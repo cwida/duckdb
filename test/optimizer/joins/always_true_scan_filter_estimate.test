@@ -1,0 +1,41 @@
+# name: test/optimizer/joins/always_true_scan_filter_estimate.test
+# description: Proven-true scan predicates do not reduce estimated cardinality
+# group: [joins]
+
+statement ok
+CREATE TABLE input AS SELECT i AS id, CASE WHEN i=0 THEN NULL ELSE i END AS nullable_id,
+                           CASE WHEN i%10=0 THEN 'special' ELSE 'ordinary' END AS label
+FROM range(1000) r(i);
+
+# Keep the predicate in the scan so the estimator, rather than predicate removal, is tested.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+PRAGMA explain_output='optimized_only';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE id IS NOT NULL;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"1000".*
+
+# A nullable column must still receive the existing selectivity estimate.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE nullable_id IS NOT NULL;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Skipping the proven-true predicate must not skip other scan filters.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE id IS NOT NULL AND label LIKE '%special%';
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+query III
+SELECT count(*) FILTER (WHERE id IS NOT NULL), count(*) FILTER (WHERE nullable_id IS NOT NULL),
+       count(*) FILTER (WHERE id IS NOT NULL AND label LIKE '%special%') FROM input;
+----
+1000	999	100
+
+statement ok
+RESET disabled_optimizers;

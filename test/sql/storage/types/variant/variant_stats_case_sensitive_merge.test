@@ -1,0 +1,31 @@
+# name: test/sql/storage/types/variant/variant_stats_case_sensitive_merge.test
+# group: [variant]
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+ATTACH '{TEST_DIR}/variant_stats_case_sensitive_merge.db' AS db (
+	ROW_GROUP_SIZE 2048,
+	STORAGE_VERSION 'v1.5.0'
+);
+
+statement ok
+CREATE TABLE db.tbl(v VARIANT);
+
+statement ok
+INSERT INTO db.tbl SELECT {'Foo': i::INTEGER}::VARIANT FROM range(2048) t(i);
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+INSERT INTO db.tbl SELECT {'foo': i::INTEGER}::VARIANT FROM range(2048) t(i);
+
+statement ok
+CHECKPOINT db;
+
+query I
+SELECT stats(v).shredding_state FROM db.tbl LIMIT 1;
+----
+INCONSISTENT

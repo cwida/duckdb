@@ -101,6 +101,8 @@ struct VariantBuilder {
 	//! maps a key string to its (unsorted) dictionary index, owned by the result's keys vector
 	OrderedOwningStringMap<uint32_t> &dictionary;
 
+	static constexpr idx_t INIT_NESTING_DEPTH = 8;
+
 	//! the offsets at which the current row's entries begin
 	idx_t row_values = 0;
 	idx_t row_children = 0;
@@ -126,14 +128,18 @@ struct VariantBuilder {
 	//! Emit a VARIANT_NULL value
 	void EmitNull() {
 		type_ids.push_back(static_cast<uint8_t>(VariantLogicalType::VARIANT_NULL));
-		byte_offsets.push_back(NumericCast<uint32_t>(blob.size()));
+		//! 'blob' may already exceed uint32_t mid-row; this offset is only read once the row is known to fit
+		//! (checked in BuildVariant once the row is fully emitted), so a narrowing wrap here is harmless.
+		byte_offsets.push_back(static_cast<uint32_t>(blob.size()));
 	}
 
 	//! Emit an OBJECT value with 'n' children (assumed to be in lexicographic key order). 'key_fn(i)'
 	//! returns the (string_t) key of child i; 'emit_fn(i)' must emit exactly one value for child i.
 	template <class KEY_FN, class EMIT_FN>
 	void EmitObject(idx_t n, KEY_FN &&key_fn, EMIT_FN &&emit_fn) {
-		auto byte_offset = NumericCast<uint32_t>(blob.size());
+		//! 'blob' may already exceed uint32_t mid-row; this offset is only read once the row is known to fit
+		//! (checked in BuildVariant once the row is fully emitted), so a narrowing wrap here is harmless.
+		auto byte_offset = static_cast<uint32_t>(blob.size());
 		type_ids.push_back(static_cast<uint8_t>(VariantLogicalType::OBJECT));
 		byte_offsets.push_back(byte_offset);
 		VariantBuilderAppendVarint(blob, NumericCast<uint32_t>(n));
@@ -155,7 +161,9 @@ struct VariantBuilder {
 	//! Emit an ARRAY value with 'n' elements. 'emit_fn(i)' must emit exactly one value for element i.
 	template <class EMIT_FN>
 	void EmitArray(idx_t n, EMIT_FN &&emit_fn) {
-		auto byte_offset = NumericCast<uint32_t>(blob.size());
+		//! 'blob' may already exceed uint32_t mid-row; this offset is only read once the row is known to fit
+		//! (checked in BuildVariant once the row is fully emitted), so a narrowing wrap here is harmless.
+		auto byte_offset = static_cast<uint32_t>(blob.size());
 		type_ids.push_back(static_cast<uint8_t>(VariantLogicalType::ARRAY));
 		byte_offsets.push_back(byte_offset);
 		VariantBuilderAppendVarint(blob, NumericCast<uint32_t>(n));
@@ -341,7 +349,9 @@ struct VariantBuilder {
 	//! 'it.GetDecimalProperties()' followed by 'it.GetData<T>()' at the physical type implied by the width.
 	template <class NODE>
 	void EmitPrimitiveNode(const NODE &it, VariantLogicalType type_id) {
-		auto byte_offset = NumericCast<uint32_t>(blob.size());
+		//! 'blob' may already exceed uint32_t mid-row; this offset is only read once the row is known to fit
+		//! (checked in BuildVariant once the row is fully emitted), so a narrowing wrap here is harmless.
+		auto byte_offset = static_cast<uint32_t>(blob.size());
 		type_ids.push_back(static_cast<uint8_t>(type_id));
 		byte_offsets.push_back(byte_offset);
 		switch (type_id) {
@@ -455,6 +465,32 @@ struct VariantBuilder {
 			throw InternalException("EmitPrimitiveNode: unhandled VariantLogicalType (%d)", static_cast<int>(type_id));
 		}
 	}
+
+	optional_idx BeginContainer(VariantLogicalType type_id, idx_t n) {
+		auto byte_offset = NumericCast<uint32_t>(blob.size());
+		type_ids.push_back(static_cast<uint8_t>(type_id));
+		byte_offsets.push_back(byte_offset);
+		VariantBuilderAppendVarint(blob, NumericCast<uint32_t>(n));
+		if (!n) {
+			return optional_idx();
+		}
+		VariantBuilderAppendVarint(blob, LocalChild());
+		auto block = child_value_ids.size();
+		child_value_ids.resize(block + n);
+		child_key_ids.resize(block + n);
+		return optional_idx(block);
+	}
+
+	void AssignObjectChild(idx_t block, idx_t i, string_t key) {
+		child_value_ids[block + i] = LocalValue();
+		child_key_ids[block + i] = LocalKey();
+		key_slots.push_back(VariantBuilderGetOrCreateIndex(dictionary, key));
+	}
+
+	void AssignArrayChild(idx_t block, idx_t i) {
+		child_value_ids[block + i] = LocalValue();
+		child_key_ids[block + i] = VARIANT_INVALID_KEY;
+	}
 };
 
 //===--------------------------------------------------------------------===//
@@ -474,29 +510,101 @@ auto CollectObjectChildren(const NODE &it) {
 
 //! Traverse a VariantNode-like cursor 'it' (any type exposing the node concept) into the builder.
 template <class NODE>
-void EmitIterator(const NODE &it, VariantBuilder &builder) {
-	if (it.IsNull() || it.IsMissing()) {
-		builder.EmitNull();
-		return;
-	}
+void EmitIterator(const NODE &root, VariantBuilder &builder) {
+	using EntryT = typename decltype(CollectObjectChildren(root))::value_type;
+	using ArrayIterT = decltype(std::declval<NODE>().GetArrayChildren());
 
-	auto type_id = it.GetTypeId();
-	switch (type_id) {
-	case VariantLogicalType::OBJECT: {
-		auto children = CollectObjectChildren(it);
-		builder.EmitObject(
-		    children.size(), [&](idx_t i) { return children[i].key; },
-		    [&](idx_t i) { EmitIterator(children[i].value, builder); });
-		break;
-	}
-	case VariantLogicalType::ARRAY: {
-		auto array = it.GetArrayChildren();
-		builder.EmitArray(array.size(), [&](idx_t i) { EmitIterator(array[i], builder); });
-		break;
-	}
-	default:
-		builder.EmitPrimitiveNode(it, type_id);
-		break;
+	struct Frame {
+		bool is_object = false;
+		idx_t index = 0;
+		idx_t block = 0;
+		vector<EntryT> object_children;
+		optional<ArrayIterT> array_children;
+	};
+
+	vector<Frame> stack;
+	stack.reserve(VariantBuilder::INIT_NESTING_DEPTH);
+
+	auto ProcessNode = [&](const NODE &node) {
+		if (node.IsNull() || node.IsMissing()) {
+			builder.EmitNull();
+			return;
+		}
+		auto type_id = node.GetTypeId();
+		switch (type_id) {
+		case VariantLogicalType::OBJECT: {
+			auto children = CollectObjectChildren(node);
+			auto n = children.size();
+			if (stack.size() >= stack.capacity()) {
+				stack.reserve(NextPowerOfTwo(stack.size() + 1));
+			}
+			auto block = builder.BeginContainer(VariantLogicalType::OBJECT, n);
+			if (block.IsValid()) {
+				Frame frame;
+				frame.is_object = true;
+				frame.block = block.GetIndex();
+				frame.object_children = std::move(children);
+				stack.push_back(std::move(frame));
+			}
+			break;
+		}
+		case VariantLogicalType::ARRAY: {
+			auto array_iter = node.GetArrayChildren();
+			auto n = array_iter.size();
+			if (stack.size() >= stack.capacity()) {
+				stack.reserve(NextPowerOfTwo(stack.size() + 1));
+			}
+			auto block = builder.BeginContainer(VariantLogicalType::ARRAY, n);
+			if (block.IsValid()) {
+				Frame frame;
+				frame.is_object = false;
+				frame.block = block.GetIndex();
+				frame.array_children.emplace(std::move(array_iter));
+				stack.push_back(std::move(frame));
+			}
+			break;
+		}
+		default:
+			builder.EmitPrimitiveNode(node, type_id);
+			break;
+		}
+	};
+
+	ProcessNode(root);
+
+	while (!stack.empty()) {
+		auto &frame = stack.back();
+
+		idx_t count;
+		if (frame.is_object) {
+			count = frame.object_children.size();
+		} else {
+			if (!frame.array_children) {
+				throw InternalException("Variant array frame has no children");
+			}
+			count = frame.array_children->size();
+		}
+
+		if (frame.index >= count) {
+			stack.pop_back();
+			continue;
+		}
+
+		const bool is_object = frame.is_object;
+		const idx_t block = frame.block;
+		const idx_t i = frame.index++;
+
+		if (is_object) {
+			auto &entry = frame.object_children[i];
+			builder.AssignObjectChild(block, i, entry.key);
+			ProcessNode(entry.value);
+		} else {
+			if (!frame.array_children) {
+				throw InternalException("Variant array frame has no children");
+			}
+			builder.AssignArrayChild(block, i);
+			ProcessNode((*frame.array_children)[i]);
+		}
 	}
 }
 
@@ -531,6 +639,12 @@ void BuildVariant(SOURCE &source, idx_t count, Vector &result) {
 	for (idx_t row = 0; row < count; row++) {
 		builder.BeginRow();
 		bool is_null = source.Emit(row, builder);
+		size_t temp = builder.blob.size();
+		if (temp > NumericLimits<uint32_t>::Maximum()) {
+			throw InvalidInputException(
+			    "Cannot convert value to VARIANT: encoded row size exceeds the maximum supported %u bytes",
+			    NumericLimits<uint32_t>::Maximum());
+		}
 		blob_writer.WriteValue(string_t(builder.blob.data(), NumericCast<uint32_t>(builder.blob.size())));
 		if (is_null) {
 			//! SPEC: If a Variant is missing in a context where a value is required, readers must return a Variant null

@@ -178,10 +178,12 @@ struct ToMicroSecondsOperator {
 template <typename OP>
 ScalarFunctionSet GetIntegerIntervalFunctions() {
 	ScalarFunctionSet function_set;
-	function_set.AddFunction(ScalarFunction({LogicalType::INTEGER}, LogicalType::INTERVAL,
-	                                        ScalarFunction::UnaryFunction<int32_t, interval_t, OP>));
-	function_set.AddFunction(ScalarFunction({LogicalType::BIGINT}, LogicalType::INTERVAL,
-	                                        ScalarFunction::UnaryFunction<int64_t, interval_t, OP>));
+	ScalarFunction int32_fun({}, LogicalType::INTERVAL, ScalarFunction::UnaryFunction<int32_t, interval_t, OP>);
+	int32_fun.GetSignature().AddParameter("integer", LogicalType::INTEGER);
+	function_set.AddFunction(int32_fun);
+	ScalarFunction int64_fun({}, LogicalType::INTERVAL, ScalarFunction::UnaryFunction<int64_t, interval_t, OP>);
+	int64_fun.GetSignature().AddParameter("integer", LogicalType::BIGINT);
+	function_set.AddFunction(int64_fun);
 	function_set.SetFallible();
 	return function_set;
 }
@@ -221,36 +223,41 @@ ScalarFunctionSet ToDaysFun::GetFunctions() {
 }
 
 ScalarFunction ToHoursFun::GetFunction() {
-	ScalarFunction function({LogicalType::BIGINT}, LogicalType::INTERVAL,
+	ScalarFunction function({}, LogicalType::INTERVAL,
 	                        ScalarFunction::UnaryFunction<int64_t, interval_t, ToHoursOperator>);
+	function.GetSignature().AddParameter("integer", LogicalType::BIGINT);
 	function.SetFallible();
 	return function;
 }
 
 ScalarFunction ToMinutesFun::GetFunction() {
-	ScalarFunction function({LogicalType::BIGINT}, LogicalType::INTERVAL,
+	ScalarFunction function({}, LogicalType::INTERVAL,
 	                        ScalarFunction::UnaryFunction<int64_t, interval_t, ToMinutesOperator>);
+	function.GetSignature().AddParameter("integer", LogicalType::BIGINT);
 	function.SetFallible();
 	return function;
 }
 
 ScalarFunction ToSecondsFun::GetFunction() {
-	ScalarFunction function({LogicalType::DOUBLE}, LogicalType::INTERVAL,
+	ScalarFunction function({}, LogicalType::INTERVAL,
 	                        ScalarFunction::UnaryFunction<double, interval_t, ToSecondsOperator>);
+	function.GetSignature().AddParameter("double", LogicalType::DOUBLE);
 	function.SetFallible();
 	return function;
 }
 
 ScalarFunction ToMillisecondsFun::GetFunction() {
-	ScalarFunction function({LogicalType::DOUBLE}, LogicalType::INTERVAL,
+	ScalarFunction function({}, LogicalType::INTERVAL,
 	                        ScalarFunction::UnaryFunction<double, interval_t, ToMilliSecondsOperator>);
+	function.GetSignature().AddParameter("double", LogicalType::DOUBLE);
 	function.SetFallible();
 	return function;
 }
 
 ScalarFunction ToMicrosecondsFun::GetFunction() {
-	ScalarFunction function({LogicalType::BIGINT}, LogicalType::INTERVAL,
+	ScalarFunction function({}, LogicalType::INTERVAL,
 	                        ScalarFunction::UnaryFunction<int64_t, interval_t, ToMicroSecondsOperator>);
+	function.GetSignature().AddParameter("integer", LogicalType::BIGINT);
 	function.SetFallible();
 	return function;
 }

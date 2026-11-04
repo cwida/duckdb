@@ -20,7 +20,15 @@
     {
       "reason": "Before storage version v1.5.0 ALP and ALPRD are disabled for non-default block sizes.",
       "paths": [
-        "test/sql/storage/compression/alp/alp_uncompressed_mode_v1_4_0.test_slow"
+        "test/sql/storage/compression/alp/alp_uncompressed_mode_v1_4_0.test_slow",
+        "test/sql/storage/compression/alprd/alprd_uncompressed_mode_regression.test_slow"
+      ]
+    },
+    {
+      "reason": "Block and WAL size assertions assume the default block size.",
+      "paths": [
+        "test/sql/storage/wal/wal_replay_clean_checkpoint_block_marks.test_slow",
+        "test/sql/storage/wal/wal_size_unaligned_appends.test_slow"
       ]
     }
   ]

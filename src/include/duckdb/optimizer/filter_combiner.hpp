@@ -12,6 +12,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/parser/expression_map.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/joinside.hpp"
 
 #include "duckdb/storage/data_table.hpp"
 #include <functional>
@@ -44,6 +45,8 @@ public:
 	};
 
 	FilterResult AddFilter(unique_ptr<Expression> expr);
+	//! Splits on AND and adds each conjunct
+	FilterResult AddConjuncts(unique_ptr<Expression> expr);
 
 	//! Returns whether or not a set of integral values is a dense range (i.e. 1, 2, 3, 4, 5)
 	//! If this returns true - this sorts "in_list" as a side-effect
@@ -54,6 +57,15 @@ public:
 	bool HasFilters();
 	void GenerateEquivalentFilters(const Expression &filter,
 	                               const std::function<void(unique_ptr<Expression> filter)> &callback);
+	//! The expression that a comparison, BETWEEN or IN filter compares with constants, or nullptr for other filters.
+	//! Such a filter is false for NULL and has the same result for all values equal to that expression.
+	static optional_ptr<const Expression> GetComparedExpression(const Expression &filter);
+	//! Generates the comparisons with constants that filters on one side of a join imply for the target side through
+	//! the equality conditions, e.g. [i = a and i = 500] => [a = 500]. Unlike GenerateEquivalentFilters, it only
+	//! replaces a compared expression as a whole, so values that are equal but not identical stay apart.
+	static void GenerateJoinFilters(const vector<JoinCondition> &conditions,
+	                                const vector<reference<const Expression>> &filters, JoinSide target_side,
+	                                const std::function<void(unique_ptr<Expression> filter)> &callback);
 	TableFilterSet GenerateTableScanFilters(const vector<ColumnIndex> &column_ids,
 	                                        vector<FilterPushdownResult> &pushdown_results);
 

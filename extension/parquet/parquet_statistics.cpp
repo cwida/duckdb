@@ -18,18 +18,17 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
-#include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "reader/uuid_column_reader.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "column_reader.hpp"
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/constants.hpp"
@@ -53,6 +52,7 @@
 #include "duckdb/storage/statistics/string_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 #include "parquet_column_schema.hpp"
+#include "parquet_reader.hpp"
 #include "parquet_types.h"
 #include "thrift/protocol/TProtocol.h"
 #include "thrift_tools.hpp"
@@ -111,6 +111,13 @@ static unique_ptr<BaseStatistics> CreateFloatingPointStats(const LogicalType &ty
 	return stats.ToUnique();
 }
 
+bool ParquetStatisticsUtils::CanHaveNaN(const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan) {
+	if (parquet_stats.__isset.nan_count) {
+		return parquet_stats.nan_count != 0;
+	}
+	return can_have_nan;
+}
+
 Value ParquetStatisticsUtils::ConvertValue(const LogicalType &type, const ParquetColumnSchema &schema_ele,
                                            const std::string &stats) {
 	string error;
@@ -121,6 +128,17 @@ Value ParquetStatisticsUtils::ConvertValue(const LogicalType &type, const Parque
 	}
 	return std::move(*result);
 }
+//! Statistics values that do not fit in the width of the decimal are ignored
+template <class T>
+static Value ParquetDecimalStatsValue(T value, uint8_t width, uint8_t scale) {
+	const auto max_value = Hugeint::POWERS_OF_TEN[width];
+	const auto hugeint_value = hugeint_t(value);
+	if (hugeint_value >= max_value || hugeint_value <= -max_value) {
+		return Value();
+	}
+	return Value::DECIMAL(value, width, scale);
+}
+
 Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, const ParquetColumnSchema &schema_ele,
                                                    const std::string &stats) {
 	auto stats_data = const_data_ptr_cast(stats.c_str());
@@ -129,7 +147,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		if (stats.size() != sizeof(bool)) {
 			throw InvalidInputException("Incorrect stats size for type BOOLEAN");
 		}
-		return Value::BOOLEAN(Load<bool>(stats_data));
+		return Value::BOOLEAN(Load<uint8_t>(stats_data) != 0);
 	}
 	case LogicalTypeId::UTINYINT:
 	case LogicalTypeId::USMALLINT:
@@ -195,25 +213,25 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 			if (stats.size() != sizeof(int32_t)) {
 				throw InvalidInputException("Incorrect stats size for type %s", type.ToString());
 			}
-			return Value::DECIMAL(Load<int32_t>(stats_data), width, scale);
+			return ParquetDecimalStatsValue(Load<int32_t>(stats_data), width, scale);
 		case ParquetExtraTypeInfo::DECIMAL_INT64:
 			if (stats.size() != sizeof(int64_t)) {
 				throw InvalidInputException("Incorrect stats size for type %s", type.ToString());
 			}
-			return Value::DECIMAL(Load<int64_t>(stats_data), width, scale);
+			return ParquetDecimalStatsValue(Load<int64_t>(stats_data), width, scale);
 		case ParquetExtraTypeInfo::DECIMAL_BYTE_ARRAY:
 			switch (type.InternalType()) {
 			case PhysicalType::INT16:
-				return Value::DECIMAL(
+				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<int16_t>(stats_data, stats.size(), schema_ele), width, scale);
 			case PhysicalType::INT32:
-				return Value::DECIMAL(
+				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<int32_t>(stats_data, stats.size(), schema_ele), width, scale);
 			case PhysicalType::INT64:
-				return Value::DECIMAL(
+				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<int64_t>(stats_data, stats.size(), schema_ele), width, scale);
 			case PhysicalType::INT128:
-				return Value::DECIMAL(
+				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<hugeint_t>(stats_data, stats.size(), schema_ele), width,
 				    scale);
 			default:
@@ -245,32 +263,30 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 		}
 		switch (schema_ele.type_info) {
 		case ParquetExtraTypeInfo::UNIT_MS:
+			if (!ParquetTimeIsValid(val, Interval::MSECS_PER_SEC * Interval::SECS_PER_DAY)) {
+				return Value();
+			}
 			return Value::TIME(Time::FromTimeMs(val));
-		case ParquetExtraTypeInfo::UNIT_NS:
-			return Value::TIME(Time::FromTimeNs(val));
 		case ParquetExtraTypeInfo::UNIT_MICROS:
 		default:
+			if (!ParquetTimeIsValid(val, Interval::MICROS_PER_DAY)) {
+				return Value();
+			}
 			return Value::TIME(dtime_t(val));
 		}
 	}
 	case LogicalTypeId::TIME_NS: {
-		int64_t val;
-		if (stats.size() == sizeof(int32_t)) {
-			val = Load<int32_t>(stats_data);
-		} else if (stats.size() == sizeof(int64_t)) {
-			val = Load<int64_t>(stats_data);
-		} else {
+		if (stats.size() != sizeof(int64_t)) {
 			throw InvalidInputException("Incorrect stats size for type TIME_NS");
 		}
-		switch (schema_ele.type_info) {
-		case ParquetExtraTypeInfo::UNIT_MS:
-			return Value::TIME_NS(ParquetMsIntToTimeNs(NumericCast<int32_t>(val)));
-		case ParquetExtraTypeInfo::UNIT_NS:
-			return Value::TIME_NS(ParquetIntToTimeNs(val));
-		case ParquetExtraTypeInfo::UNIT_MICROS:
-		default:
-			return Value::TIME_NS(dtime_ns_t(val));
+		if (schema_ele.type_info != ParquetExtraTypeInfo::UNIT_NS) {
+			throw InternalException("TIME_NS requires nanosecond type info");
 		}
+		const auto nanos = Load<int64_t>(stats_data);
+		if (!ParquetTimeIsValid(nanos, Interval::NANOS_PER_DAY)) {
+			return Value();
+		}
+		return Value::TIME_NS(ParquetIntToTimeNs(nanos));
 	}
 	case LogicalTypeId::TIME_TZ: {
 		int64_t val;
@@ -307,9 +323,6 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 			switch (schema_ele.type_info) {
 			case ParquetExtraTypeInfo::UNIT_MS:
 				timestamp_value = ParquetTimestampMsToTimestamp(val);
-				break;
-			case ParquetExtraTypeInfo::UNIT_NS:
-				timestamp_value = ParquetTimestampNsToTimestamp(val);
 				break;
 			case ParquetExtraTypeInfo::UNIT_MICROS:
 			default:
@@ -349,7 +362,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 			}
 		}
 		if (type.id() == LogicalTypeId::TIMESTAMP_TZ_NS) {
-			return Value::TIMESTAMPTZNS(timestamp_tz_ns_t(timestamp_value));
+			return Value::TIMESTAMPTZNS(timestamp_tz_ns_t(timestamp_value.value));
 		}
 		return Value::TIMESTAMPNS(timestamp_value);
 	}
@@ -381,7 +394,7 @@ static void ConvertUnshreddedStats(BaseStatistics &result, optional_ptr<BaseStat
 		return;
 	}
 	auto &input = *input_p;
-	D_ASSERT(input.GetType().id() == LogicalTypeId::BLOB);
+	D_ASSERT(input.GetType().id() == LogicalTypeId::BLOB || input.GetType().id() == LogicalTypeId::VARCHAR);
 	result.CopyValidity(input);
 
 	if (!result.CanHaveNoNull()) {
@@ -438,7 +451,7 @@ static void ConvertShreddedStats(BaseStatistics &result, optional_ptr<BaseStatis
 		ConvertShreddedStatsItem(ListStats::GetChildStats(result), ListStats::GetChildStats(input));
 		return;
 	}
-	if (type_id == LogicalTypeId::STRUCT) {
+	if (StructType::IsStruct(type_id)) {
 		auto field_count = StructType::GetChildCount(result.GetType());
 		for (idx_t i = 0; i < field_count; i++) {
 			ConvertShreddedStatsItem(StructStats::GetChildStats(result, i), StructStats::GetChildStats(input, i));
@@ -477,10 +490,18 @@ static bool TryGetStringStats(const string &value, bool has_value, const string 
 	return false;
 }
 
-unique_ptr<BaseStatistics>
-ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, const ParquetColumnSchema &schema,
-                                                   const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan,
-                                                   optional_ptr<const ColumnChunk> column_chunk) {
+unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
+    const LogicalType &type, const ParquetColumnSchema &schema, const duckdb_parquet::Statistics &parquet_stats,
+    const ParquetOptions &parquet_options, bool can_have_nan, optional_ptr<const ColumnChunk> column_chunk) {
+	// INT96 has no defined sort order: a column is only ordered chronologically when the file declares
+	// INT96_TIMESTAMP_ORDER for it. Under the default TYPE_ORDER the statistics bound the values by byte comparison,
+	// which is a different order, so pruning on them silently drops rows - the specification requires readers to
+	// ignore all statistics of such a column, whether it declares TYPE_ORDER or no column order at all.
+	// See test/sql/copy/parquet/int96_invalid_stats.test
+	if (schema.parquet_type == Type::INT96) {
+		auto unknown_stats = BaseStatistics::CreateUnknown(type);
+		return unknown_stats.ToUnique();
+	}
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::UTINYINT:
@@ -506,20 +527,23 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 		return CreateNumericStats(type, schema, parquet_stats);
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE:
-		if (can_have_nan) {
-			// Since parquet doesn't tell us if the column has NaN values, if the user has explicitly declared that it
-			// does, we create stats without an upper max value, as NaN compares larger than anything else.
+		if (CanHaveNaN(parquet_stats, can_have_nan)) {
+			// The column can contain NaN values - create stats without an upper max value, as NaN compares larger than
+			// anything else and is not included in the Parquet min/max
 			return CreateFloatingPointStats(type, schema, parquet_stats);
 		} else {
-			// Otherwise we use the numeric stats as usual, which might lead to "wrong" pruning if the column contains
-			// NaN values. The parquet spec is not clear on how to handle NaN values in statistics, and so this is
-			// probably the best we can do for now.
+			// Otherwise we use the numeric stats as usual
 			return CreateNumericStats(type, schema, parquet_stats);
 		}
 		break;
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::VARCHAR: {
 		const bool is_varchar = type.id() == LogicalTypeId::VARCHAR;
+		if (parquet_options.RepairsInvalidUTF8() &&
+		    StringColumnReader::GetStringColumnType(type) == StringColumnReader::StringColumnType::VARCHAR) {
+			// a repaired value can lie below the minimum or above the maximum of the stored bytes
+			return StringStats::CreateUnknown(type).ToUnique();
+		}
 		auto min_stats_type = parquet_stats.__isset.is_min_value_exact && parquet_stats.is_min_value_exact
 		                          ? StringStatsType::EXACT_STATS
 		                          : StringStatsType::TRUNCATED_STATS;
@@ -591,7 +615,9 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 				if (!types.empty()) {
 					stats_types.Clear();
 					for (auto &geom_type : types) {
-						stats_types.AddWKBType(geom_type);
+						if (!stats_types.TryAddWKBType(geom_type)) {
+							throw DataCorruptionException("Invalid geometry type in Parquet file");
+						}
 					}
 				}
 			}
@@ -607,9 +633,10 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 	return unknown_stats.ToUnique();
 }
 
-unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(const ParquetColumnSchema &schema,
-                                                                             const vector<ColumnChunk> &columns,
-                                                                             bool can_have_nan) {
+unique_ptr<BaseStatistics>
+ParquetStatisticsUtils::TransformColumnStatistics(const ParquetColumnSchema &schema,
+                                                  const duckdb_parquet::ColumnChunkList &columns,
+                                                  const ParquetOptions &parquet_options) {
 	// Not supported types
 	auto &type = schema.type;
 	if (type.id() == LogicalTypeId::ARRAY) {
@@ -621,18 +648,19 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 	if (type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::MAP) {
 		auto list_stats = ListStats::CreateUnknown(type);
 		auto &child_schema = schema.children[0];
-		auto child_stats = ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, can_have_nan);
+		auto child_stats = ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, parquet_options);
 		ListStats::SetChildStats(list_stats, std::move(child_stats));
 		row_group_stats = list_stats.ToUnique();
 		return row_group_stats;
 	}
 	// Structs are handled differently (they dont have stats)
-	if (type.id() == LogicalTypeId::STRUCT) {
+	if (StructType::IsStruct(type)) {
 		auto struct_stats = StructStats::CreateUnknown(type);
 		// Recurse into child readers
 		for (idx_t i = 0; i < schema.children.size(); i++) {
 			auto &child_schema = schema.children[i];
-			auto child_stats = ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, can_have_nan);
+			auto child_stats =
+			    ParquetStatisticsUtils::TransformColumnStatistics(child_schema, columns, parquet_options);
 			StructStats::SetChildStats(struct_stats, i, std::move(child_stats));
 		}
 		row_group_stats = struct_stats.ToUnique();
@@ -650,10 +678,7 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 			//! field is missing)
 			return nullptr;
 		}
-		auto shredding_type = TypeVisitor::VisitReplace(logical_type, [](const LogicalType &type) {
-			return LogicalType::STRUCT({{"typed_value", type}, {"untyped_value_index", LogicalType::UINTEGER}});
-		});
-		auto variant_stats = VariantStats::CreateShredded(shredding_type);
+		auto variant_stats = VariantStats::CreateShredded(VariantStats::GetShreddingType(logical_type));
 
 		//! Take the root stats
 		auto &shredded_stats = VariantStats::GetShreddedStats(variant_stats);
@@ -662,14 +687,16 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 
 		//! Convert the root 'value' -> 'untyped_value_index'
 		auto &value = schema.children[1];
-		D_ASSERT(value.name == "value");
-		auto value_stats = ParquetStatisticsUtils::TransformColumnStatistics(value, columns, can_have_nan);
+		if (schema.children[0].name != "metadata" || value.name != "value") {
+			return nullptr;
+		}
+		auto value_stats = ParquetStatisticsUtils::TransformColumnStatistics(value, columns, parquet_options);
 		//! Best-effort: nodes whose stats can't be converted are left UNKNOWN (not fully shredded) rather
 		//! than discarding the statistics for the entire variant column
 		ConvertUnshreddedStats(untyped_value_index_stats, value_stats.get());
 
 		auto parquet_typed_value_stats =
-		    ParquetStatisticsUtils::TransformColumnStatistics(typed_value, columns, can_have_nan);
+		    ParquetStatisticsUtils::TransformColumnStatistics(typed_value, columns, parquet_options);
 		ConvertShreddedStats(typed_value_stats, parquet_typed_value_stats.get());
 		//! Set validity to UNKNOWN
 		variant_stats.SetHasNoNull();
@@ -684,7 +711,8 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 		return nullptr;
 	}
 	auto &parquet_stats = column_chunk.meta_data.statistics;
-	row_group_stats = TransformParquetStatistics(type, schema, parquet_stats, can_have_nan, &column_chunk);
+	row_group_stats = TransformParquetStatistics(type, schema, parquet_stats, parquet_options,
+	                                             parquet_options.can_have_nan, &column_chunk);
 
 	// null count is generic
 	if (row_group_stats) {
@@ -697,24 +725,6 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformColumnStatistics(con
 		}
 	}
 	return row_group_stats;
-}
-
-// Optional filters store the expression used for pruning in their bind data.
-static optional_ptr<const Expression> GetOptionalFilterChild(const Expression &expr) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
-		return nullptr;
-	}
-	auto &func = expr.Cast<BoundFunctionExpression>();
-	if (!func.BindInfo()) {
-		return nullptr;
-	}
-	if (func.Function().GetName() == OptionalFilterScalarFun::NAME) {
-		return func.BindInfo()->Cast<OptionalFilterFunctionData>().child_filter_expr.get();
-	}
-	if (func.Function().GetName() == SelectivityOptionalFilterScalarFun::NAME) {
-		return func.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>().child_filter_expr.get();
-	}
-	return nullptr;
 }
 
 static bool UsesNormalizedIntervalHash(ParquetBloomFilterHashStrategy hash_strategy) {
@@ -799,7 +809,7 @@ static bool HasFilterConstants(const Expression &expr, ParquetBloomFilterHashStr
 	if (GetBloomFilterInExpression(expr, hash_strategy)) {
 		return true;
 	}
-	auto optional_filter_child = GetOptionalFilterChild(expr);
+	auto optional_filter_child = ExpressionFilter::GetOptionalFilterChild(expr);
 	if (optional_filter_child) {
 		return HasFilterConstants(*optional_filter_child, hash_strategy);
 	}
@@ -902,10 +912,6 @@ static optional<uint64_t> TryHashTimestamp(const Value &constant, const ParquetC
 	}
 }
 
-static uint64_t HashNormalizedInterval(const Value &constant) {
-	return ParquetIntervalUtils::HashNormalized(constant.GetValue<interval_t>());
-}
-
 // TODO we can only this if the parquet representation of the type exactly matches the duckdb rep!
 // TODO TEST THIS!
 // TODO perhaps we can re-use some writer infra here
@@ -925,9 +931,18 @@ static optional<uint64_t> ValueXXH64(const Value &constant, const ParquetColumnS
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
 		return TryHashTimestamp(constant, schema);
-	case LogicalTypeId::INTERVAL:
-		return UsesNormalizedIntervalHash(hash_strategy) ? optional<uint64_t>(HashNormalizedInterval(constant))
-		                                                 : nullopt;
+	case LogicalTypeId::INTERVAL: {
+		if (!UsesNormalizedIntervalHash(hash_strategy)) {
+			return nullopt;
+		}
+		const auto interval = constant.GetValue<interval_t>();
+		// files of different versions hash an interval whose normalization saturates and keeps whole days in its
+		// microseconds differently, so a filter on one cannot rely on the bloom filter
+		if (interval.Normalize().micros >= Interval::MICROS_PER_DAY) {
+			return nullopt;
+		}
+		return ParquetIntervalUtils::TryHashNormalized(interval);
+	}
 	case LogicalTypeId::DECIMAL:
 		if (schema.parquet_type == duckdb_parquet::Type::INT32) {
 			return ValueXH64FixedWidth<int32_t>(constant);
@@ -1035,7 +1050,7 @@ static bool ApplyBloomFilter(const Expression &expr, ParquetBloomFilter &bloom_f
 		}
 		return true;
 	}
-	auto optional_filter_child = GetOptionalFilterChild(expr);
+	auto optional_filter_child = ExpressionFilter::GetOptionalFilterChild(expr);
 	if (optional_filter_child) {
 		return ApplyBloomFilter(*optional_filter_child, bloom_filter, schema, hash_strategy);
 	}
@@ -1226,21 +1241,98 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 	return ApplyBloomFilter(duckdb_filter, bloom_filter, schema, hash_strategy);
 }
 
-ParquetBloomFilter::ParquetBloomFilter(idx_t num_entries, double bloom_filter_false_positive_ratio) {
-	// aim for hit ratio of 0.01%
-	// see http://tfk.mit.edu/pdf/bloom.pdf
-	double f = bloom_filter_false_positive_ratio;
-	double k = 8.0;
-	double n = LossyNumericCast<double>(num_entries);
-	double m = -k * n / std::log(1 - std::pow(f, 1 / k));
-	auto b = MaxValue<idx_t>(NextPowerOfTwo(LossyNumericCast<idx_t>(m / k)) / 32, 1);
+bool ParquetBloomFilterMemory::TryReserve(idx_t bytes) {
+	if (TryReserveInternal(bytes)) {
+		return true;
+	}
+	if (bytes > limit) {
+		return false;
+	}
+	make_room();
+	return TryReserveInternal(bytes);
+}
 
-	D_ASSERT(b > 0 && IsPowerOfTwo(b));
+bool ParquetBloomFilterMemory::TryReserveInternal(idx_t bytes) {
+	lock_guard<mutex> guard(lock);
+	if (bytes > limit - used) {
+		return false;
+	}
+	used += bytes;
+	return true;
+}
 
-	data = make_uniq<ResizeableBuffer>(Allocator::DefaultAllocator(), sizeof(ParquetBloomBlock) * b);
-	data->zero();
-	block_count = data->len / sizeof(ParquetBloomBlock);
-	D_ASSERT(data->len % sizeof(ParquetBloomBlock) == 0);
+void ParquetBloomFilterMemory::Release(idx_t bytes) {
+	lock_guard<mutex> guard(lock);
+	D_ASSERT(bytes <= used);
+	used -= bytes;
+}
+
+// see http://tfk.mit.edu/pdf/bloom.pdf
+static optional_idx BloomFilterSize(idx_t num_entries, double target) {
+	D_ASSERT(target > 0 && target <= 1);
+	// Check the floating-point size before converting or rounding to a power of two.
+	const auto bytes = -LossyNumericCast<double>(num_entries) / std::log1p(-std::pow(target, 1.0 / 8.0));
+	constexpr idx_t max_filter_bytes = 128ULL * 1024 * 1024;
+	if (!std::isfinite(bytes) || bytes > max_filter_bytes) {
+		return optional_idx();
+	}
+	return MaxValue<idx_t>(sizeof(ParquetBloomBlock), NextPowerOfTwo(LossyNumericCast<idx_t>(bytes)));
+}
+
+static unique_ptr<ResizeableBuffer> AllocateBloomFilter(Allocator &allocator, idx_t size) {
+	auto buffer = make_uniq<ResizeableBuffer>(allocator, size);
+	buffer->zero();
+	return buffer;
+}
+
+optional_idx ParquetBloomFilter::EstimateSize(idx_t num_entries, double target) {
+	return BloomFilterSize(num_entries, target);
+}
+
+unique_ptr<ParquetBloomFilter> ParquetBloomFilter::Create(Allocator &allocator, idx_t num_entries, double target) {
+	const auto size = BloomFilterSize(num_entries, target);
+	if (!size.IsValid()) {
+		return nullptr;
+	}
+	return make_uniq<ParquetBloomFilter>(AllocateBloomFilter(allocator, size.GetIndex()));
+}
+
+unique_ptr<ParquetBloomFilter> ParquetBloomFilter::TryCreate(Allocator &allocator, idx_t num_entries, double target,
+                                                             shared_ptr<ParquetBloomFilterMemory> memory) {
+	if (!num_entries) {
+		return nullptr;
+	}
+	const auto size = BloomFilterSize(num_entries, target);
+	if (!size.IsValid()) {
+		return nullptr;
+	}
+	// Reserve scratch space as well, so concurrent compaction stays within the budget.
+	const auto reservation = size.GetIndex() + size.GetIndex() / 2;
+	if (!memory->TryReserve(reservation)) {
+		return nullptr;
+	}
+	try {
+		auto result = make_uniq<ParquetBloomFilter>(AllocateBloomFilter(allocator, size.GetIndex()));
+		result->memory = memory;
+		result->reserved_bytes = reservation;
+		return result;
+	} catch (...) {
+		memory->Release(reservation);
+		throw;
+	}
+}
+
+ParquetBloomFilter::~ParquetBloomFilter() {
+	data.reset();
+	ReleaseReservation();
+}
+
+void ParquetBloomFilter::ReleaseReservation() {
+	if (memory) {
+		memory->Release(reserved_bytes);
+		memory.reset();
+		reserved_bytes = 0;
+	}
 }
 
 ParquetBloomFilter::ParquetBloomFilter(unique_ptr<ResizeableBuffer> data_p) {
@@ -1279,6 +1371,44 @@ double ParquetBloomFilter::OneRatio() {
 		one_count += PopCnt64(bloom_ptr[b_idx]);
 	}
 	return LossyNumericCast<double>(one_count) / (LossyNumericCast<double>(data->len) * 8.0);
+}
+
+void ParquetBloomFilter::Shrink(Allocator &allocator, idx_t new_block_count) {
+	D_ASSERT(new_block_count > 0 && block_count % new_block_count == 0);
+	auto folded = AllocateBloomFilter(allocator, new_block_count * sizeof(ParquetBloomBlock));
+	array_ptr<ParquetBloomBlock> source(reinterpret_cast<ParquetBloomBlock *>(data->ptr), block_count);
+	array_ptr<ParquetBloomBlock> target(reinterpret_cast<ParquetBloomBlock *>(folded->ptr), new_block_count);
+	const auto factor = block_count / new_block_count;
+	for (idx_t i = 0; i < new_block_count; i++) {
+		auto &merged = target[i];
+		for (idx_t j = i * factor; j < (i + 1) * factor; j++) {
+			for (idx_t word = 0; word < 8; word++) {
+				merged.block[word] |= source[j].block[word];
+			}
+		}
+	}
+	data = std::move(folded);
+	block_count = new_block_count;
+}
+
+void ParquetBloomFilter::FoldToTarget(Allocator &allocator, double target) {
+	D_ASSERT(IsPowerOfTwo(block_count));
+	double zero_ratio = 1.0 - OneRatio();
+	auto new_block_count = block_count;
+	while (new_block_count > 1) {
+		zero_ratio *= zero_ratio;
+		if (std::pow(1.0 - zero_ratio, 8) > target) {
+			break;
+		}
+		new_block_count /= 2;
+	}
+	if (new_block_count < block_count) {
+		Shrink(allocator, new_block_count);
+	}
+	if (memory) {
+		memory->Release(reserved_bytes - data->len);
+		reserved_bytes = data->len;
+	}
 }
 
 ResizeableBuffer *ParquetBloomFilter::Get() {

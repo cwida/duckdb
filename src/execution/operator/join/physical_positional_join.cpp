@@ -21,7 +21,7 @@ class PositionalJoinGlobalState : public GlobalSinkState {
 public:
 	explicit PositionalJoinGlobalState(ClientContext &context, const PhysicalPositionalJoin &op)
 	    : rhs(context, op.children[1].get().GetTypes()), initialized(false), source_count(0), source_offset(0),
-	      exhausted(false) {
+	      exhausted(false), rows_scanned(0) {
 		rhs.InitializeAppend(append_state);
 	}
 
@@ -35,6 +35,7 @@ public:
 	idx_t source_count;
 	idx_t source_offset;
 	bool exhausted;
+	atomic<idx_t> rows_scanned;
 
 	void InitializeScan();
 	idx_t Refill();
@@ -137,6 +138,8 @@ void PositionalJoinGlobalState::Execute(DataChunk &input, DataChunk &output) {
 	CopyData(output, count, col_offset);
 
 	output.SetChildCardinality(count);
+	const auto scanned = rows_scanned.load(std::memory_order_relaxed);
+	rows_scanned.store(scanned + MinValue(count, rhs.Count() - scanned), std::memory_order_relaxed);
 }
 
 OperatorResultType PhysicalPositionalJoin::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
@@ -172,6 +175,8 @@ void PositionalJoinGlobalState::GetData(DataChunk &output) {
 	//	RHS still has data, so copy it
 	CopyData(output, count, col_offset);
 	output.SetChildCardinality(count);
+	const auto scanned = rows_scanned.load(std::memory_order_relaxed);
+	rows_scanned.store(scanned + MinValue(count, rhs.Count() - scanned), std::memory_order_relaxed);
 }
 
 SourceResultType PhysicalPositionalJoin::GetDataInternal(ExecutionContext &context, DataChunk &result,
@@ -180,6 +185,19 @@ SourceResultType PhysicalPositionalJoin::GetDataInternal(ExecutionContext &conte
 	sink.GetData(result);
 
 	return result.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
+}
+
+ProgressData PhysicalPositionalJoin::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &sink = sink_state->Cast<PositionalJoinGlobalState>();
+	ProgressData progress;
+	progress.total = double(MaxValue<idx_t>(sink.rhs.Count(), 1));
+	progress.done = sink.rhs.Count() == 0 ? 1.0 : double(sink.rows_scanned.load(std::memory_order_relaxed));
+	return progress;
+}
+
+void PhysicalPositionalJoin::SourceFinished(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &sink = sink_state->Cast<PositionalJoinGlobalState>();
+	sink.rows_scanned.store(sink.rhs.Count(), std::memory_order_relaxed);
 }
 
 //===--------------------------------------------------------------------===//

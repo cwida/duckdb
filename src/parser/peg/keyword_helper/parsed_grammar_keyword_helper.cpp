@@ -46,26 +46,44 @@ static void PopulateKeywordMap(const ParsedGrammar &grammar, const string &root_
 	active_rules.erase(rule_name);
 }
 
-ParsedGrammarKeywordHelper::ParsedGrammarKeywordHelper(const ParsedGrammar &grammar) {
-	unordered_map<string, reference<case_insensitive_set_t>> mapping {
-	    {"ReservedKeyword", keyword_maps.reserved_keyword_map},
-	    {"UnreservedKeyword", keyword_maps.unreserved_keyword_map},
-	    {"ColumnNameKeyword", keyword_maps.colname_keyword_map},
-	    {"TypeFuncKeyword", keyword_maps.typefunc_keyword_map},
-	    {"TypeNameKeyword", keyword_maps.typename_keyword_map},
+static DefaultKeywordMaps BuildKeywordMaps(const ParsedGrammar &grammar) {
+	DefaultKeywordMaps keyword_maps;
+	struct KeywordRuleMapping {
+		const char *rule_name;
+		reference<case_insensitive_set_t> keyword_map;
+		bool optional;
+	};
+	// grammars without a bare-label rule only accept non-keywords as bare labels
+	const KeywordRuleMapping mapping[] = {
+	    {"ReservedKeyword", keyword_maps.reserved_keyword_map, false},
+	    {"UnreservedKeyword", keyword_maps.unreserved_keyword_map, false},
+	    {"ColumnNameKeyword", keyword_maps.colname_keyword_map, false},
+	    {"TypeFuncKeyword", keyword_maps.typefunc_keyword_map, false},
+	    {"TypeNameKeyword", keyword_maps.typename_keyword_map, false},
+	    {"BareLabelKeyword", keyword_maps.bare_label_keyword_map, true},
 	};
 	for (auto &entry : mapping) {
+		if (entry.optional && !grammar.GetRule(entry.rule_name)) {
+			continue;
+		}
 		case_insensitive_set_t active_rules;
-		PopulateKeywordMap(grammar, entry.first, entry.first, entry.second.get(), active_rules);
+		PopulateKeywordMap(grammar, entry.rule_name, entry.rule_name, entry.keyword_map.get(), active_rules);
 	}
+	// the bare-label classification is orthogonal: every entry must also be an unreserved or column-name keyword
+	for (auto &keyword : keyword_maps.bare_label_keyword_map) {
+		if (!keyword_maps.unreserved_keyword_map.count(keyword) && !keyword_maps.colname_keyword_map.count(keyword)) {
+			throw InvalidInputException("Bare label keyword '%s' is not an unreserved or column-name keyword", keyword);
+		}
+	}
+	return keyword_maps;
 }
 
-bool ParsedGrammarKeywordHelper::KeywordCategoryType(const string &text, PEGKeywordCategory category) const {
-	return keyword_maps.IsKeywordOfCategory(text, category);
+ParsedGrammarKeywordHelper::ParsedGrammarKeywordHelper(const ParsedGrammar &grammar)
+    : keyword_maps(BuildKeywordMaps(grammar)), literal_table(grammar, keyword_maps.ToLiteralMap()) {
 }
 
-bool ParsedGrammarKeywordHelper::IsKeyword(const string &text) const {
-	return keyword_maps.IsKeyword(text);
+keyword_categories_t ParsedGrammarKeywordHelper::GetIdentifierMask(SuggestionState type) const {
+	return DefaultKeywordMaps::GetIdentifierMask(type);
 }
 
 vector<ParserKeyword> ParsedGrammarKeywordHelper::KeywordList() const {

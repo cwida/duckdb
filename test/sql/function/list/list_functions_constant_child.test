@@ -1,0 +1,18 @@
+# name: test/sql/function/list/list_functions_constant_child.test
+# description: list and array functions on lists and arrays whose child vector is not flat
+# group: [list]
+
+# TRY_CAST of a list with no valid conversion produces a constant NULL child vector
+query II
+SELECT list_select(TRY_CAST(l AS UUID[]), [2, 1]), list_where(TRY_CAST(l AS UUID[]), [true, false]) FROM (SELECT [1, 2, 3] l)
+----
+[NULL, NULL]	[NULL]
+
+foreach func array_distance array_inner_product array_cosine_similarity array_cross_product array_negative_inner_product array_cosine_distance
+
+statement error
+SELECT {func}(TRY_CAST(a AS FLOAT[3]), [1, 2, 3]::FLOAT[3]) FROM (SELECT [uuid(), uuid(), uuid()]::UUID[3] a)
+----
+left argument can not contain NULL values
+
+endloop

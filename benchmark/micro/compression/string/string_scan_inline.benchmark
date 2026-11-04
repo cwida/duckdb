@@ -1,0 +1,24 @@
+# name: benchmark/micro/compression/string/string_scan_inline.benchmark
+# description: Scan Uncompressed String Column (8-byte strings)
+# group: [string]
+
+name Scan Uncompressed String Column (8-byte strings)
+group string
+storage persistent
+cache string_scan_inline.db
+
+load
+CREATE TABLE string_values(s VARCHAR USING COMPRESSION UNCOMPRESSED);
+INSERT INTO string_values SELECT lpad(i::VARCHAR, 8, '0') FROM range(5_000_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('string_values') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+Uncompressed
+
+run
+SELECT SUM(strlen(s)) FROM string_values;
+
+result I
+40000000

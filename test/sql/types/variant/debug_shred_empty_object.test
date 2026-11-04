@@ -1,0 +1,32 @@
+# name: test/sql/types/variant/debug_shred_empty_object.test
+# description: Debug shredding preserves cardinality when the first value has no shreddable fields
+# group: [variant]
+
+statement ok
+PRAGMA debug_verify_vector = 'shredded_vector';
+
+statement ok
+CREATE TABLE variants AS SELECT empty_struct::VARIANT v FROM test_all_types();
+
+# Empty objects have no shreddable fields, so DebugShred returns the copied vector.
+query II rowsort
+SELECT v IS NULL, v IS NOT NULL FROM variants;
+----
+false	true
+false	true
+true	false
+
+query IIII
+SELECT count(*), count(v), sum(v IS NULL), sum(v IS NOT NULL) FROM variants;
+----
+3	2	1	2
+
+query I
+SELECT count(*) FROM variants WHERE v IS NULL;
+----
+1
+
+query I
+SELECT count(*) FROM variants WHERE v IS NOT NULL;
+----
+2

@@ -1,0 +1,70 @@
+# name: test/sql/subquery/any_all/test_any_array_subquery.test
+# description: ANY and ALL of an ARRAY(SELECT ...) compare against the elements of the list
+# group: [any_all]
+
+statement ok
+CREATE TABLE s AS SELECT * FROM (VALUES ('a'), ('c'), (NULL)) t(x);
+
+statement ok
+CREATE TABLE allowed AS SELECT * FROM (VALUES ('a'), ('b')) t(y);
+
+query T
+SELECT 'a' = ANY(ARRAY(SELECT y FROM allowed));
+----
+true
+
+query II
+SELECT x, x = ANY(ARRAY(SELECT y FROM allowed)) FROM s ORDER BY x NULLS LAST;
+----
+a	true
+c	false
+NULL	NULL
+
+query I
+SELECT x FROM s WHERE x = ANY(ARRAY(SELECT y FROM allowed ORDER BY y));
+----
+a
+
+query T
+SELECT 'a' <> ALL(ARRAY(SELECT y FROM allowed));
+----
+false
+
+query T
+SELECT 3 > ALL(ARRAY(SELECT * FROM range(3)));
+----
+true
+
+# an empty ARRAY(...) contains no matching element
+query T
+SELECT 1 = ANY(ARRAY(SELECT * FROM range(0)));
+----
+false
+
+# ANY of a subquery still compares against its rows
+query T
+SELECT 'a' = ANY(SELECT y FROM allowed);
+----
+true
+
+# a parenthesized subquery is still a subquery
+query T
+SELECT 'a' = ANY((SELECT y FROM allowed));
+----
+true
+
+query T
+SELECT 'b' <> ALL(SELECT y FROM allowed);
+----
+false
+
+query T
+SELECT 'c' = ANY(SELECT y FROM allowed UNION ALL SELECT 'c');
+----
+true
+
+# ANY of a list compares against its elements
+query T
+SELECT 'b' = ANY(['a', 'b']);
+----
+true

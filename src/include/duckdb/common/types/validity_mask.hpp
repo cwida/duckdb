@@ -419,6 +419,13 @@ struct ValidityArray {
 		validity_mask = validity_data.get();
 		memset(validity_mask, initial, sizeof(bool) * count);
 	}
+	//! Points the array at storage of `count` entries owned by the caller (e.g. a buffer-allocated block, so that an
+	//! O(rows) array counts against the memory limit); the storage must outlive the array
+	inline void Initialize(bool *validity, idx_t count) {
+		validity_data.reset();
+		validity_mask = validity;
+		capacity = count;
+	}
 	inline void InitializeEmpty(idx_t count) {
 		capacity = count;
 	}

@@ -1,0 +1,90 @@
+# name: test/sql/join/mark/nested_operator_semantics.test
+# description: MARK retains native nested-key comparison semantics for each operator
+# group: [mark]
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c = d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c <> d;
+----
+NULL
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c < d;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c <= d;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c > d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c >= d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c IS DISTINCT FROM d;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,2))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,NULL::INT))) b(d) ON c IS NOT DISTINCT FROM d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c = d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c <> d;
+----
+NULL
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c < d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c <= d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c > d;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c >= d;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c IS DISTINCT FROM d;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (row(1,NULL::INT))) p(c) JOIN BY(TYPE MARK) (VALUES (row(1,2))) b(d) ON c IS NOT DISTINCT FROM d;
+----
+false
+
+endloop

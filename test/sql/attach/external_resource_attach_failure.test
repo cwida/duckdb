@@ -1,0 +1,198 @@
+# name: test/sql/attach/external_resource_attach_failure.test
+# description: a resource whose endpoint cannot be attached is reaped, not stranded
+# group: [attach]
+
+statement ok
+CALL enable_logging('ExternalResource', storage='memory');
+
+statement ok
+CREATE SEQUENCE destroy_seq;
+
+statement ok
+ATTACH '{TEST_DIR}/er_taken.db' AS seed;
+
+statement ok
+CREATE TABLE seed.t AS SELECT 42 AS x;
+
+statement ok
+DETACH seed;
+
+statement ok
+CREATE MACRO t_create(p) AS TABLE SELECT MAP {'id': 't1'} AS handle;
+
+statement ok
+CREATE MACRO t_status(h) AS TABLE SELECT 'ready' AS state,
+  MAP {'uri': '{TEST_DIR}/er_taken.db', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CREATE MACRO t_destroy(h) AS TABLE SELECT nextval('destroy_seq') AS status;
+
+statement ok
+CALL register_external_resource_type('taken@local', kind := 'catalog', create_function := 't_create',
+    status_function := 't_status', destroy_function := 't_destroy');
+
+# The endpoint is already attached read-write elsewhere, so attaching it again cannot work. This fails
+# deeper inside AttachDatabase than the name clash does -- in the file path manager, not on the alias.
+statement ok
+ATTACH '{TEST_DIR}/er_taken.db' AS holder;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'taken@local' AS blocked;
+----
+<REGEX>:.*already attached.*
+
+# Nothing was attached...
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'blocked';
+----
+0
+
+# ...and the resource we had just provisioned was torn down rather than left running.
+query II
+SELECT operation, outcome FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+create	ok
+status	ok
+destroy	ok
+
+query I
+SELECT currval('destroy_seq');
+----
+1
+
+statement ok
+DETACH holder;
+
+# With the endpoint free again the same statement succeeds, and DETACH reaps the resource it owns.
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'taken@local' AS ok_now;
+
+query I
+SELECT x FROM ok_now.t;
+----
+42
+
+statement ok
+DETACH ok_now;
+
+query I
+SELECT currval('destroy_seq');
+----
+2
+
+# The resource can also be rejected between provisioning and the attach, while its own options are
+# parsed. That window used to sit outside the compensating teardown, so the resource was provisioned
+# and then stranded. Each of these throws from a different place in the option parsing.
+statement ok
+CREATE MACRO bad_status(h) AS TABLE SELECT 'ready' AS state,
+  MAP {'uri': '{TEST_DIR}/er_taken.db', 'attached_db_type': 'duckdb', 'recovery_mode': 'bogus'} AS result;
+
+statement ok
+CALL register_external_resource_type('badopt@local', kind := 'catalog', create_function := 't_create',
+    status_function := 'bad_status', destroy_function := 't_destroy');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'badopt@local' AS rejected;
+----
+<REGEX>:.*(recovery_mode|Enum value).*
+
+# Provisioned, then reaped rather than left running.
+query II
+SELECT operation, outcome FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+create	ok
+status	ok
+destroy	ok
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'rejected';
+----
+0
+
+# DESTROY removes the attached databases that borrowed the resource -- both of them, and only them.
+statement ok
+CREATE EXTERNAL RESOURCE 'taken@local' AS shared;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared AS b1 (READ_ONLY);
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared AS b2 (READ_ONLY);
+
+statement ok
+ATTACH ':memory:' AS unrelated;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name IN ('b1', 'b2', 'unrelated');
+----
+3
+
+statement ok
+DESTROY EXTERNAL RESOURCE shared;
+
+query II
+SELECT count(*) FILTER (database_name IN ('b1', 'b2')), count(*) FILTER (database_name = 'unrelated')
+FROM duckdb_databases();
+----
+0	1
+
+# The deleter fired once for the DESTROY, not once per borrower. (4 not 3: the rejected-option case
+# above reaped its own resource too.)
+query I
+SELECT currval('destroy_seq');
+----
+4
+
+# A failed BORROW must leave the resource alone. The compensating teardown only ever reaps what the
+# statement provisioned; here someone else did, so owns_resource is false and reaping would destroy a
+# resource this statement does not own. Both failure points are covered: the attach itself, and the
+# option parsing before it, which is the window the provision case above does reap in.
+statement ok
+CREATE EXTERNAL RESOURCE 'taken@local' AS borrowed;
+
+statement ok
+ATTACH ':memory:' AS occupied;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement error
+ATTACH TO EXTERNAL RESOURCE borrowed AS occupied;
+----
+<REGEX>:.*already exists.*
+
+statement error
+ATTACH TO EXTERNAL RESOURCE borrowed AS other (VACUUM_REBUILD_INDEXES 'notanumber');
+----
+<REGEX>:.*(cast|Conversion).*
+
+# Neither failure reaped it: no destroy was called at all, and it is still registered and usable.
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'borrowed';
+----
+1
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE borrowed AS still_works (READ_ONLY);
+
+query I
+SELECT x FROM still_works.t;
+----
+42
+
+statement ok
+DETACH still_works;
+
+statement ok
+DESTROY EXTERNAL RESOURCE borrowed;

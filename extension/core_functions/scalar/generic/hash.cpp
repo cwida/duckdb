@@ -7,9 +7,12 @@ static void HashFunction(DataChunk &args, ExpressionState &state, Vector &result
 }
 
 ScalarFunction HashFun::GetFunction() {
-	auto hash_fun = ScalarFunction({LogicalType::ANY}, LogicalType::HASH, HashFunction);
-	hash_fun.SetVarArgs(LogicalType::ANY);
+	auto hash_fun = ScalarFunction({}, LogicalType::HASH, HashFunction);
+	hash_fun.GetSignature().AddParameter("value", LogicalType::ANY);
+	hash_fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	hash_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// hash the arguments after their combinable collations
+	hash_fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	return hash_fun;
 }
 

@@ -1,33 +1,55 @@
 # name: test/sql/copy/csv/test_big_compressed.test_slow
-# description: Test scan over multiple compressed big csv files
+# description: Import a gzip CSV larger than the memory limit and verify every row
 # group: [csv]
-
-# This test is way too slow to run on CI, generating a SF100 TPC-H lineitem file takes a LOT of time.
-# Still useful to check for problems locally.
-mode skip instable
 
 require tpch
 
+load {TEST_DIR}/lineitem_compressed.db
 
 statement ok
-CALL dbgen(sf=100);
+SET threads=2;
 
 statement ok
-copy lineitem to '{TEST_DIR}/lineitem_100.csv.gz';
+CALL dbgen(sf=0.1);
 
 statement ok
-SET temp_directory=''
+COPY lineitem TO '{TEST_DIR}/lineitem.csv.gz' (FORMAT CSV, COMPRESSION GZIP, HEADER);
 
-# load the DB from disk (Avoids OOM when generating ze table)
-load {TEST_DIR}/lineitem_100_compressed.db
+# Persist the reference and reopen it before constraining the import.
+restart
+
+statement ok
+SET threads=2;
+
+statement ok
+SET memory_limit='64MiB';
+
+statement ok
+SET temp_directory='';
 
 statement ok
 CREATE TABLE lineitem_2(l_orderkey INTEGER NOT NULL, l_partkey INTEGER NOT NULL, l_suppkey INTEGER NOT NULL, l_linenumber INTEGER NOT NULL, l_quantity DECIMAL(15,2) NOT NULL, l_extendedprice DECIMAL(15,2) NOT NULL, l_discount DECIMAL(15,2) NOT NULL, l_tax DECIMAL(15,2) NOT NULL, l_returnflag VARCHAR NOT NULL, l_linestatus VARCHAR NOT NULL, l_shipdate DATE NOT NULL, l_commitdate DATE NOT NULL, l_receiptdate DATE NOT NULL, l_shipinstruct VARCHAR NOT NULL, l_shipmode VARCHAR NOT NULL, l_comment VARCHAR NOT NULL);
 
 statement ok
-INSERT INTO lineitem_2 FROM '{TEST_DIR}/lineitem_100.csv.gz';
+INSERT INTO lineitem_2
+FROM read_csv('{TEST_DIR}/lineitem.csv.gz', buffer_size=1048576, max_line_size=65536);
 
 query I
 select count(*) from lineitem_2
 ----
-600037902
+600572
+
+# The import above must stream without spilling. Allow the multiset comparisons
+# to spill afterwards, so all 16 columns and duplicate rows are checked.
+statement ok
+SET temp_directory='{TEST_DIR}/csv_comparison_tmp';
+
+query I
+SELECT count(*) FROM (SELECT * FROM lineitem EXCEPT ALL SELECT * FROM lineitem_2) differences;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM lineitem_2 EXCEPT ALL SELECT * FROM lineitem) differences;
+----
+0

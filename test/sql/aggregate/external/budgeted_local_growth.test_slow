@@ -1,0 +1,86 @@
+# name: test/sql/aggregate/external/budgeted_local_growth.test_slow
+# description: Parallel aggregation remains correct when local hash tables grow or fall back to external aggregation
+# group: [external]
+
+# These memory budgets assume standard-sized vectors.
+require vector_size 2048
+
+statement ok
+CREATE TABLE growth_input AS SELECT i FROM range(2000000) t(i);
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='512MB';
+
+query II
+SELECT count(*), sum(chosen_value % 100000)
+FROM (
+    SELECT customer_id, any_value(i) AS chosen_value
+    FROM (
+        SELECT 'group_' || (i % 100000)::VARCHAR AS customer_id, i
+        FROM growth_input
+    ) source
+    GROUP BY customer_id
+) grouped;
+----
+100000	4999950000
+
+query III
+SELECT count(*), sum(group_rows), sum(group_sum)
+FROM (
+    SELECT customer_id, count(*) AS group_rows, sum(i) AS group_sum
+    FROM (
+        SELECT 'group_' || (i % 100000)::VARCHAR AS customer_id, i
+        FROM growth_input
+    ) source
+    GROUP BY customer_id
+) grouped;
+----
+100000	2000000	1999999000000
+
+statement ok
+SET memory_limit='128MB';
+
+query II
+SELECT count(*), sum(chosen_value % 100000)
+FROM (
+    SELECT customer_id, any_value(i) AS chosen_value
+    FROM (
+        SELECT 'group_' || (i % 100000)::VARCHAR AS customer_id, i
+        FROM growth_input
+    ) source
+    GROUP BY customer_id
+) grouped;
+----
+100000	4999950000
+
+statement ok
+SET memory_limit='512MB';
+
+statement ok
+SET debug_force_external=true;
+
+query II
+SELECT count(*), sum(chosen_value % 100000)
+FROM (
+    SELECT i % 100000 AS customer_id, any_value(i) AS chosen_value
+    FROM growth_input
+    GROUP BY customer_id
+) grouped;
+----
+100000	4999950000
+
+statement ok
+SET debug_force_external=false;
+
+query II
+SELECT count(*), sum(chosen_value)
+FROM (
+    SELECT i AS customer_id, any_value(i) AS chosen_value
+    FROM growth_input
+    GROUP BY customer_id
+) grouped;
+----
+2000000	1999999000000

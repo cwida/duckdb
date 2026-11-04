@@ -10,9 +10,19 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/enums/catalog_type.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/identifier.hpp"
+#include "duckdb/common/types/value.hpp"
+#include "duckdb/common/unordered_map.hpp"
 
 namespace duckdb {
+class ParsedExpression;
+class Value;
+
+//! Render a statement's `(k v, ...)` option list, quoting each name, from the unbound and bound maps
+//! alike. Empty string when there is nothing to render, so callers can append it unconditionally.
+string RenderOptionList(const case_insensitive_map_t<unique_ptr<ParsedExpression>> &parsed_options,
+                        const unordered_map<string, Value> &options);
 
 enum class CatalogType : uint8_t;
 

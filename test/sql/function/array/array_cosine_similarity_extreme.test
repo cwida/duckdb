@@ -1,0 +1,33 @@
+# name: test/sql/function/array/array_cosine_similarity_extreme.test
+# description: Cosine similarity of vectors with extreme, zero and NaN values
+# group: [array]
+
+query I
+SELECT array_cosine_similarity([1e308,1e308,1e308]::DOUBLE[3], [1e308,1e308,1e308]::DOUBLE[3])
+----
+1.0
+
+query I
+SELECT array_cosine_similarity([1e-320,0,0]::DOUBLE[3], [1e-320,0,0]::DOUBLE[3])
+----
+1.0
+
+query I
+SELECT array_cosine_similarity([1e10,1e10,1e10]::FLOAT[3], [1e10,1e10,1e10]::FLOAT[3])
+----
+1.0
+
+query I
+SELECT array_cosine_distance([1e308,1e308,1e308]::DOUBLE[3], [-1e308,-1e308,-1e308]::DOUBLE[3])
+----
+2.0
+
+query I
+SELECT list_cosine_similarity([1e308, 1e308], [1e308, 1e308])
+----
+1.0
+
+query III
+SELECT isnan(array_cosine_similarity(['nan'::DOUBLE,1,1]::DOUBLE[3], [1,1,1]::DOUBLE[3])), isnan(array_cosine_similarity([0,0,0]::DOUBLE[3], [1,2,3]::DOUBLE[3])), isnan(array_cosine_distance(['inf'::DOUBLE,1,1]::DOUBLE[3], [1,1,1]::DOUBLE[3]))
+----
+true	true	true

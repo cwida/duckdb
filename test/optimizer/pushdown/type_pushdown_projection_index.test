@@ -1,0 +1,30 @@
+# name: test/optimizer/pushdown/type_pushdown_projection_index.test
+# description: Expression pushdown indexes projection types correctly
+# group: [pushdown]
+
+require parquet
+
+statement ok
+COPY (
+    SELECT i % 2 = 0 AS f1, i AS f2, repeat('x', (i % 5)::INT) AS s
+    FROM range(100) t(i)
+) TO '{TEST_DIR}/type_pushdown_projection_index.parquet' (FORMAT parquet);
+
+query I
+SELECT sum(strlen(s))
+FROM (
+    SELECT s FROM '{TEST_DIR}/type_pushdown_projection_index.parquet'
+    WHERE f1 AND f2 >= 2
+);
+----
+100
+
+statement ok
+CREATE VIEW view AS
+SELECT s FROM '{TEST_DIR}/type_pushdown_projection_index.parquet'
+WHERE f1 AND f2 >= 2;
+
+query I
+SELECT sum(strlen(s)) FROM view;
+----
+100

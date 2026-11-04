@@ -7,6 +7,45 @@ select invoke(lambda x: x * x, 2) as square_of_x
 ----
 4
 
+# Lambda volatility must be visible to common subexpression elimination.
+statement ok
+CREATE SEQUENCE invoke_cse_seq START 1
+
+query II
+SELECT count(*) FILTER (WHERE a = b), count(*)
+FROM (
+	SELECT
+		invoke(lambda x: nextval('invoke_cse_seq'), i) a,
+		invoke(lambda x: nextval('invoke_cse_seq'), i) b
+	FROM range(10000) tbl(i)
+)
+----
+0	10000
+
+# Volatile lambda bodies must not be constant-folded when all invoke arguments are constant.
+statement ok
+CREATE SEQUENCE invoke_constant_seq START 1
+
+query I
+SELECT count(DISTINCT invoke(lambda x: nextval('invoke_constant_seq'), 1)) FROM range(10000)
+----
+10000
+
+# Throwing lambda bodies must produce the original execution error.
+statement error
+SELECT invoke(lambda x: error('expected'), 1)
+----
+expected
+
+# CONSISTENT_WITHIN_QUERY lambda bodies cannot be part of persistent expressions such as index keys.
+statement ok
+CREATE TABLE invoke_consistency_tbl(i INTEGER)
+
+statement error
+CREATE INDEX invoke_consistency_idx ON invoke_consistency_tbl (invoke(lambda x: current_schema(), i))
+----
+Index keys cannot contain expressions with side effects
+
 # Multiple bindings using nested invoke
 query I
 select invoke(lambda a: invoke(lambda b: a + b, 4), 3) as sum_ab
@@ -116,6 +155,38 @@ CREATE TABLE invoke_order_tbl AS SELECT 1 a, 2 b, 3 c
 statement ok
 CREATE VIEW invoke_order_view AS SELECT invoke(lambda x, y, z: x * 100 + y * 10 + z, a, b, c) AS result FROM invoke_order_tbl
 
+statement ok
+CREATE TABLE invoke_dictionary_tbl AS
+	SELECT CASE WHEN i % 2 = 0 THEN 'x' ELSE 'y' END s FROM range(10000) tbl(i)
+
+statement ok
+CREATE SEQUENCE invoke_dictionary_seq START 1
+
+statement ok
+CREATE SEQUENCE invoke_stored_volatile_seq START 1
+
+statement ok
+CREATE VIEW invoke_stored_volatile_view AS
+	SELECT
+		invoke(lambda x: nextval('invoke_stored_volatile_seq'), i) a,
+		invoke(lambda x: nextval('invoke_stored_volatile_seq'), i) b
+	FROM range(1000) tbl(i)
+
+statement ok
+CREATE SEQUENCE invoke_stored_constant_seq START 1
+
+statement ok
+CREATE VIEW invoke_stored_constant_view AS
+	SELECT invoke(lambda x: nextval('invoke_stored_constant_seq'), 1) v FROM range(10000)
+
+statement ok
+CREATE VIEW invoke_stored_error_view AS
+	SELECT invoke(lambda x: error('stored expected'), 1) v
+
+statement ok
+CREATE TABLE invoke_throw_dictionary_tbl AS
+	SELECT CASE WHEN i % 2 = 0 THEN '1' ELSE 'bad' END s FROM range(10000) tbl(i)
+
 query I
 SELECT result FROM invoke_order_view
 ----
@@ -127,6 +198,36 @@ query I
 SELECT result FROM invoke_order_view
 ----
 123
+
+# Volatility in deserialized lambda bind data must remain visible to the optimizer.
+query II
+SELECT count(*) FILTER (WHERE a = b), count(*) FROM invoke_stored_volatile_view
+----
+0	1000
+
+# Deserialized volatile lambda bodies must also bypass constant-vector execution.
+query I
+SELECT count(DISTINCT v) FROM invoke_stored_constant_view
+----
+10000
+
+# Deserialization must restore fallibility on the bound function metadata.
+statement error
+SELECT * FROM invoke_stored_error_view
+----
+<REGEX>:Invalid Input Error.*stored expected.*
+
+# Volatile lambda bodies must execute once per row, not once per dictionary entry.
+query I
+SELECT count(DISTINCT invoke(lambda x: nextval('invoke_dictionary_seq'), s)) FROM invoke_dictionary_tbl
+----
+10000
+
+# Dictionary evaluation must not evaluate throwing bodies for filtered-out values.
+query I
+SELECT sum(invoke(lambda x: x::INTEGER, s)) FROM invoke_throw_dictionary_tbl WHERE s = '1'
+----
+5000
 
 # Errors
 statement error

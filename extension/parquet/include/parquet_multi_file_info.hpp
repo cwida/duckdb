@@ -32,6 +32,7 @@
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
 namespace duckdb {
+struct TableFunctionMultiFileSettings;
 class ClientContext;
 class ExecutionContext;
 enum class FileExpandResult : uint8_t;
@@ -48,6 +49,26 @@ public:
 	}
 
 	ParquetOptions options;
+};
+
+struct ParquetReadGlobalState : public GlobalTableFunctionState {
+	explicit ParquetReadGlobalState(optional_ptr<const PhysicalOperator> op_p) : row_group_index(0), op(op_p) {
+	}
+	//! Index of row group within file currently up for scanning
+	idx_t row_group_index;
+	//! (Optional) pointer to physical operator performing the scan
+	optional_ptr<const PhysicalOperator> op;
+	//! Row groups read but not yet reported to the profiler
+	atomic<idx_t> row_groups_scanned_unreported {0};
+	//! Compressed size of their column chunks
+	atomic<idx_t> bytes_scanned_unreported {0};
+	//! Total considered, across all scan states
+	atomic<idx_t> total_row_groups_to_scan {0};
+};
+
+struct ParquetReadLocalState : public LocalTableFunctionState {
+	ParquetReaderScanState scan_state;
+	idx_t group_index;
 };
 
 struct ParquetMultiFileInfo : MultiFileReaderInterface {
@@ -92,7 +113,19 @@ struct ParquetMultiFileInfo : MultiFileReaderInterface {
 
 class ParquetScanFunction {
 public:
-	static TableFunctionSet GetFunctionSet();
+	//! The single-file parquet reader that the multi-file reader is built on
+	static TableFunction GetSingleFileFunction();
+	//! How the single-file parquet reader is wrapped into the multi-file reader
+	static TableFunctionMultiFileSettings GetMultiFileSettings();
+	//! The named parameters that both of the above accept
+	static void AddNamedParameters(TableFunction &table_function);
+	//! The multi-file parquet reader, built by wrapping the single-file reader above
+	static TableFunction GetMultiFileFunction(Identifier name);
+	//! Push strlen/octet_length on a column into the multi-file parquet reader of a single file
+	static bool ProjectionExpressionPushdown(ClientContext &context,
+	                                         const TableFunctionProjectionExpressionInput &input);
+	//! The options a file is read with, given the bind data of the single-file reader for it
+	static const ParquetOptions &GetFileOptions(const FunctionData &file_bind_data);
 };
 
 } // namespace duckdb

@@ -15,10 +15,8 @@ BoundStatement Binder::Bind(CallStatement &stmt) {
 	select_node->from_table = std::move(table_function);
 	select_statement.node = std::move(select_node);
 
-	// CALL is `SELECT * FROM func()` (which already propagates call_return_type) forced to materialize.
-	auto result = Bind(select_statement);
-	GetStatementProperties().output_type = QueryResultOutputType::FORCE_MATERIALIZED;
-	return result;
+	// CALL is `SELECT * FROM func()`, which already propagates call_return_type
+	return Bind(select_statement);
 }
 
 } // namespace duckdb

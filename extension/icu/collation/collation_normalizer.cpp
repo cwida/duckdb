@@ -66,7 +66,7 @@ uint32_t Normalizer::Decode(const char *data, idx_t size, vector<uint32_t> &resu
 			}
 			codepoint = (codepoint << 6) | (trail & 0x3F);
 		}
-		if (!valid) {
+		if (!valid || codepoint > 0x10FFFF) {
 			result.push_back(REPLACEMENT_CHARACTER);
 			pos++;
 			continue;

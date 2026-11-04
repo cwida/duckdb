@@ -1,0 +1,16 @@
+# name: test/issues/general/test_25373.test
+# description: Issue 25373 - planning time exponential in the depth of nested windows/aggregates
+# group: [general]
+
+statement ok
+CREATE TABLE t AS SELECT range a, range % 10 b FROM range(100)
+
+query II
+SELECT count(*), sum(a) FROM (SELECT a, b FROM (SELECT a, b, sum(b) OVER (PARTITION BY a) FROM (SELECT a, b FROM (SELECT a, b, sum(b) OVER (PARTITION BY a) FROM (SELECT a, b FROM t))))) WHERE a < 50
+----
+50	1225
+
+query II
+SELECT count(*), sum(b) FROM (SELECT a, sum(b) AS b FROM (SELECT a, sum(b) AS b FROM (SELECT a, b FROM t) GROUP BY a) GROUP BY a) WHERE a > 90
+----
+9	45

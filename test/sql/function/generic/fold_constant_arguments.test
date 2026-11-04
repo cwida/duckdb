@@ -1,0 +1,47 @@
+# name: test/sql/function/generic/fold_constant_arguments.test
+# description: Constant arguments of a function call are folded while binding, so that nested constant expressions are evaluated once rather than once per nesting level
+# group: [generic]
+
+statement ok
+PRAGMA enable_verification
+
+# a deeply nested constant expression - without folding, every level re-evaluates the whole chain below it.
+# 300 levels stay within the 1 MB main-thread stack of Windows
+query I
+SELECT length('a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a' || 'a');
+----
+300
+
+query I
+SELECT 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+----
+300
+
+# the folded constant keeps the type of the expression, including a typed NULL
+query I
+SELECT typeof(repeat(NULL::VARCHAR || 'z', 2));
+----
+VARCHAR
+
+# an argument that cannot be evaluated is left in place: the error is raised at execution, not while binding
+statement error
+SELECT abs(('1' || 'x')::INT);
+----
+Could not convert string '1x' to INT32
+
+query I
+SELECT CASE WHEN 1 = 0 THEN abs(('1' || 'x')::INT) ELSE 42 END;
+----
+42
+
+# a lambda with a constant body is not folded - the function it is passed to executes it
+query I
+SELECT list_transform([1, 2], lambda x: 40 + 2);
+----
+[42, 42]
+
+# the alias of a folded argument is kept
+query I
+SELECT make_type('STRUCT', a := make_type('INTEGER'), b := make_type('var' || 'char'))::VARCHAR;
+----
+STRUCT(a INTEGER, b VARCHAR)

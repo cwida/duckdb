@@ -1,0 +1,41 @@
+# name: test/optimizer/statistics/statistics_exp_libm.test
+# description: exp must not be treated as monotone: libm exp can invert the order of adjacent doubles
+# group: [statistics]
+
+statement ok
+CREATE TABLE t(x DOUBLE);
+
+# on Apple libm exp(min) > exp(max) for this pair, which used to raise an INTERNAL error at optimize time
+statement ok
+INSERT INTO t VALUES (-1.1801838152580846e-11), (-1.1801837285219108e-11);
+
+query I
+SELECT count(*) FROM (SELECT exp(x) FROM t)
+----
+2
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(exp(x)) s FROM t LIMIT 1)
+----
+NULL	NULL
+
+# with the corners in order, an interior value can still exceed exp(max) (Apple libm); bounds derived
+# from the corners used to prune the matching row away. Which rows match depends on the platform libm,
+# so compare against a materialized copy of exp(x), which cannot be pruned
+statement ok
+INSERT INTO t VALUES (-1.2e-11);
+
+statement ok
+CREATE TABLE e AS SELECT exp(x) e FROM t;
+
+query I
+SELECT (SELECT count(*) FROM t WHERE exp(x) > exp(-1.1801837285219108e-11::DOUBLE))
+     = (SELECT count(*) FROM e WHERE e > exp(-1.1801837285219108e-11::DOUBLE))
+----
+true
+
+query I
+SELECT (SELECT count(*) FROM t WHERE exp(x) >= (SELECT max(e) FROM e))
+     = (SELECT count(*) FROM e WHERE e >= (SELECT max(e) FROM e))
+----
+true

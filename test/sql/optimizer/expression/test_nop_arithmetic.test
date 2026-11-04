@@ -84,9 +84,9 @@ SELECT a // 0 FROM test
 <REGEX>:.*Division by zero.*
 
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
-# a / 0 => NULL with null_on_division_by_zero
+# a / 0 => NULL without error_on_division_by_zero
 query I
 SELECT a // 0 FROM test
 ----
@@ -94,7 +94,7 @@ NULL
 NULL
 
 statement ok
-SET null_on_division_by_zero=false;
+SET error_on_division_by_zero=true;
 
 # 0 / a => 0
 query I
@@ -136,7 +136,7 @@ SELECT 0 / rowid FROM test
 <REGEX>:.*Division by zero.*
 
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 query I
 SELECT 0 / rowid FROM test

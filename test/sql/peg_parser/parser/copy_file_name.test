@@ -1,0 +1,107 @@
+# name: test/sql/peg_parser/parser/copy_file_name.test
+# description: Test unquoted dotted COPY filenames
+# group: [parser]
+
+statement ok
+CREATE OR REPLACE TABLE copy_file_name(a INTEGER);
+
+statement ok
+INSERT INTO copy_file_name VALUES (1), (2);
+
+statement ok
+SET file_search_path='{TEST_DIR}';
+
+foreach suffix csv header integer csv.gz header.csv.gz integer.header.csv.gz
+
+# EXPLAIN checks fully unquoted output names without writing outside the test directory.
+statement ok
+EXPLAIN COPY copy_file_name TO parity.{suffix} (FORMAT CSV);
+
+statement ok
+EXPLAIN COPY (SELECT 1) TO parity.{suffix} (FORMAT CSV);
+
+# Quote the directory prefix but leave the dot and keyword-like suffix unquoted.
+statement ok
+COPY copy_file_name TO "{TEST_DIR}/copy_file_name".{suffix} (FORMAT CSV);
+
+statement ok
+CREATE OR REPLACE TABLE copy_file_name_result(a INTEGER);
+
+query I
+COPY copy_file_name_result FROM copy_file_name.{suffix} (FORMAT CSV);
+----
+2
+
+query I
+SELECT * FROM copy_file_name_result ORDER BY a;
+----
+1
+2
+
+endloop
+
+# Compression and CSV format are inferred from the repeated suffixes.
+statement ok
+COPY copy_file_name TO "{TEST_DIR}/copy_file_name_auto".csv.gz;
+
+statement ok
+CREATE OR REPLACE TABLE copy_file_name_compressed(a INTEGER);
+
+query I
+COPY copy_file_name_compressed FROM copy_file_name_auto.csv.gz;
+----
+2
+
+query I
+SELECT * FROM copy_file_name_compressed ORDER BY a;
+----
+1
+2
+
+query I
+SELECT starts_with(hex(content), '1F8B') FROM read_blob('{TEST_DIR}/copy_file_name_auto.csv.gz');
+----
+true
+
+# Quoted and undotted filenames, including specialized options, remain valid.
+statement ok
+EXPLAIN COPY copy_file_name TO 'parity.csv' (FORMAT CSV);
+
+statement ok
+EXPLAIN COPY copy_file_name TO parity CSV HEADER;
+
+statement ok
+EXPLAIN COPY copy_file_name TO stdout (FORMAT CSV);
+
+query I
+COPY copy_file_name_result FROM '{TEST_DIR}/copy_file_name.csv' (FORMAT CSV);
+----
+2
+
+query I
+SELECT count(*) FROM copy_file_name_result;
+----
+4
+
+# Every dot must be followed by a filename component.
+foreach direction TO FROM
+
+statement error
+COPY copy_file_name {direction} parity.csv. (FORMAT CSV);
+----
+Parser Error: syntax error at or near "("
+
+statement error
+COPY copy_file_name {direction} parity. (FORMAT CSV);
+----
+Parser Error: syntax error at or near "("
+
+endloop
+
+statement ok
+COPY (SELECT 3 AS a) TO "{TEST_DIR}/copy_select_file_name".csv.gz (FORMAT CSV);
+
+query I
+SELECT * FROM read_csv('{TEST_DIR}/copy_select_file_name.csv.gz');
+----
+3

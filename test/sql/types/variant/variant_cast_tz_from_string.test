@@ -1,0 +1,35 @@
+# name: test/sql/types/variant/variant_cast_tz_from_string.test
+# description: strict casts from VARIANT(VARCHAR) to TIMETZ / TIMESTAMPTZ error on invalid input
+# group: [variant]
+
+require icu
+
+foreach target TIMETZ TIMESTAMPTZ TIMESTAMPTZ_NS
+
+statement error
+SELECT CAST('garbage'::VARIANT AS {target})
+----
+Conversion Error
+
+query I
+SELECT TRY_CAST('garbage'::VARIANT AS {target})
+----
+NULL
+
+endloop
+
+statement error
+SELECT CAST('23:59:59+16:00'::VARIANT AS TIMETZ)
+----
+Conversion Error
+
+query II
+SELECT CAST('10:00:00+02'::VARIANT AS TIMETZ), CAST('2024-01-01 10:00:00+00'::VARIANT AS TIMESTAMPTZ) = TIMESTAMPTZ '2024-01-01 10:00:00+00'
+----
+10:00:00+02	true
+
+query I
+SELECT TRY_CAST(s AS TIMESTAMPTZ) IS NULL FROM (VALUES (1, '2024-01-01'), (2, 'x')) t(i, s) ORDER BY i
+----
+false
+true

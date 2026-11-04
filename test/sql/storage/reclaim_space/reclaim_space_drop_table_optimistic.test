@@ -1,0 +1,40 @@
+# name: test/sql/storage/reclaim_space/reclaim_space_drop_table_optimistic.test
+# description: Test reclaiming optimistic blocks when dropping tables in a transaction
+# group: [reclaim_space]
+
+load {TEST_DIR}/reclaim_space_drop_table_optimistic.db
+
+statement ok
+SET preserve_insertion_order = false;
+
+statement ok
+SET checkpoint_threshold = '999999GB';
+
+statement ok
+CREATE TABLE dummy (x INT);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+CREATE TABLE t_to_drop (r BIGINT, s VARCHAR);
+
+statement ok
+INSERT INTO t_to_drop SELECT r, repeat(md5(r::VARCHAR), 10) FROM range(200000) tt(r);
+
+statement ok
+DROP TABLE t_to_drop;
+
+statement ok
+COMMIT;
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT used_blocks <= 2 FROM pragma_database_size();
+----
+true

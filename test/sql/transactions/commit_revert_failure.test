@@ -62,6 +62,45 @@ SELECT i FROM t ORDER BY i
 3
 5
 
+# Revert an indexed UPDATE in reverse order: remove the replacement row before restoring the original row.
+statement ok
+CREATE TABLE indexed_t(a INTEGER PRIMARY KEY, b INTEGER)
+
+statement ok
+INSERT INTO indexed_t VALUES (1, 10), (2, 20), (3, 30)
+
+statement ok
+CREATE INDEX indexed_t_b ON indexed_t(b)
+
+statement ok
+SET debug_force_commit_failure=true;
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE indexed_t SET b = 99 WHERE a = 2
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure=false;
+
+query II
+SELECT a, b FROM indexed_t ORDER BY a
+----
+1	10
+2	20
+3	30
+
+query I
+SELECT a FROM indexed_t WHERE b = 20
+----
+2
+
 # --- commit fails AND RevertCommit also fails: the database is invalidated instead of crashing ---
 
 statement ok

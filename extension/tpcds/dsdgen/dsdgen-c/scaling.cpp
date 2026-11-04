@@ -730,9 +730,7 @@ void setUpdateScaling(int nTable) {
 		nBaseTable = INVENTORY;
 		break;
 	default:
-		fprintf(stderr, "ERROR: Invalid table in setUpdateScaling\n");
-		exit(1);
-		break;
+		INTERNAL("Invalid table in setUpdateScaling");
 	}
 
 	arRowcount[nTable].kNextInsertValue = arRowcount[nTable].kBaseRowcount;

@@ -154,51 +154,34 @@ public:
 	}
 
 	void Extend(const VertexXY &vertex) {
-		x_min = MinValue(x_min, vertex.x);
-		x_max = MaxValue(x_max, vertex.x);
-		y_min = MinValue(y_min, vertex.y);
-		y_max = MaxValue(y_max, vertex.y);
+		ExtendAxis(x_min, x_max, vertex.x);
+		ExtendAxis(y_min, y_max, vertex.y);
 	}
 
 	void Extend(const VertexXYZ &vertex) {
-		x_min = MinValue(x_min, vertex.x);
-		x_max = MaxValue(x_max, vertex.x);
-		y_min = MinValue(y_min, vertex.y);
-		y_max = MaxValue(y_max, vertex.y);
-		z_min = MinValue(z_min, vertex.z);
-		z_max = MaxValue(z_max, vertex.z);
+		ExtendAxis(x_min, x_max, vertex.x);
+		ExtendAxis(y_min, y_max, vertex.y);
+		ExtendAxis(z_min, z_max, vertex.z);
 	}
 
 	void Extend(const VertexXYM &vertex) {
-		x_min = MinValue(x_min, vertex.x);
-		x_max = MaxValue(x_max, vertex.x);
-		y_min = MinValue(y_min, vertex.y);
-		y_max = MaxValue(y_max, vertex.y);
-		m_min = MinValue(m_min, vertex.m);
-		m_max = MaxValue(m_max, vertex.m);
+		ExtendAxis(x_min, x_max, vertex.x);
+		ExtendAxis(y_min, y_max, vertex.y);
+		ExtendAxis(m_min, m_max, vertex.m);
 	}
 
 	void Extend(const VertexXYZM &vertex) {
-		x_min = MinValue(x_min, vertex.x);
-		x_max = MaxValue(x_max, vertex.x);
-		y_min = MinValue(y_min, vertex.y);
-		y_max = MaxValue(y_max, vertex.y);
-		z_min = MinValue(z_min, vertex.z);
-		z_max = MaxValue(z_max, vertex.z);
-		m_min = MinValue(m_min, vertex.m);
-		m_max = MaxValue(m_max, vertex.m);
+		ExtendAxis(x_min, x_max, vertex.x);
+		ExtendAxis(y_min, y_max, vertex.y);
+		ExtendAxis(z_min, z_max, vertex.z);
+		ExtendAxis(m_min, m_max, vertex.m);
 	}
 
 	void Merge(const GeometryExtent &other) {
-		x_min = MinValue(x_min, other.x_min);
-		y_min = MinValue(y_min, other.y_min);
-		z_min = MinValue(z_min, other.z_min);
-		m_min = MinValue(m_min, other.m_min);
-
-		x_max = MaxValue(x_max, other.x_max);
-		y_max = MaxValue(y_max, other.y_max);
-		z_max = MaxValue(z_max, other.z_max);
-		m_max = MaxValue(m_max, other.m_max);
+		MergeAxis(x_min, x_max, other.x_min, other.x_max);
+		MergeAxis(y_min, y_max, other.y_min, other.y_max);
+		MergeAxis(z_min, z_max, other.z_min, other.z_max);
+		MergeAxis(m_min, m_max, other.m_min, other.m_max);
 	}
 
 	bool IntersectsXY(const GeometryExtent &other) const {
@@ -214,6 +197,29 @@ public:
 		return x_min <= other.x_min && x_max >= other.x_max && y_min <= other.y_min && y_max >= other.y_max;
 	}
 
+private:
+	//! A NaN coordinate cannot be placed on the axis, so it makes the range of the axis unknown
+	static void ExtendAxis(double &min, double &max, double value) {
+		if (std::isnan(value)) {
+			min = UNKNOWN_MIN;
+			max = UNKNOWN_MAX;
+			return;
+		}
+		min = MinValue(min, value);
+		max = MaxValue(max, value);
+	}
+
+	static void MergeAxis(double &min, double &max, double other_min, double other_max) {
+		if (std::isnan(other_min) || std::isnan(other_max)) {
+			min = UNKNOWN_MIN;
+			max = UNKNOWN_MAX;
+			return;
+		}
+		min = MinValue(min, other_min);
+		max = MaxValue(max, other_max);
+	}
+
+public:
 	double x_min;
 	double y_min;
 	double z_min;
@@ -273,6 +279,9 @@ public:
 	//! Get legacy geometry type (pre v1.5)
 	static LogicalType GetSpatialGeometryType();
 
+	//! Convert from WKT, returns false and sets error_message if the text is not valid WKT
+	DUCKDB_API static bool TryFromString(const string_t &wkt_text, string_t &result, StringHeap &heap,
+	                                     string &error_message);
 	//! Convert from WKT
 	DUCKDB_API static bool FromString(const string_t &wkt_text, string_t &result, StringHeap &heap, bool strict,
 	                                  QueryLocation query_location);

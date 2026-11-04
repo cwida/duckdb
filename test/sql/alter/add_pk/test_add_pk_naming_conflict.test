@@ -1,34 +1,8 @@
 # name: test/sql/alter/add_pk/test_add_pk_naming_conflict.test
-# description: Test adding a PRIMARY KEY to a table that already has an index with that name.
+# description: Constraint index names do not conflict with explicit index names.
 # group: [add_pk]
 
-# There is also a catalog dependency conflict,
-# which prevents altering a table with a dependency (index) on it.
-
 load {TEST_DIR}/test_add_pk_naming_conflict.db
-
-statement ok
-CREATE TABLE tbl (i INTEGER);
-
-statement ok
-INSERT INTO tbl VALUES (1);
-
-statement ok
-CREATE INDEX PRIMARY_tbl_i ON tbl(i);
-
-statement error
-ALTER TABLE tbl ADD PRIMARY KEY (i);
-----
-<REGEX>:Catalog Error.*already exists.*
-
-restart
-
-statement error
-ALTER TABLE tbl ADD PRIMARY KEY (i);
-----
-<REGEX>:Catalog Error.*already exists.*
-
-# Let's do it the other way around now.
 
 statement ok
 CREATE TABLE test (i INTEGER)
@@ -39,7 +13,12 @@ INSERT INTO test VALUES (1);
 statement ok
 ALTER TABLE test ADD PRIMARY KEY (i);
 
-statement error
+statement ok
 CREATE INDEX PRIMARY_test_i ON test(i);
+
+restart
+
+statement error
+INSERT INTO test VALUES (1);
 ----
-<REGEX>:Catalog Error.*index with the name PRIMARY_test_i already exists.*
+<REGEX>:Constraint Error.*violates primary key constraint.*

@@ -1,0 +1,40 @@
+# name: test/sql/aggregate/aggregates/test_approx_quantile_timetz.test
+# description: approx_quantile over TIMETZ returns valid values on the normalized time
+# group: [aggregates]
+
+query I
+SELECT approx_quantile('12:34:56+05'::TIMETZ, 0.5)::VARCHAR;
+----
+07:34:56+00
+
+query I
+SELECT approx_quantile('00:00:00+00'::TIMETZ, 0.5)::VARCHAR;
+----
+00:00:00+00
+
+statement ok
+CREATE TABLE q AS SELECT approx_quantile('00:00:00+00'::TIMETZ, 0.5) AS t;
+
+query I
+SELECT t::VARCHAR FROM q;
+----
+00:00:00+00
+
+statement ok
+SUMMARIZE (SELECT '00:00:00+00'::TIMETZ AS ttz);
+
+query I
+SELECT approx_quantile(x, [0.0, 1.0])::VARCHAR FROM (VALUES ('10:00:00+05'::TIMETZ), ('09:00:00+00'::TIMETZ)) t(x);
+----
+['05:00:00+00', '09:00:00+00']
+
+# imported TIME states with out-of-range means are clamped to a valid time
+query I
+SELECT finalize(to_aggregate_state({'count':1,'min':0.0,'max':0.0,'centroids':[{'mean':1e15,'weight':1.0}]},'approx_quantile',['TIME','FLOAT'],[NULL,0.5]))::VARCHAR;
+----
+24:00:00
+
+query I
+SELECT approx_quantile(t, [0.1, 0.9])::VARCHAR FROM (VALUES ('01:00:00'::TIME), ('05:00:00'::TIME)) v(t);
+----
+['01:00:00', '05:00:00']

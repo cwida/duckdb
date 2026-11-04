@@ -1,0 +1,61 @@
+# name: test/parquet/test_parquet_schema_null_nested.test
+# description: Map explicitly NULL file columns to nested result types
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'s': NULL, 'l': NULL, 'm': NULL} AS nested FROM range(3))
+TO '{TEST_DIR}/schema_null_nested.parquet';
+
+# Existing NULL fields must stay NULL, rather than acquire defaults for missing fields.
+statement ok
+CREATE VIEW mapped AS SELECT * FROM read_parquet(
+	'{TEST_DIR}/schema_null_nested.parquet',
+	schema=map {
+		'nested': {name: 'nested', type: 'STRUCT(s STRUCT(a INTEGER), l INTEGER[], m MAP(VARCHAR, INTEGER))',
+			default_value: NULL, children: map {
+				's': {name: 's', type: 'STRUCT(a INTEGER)', default_value: {'a': 42},
+					children: map {'a': {name: 'a', type: 'INTEGER', default_value: 42}}},
+				'l': {name: 'l', type: 'INTEGER[]', default_value: NULL,
+					children: map {'list': {name: 'element', type: 'INTEGER', default_value: NULL}}},
+				'm': {name: 'm', type: 'MAP(VARCHAR, INTEGER)', default_value: NULL,
+					children: map {
+						'key': {name: 'key', type: 'VARCHAR', default_value: NULL},
+						'value': {name: 'value', type: 'INTEGER', default_value: NULL}
+					}}
+			}}
+	}
+);
+
+query I
+SELECT nested FROM mapped;
+----
+{'s': NULL, 'l': NULL, 'm': NULL}
+{'s': NULL, 'l': NULL, 'm': NULL}
+{'s': NULL, 'l': NULL, 'm': NULL}
+
+# Exercise nested projection and extraction, as well as filters over the NULL field.
+query III
+SELECT nested.s, nested.l, nested.m FROM mapped;
+----
+NULL	NULL	NULL
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+query I
+SELECT nested.s.a FROM mapped;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT count(*) FROM mapped WHERE nested.s IS NULL;
+----
+3
+
+query I
+SELECT count(*) FROM mapped WHERE nested.s.a = 42;
+----
+0

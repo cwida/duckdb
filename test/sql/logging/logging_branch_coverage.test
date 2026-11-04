@@ -1,0 +1,68 @@
+# name: test/sql/logging/logging_branch_coverage.test
+# description: Cover selected log filtering
+# group: [logging]
+
+require noforcestorage
+
+statement ok
+CALL enable_logging(level = 'trace', storage = 'memory')
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET disabled_log_types = 'QueryLog'
+
+statement ok
+SET logging_mode = 'DISABLE_SELECTED'
+
+statement ok
+SELECT 42
+
+statement ok
+SELECT write_log('hidden database log', log_type := 'QueryLog', scope := 'database')
+
+query I
+SELECT count(*) FROM duckdb_logs
+WHERE type = 'QueryLog' AND message IN ('SELECT 42', 'hidden database log')
+----
+0
+
+statement ok
+SET disabled_log_types = 'FileSystem'
+
+statement ok
+SELECT 43
+
+statement ok
+SELECT write_log('visible database log', log_type := 'QueryLog', scope := 'database')
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message = 'SELECT 43'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message = 'visible database log'
+----
+1
+
+statement ok
+CALL disable_logging()
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+RESET logging_mode
+
+statement ok
+RESET disabled_log_types
+
+statement ok
+SET disabled_filesystems = 'LocalFileSystem'
+
+statement error
+CALL enable_logging('QueryLog', storage = 'file', storage_path = '{TEST_DIR}/disabled_filesystem.csv')
+----
+Can not enable file logging with the LocalFileSystem disabled

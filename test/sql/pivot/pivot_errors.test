@@ -46,3 +46,14 @@ statement error
 SELECT * FROM (SELECT 1 AS a, 'x' AS b) t PIVOT (sum(a) FOR b IN (CAST(map() AS INTEGER)));
 ----
 Conversion Error: Unimplemented type for cast
+
+# issue #26362: zero-argument row() in PIVOT IN list
+statement error
+PIVOT test ON j IN (row());
+----
+Binder Error: PIVOT IN list - inconsistent amount of rows - expected 1 but got 0
+
+statement error
+PIVOT test ON j IN (row(row()));
+----
+Binder Error: PIVOT IN list - inconsistent amount of rows - expected 1 but got 0

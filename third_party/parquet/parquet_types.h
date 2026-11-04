@@ -20,6 +20,7 @@
 
 
 #include "windows_compatibility.h"
+#include "parquet_arena.h"
 namespace apache = duckdb_apache;
 
 namespace duckdb_parquet {
@@ -513,8 +514,11 @@ class SizeStatistics : public virtual ::apache::thrift::TBase {
   SizeStatistics(const SizeStatistics&);
   SizeStatistics(SizeStatistics&&) noexcept;
   SizeStatistics& operator=(const SizeStatistics&);
-  SizeStatistics& operator=(SizeStatistics&&) noexcept;
-  SizeStatistics() noexcept;
+  SizeStatistics& operator=(SizeStatistics&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit SizeStatistics(const allocator_type &alloc) noexcept;
+  SizeStatistics(const SizeStatistics&, const allocator_type &alloc);
+  SizeStatistics(SizeStatistics&&, const allocator_type &alloc);
 
   virtual ~SizeStatistics() noexcept;
   /**
@@ -545,7 +549,7 @@ class SizeStatistics : public virtual ::apache::thrift::TBase {
    * of information.
    * 
    */
-  duckdb::vector<int64_t>  repetition_level_histogram;
+  ParquetVector<int64_t>  repetition_level_histogram;
   /**
    * Same as repetition_level_histogram except for definition levels.
    * 
@@ -553,15 +557,15 @@ class SizeStatistics : public virtual ::apache::thrift::TBase {
    * loss of information.
    * 
    */
-  duckdb::vector<int64_t>  definition_level_histogram;
+  ParquetVector<int64_t>  definition_level_histogram;
 
   _SizeStatistics__isset __isset;
 
   void __set_unencoded_byte_array_data_bytes(const int64_t val);
 
-  void __set_repetition_level_histogram(const duckdb::vector<int64_t> & val);
+  void __set_repetition_level_histogram(const ParquetVector<int64_t> & val);
 
-  void __set_definition_level_histogram(const duckdb::vector<int64_t> & val);
+  void __set_definition_level_histogram(const ParquetVector<int64_t> & val);
 
   uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
   uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
@@ -569,7 +573,6 @@ class SizeStatistics : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(SizeStatistics &a, SizeStatistics &b);
 
 std::ostream& operator<<(std::ostream& out, const SizeStatistics& obj);
 
@@ -647,8 +650,11 @@ class GeospatialStatistics : public virtual ::apache::thrift::TBase {
   GeospatialStatistics(const GeospatialStatistics&);
   GeospatialStatistics(GeospatialStatistics&&) noexcept;
   GeospatialStatistics& operator=(const GeospatialStatistics&);
-  GeospatialStatistics& operator=(GeospatialStatistics&&) noexcept;
-  GeospatialStatistics() noexcept;
+  GeospatialStatistics& operator=(GeospatialStatistics&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit GeospatialStatistics(const allocator_type &alloc) noexcept;
+  GeospatialStatistics(const GeospatialStatistics&, const allocator_type &alloc);
+  GeospatialStatistics(GeospatialStatistics&&, const allocator_type &alloc);
 
   virtual ~GeospatialStatistics() noexcept;
   /**
@@ -658,13 +664,13 @@ class GeospatialStatistics : public virtual ::apache::thrift::TBase {
   /**
    * Geospatial type codes of all instances, or an empty list if not known
    */
-  duckdb::vector<int32_t>  geospatial_types;
+  ParquetVector<int32_t>  geospatial_types;
 
   _GeospatialStatistics__isset __isset;
 
   void __set_bbox(const BoundingBox& val);
 
-  void __set_geospatial_types(const duckdb::vector<int32_t> & val);
+  void __set_geospatial_types(const ParquetVector<int32_t> & val);
 
   uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
   uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
@@ -672,12 +678,11 @@ class GeospatialStatistics : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(GeospatialStatistics &a, GeospatialStatistics &b);
 
 std::ostream& operator<<(std::ostream& out, const GeospatialStatistics& obj);
 
 typedef struct _Statistics__isset {
-  _Statistics__isset() : max(false), min(false), null_count(false), distinct_count(false), max_value(false), min_value(false), is_max_value_exact(false), is_min_value_exact(false) {}
+  _Statistics__isset() : max(false), min(false), null_count(false), distinct_count(false), max_value(false), min_value(false), is_max_value_exact(false), is_min_value_exact(false), nan_count(false) {}
   bool max :1;
   bool min :1;
   bool null_count :1;
@@ -686,6 +691,7 @@ typedef struct _Statistics__isset {
   bool min_value :1;
   bool is_max_value_exact :1;
   bool is_min_value_exact :1;
+  bool nan_count :1;
 } _Statistics__isset;
 
 /**
@@ -698,8 +704,11 @@ class Statistics : public virtual ::apache::thrift::TBase {
   Statistics(const Statistics&);
   Statistics(Statistics&&) noexcept;
   Statistics& operator=(const Statistics&);
-  Statistics& operator=(Statistics&&) noexcept;
-  Statistics() noexcept;
+  Statistics& operator=(Statistics&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit Statistics(const allocator_type &alloc) noexcept;
+  Statistics(const Statistics&, const allocator_type &alloc);
+  Statistics(Statistics&&, const allocator_type &alloc);
 
   virtual ~Statistics() noexcept;
   /**
@@ -715,8 +724,8 @@ class Statistics : public virtual ::apache::thrift::TBase {
    * To support older readers, these may be set when the column order is
    * signed.
    */
-  std::string max;
-  std::string min;
+  ParquetString max;
+  ParquetString min;
   /**
    * Count of null values in the column.
    * 
@@ -742,8 +751,8 @@ class Statistics : public virtual ::apache::thrift::TBase {
    * Values are encoded using PLAIN encoding, except that variable-length byte
    * arrays do not include a length prefix.
    */
-  std::string max_value;
-  std::string min_value;
+  ParquetString max_value;
+  ParquetString min_value;
   /**
    * If true, max_value is the actual maximum value for a column
    */
@@ -752,6 +761,13 @@ class Statistics : public virtual ::apache::thrift::TBase {
    * If true, min_value is the actual minimum value for a column
    */
   bool is_min_value_exact;
+  /**
+   * Count of NaN values in the column; only present if physical type is FLOAT
+   * or DOUBLE, or logical type is FLOAT16.
+   * If this field is not present, readers MUST assume NaNs may be present
+   * (i.e. MUST assume nan_count > 0 and MAY NOT assume nan_count == 0).
+   */
+  int64_t nan_count;
 
   _Statistics__isset __isset;
 
@@ -771,13 +787,14 @@ class Statistics : public virtual ::apache::thrift::TBase {
 
   void __set_is_min_value_exact(const bool val);
 
+  void __set_nan_count(const int64_t val);
+
   uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
   uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
 
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(Statistics &a, Statistics &b);
 
 std::ostream& operator<<(std::ostream& out, const Statistics& obj);
 
@@ -1328,11 +1345,14 @@ class GeometryType : public virtual ::apache::thrift::TBase {
   GeometryType(const GeometryType&);
   GeometryType(GeometryType&&) noexcept;
   GeometryType& operator=(const GeometryType&);
-  GeometryType& operator=(GeometryType&&) noexcept;
-  GeometryType() noexcept;
+  GeometryType& operator=(GeometryType&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit GeometryType(const allocator_type &alloc) noexcept;
+  GeometryType(const GeometryType&, const allocator_type &alloc);
+  GeometryType(GeometryType&&, const allocator_type &alloc);
 
   virtual ~GeometryType() noexcept;
-  std::string crs;
+  ParquetString crs;
 
   _GeometryType__isset __isset;
 
@@ -1344,7 +1364,6 @@ class GeometryType : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(GeometryType &a, GeometryType &b);
 
 std::ostream& operator<<(std::ostream& out, const GeometryType& obj);
 
@@ -1377,11 +1396,14 @@ class GeographyType : public virtual ::apache::thrift::TBase {
   GeographyType(const GeographyType&);
   GeographyType(GeographyType&&) noexcept;
   GeographyType& operator=(const GeographyType&);
-  GeographyType& operator=(GeographyType&&) noexcept;
-  GeographyType() noexcept;
+  GeographyType& operator=(GeographyType&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit GeographyType(const allocator_type &alloc) noexcept;
+  GeographyType(const GeographyType&, const allocator_type &alloc);
+  GeographyType(GeographyType&&, const allocator_type &alloc);
 
   virtual ~GeographyType() noexcept;
-  std::string crs;
+  ParquetString crs;
   /**
    * 
    * @see EdgeInterpolationAlgorithm
@@ -1400,7 +1422,6 @@ class GeographyType : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(GeographyType &a, GeographyType &b);
 
 std::ostream& operator<<(std::ostream& out, const GeographyType& obj);
 
@@ -1438,8 +1459,11 @@ class LogicalType : public virtual ::apache::thrift::TBase {
   LogicalType(const LogicalType&);
   LogicalType(LogicalType&&) noexcept;
   LogicalType& operator=(const LogicalType&);
-  LogicalType& operator=(LogicalType&&) noexcept;
-  LogicalType() noexcept;
+  LogicalType& operator=(LogicalType&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit LogicalType(const allocator_type &alloc) noexcept;
+  LogicalType(const LogicalType&, const allocator_type &alloc);
+  LogicalType(LogicalType&&, const allocator_type &alloc);
 
   virtual ~LogicalType() noexcept;
   StringType STRING;
@@ -1502,7 +1526,6 @@ class LogicalType : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(LogicalType &a, LogicalType &b);
 
 std::ostream& operator<<(std::ostream& out, const LogicalType& obj);
 
@@ -1531,8 +1554,11 @@ class SchemaElement : public virtual ::apache::thrift::TBase {
   SchemaElement(const SchemaElement&);
   SchemaElement(SchemaElement&&) noexcept;
   SchemaElement& operator=(const SchemaElement&);
-  SchemaElement& operator=(SchemaElement&&) noexcept;
-  SchemaElement() noexcept;
+  SchemaElement& operator=(SchemaElement&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit SchemaElement(const allocator_type &alloc) noexcept;
+  SchemaElement(const SchemaElement&, const allocator_type &alloc);
+  SchemaElement(SchemaElement&&, const allocator_type &alloc);
 
   virtual ~SchemaElement() noexcept;
   /**
@@ -1558,7 +1584,7 @@ class SchemaElement : public virtual ::apache::thrift::TBase {
   /**
    * Name of the field in the schema
    */
-  std::string name;
+  ParquetString name;
   /**
    * Nested fields.  Since thrift does not support nested fields,
    * the nesting is flattened to a single list by a depth-first traversal.
@@ -1624,7 +1650,6 @@ class SchemaElement : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(SchemaElement &a, SchemaElement &b);
 
 std::ostream& operator<<(std::ostream& out, const SchemaElement& obj);
 
@@ -1642,8 +1667,11 @@ class DataPageHeader : public virtual ::apache::thrift::TBase {
   DataPageHeader(const DataPageHeader&);
   DataPageHeader(DataPageHeader&&) noexcept;
   DataPageHeader& operator=(const DataPageHeader&);
-  DataPageHeader& operator=(DataPageHeader&&) noexcept;
-  DataPageHeader() noexcept;
+  DataPageHeader& operator=(DataPageHeader&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit DataPageHeader(const allocator_type &alloc) noexcept;
+  DataPageHeader(const DataPageHeader&, const allocator_type &alloc);
+  DataPageHeader(DataPageHeader&&, const allocator_type &alloc);
 
   virtual ~DataPageHeader() noexcept;
   /**
@@ -1696,7 +1724,6 @@ class DataPageHeader : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(DataPageHeader &a, DataPageHeader &b);
 
 std::ostream& operator<<(std::ostream& out, const DataPageHeader& obj);
 
@@ -1794,8 +1821,11 @@ class DataPageHeaderV2 : public virtual ::apache::thrift::TBase {
   DataPageHeaderV2(const DataPageHeaderV2&);
   DataPageHeaderV2(DataPageHeaderV2&&) noexcept;
   DataPageHeaderV2& operator=(const DataPageHeaderV2&);
-  DataPageHeaderV2& operator=(DataPageHeaderV2&&) noexcept;
-  DataPageHeaderV2() noexcept;
+  DataPageHeaderV2& operator=(DataPageHeaderV2&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit DataPageHeaderV2(const allocator_type &alloc) noexcept;
+  DataPageHeaderV2(const DataPageHeaderV2&, const allocator_type &alloc);
+  DataPageHeaderV2(DataPageHeaderV2&&, const allocator_type &alloc);
 
   virtual ~DataPageHeaderV2() noexcept;
   /**
@@ -1865,7 +1895,6 @@ class DataPageHeaderV2 : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(DataPageHeaderV2 &a, DataPageHeaderV2 &b);
 
 std::ostream& operator<<(std::ostream& out, const DataPageHeaderV2& obj);
 
@@ -2120,8 +2149,11 @@ class PageHeader : public virtual ::apache::thrift::TBase {
   PageHeader(const PageHeader&);
   PageHeader(PageHeader&&) noexcept;
   PageHeader& operator=(const PageHeader&);
-  PageHeader& operator=(PageHeader&&) noexcept;
-  PageHeader() noexcept;
+  PageHeader& operator=(PageHeader&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit PageHeader(const allocator_type &alloc) noexcept;
+  PageHeader(const PageHeader&, const allocator_type &alloc);
+  PageHeader(PageHeader&&, const allocator_type &alloc);
 
   virtual ~PageHeader() noexcept;
   /**
@@ -2186,7 +2218,6 @@ class PageHeader : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(PageHeader &a, PageHeader &b);
 
 std::ostream& operator<<(std::ostream& out, const PageHeader& obj);
 
@@ -2204,12 +2235,15 @@ class KeyValue : public virtual ::apache::thrift::TBase {
   KeyValue(const KeyValue&);
   KeyValue(KeyValue&&) noexcept;
   KeyValue& operator=(const KeyValue&);
-  KeyValue& operator=(KeyValue&&) noexcept;
-  KeyValue() noexcept;
+  KeyValue& operator=(KeyValue&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit KeyValue(const allocator_type &alloc) noexcept;
+  KeyValue(const KeyValue&, const allocator_type &alloc);
+  KeyValue(KeyValue&&, const allocator_type &alloc);
 
   virtual ~KeyValue() noexcept;
-  std::string key;
-  std::string value;
+  ParquetString key;
+  ParquetString value;
 
   _KeyValue__isset __isset;
 
@@ -2223,7 +2257,6 @@ class KeyValue : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(KeyValue &a, KeyValue &b);
 
 std::ostream& operator<<(std::ostream& out, const KeyValue& obj);
 
@@ -2340,8 +2373,11 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
   ColumnMetaData(const ColumnMetaData&);
   ColumnMetaData(ColumnMetaData&&) noexcept;
   ColumnMetaData& operator=(const ColumnMetaData&);
-  ColumnMetaData& operator=(ColumnMetaData&&) noexcept;
-  ColumnMetaData() noexcept;
+  ColumnMetaData& operator=(ColumnMetaData&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit ColumnMetaData(const allocator_type &alloc) noexcept;
+  ColumnMetaData(const ColumnMetaData&, const allocator_type &alloc);
+  ColumnMetaData(ColumnMetaData&&, const allocator_type &alloc);
 
   virtual ~ColumnMetaData() noexcept;
   /**
@@ -2354,11 +2390,11 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
    * Set of all encodings used for this column. The purpose is to validate
    * whether we can decode those pages. *
    */
-  duckdb::vector<Encoding::type>  encodings;
+  ParquetVector<Encoding::type>  encodings;
   /**
    * Path in schema *
    */
-  duckdb::vector<std::string>  path_in_schema;
+  ParquetVector<ParquetString>  path_in_schema;
   /**
    * Compression codec *
    * 
@@ -2381,7 +2417,7 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
   /**
    * Optional key/value metadata *
    */
-  duckdb::vector<KeyValue>  key_value_metadata;
+  ParquetVector<KeyValue>  key_value_metadata;
   /**
    * Byte offset from beginning of file to first data page *
    */
@@ -2403,7 +2439,7 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
    * This information can be used to determine if all data pages are
    * dictionary encoded for example *
    */
-  duckdb::vector<PageEncodingStats>  encoding_stats;
+  ParquetVector<PageEncodingStats>  encoding_stats;
   /**
    * Byte offset from beginning of file to Bloom filter data. *
    */
@@ -2432,9 +2468,9 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
 
   void __set_type(const Type::type val);
 
-  void __set_encodings(const duckdb::vector<Encoding::type> & val);
+  void __set_encodings(const ParquetVector<Encoding::type> & val);
 
-  void __set_path_in_schema(const duckdb::vector<std::string> & val);
+  void __set_path_in_schema(const ParquetVector<ParquetString> & val);
 
   void __set_codec(const CompressionCodec::type val);
 
@@ -2444,7 +2480,7 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
 
   void __set_total_compressed_size(const int64_t val);
 
-  void __set_key_value_metadata(const duckdb::vector<KeyValue> & val);
+  void __set_key_value_metadata(const ParquetVector<KeyValue> & val);
 
   void __set_data_page_offset(const int64_t val);
 
@@ -2454,7 +2490,7 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
 
   void __set_statistics(const Statistics& val);
 
-  void __set_encoding_stats(const duckdb::vector<PageEncodingStats> & val);
+  void __set_encoding_stats(const ParquetVector<PageEncodingStats> & val);
 
   void __set_bloom_filter_offset(const int64_t val);
 
@@ -2470,7 +2506,6 @@ class ColumnMetaData : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(ColumnMetaData &a, ColumnMetaData &b);
 
 std::ostream& operator<<(std::ostream& out, const ColumnMetaData& obj);
 
@@ -2507,22 +2542,25 @@ class EncryptionWithColumnKey : public virtual ::apache::thrift::TBase {
   EncryptionWithColumnKey(const EncryptionWithColumnKey&);
   EncryptionWithColumnKey(EncryptionWithColumnKey&&) noexcept;
   EncryptionWithColumnKey& operator=(const EncryptionWithColumnKey&);
-  EncryptionWithColumnKey& operator=(EncryptionWithColumnKey&&) noexcept;
-  EncryptionWithColumnKey() noexcept;
+  EncryptionWithColumnKey& operator=(EncryptionWithColumnKey&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit EncryptionWithColumnKey(const allocator_type &alloc) noexcept;
+  EncryptionWithColumnKey(const EncryptionWithColumnKey&, const allocator_type &alloc);
+  EncryptionWithColumnKey(EncryptionWithColumnKey&&, const allocator_type &alloc);
 
   virtual ~EncryptionWithColumnKey() noexcept;
   /**
    * Column path in schema *
    */
-  duckdb::vector<std::string>  path_in_schema;
+  ParquetVector<ParquetString>  path_in_schema;
   /**
    * Retrieval metadata of column encryption key *
    */
-  std::string key_metadata;
+  ParquetString key_metadata;
 
   _EncryptionWithColumnKey__isset __isset;
 
-  void __set_path_in_schema(const duckdb::vector<std::string> & val);
+  void __set_path_in_schema(const ParquetVector<ParquetString> & val);
 
   void __set_key_metadata(const std::string& val);
 
@@ -2532,7 +2570,6 @@ class EncryptionWithColumnKey : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(EncryptionWithColumnKey &a, EncryptionWithColumnKey &b);
 
 std::ostream& operator<<(std::ostream& out, const EncryptionWithColumnKey& obj);
 
@@ -2548,8 +2585,11 @@ class ColumnCryptoMetaData : public virtual ::apache::thrift::TBase {
   ColumnCryptoMetaData(const ColumnCryptoMetaData&);
   ColumnCryptoMetaData(ColumnCryptoMetaData&&) noexcept;
   ColumnCryptoMetaData& operator=(const ColumnCryptoMetaData&);
-  ColumnCryptoMetaData& operator=(ColumnCryptoMetaData&&) noexcept;
-  ColumnCryptoMetaData() noexcept;
+  ColumnCryptoMetaData& operator=(ColumnCryptoMetaData&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit ColumnCryptoMetaData(const allocator_type &alloc) noexcept;
+  ColumnCryptoMetaData(const ColumnCryptoMetaData&, const allocator_type &alloc);
+  ColumnCryptoMetaData(ColumnCryptoMetaData&&, const allocator_type &alloc);
 
   virtual ~ColumnCryptoMetaData() noexcept;
   EncryptionWithFooterKey ENCRYPTION_WITH_FOOTER_KEY;
@@ -2567,7 +2607,6 @@ class ColumnCryptoMetaData : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(ColumnCryptoMetaData &a, ColumnCryptoMetaData &b);
 
 std::ostream& operator<<(std::ostream& out, const ColumnCryptoMetaData& obj);
 
@@ -2589,8 +2628,11 @@ class ColumnChunk : public virtual ::apache::thrift::TBase {
   ColumnChunk(const ColumnChunk&);
   ColumnChunk(ColumnChunk&&) noexcept;
   ColumnChunk& operator=(const ColumnChunk&);
-  ColumnChunk& operator=(ColumnChunk&&) noexcept;
-  ColumnChunk() noexcept;
+  ColumnChunk& operator=(ColumnChunk&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit ColumnChunk(const allocator_type &alloc) noexcept;
+  ColumnChunk(const ColumnChunk&, const allocator_type &alloc);
+  ColumnChunk(ColumnChunk&&, const allocator_type &alloc);
 
   virtual ~ColumnChunk() noexcept;
   /**
@@ -2598,7 +2640,7 @@ class ColumnChunk : public virtual ::apache::thrift::TBase {
    * metadata.  This path is relative to the current file.
    * 
    */
-  std::string file_path;
+  ParquetString file_path;
   /**
    * Deprecated: Byte offset in file_path to the ColumnMetaData
    * 
@@ -2641,7 +2683,7 @@ class ColumnChunk : public virtual ::apache::thrift::TBase {
   /**
    * Encrypted column metadata for this chunk *
    */
-  std::string encrypted_column_metadata;
+  ParquetString encrypted_column_metadata;
 
   _ColumnChunk__isset __isset;
 
@@ -2669,7 +2711,6 @@ class ColumnChunk : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(ColumnChunk &a, ColumnChunk &b);
 
 std::ostream& operator<<(std::ostream& out, const ColumnChunk& obj);
 
@@ -2687,8 +2728,11 @@ class RowGroup : public virtual ::apache::thrift::TBase {
   RowGroup(const RowGroup&);
   RowGroup(RowGroup&&) noexcept;
   RowGroup& operator=(const RowGroup&);
-  RowGroup& operator=(RowGroup&&) noexcept;
-  RowGroup() noexcept;
+  RowGroup& operator=(RowGroup&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit RowGroup(const allocator_type &alloc) noexcept;
+  RowGroup(const RowGroup&, const allocator_type &alloc);
+  RowGroup(RowGroup&&, const allocator_type &alloc);
 
   virtual ~RowGroup() noexcept;
   /**
@@ -2696,7 +2740,7 @@ class RowGroup : public virtual ::apache::thrift::TBase {
    * This list must have the same order as the SchemaElement list in FileMetaData.
    * 
    */
-  duckdb::vector<ColumnChunk>  columns;
+  ParquetVector<ColumnChunk>  columns;
   /**
    * Total byte size of all the uncompressed column data in this row group *
    */
@@ -2709,7 +2753,7 @@ class RowGroup : public virtual ::apache::thrift::TBase {
    * If set, specifies a sort ordering of the rows in this RowGroup.
    * The sorting columns can be a subset of all the columns.
    */
-  duckdb::vector<SortingColumn>  sorting_columns;
+  ParquetVector<SortingColumn>  sorting_columns;
   /**
    * Byte offset from beginning of file to first page (data or dictionary)
    * in this row group *
@@ -2727,13 +2771,13 @@ class RowGroup : public virtual ::apache::thrift::TBase {
 
   _RowGroup__isset __isset;
 
-  void __set_columns(const duckdb::vector<ColumnChunk> & val);
+  void __set_columns(const ParquetVector<ColumnChunk> & val);
 
   void __set_total_byte_size(const int64_t val);
 
   void __set_num_rows(const int64_t val);
 
-  void __set_sorting_columns(const duckdb::vector<SortingColumn> & val);
+  void __set_sorting_columns(const ParquetVector<SortingColumn> & val);
 
   void __set_file_offset(const int64_t val);
 
@@ -2747,7 +2791,6 @@ class RowGroup : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(RowGroup &a, RowGroup &b);
 
 std::ostream& operator<<(std::ostream& out, const RowGroup& obj);
 
@@ -2934,28 +2977,31 @@ class OffsetIndex : public virtual ::apache::thrift::TBase {
   OffsetIndex(const OffsetIndex&);
   OffsetIndex(OffsetIndex&&) noexcept;
   OffsetIndex& operator=(const OffsetIndex&);
-  OffsetIndex& operator=(OffsetIndex&&) noexcept;
-  OffsetIndex() noexcept;
+  OffsetIndex& operator=(OffsetIndex&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit OffsetIndex(const allocator_type &alloc) noexcept;
+  OffsetIndex(const OffsetIndex&, const allocator_type &alloc);
+  OffsetIndex(OffsetIndex&&, const allocator_type &alloc);
 
   virtual ~OffsetIndex() noexcept;
   /**
    * PageLocations, ordered by increasing PageLocation.offset. It is required
    * that page_locations[i].first_row_index < page_locations[i+1].first_row_index.
    */
-  duckdb::vector<PageLocation>  page_locations;
+  ParquetVector<PageLocation>  page_locations;
   /**
    * Unencoded/uncompressed size for BYTE_ARRAY types.
    * 
    * See documention for unencoded_byte_array_data_bytes in SizeStatistics for
    * more details on this field.
    */
-  duckdb::vector<int64_t>  unencoded_byte_array_data_bytes;
+  ParquetVector<int64_t>  unencoded_byte_array_data_bytes;
 
   _OffsetIndex__isset __isset;
 
-  void __set_page_locations(const duckdb::vector<PageLocation> & val);
+  void __set_page_locations(const ParquetVector<PageLocation> & val);
 
-  void __set_unencoded_byte_array_data_bytes(const duckdb::vector<int64_t> & val);
+  void __set_unencoded_byte_array_data_bytes(const ParquetVector<int64_t> & val);
 
   uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
   uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
@@ -2963,7 +3009,6 @@ class OffsetIndex : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(OffsetIndex &a, OffsetIndex &b);
 
 std::ostream& operator<<(std::ostream& out, const OffsetIndex& obj);
 
@@ -2990,8 +3035,11 @@ class ColumnIndex : public virtual ::apache::thrift::TBase {
   ColumnIndex(const ColumnIndex&);
   ColumnIndex(ColumnIndex&&) noexcept;
   ColumnIndex& operator=(const ColumnIndex&);
-  ColumnIndex& operator=(ColumnIndex&&) noexcept;
-  ColumnIndex() noexcept;
+  ColumnIndex& operator=(ColumnIndex&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit ColumnIndex(const allocator_type &alloc) noexcept;
+  ColumnIndex(const ColumnIndex&, const allocator_type &alloc);
+  ColumnIndex(ColumnIndex&&, const allocator_type &alloc);
 
   virtual ~ColumnIndex() noexcept;
   /**
@@ -3001,7 +3049,7 @@ class ColumnIndex : public virtual ::apache::thrift::TBase {
    * byte[0], so that all lists have the same length. If false, the
    * corresponding entries in min_values and max_values must be valid.
    */
-  duckdb::vector<bool>  null_pages;
+  ParquetVector<bool>  null_pages;
   /**
    * Two lists containing lower and upper bounds for the values of each page
    * determined by the ColumnOrder of the column. These may be the actual
@@ -3012,8 +3060,8 @@ class ColumnIndex : public virtual ::apache::thrift::TBase {
    * logical type. Readers must make sure that list entries are populated before
    * using them by inspecting null_pages.
    */
-  duckdb::vector<std::string>  min_values;
-  duckdb::vector<std::string>  max_values;
+  ParquetVector<ParquetString>  min_values;
+  ParquetVector<ParquetString>  max_values;
   /**
    * Stores whether both min_values and max_values are ordered and if so, in
    * which direction. This allows readers to perform binary searches in both
@@ -3033,7 +3081,7 @@ class ColumnIndex : public virtual ::apache::thrift::TBase {
    * If null_counts are not present, readers MUST NOT assume all
    * null counts are 0.
    */
-  duckdb::vector<int64_t>  null_counts;
+  ParquetVector<int64_t>  null_counts;
   /**
    * Contains repetition level histograms for each page
    * concatenated together.  The repetition_level_histogram field on
@@ -3047,28 +3095,28 @@ class ColumnIndex : public virtual ::apache::thrift::TBase {
    * for the second page.
    * 
    */
-  duckdb::vector<int64_t>  repetition_level_histograms;
+  ParquetVector<int64_t>  repetition_level_histograms;
   /**
    * Same as repetition_level_histograms except for definitions levels.
    * 
    */
-  duckdb::vector<int64_t>  definition_level_histograms;
+  ParquetVector<int64_t>  definition_level_histograms;
 
   _ColumnIndex__isset __isset;
 
-  void __set_null_pages(const duckdb::vector<bool> & val);
+  void __set_null_pages(const ParquetVector<bool> & val);
 
-  void __set_min_values(const duckdb::vector<std::string> & val);
+  void __set_min_values(const ParquetVector<ParquetString> & val);
 
-  void __set_max_values(const duckdb::vector<std::string> & val);
+  void __set_max_values(const ParquetVector<ParquetString> & val);
 
   void __set_boundary_order(const BoundaryOrder::type val);
 
-  void __set_null_counts(const duckdb::vector<int64_t> & val);
+  void __set_null_counts(const ParquetVector<int64_t> & val);
 
-  void __set_repetition_level_histograms(const duckdb::vector<int64_t> & val);
+  void __set_repetition_level_histograms(const ParquetVector<int64_t> & val);
 
-  void __set_definition_level_histograms(const duckdb::vector<int64_t> & val);
+  void __set_definition_level_histograms(const ParquetVector<int64_t> & val);
 
   uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
   uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
@@ -3076,7 +3124,6 @@ class ColumnIndex : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(ColumnIndex &a, ColumnIndex &b);
 
 std::ostream& operator<<(std::ostream& out, const ColumnIndex& obj);
 
@@ -3093,18 +3140,21 @@ class AesGcmV1 : public virtual ::apache::thrift::TBase {
   AesGcmV1(const AesGcmV1&);
   AesGcmV1(AesGcmV1&&) noexcept;
   AesGcmV1& operator=(const AesGcmV1&);
-  AesGcmV1& operator=(AesGcmV1&&) noexcept;
-  AesGcmV1() noexcept;
+  AesGcmV1& operator=(AesGcmV1&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit AesGcmV1(const allocator_type &alloc) noexcept;
+  AesGcmV1(const AesGcmV1&, const allocator_type &alloc);
+  AesGcmV1(AesGcmV1&&, const allocator_type &alloc);
 
   virtual ~AesGcmV1() noexcept;
   /**
    * AAD prefix *
    */
-  std::string aad_prefix;
+  ParquetString aad_prefix;
   /**
    * Unique file identifier part of AAD suffix *
    */
-  std::string aad_file_unique;
+  ParquetString aad_file_unique;
   /**
    * In files encrypted with AAD prefix without storing it,
    * readers must supply the prefix *
@@ -3125,7 +3175,6 @@ class AesGcmV1 : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(AesGcmV1 &a, AesGcmV1 &b);
 
 std::ostream& operator<<(std::ostream& out, const AesGcmV1& obj);
 
@@ -3142,18 +3191,21 @@ class AesGcmCtrV1 : public virtual ::apache::thrift::TBase {
   AesGcmCtrV1(const AesGcmCtrV1&);
   AesGcmCtrV1(AesGcmCtrV1&&) noexcept;
   AesGcmCtrV1& operator=(const AesGcmCtrV1&);
-  AesGcmCtrV1& operator=(AesGcmCtrV1&&) noexcept;
-  AesGcmCtrV1() noexcept;
+  AesGcmCtrV1& operator=(AesGcmCtrV1&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit AesGcmCtrV1(const allocator_type &alloc) noexcept;
+  AesGcmCtrV1(const AesGcmCtrV1&, const allocator_type &alloc);
+  AesGcmCtrV1(AesGcmCtrV1&&, const allocator_type &alloc);
 
   virtual ~AesGcmCtrV1() noexcept;
   /**
    * AAD prefix *
    */
-  std::string aad_prefix;
+  ParquetString aad_prefix;
   /**
    * Unique file identifier part of AAD suffix *
    */
-  std::string aad_file_unique;
+  ParquetString aad_file_unique;
   /**
    * In files encrypted with AAD prefix without storing it,
    * readers must supply the prefix *
@@ -3174,7 +3226,6 @@ class AesGcmCtrV1 : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(AesGcmCtrV1 &a, AesGcmCtrV1 &b);
 
 std::ostream& operator<<(std::ostream& out, const AesGcmCtrV1& obj);
 
@@ -3190,8 +3241,11 @@ class EncryptionAlgorithm : public virtual ::apache::thrift::TBase {
   EncryptionAlgorithm(const EncryptionAlgorithm&);
   EncryptionAlgorithm(EncryptionAlgorithm&&) noexcept;
   EncryptionAlgorithm& operator=(const EncryptionAlgorithm&);
-  EncryptionAlgorithm& operator=(EncryptionAlgorithm&&) noexcept;
-  EncryptionAlgorithm() noexcept;
+  EncryptionAlgorithm& operator=(EncryptionAlgorithm&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit EncryptionAlgorithm(const allocator_type &alloc) noexcept;
+  EncryptionAlgorithm(const EncryptionAlgorithm&, const allocator_type &alloc);
+  EncryptionAlgorithm(EncryptionAlgorithm&&, const allocator_type &alloc);
 
   virtual ~EncryptionAlgorithm() noexcept;
   AesGcmV1 AES_GCM_V1;
@@ -3209,7 +3263,6 @@ class EncryptionAlgorithm : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(EncryptionAlgorithm &a, EncryptionAlgorithm &b);
 
 std::ostream& operator<<(std::ostream& out, const EncryptionAlgorithm& obj);
 
@@ -3231,8 +3284,11 @@ class FileMetaData : public virtual ::apache::thrift::TBase {
   FileMetaData(const FileMetaData&);
   FileMetaData(FileMetaData&&) noexcept;
   FileMetaData& operator=(const FileMetaData&);
-  FileMetaData& operator=(FileMetaData&&) noexcept;
-  FileMetaData() noexcept;
+  FileMetaData& operator=(FileMetaData&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit FileMetaData(const allocator_type &alloc) noexcept;
+  FileMetaData(const FileMetaData&, const allocator_type &alloc);
+  FileMetaData(FileMetaData&&, const allocator_type &alloc);
 
   virtual ~FileMetaData() noexcept;
   /**
@@ -3247,7 +3303,7 @@ class FileMetaData : public virtual ::apache::thrift::TBase {
    * used to map columns to nodes in the schema.
    * The first element is the root *
    */
-  duckdb::vector<SchemaElement>  schema;
+  ParquetVector<SchemaElement>  schema;
   /**
    * Number of rows in this file *
    */
@@ -3255,18 +3311,18 @@ class FileMetaData : public virtual ::apache::thrift::TBase {
   /**
    * Row groups in this file *
    */
-  duckdb::vector<RowGroup>  row_groups;
+  ParquetVector<RowGroup>  row_groups;
   /**
    * Optional key/value metadata *
    */
-  duckdb::vector<KeyValue>  key_value_metadata;
+  ParquetVector<KeyValue>  key_value_metadata;
   /**
    * String for application that wrote this file.  This should be in the format
    * <Application> version <App Version> (build <App Build Hash>).
    * e.g. impala version 1.0 (build 6cf94d29b2b7115df4de2c06e2ab4326d721eb55)
    * 
    */
-  std::string created_by;
+  ParquetString created_by;
   /**
    * Sort order used for the min_value and max_value fields in the Statistics
    * objects and the min_values and max_values fields in the ColumnIndex
@@ -3283,7 +3339,7 @@ class FileMetaData : public virtual ::apache::thrift::TBase {
    * The obsolete min and max fields in the Statistics object are always sorted
    * by signed comparison regardless of column_orders.
    */
-  duckdb::vector<ColumnOrder>  column_orders;
+  ParquetVector<ColumnOrder>  column_orders;
   /**
    * Encryption algorithm. This field is set only in encrypted files
    * with plaintext footer. Files with encrypted footer store algorithm id
@@ -3294,23 +3350,23 @@ class FileMetaData : public virtual ::apache::thrift::TBase {
    * Retrieval metadata of key used for signing the footer.
    * Used only in encrypted files with plaintext footer.
    */
-  std::string footer_signing_key_metadata;
+  ParquetString footer_signing_key_metadata;
 
   _FileMetaData__isset __isset;
 
   void __set_version(const int32_t val);
 
-  void __set_schema(const duckdb::vector<SchemaElement> & val);
+  void __set_schema(const ParquetVector<SchemaElement> & val);
 
   void __set_num_rows(const int64_t val);
 
-  void __set_row_groups(const duckdb::vector<RowGroup> & val);
+  void __set_row_groups(const ParquetVector<RowGroup> & val);
 
-  void __set_key_value_metadata(const duckdb::vector<KeyValue> & val);
+  void __set_key_value_metadata(const ParquetVector<KeyValue> & val);
 
   void __set_created_by(const std::string& val);
 
-  void __set_column_orders(const duckdb::vector<ColumnOrder> & val);
+  void __set_column_orders(const ParquetVector<ColumnOrder> & val);
 
   void __set_encryption_algorithm(const EncryptionAlgorithm& val);
 
@@ -3322,7 +3378,6 @@ class FileMetaData : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(FileMetaData &a, FileMetaData &b);
 
 std::ostream& operator<<(std::ostream& out, const FileMetaData& obj);
 
@@ -3340,8 +3395,11 @@ class FileCryptoMetaData : public virtual ::apache::thrift::TBase {
   FileCryptoMetaData(const FileCryptoMetaData&);
   FileCryptoMetaData(FileCryptoMetaData&&) noexcept;
   FileCryptoMetaData& operator=(const FileCryptoMetaData&);
-  FileCryptoMetaData& operator=(FileCryptoMetaData&&) noexcept;
-  FileCryptoMetaData() noexcept;
+  FileCryptoMetaData& operator=(FileCryptoMetaData&&);
+  typedef ParquetAllocator<char> allocator_type;
+  explicit FileCryptoMetaData(const allocator_type &alloc) noexcept;
+  FileCryptoMetaData(const FileCryptoMetaData&, const allocator_type &alloc);
+  FileCryptoMetaData(FileCryptoMetaData&&, const allocator_type &alloc);
 
   virtual ~FileCryptoMetaData() noexcept;
   /**
@@ -3354,7 +3412,7 @@ class FileCryptoMetaData : public virtual ::apache::thrift::TBase {
    * Retrieval metadata of key used for encryption of footer,
    * and (possibly) columns *
    */
-  std::string key_metadata;
+  ParquetString key_metadata;
 
   _FileCryptoMetaData__isset __isset;
 
@@ -3368,7 +3426,6 @@ class FileCryptoMetaData : public virtual ::apache::thrift::TBase {
   virtual void printTo(std::ostream& out) const;
 };
 
-void swap(FileCryptoMetaData &a, FileCryptoMetaData &b);
 
 std::ostream& operator<<(std::ostream& out, const FileCryptoMetaData& obj);
 

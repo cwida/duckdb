@@ -433,6 +433,11 @@ statement error
 SELECT strptime('2000/10/10', '%Y-%m-%d')
 ----
 
+# truncated literal part
+statement error
+SELECT strptime('202301011200', '%Y%m%d%H%M-')
+----
+
 # incorrect date
 statement error
 SELECT strptime('2001-02-30', '%Y-%m-%d')

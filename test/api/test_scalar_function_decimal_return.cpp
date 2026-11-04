@@ -25,5 +25,5 @@ TEST_CASE("A decimal-returning function called with NULL keeps its DECIMAL type"
 
 	auto result = con.Query("SELECT typeof(decimal_ret(NULL))");
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->GetValue(0, 0).ToString() == "DECIMAL(18,3)");
+	REQUIRE(result->Collection().GetValue(0, 0).ToString() == "DECIMAL(18,3)");
 }

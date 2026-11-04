@@ -2,13 +2,8 @@
 # description: Test LATERAL UNNEST
 # group: [lateral]
 
-mode skip instable
-
-# FIXME: this causes an internal exception to be thrown
 statement ok
 PREPARE v1 AS SELECT l, (SELECT SUM(k) FROM UNNEST(l) t(k)) AS sum FROM (SELECT ARRAY [?, ?, ?] UNION ALL SELECT ARRAY[?, ?, ?] UNION ALL SELECT ARRAY[]::INT[]) t(l) ORDER BY sum NULLS LAST
-
-mode unskip
 
 # lateral join with unnest
 query II

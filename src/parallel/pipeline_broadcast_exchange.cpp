@@ -120,7 +120,7 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 		collection.InitializeAppend(append_state);
 	}
 
-	void Append(DataChunk &chunk, idx_t batch_index) {
+	void Append(DataChunk &chunk, idx_t batch_index) DUCKDB_EXCLUDES(lock) {
 		annotated_lock_guard<annotated_mutex> guard(lock);
 		D_ASSERT(chunk.size() > 0);
 		auto row_offset = collection.Count();
@@ -130,18 +130,18 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 		append_generation++;
 	}
 
-	void Read(idx_t position, DataChunk &result, BroadcastSpoolReader &reader) {
-		annotated_lock_guard<annotated_mutex> guard(lock);
-		if (position < base_position || position >= next_position) {
-			throw InternalException("Attempted to read retired pipeline broadcast spool chunk");
+	void Read(idx_t position, const ChunkEntry &entry, DataChunk &result, BroadcastSpoolReader &reader,
+	          bool producer_finished) DUCKDB_EXCLUDES(lock) {
+		// Completion is observed under the exchange mutex; collection metadata and append_generation are then
+		// immutable.
+		annotated_unique_lock<annotated_mutex> guard(lock, std::defer_lock);
+		if (!producer_finished) {
+			guard.lock();
 		}
-		auto chunk_idx = position - base_position;
-		D_ASSERT(chunk_idx < chunks.size());
-		auto &entry = chunks[chunk_idx];
 		result.Reset();
 
 		auto row_idx = entry.row_offset;
-		auto offset = SeekLocked(position, entry, row_idx, reader);
+		auto offset = Seek(position, entry, row_idx, reader);
 		auto available = reader.scan_chunk.size() - offset;
 		if (available >= entry.row_count) {
 			if (offset == 0 && entry.row_count == reader.scan_chunk.size()) {
@@ -155,7 +155,7 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 		idx_t rows_read = 0;
 		while (rows_read < entry.row_count) {
 			row_idx = entry.row_offset + rows_read;
-			offset = SeekLocked(position, entry, row_idx, reader);
+			offset = Seek(position, entry, row_idx, reader);
 			auto append_count = MinValue<idx_t>(reader.scan_chunk.size() - offset, entry.row_count - rows_read);
 			auto sel = SelectionVector::Incremental(offset, append_count);
 			result.Append(reader.scan_chunk, sel, append_count);
@@ -163,7 +163,7 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 		}
 	}
 
-	idx_t RetireBefore(idx_t position) {
+	idx_t RetireBefore(idx_t position) DUCKDB_EXCLUDES(lock) {
 		annotated_lock_guard<annotated_mutex> guard(lock);
 		idx_t retired_chunks = 0;
 		while (!chunks.empty() && base_position < position) {
@@ -174,41 +174,35 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 		return retired_chunks;
 	}
 
-	bool HasPosition(idx_t position) {
-		annotated_lock_guard<annotated_mutex> guard(lock);
-		return position >= base_position && position < next_position;
-	}
-
-	idx_t BatchIndex(idx_t position) {
+	ChunkEntry GetChunkEntry(idx_t position) DUCKDB_EXCLUDES(lock) {
 		annotated_lock_guard<annotated_mutex> guard(lock);
 		if (position < base_position || position >= next_position) {
 			throw InternalException("Attempted to inspect retired pipeline broadcast spool chunk");
 		}
-		return chunks[position - base_position].batch_index;
+		return chunks[position - base_position];
 	}
 
-	void InitializeReader(BroadcastSpoolReader &reader) {
+	void InitializeReader(BroadcastSpoolReader &reader) DUCKDB_EXCLUDES(lock) {
 		annotated_lock_guard<annotated_mutex> guard(lock);
-		ResetReaderLocked(reader);
+		ResetReader(reader);
 		collection.InitializeScanChunk(reader.scan_state, reader.scan_chunk);
 	}
 
-	void ResetReaderLocked(BroadcastSpoolReader &reader) {
+	void ResetReader(BroadcastSpoolReader &reader) {
 		collection.InitializeScan(reader.scan_state, ColumnDataScanProperties::ALLOW_ZERO_COPY);
 		reader.observed_generation = append_generation;
 	}
 
-	idx_t SeekLocked(idx_t position, const ChunkEntry &entry, idx_t row_idx, BroadcastSpoolReader &reader) {
+	idx_t Seek(idx_t position, const ChunkEntry &entry, idx_t row_idx, BroadcastSpoolReader &reader) {
 		if (reader.observed_generation != append_generation && !reader.Contains(row_idx)) {
-			ResetReaderLocked(reader);
+			ResetReader(reader);
 		}
 		if (!collection.Seek(row_idx, reader.scan_state, reader.scan_chunk)) {
 			throw InternalException(
-			    "Failed to read pipeline broadcast spool chunk (position=%llu, base=%llu, next=%llu, row=%llu, "
+			    "Failed to read pipeline broadcast spool chunk (position=%llu, row=%llu, "
 			    "row_offset=%llu, row_count=%llu, current=%llu, next_row=%llu, generation=%llu, observed=%llu)",
-			    position, base_position, next_position, row_idx, entry.row_offset, entry.row_count,
-			    reader.scan_state.current_row_index, reader.scan_state.next_row_index, append_generation,
-			    reader.observed_generation);
+			    position, row_idx, entry.row_offset, entry.row_count, reader.scan_state.current_row_index,
+			    reader.scan_state.next_row_index, append_generation, reader.observed_generation);
 		}
 		D_ASSERT(reader.scan_state.current_row_index <= row_idx);
 		auto offset = row_idx - reader.scan_state.current_row_index;
@@ -218,10 +212,10 @@ struct PipelineBroadcastExchange::BroadcastSpool {
 
 	annotated_mutex lock;
 	ColumnDataCollection collection;
-	ColumnDataAppendState append_state;
-	deque<ChunkEntry> chunks;
-	idx_t base_position;
-	idx_t next_position;
+	ColumnDataAppendState append_state DUCKDB_GUARDED_BY(lock);
+	deque<ChunkEntry> chunks DUCKDB_GUARDED_BY(lock);
+	idx_t base_position DUCKDB_GUARDED_BY(lock);
+	idx_t next_position DUCKDB_GUARDED_BY(lock);
 	idx_t append_generation = 0;
 };
 
@@ -240,6 +234,7 @@ struct PipelineBroadcastExchange::AppendReservation {
 struct PipelineBroadcastExchange::SpoolReadReservation {
 	shared_ptr<BroadcastSpool> spool;
 	shared_ptr<BroadcastSpoolReader> reader;
+	BroadcastSpool::ChunkEntry entry;
 	idx_t position = 0;
 	optional_idx batch_sequence;
 
@@ -489,16 +484,14 @@ struct PipelineBroadcastExchange::BufferState {
 	                 optional_idx &batch_index, SpoolReadReservation &spool_read) const {
 		D_ASSERT(position < next_position);
 		if (shared_spool) {
-			if (!shared_spool->HasPosition(position)) {
-				throw InternalException("Pipeline broadcast shared spool chunk was retired before it was read");
-			}
+			spool_read.entry = shared_spool->GetChunkEntry(position);
 			if (!reader) {
 				reader = make_shared_ptr<BroadcastSpoolReader>(*shared_spool);
 			}
 			spool_read.spool = shared_spool;
 			spool_read.reader = reader;
 			spool_read.position = position;
-			auto stored_batch_index = shared_spool->BatchIndex(position);
+			auto stored_batch_index = spool_read.entry.batch_index;
 			if (stored_batch_index != DConstants::INVALID_INDEX) {
 				batch_index = stored_batch_index;
 			}
@@ -1386,6 +1379,7 @@ void PipelineBroadcastExchange::Finish() {
 		}
 		buffer->FinishBatches();
 		if (producer_state == ProducerState::ACTIVE) {
+			D_ASSERT(append_reservation_state == AppendReservationState::IDLE);
 			producer_state = ProducerState::FINISHED;
 		}
 		TryReleaseBufferedStorageLocked();
@@ -1436,6 +1430,7 @@ SourceResultType PipelineBroadcastExchange::Scan(idx_t consumer_idx, DataChunk &
 	vector<ExchangeLogEntry> log_entries;
 	shared_ptr<DataChunk> next_chunk;
 	SpoolReadReservation spool_read;
+	bool producer_finished;
 	SourceResultType result;
 	batch_index = optional_idx();
 	batch_index_state = SourceBatchIndexState::UNCHANGED;
@@ -1443,11 +1438,12 @@ SourceResultType PipelineBroadcastExchange::Scan(idx_t consumer_idx, DataChunk &
 		annotated_lock_guard<annotated_mutex> guard(lock);
 		result = ReserveScanLocked(consumer_idx, interrupt_state, scan_state, next_chunk, batch_index,
 		                           batch_index_state, spool_read, readers, writers, log_entries);
+		producer_finished = producer_state == ProducerState::FINISHED;
 	}
 
 	if (spool_read.IsSet()) {
 		try {
-			spool_read.spool->Read(spool_read.position, chunk, *spool_read.reader);
+			spool_read.spool->Read(spool_read.position, spool_read.entry, chunk, *spool_read.reader, producer_finished);
 		} catch (...) {
 			vector<InterruptState> failed_readers;
 			vector<InterruptState> failed_writers;
@@ -1767,24 +1763,23 @@ ProgressData PipelineBroadcastExchange::SinkProgress(const ProgressData &source_
                                                      idx_t estimated_cardinality) const {
 	annotated_lock_guard<annotated_mutex> guard(lock);
 	ProgressData progress;
-	auto produced_count = produced_rows.load(std::memory_order_relaxed);
-	auto produced = double(produced_count);
 	if (producer_state != ProducerState::ACTIVE) {
-		auto total = MaxValue<double>(produced, 1.0);
-		progress.done = total;
-		progress.total = total;
+		progress.done = 1.0;
+		progress.total = 1.0;
 		return progress;
 	}
-	progress.done = produced;
 	if (source_progress.IsValid()) {
-		progress.total = produced + MaxValue<double>(source_progress.total - source_progress.done, 1.0);
+		// the producing pipeline is done once its source is exhausted
+		return source_progress;
+	}
+	auto produced_count = produced_rows.load(std::memory_order_relaxed);
+	auto produced = double(produced_count);
+	progress.done = produced;
+	static constexpr const idx_t MAX_PROGRESS_CARDINALITY = 1ULL << 48ULL;
+	if (estimated_cardinality > 0 && estimated_cardinality < MAX_PROGRESS_CARDINALITY) {
+		progress.total = double(MaxValue<idx_t>(estimated_cardinality, produced_count + 1));
 	} else {
-		static constexpr const idx_t MAX_PROGRESS_CARDINALITY = 1ULL << 48ULL;
-		if (estimated_cardinality > 0 && estimated_cardinality < MAX_PROGRESS_CARDINALITY) {
-			progress.total = double(MaxValue<idx_t>(estimated_cardinality, produced_count + 1));
-		} else {
-			progress.total = produced + 1.0;
-		}
+		progress.total = produced + 1.0;
 	}
 	if (progress.done > progress.total) {
 		progress.total = progress.done;

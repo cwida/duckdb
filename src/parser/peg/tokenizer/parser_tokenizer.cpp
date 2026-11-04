@@ -4,7 +4,10 @@
 namespace duckdb {
 
 static bool IsEmptyQuotedIdentifier(const string &sql, idx_t start, idx_t end, TokenType type) {
-	return type == TokenType::IDENTIFIER && end == start + 2 && sql.substr(start, 2) == "\"\"";
+	if (type != TokenType::IDENTIFIER || end != start + 2) {
+		return false;
+	}
+	return (sql[start] == '"' && sql[start + 1] == '"') || (sql[start] == '`' && sql[start + 1] == '`');
 }
 
 ParserTokenizerBehavior::ParserTokenizerBehavior(const string &sql, vector<MatcherToken> &tokens)

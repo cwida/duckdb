@@ -437,7 +437,32 @@ idx_t ShellState::GetMaxRenderWidth() const {
 	return max_render_width;
 }
 
+//! One line per table, for a reader that cannot use the box layout: "db.schema.name (table, ~N rows): col TYPE, ..."
+static void RenderTableMetadataCompact(ShellState &state, vector<ShellTableInfo> &tables) {
+	for (auto &table : tables) {
+		string line = table.database_name + "." + table.schema_name + "." + table.table_name;
+		line += table.is_view ? " (view" : " (table";
+		if (table.estimated_size.IsValid()) {
+			line += StringUtil::Format(", ~%llu rows", table.estimated_size.GetIndex());
+		}
+		line += "):";
+		for (idx_t c = 0; c < table.columns.size(); c++) {
+			auto &column = table.columns[c];
+			line += c == 0 ? " " : ", ";
+			line += column.column_name + " " + column.column_type;
+			if (column.is_primary_key) {
+				line += " PK";
+			}
+		}
+		state.Print(line + "\n");
+	}
+}
+
 void ShellState::RenderTableMetadata(vector<ShellTableInfo> &tables) {
+	if (agent_mode_active) {
+		RenderTableMetadataCompact(*this, tables);
+		return;
+	}
 	idx_t max_render_width = GetMaxRenderWidth();
 	duckdb::BoxRendererConfig config;
 	// figure out the render width of each table

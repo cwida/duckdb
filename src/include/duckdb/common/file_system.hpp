@@ -236,6 +236,9 @@ public:
 	DUCKDB_API virtual FileType GetFileType(FileHandle &handle);
 	//! Returns the file stats of the attached handle.
 	DUCKDB_API virtual FileMetadata Stats(FileHandle &handle);
+	//! Returns the stats of a file, or nullopt if the file does not exist.
+	DUCKDB_API virtual optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file,
+	                                                           optional_ptr<FileOpener> opener = nullptr);
 	//! Truncate a file to a maximum size of new_size, new_size should be smaller than or equal to the current size of
 	//! the file
 	DUCKDB_API virtual void Truncate(FileHandle &handle, int64_t new_size);
@@ -296,6 +299,10 @@ public:
 	DUCKDB_API static optional_idx GetAvailableMemory();
 	//! Returns the space available on the disk. Returns DConstants::INVALID_INDEX if the information was not available.
 	DUCKDB_API static optional_idx GetAvailableDiskSpace(const string &path);
+	//! Returns the soft limit on open file descriptors, or an invalid index when it is unlimited or unknown.
+	DUCKDB_API static optional_idx GetFileDescriptorLimit();
+	//! Returns the share of the file descriptor limit that one consumer of descriptors may hold open.
+	DUCKDB_API static idx_t GetFileDescriptorShare(idx_t file_descriptor_limit);
 	//! Path separator for path
 	DUCKDB_API virtual string PathSeparator(const string &path);
 	//! Checks if path is is an absolute path

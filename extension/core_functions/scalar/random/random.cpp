@@ -79,7 +79,7 @@ unique_ptr<FunctionLocalState> RandomInitLocalState(ExpressionState &state, cons
                                                     FunctionData *bind_data) {
 	auto &random_engine = RandomEngine::Get(state.GetContext());
 	lock_guard<mutex> guard(random_engine.lock);
-	return make_uniq<RandomLocalState>(random_engine.NextRandomInteger64());
+	return make_uniq<RandomLocalState>(random_engine.NextSeed());
 }
 
 void GenerateUUIDv4Function(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -133,13 +133,15 @@ ScalarFunction UUIDv7Fun::GetFunction() {
 }
 
 ScalarFunction UUIDExtractVersionFun::GetFunction() {
-	return ScalarFunction({LogicalType::UUID}, LogicalType::UINTEGER,
-	                      ExtractVersionFunction<hugeint_t, ExtractVersionUuidOperator>);
+	ScalarFunction function({}, LogicalType::UINTEGER, ExtractVersionFunction<hugeint_t, ExtractVersionUuidOperator>);
+	function.GetSignature().AddParameter("uuid", LogicalType::UUID);
+	return function;
 }
 
 ScalarFunction UUIDExtractTimestampFun::GetFunction() {
-	ScalarFunction function({LogicalType::UUID}, LogicalType::TIMESTAMP_TZ,
+	ScalarFunction function({}, LogicalType::TIMESTAMP_TZ,
 	                        ExtractTimestampFunction<hugeint_t, ExtractTimestampUuidOperator>);
+	function.GetSignature().AddParameter("uuid", LogicalType::UUID);
 	// throws if the UUID is not a version 7 UUID
 	function.SetFallible();
 	return function;

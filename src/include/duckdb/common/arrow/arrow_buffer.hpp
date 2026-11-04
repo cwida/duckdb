@@ -72,7 +72,7 @@ struct ArrowBuffer {
 		count++;
 	}
 
-	idx_t size() { // NOLINT
+	idx_t size() const { // NOLINT
 		return count;
 	}
 

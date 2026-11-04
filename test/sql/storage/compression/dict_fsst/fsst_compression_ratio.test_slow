@@ -107,9 +107,9 @@ NULL
 query I
 SELECT COUNT(DISTINCT l_comment) FROM l_comment_compressed WHERE k = 13
 ----
-21983
+22060
 
 query I
 SELECT COUNT(*) FROM l_comment_compressed WHERE contains(l_comment, 'fox')
 ----
-27771
+27894

@@ -1,0 +1,24 @@
+# name: test/sql/sql_export/source_names.test
+# description: SQL export quotes identifiers that are ambiguous after a qualification dot
+# group: [sql_export]
+
+statement ok
+CREATE SCHEMA "_3_schema"
+
+statement ok
+CREATE TABLE "_3_schema"."_4_table"("_0_a" INTEGER, "_1_b" VARCHAR, "__2_c" INTEGER, _a3 INTEGER)
+
+statement ok
+INSERT INTO "_3_schema"."_4_table" VALUES (1,'a',2,3),(1,'a',2,3),(NULL,'n',NULL,4)
+
+query ITII rowsort
+SELECT "_0_a", "_1_b", "__2_c", _a3 FROM "_3_schema"."_4_table"
+----
+1	a	2	3
+1	a	2	3
+NULL	n	NULL	4
+
+query I
+SELECT count(*) FROM "_3_schema"."_4_table" l JOIN "_3_schema"."_4_table" r ON l."_0_a"=r."_0_a"
+----
+4

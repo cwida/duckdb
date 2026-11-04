@@ -1,0 +1,20 @@
+# name: test/sql/function/autocomplete/explain_sql.test
+# description: SQL explain remains formatted with autocomplete loaded
+# group: [autocomplete]
+
+require autocomplete
+
+query TT
+EXPLAIN (SQL) SELECT sum(i) AS total FROM range(5) t(i) WHERE i > 1;
+----
+sql	<REGEX>:(?s)SELECT.*\n *FROM .*"range".*\n *WHERE .* > CAST\(1 AS BIGINT\).*
+
+statement ok
+CREATE TABLE formatted_completion(format_me INTEGER);
+
+query I
+SELECT suggestion_start FROM sql_auto_complete('
+SELECT
+    format_m') WHERE suggestion='format_me';
+----
+12

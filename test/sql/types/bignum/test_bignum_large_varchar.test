@@ -1,0 +1,29 @@
+# name: test/sql/types/bignum/test_bignum_large_varchar.test
+# description: Conversion of large decimal strings to BIGNUM
+# group: [bignum]
+
+query I
+SELECT CAST(repeat('9', 100000) AS BIGNUM) + 1 = CAST('1' || repeat('0', 100000) AS BIGNUM);
+----
+true
+
+query I
+SELECT CAST(repeat('123456789', 1000) AS BIGNUM)::VARCHAR = repeat('123456789', 1000);
+----
+true
+
+query I
+SELECT CAST('-' || repeat('987654321', 1000) || '0' AS BIGNUM)::VARCHAR = '-' || repeat('987654321', 1000) || '0';
+----
+true
+
+# values around digit boundaries
+query IIIIII
+SELECT '4294967295'::BIGNUM, '4294967296'::BIGNUM, '-4294967296'::BIGNUM, '999999999'::BIGNUM, '1000000000'::BIGNUM, '18446744073709551616'::BIGNUM::DOUBLE;
+----
+4294967295	4294967296	-4294967296	999999999	1000000000	1.8446744073709552e+19
+
+query II
+SELECT '4294967296'::BIGNUM = 4294967296::BIGNUM, '-1000000000000000000000'::BIGNUM = -1000000000000000000000::HUGEINT::BIGNUM;
+----
+true	true

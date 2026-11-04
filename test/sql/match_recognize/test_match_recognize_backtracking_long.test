@@ -1,0 +1,165 @@
+# name: test/sql/match_recognize/test_match_recognize_backtracking_long.test
+# description: MATCH_RECOGNIZE backtracking at a length where exploring every split is not an option
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+# The cases in test_match_recognize_backtracking are a handful of rows each, so an engine that tries
+# every split still answers them. These are the same shapes at a length where that is not an option:
+# ((A+)+ B) over a thousand rows
+# splits into 2^999 candidates, and the run below never matches, so an engine that explores them would
+# have to explore all of them. If one of these ever stops returning, it has not become slow - it has
+# stopped being polynomial, and the test will hang rather than fail.
+
+statement ok
+CREATE TABLE long_a AS SELECT i::INTEGER AS i, 'a' AS c FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE long_ab AS SELECT i::INTEGER AS i, CASE WHEN i = 999 THEN 'b' ELSE 'a' END AS c FROM range(1000) t(i);
+
+# nothing to end on, so every way of splitting the run fails
+query II
+SELECT count(*), max(len) FROM long_a MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A+)+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+0	NULL
+
+query II
+SELECT count(*), max(len) FROM long_a MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ A+ A+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+0	NULL
+
+query II
+SELECT count(*), max(len) FROM long_a MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A* A* A* A* B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+0	NULL
+
+# the same shapes with the B at the very end, so the search succeeds only after the whole run
+query II
+SELECT count(*), max(len) FROM long_ab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A+)+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	1000
+
+query II
+SELECT count(*), max(len) FROM long_ab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ A+ A+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	1000
+
+# a greedy run that has to give back a row a thousand rows after it took it
+query II
+SELECT count(*), max(len) FROM long_ab MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+)
+----
+1	1000
+
+# a star inside a star over a long run: the inner one can still match nothing at every step
+query II
+SELECT count(*), max(len) FROM long_a MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A*)*)
+    DEFINE A AS A.c = 'a'
+)
+----
+1	1000
+
+# n optional repetitions followed by n mandatory ones, at n = 50 rather than n = 4
+statement ok
+CREATE TABLE fifty_a AS SELECT i::INTEGER AS i, 'a' AS c FROM range(50) t(i);
+
+query II
+SELECT count(*), max(len) FROM fifty_a MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A{0,1}){50} A{50})
+    DEFINE A AS A.c = 'a'
+)
+----
+1	50
+
+# Two shapes Oracle refuses outright, which are worth keeping because there is nothing wrong with
+# either of them - a bound larger than the partition simply cannot be reached, and a quantified
+# subpattern that can match nothing is what an empty match is for.
+
+statement ok
+create table shapes(g integer, seq integer, c varchar);
+
+statement ok
+insert into shapes values (1,1,'a'),(1,2,'a'),(1,3,'b'),(1,4,'a'),(1,5,'c'),(2,1,'b'),(2,2,'b'),(2,3,'b'),(3,1,'a');
+
+# a bound no partition is long enough to reach. Oracle answers ORA-62518, the pattern is too large;
+# here the bound is capped at the rows there are, so nothing is built that cannot be walked.
+query III
+SELECT g, mno, len FROM shapes MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY seq
+    MEASURES MATCH_NUMBER() AS mno, COUNT(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A{1,1000})
+    DEFINE A AS 1 = 1
+) ORDER BY g, mno
+----
+1	1	5
+2	1	3
+3	1	1
+
+# a quantified subpattern that can match nothing. Oracle answers ORA-62513 and says it is not yet
+# supported; here the inner group takes what it can and the outer one then matches nothing, which is
+# the empty match reported second in partition 1.
+query IIII
+SELECT g, mno, first_seq, len FROM shapes MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY seq
+    MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((((A | B)+ )?){1,2})
+    DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, mno
+----
+1	1	1	4
+1	2	NULL	0
+2	1	1	3
+3	1	1	1
+
+# where every ordering key is the same value the rows are all tied, so which one is first is left to
+# the implementation. This keeps the order they arrived in.
+statement ok
+create table flat(k integer, v integer);
+
+statement ok
+insert into flat values (5,1),(5,2),(5,3);
+
+query III
+SELECT first_v, last_v, len FROM flat MATCH_RECOGNIZE(
+    ORDER BY k MEASURES FIRST(v) AS first_v, LAST(v) AS last_v, COUNT(*) AS len
+    PATTERN (A+) DEFINE A AS 1 = 1
+)
+----
+1	3	3

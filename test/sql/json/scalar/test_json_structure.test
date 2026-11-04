@@ -181,3 +181,15 @@ query I
 select json_structure('{"a": 1, "A": 1}');
 ----
 {"a":"UBIGINT","A":"UBIGINT"}
+
+query I
+select json_structure(repeat('[', 200) || repeat(']', 200)) =
+       repeat('[', 200) || '"NULL"' || repeat(']', 200);
+----
+true
+
+query I
+select json_structure(repeat('{"a":', 200) || '1' || repeat('}', 200)) =
+       repeat('{"a":', 200) || '"UBIGINT"' || repeat('}', 200);
+----
+true

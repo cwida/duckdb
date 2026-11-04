@@ -450,6 +450,9 @@ void CCopyToSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunct
 	// Flatten input (we dont support compressed execution yet!)
 	// TODO: Dont flatten!
 	input.Flatten();
+	for (auto &vector : input.data) {
+		PrepareCAPIVector(vector);
+	}
 
 	CCopyToSinkInfo copy_to_sink_info(context.client, bind_data, gstate);
 
@@ -650,12 +653,12 @@ unique_ptr<FunctionData> CCopyFromBind(ClientContext &context, CopyFromFunctionB
 	auto &tf_info = info.tf.function_info->Cast<CTableFunctionInfo>();
 	auto result = make_uniq<CTableBindData>(tf_info);
 
-	named_parameter_map_t named_parameters;
+	named_argument_map_t named_parameters;
 
 	// Turn all options into named parameters
 	for (auto opt : info.info.options) {
-		auto param_it = info.tf.named_parameters.find(Identifier(opt.first));
-		if (param_it == info.tf.named_parameters.end()) {
+		auto option_schema = info.tf.GetSignature().GetTypedKwargs();
+		if (!option_schema || !option_schema->Find(Identifier(opt.first))) {
 			// Option not found in the table function's named parameters
 			throw BinderException("'%s' is not a supported option for copy function '%s'", opt.first.c_str(),
 			                      info.tf.name.c_str());
@@ -724,14 +727,21 @@ void duckdb_copy_function_set_copy_from_function(duckdb_copy_function copy_funct
 	if (!tf_info.bind || !tf_info.init || !tf_info.function) {
 		return;
 	}
-	for (auto it = tf.named_parameters.begin(); it != tf.named_parameters.end(); it++) {
-		if (duckdb::TypeVisitor::Contains(it->second, duckdb::LogicalTypeId::INVALID)) {
+	for (auto &param : tf.GetSignature().GetParameters()) {
+		// a variadic parameter carries no type of its own
+		if (param.IsVariadic()) {
+			continue;
+		}
+		if (duckdb::TypeVisitor::Contains(param.GetType(), duckdb::LogicalTypeId::INVALID)) {
 			return;
 		}
 	}
-	for (const auto &argument : tf.GetArguments()) {
-		if (duckdb::TypeVisitor::Contains(argument, duckdb::LogicalTypeId::INVALID)) {
-			return;
+	auto option_schema = tf.GetSignature().GetTypedKwargs();
+	if (option_schema) {
+		for (auto &option : option_schema->GetOptions()) {
+			if (duckdb::TypeVisitor::Contains(option.type, duckdb::LogicalTypeId::INVALID)) {
+				return;
+			}
 		}
 	}
 

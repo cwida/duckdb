@@ -1,0 +1,230 @@
+# name: test/sql/settings/lock_configuration_pragmas.test
+# description: PRAGMA shortcuts and logging/profiling table functions respect lock_configuration
+# group: [settings]
+
+# without the lock the PRAGMA shortcuts change the settings
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT current_setting('enable_optimizer');
+----
+false
+
+statement ok
+PRAGMA enable_optimizer;
+
+query I
+SELECT current_setting('enable_optimizer');
+----
+true
+
+statement ok
+PRAGMA enable_progress_bar;
+
+query I
+SELECT current_setting('enable_progress_bar');
+----
+true
+
+statement ok
+PRAGMA disable_progress_bar;
+
+query I
+SELECT current_setting('enable_progress_bar');
+----
+false
+
+statement ok
+PRAGMA disable_print_progress_bar;
+
+query I
+SELECT current_setting('enable_progress_bar_print');
+----
+false
+
+statement ok
+PRAGMA enable_print_progress_bar;
+
+query I
+SELECT current_setting('enable_progress_bar_print');
+----
+true
+
+statement ok
+SET enable_profiling='no_output';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT current_setting('enable_profiling') IS NULL;
+----
+true
+
+# re-enabling keeps the previously configured format
+statement ok
+PRAGMA enable_profiling;
+
+query I
+SELECT current_setting('enable_profiling');
+----
+no_output
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+PRAGMA disable_verify_parallelism;
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+PRAGMA enable_checkpoint_on_shutdown;
+
+statement ok
+SET enable_logging=false;
+
+statement ok
+SET lock_configuration=true;
+
+statement error
+PRAGMA disable_optimizer;
+----
+the configuration has been locked
+
+statement error
+PRAGMA enable_optimizer;
+----
+the configuration has been locked
+
+query I
+SELECT current_setting('enable_optimizer');
+----
+true
+
+statement error
+PRAGMA enable_progress_bar;
+----
+the configuration has been locked
+
+statement error
+PRAGMA disable_progress_bar;
+----
+the configuration has been locked
+
+query I
+SELECT current_setting('enable_progress_bar');
+----
+false
+
+statement error
+PRAGMA disable_print_progress_bar;
+----
+the configuration has been locked
+
+statement error
+PRAGMA enable_print_progress_bar;
+----
+the configuration has been locked
+
+query I
+SELECT current_setting('enable_progress_bar_print');
+----
+true
+
+statement error
+PRAGMA disable_profiling;
+----
+the configuration has been locked
+
+statement error
+PRAGMA disable_profile;
+----
+the configuration has been locked
+
+statement error
+PRAGMA enable_profiling;
+----
+the configuration has been locked
+
+statement error
+PRAGMA enable_profile;
+----
+the configuration has been locked
+
+statement error
+CALL disable_profiling();
+----
+the configuration has been locked
+
+statement error
+CALL enable_profiling(format='json', save_location='{TEST_DIR}/locked_profile.json');
+----
+the configuration has been locked
+
+statement error
+CALL enable_profiling();
+----
+the configuration has been locked
+
+query II
+SELECT current_setting('enable_profiling'), current_setting('profiling_output');
+----
+no_output	(empty)
+
+statement error
+PRAGMA verify_parallelism;
+----
+the configuration has been locked
+
+statement error
+PRAGMA disable_verify_parallelism;
+----
+the configuration has been locked
+
+statement error
+PRAGMA force_checkpoint;
+----
+the configuration has been locked
+
+statement error
+PRAGMA disable_checkpoint_on_shutdown;
+----
+the configuration has been locked
+
+statement error
+PRAGMA enable_checkpoint_on_shutdown;
+----
+the configuration has been locked
+
+statement error
+CALL enable_logging('QueryLog');
+----
+the configuration has been locked
+
+statement error
+CALL enable_logging(storage='file', storage_path='{TEST_DIR}/locked_logs');
+----
+the configuration has been locked
+
+statement error
+CALL disable_logging();
+----
+the configuration has been locked
+
+statement error
+CALL add_grammar_extension('shell');
+----
+the configuration has been locked
+
+statement error
+CALL remove_grammar_extension('shell');
+----
+the configuration has been locked
+
+query I
+SELECT current_setting('enable_logging')::BOOLEAN;
+----
+false

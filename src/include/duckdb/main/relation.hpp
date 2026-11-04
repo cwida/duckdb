@@ -83,7 +83,9 @@ public:
 	DUCKDB_API virtual BoundStatement Bind(Binder &binder);
 	DUCKDB_API virtual Identifier GetAlias();
 
+	//! Blocking. Runs the relation to completion and returns its handle; throws on error
 	DUCKDB_API unique_ptr<QueryResult> ExecuteOrThrow();
+	//! Blocking. Runs the relation to completion and returns its handle
 	DUCKDB_API unique_ptr<QueryResult> Execute();
 	DUCKDB_API string ToString();
 	DUCKDB_API virtual string ToString(idx_t depth) = 0;
@@ -94,6 +96,7 @@ public:
 	DUCKDB_API shared_ptr<Relation> CreateView(const Identifier &name, bool replace = true, bool temporary = false);
 	DUCKDB_API shared_ptr<Relation> CreateView(const Identifier &schema_name, const Identifier &name,
 	                                           bool replace = true, bool temporary = false);
+	//! Blocking. Runs a query to completion and returns its handle; the second form exposes the relation as a view
 	DUCKDB_API unique_ptr<QueryResult> Query(const string &sql) const;
 	DUCKDB_API unique_ptr<QueryResult> Query(const Identifier &name, const string &sql);
 

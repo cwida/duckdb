@@ -6,7 +6,7 @@ statement ok
 SET ieee_floating_point_ops=false;
 
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 statement ok
 BEGIN TRANSACTION;

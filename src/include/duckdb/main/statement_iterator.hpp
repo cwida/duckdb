@@ -8,27 +8,21 @@
 
 #pragma once
 
-#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/profiler.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/unique_ptr.hpp"
-#include "duckdb/common/vector.hpp"
 #include "duckdb/main/parse_iterator.hpp"
 
 namespace duckdb {
 class ClientContext;
-class ClientContextLock;
 class SQLStatement;
 
-//! Iterator over the engine-facing statements of a query.
+//! Iterator over the user statements of a script, as parsed. The submission of each statement expands it.
 //!
 //! Usage:
 //!   StatementIterator it(ParseIterator(context, sql));
 //!   while (it.Peek()) {
 //!       auto stmt = it.GetStatement();
-//!       if (!stmt) {
-//!           continue; // a peel that preprocessing swallowed (empty expansion)
-//!       }
-//!       // ready-to-execute statement
 //!   }
 //!
 class StatementIterator {
@@ -44,45 +38,33 @@ public:
 	// Not move-assignable: holds a ClientContext reference, which cannot be rebound.
 	StatementIterator &operator=(StatementIterator &&) = delete;
 
-	//! Returns true while more input remains (a buffered engine statement, or another parse-facing
-	//! statement to pull). Parses ahead as needed but does NOT preprocess — safe as a lookahead.
+	//! Returns true while another statement remains. Parses ahead, so it throws a parser error.
 	DUCKDB_API bool Peek();
 
 	//! Grammar-free predicate: is there another statement after the current one? Never parses and
 	//! never throws (see ParseIterator::HasMore), so it is safe to consult before the current
-	//! statement has executed — e.g. to decide whether the current statement is the last.
+	//! statement has executed, for example to decide whether the current statement is the last.
 	DUCKDB_API bool HasMore();
 
-	//! Pull + preprocess the next engine-facing statement. Returns nullptr when a peel preprocesses
-	//! to nothing (skip with `continue`) or when the input is exhausted (Peek would return false).
-	//! Self-locking variant for callers that do not hold the context lock.
+	//! Pull the next statement. Returns nullptr once the input is exhausted (Peek would return false).
 	DUCKDB_API unique_ptr<SQLStatement> GetStatement();
-	//! Same, for callers that already hold the context lock.
-	DUCKDB_API unique_ptr<SQLStatement> GetStatementWithLock(ClientContextLock &lock);
 	//! Pull the next statement and attach its parser timing to the per-statement query profiler.
 	DUCKDB_API unique_ptr<SQLStatement> GetStatementForExecution();
-	//! Same, for callers that already hold the context lock.
-	DUCKDB_API unique_ptr<SQLStatement> GetStatementForExecutionWithLock(ClientContextLock &lock);
 
 private:
-	//! Shared body for both Get variants. `lock` is null for the self-locking path (preprocessing
-	//! then acquires the lock itself) or the held lock for callers that already have it.
-	unique_ptr<SQLStatement> GetStatementInternal(optional_ptr<ClientContextLock> lock, bool profile_statement);
+	unique_ptr<SQLStatement> GetStatementInternal(bool profile_statement);
 
 private:
-	//! The single parse-facing source this iterator preprocesses. Always constructed — the
-	//! single-statement ctor forwards to ParseIterator's single-statement ctor.
+	//! The single parse-facing source this iterator pulls from.
 	ParseIterator source;
-	//! The bound context, inherited from `source`. Used for preprocessing / transaction state / locking.
+	//! The bound context, inherited from `source`, whose profiler receives the parser timing.
 	ClientContext &context;
-	//! The parse-facing statement buffered by Peek, waiting to be preprocessed.
+	//! The statement parsed ahead by Peek.
 	unique_ptr<SQLStatement> pending_statement;
-	//! Parser timing for the currently buffered parse-facing statement.
+	//! Parser timing for the statement parsed ahead.
 	Profiler parser_timer;
-	//! Engine-facing statements produced by preprocessing one parse-facing peel. Drained
-	//! one-at-a-time across GetStatement calls before pulling + preprocessing the next peel.
-	vector<unique_ptr<SQLStatement>> buffer;
-	idx_t buffer_cursor = 0;
+	timestamp_t parser_start_time = timestamp_t::epoch();
+	timestamp_t parser_end_time = timestamp_t::epoch();
 };
 
 } // namespace duckdb

@@ -168,6 +168,19 @@ SELECT CAST(k AS VARCHAR) AS x FROM tint ORDER BY x LIMIT 3;
 1
 10
 
+# negative: widening from a signed to an unsigned integer can still fail for negative values
+query II
+EXPLAIN ANALYZE SELECT CAST(k AS UBIGINT) AS x FROM tint ORDER BY x LIMIT 5;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filter.*
+
+query I
+SELECT CAST(k AS UBIGINT) AS x FROM tint ORDER BY x LIMIT 3;
+----
+0
+1
+2
+
 # negative: a default (non-try) cast that can fail (INT32 -> INT8) is also not order-preserving -
 # the dynamic filter is not pushed, and the cast error raised by the sort key is reported as usual
 query II

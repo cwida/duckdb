@@ -11,6 +11,7 @@
 #include "duckdb/storage/checkpoint/row_group_writer.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/storage/checkpoint_manager.hpp"
+#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
 
@@ -52,8 +53,9 @@ public:
 	void WriteUnchangedTable(MetaBlockPointer pointer, const vector<MetaBlockPointer> &metadata_pointers,
 	                         idx_t total_rows, idx_t next_row_id) override;
 	void FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info, RowGroupCollection &collection,
-	                   Serializer &serializer) override;
+	                   const vector<shared_ptr<const IndexStorageInfo>> &index_infos, Serializer &serializer) override;
 	unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) override;
+	unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) override;
 	void FlushPartialBlocks() override;
 	CheckpointOptions GetCheckpointOptions() const override;
 	MetadataManager &GetMetadataManager() override;
@@ -80,16 +82,4 @@ private:
 	MemoryStream metadata_writer;
 };
 
-struct InMemoryPartialBlock : public PartialBlock {
-public:
-	InMemoryPartialBlock(ColumnData &data, ColumnSegment &segment, PartialBlockState state,
-	                     BlockManager &block_manager);
-	~InMemoryPartialBlock() override;
-
-public:
-	void Flush(QueryContext context, const idx_t free_space_left) override;
-	void Merge(PartialBlock &other, idx_t offset, idx_t other_size) override;
-	void AddSegmentToTail(ColumnData &data, ColumnSegment &segment, uint32_t offset_in_block) override;
-	void Clear() override;
-};
 } // namespace duckdb

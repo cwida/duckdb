@@ -33,9 +33,12 @@ public:
 	const LogicalType &GetReturnType() const {
 		return return_type;
 	}
-	void SetReturnType(LogicalType type) {
+	virtual void SetReturnType(LogicalType type) {
 		return_type = std::move(type);
 	}
+
+	//! Preserve the SQL result type when replacing an expression with an equivalent value.
+	static unique_ptr<Expression> PreserveReturnType(const LogicalType &type, unique_ptr<Expression> replacement);
 
 	const unique_ptr<BaseStatistics> &GetVerificationStats() const {
 		return verification_stats;
@@ -49,10 +52,14 @@ public:
 	bool HasParameter() const override;
 
 	virtual bool IsVolatile() const;
+	//! Whether the expression returns the same result for the same input within a query
 	virtual bool IsConsistent() const;
 	virtual bool PropagatesNullValues() const;
 	virtual bool IsFoldable() const;
 	virtual bool CanThrow() const;
+	//! Whether a function or a cast of the expression can return another result in another query, so a statement that
+	//! contains it must be bound again
+	virtual bool RequiresRebind() const;
 
 	hash_t Hash() const override;
 
@@ -80,7 +87,7 @@ protected:
 		type = other.type;
 		expression_class = other.expression_class;
 		alias = other.alias;
-		return_type = other.return_type;
+		SetReturnType(other.return_type);
 		query_location = other.query_location;
 	}
 };

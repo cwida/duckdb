@@ -101,6 +101,18 @@ public:
 	//! the schema declared by SetArrowFormat.
 	void AppendChild(const Vector &input, idx_t from, idx_t to, idx_t input_size);
 
+	//! The bytes appended so far: this column's buffers plus those of its children
+	idx_t ByteSize() const {
+		idx_t bytes = 0;
+		for (auto &buffer : arrow_buffers) {
+			bytes += buffer.size();
+		}
+		for (auto &child : child_data) {
+			bytes += child->ByteSize();
+		}
+		return bytes;
+	}
+
 public:
 	idx_t row_count = 0;
 	idx_t null_count = 0;

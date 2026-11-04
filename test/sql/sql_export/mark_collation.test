@@ -1,0 +1,33 @@
+# name: test/sql/sql_export/mark_collation.test
+# description: Correlated MARK comparisons with normalized collation operands
+# group: [sql_export]
+
+query TI
+SELECT s, 'ABC' COLLATE nocase IN (SELECT s)
+FROM (VALUES ('aBc'), ('aBc'), ('xyz'), (NULL)) t(s)
+ORDER BY s NULLS LAST
+----
+aBc	true
+aBc	true
+xyz	false
+NULL	NULL
+
+query TI
+SELECT s, 'ABC' COLLATE nocase IN (SELECT s WHERE s IS NOT NULL)
+FROM (VALUES ('aBc'), ('aBc'), ('xyz'), (NULL)) t(s)
+ORDER BY s NULLS LAST
+----
+aBc	true
+aBc	true
+xyz	false
+NULL	false
+
+query TI
+SELECT s, 'ABC' COLLATE nocase NOT IN (SELECT s WHERE s IS NOT NULL)
+FROM (VALUES ('aBc'), ('aBc'), ('xyz'), (NULL)) t(s)
+ORDER BY s NULLS LAST
+----
+aBc	false
+aBc	false
+xyz	true
+NULL	true

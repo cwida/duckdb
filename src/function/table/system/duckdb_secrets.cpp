@@ -137,7 +137,8 @@ void DuckDBSecretsFunction(ClientContext &context, TableFunctionInput &data_p, D
 void DuckDBSecretsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet functions("duckdb_secrets");
 	auto fun = TableFunction({}, DuckDBSecretsFunction, DuckDBSecretsBind, DuckDBSecretsInit);
-	fun.named_parameters["redact"] = LogicalType::BOOLEAN;
+	fun.GetSignature().WithTypedKwargs("options",
+	                                   [](TypedKwargs &options) { options.Add("redact", LogicalType::BOOLEAN); });
 	functions.AddFunction(fun);
 	set.AddFunction(functions);
 }

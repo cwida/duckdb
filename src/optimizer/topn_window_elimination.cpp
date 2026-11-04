@@ -5,7 +5,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/unique_ptr.hpp"
-#include "duckdb/optimizer/builtin_function_lookup.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/late_materialization_helper.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression_nullability.hpp"
@@ -275,6 +275,8 @@ unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<L
 	child = *filter.children[0];
 
 	// Get bindings and types from filter to use in top-most operator later
+	// the types are not necessarily resolved at this point (e.g., after previous optimizers changed the plan)
+	filter.ResolveOperatorTypes();
 	const auto topmost_bindings = filter.GetColumnBindings();
 	const auto topmost_types = filter.types;
 	vector<ColumnBinding> new_bindings;
@@ -345,7 +347,7 @@ TopNWindowElimination::CreateAggregateExpression(vector<unique_ptr<Expression>> 
 	fun_name += params.can_be_null && (requires_arg || change_to_arg) ? "_nulls_last" : "";
 
 	auto fun = GetBuiltinAggregateFunction(context, Identifier(fun_name), ExtractReturnTypes(aggregate_params));
-	return function_binder.BindAggregateFunction(std::move(fun), std::move(aggregate_params));
+	return function_binder.BindAggregateFunction(fun, std::move(aggregate_params));
 }
 
 unique_ptr<LogicalOperator>
@@ -614,6 +616,12 @@ bool TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		const auto current_column_ref = column_references.begin()->first;
 		column_references.clear();
 		D_ASSERT(current_column_ref.table_index == projection.table_index);
+		// The filter has to name the window column itself. An expression that only mentions it, such as
+		// row_number + 10, is a different predicate, and following the inner reference would drop that expression.
+		auto &proj_expr = *projection.expressions[current_column_ref.column_index];
+		if (proj_expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			return false;
+		}
 		VisitExpression(&projection.expressions[current_column_ref.column_index]);
 
 		child = *child.get().children[0];
@@ -865,7 +873,7 @@ TopNWindowElimination::UpdateTopmostBindings(TableIndex window_idx, unique_ptr<L
 		auto &new_binding = new_bindings[i];
 		unique_ptr<Expression> proj_expr = make_uniq<BoundColumnRefExpression>(original.types[i], new_binding);
 		if (original.types[i] != types[i]) {
-			proj_expr = BoundCastExpression::AddDefaultCastToType(std::move(proj_expr), types[i]);
+			proj_expr = BoundCastExpression::AddCastToType(context, std::move(proj_expr), types[i]);
 		}
 		proj_exprs.emplace_back(std::move(proj_expr));
 		new_binding.table_index = proj_table;
@@ -898,24 +906,10 @@ TopNWindowElimination::ExtractOptimizerParameters(const LogicalWindow &window, c
 	params.partition_count = window_expr.Partitions().size();
 	params.order_type = window_expr.OrderBy()[0].type;
 
-	VisitExpression(&window_expr.OrderByMutable()[0].expression);
-	if (params.payload_type == TopNPayloadType::SINGLE_COLUMN && !aggregate_payload.empty()) {
-		VisitExpression(&aggregate_payload[0]);
-	}
-	for (const auto &column_ref : column_references) {
-		const auto &column_stats = stats->find(column_ref.first);
-		if (column_stats == stats->end() || column_stats->second->CanHaveNull()) {
-			params.can_be_null = true;
-			break;
-		}
-	}
-	// A compound ORDER BY expression (NULLIF, arithmetic, cast, ...) can produce NULLs even when its input
-	// columns are non-null. Only a direct column reference inherits the column's known nullability, so treat a
-	// non-column-reference as potentially null to keep the nulls-last aggregate variant.
-	if (window_expr.OrderBy()[0].expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-		params.can_be_null = true;
-	}
-	column_references.clear();
+	// The statistics of a column binding are those at the top of the plan: a filter above the window (e.g. on the
+	// result of a decorrelated LATERAL join) can have narrowed them to non-NULL although the input of the window
+	// contains NULLs. They cannot tell whether the window input can be NULL, so keep the NULL-preserving variants.
+	params.can_be_null = true;
 
 	return params;
 }
@@ -1118,12 +1112,22 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 		}
 	}
 	// Check if we need the projection map
-	for (idx_t i = 0; i < projections.size(); i++) {
-		if (projections[i].column_index != i) {
-			for (auto &proj : projections) {
-				lhs_projections.push_back(proj.column_index);
+	bool need_projection = false;
+	for (idx_t i = 0; i < projections.size() && !need_projection; i++) {
+		need_projection = projections[i].column_index != i;
+	}
+	// ConstructJoin expects the row id columns to be the last columns of the LHS. A row id that is also used as a
+	// payload column sits somewhere before that, so it has to be projected again to end up in the right position.
+	for (const auto &col_idx : rowid_column_idxs) {
+		for (auto &column_index : logical_get.GetColumnIds()) {
+			if (column_index.GetPrimaryIndex() == col_idx) {
+				need_projection = true;
 			}
-			break;
+		}
+	}
+	if (need_projection) {
+		for (auto &proj : projections) {
+			lhs_projections.push_back(proj.column_index);
 		}
 	}
 	return true;

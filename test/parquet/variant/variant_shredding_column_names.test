@@ -1,0 +1,72 @@
+# name: test/parquet/variant/variant_shredding_column_names.test
+# description: Resolve SHREDDING column names case-insensitively while preserving column and field names
+# group: [variant]
+
+require parquet
+
+foreach serialize_enabled true false
+
+statement ok
+SET debug_verify_serializer = {serialize_enabled};
+
+foreach key Mixed mixed MIXED
+
+foreach shredding_type 'NULL' 'VARIANT' NULL::VARCHAR
+
+statement ok
+COPY (SELECT {'Foo': 42}::VARIANT AS "Mixed Value")
+TO '{TEST_DIR}/variant_disabled_column_name.parquet' (
+	SHREDDING {'{key} Value': {shredding_type}}
+);
+
+query III
+SELECT name, type, num_children
+FROM parquet_schema('{TEST_DIR}/variant_disabled_column_name.parquet')
+ORDER BY column_id;
+----
+duckdb_schema	NULL	1
+Mixed Value	NULL	2
+metadata	BYTE_ARRAY	NULL
+value	BYTE_ARRAY	NULL
+
+query I
+SELECT "Mixed Value" FROM '{TEST_DIR}/variant_disabled_column_name.parquet';
+----
+{'Foo': 42}
+
+endloop
+
+# Explicit shredding must also use the supplied schema instead of inferring it.
+statement ok
+COPY (SELECT {'foo': 42}::VARIANT AS "Mixed Value")
+TO '{TEST_DIR}/variant_explicit_column_name.parquet' (
+	SHREDDING {'{key} Value': 'STRUCT("Foo" INTEGER, "Bar" BOOLEAN)'}
+);
+
+query III
+SELECT name, type, num_children
+FROM parquet_schema('{TEST_DIR}/variant_explicit_column_name.parquet')
+ORDER BY column_id;
+----
+duckdb_schema	NULL	1
+Mixed Value	NULL	3
+metadata	BYTE_ARRAY	NULL
+value	BYTE_ARRAY	NULL
+typed_value	NULL	2
+Foo	NULL	2
+value	BYTE_ARRAY	NULL
+typed_value	INT32	NULL
+Bar	NULL	2
+value	BYTE_ARRAY	NULL
+typed_value	BOOLEAN	NULL
+
+# Nested field names remain case-sensitive.
+query III
+SELECT "Mixed Value", "Mixed Value".foo::INTEGER, "Mixed Value".Foo::INTEGER
+FROM '{TEST_DIR}/variant_explicit_column_name.parquet';
+----
+{'foo': 42}	42	NULL
+
+endloop
+
+endloop

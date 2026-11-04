@@ -1,0 +1,189 @@
+# name: test/parquet/test_parquet_schema_incompatible_nested_types.test
+# description: Reject incompatible nested types when remapping Parquet schema children
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'a': 1::INTEGER} AS s, [1::INTEGER] AS l, MAP([1::INTEGER], [2::INTEGER]) AS m,
+			 {'a': [1::INTEGER]} AS nested)
+TO '{TEST_DIR}/incompatible_nested_types.parquet' (FIELD_IDS {s: 1, l: 2, m: 3, nested: 4});
+
+# Match columns by name
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		's': {name: 'x', type: 'INTEGER[]', default_value: NULL,
+			children: map {
+				'list': {name: 'element', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'STRUCT(a INTEGER)' to result-column of type 'INTEGER[]'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		's': {name: 'x', type: 'MAP(INTEGER, INTEGER)', default_value: NULL,
+			children: map {
+				'key': {name: 'key', type: 'INTEGER', default_value: NULL},
+				'value': {name: 'value', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'STRUCT(a INTEGER)' to result-column of type 'MAP(INTEGER, INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		'l': {name: 'x', type: 'STRUCT(a INTEGER)', default_value: NULL,
+			children: map {
+				'a': {name: 'a', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'INTEGER[]' to result-column of type 'STRUCT(a INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		'l': {name: 'x', type: 'MAP(INTEGER, INTEGER)', default_value: NULL,
+			children: map {
+				'key': {name: 'key', type: 'INTEGER', default_value: NULL},
+				'value': {name: 'value', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'INTEGER[]' to result-column of type 'MAP(INTEGER, INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		'm': {name: 'x', type: 'STRUCT(a INTEGER)', default_value: NULL,
+			children: map {
+				'a': {name: 'a', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'MAP(INTEGER, INTEGER)' to result-column of type 'STRUCT(a INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		'm': {name: 'x', type: 'INTEGER[]', default_value: NULL,
+			children: map {
+				'list': {name: 'element', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'MAP(INTEGER, INTEGER)' to result-column of type 'INTEGER[]'
+
+# Match columns by field ID
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		1: {name: 'x', type: 'INTEGER[]', default_value: NULL,
+			children: map {
+				10: {name: 'element', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'STRUCT(a INTEGER)' to result-column of type 'INTEGER[]'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		1: {name: 'x', type: 'MAP(INTEGER, INTEGER)', default_value: NULL,
+			children: map {
+				10: {name: 'key', type: 'INTEGER', default_value: NULL},
+				11: {name: 'value', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'STRUCT(a INTEGER)' to result-column of type 'MAP(INTEGER, INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		2: {name: 'x', type: 'STRUCT(a INTEGER)', default_value: NULL,
+			children: map {
+				10: {name: 'a', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'INTEGER[]' to result-column of type 'STRUCT(a INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		2: {name: 'x', type: 'MAP(INTEGER, INTEGER)', default_value: NULL,
+			children: map {
+				10: {name: 'key', type: 'INTEGER', default_value: NULL},
+				11: {name: 'value', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'INTEGER[]' to result-column of type 'MAP(INTEGER, INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		3: {name: 'x', type: 'STRUCT(a INTEGER)', default_value: NULL,
+			children: map {
+				10: {name: 'a', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'MAP(INTEGER, INTEGER)' to result-column of type 'STRUCT(a INTEGER)'
+
+statement error
+SELECT * FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		3: {name: 'x', type: 'INTEGER[]', default_value: NULL,
+			children: map {
+				10: {name: 'element', type: 'INTEGER', default_value: NULL}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'MAP(INTEGER, INTEGER)' to result-column of type 'INTEGER[]'
+
+# The same check applies recursively, including when projecting a struct child.
+statement error
+SELECT x.a FROM read_parquet(
+	'{TEST_DIR}/incompatible_nested_types.parquet',
+	schema=map {
+		'nested': {name: 'x', type: 'STRUCT(a STRUCT(b INTEGER))', default_value: NULL,
+			children: map {
+				'a': {name: 'a', type: 'STRUCT(b INTEGER)', default_value: NULL,
+					children: map {'b': {name: 'b', type: 'INTEGER', default_value: NULL}}}
+			}}
+	}
+);
+----
+Binder Error: Failed to map file-column of type 'INTEGER[]' to result-column of type 'STRUCT(b INTEGER)'

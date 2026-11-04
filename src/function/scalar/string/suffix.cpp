@@ -69,10 +69,11 @@ FilterPropagateResult SuffixFilterPrune(const FunctionStatisticsPruneInput &inpu
 } // namespace
 
 ScalarFunction SuffixFun::GetFunction() {
-	ScalarFunction function("suffix",                                     // name of the function
-	                        {LogicalType::VARCHAR, LogicalType::VARCHAR}, // argument list
-	                        LogicalType::BOOLEAN,                         // return type
+	ScalarFunction function("suffix", {}, LogicalType::BOOLEAN,
 	                        ScalarFunction::BinaryFunction<string_t, string_t, bool, SuffixOperator>);
+	function.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("search_string", LogicalType::VARCHAR);
 	function.SetFilterPruneCallback(SuffixFilterPrune);
 	return function;
 }

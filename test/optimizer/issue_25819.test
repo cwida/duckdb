@@ -1,0 +1,42 @@
+# name: test/optimizer/issue_25819.test
+# description: Wrong results when two UNION ALL arms share a join subtree (common subplan)
+# group: [optimizer]
+
+# Regression test for issue #25819: the common subplan optimizer treated two
+# occurrences of the join (pairs ⋈ q ⋈ q) as identical because their signatures
+# ignore projection maps, even though the second occurrence exposes both r
+# columns of the second q relation. Both columns canonicalized to the same
+# binding, so the CTE reader mapped them to the same materialized column.
+# The conflicting subplan must be rejected instead of materialized as a CTE.
+
+statement ok
+CREATE VIEW q AS SELECT CAST(v AS VARCHAR) AS id, v AS r FROM range(0, 3) t(v);
+
+statement ok
+CREATE VIEW pairs AS SELECT a.id AS a, b.id AS b FROM q a, q b WHERE a.r < b.r;
+
+statement ok
+CREATE VIEW ids AS
+  SELECT s2.id || s3.id AS x
+  FROM pairs s1 JOIN q s2 ON s2.id = s1.a JOIN q s3 ON s3.id = s1.b
+  WHERE s2.r < s3.r;
+
+statement ok
+CREATE VIEW s AS SELECT x AS id FROM ids GROUP BY x;
+
+statement ok
+CREATE VIEW p AS
+  SELECT id, max(nm) AS nm FROM (
+    SELECT s1.id AS id, NULL AS nm FROM s s1
+    UNION ALL
+    SELECT s3.id || s4.id AS id, 'n_' || s3.r || '_' || s4.r AS nm
+    FROM pairs s2 JOIN q s3 ON s3.id = s2.a JOIN q s4 ON s4.id = s2.b
+    WHERE s3.r < s4.r
+  ) GROUP BY id;
+
+query I
+SELECT nm FROM p WHERE nm IS NOT NULL ORDER BY 1
+----
+n_0_1
+n_0_2
+n_1_2

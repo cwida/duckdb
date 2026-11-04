@@ -14,6 +14,7 @@
 #include "duckdb/function/scalar/struct_functions.hpp"
 #include "duckdb/function/scalar/system_functions.hpp"
 #include "duckdb/function/scalar/tablefilter_functions.hpp"
+#include "duckdb/function/window/match_recognize_functions.hpp"
 #include "duckdb/function/window/ranking_functions.hpp"
 #include "duckdb/function/window/rows_functions.hpp"
 #include "duckdb/function/window/value_functions.hpp"
@@ -114,6 +115,7 @@ static const StaticFunctionDefinition function[] = {
 	DUCKDB_SCALAR_FUNCTION(InternalCompressStringUintegerFun),
 	DUCKDB_SCALAR_FUNCTION(InternalCompressStringUsmallintFun),
 	DUCKDB_SCALAR_FUNCTION(InternalCompressStringUtinyintFun),
+	DUCKDB_SCALAR_FUNCTION(InternalCompressedMaterializationCastFun),
 	DUCKDB_SCALAR_FUNCTION(InternalDecompressGeometryPointFun),
 	DUCKDB_SCALAR_FUNCTION_SET(InternalDecompressIntegralBigintFun),
 	DUCKDB_SCALAR_FUNCTION_SET(InternalDecompressIntegralHugeintFun),
@@ -129,6 +131,7 @@ static const StaticFunctionDefinition function[] = {
 	DUCKDB_SCALAR_FUNCTION(TableFilterOptionalFun),
 	DUCKDB_SCALAR_FUNCTION(TableFilterPrefixRangeFun),
 	DUCKDB_SCALAR_FUNCTION(TableFilterSelectivityOptionalFun),
+	DUCKDB_SCALAR_FUNCTION(TryRethrowFun),
 	DUCKDB_SCALAR_FUNCTION_SET_ALIAS(AddFun),
 	DUCKDB_AGGREGATE_FUNCTION_SET(AnyValueFun),
 	DUCKDB_AGGREGATE_FUNCTION_SET_ALIAS(ArbitraryFun),
@@ -172,7 +175,10 @@ static const StaticFunctionDefinition function[] = {
 	DUCKDB_SCALAR_FUNCTION(FinalizeFun),
 	DUCKDB_AGGREGATE_FUNCTION_SET(FirstFun),
 	DUCKDB_WINDOW_FUNCTION(FirstValueFun),
+	DUCKDB_SCALAR_FUNCTION_SET(FmodFun),
 	DUCKDB_SCALAR_FUNCTION(GetVariableFun),
+	DUCKDB_SCALAR_FUNCTION(HasErrorFun),
+	DUCKDB_SCALAR_FUNCTION(HivePartitionComponentFun),
 	DUCKDB_SCALAR_FUNCTION(IlikeEscapeFun),
 	DUCKDB_SCALAR_FUNCTION(InvokeFun),
 	DUCKDB_WINDOW_FUNCTION(LagFun),
@@ -199,6 +205,7 @@ static const StaticFunctionDefinition function[] = {
 	DUCKDB_SCALAR_FUNCTION(ListZipFun),
 	DUCKDB_SCALAR_FUNCTION(LowerFun),
 	DUCKDB_SCALAR_FUNCTION(MapContainsFun),
+	DUCKDB_WINDOW_FUNCTION(MatchRecognizeFun),
 	DUCKDB_AGGREGATE_FUNCTION_SET(MaxFun),
 	DUCKDB_SCALAR_FUNCTION_SET(MD5Fun),
 	DUCKDB_SCALAR_FUNCTION_SET(MD5NumberFun),

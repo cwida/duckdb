@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/string/string_corrupt_int32_min.test
+# description: An INT32_MIN dictionary offset must be rejected before taking its magnitude
+# group: [string]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/string_corrupt_int32_min.db.gz {TEST_DIR}/string_corrupt_int32_min.db
+
+load {TEST_DIR}/string_corrupt_int32_min.db readonly
+
+statement ok
+USE string_corrupt_int32_min
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='a' AND compression='Uncompressed';
+----
+Uncompressed
+
+statement error
+SELECT length(a) FROM t;
+----
+Data Corruption Error
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT length(a) FROM t;
+----
+Data Corruption Error

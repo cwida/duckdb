@@ -1,0 +1,25 @@
+# name: test/sql/storage/temp_directory/offload_failure_accounting.test
+# description: A failed temp-buffer write must not leave phantom evicted bytes in the memory accounting
+# group: [temp_directory]
+
+require skip_reload
+
+require block_size 262144
+
+load {TEST_DIR}/offload_failure_accounting.db
+
+statement ok
+PRAGMA memory_limit='8MB';
+
+statement ok
+SET max_temp_directory_size='0B';
+
+statement error
+CREATE TABLE t AS SELECT repeat('x', 300000)::VARCHAR s, i FROM range(200) tbl(i);
+----
+failed to offload
+
+query I
+SELECT count(*) FROM duckdb_memory() WHERE temporary_storage_bytes > 0;
+----
+0

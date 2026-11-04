@@ -1,0 +1,97 @@
+# name: test/sql/types/bignum/test_bignum_divide.test_slow
+# description: Test bignum integer division on large generated operand sets
+# group: [bignum]
+
+# verify the division identity a = (a // b) * b + (a % b) with |a % b| < |b| on large pseudo-random operands
+statement ok
+CREATE TABLE pairs AS
+SELECT i,
+       (CASE WHEN i % 3 = 0 THEN '-' ELSE '' END || hash(i)::VARCHAR || hash(i + 1000)::VARCHAR || substr(hash(i + 2000)::VARCHAR, 1, 1 + i % 20))::BIGNUM AS a,
+       (CASE WHEN i % 5 = 0 THEN '-' ELSE '' END || substr(hash(i * 31)::VARCHAR || hash(i * 17)::VARCHAR, 1, 1 + i % 45))::BIGNUM AS b
+FROM range(3000) t(i)
+WHERE b <> 0;
+
+query I
+SELECT count(*) > 2900 FROM pairs
+----
+true
+
+query I
+SELECT count(*) FROM pairs WHERE (a // b) * b + (a % b) <> a
+----
+0
+
+query I
+SELECT count(*) FROM pairs WHERE NOT ((a % b) < (CASE WHEN b < 0 THEN -b ELSE b END) AND (a % b) > -(CASE WHEN b < 0 THEN -b ELSE b END))
+----
+0
+
+# the quotient is negative exactly when the signs differ (and it is not zero)
+query I
+SELECT count(*) FROM pairs WHERE (a // b) <> 0 AND (((a // b) < 0) <> ((a < 0) <> (b < 0)))
+----
+0
+
+# dividing by a value bigger than the dividend gives zero
+query I
+SELECT count(*) FROM pairs WHERE a // (a * 2::BIGNUM + 1::BIGNUM) <> 0
+----
+0
+
+# (a * b) // b = a
+query I
+SELECT count(*) FROM pairs WHERE (a * b) // b <> a
+----
+0
+
+# operands around powers of two hit the digit boundaries of the base-2^32 long division
+statement ok
+CREATE TABLE pow2 AS
+WITH RECURSIVE p(k, v) AS (
+	SELECT 0, 1::BIGNUM
+	UNION ALL
+	SELECT k + 1, v + v FROM p WHERE k < 260
+)
+SELECT k, v FROM p;
+
+statement ok
+CREATE TABLE edge AS
+SELECT sign::BIGNUM * (a.v + da::BIGNUM) AS a, b.v + db::BIGNUM AS b
+FROM pow2 a, pow2 b, range(-2, 3) t1(da), range(-2, 3) t2(db), (VALUES (-1), (1)) t3(sign)
+WHERE a.k BETWEEN 60 AND 260 AND a.k % 7 = 0
+  AND b.k BETWEEN 33 AND 200 AND b.k % 5 = 0;
+
+query I
+SELECT count(*) > 40000 FROM edge
+----
+true
+
+query I
+SELECT count(*) FROM edge WHERE (a // b) * b + (a % b) <> a
+----
+0
+
+query I
+SELECT count(*) FROM edge WHERE NOT ((a % b) < (CASE WHEN b < 0 THEN -b ELSE b END) AND (a % b) > -(CASE WHEN b < 0 THEN -b ELSE b END))
+----
+0
+
+query I
+SELECT count(*) FROM edge WHERE (a // b) <> 0 AND (((a // b) < 0) <> ((a < 0) <> (b < 0)))
+----
+0
+
+# 2^k // 2^j = 2^(k-j)
+query I
+SELECT count(*)
+FROM pow2 a, pow2 b, pow2 c
+WHERE a.k >= b.k AND c.k = a.k - b.k AND a.v // b.v <> c.v
+----
+0
+
+query I
+SELECT count(*)
+FROM pow2 a, pow2 b, pow2 c
+WHERE a.k + b.k = c.k AND a.v * b.v <> c.v
+----
+0

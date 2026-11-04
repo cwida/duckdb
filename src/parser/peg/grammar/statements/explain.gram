@@ -17,12 +17,15 @@ ExplainableStatements <-
     DropStatement /
     ExecuteStatement /
     InsertStatement /
+    InstallStatement /
     LoadStatement /
     MergeIntoStatement /
     PragmaStatement /
     PrepareStatement /
     ExplainSelectStatement /
     TransactionStatement /
+    TruncateStatement /
+    UpdateExtensionsStatement /
     UpdateStatement /
     VacuumStatement /
     SetStatement /

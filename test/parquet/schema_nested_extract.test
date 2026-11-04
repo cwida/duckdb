@@ -1,0 +1,58 @@
+# name: test/parquet/schema_nested_extract.test
+# description: Preserve list and map scan types when extracting mapped struct fields
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'str': 'a', 'str_list': ['sunny', 'vibrant', 'day'], 'lookup': map {'x': 42}} AS data)
+TO '{TEMP_DIR}/schema_nested_extract.parquet'
+
+statement ok
+CREATE VIEW mapped AS
+SELECT * FROM read_parquet('{TEMP_DIR}/schema_nested_extract.parquet', schema=map {
+    'data': {
+        name: 'data', type: 'STRUCT(str VARCHAR, str_list VARCHAR[], lookup MAP(VARCHAR, INTEGER))', default_value: NULL,
+        children: map {
+            'str': {name: 'str', type: 'VARCHAR', default_value: NULL, children: NULL},
+            'str_list': {
+                name: 'str_list', type: 'VARCHAR[]', default_value: NULL,
+                children: map {'list': {name: 'element', type: 'VARCHAR', default_value: NULL}}
+            },
+            'lookup': {
+                name: 'lookup', type: 'MAP(VARCHAR, INTEGER)', default_value: NULL,
+                children: map {
+                    'key': {name: 'key', type: 'VARCHAR', default_value: NULL},
+                    'value': {name: 'value', type: 'INTEGER', default_value: NULL}
+                }
+            }
+        }
+    }
+})
+
+query III
+SELECT UNNEST(data) FROM mapped
+----
+a	[sunny, vibrant, day]	{x=42}
+
+query I
+SELECT data.str_list FROM mapped
+----
+[sunny, vibrant, day]
+
+query I
+SELECT data.lookup FROM mapped
+----
+{x=42}
+
+query I
+SELECT UNNEST(data.str_list) FROM mapped
+----
+sunny
+vibrant
+day
+
+query I
+SELECT data.lookup['x'] FROM mapped
+----
+42

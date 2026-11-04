@@ -1,0 +1,44 @@
+# name: test/sql/optimizer/projection_placement/lift_through_left_join_filter.test
+# description: Lifting a projection expression through a filter and joins with pass-through projection maps used to leave a stale join projection map (INTERNAL error)
+# group: [projection_placement]
+
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+statement ok
+CREATE TABLE store_sales AS
+SELECT (i % 1800) + 1 AS ss_item_sk, (i % 5) + 1 AS ss_quantity, CAST((i % 1000) / 10.0 AS DECIMAL(7,2)) AS ss_sales_price,
+       CAST((i % 200) - 100 AS DECIMAL(7,2)) AS ss_net_profit, 2451000 + (i % 1000) AS ss_sold_date_sk, i AS ss_ticket_number
+FROM range(3000) t(i);
+
+statement ok
+CREATE TABLE item AS SELECT i AS i_item_sk, 'AAAAAAAA' || i AS i_item_id FROM range(1, 1801) t(i);
+
+statement ok
+CREATE TABLE date_dim AS SELECT 2451000 + i AS d_date_sk, DATE '2000-01-01' + INTERVAL (i) DAY AS d_date FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE store_returns AS SELECT (i % 1800) + 1 AS sr_item_sk, i * 10 AS sr_ticket_number FROM range(300) t(i);
+
+query IITTTT
+SELECT count(*), count(DISTINCT resource_id), min(summary), max(summary), min(first_seen), max(last_seen)
+FROM (
+    SELECT i.i_item_id,
+           ss.resource_id,
+           MAX(CAST(d.d_date AS TIMESTAMPTZ)) AS last_seen,
+           MIN(CAST(d.d_date AS TIMESTAMPTZ)) AS first_seen,
+           CAST(SUM(ss.ss_quantity) AS VARCHAR) || '/' || CAST(AVG(ss.ss_sales_price) AS VARCHAR) || '/' || CAST(SUM(ss.ss_net_profit) AS VARCHAR) || '/' || COALESCE(ss.resource_id, '-') AS summary
+    FROM (
+        SELECT ss_item_sk, ss_quantity, ss_sales_price, ss_net_profit, ss_sold_date_sk, ss_ticket_number,
+               CASE WHEN ss_quantity = 2 AND ss_sales_price > 20 THEN 'resource2' END AS resource_id
+        FROM store_sales
+    ) ss
+    JOIN item i ON ss.ss_item_sk = i.i_item_sk
+    JOIN date_dim d ON ss.ss_sold_date_sk = d.d_date_sk
+    LEFT JOIN store_returns sr ON ss.ss_item_sk = sr.sr_item_sk AND ss.ss_ticket_number = sr.sr_ticket_number
+    GROUP BY i.i_item_id, ss.resource_id
+) t
+----
+1920	1	1/20.0/-100.00/-	8/89.8/196.00/-	2000-01-01 00:00:00+00	2002-09-26 00:00:00+00

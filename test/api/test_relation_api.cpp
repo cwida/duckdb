@@ -1050,31 +1050,30 @@ TEST_CASE("Test Relation Pending Query API", "[relation_api]") {
 	SECTION("Materialized result") {
 		auto tbl = con.TableFunction("range", {Value(1000000)});
 		auto aggr = tbl->Aggregate("SUM(range)");
-		auto pending_query = con.context->PendingQuery(aggr, false);
-		REQUIRE(!pending_query->HasError());
-		auto result = pending_query->Execute();
-		REQUIRE(CHECK_COLUMN(result, 0, {Value::BIGINT(499999500000)}));
+		auto handle = con.context->Submit(aggr, QueryParameters());
+		REQUIRE(!handle->HasError());
+		handle->Complete();
+		REQUIRE(CHECK_COLUMN(handle, 0, {Value::BIGINT(499999500000)}));
 
-		// cannot fetch twice from the same pending query
-		REQUIRE_THROWS(pending_query->Execute());
-		REQUIRE_THROWS(pending_query->Execute());
+		// the retained result can be read again
+		REQUIRE(CHECK_COLUMN(handle, 0, {Value::BIGINT(499999500000)}));
 
 		// query the connection as normal after
-		result = con.Query("SELECT 42");
+		auto result = con.Query("SELECT 42");
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
 	}
 	SECTION("Runtime error in pending query (materialized)") {
 		auto tbl = con.TableFunction("range", {Value(1000000)});
 		auto aggr = tbl->Aggregate("SUM(range) AS s")->Project("concat(s::varchar, 'hello')::int");
 		// this succeeds initially
-		auto pending_query = con.context->PendingQuery(aggr, false);
-		REQUIRE(!pending_query->HasError());
+		auto handle = con.context->Submit(aggr, QueryParameters());
+		REQUIRE(!handle->HasError());
 		// we only encounter the failure later on as we are executing the query
-		auto result = pending_query->Execute();
-		REQUIRE_FAIL(result);
+		handle->Complete();
+		REQUIRE_FAIL(handle);
 
 		// query the connection as normal after
-		result = con.Query("SELECT 42");
+		auto result = con.Query("SELECT 42");
 		REQUIRE(CHECK_COLUMN(result, 0, {42}));
 	}
 }
@@ -1141,7 +1140,7 @@ TEST_CASE("Test materialized relations", "[relation_api]") {
 		REQUIRE_NO_FAIL(con.Query("create table tbl(a varchar);"));
 
 		auto result = con.Query("insert into tbl values ('test') returning *");
-		auto &materialized_result = result->Cast<MaterializedQueryResult>();
+		auto &materialized_result = *result;
 		auto materialized_relation = make_shared_ptr<MaterializedRelation>(
 		    con.context, materialized_result.TakeCollection(), result->GetNames(), duckdb::Identifier("vw"));
 		materialized_relation->CreateView("vw");

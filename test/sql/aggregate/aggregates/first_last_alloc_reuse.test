@@ -1,0 +1,91 @@
+# name: test/sql/aggregate/aggregates/first_last_alloc_reuse.test
+# description: first/last/any_value string state must size its allocation without truncating
+# group: [aggregates]
+
+# alloc_size governs whether the existing buffer is reused or a new one is allocated, so exercise
+# growing, shrinking and regrowing across many rows
+
+statement ok
+CREATE TABLE t AS SELECT i, repeat('x', 1000 + i) AS s FROM range(200) t(i);
+
+query I
+SELECT length(last(s)) FROM t;
+----
+1199
+
+query I
+SELECT length(first(s)) FROM t;
+----
+1000
+
+# shrink then grow repeatedly - the reuse branch is taken whenever the buffer is already big enough
+
+query I
+SELECT length(last(s)) FROM (SELECT repeat('y', CASE WHEN i % 2 = 0 THEN 50000 ELSE 10 END) AS s FROM range(41) t(i));
+----
+50000
+
+query I
+SELECT length(last(s)) FROM (SELECT repeat('y', CASE WHEN i % 2 = 0 THEN 50000 ELSE 10 END) AS s FROM range(40) t(i));
+----
+10
+
+# grouped, so several states grow independently
+
+query III
+SELECT g, length(first(s)), length(last(s)) FROM (SELECT i % 3 AS g, repeat('z', 1000 + i) AS s FROM range(30) t(i)) GROUP BY g ORDER BY g;
+----
+0	1000	1027
+1	1001	1028
+2	1002	1029
+
+# inlined values take the other branch and must still be exact
+
+query III
+SELECT first(s), last(s), any_value(s) FROM (VALUES ('abc'), ('de')) t(s);
+----
+abc	de	abc
+
+# BLOB and NULL handling are unchanged
+
+query I
+SELECT last(b)::VARCHAR FROM (VALUES ('\xAA\xBB'::BLOB)) t(b);
+----
+\xAA\xBB
+
+query III
+SELECT first(s), last(s), any_value(s) FROM (VALUES (NULL), ('a')) t(s);
+----
+NULL	a	a
+
+# min/max and mode keep an identical string state, with the same allocation-reuse branch
+
+query II
+SELECT length(min(s)), length(max(s)) FROM (SELECT repeat(chr(CAST(97 + i % 26 AS INTEGER)), 1000 + i) AS s FROM range(60) t(i));
+----
+1000	1051
+
+query I
+SELECT length(max(s)) FROM (SELECT repeat('y', CASE WHEN i % 2 = 0 THEN 50000 ELSE 10 END) AS s FROM range(41) t(i));
+----
+50000
+
+query II
+SELECT min(s), max(s) FROM (VALUES ('abc'), ('de'), ('zz')) t(s);
+----
+abc	zz
+
+query I
+SELECT length(mode(s)) FROM (SELECT repeat('q', CASE WHEN i < 20 THEN 50000 ELSE 10 END) AS s FROM range(30) t(i));
+----
+50000
+
+query I
+SELECT mode(s) FROM (VALUES ('a'), ('b'), ('b')) t(s);
+----
+b
+
+query I
+SELECT mode(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+2

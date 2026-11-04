@@ -21,7 +21,24 @@ struct ClusteredAggrState;
 
 using DictProps = unsafe_unique_array<int64_t>;
 
-static constexpr uint64_t SUM_OVERFLOW_MASK = ~((uint64_t(1) << 53) - 1);
+// log2 is constexpr only from C++26.
+// Only powers of two are supported
+static_assert((STANDARD_VECTOR_SIZE & (STANDARD_VECTOR_SIZE - 1)) == 0);
+template <unsigned int Arg>
+constexpr uint64_t c_log2() {
+	if constexpr (Arg < 2) {
+		return 0;
+	} else {
+		return 1 + c_log2<Arg / 2>();
+	}
+}
+
+// Users of I64VectorSumSafe accumulate sum into int64_t. One bit is for sign,
+// and there are log2(vector size) bits occupied by Vector values, so we can
+// guarantee no overflow if at most 64 - 1 - log2(size) bits are set.
+static constexpr uint64_t VECTOR_SIZE_LOG2 = c_log2<STANDARD_VECTOR_SIZE>();
+static constexpr uint64_t SUM_OVERFLOW_MAX_BITS = 64 - 1 - VECTOR_SIZE_LOG2;
+static constexpr uint64_t SUM_OVERFLOW_MASK = ~((uint64_t(1) << SUM_OVERFLOW_MAX_BITS) - 1);
 static inline bool I64VectorSumSafe(int64_t v) {
 	return ((static_cast<uint64_t>(v) ^ static_cast<uint64_t>(v >> 63)) & SUM_OVERFLOW_MASK) == 0;
 }
@@ -45,22 +62,38 @@ struct ClusteredAggr {
 
 	struct GroupRun {
 		data_ptr_t state; //! caller fills this after TryClustered; advanced between aggregates
-		const sel_t *sel; //! points to the tuple positions for this run
+		const sel_t *sel; //! strictly increasing input row positions, or nullptr for 0..count-1
 		uint64_t gid;     //! raw group id for this run
 		idx_t count;      //! number of tuples in this group
 	};
 
-	idx_t n_group_runs = 0;
-	GroupRun group_runs[MAX_RUNS];
+	ClusteredAggr() : group_runs(&single_run) {
+	}
+
+	struct RunRange {
+		const GroupRun *begin_ptr;
+		const GroupRun *end_ptr;
+		const GroupRun *begin() const {
+			return begin_ptr;
+		}
+		const GroupRun *end() const {
+			return end_ptr;
+		}
+		idx_t size() const {
+			return static_cast<idx_t>(end_ptr - begin_ptr);
+		}
+		const GroupRun &operator[](idx_t i) const {
+			return begin_ptr[i];
+		}
+	};
+	RunRange runs() const {
+		return RunRange {group_runs, group_runs + n_group_runs};
+	}
 
 	const ClusteredAggrState *state = nullptr;
 
-	//! Build a clustered permutation of 0..count-1 from raw integer group ids.
-	//! On success fills group_runs[].sel/gid/count.
-	bool TryClustered(const uint64_t *group_ids, sel_t count, sel_t *arena, uint64_t *slots);
-
 	//! Initialize a single run covering 0..count-1 for one aggregate state.
-	void SetSingleRun(data_ptr_t state, idx_t count);
+	void SetSingleRun(data_ptr_t state_ptr, idx_t count);
 
 	//! Advance all run state pointers by payload_size.
 	void AdvanceStates(idx_t payload_size);
@@ -73,10 +106,19 @@ struct ClusteredAggr {
 	}
 
 	//! Returns a composed dict sel for simple dictionary input, or nullptr.
-	const sel_t *ClusterIter(const Vector &input, idx_t count) const;
+	const sel_t *ClusterIter(const Vector &input) const;
 
 private:
-	mutable sel_t composed_sel_data[STANDARD_VECTOR_SIZE];
+	friend struct ClusteredAggrState;
+
+	//! Build a clustered permutation of 0..count-1 from group ids into runs.
+	//! On success fills runs[].sel/gid/count.
+	bool TryClustered(const uint64_t *group_ids, sel_t count, sel_t *arena, uint64_t *slots, GroupRun *runs);
+
+	idx_t n_group_runs = 0;
+	GroupRun single_run;
+	GroupRun *group_runs;
+
 	mutable const sel_t *cached_dict_sel = nullptr;
 };
 
@@ -84,6 +126,8 @@ private:
 struct ClusteredAggrState {
 	unsafe_unique_array<sel_t> arena;
 	unsafe_unique_array<uint64_t> slots;
+	unsafe_unique_array<ClusteredAggr::GroupRun> group_runs;
+	mutable unsafe_unique_array<sel_t> composed_sel_data;
 	bool all_clustered = false;
 	idx_t n_clustered = 0;
 	idx_t skipped_opportunities = 0;

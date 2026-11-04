@@ -5,8 +5,8 @@
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/result_format.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
-#include "duckdb/main/stream_query_result.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
@@ -152,8 +152,8 @@ bool CanRestart(Connection &conn) {
 		auto &temp = conn.client_data->temporary_objects;
 		auto &temp_catalog = temp->GetCatalog().Cast<DuckCatalog>();
 		vector<reference<DuckSchemaEntry>> schemas;
-		temp_catalog.ScanSchemas(
-		    [&](SchemaCatalogEntry &schema) { schemas.push_back(schema.Cast<DuckSchemaEntry>()); });
+		temp_catalog.ScanSchemas(VisibilityBound::AllCommitted(),
+		                         [&](DuckSchemaEntry &schema) { schemas.push_back(schema); });
 		if (schemas.size() != 1) {
 			return false;
 		}
@@ -164,7 +164,7 @@ bool CanRestart(Connection &conn) {
 		                                   CatalogType::MACRO_ENTRY,     CatalogType::TABLE_MACRO_ENTRY};
 		bool found_temp_object = false;
 		for (auto &catalog_type : catalog_types) {
-			temp_schema.Scan(catalog_type, [&](CatalogEntry &entry) {
+			temp_schema.Scan(catalog_type, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
 				if (entry.internal) {
 					return;
 				}
@@ -186,7 +186,7 @@ void Command::RestartDatabase(ExecuteContext &context, reference<Connection> &co
 	}
 	bool query_fail = false;
 	try {
-		connection.get().ExtractStatements(sql_query);
+		connection.get().ExtractStatements(sql_query, false);
 	} catch (...) {
 		query_fail = true;
 	}
@@ -199,8 +199,49 @@ void Command::RestartDatabase(ExecuteContext &context, reference<Connection> &co
 	}
 }
 
-unique_ptr<MaterializedQueryResult> Command::ExecuteQuery(ExecuteContext &context, reference<Connection> connection,
-                                                          string file_name, idx_t query_line) const {
+#ifdef DUCKDB_ALTERNATIVE_VERIFY
+//! Drain a submitted query through the non-blocking consumer API, so the alternative-verify job
+//! exercises the stream end to end. A statement that expands into several has no metadata before its result
+//! statement is bound, so the metadata is read only once a row or the end of the stream arrived
+static unique_ptr<QueryResult> DrainStream(unique_ptr<QueryResult> handle) {
+	auto client_properties = handle->client_properties;
+	QueryResultStream<> stream(std::move(handle));
+	unique_ptr<ColumnDataCollection> collection;
+	ColumnDataAppendState append_state;
+	auto start_collection = [&]() {
+		collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(), stream.GetTypes());
+		collection->InitializeAppend(append_state);
+	};
+	while (true) {
+		unique_ptr<DataChunk> chunk;
+		auto state = stream.TryFetch(chunk);
+		if (state == QueryResultState::READY) {
+			if (!collection) {
+				start_collection();
+			}
+			collection->Append(append_state, *chunk);
+			continue;
+		}
+		if (IsTerminal(state)) {
+			break;
+		}
+		if (stream.ExecuteTask() == QueryResultState::BLOCKED) {
+			stream.WaitForTask();
+		}
+	}
+	if (stream.HasError()) {
+		return make_uniq<QueryResult>(stream.GetErrorObject());
+	}
+	if (!collection) {
+		start_collection();
+	}
+	return make_uniq<QueryResult>(stream.GetStatementType(), stream.GetStatementProperties(), stream.GetNames(),
+	                              std::move(collection), client_properties);
+}
+#endif
+
+unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference<Connection> connection,
+                                              string file_name, idx_t query_line) const {
 	query_break(query_line);
 
 	if (TestConfiguration::TestForceReload() && TestConfiguration::TestForceStorage()) {
@@ -208,27 +249,37 @@ unique_ptr<MaterializedQueryResult> Command::ExecuteQuery(ExecuteContext &contex
 	}
 
 	QueryParameters parameters;
-	parameters.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
-	parameters.memory_type = QueryResultMemoryType::BUFFER_MANAGED;
+	parameters.format = ChunkFormat::BufferManaged();
 
 	try {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
-		parameters.output_type = QueryResultOutputType::ALLOW_STREAMING;
 		auto ccontext = connection.get().context;
-		auto result = ccontext->Query(context.sql_query, parameters);
-		if (result->GetResultType() == QueryResultType::STREAM_RESULT) {
-			auto &stream_result = result->Cast<StreamQueryResult>();
-			return stream_result.Materialize();
-		} else {
-			D_ASSERT(result->GetResultType() == QueryResultType::MATERIALIZED_RESULT);
-			return unique_ptr_cast<QueryResult, MaterializedQueryResult>(std::move(result));
+		// A submission takes a single statement, and only the engine's own parse is profiled, so the
+		// text is counted here and submitted as text. A parse failure takes the blocking path, which
+		// reports it with its location and type, and runs text that only parses after a LOAD
+		idx_t statement_count = 0;
+		try {
+			statement_count = connection.get().ExtractStatements(context.sql_query, false).size();
+		} catch (std::exception &) {
 		}
+		if (statement_count != 1) {
+			return ccontext->Query(context.sql_query, parameters);
+		}
+		auto handle = ccontext->Submit(context.sql_query, parameters);
+		if (handle->HasError()) {
+			return handle;
+		}
+		if (handle->MetadataAvailable() &&
+		    handle->GetStatementProperties().return_type != StatementReturnType::QUERY_RESULT) {
+			handle->Complete();
+			return handle;
+		}
+		return DrainStream(std::move(handle));
 #else
-		auto res = connection.get().context->Query(context.sql_query, parameters);
-		return unique_ptr_cast<QueryResult, MaterializedQueryResult>(std::move(res));
+		return connection.get().context->Query(context.sql_query, parameters);
 #endif
 	} catch (std::exception &ex) {
-		return make_uniq<MaterializedQueryResult>(ErrorData(ex));
+		return make_uniq<QueryResult>(ErrorData(ex));
 	}
 }
 
@@ -409,7 +460,7 @@ struct ParallelExecuteContext {
 	atomic<bool> success;
 	string error_message;
 	string error_file;
-	int error_line;
+	int error_line = 0;
 };
 
 static void ParallelExecuteLoop(ParallelExecuteContext *execute_context) {
@@ -440,6 +491,13 @@ static void ParallelExecuteLoop(ParallelExecuteContext *execute_context) {
 		execute_context->error_message = StringUtil::Format("Failure at %s:%d: Unknown error message",
 		                                                    execute_context->error_file, execute_context->error_line);
 		execute_context->success = false;
+	}
+	if (!execute_context->success) {
+		auto message = execute_context->error_message;
+		if (message.empty()) {
+			message = StringUtil::Format("Failure at %s:%d", execute_context->error_file, execute_context->error_line);
+		}
+		SQLLogicTestRunner::EmitError(execute_context->runner.file_name, message);
 	}
 }
 
@@ -673,11 +731,18 @@ void LoopCommand::ExecuteInternal(ExecuteContext &context) const {
 		std::list<std::thread> threads;
 		idx_t finished_thread_idx = 0;
 		auto context_it = contexts.begin();
+		// the reporter is per thread: hand this test's reporter to the workers it spawns
+		auto &reporter = TestReporter::Get();
 		while (context_it != contexts.end()) {
 			// launch threads
 			for (; context_it != contexts.end() && threads.size() - finished_thread_idx < max_threads; ++context_it) {
 				auto &execute_context = *context_it;
-				threads.emplace_back(ParallelExecuteLoop, &execute_context);
+				threads.emplace_back(
+				    [&reporter](ParallelExecuteContext *ctx) {
+					    TestReporter::Set(reporter);
+					    ParallelExecuteLoop(ctx);
+				    },
+				    &execute_context);
 			}
 			// wait for active threads to finish
 			for (auto it = std::next(threads.begin(), static_cast<int64_t>(finished_thread_idx)); it != threads.end();

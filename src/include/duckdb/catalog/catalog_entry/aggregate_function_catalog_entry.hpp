@@ -26,5 +26,7 @@ public:
 
 	//! The aggregate functions
 	AggregateFunctionSet functions;
+
+private:
 };
 } // namespace duckdb

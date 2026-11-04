@@ -1,0 +1,127 @@
+# name: test/sql/subquery/scalar/test_correlated_having.test
+# description: Issue #24563: Test correlated subqueries with HAVING without GROUP BY
+# group: [scalar]
+
+statement ok
+CREATE TABLE outer_values(i INTEGER);
+
+statement ok
+INSERT INTO outer_values VALUES (1), (2);
+
+statement ok
+CREATE TABLE inner_values(i INTEGER);
+
+statement ok
+INSERT INTO inner_values VALUES (1);
+
+query ITITI
+SELECT outer_values.i,
+       EXISTS (SELECT 1 FROM inner_values WHERE inner_values.i = outer_values.i HAVING true),
+       (SELECT 1 FROM inner_values WHERE inner_values.i = outer_values.i HAVING true),
+       EXISTS (SELECT 1 FROM inner_values WHERE inner_values.i = outer_values.i HAVING false),
+       (SELECT 1 FROM inner_values WHERE inner_values.i = outer_values.i HAVING false)
+FROM outer_values
+ORDER BY outer_values.i;
+----
+1	1	1	0	NULL
+2	1	1	0	NULL
+
+query IIIIIT
+SELECT outer_values.i,
+       (SELECT 7 FROM inner_values WHERE inner_values.i = outer_values.i HAVING sum(inner_values.i) IS NULL),
+       (SELECT outer_values.i FROM inner_values WHERE inner_values.i = outer_values.i HAVING true),
+       (SELECT sum(inner_values.i) FROM inner_values WHERE inner_values.i = outer_values.i),
+       (SELECT coalesce(sum(inner_values.i), 42)
+        FROM inner_values WHERE inner_values.i = outer_values.i HAVING true),
+       (SELECT sum(inner_values.i) IS NULL
+        FROM inner_values WHERE inner_values.i = outer_values.i HAVING true)
+FROM outer_values
+ORDER BY outer_values.i;
+----
+1	NULL	1	1	1	0
+2	7	2	NULL	42	1
+
+query ITT
+SELECT outer_values.i,
+       EXISTS (SELECT sum(inner_values.i) FROM inner_values WHERE inner_values.i = outer_values.i HAVING true),
+       1 IN (SELECT sum(inner_values.i) FROM inner_values WHERE inner_values.i = outer_values.i HAVING true)
+FROM outer_values
+ORDER BY outer_values.i;
+----
+1	1	1
+2	1	NULL
+
+query IT
+SELECT outer_values.i,
+       (SELECT random() FROM inner_values WHERE inner_values.i = outer_values.i HAVING true) IS NOT NULL
+FROM outer_values
+ORDER BY outer_values.i;
+----
+1	1
+2	1
+
+statement ok
+CREATE SEQUENCE having_effect_seq START 1;
+
+query II
+SELECT outer_values.i,
+       (SELECT sum(inner_values.i)
+        FROM inner_values
+        WHERE inner_values.i = outer_values.i
+        HAVING nextval('having_effect_seq') > 0)
+FROM outer_values
+ORDER BY outer_values.i;
+----
+1	1
+2	NULL
+
+query I
+SELECT currval('having_effect_seq');
+----
+2
+
+statement error
+SELECT (SELECT CAST(CASE WHEN sum(inner_values.i) IS NULL THEN 'invalid' ELSE '1' END AS INTEGER)
+        FROM inner_values
+        WHERE inner_values.i = outer_values.i)
+FROM outer_values
+WHERE outer_values.i = 2;
+----
+Could not convert string
+
+statement error
+SELECT (SELECT sum(inner_values.i)
+        FROM inner_values
+        WHERE inner_values.i = outer_values.i
+        HAVING CAST('invalid' AS BOOLEAN))
+FROM outer_values
+WHERE outer_values.i = 2;
+----
+Could not convert string
+
+statement ok
+SET disabled_optimizers='deliminator';
+
+statement ok
+SET explain_output='optimized_only';
+
+query II
+EXPLAIN SELECT (SELECT avg(inner_values.i) * 0.2
+                FROM inner_values
+                WHERE inner_values.i = outer_values.i
+                HAVING true)
+FROM outer_values;
+----
+logical_opt	<REGEX>:.*Join Type: INNER.*Conditions: i (=|IS NOT DISTINCT FROM) .*
+
+query II
+EXPLAIN SELECT (SELECT coalesce(avg(inner_values.i), 0)
+                FROM inner_values
+                WHERE inner_values.i = outer_values.i
+                HAVING true)
+FROM outer_values;
+----
+logical_opt	<REGEX>:.*Join Type: LEFT.*Conditions: i (=|IS NOT DISTINCT FROM) .*
+
+statement ok
+SET disabled_optimizers='';

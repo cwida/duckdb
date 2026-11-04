@@ -1,0 +1,38 @@
+# name: test/sql/window/test_window_filtered_count.test_slow
+# description: A filtered COUNT(*) over a frame that grows to the whole partition
+# group: [window]
+
+# A filter makes COUNT(*) count the rows of its frame rather than read off their number, and a frame
+# that grows a row at a time covers every row of the partition once per row. Counted row by row that
+# is a pass over the partition per row: a million rows took half a minute, where the same frame
+# summed took a fiftieth of a second. This is here at a size that would not finish that way.
+
+# Counted row by row this takes half a minute, so the cap fails the test rather than merely making it
+# slow. It is three orders of magnitude above what the queries below take when the count is running.
+statement ok
+SET max_execution_time=10000;
+
+statement ok
+CREATE TABLE growing AS
+    SELECT i, i % 3 = 0 AS keep, (i * 37) % 101 < 50 AS scattered
+    FROM range(0, 1000000) t(i);
+
+# the count is the same whether it is counted or summed, and both are answered from a running count
+query II
+SELECT sum(counted), sum(summed) FROM (
+    SELECT count(*) FILTER (WHERE keep) OVER w AS counted,
+           sum(CASE WHEN keep THEN 1 ELSE 0 END) OVER w AS summed
+    FROM growing WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+)
+----
+166667166667	166667166667
+
+# a frame that shrinks instead, and a filter that leaves a scattered half of the rows out
+query II
+SELECT sum(counted), sum(summed) FROM (
+    SELECT count(*) FILTER (WHERE scattered) OVER w AS counted,
+           sum(CASE WHEN scattered THEN 1 ELSE 0 END) OVER w AS summed
+    FROM growing WINDOW w AS (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
+)
+----
+247524881188	247524881188

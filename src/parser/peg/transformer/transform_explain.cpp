@@ -18,6 +18,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformExplainStatement(
     const optional<vector<GenericCopyOption>> &explain_option_list, unique_ptr<SQLStatement> explainable_statements) {
 	auto explain_type = analyze_keyword ? ExplainType::EXPLAIN_ANALYZE : ExplainType::EXPLAIN_STANDARD;
 	bool format_is_set = false;
+	bool sql_is_set = false;
 	auto format = ProfilerPrintFormat::Default();
 	if (explain_option_list) {
 		for (auto option : *explain_option_list) {
@@ -38,12 +39,24 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformExplainStatement(
 					format = ParseProfilerPrintFormat(option.children[0]);
 				}
 				format_is_set = true;
+			} else if (option_name == "sql") {
+				if (sql_is_set || !option.children.empty() || option.expression) {
+					throw InvalidInputException("SQL must be provided once without arguments");
+				}
+				sql_is_set = true;
 			} else if (option_name == "analyze") {
 				explain_type = ExplainType::EXPLAIN_ANALYZE;
 			} else {
 				throw NotImplementedException("Unimplemented explain type: %s", option_name);
 			}
 		}
+	}
+	if (sql_is_set) {
+		if (format_is_set || explain_type == ExplainType::EXPLAIN_ANALYZE) {
+			throw InvalidInputException("EXPLAIN (SQL) cannot be combined with ANALYZE or FORMAT");
+		}
+		transformer.PivotEntryCheck("EXPLAIN (SQL) statement");
+		explain_type = ExplainType::EXPLAIN_SQL;
 	}
 	auto statement = std::move(explainable_statements);
 	return make_uniq<ExplainStatement>(std::move(statement), explain_type, format);

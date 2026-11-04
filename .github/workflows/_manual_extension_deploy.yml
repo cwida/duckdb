@@ -89,6 +89,7 @@ jobs:
       opt_in_archs: ''
       extra_toolchains: 'rust'
       use_merged_vcpkg_manifest: '1'
+      vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
       duckdb_tag: ${{ inputs.duckdb_version }}
       skip_tests: ${{ inputs.skip_tests && true || false }}
       save_cache: true

@@ -5,6 +5,7 @@ namespace duckdb {
 CreateWindowFunctionInfo::CreateWindowFunctionInfo(WindowFunction function)
     : CreateFunctionInfo(CatalogType::WINDOW_FUNCTION_ENTRY), functions(function.name) {
 	SetFunctionName(function.name);
+	function.GetSignature().Verify();
 	functions.AddFunction(std::move(function));
 	internal = true;
 }
@@ -12,6 +13,9 @@ CreateWindowFunctionInfo::CreateWindowFunctionInfo(WindowFunction function)
 CreateWindowFunctionInfo::CreateWindowFunctionInfo(WindowFunctionSet set)
     : CreateFunctionInfo(CatalogType::WINDOW_FUNCTION_ENTRY), functions(std::move(set)) {
 	SetFunctionName(functions.name);
+	for (auto &func : functions.functions) {
+		func->GetSignature().Verify();
+	}
 	functions.ApplyToFunctions([&](WindowFunction &func) { func.name = functions.name; });
 	internal = true;
 }

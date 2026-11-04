@@ -6,8 +6,6 @@ on:
 
 env:
   GH_TOKEN: ${{ secrets.DUCKDBLABS_BOT_TOKEN }}
-  TITLE_PREFIX: "[duckdb/#${{ github.event.issue.number }}]"
-  PUBLIC_ISSUE_TITLE: ${{ github.event.issue.title }}
 
 jobs:
   handle_pr_submitted_or_fix_on_nightly_label:
@@ -35,53 +33,3 @@ jobs:
           For more detailed guidelines on how to create reproducible examples, please visit Stack Overflow's ["Minimal, Reproducible Example"](https://stackoverflow.com/help/minimal-reproducible-example) page.
           EOF
           gh issue comment --repo duckdb/duckdb ${{ github.event.issue.number }} --body-file needs-reproducible-example-comment.md
-
-  create_or_label_mirror_issue:
-    if: github.event.label.name == 'reproduced' || github.event.label.name == 'under review'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Remove 'needs triage' / 'under review' if 'reproduced'
-        if: github.event.label.name == 'reproduced'
-        run: |
-          gh issue edit --repo duckdb/duckdb ${{ github.event.issue.number }} --remove-label "needs triage" --remove-label "under review" --remove-label "needs reproducible example"
-
-      - name: Remove 'needs triage' / 'reproduced' if 'under review'
-        if: github.event.label.name == 'under review'
-        run: |
-          gh issue edit --repo duckdb/duckdb ${{ github.event.issue.number }} --remove-label "needs triage" --remove-label "reproduced"
-
-      - name: Remove 'needs triage' if 'expected behavior'
-        if: github.event.label.name == 'expected behavior'
-        run: |
-          gh issue edit --repo duckdb/duckdb ${{ github.event.issue.number }} --remove-label "needs triage"
-
-      - name: Get mirror issue number
-        run: |
-          gh issue list --repo duckdblabs/duckdb-internal --search "${TITLE_PREFIX}" --json title,number --state all --jq ".[] | select(.title | startswith(\"$TITLE_PREFIX\")).number" > mirror_issue_number.txt
-          echo "MIRROR_ISSUE_NUMBER=$(cat mirror_issue_number.txt)" >> "$GITHUB_ENV"
-
-      - name: Print whether mirror issue exists
-        run: |
-          if [ "$MIRROR_ISSUE_NUMBER" == "" ]; then
-            echo "Mirror issue with title prefix '$TITLE_PREFIX' does not exist yet"
-          else
-            echo "Mirror issue with title prefix '$TITLE_PREFIX' exists with number $MIRROR_ISSUE_NUMBER"
-          fi
-
-      - name: Set label environment variable
-        run: |
-          if ${{ github.event.label.name == 'reproduced' }}; then
-            echo "LABEL=reproduced" >> "$GITHUB_ENV"
-            echo "UNLABEL=under review" >> "$GITHUB_ENV"
-          else
-            echo "LABEL=under review" >> "$GITHUB_ENV"
-            echo "UNLABEL=reproduced" >> "$GITHUB_ENV"
-          fi
-
-      - name: Create or label issue
-        run: |
-          if [ "$MIRROR_ISSUE_NUMBER" == "" ]; then
-            gh issue create --repo duckdblabs/duckdb-internal --label "$LABEL" --title "$TITLE_PREFIX - $PUBLIC_ISSUE_TITLE" --body "See https://github.com/duckdb/duckdb/issues/${{ github.event.issue.number }}"
-          else
-            gh issue edit --repo duckdblabs/duckdb-internal "$MIRROR_ISSUE_NUMBER" --remove-label "$UNLABEL" --add-label "$LABEL"
-          fi

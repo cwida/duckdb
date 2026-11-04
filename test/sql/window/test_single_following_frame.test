@@ -1,0 +1,35 @@
+# name: test/sql/window/test_single_following_frame.test
+# description: A single frame bound cannot start after the current row
+# group: [window]
+
+foreach framing ROWS RANGE GROUPS
+
+statement error
+SELECT COUNT(*) OVER (ORDER BY x {framing} 1 FOLLOWING)
+FROM (VALUES (1)) t(x);
+----
+Frame starting from following row cannot end with current row
+
+statement error
+SELECT COUNT(*) OVER (ORDER BY x {framing} 0 FOLLOWING)
+FROM (VALUES (1)) t(x);
+----
+Frame starting from following row cannot end with current row
+
+query II
+SELECT x, COUNT(*) OVER (ORDER BY x {framing} BETWEEN CURRENT ROW AND 1 FOLLOWING)
+FROM (VALUES (1), (2)) t(x)
+ORDER BY x;
+----
+1	2
+2	1
+
+query II
+SELECT x, COUNT(*) OVER (ORDER BY x {framing} 1 PRECEDING)
+FROM (VALUES (1), (2)) t(x)
+ORDER BY x;
+----
+1	1
+2	2
+
+endloop

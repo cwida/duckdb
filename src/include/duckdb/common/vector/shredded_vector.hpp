@@ -31,6 +31,8 @@ public:
 	string ToString(const LogicalType &type, idx_t count) const override;
 	Value GetValue(const LogicalType &type, idx_t index) const override;
 	void SetVectorType(VectorType new_vector_type) override;
+	bool TrySerialize(Serializer &serializer, const LogicalType &type, bool compressed_serialization) const override;
+	static buffer_ptr<VectorBuffer> Deserialize(Deserializer &deserializer, const LogicalType &type, idx_t count);
 
 protected:
 	buffer_ptr<VectorBuffer> SliceInternal(const LogicalType &type, idx_t offset, idx_t end) override;

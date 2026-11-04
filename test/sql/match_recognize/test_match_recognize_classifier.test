@@ -1,0 +1,233 @@
+# name: test/sql/match_recognize/test_match_recognize_classifier.test
+# description: MATCH_RECOGNIZE - CLASSIFIER() with a variable in front of it, and navigated
+# group: [match_recognize]
+
+# ISO/IEC 19075-5 5.9: CLASSIFIER takes an optional row pattern variable, and may be nested in a row
+# pattern navigation. Every answer below was checked against another engine before it was written
+# down.
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table t(rn integer, x integer, p varchar);
+
+statement ok
+insert into t values (1,10,'a'),(2,20,'b'),(3,30,'a'),(4,40,'c'),(5,50,'a'),(6,60,'b');
+
+# CLASSIFIER(X) is the classifier of the last row mapped to X up to the current row, which for a
+# primary variable is its own name once it has matched anything
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER(A) AS c ALL ROWS PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+) ORDER BY rn
+----
+1	A
+2	A
+3	A
+4	A
+5	A
+6	A
+
+# over a union it says which member the last of their rows was mapped to
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER(U) AS c ALL ROWS PER MATCH
+    PATTERN (A B C) SUBSET U = (A, B) DEFINE A AS p = 'a', C AS true
+) ORDER BY rn
+----
+1	A
+2	B
+3	B
+
+query T
+SELECT c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER(U) AS c ONE ROW PER MATCH
+    PATTERN (A B C) SUBSET U = (A, B) DEFINE A AS p = 'a', C AS true
+)
+----
+B
+
+# the same in a condition, where the rows of the union are the ones mapped so far
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (A B C) SUBSET U = (A, B) DEFINE A AS p = 'a', C AS CLASSIFIER(U) = 'B'
+) ORDER BY rn
+----
+1	A
+2	B
+3	C
+
+# the standard's example: an array of the classifiers of a union's rows, under ONE ROW PER MATCH
+query T
+SELECT c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES array_agg(CLASSIFIER(U)) AS c ONE ROW PER MATCH
+    PATTERN (A B C) SUBSET U = (A, B) DEFINE A AS p = 'a', C AS true
+)
+----
+[A, B]
+
+# ---------------------------------------------------------------- stepped
+
+# PREV(CLASSIFIER()) is the classifier of the previous row; a row before the match is not
+# classified by it, so there it is NULL
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES PREV(CLASSIFIER()) AS c ALL ROWS PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+) ORDER BY rn
+----
+1	NULL
+2	A
+3	NULL
+4	A
+5	NULL
+6	A
+
+# in MEASURES the whole match is known, so NEXT() sees the row after the current one
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES NEXT(CLASSIFIER()) AS c ALL ROWS PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+) ORDER BY rn
+----
+1	B
+2	NULL
+3	B
+4	NULL
+5	B
+6	NULL
+
+# the standard's DEFINE example: which of two alternatives the first row took decides the second
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN ((A | B) C) DEFINE A AS x < 15, B AS x >= 15,
+    C AS CASE WHEN PREV(CLASSIFIER()) = 'A' AND x > 15 THEN 1
+              WHEN PREV(CLASSIFIER()) = 'B' AND x < 100 THEN 1 ELSE 0 END = 1
+) ORDER BY rn
+----
+1	A
+2	C
+3	B
+4	C
+5	B
+6	C
+
+# in DEFINE the next row is not mapped yet when the current one is decided, so NEXT() is NULL
+query I
+SELECT n FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (A B) DEFINE A AS true, B AS NEXT(CLASSIFIER()) IS NULL
+) ORDER BY n
+----
+2
+2
+2
+
+# FIRST and LAST of a classifier, with a logical offset, in both clauses
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES LAST(CLASSIFIER(U), 1) AS c ALL ROWS PER MATCH
+    PATTERN (A B C) SUBSET U = (A, B) DEFINE A AS p = 'a', C AS LAST(CLASSIFIER(U), 1) = 'A'
+) ORDER BY rn
+----
+1	NULL
+2	A
+3	A
+
+# a step from the row a navigation reaches (5.6.4), in both clauses
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (A B C) SUBSET U = (A, B) DEFINE A AS p = 'a', C AS NEXT(FIRST(CLASSIFIER(U)), 2) = 'C'
+) ORDER BY rn
+----
+1	A
+2	B
+3	C
+
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (A B C D) SUBSET U = (A, B) DEFINE A AS p = 'a', D AS PREV(FIRST(CLASSIFIER(U), 1), 1) = 'A'
+) ORDER BY rn
+----
+1	A
+2	B
+3	C
+4	D
+
+# the standard's own compound example: the third row mapped to U, three rows on
+query IT
+SELECT rn, c FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES NEXT(RUNNING LAST(CLASSIFIER(U), 2), 3) AS c ALL ROWS PER MATCH
+    PATTERN (A B C D E F) SUBSET U = (A, B, C) DEFINE A AS true
+) ORDER BY rn
+----
+1	NULL
+2	NULL
+3	D
+4	D
+5	D
+6	D
+
+# What a row was classified as differs between two ways of reaching the same state, so a walk that
+# reads it cannot reuse a dead end found the other way: here A takes the first row and C fails on
+# it, and the match is only found once B takes the first row instead. (One other engine keeps the
+# dead end and finds nothing; it retries when the same condition reads a column of B instead.)
+query IT
+SELECT rn, c FROM (VALUES (1, 1), (2, 2)) v(rn, x) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN ((A | B) C) DEFINE A AS true, B AS true, C AS PREV(CLASSIFIER()) = 'B'
+) ORDER BY rn
+----
+1	B
+2	C
+
+# ---------------------------------------------------------------- what is refused
+
+# the variable in front of CLASSIFIER is used the way a column's qualifier is, so it cannot be
+# combined with a reference to a different set of rows (5.9)
+statement error
+SELECT 1 FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES NEXT(CLASSIFIER(A) || p) AS c ALL ROWS PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+)
+----
+<REGEX>:Binder Error:.*NEXT\(\) reads the rows of "A", so "p" cannot also read the whole match.*
+
+statement error
+SELECT 1 FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES NEXT(CLASSIFIER() || A.p) AS c ALL ROWS PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+)
+----
+<REGEX>:Binder Error:.*NEXT\(\) reads the rows of "A", so CLASSIFIER\(\) cannot also read the whole match.*
+
+statement error
+SELECT 1 FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES array_agg(CLASSIFIER() || A.p) AS c ONE ROW PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+)
+----
+<REGEX>:Binder Error:.*array_agg\(\) reads the rows of "A", so CLASSIFIER\(\) cannot also read the whole match.*
+
+# what a step over CLASSIFIER() reads is the classifier of the row it lands on, and nothing else
+statement error
+SELECT 1 FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES NEXT(CLASSIFIER() || p) AS c ALL ROWS PER MATCH PATTERN (A B) DEFINE A AS p = 'a'
+)
+----
+<REGEX>:Binder Error:.*NEXT\(\) over CLASSIFIER\(\) reads the classifier of the row it steps to.*
+
+statement error
+SELECT 1 FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES count(*) AS n ONE ROW PER MATCH PATTERN (A B) DEFINE A AS true, B AS count(CLASSIFIER(A)) > 0
+)
+----
+<REGEX>:Binder Error:.*CLASSIFIER\(\) cannot be aggregated in a DEFINE condition.*
+
+# a name that is no pattern variable is looked for as a column of the input, and is not one either
+statement error
+SELECT 1 FROM t MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER(nope) AS c ONE ROW PER MATCH PATTERN (A B) DEFINE A AS true
+)
+----
+<REGEX>:Binder Error:.*"nope" not found.*

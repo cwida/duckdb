@@ -18,6 +18,9 @@ class LogicalRecursiveCTE : public LogicalCTE {
 	LogicalRecursiveCTE();
 
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_RECURSIVE_CTE;
 
 public:
@@ -44,6 +47,12 @@ public:
 
 	vector<TableIndex> GetTableIndex() const override;
 	string GetName() const override;
+
+private:
+	friend class LogicalPlanSQLExportContext;
+	LogicalPlanVerificationResult<LogicalPlanSQLExportRelation>
+	ExportSQLDefinition(LogicalPlanSQLExportContext &context, const LogicalPlanVerificationPath &path,
+	                    const Identifier &name);
 
 protected:
 	void ResolveTypes() override;

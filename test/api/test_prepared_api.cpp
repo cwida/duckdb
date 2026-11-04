@@ -13,7 +13,7 @@ TEST_CASE("Test prepared statements API", "[api]") {
 
 	// PrepareAndExecute with no values
 	duckdb::vector<Value> values;
-	REQUIRE_FAIL(con.PendingQuery("", values, false));
+	REQUIRE_FAIL(con.Submit("", values));
 
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a (i TINYINT)"));
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO a VALUES (11), (12), (13)"));
@@ -64,7 +64,24 @@ TEST_CASE("Test type resolution of function with parameter expressions", "[api]"
 	REQUIRE(CHECK_COLUMN(result, 0, {2}));
 
 	// no prepared statement
-	REQUIRE_FAIL(con.SendQuery("SELECT ?"));
+	REQUIRE_FAIL(con.Query("SELECT ?"));
+}
+
+TEST_CASE("Test prepared EXPLAIN ANALYZE", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	auto prepared = con.Prepare("EXPLAIN ANALYZE SELECT 42");
+	REQUIRE(!prepared->HasError());
+	// run another query between preparing and executing, and execute more than once
+	REQUIRE_NO_FAIL(con.Query("SELECT 1"));
+	for (idx_t i = 0; i < 2; i++) {
+		auto result = prepared->Execute();
+		REQUIRE_NO_FAIL(*result);
+		auto plan = result->Collection().GetValue(1, 0).ToString();
+		REQUIRE(!StringUtil::Contains(plan, "Query profiling is disabled"));
+		REQUIRE(StringUtil::Contains(plan, "Total Time"));
+	}
 }
 
 TEST_CASE("Test prepared statements and dependencies", "[api]") {
@@ -106,6 +123,42 @@ TEST_CASE("Prepared temp table insert is invalidated after drop", "[api]") {
 	auto result = prepared->Execute();
 	REQUIRE(result->HasError());
 	REQUIRE(result->GetError().find("does not exist") != string::npos);
+}
+
+TEST_CASE("Writes to temporary objects register a modification of the temp catalog", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE t(i INTEGER PRIMARY KEY)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE audit(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP SEQUENCE s"));
+
+	auto read = con.Prepare("SELECT * FROM t");
+	REQUIRE(!read->HasError());
+	REQUIRE(read->GetStatementProperties().modified_databases.empty());
+
+	vector<string> writes {
+	    "INSERT INTO t VALUES (1)",
+	    "UPDATE t SET i = 2",
+	    "DELETE FROM t",
+	    "INSERT OR REPLACE INTO t VALUES (1)",
+	    "MERGE INTO t USING (SELECT 1 AS i) s ON t.i = s.i WHEN NOT MATCHED THEN INSERT VALUES (s.i)",
+	    "CREATE TEMP TABLE t2(i INTEGER)",
+	    "CREATE TEMP VIEW v AS SELECT 42",
+	    "CREATE TRIGGER trg AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO audit VALUES (1)",
+	    "CREATE INDEX t_i ON t(i)",
+	    "ALTER TABLE t RENAME TO t3",
+	    "COMMENT ON TABLE t IS 'c'",
+	    "DROP TABLE t",
+	    "SELECT nextval('s')",
+	};
+	for (auto &write : writes) {
+		INFO(write);
+		auto prepared = con.Prepare(write);
+		REQUIRE(!prepared->HasError());
+		auto &modified = prepared->GetStatementProperties().modified_databases;
+		REQUIRE(modified.size() == 1);
+		REQUIRE(modified.count(Identifier::TempCatalog()) == 1);
+	}
 }
 
 TEST_CASE("Dropping connection with prepared statement resets dependencies", "[api]") {
@@ -161,7 +214,7 @@ TEST_CASE("Test that prepared statements live in the client context", "[api]") {
 
 	auto prepared_statement_count = [&con]() {
 		auto result = con.Query("SELECT count(*) FROM duckdb_prepared_statements()");
-		return result->GetValue(0, 0).GetValue<int64_t>();
+		return result->Collection().GetValue(0, 0).GetValue<int64_t>();
 	};
 	REQUIRE(prepared_statement_count() == 0);
 

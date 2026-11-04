@@ -15,12 +15,11 @@ ArithmeticSimplificationRule::ArithmeticSimplificationRule(ExpressionRewriter &r
 	op->matchers.push_back(make_uniq<ConstantExpressionMatcher>());
 	op->matchers.push_back(make_uniq<ExpressionMatcher>());
 	op->policy = SetMatcher::Policy::SOME;
-	// we only match on simple arithmetic expressions (+, -, *, /)
-	op->function = make_uniq<ManyFunctionMatcher>(identifier_set_t {"+", "-", "*", "//"});
+	op->function = make_uniq<ManyFunctionMatcher>(identifier_set_t {"+", "-", "*", "/", "//"});
 	// and only with numeric results
-	op->type = make_uniq<IntegerTypeMatcher>();
-	op->matchers[0]->type = make_uniq<IntegerTypeMatcher>();
-	op->matchers[1]->type = make_uniq<IntegerTypeMatcher>();
+	op->type = make_uniq<NumericTypeMatcher>();
+	op->matchers[0]->type = make_uniq<NumericTypeMatcher>();
+	op->matchers[1]->type = make_uniq<NumericTypeMatcher>();
 	root = std::move(op);
 }
 
@@ -36,22 +35,36 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 		return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 	}
 	auto &func_name = root.Function().GetName();
+	if (func_name == "/") {
+		if (constant_child == 1 && constant.GetValue() == 1 &&
+		    (root.GetChildren()[0]->GetReturnType().id() == LogicalTypeId::FLOAT ||
+		     root.GetChildren()[0]->GetReturnType().id() == LogicalTypeId::DOUBLE)) {
+			return std::move(root.GetChildrenMutable()[0]);
+		}
+		return nullptr;
+	}
+	if (!root.GetReturnType().IsIntegral()) {
+		return nullptr;
+	}
 	if (func_name == "+") {
 		if (constant.GetValue() == 0) {
 			// addition with 0
 			// we can remove the entire operator and replace it with the non-constant child
-			return std::move(root.GetChildrenMutable()[1 - constant_child]);
+			return Expression::PreserveReturnType(root.GetReturnType(),
+			                                      std::move(root.GetChildrenMutable()[1 - constant_child]));
 		}
 	} else if (func_name == "-") {
 		if (constant_child == 1 && constant.GetValue() == 0) {
 			// subtraction by 0
 			// we can remove the entire operator and replace it with the non-constant child
-			return std::move(root.GetChildrenMutable()[1 - constant_child]);
+			return Expression::PreserveReturnType(root.GetReturnType(),
+			                                      std::move(root.GetChildrenMutable()[1 - constant_child]));
 		}
 	} else if (func_name == "*") {
 		if (constant.GetValue() == 1) {
 			// multiply with 1, replace with non-constant child
-			return std::move(root.GetChildrenMutable()[1 - constant_child]);
+			return Expression::PreserveReturnType(root.GetReturnType(),
+			                                      std::move(root.GetChildrenMutable()[1 - constant_child]));
 		} else if (constant.GetValue() == 0) {
 			// multiply by zero: replace with constant or null
 			return ExpressionRewriter::ConstantOrNull(GetContext(),
@@ -62,8 +75,9 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 		if (constant_child == 1) {
 			if (constant.GetValue() == 1) {
 				// divide by 1, replace with non-constant child
-				return std::move(root.GetChildrenMutable()[1 - constant_child]);
-			} else if (constant.GetValue() == 0 && Settings::Get<NullOnDivisionByZeroSetting>(rewriter.context)) {
+				return Expression::PreserveReturnType(root.GetReturnType(),
+				                                      std::move(root.GetChildrenMutable()[1 - constant_child]));
+			} else if (constant.GetValue() == 0 && !Settings::Get<ErrorOnDivisionByZeroSetting>(rewriter.context)) {
 				// divide by 0, replace with NULL
 				return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 			}

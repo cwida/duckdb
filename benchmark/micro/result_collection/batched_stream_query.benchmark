@@ -1,5 +1,5 @@
 # name: benchmark/micro/result_collection/batched_stream_query.benchmark
-# description: Show the performance of the Batched StreamQueryResult
+# description: Show the performance of a batch-ordered stream
 # group: [result_collection]
 
 name batched_stream_query

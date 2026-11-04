@@ -1,0 +1,25 @@
+# name: test/sql/json/test_json_path_long_index.test
+# description: JSON paths with array indices that have many digits
+# group: [json]
+
+require json
+
+statement error
+SELECT json_extract('[1,2]', '$[1234567890123456789')
+----
+JSON path error near '[1234567890123456789'
+
+statement error
+SELECT json_extract('[1,2]', '$[12345678901234567890]')
+----
+JSON path error near '[12345678901234567890]'
+
+statement error
+SELECT json_extract('[1,2]', '$[#-1234567890123456789')
+----
+JSON path error
+
+query IIII
+SELECT json_extract('[1,2]', '$[1234567890123456789]'), json_extract('[1,2]', '$[1]'), json_extract('[1,2]', '$[#-1]'), json_extract('[[1,2]]', '$[0][1]')
+----
+NULL	2	2	2

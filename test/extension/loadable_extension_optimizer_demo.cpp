@@ -36,7 +36,7 @@ public:
 	static bool HasParquetScan(LogicalOperator &op) {
 		if (op.type == LogicalOperatorType::LOGICAL_GET) {
 			auto &get = op.Cast<LogicalGet>();
-			return get.function.name == "parquet_scan";
+			return get.function.GetName() == "parquet_scan";
 		}
 		for (auto &child : op.children) {
 			if (HasParquetScan(*child)) {

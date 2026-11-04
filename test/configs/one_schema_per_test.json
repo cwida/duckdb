@@ -120,7 +120,13 @@
       "paths": [
         "test/sql/constraints/foreignkey/test_fk_export.test"
       ]
+    },
+    {
+      "reason": "Recipe callbacks reference objects by unqualified name: the internal connection running them uses the default schema, not this config's per-test one.",
+      "paths": [
+        "test/sql/attach/attach_to_external_resource.test",
+        "test/sql/attach/external_resource_attach_failure.test"
+      ]
     }
-
   ]
 }

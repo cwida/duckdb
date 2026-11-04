@@ -1,0 +1,21 @@
+# name: test/sql/copy/parquet/parquet_dbp_empty_miniblock.test
+# description: DELTA_BINARY_PACKED data whose blocks are smaller than their number of miniblocks is rejected
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/broken/dbp_empty_miniblock.parquet') LIMIT 3;
+----
+Parquet file has invalid block sizes for DELTA_BINARY_PACKED
+
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/broken/dbp_empty_miniblock.parquet');
+----
+3
+
+# the database is still usable afterwards
+query I
+SELECT 42
+----
+42

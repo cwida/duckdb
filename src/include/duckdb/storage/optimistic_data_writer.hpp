@@ -26,6 +26,8 @@ struct OptimisticWriteCollection {
 
 	void MergeStorage(OptimisticWriteCollection &collection);
 	void FinalizeFlush();
+	// Reset the accounting fields to match a freshly-replaced collection
+	void ResetCollectionAccounting();
 };
 
 enum class OptimisticWritePartialManagers { PER_COLUMN, GLOBAL };

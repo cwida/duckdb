@@ -1,0 +1,57 @@
+# name: test/sql/pragma/profiling/test_io_operation_metrics.test
+# description: Test the io.total_read_operations and io.total_write_operations metrics
+# group: [profiling]
+
+require json
+
+# The metrics are registered and discoverable.
+query IIII
+SELECT metric_name, metric_type, description, unit
+FROM duckdb_available_metrics()
+WHERE metric_name = 'io.total_read_operations';
+----
+io.total_read_operations	uint64	The total number of read operations issued to storage	operations
+
+query IIII
+SELECT metric_name, metric_type, description, unit
+FROM duckdb_available_metrics()
+WHERE metric_name = 'io.total_write_operations';
+----
+io.total_write_operations	uint64	The total number of write operations issued to storage	operations
+
+# Write a source file so a later scan forces real reads from storage.
+statement ok
+COPY (SELECT i AS a, i * 2 AS b FROM range(100000) t(i)) TO '{TEST_DIR}/read_ops_src.csv';
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/read_ops_profile.json';
+
+statement ok
+SET tracked_metrics = ['io.*'];
+
+# A single profiled query that both reads (source csv) and writes (dest csv).
+statement ok
+COPY (SELECT * FROM read_csv('{TEST_DIR}/read_ops_src.csv')) TO '{TEST_DIR}/read_ops_dst.csv';
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+CREATE OR REPLACE TABLE metrics_output AS SELECT * FROM '{TEST_DIR}/read_ops_profile.json';
+
+# Reading the CSV must have issued at least one read operation, writing at least one write operation.
+query I
+SELECT io.total_read_operations > 0 AND io.total_write_operations > 0 FROM metrics_output;
+----
+true
+
+# Operation counts are consistent with the byte counters: bytes moved implies operations issued.
+query I
+SELECT io.total_read_operations >= 1 AND io.total_bytes_read > 0
+   AND io.total_write_operations >= 1 AND io.total_bytes_written > 0
+FROM metrics_output;
+----
+true

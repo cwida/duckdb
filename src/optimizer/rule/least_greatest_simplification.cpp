@@ -23,7 +23,7 @@ unique_ptr<Expression> LeastGreatestSimplificationRule::Apply(LogicalOperator &o
 	if (children[0]->IsVolatile() || !children[0]->Equals(*children[1])) {
 		return nullptr;
 	}
-	return std::move(children[0]);
+	return Expression::PreserveReturnType(root.GetReturnType(), std::move(children[0]));
 }
 
 } // namespace duckdb

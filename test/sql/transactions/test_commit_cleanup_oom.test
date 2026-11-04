@@ -1,0 +1,57 @@
+# name: test/sql/transactions/test_commit_cleanup_oom.test
+# description: Test that OOM during post-commit cleanup does not corrupt transaction state or cause crashes
+# group: [transactions]
+
+require no_alternative_verify
+
+require skip_reload
+
+require no_force_storage
+
+require vector_size 2048
+
+statement ok
+SET debug_skip_checkpoint_on_commit = true;
+
+statement ok
+SET preserve_insertion_order = false;
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET temp_directory = '{TEST_DIR}/tmp_cleanup_oom';
+
+statement ok
+SET memory_limit = '4MB';
+
+statement ok
+CREATE TABLE t (id INT, s VARCHAR);
+
+statement ok
+INSERT INTO t SELECT range, repeat('a', 100) FROM range(5000);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+UPDATE t SET s = repeat('b', 100);
+
+statement ok
+SET memory_limit = '1.5MB';
+
+statement ok
+COMMIT;
+
+statement ok
+SET memory_limit = '10MB';
+
+query I
+SELECT count(*) FROM t;
+----
+5000
+
+query I
+SELECT count(*) FROM t WHERE s = repeat('b', 100);
+----
+5000

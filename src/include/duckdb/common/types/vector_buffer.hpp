@@ -26,6 +26,8 @@ class VectorBuffer;
 class Vector;
 struct ValidityMask;
 struct SelCache;
+class Serializer;
+class Deserializer;
 
 enum class VectorBufferType : uint8_t {
 	STANDARD_BUFFER,   // VectorType::FLAT/CONSTANT - Fixed-Size Type - Holds a single array of data
@@ -92,6 +94,9 @@ public:
 public:
 	virtual data_ptr_t GetData() {
 		return nullptr;
+	}
+	virtual data_ptr_t GetDataMutable() {
+		return GetData();
 	}
 	virtual idx_t Capacity() const {
 		throw InternalException("VectorBuffer does not have a capacity");
@@ -190,6 +195,11 @@ public:
 	                                                const SelectionVector &sel, idx_t count);
 	//! Create a UnifiedVectorFormat from the buffer's data
 	virtual void ToUnifiedFormat(UnifiedVectorFormat &format) const;
+	//! Serialize the buffer as-is (including the vector_type), returns false if the vector must be serialized flat
+	virtual bool TrySerialize(Serializer &serializer, const LogicalType &type, bool compressed_serialization) const;
+	//! Deserialize a buffer written by TrySerialize
+	static buffer_ptr<VectorBuffer> Deserialize(Deserializer &deserializer, VectorType vector_type,
+	                                            const LogicalType &type, idx_t count);
 
 protected:
 	//! Slice a constant vector with a specific count

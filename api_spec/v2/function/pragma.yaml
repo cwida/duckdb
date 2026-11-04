@@ -1,0 +1,350 @@
+module: pragma
+#
+# Pragma functions are invoked with the `PRAGMA` statement, e.g. `PRAGMA my_pragma` or `PRAGMA my_pragma('arg')`.
+# A pragma takes constant arguments and comes in one of two kinds, decided by the callback it is given:
+#   * a query pragma returns a SQL string, which is parsed and run in place of the `PRAGMA` statement, so the pragma
+#     behaves like a parameterized macro for whole statements, e.g. `PRAGMA show_tables`
+#   * an exec pragma runs for its side effects and produces no rows
+# Both callbacks receive the arguments of the call through a `[[function_bind_info]]`, laid out as for every other
+# function family. Pragmas have no bind data.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  pragma_function:
+    description: |
+      An owned opaque handle to a custom pragma function being built. Created with `[[pragma_function_create]]`,
+      configured with the setter functions (e.g. `[[pragma_function_set_name]]`, `[[pragma_function_set_query_callback]]`,
+      etc.) and the signature obtained via `[[pragma_function_get_signature]]`, made available with
+      `[[connection_register_pragma_function]]` or `[[extension_register_pragma_function]]`, and destroyed with
+      `[[pragma_function_destroy]]`.
+
+  pragma_function_query_info:
+    description: |
+      A borrowed opaque handle to the result of a pragma function's "query" callback. The query callback receives this
+      handle next to a `[[function_bind_info]]`, which gives access to the arguments and the user data, and uses it to
+      set the query to run in place of the `PRAGMA` statement.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Callbacks
+#-----------------------------------------------------------------------------------------------------------------------
+callbacks:
+  pragma_function_query_callback:
+    parameters:
+      info:
+        type: function_bind_info
+        description: |
+          Borrowed opaque handle providing access to the arguments of the `PRAGMA` statement and the user data.
+      result:
+        type: pragma_function_query_info
+        description: Borrowed opaque handle to set the query to run in place of the `PRAGMA` statement through.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
+  pragma_function_exec_callback:
+    parameters:
+      info:
+        type: function_bind_info
+        description: |
+          Borrowed opaque handle providing access to the arguments of the `PRAGMA` statement and the user data.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Constructors
+  #---------------------------------------------------------------------------------------------------------------------
+  pragma_function_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Creates a new pragma function through a factory.
+
+      The function starts out empty: configure it with the setter functions (e.g. `[[pragma_function_set_name]]`,
+      `[[pragma_function_set_query_callback]]`, etc.) and the signature obtained via `[[pragma_function_get_signature]]`,
+      then make it available with `[[connection_register_pragma_function]]` or
+      `[[extension_register_pragma_function]]`. The caller owns the returned handle and must destroy it with
+      `[[pragma_function_destroy]]`, also after registration.
+
+      The pragma function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: pragma_function
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create the pragma function through.
+      function:
+        type: pragma_function
+        indirection: 1
+        kind: OUT
+        description: On success, receives the newly created pragma function. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Properties
+  #---------------------------------------------------------------------------------------------------------------------
+  pragma_function_set_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Sets the name of the pragma function, as the `PRAGMA` statement calls it.
+
+      The name is borrowed and copied. Calling this again replaces the previous name.
+      A name must be set before registration.
+    parameters:
+      function:
+        type: pragma_function
+        description: The function to set the name of.
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  pragma_function_get_docs:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Returns the documentation of the function so it can be filled in.
+
+      Set a description with `[[function_docs_set_description]]`, and add examples and categories with
+      `[[function_docs_add_example]]` and `[[function_docs_add_category]]`. The documentation is modified in place and
+      registered with the function. Optional.
+    parameters:
+      function:
+        type: pragma_function
+        kind: IN
+        description: The function to get the documentation of.
+      docs:
+        type: function_docs
+        indirection: 1
+        kind: OUT
+        description: The returned documentation. Borrowed and valid for the lifetime of the function handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  pragma_function_get_signature:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Returns the function's signature so it can be configured.
+
+      Add parameters with `[[function_signature_add_parameter]]`. A pragma produces no value, so its signature cannot
+      set a return type. A signature without parameters makes a pragma called as `PRAGMA name`. The signature is
+      modified in place.
+    parameters:
+      function:
+        type: pragma_function
+        kind: IN
+        description: The function to get the signature of.
+      sig:
+        type: function_signature
+        indirection: 1
+        kind: OUT
+        description: The returned signature. Borrowed and valid for the lifetime of the function handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  pragma_function_set_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Sets arbitrary user data on the pragma function.
+
+      Associates an opaque pointer with the function, retrievable from the callbacks via
+      `[[function_bind_get_user_data]]`. The opaque handle bundles the pointer with an optional destructor, invoked
+      when the data is no longer needed.
+    parameters:
+      function:
+        type: pragma_function
+        description: The function to set the user data of.
+      data:
+        type: opaque
+        indirection: 1
+        description: Opaque handle bundling the user data pointer plus an optional destructor.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  pragma_function_set_query_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Sets the query callback of the pragma function, making it a query pragma.
+
+      The query callback is invoked before the `PRAGMA` statement is bound, and must set a SQL string through
+      `[[pragma_function_query_set_query]]`. The string is parsed and its statements run in place of the `PRAGMA`
+      statement. A pragma function has either a query callback or an exec callback; registration fails when both or
+      neither are set.
+    parameters:
+      function:
+        type: pragma_function
+        description: The function to set the query callback of.
+      callback:
+        type: pragma_function_query_callback
+        description: The query callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  pragma_function_set_exec_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Sets the exec callback of the pragma function, making it an exec pragma.
+
+      The exec callback is invoked when the `PRAGMA` statement executes, and runs for its side effects: the statement
+      produces no rows. A pragma function has either a query callback or an exec callback; registration fails when
+      both or neither are set.
+    parameters:
+      function:
+        type: pragma_function
+        description: The function to set the exec callback of.
+      callback:
+        type: pragma_function_exec_callback
+        description: The exec callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Query Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  pragma_function_query_set_query:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Sets the SQL to run in place of the `PRAGMA` statement.
+
+      The query may hold several statements, separated by semicolons. It is borrowed and copied. Calling this again
+      replaces the previous query. The query callback must set a query.
+    parameters:
+      info:
+        type: pragma_function_query_info
+        description: The query info handle.
+      query:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The SQL to run. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Register
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_register_pragma_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Registers the pragma function, making it available to the `PRAGMA` statement.
+
+      The function is registered on the connection's database, visible to every connection, in the connection's
+      transaction: inside an explicit transaction, it is invisible to other connections until the transaction commits,
+      and a rollback undoes it. Registration requires a name and exactly one of a query callback or an exec callback,
+      and fails when a pragma of the same name already exists. The pragma function must have been created through a
+      factory of the same database. The caller still owns the handle after registration and must destroy it with
+      `[[pragma_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
+      function:
+        type: pragma_function
+        description: The pragma function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_pragma_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Registers the pragma function, making it available to the `PRAGMA` statement.
+
+      The function is registered on the loading extension's database and attributed to the extension. Use this from the
+      extension's load callback. Registration requires a name and exactly one of a query callback or an exec callback,
+      and fails when a pragma of the same name already exists. The pragma function must have been created through a
+      factory of the same database. The caller still owns the handle after registration and must destroy it with
+      `[[pragma_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: pragma_function
+        description: The pragma function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Destroy
+  #---------------------------------------------------------------------------------------------------------------------
+  pragma_function_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Destroys the pragma function, releasing its resources.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to
+      prevent double-destruction. Destroying the handle after registration does not affect the registered
+      function.
+    parameters:
+      function:
+        type: pragma_function
+        description: The function to destroy.
+        indirection: 1
+    return_type: ERROR

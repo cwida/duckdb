@@ -14,9 +14,11 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/printer.hpp"
+#include "duckdb/common/stl_allocator.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/vector_operations/aggregate_executor.hpp"
+#include "duckdb/main/client_context.hpp"
 #include <iomanip>
 #include <thread>
 
@@ -77,8 +79,9 @@ template <typename E = idx_t, typename O = idx_t, typename CMP = std::less<E>, u
 struct MergeSortTree {
 	using ElementType = E;
 	using OffsetType = O;
-	using Elements = vector<ElementType>;
-	using Offsets = vector<OffsetType>;
+	//! The levels are allocated through the tree's allocator so that their memory can be tracked
+	using Elements = vector<ElementType, true, stl_allocator<ElementType>>;
+	using Offsets = vector<OffsetType, true, stl_allocator<OffsetType>>;
 	using Level = pair<Elements, Offsets>;
 	using Tree = vector<Level>;
 
@@ -105,7 +108,10 @@ struct MergeSortTree {
 		CMP cmp;
 	};
 
-	explicit MergeSortTree(const CMP &cmp = CMP()) : cmp(cmp) {
+	explicit MergeSortTree(Allocator &allocator = Allocator::DefaultAllocator(), const CMP &cmp = CMP())
+	    : allocator(allocator), cmp(cmp) {
+	}
+	explicit MergeSortTree(const CMP &cmp) : MergeSortTree(Allocator::DefaultAllocator(), cmp) {
 	}
 
 	inline Elements &LowestLevel() {
@@ -118,7 +124,9 @@ struct MergeSortTree {
 
 	Elements &Allocate(idx_t count);
 
-	void Build();
+	//! Build the tree in parallel: every thread calls this and waits for the others at each level.
+	//! The wait is interruptible so that a failed run releases the waiting threads through the executor.
+	void Build(ClientContext &context);
 
 	//	{nth index, remainder}
 	pair<idx_t, idx_t> SelectNth(const SubFrames &frames, idx_t n) const;
@@ -133,6 +141,8 @@ struct MergeSortTree {
 	template <typename L>
 	void AggregateLowerBound(const idx_t lower, const idx_t upper, const E needle, L aggregate) const;
 
+	//! The allocator used for the levels of the tree
+	Allocator &allocator;
 	Tree tree;
 	CompareElements cmp;
 
@@ -312,21 +322,22 @@ public:
 };
 
 template <typename E, typename O, typename CMP, uint64_t F, uint64_t C>
-vector<E> &MergeSortTree<E, O, CMP, F, C>::Allocate(idx_t count) {
+typename MergeSortTree<E, O, CMP, F, C>::Elements &MergeSortTree<E, O, CMP, F, C>::Allocate(idx_t count) {
 	const auto fanout = F;
 	const auto cascading = C;
-	Elements lowest_level(count);
-	tree.emplace_back(Level(std::move(lowest_level), Offsets()));
+	Elements lowest_level(allocator);
+	lowest_level.resize(count);
+	tree.emplace_back(Level(std::move(lowest_level), Offsets(allocator)));
 
 	for (idx_t child_run_length = 1; child_run_length < count;) {
 		const auto run_length = child_run_length * fanout;
 		const auto num_runs = (count + run_length - 1) / run_length;
 
-		Elements elements;
+		Elements elements(allocator);
 		elements.resize(count);
 
 		//	Allocate cascading pointers only if there is room
-		Offsets cascades;
+		Offsets cascades(allocator);
 		if (cascading > 0 && run_length > cascading) {
 			const auto num_cascades = fanout * num_runs * (run_length / cascading + 2);
 			cascades.resize(num_cascades);
@@ -348,10 +359,13 @@ vector<E> &MergeSortTree<E, O, CMP, F, C>::Allocate(idx_t count) {
 }
 
 template <typename E, typename O, typename CMP, uint64_t F, uint64_t C>
-void MergeSortTree<E, O, CMP, F, C>::Build() {
+void MergeSortTree<E, O, CMP, F, C>::Build(ClientContext &context) {
 	//	Fan in parent levels until we are at the top
 	//	Note that we don't build the top layer as that would just be all the data.
 	while (build_level.load() < tree.size()) {
+		//	A failed run never completes its level, so the waiting threads
+		//	leave through the interrupt that the executor raises for the failure
+		context.InterruptCheck();
 		idx_t level_idx;
 		idx_t run_idx;
 		if (TryNextRun(level_idx, run_idx)) {
@@ -498,6 +512,7 @@ pair<idx_t, idx_t> MergeSortTree<E, O, CMP, F, C>::SelectNth(const SubFrames &fr
 
 			// Go over all children until we found enough in range
 			const auto *level_data = tree[level_no].first.data();
+			const auto level_size = tree[level_no].first.size();
 			while (true) {
 				idx_t matched = 0;
 				std::array<CascadeRange, 3> matches;
@@ -518,7 +533,8 @@ pair<idx_t, idx_t> MergeSortTree<E, O, CMP, F, C>::SelectNth(const SubFrames &fr
 
 					matched += idx_t(match.second - match.first);
 				}
-				if (matched > n) {
+				// 	Move down if there are enough in this child, or if this is the last child of the level
+				if (matched > n || (result + 1) * level_width >= level_size) {
 					// 	Too much in this level, so move down to leftmost child candidate within the cascade range
 					for (idx_t f = 0; f < frames.size(); ++f) {
 						auto &cascade_idx = cascades[f];

@@ -1,0 +1,18 @@
+# name: test/sql/function/string/format_large_precision.test
+# description: format / printf with a very large floating point precision
+# group: [string]
+
+statement error
+SELECT length(format('{:.{}f}', 1.5, 200000000))
+----
+Precision of 200000000 is too large
+
+statement error
+SELECT length(printf('%.*f', 200000000, 1.5))
+----
+Precision of 200000000 is too large
+
+query III
+SELECT format('{:.3f}', 1.5), printf('%.2f', 2.25), length(format('{:.{}f}', 1.5, 1000000))
+----
+1.500	2.25	1000002

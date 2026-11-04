@@ -2,13 +2,63 @@
 #include "duckdb/parser/tableref/expressionlistref.hpp"
 #include "duckdb/planner/expression_binder/insert_binder.hpp"
 #include "duckdb/common/to_string.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 
 namespace duckdb {
 
+static void WarnIfDecimalScaleIsReduced(ClientContext &context, const LogicalType &source_type,
+                                        const LogicalType &target_type, idx_t column_idx,
+                                        vector<idx_t> &warned_about_scale_reduction) {
+	if (warned_about_scale_reduction[column_idx]) {
+		return;
+	}
+	if (source_type.id() != LogicalTypeId::DECIMAL || target_type.id() != LogicalTypeId::DECIMAL) {
+		return;
+	}
+	auto source_scale = DecimalType::GetScale(source_type);
+	auto target_scale = DecimalType::GetScale(target_type);
+	if (source_scale <= target_scale) {
+		return;
+	}
+	DUCKDB_LOG_WARNING(context,
+	                   "Potential loss of decimal precision while resolving a VALUES column: type %s is being cast "
+	                   "to %s, reducing the scale from %d to %d. This may cause values to be rounded. Explicitly "
+	                   "cast all values to a compatible DECIMAL type to avoid this warning.",
+	                   source_type.ToString(), target_type.ToString(), source_scale, target_scale);
+	warned_about_scale_reduction[column_idx] = true;
+}
+
+static void VerifyExpressionListRef(const ExpressionListRef &expr) {
+	// the parser guarantees these, but a deserialized ExpressionListRef might not
+	if (expr.values.empty()) {
+		return;
+	}
+	auto column_count = expr.values[0].size();
+	for (auto &expression_list : expr.values) {
+		if (expression_list.size() != column_count) {
+			throw BinderException("VALUES lists must all be the same length");
+		}
+	}
+	if (!expr.expected_types.empty() && expr.expected_types.size() != column_count) {
+		throw BinderException("VALUES list has %d columns but %d expected types", column_count,
+		                      expr.expected_types.size());
+	}
+	if (!expr.expected_names.empty() && expr.expected_names.size() != column_count) {
+		throw BinderException("VALUES list has %d columns but %d expected names", column_count,
+		                      expr.expected_names.size());
+	}
+	for (auto &type : expr.expected_types) {
+		if (type.IsValid() && !type.IsComplete()) {
+			throw BinderException("VALUES list has an incomplete expected type %s", type.ToString());
+		}
+	}
+}
+
 BoundStatement Binder::Bind(ExpressionListRef &expr) {
+	VerifyExpressionListRef(expr);
 	BoundStatement result;
 	result.types = expr.expected_types;
 	result.names = expr.expected_names;
@@ -85,14 +135,17 @@ BoundStatement Binder::Bind(ExpressionListRef &expr) {
 			type = LogicalType::NormalizeType(type);
 		}
 		// finally do another loop over the expressions and add casts where required
+		vector<idx_t> warned_about_scale_reduction(result.types.size(), false);
 		for (idx_t list_idx = 0; list_idx < values.size(); list_idx++) {
 			auto &list = values[list_idx];
 			for (idx_t val_idx = 0; val_idx < list.size(); val_idx++) {
 				if (!should_infer[val_idx]) {
 					continue;
 				}
-				list[val_idx] =
-				    BoundCastExpression::AddCastToType(context, std::move(list[val_idx]), result.types[val_idx]);
+				auto source_type = ExpressionBinder::GetExpressionReturnType(*list[val_idx]);
+				auto &target_type = result.types[val_idx];
+				WarnIfDecimalScaleIsReduced(context, source_type, target_type, val_idx, warned_about_scale_reduction);
+				list[val_idx] = BoundCastExpression::AddCastToType(context, std::move(list[val_idx]), target_type);
 			}
 		}
 	}

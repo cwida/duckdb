@@ -54,7 +54,7 @@ TEST_CASE("Test that sequence never returns the same value twice even with abort
 		// verify that "i" only has unique values from the sequence
 		// i.e. COUNT = COUNT(DISTINCT)
 		auto result = con.Query("SELECT COUNT(i), COUNT(DISTINCT i) FROM a");
-		REQUIRE(CHECK_COLUMN(result, 1, {result->GetValue(0, 0)}));
+		REQUIRE(CHECK_COLUMN(result, 1, {result->Collection().GetValue(0, 0)}));
 	}
 	DeleteDatabase(dbdir);
 }
@@ -121,7 +121,7 @@ TEST_CASE("Test that sequence never returns the same value twice even with abort
 		// verify that "i" only has unique values from the sequence
 		// i.e. COUNT = COUNT(DISTINCT)
 		auto result = con.Query("SELECT COUNT(i), COUNT(DISTINCT i) FROM a");
-		REQUIRE(CHECK_COLUMN(result, 1, {result->GetValue(0, 0)}));
+		REQUIRE(CHECK_COLUMN(result, 1, {result->Collection().GetValue(0, 0)}));
 	}
 	DeleteDatabase(dbdir);
 }

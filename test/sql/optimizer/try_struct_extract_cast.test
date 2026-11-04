@@ -1,0 +1,61 @@
+# name: test/sql/optimizer/try_struct_extract_cast.test
+# description: unused-columns must not push a throwing CAST out from under TRY (#25236)
+# group: [optimizer]
+
+# unused-columns pushdown-extract rewrites CAST(struct_extract(s, 'bar')) into a
+# child projection and replaces the CAST with a column ref. If that CAST sat
+# inside TRY, the conversion error is then thrown by the child and TRY never
+# sees it. TRY_CAST already refused this rewrite; OPERATOR_TRY must too.
+
+statement ok
+CREATE TABLE foo AS SELECT 'x' AS t, {'bar': 'x'} AS t2;
+
+# column CAST inside TRY
+query I
+SELECT TRY(t::INTEGER) FROM foo
+----
+NULL
+
+# struct-field CAST inside TRY (the failing case)
+query I
+SELECT TRY(t2.bar::INTEGER) FROM foo
+----
+NULL
+
+# both in one projection — unused-columns still has the extra VARCHAR column
+query II
+SELECT TRY(t::INTEGER), TRY(t2.bar::INTEGER) FROM foo
+----
+NULL	NULL
+
+# TRY_CAST on the struct field already worked
+query I
+SELECT TRY_CAST(t2.bar AS INTEGER) FROM foo
+----
+NULL
+
+# bare CAST of the struct field still throws
+statement error
+SELECT t2.bar::INTEGER FROM foo
+----
+Conversion Error
+
+# CTE with an unused sibling column (original #25236 shape, TIMESTAMPTZ)
+query II
+WITH src AS (SELECT '2026-05-02, 00:00:00' AS t, {'bar': '2026-05-02, 00:00:00'} AS t2)
+SELECT TRY(t::TIMESTAMPTZ), TRY(t2.bar::TIMESTAMPTZ) FROM src
+----
+NULL	NULL
+
+# valid struct-field CAST is unchanged
+query I
+SELECT TRY(t2.bar::INTEGER)
+FROM (SELECT {'bar': '7'} AS t2)
+----
+7
+
+# CAST nested under arithmetic still inside TRY
+query I
+SELECT TRY(t2.bar::INTEGER + 1) FROM foo
+----
+NULL

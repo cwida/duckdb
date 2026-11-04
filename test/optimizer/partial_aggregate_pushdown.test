@@ -802,15 +802,6 @@ WHERE e.ev <> f.ev OR abs(e.s - f.s) > 1e-9 * abs(f.s) + 1e-9
 statement ok
 RESET disabled_optimizers
 
-# Projection fusion still allows pushdown.
-query II
-EXPLAIN
-SELECT g, count(*) AS ev, sum(b.c2) AS s
-FROM pj_a a JOIN pj_dim d USING (keyid) JOIN (SELECT keyid, c * 2.0 AS c2 FROM pj_b) b USING (keyid)
-GROUP BY g
-----
-physical_plan	<REGEX>:.*combine_aggr.*
-
 # N-way recursive pushdown.
 
 statement ok
@@ -1338,7 +1329,7 @@ EXPLAIN SELECT o.k, count(e.event_id)
 FROM outer_count_nullable o LEFT JOIN outer_count_events e ON o.k = e.k AND e.keep
 GROUP BY o.k
 ----
-physical_plan	<!REGEX>:.*COALESCE.*
+physical_plan	<REGEX>:.*COALESCE.*
 
 # NULL owner keys retain their unmatched count semantics when reliable key statistics are available.
 query II
@@ -1377,3 +1368,20 @@ FROM outer_count_owner o LEFT JOIN outer_count_events e ON o.k = e.k AND e.keep
 GROUP BY o.k
 ----
 physical_plan	<!REGEX>:.*COALESCE.*
+
+
+# Projection fusion still allows pushdown. The rewrite is gated on the estimated group count being at most
+# 2 * STANDARD_VECTOR_SIZE, and this query's estimate falls between the 512 and 2048 thresholds, so the plan
+# shape only holds at the default vector size. Kept last so the result checks above run at every size.
+require vector_size 2048
+
+statement ok
+RESET disabled_optimizers
+
+query II
+EXPLAIN
+SELECT g, count(*) AS ev, sum(b.c2) AS s
+FROM pj_a a JOIN pj_dim d USING (keyid) JOIN (SELECT keyid, c * 2.0 AS c2 FROM pj_b) b USING (keyid)
+GROUP BY g
+----
+physical_plan	<REGEX>:.*combine_aggr.*

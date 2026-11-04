@@ -72,8 +72,7 @@ inline void ListClusterUpdate(Vector inputs[], AggregateInputData &aggr_input_da
 	ListSegmentFunctions functions;
 	GetSegmentDataFunctions(functions, input.GetType());
 
-	for (idx_t run_idx = 0; run_idx < clustered.n_group_runs; run_idx++) {
-		auto &run = clustered.group_runs[run_idx];
+	for (auto &run : clustered.runs()) {
 		auto &state = *reinterpret_cast<ListAggState *>(run.state);
 		auto run_sel = run.sel;
 
@@ -160,7 +159,7 @@ void ListCombineFunction(Vector &states_vector, Vector &combined, AggregateInput
 			}
 			const auto signed_multiplicity = multiplicity_data[multiplicity_idx];
 			if (signed_multiplicity < 0) {
-				throw InvalidInputException("combine_aggr multiplicity must be non-negative");
+				InvalidInputException::Throw("combine_aggr multiplicity must be non-negative");
 			}
 			multiplicity = static_cast<idx_t>(signed_multiplicity);
 		}

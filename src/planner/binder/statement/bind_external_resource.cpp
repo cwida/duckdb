@@ -12,6 +12,19 @@
 
 namespace duckdb {
 
+Value Binder::BindExternalResourceValue(unique_ptr<ParsedExpression> &expr) {
+	TableFunctionBinder binder(*this, context, "External resource", "External resource parameter");
+	auto bound = binder.Bind(expr);
+	return ExpressionExecutor::EvaluateScalar(context, *bound, true);
+}
+
+void Binder::BindExternalResourceParams(case_insensitive_map_t<unique_ptr<ParsedExpression>> &parsed_params,
+                                        unordered_map<string, Value> &params) {
+	for (auto &entry : parsed_params) {
+		params[entry.first] = BindExternalResourceValue(entry.second);
+	}
+}
+
 BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	if (stmt.operation == ExternalResourceOperation::SHOW) {
 		// SHOW [ALL] EXTERNAL RESOURCES desugars to `SELECT * FROM duckdb_external_resources(all := <all>)`.
@@ -30,20 +43,12 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 		SelectStatement select_statement;
 		select_statement.node = std::move(select_node);
 
-		auto show_result = Bind(select_statement);
-		GetStatementProperties().output_type = QueryResultOutputType::FORCE_MATERIALIZED;
-		return show_result;
+		return Bind(select_statement);
 	}
 
 	BoundStatement result;
 	result.types = {LogicalType::BOOLEAN};
 	result.names = {"Success"};
-
-	TableFunctionBinder binder(*this, context, "External resource", "External resource parameter");
-	auto eval = [&](unique_ptr<ParsedExpression> &expr) {
-		auto bound = binder.Bind(expr);
-		return ExpressionExecutor::EvaluateScalar(context, *bound);
-	};
 
 	BoundExternalResource data;
 	data.operation = stmt.operation;
@@ -57,11 +62,9 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	if (stmt.operation != ExternalResourceOperation::DESTROY) {
 		// CREATE / REGISTER: the resource type is a string literal; only the create params need resolving.
 		data.type = stmt.type;
-		for (auto &entry : stmt.options) {
-			data.params[entry.first] = eval(entry.second);
-		}
+		BindExternalResourceParams(stmt.options, data.params);
 		if (stmt.operation == ExternalResourceOperation::REGISTER) {
-			data.handle = eval(stmt.handle);
+			data.handle = BindExternalResourceValue(stmt.handle);
 			if (data.handle.IsNull()) {
 				throw BinderException("REGISTER EXTERNAL RESOURCE: the handle must not be NULL");
 			}
@@ -71,7 +74,6 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	result.plan = make_uniq<LogicalExternalResource>(std::move(data));
 
 	auto &properties = GetStatementProperties();
-	properties.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
 	properties.return_type = StatementReturnType::NOTHING;
 	return result;
 }

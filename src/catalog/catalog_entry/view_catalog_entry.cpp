@@ -10,8 +10,6 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/catalog/catalog.hpp"
 
-#include <algorithm>
-
 namespace duckdb {
 
 void ViewCatalogEntry::Initialize(CreateViewInfo &info) {
@@ -73,28 +71,8 @@ unique_ptr<CatalogEntry> ViewCatalogEntry::AlterEntry(ClientContext &context, Al
 	// Column comments have a special alter type
 	if (info.type == AlterType::SET_COLUMN_COMMENT) {
 		auto &comment_on_column_info = info.Cast<SetColumnCommentInfo>();
+		auto resolved_column_name = ResolveColumnName(comment_on_column_info.column_name);
 		auto copied_view = Copy(context);
-
-		Identifier resolved_column_name = comment_on_column_info.column_name;
-		auto view_columns = GetColumnInfo();
-		if (view_columns) {
-			// if the view is bound - verify the name we are commenting on exists
-			auto &names = view_columns->names;
-			auto match_name = [&](const auto &n) {
-				return resolved_column_name == n;
-			};
-			auto entry = std::find_if(names.begin(), names.end(), match_name);
-			if (entry == names.end()) {
-				// the column name might be a view alias - check those as well
-				auto alias_entry = std::find_if(aliases.begin(), aliases.end(), match_name);
-				if (alias_entry == aliases.end()) {
-					throw BinderException("View %s does not have a column with name %s", name, resolved_column_name);
-				}
-				auto alias_index = NumericCast<idx_t>(std::distance(aliases.begin(), alias_entry));
-				D_ASSERT(alias_index < names.size());
-				resolved_column_name = names[alias_index];
-			}
-		}
 		// apply the comment to the view
 		auto &copied_view_entry = copied_view->Cast<ViewCatalogEntry>();
 		copied_view_entry.column_comments[resolved_column_name] = comment_on_column_info.comment_value;
@@ -150,9 +128,24 @@ Value ViewCatalogEntry::GetColumnComment(idx_t column_index) {
 	return Value();
 }
 
+Identifier ViewCatalogEntry::ResolveColumnName(const Identifier &column_name) const {
+	auto view_columns = GetColumnInfo();
+	if (!view_columns) {
+		return column_name;
+	}
+	auto &names = view_columns->names;
+	for (idx_t i = 0; i < names.size(); i++) {
+		auto &visible_name = i < aliases.size() ? aliases[i] : names[i];
+		if (visible_name == column_name) {
+			return names[i];
+		}
+	}
+	throw BinderException("View %s does not have a column with name %s", name, column_name);
+}
+
 void ViewCatalogEntry::BindView(ClientContext &context, BindViewAction action) {
 	if (bind_state == ViewBindState::BINDING && bind_thread == ThreadUtil::GetThreadId()) {
-		throw InvalidInputException("View \"%s\" was requested to be bound but this thread is already binding that "
+		throw InvalidInputException("View %s was requested to be bound but this thread is already binding that "
 		                            "view - this likely means the view was attempted to be bound recursively",
 		                            name);
 	}
@@ -166,8 +159,8 @@ void ViewCatalogEntry::BindView(ClientContext &context, BindViewAction action) {
 	bind_thread = ThreadUtil::GetThreadId();
 	try {
 		auto columns = make_shared_ptr<ViewColumnInfo>();
-		Binder::BindView(context, GetQuery(), ParentCatalog().GetName(), ParentSchema().name, nullptr, aliases,
-		                 columns->types, columns->names);
+		Binder::BindView(context, GetQuery(), ParentCatalog().GetName(), ParentSchema().GetSchemaPath(), nullptr,
+		                 aliases, columns->types, columns->names);
 		view_columns.atomic_store(columns);
 	} catch (...) {
 		bind_state = prev_bind_state;

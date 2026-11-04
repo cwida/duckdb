@@ -5,4 +5,9 @@
 statement error
 SELECT * FROM (SELECT * FROM arrow_scan(NULL, NULL, NULL));
 ----
-Binder Error: arrow_scan: pointers cannot be null
+No function matches the given name and argument types
+
+statement error
+SELECT * FROM (SELECT * FROM arrow_scan());
+----
+Binder Error: arrow_scan requires an ArrowScanFactory bind input

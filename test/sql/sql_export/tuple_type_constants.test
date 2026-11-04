@@ -1,0 +1,129 @@
+# name: test/sql/sql_export/tuple_type_constants.test
+# description: SQL export preserves tuple and TYPE constants and tuple cast failures
+# group: [sql_export]
+
+query TTTTTTTTTTTTTTTTTTTT
+SELECT
+	row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR),
+	typeof(row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR)),
+	NULL::TUPLE(SMALLINT,VARCHAR),
+	typeof(NULL::TUPLE(SMALLINT,VARCHAR)),
+	row(),
+	typeof(row()),
+	row(4::TINYINT)::TUPLE(TINYINT),
+	typeof(row(4::TINYINT)::TUPLE(TINYINT)),
+	[row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR),NULL::TUPLE(SMALLINT,VARCHAR),row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR)],
+	typeof([row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR),NULL::TUPLE(SMALLINT,VARCHAR),row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR)]),
+	[]::TUPLE(SMALLINT,VARCHAR)[],
+	typeof([]::TUPLE(SMALLINT,VARCHAR)[]),
+	NULL::TUPLE(SMALLINT,VARCHAR)[],
+	typeof(NULL::TUPLE(SMALLINT,VARCHAR)[]),
+	[row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR),NULL::TUPLE(SMALLINT,VARCHAR)]::TUPLE(SMALLINT,VARCHAR)[2],
+	typeof([row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR),NULL::TUPLE(SMALLINT,VARCHAR)]::TUPLE(SMALLINT,VARCHAR)[2]),
+	{'quoted field': row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR), 'n': 2::TINYINT},
+	typeof({'quoted field': row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR), 'n': 2::TINYINT}),
+	map([1],[row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR)]),
+	typeof(map([1],[row(7::SMALLINT, 'a''b')::TUPLE(SMALLINT,VARCHAR)]));
+----
+(7, 'a\'b')	TUPLE(SMALLINT, VARCHAR)	NULL	TUPLE(SMALLINT, VARCHAR)	()	TUPLE	(4,)	TUPLE(TINYINT)	[(7, 'a\'b'), NULL, (7, 'a\'b')]	TUPLE(SMALLINT, VARCHAR)[]	[]	TUPLE(SMALLINT, VARCHAR)[]	NULL	TUPLE(SMALLINT, VARCHAR)[]	[(7, 'a\'b'), NULL]	TUPLE(SMALLINT, VARCHAR)[2]	{'quoted field': (7, 'a\'b'), 'n': 2}	STRUCT("quoted field" TUPLE(SMALLINT, VARCHAR), n TINYINT)	{1=(7, 'a\'b')}	MAP(INTEGER, TUPLE(SMALLINT, VARCHAR))
+
+query TTTTTTTTTTTTTTTT
+SELECT
+	map([]::INTEGER[],[]::TUPLE(SMALLINT,VARCHAR)[]),
+	typeof(map([]::INTEGER[],[]::TUPLE(SMALLINT,VARCHAR)[])),
+	get_type(NULL::DECIMAL(13,4)),
+	typeof(get_type(NULL::DECIMAL(13,4))),
+	get_type(NULL::TUPLE(SMALLINT,VARCHAR)),
+	typeof(get_type(NULL::TUPLE(SMALLINT,VARCHAR))),
+	get_type(NULL::TYPE),
+	typeof(get_type(NULL::TYPE)),
+	NULL::TYPE,
+	typeof(NULL::TYPE),
+	[get_type(NULL::SMALLINT),NULL::TYPE],
+	typeof([get_type(NULL::SMALLINT),NULL::TYPE]),
+	[]::TYPE[],
+	typeof([]::TYPE[]),
+	{'type': get_type(NULL::TUPLE(SMALLINT,VARCHAR)[])},
+	typeof({'type': get_type(NULL::TUPLE(SMALLINT,VARCHAR)[])});
+----
+{}	MAP(INTEGER, TUPLE(SMALLINT, VARCHAR))	DECIMAL(13,4)	TYPE	TUPLE(SMALLINT, VARCHAR)	TYPE	TYPE	TYPE	NULL	TYPE	[SMALLINT, NULL]	TYPE[]	[]	TYPE[]	{'type': 'TUPLE(SMALLINT, VARCHAR)[]'}	STRUCT("type" TYPE)
+
+# Keep the cast nodes visible for the SQL-form assertions.
+statement ok
+PRAGMA disable_optimizer;
+
+query T
+SELECT CAST(row('7')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+(7,)
+
+query T
+SELECT TRY_CAST(row('7')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+(7,)
+
+statement error
+SELECT CAST(row('bad')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+Could not convert
+
+query T
+SELECT TRY_CAST(row('bad')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+(NULL,)
+
+query T
+SELECT CAST(NULL::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+NULL
+
+query T
+SELECT TRY_CAST(NULL::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+NULL
+
+
+query TT
+EXPLAIN (SQL) SELECT CAST(row('7')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<REGEX>:.*CAST[(].* AS TUPLE[(]SMALLINT[)].*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(row('7')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<!REGEX>:.*TRY_CAST.*
+
+query TT
+EXPLAIN (SQL) SELECT TRY_CAST(row('7')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<REGEX>:.*TRY_CAST[(].* AS TUPLE[(]SMALLINT[)].*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(row('bad')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<REGEX>:.*CAST[(].* AS TUPLE[(]SMALLINT[)].*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(row('bad')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<!REGEX>:.*TRY_CAST.*
+
+query TT
+EXPLAIN (SQL) SELECT TRY_CAST(row('bad')::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<REGEX>:.*TRY_CAST[(].* AS TUPLE[(]SMALLINT[)].*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(NULL::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<REGEX>:.*CAST[(].* AS TUPLE[(]SMALLINT[)].*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(NULL::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<!REGEX>:.*TRY_CAST.*
+
+query TT
+EXPLAIN (SQL) SELECT TRY_CAST(NULL::TUPLE(VARCHAR) AS TUPLE(SMALLINT));
+----
+sql	<REGEX>:.*TRY_CAST[(].* AS TUPLE[(]SMALLINT[)].*

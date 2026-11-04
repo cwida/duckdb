@@ -34,8 +34,7 @@ void RunBenchmark(DuckDBBenchmarkState *state) override {
 }
 
 string VerifyResult(QueryResult *result) override {
-	auto &materialized = (MaterializedQueryResult &)*result;
-	Value val = materialized.GetValue(0, 0);
+	Value val = result->Collection().GetValue(0, 0);
 	if (val != Value::BIGINT(sum + count)) {
 		return string("Value " + val.ToString() + " does not match expected value " + std::to_string(sum + count));
 	}
@@ -73,8 +72,7 @@ void RunBenchmark(DuckDBBenchmarkState *state) override {
 }
 
 string VerifyResult(QueryResult *result) override {
-	auto &materialized = (MaterializedQueryResult &)*result;
-	Value val = materialized.GetValue(0, 0);
+	Value val = result->Collection().GetValue(0, 0);
 	if (val != Value::BIGINT(sum - count)) {
 		return string("Value " + val.ToString() + " does not match expected value " + std::to_string(sum - count));
 	}

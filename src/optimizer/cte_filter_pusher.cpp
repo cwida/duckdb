@@ -1,9 +1,11 @@
 #include "duckdb/optimizer/cte_filter_pusher.hpp"
+#include "duckdb/optimizer/cte_join_filter_pusher.hpp"
 
-#include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_materialized_cte.hpp"
@@ -11,7 +13,8 @@
 namespace duckdb {
 
 CTEFilterPusher::MaterializedCTEInfo::MaterializedCTEInfo(LogicalOperator &materialized_cte_p)
-    : materialized_cte(materialized_cte_p), all_cte_refs_are_filtered(true) {
+    : materialized_cte(materialized_cte_p), all_cte_refs_are_filtered(true),
+      has_filter_dependency(materialized_cte_p.Cast<LogicalMaterializedCTE>().filter_dependency != nullptr) {
 }
 
 CTEFilterPusher::CTEFilterPusher(Optimizer &optimizer_p) : optimizer(optimizer_p) {
@@ -19,11 +22,19 @@ CTEFilterPusher::CTEFilterPusher(Optimizer &optimizer_p) : optimizer(optimizer_p
 
 unique_ptr<LogicalOperator> CTEFilterPusher::Optimize(unique_ptr<LogicalOperator> op) {
 	FindCandidates(*op);
+	if (cte_info_map.empty()) {
+		return op;
+	}
+	// Scalar producer pushdown must preserve markers referenced by CTE consumers.
+	FilterPushdown pushdown(optimizer);
+	unordered_set<TableIndex> referenced_bindings;
+	pushdown.CheckMarkToSemi(*op, referenced_bindings);
 	auto ctes = std::move(cte_info_map);
 
 	// Iterate once over all materialized CTEs
 	for (auto it = ctes.rbegin(); it != ctes.rend(); it++) {
-		if (!it->second->all_cte_refs_are_filtered) {
+		if (it->second->filters.empty() ||
+		    (!it->second->all_cte_refs_are_filtered && !it->second->has_filter_dependency)) {
 			continue;
 		}
 
@@ -32,9 +43,41 @@ unique_ptr<LogicalOperator> CTEFilterPusher::Optimize(unique_ptr<LogicalOperator
 		cte_info_map = InsertionOrderPreservingMap<unique_ptr<MaterializedCTEInfo>>();
 		FindCandidates(*op);
 
-		PushFilterIntoCTE(*cte_info_map[it->first]);
+		auto &info = *cte_info_map[it->first];
+		if (CanPushFilter(info)) {
+			PushFilterIntoCTE(info);
+		}
 	}
+	CTEJoinFilterPusher join_pusher(optimizer);
+	join_pusher.Optimize(*op);
 	return op;
+}
+
+void CTEFilterPusher::ClearDependencies(LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		op.Cast<LogicalMaterializedCTE>().filter_dependency.reset();
+	}
+	for (auto &child : op.children) {
+		ClearDependencies(*child);
+	}
+}
+
+bool CTEFilterPusher::CanPushFilter(const MaterializedCTEInfo &info) {
+	if (info.all_cte_refs_are_filtered) {
+		return true;
+	}
+	if (info.filters.size() != 1 || !HasValidDependency(info)) {
+		return false;
+	}
+	auto &cte = info.materialized_cte.Cast<LogicalMaterializedCTE>();
+	D_ASSERT(info.filters[0].get().children[0]->type == LogicalOperatorType::LOGICAL_CTE_REF);
+	auto &filtered_ref = info.filters[0].get().children[0]->Cast<LogicalCTERef>();
+	return filtered_ref.table_index == cte.filter_dependency->row_scan;
+}
+
+bool CTEFilterPusher::HasValidDependency(const MaterializedCTEInfo &info) {
+	auto &cte = info.materialized_cte.Cast<LogicalMaterializedCTE>();
+	return cte.filter_dependency && cte.filter_dependency->MatchesConsumers(info.references);
 }
 
 void CTEFilterPusher::FindCandidates(LogicalOperator &op) {
@@ -51,6 +94,7 @@ void CTEFilterPusher::FindCandidates(LogicalOperator &op) {
 		auto it = cte_info_map.find(to_string(cte_ref.cte_index.index));
 		if (it != cte_info_map.end()) {
 			it->second->filters.push_back(op);
+			it->second->references.push_back(cte_ref);
 		}
 		return;
 	} else if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
@@ -59,6 +103,7 @@ void CTEFilterPusher::FindCandidates(LogicalOperator &op) {
 		auto it = cte_info_map.find(to_string(cte_ref.cte_index.index));
 		if (it != cte_info_map.end()) {
 			it->second->all_cte_refs_are_filtered = false;
+			it->second->references.push_back(cte_ref);
 		}
 		return;
 	}
@@ -88,9 +133,19 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 			replacer.replacement_bindings.emplace_back(old_bindings[i], new_bindings[i]);
 		}
 
+		bool all_conjuncts_repeatable = true;
+		for (auto &expr : filter.get().expressions) {
+			all_conjuncts_repeatable &= !expr->IsVolatile() && !ExpressionBarrier::Contains(*expr);
+		}
+
 		// We copy the filters and replace the CTE reference bindings with the bindings in the CTE definition
 		unique_ptr<Expression> inner_expr;
 		for (auto &filter_expr : filter.get().expressions) {
+			// Dropping a conjunct must not expose errors it previously short-circuited.
+			if (filter_expr->IsVolatile() || ExpressionBarrier::Contains(*filter_expr) ||
+			    (!all_conjuncts_repeatable && filter_expr->CanThrow())) {
+				continue;
+			}
 			auto filter_expr_copy = filter_expr->Copy();
 			replacer.VisitExpression(&filter_expr_copy);
 			if (inner_expr) {
@@ -99,6 +154,11 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 			} else {
 				inner_expr = std::move(filter_expr_copy);
 			}
+		}
+
+		// An unrestricted consumer makes the disjunction true.
+		if (!inner_expr) {
+			return;
 		}
 
 		if (outer_expr) {

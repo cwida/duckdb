@@ -251,3 +251,28 @@ query I
 SELECT 'foo'::VARIANT::JSON::VARIANT
 ----
 foo
+
+# LIST(JSON) casts preserve SQL NULL values
+query T
+SELECT v::VARCHAR
+FROM (VALUES (1, NULL::JSON[]), (2, [JSON '1', NULL, JSON '{"a":2}'])) t(id, v)
+ORDER BY id
+----
+NULL
+[1, NULL, {"a":2}]
+
+# VARCHAR to LIST(JSON) requires valid JSON containing an array
+query T
+SELECT TRY_CAST(v AS JSON[]) FROM (VALUES ('not json')) t(v)
+----
+NULL
+
+query T
+SELECT TRY_CAST(v AS JSON[]) FROM (VALUES ('{}')) t(v)
+----
+NULL
+
+query T
+SELECT TRY_CAST(v AS JSON[]) FROM (VALUES ('[1,null,{"a":2}]')) t(v)
+----
+[1, null, {"a":2}]

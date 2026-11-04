@@ -1,0 +1,23 @@
+# name: test/sql/catalog/view/nested_view_search_path.test
+# description: Nested views use their catalog when another database is the default
+# group: [view]
+
+statement ok
+ATTACH ':memory:' AS nested_view_db;
+
+statement ok
+CREATE SCHEMA nested_view_db.outer_schema;
+
+statement ok
+CREATE SCHEMA nested_view_db.outer_schema.inner_schema;
+
+statement ok
+CREATE TABLE nested_view_db.outer_schema.inner_schema.t AS SELECT 42 AS i;
+
+statement ok
+CREATE VIEW nested_view_db.outer_schema.inner_schema.v AS SELECT * FROM nested_view_db.outer_schema.inner_schema.t;
+
+query I
+SELECT * FROM nested_view_db.outer_schema.inner_schema.v;
+----
+42

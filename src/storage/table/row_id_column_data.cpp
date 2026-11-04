@@ -12,7 +12,7 @@ RowIdColumnData::RowIdColumnData(BlockManager &block_manager, DataTableInfo &inf
 }
 
 idx_t RowIdColumnData::GetRowStart(ColumnScanState &state) {
-	return state.parent->row_group->GetRowStart();
+	return state.parent->GetRowGroup()->GetRowStart();
 }
 
 FilterPropagateResult RowIdColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,

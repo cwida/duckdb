@@ -5,15 +5,11 @@
 query I
 SELECT dialect_name FROM duckdb_dialects() ORDER BY dialect_name;
 ----
-duckdb
 
 query I
 SELECT current_setting('current_dialect');
 ----
-duckdb
-
-statement ok
-SET current_dialect = 'duckdb';
+NULL
 
 statement error
 SET current_dialect = 'missing';
@@ -22,3 +18,8 @@ Dialect "missing" is not installed
 
 statement ok
 RESET current_dialect;
+
+query I
+SELECT current_setting('current_dialect');
+----
+NULL

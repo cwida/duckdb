@@ -1,0 +1,17 @@
+# name: test/sql/order/limit_percent_cardinality_overflow.test
+# description: LIMIT PERCENT cardinality estimation must not overflow idx_t for a large child cardinality
+# group: [order]
+
+# cardinality estimation runs at plan time; a huge child cardinality must not overflow the idx_t cast
+statement ok
+EXPLAIN SELECT * FROM range(9223372036854775807) LIMIT 50 PERCENT;
+
+# the largest valid percentage against a huge child cardinality must also be safe
+statement ok
+EXPLAIN SELECT * FROM range(9223372036854775807) LIMIT 100 PERCENT;
+
+# normal percentages still produce the right number of rows
+query I
+SELECT count(*) FROM (SELECT * FROM range(100) LIMIT 50 PERCENT);
+----
+50

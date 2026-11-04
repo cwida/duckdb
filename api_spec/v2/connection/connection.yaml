@@ -1,28 +1,24 @@
 module: connection
-handles:
-  query_progress:
-    description: |
-      An opaque, owned handle to a snapshot of a query's execution progress,
-      taken by connection_query_progress at call time. Read it with the
-      query_progress_get_* accessors; destroy it via query_progress_destroy.
-    cleanup_with: query_progress_destroy
 
 functions:
-  connect:
+  connection_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Opens a connection to a database.
+      Opens a connection to an instance.
 
       Each connection carries its own client context and session-scoped (LOCAL)
-      settings. Connections to the same database share its catalog, buffer
-      pool, and transaction manager.
+      settings. Connections to the same instance share its catalog, buffer
+      pool, and transaction manager. A connection may be created before any
+      database is attached to the instance; until one is, only the system
+      catalog and the connection's temporary catalog are visible. The caller
+      destroys it via `[[connection_destroy]]`.
     role: constructor
     belongs_to: connection
     parameters:
-      db:
-        type: database
-        description: "The database to connect to."
+      instance:
+        type: instance
+        description: "The instance to connect to."
       out_conn:
         type: connection
         indirection: 1
@@ -32,161 +28,38 @@ functions:
         type: error_info
         indirection: 1
         kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
-  disconnect:
+  connection_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Closes the connection.
+      Destroys the connection.
 
       Always succeeds. Releases the connection's reference on the underlying
       database instance, which survives for as long as anything else still
-      references it. On success the handle is set to null.
+      references it. On success the handle is set to null. Safe to call on an
+      already-null slot.
     role: destructor
     belongs_to: connection
     parameters:
       conn:
         type: connection
         indirection: 1
-        description: "The connection to close."
+        description: "The connection to destroy."
     return_type: ERROR
-  connection_option_set:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Sets a config option through the connection.
-
-      Only the name and setting of the option are read; the remaining fields
-      are ignored. `scope` chooses the destination, mirroring SQL:
-        - AUTOMATIC resolves it from the option's target scope, like a bare
-          `SET name = setting`.
-        - GLOBAL writes through to the database, visible to all connections,
-          like `SET GLOBAL`.
-        - LOCAL writes to this connection's session only, like `SET LOCAL` /
-          `SET SESSION`.
-      A disallowed combination returns ERROR_INPUT_INVALID: GLOBAL against a
-      LOCAL_ONLY option, LOCAL against a GLOBAL_ONLY one, and the legacy
-      analogues. Unknown option names are rejected; to set an option whose
-      defining extension has not loaded yet, use database scope or the startup
-      options of open.
-    role: setter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      option:
-        type: option
-        description: "The config option to apply."
-      scope:
-        type: SETTING_SCOPE
-        description: "Target scope: AUTOMATIC, GLOBAL, or LOCAL."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  connection_option_get:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Reads a config option through the connection.
-
-      Returns the option's effective setting at the connection's scope: the
-      LOCAL override if this connection set one, otherwise the GLOBAL value,
-      otherwise the static default. The remaining fields are populated exactly
-      as by database_option_get. Aliases resolve transparently, and an unknown
-      name returns ERROR_INPUT_INVALID. The caller destroys the returned
-      option.
-    role: getter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      name:
-        type: identifier
-        description: "Option name (canonical or alias)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  connection_option_get_count:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Returns the number of config options visible to this connection.
-
-      The same count database_option_get_count reports for the underlying
-      database: core plus extension options, aliases excluded.
-    role: getter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      out_count:
-        type: idx
-        indirection: 1
-        kind: OUT
-        description: "Receives the option count."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  connection_option_get_by_index:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Reads the config option at the given index visible to this connection.
-
-      Index space: [0, core_count) addresses core options, [core_count, total)
-      the extension options visible from this connection's database. An
-      out-of-range index returns ERROR_INPUT_INVALID. The caller destroys the
-      returned option.
-    role: getter
-    belongs_to: connection
-    parameters:
-      conn:
-        type: connection
-        description: "The connection."
-      index:
-        type: idx
-        description: "The option index, in [0, option_count)."
-      out_option:
-        type: option
-        indirection: 1
-        kind: OUT
-        description: "Receives the populated option handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  # Query processing
   connection_interrupt:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Interrupts the query currently executing on the connection.
 
-      The cross-thread cancellation entry point for streaming results: safe to
-      call from any thread, including while another thread steps the query's
-      result. A no-op when no query is active. Cancellation surfaces on the
-      consuming side as step status CANCELLED (result_step), or as
-      ERROR_RUNTIME_INTERRUPT (result_fetch_chunk).
+      The cross-thread (but not cross-connection) cancellation entry point
+      for streaming results: safe to call from any thread within the execution
+      of a query through a connection, including while another thread steps
+      the query's result. A no-op when no query is active. Cancellation surfaces
+      on the consuming side as step status CANCELLED (`[[result_step]]`), or as
+      ERROR_RUNTIME_INTERRUPT (`[[result_fetch_chunk]]`).
     role: method
     belongs_to: connection
     parameters:
@@ -197,96 +70,40 @@ functions:
         type: error_info
         indirection: 1
         kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
-  connection_query_progress:
+  connection_progress_get:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Captures a snapshot of the active query's execution progress.
 
-      Writes the progress of the query currently executing on the connection
-      into an owned snapshot handle; read it with the query_progress_get_*
-      accessors and destroy it via query_progress_destroy. Safe to call from
-      any thread, including while another thread steps the query's result.
+      Reads the percentage and row counts from one consistent snapshot
+      of the query currently executing on the connection. Safe to call
+      from any thread, including while another thread steps the query's
+      result.
 
-      Progress is published only while the enable_progress_bar option is set;
-      this call does not enable tracking itself. A percentage of -1, with both
-      row counts 0, means no information is available: tracking is disabled, no
-      query is active, or nothing has been published yet.
-    role: constructor
-    belongs_to: query_progress
+      Progress is published only when the enable_progress_bar option is
+      set; the bridge does not enable tracking itself. Both row counts
+      are 0 when no information is available. The percentage is -1 when
+      tracking is disabled, no query is active, or no progress has been
+      published yet.
+    role: getter
+    belongs_to: connection
     parameters:
       conn:
         type: connection
         description: "The connection."
-      out_progress:
-        type: query_progress
-        indirection: 1
-        kind: OUT
-        description: "Receives the new progress snapshot handle."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  query_progress_get_percentage:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Returns the snapshot's percentage complete.
-
-      A percentage in [0, 100], or -1 when no progress information was
-      available at capture time.
-    role: getter
-    belongs_to: query_progress
-    parameters:
-      progress:
-        type: query_progress
-        description: "The progress snapshot."
       out_percentage:
         type: f64
         indirection: 1
         kind: OUT
-        description: "Receives the percentage."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  query_progress_get_rows_processed:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: "Returns the snapshot's processed row count."
-    role: getter
-    belongs_to: query_progress
-    parameters:
-      progress:
-        type: query_progress
-        description: "The progress snapshot."
+        description: "Receives the percentage complete in [0, 100], -1 if tracking is disabled, no query is active, or no progress has been published yet."
       out_rows_processed:
         type: u64
         indirection: 1
         kind: OUT
         description: "Receives the number of rows processed so far."
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  query_progress_get_total_rows_to_process:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: "Returns the snapshot's total row count."
-    role: getter
-    belongs_to: query_progress
-    parameters:
-      progress:
-        type: query_progress
-        description: "The progress snapshot."
       out_total_rows_to_process:
         type: u64
         indirection: 1
@@ -296,21 +113,5 @@ functions:
         type: error_info
         indirection: 1
         kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
-    return_type: ERROR
-  query_progress_destroy:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Destroys a progress snapshot handle.
-
-      Null-safe: passing nullptr or a slot already set to nullptr is a
-      no-op. On success the slot is set to nullptr.
-    role: destructor
-    belongs_to: query_progress
-    parameters:
-      progress:
-        type: query_progress
-        indirection: 1
-        description: "The progress snapshot to destroy."
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR

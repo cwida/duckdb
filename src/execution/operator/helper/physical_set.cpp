@@ -14,14 +14,33 @@ void PhysicalSet::SetGenericVariable(ClientContext &context, idx_t setting_index
 
 void PhysicalSet::SetExtensionVariable(ClientContext &context, ExtensionOption &extension_option, SetScope scope,
                                        const Value &value) {
+	Identifier name;
+	for (auto &entry : DBConfig::GetConfig(context).GetExtensionSettings()) {
+		if (entry.second.setting_index.GetIndex() == extension_option.setting_index.GetIndex()) {
+			name = entry.first;
+			break;
+		}
+	}
+	D_ASSERT(!name.GetIdentifierName().empty());
+	SetExtensionVariable(context, name, extension_option, scope, value);
+}
+
+void PhysicalSet::SetExtensionVariable(ClientContext &context, const Identifier &name,
+                                       ExtensionOption &extension_option, SetScope scope, const Value &value) {
 	auto &target_type = extension_option.type;
 	Value target_value = value.CastAs(context, target_type);
+	auto resolved_scope = extension_option.ResolveScope(name, scope);
 	if (extension_option.set_function) {
 		extension_option.set_function(context, scope, target_value);
 	}
-	if (scope == SetScope::AUTOMATIC) {
-		scope = extension_option.default_scope;
+	if (extension_option.info) {
+		extension_option.info->OnSet(context, resolved_scope, target_value, false);
 	}
+	// after the callbacks, which may still refuse the value
+	if (extension_option.is_deprecated) {
+		SettingCallbackInfo(context, resolved_scope).WarnDeprecated(name.GetIdentifierName());
+	}
+	scope = resolved_scope;
 	auto setting_index = extension_option.setting_index.GetIndex();
 	SetGenericVariable(context, setting_index, scope, std::move(target_value));
 }
@@ -71,16 +90,20 @@ void PhysicalSet::SetVariable(ClientContext &context, const Identifier &name, Se
 				throw InvalidInputException("Extension parameter %s was not found after autoloading", name);
 			}
 		}
-		SetExtensionVariable(context, extension_option, scope, value);
+		SetExtensionVariable(context, name, extension_option, scope, value);
 		return;
 	}
 	SetScope variable_scope = GetSettingScope(*option, scope);
 
 	Value input_val = value.CastAs(context, DBConfig::ParseLogicalType(option->parameter_type));
 	if (option->default_value) {
+		SettingCallbackInfo info(context, variable_scope);
 		if (option->set_callback) {
-			SettingCallbackInfo info(context, variable_scope);
 			option->set_callback(info, input_val);
+		}
+		// after the callback, which may still refuse the value
+		if (option->is_deprecated) {
+			info.WarnDeprecated(option->name);
 		}
 		auto setting_index = option->setting_idx.GetIndex();
 		SetGenericVariable(context, setting_index, variable_scope, std::move(input_val));

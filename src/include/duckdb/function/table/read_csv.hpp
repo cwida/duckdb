@@ -72,8 +72,6 @@ struct ReadCSVData : public BaseCSVData {
 	//! The buffer manager (if any): this is used when automatic detection is used during binding.
 	//! In this case, some CSV buffers have already been read and can be reused.
 	shared_ptr<CSVBufferManager> buffer_manager;
-	//! Column info (used for union reader serialization)
-	vector<ColumnInfo> column_info;
 	//! The CSV schema, in case there is a unified schema that all files must read
 	CSVSchema csv_schema;
 
@@ -114,6 +112,10 @@ struct CSVCopyFunction {
 struct ReadCSVTableFunction {
 	static TableFunction GetFunction();
 	static TableFunction GetAutoFunction();
+	//! The CSV reader that reads a single file - this is what the multi-file CSV reader wraps
+	static TableFunction GetSingleFileFunction();
+	//! The single-file CSV reader wrapped into a multi-file function
+	static TableFunction GetMultiFileFunction(Identifier name);
 	static void ReadCSVAddNamedParameters(TableFunction &table_function);
 	static void RegisterFunction(BuiltinFunctions &set);
 };

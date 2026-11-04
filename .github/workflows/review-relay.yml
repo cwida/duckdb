@@ -1,0 +1,23 @@
+name: Review relay
+
+# Exists only to produce a workflow_run event. A pull_request_review on a fork PR
+# runs without secrets, so it can't dispatch to pr-tracker directly — but its
+# completion still fires a workflow_run in the base repo, which review-forward.yml
+# (running WITH secrets on the default branch) reacts to. This job emits nothing
+# that is trusted downstream; pr-tracker re-fetches the review from the API.
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+
+jobs:
+  emit-workflow-run:
+    runs-on: ubuntu-latest
+    steps:
+      # Never let this stub fail — its only job is to complete so the base repo
+      # gets a workflow_run event for review-forward.yml to react to.
+      - continue-on-error: true
+        run: echo "review submitted on PR ${{ github.event.pull_request.number }} - relaying via workflow_run"

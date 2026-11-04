@@ -404,6 +404,7 @@ typedef enum duckdb_error_type {
 	DUCKDB_ERROR_SEQUENCE = 41,
 	DUCKDB_ERROR_DATA_CORRUPTION = 43,
 	DUCKDB_INVALID_CONFIGURATION = 42,
+	DUCKDB_ERROR_RESOURCE_IN_USE = 44,
 } duckdb_error_type;
 
 /*!
@@ -1607,6 +1608,8 @@ DUCKDB_C_API duckdb_date_struct duckdb_from_date(duckdb_date date);
 /*!
  * Re-compose a `duckdb_date` from year, month and date (`duckdb_date_struct`).
  *
+ * If the year, month and day do not form a valid date the result will be 0.
+ *
  * history:
  * - stable: v0.2.9
  *
@@ -1700,6 +1703,8 @@ DUCKDB_C_API duckdb_timestamp_struct duckdb_from_timestamp(duckdb_timestamp ts);
 #if DUCKDB_API_VERSION_AT_LEAST(0, 2, 9)
 /*!
  * Re-compose a `duckdb_timestamp` from a duckdb_timestamp_struct.
+ *
+ * If the date is not valid or the timestamp is out of range the result will be 0.
  *
  * history:
  * - stable: v0.2.9
@@ -2244,10 +2249,10 @@ DUCKDB_C_API duckdb_error_data duckdb_appender_error_data(duckdb_appender append
 
 #if DUCKDB_API_VERSION_AT_LEAST(0, 2, 5)
 /*!
- * Flush the appender to the table, forcing the cache of the appender to be cleared. If flushing the data triggers a
- * constraint violation or any other error, then all data is invalidated, and this function returns DuckDBError. It is
- * not possible to append more values. Call duckdb_appender_error_data to obtain the error data followed by
- * duckdb_appender_destroy to destroy the invalidated appender.
+ * Flush the appender to the table, forcing the cache of the appender to be cleared. Requires a connection with no open
+ * result. If flushing the data triggers a constraint violation or any other error, then all data is invalidated, and
+ * this function returns DuckDBError. It is not possible to append more values. Call duckdb_appender_error_data to
+ * obtain the error data followed by duckdb_appender_destroy to destroy the invalidated appender.
  *
  * history:
  * - stable: v0.2.5
@@ -5628,6 +5633,14 @@ DUCKDB_C_API duckdb_state duckdb_pending_prepared(duckdb_prepared_statement prep
 /*!
  * Closes the pending result and de-allocates all memory allocated for the result.
  *
+ * Destroying a pending result whose statement has not completed aborts the statement. On autocommit, its writes are
+ * rolled back. Inside a transaction, a statement that may write invalidates the transaction, and a read-only statement
+ * just stops. Until the statement has completed, preparing or running another statement on the connection fails with
+ * `DUCKDB_ERROR_RESOURCE_IN_USE` and leaves it untouched. `duckdb_pending_execution_is_finished` reporting true does
+ * not mean that the statement completed. To make sure a statement takes effect, complete it before destroying the
+ * pending result: call `duckdb_execute_pending`, and fetch a streaming result until `duckdb_fetch_chunk` returns NULL.
+ * A NULL chunk is also returned on an error, so check `duckdb_result_error` afterwards.
+ *
  * history:
  * - stable: v0.5.0
  *
@@ -6501,6 +6514,13 @@ DUCKDB_C_API duckdb_state duckdb_query(duckdb_connection connection, const char 
 
 /*!
  * Closes the result and de-allocates all memory allocated for that result.
+ *
+ * Destroying a streaming result whose statement has not completed aborts the statement. On autocommit, its writes are
+ * rolled back. Inside a transaction, a statement that may write invalidates the transaction, and a read-only statement
+ * just stops. Until the statement has completed, preparing or running another statement on the connection fails with
+ * `DUCKDB_ERROR_RESOURCE_IN_USE` and leaves it untouched. To make sure the statement takes effect, complete it by
+ * fetching until `duckdb_fetch_chunk` returns NULL before destroying the result. A NULL chunk is also returned on an
+ * error, so check `duckdb_result_error` afterwards.
  *
  * history:
  * - stable: v0.1.0

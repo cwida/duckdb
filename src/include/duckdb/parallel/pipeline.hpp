@@ -99,6 +99,14 @@ private:
 	unique_ptr<PipelineBuildStateData> data;
 };
 
+//! Progress of a pipeline, split into the source and the (sink-adjusted) pipeline progress
+struct PipelineProgress {
+	//! Progress as reported by the source, before normalization
+	ProgressData source;
+	//! Progress of the pipeline: the normalized source progress, adjusted by the sink
+	ProgressData pipeline;
+};
+
 //! The Pipeline class represents an execution pipeline starting at a
 class Pipeline : public enable_shared_from_this<Pipeline> {
 	friend class Executor;
@@ -136,8 +144,20 @@ public:
 	void Ready();
 	void Reset();
 	void ResetSink();
-	void ResetSinkForReschedule();
-	void ResetForReschedule(bool reset_sink);
+	void ResetSinkForReschedule(idx_t scheduled_workers, bool single_producer);
+	//! Invalidate one operator's global state for the next reschedule round: reusable state is
+	//! reset in place, all other state is destroyed and lazily recreated by
+	//! InitializeOperatorState. Must run exactly once per operator per round, while no pipeline
+	//! sharing the operator executes.
+	static void InvalidateOperatorStateForReschedule(ClientContext &client, PhysicalOperator &op);
+	//! Create missing global operator state under the operator's lock. Safe to call from
+	//! concurrently scheduling pipelines: the first caller initializes shared state, later
+	//! callers observe it. On the execute scheduling paths this runs after the pipeline's
+	//! dependencies have finished, so state construction may consume dependency-produced sink
+	//! state there; the external-input initialization path calls it before dependency completion.
+	void InitializeOperatorState();
+	//! Reset the pipeline-local global source state for the next reschedule
+	void ResetSourceForReschedule();
 	void ResetSource(bool force);
 	void PrepareExternalInput();
 	void ClearSource();
@@ -154,6 +174,8 @@ public:
 
 	//! Returns query progress
 	bool GetProgress(ProgressData &progress_data);
+	//! Returns the progress of the source and of the pipeline separately
+	void GetDetailedProgress(PipelineProgress &progress);
 
 	//! Returns a list of all operators (including source and sink) involved in this pipeline
 	vector<reference<PhysicalOperator>> GetOperators();
@@ -166,6 +188,10 @@ public:
 
 	optional_ptr<PhysicalOperator> GetSource() {
 		return source;
+	}
+
+	bool HasSourceState() {
+		return bool(GetSourceState());
 	}
 
 	//! Returns whether any of the operators in the pipeline care about preserving order
@@ -194,6 +220,10 @@ public:
 
 	//! Updates the batch index of a pipeline (and returns the new minimum batch index)
 	idx_t UpdateBatchIndex(idx_t old_index, idx_t new_index);
+
+private:
+	//! Tells the progress verifier (if any) that a new run of this pipeline starts
+	void NotifyProgressReset();
 
 private:
 	//! Whether or not the pipeline has been readied

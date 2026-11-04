@@ -1,0 +1,161 @@
+# name: test/sql/join/mark/constant_mark_join.test
+# description: MARK comparison operands can be independent of either input
+# group: [mark]
+
+statement ok
+CREATE TABLE probe(i INTEGER);
+
+statement ok
+INSERT INTO probe VALUES (1),(2),(2),(NULL);
+
+statement ok
+CREATE TABLE build(i INTEGER);
+
+statement ok
+INSERT INTO build VALUES (1),(3),(NULL);
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON p.i=1;
+----
+1	true
+2	false
+2	false
+NULL	NULL
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON 1=p.i;
+----
+1	true
+2	false
+2	false
+NULL	NULL
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON 2=b.i;
+----
+1	NULL
+2	NULL
+2	NULL
+NULL	NULL
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON b.i=1;
+----
+1	true
+2	true
+2	true
+NULL	true
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON 1<p.i;
+----
+1	false
+2	true
+2	true
+NULL	NULL
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON b.i<2;
+----
+1	true
+2	true
+2	true
+NULL	true
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON NULL::INTEGER=b.i;
+----
+1	NULL
+2	NULL
+2	NULL
+NULL	NULL
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON p.i IS NOT DISTINCT FROM NULL;
+----
+1	false
+2	false
+2	false
+NULL	true
+
+statement ok
+DELETE FROM build;
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON NULL::INTEGER=p.i;
+----
+1	false
+2	false
+2	false
+NULL	false
+
+query II rowsort
+SELECT p.i,__mark_join_marker FROM probe p JOIN BY (TYPE MARK) build b ON 1=b.i;
+----
+1	false
+2	false
+2	false
+NULL	false
+
+# Empty build input does not evaluate the scalar probe operand.
+statement ok
+CREATE SEQUENCE scalar_operand;
+
+query I
+SELECT __mark_join_marker
+FROM range(2) p(i) JOIN BY (TYPE MARK)
+(SELECT i FROM range(12) b(i) WHERE random()<0) b
+ON nextval('scalar_operand')=b.i;
+----
+false
+false
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='scalar_operand';
+----
+NULL
+
+query I
+SELECT __mark_join_marker
+FROM range(2) p(i) JOIN BY (TYPE MARK)
+(SELECT i FROM range(12) b(i) WHERE random()<0) b
+ON CASE WHEN nextval('scalar_operand')>0 THEN error('scalar operand') ELSE 0 END=b.i;
+----
+false
+false
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='scalar_operand';
+----
+NULL
+
+# A constant quantified operand must remain a comparison when rendered as an explicit MARK join.
+query I
+SELECT 1 = ANY(SELECT 1);
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (SELECT NULL::INTEGER AS dummy) l JOIN BY(TYPE MARK) (SELECT 1 AS i) r ON 1=r.i;
+----
+true
+
+query I
+SELECT NULL::INTERVAL IN(SELECT INTERVAL 1 DAY);
+----
+NULL
+
+query I
+SELECT __mark_join_marker FROM (SELECT NULL::INTEGER AS dummy) l JOIN BY(TYPE MARK) (SELECT INTERVAL 1 DAY AS i) r ON NULL::INTERVAL=r.i;
+----
+NULL
+
+query I
+SELECT 'ABC' COLLATE nocase IN(SELECT 'aBc');
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (SELECT NULL::INTEGER AS dummy) l JOIN BY(TYPE MARK) (SELECT 'aBc' AS s) r ON 'ABC' COLLATE nocase=r.s;
+----
+true

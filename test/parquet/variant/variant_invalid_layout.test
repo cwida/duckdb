@@ -1,0 +1,11 @@
+# name: test/parquet/variant/variant_invalid_layout.test
+# description: A VARIANT group without 'metadata' and 'value' columns is rejected
+# group: [variant]
+
+require parquet
+
+# the 'metadata' column of the VARIANT group is renamed to 'metadatx'
+statement error
+SELECT * FROM '{DATA_DIR}/parquet-testing/variant_missing_metadata.parquet';
+----
+Failed to read file

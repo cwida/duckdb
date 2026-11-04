@@ -27,6 +27,8 @@ public:
 	RowGroupReorderer(const RowGroupOrderOptions &options_p, TransactionData transaction_p);
 	optional_ptr<SegmentNode<RowGroup>> GetRootSegment(RowGroupSegmentTree &row_groups);
 	optional_ptr<SegmentNode<RowGroup>> GetNextRowGroup(SegmentNode<RowGroup> &row_group);
+	//! The number of rows in the row groups that will be scanned (after pruning)
+	idx_t ScanRowCount() const;
 
 	static Value RetrieveStat(const BaseStatistics &stats, OrderByStatistics order_by, OrderByColumnType column_type);
 	static OffsetPruningResult GetOffsetAfterPruning(OrderByStatistics order_by, OrderByColumnType column_type,

@@ -49,7 +49,9 @@ void DictionaryDecoder::InitializeDictionary(idx_t new_dictionary_size, optional
 	}
 
 	// now read the non-NULL values from Parquet
-	reader.Plain(reader.block, nullptr, dictionary_size, 0, dictionary_data);
+	if (dictionary_size > 0) {
+		reader.Plain(reader.block, nullptr, dictionary_size, 0, dictionary_data);
+	}
 
 	// immediately filter the dictionary, if applicable
 	if (filter && CanFilter(*filter, *filter_state)) {
@@ -187,23 +189,22 @@ void DictionaryDecoder::Filter(uint8_t *defines, const idx_t read_count, Vector 
 	}
 
 	// apply the filter by checking the dictionary offsets directly
-	uint32_t *offsets;
-	if (valid_count == read_count) {
-		offsets = dictionary_selection_vector.data();
-	} else {
-		offsets = reinterpret_cast<uint32_t *>(offset_buffer.ptr);
-	}
-	D_ASSERT(offsets);
 	SelectionVector new_sel(valid_count);
-	approved_tuple_count = 0;
-	for (idx_t idx = 0; idx < valid_count; idx++) {
-		auto row_idx = valid_count == read_count ? idx : valid_sel.get_index(idx);
-		auto offset = offsets[idx];
-		if (!filter_result[offset]) {
-			// does not pass the filter
-			continue;
+	if (valid_count == read_count) {
+		approved_tuple_count =
+		    SelectionVector::SelectFromBoolean(filter_result.get(), &dictionary_selection_vector, read_count,
+		                                       array_ptr<sel_t>(new_sel.data(), new_sel.Capacity()));
+	} else {
+		auto offsets = reinterpret_cast<uint32_t *>(offset_buffer.ptr);
+		D_ASSERT(offsets);
+		approved_tuple_count = 0;
+		for (idx_t idx = 0; idx < valid_count; idx++) {
+			auto row_idx = valid_sel.get_index(idx);
+			auto offset = offsets[idx];
+			// avoid a branch per row: always write, advance only on a match
+			new_sel.set_index(approved_tuple_count, row_idx);
+			approved_tuple_count += filter_result[offset];
 		}
-		new_sel.set_index(approved_tuple_count++, row_idx);
 	}
 	if (approved_tuple_count < read_count) {
 		sel.Initialize(new_sel);

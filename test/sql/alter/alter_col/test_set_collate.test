@@ -1,0 +1,88 @@
+# name: test/sql/alter/alter_col/test_set_collate.test
+# description: Test COLLATE in alter column statement
+# group: [alter_col]
+
+statement ok
+CREATE TABLE t(id INT, s VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1, 'hello'), (2, 'HELLO'), (3, 'World');
+
+statement ok
+ALTER TABLE t ALTER COLUMN s TYPE VARCHAR COLLATE nocase;
+
+query I
+SELECT id FROM t WHERE s = 'hello' ORDER BY id
+----
+1
+2
+
+query T
+SELECT s FROM t ORDER BY s, id
+----
+hello
+HELLO
+World
+
+# COLLATE combined with USING
+statement ok
+ALTER TABLE t ALTER COLUMN id TYPE VARCHAR COLLATE nocase USING 'x' || id::VARCHAR;
+
+query I
+SELECT count(*) FROM t WHERE id = 'X1'
+----
+1
+
+statement error
+ALTER TABLE t ALTER COLUMN s TYPE INTEGER COLLATE nocase;
+----
+Only VARCHAR columns can have collations!
+
+statement error
+ALTER TABLE t ALTER COLUMN s COLLATE nocase;
+----
+Parser Error
+
+statement error
+ALTER TABLE t ALTER COLUMN s TYPE COLLATE nocase USING s;
+----
+Parser Error: Specify the VARCHAR type to set a collation
+
+statement error
+ALTER TABLE t ALTER COLUMN s TYPE VARCHAR COLLATE nonexistent_collation;
+----
+<REGEX>:.*Catalog Error.*nonexistent_collation.*
+
+# the collation is stored in the table definition
+query I
+SELECT sql LIKE '%s VARCHAR(''nocase'')%' FROM duckdb_tables() WHERE table_name = 't'
+----
+true
+
+# ADD COLUMN with a collation
+statement ok
+ALTER TABLE t ADD COLUMN c VARCHAR COLLATE nocase;
+
+statement ok
+UPDATE t SET c = s;
+
+query I
+SELECT id FROM t WHERE c = 'HELLO' ORDER BY id
+----
+x1
+x2
+
+query I
+SELECT sql LIKE '%c VARCHAR(''nocase'')%' FROM duckdb_tables() WHERE table_name = 't'
+----
+true
+
+statement error
+ALTER TABLE t ADD COLUMN d INTEGER COLLATE nocase;
+----
+Parser Error: Only VARCHAR columns can have collations!
+
+statement error
+ALTER TABLE t ADD COLUMN d VARCHAR COLLATE nonexistent_collation;
+----
+Catalog Error: Collation with name nonexistent_collation does not exist!

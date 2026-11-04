@@ -1,0 +1,43 @@
+# name: test/sql/types/geo/geometry_wkb_depth.test
+# description: WKB input nested deeper than the maximum geometry depth is rejected
+# group: [geo]
+
+# 16 nested levels are fine
+query I
+SELECT ST_AsText(ST_GeomFromWKB(from_hex(repeat('010700000001000000', 15) || '010700000000000000')))[1:40];
+----
+GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (
+
+statement error
+SELECT octet_length(ST_AsWKB(ST_GeomFromWKB(from_hex(repeat('010700000001000000', 16) || '010700000000000000'))));
+----
+Geometry exceeds maximum recursion depth of 16
+
+statement error
+SELECT octet_length(ST_AsWKB(from_hex(repeat('010700000001000000', 50000) || '010700000000000000')::GEOMETRY));
+----
+Geometry exceeds maximum recursion depth of 16
+
+# big-endian input
+statement error
+SELECT octet_length(ST_AsWKB(ST_GeomFromWKB(from_hex(repeat('000000000700000001', 16) || '000000000700000000'))));
+----
+Geometry exceeds maximum recursion depth of 16
+
+query II
+SELECT octet_length(ST_AsWKB(TRY_CAST(from_hex(repeat('010700000001000000', 16) || '010700000000000000') AS GEOMETRY))), octet_length(ST_AsWKB(TRY_CAST(from_hex(repeat('010700000001000000', 50000) || '010700000000000000') AS GEOMETRY)));
+----
+NULL	NULL
+
+query I
+SELECT ST_AsText(ST_GeomFromWKB(from_hex('0107000000020000000107000000000000000101000000000000000000F03F0000000000000040')));
+----
+GEOMETRYCOLLECTION (GEOMETRYCOLLECTION EMPTY, POINT (1 2))
+
+statement ok
+CREATE TABLE geoms AS SELECT ST_GeomFromWKB(from_hex(repeat('010700000001000000', 15) || '0101000000000000000000F03F0000000000000040')) g;
+
+query I
+SELECT ST_AsText(g)[-30:] FROM geoms;
+----
+ON (POINT (1 2))))))))))))))))

@@ -1,0 +1,59 @@
+# name: test/sql/index/art/vacuum/test_art_vacuum_persisted_nested_leaf.test
+# description: In-place VACUUM on a non-unique ART must mark relocated nested leaf destination buffers as dirty
+# group: [vacuum]
+
+statement ok
+SET threads = 1;
+
+statement ok
+ATTACH '{TEST_DIR}/test_art_vacuum_nested_leaf.db' AS leaf_db (BLOCK_SIZE 16384);
+
+statement ok
+CREATE TABLE leaf_db.t AS SELECT i // 256 AS k, i AS id FROM range(338944) r(i);
+
+statement ok
+CREATE INDEX idx_k ON leaf_db.t(k);
+
+statement ok
+CHECKPOINT leaf_db;
+
+statement ok
+DETACH leaf_db;
+
+# Re-attach the database; buffer 3 is on-disk and clean
+statement ok
+ATTACH '{TEST_DIR}/test_art_vacuum_nested_leaf.db' AS leaf_db (BLOCK_SIZE 16384);
+
+# Touch k = 1250 to bring buffer 3 into memory without dirtying it
+query I
+SELECT count(*) FROM leaf_db.t WHERE k = 1250;
+----
+256
+
+# Delete keys in [824, 1224) to create excessive free segments in buffer 2,
+# triggering VACUUM to relocate surviving leaf nodes (such as k = 816) into buffer 3.
+statement ok
+DELETE FROM leaf_db.t WHERE k >= 824 AND k < 1224;
+
+statement ok
+VACUUM leaf_db.t;
+
+statement ok
+CHECKPOINT leaf_db;
+
+statement ok
+DETACH leaf_db;
+
+statement ok
+ATTACH '{TEST_DIR}/test_art_vacuum_nested_leaf.db' AS leaf_db;
+
+# Verify that index scan is used and all rows are returned
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM leaf_db.t WHERE k = 816;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT count(*) FROM leaf_db.t WHERE k = 816;
+----
+256

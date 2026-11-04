@@ -1,0 +1,16 @@
+# name: benchmark/micro/pushdown/constant_or_null_conjunction.benchmark
+# description: Eliminate a redundant NULL-preserving bound before scan filtering
+# group: [pushdown]
+
+name ConstantOrNullConjunction
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE quantities AS SELECT nullif(i % 101, 0)::INTEGER AS q FROM range(10000000) t(i);
+
+run
+SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20;
+
+result I
+1980200

@@ -14,6 +14,12 @@ SELECT b, SUM(a) AS sum FROM test GROUP BY b HAVING b=21 ORDER BY b;
 ----
 21	12.000000
 
+# the SELECT list is bound before HAVING
+statement error
+SELECT c FROM test GROUP BY b HAVING d > 1;
+----
+Referenced column "c" not found
+
 # HAVING with condition on sum
 query IR
 SELECT b, SUM(a) FROM test GROUP BY b HAVING SUM(a) < 20 ORDER BY b;
@@ -78,3 +84,24 @@ SELECT test.b, SUM(a) FROM test GROUP BY test.b ORDER BY (SELECT SUM(a) FROM tes
 22	24.000000
 21	12.000000
 
+# HAVING filters the groups before QUALIFY
+query III
+SELECT g, sum(v) AS n, row_number() OVER (ORDER BY sum(v)) AS rn FROM (VALUES (1, 1), (2, 2), (3, 3)) t(g, v) GROUP BY g HAVING n >= 2 QUALIFY rn = 1;
+----
+2	2	1
+
+query I
+SELECT row_number() OVER () AS rn FROM range(3) t(i) HAVING count(*) = 3 QUALIFY rn = 1;
+----
+1
+
+statement error
+SELECT row_number() OVER () AS rn FROM range(3) t(i) HAVING count(*) = 3 QUALIFY i = 0;
+----
+column "i" must appear in the GROUP BY clause
+
+# HAVING on a collated group of a grouping set
+query TII
+SELECT s, count(*), grouping(s) FROM (SELECT 'A' COLLATE NOCASE AS s) t GROUP BY ROLLUP(s) HAVING s IS NULL;
+----
+NULL	1	1

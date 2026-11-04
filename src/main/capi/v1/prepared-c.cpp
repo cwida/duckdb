@@ -13,10 +13,8 @@ using duckdb::ErrorData;
 using duckdb::ExtractStatementsWrapper;
 using duckdb::hugeint_t;
 using duckdb::LogicalType;
-using duckdb::MaterializedQueryResult;
 using duckdb::optional_ptr;
 using duckdb::PreparedStatementWrapper;
-using duckdb::QueryResultType;
 using duckdb::StringUtil;
 using duckdb::timestamp_t;
 using duckdb::uhugeint_t;
@@ -432,7 +430,7 @@ duckdb_state duckdb_execute_prepared(duckdb_prepared_statement prepared_statemen
 
 	duckdb::unique_ptr<duckdb::QueryResult> result;
 	try {
-		result = wrapper->statement->Execute(wrapper->values, false);
+		result = wrapper->statement->Execute(wrapper->values);
 	} catch (...) {
 		return DuckDBError;
 	}
@@ -447,8 +445,15 @@ duckdb_state duckdb_execute_prepared_streaming(duckdb_prepared_statement prepare
 	}
 
 	try {
-		auto result = wrapper->statement->Execute(wrapper->values, true);
-		return DuckDBTranslateResult(std::move(result), out_result);
+		auto result = wrapper->statement->Submit(wrapper->values);
+		// Without an out_result the stream is dropped unread, which rolls back what the statement wrote
+		if (result->HasError() ||
+		    !duckdb::StreamsByDefault(wrapper->statement->GetStatementType(), *result, out_result != nullptr)) {
+			result->Complete();
+			return DuckDBTranslateResult(std::move(result), out_result);
+		}
+		return DuckDBTranslateStreamResult(duckdb::make_uniq<duckdb::QueryResultStream<>>(std::move(result)),
+		                                   out_result);
 	} catch (...) {
 		return DuckDBError;
 	}

@@ -1,11 +1,7 @@
-if(${EXIT_TIME_DESTRUCTORS_WARNING})
-  set(CMAKE_CXX_FLAGS_DEBUG
-      "${CMAKE_CXX_FLAGS_DEBUG} -Wno-exit-time-destructors")
-endif()
-
 add_library_unity(
   duckdb_common_types_row
   OBJECT
+  integer_partitioned_tuple_data.cpp
   partitioned_tuple_data.cpp
   tuple_data_allocator.cpp
   tuple_data_collection.cpp

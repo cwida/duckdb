@@ -1,0 +1,56 @@
+# name: test/sql/aggregate/distinct/rewrite/distinct_aggregate_rewrite_join_order.test
+# description: DISTINCT aggregate and GROUPING SETS rewrites keep the shared input column layout when joins below it are reordered
+# group: [rewrite]
+
+statement ok
+CREATE TABLE t1 (c1 INTEGER, c2 INTEGER[]);
+
+statement ok
+INSERT INTO t1 VALUES (1, NULL), (2, NULL);
+
+query II
+SELECT t1.c1, s3.a1
+FROM t1, (
+	SELECT t1.c1 AS a0, max(s1.v1) AS a1, max(t1.c1)::BIGINT AS a2, count(DISTINCT t1.c1) AS a3
+	FROM t1
+	JOIN (SELECT c1 AS k1, [c1] AS v1 FROM t1) AS s1 ON (t1.c1 = s1.k1)
+	JOIN (SELECT DISTINCT c1 FROM t1) AS s2 ON (t1.c1 = s2.c1)
+	GROUP BY t1.c1
+) AS s3
+WHERE t1.c1 = s3.a0
+ORDER BY ALL
+----
+1	[1]
+2	[2]
+
+query II
+SELECT t1.c1, s3.a1
+FROM t1, (
+	SELECT t1.c1 AS a0, max(s1.v1) AS a1, max(t1.c1)::BIGINT AS a2, count(DISTINCT t1.c1) AS a3
+	FROM t1
+	JOIN (SELECT c1 AS k1, [c1] AS v1 FROM t1) AS s1 ON (t1.c1 = s1.k1)
+	JOIN (SELECT DISTINCT c1 FROM t1) AS s2 ON (t1.c1 = s2.c1)
+	GROUP BY GROUPING SETS ((t1.c1), ())
+) AS s3
+WHERE t1.c1 = s3.a0
+ORDER BY ALL
+----
+1	[1]
+2	[2]
+
+statement ok
+UPDATE t1 SET c2 = s3.a1
+FROM (
+	SELECT t1.c1 AS a0, max(s1.v1) AS a1, max(t1.c1)::BIGINT AS a2, count(DISTINCT t1.c1) AS a3
+	FROM t1
+	JOIN (SELECT c1 AS k1, [c1] AS v1 FROM t1) AS s1 ON (t1.c1 = s1.k1)
+	JOIN (SELECT DISTINCT c1 FROM t1) AS s2 ON (t1.c1 = s2.c1)
+	GROUP BY t1.c1
+) AS s3
+WHERE t1.c1 = s3.a0;
+
+query II
+SELECT * FROM t1 ORDER BY c1
+----
+1	[1]
+2	[2]

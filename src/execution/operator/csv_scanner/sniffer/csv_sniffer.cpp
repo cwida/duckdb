@@ -106,8 +106,10 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 	// Parse chunk and read csv with info candidate
 	auto &data_chunk = scanner->ParseChunk().ToChunk();
 	idx_t start_row = 0;
-	if (sniffed_column_counts.result_position == 2) {
-		// If equal to two, we will only use the second row for type checking
+	const bool should_skip_header =
+	    !options.dialect_options.header.IsSetByUser() || options.dialect_options.header.GetValue();
+	if (sniffed_column_counts.result_position > 1 && should_skip_header) {
+		// Skip the potential header when detecting types
 		start_row = 1;
 	}
 
@@ -119,15 +121,17 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 
 	// Possibly Gather Header
 	vector<HeaderValue> potential_header;
-	for (idx_t col_idx = 0; col_idx < data_chunk.ColumnCount(); col_idx++) {
-		auto &cur_vector = data_chunk.data[col_idx];
-		const auto vector_data = FlatVector::GetData<string_t>(cur_vector);
-		auto &validity = FlatVector::ValidityMutable(cur_vector);
-		HeaderValue val;
-		if (validity.RowIsValid(0)) {
-			val = HeaderValue(vector_data[0]);
+	if (data_chunk.size() > 0) {
+		for (idx_t col_idx = 0; col_idx < data_chunk.ColumnCount(); col_idx++) {
+			auto &cur_vector = data_chunk.data[col_idx];
+			const auto vector_data = FlatVector::GetData<string_t>(cur_vector);
+			auto &validity = FlatVector::ValidityMutable(cur_vector);
+			HeaderValue val;
+			if (validity.RowIsValid(0)) {
+				val = HeaderValue(vector_data[0]);
+			}
+			potential_header.emplace_back(val);
 		}
-		potential_header.emplace_back(val);
 	}
 
 	auto names = DetectHeaderInternal(buffer_manager->context, potential_header, *state_machine, set_columns,
@@ -149,7 +153,7 @@ SnifferResult CSVSniffer::AdaptiveSniff(const CSVSchema &file_schema) {
 	// Check if we are happy with the result or if we need to do more sniffing
 	if (!error_handler->AnyErrors() && !detection_error_handler->AnyErrors()) {
 		// If we got no errors, we also run full if schemas do not match.
-		if (!set_columns.IsSet() && !file_options.AnySet()) {
+		if (!set_columns.IsSet()) {
 			string error;
 			run_full = !file_schema.SchemasMatch(error, min_sniff_res, options.file_path, true);
 		}

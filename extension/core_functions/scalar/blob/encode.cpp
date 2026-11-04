@@ -82,7 +82,7 @@ void BinaryDecodeFunction(DataChunk &args, ExpressionState &state, Vector &resul
 			    auto new_str = Utf8Proc::RemoveInvalid(input_data, input_length);
 			    auto target = StringVector::EmptyString(result, new_str.size());
 			    auto output = target.GetDataWriteable();
-			    memcpy(output, new_str.data(), new_str.size());
+			    memcpy(output, new_str.data(), new_str.size()); // NOLINT(bugprone-not-null-terminated-result)
 			    target.Finalize();
 			    return target;
 		    }
@@ -105,21 +105,25 @@ void BinaryDecodeFunction(DataChunk &args, ExpressionState &state, Vector &resul
 } // namespace
 
 ScalarFunction EncodeFun::GetFunction() {
-	return ScalarFunction({LogicalType::VARCHAR}, LogicalType::BLOB, EncodeFunction);
+	ScalarFunction func({}, LogicalType::BLOB, EncodeFunction);
+	func.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	return func;
 }
 
 ScalarFunctionSet DecodeFun::GetFunctions() {
 	ScalarFunctionSet decode("decode");
 
-	ScalarFunction unary_function({LogicalType::BLOB}, LogicalType::VARCHAR, UnaryDecodeFunction);
-	ScalarFunction binary_function({LogicalType::BLOB, LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                               BinaryDecodeFunction);
+	ScalarFunction unary_function({}, LogicalType::VARCHAR, UnaryDecodeFunction);
+	unary_function.GetSignature().AddParameter("blob", LogicalType::BLOB);
 
-	unary_function.SetFallible();
-	binary_function.SetFallible();
+	ScalarFunction binary_function({}, LogicalType::VARCHAR, BinaryDecodeFunction);
+	binary_function.GetSignature()
+	    .AddParameter("blob", LogicalType::BLOB)
+	    .AddParameter("error_option", LogicalType::VARCHAR);
 
 	decode.AddFunction(unary_function);
 	decode.AddFunction(binary_function);
+	decode.SetFallible();
 
 	return decode;
 }

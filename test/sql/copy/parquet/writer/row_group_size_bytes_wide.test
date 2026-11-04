@@ -1,0 +1,162 @@
+# name: test/sql/copy/parquet/writer/row_group_size_bytes_wide.test
+# description: ROW_GROUP_SIZE_BYTES must be honoured when a chunk is wider than the limit
+# group: [writer]
+
+require parquet
+
+# 64 kB rows, so one vector is far wider than the 1 MB limit used below
+statement ok
+CREATE TABLE wide AS SELECT i, repeat(md5(i::VARCHAR), 2048)::BLOB AS payload FROM range(600) t(i)
+
+# the unordered sink
+statement ok
+SET preserve_insertion_order=false
+
+statement ok
+COPY wide TO '{TEST_DIR}/unordered.parquet' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000)
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/unordered.parquet')
+----
+true
+
+# the order-preserving sink writes through repartitioning instead
+statement ok
+SET preserve_insertion_order=true
+
+statement ok
+COPY wide TO '{TEST_DIR}/ordered.parquet' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000)
+
+query IT
+SELECT count(*), bool_and(payload = repeat(md5(i::VARCHAR), 2048)::BLOB) FROM '{TEST_DIR}/ordered.parquet'
+----
+600	true
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/ordered.parquet')
+----
+true
+
+# partitioned writes batch on their own
+statement ok
+COPY (SELECT i % 4 AS p, i, payload FROM wide) TO '{TEST_DIR}/part' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000, PARTITION_BY ('p'))
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/part/**/*.parquet')
+----
+true
+
+# a partition below partitioned_write_flush_threshold is merged back into one collection before it is
+# split into row groups again
+statement ok
+CREATE TABLE mixed AS SELECT i, CASE WHEN i % 100 = 0 THEN repeat(md5(i::VARCHAR), 4096) ELSE md5(i::VARCHAR) END::BLOB AS payload FROM range(20000) t(i)
+
+statement ok
+COPY (SELECT i % 4 AS p, i, payload FROM mixed) TO '{TEST_DIR}/mixed' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000, PARTITION_BY ('p'))
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/mixed/**/*.parquet')
+----
+true
+
+# Clustered wide rows must also be split when partitions are prepared immediately.
+statement ok
+CREATE TABLE skewed AS SELECT i // 2048 AS p, i,
+    CASE WHEN i % 2048 < 100 THEN repeat(md5(i::VARCHAR), 2048) ELSE md5(i::VARCHAR) END::BLOB AS payload
+FROM range(4096) t(i)
+
+statement ok
+SET partitioned_write_flush_threshold=1
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads}
+
+statement ok
+COPY skewed TO '{TEST_DIR}/skewed_{threads}' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000, PARTITION_BY (p))
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/skewed_{threads}/**/*.parquet')
+----
+true
+
+query II
+SELECT (SELECT count(*) FROM (FROM skewed EXCEPT ALL SELECT p, i, payload FROM '{TEST_DIR}/skewed_{threads}/**/*.parquet')),
+       (SELECT count(*) FROM (SELECT p, i, payload FROM '{TEST_DIR}/skewed_{threads}/**/*.parquet' EXCEPT ALL FROM skewed))
+----
+0	0
+
+statement ok
+COPY skewed TO '{TEST_DIR}/skewed_sorted_{threads}' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000, PARTITION_BY (p), ORDER_BY (i))
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/skewed_sorted_{threads}/**/*.parquet')
+----
+true
+
+endloop
+
+# ORDER_BY without partition keys uses the same batching path.
+statement ok
+COPY skewed TO '{TEST_DIR}/skewed_sorted' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000, ORDER_BY (i))
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/skewed_sorted/*.parquet')
+----
+true
+
+statement ok
+RESET threads
+
+statement ok
+RESET partitioned_write_flush_threshold
+
+# nested types are sliced per column, so they need the same bound and must round-trip
+statement ok
+CREATE TABLE nested AS SELECT
+    CASE WHEN i % 3 = 0 THEN NULL ELSE {'a': i, 'b': i} END AS fixed_strct,
+    range(i, i + 400) AS lst,
+    {'a': repeat(md5(i::VARCHAR), 20), 'b': i} AS strct,
+    [repeat(md5(i::VARCHAR), 10), repeat(md5((i + 1)::VARCHAR), 10)]::VARCHAR[2] AS arr,
+    map_from_entries([(i, repeat(md5(i::VARCHAR), 20))]) AS mp
+FROM range(1200) t(i)
+
+statement ok
+COPY nested TO '{TEST_DIR}/nested.parquet' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000)
+
+query T
+SELECT max(row_group_bytes) < 1300000 FROM parquet_metadata('{TEST_DIR}/nested.parquet')
+----
+true
+
+query II
+SELECT (SELECT count(*) FROM (FROM nested EXCEPT FROM '{TEST_DIR}/nested.parquet')),
+       (SELECT count(*) FROM (FROM '{TEST_DIR}/nested.parquet' EXCEPT FROM nested))
+----
+0	0
+
+# a struct has no payload of its own, and nothing reports a heap size for fixed-width children, so
+# its width has to come from summing them. One vector of these is 128 kB, well past the 50 kB limit
+statement ok
+CREATE TABLE fixed_struct AS SELECT {'a': i, 'b': i, 'c': i, 'd': i, 'e': i, 'f': i, 'g': i, 'h': i} AS s FROM range(20000) t(i)
+
+statement ok
+COPY fixed_struct TO '{TEST_DIR}/fixed_struct.parquet' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 50000)
+
+query TT
+SELECT max(row_group_bytes) < 65000, count(DISTINCT row_group_id) < 100 FROM parquet_metadata('{TEST_DIR}/fixed_struct.parquet')
+----
+true	true
+
+# a row wider than the limit cannot be split further - one row per row group, and no hang
+statement ok
+CREATE TABLE huge AS SELECT repeat(md5(i::VARCHAR), 262144)::BLOB AS payload FROM range(8) t(i)
+
+statement ok
+COPY huge TO '{TEST_DIR}/huge.parquet' (FORMAT parquet, COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 1000000)
+
+query I
+SELECT count(DISTINCT row_group_id) FROM parquet_metadata('{TEST_DIR}/huge.parquet')
+----
+8

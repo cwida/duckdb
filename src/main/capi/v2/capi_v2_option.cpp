@@ -2,20 +2,6 @@
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_option_create(duckdb_v2_identifier_t name, duckdb_v2_str setting,
-                                        duckdb_v2_option_handle *out_option, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(name);
-	DUCKDB_CHECK_ARG(setting);
-	DUCKDB_CHECK_ARG(out_option);
-	*out_option = nullptr;
-	return WithErrorHandler(err, [&]() {
-		auto wrapper = duckdb::make_uniq<CV2Option>();
-		wrapper->name = duckdb::Identifier(Convert(name));
-		wrapper->setting = Convert(setting);
-		*out_option = Convert(wrapper.release());
-	});
-}
-
 DUCKDB_V2_ERROR duckdb_v2_option_destroy(duckdb_v2_option_handle *option) {
 	return WithErrorHandler(nullptr, [&]() {
 		if (!option) {
@@ -35,18 +21,12 @@ DUCKDB_V2_ERROR duckdb_v2_option_get_name(duckdb_v2_option_handle option, duckdb
 	return WithErrorHandler(err, [&]() { *out_name = Convert(Convert(option)->name); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_option_get_setting(duckdb_v2_option_handle option, duckdb_v2_str *out_setting,
-                                             duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_option_get_default_value(duckdb_v2_option_handle option, duckdb_v2_value_handle *out_value,
+                                                   duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
-	DUCKDB_CHECK_ARG(out_setting);
-	return WithErrorHandler(err, [&]() { *out_setting = Convert(Convert(option)->setting); });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_option_get_default_setting(duckdb_v2_option_handle option, duckdb_v2_str *out_default_setting,
-                                                     duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(option);
-	DUCKDB_CHECK_ARG(out_default_setting);
-	return WithErrorHandler(err, [&]() { *out_default_setting = Convert(Convert(option)->default_setting); });
+	DUCKDB_CHECK_ARG(out_value);
+	*out_value = nullptr;
+	return WithErrorHandler(err, [&]() { *out_value = Convert(new duckdb::Value(Convert(option)->default_value)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_option_get_description(duckdb_v2_option_handle option, duckdb_v2_str *out_description,
@@ -56,12 +36,31 @@ DUCKDB_V2_ERROR duckdb_v2_option_get_description(duckdb_v2_option_handle option,
 	return WithErrorHandler(err, [&]() { *out_description = Convert(Convert(option)->description); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_option_get_target_scope(duckdb_v2_option_handle option,
-                                                  DUCKDB_V2_OPTION_TARGET_SCOPE *out_target_scope,
-                                                  duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_option_supports_scope(duckdb_v2_option_handle option, DUCKDB_V2_SETTING_SCOPE scope,
+                                                bool *out_supported, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
-	DUCKDB_CHECK_ARG(out_target_scope);
-	return WithErrorHandler(err, [&]() { *out_target_scope = Convert(option)->target_scope; });
+	DUCKDB_CHECK_ARG(out_supported);
+	return WithErrorHandler(err, [&]() {
+		const auto &wrapper = *Convert(option);
+		switch (scope) {
+		case DUCKDB_V2_SETTING_SCOPE_GLOBAL:
+			*out_supported = wrapper.supports_global;
+			break;
+		case DUCKDB_V2_SETTING_SCOPE_SESSION:
+			*out_supported = wrapper.supports_session;
+			break;
+		default:
+			*out_supported = wrapper.supports_global || wrapper.supports_session;
+			break;
+		}
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_option_get_default_scope(duckdb_v2_option_handle option, DUCKDB_V2_SETTING_SCOPE *out_scope,
+                                                   duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(option);
+	DUCKDB_CHECK_ARG(out_scope);
+	return WithErrorHandler(err, [&]() { *out_scope = Convert(option)->default_scope; });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_option_get_alias_count(duckdb_v2_option_handle option, idx_t *out_count,
@@ -84,3 +83,7 @@ DUCKDB_V2_ERROR duckdb_v2_option_get_alias(duckdb_v2_option_handle option, idx_t
 		*out_alias = Convert(wrapper.aliases[index]);
 	});
 }
+
+// ---------------------------------------------------------------------------
+// Context options: the connection's cascade, from inside DuckDB
+// ---------------------------------------------------------------------------

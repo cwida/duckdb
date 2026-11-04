@@ -3,14 +3,6 @@
 
 cmake_minimum_required(VERSION 3.5...3.29)
 
-if(POLICY CMP0048)
-  cmake_policy(SET CMP0048 NEW)
-endif()
-
-if(POLICY CMP0063)
-  cmake_policy(SET CMP0063 NEW)
-endif()
-
 project(RE2 CXX)
 
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)

@@ -54,3 +54,9 @@ query T
 SELECT json_array_length('{"one":[1,2,3]}', '$.two');
 ----
 NULL
+
+# Multiple paths
+query T
+SELECT json_array_length('{"a":[1,2],"b":[],"c":42}', ['$.a', '$.b', '$.c', '$.missing']);
+----
+[2, 0, 0, NULL]

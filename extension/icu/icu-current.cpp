@@ -35,6 +35,7 @@ static void CurrentDateFunction(DataChunk &input, ExpressionState &state, Vector
 ScalarFunction GetCurrentTimeFun() {
 	ScalarFunction current_time({}, LogicalType::TIME_TZ, CurrentTimeFunction);
 	current_time.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+	current_time.SetFallible();
 	return current_time;
 }
 

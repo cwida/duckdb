@@ -1,0 +1,24 @@
+# name: test/optimizer/projection_pullup_nested.test
+# description: Results after pulling a computed projection over nested joins
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (20);
+
+# Compression would introduce its own projections below the joins.
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
+
+query II
+SELECT p.x, z.i
+FROM (
+	SELECT length(a.i::VARCHAR) x, a.i
+	FROM (SELECT i FROM t) a JOIN (SELECT i FROM t) b USING (i)
+) p JOIN t z USING (i)
+ORDER BY z.i;
+----
+1	1
+2	20

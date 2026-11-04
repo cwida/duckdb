@@ -1,0 +1,161 @@
+# name: test/optimizer/statistics/current_domain_cardinality.test
+# description: Current-domain estimates for filters and grouping
+# group: [statistics]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE current_domain_values AS
+SELECT range::INTEGER k, (range % 100)::INTEGER repeated
+FROM range(1000);
+
+statement ok
+ANALYZE current_domain_values;
+
+# Range filters use the generic multiplicity-aware row-survival domain.
+query II
+EXPLAIN SELECT k, count(*) FROM current_domain_values WHERE k < 100 GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~200 rows.*SEQ_SCAN.*Filters: k < 100.*
+
+query I rowsort
+SELECT k FROM current_domain_values WHERE k < 5 GROUP BY k;
+----
+0
+1
+2
+3
+4
+
+# Direct IN/OR bounds are combined before the single-key group estimate. Once an
+# IN list is expanded to OR predicates, repeated equalities are conservatively summed.
+query II
+EXPLAIN SELECT k, count(*) FROM current_domain_values WHERE k IN (2, 4, 4, 8) GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~4 rows.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM current_domain_values WHERE k = 2 OR k = 8 GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~2 rows.*
+
+# A supported equality remains the tightest bound in a conjunction.
+query II
+EXPLAIN SELECT k, count(*) FROM current_domain_values WHERE k = 10 AND k < 20 GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~1 row.*SEQ_SCAN.*Filters: k = 10.*
+
+# LIMIT, OFFSET and LIMIT PERCENT all reduce the current domain.
+query II
+EXPLAIN SELECT k, count(*) FROM (SELECT k FROM current_domain_values LIMIT 10 OFFSET 999) limited GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~1 row.*
+
+query II
+EXPLAIN SELECT k, count(*) FROM (SELECT k FROM current_domain_values LIMIT 10 PERCENT) limited GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~100 rows.*
+
+# Repeated values use multiplicity-aware row survival below a LIMIT.
+query II
+EXPLAIN SELECT repeated, count(*)
+FROM (SELECT repeated FROM current_domain_values LIMIT 100) limited
+GROUP BY repeated;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~65 rows.*(STREAMING_)?LIMIT.*Limit: 100.*
+
+# Direct evidence follows its column through a window and projection.
+query II
+EXPLAIN SELECT k, count(*), max(rn)
+FROM (SELECT k, row_number() OVER () rn FROM current_domain_values WHERE k = 20) windowed
+GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~1 row.*STREAMING_WINDOW.*SEQ_SCAN.*Filters: k = 20.*
+
+statement ok
+CREATE TABLE current_domain_union_left AS SELECT range::INTEGER k FROM range(10);
+
+statement ok
+CREATE TABLE current_domain_union_right AS SELECT (range + 10)::INTEGER k FROM range(10);
+
+statement ok
+ANALYZE current_domain_union_left;
+
+statement ok
+ANALYZE current_domain_union_right;
+
+# Set-operation domains combine by ordinal instead of depending on the first child.
+query II
+EXPLAIN SELECT k, count(*)
+FROM (
+	SELECT k FROM current_domain_union_left
+	UNION ALL
+	SELECT k FROM current_domain_union_right
+) unioned
+GROUP BY k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~20 rows.*
+
+# Volatile zero-argument expressions are not constant singleton domains.
+statement ok
+CREATE SEQUENCE current_domain_group_seq START 1;
+
+query II
+EXPLAIN SELECT x, count(*)
+FROM (SELECT nextval('current_domain_group_seq') x FROM range(100)) generated
+GROUP BY x;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY.*~100 rows.*
+
+query I
+SELECT count(*)
+FROM (
+	SELECT x
+	FROM (SELECT nextval('current_domain_group_seq') x FROM range(100)) generated
+	GROUP BY x
+) groups;
+----
+100
+
+statement ok
+CREATE SEQUENCE current_domain_composed_seq START 1;
+
+query II
+EXPLAIN SELECT x, count(*)
+FROM (SELECT nextval('current_domain_composed_seq') + 1 x FROM range(100)) generated
+GROUP BY x;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY.*~100 rows.*
+
+query I
+SELECT count(*)
+FROM (
+	SELECT x
+	FROM (SELECT nextval('current_domain_composed_seq') + 1 x FROM range(100)) generated
+	GROUP BY x
+) groups;
+----
+100
+
+# Recursive CTE outputs use their fixpoint fallback cardinality.
+query II
+EXPLAIN WITH RECURSIVE vals(i) AS (
+	SELECT 1
+	UNION ALL
+	SELECT i + 1 FROM vals WHERE i < 10
+)
+SELECT i FROM vals;
+----
+physical_plan	<REGEX>:(?s).*REC_CTE.*CTE Name: vals.*~1,001 rows.*REC_CTE_SCAN.*~1 row.*
+
+# Join terms in a recursive CTE retain the same fallback and output layout.
+query II
+EXPLAIN WITH RECURSIVE vals(i) AS (
+	SELECT 1
+	UNION ALL
+	SELECT i + 1 FROM vals, (VALUES (1)) extra(j) WHERE i < 10
+)
+SELECT i FROM vals;
+----
+physical_plan	<REGEX>:(?s).*REC_CTE.*CTE Name: vals.*~1,001 rows.*CROSS_PRODUCT.*REC_CTE_SCAN.*~1 row.*

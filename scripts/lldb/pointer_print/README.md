@@ -47,6 +47,10 @@ p my_shared_ptr
 
 The `/x`-style prefix is forwarded to LLDB as `expression -f <format>`.
 
+Expressions are evaluated once. Output and errors are returned through LLDB's
+command result, so callers using `SBCommandInterpreter.HandleCommand` can capture
+the printed value and check whether evaluation succeeded.
+
 ## What The Formatter Shows
 
 - null pointers are rendered as `nullptr`

@@ -15,7 +15,7 @@ permissions:
 jobs:
   apply:
     name: Apply PR actions
-    runs-on: namespace-profile-linux-slim
+    runs-on: namespace-profile-linux-slim;job.priority=1
     timeout-minutes: 10
 
     env:

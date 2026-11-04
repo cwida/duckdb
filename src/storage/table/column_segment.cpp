@@ -1,23 +1,13 @@
-#include "duckdb/common/vector/map_vector.hpp"
-#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 
-#include "duckdb/common/limits.hpp"
-#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/vector.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/planner/expression/bound_comparison_expression.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_reference_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
-#include "duckdb/planner/filter/bloom_filter.hpp"
 
 #include <cstring>
 
@@ -42,6 +32,10 @@ unique_ptr<ColumnSegment> ColumnSegment::CreatePersistentSegment(DatabaseInstanc
 
 	auto &type = statistics.GetType();
 	auto function = config.GetCompressionFunction(compression_type, type.InternalType());
+	if (block_id == INVALID_BLOCK && !function.get().supports_null_block) {
+		throw DataCorruptionException("Persistent %s segment is missing its data block",
+		                              CompressionTypeToString(compression_type));
+	}
 	if (block_id != INVALID_BLOCK) {
 		block = block_manager.RegisterBlock(block_id);
 	}
@@ -151,11 +145,16 @@ void ColumnSegment::Scan(ColumnScanState &state, idx_t scan_count, Vector &resul
 }
 
 void ColumnSegment::Select(ColumnScanState &state, idx_t scan_count, Vector &result, const SelectionVector &sel,
-                           idx_t sel_count) {
+                           idx_t sel_count, idx_t result_offset, ScanVectorType scan_type) {
 	if (!function.get().select) {
 		throw InternalException("ColumnSegment::Select not implemented for this compression method");
 	}
-	function.get().select(*this, state, scan_count, result, sel, sel_count);
+	if (scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR) {
+		D_ASSERT(result_offset == 0);
+	} else {
+		D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
+	}
+	function.get().select(*this, state, scan_count, result, sel, sel_count, result_offset, scan_type);
 }
 
 void ColumnSegment::Filter(ColumnScanState &state, idx_t scan_count, Vector &result, SelectionVector &sel,
@@ -177,16 +176,6 @@ void ColumnSegment::Scan(ColumnScanState &state, idx_t scan_count, Vector &resul
 
 void ColumnSegment::ScanPartial(ColumnScanState &state, idx_t scan_count, Vector &result, idx_t result_offset) {
 	function.get().scan_partial(*this, state, scan_count, result, result_offset);
-}
-
-//===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ColumnSegment::FetchRow(ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	if (row_id < 0 || NumericCast<idx_t>(row_id) >= count) {
-		throw InternalException("ColumnSegment::FetchRow - row_id out of range for segment");
-	}
-	function.get().fetch_row(*this, state, row_id, result, result_idx);
 }
 
 //===--------------------------------------------------------------------===//
@@ -249,26 +238,14 @@ void ColumnSegment::RevertAppend(idx_t new_count) {
 //===--------------------------------------------------------------------===//
 // Convert To Persistent
 //===--------------------------------------------------------------------===//
-void ColumnSegment::ConvertToPersistent(QueryContext context, optional_ptr<BlockManager> block_manager,
-                                        const block_id_t block_id_p) {
+void ColumnSegment::ConvertToPersistentConstant() {
 	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
+	D_ASSERT(stats.statistics.IsConstant());
+
 	segment_type = ColumnSegmentType::PERSISTENT;
-	block_id = block_id_p;
+	block_id = INVALID_BLOCK;
 	offset = 0;
 
-	if (block_id != INVALID_BLOCK) {
-		D_ASSERT(!stats.statistics.IsConstant());
-		// Non-constant block: write the block to disk.
-		// The block data already exists in memory, so we alter the metadata,
-		// which ensures that the buffer points to an on-disk block.
-		block = block_manager->ConvertToPersistent(context, block_id, std::move(block));
-		return;
-	}
-
-	// Constant block: no need to write anything to disk besides the stats (metadata).
-	// I.e., we do not need to write an actual block.
-	// Thus, we set the compression function to constant and reset the block buffer.
-	D_ASSERT(stats.statistics.IsConstant());
 	auto &config = DBConfig::GetConfig(db);
 	function = config.GetCompressionFunction(CompressionType::COMPRESSION_CONSTANT, GetType().InternalType());
 	block.reset();
@@ -278,6 +255,12 @@ void ColumnSegment::MarkAsPersistent(shared_ptr<BlockHandle> block_p, uint32_t o
 	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
 	block_id = block_p->BlockId();
 	SetBlock(std::move(block_p), offset_p);
+}
+
+void ColumnSegment::UsePackedCopy(const shared_ptr<BlockHandle> &block_p, uint32_t offset_p) {
+	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
+	offset = offset_p;
+	block = block_p;
 }
 
 void ColumnSegment::SetBlock(shared_ptr<BlockHandle> block_p, uint32_t offset_p) {
@@ -490,8 +473,8 @@ static idx_t ExecuteExpressionFilterSelection(SelectionVector &sel, Vector &vect
 		chunk.data.emplace_back(Vector::Ref(vector));
 		chunk.SetChildCardinality(scan_count);
 		SelectionVector identity_sel;
-		optional_ptr<SelectionVector> current_sel = &sel;
-		if (!sel.IsSet()) {
+		optional_ptr<SelectionVector> current_sel = sel.IsSet() ? &sel : nullptr;
+		if (!sel.IsSet() && (vector.GetType().IsNested() || approved_tuple_count != scan_count)) {
 			identity_sel = SelectionVector::Incremental(approved_tuple_count);
 			current_sel = &identity_sel;
 		}

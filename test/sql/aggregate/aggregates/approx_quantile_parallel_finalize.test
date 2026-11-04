@@ -1,0 +1,51 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_parallel_finalize.test
+# description: approx_quantile over many small groups finalized in parallel
+# group: [aggregates]
+
+# A single sink thread leaves every group's digest in one local hash table arena, whose rows end up in
+# several partitions; those partitions are then finalized by several threads at once.  The arena is not
+# thread-safe, so the digest must not allocate from it at finalize time: with lazily grown buffers the
+# final process() used to grow them there, and the concurrent allocations corrupted the digests
+# ("Attempted to access index -1 within vector of size N" out of quantile()).
+
+statement ok
+PRAGMA threads=8;
+
+statement ok
+CREATE TABLE t AS SELECT i % 5000 AS g, (i * 7919) % 997 AS v FROM range(120000) r(i);
+
+loop i 0 5
+
+query I
+SELECT count(*) FROM (SELECT approx_quantile(v, 0.5) AS q FROM t GROUP BY g) WHERE q IS NOT NULL;
+----
+5000
+
+query I
+SELECT count(*) FROM (SELECT approx_quantile(v, 0.99) AS q, approx_quantile(v, 0.5) AS q2 FROM t GROUP BY g) WHERE q >= q2;
+----
+5000
+
+endloop
+
+# the same digests merged across threads: a multi-row-group table, re-aggregated per partition
+statement ok
+CREATE TABLE big AS SELECT i % 3000 AS g, (i * 7919) % 97 AS v FROM range(1500000) r(i);
+
+loop i 0 5
+
+query I
+SELECT count(*) FROM (SELECT approx_quantile(v, 0.5) AS q FROM big GROUP BY g) WHERE q BETWEEN 0 AND 96;
+----
+3000
+
+# Copied sink states grow during combine. Constant groups give an exact oracle for both overloads.
+query I
+SELECT count(*) FROM (
+	SELECT g, approx_quantile(g, 0.5) AS q, approx_quantile(g, [0, 0.5, 1]) AS qs
+	FROM big GROUP BY g
+) WHERE q = g AND qs = [g, g, g];
+----
+3000
+
+endloop

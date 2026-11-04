@@ -1,0 +1,215 @@
+# name: test/sql/cte/recursive_cte_iteration_state_reuse.test
+# description: Recursive CTEs reuse aggregate and join sink state across iterations
+# group: [cte]
+
+# many small iterations with a grouped aggregate, a join, and an anti-join in the recursive term:
+# the aggregate sink restarts from a single partition and the join shells are recycled per iteration
+query II
+WITH RECURSIVE memo(k, v) AS (
+    SELECT i::BIGINT AS k, i::BIGINT AS v FROM range(32) t(i)
+    UNION
+    (
+      WITH agg AS (
+          SELECT k % 8 AS g, max(v) AS mv, count(*) AS c
+          FROM memo
+          GROUP BY k % 8
+      )
+      SELECT f.k + 32 AS k, max(f.v % 100000 + a.mv % 100000) AS v
+      FROM memo f
+      JOIN agg a ON f.k % 8 = a.g
+      WHERE f.k + 32 < 64 * 32
+        AND NOT EXISTS (SELECT 1 FROM agg a2 WHERE a2.g = (f.k + 1) % 8 AND a2.mv > f.v + 1e15)
+      GROUP BY f.k + 32
+    )
+)
+SELECT count(*), max(v) FROM memo;
+----
+2048	199808
+
+# the same shape as a USING KEY recursive CTE with a recurring-table anti-join
+query II
+WITH RECURSIVE memo(k, v) USING KEY (k, max(v)) AS (
+    SELECT i::BIGINT AS k, i::BIGINT AS v FROM range(32) t(i)
+    UNION
+    (
+      WITH agg AS (
+          SELECT k % 8 AS g, max(v) AS mv, count(*) AS c
+          FROM memo
+          GROUP BY k % 8
+      )
+      SELECT f.k + 32 AS k, max(f.v % 100000 + a.mv % 100000) AS v
+      FROM memo f
+      JOIN agg a ON f.k % 8 = a.g
+      WHERE f.k + 32 < 64 * 32
+        AND NOT EXISTS (SELECT 1 FROM recurring.memo r WHERE r.k = f.k + 32)
+      GROUP BY f.k + 32
+    )
+)
+SELECT count(*), max(v) FROM memo;
+----
+2048	199808
+
+# large frontiers per iteration: the aggregate sink must grow its partitioning again after the reset
+query III
+WITH RECURSIVE big(round, g, v) AS (
+    SELECT 0 AS round, i % 100000 AS g, i::BIGINT AS v FROM range(400000) t(i)
+    UNION ALL
+    SELECT round + 1, (g * 37 + 11) % 99991 AS g2, max(v)
+    FROM big
+    WHERE round < 3
+    GROUP BY round, g2
+)
+SELECT count(*), max(v), min(v) FROM big;
+----
+699973	399999	0
+
+# a join whose build side is empty in every iteration: the local hash table shell is kept as-is
+query III
+WITH RECURSIVE walk(k, v) AS (
+    SELECT 0::BIGINT, 0::BIGINT
+    UNION ALL
+    SELECT w.k + 1, w.v + coalesce(e.x, 1)
+    FROM walk w
+    LEFT JOIN (SELECT g AS x FROM (SELECT k % 8 AS g FROM walk) t WHERE g > 100) e ON e.x = w.k
+    WHERE w.k < 50
+)
+SELECT count(*), max(k), max(v) FROM walk;
+----
+51	50	50
+
+# The probe side is a base-table scan and the recursive build keys shift every iteration.
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CREATE TABLE lookup AS SELECT i * 102959::BIGINT AS k, i AS payload FROM range(200000) t(i);
+
+query II
+WITH RECURSIVE w(n, k, s) AS (
+    SELECT 0 AS n, i * 102959::BIGINT AS k, 0::BIGINT AS s FROM range(3000) t(i)
+    UNION ALL
+    SELECT w.n + 1, (l.k + 102959::BIGINT * 977) % (102959::BIGINT * 200000), w.s + l.payload
+    FROM lookup l JOIN w ON l.k = w.k
+    WHERE w.n < 25
+)
+SELECT count(*), sum(s) FROM w;
+----
+78000	9082612500
+
+statement ok
+RESET disabled_optimizers;
+
+# a build side that alternates between empty and nonempty across iterations, so the recycled local
+# shell flips between the unpublished state and a freshly published layout
+query III
+WITH RECURSIVE t(n, v) AS (
+    SELECT 0, 0::BIGINT
+    UNION ALL
+    SELECT t.n + 1, t.v + coalesce(b.x, 100)
+    FROM t LEFT JOIN (SELECT n2 % 97 AS x FROM (SELECT t2.n AS n2 FROM t t2) WHERE n2 % 2 = 1) b ON b.x = t.n % 97
+    WHERE t.n < 60
+)
+SELECT count(*), max(n), max(v) FROM t;
+----
+61	60	3900
+
+# a NULL-bearing mark join whose build set switches between NULL and non-NULL per iteration
+query II
+WITH RECURSIVE m(n, v) AS (
+    SELECT 0, 1::BIGINT
+    UNION ALL
+    SELECT m.n + 1,
+           CASE WHEN m.v + 1 NOT IN (SELECT CASE WHEN x % 3 = 0 THEN NULL ELSE x END FROM (SELECT m2.v AS x FROM m m2))
+                THEN m.v + 2 ELSE m.v + 1 END
+    FROM m WHERE m.n < 50
+)
+SELECT count(*), max(v) FROM m;
+----
+51	76
+
+# Two producer pipelines share one hash-join build sink across recursive iterations.
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+query II
+WITH RECURSIVE w(n, k, s) AS (
+    SELECT 0 AS n, i * 102959::BIGINT AS k, 0::BIGINT AS s FROM range(3000) t(i)
+    UNION ALL
+    SELECT u.n + 1, (l.k + 102959::BIGINT * 977) % (102959::BIGINT * 200000), u.s + l.payload
+    FROM lookup l JOIN (
+        SELECT * FROM w WHERE n % 2 = 0
+        UNION ALL
+        SELECT * FROM w WHERE n % 2 = 1
+    ) u ON l.k = u.k
+    WHERE u.n < 25
+)
+SELECT count(*), sum(s) FROM w;
+----
+78000	9082612500
+
+statement ok
+RESET disabled_optimizers;
+
+# a parallel producer and a singleton producer share one grouped-aggregate sink: the sink restart
+# must use the combined bound over all producers rather than the last producer's
+query III
+WITH RECURSIVE r(round, g, v) AS (
+    SELECT 0 AS round, i AS g, i::BIGINT AS v FROM range(50000) t(i)
+    UNION ALL
+    SELECT u.round + 1, u.g2 % 50000, max(u.v)
+    FROM (
+        SELECT round, (g * 31 + 7) AS g2, v FROM r
+        UNION ALL
+        SELECT 3, 1, 1::BIGINT FROM (SELECT max(round) AS mr FROM r) WHERE mr < 2
+    ) u
+    WHERE u.round < 4
+    GROUP BY u.round + 1, u.g2 % 50000
+)
+SELECT count(*), max(v), min(v) FROM r;
+----
+250001	49999	0
+
+# a recursive aggregate whose partitioning grows during the iteration under a memory limit: the
+# reservation floor must grow with the partitions so the sink does not spill against a stale floor
+statement ok
+SET memory_limit='512MiB';
+
+# partition growth requires more than GROW_STRATEGY_THREAD_THRESHOLD threads
+statement ok
+SET threads=8;
+
+query III
+WITH RECURSIVE big(round, g, v) AS (
+    SELECT 0, 0::BIGINT, 0::BIGINT
+    UNION ALL
+    SELECT round + 1, (big.g * 37 + i) % 499979 AS g2,
+           max(big.v + i)
+    FROM big CROSS JOIN range(500000) t(i)
+    WHERE round < 1
+    GROUP BY round, g2
+)
+SELECT count(*), max(v), min(v) FROM big;
+----
+499980	499999	0
+
+# the same mechanism after an iteration that populated the sink: the tiny first round resets the
+# restart to a single partition, so the large second round must regrow the floor with the partitions
+query III
+WITH RECURSIVE big(round, g, v) AS (
+    SELECT 0, 0::BIGINT, 0::BIGINT
+    UNION ALL
+    SELECT round + 1, (big.g * 37 + i) % 199999 AS g2,
+           max(big.v + i)
+    FROM big CROSS JOIN range(CASE WHEN round = 0 THEN 10 ELSE 200000 END) t(i)
+    WHERE round < 2
+    GROUP BY round, g2
+)
+SELECT count(*), max(v), min(v) FROM big;
+----
+200010	200008	0
+
+statement ok
+RESET memory_limit;
+
+statement ok
+RESET threads;

@@ -1,7 +1,7 @@
 [
     {
         "name": "histogram",
-        "parameters": "arg",
+        "parameters": "arg,bins",
         "description": "Returns a LIST of STRUCTs with the fields bucket and count.",
         "example": "histogram(A)",
         "type": "aggregate_function_set",

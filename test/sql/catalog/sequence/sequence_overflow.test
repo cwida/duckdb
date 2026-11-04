@@ -117,3 +117,36 @@ statement error
 SELECT nextval('seq7') from generate_series(0,20);
 ----
 <REGEX>:.*Sequence Error.*reached minimum value of sequence.*
+
+# a failed nextval must not leave the counter wrapped around
+statement ok
+create sequence seq8 MINVALUE -9223372036854775808 MAXVALUE 9223372036854775807 INCREMENT 1 NO CYCLE;
+
+statement ok
+SELECT setval('seq8', 9223372036854775807, false);
+
+statement error
+SELECT nextval('seq8');
+----
+<REGEX>:.*Sequence Error.*reached maximum value of sequence.*
+
+statement error
+SELECT nextval('seq8');
+----
+<REGEX>:.*Sequence Error.*reached maximum value of sequence.*
+
+statement ok
+create sequence seq9 MINVALUE -9223372036854775808 MAXVALUE 9223372036854775807 INCREMENT -1 NO CYCLE;
+
+statement ok
+SELECT setval('seq9', -9223372036854775808, false);
+
+statement error
+SELECT nextval('seq9');
+----
+<REGEX>:.*Sequence Error.*reached minimum value of sequence.*
+
+statement error
+SELECT nextval('seq9');
+----
+<REGEX>:.*Sequence Error.*reached minimum value of sequence.*

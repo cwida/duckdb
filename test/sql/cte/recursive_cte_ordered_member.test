@@ -1,0 +1,104 @@
+# name: test/sql/cte/recursive_cte_ordered_member.test
+# description: Test ORDER BY inside recursive members across epochs, executor reuse, and key types
+# group: [cte]
+
+foreach threads 1 8
+
+statement ok
+SET threads={threads};
+
+# A plain key: the sort specification is bound once and reused for every epoch.
+statement ok
+PREPARE recursive_ordered_member AS
+WITH RECURSIVE r(iter, v) AS (
+	SELECT 0, i FROM range(64) t(i)
+	UNION ALL
+	SELECT iter + 1, v FROM (SELECT iter, v FROM r WHERE iter < 3 ORDER BY v DESC) s
+)
+SELECT iter, count(*), sum(v) FROM r GROUP BY iter ORDER BY iter;
+
+query III
+EXECUTE recursive_ordered_member;
+----
+0	64	2016
+1	64	2016
+2	64	2016
+3	64	2016
+
+# Reuse the prepared plan and its sort specification.
+query III
+EXECUTE recursive_ordered_member;
+----
+0	64	2016
+1	64	2016
+2	64	2016
+3	64	2016
+
+statement ok
+DEALLOCATE recursive_ordered_member;
+
+# The member's order is observable through a streaming window, so a stale or unsorted epoch changes the kept rows.
+query IT
+WITH RECURSIVE r(iter, v) AS (
+	SELECT 0, i FROM range(8) t(i)
+	UNION ALL
+	SELECT iter + 1, (v + 1) % 8
+	FROM (SELECT iter, v, row_number() OVER () AS rn FROM (SELECT iter, v FROM r WHERE iter < 6 ORDER BY v DESC) o) s
+	WHERE rn <= 4
+)
+SELECT iter, list(v ORDER BY v) FROM r GROUP BY iter ORDER BY iter;
+----
+0	[0, 1, 2, 3, 4, 5, 6, 7]
+1	[0, 5, 6, 7]
+2	[0, 1, 6, 7]
+3	[0, 1, 2, 7]
+4	[0, 1, 2, 3]
+5	[1, 2, 3, 4]
+6	[2, 3, 4, 5]
+
+# A named STRUCT key keeps its field types without parsing a type string.
+query III
+WITH RECURSIVE r(iter, v) AS (
+	SELECT 0, i FROM range(64) t(i)
+	UNION ALL
+	SELECT iter + 1, v FROM (SELECT iter, v FROM r WHERE iter < 3 ORDER BY {'a': v, 'b': v::VARCHAR} DESC) s
+)
+SELECT iter, count(*), sum(v) FROM r GROUP BY iter ORDER BY iter;
+----
+0	64	2016
+1	64	2016
+2	64	2016
+3	64	2016
+
+# A constant-width composite key selects the BIGINT sort key representation.
+query III
+WITH RECURSIVE r(iter, v) AS (
+	SELECT 0, i FROM range(64) t(i)
+	UNION ALL
+	SELECT iter + 1, v FROM (SELECT iter, v FROM r WHERE iter < 3 ORDER BY v::INTEGER ASC, v % 2 = 0 DESC) s
+)
+SELECT iter, count(*), sum(v) FROM r GROUP BY iter ORDER BY iter;
+----
+0	64	2016
+1	64	2016
+2	64	2016
+3	64	2016
+
+# An unnamed TUPLE key is decoded back into its original type and order.
+query II
+WITH RECURSIVE r(iter, v) AS (
+ SELECT 0, i FROM range(8) t(i)
+ UNION ALL
+ SELECT iter + 1, v
+ FROM (SELECT iter, v, row_number() OVER () AS rn
+       FROM (SELECT iter, v FROM r WHERE iter < 3 ORDER BY row(v, v::VARCHAR) DESC) o) s
+ WHERE rn <= 2
+)
+SELECT iter, sum(v) FROM r GROUP BY iter ORDER BY iter;
+----
+0	28
+1	13
+2	13
+3	13
+
+endloop

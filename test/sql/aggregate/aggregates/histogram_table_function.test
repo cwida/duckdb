@@ -114,17 +114,15 @@ SELECT * FROM histogram_values(booleans, b::INTEGER)
 0	75
 1	25
 
-mode skip instable
-
-# FIXME: booleans do not work yet because of quantile turning any unsupported type into VARCHAR
 query II
-SELECT * FROM histogram_values(booleans, b)
+SELECT * FROM histogram_values(booleans, b) ORDER BY bin
 ----
+false	75
+true	25
 
 # lists
-# FIXME: lists do not work yet because of quantile turning any unsupported type into VARCHAR
 query II
-SELECT * FROM histogram_values(integers, [i%2])
+SELECT * FROM histogram_values(integers, [i%2]) ORDER BY bin
 ----
-
-mode unskip
+[0]	66
+[1]	64

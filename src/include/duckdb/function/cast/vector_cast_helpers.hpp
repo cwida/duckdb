@@ -76,8 +76,8 @@ struct VectorTryCastStringOperator {
 		        OP::template Operation<INPUT_TYPE, RESULT_TYPE>(input, output, data.result, data.parameters))) {
 			return output;
 		}
-		return HandleVectorCastError::Operation<RESULT_TYPE>(CastExceptionText<INPUT_TYPE, RESULT_TYPE>(input), mask,
-		                                                     idx, data);
+		return HandleVectorCastError::Operation<RESULT_TYPE>(
+		    CastExceptionText<INPUT_TYPE>(input, data.result.GetType()), mask, idx, data);
 	}
 };
 
@@ -172,7 +172,7 @@ struct VectorCastHelpers {
 			return TemplatedDecimalCast<T, hugeint_t, TryCastToDecimal>(source, result, count, parameters, width,
 			                                                            scale);
 		default:
-			throw InternalException("Unimplemented internal type for decimal");
+			InternalException::Throw("Unimplemented internal type for decimal");
 		}
 	}
 

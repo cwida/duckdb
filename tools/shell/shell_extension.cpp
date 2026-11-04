@@ -1,7 +1,9 @@
 #include "shell_extension.hpp"
+#include "shell_grammar_extension.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/os_util.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/planner/logical_operator.hpp"
@@ -24,14 +26,9 @@ namespace duckdb {
 
 static void GetEnvFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, [&](string_t input) {
-		string env_name = input.GetString();
-		auto env_value = getenv(env_name.c_str());
-		if (!env_value) {
-			return heap.AddString(string());
-		}
-		return heap.AddString(env_value);
-	});
+	auto &os_util = OSUtil::Get(*state.GetContext().db);
+	UnaryExecutor::Execute<string_t, string_t>(
+	    args.data[0], result, [&](string_t input) { return heap.AddString(os_util.GetEnv(input.GetString())); });
 }
 
 static unique_ptr<FunctionData> GetEnvBind(BindScalarFunctionInput &input) {
@@ -61,6 +58,9 @@ unique_ptr<TableRef> ShellScanLastResult(ClientContext &context, ReplacementScan
 // would have fired)
 void ShellPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
 	auto &state = duckdb_shell::ShellState::Get();
+	if (!state.conn || !RefersToSameObject(*state.conn->context, input.context)) {
+		return;
+	}
 	if (state.last_result_referenced) {
 		return;
 	}
@@ -118,8 +118,9 @@ static void ShellHistoryFunction(ClientContext &context, TableFunctionInput &dat
 
 void ShellExtension::Load(ExtensionLoader &loader) {
 	loader.SetDescription("Adds CLI-specific support and functionalities");
-	loader.RegisterFunction(
-	    ScalarFunction("getenv", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GetEnvFunction, GetEnvBind));
+	ScalarFunction getenv_fun("getenv", {}, LogicalType::VARCHAR, GetEnvFunction, GetEnvBind);
+	getenv_fun.GetSignature().AddParameter("name", LogicalType::VARCHAR);
+	loader.RegisterFunction(getenv_fun);
 
 	TableFunction shell_history("shell_history", {}, ShellHistoryFunction, ShellHistoryBind, ShellHistoryInit);
 	loader.RegisterFunction(shell_history);
@@ -131,6 +132,9 @@ void ShellExtension::Load(ExtensionLoader &loader) {
 	PlannerExtension planner_ext;
 	planner_ext.post_bind_function = duckdb::ShellPostBind;
 	PlannerExtension::Register(config, planner_ext);
+
+	// opt-in grammar: the CLI enables it via CALL add_grammar_extension('shell') when it opens a database
+	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<ShellGrammarExtension>());
 
 	// highlight the CLI profiler "query_tree" output
 	duckdb_shell::RegisterProfilerHighlighting(config);

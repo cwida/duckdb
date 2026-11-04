@@ -73,4 +73,4 @@ syntax error at or near "quack"
 statement error
 quak SELECT 32;
 ----
-syntax error at or near "SELECT"
+syntax error at or near "quak"

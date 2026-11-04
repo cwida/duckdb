@@ -17,7 +17,7 @@ namespace duckdb {
 
 struct InternalCompressIntegralUtinyintFun {
 	static constexpr const char *Name = "__internal_compress_integral_utinyint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -27,7 +27,7 @@ struct InternalCompressIntegralUtinyintFun {
 
 struct InternalCompressIntegralUsmallintFun {
 	static constexpr const char *Name = "__internal_compress_integral_usmallint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -37,7 +37,7 @@ struct InternalCompressIntegralUsmallintFun {
 
 struct InternalCompressIntegralUintegerFun {
 	static constexpr const char *Name = "__internal_compress_integral_uinteger";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -47,7 +47,7 @@ struct InternalCompressIntegralUintegerFun {
 
 struct InternalCompressIntegralUbigintFun {
 	static constexpr const char *Name = "__internal_compress_integral_ubigint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -57,7 +57,7 @@ struct InternalCompressIntegralUbigintFun {
 
 struct InternalCompressStringUtinyintFun {
 	static constexpr const char *Name = "__internal_compress_string_utinyint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -67,7 +67,7 @@ struct InternalCompressStringUtinyintFun {
 
 struct InternalCompressStringUsmallintFun {
 	static constexpr const char *Name = "__internal_compress_string_usmallint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -77,7 +77,7 @@ struct InternalCompressStringUsmallintFun {
 
 struct InternalCompressStringUintegerFun {
 	static constexpr const char *Name = "__internal_compress_string_uinteger";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -87,7 +87,7 @@ struct InternalCompressStringUintegerFun {
 
 struct InternalCompressStringUbigintFun {
 	static constexpr const char *Name = "__internal_compress_string_ubigint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -97,7 +97,7 @@ struct InternalCompressStringUbigintFun {
 
 struct InternalCompressStringUhugeintFun {
 	static constexpr const char *Name = "__internal_compress_string_uhugeint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -107,7 +107,7 @@ struct InternalCompressStringUhugeintFun {
 
 struct InternalCompressStringHugeintFun {
 	static constexpr const char *Name = "__internal_compress_string_hugeint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -117,7 +117,7 @@ struct InternalCompressStringHugeintFun {
 
 struct InternalCompressGeometryPointFun {
 	static constexpr const char *Name = "__internal_compress_geometry_point";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -127,7 +127,7 @@ struct InternalCompressGeometryPointFun {
 
 struct InternalDecompressGeometryPointFun {
 	static constexpr const char *Name = "__internal_decompress_geometry_point";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -137,7 +137,7 @@ struct InternalDecompressGeometryPointFun {
 
 struct InternalDecompressIntegralSmallintFun {
 	static constexpr const char *Name = "__internal_decompress_integral_smallint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -147,7 +147,7 @@ struct InternalDecompressIntegralSmallintFun {
 
 struct InternalDecompressIntegralIntegerFun {
 	static constexpr const char *Name = "__internal_decompress_integral_integer";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -157,7 +157,7 @@ struct InternalDecompressIntegralIntegerFun {
 
 struct InternalDecompressIntegralBigintFun {
 	static constexpr const char *Name = "__internal_decompress_integral_bigint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -167,7 +167,7 @@ struct InternalDecompressIntegralBigintFun {
 
 struct InternalDecompressIntegralHugeintFun {
 	static constexpr const char *Name = "__internal_decompress_integral_hugeint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -177,7 +177,7 @@ struct InternalDecompressIntegralHugeintFun {
 
 struct InternalDecompressIntegralUsmallintFun {
 	static constexpr const char *Name = "__internal_decompress_integral_usmallint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -187,7 +187,7 @@ struct InternalDecompressIntegralUsmallintFun {
 
 struct InternalDecompressIntegralUintegerFun {
 	static constexpr const char *Name = "__internal_decompress_integral_uinteger";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -197,7 +197,7 @@ struct InternalDecompressIntegralUintegerFun {
 
 struct InternalDecompressIntegralUbigintFun {
 	static constexpr const char *Name = "__internal_decompress_integral_ubigint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -207,7 +207,7 @@ struct InternalDecompressIntegralUbigintFun {
 
 struct InternalDecompressIntegralUhugeintFun {
 	static constexpr const char *Name = "__internal_decompress_integral_uhugeint";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value,min";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -217,12 +217,22 @@ struct InternalDecompressIntegralUhugeintFun {
 
 struct InternalDecompressStringFun {
 	static constexpr const char *Name = "__internal_decompress_string";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "value";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
 
 	static ScalarFunctionSet GetFunctions();
+};
+
+struct InternalCompressedMaterializationCastFun {
+	static constexpr const char *Name = "__internal_compressed_materialization_cast";
+	static constexpr const char *Parameters = "";
+	static constexpr const char *Description = "";
+	static constexpr const char *Example = "";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
 };
 
 } // namespace duckdb

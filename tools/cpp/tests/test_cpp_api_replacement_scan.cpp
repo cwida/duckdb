@@ -54,9 +54,9 @@ void ClaimRange(ReplacementScan::Input &input) {
 	}
 	scan_observed.rendered = name.Render();
 
-	auto ctx = input.GetContext();
+	auto &factory = input.GetContext().GetFactory();
 	input.SetFunctionName("range");
-	input.AddArgument(Value::Create(ctx, int64_t {2}));
+	input.AddArgument(Value::Create(factory, int64_t {2}));
 	input.SetAlias("claimed");
 }
 
@@ -86,11 +86,12 @@ void DeclineEverything(ReplacementScan::Input &input) {
 
 // Builds a single-column BIGINT collection holding the given values.
 auto MakeScanCollection(Connection &conn, const std::vector<int64_t> &values) -> ColumnDataCollection {
+	auto &factory = conn.GetFactory();
 	std::vector<LogicalType> types;
-	types.push_back(conn.ParseType("BIGINT"));
-	ColumnDataCollection collection(conn, types);
+	types.push_back(factory.ParseType("BIGINT"));
+	ColumnDataCollection collection(factory, types);
 
-	DataChunk chunk(types);
+	DataChunk chunk(factory, types);
 	auto vec = chunk.GetVector(0);
 	auto *data = vec.GetDataMutable<int64_t>();
 	for (size_t i = 0; i < values.size(); i++) {
@@ -104,14 +105,13 @@ auto MakeScanCollection(Connection &conn, const std::vector<int64_t> &values) ->
 } // namespace
 
 TEST_CASE("Stable C++API: replacement scan claims a table function", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	scan_observed = ScanObserved();
-	auto scan = ReplacementScan::Create(conn);
+	auto scan = ReplacementScan::Create(conn.GetFactory());
 	scan.SetCallback(ClaimRange);
-	scan.Register();
+	conn.Register(scan);
 
 	REQUIRE(CollectScanBigints(conn.Execute("SELECT * FROM not_a_table")) == std::vector<int64_t> {0, 1});
 	REQUIRE(scan_observed.calls == 1);
@@ -123,13 +123,12 @@ TEST_CASE("Stable C++API: replacement scan claims a table function", "[cpp_api]"
 }
 
 TEST_CASE("Stable C++API: replacement scan reports the unresolved name", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
-	auto scan = ReplacementScan::Create(conn);
+	auto scan = ReplacementScan::Create(conn.GetFactory());
 	scan.SetCallback(ClaimRange);
-	scan.Register();
+	conn.Register(scan);
 
 	// An unqualified reference is a single part -- absence is a shorter path, not an empty placeholder.
 	scan_observed = ScanObserved();
@@ -178,21 +177,19 @@ TEST_CASE("Stable C++API: qualified name", "[cpp_api]") {
 }
 
 TEST_CASE("Stable C++API: replacement scan reports the name and can decline", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
-	auto scan = ReplacementScan::Create(conn);
+	auto scan = ReplacementScan::Create(conn.GetFactory());
 	scan.SetCallback(DeclineEverything).SetUserData<ScanRegistry>();
-	scan.Register();
+	conn.Register(scan);
 
 	// Declining leaves the reference unresolved.
 	REQUIRE_THROWS_AS(conn.Execute("SELECT * FROM missing_table").Drain(), Exception);
 }
 
 TEST_CASE("Stable C++API: replacement scan claims a column data collection", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	auto collection = MakeScanCollection(conn, {10, 20});
@@ -201,9 +198,9 @@ TEST_CASE("Stable C++API: replacement scan claims a column data collection", "[c
 	seed.name = "my_batch";
 	seed.collection = &collection;
 
-	auto scan = ReplacementScan::Create(conn);
+	auto scan = ReplacementScan::Create(conn.GetFactory());
 	scan.SetCallback(ClaimCollection).SetUserData<ScanRegistry>(seed);
-	scan.Register();
+	conn.Register(scan);
 
 	REQUIRE(CollectScanBigints(conn.Execute("SELECT amount FROM my_batch ORDER BY amount")) ==
 	        std::vector<int64_t> {10, 20});
@@ -218,59 +215,55 @@ TEST_CASE("Stable C++API: replacement scan claims a column data collection", "[c
 }
 
 TEST_CASE("Stable C++API: replacement scan claims a subquery", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
-	auto scan = ReplacementScan::Create(conn);
+	auto scan = ReplacementScan::Create(conn.GetFactory());
 	scan.SetCallback(ClaimSubquery);
-	scan.Register();
+	conn.Register(scan);
 
 	REQUIRE(CollectScanBigints(conn.Execute("SELECT v::BIGINT FROM anything")) == std::vector<int64_t> {42});
 }
 
 TEST_CASE("Stable C++API: replacement scan scoping", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	auto other = db.Connect();
 
-	auto scan = ReplacementScan::Create(conn);
+	auto scan = ReplacementScan::Create(conn.GetFactory());
 	scan.SetCallback(ClaimSubquery);
-	scan.Register();
+	conn.Register(scan);
 
 	// Visible on the registering connection only.
 	REQUIRE(CollectScanBigints(conn.Execute("SELECT v::BIGINT FROM anything")) == std::vector<int64_t> {42});
 	REQUIRE_THROWS_AS(other.Execute("SELECT * FROM anything").Drain(), Exception);
 
 	// A database-scoped scan reaches every connection.
-	auto db_scan = ReplacementScan::Create(db);
+	auto db_scan = ReplacementScan::Create(db.GetFactory());
 	db_scan.SetCallback(ClaimSubquery);
-	db_scan.Register();
+	db.Register(db_scan);
 	REQUIRE(CollectScanBigints(other.Execute("SELECT v::BIGINT FROM anything")) == std::vector<int64_t> {42});
 }
 
 TEST_CASE("Stable C++API: replacement scan errors", "[cpp_api]") {
 	SECTION("a throwing callback fails the query") {
-		Environment env;
-		auto db = env.Open(":memory:");
+		auto db = Instance(":memory:");
 		auto conn = db.Connect();
 
-		auto scan = ReplacementScan::Create(conn);
+		auto scan = ReplacementScan::Create(conn.GetFactory());
 		scan.SetCallback(ThrowingScan);
-		scan.Register();
+		conn.Register(scan);
 		REQUIRE_THROWS_MATCHES(conn.Execute("SELECT * FROM anything").Drain(), Exception,
 		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 	SECTION("registration requires a callback, and happens once") {
-		Environment env;
-		auto db = env.Open(":memory:");
+		auto db = Instance(":memory:");
 		auto conn = db.Connect();
 
-		auto scan = ReplacementScan::Create(conn);
-		REQUIRE_THROWS_MATCHES(scan.Register(), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		auto scan = ReplacementScan::Create(conn.GetFactory());
+		REQUIRE_THROWS_MATCHES(conn.Register(scan), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 		scan.SetCallback(ClaimSubquery);
-		scan.Register();
-		REQUIRE_THROWS_MATCHES(scan.Register(), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		conn.Register(scan);
+		REQUIRE_THROWS_MATCHES(conn.Register(scan), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 }

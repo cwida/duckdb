@@ -14,6 +14,7 @@
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/parser/statement/merge_into_statement.hpp"
 #include "duckdb/parser/tableref/list.hpp"
+#include "duckdb/parser/tableref/match_recognize_ref.hpp"
 
 namespace duckdb {
 
@@ -113,9 +114,37 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 		expr_callback(tf_ref.function);
 		break;
 	}
+	case TableReferenceType::MATCH_RECOGNIZE: {
+		auto &mr_ref = ref.Cast<MatchRecognizeRef>();
+		for (auto &expr : mr_ref.config->partition_expressions) {
+			expr_callback(expr);
+		}
+		for (auto &order : mr_ref.config->order_by_expressions) {
+			expr_callback(order.expression);
+		}
+		for (auto &expr : mr_ref.config->measures_expression_list) {
+			expr_callback(expr);
+		}
+		for (auto &expr : mr_ref.config->defines_expression_list) {
+			expr_callback(expr);
+		}
+		if (mr_ref.config->pattern) {
+			expr_callback(mr_ref.config->pattern);
+		}
+		if (mr_ref.input) {
+			ref_callback(*mr_ref.input);
+		}
+		break;
+	}
+	case TableReferenceType::SHOW_REF: {
+		auto &show_ref = ref.Cast<ShowRef>();
+		if (show_ref.query) {
+			EnumerateQueryNodeChildren(*show_ref.query, expr_callback, ref_callback);
+		}
+		break;
+	}
 	case TableReferenceType::BASE_TABLE:
 	case TableReferenceType::EMPTY_FROM:
-	case TableReferenceType::SHOW_REF:
 	case TableReferenceType::COLUMN_DATA:
 	case TableReferenceType::DELIM_GET:
 		// these TableRefs do not need to be unfolded
@@ -156,7 +185,9 @@ void ParsedExpressionIterator::EnumerateQueryNodeChildren(
 			expr_callback(sel_node.qualify);
 		}
 
-		EnumerateTableRefChildren(*sel_node.from_table.get(), expr_callback, ref_callback);
+		if (sel_node.from_table) {
+			EnumerateTableRefChildren(*sel_node.from_table, expr_callback, ref_callback);
+		}
 		break;
 	}
 	case QueryNodeType::SET_OPERATION_NODE: {

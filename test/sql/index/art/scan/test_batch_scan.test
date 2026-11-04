@@ -1,0 +1,43 @@
+# name: test/sql/index/art/scan/test_batch_scan.test
+# description: Test batched equality index scans for IN lists and joins
+# group: [scan]
+
+statement ok
+CREATE TABLE t AS SELECT i FROM range(100000) r(i);
+
+statement ok
+CREATE UNIQUE INDEX idx ON t(i);
+
+statement ok
+SET dynamic_or_filter_threshold = 100;
+
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
+
+statement ok
+CREATE VIEW in_lookup AS SELECT i FROM t WHERE i IN (
+    SELECT 1 + 10 * j FROM range(100) r(j)
+);
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(i) FROM in_lookup;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), sum(i) FROM in_lookup;
+----
+100	49600
+
+statement ok
+CREATE TABLE k AS SELECT i * 10 + 1 AS i FROM range(100) r(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*), sum(t.i) FROM t JOIN k USING(i);
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), sum(t.i) FROM t JOIN k USING(i);
+----
+100	49600

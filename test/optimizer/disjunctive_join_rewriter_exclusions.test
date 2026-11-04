@@ -1,0 +1,75 @@
+# name: test/optimizer/disjunctive_join_rewriter_exclusions.test
+# description: Preserve nullable expression semantics and simplify disjunctive join exclusions
+# group: [optimizer]
+
+statement ok
+CREATE TABLE lhs(id INTEGER, a INTEGER NOT NULL, b INTEGER NOT NULL);
+
+statement ok
+INSERT INTO lhs VALUES (1, 0, 10), (2, 1, 20), (2, 1, 20), (3, 2, 30), (4, 0, 40), (5, 99, 99);
+
+statement ok
+CREATE TABLE rhs(id INTEGER, a INTEGER NOT NULL, b INTEGER NOT NULL);
+
+statement ok
+INSERT INTO rhs VALUES (11, 0, 10), (12, 1, 20), (12, 1, 20), (13, 0, 30), (14, 2, 80), (15, 88, 88);
+
+statement ok
+CREATE MACRO equal_key(a, b) AS a = b;
+
+statement ok
+CREATE MACRO null_safe_key(a, b) AS a IS NOT DISTINCT FROM b;
+
+# The comparison operands can be NULL even though their source columns are NOT NULL.
+foreach first,second equal_key,equal_key null_safe_key,null_safe_key equal_key,null_safe_key null_safe_key,equal_key
+
+statement ok
+CREATE OR REPLACE MACRO matches(la, lb, ra, rb) AS
+    {first}(NULLIF(la, 0), NULLIF(ra, 0)) OR {second}(lb, rb);
+
+foreach join_type INNER LEFT RIGHT FULL SEMI ANTI
+
+statement ok
+SET disabled_optimizers = 'disjunctive_join_rewriter';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS
+SELECT * FROM lhs l {join_type} JOIN rhs r ON matches(l.a, l.b, r.a, r.b);
+
+foreach disabled_opt '' 'statistics_propagation'
+
+statement ok
+SET disabled_optimizers = {disabled_opt};
+
+query TT
+EXPLAIN SELECT * FROM lhs l {join_type} JOIN rhs r ON matches(l.a, l.b, r.a, r.b);
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+statement ok
+CREATE OR REPLACE TABLE actual AS
+SELECT * FROM lhs l {join_type} JOIN rhs r ON matches(l.a, l.b, r.a, r.b);
+
+query I
+SELECT count(*) FROM (
+    (FROM actual EXCEPT ALL FROM expected)
+    UNION ALL
+    (FROM expected EXCEPT ALL FROM actual)
+) differences;
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+RESET disabled_optimizers;
+
+# Ordinary non-null keys should expose a direct inequality after statistics simplify the NULL checks.
+query TT
+EXPLAIN SELECT * FROM lhs l JOIN rhs r ON l.a = r.a OR l.b = r.b;
+----
+physical_plan	<REGEX>:.*a != a.*

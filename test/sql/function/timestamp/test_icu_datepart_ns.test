@@ -1,0 +1,78 @@
+# name: test/sql/function/timestamp/test_icu_datepart_ns.test
+# description: Test ICU date part functions for nanoseconds
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET default_null_order='nulls_first';
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone='UTC';
+
+statement ok
+CREATE OR REPLACE TABLE nanos (ns TIMESTAMPTZ_NS);
+
+statement ok
+INSERT INTO nanos VALUES ('2026-10-12 12:34:56.987654321'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+
+statement ok
+INSERT INTO nanos VALUES ('1969-12-31 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+
+query I
+FROM nanos;
+----
+2026-10-12 12:34:56.987654321+00
+1969-12-31 12:34:56.123456789+00
+
+query I
+SELECT date_part('day', ns)
+FROM nanos;
+----
+12
+31
+
+query I
+SELECT date_part('microsecond', ns)
+FROM nanos;
+----
+56987654
+56123456
+
+query I
+SELECT last_day(ns)
+FROM nanos;
+----
+2026-10-31
+1969-12-31
+
+query I
+SELECT monthname(ns)
+FROM nanos;
+----
+October
+December
+
+query I
+SELECT dayname(ns)
+FROM nanos;
+----
+Monday
+Wednesday
+
+query I
+SELECT date_part(['day', 'microsecond',], ns)
+FROM nanos;
+----
+{'day': 12, 'microsecond': 56987654}
+{'day': 31, 'microsecond': 56123456}
+
+query II
+SELECT 
+	day('1969-12-31'::TIMESTAMPTZ_NS) AS d,
+	day('1969-12-31'::TIMESTAMPTZ)    AS d_us;
+----
+31	31

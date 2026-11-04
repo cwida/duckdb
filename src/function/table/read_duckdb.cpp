@@ -113,6 +113,8 @@ private:
 	unique_ptr<FunctionData> bind_data;
 	unique_ptr<GlobalTableFunctionState> global_state;
 	atomic<bool> finished;
+	//! The column indexes to scan - the row id is scanned if no columns are projected
+	vector<ColumnIndex> scan_column_indexes;
 	idx_t column_count;
 	Identifier schema_name;
 	Identifier table_name;
@@ -123,6 +125,8 @@ struct DuckDBReadGlobalState : GlobalTableFunctionState {};
 struct DuckDBReadLocalState : LocalTableFunctionState {
 	unique_ptr<LocalTableFunctionState> local_state;
 	shared_ptr<AttachedDatabaseWrapper> attached_database;
+	//! The chunk to scan into when no columns are projected (we then scan the row ids)
+	DataChunk row_id_chunk;
 };
 
 string DuckDBFileReaderOptions::GetCandidates(const vector<reference<TableCatalogEntry>> &tables) const {
@@ -210,7 +214,7 @@ DuckDBReader::DuckDBReader(ClientContext &context_p, OpenFileInfo file_p, const 
 	vector<reference<TableCatalogEntry>> tables;
 	vector<reference<TableCatalogEntry>> candidate_tables;
 	catalog.ScanSchemas(context, [&](SchemaCatalogEntry &schema) {
-		schema.Scan(CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
 			if (entry.type != CatalogType::TABLE_ENTRY) {
 				return;
 			}
@@ -234,7 +238,8 @@ DuckDBReader::DuckDBReader(ClientContext &context_p, OpenFileInfo file_p, const 
 	}
 	auto &table = tables[0].get();
 	for (auto &col : table.GetColumns().Logical()) {
-		columns.emplace_back(col.Name().GetIdentifierName(), col.Type());
+		// create the child column definitions as well, so that STRUCT children are mapped by name
+		columns.push_back(MultiFileColumnDefinition::CreateFromNameAndType(col.Name(), col.Type()));
 	}
 	column_count = columns.size();
 	schema_name = table.ParentSchema().name;
@@ -250,10 +255,9 @@ AttachedDatabase &DuckDBReader::GetAttachedDatabase() {
 		auto &db_manager = DatabaseManager::Get(context);
 		AttachInfo info;
 		info.path = file.path;
-		// use invalid UTF-8 so that a conflicting database name cannot be attached by a user
-		info.name = Identifier("\x80__duckdb_reader_" + info.path);
-
-		info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
+		// a unique name per reader: each reader detaches its own attachment when it finishes
+		info.name = GenerateInternalName("__duckdb_reader_");
+		info.on_conflict = OnCreateConflict::ERROR_ON_CONFLICT;
 		unordered_map<string, Value> attach_kv;
 		AttachOptions attach_options(attach_kv, AccessMode::READ_ONLY);
 		attach_options.visibility = AttachVisibility::HIDDEN;
@@ -297,16 +301,24 @@ bool DuckDBReader::TryInitializeScan(ClientContext &context, GlobalTableFunction
 			}
 		}
 
+		scan_column_indexes = column_indexes;
+		if (scan_column_indexes.empty()) {
+			// the table scan requires at least one column - scan the row id if no columns are projected
+			scan_column_indexes.emplace_back(COLUMN_IDENTIFIER_ROW_ID);
+		}
 		// initialize the scan over this table
-		TableFunctionInitInput input(bind_data.get(), column_indexes, vector<idx_t>(), filters.get());
+		TableFunctionInitInput input(bind_data.get(), scan_column_indexes, vector<idx_t>(), filters.get());
 		global_state = scan_function.init_global(context, input);
 	}
 	AssignSharedPointer(lstate.attached_database, db_wrapper);
 	// initialize the local scan
 	ThreadContext thread(context);
 	ExecutionContext exec_context(context, thread, nullptr);
-	TableFunctionInitInput input(bind_data.get(), column_indexes, vector<idx_t>(), filters.get());
+	TableFunctionInitInput input(bind_data.get(), scan_column_indexes, vector<idx_t>(), filters.get());
 	lstate.local_state = scan_function.init_local(exec_context, input, global_state.get());
+	if (column_indexes.empty() && lstate.row_id_chunk.ColumnCount() == 0) {
+		lstate.row_id_chunk.Initialize(context, {LogicalType::ROW_TYPE});
+	}
 	return true;
 }
 
@@ -320,7 +332,14 @@ AsyncResult DuckDBReader::Scan(ClientContext &context, GlobalTableFunctionState 
 	} else {
 		input.async_result = AsyncResultType::IMPLICIT;
 		input.results_execution_mode = AsyncResultsExecutionMode::TASK_EXECUTOR;
-		scan_function.function(context, input, chunk);
+		if (column_indexes.empty()) {
+			// no columns are projected - scan the row ids and only emit the count
+			lstate.row_id_chunk.Reset();
+			scan_function.function(context, input, lstate.row_id_chunk);
+			chunk.SetChildCardinality(lstate.row_id_chunk.size());
+		} else {
+			scan_function.function(context, input, chunk);
+		}
 
 		if (input.async_result.GetResultType() == AsyncResultType::BLOCKED) {
 			return std::move(input.async_result);
@@ -384,6 +403,9 @@ bool DuckDBMultiFileInfo::ParseCopyOption(ClientContext &context, const Identifi
 bool DuckDBMultiFileInfo::ParseOption(ClientContext &context, const Identifier &key, const Value &val,
                                       MultiFileOptions &file_options, BaseFileReaderOptions &options_p) {
 	auto &options = options_p.Cast<DuckDBFileReaderOptions>();
+	if ((key == "schema_name" || key == "table_name") && val.IsNull()) {
+		throw BinderException("read_duckdb parameter %s cannot be NULL", key);
+	}
 	if (key == "schema_name") {
 		options.schema_name = Identifier(StringValue::Get(val));
 		return true;
@@ -500,10 +522,10 @@ void DuckDBMultiFileInfo::GetVirtualColumns(ClientContext &, MultiFileBindData &
 }
 
 void ReadDuckDBAddNamedParameters(TableFunction &table_function) {
-	table_function.named_parameters["schema_name"] = LogicalType::VARCHAR;
-	table_function.named_parameters["table_name"] = LogicalType::VARCHAR;
-
-	MultiFileReader::AddParameters(table_function);
+	// extends the options MultiFileFunction declares
+	table_function.GetSignature().ExtendTypedKwargs([](TypedKwargs &options) {
+		options.Add("schema_name", LogicalType::VARCHAR).Add("table_name", LogicalType::VARCHAR);
+	});
 }
 
 static vector<column_t> DuckDBGetRowIdColumns(ClientContext &, optional_ptr<FunctionData>) {

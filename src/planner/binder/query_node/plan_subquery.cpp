@@ -1,5 +1,9 @@
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -97,22 +101,25 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	}
 	min_max_children.push_back(std::move(min_max_child));
 
-	auto extremum_aggr =
-	    function_binder.BindAggregateFunction(is_min ? MinFunction::GetFunction() : MaxFunction::GetFunction(),
-	                                          std::move(min_max_children), nullptr, AggregateType::NON_DISTINCT);
+	auto extremum_fun = GetBuiltinAggregateFunction(binder.context, is_min ? MinFun::Name : MaxFun::Name,
+	                                                {min_max_children[0]->GetReturnType()});
+	auto extremum_aggr = function_binder.BindAggregateFunction(extremum_fun, std::move(min_max_children), nullptr,
+	                                                           AggregateType::NON_DISTINCT);
 	auto extremum_type = extremum_aggr->GetReturnType();
 	aggregate_list.push_back(std::move(extremum_aggr));
 
 	// 2. count_star = COUNT(*)
-	auto count_star_aggr =
-	    function_binder.BindAggregateFunction(CountStarFun::GetFunction(), {}, nullptr, AggregateType::NON_DISTINCT);
+	auto count_star_aggr = function_binder.BindAggregateFunction(
+	    GetBuiltinAggregateFunction(binder.context, CountStarFun::Name, {}), {}, nullptr, AggregateType::NON_DISTINCT);
 	aggregate_list.push_back(std::move(count_star_aggr));
 
 	// 3. count_child = COUNT(child)
 	vector<unique_ptr<Expression>> count_child_children;
 	count_child_children.push_back(bound_colref->Copy());
-	auto count_child_aggr = function_binder.BindAggregateFunction(
-	    CountFunctionBase::GetFunction(), std::move(count_child_children), nullptr, AggregateType::NON_DISTINCT);
+	auto count_fun =
+	    GetBuiltinAggregateFunction(binder.context, CountFun::Name, {count_child_children[0]->GetReturnType()});
+	auto count_child_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_child_children), nullptr,
+	                                                              AggregateType::NON_DISTINCT);
 	aggregate_list.push_back(std::move(count_child_aggr));
 
 	auto aggr_index = binder.GenerateTableIndex();
@@ -190,6 +197,10 @@ static bool IsMultiColumnComparison(const BoundSubqueryExpression &expr) {
 	if (expr.GetChildren().size() > 1 || expr.GetChildTypes().size() > 1) {
 		return true;
 	}
+	if (expr.ComparisonType() == ExpressionType::COMPARE_EQUAL) {
+		// equality on a TUPLE is a single struct comparison, which is supported
+		return false;
+	}
 	for (auto &child : expr.GetChildren()) {
 		if (IsMultiColumnTuple(child->GetReturnType())) {
 			return true;
@@ -216,7 +227,7 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 		plan = std::move(limit);
 
 		// now we push a COUNT(*) aggregate onto the limit, this will be either 0 or 1 (EXISTS or NOT EXISTS)
-		auto count_star_fun = CountStarFun::GetFunction();
+		auto count_star_fun = GetBuiltinAggregateFunction(binder.context, CountStarFun::Name, {});
 
 		FunctionBinder function_binder(binder);
 		auto count_star =
@@ -275,15 +286,16 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 		first_children.push_back(std::move(bound));
 
 		FunctionBinder function_binder(binder);
-		auto first_agg =
-		    function_binder.BindAggregateFunction(FirstFunctionGetter::GetFunction(expr.GetReturnType()),
-		                                          std::move(first_children), nullptr, AggregateType::NON_DISTINCT);
+		auto first_fun = GetBuiltinAggregateFunction(binder.context, FirstFun::Name, {expr.GetReturnType()});
+		auto first_agg = function_binder.BindAggregateFunction(first_fun, std::move(first_children), nullptr,
+		                                                       AggregateType::NON_DISTINCT);
 
 		expressions.push_back(std::move(first_agg));
 		if (error_on_multiple_rows) {
 			vector<unique_ptr<Expression>> count_children;
 			auto count_agg = function_binder.BindAggregateFunction(
-			    CountStarFun::GetFunction(), std::move(count_children), nullptr, AggregateType::NON_DISTINCT);
+			    GetBuiltinAggregateFunction(binder.context, CountStarFun::Name, {}), std::move(count_children), nullptr,
+			    AggregateType::NON_DISTINCT);
 			expressions.push_back(std::move(count_agg));
 		}
 		auto aggr_index = binder.GenerateTableIndex();
@@ -310,7 +322,7 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 			    Value("More than one row returned by a subquery used as an expression - scalar subqueries can only "
 			          "return a single row.\n\nUse \"SET scalar_subquery_error_on_multiple_rows=false\" to revert to "
 			          "previous behavior of returning a random row.")));
-			auto error_expr = function_binder.BindScalarFunction(ErrorFun::GetFunction(), std::move(error_children));
+			auto error_expr = BindBuiltinScalarFunction(binder.context, ErrorFun::Name, std::move(error_children));
 			error_expr->SetReturnType(first_ref->GetReturnType());
 			auto case_expr =
 			    make_uniq<BoundCaseExpression>(std::move(count_check), std::move(error_expr), std::move(first_ref));
@@ -375,7 +387,7 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 
 			// Create a struct expression from the subquery columns using the "row" function
 			FunctionBinder function_binder(binder);
-			auto struct_expr = function_binder.BindScalarFunction(RowFun::GetFunction(), std::move(struct_children));
+			auto struct_expr = BindBuiltinScalarFunction(binder.context, RowFun::Name, std::move(struct_children));
 
 			JoinCondition cond(std::move(expr.GetChildrenMutable()[0]), std::move(struct_expr), expr.ComparisonType());
 
@@ -436,9 +448,46 @@ static bool PerformDelimOnType(const LogicalType &type) {
 	return true;
 }
 
+//! Like IsVolatile, but ignores error()
+//! Error is deterministic, so it can be evaluated once per distinct correlated value
+//! FIXME: remove once `error` no longer has to be volatile (fixing blockers is WIP)
+static bool IsVolatileIgnoringError(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_FUNCTION: {
+		auto &function = expr.Cast<BoundFunctionExpression>().Function();
+		if (function.HasBindLambdaCallback() ||
+		    (function.GetName() != ErrorFun::Name && function.GetStability() == FunctionStability::VOLATILE)) {
+			return expr.IsVolatile();
+		}
+		break;
+	}
+	case ExpressionClass::BOUND_CASE:
+	case ExpressionClass::BOUND_CONJUNCTION:
+	case ExpressionClass::BOUND_OPERATOR:
+		break;
+	default:
+		return expr.IsVolatile();
+	}
+	bool is_volatile = false;
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { is_volatile = is_volatile || IsVolatileIgnoringError(child); });
+	return is_volatile;
+}
+
+static bool HasVolatileExpressionsIgnoringError(const LogicalOperator &op) {
+	bool is_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expression) {
+		is_volatile = is_volatile || IsVolatileIgnoringError(**expression);
+	});
+	for (auto &child : op.children) {
+		is_volatile = is_volatile || (child && HasVolatileExpressionsIgnoringError(*child));
+	}
+	return is_volatile;
+}
+
 static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &correlated_columns,
                                         optional_ptr<LogicalOperator> dependent_plan = nullptr) {
-	bool perform_delim = !dependent_plan || !dependent_plan->HasVolatileExpressions();
+	bool perform_delim = !dependent_plan || !HasVolatileExpressionsIgnoringError(*dependent_plan);
 	if (perform_delim && !Settings::Get<EnableOptimizerSetting>(binder.context)) {
 		// if optimizations are disabled we always do a delim join
 		return true;
@@ -470,7 +519,7 @@ static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubque
 	// Preserve the existing duplicate-elimination path for deterministic ANY queries. Volatile ANY queries require
 	// row identity for the same reason as other correlated subqueries: sharing one result between equal outer values
 	// changes their evaluation cardinality.
-	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !plan->HasVolatileExpressions()
+	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !HasVolatileExpressionsIgnoringError(*plan)
 	                         ? true
 	                         : PerformDuplicateElimination(binder, correlated_columns, plan);
 	D_ASSERT(expr.IsCorrelated());
@@ -703,10 +752,11 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::PlanOperator(unique_ptr<L
 
 		for (idx_t i = 0; i < op_ptr->children.size(); i++) {
 			D_ASSERT(op_ptr->children[i]);
-			auto old_child_bindings = op_ptr->children[i]->GetColumnBindings();
-			auto child_replacements = PlanOperator(op_ptr->children[i]);
-			ColumnBindingRewrite::ApplyToChild(op_ptr, i, std::move(old_child_bindings), child_replacements);
-			operator_replacements.Merge(child_replacements);
+			ColumnBindingRewrite::RewriteChild(
+			    op_ptr, i, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &child_replacements) {
+				    child_replacements = PlanOperator(child);
+				    operator_replacements.Merge(child_replacements);
+			    });
 		}
 	}
 	ColumnBindingRewrite::ValidateOutput(old_output, op_ptr->GetColumnBindings(), operator_replacements);
@@ -718,10 +768,11 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::PlanAnyJoinCondition(uniq
 	BindingReplacementGraph operator_replacements;
 
 	for (idx_t child_index = 0; child_index < op_ptr->children.size(); child_index++) {
-		auto old_child_bindings = op_ptr->children[child_index]->GetColumnBindings();
-		auto child_replacements = PlanOperator(op_ptr->children[child_index]);
-		ColumnBindingRewrite::ApplyToChild(op_ptr, child_index, std::move(old_child_bindings), child_replacements);
-		operator_replacements.Merge(child_replacements);
+		ColumnBindingRewrite::RewriteChild(
+		    op_ptr, child_index, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &child_replacements) {
+			    child_replacements = PlanOperator(child);
+			    operator_replacements.Merge(child_replacements);
+		    });
 	}
 
 	BindingReplacementGraph pair_replacements;
@@ -737,10 +788,11 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::PlanAnyJoinCondition(uniq
 	D_ASSERT(join.condition);
 	PlanJoinSubqueries(join, join.condition, JoinSide::LEFT);
 	for (idx_t child_index = 0; child_index < join.children.size(); child_index++) {
-		auto old_child_bindings = join.children[child_index]->GetColumnBindings();
-		auto child_replacements = PlanOperator(join.children[child_index]);
-		ColumnBindingRewrite::ApplyToChild(op_ptr, child_index, std::move(old_child_bindings), child_replacements);
-		operator_replacements.Merge(child_replacements);
+		ColumnBindingRewrite::RewriteChild(
+		    op_ptr, child_index, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &child_replacements) {
+			    child_replacements = PlanOperator(child);
+			    operator_replacements.Merge(child_replacements);
+		    });
 	}
 	ColumnBindingRewrite::ValidateOutput(old_output, op_ptr->GetColumnBindings(), operator_replacements);
 	return operator_replacements;
@@ -756,11 +808,60 @@ unique_ptr<Expression> RecursiveDependentJoinPlanner::VisitReplace(BoundSubquery
 	return binder.PlanSubquery(expr, root);
 }
 
+static unique_ptr<Expression> BindTryRethrowFunction(Binder &binder, const char *name,
+                                                     vector<unique_ptr<Expression>> children) {
+	auto &system_catalog = Catalog::GetSystemCatalog(binder.context);
+	auto &entry = system_catalog.GetEntry<ScalarFunctionCatalogEntry>(
+	    binder.context, QualifiedName(system_catalog.GetName(), DEFAULT_SCHEMA, name));
+	vector<pair<Identifier, unique_ptr<Expression>>> arguments;
+	for (auto &child : children) {
+		arguments.emplace_back(Identifier(), std::move(child));
+	}
+	ErrorData error;
+	FunctionBinder function_binder(binder);
+	auto result = function_binder.BindScalarFunction(entry, std::move(arguments), error, false, &binder);
+	if (!result) {
+		error.Throw();
+	}
+	return result;
+}
+
+//! Replace a TRY subquery that was lowered with an exposed error flag by
+//! __internal_try_rethrow(<error flag>, <masked value>), so that errors captured inside the subquery
+//! are re-raised at the use site, where the enclosing TRY, HAS_ERROR or subquery lowering consumes them.
+//! Only a re-raise in a conditionally evaluated position of an aggregate select item escapes to the
+//! user; the original message is not available here, since HAS_ERROR captures only the fact that an
+//! error occurred, so the fixed message states that.
+static unique_ptr<Expression> CreateTryErrorRethrow(Binder &binder, unique_ptr<Expression> subquery_result) {
+	auto flag_input = subquery_result->Copy();
+
+	vector<unique_ptr<Expression>> value_children;
+	value_children.push_back(std::move(subquery_result));
+	value_children.push_back(make_uniq<BoundConstantExpression>(Value("value")));
+	auto value = BindTryRethrowFunction(binder, "struct_extract", std::move(value_children));
+
+	vector<unique_ptr<Expression>> flag_children;
+	flag_children.push_back(std::move(flag_input));
+	flag_children.push_back(make_uniq<BoundConstantExpression>(Value("error")));
+	auto flag = BindTryRethrowFunction(binder, "struct_extract", std::move(flag_children));
+
+	vector<unique_ptr<Expression>> rethrow_children;
+	rethrow_children.push_back(std::move(flag));
+	rethrow_children.push_back(std::move(value));
+	return BindTryRethrowFunction(binder, TryRethrowFun::Name, std::move(rethrow_children));
+}
+
 unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root) {
 	D_ASSERT(root);
 	// first we translate the QueryNode of the subquery into a logical plan
 	auto subquery_root = std::move(expr.SubqueryMutable().plan);
 	D_ASSERT(subquery_root);
+
+	if (expr.RethrowsTryErrors()) {
+		// the plan outputs a struct of the masked value and the error flag; the flattened result column
+		// carries that struct until the rethrow wrapper unpacks it below
+		expr.SetReturnType(expr.Subquery().types[0]);
+	}
 
 	// now we actually flatten the subquery
 	auto plan = std::move(subquery_root);
@@ -770,6 +871,9 @@ unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, uniqu
 		result_expression = PlanUncorrelatedSubquery(*this, expr, root, std::move(plan));
 	} else {
 		result_expression = PlanCorrelatedSubquery(*this, expr, root, std::move(plan));
+	}
+	if (expr.RethrowsTryErrors()) {
+		result_expression = CreateTryErrorRethrow(*this, std::move(result_expression));
 	}
 	IncreaseDepth();
 	return result_expression;

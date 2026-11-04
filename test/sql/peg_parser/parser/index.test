@@ -19,3 +19,39 @@ CALL check_peg_parser($TEST_PEG_PARSER$DROP INDEX simple.new_schema.i_index$TEST
 statement ok
 CALL check_peg_parser($TEST_PEG_PARSER$DROP INDEX s.i_index;$TEST_PEG_PARSER$);
 
+statement ok
+CREATE TABLE create_index_syntax(a INTEGER, b INTEGER);
+
+statement error
+CREATE INDEX duplicate_index_list ON create_index_syntax(a) (b);
+----
+<REGEX>:.*Parser Error: syntax error.*
+
+statement error
+CREATE INDEX missing_index_list ON create_index_syntax;
+----
+<REGEX>:.*Parser Error: syntax error.*
+
+statement ok
+CREATE INDEX plain_index ON create_index_syntax(a, b);
+
+statement ok
+CREATE INDEX expression_index ON create_index_syntax((a + b));
+
+statement ok
+CREATE INDEX using_index ON create_index_syntax USING ART(a);
+
+query III
+SELECT index_name, sql, expressions
+FROM duckdb_indexes()
+WHERE table_name = 'create_index_syntax'
+ORDER BY index_name;
+----
+expression_index	CREATE INDEX expression_index ON create_index_syntax(((a + b)));	['((a + b))']
+plain_index	CREATE INDEX plain_index ON create_index_syntax(a, b);	[a, b]
+using_index	CREATE INDEX using_index ON create_index_syntax(a);	[a]
+
+statement error
+CREATE INDEX missing_column_index ON create_index_syntax(missing);
+----
+<REGEX>:.*Binder Error: Table "create_index_syntax" does not have a column named "missing".*

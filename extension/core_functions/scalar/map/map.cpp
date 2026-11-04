@@ -164,8 +164,10 @@ ScalarFunctionSet MapFun::GetFunctions() {
 
 	auto key_type = LogicalType::TEMPLATE("K");
 	auto val_type = LogicalType::TEMPLATE("V");
-	ScalarFunction value_func({LogicalType::LIST(key_type), LogicalType::LIST(val_type)},
-	                          LogicalType::MAP(key_type, val_type), MapFunction);
+	ScalarFunction value_func({}, LogicalType::MAP(key_type, val_type), MapFunction);
+	value_func.GetSignature()
+	    .AddParameter("keys", LogicalType::LIST(key_type))
+	    .AddParameter("values", LogicalType::LIST(val_type));
 	value_func.SetFallible();
 	value_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 

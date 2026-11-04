@@ -1,0 +1,250 @@
+# name: test/optimizer/pullup_join_expression_semantics.test
+# description: Preserve expression join semantics across projections and adjacent join boundaries
+# group: [optimizer]
+
+statement ok
+SET max_execution_time=5000
+
+statement ok
+CREATE TABLE facts(i BIGINT)
+
+statement ok
+INSERT INTO facts VALUES (0), (0), (1), (2), (NULL)
+
+statement ok
+CREATE TABLE empty_facts(i BIGINT)
+
+statement ok
+CREATE TABLE dimensions(k BIGINT)
+
+statement ok
+INSERT INTO dimensions VALUES (1), (1), (2), (2), (3), (4), (NULL)
+
+statement ok
+CREATE TABLE probes(k BIGINT)
+
+statement ok
+INSERT INTO probes VALUES (-1), (0), (0), (1), (2), (NULL)
+
+statement ok
+CREATE MACRO inlined_chain(input_table) AS TABLE
+    WITH a AS NOT MATERIALIZED (
+        SELECT * FROM query_table(input_table) f JOIN dimensions d1 ON d1.k = f.i + 1
+    ), b AS NOT MATERIALIZED (
+        SELECT * FROM a JOIN dimensions d2 ON d2.k = a.i + 2
+    ), c AS NOT MATERIALIZED (
+        SELECT * FROM b JOIN dimensions d3 ON d3.k = b.i + 3
+    )
+    SELECT * FROM c
+
+statement ok
+CREATE MACRO materialized_chain(input_table) AS TABLE
+    WITH a AS MATERIALIZED (
+        SELECT * FROM query_table(input_table) f JOIN dimensions d1 ON d1.k = f.i + 1
+    ), b AS MATERIALIZED (
+        SELECT * FROM a JOIN dimensions d2 ON d2.k = a.i + 2
+    ), c AS MATERIALIZED (
+        SELECT * FROM b JOIN dimensions d3 ON d3.k = b.i + 3
+    )
+    SELECT * FROM c
+
+statement ok
+CREATE TABLE guarded_strings(i BIGINT, value VARCHAR)
+
+statement ok
+INSERT INTO guarded_strings VALUES (0, 'bad'), (1, '1'), (2, '2'), (NULL, NULL)
+
+statement ok
+CREATE TABLE guarded_integers(i BIGINT)
+
+statement ok
+INSERT INTO guarded_integers VALUES (1), (2), (9223372036854775807), (NULL)
+
+statement ok
+CREATE MACRO cast_rows(only_valid) AS TABLE
+    SELECT a.i, count(*) AS n, sum(a.payload) AS payload
+    FROM dimensions d2 JOIN (
+        SELECT *, abs(s.i) AS payload
+        FROM dimensions d1 JOIN (
+            SELECT * FROM guarded_strings WHERE NOT only_valid OR value <> 'bad'
+        ) s ON d1.k = s.value::BIGINT + 1
+    ) a ON d2.k = a.i + 2
+    GROUP BY a.i
+
+statement ok
+CREATE MACRO overflow_rows(only_valid) AS TABLE
+    SELECT a.i, count(*) AS n, sum(a.payload) AS payload
+    FROM dimensions d2 JOIN (
+        SELECT *, abs(s.i) AS payload
+        FROM dimensions d1 JOIN (
+            SELECT * FROM guarded_integers WHERE NOT only_valid OR i < 9223372036854775807
+        ) s ON d1.k = s.i + 1
+    ) a ON d2.k = a.i + 2
+    GROUP BY a.i
+
+# Keep all join-key columns projected so adding a column is not itself a pullup barrier.
+foreach chain inlined_chain materialized_chain
+
+query TT
+EXPLAIN (FORMAT JSON) SELECT i, count(*) FROM {chain}('facts') GROUP BY i
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+endloop
+
+foreach guarded_query cast_rows overflow_rows
+
+query TT
+EXPLAIN (FORMAT JSON) SELECT * FROM {guarded_query}(true)
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*
+
+endloop
+
+# Check the same explicit multisets with and without optimization.
+foreach optimizer true false
+
+statement ok
+SET enable_optimizer={optimizer}
+
+foreach chain inlined_chain materialized_chain
+
+query II rowsort
+SELECT i, count(*) FROM {chain}('facts') GROUP BY i
+----
+0	8
+1	2
+
+query I
+SELECT count(*) FROM {chain}('empty_facts')
+----
+0
+
+# The chain is on the nullable side, with unmatched and NULL probe keys.
+query III rowsort
+SELECT p.k, a.i, count(*)
+FROM probes p LEFT JOIN {chain}('facts') a ON p.k = a.i
+GROUP BY ALL
+----
+-1	NULL	1
+0	0	16
+1	1	2
+2	NULL	1
+NULL	NULL	1
+
+# A filter on the nullable side must not remove preserved chain rows.
+query III rowsort
+SELECT a.i, p.k, count(*)
+FROM {chain}('facts') a LEFT JOIN (SELECT * FROM probes WHERE k > 0) p ON a.i = p.k
+GROUP BY ALL
+----
+0	NULL	8
+1	1	2
+
+query I rowsort
+SELECT p.k FROM probes p SEMI JOIN {chain}('facts') a ON p.k = a.i
+----
+0
+0
+1
+
+query I rowsort
+SELECT p.k FROM probes p ANTI JOIN {chain}('facts') a ON p.k = a.i
+----
+-1
+2
+NULL
+
+foreach join_type,expected_i,expected_count SEMI,1,2 ANTI,0,8
+
+query II
+SELECT a.i = {expected_i}, count(*) = {expected_count}
+FROM {chain}('facts') a {join_type} JOIN (SELECT * FROM probes WHERE k > 0) p ON a.i = p.k
+GROUP BY a.i
+----
+true	true
+
+endloop
+
+endloop
+
+# Safe guards must stay with the fallible predicates pulled out of the joins.
+foreach guarded_query cast_rows overflow_rows
+
+query III rowsort
+SELECT * FROM {guarded_query}(true)
+----
+1	2	2
+2	1	2
+
+endloop
+
+# The inner join must remove invalid values before evaluating the projection.
+query II
+SELECT count(*), sum(payload)
+FROM dimensions d2 JOIN (
+    SELECT *, s.value::BIGINT AS payload
+    FROM (SELECT * FROM dimensions WHERE k > 1) d1
+    JOIN guarded_strings s ON d1.k = s.i + 1
+) a ON d2.k = a.i + 2
+----
+3	4
+
+# Inputs that reach the join expression must still raise their original errors.
+statement error
+SELECT * FROM cast_rows(false)
+----
+<REGEX>:.*Conversion Error.*bad.*
+
+statement error
+SELECT * FROM overflow_rows(false)
+----
+<REGEX>:.*Out of Range Error.*Overflow in addition.*
+
+endloop
+
+statement ok
+SET enable_optimizer=true
+
+# Do not rely on later rewrites to reunite a protective guard with its throwing predicate.
+statement ok
+SET disabled_optimizers='filter_pushdown,join_order,projection_pullup'
+
+foreach guarded_query cast_rows overflow_rows
+
+query III rowsort
+SELECT * FROM {guarded_query}(true)
+----
+1	2	2
+2	1	2
+
+endloop
+
+# The safe predicate must also restrict evaluation of the projected sequence.
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer
+
+statement ok
+CREATE OR REPLACE SEQUENCE guard_calls START 1
+
+query II
+SELECT count(*), sum(payload) > 0
+FROM dimensions d2 JOIN (
+    SELECT *, nextval('guard_calls') AS payload
+    FROM dimensions d1 JOIN (SELECT * FROM facts WHERE i > 0) s ON d1.k = s.i + 1
+) a ON d2.k = a.i + 2
+----
+3	true
+
+# Three matches remain; the four i=0 matches must never evaluate nextval.
+query I
+SELECT currval('guard_calls')
+----
+3
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer

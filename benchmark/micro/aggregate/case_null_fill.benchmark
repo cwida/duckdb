@@ -1,0 +1,20 @@
+# name: benchmark/micro/aggregate/case_null_fill.benchmark
+# group: [aggregate]
+
+name CASE NULL arms
+group micro
+subgroup aggregate
+
+load
+CREATE TABLE case_values AS
+SELECT i, (i%100)::INTEGER AS n FROM range(10000000) t(i);
+
+run
+SELECT sum(CASE WHEN i%7=0 THEN n
+                WHEN i%3=0 THEN NULL
+                WHEN i%7=1 THEN n
+                ELSE NULL END)
+FROM case_values;
+
+result I
+117857251

@@ -218,38 +218,47 @@ void ListRangeFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 
 } // namespace
 
+template <bool GENERATE_SERIES>
+static void AddRangeFunctions(ScalarFunctionSet &set) {
+	ScalarFunction stop_only({}, LogicalType::LIST(LogicalType::BIGINT),
+	                         ListRangeFunction<NumericRangeInfo, GENERATE_SERIES>);
+	stop_only.GetSignature().AddParameter("stop", LogicalType::BIGINT);
+	set.AddFunction(stop_only);
+
+	ScalarFunction start_stop({}, LogicalType::LIST(LogicalType::BIGINT),
+	                          ListRangeFunction<NumericRangeInfo, GENERATE_SERIES>);
+	start_stop.GetSignature().AddParameter("start", LogicalType::BIGINT).AddParameter("stop", LogicalType::BIGINT);
+	set.AddFunction(start_stop);
+
+	ScalarFunction start_stop_step({}, LogicalType::LIST(LogicalType::BIGINT),
+	                               ListRangeFunction<NumericRangeInfo, GENERATE_SERIES>);
+	start_stop_step.GetSignature()
+	    .AddParameter("start", LogicalType::BIGINT)
+	    .AddParameter("stop", LogicalType::BIGINT)
+	    .AddParameter("step", LogicalType::BIGINT);
+	set.AddFunction(start_stop_step);
+
+	ScalarFunction timestamp_range({}, LogicalType::LIST(LogicalType::TIMESTAMP),
+	                               ListRangeFunction<TimestampRangeInfo, GENERATE_SERIES>);
+	timestamp_range.GetSignature()
+	    .AddParameter("start", LogicalType::TIMESTAMP)
+	    .AddParameter("stop", LogicalType::TIMESTAMP)
+	    .AddParameter("step", LogicalType::INTERVAL);
+	set.AddFunction(timestamp_range);
+
+	set.SetFallible();
+}
+
 ScalarFunctionSet ListRangeFun::GetFunctions() {
 	// the arguments and return types are actually set in the binder function
 	ScalarFunctionSet range_set;
-	range_set.AddFunction(ScalarFunction({LogicalType::BIGINT}, LogicalType::LIST(LogicalType::BIGINT),
-	                                     ListRangeFunction<NumericRangeInfo, false>));
-	range_set.AddFunction(ScalarFunction({LogicalType::BIGINT, LogicalType::BIGINT},
-	                                     LogicalType::LIST(LogicalType::BIGINT),
-	                                     ListRangeFunction<NumericRangeInfo, false>));
-	range_set.AddFunction(ScalarFunction({LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT},
-	                                     LogicalType::LIST(LogicalType::BIGINT),
-	                                     ListRangeFunction<NumericRangeInfo, false>));
-	range_set.AddFunction(ScalarFunction({LogicalType::TIMESTAMP, LogicalType::TIMESTAMP, LogicalType::INTERVAL},
-	                                     LogicalType::LIST(LogicalType::TIMESTAMP),
-	                                     ListRangeFunction<TimestampRangeInfo, false>));
-	range_set.SetFallible();
+	AddRangeFunctions<false>(range_set);
 	return range_set;
 }
 
 ScalarFunctionSet GenerateSeriesFun::GetFunctions() {
 	ScalarFunctionSet generate_series;
-	generate_series.AddFunction(ScalarFunction({LogicalType::BIGINT}, LogicalType::LIST(LogicalType::BIGINT),
-	                                           ListRangeFunction<NumericRangeInfo, true>));
-	generate_series.AddFunction(ScalarFunction({LogicalType::BIGINT, LogicalType::BIGINT},
-	                                           LogicalType::LIST(LogicalType::BIGINT),
-	                                           ListRangeFunction<NumericRangeInfo, true>));
-	generate_series.AddFunction(ScalarFunction({LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT},
-	                                           LogicalType::LIST(LogicalType::BIGINT),
-	                                           ListRangeFunction<NumericRangeInfo, true>));
-	generate_series.AddFunction(ScalarFunction({LogicalType::TIMESTAMP, LogicalType::TIMESTAMP, LogicalType::INTERVAL},
-	                                           LogicalType::LIST(LogicalType::TIMESTAMP),
-	                                           ListRangeFunction<TimestampRangeInfo, true>));
-	generate_series.SetFallible();
+	AddRangeFunctions<true>(generate_series);
 	return generate_series;
 }
 

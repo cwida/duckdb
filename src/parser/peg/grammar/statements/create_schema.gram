@@ -1,1 +1,3 @@
-CreateSchemaStmt <- 'SCHEMA' IfNotExists? QualifiedName
+CreateSchemaStmt <- 'SCHEMA' IfNotExists? QualifiedName WithOptionList?
+
+WithOptionList <- 'WITH' RelOptionList

@@ -1,0 +1,73 @@
+# name: test/sql/join/iejoin/iejoin_semi_anti_residual_payload.test
+# description: SEMI/ANTI IEJoin with a residual predicate over sides whose column types differ positionally
+# group: [iejoin]
+
+statement ok
+PRAGMA enable_verification
+
+# SplitPayloads used to reference the right payload from the left columns of the merged chunk,
+# which threw "Vector::Reference used on vector of different type" whenever the left column at that
+# position had a different type than the right one (INTEGER vs BIGINT here)
+query I
+SELECT count(*)
+FROM (VALUES (0, 10, 1.5), (1, 11, 1.5), (2, 12, 1.5), (3, 13, 1.5),
+             (4, 14, 1.5), (5, 15, 1.5), (6, 16, 1.5), (7, 17, 1.5)) l(start, stop, price)
+ANTI JOIN (SELECT i AS start, i + 1 AS stop, 150.0 + i AS bid FROM range(100) t(i)) r
+  ON l.start < r.stop AND r.start < l.stop AND l.price + r.bid < 400;
+----
+0
+
+query I
+SELECT count(*)
+FROM (VALUES (0, 10, 1.5), (1, 11, 1.5), (2, 12, 1.5), (3, 13, 1.5),
+             (4, 14, 1.5), (5, 15, 1.5), (6, 16, 1.5), (7, 17, 1.5)) l(start, stop, price)
+SEMI JOIN (SELECT i AS start, i + 1 AS stop, 150.0 + i AS bid FROM range(100) t(i)) r
+  ON l.start < r.stop AND r.start < l.stop AND l.price + r.bid < 400;
+----
+8
+
+# only some rows satisfy the residual predicate
+query I
+SELECT l.start
+FROM (VALUES (0, 10, 1.5), (1, 11, 1.5), (2, 12, 1.5), (3, 13, 1.5),
+             (4, 14, 1.5), (5, 15, 1.5), (6, 16, 1.5), (7, 17, 1.5)) l(start, stop, price)
+ANTI JOIN (SELECT i AS start, i + 1 AS stop, 150.0 + i AS bid FROM range(100) t(i)) r
+  ON l.start < r.stop AND r.start < l.stop AND l.price + r.bid < 155
+ORDER BY 1;
+----
+4
+5
+6
+7
+
+query I
+SELECT l.start
+FROM (VALUES (0, 10, 1.5), (1, 11, 1.5), (2, 12, 1.5), (3, 13, 1.5),
+             (4, 14, 1.5), (5, 15, 1.5), (6, 16, 1.5), (7, 17, 1.5)) l(start, stop, price)
+SEMI JOIN (SELECT i AS start, i + 1 AS stop, 150.0 + i AS bid FROM range(100) t(i)) r
+  ON l.start < r.stop AND r.start < l.stop AND l.price + r.bid < 155
+ORDER BY 1;
+----
+0
+1
+2
+3
+
+# an unused leading column shifts the left layout against the right one (BIGINT under a TIMESTAMP)
+query I
+SELECT count(*)
+FROM (VALUES (1::BIGINT, TIMESTAMP '2026-01-01 00:00:00', TIMESTAMP '2026-01-01 00:24:22', 149.5::DOUBLE),
+             (2, TIMESTAMP '2026-01-01 00:24:22', TIMESTAMP '2026-01-01 00:48:45', 164.1),
+             (3, TIMESTAMP '2026-01-01 00:48:45', TIMESTAMP '2026-01-01 01:13:08', 178.8),
+             (4, TIMESTAMP '2026-01-01 01:13:08', TIMESTAMP '2026-01-01 01:37:31', 193.4),
+             (5, TIMESTAMP '2026-01-01 01:37:31', TIMESTAMP '2026-01-01 02:01:54', 208.0),
+             (6, TIMESTAMP '2026-01-01 02:01:54', TIMESTAMP '2026-01-01 02:26:17', 222.6),
+             (7, NULL, TIMESTAMP '2026-01-01 02:50:40', 237.3),
+             (8, TIMESTAMP '2026-01-01 02:50:40', NULL, 251.9)) l(id, start, stop, price)
+ANTI JOIN (SELECT TIMESTAMP '2026-01-01' + INTERVAL (i + 15 * 2048 // 7) SECOND AS start,
+                  TIMESTAMP '2026-01-01' + INTERVAL (i + 15 * 2048 // 7 + 1) SECOND AS stop,
+                  150.0 + i / 100.0 AS bid
+           FROM range(10240) t(i)) r
+  ON l.start < r.stop AND r.start < l.stop AND l.price + r.bid < 400;
+----
+6

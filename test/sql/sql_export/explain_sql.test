@@ -1,0 +1,119 @@
+# name: test/sql/sql_export/explain_sql.test
+# description: SQL explain syntax, result shape and absence of child execution
+# group: [sql_export]
+
+query TT
+EXPLAIN (SQL) SELECT 1 + 2 AS answer;
+----
+sql	SELECT CAST(3 AS INTEGER) AS answer
+
+statement ok
+SET explain_output='all';
+
+query TT
+EXPLAIN (SQL) VALUES (42);
+----
+sql	<REGEX>:.*SELECT.*42.*
+
+statement ok
+SET explain_output='physical_only';
+
+statement error
+EXPLAIN (SQL, SQL) SELECT 1;
+----
+SQL must be provided once without arguments
+
+statement error
+EXPLAIN (SQL true) SELECT 1;
+----
+SQL must be provided once without arguments
+
+statement error
+EXPLAIN (SQL, ANALYZE) SELECT 1;
+----
+EXPLAIN (SQL) cannot be combined with ANALYZE or FORMAT
+
+statement error
+EXPLAIN ANALYZE (SQL) SELECT 1;
+----
+EXPLAIN (SQL) cannot be combined with ANALYZE or FORMAT
+
+statement error
+EXPLAIN (FORMAT JSON, SQL) SELECT 1;
+----
+EXPLAIN (SQL) cannot be combined with ANALYZE or FORMAT
+
+statement ok
+CREATE TABLE explain_target(i INTEGER);
+
+query TT
+EXPLAIN (SQL) INSERT INTO explain_target VALUES (1);
+----
+sql	<REGEX>:(?s)INSERT\s*INTO\s*.*explain_target.*
+
+statement error
+EXPLAIN (SQL) CREATE TABLE unexpected(i INTEGER);
+----
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
+
+statement error
+EXPLAIN (SQL) CALL range(3);
+----
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
+
+statement ok
+PREPARE query_to_explain AS SELECT 1;
+
+statement error
+EXPLAIN (SQL) EXECUTE query_to_explain;
+----
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
+
+query I
+SELECT count(*) FROM explain_target;
+----
+0
+
+statement ok
+CREATE SEQUENCE explain_sequence;
+
+query TT
+EXPLAIN (SQL) SELECT nextval('explain_sequence');
+----
+sql	<REGEX>:.*nextval.*explain_sequence.*
+
+query TT
+EXPLAIN (SQL) SELECT error('execution only');
+----
+sql	<REGEX>:.*error.*execution only.*
+
+statement error
+EXPLAIN (SQL) PIVOT (SELECT nextval('explain_sequence') AS i) ON i;
+----
+PIVOT statements with pivot elements extracted from the data cannot be used in EXPLAIN (SQL) statements.
+
+query I
+SELECT last_value IS NULL FROM duckdb_sequences() WHERE sequence_name='explain_sequence';
+----
+true
+
+query TT
+EXPLAIN (SQL) PIVOT (VALUES ('a', 1)) t(k,v) ON k IN ('a') USING sum(v);
+----
+sql	<REGEX>:.*SELECT.*
+
+statement error
+EXPLAIN (SQL) SELECT * FROM missing_explain_source;
+----
+missing_explain_source
+
+query TT
+EXPLAIN (SQL) SELECT __mark_join_marker FROM (VALUES (1,1)) l(a,c)
+JOIN BY (TYPE MARK) (VALUES (1,NULL::INTEGER)) r(b,d) ON a IS NOT DISTINCT FROM b AND c=d;
+----
+sql	<REGEX>:.*JOIN[[:space:]]+BY [(]TYPE MARK[)].*
+
+query TT
+EXPLAIN (SQL) SELECT * FROM duckdb_views();
+----
+sql	<REGEX>:.*FROM.*duckdb_views.*

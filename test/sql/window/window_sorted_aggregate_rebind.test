@@ -1,0 +1,37 @@
+# name: test/sql/window/window_sorted_aggregate_rebind.test
+# description: Sorted window aggregates rebound to the buffering wrapper keep regular errors and results
+# group: [window]
+
+# The volatile CASE input blocks the window-to-aggregate rewrite, so the constant aggregator performs the
+# runtime sorted-aggregate rebind for these whole-partition frames. These pin the rebound wrapper's
+# behavior so a consumer reordering that exposes the wrapper's error mode gets caught.
+
+# the rebound wrapper's finalize runs the fallible inner aggregate, whose error must stay a regular error
+
+statement error
+SELECT approx_top_k(v2, NULL ORDER BY v2 DESC) OVER (PARTITION BY g ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+FROM (SELECT range % 2 AS g, CASE WHEN random() >= 0 THEN range END AS v2 FROM range(4)) t;
+----
+k value cannot be NULL
+
+# a fallible inner aggregate produces correct results through the rebound wrapper
+
+query II rowsort
+SELECT g, string_agg(v2, ',') OVER (PARTITION BY g ORDER BY v2 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+FROM (SELECT range % 2 AS g, CASE WHEN random() >= 0 THEN range END AS v2 FROM range(4)) t;
+----
+0	2,0
+0	2,0
+1	3,1
+1	3,1
+
+# an infallible inner aggregate produces correct results through the rebound wrapper
+
+query II rowsort
+SELECT g, list(v2 ORDER BY v2 DESC) OVER (PARTITION BY g ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+FROM (SELECT range % 2 AS g, CASE WHEN random() >= 0 THEN range END AS v2 FROM range(4)) t;
+----
+0	[2, 0]
+0	[2, 0]
+1	[3, 1]
+1	[3, 1]

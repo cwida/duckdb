@@ -1,0 +1,30 @@
+# name: test/sql/types/union/union_list_empty_to_varchar.test
+# description: Casting empty lists of UNIONs to VARCHAR
+# group: [union]
+
+query I
+SELECT CAST(CAST([]::INTEGER[] AS UNION(i INTEGER)[]) AS VARCHAR) || 'x';
+----
+[]x
+
+query I
+SELECT CAST(CAST([]::VARCHAR[] AS UNION(i INTEGER, s VARCHAR)[]) AS VARCHAR) || 'x';
+----
+[]x
+
+query I
+SELECT md5(CAST(CAST([]::INTEGER[] AS UNION(i INTEGER)[]) AS VARCHAR));
+----
+d751713988987e9331980363e24189ce
+
+query I
+SELECT CAST(l AS VARCHAR) FROM (VALUES ([]::UNION(i INTEGER)[]), ([1]::UNION(i INTEGER)[]), (NULL)) t(l);
+----
+[]
+[1]
+NULL
+
+query I
+SELECT CAST(CAST([1, 2]::INTEGER[] AS UNION(i INTEGER)[]) AS VARCHAR);
+----
+[1, 2]

@@ -1,0 +1,10 @@
+[
+    {
+        "name": "match_recognize",
+        "parameters": "columns",
+        "description": "Internal window function implementing row pattern matching for MATCH_RECOGNIZE",
+        "example": "MATCH_RECOGNIZE(PATTERN (A B) DEFINE A AS x > 0, B AS y > 0)",
+        "categories": "",
+        "type": "window_function"
+    }
+]

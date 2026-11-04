@@ -44,9 +44,9 @@ SELECT val, val % 0::{type} FROM tbl
 ----
 <REGEX>:.*Division by zero.*
 
-# unless null_on_division_by_zero is set
+# unless error_on_division_by_zero is disabled
 statement ok
-SET null_on_division_by_zero = true;
+SET error_on_division_by_zero = false;
 
 # division by zero
 query II
@@ -69,7 +69,7 @@ nan	NULL
 inf	NULL
 
 statement ok
-SET null_on_division_by_zero = false;
+SET error_on_division_by_zero = true;
 
 # math domain cases still error when IEEE behavior is disabled
 statement ok

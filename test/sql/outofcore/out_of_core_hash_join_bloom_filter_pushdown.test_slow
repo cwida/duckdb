@@ -1,0 +1,53 @@
+# name: test/sql/outofcore/out_of_core_hash_join_bloom_filter_pushdown.test_slow
+# description: Test that runtime filter pushdown (Bloom filter) does not drop rows when the hash join build side
+# group: [outofcore]
+
+#              spills to disk (external / multi-round hash join). Regression test for #25702.
+
+load {TEST_DIR}/out_of_core_hash_join_bloom_filter_pushdown.db
+
+statement ok
+SET threads=1
+
+statement ok
+CREATE TABLE t AS SELECT (i % 25)::INT AS a FROM range(3000000) tbl(i)
+
+statement ok
+CREATE TABLE u AS SELECT (i % 25)::INT AS b FROM range(3000000) tbl(i)
+
+# memory_limit small enough that the build side (u) does not fit in memory, so the hash join goes external and
+# builds over multiple rounds
+statement ok
+SET memory_limit='60MB'
+
+# Every value of t has 120,000 matches in u (25 distinct keys), so the semi join / IN (subquery) must return all
+# 3,000,000 rows of t. join_filter_pushdown (on by default) pushes a Bloom filter into the scan of t; if that
+# filter is only built from the first build round of the external join, keys that live in a not-yet-built
+# partition are wrongly filtered out of the probe side, and a strict subset of rows is returned instead (#25702).
+query I
+SELECT count(*) FROM t WHERE a IN (SELECT b FROM u)
+----
+3000000
+
+query I
+SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.b = t.a)
+----
+3000000
+
+# same queries, with the filter pushdown optimizer disabled, should still produce the correct result
+statement ok
+SET disabled_optimizers='join_filter_pushdown'
+
+query I
+SELECT count(*) FROM t WHERE a IN (SELECT b FROM u)
+----
+3000000
+
+statement ok
+SET disabled_optimizers=''
+
+statement ok
+SET memory_limit='-1'
+
+statement ok
+SET threads=4

@@ -1,0 +1,26 @@
+# name: test/sql/types/variant/map_extract_variant_values.test
+# description: Extracting VARIANT values from maps copies single values out of the map's value vector
+# group: [variant]
+
+statement ok
+CREATE TABLE tm AS SELECT i, MAP {'z': 'q'} m FROM range(10) t(i);
+
+query I
+SELECT count(map_extract(m::MAP(VARCHAR, VARIANT), 'z')) FROM tm;
+----
+10
+
+query I
+SELECT DISTINCT element_at(m::MAP(VARCHAR, VARIANT), 'z')::VARCHAR FROM tm;
+----
+[q]
+
+query II
+SELECT count(*), max(length(x::VARCHAR)) FROM (SELECT map_extract(MAP {'k' || (i % 3): 'v' || i, 'z': 'q'}::MAP(VARCHAR, VARIANT), 'z') FROM range(5000) t(i)) s(x);
+----
+5000	3
+
+query I
+SELECT count(*) FROM (SELECT list_intersect(['a', 'b']::VARIANT[], [x::VARIANT, 'b']) l FROM (SELECT 'v' || i AS x FROM range(5000) t(i))) WHERE len(l) = 1;
+----
+5000

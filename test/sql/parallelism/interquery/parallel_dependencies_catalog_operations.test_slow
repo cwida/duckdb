@@ -2,9 +2,6 @@
 # description: Test concurrent dependencies with catalog operations
 # group: [interquery]
 
-# # FIXME: this test triggers an internal exception
-mode skip flaky
-
 concurrentloop threadid 0 11
 
 loop x 0 100

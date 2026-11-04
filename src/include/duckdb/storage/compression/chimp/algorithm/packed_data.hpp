@@ -39,12 +39,12 @@ public:
 	// IIIIIII				//! Index (7 bits, shifted by 9)
 	//        LLL			//! LeadingZeros (3 bits, shifted by 6)
 	//           SSSSSS 	//! SignificantBits (6 bits)
-	static inline void Unpack(uint16_t packed_data, UnpackedData &dest) {
-		dest.index = packed_data >> INDEX_SHIFT_AMOUNT & INDEX_MASK;
-		dest.leading_zero = packed_data >> LEADING_SHIFT_AMOUNT & LEADING_MASK;
-		dest.significant_bits = packed_data & SignificantBits<CHIMP_TYPE>::mask;
-		//  Verify that combined, this is not bigger than the full size of the type
-		D_ASSERT(dest.significant_bits + dest.leading_zero <= (sizeof(CHIMP_TYPE) * 8));
+	static inline UnpackedData Unpack(uint16_t packed_data) {
+		UnpackedData result;
+		result.index = packed_data >> INDEX_SHIFT_AMOUNT & INDEX_MASK;
+		result.leading_zero = packed_data >> LEADING_SHIFT_AMOUNT & LEADING_MASK;
+		result.significant_bits = packed_data & SignificantBits<CHIMP_TYPE>::mask;
+		return result;
 	}
 
 	static inline uint16_t Pack(uint8_t index, uint8_t leading_zero, uint8_t significant_bits) {

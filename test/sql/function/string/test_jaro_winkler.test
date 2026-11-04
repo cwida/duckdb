@@ -205,3 +205,27 @@ select avg(jaro_winkler_similarity('00000000', s)) from test;
 query T nosort q0
 select avg(jaro_winkler_similarity(s, '00000000')) from test;
 ----
+
+# Jaro similarity with flat inputs and per-row score cutoffs
+query TT rowsort
+SELECT jaro_similarity(a, b), jaro_similarity(a, b, cutoff)
+FROM (VALUES ('CRATE', 'TRACE', 0.6), ('fly', 'ant', 0.8)) strings(a, b, cutoff);
+----
+0.0	0.0
+0.7333333333333334	0.7333333333333334
+
+# Cached Jaro similarity with a score cutoff
+query T rowsort
+SELECT jaro_similarity('CRATE', other, cutoff)
+FROM (VALUES ('TRACE', 0.6), ('TRACE', 0.8)) strings(other, cutoff);
+----
+0.0
+0.7333333333333334
+
+# A constant NULL input produces a NULL result vector
+query T
+SELECT jaro_similarity(NULL, other)
+FROM (VALUES ('duck'), ('db')) strings(other);
+----
+NULL
+NULL

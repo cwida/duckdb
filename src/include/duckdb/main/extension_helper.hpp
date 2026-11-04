@@ -26,7 +26,6 @@ enum class ExtensionLoadResult : uint8_t { LOADED_EXTENSION = 0, EXTENSION_UNKNO
 struct DefaultExtension {
 	const char *name;
 	const char *description;
-	bool statically_loaded;
 };
 
 struct ExtensionAlias {
@@ -100,10 +99,8 @@ struct ExtensionInstallOptions {
 class ExtensionHelper {
 public:
 	static void LoadAllExtensions(DuckDB &db);
-	static vector<string> LoadedExtensionTestPaths();
 	static ExtensionLoadResult LoadExtension(DuckDB &db, const std::string &extension);
-	//! Publishes the extensions linked into this binary onto the config. Generated at build time;
-	//! a build that links none (or an extension carrying its own DuckDB) registers nothing.
+	//! Publishes the extensions linked into this binary, as collected by LinkedExtensionRegistry, onto the config
 	static void RegisterLinkedExtensions(DBConfig &config);
 
 	//! Install an extension
@@ -120,10 +117,16 @@ public:
 	//! Autoload an extension (depending on config, potentially a nop. Throws when installation fails)
 	static void AutoLoadExtension(ClientContext &context, const string &extension_name);
 	static void AutoLoadExtension(DatabaseInstance &db, const string &extension_name);
+	//! Autoload the extension a remote path requires
+	DUCKDB_API static void AutoLoadExtensionForPath(DatabaseInstance &db, const string &path,
+	                                                const string &path_kind = "File");
 
 	//! Autoload an extension (depending on config, potentially a nop. Returns false on failure)
 	DUCKDB_API static bool TryAutoLoadExtension(DatabaseInstance &db, const string &extension_name) noexcept;
 	DUCKDB_API static bool TryAutoLoadExtension(ClientContext &context, const string &extension_name) noexcept;
+	//! Where automatic installs go: autoinstall_extension_repository, else custom_extension_repository, else
+	//! DBConfigOptions::default_autoinstall_repository, else the core repository
+	DUCKDB_API static ExtensionRepository GetAutoinstallRepository(DatabaseInstance &db);
 
 	//! Autoload an extension, only if available locally
 	DUCKDB_API static bool TryAutoLoadAvailableExtension(DatabaseInstance &instance,
@@ -141,6 +144,8 @@ public:
 	// Get all extension directory paths
 	static vector<string> GetExtensionDirectoryPath(ClientContext &context);
 	static vector<string> GetExtensionDirectoryPath(DatabaseInstance &db, FileSystem &fs);
+	//! Whether a file in an extension directory is an installed extension, and not the temporary file of an install
+	static bool IsInstalledExtensionFile(const string &path);
 
 	// Check signature of an Extension stored as FileHandle
 	static bool CheckExtensionSignature(DatabaseInstance &db, FileHandle &handle,
@@ -243,19 +248,17 @@ public:
 	template <idx_t N>
 	static void TryAutoloadFromEntry(DatabaseInstance &db, const Identifier &entry,
 	                                 const ExtensionEntry (&entries)[N]) {
-#ifndef DUCKDB_DISABLE_EXTENSION_LOAD
 		if (Settings::Get<AutoloadKnownExtensionsSetting>(db)) {
 			auto extension_name = ExtensionHelper::FindExtensionInEntries(entry, entries);
-			if (ExtensionHelper::CanAutoloadExtension(extension_name)) {
+			if (ExtensionHelper::CanAutoloadExtension(db, extension_name)) {
 				ExtensionHelper::AutoLoadExtension(db, extension_name);
 			}
 		}
-#endif
 	}
 
 	//! Whether an extension can be autoloaded (i.e. it's registered as an autoloadable extension in
 	//! extension_entries.hpp)
-	static bool CanAutoloadExtension(const string &ext_name);
+	static bool CanAutoloadExtension(DatabaseInstance &db, const string &ext_name);
 
 	//! Utility functions for creating meaningful error messages regarding missing extensions
 	static string WrapAutoLoadExtensionErrorMsg(ClientContext &context, const string &base_error,

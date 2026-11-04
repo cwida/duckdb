@@ -1,0 +1,20 @@
+# name: benchmark/micro/match_recognize/match_recognize_quantifier.benchmark
+# description: MATCH_RECOGNIZE with greedy quantifiers, which make the matcher backtrack
+# group: [match_recognize]
+
+name MatchRecognize Quantifier
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE readings AS
+    SELECT i::INTEGER AS i, (i % 17)::INTEGER AS v FROM range(0, 500000) t(i);
+
+run
+SELECT count(*) FROM readings MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES i AS start_i
+    ALL ROWS PER MATCH
+    PATTERN (A+ B+ A+)
+    DEFINE A AS v < 12, B AS v >= 12
+);

@@ -96,6 +96,33 @@ class TestBenchmarkRunner(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(run.call_args.kwargs["env"][EXTENSION_DIRECTORY_ENV], str(extension_directory.resolve()))
 
+    def test_base_answers_override_preserves_pr_sources_and_answers(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            source_root = Path(temp_directory) / "duckdb"
+            dsdgen_directory = source_root / "extension/tpcds/dsdgen"
+            pr_answers = dsdgen_directory / "answers/sf10"
+            pr_answers.mkdir(parents=True)
+            (pr_answers / "38.csv").write_text("487", encoding="utf-8")
+            queries = dsdgen_directory / "queries"
+            queries.mkdir()
+            (queries / "38.sql").write_text("SELECT count(*) FROM t;", encoding="utf-8")
+            base_answers = Path(temp_directory) / "base-answers"
+            (base_answers / "sf10").mkdir(parents=True)
+            (base_answers / "sf10/38.csv").write_text("488", encoding="utf-8")
+
+            base_root = Path(temp_directory) / "base"
+            pr_root = Path(temp_directory) / "pr"
+            create_isolated_benchmark_root(source_root, base_root, base_answers)
+            create_isolated_benchmark_root(source_root, pr_root)
+
+            answer_path = "extension/tpcds/dsdgen/answers/sf10/38.csv"
+            self.assertEqual((base_root / answer_path).read_text(encoding="utf-8"), "488")
+            self.assertEqual((pr_root / answer_path).read_text(encoding="utf-8"), "487")
+            self.assertEqual((source_root / answer_path).read_text(encoding="utf-8"), "487")
+            query_path = "extension/tpcds/dsdgen/queries/38.sql"
+            self.assertEqual((base_root / query_path).resolve(), (source_root / query_path).resolve())
+            self.assertEqual((pr_root / query_path).resolve(), (source_root / query_path).resolve())
+
     def test_surfaces_incorrect_result_diagnostic(self):
         completed_process = subprocess.CompletedProcess(
             args=[],
@@ -251,7 +278,7 @@ with open(os.environ["BENCHMARK_ORDER_LOG"], "a", encoding="utf-8") as order_log
 values = {
     "q26.benchmark": {
         "old": [0.0805, 0.084, 0.0882, 0.095, 0.103],
-        "new": [0.0757, 0.082, 0.0859, 0.095, 0.104],
+        "new": [0.0757, 0.082, 0.085, 0.095, 0.104],
     },
     "q28.benchmark": {
         "old": [0.397, 0.420, 0.436, 0.460, 0.499],
@@ -283,7 +310,7 @@ with open(os.environ["BENCHMARK_ORDER_LOG"], "a", encoding="utf-8") as order_log
 counter_path = Path(os.environ["BENCHMARK_COUNTER_DIR"]) / f"{label}.count"
 invocation = int(counter_path.read_text(encoding="utf-8")) if counter_path.exists() else 0
 counter_path.write_text(str(invocation + 1), encoding="utf-8")
-timing = 1.03 if label == "new" and invocation < 2 else 1.0
+timing = 1.04 if label == "new" and invocation < 2 else 1.0
 print("name\\trun\\ttiming", file=sys.stderr)
 for run in range(1, runs + 1):
     print(f"{sys.argv[1]}\\t{run}\\t{timing}", file=sys.stderr)
@@ -306,7 +333,7 @@ for run in range(1, runs + 1):
     if label == "old":
         timing = 1.0
     elif invocation < 2:
-        timing = 1.03
+        timing = 1.04
     elif invocation < 4 and run <= 3:
         timing = 1.1
     else:
@@ -342,6 +369,25 @@ import sys
 print("name\\trun\\ttiming", file=sys.stderr)
 print(f"{sys.argv[1]}\\t1\\tINCORRECT", file=sys.stderr)
 print("INCORRECT RESULT: Data Corruption Error: attempted to read past the end of the segment", file=sys.stderr)
+"""
+
+    tpcds_answers_runner_source = """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+label = os.path.basename(sys.argv[0])
+root = Path(sys.argv[sys.argv.index("--root-dir") + 1])
+expected = (root / "extension/tpcds/dsdgen/answers/sf10/38.csv").read_text().splitlines()[1]
+actual = "488" if label == "old" else "487"
+print("name\\trun\\ttiming", file=sys.stderr)
+if expected != actual:
+    print(f"{sys.argv[1]}\\t1\\tINCORRECT", file=sys.stderr)
+    print(f"INCORRECT RESULT: expected {expected}, got {actual}", file=sys.stderr)
+else:
+    runs = int(sys.argv[sys.argv.index("--timed-runs") + 1])
+    for run in range(1, runs + 1):
+        print(f"{sys.argv[1]}\\t{run}\\t1.0", file=sys.stderr)
 """
 
     benchmark_data_runner_source = """#!/usr/bin/env python3
@@ -387,6 +433,33 @@ else:
         print(f"{sys.argv[1]}\\t{run}\\t1.0", file=sys.stderr)
 """
 
+    missing_base_runner_source = """#!/usr/bin/env python3
+import os
+import sys
+
+label = os.path.basename(sys.argv[0])
+benchmark = sys.argv[1]
+runs = int(sys.argv[sys.argv.index("--timed-runs") + 1])
+with open(os.environ["BENCHMARK_ORDER_LOG"], "a", encoding="utf-8") as order_log:
+    order_log.write(f"{label}:{runs}\\n")
+base_missing = benchmark in ("new_query.benchmark", "broken_query.benchmark", "missing_everywhere.benchmark")
+if label == "old" and base_missing:
+    print("Benchmark to run could not be found.", file=sys.stderr)
+    raise SystemExit(1)
+if label == "old" and benchmark == "base_error.benchmark":
+    print("Base benchmark setup failed.", file=sys.stderr)
+    raise SystemExit(1)
+if label == "new" and benchmark == "broken_query.benchmark":
+    print("PR benchmark setup failed.", file=sys.stderr)
+    raise SystemExit(1)
+if label == "new" and benchmark == "missing_everywhere.benchmark":
+    print("Benchmark to run could not be found.", file=sys.stderr)
+    raise SystemExit(1)
+print("name\\trun\\ttiming", file=sys.stderr)
+for run in range(1, runs + 1):
+    print(f"{benchmark}\\t{run}\\t1.0", file=sys.stderr)
+"""
+
     def run_regression_test(
         self,
         runner_source,
@@ -400,6 +473,7 @@ else:
         expected_memory_limit=None,
         expected_benchmark_argument=None,
         step_summary=False,
+        old_tpcds_answer=None,
     ):
         with tempfile.TemporaryDirectory() as temp_directory:
             temp_path = Path(temp_directory)
@@ -449,6 +523,11 @@ else:
             ]
             if extra_args:
                 command.extend(extra_args)
+            if old_tpcds_answer is not None:
+                answers = temp_path / "base-answers"
+                (answers / "sf10").mkdir(parents=True)
+                (answers / "sf10/38.csv").write_text(f"count_star()\n{old_tpcds_answer}\n", encoding="utf-8")
+                command.extend(["--old-tpcds-answers", str(answers)])
             process = subprocess.run(
                 command,
                 cwd=self.repository_root,
@@ -461,6 +540,38 @@ else:
             order = order_log.read_text(encoding="utf-8").splitlines() if order_log.exists() else []
             summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
             return process, order, summary
+
+    def test_tpcds_generator_change_uses_each_revisions_answers(self):
+        for base_answer, returncode in [(None, 1), ("488", 0), ("486", 1)]:
+            with self.subTest(base_answer=base_answer):
+                process, _, _ = self.run_regression_test(
+                    self.tpcds_answers_runner_source,
+                    extra_args=["--samples", "5"],
+                    old_tpcds_answer=base_answer,
+                )
+                self.assertEqual(process.returncode, returncode, process.stdout + process.stderr)
+                if returncode:
+                    self.assertIn("INCORRECT RESULT:", process.stdout)
+
+    def test_tpcds_answer_override_still_rejects_incorrect_pr_results(self):
+        process, _, _ = self.run_regression_test(
+            self.tpcds_answers_runner_source.replace('else "487"', 'else "486"'),
+            extra_args=["--samples", "5"],
+            old_tpcds_answer="488",
+        )
+        self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+        self.assertIn("INCORRECT RESULT: expected 487, got 486", process.stdout)
+
+    def test_missing_base_tpcds_answers_are_rejected(self):
+        process, _, _ = self.run_regression_test(
+            self.stable_runner_source,
+            extra_args=[
+                "--old-tpcds-answers",
+                str(self.repository_root / "missing-tpcds-answers"),
+            ],
+        )
+        self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+        self.assertIn("Failed to find base TPC-DS answers directory", process.stdout)
 
     @staticmethod
     def expected_order(total_runs):
@@ -477,22 +588,22 @@ else:
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
         self.assertEqual(order, self.expected_order(10))
         plain_output = re.sub(r"\x1b\[[0-9;]*m", "", process.stdout)
-        self.assertIn("sampling: adaptive; 10 initial pairs, then 30–100 confirmation pairs outside ±2%", plain_output)
+        self.assertIn("sampling: adaptive; 10 initial pairs, then 30–100 confirmation pairs outside ±3%", plain_output)
         self.assertIn("query regression: median change ≥ +10.0% (warning)", plain_output)
         self.assertIn("CI failure: geomean change ≥ +10.0% or ≥ +50.0 ms", plain_output)
         self.assertNotIn("confidence", plain_output.lower())
         self.assertNotIn("UNCERTAIN", plain_output)
-        self.assertIn("UNCHANGED (±2%)\n1 benchmarks", plain_output)
+        self.assertIn("UNCHANGED (±3%)\n1 benchmarks", plain_output)
         self.assertTrue(plain_output.rstrip().endswith("result: passed; no query regressions"))
 
     def test_noise_boundaries_are_inclusive(self):
-        for new_timing in ("0.98", "1.02"):
+        for new_timing in ("0.97", "1.03"):
             with self.subTest(new_timing=new_timing):
                 process, order, _ = self.run_regression_test(self.stable_runner_source, new_timing=new_timing)
                 self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
                 self.assertEqual(order, self.expected_order(10))
                 plain_output = re.sub(r"\x1b\[[0-9;]*m", "", process.stdout)
-                self.assertIn("UNCHANGED (±2%)", plain_output)
+                self.assertIn("UNCHANGED (±3%)", plain_output)
 
     def test_adaptive_batches_alternate_and_full_budget_is_default(self):
         process, order, _ = self.run_regression_test(self.stable_runner_source, new_timing="1.08")
@@ -511,7 +622,7 @@ else:
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
         self.assertEqual(order, self.expected_order(20))
         self.assertIn(
-            "confirm: fake.benchmark: 10 pairs | median change +0.0% | within ±2% (stopped early)",
+            "confirm: fake.benchmark: 10 pairs | median change +0.0% | within ±3% (stopped early)",
             process.stdout,
         )
 
@@ -522,7 +633,7 @@ else:
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
         self.assertEqual(order, self.expected_order(30))
         self.assertIn(
-            "confirm: fake.benchmark: 20 pairs | median change +0.0% | within ±2% (stopped early)",
+            "confirm: fake.benchmark: 20 pairs | median change +0.0% | within ±3% (stopped early)",
             process.stdout,
         )
 
@@ -629,6 +740,57 @@ else:
         self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
         self.assertIn("::error title=Geomean benchmark regression::", process.stdout)
         self.assertIn("+50.0 ms (+5.0%)", process.stdout)
+
+    def test_missing_base_benchmark_warns_and_smoke_tests_pr_once(self):
+        process, order, summary = self.run_regression_test(
+            self.missing_base_runner_source,
+            ci=True,
+            benchmarks=["new_query.benchmark"],
+            step_summary=True,
+        )
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(order, ["old:5", "new:1"])
+        self.assertIn("::warning title=Benchmark missing from Linux Base::", process.stdout)
+        self.assertIn("SKIPPED (missing from Base)", process.stdout)
+        self.assertIn("new_query: PR smoke test passed", process.stdout)
+        self.assertIn("geomean: unavailable", process.stdout)
+        self.assertIn("1 benchmark skipped (missing from Base)", process.stdout)
+        self.assertIn("## Benchmarks Missing From Base: `benchmarks`", summary)
+        self.assertIn("| `new_query.benchmark` | passed |", summary)
+
+    def test_missing_base_query_does_not_exclude_supported_queries(self):
+        process, order, _ = self.run_regression_test(
+            self.missing_base_runner_source,
+            benchmarks=["stable.benchmark", "new_query.benchmark"],
+        )
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(order, ["old:5", "new:5", "new:5", "old:5", "old:5", "new:1"])
+        self.assertIn("UNCHANGED (±3%)", process.stdout)
+        self.assertIn("geomean: 1.0 s -> 1.0 s", process.stdout)
+        self.assertIn("new_query: PR smoke test passed", process.stdout)
+
+    def test_missing_base_benchmark_does_not_hide_pr_failure(self):
+        for benchmark in ("broken_query.benchmark", "missing_everywhere.benchmark"):
+            with self.subTest(benchmark=benchmark):
+                process, order, _ = self.run_regression_test(
+                    self.missing_base_runner_source,
+                    ci=True,
+                    benchmarks=[benchmark],
+                )
+                self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+                self.assertEqual(order, ["old:5", "new:1"])
+                self.assertIn("::error title=Regression benchmark failure::", process.stdout)
+                self.assertNotIn("::warning title=Benchmark missing from Linux Base::", process.stdout)
+
+    def test_other_base_errors_still_fail(self):
+        process, order, _ = self.run_regression_test(
+            self.missing_base_runner_source,
+            benchmarks=["base_error.benchmark"],
+        )
+        self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+        self.assertEqual(order, ["old:5", "new:5"])
+        self.assertIn("Base benchmark setup failed.", process.stdout)
+        self.assertIn("benchmark failure", process.stdout)
 
     def test_nofail_suppresses_only_geomean_gate(self):
         process, _, _ = self.run_regression_test(

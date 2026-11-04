@@ -1,0 +1,84 @@
+# name: test/sql/copy/parquet/test_parquet_decimal_gt38.test
+# description: Read parquet decimals with precision > 38, which are returned as DOUBLE
+# group: [parquet]
+
+require parquet
+
+# decimal(39,2) stored as a 17-byte FIXED_LEN_BYTE_ARRAY - the big-endian two's complement
+# value does not divide evenly into 8-byte chunks
+query I
+SELECT typeof(x) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38.parquet') LIMIT 1
+----
+DOUBLE
+
+query I
+SELECT x FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38.parquet')
+----
+2.25
+-2.25
+-0.01
+-0.02
+1.0
+-1.0
+
+# decimal(50,2) stored as a 21-byte FIXED_LEN_BYTE_ARRAY
+query I
+SELECT x FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38_len21.parquet')
+----
+1.5
+-2.25
+123456789.1
+
+# decimal(39,2) split across two row groups with min/max statistics; the statistics decode
+# through the same conversion as the values, so zone-map pruning must agree with the data
+query I
+SELECT x FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38_row_groups.parquet') ORDER BY x
+----
+-5.0
+-4.0
+-3.0
+-2.0
+-1.0
+1.0
+2.0
+3.0
+4.0
+5.0
+
+query I
+SELECT count(*) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38_row_groups.parquet') WHERE x < -1.5
+----
+4
+
+query I
+SELECT count(*) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38_row_groups.parquet') WHERE x = 2.0
+----
+1
+
+query I
+SELECT count(*) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38_row_groups.parquet') WHERE x BETWEEN -3 AND 3
+----
+6
+
+query II
+SELECT min(x), max(x) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_decimal_gt38_row_groups.parquet')
+----
+-5.0	5.0
+
+# decimal(39,2) stored as variable-length BYTE_ARRAY - every value carries its own byte length
+query I
+SELECT x FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/byte_array_decimal_gt38.parquet') ORDER BY x
+----
+0.01
+3.0
+700.0
+
+query I
+SELECT count(*) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/byte_array_decimal_gt38.parquet') WHERE x > 100
+----
+1
+
+query I
+SELECT count(*) FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/byte_array_decimal_gt38.parquet') WHERE x < 1
+----
+1

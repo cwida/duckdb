@@ -1,0 +1,140 @@
+# name: test/issues/general/test_23924.test
+# description: Issue 23924 - COUNT DISTINCT uses VARIANT comparison semantics
+# group: [general]
+
+statement ok
+SET debug_verify_serializer = true;
+
+query TI
+WITH x(v) AS (
+	VALUES (1::INTEGER::VARIANT), (1::BIGINT::VARIANT)
+)
+SELECT min(v = 1::INTEGER::VARIANT), count(DISTINCT v) FROM x;
+----
+true	1
+
+# Equivalent numeric values use one NUMBER comparison class; SQL NULL is ignored.
+query I
+WITH x(v) AS (
+	VALUES (1::TINYINT::VARIANT), (1::BIGINT::VARIANT), (1.00::DECIMAL(4, 2)::VARIANT),
+	       (2::INTEGER::VARIANT), (NULL::VARIANT)
+)
+SELECT count(DISTINCT v) FROM x;
+----
+2
+
+# The native distinct-aggregate hash table must use the same keys as the logical rewrite.
+statement ok
+SET disabled_optimizers = 'distinct_aggregate_rewrite';
+
+query I
+WITH x(v) AS (
+	VALUES (1::INTEGER::VARIANT), (1::BIGINT::VARIANT)
+)
+SELECT count(DISTINCT v) FROM x;
+----
+1
+
+statement ok
+SET disabled_optimizers = '';
+
+# Windowed COUNT DISTINCT is bound through a separate path.
+query I
+WITH x(v) AS (
+	VALUES (1::INTEGER::VARIANT), (1::BIGINT::VARIANT)
+)
+SELECT DISTINCT count(DISTINCT v) OVER () FROM x;
+----
+1
+
+# Named arguments reach the same normalization in both binding paths.
+query I
+WITH x(v) AS (
+    VALUES (1::INTEGER::VARIANT), (1::BIGINT::VARIANT)
+)
+SELECT count(DISTINCT arg := v) FROM x;
+----
+1
+
+query I
+WITH x(v) AS (
+    VALUES (1::INTEGER::VARIANT), (1::BIGINT::VARIANT)
+)
+SELECT DISTINCT count(DISTINCT arg := v) OVER () FROM x;
+----
+1
+
+# Filtering happens before deduplication, and duplicate values can enter and leave a moving frame.
+statement ok
+CREATE TABLE frames AS
+SELECT * FROM (VALUES
+    (1, 1::INTEGER::VARIANT, true),
+    (2, 1::BIGINT::VARIANT, true),
+    (3, 1.00::DECIMAL(4,2)::VARIANT, false),
+    (4, 2::INTEGER::VARIANT, true),
+    (5, NULL::VARIANT, true),
+    (6, 2::BIGINT::VARIANT, false)
+) t(id, v, keep);
+
+query IIII
+SELECT id, count(DISTINCT v) OVER w, count(DISTINCT v) FILTER (WHERE keep) OVER w,
+       count(DISTINCT v) FILTER (WHERE keep) OVER excluded
+FROM frames
+WINDOW w AS (ORDER BY id ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
+       excluded AS (ORDER BY id ROWS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW)
+ORDER BY id;
+----
+1	1	1	0
+2	1	1	1
+3	1	1	1
+4	2	2	1
+5	2	1	1
+6	1	1	1
+
+# Reusing a prepared statement must not retain a comparison key from a previous argument.
+statement ok
+PREPARE distinct_variants AS
+SELECT count(DISTINCT v) FROM (VALUES ($1::VARIANT), ($2::VARIANT), (NULL::VARIANT)) t(v);
+
+query I
+EXECUTE distinct_variants(1::INTEGER, 1::BIGINT);
+----
+1
+
+query I
+EXECUTE distinct_variants(1::INTEGER, 2::BIGINT);
+----
+2
+
+# Key normalization is specific to DISTINCT COUNT, not value-returning aggregates.
+query IIT
+SELECT count(DISTINCT v), count(v), typeof(list(v)) FROM frames;
+----
+2	5	VARIANT[]
+
+# Nested keys preserve the distinction between a NULL list and a list containing NULL.
+query I
+SELECT count(DISTINCT v) FROM (VALUES
+    ([1::INTEGER::VARIANT]), ([1::BIGINT::VARIANT]), ([NULL::VARIANT]), (NULL::VARIANT[])
+) t(v);
+----
+2
+
+# Exercise mixed aggregates over shredded storage with compressed materialization enabled.
+load {TEST_DIR}/count_distinct_variant.db
+
+statement ok
+CREATE TABLE shredded AS
+SELECT (i % 3)::VARIANT AS g, (i // 3)::VARIANT AS v FROM range(12000) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query III
+SELECT g, count(DISTINCT v), count(v) FROM shredded GROUP BY g ORDER BY g;
+----
+0	4000	4000
+1	4000	4000
+2	4000	4000

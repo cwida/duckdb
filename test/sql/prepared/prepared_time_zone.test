@@ -1,0 +1,88 @@
+# name: test/sql/prepared/prepared_time_zone.test
+# description: Prepared statements whose binds read the TimeZone setting are bound again at every execution
+# group: [prepared]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+# hour reads the TimeZone when it is bound
+statement ok
+PREPARE function_bind AS SELECT hour(to_timestamp(1767225600));
+
+# the cast of the literal to TIMESTAMPTZ is folded while binding epoch_us
+statement ok
+PREPARE folded_cast AS SELECT epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00');
+
+# the bind of switch evaluates the cast of the map keys to TIMESTAMPTZ
+statement ok
+PREPARE evaluated_cast AS SELECT switch(to_timestamp(1767225600), MAP {TIMESTAMP '2026-01-01 00:00:00': 'hit'}, 'miss');
+
+query I
+EXECUTE function_bind;
+----
+0
+
+query I
+EXECUTE folded_cast;
+----
+1767225600000000
+
+query I
+EXECUTE evaluated_cast;
+----
+hit
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE function_bind;
+----
+1
+
+query I
+EXECUTE folded_cast;
+----
+1767222000000000
+
+query I
+EXECUTE evaluated_cast;
+----
+miss
+
+query III
+SELECT hour(to_timestamp(1767225600)), epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00'), switch(to_timestamp(1767225600), MAP {TIMESTAMP '2026-01-01 00:00:00': 'hit'}, 'miss');
+----
+1	1767222000000000	miss
+
+# current_localtimestamp reads the start of the transaction and the TimeZone when it is bound
+statement ok
+CREATE TABLE local_times (ts TIMESTAMP);
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+PREPARE local_time AS INSERT INTO local_times SELECT current_localtimestamp();
+
+statement ok
+BEGIN;
+
+statement ok
+EXECUTE local_time;
+
+statement ok
+SET TimeZone = 'Asia/Kolkata';
+
+statement ok
+EXECUTE local_time;
+
+query I
+SELECT max(ts) - min(ts) FROM local_times;
+----
+05:30:00
+
+statement ok
+COMMIT;

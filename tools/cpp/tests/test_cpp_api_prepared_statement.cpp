@@ -32,17 +32,17 @@ std::vector<int64_t> CollectPreparedBigints(QueryResult result) {
 } // namespace
 
 TEST_CASE("Stable C++API: PreparedStatement executes repeatedly", "[cpp_api][prepared_statement]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
 	conn.Execute("CREATE TABLE t(x BIGINT)").Drain();
 	conn.Execute("INSERT INTO t VALUES (1), (2), (3), (4)").Drain();
 
 	// Value is move-only, so a parameter list is built by move rather than brace-init.
-	auto Params = [&conn](std::initializer_list<int64_t> values) {
+	auto Params = [&factory](std::initializer_list<int64_t> values) {
 		std::vector<Value> params;
 		for (auto value : values) {
-			params.push_back(Value::Create(conn, int64_t(value)));
+			params.push_back(Value::Create(factory, int64_t(value)));
 		}
 		return params;
 	};
@@ -60,29 +60,28 @@ TEST_CASE("Stable C++API: PreparedStatement executes repeatedly", "[cpp_api][pre
 }
 
 TEST_CASE("Stable C++API: PreparedStatement binds named parameters", "[cpp_api][prepared_statement]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
 
 	auto iter = conn.ParseSQL("SELECT $a - $b");
 	auto stmt = iter.Next();
 	auto prepared = conn.Prepare(stmt);
 
 	std::vector<NamedParam> params;
-	params.push_back({"a", Value::Create(conn, int64_t(10))});
-	params.push_back({"b", Value::Create(conn, int64_t(4))});
+	params.push_back({"a", Value::Create(factory, int64_t(10))});
+	params.push_back({"b", Value::Create(factory, int64_t(4))});
 	REQUIRE(CollectPreparedBigints(prepared.Execute(params)) == std::vector<int64_t> {6});
 
 	// Keyed by name, so swapping the entries changes nothing.
 	std::vector<NamedParam> swapped;
-	swapped.push_back({"b", Value::Create(conn, int64_t(4))});
-	swapped.push_back({"a", Value::Create(conn, int64_t(10))});
+	swapped.push_back({"b", Value::Create(factory, int64_t(4))});
+	swapped.push_back({"a", Value::Create(factory, int64_t(10))});
 	REQUIRE(CollectPreparedBigints(prepared.Execute(swapped)) == std::vector<int64_t> {6});
 }
 
 TEST_CASE("Stable C++API: PreparedStatement reports plan reuse", "[cpp_api][prepared_statement]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	conn.Execute("CREATE TABLE t(x BIGINT)").Drain();
 
@@ -105,8 +104,7 @@ TEST_CASE("Stable C++API: PreparedStatement reports plan reuse", "[cpp_api][prep
 }
 
 TEST_CASE("Stable C++API: PreparedStatement lifetimes", "[cpp_api][prepared_statement]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 
 	SECTION("a result outlives the statement that made it") {
 		auto conn = db.Connect();
@@ -139,8 +137,7 @@ TEST_CASE("Stable C++API: PreparedStatement lifetimes", "[cpp_api][prepared_stat
 }
 
 TEST_CASE("Stable C++API: PreparedStatement error paths", "[cpp_api][prepared_statement]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	SECTION("a prepare-time catalog error throws") {

@@ -83,10 +83,15 @@ void PhysicalUnion::BuildPipelines(Pipeline &current, MetaPipeline &meta_pipelin
 			auto dependency_type =
 			    order_matters ? PipelineDependencyType::REQUIRED : PipelineDependencyType::OPTIONAL_DEPENDENCY;
 			dependencies = meta_pipeline.AddDependenciesFrom(union_pipeline, union_pipeline, false, dependency_type);
+			if (!allow_out_of_order) {
+				// CreateUnionPipeline already orders this pipeline after current. Include current when
+				// propagating that ordering to the child sink pipelines as well.
+				dependencies.push_back(current.shared_from_this());
+			}
 			// we also add dependencies if the LHS child can saturate all available threads
 			// in that case, we recursively make all RHS children depend on the LHS.
 			// This prevents breadth-first plan evaluation
-			if (can_saturate_threads) {
+			if (!allow_out_of_order || can_saturate_threads) {
 				last_child_ptr = meta_pipeline.GetLastChild();
 			}
 		}
@@ -96,8 +101,10 @@ void PhysicalUnion::BuildPipelines(Pipeline &current, MetaPipeline &meta_pipelin
 		children[i].get().BuildPipelines(union_pipeline, meta_pipeline);
 
 		if (last_child_ptr) {
-			// the pointer was set, set up the dependencies
-			meta_pipeline.AddRecursiveDependencies(dependencies, *last_child_ptr);
+			// Explicitly ordered unions also order their children's sink pipelines.
+			auto dependency_mode =
+			    !allow_out_of_order ? RecursiveDependencyMode::FORCE : RecursiveDependencyMode::RESPECT_PARALLELISM;
+			meta_pipeline.AddRecursiveDependencies(dependencies, *last_child_ptr, dependency_mode);
 		}
 	}
 }

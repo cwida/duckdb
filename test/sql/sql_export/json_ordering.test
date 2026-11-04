@@ -1,0 +1,40 @@
+# name: test/sql/sql_export/json_ordering.test
+# description: Preserve JSON types while reconstructing binary ordering
+# group: [sql_export]
+
+require json
+
+statement ok
+CREATE TABLE json_ordering(v JSON);
+
+statement ok
+INSERT INTO json_ordering VALUES ('2'), ('1'), (NULL), ('1');
+
+query TT
+SELECT v, typeof(v) FROM json_ordering ORDER BY v NULLS LAST;
+----
+1	JSON
+1	JSON
+2	JSON
+NULL	JSON
+
+query T
+SELECT string_agg(v, ',' ORDER BY v NULLS LAST) FROM json_ordering;
+----
+1,1,2
+
+query TI rowsort
+SELECT v, rank() OVER (ORDER BY v NULLS LAST) FROM json_ordering;
+----
+1	1
+1	1
+2	3
+NULL	4
+
+query TT rowsort
+SELECT v, first_value(v ORDER BY v NULLS LAST) OVER () FROM json_ordering;
+----
+1	1
+1	1
+2	1
+NULL	1

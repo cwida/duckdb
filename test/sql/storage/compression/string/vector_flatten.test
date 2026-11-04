@@ -1,0 +1,74 @@
+# name: test/sql/storage/compression/string/vector_flatten.test
+# description: Flatten selective FSST vectors with scalar and nested string types
+# group: [string]
+
+load {TEST_DIR}/vector_fsst_flatten.db readwrite v1.0.0
+
+statement ok
+SET threads = 1
+
+statement ok
+SET enable_fsst_vectors = true
+
+statement ok
+PRAGMA force_compression = 'fsst'
+
+statement ok
+CREATE TABLE source (
+	id INTEGER,
+	s VARCHAR,
+	b BLOB,
+	l VARCHAR[],
+	a VARCHAR[2],
+	st STRUCT(v VARCHAR)
+)
+
+statement ok
+INSERT INTO source
+SELECT
+	i,
+	CASE i % 7
+		WHEN 0 THEN NULL
+		WHEN 1 THEN ''
+		ELSE 'repeating-string-' || (i % 100)::VARCHAR
+	END,
+	encode('repeating-blob-' || (i % 100)::VARCHAR),
+	['list-prefix-' || (i % 10)::VARCHAR, 'list-suffix-' || (i % 20)::VARCHAR],
+	['array-prefix-' || (i % 10)::VARCHAR, 'array-suffix-' || (i % 20)::VARCHAR]::VARCHAR[2],
+	{'v': 'struct-string-' || (i % 100)::VARCHAR}
+FROM range(10000) t(i)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT count(*) >= 5
+FROM pragma_storage_info('source')
+WHERE compression = 'FSST'
+----
+true
+
+statement ok
+CREATE TABLE target AS SELECT * FROM source LIMIT 0
+
+# Filtering slices the persisted vectors; INSERT flattens the resulting dictionary and nested vectors.
+statement ok
+INSERT INTO target
+SELECT *
+FROM source
+WHERE id % 3 <> 0
+
+query I
+SELECT count(*) FROM target
+----
+6666
+
+query I
+SELECT count(*)
+FROM (
+	SELECT * FROM target
+	EXCEPT
+	SELECT * FROM source WHERE id % 3 <> 0
+)
+----
+0

@@ -53,10 +53,9 @@ static void StructValuesFunction(DataChunk &args, ExpressionState &state, Vector
 }
 
 // Ensure input is a STRUCT, set return type to an unnamed STRUCT with same child types
-static unique_ptr<FunctionData> StructValuesBind(BindScalarFunctionInput &input) {
+static void StructValuesResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-	const auto arg_type = arguments[0]->GetReturnType();
+	const auto &arg_type = input.GetArgumentType(0);
 	if (arg_type == LogicalTypeId::UNKNOWN) {
 		throw ParameterNotResolvedException();
 	}
@@ -67,17 +66,18 @@ static unique_ptr<FunctionData> StructValuesBind(BindScalarFunctionInput &input)
 
 	// Build unnamed TUPLE child list using only the types
 	vector<LogicalType> unnamed_children;
-	auto &children = StructType::GetChildTypes(arguments[0]->GetReturnType());
+	auto &children = StructType::GetChildTypes(arg_type);
 	unnamed_children.reserve(children.size());
 	for (auto &child : children) {
 		unnamed_children.emplace_back(child.second);
 	}
 	bound_function.SetReturnType(LogicalType::TUPLE(std::move(unnamed_children)));
-	return nullptr;
 }
 
 ScalarFunction StructValuesFun::GetFunction() {
-	ScalarFunction func({LogicalTypeId::STRUCT}, LogicalTypeId::TUPLE, StructValuesFunction, StructValuesBind);
+	ScalarFunction func({}, LogicalTypeId::TUPLE, StructValuesFunction);
+	func.SetResolveTypesCallback(StructValuesResolveTypes);
+	func.GetSignature().AddParameter("struct", LogicalTypeId::STRUCT);
 	return func;
 }
 

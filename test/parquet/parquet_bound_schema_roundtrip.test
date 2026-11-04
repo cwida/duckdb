@@ -1,0 +1,69 @@
+# name: test/parquet/parquet_bound_schema_roundtrip.test
+# description: Bound Parquet schemas survive SQL reconstruction and serialized plan binding
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1::INTEGER v) TO '{TEST_DIR}/bound_roundtrip_int.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 1.4::DOUBLE v) TO '{TEST_DIR}/bound_roundtrip_double.parquet' (FORMAT parquet)
+
+statement ok
+SET debug_verify_statement='explain_sql'
+
+query R
+SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_roundtrip_int.parquet','{TEST_DIR}/bound_roundtrip_double.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+----
+2.4
+
+query R
+SELECT v FROM read_parquet(['{TEST_DIR}/bound_roundtrip_int.parquet','{TEST_DIR}/bound_roundtrip_double.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false) WHERE v > 1
+----
+1.4
+
+statement ok
+RESET debug_verify_statement
+
+query TT
+EXPLAIN (SQL) SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_roundtrip_int.parquet','{TEST_DIR}/bound_roundtrip_double.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+----
+sql	<REGEX>:.*bound_schema.*DOUBLE.*
+
+# Logical serialization rebinds the reader with the explicit target.
+statement ok
+SET debug_verify_serializer=true
+
+query RT
+SELECT sum(v), typeof(sum(v)) FROM read_parquet(['{TEST_DIR}/bound_roundtrip_int.parquet','{TEST_DIR}/bound_roundtrip_double.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+----
+2.4	DOUBLE
+
+statement ok
+COPY (SELECT 7::BIGINT k, 42 id) TO '{TEST_DIR}/bound_roundtrip_hive' (FORMAT parquet, PARTITION_BY(k))
+
+query II
+SELECT id, k FROM read_parquet('{TEST_DIR}/bound_roundtrip_hive/k=7/*.parquet', bound_schema={'k':'BIGINT','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false) WHERE k=7
+----
+42	7
+
+# A successfully bound reader can have every file pruned before logical reconstruction.
+query II
+SELECT count(*), sum(id) FROM read_parquet('{TEST_DIR}/bound_roundtrip_hive/k=7/*.parquet', bound_schema={'k':'BIGINT','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false) WHERE k=8
+----
+0	NULL
+
+statement ok
+RESET debug_verify_serializer
+
+# An unpinned scan retains ordinary inference; the option does not affect other calls.
+query T
+SELECT typeof(v) FROM read_parquet('{TEST_DIR}/bound_roundtrip_int.parquet', hive_partitioning=false)
+----
+INTEGER
+
+query T
+SELECT typeof(v) FROM read_parquet('{TEST_DIR}/bound_roundtrip_double.parquet', hive_partitioning=false)
+----
+DOUBLE

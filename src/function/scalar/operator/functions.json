@@ -1,7 +1,7 @@
 [
     {
         "name": "+",
-        "parameters": "",
+        "parameters": "left,right",
         "description": "",
         "example": "",
         "type": "scalar_function_set",
@@ -10,7 +10,7 @@
     },
     {
         "name": "-",
-        "parameters": "",
+        "parameters": "left,right",
         "description": "",
         "example": "",
         "type": "scalar_function_set",
@@ -19,7 +19,7 @@
     },
     {
         "name": "*",
-        "parameters": "",
+        "parameters": "left,right",
         "description": "",
         "example": "",
         "type": "scalar_function_set",
@@ -28,7 +28,7 @@
     },
     {
         "name": "/",
-        "parameters": "",
+        "parameters": "left,right",
         "description": "",
         "example": "",
         "type": "scalar_function_set",
@@ -36,7 +36,7 @@
     },
     {
         "name": "//",
-        "parameters": "",
+        "parameters": "left,right",
         "description": "",
         "example": "",
         "type": "scalar_function_set",
@@ -45,12 +45,19 @@
     },
     {
         "name": "%",
-        "parameters": "",
+        "parameters": "left,right",
         "description": "",
         "example": "",
         "type": "scalar_function_set",
         "aliases": ["mod"],
         "struct": "OperatorModuloFun"
+    },
+    {
+        "name": "fmod",
+        "parameters": "x,y",
+        "description": "Calculates the modulo value with the sign of y. Always returns a floating point number.",
+        "example": "fmod(-10, 3)",
+        "type": "scalar_function_set"
     },
     {
         "name": "__cast",
@@ -62,7 +69,7 @@
     },
     {
         "name": "decimal_division",
-        "parameters": "x,y[,scale]",
+        "parameters": "x,y,scale",
         "description": "Divides two DECIMAL values using exact integer arithmetic and round-half-to-even, returning a DECIMAL result with scale determined by SQL Server semantics (result_scale = max(6, s1 + p2 + 1)).",
         "example": "decimal_division(10.00::DECIMAL(10,2), 3.00::DECIMAL(10,2))",
         "type": "scalar_function_set",

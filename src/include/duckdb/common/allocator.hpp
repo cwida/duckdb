@@ -56,6 +56,8 @@ typedef data_ptr_t (*reallocate_function_ptr_t)(PrivateAllocatorData *private_da
 class AllocatedData {
 public:
 	DUCKDB_API AllocatedData();
+	//! An empty allocation that retains its resource for later growth.
+	DUCKDB_API explicit AllocatedData(Allocator &allocator);
 	DUCKDB_API AllocatedData(Allocator &allocator, data_ptr_t pointer, idx_t allocated_size);
 	DUCKDB_API ~AllocatedData();
 	// disable copy constructors
@@ -107,6 +109,7 @@ public:
 	AllocatedData Allocate(idx_t size) {
 		return AllocatedData(*this, AllocateData(size), size);
 	}
+
 	static data_ptr_t DefaultAllocate(PrivateAllocatorData *private_data, idx_t size);
 	static void DefaultFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size);
 	static data_ptr_t DefaultReallocate(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t old_size,
@@ -122,6 +125,8 @@ public:
 	DUCKDB_API static Allocator &DefaultAllocator();
 	DUCKDB_API static shared_ptr<Allocator> &DefaultAllocatorReference();
 
+	//! Total mapped allocator memory, if supported by this allocator.
+	optional_idx GetMappedMemory() const;
 	static bool SupportsFlush();
 	static optional_idx DecayDelay();
 	static void ThreadFlush(bool allocator_background_threads, idx_t threshold, idx_t thread_count);
@@ -167,15 +172,63 @@ void DestroyObject(T *ptr) {
 	Allocator::DefaultAllocator().FreeData(data_ptr_cast(ptr), sizeof(T));
 }
 
+class StandardBufferManager;
+class BufferAllocator;
+
+//! Owns buffer-allocated memory requested with a huge-page hint.
+class HugeAllocation {
+	friend class BufferAllocator;
+
+public:
+	DUCKDB_API HugeAllocation();
+	DUCKDB_API ~HugeAllocation();
+	HugeAllocation(const HugeAllocation &) = delete;
+	HugeAllocation &operator=(const HugeAllocation &) = delete;
+	DUCKDB_API HugeAllocation(HugeAllocation &&other) noexcept;
+	DUCKDB_API HugeAllocation &operator=(HugeAllocation &&other) noexcept;
+
+	data_ptr_t get() { // NOLINT: matching std style
+		return pointer;
+	}
+	const_data_ptr_t get() const { // NOLINT: matching std style
+		return pointer;
+	}
+	idx_t GetSize() const {
+		return allocated_size;
+	}
+	bool IsSet() const {
+		return pointer;
+	}
+	DUCKDB_API void Reset();
+
+private:
+	HugeAllocation(BufferAllocator &allocator, data_ptr_t pointer, idx_t allocated_size);
+
+	optional_ptr<BufferAllocator> allocator;
+	data_ptr_t pointer;
+	idx_t allocated_size;
+};
+
 //! The BufferAllocator is a wrapper around the global allocator class that sends any allocations made through the
 //! buffer manager. This makes the buffer manager aware of the memory usage, allowing it to potentially free
 //! other blocks to make space in memory.
 //! Note that there is a cost to doing so (several atomic operations will be performed on allocation/free).
 //! As such this class should be used primarily for larger allocations.
-struct BufferAllocator {
-	DUCKDB_API static Allocator &Get(ClientContext &context);
-	DUCKDB_API static Allocator &Get(DatabaseInstance &db);
-	DUCKDB_API static Allocator &Get(AttachedDatabase &db);
+class BufferAllocator : public Allocator {
+	friend class StandardBufferManager;
+	friend class HugeAllocation;
+
+public:
+	//! Allocate with a huge-page hint, retaining the matching release path.
+	DUCKDB_API HugeAllocation AllocateHuge(idx_t size);
+	DUCKDB_API static BufferAllocator &Get(ClientContext &context);
+	DUCKDB_API static BufferAllocator &Get(DatabaseInstance &db);
+	DUCKDB_API static BufferAllocator &Get(AttachedDatabase &db);
+
+private:
+	explicit BufferAllocator(StandardBufferManager &manager);
+
+	void FreeHuge(data_ptr_t pointer, idx_t size);
 };
 
 } // namespace duckdb

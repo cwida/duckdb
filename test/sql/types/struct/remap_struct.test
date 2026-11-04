@@ -217,3 +217,37 @@ SELECT remap_struct(
   );
 ----
 <REGEX>:.*Binder Error.*No child remaps found.*
+
+# A NULL-typed field can map directly to any nested type and remains NULL.
+query II
+SELECT typeof(mapped) = typeof(NULL::STRUCT(renamed STRUCT(a INTEGER))), mapped
+FROM (SELECT remap_struct(
+    {'x': NULL::"NULL"},
+    NULL::STRUCT(renamed STRUCT(a INTEGER)),
+    {'renamed': 'x'},
+    NULL
+) AS mapped);
+----
+true	{'renamed': NULL}
+
+query II
+SELECT typeof(mapped) = typeof(NULL::STRUCT(renamed INTEGER[])), mapped
+FROM (SELECT remap_struct(
+    {'x': NULL::"NULL"},
+    NULL::STRUCT(renamed INTEGER[]),
+    {'renamed': 'x'},
+    NULL
+) AS mapped);
+----
+true	{'renamed': NULL}
+
+query II
+SELECT typeof(mapped) = typeof(NULL::STRUCT(renamed MAP(VARCHAR, INTEGER))), mapped
+FROM (SELECT remap_struct(
+    {'x': NULL::"NULL"},
+    NULL::STRUCT(renamed MAP(VARCHAR, INTEGER)),
+    {'renamed': 'x'},
+    NULL
+) AS mapped);
+----
+true	{'renamed': NULL}

@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/allocator.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/query_context.hpp"
@@ -19,8 +21,8 @@ struct StreamData {
 	// various buffers & pointers
 	bool write = false;
 	bool refresh = false;
-	unsafe_unique_array<data_t> in_buff;
-	unsafe_unique_array<data_t> out_buff;
+	AllocatedData in_buff;
+	AllocatedData out_buff;
 	data_ptr_t out_buff_start = nullptr;
 	data_ptr_t out_buff_end = nullptr;
 	data_ptr_t in_buff_start = nullptr;
@@ -35,6 +37,7 @@ struct StreamWrapper {
 
 	DUCKDB_API virtual void Initialize(QueryContext context, CompressedFile &file, bool write) = 0;
 	DUCKDB_API virtual bool Read(StreamData &stream_data) = 0;
+	DUCKDB_API virtual void FinalizeRead(StreamData &stream_data);
 	DUCKDB_API virtual void Write(CompressedFile &file, StreamData &stream_data, data_ptr_t buffer,
 	                              int64_t nr_bytes) = 0;
 	DUCKDB_API virtual void Close() = 0;
@@ -86,12 +89,17 @@ public:
 	DUCKDB_API int64_t WriteData(data_ptr_t buffer, int64_t nr_bytes);
 	DUCKDB_API void Close() override;
 	DUCKDB_API void AbortCompressedWrite();
+	//! Counts bytes the stream read from the child handle itself, outside ReadData (e.g. a header), as consumed
+	DUCKDB_API void AddConsumedBytes(idx_t bytes);
 
 private:
 	void Clear(); // for Initialize re-use to support FS.Reset()
 	void ResetStreamData();
 
-	idx_t current_position = 0;
+	//! The number of compressed bytes read from the child handle
+	idx_t compressed_bytes_read = 0;
+	//! The number of compressed bytes consumed by the decompressor (for progress)
+	atomic<idx_t> compressed_bytes_consumed {0};
 	bool initialized = false;
 	unique_ptr<StreamWrapper> stream_wrapper;
 };

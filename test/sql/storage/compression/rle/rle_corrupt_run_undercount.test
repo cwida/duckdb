@@ -23,6 +23,17 @@ Data Corruption Error: Corrupted RLE segment: run counts do not cover the segmen
 
 restart
 
+# A pushed rowid filter exercises selected reads and their unselected tail.
+statement ok
+SET debug_force_fetch_row=false;
+
+statement error
+SELECT sum(a) FROM t WHERE rowid%2=1;
+----
+Data Corruption Error: Corrupted RLE segment: run counts do not cover the segment row count
+
+restart
+
 statement ok
 SET debug_force_fetch_row=true;
 

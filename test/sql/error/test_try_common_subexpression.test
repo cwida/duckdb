@@ -1,0 +1,52 @@
+# name: test/sql/error/test_try_common_subexpression.test
+# description: TRY suppresses errors of sub-expressions that are shared with another TRY
+# group: [error]
+
+statement ok
+CREATE TABLE t AS SELECT 'bad' AS s, 0 AS z, '2x' AS ds, 'bad' AS s2;
+
+query II
+SELECT TRY(s::INTEGER) AS a, TRY(s::INTEGER + 5) AS b FROM t;
+----
+NULL	NULL
+
+query II
+SELECT TRY(s::INTEGER) AS a, TRY(s::INTEGER * 2) AS b FROM t;
+----
+NULL	NULL
+
+query II
+SELECT TRY(100 // z) AS a, TRY(100 // z + 1) AS b FROM t;
+----
+NULL	NULL
+
+query II
+SELECT TRY(ds::DATE) AS a, TRY(ds::DATE + 1) AS b FROM t;
+----
+NULL	NULL
+
+# shared sub-expression repeated outside of the TRY
+statement error
+SELECT s::INTEGER AS a, s::INTEGER + 1 AS b, TRY(s::INTEGER + 5) AS c FROM t;
+----
+Conversion Error
+
+# the sub-expression is shared between two TRY expressions and a non-erroring row
+query II
+SELECT TRY(x::INTEGER) AS a, TRY(x::INTEGER + 5) AS b FROM (VALUES ('1'), ('bad'), ('3')) v(x);
+----
+1	6
+NULL	NULL
+3	8
+
+# identical TRY expressions are still shared
+query II
+SELECT TRY(s::INTEGER + 5) AS a, TRY(s::INTEGER + 5) AS b FROM t;
+----
+NULL	NULL
+
+# aggregates
+query II
+SELECT sum(TRY(x::INTEGER)) AS a, sum(TRY(x::INTEGER + 5)) AS b FROM (VALUES ('1'), ('bad'), ('3')) v(x);
+----
+4	14

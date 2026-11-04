@@ -1,0 +1,22 @@
+# name: test/sql/copy/parquet/parquet_empty_enum.test
+# description: Write a column of an empty ENUM type to Parquet
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TYPE mood AS ENUM();
+
+statement ok
+CREATE TABLE t (m mood);
+
+statement ok
+INSERT INTO t VALUES (NULL), (NULL);
+
+statement ok
+COPY t TO '{TEST_DIR}/empty_enum.parquet' (FORMAT PARQUET);
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/empty_enum.parquet') WHERE m IS NULL;
+----
+2

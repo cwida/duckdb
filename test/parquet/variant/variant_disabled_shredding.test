@@ -1,0 +1,185 @@
+# name: test/parquet/variant/variant_disabled_shredding.test
+# description: Disabling Parquet VARIANT shredding preserves values without typed_value columns
+# group: [variant]
+
+require parquet
+
+# SHREDDING requires a mapping from column names to types.
+foreach option NULL 'NULL' 'ANY' 'VARIANT' 42 true ['NULL']
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/variant_invalid_shredding_option.parquet' (SHREDDING {option});
+----
+Binder Error: SHREDDING value should be a STRUCT of column names to types
+
+endloop
+
+# An untyped NULL is not a stringified type.
+foreach option NULL 42 true ['NULL']
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/variant_invalid_shredding_option.parquet' (SHREDDING {v: {option}});
+----
+Binder Error: SHREDDING value should be of type VARCHAR
+
+endloop
+
+# ANY is an internal type, not a SQL type name.
+foreach option 'ANY' 'any'
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/variant_invalid_shredding_option.parquet' (SHREDDING {v: {option}});
+----
+can not be converted to a DuckDB Type
+
+endloop
+
+statement ok
+CREATE MACRO mixed_data() AS TABLE (
+	FROM (VALUES
+		({'a': 21::INTEGER, 'b': NULL}::VARIANT),
+		({'a': 42::INTEGER, 'd': 'test'}::VARIANT),
+		([]::VARIANT),
+		(NULL::VARIANT),
+		([{'b': True, 'c': 'test'}::VARIANT, 'test', 21, {'a': True}, [1::VARIANT, 2, True, 'false']]::VARIANT),
+		('this is a long string'::VARIANT),
+		('this is big enough to not be classified as a "short string" by parquet VARIANT'::VARIANT)
+	) t(v)
+)
+
+statement ok
+CREATE MACRO all_types_data() AS TABLE (
+	SELECT unnest([*COLUMNS(*)]) AS v FROM (
+		SELECT COLUMNS([
+			x FOR x IN (*) IF x NOT IN [
+				'utinyint', 'usmallint', 'uint', 'ubigint', 'hugeint', 'uhugeint',
+				'bignum', 'time_ns', 'timestamp_s', 'timestamp_ms', 'timestamp_tz',
+				'time_tz', 'interval', 'bit', 'dec_4_1', 'timestamp_tz_ns',
+				'blob', -- Parquet VARIANT reads blobs as base64.
+				'geometry' -- Not supported yet.
+			]
+		])::VARIANT FROM test_all_types()
+	)
+)
+
+statement ok
+CREATE MACRO partial_data() AS TABLE (
+	SELECT {
+		'field1': CASE WHEN i%2=0 THEN CONCAT('hello', i)::VARIANT ELSE i::VARIANT END,
+		'field2': i::INT
+	}::VARIANT AS v
+	FROM range(5) t(i)
+)
+
+# Typed NULLs and the NULL/VARIANT type names all leave the column unshredded.
+foreach shredding_type 'NULL' 'null' NULL::VARCHAR 'VARIANT' 'variant'
+
+foreach data mixed_data all_types_data partial_data
+
+query I nosort disabled_data
+FROM {data}();
+----
+
+statement ok
+COPY (FROM {data}()) TO '{TEST_DIR}/variant_disabled_{data}.parquet' (SHREDDING {v: {shredding_type}});
+
+query I nosort disabled_data
+FROM '{TEST_DIR}/variant_disabled_{data}.parquet';
+----
+
+query III
+SELECT name, type, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_disabled_{data}.parquet')
+ORDER BY column_id;
+----
+duckdb_schema	NULL	REQUIRED
+v	NULL	OPTIONAL
+metadata	BYTE_ARRAY	REQUIRED
+value	BYTE_ARRAY	REQUIRED
+
+reset label disabled_data
+
+endloop
+
+# Each shape would be automatically shredded without the explicit type.
+foreach serialize_enabled true false
+
+statement ok
+SET debug_verify_serializer = {serialize_enabled};
+
+foreach shape 42 'hello' {'a':42} [1,2,3] NULL
+
+statement ok
+COPY (SELECT {shape}::VARIANT AS v) TO '{TEST_DIR}/variant_disabled_shape.parquet' (SHREDDING {v: {shredding_type}});
+
+query I
+SELECT count(*) FROM parquet_schema('{TEST_DIR}/variant_disabled_shape.parquet') WHERE name = 'typed_value';
+----
+0
+
+query I
+SELECT v IS NOT DISTINCT FROM {shape}::VARIANT FROM '{TEST_DIR}/variant_disabled_shape.parquet';
+----
+true
+
+statement ok
+COPY (SELECT {shape}::VARIANT AS v) TO '{TEST_DIR}/variant_auto_shape.parquet';
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{TEST_DIR}/variant_auto_shape.parquet') WHERE name = 'typed_value';
+----
+true
+
+endloop
+
+# Disabling one column leaves automatic and explicit shredding of other columns intact.
+statement ok
+COPY (
+	SELECT i::VARIANT AS disabled, i::VARIANT AS automatic, i::VARIANT AS explicit
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_disabled_columns.parquet' (
+	ROW_GROUP_SIZE 2048, SHREDDING {disabled: {shredding_type}, explicit: 'BIGINT'}
+);
+
+query II
+SELECT path_in_schema, count(DISTINCT row_group_id)
+FROM parquet_metadata('{TEST_DIR}/variant_disabled_columns.parquet')
+GROUP BY path_in_schema ORDER BY path_in_schema;
+----
+automatic, metadata	3
+automatic, typed_value	3
+automatic, value	3
+disabled, metadata	3
+disabled, value	3
+explicit, metadata	3
+explicit, typed_value	3
+explicit, value	3
+
+query IIII
+SELECT count(*), min(disabled)::BIGINT, max(disabled)::BIGINT,
+       count(*) FILTER (WHERE disabled = automatic AND disabled = explicit)
+FROM '{TEST_DIR}/variant_disabled_columns.parquet';
+----
+5000	0	4999	5000
+
+# No rows must still produce an unshredded VARIANT schema.
+statement ok
+COPY (SELECT 42::VARIANT AS v WHERE false)
+TO '{TEST_DIR}/variant_disabled_empty.parquet' (SHREDDING {v: {shredding_type}});
+
+query II
+SELECT name, type FROM parquet_schema('{TEST_DIR}/variant_disabled_empty.parquet') ORDER BY column_id;
+----
+duckdb_schema	NULL
+v	NULL
+metadata	BYTE_ARRAY
+value	BYTE_ARRAY
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_disabled_empty.parquet';
+----
+0
+
+endloop
+
+endloop

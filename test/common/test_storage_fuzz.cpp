@@ -4,7 +4,6 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
 #include "test_config.hpp"
 #include "test_helpers.hpp"
 
@@ -312,7 +311,7 @@ TEST_CASE("simple fault injection storage test", "[storage][.]") {
 
 		auto res = con.Query("SELECT count(*) FROM t");
 		validate(*res);
-		REQUIRE(res->GetValue(0, 0).ToString() == "1001000");
+		REQUIRE(res->Collection().GetValue(0, 0).ToString() == "1001000");
 
 		// Writes are ok - fsync are not ok
 		raw_fs->InjectFault(LazyFlushFileSystem::FaultInjectionSite::FSYNC);
@@ -323,7 +322,7 @@ TEST_CASE("simple fault injection storage test", "[storage][.]") {
 		// Check that the tx was rolled back
 		auto res2 = con.Query("SELECT count(*) FROM t");
 		validate(*res2);
-		REQUIRE(res2->GetValue(0, 0).ToString() == "1001000");
+		REQUIRE(res2->Collection().GetValue(0, 0).ToString() == "1001000");
 	}
 	{
 		duckdb::DuckDB db(file_path, &config);
@@ -331,7 +330,7 @@ TEST_CASE("simple fault injection storage test", "[storage][.]") {
 
 		auto res = con.Query("SELECT count(*) FROM t");
 		validate(*res);
-		REQUIRE(res->GetValue(0, 0).ToString() == "1001000");
+		REQUIRE(res->Collection().GetValue(0, 0).ToString() == "1001000");
 	}
 }
 
@@ -428,13 +427,12 @@ TEST_CASE("fuzzed storage test", "[storage][.]") {
 		if (!expected_checksum.empty()) {
 			auto checksum = con.Query("SELECT bit_xor(hash(i)) FROM t");
 			validate(*checksum);
-			auto computed_checksum = checksum->GetValue(0, 0).ToString();
+			auto computed_checksum = checksum->Collection().GetValue(0, 0).ToString();
 			PRINT_INFO("Verifying checksum computed=" << computed_checksum << ", actual=" << expected_checksum);
 			if (computed_checksum != expected_checksum) {
 				auto result = con.Query("SELECT * FROM t ORDER BY ALL");
 				string error;
-				ColumnDataCollection::ResultEquals(previous_result->Cast<MaterializedQueryResult>().Collection(),
-				                                   result->Cast<MaterializedQueryResult>().Collection(), error);
+				ColumnDataCollection::ResultEquals(previous_result->Collection(), result->Collection(), error);
 				Printer::PrintF("Checksum failure\nResult comparison:\n%s", error);
 				REQUIRE(computed_checksum == expected_checksum);
 			}
@@ -508,7 +506,7 @@ TEST_CASE("fuzzed storage test", "[storage][.]") {
 		if (action != ActionType::LARGE_WRITE_WITH_FAULT) {
 			auto checksum = con.Query("SELECT bit_xor(hash(i)) FROM t");
 			validate(*checksum);
-			expected_checksum = checksum->GetValue(0, 0).ToString();
+			expected_checksum = checksum->Collection().GetValue(0, 0).ToString();
 
 			PRINT_INFO("Computed new checksum: " << expected_checksum);
 		} else {

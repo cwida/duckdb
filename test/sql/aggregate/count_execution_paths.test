@@ -1,0 +1,29 @@
+# name: test/sql/aggregate/count_execution_paths.test
+# description: Exercise COUNT validity-mask and filtered window paths
+# group: [aggregate]
+
+statement ok
+CREATE TABLE count_validity AS
+SELECT i,
+       CASE
+           WHEN i < 64 THEN i
+           WHEN i < 128 THEN NULL
+           WHEN i % 2 = 0 THEN i
+           ELSE NULL
+       END AS v
+FROM range(192) t(i);
+
+query I
+SELECT count(v) FROM count_validity;
+----
+96
+
+query I
+SELECT sum(c) FROM (
+    SELECT count(*) FILTER (WHERE i % 3 = 0) OVER (
+        ORDER BY i ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING EXCLUDE CURRENT ROW
+    ) AS c
+    FROM range(10) t(i)
+);
+----
+12

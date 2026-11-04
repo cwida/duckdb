@@ -11,10 +11,10 @@
 #include "duckdb/common/row_operations/row_matcher.hpp"
 #include "duckdb/common/types/row/partitioned_tuple_data.hpp"
 #include "duckdb/execution/base_aggregate_hashtable.hpp"
+#include "duckdb/execution/aggregate_ht_adaptivity_state.hpp"
 #include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/storage/arena_allocator.hpp"
 #include "duckdb/common/row_operations/row_operations.hpp"
-#include "duckdb/common/types/hyperloglog.hpp"
 #include "duckdb/common/clustered_aggregate.hpp"
 #include "duckdb/common/atomic.hpp"
 
@@ -145,12 +145,14 @@ public:
 	                  idx_t group_count, DataChunk &result) const;
 
 	const PartitionedTupleData &GetPartitionedData() const;
+	//! Retained tuple blocks, allocator metadata, aggregate arena, and pointer table
+	idx_t GetSizeInBytes() const;
 	unique_ptr<PartitionedTupleData> AcquirePartitionedData();
 	void Abandon();
 	void Repartition();
 	shared_ptr<ArenaAllocator> GetAggregateAllocator();
 
-	//! Resize the HT to the specified size. Must be larger than the current size.
+	//! Resize an empty HT, or grow an HT with no abandoned groups.
 	void Resize(idx_t size);
 	//! Resets the pointer table of the HT to all 0's
 	void ClearPointerTable();
@@ -158,22 +160,23 @@ public:
 	void SetRadixBits(idx_t radix_bits);
 	//! Get the radix bits for this HT
 	idx_t GetRadixBits() const;
-	//! Get the total number of tuples sunk into this HT
-	idx_t GetSinkCount() const;
 	//! Get the total number of tuples materialized currently in this HT
 	idx_t GetMaterializedCount() const;
-	//! Skips lookups from here on out
+	//! Read-only adaptivity observations; mutations follow the HT's lifecycle.
+	const AggregateHTAdaptivityState &GetAdaptivityState() const {
+		return adaptivity;
+	}
+	//! Skip lookups until resuming at an empty pointer table
 	void SkipLookups();
-	//! Enable/disable HLL
+	//! Resume lookups after abandoning the previous pointer table.
+	void ResumeLookups();
+	//! Enable/disable HLL; a fresh sketch must start before inserting groups
 	void EnableHLL(bool enable);
-	//! Whether HLL is enabled
-	bool HLLEnabled() const;
-	//! Get HLL count
-	idx_t GetHLLUpperBound() const;
 
 	//! Executes the filter(if any) and update the aggregates
 	void Combine(GroupedAggregateHashTable &other);
-	void Combine(TupleDataCollection &other_data, optional_ptr<atomic<double>> progress = nullptr);
+	//! Combines the data into this HT - combined_chunks (if set) is incremented for every combined chunk
+	void Combine(TupleDataCollection &other_data, optional_ptr<atomic<idx_t>> combined_chunks = nullptr);
 	//! Reset the HT for a new execution while reusing internal allocations where possible
 	void ResetForNewIteration(idx_t radix_bits);
 
@@ -214,6 +217,12 @@ private:
 	//! The data of the HT
 	unique_ptr<PartitionedTupleData> partitioned_data;
 	unique_ptr<PartitionedTupleData> unpartitioned_data;
+	//! Cache tuple allocations while the materialized groups and their storage stay unchanged.
+	struct TupleSizeCache {
+		optional_idx count;
+		idx_t size = 0;
+	};
+	mutable TupleSizeCache tuple_size_cache;
 
 	//! Predicates for matching groups (always ExpressionType::COMPARE_EQUAL)
 	vector<ExpressionType> predicates;
@@ -223,21 +232,14 @@ private:
 	//! The capacity of the HT. This can be increased using GroupedAggregateHashTable::Resize
 	idx_t capacity;
 	//! The hash map (pointer table) of the HT: allocated data and pointer into it
-	AllocatedData hash_map;
+	HugeAllocation hash_map;
 	ht_entry_t *entries;
 	//! Offset of the hash column in the rows
 	idx_t hash_offset;
 	//! Bitmask for getting relevant bits from the hashes to determine the position
 	hash_t bitmask;
 
-	//! How many tuples went into this HT (before de-duplication)
-	idx_t sink_count;
-	//! If true, we just append, skipping HT lookups
-	bool skip_lookups;
-	//! Whether to enable HLL counting the hashes
-	bool enable_hll;
-	//! The associated HLL
-	HyperLogLog hll;
+	AggregateHTAdaptivityState adaptivity;
 
 	//! The active arena allocator used by the aggregates for their internal state
 	shared_ptr<ArenaAllocator> aggregate_allocator;
@@ -282,7 +284,8 @@ private:
 
 	//! Does the actual group matching / creation
 	idx_t FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes, Vector &addresses,
-	                                 SelectionVector &new_groups);
+	                                 SelectionVector &new_groups,
+	                                 optional_ptr<TupleDataChunkState> source_rows = nullptr);
 	void InitializeLookupState(AggregateHTLookupState &lookup_state) const;
 
 	//! Verify the pointer table of the HT

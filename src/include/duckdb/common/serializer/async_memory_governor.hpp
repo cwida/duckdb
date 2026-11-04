@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/mutex.hpp"
 
 namespace duckdb {
 
@@ -21,6 +22,10 @@ struct ManagedAsyncMemoryConfig {
 	static constexpr idx_t MAX_PENDING_BYTES_PER_THREAD = 64ULL * 1024ULL * 1024ULL;
 	//! Minimum async reservation requested per regular execution thread.
 	static constexpr idx_t MIN_PENDING_BYTES_PER_THREAD = 8ULL * 1024ULL * 1024ULL;
+	//! Maximum fraction of the memory limit the async backlog may claim.
+	static constexpr idx_t MAX_PENDING_MEMORY_LIMIT_DIVISOR = 8ULL;
+	//! Maximum fraction of the memory limit the minimum async reservation may claim.
+	static constexpr idx_t MIN_PENDING_MEMORY_LIMIT_DIVISOR = 16ULL;
 	//! Below this reservation, do not retain an async backlog (behave close to synchronous draining).
 	static constexpr idx_t MIN_RESERVATION_FOR_BACKLOG = 8ULL * 1024ULL * 1024ULL;
 };
@@ -49,6 +54,8 @@ private:
 	ClientContext &client_context;
 	//! Temporary memory reservation state used to limit queued async data. Absent when draining synchronously.
 	unique_ptr<TemporaryMemoryState> memory_state;
+	//! Serializes concurrent reservation updates and releases from multiple producers.
+	mutex reservation_lock;
 	//! Last remaining-size request sent to TemporaryMemoryManager. Grows monotonically until Release().
 	idx_t memory_request_bytes = 0;
 	//! Minimum TemporaryMemoryManager reservation while work is outstanding.

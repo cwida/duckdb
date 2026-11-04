@@ -66,7 +66,7 @@ TEST_CASE("Test other methods on streaming results in C API", "[capi]") {
 		}
 	}
 
-	// Once we've done this, the StreamQueryResult is made
+	// Once we've done this, the stream is opened
 	result = pending.Execute();
 	REQUIRE(result);
 	REQUIRE(!result->HasError());
@@ -180,4 +180,39 @@ TEST_CASE("Test query progress and interrupt in C API", "[capi]") {
 			break;
 		}
 	}
+}
+
+TEST_CASE("Test destroying a partly read streaming result inside a transaction", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE SEQUENCE s"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE t AS SELECT range i FROM range(1000000)"));
+
+	string query;
+	bool invalidates = false;
+	SECTION("a query that writes invalidates the transaction") {
+		query = "SELECT nextval('s') FROM range(1000000)";
+		invalidates = true;
+	}
+	SECTION("a read-only query keeps the transaction") {
+		query = "SELECT i FROM t";
+	}
+	REQUIRE_NO_FAIL(tester.Query("BEGIN TRANSACTION"));
+	{
+		CAPIPrepared prepared;
+		CAPIPending pending;
+		REQUIRE(prepared.Prepare(tester, query));
+		REQUIRE(pending.PendingStreaming(prepared));
+		auto result = pending.Execute();
+		REQUIRE(result);
+		REQUIRE(!result->HasError());
+		REQUIRE(result->StreamChunk());
+	}
+
+	auto next = tester.Query("SELECT 42");
+	REQUIRE(next->HasError() == invalidates);
+	if (invalidates) {
+		REQUIRE(string(next->ErrorMessage()).find("aborted") != string::npos);
+	}
+	REQUIRE_NO_FAIL(tester.Query("ROLLBACK"));
 }

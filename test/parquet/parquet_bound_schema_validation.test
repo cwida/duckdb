@@ -1,0 +1,57 @@
+# name: test/parquet/parquet_bound_schema_validation.test
+# description: Bound Parquet declaration validation remains separate from demanded file columns
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 id) TO '{TEST_DIR}/bound_validation.parquet' (FORMAT parquet)
+
+# Metadata-only count cannot make a required physical root optional.
+statement error
+SELECT count(missing) FROM read_parquet('{TEST_DIR}/bound_validation.parquet', bound_schema={'missing':'BIGINT','id':'INTEGER'}, hive_partitioning=false)
+----
+missing
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_validation.parquet', bound_schema={'missing':'BIGINT','id':'INTEGER'}, hive_partitioning=false)
+----
+1
+
+query I
+SELECT id FROM read_parquet('{TEST_DIR}/bound_validation.parquet', bound_schema={'missing':'BIGINT','id':'INTEGER'}, hive_partitioning=false)
+----
+42
+
+# The native type parser rejects ANY even if count(*) would not read the column.
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_validation.parquet', bound_schema={'id':'ANY'}, hive_partitioning=false)
+----
+Value "ANY" can not be converted to a DuckDB Type.
+
+# A declaration-only failure is distinguished from the unsupported empty-file combination.
+statement error
+SELECT count(*) FROM read_parquet([]::VARCHAR[], allow_empty=true, bound_schema={'FILE_ROW_NUMBER':'BIGINT'}, file_row_number=true, hive_partitioning=true, hive_types_autocast=false, hive_types={'file_row_number':'BIGINT'})
+----
+cannot assign generated and Hive roles
+
+statement error
+SELECT count(*) FROM read_parquet([]::VARCHAR[], bound_schema={'id':'INTEGER'}, allow_empty=true, hive_partitioning=false)
+----
+does not support allow_empty
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_validation.parquet', bound_schema={'id':'INTEGER'}, hive_partitioning=false, filename=true)
+----
+must include column "filename"
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_validation.parquet', bound_schema={'id':'INTEGER','file_row_number':'INTEGER'}, hive_partitioning=false, file_row_number=true)
+----
+must include column "file_row_number" with type BIGINT
+
+# Role validation is independent of option order.
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_validation.parquet', file_row_number=true, hive_partitioning=false, bound_schema={'id':'INTEGER','file_row_number':'INTEGER'})
+----
+must include column "file_row_number" with type BIGINT

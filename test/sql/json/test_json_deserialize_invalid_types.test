@@ -1,0 +1,87 @@
+# name: test/sql/json/test_json_deserialize_invalid_types.test
+# description: Test deserializing corrupted logical types from serialized SQL
+# group: [json]
+
+require json
+
+require json
+
+# ENUM with fewer values than values_count
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"ENUM","type_info":{"type":"ENUM_TYPE_INFO","alias":"","values_count":3,"values":["a"]}},"is_null":false,"value":0}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+Corrupted enum: expected 3 values, but found 1
+
+# STRUCT carrying DECIMAL type info
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"STRUCT","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","width":4,"scale":1}},"is_null":false,"value":{"children":[]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+type info DECIMAL_TYPE_INFO does not match the type
+
+# DECIMAL carrying STRUCT type info
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"DECIMAL","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","child_types":[]}},"is_null":false,"value":10}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+type info STRUCT_TYPE_INFO does not match the type
+
+# ENUM carrying DECIMAL type info
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"ENUM","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","width":4,"scale":1}},"is_null":false,"value":0}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+type info DECIMAL_TYPE_INFO does not match the type
+
+# INTEGER carrying STRUCT type info
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"INTEGER","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","child_types":[]}},"is_null":false,"value":10}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+type info STRUCT_TYPE_INFO does not match the type
+
+# DECIMAL scale exceeding the width
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","width":1,"scale":255}},"is_null":false,"value":10}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+invalid DECIMAL(1, 255)
+
+# DECIMAL width exceeding the maximum
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","width":60,"scale":0}},"is_null":false,"value":10}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+invalid DECIMAL(60, 0)
+
+# LIST value without a child type
+statement error
+SELECT json_deserialize_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"LIST","type_info":null},"is_null":false,"value":{"children":[]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+type LIST is missing its type info
+
+# Valid DECIMAL
+query I
+SELECT * FROM json_execute_serialized_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","width":4,"scale":1}},"is_null":false,"value":15}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+1.5
+
+# Aliased type (JSON)
+query I
+SELECT * FROM json_execute_serialized_sql($json$
+{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"value":{"type":{"id":"VARCHAR","type_info":{"type":"GENERIC_TYPE_INFO","alias":"JSON"}},"is_null":false,"value":"[42]"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}
+$json$);
+----
+[42]

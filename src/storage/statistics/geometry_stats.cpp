@@ -60,6 +60,16 @@ vector<string> GeometryTypeSet::ToString(bool snake_case) const {
 	return result;
 }
 
+bool GeometryTypeSet::TryAdd(const string &type_name) {
+	auto names = Unknown().ToString(true);
+	const auto idx = StringUtil::CIFind(names, type_name);
+	if (idx == DConstants::INVALID_INDEX) {
+		return false;
+	}
+	Add(static_cast<GeometryType>(idx % PART_TYPES), static_cast<VertexType>(idx / PART_TYPES));
+	return true;
+}
+
 BaseStatistics GeometryStats::CreateUnknown(LogicalType type) {
 	BaseStatistics result(std::move(type));
 	result.InitializeUnknown();

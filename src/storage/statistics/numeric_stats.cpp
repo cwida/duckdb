@@ -9,7 +9,19 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 
+#include <limits>
+
 namespace duckdb {
+
+namespace {
+
+template <class T>
+void InitializeEmptyFloatingPointStats(BaseStatistics &result) {
+	NumericStats::SetMin(result, std::numeric_limits<T>::quiet_NaN());
+	NumericStats::SetMax(result, NumericLimits<T>::Minimum());
+}
+
+} // namespace
 
 BaseStatistics NumericStats::CreateUnknown(LogicalType type) {
 	BaseStatistics result(std::move(type));
@@ -19,11 +31,42 @@ BaseStatistics NumericStats::CreateUnknown(LogicalType type) {
 	return result;
 }
 
+//! The type whose limits are used for the min/max of empty statistics
+static LogicalType GetEmptyStatsLimitType(const LogicalType &type) {
+	if (type.id() != LogicalTypeId::ENUM) {
+		return type;
+	}
+	// the dictionary of an ENUM can be empty or have a single entry: use the limits of the index type instead, so
+	// that the min is larger than the max until a value is added
+	switch (type.InternalType()) {
+	case PhysicalType::UINT8:
+		return LogicalType::UTINYINT;
+	case PhysicalType::UINT16:
+		return LogicalType::USMALLINT;
+	case PhysicalType::UINT32:
+		return LogicalType::UINTEGER;
+	default:
+		throw InternalException("Invalid Internal Type for ENUMs");
+	}
+}
+
 BaseStatistics NumericStats::CreateEmpty(LogicalType type) {
 	BaseStatistics result(std::move(type));
 	result.InitializeEmpty();
-	SetMin(result, Value::MaximumValue(result.GetType()));
-	SetMax(result, Value::MinimumValue(result.GetType()));
+	switch (result.GetType().InternalType()) {
+	case PhysicalType::FLOAT:
+		InitializeEmptyFloatingPointStats<float>(result);
+		break;
+	case PhysicalType::DOUBLE:
+		InitializeEmptyFloatingPointStats<double>(result);
+		break;
+	default: {
+		auto limit_type = GetEmptyStatsLimitType(result.GetType());
+		SetMin(result, Value::MaximumValue(limit_type));
+		SetMax(result, Value::MinimumValue(limit_type));
+		break;
+	}
+	}
 	return result;
 }
 
@@ -42,6 +85,13 @@ void NumericStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 		return;
 	}
 	D_ASSERT(stats.GetType() == other.GetType());
+	// If the min and max of the stats are not valid, we need to merge the min and max of the other stats.
+	if (NumericStats::HasMin(stats) && NumericStats::HasMax(stats) &&
+	    NumericStats::Min(stats) > NumericStats::Max(stats)) {
+		NumericStats::SetMin(stats, NumericStats::HasMin(other) ? NumericStats::Min(other) : Value());
+		NumericStats::SetMax(stats, NumericStats::HasMax(other) ? NumericStats::Max(other) : Value());
+		return;
+	}
 	if (NumericStats::HasMin(other) && NumericStats::HasMin(stats)) {
 		auto other_min = NumericStats::Min(other);
 		if (other_min < NumericStats::Min(stats)) {
@@ -222,7 +272,7 @@ FilterPropagateResult CheckZonemapTemplated(const BaseStatistics &stats, Express
 			return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 		}
 	default:
-		throw InternalException("Expression type in zonemap check not implemented");
+		InternalException::Throw("Expression type in zonemap check not implemented");
 	}
 }
 
@@ -321,8 +371,26 @@ bool NumericStats::ConstantsCoverRange(const BaseStatistics &stats, array_ptr<co
 	return true;
 }
 
+template <class T>
+static bool ZeroSignsMatch(const BaseStatistics &stats) {
+	auto min = NumericStats::GetMinUnsafe<T>(stats);
+	auto max = NumericStats::GetMaxUnsafe<T>(stats);
+	return min != T(0) || std::signbit(min) == std::signbit(max);
+}
+
 bool NumericStats::IsConstant(const BaseStatistics &stats) {
-	return NumericStats::Max(stats) <= NumericStats::Min(stats);
+	if (NumericStats::Max(stats) > NumericStats::Min(stats)) {
+		return false;
+	}
+	// -0.0 == 0.0, so a zero range is only constant if both bounds have the same sign
+	switch (stats.GetType().InternalType()) {
+	case PhysicalType::FLOAT:
+		return ZeroSignsMatch<float>(stats);
+	case PhysicalType::DOUBLE:
+		return ZeroSignsMatch<double>(stats);
+	default:
+		return true;
+	}
 }
 
 void SetNumericValueInternal(const Value &input, const LogicalType &type, NumericValueUnion &val, bool &has_val) {
@@ -624,6 +692,11 @@ child_list_t<Value> NumericStats::ToStruct(const BaseStatistics &stats) {
 	return result;
 }
 
+[[noreturn]] static void ThrowStatisticsMismatch(const char *message, const BaseStatistics &stats,
+                                                 const Vector &vector) {
+	throw InternalException("%s\nStatistics: %s\nVector: %s", message, stats.ToString(), vector.ToString());
+}
+
 template <class T>
 void NumericStats::TemplatedVerify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel,
                                    idx_t count) {
@@ -638,12 +711,10 @@ void NumericStats::TemplatedVerify(const BaseStatistics &stats, const Vector &ve
 		}
 		if (!min_value.IsNull() &&
 		    LessThan::Operation(entry.GetValue(), min_value.GetValueUnsafe<T>())) { // LCOV_EXCL_START
-			throw InternalException("Statistics mismatch: value is smaller than min.\nStatistics: %s\nVector: %s",
-			                        stats.ToString(), vector.ToString());
+			ThrowStatisticsMismatch("Statistics mismatch: value is smaller than min.", stats, vector);
 		} // LCOV_EXCL_STOP
 		if (!max_value.IsNull() && GreaterThan::Operation(entry.GetValue(), max_value.GetValueUnsafe<T>())) {
-			throw InternalException("Statistics mismatch: value is bigger than max.\nStatistics: %s\nVector: %s",
-			                        stats.ToString(), vector.ToString());
+			ThrowStatisticsMismatch("Statistics mismatch: value is bigger than max.", stats, vector);
 		}
 	}
 }

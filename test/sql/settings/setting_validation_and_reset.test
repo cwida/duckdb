@@ -1,0 +1,133 @@
+# name: test/sql/settings/setting_validation_and_reset.test
+# description: Test setting validation and reset paths
+# group: [settings]
+
+statement ok
+SET disabled_compression_methods='rle,dictionary'
+
+query I
+SELECT current_setting('disabled_compression_methods') = 'RLE,Dictionary'
+----
+true
+
+statement ok
+SET disabled_compression_methods='none'
+
+query I
+SELECT current_setting('disabled_compression_methods') = ''
+----
+true
+
+statement ok
+RESET disabled_compression_methods
+
+statement error
+SET external_file_cache_local_max_block_size=3
+----
+block size must be a power of two, got 3
+
+statement ok
+SET force_variant_shredding='STRUCT(a INTEGER[])'
+
+query I
+SELECT current_setting('force_variant_shredding') <> 'INVALID'
+----
+true
+
+statement error
+SET force_variant_shredding='MAP(VARCHAR, INTEGER)'
+----
+<REGEX>:.*Shredding can consist of the nested types LIST .* or STRUCT .* not MAP\(VARCHAR, INTEGER\).*
+
+statement ok
+RESET force_variant_shredding
+
+query I
+SELECT current_setting('force_variant_shredding') = 'INVALID'
+----
+true
+
+query I
+SELECT current_setting('standard_vector_size') > 0
+----
+true
+
+statement error
+SET standard_vector_size=1024
+----
+standard_vector_size is a read-only setting determined at compile time
+
+statement error
+RESET standard_vector_size
+----
+standard_vector_size is a read-only setting determined at compile time
+
+statement ok
+SET enable_progress_bar_print=false
+
+query I
+SELECT current_setting('enable_progress_bar_print')
+----
+false
+
+statement ok
+RESET enable_progress_bar_print
+
+query I
+SELECT current_setting('enable_progress_bar_print')
+----
+true
+
+statement ok
+SET enable_progress_bar=true
+
+query I
+SELECT current_setting('enable_progress_bar')
+----
+true
+
+statement ok
+RESET enable_progress_bar
+
+query I
+SELECT current_setting('enable_progress_bar')
+----
+false
+
+statement ok
+SET progress_bar_time=10
+
+query I
+SELECT current_setting('progress_bar_time')
+----
+10
+
+statement ok
+RESET progress_bar_time
+
+query I
+SELECT current_setting('progress_bar_time')
+----
+2000
+
+statement ok
+SET debug_order_verification='none'
+
+query I
+SELECT current_setting('debug_order_verification') = 'none'
+----
+true
+
+statement ok
+RESET debug_order_verification
+
+statement ok
+SET max_temp_directory_size='90% of available disk space'
+
+query I
+SELECT current_setting('max_temp_directory_size') = '90% of available disk space'
+----
+true
+
+statement ok
+RESET max_temp_directory_size

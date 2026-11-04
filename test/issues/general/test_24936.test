@@ -1,0 +1,77 @@
+# name: test/issues/general/test_24936.test
+# description: Issue 24936 - value count mismatch when writing DELTA_BINARY_PACKED for NULLs nested in a LIST
+# group: [general]
+
+require parquet
+
+# NULLs in a list whose child vector fills up a data page
+statement ok
+CREATE TABLE lists AS
+SELECT i AS id, list(CASE WHEN j % 9 = 0 THEN NULL ELSE 'N' || (i * 7919 + j) END ORDER BY j) AS v
+FROM range(20000) s(i), (SELECT unnest(range(50)) AS j)
+GROUP BY i;
+
+statement ok
+COPY lists TO '{TEST_DIR}/24936_list.parquet' (FORMAT PARQUET, PARQUET_VERSION V2, DATA_PAGE_SIZE_LIMIT 4096);
+
+query I
+SELECT count(*) FROM lists JOIN '{TEST_DIR}/24936_list.parquet' p USING (id) WHERE lists.v IS DISTINCT FROM p.v;
+----
+0
+
+# the same through a STRUCT inside the LIST
+statement ok
+COPY (SELECT id, [{'s': x} for x in v] AS v FROM lists) TO '{TEST_DIR}/24936_list_struct.parquet' (FORMAT PARQUET, PARQUET_VERSION V2, DATA_PAGE_SIZE_LIMIT 4096);
+
+query I
+SELECT count(*) FROM lists JOIN '{TEST_DIR}/24936_list_struct.parquet' p USING (id) WHERE [{'s': x} for x in lists.v] IS DISTINCT FROM p.v;
+----
+0
+
+# fixed-size ARRAY child vectors take the same single page path
+statement ok
+CREATE TABLE arrays AS
+SELECT i AS id, [CASE WHEN i % 3 = 0 THEN NULL ELSE 'A' || (i * 31) END, 'B' || i, NULL]::VARCHAR[3] AS a
+FROM range(200000) s(i);
+
+statement ok
+COPY arrays TO '{TEST_DIR}/24936_array.parquet' (FORMAT PARQUET, PARQUET_VERSION V2, DATA_PAGE_SIZE_LIMIT 4096);
+
+query I
+SELECT count(*) FROM arrays JOIN '{TEST_DIR}/24936_array.parquet' p USING (id) WHERE arrays.a IS DISTINCT FROM p.a;
+----
+0
+
+# V1 must round-trip and report the right null count
+statement ok
+COPY lists TO '{TEST_DIR}/24936_list_v1.parquet' (FORMAT PARQUET, PARQUET_VERSION V1, DATA_PAGE_SIZE_LIMIT 4096);
+
+query I
+SELECT count(*) FROM lists JOIN '{TEST_DIR}/24936_list_v1.parquet' p USING (id) WHERE lists.v IS DISTINCT FROM p.v;
+----
+0
+
+query I
+SELECT sum(stats_null_count) FROM parquet_metadata('{TEST_DIR}/24936_list_v1.parquet') WHERE path_in_schema LIKE 'v%';
+----
+120000
+
+# a large element at the page boundary must not blow up the page size estimate
+statement ok
+SET memory_limit='4GB';
+
+statement ok
+CREATE TABLE big AS
+SELECT list(s ORDER BY i) AS l FROM (
+    SELECT i, CASE WHEN i < 204799 THEN lpad(i::VARCHAR, 508, '0')
+                   WHEN i = 204799 THEN repeat('B', 1000000)
+                   ELSE 'y' END AS s
+    FROM range(224800) r(i));
+
+statement ok
+COPY big TO '{TEST_DIR}/24936_big.parquet' (FORMAT PARQUET);
+
+query I
+SELECT count(*) FROM big JOIN '{TEST_DIR}/24936_big.parquet' p ON (big.l = p.l);
+----
+1

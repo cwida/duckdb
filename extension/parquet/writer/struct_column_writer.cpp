@@ -15,6 +15,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "parquet_column_schema.hpp"
+#include "parquet_writer.hpp"
 #include "parquet_types.h"
 
 namespace duckdb {
@@ -34,6 +35,8 @@ public:
 	duckdb_parquet::RowGroup &row_group;
 	idx_t col_idx;
 	vector<unique_ptr<ColumnWriterState>> child_states;
+	//! Null structs before PrepareWrite adds ancestor nulls to null_count
+	idx_t own_null_count = 0;
 };
 
 unique_ptr<ColumnWriterState> StructColumnWriter::InitializeWriteState(duckdb_parquet::RowGroup &row_group) {
@@ -93,6 +96,7 @@ void StructColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *
 	}
 	HandleRepeatLevels(state_p, parent, count);
 	HandleDefineLevels(state_p, parent, validity, count, PARQUET_DEFINE_VALID, MaxDefine() - 1);
+	state.own_null_count = state.null_count;
 	auto &child_vectors = StructVector::GetEntries(vector);
 	for (idx_t child_idx = 0; child_idx < child_writers.size(); child_idx++) {
 		child_writers[child_idx]->Prepare(*state.child_states[child_idx], &state_p, child_vectors[child_idx], count,
@@ -118,20 +122,20 @@ void StructColumnWriter::Write(ColumnWriterState &state_p, Vector &vector, idx_t
 void StructColumnWriter::PrepareWrite(ColumnWriterState &state_p) {
 	auto &state = state_p.Cast<StructColumnWriterState>();
 	for (idx_t child_idx = 0; child_idx < child_writers.size(); child_idx++) {
-		// we add the null count of the struct to the null count of the children
-		state.child_states[child_idx]->null_count += state_p.null_count;
 		child_writers[child_idx]->PrepareWrite(*state.child_states[child_idx]);
 	}
 }
 
 void StructColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 	auto &state = state_p.Cast<StructColumnWriterState>();
+	auto num_values = state.definition_levels.size() - state.parent_null_count;
+	writer.FlushNestedColumnStats(SchemaIndex(), state.own_null_count, num_values);
 	for (idx_t child_idx = 0; child_idx < child_writers.size(); child_idx++) {
 		child_writers[child_idx]->FinalizeWrite(*state.child_states[child_idx]);
 	}
 }
 
-idx_t StructColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) {
+idx_t StructColumnWriter::FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) {
 	idx_t schema_idx = schemas.size();
 
 	auto &schema = column_schema;
@@ -142,7 +146,8 @@ idx_t StructColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &
 	auto &field_id = schema.field_id;
 
 	// set up the schema element for this struct
-	duckdb_parquet::SchemaElement schema_element;
+	schemas.emplace_back();
+	auto &schema_element = schemas.back();
 	schema_element.repetition_type = repetition_type;
 	schema_element.num_children = NumericCast<int32_t>(child_writers.size());
 	schema_element.__isset.num_children = true;
@@ -153,7 +158,6 @@ idx_t StructColumnWriter::FinalizeSchema(vector<duckdb_parquet::SchemaElement> &
 		schema_element.__isset.field_id = true;
 		schema_element.field_id = NumericCast<int32_t>(field_id.GetIndex());
 	}
-	schemas.push_back(std::move(schema_element));
 
 	idx_t unique_columns = 0;
 	for (auto &child_writer : child_writers) {

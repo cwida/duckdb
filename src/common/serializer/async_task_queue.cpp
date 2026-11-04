@@ -114,14 +114,7 @@ void AsyncTaskQueue::Submit(AsyncTaskRequest request) {
 	}
 	auto request_size = request.Size();
 	if (executor && executor->HasError()) {
-		ErrorData error;
-		try {
-			executor->ThrowError();
-		} catch (const std::exception &ex) {
-			error = ErrorData(ex);
-		} catch (...) { // LCOV_EXCL_START
-			error = ErrorData("Unknown exception during async task");
-		} // LCOV_EXCL_STOP
+		auto error = executor->GetError();
 		request.task.reset();
 		CompleteRequest(request, request_size, error);
 		error.Throw();
@@ -299,15 +292,10 @@ void AsyncTaskQueue::Flush() {
 		return;
 	}
 
-	try {
+	{
+		// join before leaving this scope, whether the scheduling succeeds or throws
+		TaskExecutor::JoinGuard join(*executor);
 		ScheduleTasksInternal();
-		executor->WorkOnTasks();
-	} catch (...) {
-		try {
-			executor->WorkOnTasks();
-		} catch (...) {
-		}
-		throw;
 	}
 	RethrowTaskError();
 }

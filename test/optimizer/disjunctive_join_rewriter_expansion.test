@@ -1,0 +1,99 @@
+# name: test/optimizer/disjunctive_join_rewriter_expansion.test
+# description: Bound disjunctive join expansion while preserving result bags
+# group: [optimizer]
+
+statement ok
+CREATE TABLE lhs(x BIGINT);
+
+statement ok
+INSERT INTO lhs VALUES (-1), (0), (0), (7), (16), (100), (1016), (NULL);
+
+statement ok
+CREATE TABLE rhs AS
+SELECT list_transform(range(17), lambda n: x + n) AS keys
+FROM (VALUES (0), (0), (10), (1000), (NULL)) v(x);
+
+statement ok
+CREATE MACRO equal_branch(a, b, n) AS a = b[n];
+
+statement ok
+CREATE MACRO null_safe_branch(a, b, n) AS a IS NOT DISTINCT FROM b[n];
+
+statement ok
+CREATE MACRO mixed_branch(a, b, n) AS
+    CASE WHEN n % 2 = 0 THEN equal_branch(a, b, n) ELSE null_safe_branch(a, b, n) END;
+
+foreach comparison equal_branch null_safe_branch mixed_branch
+
+# Distinct list positions prevent expression simplification from merging branches.
+# The row 1016 can match only the seventeenth branch, including for SEMI and ANTI joins.
+statement ok
+CREATE OR REPLACE MACRO match_16(a, b) AS
+    {comparison}(a, b, 1) OR {comparison}(a, b, 2) OR
+    {comparison}(a, b, 3) OR {comparison}(a, b, 4) OR
+    {comparison}(a, b, 5) OR {comparison}(a, b, 6) OR
+    {comparison}(a, b, 7) OR {comparison}(a, b, 8) OR
+    {comparison}(a, b, 9) OR {comparison}(a, b, 10) OR
+    {comparison}(a, b, 11) OR {comparison}(a, b, 12) OR
+    {comparison}(a, b, 13) OR {comparison}(a, b, 14) OR
+    {comparison}(a, b, 15) OR {comparison}(a, b, 16);
+
+statement ok
+CREATE OR REPLACE MACRO match_17(a, b) AS match_16(a, b) OR {comparison}(a, b, 17);
+
+foreach join_type INNER LEFT RIGHT FULL SEMI ANTI
+
+query TT
+EXPLAIN SELECT * FROM lhs l {join_type} JOIN rhs r ON match_16(l.x, r.keys);
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query TT
+EXPLAIN SELECT * FROM lhs l {join_type} JOIN rhs r ON match_17(l.x, r.keys);
+----
+physical_plan	<REGEX>:.*Blockwise Nl Join.*
+
+statement ok
+SET disabled_optimizers = 'disjunctive_join_rewriter';
+
+statement ok
+CREATE OR REPLACE TABLE expected_16 AS
+SELECT * FROM lhs l {join_type} JOIN rhs r ON match_16(l.x, r.keys);
+
+statement ok
+CREATE OR REPLACE TABLE expected_17 AS
+SELECT * FROM lhs l {join_type} JOIN rhs r ON match_17(l.x, r.keys);
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE OR REPLACE TABLE actual_16 AS
+SELECT * FROM lhs l {join_type} JOIN rhs r ON match_16(l.x, r.keys);
+
+statement ok
+CREATE OR REPLACE TABLE actual_17 AS
+SELECT * FROM lhs l {join_type} JOIN rhs r ON match_17(l.x, r.keys);
+
+# Compare both bag differences, retaining duplicates and NULL-valued outer rows.
+query I
+SELECT count(*) FROM (
+    (FROM actual_16 EXCEPT ALL FROM expected_16)
+    UNION ALL
+    (FROM expected_16 EXCEPT ALL FROM actual_16)
+) differences;
+----
+0
+
+query I
+SELECT count(*) FROM (
+    (FROM actual_17 EXCEPT ALL FROM expected_17)
+    UNION ALL
+    (FROM expected_17 EXCEPT ALL FROM actual_17)
+) differences;
+----
+0
+
+endloop
+
+endloop

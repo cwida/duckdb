@@ -18,29 +18,42 @@ struct BitState {
 	bool is_set;
 };
 
+static AggregateFunction NameArgParameter(AggregateFunction fun) {
+	fun.GetSignature().GetParameter(0).SetName("arg");
+	return fun;
+}
+
 template <class OP>
-AggregateFunction GetBitfieldUnaryAggregate(LogicalType type) {
+AggregateFunction GetBitfieldUnaryAggregate(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::TINYINT:
-		return AggregateFunction::UnaryAggregate<BitState<uint8_t>, int8_t, int8_t, OP>(type, type);
+		return NameArgParameter(AggregateFunction::UnaryAggregate<BitState<uint8_t>, int8_t, int8_t, OP>(type, type));
 	case LogicalTypeId::SMALLINT:
-		return AggregateFunction::UnaryAggregate<BitState<uint16_t>, int16_t, int16_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uint16_t>, int16_t, int16_t, OP>(type, type));
 	case LogicalTypeId::INTEGER:
-		return AggregateFunction::UnaryAggregate<BitState<uint32_t>, int32_t, int32_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uint32_t>, int32_t, int32_t, OP>(type, type));
 	case LogicalTypeId::BIGINT:
-		return AggregateFunction::UnaryAggregate<BitState<uint64_t>, int64_t, int64_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uint64_t>, int64_t, int64_t, OP>(type, type));
 	case LogicalTypeId::HUGEINT:
-		return AggregateFunction::UnaryAggregate<BitState<hugeint_t>, hugeint_t, hugeint_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<hugeint_t>, hugeint_t, hugeint_t, OP>(type, type));
 	case LogicalTypeId::UTINYINT:
-		return AggregateFunction::UnaryAggregate<BitState<uint8_t>, uint8_t, uint8_t, OP>(type, type);
+		return NameArgParameter(AggregateFunction::UnaryAggregate<BitState<uint8_t>, uint8_t, uint8_t, OP>(type, type));
 	case LogicalTypeId::USMALLINT:
-		return AggregateFunction::UnaryAggregate<BitState<uint16_t>, uint16_t, uint16_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uint16_t>, uint16_t, uint16_t, OP>(type, type));
 	case LogicalTypeId::UINTEGER:
-		return AggregateFunction::UnaryAggregate<BitState<uint32_t>, uint32_t, uint32_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uint32_t>, uint32_t, uint32_t, OP>(type, type));
 	case LogicalTypeId::UBIGINT:
-		return AggregateFunction::UnaryAggregate<BitState<uint64_t>, uint64_t, uint64_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uint64_t>, uint64_t, uint64_t, OP>(type, type));
 	case LogicalTypeId::UHUGEINT:
-		return AggregateFunction::UnaryAggregate<BitState<uhugeint_t>, uhugeint_t, uhugeint_t, OP>(type, type);
+		return NameArgParameter(
+		    AggregateFunction::UnaryAggregate<BitState<uhugeint_t>, uhugeint_t, uhugeint_t, OP>(type, type));
 	default:
 		throw InternalException("Unimplemented bitfield type for unary aggregate");
 	}
@@ -98,7 +111,9 @@ struct BitwiseOperation {
 };
 
 template <class OP>
-struct NumericBitwiseOperation : public BitwiseOperation, public ClusteredStateCopy {
+struct NumericBitwiseOperation // NOLINT(bugprone-crtp-constructor-accessibility)
+    : public BitwiseOperation,
+      public ClusteredStateCopy {
 	template <class INPUT_TYPE, class STATE>
 	static void UpdateClusteredLocal(STATE &local, const INPUT_TYPE &input) {
 		if (!local.is_set) {
@@ -244,8 +259,11 @@ AggregateFunctionSet BitAndFun::GetFunctions() {
 	for (auto &type : LogicalType::Integral()) {
 		bit_and.AddFunction(GetBitfieldUnaryAggregate<BitAndOperation>(type));
 	}
-	bit_and.AddFunction(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringAndOperation>(
-	    LogicalType::BIT, LogicalType::BIT));
+	auto bit_and_bit =
+	    NameArgParameter(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringAndOperation>(
+	        LogicalType::BIT, LogicalType::BIT));
+	bit_and_bit.SetFallible(); // combining bit strings of different lengths throws at runtime
+	bit_and.AddFunction(std::move(bit_and_bit));
 	return bit_and;
 }
 
@@ -254,8 +272,11 @@ AggregateFunctionSet BitOrFun::GetFunctions() {
 	for (auto &type : LogicalType::Integral()) {
 		bit_or.AddFunction(GetBitfieldUnaryAggregate<BitOrOperation>(type));
 	}
-	bit_or.AddFunction(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringOrOperation>(
-	    LogicalType::BIT, LogicalType::BIT));
+	auto bit_or_bit =
+	    NameArgParameter(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringOrOperation>(
+	        LogicalType::BIT, LogicalType::BIT));
+	bit_or_bit.SetFallible(); // combining bit strings of different lengths throws at runtime
+	bit_or.AddFunction(std::move(bit_or_bit));
 	return bit_or;
 }
 
@@ -264,8 +285,11 @@ AggregateFunctionSet BitXorFun::GetFunctions() {
 	for (auto &type : LogicalType::Integral()) {
 		bit_xor.AddFunction(GetBitfieldUnaryAggregate<BitXorOperation>(type));
 	}
-	bit_xor.AddFunction(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringXorOperation>(
-	    LogicalType::BIT, LogicalType::BIT));
+	auto bit_xor_bit =
+	    NameArgParameter(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringXorOperation>(
+	        LogicalType::BIT, LogicalType::BIT));
+	bit_xor_bit.SetFallible(); // combining bit strings of different lengths throws at runtime
+	bit_xor.AddFunction(std::move(bit_xor_bit));
 	return bit_xor;
 }
 

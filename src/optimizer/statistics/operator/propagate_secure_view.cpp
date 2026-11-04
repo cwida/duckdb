@@ -11,24 +11,37 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalSecu
 		bindings_before.insert(entry.first);
 	}
 
-	// propagate into the view - the view definition itself is still optimized using its own statistics
-	PropagateChildren(op, node_ptr);
+	// propagate into the view - the view definition itself is always optimized using its own statistics
+	auto child_stats = PropagateStatistics(op.children[0]);
 
-	// discard every statistic that was derived from the contents of the view. Statistics describe the data itself
-	// (min/max, null counts, distinct counts) - leaking them past a secure view would expose values from rows that
-	// the view does not return, both through stats() and by allowing filters on top of the view to be pruned.
+	// statistics describe the data itself (min/max, null counts, distinct counts). Only the statistics of the columns
+	// that the view emits may cross the boundary, and only if the view emits every row it reads - otherwise they would
+	// expose values from rows that the view does not return, both through stats() and by allowing filters on top of
+	// the view to be pruned.
+	column_binding_set_t exposed_bindings;
+	if (op.propagate_statistics) {
+		for (auto &binding : op.GetColumnBindings()) {
+			exposed_bindings.insert(binding);
+		}
+	}
 	vector<ColumnBinding> leaked_bindings;
 	for (auto &entry : statistics_map) {
-		if (bindings_before.find(entry.first) == bindings_before.end()) {
-			leaked_bindings.push_back(entry.first);
+		if (bindings_before.find(entry.first) != bindings_before.end()) {
+			continue;
 		}
+		if (exposed_bindings.find(entry.first) != exposed_bindings.end()) {
+			continue;
+		}
+		leaked_bindings.push_back(entry.first);
 	}
 	for (auto &binding : leaked_bindings) {
 		statistics_map.erase(binding);
 	}
-
-	// no cardinality information escapes the view either
-	return nullptr;
+	if (!op.propagate_statistics) {
+		// no cardinality information escapes the view either
+		return nullptr;
+	}
+	return child_stats;
 }
 
 } // namespace duckdb

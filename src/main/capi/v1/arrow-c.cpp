@@ -1,19 +1,72 @@
 #include "duckdb/common/arrow/arrow.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
+#include "duckdb/common/arrow/arrow_format.hpp"
 #include "duckdb/function/table/arrow.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/main/query_parameters.hpp"
 #include "fmt/format.h"
 
 using duckdb::ArrowConverter;
+using duckdb::ArrowFormat;
 using duckdb::ArrowResultWrapper;
 using duckdb::CClientArrowOptionsWrapper;
 using duckdb::Connection;
 using duckdb::DataChunk;
 using duckdb::LogicalType;
-using duckdb::MaterializedQueryResult;
 using duckdb::PreparedStatementWrapper;
+using duckdb::QueryParameters;
 using duckdb::QueryResult;
-using duckdb::QueryResultType;
+
+namespace {
+
+//! Every duckdb_arrow result is produced in the Arrow format, so the engine's worker threads build
+//! the Arrow arrays and duckdb_query_arrow_array only hands them out
+QueryParameters ArrowParameters() {
+	return QueryParameters(duckdb::make_shared_ptr<ArrowFormat>(STANDARD_VECTOR_SIZE));
+}
+
+//! The rows a CHANGED_ROWS statement affected
+idx_t ChangedRows(QueryResult &result) {
+	if (result.HasError()) {
+		return 0;
+	}
+	if (result.GetStatementProperties().return_type != duckdb::StatementReturnType::CHANGED_ROWS) {
+		return 0;
+	}
+	auto &types = result.GetTypes();
+	if (types.size() != 1 || types[0].id() != duckdb::LogicalTypeId::BIGINT) {
+		return 0;
+	}
+	auto &arrays = result.Collection<ArrowFormat>();
+	if (arrays.empty()) {
+		return 0;
+	}
+	return ArrowFormat::ChangedRows(arrays.front()->arrow_array);
+}
+
+//! Rejects an array whose shape disagrees with the resolved schema before anything reads it, so a malformed
+//! array is an input error rather than a crash inside the conversion (mirrors CV2ValidateArrowArray).
+void ValidateArrowArrayShape(duckdb::ArrowTableSchema &arrow_table, const ArrowArray &array) {
+	auto column_count = arrow_table.GetTypes().size();
+	if (duckdb::NumericCast<idx_t>(array.n_children) != column_count) {
+		throw duckdb::InvalidInputException("Arrow array child count does not match the schema's column count");
+	}
+	if (column_count > 0 && !array.children) {
+		throw duckdb::InvalidInputException("Arrow array has null children");
+	}
+	for (idx_t i = 0; i < column_count; i++) {
+		auto *child_array = array.children[i];
+		if (!child_array || !child_array->release) {
+			throw duckdb::InvalidInputException("Arrow array child is null or already released");
+		}
+		if (child_array->length != array.length) {
+			throw duckdb::InvalidInputException("Arrow array child length does not match the array length");
+		}
+	}
+}
+
+} // namespace
 
 duckdb_error_data duckdb_to_arrow_schema(duckdb_arrow_options arrow_options, duckdb_logical_type *types,
                                          const char **names, idx_t column_count, struct ArrowSchema *out_schema) {
@@ -101,22 +154,31 @@ duckdb_error_data duckdb_data_chunk_from_arrow(duckdb_connection connection, str
 	auto conn = reinterpret_cast<Connection *>(connection);
 	auto &types = arrow_table->GetTypes();
 
+	try {
+		ValidateArrowArrayShape(*arrow_table, *arrow_array);
+	} catch (const duckdb::Exception &ex) {
+		return duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, ex.what());
+	} catch (const std::exception &ex) {
+		return duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, ex.what());
+	}
+
 	auto dchunk = duckdb::make_uniq<duckdb::DataChunk>();
 	dchunk->Initialize(duckdb::Allocator::DefaultAllocator(), types, duckdb::NumericCast<idx_t>(arrow_array->length));
 
 	auto &arrow_types = arrow_table->GetColumns();
 	dchunk->SetChildCardinality(duckdb::NumericCast<idx_t>(arrow_array->length));
+	// All columns share ownership of the array, so it is only released once no column references it anymore
+	auto owned_data = duckdb::make_shared_ptr<duckdb::ArrowArrayWrapper>();
+	owned_data->arrow_array = *arrow_array;
+	// We set it to nullptr to effectively transfer the ownership
+	arrow_array->release = nullptr;
 	for (idx_t i = 0; i < dchunk->ColumnCount(); i++) {
 		auto &parent_array = *arrow_array;
 		auto &array = parent_array.children[i];
 		auto arrow_type = arrow_types.at(i);
 		auto array_physical_type = arrow_type->GetPhysicalType();
 		auto array_state = duckdb::make_uniq<duckdb::ArrowArrayScanState>(*conn->context);
-		// We need to make sure that our chunk will hold the ownership
-		array_state->owned_data = duckdb::make_shared_ptr<duckdb::ArrowArrayWrapper>();
-		array_state->owned_data->arrow_array = *arrow_array;
-		// We set it to nullptr to effectively transfer the ownership
-		arrow_array->release = nullptr;
+		array_state->owned_data = owned_data;
 		try {
 			switch (array_physical_type) {
 			case duckdb::ArrowArrayPhysicalType::DICTIONARY_ENCODED:
@@ -162,13 +224,13 @@ duckdb_state duckdb_query_arrow(duckdb_connection connection, const char *query,
 	Connection *conn = (Connection *)connection;
 	auto wrapper = new ArrowResultWrapper();
 	try {
-		wrapper->result = conn->Query(query);
-		*out_result = (duckdb_arrow)wrapper;
-		return !wrapper->result->HasError() ? DuckDBSuccess : DuckDBError;
+		wrapper->result = conn->context->Query(query, ArrowParameters());
 	} catch (...) {
 		delete wrapper;
 		return DuckDBError;
 	}
+	*out_result = (duckdb_arrow)wrapper;
+	return !wrapper->result->HasError() ? DuckDBSuccess : DuckDBError;
 }
 
 duckdb_state duckdb_query_arrow_schema(duckdb_arrow result, duckdb_arrow_schema *out_schema) {
@@ -234,17 +296,20 @@ duckdb_state duckdb_query_arrow_array(duckdb_arrow result, duckdb_arrow_array *o
 		return DuckDBSuccess;
 	}
 	auto wrapper = reinterpret_cast<ArrowResultWrapper *>(result);
-	auto success = wrapper->result->TryFetch(wrapper->current_chunk, wrapper->result->GetErrorObject());
-	if (!success) { // LCOV_EXCL_START
+	duckdb::unique_ptr<duckdb::ArrowArrayWrapper> array;
+	try {
+		array = wrapper->result->Fetch<ArrowFormat>();
+	} catch (std::exception &ex) { // LCOV_EXCL_START
+		wrapper->result->SetError(duckdb::ErrorData(ex));
+		return DuckDBError;
+	} catch (...) {
+		wrapper->result->SetError(duckdb::ErrorData("Unknown error in Fetch"));
 		return DuckDBError;
 	} // LCOV_EXCL_STOP
-	if (!wrapper->current_chunk || wrapper->current_chunk->size() == 0) {
+	if (!array) {
 		return DuckDBSuccess;
 	}
-	auto extension_type_cast = duckdb::ArrowTypeExtensionData::GetExtensionTypes(
-	    *wrapper->result->client_properties.client_context, wrapper->result->GetTypes());
-	ArrowConverter::ToArrowArray(*wrapper->current_chunk, reinterpret_cast<ArrowArray *>(*out_array),
-	                             wrapper->result->client_properties, extension_type_cast);
+	array->MoveTo(*reinterpret_cast<ArrowArray *>(*out_array));
 	return DuckDBSuccess;
 }
 
@@ -254,11 +319,12 @@ void duckdb_result_arrow_array(duckdb_result result, duckdb_data_chunk chunk, du
 	}
 	auto dchunk = reinterpret_cast<duckdb::DataChunk *>(chunk);
 	auto &result_data = *(reinterpret_cast<duckdb::DuckDBResultData *>(result.internal_data));
-	auto extension_type_cast = duckdb::ArrowTypeExtensionData::GetExtensionTypes(
-	    *result_data.result->client_properties.client_context, result_data.result->GetTypes());
+	auto &client_properties = result_data.GetClientProperties();
+	auto extension_type_cast =
+	    duckdb::ArrowTypeExtensionData::GetExtensionTypes(*client_properties.client_context, result_data.GetTypes());
 
-	ArrowConverter::ToArrowArray(*dchunk, reinterpret_cast<ArrowArray *>(*out_array),
-	                             result_data.result->client_properties, extension_type_cast);
+	ArrowConverter::ToArrowArray(*dchunk, reinterpret_cast<ArrowArray *>(*out_array), client_properties,
+	                             extension_type_cast);
 }
 
 idx_t duckdb_arrow_row_count(duckdb_arrow result) {
@@ -276,20 +342,11 @@ idx_t duckdb_arrow_column_count(duckdb_arrow result) {
 
 idx_t duckdb_arrow_rows_changed(duckdb_arrow result) {
 	auto wrapper = reinterpret_cast<ArrowResultWrapper *>(result);
-	if (wrapper->result->HasError()) {
+	try {
+		return ChangedRows(*wrapper->result);
+	} catch (...) { // LCOV_EXCL_START
 		return 0;
-	}
-	idx_t rows_changed = 0;
-	auto &collection = wrapper->result->Collection();
-	idx_t row_count = collection.Count();
-	if (row_count > 0 &&
-	    wrapper->result->GetStatementProperties().return_type == duckdb::StatementReturnType::CHANGED_ROWS) {
-		auto rows = collection.GetRows();
-		D_ASSERT(row_count == 1);
-		D_ASSERT(rows.size() == 1);
-		rows_changed = duckdb::NumericCast<idx_t>(rows[0].GetValue(0).GetValue<int64_t>());
-	}
-	return rows_changed;
+	} // LCOV_EXCL_STOP
 }
 
 const char *duckdb_query_arrow_error(duckdb_arrow result) {
@@ -326,15 +383,13 @@ duckdb_state duckdb_execute_prepared_arrow(duckdb_prepared_statement prepared_st
 	}
 	auto arrow_wrapper = new ArrowResultWrapper();
 	try {
-		auto result = wrapper->statement->Execute(wrapper->values, false);
-		D_ASSERT(result->GetResultType() == QueryResultType::MATERIALIZED_RESULT);
-		arrow_wrapper->result = duckdb::unique_ptr_cast<QueryResult, MaterializedQueryResult>(std::move(result));
-		*out_result = reinterpret_cast<duckdb_arrow>(arrow_wrapper);
-		return !arrow_wrapper->result->HasError() ? DuckDBSuccess : DuckDBError;
+		arrow_wrapper->result = wrapper->statement->Execute(wrapper->values, ArrowParameters());
 	} catch (...) {
 		delete arrow_wrapper;
 		return DuckDBError;
 	}
+	*out_result = reinterpret_cast<duckdb_arrow>(arrow_wrapper);
+	return !arrow_wrapper->result->HasError() ? DuckDBSuccess : DuckDBError;
 }
 
 namespace arrow_array_stream_wrapper {
@@ -394,14 +449,27 @@ int GetNext(struct ArrowArrayStream *stream, struct ArrowArray *out) {
 	return DuckDBSuccess;
 }
 
-duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> FactoryGetNext(uintptr_t stream_factory_ptr,
-                                                                   duckdb::ArrowStreamParameters &parameters) {
-	auto stream = reinterpret_cast<ArrowArrayStream *>(stream_factory_ptr);
-	auto ret = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
-	ret->arrow_array_stream = *stream;
-	ret->arrow_array_stream.release = EmptyStreamRelease;
-	return ret;
-}
+class CArrowScanFactory : public duckdb::ArrowScanFactory {
+public:
+	explicit CArrowScanFactory(ArrowArrayStream &stream_p) : stream(stream_p) {
+	}
+
+	void GetSchema(ArrowSchema &schema) override {
+		FactoryGetSchema(&stream.get(), schema);
+	}
+
+	duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper>
+	ProduceStream(duckdb::ArrowStreamParameters &parameters) override {
+		auto result = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
+		result->arrow_array_stream = stream.get();
+		result->arrow_array_stream.release = EmptyStreamRelease;
+		return result;
+	}
+
+private:
+	//! The caller retains ownership of the stream and its arrays.
+	duckdb::reference<ArrowArrayStream> stream;
+};
 
 // LCOV_EXCL_START
 // This function is never be called, because it's used to construct a stream wrapping around a caller-supplied
@@ -423,10 +491,11 @@ void Release(struct ArrowArrayStream *stream) {
 duckdb_state Ingest(duckdb_connection connection, const char *table_name, struct ArrowArrayStream *input) {
 	try {
 		auto cconn = reinterpret_cast<duckdb::Connection *>(connection);
-		cconn
-		    ->TableFunction("arrow_scan", {duckdb::Value::POINTER((uintptr_t)input),
-		                                   duckdb::Value::POINTER((uintptr_t)FactoryGetNext),
-		                                   duckdb::Value::POINTER((uintptr_t)FactoryGetSchema)})
+		if (!input) {
+			return DuckDBError;
+		}
+		auto factory = duckdb::make_shared_ptr<CArrowScanFactory>(*input);
+		cconn->TableFunction("arrow_scan", {}, {}, std::move(factory))
 		    ->CreateView(duckdb::Identifier(table_name), true, false);
 	} catch (...) { // LCOV_EXCL_START
 		// Tried covering this in tests, but it proved harder than expected. At the time of writing:

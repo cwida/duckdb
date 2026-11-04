@@ -1,0 +1,100 @@
+# name: test/sql/aggregate/flat_binary_validity_bits.test
+# description: Binary aggregate validity intersections preserve indices and tail boundaries
+# group: [aggregate]
+
+statement ok
+SET perfect_ht_threshold=0
+
+statement ok
+SET disabled_optimizers='compressed_materialization'
+
+foreach n 0 1 2 63 64 65 127 128 129 2047 2048 2049 4097
+
+foreach mode 0 1 2 3 4 5 6 7
+
+statement ok
+CREATE OR REPLACE TABLE binary_input AS
+SELECT i, i % 7 AS g,
+    CASE WHEN
+        CASE {mode}
+            WHEN 0 THEN true
+            WHEN 1 THEN false
+            WHEN 2 THEN true
+            WHEN 3 THEN i % 2 = 0
+            WHEN 4 THEN i % 2 = 0
+            WHEN 5 THEN i % 64 = 0
+            WHEN 6 THEN i % 64 = 63
+            WHEN 7 THEN i >= 64 AND i < 128
+        END
+        THEN (i % 31 - 15)::DOUBLE END AS l,
+    CASE WHEN
+        CASE {mode}
+            WHEN 0 THEN true
+            WHEN 1 THEN true
+            WHEN 2 THEN false
+            WHEN 3 THEN i % 3 = 0
+            WHEN 4 THEN i % 2 = 1
+            WHEN 5 THEN i % 3 = 0
+            WHEN 6 THEN i % 3 = 0
+            WHEN 7 THEN i >= 65 AND i < 129
+        END
+        THEN i::DOUBLE END AS r
+FROM range({n}) t(i)
+
+foreach stride 1 2
+
+query I
+WITH actual AS (
+    SELECT g, covar_pop(l, r) AS cp, covar_samp(l, r) AS cs, regr_count(l, r) AS n
+    FROM binary_input WHERE i % {stride} = 0 GROUP BY g
+), moments AS (
+    SELECT g,
+        count(*) FILTER (WHERE l IS NOT NULL AND r IS NOT NULL) AS n,
+        sum(l) FILTER (WHERE r IS NOT NULL) AS sl,
+        sum(r) FILTER (WHERE l IS NOT NULL) AS sr,
+        sum(l * r) AS slr
+    FROM binary_input WHERE i % {stride} = 0 GROUP BY g
+), expected AS (
+    SELECT g, n,
+        CASE WHEN n > 0 THEN (slr - sl * sr / n) / n END AS cp,
+        CASE WHEN n > 1 THEN (slr - sl * sr / n) / (n - 1) END AS cs
+    FROM moments
+)
+SELECT count(*) FROM actual a FULL OUTER JOIN expected e USING (g)
+WHERE a.n IS DISTINCT FROM e.n
+   OR (a.cp IS NULL) IS DISTINCT FROM (e.cp IS NULL)
+   OR (a.cs IS NULL) IS DISTINCT FROM (e.cs IS NULL)
+   OR abs(a.cp - e.cp) > 0.0000001
+   OR abs(a.cs - e.cs) > 0.0000001
+----
+0
+
+query I
+WITH actual AS (
+    SELECT g, arg_min(l, r) AS lo, arg_max(l, r) AS hi,
+        arg_min_null(l, r) AS ln, arg_max_null(l, r) AS hn
+    FROM binary_input WHERE i % {stride} = 0 GROUP BY g
+), expected AS (
+    SELECT g,
+        first(l ORDER BY r) FILTER (WHERE l IS NOT NULL AND r IS NOT NULL) AS lo,
+        first(l ORDER BY r DESC) FILTER (WHERE l IS NOT NULL AND r IS NOT NULL) AS hi,
+        first(l ORDER BY r) FILTER (WHERE r IS NOT NULL) AS ln,
+        first(l ORDER BY r DESC) FILTER (WHERE r IS NOT NULL) AS hn
+    FROM binary_input WHERE i % {stride} = 0 GROUP BY g
+)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+) differences
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+DROP TABLE binary_input

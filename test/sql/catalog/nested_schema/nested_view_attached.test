@@ -1,0 +1,86 @@
+# name: test/sql/catalog/nested_schema/nested_view_attached.test
+# description: Views in an attached database referencing nested schema entries of the view's own catalog
+# group: [nested_schema]
+
+# an in-memory default database allows nested schemas under every storage version
+statement ok
+ATTACH ':memory:' AS mem;
+
+statement ok
+USE mem;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_view_attached.db' AS db (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE SCHEMA db.s1;
+
+statement ok
+CREATE SCHEMA db.s1.s2;
+
+statement ok
+CREATE TABLE db.s1.s2.t AS SELECT 42 AS i;
+
+statement ok
+CREATE VIEW db.s1.s2.v AS SELECT i FROM db.s1.s2.t;
+
+query I
+SELECT * FROM db.s1.s2.v;
+----
+42
+
+# the view's catalog takes precedence over the same nested path in the default database
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE SCHEMA s1.s2;
+
+statement ok
+CREATE TABLE s1.s2.t AS SELECT 1 AS i;
+
+query I
+SELECT * FROM db.s1.s2.v;
+----
+42
+
+statement ok
+CREATE VIEW db.s1.s2.v_unqualified AS SELECT i FROM s1.s2.t;
+
+query I
+SELECT * FROM db.s1.s2.v_unqualified;
+----
+42
+
+# nested entries that only exist in the default database still resolve there
+statement ok
+CREATE SCHEMA s3;
+
+statement ok
+CREATE SCHEMA s3.s4;
+
+statement ok
+CREATE TABLE s3.s4.t AS SELECT 7 AS i;
+
+statement ok
+CREATE VIEW db.s1.s2.v_default AS SELECT i FROM s3.s4.t;
+
+query I
+SELECT * FROM db.s1.s2.v_default;
+----
+7
+
+statement ok
+DROP VIEW db.s1.s2.v_default;
+
+# the view keeps working when the database is attached under a different alias
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_view_attached.db' AS other;
+
+query I
+SELECT * FROM other.s1.s2.v;
+----
+42

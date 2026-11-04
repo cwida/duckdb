@@ -1,0 +1,157 @@
+# name: test/sql/sql_export/explain_sql_roundtrip.test
+# description: Execute SQL obtained through the public EXPLAIN interface
+# group: [sql_export]
+
+statement ok
+CREATE TABLE explain_data(i INTEGER, g VARCHAR);
+
+statement ok
+INSERT INTO explain_data VALUES (1,'a'), (1,'a'), (2,'b'), (NULL,'b');
+
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query II rowsort
+SELECT i,count(*) FROM explain_data GROUP BY i;
+----
+1	2
+2	1
+NULL	1
+
+query II rowsort
+SELECT a.i,b.i FROM explain_data a JOIN explain_data b ON a.i=b.i;
+----
+1	1
+1	1
+1	1
+1	1
+2	2
+
+query II
+SELECT i,row_number() OVER (ORDER BY i NULLS LAST) FROM explain_data ORDER BY 2;
+----
+1	1
+1	2
+2	3
+NULL	4
+
+query I
+SELECT i FROM explain_data ORDER BY i NULLS LAST LIMIT 2 OFFSET 1;
+----
+1
+2
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT i FROM explain_data)
+SELECT a.i,b.i FROM c a JOIN c b ON a.i=b.i WHERE a.i=2;
+----
+2	2
+
+query I
+WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<3)
+SELECT i FROM c ORDER BY i;
+----
+1
+2
+3
+
+query I rowsort
+SELECT i FROM explain_data UNION ALL SELECT 3;
+----
+1
+1
+2
+3
+NULL
+
+query II
+SELECT i,(SELECT count(*) FROM explain_data b WHERE b.i=a.i) FROM explain_data a ORDER BY i NULLS LAST;
+----
+1	2
+1	2
+2	1
+NULL	0
+
+query II rowsort
+SELECT x,count(*) FROM explain_data, LATERAL (VALUES(i),(i)) v(x) GROUP BY x;
+----
+1	4
+2	2
+NULL	2
+
+query II
+SELECT count(*),sum(i) FROM explain_data WHERE false;
+----
+0	NULL
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS n);
+----
+1
+
+query II
+PIVOT (VALUES ('a',1),('a',2),('b',4)) t(k,v) ON k IN ('a','b') USING sum(v);
+----
+3	4
+
+query T
+SELECT list_transform([1,NULL,3], lambda x: coalesce(x,0)+1);
+----
+[2, 1, 4]
+
+query T
+SELECT {'items': [1,NULL], 'label': 'hello'};
+----
+{'items': [1, NULL], 'label': hello}
+
+query I
+SELECT count(*) FROM range(1000) TABLESAMPLE BERNOULLI(50 PERCENT) REPEATABLE(42);
+----
+494
+
+query I
+SELECT count(*) > 0 FROM duckdb_tables();
+----
+true
+
+statement ok
+COPY explain_data TO '{TEST_DIR}/explain_source.csv' (HEADER);
+
+query II
+SELECT count(*),sum(i) FROM read_csv('{TEST_DIR}/explain_source.csv', header=true, delim=',');
+----
+4	4
+
+query II
+SELECT count(*),sum(i) FROM read_csv('{TEST_DIR}/explain_source*.csv', header=true);
+----
+4	4
+
+statement ok
+CREATE SEQUENCE explain_once;
+
+query I
+SELECT nextval('explain_once');
+----
+1
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='explain_once';
+----
+1
+
+query I
+SELECT random() >= 0 AND random() < 1;
+----
+true
+
+statement error
+SELECT error('generated execution reached');
+----
+generated execution reached
+
+query I
+SELECT 42;
+----
+42

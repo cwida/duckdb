@@ -1,0 +1,117 @@
+# name: test/optimizer/disjunctive_join_rewriter_occurrences.test
+# description: Disjunctive join branches share non-repeatable input occurrences
+# group: [optimizer]
+
+statement ok
+SET threads = 1;
+
+# Each sampled row matches exactly two rows, regardless of which row the sample selects.
+# Seeding the connection stabilizes the reproducer without making the sample repeatable.
+foreach join_type,left_count,right_count INNER,2,2 LEFT,2,4 RIGHT,4,2 FULL,4,4
+
+statement ok
+SELECT setseed(0.123);
+
+query II
+SELECT count(*) = {left_count}, count(DISTINCT l.x)
+FROM (SELECT x FROM (VALUES (0), (1), (2), (3)) v(x) USING SAMPLE 1 ROWS) l
+{join_type} JOIN (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) r(x, y)
+ON l.x = r.x OR l.x = r.y;
+----
+true	1
+
+statement ok
+SELECT setseed(0.123);
+
+query II
+SELECT count(*) = {right_count}, count(DISTINCT r.x)
+FROM (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) l(x, y)
+{join_type} JOIN (SELECT x FROM (VALUES (0), (1), (2), (3)) v(x) USING SAMPLE 1 ROWS) r
+ON l.x = r.x OR l.y = r.x;
+----
+true	1
+
+endloop
+
+query III
+SELECT count(*) BETWEEN 1 AND 2, count(DISTINCT l.x), count(DISTINCT r.x)
+FROM (SELECT x FROM (VALUES (0), (1), (2), (3)) v(x) USING SAMPLE 1 ROWS) l
+FULL JOIN (
+    SELECT x, y FROM (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) v(x, y) USING SAMPLE 1 ROWS
+) r ON l.x = r.x OR l.x = r.y;
+----
+true	1	1
+
+# The build side must also stay shared across mark and anti join chains.
+foreach join_type SEMI ANTI
+
+statement ok
+SELECT setseed(0.123);
+
+query I
+SELECT count(*)
+FROM (VALUES (0), (1), (2), (3)) l(x)
+{join_type} JOIN (
+    SELECT x, y FROM (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) v(x, y) USING SAMPLE 1 ROWS
+) r ON l.x = r.x OR l.x = r.y;
+----
+2
+
+endloop
+
+# Check positive activation as well as the shared input boundary.
+query TT
+EXPLAIN SELECT l.x, r.x
+FROM (SELECT x FROM (VALUES (0), (1), (2), (3)) v(x) USING SAMPLE 1 ROWS) l
+JOIN (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) r(x, y) ON l.x = r.x OR l.x = r.y;
+----
+physical_plan	<REGEX>:.*lhs_cte.*Hash Join.*
+
+query TT
+EXPLAIN SELECT l.x, r.x
+FROM (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) l(x, y)
+JOIN (SELECT x FROM (VALUES (0), (1), (2), (3)) v(x) USING SAMPLE 1 ROWS) r
+ON l.x = r.x OR l.y = r.x;
+----
+physical_plan	<REGEX>:.*rhs_cte.*Hash Join.*
+
+# Repeatable inputs remain eligible for inlining.
+query TT
+EXPLAIN SELECT l.x, r.x
+FROM (VALUES (0), (1), (2), (3)) l(x)
+JOIN (VALUES (0, 3), (1, 2), (2, 1), (3, 0)) r(x, y) ON l.x = r.x OR l.x = r.y;
+----
+physical_plan	<!REGEX>:.*[lr]hs_cte.*
+
+# Observe volatile input occurrences directly, including the unmatched branches.
+foreach join_type,rows,left_occurrences,right_occurrences INNER,8,4,4 LEFT,9,5,4 RIGHT,9,4,5 FULL,10,5,5
+
+statement ok
+CREATE OR REPLACE SEQUENCE left_occurrence;
+
+statement ok
+CREATE OR REPLACE SEQUENCE right_occurrence;
+
+query III
+SELECT count(*) = {rows},
+       count(DISTINCT l.occurrence) = {left_occurrences},
+       count(DISTINCT r.occurrence) = {right_occurrences}
+FROM (
+    SELECT x, nextval('left_occurrence') AS occurrence FROM (VALUES (0), (1), (2), (3), (4)) v(x)
+) l
+{join_type} JOIN (
+    SELECT x, y, nextval('right_occurrence') AS occurrence
+    FROM (VALUES (0, 3), (1, 2), (2, 1), (3, 0), (5, 5)) v(x, y)
+) r ON l.x = r.x OR l.x = r.y;
+----
+true	true	true
+
+query II
+SELECT currval('left_occurrence'), currval('right_occurrence');
+----
+5	5
+
+endloop
+
+statement ok
+RESET threads;

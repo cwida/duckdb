@@ -1,0 +1,229 @@
+# name: test/sql/match_recognize/test_match_recognize_lambdas.test
+# description: MATCH_RECOGNIZE - lambda scopes, and matcher state a lambda captures
+# group: [match_recognize]
+
+statement ok
+PRAGMA enable_verification
+
+# A lambda names its own parameters, and a name it binds is not the input's to compute below this
+# clause. What the name means is the ordinary binder's to decide, here as anywhere else.
+
+query I
+FROM (VALUES (10)) t(x) MATCH_RECOGNIZE (
+    MEASURES list_transform([1, 2], lambda v: v + 1) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+[2, 3]
+
+query I
+FROM (VALUES ([1, 2])) t(xs) MATCH_RECOGNIZE (
+    MEASURES list_transform(t.xs, lambda v: v + 1) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+[2, 3]
+
+# the parameter is the lambda's even where the input has a column of the same name, and the column is
+# still the column everywhere else
+query II
+FROM (VALUES ([1, 2], 100)) t(xs, v) MATCH_RECOGNIZE (
+    MEASURES list_transform(xs, lambda v: v + 1) AS s, v AS w PATTERN (A)
+ DEFINE A AS true)
+----
+[2, 3]	100
+
+# a name the lambda does not bind is the input's, and is computed there
+query I
+FROM (VALUES ([1, 2], 100)) t(xs, v) MATCH_RECOGNIZE (
+    MEASURES list_transform(xs, lambda w: w + v) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+[101, 102]
+
+query I
+FROM (VALUES ([[1, 2]], 10)) t(xs, x) MATCH_RECOGNIZE (
+    MEASURES list_transform(xs, lambda a: list_transform(a, lambda b: b + x)) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+[[11, 12]]
+
+query I
+FROM (VALUES ([1, 2], 1), ([3, 4], 2)) t(xs, i) MATCH_RECOGNIZE (
+    ORDER BY i MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS len(list_filter(xs, lambda v: v > 2)) = 0
+)
+----
+1
+
+query I
+FROM (VALUES ([2, 1]), ([1, 1])) t(xs) MATCH_RECOGNIZE (
+    ORDER BY list_transform(xs, lambda v: v)[1] MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+2
+
+# The match number is a field the matcher writes per attempt, and until the plan knows which field it
+# is a column of a table nothing produces - so it is captured out of a lambda body the way any other
+# value a condition reads is, rather than staying behind as a reference the lambda would read.
+
+query I
+FROM range(2) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda v: v + MATCH_NUMBER())[1] > 1
+)
+----
+2
+
+query I
+FROM range(2) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([[1]], lambda a: list_transform(a, lambda b: b + MATCH_NUMBER()))[1][1] > 1
+)
+----
+2
+
+# a condition that captures the match number still depends on the attempt it is tested in, so the
+# same answer as the spelling that reads it directly
+query I
+SELECT n FROM (
+    FROM range(3) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP TO NEXT ROW PATTERN (A+)
+        DEFINE A AS list_transform([1], lambda v: v * MATCH_NUMBER())[1] < 3
+    )
+) ORDER BY n
+----
+2
+3
+
+query I
+FROM range(2) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform(['q'], lambda v: v || CLASSIFIER())[1] = 'qA'
+)
+----
+2
+
+query I
+FROM range(3) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda v: v + FIRST(x))[1] > 0
+)
+----
+3
+
+query I
+FROM range(3) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS list_transform([1], lambda v: v + x)[1] >= 1
+)
+----
+3
+
+query I
+SELECT s FROM (
+    FROM range(2) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES list_transform([1], lambda v: v + MATCH_NUMBER()) AS s
+        ALL ROWS PER MATCH PATTERN (A+)
+     DEFINE A AS true)
+) LIMIT 1
+----
+[2]
+
+# where the value is computed still decides what it may read, lambda or not
+statement error
+FROM range(2) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS lag(list_transform([1], lambda v: v + MATCH_NUMBER())[1]) OVER (ORDER BY x) IS NULL
+)
+----
+cannot be part of a window function
+
+statement error
+FROM range(2) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS FIRST(list_transform([1], lambda v: v + MATCH_NUMBER())[1]) > 1
+)
+----
+cannot be part of the expression a navigation reads
+
+# A lambda parameter and a pattern variable can be spelled the same way. The lambda's is the one in
+# scope, so what its body reads does not change with the spelling of the parameter.
+
+query I
+FROM (VALUES (10)) t(x) MATCH_RECOGNIZE (
+    MEASURES list_transform([{'x': 1}, {'x': 2}], lambda A: A.x + 1) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+[2, 3]
+
+query I
+FROM (VALUES (10)) t(x) MATCH_RECOGNIZE (
+    MEASURES list_transform([{'x': 1}, {'x': 2}], lambda v: v.x + 1) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+[2, 3]
+
+query I
+FROM (VALUES (10)) t(x) MATCH_RECOGNIZE (
+    MEASURES count(*) AS n PATTERN (A)
+    DEFINE A AS list_transform([{'x': 1}], lambda A: A.x)[1] = 1
+)
+----
+1
+
+# the same inside an aggregate, whose arguments decide which rows of the match it aggregates
+query I
+FROM (VALUES (10)) t(x) MATCH_RECOGNIZE (
+    MEASURES list_sum(list_transform([{'x': 1}, {'x': 2}], lambda A: A.x)) AS s PATTERN (A)
+ DEFINE A AS true)
+----
+3
+
+# an aggregate over the rows of the match reads its arguments for a pattern variable to scope to, so
+# a lambda parameter inside one must not be mistaken for a variable the match could be scoped to
+query I
+SELECT s FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES sum(list_transform([{'A': x}], lambda A: A.A)[1]) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+3
+
+# naming the variable outside the lambda still scopes the aggregate to the rows it matched
+query I
+SELECT s FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES sum(list_transform([B.x], lambda v: v)[1]) AS s
+    PATTERN (A B+) DEFINE A AS x < 2, B AS x >= 2
+)
+----
+5
+
+# a pattern variable in front of a column still means the column, where no lambda binds the name
+query II
+SELECT * FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n, LAST(A.x) AS last_x PATTERN (A+)
+ DEFINE A AS true)
+----
+2	2
+
+# The arrow spelling is the JSON operator as well as a lambda, and which it is only settles when the
+# enclosing function is bound - so nothing about it is decided before that, and an ambiguous column
+# under one is still ambiguous.
+
+statement error
+FROM (
+    (VALUES (1)) a(j)
+    CROSS JOIN (VALUES (2)) b(j)
+) MATCH_RECOGNIZE (
+    MEASURES (j -> 'k') AS v PATTERN (X)
+ DEFINE X AS true)
+----
+Ambiguous reference to column name "j"
+
+statement error
+FROM (
+    (VALUES (1)) a(j)
+    CROSS JOIN (VALUES (2)) b(j)
+) MATCH_RECOGNIZE (
+    MEASURES j AS v PATTERN (X)
+ DEFINE X AS true)
+----
+Ambiguous reference to column name "j"

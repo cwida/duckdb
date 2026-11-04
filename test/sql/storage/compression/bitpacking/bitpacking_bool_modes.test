@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/bitpacking/bitpacking_bool_modes.test
+# description: BOOL columns written with every bitpacking mode can be read back
+# group: [bitpacking]
+
+load {TEST_DIR}/bitpacking_bool_modes.db
+
+statement ok
+SET force_compression = 'bitpacking'
+
+foreach mode auto constant constant_delta delta_for for
+
+statement ok
+SET force_bitpacking_mode='{mode}'
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 3 = 0 END b, i < 3000 c, NULL::BOOL n, (i // 2) % 2 = 0 d FROM range(10000) r(i)
+
+statement ok
+CHECKPOINT
+
+query IIIIII
+SELECT count(b), sum(b::INT), sum(c::INT), count(n), sum(d::INT), bool_or(b) FROM t
+----
+8571	2857	3000	0	5000	true
+
+query III
+SELECT b, c, d FROM t WHERE i IN (0, 1, 3, 7, 9999) ORDER BY i
+----
+NULL	true	true
+false	true	true
+true	true	false
+NULL	true	false
+true	false	false
+
+endloop

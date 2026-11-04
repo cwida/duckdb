@@ -13,6 +13,7 @@
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -82,20 +83,20 @@ bool StringUtil::Equals(const char *s1, const string_t &s2) {
 	return StringUtil::Equals(s2, s1);
 }
 
-bool StringUtil::Contains(const string &haystack, const string &needle) {
+bool StringUtil::Contains(std::string_view haystack, std::string_view needle) {
 	return Find(haystack, needle).IsValid();
 }
 
-optional_idx StringUtil::Find(const string &haystack, const string &needle) {
+optional_idx StringUtil::Find(std::string_view haystack, std::string_view needle) {
 	auto index = haystack.find(needle);
-	if (index == string::npos) {
+	if (index == std::string_view::npos) {
 		return optional_idx();
 	}
 	return optional_idx(index);
 }
 
-bool StringUtil::Contains(const string &haystack, const char &needle_char) {
-	return (haystack.find(needle_char) != string::npos);
+bool StringUtil::Contains(std::string_view haystack, const char &needle_char) {
+	return haystack.find(needle_char) != std::string_view::npos;
 }
 
 idx_t StringUtil::ToUnsigned(const string &str) {
@@ -108,6 +109,10 @@ int64_t StringUtil::ToSigned(const string &str) {
 
 double StringUtil::ToDouble(const string &str) {
 	return std::stod(str);
+}
+
+string StringUtil::ToString(double value) {
+	return StringUtil::Format("%f", value);
 }
 
 void StringUtil::LTrim(string &str) {
@@ -135,21 +140,21 @@ void StringUtil::Trim(string &str) {
 	StringUtil::RTrim(str);
 }
 
-bool StringUtil::StartsWith(const string &str, const string &prefix) {
+bool StringUtil::StartsWith(std::string_view str, std::string_view prefix) {
 	if (prefix.size() > str.size()) {
 		return false;
 	}
-	return equal(prefix.begin(), prefix.end(), str.begin());
+	return str.substr(0, prefix.size()) == prefix;
 }
 
-bool StringUtil::EndsWith(const string &str, const string &suffix) {
+bool StringUtil::EndsWith(std::string_view str, std::string_view suffix) {
 	if (suffix.size() > str.size()) {
 		return false;
 	}
-	return equal(suffix.rbegin(), suffix.rend(), str.rbegin());
+	return str.substr(str.size() - suffix.size()) == suffix;
 }
 
-idx_t StringUtil::GetCommonPrefixSize(const string &left, const string &right) {
+idx_t StringUtil::GetCommonPrefixSize(std::string_view left, std::string_view right) {
 	auto common_size = MinValue<idx_t>(left.size(), right.size());
 	idx_t prefix_size = 0;
 	while (prefix_size < common_size && left[prefix_size] == right[prefix_size]) {
@@ -222,6 +227,26 @@ inline string TakePossiblyQuotedItem(const string &str, idx_t &index, char delim
 }
 
 } // namespace string_util_internal
+
+bool StringUtil::TryParseQuotedString(const string &str, idx_t &pos, string &result, char quote) {
+	if (pos >= str.size() || str[pos] != quote) {
+		return false;
+	}
+	string value;
+	for (idx_t i = pos + 1; i < str.size(); i++) {
+		if (str[i] != quote) {
+			value += str[i];
+		} else if (i + 1 < str.size() && str[i + 1] == quote) {
+			value += quote;
+			i++;
+		} else {
+			pos = i + 1;
+			result = std::move(value);
+			return true;
+		}
+	}
+	return false;
+}
 
 vector<string> StringUtil::SplitWithQuote(const string &str, char delimiter, char quote) {
 	vector<string> entries;
@@ -388,15 +413,32 @@ string StringUtil::TryParseFormattedBytes(const string &arg, idx_t &result) {
 		                          unit);
 	}
 
+	// integer values are multiplied exactly - going through a double loses precision above 2^53
+	bool is_integer = !number.empty() && number.find_first_not_of("0123456789") == string::npos;
+	if (is_integer) {
+		uint64_t integer_limit;
+		if (!TryCast::Operation<string_t, uint64_t>(string_t(number), integer_limit)) {
+			return "Memory value out of range: value is too large";
+		}
+		uint64_t integer_bytes;
+		if (!TryMultiplyOperator::Operation(integer_limit, static_cast<uint64_t>(multiplier), integer_bytes)) {
+			return "Memory value out of range: value is too large";
+		}
+		result = integer_bytes;
+		return string();
+	}
+
 	// Make sure the result is not greater than `idx_t` max value
 	constexpr double max_value = static_cast<double>(NumericLimits<idx_t>::Maximum());
 	const double double_multiplier = static_cast<double>(multiplier);
 
-	if (limit > (max_value / double_multiplier)) {
+	// double(idx_max) rounds up to 2^64, so the product itself has to be strictly below it
+	const double bytes = double_multiplier * limit;
+	if (!(bytes < max_value)) {
 		return "Memory value out of range: value is too large";
 	}
 
-	result = LossyNumericCast<idx_t>(static_cast<double>(multiplier) * limit);
+	result = LossyNumericCast<idx_t>(bytes);
 	return string();
 }
 
@@ -452,8 +494,8 @@ bool StringUtil::IsUpper(const string &str) {
 }
 
 // Jenkins hash function: https://en.wikipedia.org/wiki/Jenkins_hash_function
-uint64_t StringUtil::CIHash(const string &str) {
-	return StringUtil::CIHash(str.c_str(), str.size());
+uint64_t StringUtil::CIHash(std::string_view str) {
+	return StringUtil::CIHash(str.data(), str.size());
 }
 
 uint64_t StringUtil::CIHash(const char *str, idx_t size) {
@@ -483,39 +525,38 @@ bool StringUtil::CIEquals(const char *l1, idx_t l1_size, const char *l2, idx_t l
 	return true;
 }
 
-bool StringUtil::CIEquals(const string &l1, const string &l2) {
-	return CIEquals(l1.c_str(), l1.size(), l2.c_str(), l2.size());
+bool StringUtil::CIEquals(std::string_view l1, std::string_view l2) {
+	return CIEquals(l1.data(), l1.size(), l2.data(), l2.size());
 }
 
-bool StringUtil::CIStartsWith(const string &str, const string &prefix) {
+bool StringUtil::CIStartsWith(std::string_view str, std::string_view prefix) {
 	if (prefix.size() > str.size()) {
 		return false;
 	}
-	return CIEquals(str.c_str(), prefix.size(), prefix.c_str(), prefix.size());
+	return CIEquals(str.substr(0, prefix.size()), prefix);
 }
 
-bool StringUtil::CIEndsWith(const string &str, const string &suffix) {
+bool StringUtil::CIEndsWith(std::string_view str, std::string_view suffix) {
 	if (suffix.size() > str.size()) {
 		return false;
 	}
-	return CIEquals(str.c_str() + str.size() - suffix.size(), suffix.size(), suffix.c_str(), suffix.size());
+	return CIEquals(str.substr(str.size() - suffix.size()), suffix);
 }
 
-bool StringUtil::CILessThan(const string &s1, const string &s2) {
+bool StringUtil::CILessThan(std::string_view s1, std::string_view s2) {
 	const auto charmap = ASCII_TO_UPPER_MAP;
 
-	unsigned char u1 {}, u2 {};
-
-	idx_t length = MinValue<idx_t>(s1.length(), s2.length());
-	length += s1.length() != s2.length();
+	// compare the common prefix byte-by-byte (treating an embedded NUL as a regular byte)
+	const idx_t length = MinValue<idx_t>(s1.length(), s2.length());
 	for (idx_t i = 0; i < length; i++) {
-		u1 = (unsigned char)s1[i];
-		u2 = (unsigned char)s2[i];
-		if (charmap[u1] != charmap[u2]) {
-			break;
+		const auto u1 = charmap[(unsigned char)s1[i]];
+		const auto u2 = charmap[(unsigned char)s2[i]];
+		if (u1 != u2) {
+			return u1 < u2;
 		}
 	}
-	return (charmap[u1] - charmap[u2]) < 0;
+	// the prefixes are equal - the shorter string sorts first
+	return s1.length() < s2.length();
 }
 
 idx_t StringUtil::CIFind(const vector<Identifier> &vector, const Identifier &search_string) {
@@ -705,6 +746,32 @@ idx_t StringUtil::LevenshteinDistance(const string &s1_p, const string &s2_p, id
 	return array.Score(len1, len2);
 }
 
+idx_t StringUtil::DamerauLevenshteinDistance(const string &s1_p, const string &s2_p) {
+	auto s1 = StringUtil::Lower(s1_p);
+	auto s2 = StringUtil::Lower(s2_p);
+	idx_t len1 = s1.size();
+	idx_t len2 = s2.size();
+	LevenshteinArray array(len1 + 1, len2 + 1);
+	for (idx_t i = 0; i <= len1; i++) {
+		array.Score(i, 0) = i;
+	}
+	for (idx_t j = 0; j <= len2; j++) {
+		array.Score(0, j) = j;
+	}
+	for (idx_t i = 1; i <= len1; i++) {
+		for (idx_t j = 1; j <= len2; j++) {
+			idx_t cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
+			idx_t score = MinValue(array.Score(i - 1, j) + 1, array.Score(i, j - 1) + 1);
+			score = MinValue(score, array.Score(i - 1, j - 1) + cost);
+			if (i > 1 && j > 1 && s1[i - 1] == s2[j - 2] && s1[i - 2] == s2[j - 1]) {
+				score = MinValue(score, array.Score(i - 2, j - 2) + 1);
+			}
+			array.Score(i, j) = score;
+		}
+	}
+	return array.Score(len1, len2);
+}
+
 idx_t StringUtil::SimilarityScore(const string &s1, const string &s2) {
 	return LevenshteinDistance(s1, s2, 3);
 }
@@ -781,7 +848,7 @@ static string JSONValueToString(const string &json, JSONValue value) {
 		return to_string(value.GetSignedInteger());
 	case JSONValueType::DOUBLE:
 	case JSONValueType::RAW:
-		return to_string(value.GetDouble());
+		return StringUtil::ToString(value.GetDouble());
 	case JSONValueType::JSON_NULL:
 		return "null";
 	case JSONValueType::OBJECT:
@@ -918,6 +985,14 @@ string StringUtil::GetFilePath(const string &file_path) {
 	}
 
 	return file_path.substr(0, pos + 1);
+}
+
+string StringUtil::ReplaceFileName(const string &file_path, const string &file_name) {
+	auto pos = file_path.find_last_of("/\\");
+	if (pos == string::npos) {
+		return file_name;
+	}
+	return file_path.substr(0, pos + 1) + file_name;
 }
 
 struct URLEncodeLength {

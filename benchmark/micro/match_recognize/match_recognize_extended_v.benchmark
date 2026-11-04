@@ -1,0 +1,30 @@
+# name: benchmark/micro/match_recognize/match_recognize_extended_v.benchmark
+# description: An extended V shape over a price series, where the last variable is relative to the first
+# group: [match_recognize]
+
+# 52057 real quotes of one instrument, newest first, price in cents. The shape is the one chart
+# analysis looks for: a fall, a recovery, and a closing condition comparing the end of the match back
+# to its beginning. That last condition is what makes this expensive - a condition reading another
+# variable depends on the rows matched so far, so the matcher cannot reuse the states it has walked.
+# The plain fall-and-recovery shapes over the same quotes run in about a tenth of the time.
+
+name MatchRecognize Extended V
+group micro
+subgroup match_recognize
+
+require parquet
+
+load
+CREATE TABLE quotes AS SELECT * FROM 'data/match_recognize/dax.parquet';
+
+run
+SELECT count(*) FROM quotes MATCH_RECOGNIZE(
+    PARTITION BY isin ORDER BY time
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST FIN
+    PATTERN (STRT D1 D2 DOWN+ UP+ U1 U2 FIN)
+    DEFINE D1 AS D1.price < PREV(D1.price), D2 AS D2.price < PREV(D2.price),
+           DOWN AS DOWN.price < PREV(DOWN.price), UP AS UP.price > PREV(UP.price),
+           U1 AS U1.price > PREV(U1.price), U2 AS U2.price > PREV(U2.price),
+           FIN AS D1.price < FIN.price
+);

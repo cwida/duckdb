@@ -73,6 +73,10 @@ struct SettingCallbackInfo {
 	SetScope scope;
 	//! Whether the callback fires for a RESET rather than a SET
 	bool is_reset = false;
+
+public:
+	//! Logs that the setting is deprecated; resetting it back to its default does not
+	DUCKDB_API void WarnDeprecated(const string &name) const;
 };
 
 typedef void (*set_callback_t)(SettingCallbackInfo &info, Value &parameter);
@@ -107,14 +111,35 @@ struct ConfigurationAlias {
 
 typedef void (*set_option_callback_t)(ClientContext &context, SetScope scope, Value &parameter);
 
+//! Extra state and behavior of an extension option
+struct ExtensionOptionInfo {
+	DUCKDB_API virtual ~ExtensionOptionInfo();
+
+	//! Called when the option is set or reset, with the scope resolved to SESSION or GLOBAL, before the value is
+	//! stored. May replace the value, or throw to refuse it
+	virtual void OnSet(ClientContext &context, SetScope scope, Value &parameter, bool is_reset) const = 0;
+
+	template <class TARGET>
+	TARGET &Cast() {
+		DynamicCastCheck<TARGET>(this);
+		return reinterpret_cast<TARGET &>(*this);
+	}
+	template <class TARGET>
+	const TARGET &Cast() const {
+		DynamicCastCheck<TARGET>(this);
+		return reinterpret_cast<const TARGET &>(*this);
+	}
+};
+
 struct ExtensionOption {
 	ExtensionOption() : set_function(nullptr), default_scope(SetScope::AUTOMATIC) {
 	}
 	// NOLINTNEXTLINE: work around bug in clang-tidy
 	ExtensionOption(string description_p, LogicalType type_p, set_option_callback_t set_function_p,
-	                Value default_value_p, SetScope default_scope_p)
+	                Value default_value_p, SetScope default_scope_p, bool is_debug_p, bool is_deprecated_p)
 	    : description(std::move(description_p)), type(std::move(type_p)), set_function(set_function_p),
-	      default_value(std::move(default_value_p)), default_scope(default_scope_p) {
+	      default_value(std::move(default_value_p)), default_scope(default_scope_p), is_debug(is_debug_p),
+	      is_deprecated(is_deprecated_p) {
 	}
 
 	string description;
@@ -123,6 +148,17 @@ struct ExtensionOption {
 	Value default_value;
 	SetScope default_scope;
 	optional_idx setting_index;
+	bool is_debug = false;
+	bool is_deprecated = false;
+	//! Whether the option can be set globally, and per session
+	bool supports_global = true;
+	bool supports_session = true;
+	//! Optional extra state and behavior, invoked after set_function
+	shared_ptr<ExtensionOptionInfo> info;
+
+public:
+	//! Resolves AUTOMATIC to the default scope, and throws when the option cannot be set at the resulting scope
+	DUCKDB_API SetScope ResolveScope(const Identifier &name, SetScope scope) const;
 };
 
 } // namespace duckdb

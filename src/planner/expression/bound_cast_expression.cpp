@@ -1,6 +1,7 @@
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_default_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
+#include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression_binder.hpp"
@@ -109,6 +110,48 @@ unique_ptr<Expression> BoundCastExpression::AddArrayCastToList(ClientContext &co
 	return BoundCastExpression::AddCastToType(context, std::move(expr), LogicalType::LIST(child_type));
 }
 
+//! Whether a cast between nested types is invertible: the structure has to stay the same, and all child casts have to
+//! be invertible
+static bool NestedCastIsInvertible(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() != target_type.id()) {
+		return false;
+	}
+	switch (source_type.id()) {
+	case LogicalTypeId::LIST:
+		return BoundCastExpression::CastIsInvertible(ListType::GetChildType(source_type),
+		                                             ListType::GetChildType(target_type));
+	case LogicalTypeId::ARRAY:
+		if (ArrayType::IsAnySize(source_type) || ArrayType::IsAnySize(target_type) ||
+		    ArrayType::GetSize(source_type) != ArrayType::GetSize(target_type)) {
+			return false;
+		}
+		return BoundCastExpression::CastIsInvertible(ArrayType::GetChildType(source_type),
+		                                             ArrayType::GetChildType(target_type));
+	case LogicalTypeId::MAP:
+		return BoundCastExpression::CastIsInvertible(MapType::KeyType(source_type), MapType::KeyType(target_type)) &&
+		       BoundCastExpression::CastIsInvertible(MapType::ValueType(source_type), MapType::ValueType(target_type));
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE: {
+		// adding or removing fields is not invertible
+		auto &source_children = StructType::GetChildTypes(source_type);
+		auto &target_children = StructType::GetChildTypes(target_type);
+		if (source_children.size() != target_children.size()) {
+			return false;
+		}
+		for (idx_t child_idx = 0; child_idx < source_children.size(); child_idx++) {
+			if (source_children[child_idx].first != target_children[child_idx].first ||
+			    !BoundCastExpression::CastIsInvertible(source_children[child_idx].second,
+			                                           target_children[child_idx].second)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return false;
+	}
+}
+
 bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const LogicalType &target_type) {
 	D_ASSERT(source_type.IsValid() && target_type.IsValid());
 	if (source_type.id() == LogicalTypeId::BOOLEAN || target_type.id() == LogicalTypeId::BOOLEAN) {
@@ -121,6 +164,12 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 		return false;
 	}
 	if (source_type.id() == LogicalTypeId::VARIANT || target_type.id() == LogicalTypeId::VARIANT) {
+		return false;
+	}
+	if (source_type.IsNested() || target_type.IsNested()) {
+		return NestedCastIsInvertible(source_type, target_type);
+	}
+	if (source_type.id() == LogicalTypeId::ENUM && target_type.id() == LogicalTypeId::ENUM) {
 		return false;
 	}
 	if (source_type.id() == LogicalTypeId::DECIMAL || target_type.id() == LogicalTypeId::DECIMAL) {
@@ -137,7 +186,22 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 		if (target_scale < source_scale) {
 			return false;
 		}
-		return true;
+		if (target_type.IsUnsigned()) {
+			// decimals can be negative
+			return false;
+		}
+		// the target needs to fit all digits before the decimal point
+		// integral types do not fit all numbers of their decimal width, e.g. SMALLINT (width 5) does not fit 99999
+		auto source_digits = source_width - source_scale;
+		auto target_digits = target_width - target_scale;
+		if (source_type.id() == LogicalTypeId::HUGEINT || source_type.id() == LogicalTypeId::UHUGEINT) {
+			// (u)hugeint values can have up to 39 digits
+			source_digits++;
+		}
+		if (target_type.id() != LogicalTypeId::DECIMAL) {
+			target_digits--;
+		}
+		return source_digits <= target_digits;
 	}
 	switch (source_type.id()) {
 	case LogicalTypeId::TIMESTAMP:
@@ -167,6 +231,12 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 			       source_type.id() <= LogicalTypeId::TIMESTAMP_TZ_NS;
 		default:
 			break;
+		}
+		break;
+	case LogicalTypeId::TIME_NS:
+		// a cast to microseconds rounds the nanoseconds
+		if (target_type.id() == LogicalTypeId::TIME) {
+			return false;
 		}
 		break;
 	case LogicalTypeId::VARCHAR:
@@ -242,35 +312,91 @@ static bool NestedCastCanThrow(const LogicalType &source_type, const LogicalType
 		if (target_type.id() != LogicalTypeId::STRUCT) {
 			return true;
 		}
-		auto &source_children = StructType::GetChildTypes(source_type);
-		auto &target_children = StructType::GetChildTypes(target_type);
-		if (source_children.size() != target_children.size()) {
+		// Pair the fields as the cast executes them: positionally for unnamed structs, by name otherwise.
+		// Unmatched target fields become NULL and unmatched source fields are dropped, which does not throw.
+		auto mapping = StructBoundCastData::GetFieldMapping(source_type, target_type);
+		if (mapping.kind != StructCastFieldMapping::MatchKind::VALID) {
+			// Binding the cast fails, which throws when the cast is bound lazily
 			return true;
 		}
-		for (idx_t child_idx = 0; child_idx < source_children.size(); child_idx++) {
-			if (BoundCastExpression::CastCanThrow(source_children[child_idx].second, target_children[child_idx].second,
-			                                      false)) {
+		auto &source_children = StructType::GetChildTypes(source_type);
+		auto &target_children = StructType::GetChildTypes(target_type);
+		for (idx_t i = 0; i < mapping.source_indexes.size(); i++) {
+			if (BoundCastExpression::CastCanThrow(source_children[mapping.source_indexes[i]].second,
+			                                      target_children[mapping.target_indexes[i]].second, false)) {
 				return true;
 			}
 		}
 		return false;
 	}
-	case LogicalTypeId::MAP:
+	case LogicalTypeId::MAP: {
 		if (target_type.id() != LogicalTypeId::MAP) {
 			return true;
 		}
+		auto &source_key = MapType::KeyType(source_type);
+		auto &target_key = MapType::KeyType(target_type);
+		// Map keys must stay unique: a key cast that can map distinct keys onto the same key (is not invertible)
+		// throws the duplicate-key error even when none of the child casts throws
+		if (source_key != target_key && !BoundCastExpression::CastIsInvertible(source_key, target_key)) {
+			return true;
+		}
 		// Map keys cannot be NULL, so a failing key cast throws even when the value cast would default to NULL
-		return BoundCastExpression::CastCanThrow(MapType::KeyType(source_type), MapType::KeyType(target_type), false) ||
+		return BoundCastExpression::CastCanThrow(source_key, target_key, false) ||
 		       BoundCastExpression::CastCanThrow(MapType::ValueType(source_type), MapType::ValueType(target_type),
 		                                         false);
+	}
 	default:
 		return true;
 	}
 }
 
+//! The decimal digits that every value of an integer type fits in, e.g. 5 for SMALLINT: no five-digit DECIMAL
+//! overflows for 32767 or -32768. 0 for other types, and for HUGEINT and UHUGEINT, whose 39-digit values no DECIMAL
+//! holds
+static uint8_t IntegerTypeDecimalDigits(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::UTINYINT:
+		return 3;
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::USMALLINT:
+		return 5;
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::UINTEGER:
+		return 10;
+	case LogicalTypeId::BIGINT:
+		return 19;
+	case LogicalTypeId::UBIGINT:
+		return 20;
+	default:
+		return 0;
+	}
+}
+
+//! Whether a DECIMAL target holds every value of the source type, so that the cast cannot overflow
+static bool DecimalHoldsEveryValue(const LogicalType &source_type, const LogicalType &target_type) {
+	D_ASSERT(target_type.id() == LogicalTypeId::DECIMAL);
+	const auto target_integral_digits = DecimalType::GetWidth(target_type) - DecimalType::GetScale(target_type);
+	if (source_type.id() == LogicalTypeId::DECIMAL) {
+		// The target needs the digits of the source on both sides of the decimal point: scaling up multiplies by a
+		// power of ten and keeps every digit, but scaling down rounds, which can carry into one more integral digit
+		// (9.99 -> DECIMAL(2,1) rounds to 10.0)
+		const auto source_integral_digits = DecimalType::GetWidth(source_type) - DecimalType::GetScale(source_type);
+		return DecimalType::GetScale(target_type) >= DecimalType::GetScale(source_type) &&
+		       target_integral_digits >= source_integral_digits;
+	}
+	// An integer fits when its digits fit before the decimal point: the cast checks the value against 10^(width-scale)
+	const auto source_digits = IntegerTypeDecimalDigits(source_type);
+	return source_digits > 0 && target_integral_digits >= source_digits;
+}
+
 bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const LogicalType &target_type, bool try_cast) {
 	if (source_type == target_type) {
 		return false;
+	}
+	// Converting VARIANT can hit its traversal depth limit, regardless of the target type or TRY_CAST.
+	if (source_type.id() == LogicalTypeId::VARIANT) {
+		return true;
 	}
 	// Casts involving custom types are implemented by extensions, so we cannot reason about them - they can throw
 	// even for a try_cast, e.g. casting JSON into a MAP throws when a key fails to cast, since map keys cannot be NULL
@@ -286,6 +412,10 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (target_type.id() == LogicalTypeId::VARCHAR) {
 		return false;
 	}
+	// A geometry -> geometry cast only changes CRS metadata (incompatible CRSs are rejected at bind time)
+	if (source_type.id() == LogicalTypeId::GEOMETRY && target_type.id() == LogicalTypeId::GEOMETRY) {
+		return false;
+	}
 	// Casting from a string requires parsing it, which throws whenever the string is not a valid representation of
 	// the target type. Types that sit above VARCHAR in the coercion lattice (e.g. UUID, BLOB, BIT, nested types)
 	// would otherwise be considered safe by the max-type check below.
@@ -298,13 +428,21 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type.id() == LogicalTypeId::BIGNUM) {
 		return true;
 	}
+	// Floating point values that are not finite (NaN, inf) cannot be represented as a BIGNUM
+	if (target_type.id() == LogicalTypeId::BIGNUM &&
+	    (source_type.id() == LogicalTypeId::FLOAT || source_type.id() == LogicalTypeId::DOUBLE)) {
+		return true;
+	}
 	// Casts of nested types are executed on the child types - recurse into them
 	if (source_type.IsNested() || target_type.IsNested()) {
 		return NestedCastCanThrow(source_type, target_type);
 	}
-	// Casting to DECIMAL overflows whenever the value does not fit in the width and scale, e.g. 100 -> DECIMAL(38,37)
+	// Casting to DECIMAL overflows whenever the value does not fit in the width and scale, e.g. 100 -> DECIMAL(38,37),
+	// unless the target holds every value of the source type: a DECIMAL that keeps the source's integral and fractional
+	// digits, or an integer type whose digits fit before the decimal point. The max-type check below cannot decide
+	// this, since the maximum DECIMAL of two types is capped at the maximum width, e.g. HUGEINT -> DECIMAL(38,0)
 	if (target_type.id() == LogicalTypeId::DECIMAL) {
-		return true;
+		return !DecimalHoldsEveryValue(source_type, target_type);
 	}
 	// Casting to a TIMESTAMP overflows for values outside of the timestamp range, even when widening the type,
 	// e.g. a DATE far in the future does not fit in a TIMESTAMP

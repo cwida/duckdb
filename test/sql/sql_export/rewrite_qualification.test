@@ -1,0 +1,375 @@
+# name: test/sql/sql_export/rewrite_qualification.test
+# description: SQL export qualifies optimizer-produced calls despite search-path shadowing
+# group: [sql_export]
+
+statement ok
+CREATE SCHEMA shadow;
+
+statement ok
+CREATE MACRO shadow.prefix(a,b) AS false;
+
+statement ok
+CREATE MACRO shadow.suffix(a,b) AS false;
+
+statement ok
+CREATE MACRO shadow.contains(a,b) AS false;
+
+statement ok
+CREATE MACRO shadow.count(a) AS 999::BIGINT;
+
+statement ok
+SET search_path='shadow,main';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query I rowsort
+SELECT s LIKE 'a%' FROM (VALUES ('abc'),('cab'),(NULL)) v(s);
+----
+0
+1
+NULL
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s LIKE 'a%' FROM (VALUES ('abc'),('cab'),(NULL)) v(s);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?prefix"?[(].*
+
+query I rowsort
+SELECT system.main.prefix(s, 'a') FROM (VALUES ('abc'),('cab'),(NULL)) v(s);
+----
+0
+1
+NULL
+
+query I rowsort
+SELECT prefix(s, 'a') FROM (VALUES ('abc'),('cab'),(NULL)) v(s);
+----
+0
+0
+0
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query I rowsort
+SELECT s LIKE '%a' FROM (VALUES ('bca'),('abc'),(NULL)) v(s);
+----
+0
+1
+NULL
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s LIKE '%a' FROM (VALUES ('bca'),('abc'),(NULL)) v(s);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?suffix"?[(].*
+
+query I rowsort
+SELECT system.main.suffix(s, 'a') FROM (VALUES ('bca'),('abc'),(NULL)) v(s);
+----
+0
+1
+NULL
+
+query I rowsort
+SELECT suffix(s, 'a') FROM (VALUES ('bca'),('abc'),(NULL)) v(s);
+----
+0
+0
+0
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query I rowsort
+SELECT s LIKE '%a%' FROM (VALUES ('abc'),('bbb'),(NULL)) v(s);
+----
+0
+1
+NULL
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s LIKE '%a%' FROM (VALUES ('abc'),('bbb'),(NULL)) v(s);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?contains"?[(].*
+
+query I rowsort
+SELECT system.main.contains(s, 'a') FROM (VALUES ('abc'),('bbb'),(NULL)) v(s);
+----
+0
+1
+NULL
+
+query I rowsort
+SELECT contains(s, 'a') FROM (VALUES ('abc'),('bbb'),(NULL)) v(s);
+----
+0
+0
+0
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query R rowsort
+SELECT avg(i) FROM (VALUES (1),(2),(NULL)) v(i);
+----
+1.5
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT avg(i) FROM (VALUES (1),(2),(NULL)) v(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
+
+query I rowsort
+SELECT system.main.count(i) FROM (VALUES (1),(2),(NULL)) v(i);
+----
+2
+
+query I rowsort
+SELECT count(i) FROM (VALUES (1),(2),(NULL)) v(i);
+----
+999
+999
+999
+
+endloop
+
+statement ok
+SET search_path='main';
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query R rowsort
+SELECT avg(i) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+1.5
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT avg(i) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?sum"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT avg(i) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT avg(i) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?/"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query I rowsort
+SELECT sum(i + 1) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+5
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT sum(i + 1) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?sum"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT sum(i + 1) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query I rowsort
+SELECT count(i) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+2
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT count(i) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query I rowsort
+SELECT count(*) FROM (VALUES (1),(2)) t(i);
+----
+2
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM (VALUES (1),(2)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count_star"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query IRI rowsort
+SELECT sum(i), avg(i), count(DISTINCT i) FROM (VALUES (1),(2),(2),(NULL)) t(i);
+----
+5	1.6666666666666667	2
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT sum(i), avg(i), count(DISTINCT i) FROM (VALUES (1),(2),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?sum"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT sum(i), avg(i), count(DISTINCT i) FROM (VALUES (1),(2),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT sum(i), avg(i), count(DISTINCT i) FROM (VALUES (1),(2),(2),(NULL)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?/"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query T rowsort
+SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s LIKE 'a%';
+----
+abc
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s LIKE 'a%';
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?prefix"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query T rowsort
+SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s LIKE '%a';
+----
+bca
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s LIKE '%a';
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?suffix"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query T rowsort
+SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s LIKE '%a%';
+----
+abc
+bca
+cab
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s LIKE '%a%';
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?contains"?[(].*
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query T rowsort
+SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s NOT LIKE 'a%';
+----
+bca
+cab
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT s FROM (VALUES ('abc'),('cab'),('bca'),(NULL)) t(s) WHERE s NOT LIKE 'a%';
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?prefix"?[(].*
+
+query T
+SELECT histogram(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+{1=1, 2=2}
+
+query TT
+EXPLAIN (SQL) SELECT histogram(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?list"?[(].*
+
+query R
+SELECT entropy(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+0.9182958340544894
+
+query TT
+EXPLAIN (SQL) SELECT entropy(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?sum"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT entropy(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?log2"?[(].*
+
+query I
+SELECT mode(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+2
+
+query TT
+EXPLAIN (SQL) SELECT mode(i) FROM (VALUES (1), (2), (2)) t(i);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?arg_max"?[(].*

@@ -33,15 +33,8 @@ query I nosort expected_res
 select * from data();
 ----
 
-foreach disabled true false
-
 foreach type bool tinyint smallint int bigint date time timestamp timestamp_ns timestamp_tz float double dec_9_4 dec_18_6 dec38_10 uuid varchar blob small_enum medium_enum large_enum int_array double_array date_array timestamp_array timestamptz_array varchar_array nested_int_array struct struct_of_arrays array_of_structs
 
-onlyif disabled=true
-statement ok
-SET VARIABLE type_str = 'NULL';
-
-onlyif disabled=false
 statement ok
 SET VARIABLE type_str = (SELECT $$STRUCT("{type}" $$ || typeof("{type}") || ')' from test_all_types() limit 1);
 
@@ -57,7 +50,5 @@ COPY (
 query I nosort expected_res
 select * from '{TEST_DIR}/all_types_shredded_{type}.parquet'
 ----
-
-endloop
 
 endloop

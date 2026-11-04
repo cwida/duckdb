@@ -1,0 +1,131 @@
+# name: test/sql/subquery/lateral/lateral_domain_join_filter_semantics.test
+# description: Preserve joins, duplicates, NULLs and shared consumers when restricting CTE inputs
+# group: [lateral]
+
+statement ok
+SET max_execution_time=10000;
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE person(id BIGINT, tag VARCHAR, selected BOOLEAN, grp BIGINT);
+
+statement ok
+INSERT INTO person SELECT i, (i%2)::VARCHAR, i IN (3,17,51), 0 FROM range(1000) t(i);
+
+statement ok
+INSERT INTO person VALUES (3,'1',true,0),(NULL,'z',true,0),(NULL,'z',true,0);
+
+statement ok
+CREATE VIEW expanded AS
+SELECT i.id, i.tag, i.grp, r.x FROM person i, LATERAL (
+WITH RECURSIVE walk(x) USING KEY(x) AS (
+ SELECT coalesce(i.id,0) UNION SELECT w.x+1 FROM walk w WHERE w.x<coalesce(i.id,0)+2
+ AND NOT EXISTS (SELECT 1 FROM recurring.walk v WHERE v.x=w.x+1)
+) SELECT max(x) x FROM walk
+) r;
+
+# equal plain
+query II
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected) SELECT count(*),sum(q.x) FROM o JOIN (SELECT * FROM expanded) q ON o.id = q.id AND o.tag = q.tag;
+----
+6	92
+
+# nullsafe plain
+query II
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected) SELECT count(*),sum(q.x) FROM o JOIN (SELECT * FROM expanded) q ON o.id IS NOT DISTINCT FROM q.id AND o.tag IS NOT DISTINCT FROM q.tag;
+----
+10	100
+
+# equal distinct
+query II
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected) SELECT count(*),sum(q.x) FROM o JOIN (SELECT DISTINCT i.id, i.tag, i.grp, r.x FROM person i, LATERAL (
+WITH RECURSIVE walk(x) USING KEY(x) AS (
+ SELECT coalesce(i.id,0) UNION SELECT w.x+1 FROM walk w WHERE w.x<coalesce(i.id,0)+2
+ AND NOT EXISTS (SELECT 1 FROM recurring.walk v WHERE v.x=w.x+1)
+) SELECT max(x) x FROM walk
+) r) q ON o.id = q.id AND o.tag = q.tag;
+----
+4	82
+
+# nullsafe group
+query II
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected) SELECT count(*),sum(q.x) FROM o JOIN (SELECT id,tag,grp,max(x) x FROM (SELECT * FROM expanded) t GROUP BY id,tag,grp) q ON o.id IS NOT DISTINCT FROM q.id AND o.tag IS NOT DISTINCT FROM q.tag;
+----
+6	86
+
+# equal union
+query II
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected) SELECT count(*),sum(q.x) FROM o JOIN (SELECT * FROM expanded UNION ALL SELECT * FROM expanded) q ON o.id = q.id AND o.tag = q.tag;
+----
+12	184
+
+# nullsafe union distinct
+query II
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected) SELECT count(*),sum(q.x) FROM o JOIN (SELECT * FROM expanded UNION SELECT * FROM expanded) q ON o.id IS NOT DISTINCT FROM q.id AND o.tag IS NOT DISTINCT FROM q.tag;
+----
+6	86
+
+# independent observer
+query III
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected), q AS MATERIALIZED (SELECT * FROM expanded) SELECT count(*),sum(q.x),(SELECT sum(x) FROM q) FROM o JOIN q ON o.id IS NOT DISTINCT FROM q.id;
+----
+10	100	501509
+
+# Restricting below DISTINCT ON could change the chosen representative.
+# Keep every representative and compare to an explicitly materialized baseline.
+statement ok
+CREATE TABLE representatives AS SELECT DISTINCT ON (grp) * FROM expanded;
+
+query I
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected)
+SELECT (SELECT count(*) FROM o JOIN (SELECT DISTINCT ON (grp) * FROM expanded) q ON o.id=q.id)
+     = (SELECT count(*) FROM o JOIN representatives q ON o.id=q.id);
+----
+true
+
+# LIMIT and window bounds apply before the outer join's key restriction.
+statement ok
+CREATE TABLE first_rows AS SELECT * FROM expanded ORDER BY id NULLS LAST LIMIT 7;
+
+query I
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected)
+SELECT (SELECT sum(q.x) FROM o JOIN (SELECT * FROM expanded ORDER BY id NULLS LAST LIMIT 7) q ON o.id=q.id)
+     = (SELECT sum(q.x) FROM o JOIN first_rows q ON o.id=q.id);
+----
+true
+
+query I
+WITH o AS MATERIALIZED (SELECT * FROM person WHERE selected)
+SELECT (SELECT sum(q.x) FROM o JOIN
+        (SELECT *, row_number() OVER (ORDER BY id NULLS LAST) n FROM expanded QUALIFY n<=7) q ON o.id=q.id)
+     = (SELECT sum(q.x) FROM o JOIN first_rows q ON o.id=q.id);
+----
+true
+
+# Producer pushdown must keep marker columns that the CTE's readers still consume.
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query I
+WITH c AS MATERIALIZED (
+    SELECT id, EXISTS (SELECT 1 FROM person x WHERE x.id=p.id) AS found FROM person p
+)
+SELECT count(*) FROM c WHERE found;
+----
+1001
+
+query I
+WITH c AS MATERIALIZED (
+    SELECT id, EXISTS (SELECT 1 FROM person x WHERE x.id=p.id) AS found FROM person p
+)
+SELECT count(found) FROM c WHERE found;
+----
+1001
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET max_execution_time;

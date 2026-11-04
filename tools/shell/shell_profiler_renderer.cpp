@@ -243,7 +243,7 @@ protected:
 			}
 			duckdb::vector<duckdb::Value> params;
 			params.emplace_back(sql);
-			auto result = prepared->Execute(params, false);
+			auto result = prepared->Execute(params);
 			if (!result || result->HasError()) {
 				return sql;
 			}

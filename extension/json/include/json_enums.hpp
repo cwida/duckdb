@@ -41,6 +41,13 @@ enum class JSONFormat : uint8_t {
 	ARRAY = 3,
 };
 
+enum class JSONKeyMatch : uint8_t {
+	//! Object keys match names byte for byte
+	EXACT = 0,
+	//! Object keys match names ignoring ASCII case
+	CASE_INSENSITIVE = 1,
+};
+
 template<>
 const char* EnumUtil::ToChars<JSONScanType>(JSONScanType value);
 
@@ -58,5 +65,11 @@ const char* EnumUtil::ToChars<JSONFormat>(JSONFormat value);
 
 template<>
 JSONFormat EnumUtil::FromString<JSONFormat>(const char *value);
+
+template<>
+const char* EnumUtil::ToChars<JSONKeyMatch>(JSONKeyMatch value);
+
+template<>
+JSONKeyMatch EnumUtil::FromString<JSONKeyMatch>(const char *value);
 
 } // namespace duckdb

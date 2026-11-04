@@ -108,6 +108,9 @@ struct TimeBucket {
 			    SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, bucket_width_micros);
 		}
 		result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, origin_micros);
+		if (!timestamp_t(result_micros).IsFinite()) {
+			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is not a finite TIMESTAMP");
+		}
 
 		return Timestamp::FromEpochMicroSeconds(result_micros);
 	}
@@ -385,32 +388,54 @@ void TimeBucketOriginFunction(DataChunk &args, ExpressionState &state, Vector &r
 
 } // namespace
 
+// Names the bucket_width/timestamp/[offset|origin] arguments shared by time_bucket's per-type overloads.
+static ScalarFunction NameBucketWidthTimestampArguments(ScalarFunction fun, const LogicalType &type) {
+	fun.GetSignature().AddParameter("bucket_width", LogicalType::INTERVAL).AddParameter("timestamp", type);
+	return fun;
+}
+
+static ScalarFunction NameBucketWidthTimestampOffsetArguments(ScalarFunction fun, const LogicalType &type) {
+	fun.GetSignature()
+	    .AddParameter("bucket_width", LogicalType::INTERVAL)
+	    .AddParameter("timestamp", type)
+	    .AddParameter("offset", LogicalType::INTERVAL);
+	return fun;
+}
+
+static ScalarFunction NameBucketWidthTimestampOriginArguments(ScalarFunction fun, const LogicalType &type) {
+	fun.GetSignature()
+	    .AddParameter("bucket_width", LogicalType::INTERVAL)
+	    .AddParameter("timestamp", type)
+	    .AddParameter("origin", type);
+	return fun;
+}
+
 ScalarFunctionSet TimeBucketFun::GetFunctions() {
 	ScalarFunctionSet time_bucket;
-	time_bucket.AddFunction(
-	    ScalarFunction({LogicalType::INTERVAL, LogicalType::DATE}, LogicalType::DATE, TimeBucketFunction<date_t>));
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::DATE, LogicalType::INTERVAL},
-	                                       LogicalType::DATE, TimeBucketOffsetFunction<date_t>));
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::DATE, LogicalType::DATE},
-	                                       LogicalType::DATE, TimeBucketOriginFunction<date_t>));
+	time_bucket.AddFunction(NameBucketWidthTimestampArguments(
+	    ScalarFunction({}, LogicalType::DATE, TimeBucketFunction<date_t>), LogicalType::DATE));
+	time_bucket.AddFunction(NameBucketWidthTimestampOffsetArguments(
+	    ScalarFunction({}, LogicalType::DATE, TimeBucketOffsetFunction<date_t>), LogicalType::DATE));
+	time_bucket.AddFunction(NameBucketWidthTimestampOriginArguments(
+	    ScalarFunction({}, LogicalType::DATE, TimeBucketOriginFunction<date_t>), LogicalType::DATE));
 
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP}, LogicalType::TIMESTAMP,
-	                                       TimeBucketFunction<timestamp_t>));
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP, LogicalType::INTERVAL},
-	                                       LogicalType::TIMESTAMP, TimeBucketOffsetFunction<timestamp_t>));
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP, LogicalType::TIMESTAMP},
-	                                       LogicalType::TIMESTAMP, TimeBucketOriginFunction<timestamp_t>));
+	time_bucket.AddFunction(NameBucketWidthTimestampArguments(
+	    ScalarFunction({}, LogicalType::TIMESTAMP, TimeBucketFunction<timestamp_t>), LogicalType::TIMESTAMP));
+	time_bucket.AddFunction(NameBucketWidthTimestampOffsetArguments(
+	    ScalarFunction({}, LogicalType::TIMESTAMP, TimeBucketOffsetFunction<timestamp_t>), LogicalType::TIMESTAMP));
+	time_bucket.AddFunction(NameBucketWidthTimestampOriginArguments(
+	    ScalarFunction({}, LogicalType::TIMESTAMP, TimeBucketOriginFunction<timestamp_t>), LogicalType::TIMESTAMP));
 
 	time_bucket.ApplyToFunctions(
 	    [](ScalarFunction &func) { func.SetArgProperties(1, ArgProperties().NonDecreasing()); });
 
 	//	Not monotonic (wraps)
-	time_bucket.AddFunction(
-	    ScalarFunction({LogicalType::INTERVAL, LogicalType::TIME}, LogicalType::TIME, TimeBucketFunction<dtime_t>));
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIME, LogicalType::INTERVAL},
-	                                       LogicalType::TIME, TimeBucketOffsetFunction<dtime_t>));
-	time_bucket.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIME, LogicalType::TIME},
-	                                       LogicalType::TIME, TimeBucketOriginFunction<dtime_t>));
+	time_bucket.AddFunction(NameBucketWidthTimestampArguments(
+	    ScalarFunction({}, LogicalType::TIME, TimeBucketFunction<dtime_t>), LogicalType::TIME));
+	time_bucket.AddFunction(NameBucketWidthTimestampOffsetArguments(
+	    ScalarFunction({}, LogicalType::TIME, TimeBucketOffsetFunction<dtime_t>), LogicalType::TIME));
+	time_bucket.AddFunction(NameBucketWidthTimestampOriginArguments(
+	    ScalarFunction({}, LogicalType::TIME, TimeBucketOriginFunction<dtime_t>), LogicalType::TIME));
 
 	time_bucket.SetFallible();
 

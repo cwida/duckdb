@@ -1,0 +1,32 @@
+# name: test/sql/function/table/multi_file_array_parameter.test
+# description: Passing an ARRAY to the file-list parameter of a multi-file reader must not raise an internal error
+# group: [table]
+
+statement error
+SELECT * FROM read_csv(NULL::INTEGER[3]);
+----
+<REGEX>:.*(Binder|Parser|Invalid Input|Conversion) Error.*
+
+statement error
+SELECT * FROM read_blob(NULL::VARCHAR[1]);
+----
+<REGEX>:.*(Binder|Parser|Invalid Input) Error.*
+
+statement error
+SELECT * FROM read_text(NULL::VARCHAR[1]);
+----
+<REGEX>:.*(Binder|Parser|Invalid Input) Error.*
+
+statement error
+SELECT * FROM glob(NULL::VARCHAR[2]);
+----
+<REGEX>:.*(Binder|Parser|Invalid Input) Error.*
+
+# a non-null ARRAY of file paths is accepted like a LIST
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/multi_file_array.csv';
+
+query I
+SELECT * FROM read_csv(['{TEST_DIR}/multi_file_array.csv']::VARCHAR[1]);
+----
+42

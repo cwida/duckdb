@@ -238,7 +238,7 @@ SELECT INTERVAL '1 year 2 days 2 seconds' / 0;
 <REGEX>:.*Division by zero.*
 
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 query T
 SELECT INTERVAL '1 year 2 days 2 seconds' / 0;
@@ -246,7 +246,7 @@ SELECT INTERVAL '1 year 2 days 2 seconds' / 0;
 NULL
 
 statement ok
-SET null_on_division_by_zero=false;
+SET error_on_division_by_zero=true;
 
 # invalid intervals
 # empty interval

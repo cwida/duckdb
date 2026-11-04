@@ -1,0 +1,112 @@
+# name: test/sql/sql_export/scalar_limit.test
+# description: Scalar LIMIT inputs preserve evaluation, errors and scope
+# group: [sql_export]
+
+# These checks depend on session state across statements.
+require skip_reload
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+CREATE SEQUENCE limit_calls;
+
+statement ok
+CREATE SEQUENCE offset_calls;
+
+query I
+SELECT i FROM range(10) t(i) ORDER BY i
+LIMIT (SELECT nextval('limit_calls')+2) OFFSET (SELECT nextval('offset_calls')+1)
+----
+2
+3
+4
+
+query II
+SELECT currval('limit_calls'), currval('offset_calls')
+----
+1	1
+
+statement ok
+CREATE SEQUENCE row_calls;
+
+query I
+SELECT nextval('row_calls') FROM (SELECT i FROM range(100000) t(i) LIMIT (SELECT 2)) t
+----
+1
+2
+
+query I
+SELECT currval('row_calls')
+----
+2
+
+statement ok
+CREATE TABLE empty_limit_input(i INTEGER);
+
+query I
+SELECT i FROM empty_limit_input LIMIT ((SELECT '-2147483648'::INTEGER)-1)
+----
+
+statement error
+SELECT i FROM range(1) t(i) LIMIT ((SELECT '-2147483648'::INTEGER)-1)
+----
+Overflow
+
+query I
+SELECT i FROM empty_limit_input LIMIT (SELECT 'bad')
+----
+
+statement error
+SELECT i FROM range(1) t(i) LIMIT (SELECT 'bad')
+----
+Could not convert string
+
+statement error
+SELECT i FROM empty_limit_input LIMIT (SELECT 1 UNION ALL SELECT 2)
+----
+More than one row returned by a subquery
+
+query I
+SELECT i FROM (VALUES (1),(1),(NULL)) t(i) LIMIT (SELECT NULL) OFFSET (SELECT NULL)
+----
+1
+1
+NULL
+
+query I
+SELECT i FROM (SELECT i FROM range(10) t(i) ORDER BY i LIMIT (SELECT 7)) t
+ORDER BY i LIMIT (SELECT 2) OFFSET (SELECT 3)
+----
+3
+4
+
+# Nested limit scopes must share each scalar input with exactly one producer.
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+CREATE SEQUENCE nested_limit_calls;
+
+query I
+SELECT i FROM (
+    SELECT i FROM range(20) t(i) ORDER BY i
+    LIMIT (SELECT nextval('nested_limit_calls') * 0 + 7)
+) t ORDER BY i
+LIMIT (SELECT nextval('nested_limit_calls') * 0 + 2)
+OFFSET (SELECT nextval('nested_limit_calls') * 0 + 3)
+----
+3
+4
+
+query I
+SELECT currval('nested_limit_calls');
+----
+3
+
+statement ok
+DROP SEQUENCE nested_limit_calls;
+
+endloop

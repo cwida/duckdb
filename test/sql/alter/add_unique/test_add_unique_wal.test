@@ -1,5 +1,5 @@
 # name: test/sql/alter/add_unique/test_add_unique_wal.test
-# description: Test replaying ALTER TABLE ADD UNIQUE from the WAL
+# description: Constraint index identities survive WAL replay, rename, rollback, and checkpoint
 # group: [add_unique]
 
 load {TEST_DIR}/test_add_unique_wal.db
@@ -11,17 +11,84 @@ statement ok
 PRAGMA wal_autocheckpoint='1TB';
 
 statement ok
-CREATE TABLE t(i INTEGER);
+CREATE TABLE t(i INTEGER, j INTEGER, k INTEGER);
 
 statement ok
-INSERT INTO t VALUES (1);
+INSERT INTO t VALUES (1, 10, 100);
+
+statement ok
+BEGIN;
+
+statement ok
+ALTER TABLE t ADD PRIMARY KEY (j);
 
 statement ok
 ALTER TABLE t ADD UNIQUE (i);
 
+statement ok
+ALTER TABLE t RENAME TO renamed_t;
+
+statement ok
+ALTER TABLE renamed_t RENAME COLUMN i TO id;
+
+statement ok
+COMMIT;
+
 restart
 
 statement error
-INSERT INTO t VALUES (1);
+INSERT INTO renamed_t VALUES (1, 20, 200);
 ----
-<REGEX>:Constraint Error.*Duplicate key "i: 1" violates unique constraint.*
+<REGEX>:Constraint Error.*violates unique constraint.*
+
+statement error
+INSERT INTO renamed_t VALUES (2, 10, 200);
+----
+<REGEX>:Constraint Error.*violates primary key constraint.*
+
+# Rollback must remove only the new index, even when the original names are reused.
+statement ok
+BEGIN;
+
+statement ok
+ALTER TABLE renamed_t RENAME TO t;
+
+statement ok
+ALTER TABLE t RENAME COLUMN id TO i;
+
+statement ok
+ALTER TABLE t ADD UNIQUE (k);
+
+statement ok
+ROLLBACK;
+
+statement ok
+INSERT INTO renamed_t VALUES (2, 20, 100);
+
+statement error
+INSERT INTO renamed_t VALUES (3, 10, 300);
+----
+<REGEX>:Constraint Error.*violates primary key constraint.*
+
+statement error
+INSERT INTO renamed_t VALUES (1, 30, 300);
+----
+<REGEX>:Constraint Error.*violates unique constraint.*
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement error
+INSERT INTO renamed_t VALUES (1, 30, 300);
+----
+<REGEX>:Constraint Error.*violates unique constraint.*
+
+statement error
+INSERT INTO renamed_t VALUES (3, 10, 300);
+----
+<REGEX>:Constraint Error.*violates primary key constraint.*
+
+statement ok
+INSERT INTO renamed_t VALUES (3, 30, 100);

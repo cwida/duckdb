@@ -1,0 +1,234 @@
+# name: test/sql/sql_export/join_multiplicities.test
+# description: SQL export preserves join multiplicities, NULL comparisons and SINGLE errors
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) CROSS JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y);
+----
+1	10	2	100
+1	10	3	200
+1	10	NULL	300
+2	20	2	100
+2	20	3	200
+2	20	NULL	300
+2	21	2	100
+2	21	3	200
+2	21	NULL	300
+NULL	30	2	100
+NULL	30	3	200
+NULL	30	NULL	300
+
+query IIII
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) POSITIONAL JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y);
+----
+1	10	2	100
+2	20	3	200
+2	21	NULL	300
+NULL	30	NULL	NULL
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) INNER JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+2	20	2	100
+2	21	2	100
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) LEFT JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+1	10	NULL	NULL
+2	20	2	100
+2	21	2	100
+NULL	30	NULL	NULL
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) RIGHT JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+2	20	2	100
+2	21	2	100
+NULL	NULL	3	200
+NULL	NULL	NULL	300
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) FULL JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+1	10	NULL	NULL
+2	20	2	100
+2	21	2	100
+NULL	30	NULL	NULL
+NULL	NULL	3	200
+NULL	NULL	NULL	300
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) SEMI JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+2	20
+2	21
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) ANTI JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+1	10
+NULL	30
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) JOIN BY (TYPE right_semi) (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+2	100
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) JOIN BY (TYPE right_anti) (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+3	200
+NULL	300
+
+query III rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) JOIN BY (TYPE mark) (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+1	10	NULL
+2	20	true
+2	21	true
+NULL	30	NULL
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) JOIN BY (TYPE single) (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a=b;
+----
+1	10	NULL	NULL
+2	20	2	100
+2	21	2	100
+NULL	30	NULL	NULL
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,21),(NULL,30)) l(a,x) ASOF LEFT JOIN (VALUES (2,100),(3,200),(NULL,300)) r(b,y) ON a>=b;
+----
+1	10	NULL	NULL
+2	20	2	100
+2	21	2	100
+NULL	30	NULL	NULL
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) INNER JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a IS NOT DISTINCT FROM b;
+----
+2	20	2	20
+2	20	2	20
+NULL	30	NULL	40
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) INNER JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b AND x<y;
+----
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) INNER JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b OR x=y;
+----
+2	20	2	20
+2	20	2	20
+NULL	30	3	30
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) LEFT JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a IS NOT DISTINCT FROM b;
+----
+1	10	NULL	NULL
+2	20	2	20
+2	20	2	20
+NULL	30	NULL	40
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) LEFT JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b AND x<y;
+----
+1	10	NULL	NULL
+2	20	NULL	NULL
+2	20	NULL	NULL
+NULL	30	NULL	NULL
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) LEFT JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b OR x=y;
+----
+1	10	NULL	NULL
+2	20	2	20
+2	20	2	20
+NULL	30	3	30
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) FULL JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a IS NOT DISTINCT FROM b;
+----
+1	10	NULL	NULL
+2	20	2	20
+2	20	2	20
+NULL	30	NULL	40
+NULL	NULL	3	30
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) FULL JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b AND x<y;
+----
+1	10	NULL	NULL
+2	20	NULL	NULL
+2	20	NULL	NULL
+NULL	30	NULL	NULL
+NULL	NULL	2	20
+NULL	NULL	3	30
+NULL	NULL	NULL	40
+
+query IIII rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) FULL JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b OR x=y;
+----
+1	10	NULL	NULL
+2	20	2	20
+2	20	2	20
+NULL	30	3	30
+NULL	NULL	NULL	40
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) SEMI JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a IS NOT DISTINCT FROM b;
+----
+2	20
+2	20
+NULL	30
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) SEMI JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b AND x<y;
+----
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) SEMI JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b OR x=y;
+----
+2	20
+2	20
+NULL	30
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) ANTI JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a IS NOT DISTINCT FROM b;
+----
+1	10
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) ANTI JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b AND x<y;
+----
+1	10
+2	20
+2	20
+NULL	30
+
+query II rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) ANTI JOIN (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a=b OR x=y;
+----
+1	10
+
+query III rowsort
+SELECT * FROM (VALUES (1,10),(2,20),(2,20),(NULL,30)) l(a,x) JOIN BY (TYPE mark) (VALUES (2,20),(3,30),(NULL,40)) r(b,y) ON a IS NOT DISTINCT FROM b;
+----
+1	10	false
+2	20	true
+2	20	true
+NULL	30	true
+
+statement error
+SELECT * FROM (VALUES (1),(2)) l(a) JOIN BY (TYPE single) (VALUES(2),(2)) r(b) ON a=b;
+----
+More than one row returned
+
+query I
+SELECT 42;
+----
+42

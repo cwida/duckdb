@@ -193,7 +193,7 @@ struct CSVReaderOptions {
 	void SetWriteOption(const Identifier &loption, const Value &value);
 	void SetDateFormat(LogicalTypeId type, const string &format, bool read_format);
 	void ToNamedParameters(named_parameter_map_t &out) const;
-	void FromNamedParameters(const named_parameter_map_t &in, ClientContext &context, MultiFileOptions &file_options);
+	void FromNamedParameters(const named_argument_map_t &in, ClientContext &context, MultiFileOptions &file_options);
 	void ParseOption(ClientContext &context, const Identifier &key, const Value &val);
 	//! Verify options are not conflicting
 	void Verify(MultiFileOptions &file_options);

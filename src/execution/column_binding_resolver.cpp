@@ -14,6 +14,25 @@ namespace duckdb {
 ColumnBindingResolver::ColumnBindingResolver(bool verify_only) : verify_only(verify_only) {
 }
 
+ColumnBindingResolver::ColumnBindingResolver(vector<ColumnBinding> bindings_p, vector<LogicalType> types_p)
+    : bindings(std::move(bindings_p)), types(std::move(types_p)), verify_only(false) {
+}
+
+//! Combine the types of both join sides for resolving expressions against the combined bindings.
+//! An empty type vector for a non-empty binding set means type verification was skipped for that side (e.g., legacy
+//! extension operators), in which case we skip it for the combined set too.
+static vector<LogicalType> CombineJoinTypes(const vector<ColumnBinding> &left_bindings,
+                                            const vector<LogicalType> &left_types,
+                                            const vector<ColumnBinding> &right_bindings,
+                                            const vector<LogicalType> &right_types) {
+	if ((left_types.empty() && !left_bindings.empty()) || (right_types.empty() && !right_bindings.empty())) {
+		return vector<LogicalType>();
+	}
+	auto result = left_types;
+	result.insert(result.end(), right_types.begin(), right_types.end());
+	return result;
+}
+
 void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
@@ -45,8 +64,7 @@ void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 		// combine bindings to resolve predicate
 		auto combined_bindings = left_bindings;
 		combined_bindings.insert(combined_bindings.end(), right_bindings.begin(), right_bindings.end());
-		auto combined_types = left_types;
-		combined_types.insert(combined_types.end(), right_types.begin(), right_types.end());
+		auto combined_types = CombineJoinTypes(left_bindings, left_types, right_bindings, right_types);
 
 		bindings = combined_bindings;
 		types = combined_types;
@@ -92,12 +110,13 @@ void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 		}
 
 		// arbitrary expressions are resolved against both join sides in logical left/right order
-		auto combined_bindings = comp_join.delim_flipped ? other_bindings : delim_bindings;
+		auto &left_bindings = comp_join.delim_flipped ? other_bindings : delim_bindings;
 		auto &right_bindings = comp_join.delim_flipped ? delim_bindings : other_bindings;
+		auto combined_bindings = left_bindings;
 		combined_bindings.insert(combined_bindings.end(), right_bindings.begin(), right_bindings.end());
-		auto combined_types = comp_join.delim_flipped ? other_types : delim_types;
+		auto &left_types = comp_join.delim_flipped ? other_types : delim_types;
 		auto &right_types = comp_join.delim_flipped ? delim_types : other_types;
-		combined_types.insert(combined_types.end(), right_types.begin(), right_types.end());
+		auto combined_types = CombineJoinTypes(left_bindings, left_types, right_bindings, right_types);
 		bindings = std::move(combined_bindings);
 		types = std::move(combined_types);
 		for (auto &cond : comp_join.conditions) {
@@ -228,6 +247,7 @@ unique_ptr<Expression> ColumnBindingResolver::VisitReplace(BoundColumnRefExpress
 	for (idx_t i = 0; i < bindings.size(); i++) {
 		if (expr.Binding() == bindings[i]) {
 			if (!types.empty()) {
+				// LCOV_EXCL_START
 				if (bindings.size() != types.size()) {
 					throw InternalException(
 					    "Failed to bind column reference %s [%d.%d]: inequal num bindings/types (%llu != %llu)",
@@ -240,6 +260,7 @@ unique_ptr<Expression> ColumnBindingResolver::VisitReplace(BoundColumnRefExpress
 					                        expr.Binding().column_index, expr.GetReturnType().ToString(),
 					                        types[i].ToString());
 				}
+				// LCOV_EXCL_STOP
 			}
 			if (verify_only) {
 				// in verification mode

@@ -2,7 +2,7 @@
 
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
-#include "duckdb/optimizer/builtin_function_lookup.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -75,7 +75,7 @@ static unique_ptr<BoundAggregateExpression> BindMinAggregate(ClientContext &cont
 	FunctionBinder function_binder(context);
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(child));
-	return function_binder.BindAggregateFunction(std::move(function), std::move(children));
+	return function_binder.BindAggregateFunction(function, std::move(children));
 }
 
 static unique_ptr<Expression> CreateAggregateSortKey(ClientContext &context, const BoundOrderModifier &order_bys) {
@@ -85,13 +85,7 @@ static unique_ptr<Expression> CreateAggregateSortKey(ClientContext &context, con
 		sort_children.push_back(make_uniq<BoundConstantExpression>(Value(order.GetOrderModifier())));
 	}
 	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto sort_key = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key",
-	                                                   std::move(sort_children), error);
-	if (!sort_key) {
-		error.Throw();
-	}
-	return sort_key;
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key", std::move(sort_children));
 }
 
 unique_ptr<AggregateRewritePlan> FrequencyAggregateRewrite::Create(AggregateRewriteInput &input, bool ignore_nulls,
@@ -124,7 +118,7 @@ unique_ptr<AggregateRewritePlan> FrequencyAggregateRewrite::Create(AggregateRewr
 		count_column = frequency_aggregates.size();
 		FunctionBinder function_binder(input.context);
 		auto count_star = GetBuiltinAggregateFunction(input.context, CountStarFun::Name, {});
-		frequency_aggregates.push_back(function_binder.BindAggregateFunction(std::move(count_star), {}));
+		frequency_aggregates.push_back(function_binder.BindAggregateFunction(count_star, {}));
 	}
 
 	optional_idx order_column;

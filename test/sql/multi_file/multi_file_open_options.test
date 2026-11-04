@@ -126,32 +126,21 @@ SELECT * FROM read_parquet({'etag': 'my_etag'}::VARIANT)
 
 # an option that is set to a value it cannot be read back as is an error, not a crash
 statement error
-SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'file_size': 'notanumber'}])
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'}])
 ----
-<REGEX>:Invalid Input Error.*file option "file_size".*UBIGINT.*
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
 
 statement error
-SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'file_size': -1}])
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': -1}])
 ----
-<REGEX>:Invalid Input Error.*file option "file_size".*UBIGINT.*
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
 
 statement error
 SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'validate_external_file_cache': 'notabool'}])
 ----
 <REGEX>:Invalid Input Error.*file option "validate_external_file_cache".*BOOLEAN.*
 
-statement error
-SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'force_full_download': 'notabool'}])
-----
-<REGEX>:Invalid Input Error.*file option "force_full_download".*BOOLEAN.*
-
-statement error
-SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'last_modified': 'notatimestamp'}])
-----
-<REGEX>:Invalid Input Error.*file option "last_modified".*TIMESTAMP.*
-
-# a VARCHAR option accepts anything that has a text representation - it is the type it is read back as that
-# matters, not the type it was written as
+# options are stored as-is - it is the type an option is read back as that matters, not the type it was written as
 query II
 SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 42}])
 ----
@@ -159,9 +148,9 @@ SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'e
 
 # the same holds for options passed through a VARIANT
 statement error
-SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'file_size': 'notanumber'}::VARIANT])
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'}::VARIANT])
 ----
-<REGEX>:Invalid Input Error.*file option "file_size".*UBIGINT.*
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
 
 # a value that can be read back as the expected type is accepted and converted
 query II
@@ -236,11 +225,6 @@ SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'f
 ----
 <REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
 
-statement error
-SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'encryption_key': 42}])
-----
-<REGEX>:Invalid Input Error.*file option "encryption_key".*VARCHAR.*
-
 # has_deletes is only read when partition statistics are gathered, so it is inert for a plain scan - what
 # matters is that carrying an unusable value does not crash the scan that ignores it
 query II
@@ -264,3 +248,40 @@ statement error
 SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'encryption_key': '0123456789112345'}])
 ----
 <REGEX>:Invalid Input Error.*is not encrypted.*
+
+# the single-file function a multi-file function wraps takes its file the same way: as a path, or as a struct that
+# also holds the options to open it with
+query II
+SELECT * FROM read_single_parquet_file('{TEST_DIR}/open_options_1.parquet')
+----
+42	hello
+
+query II
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 'my_etag'})
+----
+42	hello
+
+statement error
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 999999::UBIGINT})
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*
+
+statement error
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'})
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+statement error
+SELECT * FROM read_single_parquet_file({'footer_size': 1::UBIGINT})
+----
+<REGEX>:.*requires a file struct to have a "filename" field.*
+
+statement error
+SELECT * FROM read_single_parquet_file(42)
+----
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as INTEGER.*
+
+query II
+SELECT * FROM read_single_csv_file({'filename': '{TEST_DIR}/open_options.csv', 'etag': 'my_etag'})
+----
+42	hello

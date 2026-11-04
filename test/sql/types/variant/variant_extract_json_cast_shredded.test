@@ -1,0 +1,48 @@
+# name: test/sql/types/variant/variant_extract_json_cast_shredded.test
+# description: variant_extract(v, 'k')::JSON serializes the value also when the column is shredded (#26432)
+# group: [variant]
+
+require json
+
+statement ok
+ATTACH '{TEST_DIR}/variant_extract_json_cast.db' AS shred (STORAGE_VERSION 'v1.5.0');
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE shred.t AS SELECT '{"s": "x", "b": "true", "n": 42}'::JSON::VARIANT AS v FROM range(10);
+
+# shredding happens when the row group is written
+statement ok
+CHECKPOINT;
+
+# the extract of a string key is pushed into the scan and read from the shredded VARCHAR column;
+# the cast to JSON must still serialize the string instead of parsing it
+query III
+SELECT (variant_extract(v, 's')::JSON)::VARCHAR, (variant_extract(v, 'b')::JSON)::VARCHAR, (variant_extract(v, 'n')::JSON)::VARCHAR
+FROM shred.t LIMIT 1;
+----
+"x"	"true"	42
+
+query III
+SELECT json_type(variant_extract(v, 's')::JSON), json_type(variant_extract(v, 'b')::JSON), json_type(variant_extract(v, 'n')::JSON)
+FROM shred.t LIMIT 1;
+----
+VARCHAR	VARCHAR	UBIGINT
+
+# other casts of the extract keep being pushed down
+query III
+SELECT variant_extract(v, 's')::VARCHAR, variant_extract(v, 'b')::BOOLEAN, variant_extract(v, 'n')::INTEGER FROM shred.t LIMIT 1;
+----
+x	true	42
+
+# the same answers without the pushdown
+statement ok
+SET disabled_optimizers = 'unused_columns';
+
+query III
+SELECT (variant_extract(v, 's')::JSON)::VARCHAR, (variant_extract(v, 'b')::JSON)::VARCHAR, (variant_extract(v, 'n')::JSON)::VARCHAR
+FROM shred.t LIMIT 1;
+----
+"x"	"true"	42

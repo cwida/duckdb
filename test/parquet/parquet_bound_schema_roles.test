@@ -1,0 +1,149 @@
+# name: test/parquet/parquet_bound_schema_roles.test
+# description: Validate bound Parquet roles and preserve generated column positions
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 id, 'physical' filename, 99::BIGINT file_row_number, 999::BIGINT k) TO '{TEST_DIR}/bound_roles' (FORMAT parquet, PARTITION_BY(k))
+
+# Use a Hive directory independent of a physical column with the same name.
+statement ok
+COPY (SELECT 7::BIGINT k, 42 id) TO '{TEST_DIR}/bound_path' (FORMAT parquet, PARTITION_BY(k))
+
+query IIIT
+SELECT k, id, file_row_number, typeof(filename) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'filename':'VARCHAR','k':'BIGINT','file_row_number':'BIGINT','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false, filename=true, file_row_number=true)
+----
+7	42	0	VARCHAR
+
+query III
+SELECT a, b, c FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', filename=true, file_row_number=true, hive_types_autocast=false, hive_types={'k':'BIGINT'}, hive_partitioning=true, bound_schema={'k':'BIGINT','file_row_number':'BIGINT','id':'INTEGER','filename':'VARCHAR'}) t(a,b,c,d)
+----
+7	0	42
+
+# Generated roles explicitly declared in the target override physical name shadows.
+query II
+SELECT file_row_number, filename <> 'physical' FROM read_parquet('{TEST_DIR}/bound_roles/k=999/*.parquet', bound_schema={'file_row_number':'BIGINT','filename':'VARCHAR','id':'INTEGER'}, hive_partitioning=false, filename=true, file_row_number=true)
+----
+0	true
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'k':'BIGINT','id':'INTEGER'}, hive_partitioning=true, hive_types_autocast=false)
+----
+requires hive_types for every Hive partition column
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false)
+----
+must include column "k"
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'k':'VARCHAR','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false)
+----
+must include column "k" with type BIGINT
+
+# These declaration errors precede file access even for an empty restored input.
+statement error
+SELECT count(*) FROM read_parquet([]::VARCHAR[], bound_schema={'file_row_number':'BIGINT'}, file_row_number=true, hive_partitioning=true, hive_types={'FILE_ROW_NUMBER':'BIGINT'}, hive_types_autocast=false, allow_empty=true)
+----
+cannot assign generated and Hive roles
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', file_row_number=true, hive_types={'file_row_number':'BIGINT'}, hive_partitioning=true, hive_types_autocast=false, bound_schema={'file_row_number':'BIGINT','id':'INTEGER'})
+----
+cannot assign generated and Hive roles
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'FILE_ROW_NUMBER':'BIGINT','id':'INTEGER'}, hive_types_autocast=false, hive_partitioning=true, hive_types={'file_row_number':'BIGINT'}, file_row_number=true)
+----
+cannot assign generated and Hive roles
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'k':'VARCHAR'}, hive_partitioning=true, hive_types={'k':'VARCHAR'}, hive_types_autocast=false, filename='k')
+----
+cannot assign generated and Hive roles
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':'INTEGER'})
+----
+requires explicit hive_partitioning
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':'INTEGER'}, hive_partitioning=false, union_by_name=true)
+----
+does not support union_by_name
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':'INTEGER'}, hive_partitioning=false, allow_empty=true)
+----
+does not support allow_empty
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':'INTEGER'}, schema=MAP {'id':{'name':'id','type':'INTEGER','default_value':0}})
+----
+cannot be combined with 'schema'
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema=NULL, hive_partitioning=false)
+----
+expects a non-NULL STRUCT
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':NULL}, hive_partitioning=false)
+----
+types must be non-NULL VARCHAR
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_path/k=7/*.parquet', bound_schema={'id':42}, hive_partitioning=false)
+----
+types must be non-NULL VARCHAR
+
+# Mixed-case custom filename and generated/Hive shadows bind in declared order.
+statement ok
+COPY (SELECT 40+i::INTEGER id, 'physical' source, (99+i)::BIGINT FILE_ROW_NUMBER, 999::BIGINT k FROM range(2) t(i)) TO '{TEST_DIR}/bound_path/k=7/custom_roles.parquet' (FORMAT parquet)
+
+statement ok
+PREPARE custom_roles AS SELECT path <> 'physical', identity, row_no, part_key
+FROM read_parquet('{TEST_DIR}/bound_path/k=7/custom_roles.parquet', bound_schema={'SOURCE':'VARCHAR','id':'INTEGER','FILE_ROW_NUMBER':'BIGINT','K':'BIGINT'}, filename='SoUrCe', file_row_number=true, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false) t(path,identity,row_no,part_key)
+WHERE row_no=1 AND part_key=7
+
+query IIII
+EXECUTE custom_roles
+----
+true	41	1	7
+
+query IIII
+EXECUTE custom_roles
+----
+true	41	1	7
+
+statement ok
+DEALLOCATE custom_roles
+
+query IIII
+SELECT path <> 'physical', identity, row_no, part_key
+FROM read_parquet('{TEST_DIR}/bound_path/k=7/custom_roles.parquet', bound_schema={'K':'BIGINT','FILE_ROW_NUMBER':'BIGINT','SOURCE':'VARCHAR','id':'INTEGER'}, filename='source', file_row_number=true, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false) t(part_key,row_no,path,identity)
+WHERE row_no=1 AND part_key=7
+----
+true	41	1	7
+
+# Physical row-number bounds 99/100 do not describe the generated 0/1 values.
+query II
+SELECT min(file_row_number), max(file_row_number)
+FROM read_parquet('{TEST_DIR}/bound_path/k=7/custom_roles.parquet', bound_schema={'K':'BIGINT','FILE_ROW_NUMBER':'BIGINT','SOURCE':'VARCHAR','id':'INTEGER'}, filename='source', file_row_number=true, hive_partitioning=true, hive_types={'k':'BIGINT'}, hive_types_autocast=false)
+----
+0	1
+
+# Hive pruning also resolves differently-cased bound column names as SQL identifiers.
+statement ok
+COPY (SELECT * FROM (VALUES (1, 10), (2, 20)) t(id, k)) TO '{TEST_DIR}/bound_case_pruning' (FORMAT parquet, PARTITION_BY(k))
+
+query I
+SELECT id FROM read_parquet('{TEST_DIR}/bound_case_pruning/*/*.parquet', bound_schema={'K':'INTEGER','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'INTEGER'}, hive_types_autocast=false) WHERE k=10
+----
+1
+
+query II
+EXPLAIN SELECT id FROM read_parquet('{TEST_DIR}/bound_case_pruning/*/*.parquet', bound_schema={'K':'INTEGER','id':'INTEGER'}, hive_partitioning=true, hive_types={'k':'INTEGER'}, hive_types_autocast=false) WHERE k=10
+----
+physical_plan	<REGEX>:.*File Filters:.*K.*Scanning Files:.*1/2.*

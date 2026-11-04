@@ -1,0 +1,47 @@
+# name: test/sql/join/mark/tuple_inequality.test
+# description: Tuple MARK inequalities retain comparison NULLs
+# group: [mark]
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+foreach comparison < > <= >=
+
+query I
+SELECT __mark_join_marker FROM (VALUES (NULL::TUPLE(INTEGER,INTEGER))) l(a) JOIN BY (TYPE MARK) (VALUES (1)) r(b) ON a{comparison}(1,2);
+----
+NULL
+
+query I
+SELECT __mark_join_marker IS NOT DISTINCT FROM (a{comparison}(1,2)) FROM (VALUES ((1,NULL))) l(a) JOIN BY (TYPE MARK) (VALUES (1)) r(b) ON a{comparison}(1,2);
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES ((1,2))) l(a) JOIN BY (TYPE MARK) (VALUES (NULL::TUPLE(INTEGER,INTEGER))) r(b) ON a{comparison}b;
+----
+NULL
+
+# Earlier fields can decide the result before a later NULL field is visited.
+query I
+SELECT __mark_join_marker IS NOT DISTINCT FROM (a{comparison}(1,2)) FROM (VALUES (NULL::TUPLE(INTEGER,INTEGER)),((0,NULL)),((1,NULL)),((2,NULL)),((2,NULL))) l(a) JOIN BY (TYPE MARK) (VALUES (1),(1)) r(b) ON a{comparison}(1,2);
+----
+true
+true
+true
+true
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (NULL::TUPLE(INTEGER,INTEGER))) l(a) JOIN BY (TYPE MARK) (SELECT range b FROM range(0)) r ON a{comparison}(1,2);
+----
+false
+
+endloop
+
+endloop
+
+statement ok
+SET debug_disable_optimizer=false;

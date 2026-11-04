@@ -18,6 +18,14 @@ MacroCatalogEntry::MacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schem
 	this->tags = info.tags;
 }
 
+unique_ptr<MacroCatalogEntry> MacroCatalogEntry::Create(Catalog &catalog, SchemaCatalogEntry &schema,
+                                                        CreateMacroInfo &info) {
+	if (info.type == CatalogType::TABLE_MACRO_ENTRY) {
+		return make_uniq<TableMacroCatalogEntry>(catalog, schema, info);
+	}
+	return make_uniq<ScalarMacroCatalogEntry>(catalog, schema, info);
+}
+
 ScalarMacroCatalogEntry::ScalarMacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateMacroInfo &info)
     : MacroCatalogEntry(catalog, schema, info) {
 }

@@ -22,6 +22,12 @@ namespace duckdb {
 class BlockHandle;
 
 struct CacheBlock {
+	CacheBlock(idx_t location_p, idx_t size_p) : location(location_p), size(size_p) {
+	}
+
+	const idx_t location;
+	const idx_t size;
+
 	mutable annotated_mutex mtx;
 	mutable std::condition_variable cv DUCKDB_GUARDED_BY(mtx);
 	CacheBlockState state DUCKDB_GUARDED_BY(mtx) = CacheBlockState::EMPTY;

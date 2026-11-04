@@ -1,0 +1,113 @@
+# name: test/sql/constraints/deferred/test_deferred_delete_reinsert.test
+# description: Deferred constraints with keys that are deleted and inserted again in the same transaction
+# group: [deferred]
+
+statement ok
+CREATE TABLE t(i INTEGER PRIMARY KEY DEFERRED, j INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+# the UPDATE deletes both rows and inserts key 1 twice
+statement error
+UPDATE t SET i = 1;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query II rowsort
+SELECT i, j FROM t;
+----
+1	10
+2	20
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+DELETE FROM t WHERE i = 1;
+
+statement ok
+INSERT INTO t VALUES (1, 11), (1, 12);
+
+statement error
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+# the key is inserted again in separate statements
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+DELETE FROM t WHERE i = 1;
+
+statement ok
+INSERT INTO t VALUES (1, 11);
+
+statement ok
+INSERT INTO t VALUES (1, 12);
+
+statement error
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+# the database is still usable, and the failed commits left no index entries behind
+query II rowsort
+SELECT i, j FROM t;
+----
+1	10
+2	20
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+DELETE FROM t WHERE i = 1;
+
+statement ok
+INSERT INTO t VALUES (1, 13);
+
+statement ok
+COMMIT;
+
+query II rowsort
+SELECT i, j FROM t;
+----
+1	13
+2	20
+
+# duplicates can be resolved before the commit
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+DELETE FROM t WHERE i = 1;
+
+statement ok
+INSERT INTO t VALUES (1, 15), (1, 16);
+
+statement ok
+DELETE FROM t WHERE j = 16;
+
+statement ok
+COMMIT;
+
+query II rowsort
+SELECT i, j FROM t;
+----
+1	15
+2	20
+
+# swapping keys, and shifting all keys by one
+statement ok
+UPDATE t SET i = CASE i WHEN 1 THEN 2 WHEN 2 THEN 1 ELSE i END;
+
+statement ok
+UPDATE t SET i = i + 1;
+
+query II rowsort
+SELECT i, j FROM t;
+----
+2	20
+3	15

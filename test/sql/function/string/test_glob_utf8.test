@@ -1,0 +1,23 @@
+# name: test/sql/function/string/test_glob_utf8.test
+# description: GLOB matches non-ASCII characters as single characters
+# group: [string]
+
+query IIII
+SELECT 'é' GLOB '?', 'é' GLOB '??', '🦆x' GLOB '?x', 'aébc' GLOB 'a?bc'
+----
+true	false	true	true
+
+query IIII
+SELECT 'é' GLOB '[é]', 'é' GLOB '[!x]', 'é' GLOB '[a-ö]', 'ü' GLOB '[a-é]'
+----
+true	true	true	false
+
+query III
+SELECT 'aébc' GLOB '*b?', '🦆x' GLOB '[🦆]x', 'x🦆' GLOB '*[!a]'
+----
+true	true	true
+
+query III
+SELECT 'abc' GLOB 'a?c', 'a]' GLOB 'a[]]', 'a-' GLOB 'a[-]'
+----
+true	true	true

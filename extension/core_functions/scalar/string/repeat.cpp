@@ -108,12 +108,21 @@ static unique_ptr<BaseStatistics> RepeatStringStats(ClientContext &, FunctionSta
 
 ScalarFunctionSet RepeatFun::GetFunctions() {
 	ScalarFunctionSet repeat;
-	for (const auto &type : {LogicalType::VARCHAR, LogicalType::BLOB}) {
-		repeat.AddFunction(
-		    ScalarFunction({type, LogicalType::BIGINT}, type, RepeatFunction, nullptr, RepeatStringStats));
-	}
-	repeat.AddFunction(ScalarFunction({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::BIGINT},
-	                                  LogicalType::LIST(LogicalType::TEMPLATE("T")), RepeatListFunction));
+
+	ScalarFunction string_fun({}, LogicalType::VARCHAR, RepeatFunction, nullptr, RepeatStringStats);
+	string_fun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("count", LogicalType::BIGINT);
+	repeat.AddFunction(string_fun);
+
+	ScalarFunction blob_fun({}, LogicalType::BLOB, RepeatFunction, nullptr, RepeatStringStats);
+	blob_fun.GetSignature().AddParameter("blob", LogicalType::BLOB).AddParameter("count", LogicalType::BIGINT);
+	repeat.AddFunction(blob_fun);
+
+	ScalarFunction list_fun({}, LogicalType::LIST(LogicalType::TEMPLATE("T")), RepeatListFunction);
+	list_fun.GetSignature()
+	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
+	    .AddParameter("count", LogicalType::BIGINT);
+	repeat.AddFunction(list_fun);
+
 	repeat.SetFallible();
 	return repeat;
 }

@@ -7,18 +7,18 @@ module: value
 #     hugeint, interval, and every date/time/timestamp variant).
 #   - varchar/blob/bit/bignum/geometry: a managed byte string.
 #   - type: a managed byte string holding the serialized logical type, which
-#     value_create_type_with_context / _with_connection wrap and value_get_type
-#     unwraps.
+#     value_create_type wraps and value_get_type unwraps.
 #   - composites (list/struct/tuple/map/array/union): a vector of child values,
 #     built via value_create (LIST/ARRAY/STRUCT/TUPLE/MAP) or via value_cast
 #     (UNION from a member value, ENUM from a VARCHAR), and read via
 #     value_get_child_count / value_get_child.
 #
 # Leaf payloads cross the boundary through the per-kind typed pairs:
-# value_create_<kind>_with_context / _with_connection builds one, and
-# value_get_<kind> reads one back. The constructors take a context or a
-# connection because a value's construction is scoped to a catalog; the getters
-# need no scope. A getter reads its own type id directly and converts anything
+# value_create_<kind> builds one, and value_get_<kind> reads one back. The
+# constructors take a factory, from an instance, a connection or a callback's
+# context; an instance's factory infers types and casts with the built-in rules
+# only, without the connection's settings.
+# The getters need no scope. A getter reads its own type id directly and converts anything
 # else through the default cast set, on a copy, so a read never alters the
 # value it reads. Three do not convert: value_get_varchar and value_get_blob
 # hand back a pointer into the value, which a converted copy could not outlive,
@@ -50,7 +50,7 @@ functions:
   # -----------------------------------------------------------------------
   value_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a value handle.
 
@@ -64,37 +64,12 @@ functions:
         indirection: 1
         description: The value to destroy.
     return_type: ERROR
-  value_create_null:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a NULL value of the given logical type.
-
-      The logical type is borrowed and copied into the value, so the caller can
-      destroy it independently.
-    role: constructor
-    belongs_to: value
-    parameters:
-      type:
-        type: logical_type
-        description: The borrowed logical type to attach to the NULL value.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new NULL value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
   # --------------------------------------------------------------------------------------------------------------------
   # Accessors
   # --------------------------------------------------------------------------------------------------------------------
   value_get_bool:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a BOOLEAN.
 
@@ -121,7 +96,7 @@ functions:
 
   value_get_utinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UTINYINT.
 
@@ -148,7 +123,7 @@ functions:
 
   value_get_usmallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a USMALLINT.
 
@@ -175,7 +150,7 @@ functions:
 
   value_get_uint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UINTEGER.
 
@@ -202,7 +177,7 @@ functions:
 
   value_get_ubigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UBIGINT.
 
@@ -229,7 +204,7 @@ functions:
 
   value_get_uhugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UHUGEINT.
 
@@ -256,7 +231,7 @@ functions:
 
   value_get_tinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TINYINT.
 
@@ -283,7 +258,7 @@ functions:
 
   value_get_smallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a SMALLINT.
 
@@ -310,7 +285,7 @@ functions:
 
   value_get_int:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as an INTEGER.
 
@@ -337,7 +312,7 @@ functions:
 
   value_get_bigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a BIGINT.
 
@@ -364,7 +339,7 @@ functions:
 
   value_get_hugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a HUGEINT.
 
@@ -391,7 +366,7 @@ functions:
 
   value_get_varchar:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a VARCHAR.
 
@@ -419,7 +394,7 @@ functions:
 
   value_get_blob:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a byte string: a BLOB, or the storage bytes of a BIT
       or BIGNUM.
@@ -448,7 +423,7 @@ functions:
 
   value_get_float:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a FLOAT.
 
@@ -475,7 +450,7 @@ functions:
 
   value_get_double:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a DOUBLE.
 
@@ -502,7 +477,7 @@ functions:
 
   value_get_date:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a DATE.
 
@@ -532,7 +507,7 @@ functions:
 
   value_get_time:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIME.
 
@@ -562,7 +537,7 @@ functions:
 
   value_get_time_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIME_NS.
 
@@ -592,7 +567,7 @@ functions:
 
   value_get_time_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIME_TZ.
 
@@ -623,7 +598,7 @@ functions:
 
   value_get_timestamp:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP.
 
@@ -653,7 +628,7 @@ functions:
 
   value_get_timestamp_sec:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_SEC.
 
@@ -683,7 +658,7 @@ functions:
 
   value_get_timestamp_ms:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_MS.
 
@@ -713,7 +688,7 @@ functions:
 
   value_get_timestamp_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_NS.
 
@@ -743,7 +718,7 @@ functions:
 
   value_get_timestamp_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_TZ.
 
@@ -773,7 +748,7 @@ functions:
 
   value_get_timestamp_tz_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_TZ_NS.
 
@@ -803,7 +778,7 @@ functions:
 
   value_get_interval:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as an INTERVAL.
 
@@ -833,7 +808,7 @@ functions:
 
   value_get_uuid:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UUID, in its internal 128-bit form.
 
@@ -861,7 +836,7 @@ functions:
 
   value_get_decimal:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a DECIMAL: its backing integer plus the width and
       scale of its type.
@@ -903,7 +878,7 @@ functions:
 
   value_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Unwraps the logical type carried by a TYPE value.
 
@@ -929,11 +904,11 @@ functions:
     return_type: ERROR
 
   # --------------------------------------------------------------------------------------------------------------------
-  # Constructors (Context)
+  # Constructors
   # --------------------------------------------------------------------------------------------------------------------
-  value_create_null_with_context:
+  value_create_null:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a NULL value of the given logical type.
 
@@ -942,9 +917,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       type:
         type: logical_type
         description: The borrowed logical type to attach to the NULL value.
@@ -960,9 +935,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_bool_with_context:
+  value_create_bool:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BOOLEAN value from a bool.
 
@@ -971,9 +946,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: bool
         description: The bool to wrap.
@@ -989,9 +964,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_utinyint_with_context:
+  value_create_utinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UTINYINT value from a uint8_t.
 
@@ -1000,9 +975,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: u8
         description: The uint8_t to wrap.
@@ -1018,9 +993,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_usmallint_with_context:
+  value_create_usmallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a USMALLINT value from a uint16_t.
 
@@ -1029,9 +1004,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: u16
         description: The uint16_t to wrap.
@@ -1047,9 +1022,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_uint_with_context:
+  value_create_uint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UINTEGER value from a uint32_t.
 
@@ -1058,9 +1033,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: u32
         description: The uint32_t to wrap.
@@ -1076,9 +1051,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_ubigint_with_context:
+  value_create_ubigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UBIGINT value from a uint64_t.
 
@@ -1087,9 +1062,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: u64
         description: The uint64_t to wrap.
@@ -1105,9 +1080,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_uhugeint_with_context:
+  value_create_uhugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UHUGEINT value from a uint128_t.
 
@@ -1116,11 +1091,13 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: uhugeint_t
+        indirection: 1
+        const: true
         description: The uint128_t to wrap.
       out_value:
         type: value
@@ -1134,9 +1111,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_tinyint_with_context:
+  value_create_tinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TINYINT value from an int8_t.
 
@@ -1145,9 +1122,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i8
         description: The int8_t to wrap.
@@ -1163,9 +1140,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_smallint_with_context:
+  value_create_smallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a SMALLINT value from an int16_t.
 
@@ -1174,9 +1151,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i16
         description: The int16_t to wrap.
@@ -1192,9 +1169,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_int_with_context:
+  value_create_int:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates an INTEGER value from an int32_t.
 
@@ -1203,9 +1180,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i32
         description: The int32_t to wrap.
@@ -1221,9 +1198,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_bigint_with_context:
+  value_create_bigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BIGINT value from an int64_t.
 
@@ -1232,9 +1209,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The int64_t to wrap.
@@ -1250,9 +1227,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_hugeint_with_context:
+  value_create_hugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a HUGEINT value from an int128_t.
 
@@ -1261,11 +1238,13 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: hugeint_t
+        indirection: 1
+        const: true
         description: The int128_t to wrap.
       out_value:
         type: value
@@ -1279,9 +1258,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_varchar_with_context:
+  value_create_varchar:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a VARCHAR value from a UTF-8 string.
 
@@ -1290,11 +1269,14 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The UTF-8 string to wrap. May be null only when len is 0 (empty string).
       out_value:
         type: value
@@ -1308,9 +1290,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_blob_with_context:
+  value_create_blob:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BLOB value from a byte string.
 
@@ -1319,11 +1301,14 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The byte string to wrap. May be null only when len is 0 (empty string).
       out_value:
         type: value
@@ -1337,9 +1322,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_float_with_context:
+  value_create_float:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a FLOAT value from a float.
 
@@ -1348,9 +1333,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: f32
         description: The float to wrap.
@@ -1366,9 +1351,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_double_with_context:
+  value_create_double:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a DOUBLE value from a double.
 
@@ -1377,9 +1362,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: f64
         description: The double to wrap.
@@ -1395,9 +1380,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_type_with_context:
+  value_create_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TYPE value from a logical type.
 
@@ -1406,9 +1391,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_type:
         type: logical_type
         description: The borrowed logical type to wrap.
@@ -1424,508 +1409,12 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  # --------------------------------------------------------------------------------------------------------------------
-  # Constructors (Connection)
-  # --------------------------------------------------------------------------------------------------------------------
-  value_create_null_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a NULL value of the given logical type.
-
-      The logical type is borrowed and copied into the value, so the caller can
-      destroy it independently.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      type:
-        type: logical_type
-        description: The borrowed logical type to attach to the NULL value.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new NULL value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_bool_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a BOOLEAN value from a bool.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: bool
-        description: The bool to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new BOOLEAN value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_utinyint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a UTINYINT value from a uint8_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: u8
-        description: The uint8_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new UTINYINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_usmallint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a USMALLINT value from a uint16_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: u16
-        description: The uint16_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new USMALLINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_uint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a UINTEGER value from a uint32_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: u32
-        description: The uint32_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new UINTEGER value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_ubigint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a UBIGINT value from a uint64_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: u64
-        description: The uint64_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new UBIGINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_uhugeint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a UHUGEINT value from a uint128_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: uhugeint_t
-        description: The uint128_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new UHUGEINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_tinyint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TINYINT value from an int8_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i8
-        description: The int8_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TINYINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_smallint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a SMALLINT value from an int16_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i16
-        description: The int16_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new SMALLINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_int_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates an INTEGER value from an int32_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i32
-        description: The int32_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new INTEGER value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_bigint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a BIGINT value from an int64_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The int64_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new BIGINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_hugeint_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a HUGEINT value from an int128_t.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: hugeint_t
-        description: The int128_t to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new HUGEINT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_varchar_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a VARCHAR value from a UTF-8 string.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: str
-        description: The UTF-8 string to wrap. May be null only when len is 0 (empty string).
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new VARCHAR value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_blob_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a BLOB value from a byte string.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: str
-        description: The byte string to wrap. May be null only when len is 0 (empty string).
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new BLOB value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_float_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a FLOAT value from a float.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: f32
-        description: The float to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new FLOAT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_double_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a DOUBLE value from a double.
-
-      The input is copied in. The returned value is caller-owned; destroy it
-      via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: f64
-        description: The double to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new DOUBLE value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_type_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TYPE value wrapping the given logical type.
-
-      The input logical type is borrowed; the value internally copies the
-      type so the caller can destroy the logical type independently.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      type:
-        type: logical_type
-        description: The borrowed logical type to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
   # -----------------------------------------------------------------------
   # Composite construction + descent + cast
   # -----------------------------------------------------------------------
-  value_create_date_with_context:
+  value_create_date:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a DATE value.
 
@@ -1935,9 +1424,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i32
         description: The payload to wrap.
@@ -1953,39 +1442,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_date_with_connection:
+  value_create_time:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a DATE value.
-
-      The payload is days since 1970-01-01, the same unit value_get_date reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i32
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new DATE value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_time_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIME value.
 
@@ -1995,9 +1454,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2013,39 +1472,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_time_with_connection:
+  value_create_time_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIME value.
-
-      The payload is microseconds since midnight, the same unit value_get_time reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIME value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_time_ns_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIME_NS value.
 
@@ -2055,9 +1484,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2073,39 +1502,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_time_ns_with_connection:
+  value_create_time_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIME_NS value.
-
-      The payload is nanoseconds since midnight, the same unit value_get_time_ns reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIME_NS value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_time_tz_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIME_TZ value.
 
@@ -2117,9 +1516,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: u64
         description: The payload to wrap.
@@ -2135,41 +1534,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_time_tz_with_connection:
+  value_create_timestamp:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIME_TZ value.
-
-      The payload packs the time of day and the UTC offset into one integer, in
-      the committed layout: micros in the high 40 bits, a biased offset in the
-      low 24. The same form value_get_time_tz reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: u64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIME_TZ value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_timestamp_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP value.
 
@@ -2179,9 +1546,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2197,39 +1564,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_timestamp_with_connection:
+  value_create_timestamp_sec:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIMESTAMP value.
-
-      The payload is microseconds since 1970-01-01, the same unit value_get_timestamp reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIMESTAMP value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_timestamp_sec_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_SEC value.
 
@@ -2239,9 +1576,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2257,39 +1594,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_timestamp_sec_with_connection:
+  value_create_timestamp_ms:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIMESTAMP_SEC value.
-
-      The payload is seconds since 1970-01-01, the same unit value_get_timestamp_sec reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIMESTAMP_SEC value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_timestamp_ms_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_MS value.
 
@@ -2299,9 +1606,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2317,39 +1624,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_timestamp_ms_with_connection:
+  value_create_timestamp_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIMESTAMP_MS value.
-
-      The payload is milliseconds since 1970-01-01, the same unit value_get_timestamp_ms reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIMESTAMP_MS value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_timestamp_ns_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_NS value.
 
@@ -2359,9 +1636,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2377,39 +1654,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_timestamp_ns_with_connection:
+  value_create_timestamp_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIMESTAMP_NS value.
-
-      The payload is nanoseconds since 1970-01-01, the same unit value_get_timestamp_ns reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIMESTAMP_NS value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_timestamp_tz_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_TZ value.
 
@@ -2420,9 +1667,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2438,40 +1685,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_timestamp_tz_with_connection:
+  value_create_timestamp_tz_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIMESTAMP_TZ value.
-
-      The payload is microseconds since 1970-01-01, in UTC, the same unit
-      value_get_timestamp_tz reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIMESTAMP_TZ value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_timestamp_tz_ns_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_TZ_NS value.
 
@@ -2482,9 +1698,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: i64
         description: The payload to wrap.
@@ -2500,40 +1716,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_timestamp_tz_ns_with_connection:
+  value_create_interval:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TIMESTAMP_TZ_NS value.
-
-      The payload is nanoseconds since 1970-01-01, in UTC, the same unit
-      value_get_timestamp_tz_ns reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: i64
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new TIMESTAMP_TZ_NS value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_interval_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a INTERVAL value.
 
@@ -2543,11 +1728,13 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: interval_t
+        indirection: 1
+        const: true
         description: The payload to wrap.
       out_value:
         type: value
@@ -2561,39 +1748,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_interval_with_connection:
+  value_create_decimal:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a INTERVAL value.
-
-      The payload is the (months, days, micros) triple, the same unit value_get_interval reports.
-      It is not range-checked here; value_cast is the validating path. The
-      returned value is caller-owned; destroy it via value_destroy.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: interval_t
-        description: The payload to wrap.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new INTERVAL value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_decimal_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a DECIMAL value from its backing integer.
 
@@ -2606,11 +1763,13 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: hugeint_t
+        indirection: 1
+        const: true
         description: The backing integer, scaled by 10^scale.
       width:
         type: u8
@@ -2630,48 +1789,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_decimal_with_connection:
+  value_create_uuid:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a DECIMAL value from its backing integer.
-
-      The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is
-      the total digit count and must be 1..38; scale is the number of digits
-      after the point and must not exceed width. Violating either returns
-      ERROR_INPUT_INVALID, as does a value too wide for the storage tier the
-      width selects. The value itself is not range-checked against the width;
-      value_cast is the validating path.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: hugeint_t
-        description: The backing integer, scaled by 10^scale.
-      width:
-        type: u8
-        description: Total digit count, 1..38.
-      scale:
-        type: u8
-        description: Digits after the decimal point; must not exceed width.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new DECIMAL value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_uuid_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UUID value from its internal 128-bit form.
 
@@ -2682,11 +1802,13 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: hugeint_t
+        indirection: 1
+        const: true
         description: The internal 128-bit storage form.
       out_value:
         type: value
@@ -2700,40 +1822,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_uuid_with_connection:
+  value_create_bit:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a UUID value from its internal 128-bit form.
-
-      The payload is the storage form a vector element holds, not the canonical
-      byte order: the high bit is flipped so the integer sorts. To build one
-      from canonical text, cast a VARCHAR with value_cast instead, which is
-      also how a UUID renders back.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: hugeint_t
-        description: The internal 128-bit storage form.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new UUID value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_bit_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BIT value from its wire bytes.
 
@@ -2744,11 +1835,14 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The wire bytes, a padding header byte followed by data. Must be at least 1 byte.
       out_value:
         type: value
@@ -2762,40 +1856,9 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-  value_create_bit_with_connection:
+  value_create_bignum:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a BIT value from its wire bytes.
-
-      The wire form is a mandatory padding-header byte — the count of leading
-      bits in the first data byte that are not part of the bit string —
-      followed by the data bytes, so the input must be at least 1 byte. These
-      are the same bytes value_get_blob reports back.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: str
-        description: The wire bytes, a padding header byte followed by data. Must be at least 1 byte.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new BIT value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_bignum_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BIGNUM value from its storage bytes.
 
@@ -2807,43 +1870,14 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       in_value:
         type: str
-        description: The opaque storage bytes from bignum_encode. Must exceed 3 bytes.
-      out_value:
-        type: value
         indirection: 1
-        kind: OUT
-        description: Receives the new BIGNUM value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  value_create_bignum_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a BIGNUM value from its storage bytes.
-
-      The bytes are opaque storage, as produced by bignum_encode from a
-      magnitude and a sign flag; a negative is stored bit-inverted behind a
-      header, so these are not the magnitude bytes. The header plus at least
-      one magnitude byte means the input must exceed 3 bytes. These are the
-      same bytes value_get_blob reports back, for bignum_decode to translate.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      in_value:
-        type: str
+        const: true
+        kind: IN
         description: The opaque storage bytes from bignum_encode. Must exceed 3 bytes.
       out_value:
         type: value
@@ -2860,9 +1894,9 @@ functions:
   # -----------------------------------------------------------------------
   # Composite constructors
   # -----------------------------------------------------------------------
-  value_create_list_with_context:
+  value_create_list:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a LIST value from its elements.
 
@@ -2879,9 +1913,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       child_type:
         type: logical_type
         description: Optional. The element type. Pass NULL to resolve it from the elements.
@@ -2904,53 +1938,9 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
-  value_create_list_with_connection:
+  value_create_array:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a LIST value from its elements.
-
-      The child type is the common type of the elements, resolved by the same
-      rule a SQL list literal follows, and every element is cast to it; a set
-      with no common type surfaces the cast error. Pass child_type to name the
-      type instead, which is also how an empty list is built: with child_type
-      NULL, an empty element array has no type to resolve and returns
-      ERROR_INPUT_INVALID.
-
-      The elements are borrowed and copied in, and a NULL element becomes a
-      typed NULL. The type is rebuilt from its child, so an alias on the outer
-      LIST type is not preserved; value_cast is the alias-preserving path.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      child_type:
-        type: logical_type
-        description: Optional. The element type. Pass NULL to resolve it from the elements.
-      children:
-        type: value
-        indirection: 1
-        const: true
-        description: An array of child_count elements. Borrowed (copied in). Pass NULL when child_count is 0.
-      child_count:
-        type: idx
-        description: The number of elements.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new composite value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-  value_create_array_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates an ARRAY value from its elements, sized by their count.
 
@@ -2964,9 +1954,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       child_type:
         type: logical_type
         description: Optional. The element type. Pass NULL to resolve it from the elements.
@@ -2989,50 +1979,9 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
-  value_create_array_with_connection:
+  value_create_struct:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates an ARRAY value from its elements, sized by their count.
-
-      The child type is resolved exactly as for value_create_list, and
-      child_type names it explicitly the same way. The minimum array size is 1,
-      so an empty element array returns ERROR_INPUT_INVALID whether or not
-      child_type is given.
-
-      The elements are borrowed and copied in, and a NULL element becomes a
-      typed NULL.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      child_type:
-        type: logical_type
-        description: Optional. The element type. Pass NULL to resolve it from the elements.
-      children:
-        type: value
-        indirection: 1
-        const: true
-        description: An array of child_count elements. Borrowed (copied in). Pass NULL when child_count is 0.
-      child_count:
-        type: idx
-        description: The number of elements.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new composite value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-  value_create_struct_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a STRUCT value from named fields, in order.
 
@@ -3046,13 +1995,14 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       names:
         type: identifier
         indirection: 1
         const: true
+        kind: IN
         description: An array of field_count field names. Pass NULL when field_count is 0.
       children:
         type: value
@@ -3073,52 +2023,9 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
-  value_create_struct_with_connection:
+  value_create_tuple:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a STRUCT value from named fields, in order.
-
-      Each field keeps its own child's type, so there is nothing to resolve
-      across them; names and children are parallel arrays of field_count
-      entries. An empty field list builds the empty struct, which is a real
-      type.
-
-      The names and children are borrowed and copied in, and a NULL child
-      becomes a typed NULL. Duplicate field names are rejected.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      names:
-        type: identifier
-        indirection: 1
-        const: true
-        description: An array of field_count field names. Pass NULL when field_count is 0.
-      children:
-        type: value
-        indirection: 1
-        const: true
-        description: An array of field_count field values. Borrowed (copied in). Pass NULL when field_count is 0.
-      field_count:
-        type: idx
-        description: The number of fields.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new composite value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-  value_create_tuple_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TUPLE value from positional fields.
 
@@ -3132,9 +2039,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       children:
         type: value
         indirection: 1
@@ -3154,47 +2061,9 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
-  value_create_tuple_with_connection:
+  value_create_map:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a TUPLE value from positional fields.
-
-      TUPLE is the unnamed struct: the same positional children as
-      value_create_struct, under a distinct type id and with no names. Each
-      field keeps its own child's type. An empty field list builds the empty
-      tuple, which is a real type.
-
-      The children are borrowed and copied in, and a NULL child becomes a typed
-      NULL.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
-      children:
-        type: value
-        indirection: 1
-        const: true
-        description: An array of field_count field values. Borrowed (copied in). Pass NULL when field_count is 0.
-      field_count:
-        type: idx
-        description: The number of fields.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new composite value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-  value_create_map_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a MAP value from parallel key and value arrays.
 
@@ -3209,59 +2078,9 @@ functions:
     role: constructor
     belongs_to: value
     parameters:
-      ctx:
-        type: context
-        description: The context to use for the construction.
-      key_type:
-        type: logical_type
-        description: Optional. The key type. Pass NULL to resolve it from the keys.
-      value_type:
-        type: logical_type
-        description: Optional. The value type. Pass NULL to resolve it from the values.
-      keys:
-        type: value
-        indirection: 1
-        const: true
-        description: An array of entry_count keys. Borrowed (copied in). Pass NULL when entry_count is 0.
-      values:
-        type: value
-        indirection: 1
-        const: true
-        description: An array of entry_count values, parallel to keys. Borrowed (copied in). Pass NULL when entry_count is 0.
-      entry_count:
-        type: idx
-        description: The number of entries.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the new composite value.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-  value_create_map_with_connection:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Creates a MAP value from parallel key and value arrays.
-
-      The key and value types are the common types of the keys and of the
-      values, resolved as for value_create_list, and every entry is cast to
-      them. Pass key_type and value_type to name them instead, which is also
-      how an empty map is built: with both NULL, empty key and value arrays
-      have no types to resolve and return ERROR_INPUT_INVALID.
-
-      Keys and values are borrowed and copied in, and the two arrays must be
-      the same length. Keys must be non-NULL and unique; both are enforced.
-    role: constructor
-    belongs_to: value
-    parameters:
-      conn:
-        type: connection
-        description: The connection to use for the construction.
+      factory:
+        type: factory
+        description: The factory to create with.
       key_type:
         type: logical_type
         description: Optional. The key type. Pass NULL to resolve it from the keys.
@@ -3294,7 +2113,7 @@ functions:
     return_type: ERROR
   value_get_child_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of child values of a value.
 
@@ -3321,7 +2140,7 @@ functions:
     return_type: ERROR
   value_get_child:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns one child of a composite value as an owned copy.
 
@@ -3359,75 +2178,30 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
-  value_cast_with_connection:
+  value_cast:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Casts a value to a target type, using a connection.
-
-      The same as value_cast_with_context, except that the cast function set
-      comes from a connection: the cast runs in its own transaction on that
-      connection's context. Use it from outside DuckDB, where a connection —
-      but no context — is in hand.
+      Casts a value to a target type, using a factory.
 
       The conversion is the SQL-faithful, non-strict one, registered custom
       casts included, and a cast failure surfaces from the call. Together with
-      a VARCHAR built through value_create_varchar_with_context /
-      _with_connection, this constructs any value from text, extension values
+      a VARCHAR built through value_create_varchar, this constructs any value from text, extension values
       included; casting a member value to a union type, or a VARCHAR to an enum
       type, is the sanctioned way to build UNION and ENUM values.
+
+      A connection's or callback's factory casts with that client's cast
+      functions and settings (e.g. TimeZone). An instance's factory supports
+      only the built-in casts, with default settings.
 
       The input value and target type are borrowed. The returned value is
       caller-owned; destroy it via value_destroy.
     role: method
     belongs_to: value
     parameters:
-      conn:
-        type: connection
-        description: The connection whose context supplies the cast function set.
-      value:
-        type: value
-        description: The borrowed value to cast.
-      target_type:
-        type: logical_type
-        description: The borrowed target logical type.
-      out_value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the owned cast result.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-  value_cast_with_context:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
-    description: |
-      Casts a value to a target type, using a context.
-
-      The conversion is the SQL-faithful, non-strict one, registered custom
-      casts included, and a cast failure surfaces from the call. Together with
-      a VARCHAR built through value_create_varchar_with_context /
-      _with_connection, this constructs any value from text, extension values
-      included; casting a member value to a union type, or a VARCHAR to an enum
-      type, is the sanctioned way to build UNION and ENUM values.
-
-      Runs in the caller's context scope, as create_type_from_text does: reach
-      it from a bind-phase callback or another context-holding scope, not from
-      an exec-phase worker callback. From outside DuckDB use
-      value_cast_with_connection.
-
-      The input value and target type are borrowed. The returned value is
-      caller-owned; destroy it via value_destroy.
-    role: method
-    belongs_to: value
-    parameters:
-      ctx:
-        type: context
-        description: The context supplying the cast function set.
+      factory:
+        type: factory
+        description: The factory supplying the cast functions.
       value:
         type: value
         description: The borrowed value to cast.
@@ -3450,7 +2224,7 @@ functions:
   # -----------------------------------------------------------------------
   value_is_null:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: Returns whether the value is NULL.
     role: getter
     belongs_to: value
@@ -3471,7 +2245,7 @@ functions:
     return_type: ERROR
   value_get_logical_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the logical type of the value.
 
@@ -3496,7 +2270,7 @@ functions:
     return_type: ERROR
   value_to_string:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Renders the value as a human-readable string. Diagnostic only.
 

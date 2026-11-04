@@ -1,0 +1,59 @@
+# name: test/sql/pivot/pivot_in_map.test
+# description: Test map() expressions in the PIVOT IN list
+# group: [pivot]
+
+require core_functions
+
+statement ok
+CREATE TABLE t(col VARCHAR);
+
+# empty table
+query I
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST(map() AS VARCHAR)));
+----
+0
+
+statement ok
+INSERT INTO t VALUES ('{}'), ('x'), ('{a=1}');
+
+query I
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST(map() AS VARCHAR)));
+----
+1
+
+query I
+SELECT * FROM t PIVOT (count(*) FOR col IN (map()));
+----
+1
+
+query I
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST(map(['a'], [1]) AS VARCHAR)));
+----
+1
+
+# MAP literal syntax is transformed into a map() call
+query I
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST(MAP {} AS VARCHAR)));
+----
+1
+
+query I
+SELECT * FROM t PIVOT (count(*) FOR col IN (MAP {'a': 1}));
+----
+1
+
+query II
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST([map()] AS VARCHAR), CAST({'k': map()} AS VARCHAR)));
+----
+0	0
+
+# wrong number of arguments
+statement error
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST(map([1]) AS VARCHAR)));
+----
+<REGEX>:Binder Error:.*No function matches.*map\(INTEGER\[\]\).*
+
+statement error
+SELECT * FROM t PIVOT (count(*) FOR col IN (CAST(map([1], [2], [3]) AS VARCHAR)));
+----
+<REGEX>:Binder Error:.*No function matches.*map\(INTEGER\[\], INTEGER\[\], INTEGER\[\]\).*

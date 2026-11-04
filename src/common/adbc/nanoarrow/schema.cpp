@@ -416,7 +416,7 @@ ArrowErrorCode ArrowSchemaAllocateDictionary(struct ArrowSchema *schema) {
 	return NANOARROW_OK;
 }
 
-int ArrowSchemaDeepCopy(struct ArrowSchema *schema, struct ArrowSchema *schema_out) {
+int ArrowSchemaDeepCopy(const struct ArrowSchema *schema, struct ArrowSchema *schema_out) {
 	int result;
 	result = ArrowSchemaInit(schema_out, NANOARROW_TYPE_NA);
 	if (result != NANOARROW_OK) {

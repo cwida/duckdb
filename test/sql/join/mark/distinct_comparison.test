@@ -1,0 +1,121 @@
+# name: test/sql/join/mark/distinct_comparison.test
+# description: DISTINCT comparisons produce Boolean MARK results for NULL keys
+# group: [mark]
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+statement ok
+CREATE OR REPLACE TABLE distinct_probe(a INTEGER);
+
+statement ok
+INSERT INTO distinct_probe VALUES (NULL),(1),(2),(2);
+
+statement ok
+CREATE OR REPLACE TABLE distinct_build(b INTEGER);
+
+statement ok
+INSERT INTO distinct_build VALUES (NULL),(2),(2);
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a IS DISTINCT FROM 2;
+----
+1	true
+2	false
+2	false
+NULL	true
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON 2 IS DISTINCT FROM a;
+----
+1	true
+2	false
+2	false
+NULL	true
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a IS DISTINCT FROM b;
+----
+1	true
+2	true
+2	true
+NULL	true
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON 2 IS DISTINCT FROM b;
+----
+1	true
+2	true
+2	true
+NULL	true
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a IS DISTINCT FROM NULL::INTEGER;
+----
+1	true
+2	true
+2	true
+NULL	false
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a IS NOT DISTINCT FROM NULL::INTEGER;
+----
+1	false
+2	false
+2	false
+NULL	true
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a<>2;
+----
+1	true
+2	false
+2	false
+NULL	NULL
+
+statement ok
+DELETE FROM distinct_build WHERE b IS NOT NULL;
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a IS DISTINCT FROM b;
+----
+1	true
+2	true
+2	true
+NULL	false
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a<>b;
+----
+1	NULL
+2	NULL
+2	NULL
+NULL	NULL
+
+query I
+SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER[])) l(a) JOIN BY (TYPE MARK) (VALUES ([2])) r(b) ON a IS DISTINCT FROM b;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER[])) l(a) JOIN BY (TYPE MARK) (VALUES (NULL::INTEGER[])) r(b) ON a IS DISTINCT FROM b;
+----
+false
+
+statement ok
+DELETE FROM distinct_build;
+
+query II rowsort
+SELECT a,__mark_join_marker FROM distinct_probe JOIN BY (TYPE MARK) distinct_build ON a IS DISTINCT FROM 2;
+----
+1	false
+2	false
+2	false
+NULL	false
+
+endloop
+
+statement ok
+SET debug_disable_optimizer=false;

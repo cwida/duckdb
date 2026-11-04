@@ -1,0 +1,28 @@
+# name: test/sql/peg_parser/transformer/between_asymmetric.test
+# description: Test BETWEEN ASYMMETRIC in the PEG parser
+# group: [transformer]
+
+query I
+SELECT 5 BETWEEN ASYMMETRIC 1 AND 10;
+----
+true
+
+query I
+SELECT 5 NOT BETWEEN ASYMMETRIC 1 AND 10;
+----
+false
+
+query I
+SELECT 5 BETWEEN 1 AND 10;
+----
+true
+
+query I
+SELECT 5 BETWEEN ASYMMETRIC 10 AND 1;
+----
+false
+
+query I
+SELECT 5 NOT BETWEEN ASYMMETRIC 10 AND 1;
+----
+true

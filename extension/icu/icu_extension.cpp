@@ -55,7 +55,8 @@ struct IcuBindData : public FunctionData {
 	explicit IcuBindData(string tag_p) : collator(SettingsFromTag(tag_p)), tag(std::move(tag_p)) {
 	}
 
-	static duckdb::unique_ptr<FunctionData> CreateInstance(string language, string country, string tag) {
+	static duckdb::unique_ptr<FunctionData> CreateInstance(const string &language, const string &country,
+	                                                       const string &tag) {
 		//! give priority to tagged collation
 		if (!tag.empty()) {
 			return make_uniq<IcuBindData>(tag);
@@ -209,8 +210,8 @@ static duckdb::unique_ptr<FunctionData> ICUSortKeyBind(BindScalarFunctionInput &
 //! The function a collation pushes into a query, it writes the sort key as a blob
 static ScalarFunction GetCollateFunction(const string &collation, const string &tag) {
 	string fname = IcuBindData::EncodeFunctionName(collation);
-	ScalarFunction result(Identifier(fname), {LogicalType::VARCHAR}, LogicalType::BLOB, ICUCollateFunction<false>,
-	                      ICUCollateBind);
+	ScalarFunction result(Identifier(fname), {}, LogicalType::BLOB, ICUCollateFunction<false>, ICUCollateBind);
+	result.GetSignature().AddParameter("str", LogicalType::VARCHAR);
 	//! collation tag is added into the Function extra info
 	result.extra_info = tag;
 	result.SetInitStateCallback(CollatorLocalState::Init);
@@ -223,8 +224,8 @@ static ScalarFunction GetCollateFunction(const string &collation, const string &
 //! queries and plans that call it directly keep working
 static ScalarFunction GetICUCollateFunction(const string &collation, const string &tag) {
 	string fname = IcuBindData::EncodeHexFunctionName(collation);
-	ScalarFunction result(Identifier(fname), {LogicalType::VARCHAR}, LogicalType::VARCHAR, ICUCollateFunction<true>,
-	                      ICUCollateBind);
+	ScalarFunction result(Identifier(fname), {}, LogicalType::VARCHAR, ICUCollateFunction<true>, ICUCollateBind);
+	result.GetSignature().AddParameter("str", LogicalType::VARCHAR);
 	result.extra_info = tag;
 	result.SetInitStateCallback(CollatorLocalState::Init);
 	result.SetSerializeCallback(IcuBindData::Serialize);
@@ -308,7 +309,8 @@ unique_ptr<TimeZone> GetNormalizedTimeZone(string &tz_str) {
 			mapped += hours_str;
 		}
 		// Final sanity check
-		if (tz = GetKnownTimeZone(mapped)) {
+		tz = GetKnownTimeZone(mapped);
+		if (tz) {
 			tz_str = mapped;
 			return tz;
 		}
@@ -355,6 +357,9 @@ unique_ptr<TimeZone> ICUHelpers::GetTimeZone(string &tz_str, string *error_messa
 }
 
 static void SetICUTimeZone(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("TimeZone setting cannot be NULL");
+	}
 	auto tz_str = StringValue::Get(parameter);
 	ICUHelpers::GetTimeZone(tz_str);
 	parameter = Value(tz_str);
@@ -392,6 +397,9 @@ static void ICUCalendarFunction(ClientContext &context, TableFunctionInput &data
 }
 
 static void SetICUCalendar(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("Calendar setting cannot be NULL");
+	}
 	const auto name = parameter.Value::GetValueUnsafe<string>();
 	//	Try to be friendlier: look for a case insensitive match, and if we don't find one,
 	//	make a suggestion
@@ -430,8 +438,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterCollation(info);
 	loader.RegisterFunction(GetICUCollateFunction("noaccent", "und-u-ks-level1-kc-true"));
 
-	ScalarFunction sort_key("icu_sort_key", {{"str", LogicalType::VARCHAR}, {"collator", LogicalType::VARCHAR}},
-	                        LogicalType::VARCHAR, ICUCollateFunction<true>, ICUSortKeyBind);
+	ScalarFunction sort_key("icu_sort_key", {}, LogicalType::VARCHAR, ICUCollateFunction<true>, ICUSortKeyBind);
+	sort_key.GetSignature().AddParameter("str", LogicalType::VARCHAR).AddParameter("collator", LogicalType::VARCHAR);
 	sort_key.SetInitStateCallback(CollatorLocalState::Init);
 	loader.RegisterFunction(sort_key);
 
@@ -463,6 +471,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(cal_names);
 }
 
+// LCOV_EXCL_START
 void IcuExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
@@ -478,6 +487,7 @@ std::string IcuExtension::Version() const {
 	return "";
 #endif
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb
 

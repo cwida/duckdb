@@ -20,9 +20,7 @@ ScalarFunctionCatalogEntry::ScalarFunctionCatalogEntry(Catalog &catalog, SchemaC
 
 shared_ptr<const ScalarFunction> ScalarFunctionCatalogEntry::FinalizeFunction(ScalarFunction function) const {
 	auto result = make_shared_ptr<ScalarFunction>(std::move(function));
-	result->SetName(name);
-	result->SetCatalogName(catalog.GetAttached().GetName());
-	result->SetSchemaName(schema.name);
+	result->SetQualifiedName(schema.GetQualifiedName(name));
 	return result;
 }
 
@@ -39,8 +37,8 @@ unique_ptr<CatalogEntry> ScalarFunctionCatalogEntry::AlterEntry(CatalogTransacti
 
 	ScalarFunctionSet new_set = functions;
 	if (!new_set.MergeFunctionSet(add_overloads.new_overloads->functions, true)) {
-		throw BinderException(
-		    "Failed to add new function overloads to function \"%s\": function overload already exists", name);
+		throw BinderException("Failed to add new function overloads to function %s: function overload already exists",
+		                      name);
 	}
 	CreateScalarFunctionInfo new_info(std::move(new_set));
 	new_info.internal = internal;

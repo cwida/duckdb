@@ -2,6 +2,9 @@
   {
     "class": "TableRef",
     "class_type": "type",
+    "finalize_deserialization": [
+      "result->VerifyDeserialized();"
+    ],
     "includes": [
       "duckdb/parser/tableref/list.hpp"
     ],
@@ -198,6 +201,28 @@
     ]
   },
   {
+    "class": "MatchRecognizeRef",
+    "base": "TableRef",
+    "enum": "MATCH_RECOGNIZE",
+    "members": [
+      {
+        "id": 200,
+        "name": "input",
+        "type": "TableRef*"
+      },
+      {
+        "id": 201,
+        "name": "config",
+        "type": "MatchRecognizeConfig*"
+      },
+      {
+        "id": 202,
+        "name": "column_name_alias",
+        "type": "vector<Identifier>"
+      }
+    ]
+  },
+  {
     "class": "TableFunctionRef",
     "base": "TableRef",
     "enum": "TABLE_FUNCTION",
@@ -205,6 +230,7 @@
       {
         "id": 200,
         "name": "function",
+        "serialize_property": "SerializableFunction()",
         "type": "ParsedExpression*"
       },
       {
@@ -252,6 +278,11 @@
     "class": "ColumnDataRef",
     "base": "TableRef",
     "enum": "COLUMN_DATA",
+    "finalize_deserialization": [
+      "if (!result->collection) {",
+      "\tthrow SerializationException(\"ColumnDataRef is missing its collection\");",
+      "}"
+    ],
     "members": [
       {
         "id": 200,

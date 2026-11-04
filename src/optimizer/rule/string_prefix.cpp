@@ -3,7 +3,7 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
-#include "duckdb/optimizer/builtin_function_lookup.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/optimizer/matcher/type_matcher_id.hpp"
@@ -176,6 +176,10 @@ unique_ptr<Expression> InstrPrefixRule::Apply(LogicalOperator &op, vector<refere
 
 	// If requested position is 1, rewrite as prefix comparison.
 	if (position.GetValue().IsNull() || position.GetValue().GetValue<int64_t>() != 1) {
+		return nullptr;
+	}
+	// prefix with a NULL needle binds to a NULL constant, not to a function
+	if (needle.GetValue().IsNull()) {
 		return nullptr;
 	}
 

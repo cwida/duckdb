@@ -1,0 +1,45 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_memory_limit.test
+# description: In automatic mode the read-ahead backlog is bounded by the memory limit, so a copy that fits without read-ahead also fits with it
+# group: [read_ahead]
+
+require parquet
+
+# Small row groups keep concurrent COPY writers within the memory budget. The full
+# input still exceeds the available space when read-ahead queues it without a bound.
+statement ok
+COPY (SELECT md5(i::VARCHAR)::UUID::VARCHAR AS v, md5((-i)::VARCHAR)::UUID AS u FROM range(2000000) t(i)) TO '{TEST_DIR}/readahead_memory_limit.parquet' (ROW_GROUP_SIZE 16384)
+
+statement ok
+SET threads=16
+
+statement ok
+SET memory_limit='100MB'
+
+statement ok
+SET read_ahead_depth=0
+
+statement ok
+COPY '{TEST_DIR}/readahead_memory_limit.parquet' TO '{TEST_DIR}/readahead_memory_limit_off.parquet' (ROW_GROUP_SIZE 16384)
+
+statement ok
+SET read_ahead_depth=-1
+
+statement ok
+COPY '{TEST_DIR}/readahead_memory_limit.parquet' TO '{TEST_DIR}/readahead_memory_limit_auto.parquet' (ROW_GROUP_SIZE 16384)
+
+statement ok
+SET memory_limit='2GB'
+
+query II
+SELECT count(*), count(DISTINCT v) FROM '{TEST_DIR}/readahead_memory_limit_auto.parquet'
+----
+2000000	2000000
+
+query I
+SELECT count(*) FROM (
+	SELECT * FROM '{TEST_DIR}/readahead_memory_limit.parquet'
+	EXCEPT
+	SELECT * FROM '{TEST_DIR}/readahead_memory_limit_auto.parquet'
+)
+----
+0

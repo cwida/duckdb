@@ -1,0 +1,63 @@
+# name: test/sql/json/issues/issue25415.test
+# description: parallel STRUCT->JSON cast races on the shared StructNames vectors
+# group: [issues]
+
+require json
+
+statement ok
+PRAGMA disable_object_cache;
+
+statement ok
+SET threads=8;
+
+statement ok
+CREATE TABLE base AS
+SELECT range::BIGINT AS id,
+       'svc-' || (range % 97)::VARCHAR AS svc,
+       'host-' || (range % 29)::VARCHAR AS host,
+       [{'k': 'n', 'v': (range % 500)::VARCHAR},
+        {'k': 'ok', 'v': ((range % 2) = 0)::VARCHAR}] AS attrs,
+       {'code': (range % 3)::INT, 'msg': 'msg-' || (range % 13)::VARCHAR} AS status
+FROM range(400000);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 0) TO '{TEST_DIR}/shard_0.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 1) TO '{TEST_DIR}/shard_1.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 2) TO '{TEST_DIR}/shard_2.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 3) TO '{TEST_DIR}/shard_3.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 4) TO '{TEST_DIR}/shard_4.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 5) TO '{TEST_DIR}/shard_5.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 6) TO '{TEST_DIR}/shard_6.ndjson' (FORMAT JSON);
+
+statement ok
+COPY (SELECT * FROM base WHERE id % 8 = 7) TO '{TEST_DIR}/shard_7.ndjson' (FORMAT JSON);
+
+statement ok
+CREATE TABLE out(j JSON);
+
+statement ok
+INSERT INTO out
+SELECT {'id': id, 'svc': svc, 'host': host, 'attrs': attrs, 'status': status}::JSON
+FROM read_json('{TEST_DIR}/shard_*.ndjson', format='newline_delimited');
+
+query I
+SELECT count(*) FROM out;
+----
+400000
+
+query I
+SELECT count(*) FROM out WHERE json_valid(j);
+----
+400000

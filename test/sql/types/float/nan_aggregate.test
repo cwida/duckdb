@@ -38,21 +38,24 @@ DROP TABLE floats
 
 endloop
 
-# still need to catch overflows during sum operation
-mode skip instable
-
 statement ok
 create table floats_doubles (f FLOAT, d DOUBLE);
 
 statement ok
 insert into floats_doubles VALUES (2e38, 1e308), (2e38, 1e308), (-1e38, 0), (-1e38, 0);
 
-statement error
-select sum(f) from floats_doubles where f > 0
+# FLOAT inputs are accumulated as DOUBLE, so this sum is finite.
+query RT
+select sum(f), typeof(sum(f)) from floats_doubles where f > 0
 ----
-Out of Range Error
+3.999999872114277e+38	DOUBLE
+
+# DOUBLE overflow detection is not implemented.
+mode skip instable
 
 statement error
 select sum(d) from floats_doubles where d > 0
 ----
 Out of Range Error
+
+mode unskip

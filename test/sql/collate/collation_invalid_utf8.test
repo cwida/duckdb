@@ -1,0 +1,103 @@
+# name: test/sql/collate/collation_invalid_utf8.test
+# description: COLLATE comparisons on strings with invalid UTF-8 (code points beyond U+10FFFF) must not read out of bounds in the collation tables
+# group: [collate]
+
+require icu
+
+# The database is written with a vector size of 2048.
+require vector_size 2048
+
+# This test intentionally reads invalid UTF-8 bytes from storage.
+require no_vector_verification
+
+# The stored string bytes decode to out-of-range code points: s1 is F4 90 80 80
+# (U+110000, just past the maximum), s2 is F7 BF BF BF (U+1FFFFF, far past it).
+# Reading them from storage skips the UTF-8 validation at the input boundaries,
+# so the collator must reject the code points itself.
+unzip data/storage/collation_invalid_utf8.db.gz {TEST_DIR}/collation_invalid_utf8.db
+
+load {TEST_DIR}/collation_invalid_utf8.db readonly
+
+# Internal vector verification rejects the intentionally invalid UTF-8 bytes
+# before they reach the collation code under test, so disable it after the
+# load (the config on_init re-applies it on every database open).
+statement ok
+SET debug_verification_mode='none';
+
+# The fixture still has statistics for the original AAAA/BBBB strings.
+# Do not fold collation comparisons using those statistics.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+LOAD icu
+
+query I
+SELECT s1 COLLATE de = 'x' COLLATE de FROM t
+----
+false
+false
+false
+false
+false
+false
+false
+false
+false
+false
+
+query I
+SELECT s2 COLLATE de = 'x' COLLATE de FROM t
+----
+false
+false
+false
+false
+false
+false
+false
+false
+false
+false
+
+query I
+SELECT s1 COLLATE de = s1 COLLATE de FROM t
+----
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+
+query I
+SELECT s2 COLLATE de = s2 COLLATE de FROM t
+----
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+
+query I
+SELECT s1 COLLATE de = s2 COLLATE de FROM t
+----
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true

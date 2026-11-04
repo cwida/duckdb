@@ -15,7 +15,7 @@ namespace {
 std::string RenderQuoted(const char *name, DUCKDB_V2_ERROR &rc) {
 	auto view = Convert(name);
 	return RenderText([&](char *buf, idx_t cap,
-	                      idx_t *len) { return duckdb_v2_identifier_render_quoted(view, buf, cap, len, nullptr); },
+	                      idx_t *len) { return duckdb_v2_identifier_render_quoted(&view, buf, cap, len, nullptr); },
 	                  rc);
 }
 
@@ -59,26 +59,39 @@ TEST_CASE("V2 identifier: buffer protocol and null arguments", "[capi_v2][identi
 	idx_t length = 0;
 
 	// A null buffer reports the length only.
-	REQUIRE(duckdb_v2_identifier_render_quoted(view, nullptr, 0, &length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_identifier_render_quoted(&view, nullptr, 0, &length, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(length == 8);
 
 	// A buffer without room for the terminator is refused, reporting the required length.
 	char small[8];
 	length = 0;
-	REQUIRE(duckdb_v2_identifier_render_quoted(view, small, sizeof(small), &length, nullptr) ==
+	REQUIRE(duckdb_v2_identifier_render_quoted(&view, small, sizeof(small), &length, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_OBJECT_SIZE);
 	REQUIRE(length == 8);
 
 	// A big enough buffer receives the text and a terminator.
 	char big[9];
-	REQUIRE(duckdb_v2_identifier_render_quoted(view, big, sizeof(big), &length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_identifier_render_quoted(&view, big, sizeof(big), &length, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(std::string(big) == "\"my col\"");
 
 	// A null name view with a non-zero length, or a null length slot, is an input error.
 	duckdb_v2_identifier_t malformed = {nullptr, 3};
-	REQUIRE(duckdb_v2_identifier_render_quoted(malformed, nullptr, 0, &length, nullptr) ==
+	REQUIRE(duckdb_v2_identifier_render_quoted(&malformed, nullptr, 0, &length, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_identifier_render_quoted(view, nullptr, 0, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_identifier_render_quoted(&view, nullptr, 0, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+}
+
+TEST_CASE("V2 identifier: names must be valid UTF-8", "[capi_v2][identifier]") {
+	idx_t length = 0;
+	auto name_str = Convert("\x80");
+	REQUIRE(duckdb_v2_identifier_render_quoted(&name_str, nullptr, 0, &length, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	const std::string trailing_invalid("ok\0\x80", 4);
+	auto name_str2 = Convert(trailing_invalid);
+	REQUIRE(duckdb_v2_identifier_render_quoted(&name_str2, nullptr, 0, &length, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	auto name_str3 = Convert("caf\xc3\xa9");
+	REQUIRE(duckdb_v2_identifier_render_quoted(&name_str3, nullptr, 0, &length, nullptr) == DUCKDB_V2_ERROR_NONE);
 }
 
 } // namespace test_capi_v2

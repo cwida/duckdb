@@ -1,0 +1,138 @@
+# name: test/sql/aggregate/external/adaptive_sink_phases.test_slow
+# description: Aggregation preserves results across changes in cardinality and memory pressure
+# group: [external]
+
+# These memory budgets assume standard-sized vectors.
+require vector_size 2048
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='512MB';
+
+statement ok
+CREATE TABLE retirement_input AS SELECT i FROM range(12000000) t(i);
+
+# Repeated keys first allow the local tables to settle, then the number of groups increases.
+statement ok
+PREPARE late_groups AS
+SELECT count(*), sum(n), sum(s)
+FROM (
+    SELECT CASE WHEN i < 8000000 THEN i % 65536 ELSE 65536 + i % 262144 END AS k,
+           count(*) AS n, sum(i) AS s
+    FROM retirement_input
+    GROUP BY k
+) grouped;
+
+query III
+EXECUTE late_groups;
+----
+327680	12000000	71999994000000
+
+query III
+EXECUTE late_groups;
+----
+327680	12000000	71999994000000
+
+# Variable-width and nested keys retain every group across adaptations.
+query III
+SELECT count(*), sum(n), sum(s)
+FROM (
+    SELECT {'key': [CASE WHEN i % 65536 = 0 THEN NULL ELSE i % 65536 END],
+            'name': 'retained_group_' || lpad((i % 65536)::VARCHAR, 8, '0')} AS k,
+           count(*) AS n, sum(i) AS s
+    FROM retirement_input
+    GROUP BY k
+) grouped;
+----
+65536	12000000	71999994000000
+
+# Adaptation must not bypass the checks that switch the sink to external aggregation.
+statement ok
+SET memory_limit='128MB';
+
+query III
+EXECUTE late_groups;
+----
+327680	12000000	71999994000000
+
+statement ok
+SET debug_force_external=true;
+
+query III
+EXECUTE late_groups;
+----
+327680	12000000	71999994000000
+
+statement ok
+SET debug_force_external=false;
+
+statement ok
+SET memory_limit='512MB';
+
+foreach threads 1 2 3
+
+statement ok
+SET threads={threads};
+
+query III
+EXECUTE late_groups;
+----
+327680	12000000	71999994000000
+
+endloop
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='1GB';
+
+# The distinct key space settles while a recently grown table is still being populated.
+query III
+SELECT count(*), sum(n), sum(s)
+FROM (
+    SELECT CASE WHEN i < 524288 THEN i
+                WHEN i < 4000000 THEN (hash(i) % 524288)::BIGINT
+                ELSE 524288 + i % 262144 END AS k,
+           count(*) AS n, sum(i) AS s
+    FROM range(6000000) t(i)
+    GROUP BY k
+) grouped;
+----
+786432	6000000	17999997000000
+
+# New groups keep arriving throughout the input.
+query III
+SELECT count(*), sum(n), sum(s)
+FROM (
+    SELECT i // 16 AS k, count(*) AS n, sum(i) AS s
+    FROM range(20000000) t(i)
+    GROUP BY k
+) grouped;
+----
+1250000	20000000	199999990000000
+
+# A unique prefix causes lookup skipping, then a small recurring domain allows recovery.
+# Check every group's aggregates against the arithmetic progression of its input rows.
+query I
+WITH actual AS (
+    SELECT CASE WHEN i < 4000000 THEN i ELSE i % 64 END AS k,
+           count(*) AS n, sum(i) AS s, min(i) AS lo, max(i) AS hi
+    FROM range(12000000) t(i)
+    GROUP BY k
+), expected AS (
+    SELECT k,
+           CASE WHEN k < 64 THEN 125001 ELSE 1 END AS n,
+           CASE WHEN k < 64 THEN 125000::HUGEINT * (7999968 + k) + k ELSE k END AS s,
+           k AS lo,
+           CASE WHEN k < 64 THEN 11999936 + k ELSE k END AS hi
+    FROM range(4000000) t(k)
+)
+SELECT count(*)
+FROM actual a FULL OUTER JOIN expected e ON a.k = e.k
+WHERE a.k IS NULL OR e.k IS NULL
+   OR a.n <> e.n OR a.s <> e.s OR a.lo <> e.lo OR a.hi <> e.hi;
+----
+0

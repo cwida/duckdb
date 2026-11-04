@@ -25,6 +25,12 @@ SELECT * FROM test;
 statement error
 UPDATE test SET bar = 5
 ----
+Binder Error: Cant update column "bar" because it is a generated column!
+
+statement error
+UPDATE test SET foo = 1, foo = 2;
+----
+Binder Error: Multiple assignments to same column "foo"
 
 # Correctly formatted UPDATE statements work
 statement ok

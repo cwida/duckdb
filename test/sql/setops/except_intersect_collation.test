@@ -1,0 +1,63 @@
+# name: test/sql/setops/except_intersect_collation.test
+# description: EXCEPT and INTERSECT compare with the collation of the result columns, independent of the plan shape
+# group: [setops]
+
+statement ok
+CREATE TABLE a(id INT, s VARCHAR);
+
+statement ok
+INSERT INTO a VALUES (1, 'a');
+
+statement ok
+CREATE TABLE b(s VARCHAR);
+
+statement ok
+INSERT INTO b VALUES ('A');
+
+statement ok
+CREATE TABLE c(s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO c VALUES ('a');
+
+foreach optimizers '' 'unused_columns'
+
+statement ok
+SET disabled_optimizers={optimizers};
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE AS c FROM a WHERE id > 0) EXCEPT (SELECT s FROM b));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE AS c FROM a WHERE id > 0) INTERSECT (SELECT s FROM b));
+----
+1
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE AS c FROM a) EXCEPT (SELECT s FROM b));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE AS c FROM a) EXCEPT ALL (SELECT s FROM b));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE AS c FROM a) INTERSECT ALL (SELECT s FROM b));
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT s FROM b EXCEPT SELECT s FROM c);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a EXCEPT SELECT s FROM b);
+----
+1
+
+endloop

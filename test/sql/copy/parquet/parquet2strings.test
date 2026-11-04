@@ -16,12 +16,34 @@
 # ref2.write.parquet("p2strings.parquet")
 # ref2.write.csv("p2strings.csv")
 
-# for now
-mode skip instable
-
 require parquet
 
-
-query I
-SELECT id_string FROM '{DATA_DIR}/parquet-testing/p2strings.parquet' limit 10;
+query T
+SELECT id_string FROM '{DATA_DIR}/parquet-testing/p2strings.parquet' ORDER BY id LIMIT 10;
 ----
+XYZXYZ42
+XYZXYZXYZXYZ44
+XYZ46
+XYZXYZXYZ48
+50
+XYZXYZ52
+XYZXYZXYZXYZ54
+XYZ56
+XYZXYZXYZ58
+60
+
+# Check all rows against the independently generated CSV fixture.
+query I
+SELECT count(*) FROM (
+    (SELECT id, id_string FROM '{DATA_DIR}/parquet-testing/p2strings.parquet'
+     EXCEPT ALL
+     SELECT id, id_string FROM read_csv('{DATA_DIR}/parquet-testing/p2strings.csv',
+         header=false, columns={'id': 'BIGINT', 'id_string': 'VARCHAR'}))
+    UNION ALL
+    (SELECT id, id_string FROM read_csv('{DATA_DIR}/parquet-testing/p2strings.csv',
+         header=false, columns={'id': 'BIGINT', 'id_string': 'VARCHAR'})
+     EXCEPT ALL
+     SELECT id, id_string FROM '{DATA_DIR}/parquet-testing/p2strings.parquet')
+);
+----
+0

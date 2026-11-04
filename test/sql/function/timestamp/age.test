@@ -154,6 +154,17 @@ select age(timestamp '1992-01-01 01:01:01.400', timestamp '1992-01-01 01:01:02.2
 ----
 -00:00:00.8
 
+# Borrow seconds across a minute boundary in both directions
+query I
+SELECT age(lhs, rhs)
+FROM (VALUES
+	(TIMESTAMP '2020-01-01 00:01:10', TIMESTAMP '2020-01-01 00:00:50'),
+	(TIMESTAMP '2020-01-01 00:00:50', TIMESTAMP '2020-01-01 00:01:10')
+) t(lhs, rhs)
+----
+00:00:20
+-00:00:20
+
 #
 # Infinities
 #

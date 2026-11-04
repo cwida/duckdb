@@ -1,0 +1,235 @@
+# name: test/sql/sql_export/composition_results.test
+# description: Expression composition preserves evaluation stages, grouping, and binding identities
+# group: [sql_export]
+
+statement ok
+CREATE TABLE composition_input(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO composition_input VALUES (1,'a'),(2,'A'),(2,'b'),(NULL,NULL);
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+foreach optimizer true false
+
+statement ok
+SET debug_disable_optimizer={optimizer};
+
+query T rowsort
+SELECT upper(x) FROM (SELECT lower(s) x FROM composition_input) q;
+----
+A
+A
+B
+NULL
+
+query I
+SELECT count(*) FROM (SELECT lower(s) x FROM composition_input) q WHERE x='a';
+----
+2
+
+query T
+SELECT min(x) FROM (SELECT lower(s) x FROM composition_input) q;
+----
+a
+
+query II
+SELECT n,n+1 FROM (SELECT count(*) n FROM composition_input) q;
+----
+4	5
+
+query I
+SELECT 42 FROM (SELECT count(*) n FROM composition_input WHERE false) q;
+----
+42
+
+query II
+SELECT n,n+1 FROM (SELECT count(*) n FROM composition_input WHERE false) q;
+----
+0	1
+
+query TI rowsort
+SELECT lower(s),count(*) FROM composition_input GROUP BY GROUPING SETS ((lower(s)),(lower(s)),());
+----
+NULL	1
+NULL	1
+NULL	4
+a	2
+a	2
+b	1
+b	1
+
+query TII rowsort
+SELECT lower(s),count(*),grouping(lower(s)) FROM composition_input GROUP BY ROLLUP(lower(s));
+----
+NULL	1	0
+NULL	4	1
+a	2	0
+b	1	0
+
+query II
+SELECT i AS s,length(s) AS i FROM composition_input WHERE i IS NOT NULL ORDER BY i,s;
+----
+1	1
+2	1
+2	1
+
+query I
+SELECT count(x) FILTER (WHERE x='a') FROM (SELECT lower(s) x FROM composition_input) q;
+----
+2
+
+query TI rowsort
+WITH c AS MATERIALIZED (SELECT lower(s) x,i FROM composition_input) SELECT x,count(*) FROM c GROUP BY x;
+----
+NULL	1
+a	2
+b	1
+
+query TI rowsort
+WITH c AS NOT MATERIALIZED (SELECT lower(s) x,i FROM composition_input) SELECT x,count(*) FROM c GROUP BY x;
+----
+NULL	1
+a	2
+b	1
+
+query TI rowsort
+SELECT lower(l.s),r.i FROM composition_input l LEFT JOIN composition_input r ON l.i=r.i WHERE l.i=1;
+----
+a	1
+
+query T rowsort
+SELECT CASE WHEN i=1 THEN x END FROM (SELECT lower(s) x,i FROM composition_input) q;
+----
+NULL
+NULL
+NULL
+a
+
+query T rowsort
+SELECT coalesce(x,'missing') FROM (SELECT lower(s) x FROM composition_input) q;
+----
+a
+a
+b
+missing
+
+# Constant keys must not acquire positional meaning after substitution.
+query II
+SELECT k,count(*) FROM (SELECT 1 k FROM composition_input) q GROUP BY k;
+----
+1	4
+
+query II
+SELECT i,k FROM (SELECT i,1 k FROM composition_input) q ORDER BY k,i;
+----
+1	1
+2	1
+2	1
+NULL	1
+
+query II
+SELECT k,count(*) FROM (SELECT NULL k FROM composition_input) q GROUP BY k;
+----
+NULL	4
+
+foreach allow_constant_order false true
+
+statement ok
+SET order_by_non_integer_literal={allow_constant_order};
+
+query II
+SELECT i,k FROM (SELECT i,NULL k FROM composition_input) q ORDER BY k,i;
+----
+1	NULL
+2	NULL
+2	NULL
+NULL	NULL
+
+query II
+SELECT i,k FROM (SELECT i,NULL k FROM composition_input) q ORDER BY k,i LIMIT 1;
+----
+1	NULL
+
+endloop
+
+statement ok
+SET order_by_non_integer_literal=false;
+
+query I
+SELECT n+1 FROM (SELECT i,count(*) n FROM composition_input GROUP BY i HAVING count(*)>1) q;
+----
+3
+
+query I rowsort
+SELECT i FROM (SELECT i,row_number() OVER (ORDER BY i) r FROM composition_input QUALIFY r % 2 = 1) q;
+----
+1
+2
+
+query I rowsort
+SELECT * FROM (SELECT DISTINCT i FROM composition_input) q;
+----
+1
+2
+NULL
+
+query I
+SELECT n+n+n FROM (SELECT count(*) n FROM composition_input) q;
+----
+12
+
+query I
+SELECT n+n+n FROM (SELECT sum(length(lower(lower(lower(lower(lower(s))))))) n FROM composition_input) q;
+----
+9
+
+endloop
+
+endloop
+
+statement ok
+SET debug_verify_statement='none';
+
+statement ok
+PRAGMA disable_optimizer;
+
+# Nested volatile projections retain their evaluation order.
+statement ok
+CREATE TABLE composition_one_row(i INTEGER);
+
+statement ok
+INSERT INTO composition_one_row VALUES (1);
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+CREATE OR REPLACE SEQUENCE composition_order_sequence;
+
+query II
+SELECT nextval('composition_order_sequence') y,x FROM (SELECT nextval('composition_order_sequence') x FROM composition_one_row) q;
+----
+2	1
+
+endloop
+
+statement ok
+SET debug_verify_statement='none';
+
+# Aggregate implementations may throw even when their arguments cannot.
+statement ok
+CREATE TABLE composition_overflow(i HUGEINT);
+
+statement ok
+INSERT INTO composition_overflow VALUES (170141183460469231731687303715884105727),(1);
+
+statement error
+SELECT n FROM (SELECT sum(i) s,count(*) n FROM composition_overflow) q;
+----
+Overflow in HUGEINT addition

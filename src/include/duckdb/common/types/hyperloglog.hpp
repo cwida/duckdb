@@ -34,6 +34,7 @@ public:
 template <idx_t P>
 class HyperLogLogP : public HyperLogLogBase {
 public:
+	static constexpr idx_t PRECISION = P;
 	static constexpr idx_t Q = 64 - P;
 	static constexpr idx_t M = 1 << P;
 	static constexpr double ALPHA = 0.721347520444481703680; // 1 / (2 log(2))
@@ -62,6 +63,13 @@ public:
 
 	inline uint8_t GetRegister(const idx_t &i) const {
 		return k[i];
+	}
+
+	//! Overwrites a register, for importing an exported sketch. A register holds the position of the first set bit of
+	//! a hash, at most Q + 1 - ExtractCounts indexes an array of Q + 2 counts with it, so callers must check that.
+	void SetRegister(const idx_t &i, const uint8_t &value) {
+		D_ASSERT(value <= Q + 1);
+		k[i] = value;
 	}
 
 	idx_t Count() const {

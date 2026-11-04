@@ -17,7 +17,7 @@ namespace duckdb {
 
 struct DecodeFun {
 	static constexpr const char *Name = "decode";
-	static constexpr const char *Parameters = "blob,varchar";
+	static constexpr const char *Parameters = "blob,error_option";
 	static constexpr const char *Description = "Converts `blob` to `VARCHAR`. Invalid UTF-8 is handled based on the error behavior argument. Can be 'strict' (default, fail), 'replace' to replace invalid characters with '?', or 'ignore' to skip invalid characters.";
 	static constexpr const char *Example = "decode('\\xC3\\xBC'::BLOB)\002decode('\\xA0'::BLOB, 'replace')\002decode('\\xA0'::BLOB, 'ignore')";
 	static constexpr const char *Categories = "blob";

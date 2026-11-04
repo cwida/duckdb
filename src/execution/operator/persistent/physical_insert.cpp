@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/conflict_manager.hpp"
+#include "duckdb/common/types/constraint_conflict_info.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/operator/persistent/collection_merger.hpp"
@@ -117,12 +118,11 @@ unique_ptr<GlobalSinkState> PhysicalInsert::GetGlobalSinkState(ClientContext &co
 		// CREATE TABLE AS
 		D_ASSERT(!insert_table);
 		auto &catalog = schema->catalog;
-		table = &catalog.CreateTable(catalog.GetCatalogTransaction(context), *schema.get_mutable(), *info)
-		             ->Cast<DuckTableEntry>();
+		table = &catalog.CreateTable(catalog.GetCatalogTransaction(context), *schema, *info)->Cast<DuckTableEntry>();
 	} else {
 		D_ASSERT(insert_table);
 		D_ASSERT(insert_table->IsDuckTable());
-		table = insert_table.get_mutable();
+		table = insert_table;
 	}
 	auto result = make_uniq<InsertGlobalState>(context, GetTypes(), *table);
 	return std::move(result);
@@ -669,7 +669,8 @@ SinkCombineResultType PhysicalInsert::Combine(ExecutionContext &context, Operato
 	const idx_t row_group_size = storage.GetRowGroupSize();
 
 	// parallel append: finalize the append
-	auto tdata = TransactionData::Unversioned();
+	// the transaction id keeps the rows invisible to other transactions until the commit
+	TransactionData tdata(DuckTransaction::Get(context.client, table.catalog));
 	auto &data_table = gstate.table.GetStorage();
 	auto &optimistic_collection = data_table.GetOptimisticCollection(context.client, lstate.collection_index);
 	auto &collection = *optimistic_collection.collection;
@@ -802,6 +803,7 @@ SinkFinalizeType PhysicalInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 		current_rows += data_table.GetOptimisticCollection(context, collection_index).collection->GetTotalRows();
 		if (current_rows >= row_group_size) {
 			mergers.push_back(std::move(current_merger));
+			current_merger.reset();
 			current_rows = 0;
 		}
 	}
@@ -821,19 +823,30 @@ SinkFinalizeType PhysicalInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 //===--------------------------------------------------------------------===//
 class InsertSourceState : public GlobalSourceState {
 public:
-	explicit InsertSourceState(const PhysicalInsert &op) {
+	explicit InsertSourceState(const PhysicalInsert &op) : total_rows(1), rows_scanned(0) {
 		if (op.return_chunk) {
 			D_ASSERT(op.sink_state);
 			auto &g = op.sink_state->Cast<InsertGlobalState>();
 			g.return_collection.InitializeScan(scan_state);
+			total_rows = g.return_collection.Count();
 		}
 	}
 
 	ColumnDataScanState scan_state;
+	idx_t total_rows;
+	atomic<idx_t> rows_scanned;
 };
 
 unique_ptr<GlobalSourceState> PhysicalInsert::GetGlobalSourceState(ClientContext &context) const {
 	return make_uniq<InsertSourceState>(*this);
+}
+
+ProgressData PhysicalInsert::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &state = gstate.Cast<InsertSourceState>();
+	ProgressData progress;
+	progress.total = double(MaxValue<idx_t>(state.total_rows, 1));
+	progress.done = state.total_rows == 0 ? 1.0 : double(state.rows_scanned.load(std::memory_order_relaxed));
+	return progress;
 }
 
 SourceResultType PhysicalInsert::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
@@ -842,10 +855,12 @@ SourceResultType PhysicalInsert::GetDataInternal(ExecutionContext &context, Data
 	auto &insert_gstate = sink_state->Cast<InsertGlobalState>();
 	if (!return_chunk) {
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(insert_gstate.insert_count)));
+		state.rows_scanned.store(1, std::memory_order_relaxed);
 		return SourceResultType::FINISHED;
 	}
 
 	insert_gstate.return_collection.Scan(state.scan_state, chunk);
+	state.rows_scanned.fetch_add(chunk.size(), std::memory_order_relaxed);
 	return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
 }
 

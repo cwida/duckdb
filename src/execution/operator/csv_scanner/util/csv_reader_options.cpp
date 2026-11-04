@@ -3,6 +3,7 @@
 #include "duckdb/common/vector_size.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "duckdb/common/set.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
@@ -294,7 +295,11 @@ void CSVReaderOptions::SetReadOption(const Identifier &loption, const Value &val
 	} else if (loption == "ignore_errors") {
 		ignore_errors.Set(ParseBoolean(value, loption));
 	} else if (loption == "buffer_size") {
-		buffer_size_option.Set(NumericCast<idx_t>(ParseInteger(value, loption)));
+		auto buffer_size = ParseInteger(value, loption);
+		if (buffer_size < 0) {
+			throw InvalidInputException("Buffer Size option must be higher than 0");
+		}
+		buffer_size_option.Set(NumericCast<idx_t>(buffer_size));
 		if (buffer_size_option == 0) {
 			throw InvalidInputException("Buffer Size option must be higher than 0");
 		}
@@ -399,7 +404,7 @@ void CSVReaderOptions::SetWriteOption(const Identifier &loption, const Value &va
 		SetDateFormat(LogicalTypeId::DATE, format, false);
 	} else if (loption == "timestamp_format" || loption == "timestampformat") {
 		string format = ParseString(value, loption);
-		if (StringUtil::Lower(format) == "iso") {
+		if (StringUtil::CIEquals(format, "iso")) {
 			format = "%Y-%m-%dT%H:%M:%S.%fZ";
 		}
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, false);
@@ -621,7 +626,13 @@ void CSVReaderOptions::Verify(MultiFileOptions &file_options) {
 	} else if (maximum_line_size.IsSetByUser() && maximum_line_size.GetValue() > max_line_size_default) {
 		// If the max line size is set by the user and bigger than we have by default, we make it part of our buffer
 		// size decision.
-		buffer_size_option.Set(CSVBuffer::ROWS_PER_BUFFER * maximum_line_size.GetValue(), false);
+		idx_t buffer_size;
+		if (!TryMultiplyOperator::Operation<idx_t, idx_t, idx_t>(CSVBuffer::ROWS_PER_BUFFER,
+		                                                         maximum_line_size.GetValue(), buffer_size)) {
+			throw BinderException("MAX_LINE_SIZE option was set to %d, which is too large",
+			                      maximum_line_size.GetValue());
+		}
+		buffer_size_option.Set(buffer_size, false);
 	}
 }
 
@@ -643,7 +654,7 @@ string CSVReaderOptions::GetUserDefinedParameters() const {
 	return result;
 }
 
-void CSVReaderOptions::FromNamedParameters(const named_parameter_map_t &in, ClientContext &context,
+void CSVReaderOptions::FromNamedParameters(const named_argument_map_t &in, ClientContext &context,
                                            MultiFileOptions &file_options) {
 	for (auto &kv : in) {
 		if (MultiFileReader().ParseOption(kv.first, kv.second, file_options, context)) {
@@ -669,6 +680,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		if (child_type.id() != LogicalTypeId::STRUCT) {
 			throw BinderException("read_csv columns requires a struct as input");
 		}
+		if (val.IsNull()) {
+			throw BinderException("read_csv columns cannot be NULL");
+		}
 		auto &struct_children = StructValue::GetChildren(val);
 		D_ASSERT(StructType::GetChildCount(child_type) == struct_children.size());
 
@@ -682,6 +696,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 			parsed_names.emplace_back(name);
 			if (val.type().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("read_csv requires a type specification as string");
+			}
+			if (val.IsNull()) {
+				throw BinderException("read_csv columns cannot have a NULL type");
 			}
 			parsed_types_per_column[name] = i;
 			parsed_types.emplace_back(TransformStringToLogicalType(StringValue::Get(val), context));
@@ -708,6 +725,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		if (child_type.id() != LogicalTypeId::LIST) {
 			throw BinderException("read_csv auto_types requires a list as input");
 		}
+		if (val.IsNull()) {
+			throw BinderException("auto_type_candidates cannot be NULL");
+		}
 		auto &list_children = ListValue::GetChildren(val);
 		if (list_children.empty()) {
 			throw BinderException("auto_type_candidates requires at least one type");
@@ -715,6 +735,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		for (auto &child : list_children) {
 			if (child.type().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("auto_type_candidates requires a type specification as string");
+			}
+			if (child.IsNull()) {
+				throw BinderException("auto_type_candidates cannot contain NULL types");
 			}
 			auto candidate_type = TransformStringToLogicalType(StringValue::Get(child), context);
 			candidate_types[GetCandidateSpecificity(candidate_type)] = candidate_type;
@@ -761,6 +784,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		if (!columns_set && !sql_type_list.empty()) {
 			throw BinderException("read_csv column_types/types/dtypes can only be supplied once");
 		}
+		if (val.IsNull()) {
+			throw BinderException("read_csv %s cannot be NULL", key);
+		}
 
 		// Parse into temporary lists first
 		vector<string> sql_type_names;
@@ -774,6 +800,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 				if (val.type().id() != LogicalTypeId::VARCHAR) {
 					throw BinderException("read_csv %s requires a type specification as string", key);
 				}
+				if (val.IsNull()) {
+					throw BinderException("read_csv %s cannot have a NULL type", key);
+				}
 				sql_type_names.push_back(StringValue::Get(val));
 				parsed_types_per_column[name] = i;
 			}
@@ -784,6 +813,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 			}
 			auto &children = ListValue::GetChildren(val);
 			for (auto &child : children) {
+				if (child.IsNull()) {
+					throw BinderException("read_csv %s cannot have a NULL type", key);
+				}
 				sql_type_names.push_back(StringValue::Get(child));
 			}
 		}
@@ -851,7 +883,7 @@ void CSVReaderOptions::ToNamedParameters(named_parameter_map_t &named_params) co
 	}
 	named_params["max_line_size"] = Value::BIGINT(NumericCast<int64_t>(maximum_line_size.GetValue()));
 	if (dialect_options.skip_rows.IsSetByUser()) {
-		named_params["skip"] = Value::UBIGINT(GetSkipRows());
+		named_params["skip"] = Value::BIGINT(NumericCast<int64_t>(GetSkipRows()));
 	}
 	named_params["null_padding"] = Value::BOOLEAN(null_padding);
 	named_params["parallel"] = Value::BOOLEAN(parallel);

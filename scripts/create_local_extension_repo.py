@@ -40,4 +40,11 @@ glob_string = os.path.join(extension_path, 'extension', '*', '*.' + postfix)
 
 for file in glob.glob(glob_string):
     dest_file = os.path.join(dest_path, os.path.basename(file))
-    shutil.copy(file, dest_file)
+    # This runs on every build, so skip extensions that weren't rebuilt instead of copying hundreds of MBs each time.
+    # copy2 keeps the mtime, which is what makes this check work.
+    if os.path.exists(dest_file):
+        src_stat = os.stat(file)
+        dest_stat = os.stat(dest_file)
+        if src_stat.st_size == dest_stat.st_size and src_stat.st_mtime_ns == dest_stat.st_mtime_ns:
+            continue
+    shutil.copy2(file, dest_file)

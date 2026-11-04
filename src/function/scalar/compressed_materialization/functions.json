@@ -1,149 +1,156 @@
 [
     {
         "name": "__internal_compress_integral_utinyint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_compress_integral_usmallint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_compress_integral_uinteger",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_compress_integral_ubigint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_compress_string_utinyint",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_compress_string_usmallint",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_compress_string_uinteger",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_compress_string_ubigint",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_compress_string_uhugeint",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_compress_string_hugeint",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_compress_geometry_point",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_decompress_geometry_point",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function"
     },
     {
         "name": "__internal_decompress_integral_smallint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_integer",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_bigint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_hugeint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_usmallint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_uinteger",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_ubigint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_integral_uhugeint",
-        "parameters": "",
+        "parameters": "value,min",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
     },
     {
         "name": "__internal_decompress_string",
-        "parameters": "",
+        "parameters": "value",
         "description": "",
         "example": "",
         "type": "scalar_function_set"
+    },
+    {
+        "name": "__internal_compressed_materialization_cast",
+        "parameters": "",
+        "description": "",
+        "example": "",
+        "type": "scalar_function"
     }
 ]

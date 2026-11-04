@@ -48,11 +48,19 @@ struct TailoredBlocks {
 	void Build(const uint32_t *codepoints, uint32_t count);
 
 	bool Contains(uint32_t codepoint) const {
+		if (codepoint >= 0x110000) {
+			return false;
+		}
 		auto block = codepoint >> BITMAP_SHIFT;
 		return (bitmap[block / 64] & (1ULL << (block % 64))) != 0;
 	}
 	//! The part of the tailoring that can hold the code point
 	void GetRange(uint32_t codepoint, uint32_t &lower, uint32_t &upper) const {
+		if (codepoint >= 0x110000) {
+			lower = 0;
+			upper = 0;
+			return;
+		}
 		lower = bounds[codepoint >> BOUND_SHIFT];
 		upper = bounds[(codepoint >> BOUND_SHIFT) + 1];
 	}

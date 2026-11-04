@@ -33,7 +33,7 @@ enums:
 functions:
   context_log:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Writes a message to DuckDB's log.
 
@@ -54,9 +54,93 @@ functions:
         description: Severity of the message.
       log_type:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The log type to record under, matched case-sensitively. Empty selects the default type.
       message:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The message body. Borrowed for the call only.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+  instance_log:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Writes a message to DuckDB's log.
+
+      The entry is attributed to the database scope: it carries no connection
+      or query ids. Whether it is recorded at all is up to the
+      database's log configuration: if logging is off, or level is below the
+      configured threshold, or log_type is not among the enabled types, the
+      call succeeds and writes nothing. An empty log_type selects the default
+      type. Read entries back with `SELECT * FROM duckdb_logs`.
+    role: method
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: The instance to log through.
+      level:
+        type: LOG_LEVEL
+        description: Severity of the message.
+      log_type:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The log type to record under, matched case-sensitively. Empty selects the default type.
+      message:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The message body. Borrowed for the call only.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+  connection_log:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Writes a message to DuckDB's log.
+
+      The entry is attributed to the connection scope, so it carries the
+      connection's ids. Whether it is recorded at all is up to the
+      database's log configuration: if logging is off, or level is below the
+      configured threshold, or log_type is not among the enabled types, the
+      call succeeds and writes nothing. An empty log_type selects the default
+      type. Read entries back with `SELECT * FROM duckdb_logs`.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to log through.
+      level:
+        type: LOG_LEVEL
+        description: Severity of the message.
+      log_type:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The log type to record under, matched case-sensitively. Empty selects the default type.
+      message:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The message body. Borrowed for the call only.
       err:
         type: error_info

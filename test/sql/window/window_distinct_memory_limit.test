@@ -1,0 +1,26 @@
+# name: test/sql/window/window_distinct_memory_limit.test
+# description: Window merge sort trees and aggregate states are tracked by the buffer manager
+# group: [window]
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads}
+
+statement ok
+PRAGMA memory_limit='64MB'
+
+# the DISTINCT aggregate builds two merge sort trees and one aggregate state per tree node,
+# which does not fit in the limit
+statement error
+SELECT sum(c) FROM (SELECT count(DISTINCT i % 1000) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) c FROM range(1000000) t(i))
+----
+Out of Memory
+
+# a small partition fits
+query I
+SELECT sum(c) FROM (SELECT count(DISTINCT i % 1000) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) c FROM range(30000) t(i))
+----
+3024950
+
+endloop

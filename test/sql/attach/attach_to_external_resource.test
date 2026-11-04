@@ -1,0 +1,276 @@
+# name: test/sql/attach/attach_to_external_resource.test
+# description: ATTACH/CONNECT TO [CREATE] EXTERNAL RESOURCE — provision + attach/connect, or borrow a registered resource
+# group: [attach]
+
+require quack
+
+require httpfs
+
+statement ok
+CALL quack_serve(token='test_token');
+
+# Recipe callbacks (non-TEMP macros). status returns the quack endpoint; destroy is a no-op.
+statement ok
+CREATE MACRO qk_create(p) AS TABLE SELECT MAP {'id': 'q1'} AS handle;
+
+statement ok
+CREATE MACRO qk_status(h) AS TABLE
+  SELECT 'ready' AS state, MAP {'uri': 'localhost', 'attached_db_type': 'quack', 'token': 'test_token'} AS result;
+
+statement ok
+CREATE MACRO qk_destroy(h) AS TABLE SELECT 'destroyed' AS status;
+
+statement ok
+CALL register_external_resource_type('quack@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status', destroy_function := 'qk_destroy');
+
+# ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE: provisions (create + status) and attaches the endpoint.
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' AS qk;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qk';
+----
+1
+
+# DETACH runs the deleter and removes the attachment.
+statement ok
+DETACH qk;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qk';
+----
+0
+
+# Arbitrary params are accepted and passed through to the create callback (which ignores them here),
+# including a bare flag (no value), which binds to boolean true like ATTACH/CONNECT options.
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (INSTANCE 'r7i.16xlarge', REGION 'eu-west-1', SPOT, ANYTHING 'else') AS qk2;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qk2';
+----
+1
+
+statement ok
+DETACH qk2;
+
+# A bare identifier references a registered resource (borrow); DETACH leaves it registered.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS shared_res;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared_res AS qk3;
+
+statement ok
+DETACH qk3;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'shared_res';
+----
+1
+
+statement ok
+DESTROY EXTERNAL RESOURCE shared_res;
+
+# Create params go through the same validation as any other option list, on this path too.
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (REGION NULL) AS qknull;
+----
+<REGEX>:.*NULL is not supported as a valid option for EXTERNAL RESOURCE option "region".*
+
+# The attach alias is mandatory, and that is what disambiguates the two option lists: everything in
+# parens before `AS` is a create param for the recipe, everything after belongs to the attachment.
+# Without the alias a lone option list could silently land in the wrong one, so it is a syntax error.
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local';
+----
+<REGEX>:.*(syntax error|Parser).*
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' (READ_ONLY);
+----
+<REGEX>:.*(syntax error|Parser).*
+
+statement error
+ATTACH TO EXTERNAL RESOURCE shared_res;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+# An unknown resource type errors.
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'does-not-exist' AS bad;
+----
+<REGEX>:.*unknown resource type.*
+
+# CONNECT is ephemeral and hidden, so it takes no trailing `AS y` alias (the grammar rejects it).
+statement error
+CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' AS y;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+# A NULL uri from the status callback surfaces as a clear uri error, not a "NULL" attach path.
+statement ok
+CREATE MACRO qk_status_null(h) AS TABLE
+  SELECT 'ready' AS state, MAP {'uri': NULL, 'attached_db_type': 'quack'} AS result;
+
+statement ok
+CALL register_external_resource_type('quacknull@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status_null', destroy_function := 'qk_destroy');
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quacknull@local' AS qkn;
+----
+<REGEX>:.*uri.*
+
+# The CONNECT variant provisions and connects (ephemeral, hidden alias).
+statement ok
+CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local';
+
+statement ok
+DISCONNECT;
+
+# The deleter fires on DETACH: a failing deleter surfaces as a DETACH error (proves invocation),
+# with a hint on how to retry the teardown manually. The detach itself completes.
+statement ok
+CREATE MACRO qk_destroy_fail(h) AS TABLE SELECT CAST('boom' AS INTEGER) AS x;
+
+statement ok
+CALL register_external_resource_type('quackfail@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status', destroy_function := 'qk_destroy_fail');
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackfail@local' AS qkf;
+
+statement error
+DETACH qkf;
+----
+<REGEX>:.*teardown failed.*retry the teardown.*
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qkf';
+----
+0
+
+# The deleter function name is quoted as an identifier, so a registry-supplied string cannot inject
+# SQL: an injection payload becomes an unknown-function error, not executed statements.
+statement ok
+CREATE TABLE victim(x INTEGER);
+
+statement ok
+CALL register_external_resource_type('quackinj@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status', destroy_function := 'qk_destroy(1); DROP TABLE victim; --');
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackinj@local' AS qki;
+
+statement error
+DETACH qki;
+----
+<REGEX>:.*does not exist.*
+
+# The injected DROP did not run: victim survives.
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 'victim';
+----
+1
+
+# A deleter with a side effect (sequence) proves single invocation on each teardown path.
+statement ok
+CREATE SEQUENCE destroy_seq;
+
+statement ok
+CREATE MACRO qk_destroy_count(h) AS TABLE SELECT nextval('destroy_seq') AS status;
+
+statement ok
+CALL register_external_resource_type('quackcount@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status', destroy_function := 'qk_destroy_count');
+
+# Compensating teardown: the attach fails after provisioning (name conflict), the deleter still runs.
+statement ok
+ATTACH ':memory:' AS taken;
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackcount@local' AS taken;
+----
+<REGEX>:.*already exists.*
+
+query I
+SELECT currval('destroy_seq');
+----
+1
+
+# ATTACH OR REPLACE over an external-resource attachment: the old deleter runs (best-effort).
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackcount@local' AS qkr;
+
+statement ok
+ATTACH OR REPLACE ':memory:' AS qkr;
+
+query I
+SELECT currval('destroy_seq');
+----
+2
+
+statement ok
+DETACH qkr;
+
+# A failing deleter does not abort ATTACH OR REPLACE (best-effort on the implicit detach).
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackfail@local' AS qkr2;
+
+statement ok
+ATTACH OR REPLACE ':memory:' AS qkr2;
+
+statement ok
+DETACH qkr2;
+
+# Provisioning inside an explicit transaction: ROLLBACK undoes the attach and tears the resource down
+# (the deleter cannot run under the transaction lock, so it is queued and drained after rollback).
+statement ok
+BEGIN;
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackcount@local' AS qtx;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qtx';
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qtx';
+----
+0
+
+# The deleter ran exactly once during rollback (sequence advanced by 1).
+query I
+SELECT currval('destroy_seq');
+----
+3
+
+# COMMIT keeps the attachment; a later DETACH still tears it down.
+statement ok
+BEGIN;
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackcount@local' AS qtx2;
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'qtx2';
+----
+1
+
+statement ok
+DETACH qtx2;
+
+query I
+SELECT currval('destroy_seq');
+----
+4

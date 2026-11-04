@@ -77,6 +77,8 @@ struct JoinFilterPushdownFilter {
 	shared_ptr<DynamicTableFilterSet> dynamic_filters;
 	//! The columns for which we should generate filters
 	vector<JoinFilterPushdownColumn> columns;
+	//! Target scan estimate for filter costing when intervening operators reduce the probe cardinality.
+	idx_t estimated_scan_cardinality = 0;
 };
 
 struct PushdownFilterTarget {
@@ -132,10 +134,12 @@ private:
 	                                  idx_t max_bits, JoinFilterGlobalState &gstate) const;
 
 	bool CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht, const ExpressionType &cmp) const;
-	bool CanUseBloomFilter(const ClientContext &context, const PhysicalComparisonJoin &op, const ExpressionType &cmp,
+	bool CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
+	                       const PhysicalComparisonJoin &op, const ExpressionType &cmp,
 	                       optional_ptr<JoinHashTable> ht = nullptr) const;
-	bool CanUsePrefixRangeFilter(const ClientContext &context, const PhysicalComparisonJoin &op,
-	                             optional_ptr<JoinHashTable> ht, const ExpressionType &cmp) const;
+	bool CanUsePrefixRangeFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
+	                             const PhysicalComparisonJoin &op, optional_ptr<JoinHashTable> ht,
+	                             const ExpressionType &cmp) const;
 };
 
 } // namespace duckdb

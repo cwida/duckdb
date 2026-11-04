@@ -1,0 +1,29 @@
+# name: test/sql/attach/attach_remote_http_logging.test
+# description: Reads of an attached remote database go through the attaching session: its HTTP requests are logged
+# group: [attach]
+
+require httpfs
+
+# Logging and the attached database are session state that a restart between statements would discard
+require skip_reload
+
+statement ok
+CALL enable_logging('HTTP')
+
+statement ok
+ATTACH 'https://blobs.duckdb.org/databases/stations.duckdb' AS stations (READ_ONLY)
+
+query I
+SELECT count(*) FROM stations.stations
+----
+578
+
+# Attaching prefetches only the header; the table's blocks are read afterwards, through the handle opened on attach,
+# and those requests are logged as well
+query I
+SELECT count(*) > 1 FROM duckdb_logs_parsed('HTTP') WHERE request.type = 'GET'
+----
+true
+
+statement ok
+DETACH stations

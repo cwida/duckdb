@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/patas/patas_corrupt_metadata_offset_low.test
+# description: A Patas metadata end too low for its metadata table must be rejected
+# group: [patas]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/patas_corrupt_metadata_offset_low.db.gz {TEST_DIR}/patas_corrupt_metadata_offset_low.db
+
+load {TEST_DIR}/patas_corrupt_metadata_offset_low.db readonly
+
+statement ok
+USE patas_corrupt_metadata_offset_low;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE segment_type='DOUBLE' LIMIT 1;
+----
+Patas
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Patas segment: metadata table exceeds the segment
+
+restart
+
+statement ok
+USE patas_corrupt_metadata_offset_low;
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Patas segment: metadata table exceeds the segment

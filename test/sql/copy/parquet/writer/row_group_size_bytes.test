@@ -80,8 +80,8 @@ select max(row_group_num_rows) from parquet_metadata('{TEST_DIR}/tbl.parquet')
 ----
 10240
 
-# these strings take around 16 + 50 = 66 bytes per string, so 2048 * 66 = 135168 per chunk
-# if we set the limit to 200000, then we should get row groups of 4096
+# these strings take around 16 + 50 = 66 bytes per string, so the limit of 200000 is crossed
+# part-way through the second chunk, and that is where the row group ends
 statement ok
 copy (
     select range || repeat('0', 50) c0
@@ -89,9 +89,9 @@ copy (
 ) to '{TEST_DIR}/tbl.parquet' (ROW_GROUP_SIZE_BYTES 200000)
 
 query T
-select max(row_group_num_rows) from parquet_metadata('{TEST_DIR}/tbl.parquet')
+select max(row_group_num_rows) between 2600 and 4096 from parquet_metadata('{TEST_DIR}/tbl.parquet')
 ----
-4096
+true
 
 # if we set it to 650000 we should get 10240 row groups
 statement ok

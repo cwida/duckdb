@@ -1,0 +1,226 @@
+# name: test/sql/sql_export/aggregate_topn_rewrites.test
+# description: SQL export preserves aggregate and TopN optimizer rewrites
+# group: [sql_export]
+
+statement ok
+CREATE TEMP TABLE reuse_owner AS FROM (VALUES (1,10),(2,20),(3,30),(4,40)) t(k,dim_id);
+
+statement ok
+CREATE TEMP TABLE reuse_dim AS FROM (VALUES (10,'x'),(20,'b'),(30,'x'),(40,'d')) t(id,label);
+
+statement ok
+CREATE TEMP TABLE reuse_fact AS FROM (VALUES (1,10),(1,20),(2,5),(3,40),(3,50),(4,NULL)) t(k,v);
+
+statement ok
+SET disabled_optimizers='grouping_sets';
+
+query TTT
+SELECT i,j,sum(k) FROM (VALUES (1,1,2),(1,2,3),(2,1,4),(2,2,5)) t(i,j,k) GROUP BY ROLLUP(i,j) ORDER BY ALL;
+----
+1	1	2
+1	2	3
+1	NULL	5
+2	1	4
+2	2	5
+2	NULL	9
+NULL	NULL	14
+
+query TT
+EXPLAIN SELECT i,j,sum(k) FROM (VALUES (1,1,2),(1,2,3),(2,1,4),(2,2,5)) t(i,j,k) GROUP BY ROLLUP(i,j) ORDER BY ALL;
+----
+physical_plan	<!REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='';
+
+query TTT
+SELECT i,j,sum(k) FROM (VALUES (1,1,2),(1,2,3),(2,1,4),(2,2,5)) t(i,j,k) GROUP BY ROLLUP(i,j) ORDER BY ALL;
+----
+1	1	2
+1	2	3
+1	NULL	5
+2	1	4
+2	2	5
+2	NULL	9
+NULL	NULL	14
+
+query TT
+EXPLAIN SELECT i,j,sum(k) FROM (VALUES (1,1,2),(1,2,3),(2,1,4),(2,2,5)) t(i,j,k) GROUP BY ROLLUP(i,j) ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='grouping_sets';
+
+query TT
+SELECT i,sum(j) FROM (VALUES (1,2),(1,3),(2,4),(2,5)) t(i,j) GROUP BY GROUPING SETS ((i),()) ORDER BY ALL;
+----
+1	5
+2	9
+NULL	14
+
+query TT
+EXPLAIN SELECT i,sum(j) FROM (VALUES (1,2),(1,3),(2,4),(2,5)) t(i,j) GROUP BY GROUPING SETS ((i),()) ORDER BY ALL;
+----
+physical_plan	<!REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='';
+
+query TT
+SELECT i,sum(j) FROM (VALUES (1,2),(1,3),(2,4),(2,5)) t(i,j) GROUP BY GROUPING SETS ((i),()) ORDER BY ALL;
+----
+1	5
+2	9
+NULL	14
+
+query TT
+EXPLAIN SELECT i,sum(j) FROM (VALUES (1,2),(1,3),(2,4),(2,5)) t(i,j) GROUP BY GROUPING SETS ((i),()) ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='partial_aggregate_pushdown';
+
+query TTTTT
+SELECT d.a,d.b,d.c,d.d,sum(f.v) FROM (VALUES (0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0)) f(k,v) JOIN (VALUES (0,1,2,3,4),(1,5,6,7,8),(2,9,10,11,12)) d(k,a,b,c,d) USING(k) GROUP BY d.a,d.b,d.c,d.d ORDER BY ALL;
+----
+1	2	3	4	121
+5	6	7	8	119
+9	10	11	12	117
+
+query TT
+EXPLAIN SELECT d.a,d.b,d.c,d.d,sum(f.v) FROM (VALUES (0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0)) f(k,v) JOIN (VALUES (0,1,2,3,4),(1,5,6,7,8),(2,9,10,11,12)) d(k,a,b,c,d) USING(k) GROUP BY d.a,d.b,d.c,d.d ORDER BY ALL;
+----
+physical_plan	<!REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='';
+
+query TTTTT
+SELECT d.a,d.b,d.c,d.d,sum(f.v) FROM (VALUES (0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0)) f(k,v) JOIN (VALUES (0,1,2,3,4),(1,5,6,7,8),(2,9,10,11,12)) d(k,a,b,c,d) USING(k) GROUP BY d.a,d.b,d.c,d.d ORDER BY ALL;
+----
+1	2	3	4	121
+5	6	7	8	119
+9	10	11	12	117
+
+query TT
+EXPLAIN SELECT d.a,d.b,d.c,d.d,sum(f.v) FROM (VALUES (0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0),(0,1),(1,2),(2,3),(0,4),(1,5),(2,6),(0,0),(1,1),(2,2),(0,3),(1,4),(2,5),(0,6),(1,0),(2,1),(0,2),(1,3),(2,4),(0,5),(1,6),(2,0)) f(k,v) JOIN (VALUES (0,1,2,3,4),(1,5,6,7,8),(2,9,10,11,12)) d(k,a,b,c,d) USING(k) GROUP BY d.a,d.b,d.c,d.d ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='top_n_window_elimination';
+
+query T
+SELECT i FROM (VALUES (1,1),(1,2),(2,3),(2,4)) t(g,i) QUALIFY row_number() OVER (PARTITION BY g ORDER BY i) <= 1 ORDER BY ALL;
+----
+1
+3
+
+query TT
+EXPLAIN SELECT i FROM (VALUES (1,1),(1,2),(2,3),(2,4)) t(g,i) QUALIFY row_number() OVER (PARTITION BY g ORDER BY i) <= 1 ORDER BY ALL;
+----
+physical_plan	<!REGEX>:.*min[(].*
+
+statement ok
+SET disabled_optimizers='';
+
+query T
+SELECT i FROM (VALUES (1,1),(1,2),(2,3),(2,4)) t(g,i) QUALIFY row_number() OVER (PARTITION BY g ORDER BY i) <= 1 ORDER BY ALL;
+----
+1
+3
+
+query TT
+EXPLAIN SELECT i FROM (VALUES (1,1),(1,2),(2,3),(2,4)) t(g,i) QUALIFY row_number() OVER (PARTITION BY g ORDER BY i) <= 1 ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*min[(].*
+
+statement ok
+SET disabled_optimizers='aggregate_reuse';
+
+query TTT
+SELECT o.k,d.label,sum(f.v) FROM reuse_owner o JOIN reuse_dim d ON o.dim_id=d.id JOIN reuse_fact f USING(k) WHERE o.k IN (SELECT k FROM reuse_fact GROUP BY k HAVING sum(v)>25) GROUP BY o.k,d.label ORDER BY ALL;
+----
+1	x	30
+3	x	90
+
+query TT
+EXPLAIN SELECT o.k,d.label,sum(f.v) FROM reuse_owner o JOIN reuse_dim d ON o.dim_id=d.id JOIN reuse_fact f USING(k) WHERE o.k IN (SELECT k FROM reuse_fact GROUP BY k HAVING sum(v)>25) GROUP BY o.k,d.label ORDER BY ALL;
+----
+physical_plan	<!REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='';
+
+query TTT
+SELECT o.k,d.label,sum(f.v) FROM reuse_owner o JOIN reuse_dim d ON o.dim_id=d.id JOIN reuse_fact f USING(k) WHERE o.k IN (SELECT k FROM reuse_fact GROUP BY k HAVING sum(v)>25) GROUP BY o.k,d.label ORDER BY ALL;
+----
+1	x	30
+3	x	90
+
+query TT
+EXPLAIN SELECT o.k,d.label,sum(f.v) FROM reuse_owner o JOIN reuse_dim d ON o.dim_id=d.id JOIN reuse_fact f USING(k) WHERE o.k IN (SELECT k FROM reuse_fact GROUP BY k HAVING sum(v)>25) GROUP BY o.k,d.label ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*combine_aggr[(].*
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+query T
+SELECT f.v FROM reuse_fact f JOIN reuse_owner o USING(k) WHERE o.dim_id>10 ORDER BY ALL;
+----
+5
+40
+50
+NULL
+
+statement ok
+SET disabled_optimizers='';
+
+query T
+SELECT f.v FROM reuse_fact f JOIN reuse_owner o USING(k) WHERE o.dim_id>10 ORDER BY ALL;
+----
+5
+40
+50
+NULL
+
+statement ok
+SET disabled_optimizers='unused_columns';
+
+query T
+SELECT 42 FROM (SELECT sum(i) FROM (VALUES (1),(2)) t(i));
+----
+42
+
+query TT
+EXPLAIN SELECT 42 FROM (SELECT sum(i) FROM (VALUES (1),(2)) t(i));
+----
+physical_plan	<!REGEX>:.*count_star[(].*
+
+statement ok
+SET disabled_optimizers='';
+
+query T
+SELECT 42 FROM (SELECT sum(i) FROM (VALUES (1),(2)) t(i));
+----
+42
+
+query TT
+EXPLAIN SELECT 42 FROM (SELECT sum(i) FROM (VALUES (1),(2)) t(i));
+----
+physical_plan	<REGEX>:.*count_star[(].*
+
+# Runtime-filter aggregates are execution metadata; cover their SQL calls directly.
+
+query II
+SELECT min(k), max(k) FROM reuse_owner WHERE dim_id>10;
+----
+2	4
+
+query II
+SELECT min(k), max(k) FROM reuse_owner WHERE false;
+----
+NULL	NULL

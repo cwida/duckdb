@@ -1,13 +1,12 @@
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 
 #include "duckdb/common/assert.hpp"
-#include "duckdb/function/function.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression_nullability.hpp"
 
 namespace duckdb {
 
@@ -44,20 +43,6 @@ static bool ContainedInUnion(const JoinRelationSet &required, const JoinRelation
 	return true;
 }
 
-static JoinRelationSet &Intersection(JoinRelationSetManager &set_manager, const JoinRelationSet &left,
-                                     const JoinRelationSet &right) {
-	unordered_set<RelationIndex> result;
-	for (idx_t left_idx = 0; left_idx < left.count; left_idx++) {
-		for (idx_t right_idx = 0; right_idx < right.count; right_idx++) {
-			if (left.relations[left_idx] == right.relations[right_idx]) {
-				result.insert(left.relations[left_idx]);
-				break;
-			}
-		}
-	}
-	return set_manager.GetJoinRelation(result);
-}
-
 bool JoinOrderConflictDetector::IsCommutative(JoinOrderOperatorType type) {
 	return type == JoinOrderOperatorType::INNER || type == JoinOrderOperatorType::CROSS_PRODUCT;
 }
@@ -86,29 +71,8 @@ static bool ColumnBecomesNull(const BoundColumnRefExpression &column, const Join
 	return entry != relation_mapping.end() && ContainsRelation(null_relations, entry->second);
 }
 
-static bool ExpressionBecomesNull(const Expression &expression, const JoinRelationSet &null_relations,
-                                  const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
-	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-		return ColumnBecomesNull(expression.Cast<BoundColumnRefExpression>(), null_relations, relation_mapping);
-	}
-	if (expression.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
-		auto &function = expression.Cast<BoundFunctionExpression>();
-		if (function.Function().GetNullHandling() == FunctionNullHandling::SPECIAL_HANDLING) {
-			return false;
-		}
-	}
-	if (!expression.PropagatesNullValues()) {
-		return false;
-	}
-	bool child_becomes_null = false;
-	ExpressionIterator::EnumerateChildren(expression, [&](const Expression &child) {
-		child_becomes_null |= ExpressionBecomesNull(child, null_relations, relation_mapping);
-	});
-	return child_becomes_null;
-}
-
-static bool ExpressionRejectsNulls(const Expression &expression, const JoinRelationSet &null_relations,
-                                   const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
+static bool ExpressionRejectsNulls(const Expression &expression,
+                                   const std::function<bool(const BoundColumnRefExpression &)> &column_becomes_null) {
 	if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND ||
 	    expression.GetExpressionType() == ExpressionType::CONJUNCTION_OR) {
 		auto &conjunction = expression.Cast<BoundConjunctionExpression>();
@@ -118,17 +82,16 @@ static bool ExpressionRejectsNulls(const Expression &expression, const JoinRelat
 		auto rejects = expression.GetExpressionType() == ExpressionType::CONJUNCTION_OR;
 		for (auto &child : conjunction.GetChildren()) {
 			if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
-				rejects |= ExpressionRejectsNulls(*child, null_relations, relation_mapping);
+				rejects |= ExpressionRejectsNulls(*child, column_becomes_null);
 			} else {
-				rejects &= ExpressionRejectsNulls(*child, null_relations, relation_mapping);
+				rejects &= ExpressionRejectsNulls(*child, column_becomes_null);
 			}
 		}
 		return rejects;
 	}
 	if (expression.GetExpressionType() == ExpressionType::OPERATOR_IS_NOT_NULL) {
 		auto &op = expression.Cast<BoundOperatorExpression>();
-		return !op.GetChildren().empty() &&
-		       ExpressionBecomesNull(*op.GetChildren()[0], null_relations, relation_mapping);
+		return !op.GetChildren().empty() && ExpressionBecomesNull(*op.GetChildren()[0], column_becomes_null);
 	}
 	if (BoundComparisonExpression::IsComparison(expression)) {
 		if (expression.GetExpressionType() == ExpressionType::COMPARE_DISTINCT_FROM ||
@@ -136,26 +99,29 @@ static bool ExpressionRejectsNulls(const Expression &expression, const JoinRelat
 			return false;
 		}
 		auto &comparison = expression.Cast<BoundFunctionExpression>();
-		return ExpressionBecomesNull(BoundComparisonExpression::Left(comparison), null_relations, relation_mapping) ||
-		       ExpressionBecomesNull(BoundComparisonExpression::Right(comparison), null_relations, relation_mapping);
+		return ExpressionBecomesNull(BoundComparisonExpression::Left(comparison), column_becomes_null) ||
+		       ExpressionBecomesNull(BoundComparisonExpression::Right(comparison), column_becomes_null);
 	}
 	return expression.GetReturnType().id() == LogicalTypeId::BOOLEAN &&
-	       ExpressionBecomesNull(expression, null_relations, relation_mapping);
+	       ExpressionBecomesNull(expression, column_becomes_null);
 }
 
 static bool PredicateRejectsNulls(const vector<JoinCondition> &conditions, const JoinRelationSet &null_relations,
                                   const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
+	auto column_becomes_null = [&](const BoundColumnRefExpression &column) {
+		return ColumnBecomesNull(column, null_relations, relation_mapping);
+	};
 	for (auto &condition : conditions) {
 		if (condition.IsComparison()) {
 			if (condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM ||
 			    condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
 				continue;
 			}
-			if (ExpressionBecomesNull(condition.GetLHS(), null_relations, relation_mapping) ||
-			    ExpressionBecomesNull(condition.GetRHS(), null_relations, relation_mapping)) {
+			if (ExpressionBecomesNull(condition.GetLHS(), column_becomes_null) ||
+			    ExpressionBecomesNull(condition.GetRHS(), column_becomes_null)) {
 				return true;
 			}
-		} else if (ExpressionRejectsNulls(condition.GetJoinExpression(), null_relations, relation_mapping)) {
+		} else if (ExpressionRejectsNulls(condition.GetJoinExpression(), column_becomes_null)) {
 			return true;
 		}
 	}
@@ -202,7 +168,7 @@ static void AddConflictRule(JoinOrderOperator &op, JoinRelationSet &trigger, Joi
 
 static JoinRelationSet &PredicateIntersectionOrInput(JoinRelationSetManager &set_manager, JoinRelationSet &input,
                                                      JoinRelationSet &syntactic_set) {
-	auto &intersection = Intersection(set_manager, input, syntactic_set);
+	auto &intersection = set_manager.Intersection(input, syntactic_set);
 	return intersection.Empty() ? input : intersection;
 }
 
@@ -254,8 +220,8 @@ static void SimplifyConflictRules(JoinOrderOperator &op, JoinRelationSetManager 
 		}
 	}
 	op.conflict_rules = std::move(remaining_rules);
-	op.left_total_set = Intersection(set_manager, op.total_set, op.left_relations);
-	op.right_total_set = Intersection(set_manager, op.total_set, op.right_relations);
+	op.left_total_set = set_manager.Intersection(op.total_set, op.left_relations);
+	op.right_total_set = set_manager.Intersection(op.total_set, op.right_relations);
 }
 
 void JoinOrderConflictDetector::Build(vector<unique_ptr<JoinOrderOperator>> &operators,

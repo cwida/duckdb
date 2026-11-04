@@ -1,0 +1,68 @@
+# name: test/sql/window/window_expression_comparison.test
+# description: Exercise bound window expression comparison paths
+# group: [window]
+
+statement ok
+CREATE TABLE window_input(p INTEGER, q INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO window_input VALUES (1, 1, 1), (1, 1, NULL), (1, 2, 3), (2, 1, 4);
+
+statement ok
+CREATE TABLE window_results AS
+SELECT
+	first_value(v) OVER common_window AS plain_first,
+	first_value(v IGNORE NULLS) OVER common_window AS nonnull_first,
+	sum(v) OVER common_window AS plain_sum,
+	sum(DISTINCT v) OVER common_window AS distinct_sum,
+	sum(v) FILTER (WHERE v > 1) OVER common_window AS filtered_sum,
+	sum(v ORDER BY q DESC) OVER common_window AS argument_order_sum,
+	sum(v ORDER BY q ASC) OVER common_window AS argument_order_asc,
+	sum(v ORDER BY q DESC) OVER common_window AS argument_order_desc,
+	sum(v) OVER (
+		PARTITION BY p
+		ORDER BY v
+		ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+	) AS partition_p_sum,
+	sum(v) OVER (
+		PARTITION BY q
+		ORDER BY v
+		ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+	) AS partition_q_sum,
+	sum(v) OVER (
+		PARTITION BY p, q
+		ORDER BY v
+		ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+	) AS included_sum,
+	sum(v) OVER (
+		PARTITION BY p, q
+		ORDER BY v
+		ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+		EXCLUDE CURRENT ROW
+	) AS excluded_sum,
+	sum(v) OVER (
+		ORDER BY v
+		ROWS BETWEEN p PRECEDING AND CURRENT ROW
+	) AS dynamic_p_sum,
+	sum(v) OVER (
+		ORDER BY v
+		ROWS BETWEEN q PRECEDING AND CURRENT ROW
+	) AS dynamic_q_sum,
+	sum(v) OVER (
+		PARTITION BY q, p
+		ORDER BY v
+		RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING
+	) AS reordered_partition_sum,
+	lead(v, 1, -1) OVER common_window AS next_value,
+	lag(v, 1, -1) OVER common_window AS previous_value
+FROM window_input
+WINDOW common_window AS (
+	PARTITION BY p, q
+	ORDER BY v
+	ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+);
+
+query I
+SELECT count(*) FROM window_results;
+----
+4

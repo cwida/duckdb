@@ -1,0 +1,54 @@
+# name: test/sql/delete/test_parallel_delete_transaction_local.test
+# description: Parallel DELETE of transaction-local rows, followed by a commit of the remaining rows
+# group: [delete]
+
+statement ok
+PRAGMA threads=8
+
+# the committed rows give the scan enough threads to also scan the local rows in parallel
+loop iteration 0 5
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT range AS i FROM range(1000000)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT range FROM range(1000000)
+
+statement ok
+DELETE FROM t WHERE i % 2 = 0
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+1000000	500000000000
+
+endloop
+
+# same with RETURNING
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT range AS i FROM range(1000000)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT range FROM range(1000000)
+
+query II
+WITH deleted AS (DELETE FROM t WHERE i % 2 = 0 RETURNING i) SELECT count(*), sum(i) FROM deleted
+----
+1000000	499999000000
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+1000000	500000000000

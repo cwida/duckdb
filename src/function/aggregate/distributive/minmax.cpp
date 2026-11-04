@@ -1,3 +1,4 @@
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/function/aggregate_state_layout.hpp"
@@ -156,23 +157,24 @@ using MaxOperation = NumericMinMaxBase<Max>;
 struct BaseMinMaxStringState {
 	string_t value;
 	bool is_set;
-	uint32_t alloc_size;
+	//! Must be wide enough for NextPowerOfTwo(MAX_STRING_SIZE), which does not fit in a uint32_t
+	idx_t alloc_size;
 
 	void Assign(string_t input, AggregateInputData &input_data) {
 		if (input.IsInlined()) {
 			value = input;
 			alloc_size = 0;
 		} else {
-			auto len = UnsafeNumericCast<uint32_t>(input.GetSize());
+			auto len = input.GetSize();
 			char *ptr;
 			if (alloc_size >= len) {
 				ptr = value.GetDataWriteable();
 			} else {
-				alloc_size = UnsafeNumericCast<uint32_t>(NextPowerOfTwo(len));
+				alloc_size = NextPowerOfTwo(len);
 				ptr = char_ptr_cast(input_data.allocator.Allocate(alloc_size));
 			}
 			memcpy(ptr, input.GetData(), len);
-			value = string_t(ptr, len);
+			value = string_t(ptr, UnsafeNumericCast<uint32_t>(len));
 		}
 	}
 };
@@ -340,18 +342,25 @@ shared_ptr<const AggregateFunction> GetCollatedMinMaxFunction(ClientContext &con
 	    error_context);
 	if (!func) {
 		throw NotImplementedException(
-		    "Failure while binding function \"%s\" using collations - arg_min/arg_max do not exist in the "
+		    "Failure while binding function %s using collations - arg_min/arg_max do not exist in the "
 		    "catalog - load the core_functions module to fix this issue",
 		    name);
 	}
 
-	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto best_function = function_binder.BindFunction(func->name, func->functions, types, error);
-	if (!best_function.IsValid()) {
-		throw BinderException("Fail to find corresponding function for collation min/max: %s", error.Message());
-	}
-	return func->functions.GetFunctionByOffset(best_function.GetIndex());
+	return func->functions.GetFunctionByArguments(context, types);
+}
+
+//! Whether min/max over the type are computed through arg_min/arg_max over the collated value
+static bool MinMaxUsesCollation(ClientContext &context, const LogicalType &input_type) {
+	// The generic non-VARCHAR collation path is not ready yet (see internal #8704). BIT, TIMETZ and VARIANT use
+	// explicit binary-comparable keys so min/max follows the same logical order as comparisons and ORDER BY.
+	const auto varchar_collation =
+	    input_type.id() == LogicalTypeId::VARCHAR &&
+	    (!StringType::GetCollation(input_type).empty() || !Settings::Get<DefaultCollationSetting>(context).empty());
+	const auto nested_collation = StructType::IsStruct(input_type) || input_type.id() == LogicalTypeId::LIST ||
+	                              input_type.id() == LogicalTypeId::ARRAY;
+	return input_type.id() == LogicalTypeId::BIT || input_type.id() == LogicalTypeId::TIME_TZ ||
+	       input_type.id() == LogicalTypeId::VARIANT || varchar_collation || nested_collation;
 }
 
 template <class OP, class OP_STRING, class OP_VECTOR>
@@ -361,13 +370,7 @@ unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 	auto &arguments = input.GetArguments();
 	auto input_type = arguments[0]->GetReturnType();
 
-	// The generic non-VARCHAR collation path is not ready yet (see internal #8704). BIT and VARIANT use explicit
-	// binary-comparable keys so min/max follows the same logical order as comparisons and ORDER BY.
-	const auto varchar_collation =
-	    input_type.id() == LogicalTypeId::VARCHAR &&
-	    (!StringType::GetCollation(input_type).empty() || !Settings::Get<DefaultCollationSetting>(context).empty());
-	const auto collation =
-	    input_type.id() == LogicalTypeId::BIT || input_type.id() == LogicalTypeId::VARIANT || varchar_collation;
+	const auto collation = MinMaxUsesCollation(context, input_type);
 	auto collated_arg = collation ? arguments[0]->Copy() : nullptr;
 	if (collation && ExpressionBinder::PushCollation(context, collated_arg, collated_arg->GetReturnType())) {
 		// If aggr function is min/max and uses collations, replace bound_function with arg_min/arg_max
@@ -379,6 +382,7 @@ unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 		// Bind function like arg_min/arg_max.
 		arguments.push_back(std::move(collated_arg));
 		function.GetArguments()[0] = arguments[0]->GetReturnType();
+		function.GetArguments()[1] = arguments[1]->GetReturnType();
 		function.SetReturnType(arguments[0]->GetReturnType());
 		return make_uniq<ArgMinMaxFunctionData>();
 	}
@@ -407,10 +411,26 @@ unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 	return std::move(expr->BindInfoMutable());
 }
 
+//! BindMinMax replaces a collated min/max with arg_min/arg_max over the collation key, so the bound call has one
+//! more argument than the definition and must be rendered under the replacement's own name
+static unique_ptr<FunctionExpression> MinMaxUnbind(AggregateFunctionUnbindInput &input) {
+	auto &function = input.expression.Function();
+	auto name = function.GetDefinition()->GetQualifiedName();
+	if (input.children.size() == function.GetLogicalArguments().size() + 1) {
+		name = function.GetQualifiedName();
+	} else if (input.children.size() != function.GetLogicalArguments().size()) {
+		return nullptr;
+	}
+	return make_uniq<FunctionExpression>(name, std::move(input.children));
+}
+
 template <class OP, class OP_STRING, class OP_VECTOR>
 AggregateFunction GetMinMaxOperator(const string &name) {
-	return AggregateFunction(Identifier(name), {LogicalType::ANY}, LogicalType::ANY, nullptr, nullptr, nullptr, nullptr,
-	                         nullptr, nullptr, BindMinMax<OP, OP_STRING, OP_VECTOR>);
+	AggregateFunction fun(Identifier(name), {}, LogicalType::ANY, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                      BindMinMax<OP, OP_STRING, OP_VECTOR>);
+	fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
+	fun.SetUnbindCallback(MinMaxUnbind);
+	return fun;
 }
 
 } // namespace
@@ -545,7 +565,7 @@ unique_ptr<FunctionData> MinMaxNBind(BindAggregateFunctionInput &input) {
 			throw ParameterNotResolvedException();
 		}
 	}
-	if (arguments[0]->GetReturnType().id() == LogicalTypeId::VARIANT) {
+	if (MinMaxUsesCollation(context, arguments[0]->GetReturnType())) {
 		auto collated_arg = arguments[0]->Copy();
 		if (ExpressionBinder::PushCollation(context, collated_arg, collated_arg->GetReturnType())) {
 			vector<LogicalType> types {arguments[0]->GetReturnType(), collated_arg->GetReturnType(),
@@ -558,8 +578,7 @@ unique_ptr<FunctionData> MinMaxNBind(BindAggregateFunctionInput &input) {
 			collated_arguments.push_back(std::move(collated_arg));
 			collated_arguments.push_back(std::move(arguments[1]));
 			FunctionBinder function_binder(context);
-			auto expr =
-			    function_binder.BindAggregateFunction(std::move(collated_function), std::move(collated_arguments));
+			auto expr = function_binder.BindAggregateFunction(collated_function, std::move(collated_arguments));
 			arguments = std::move(expr->GetChildrenMutable());
 			function.ReplaceImplementation(expr->Function());
 			return std::move(expr->BindInfoMutable());
@@ -577,9 +596,12 @@ unique_ptr<FunctionData> MinMaxNBind(BindAggregateFunctionInput &input) {
 
 template <class COMPARATOR>
 AggregateFunction GetMinMaxNFunction() {
-	return AggregateFunction({LogicalTypeId::ANY, LogicalType::BIGINT}, LogicalType::LIST(LogicalType::ANY), nullptr,
-	                         nullptr, nullptr, nullptr, nullptr, FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr,
-	                         MinMaxNBind<COMPARATOR>, nullptr);
+	AggregateFunction fun({}, LogicalType::LIST(LogicalType::ANY), nullptr, nullptr, nullptr, nullptr, nullptr,
+	                      FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr, MinMaxNBind<COMPARATOR>, nullptr);
+	fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY).AddParameter("n", LogicalType::BIGINT);
+	fun.SetUnbindCallback(MinMaxUnbind);
+	fun.SetFallible(); // the update callback rejects NULL and out-of-range n values at runtime
+	return fun;
 }
 
 } // namespace

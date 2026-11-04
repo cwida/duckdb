@@ -476,6 +476,7 @@ COPY (
         (TIMESTAMP '2000-01-01' +
          (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIMESTAMPTZ_NS AS ts_tz_ns,
         (TIME '00:00:00' + (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIME AS tm,
+        (TIME '00:00:00' + (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIME_NS AS tm_ns,
         (TIMETZ '12:00:00+02' + (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIMETZ AS tm_tz
     FROM range(8192) t(i)
 ) TO '{TEST_DIR}/bloom_temporal.parquet' (
@@ -500,6 +501,7 @@ ORDER BY column_id;
 6	true	true
 7	true	true
 8	true	true
+9	true	true
 
 # Verify the DuckDB logical types and physical Parquet timestamp units under test
 query TTIIIT
@@ -514,6 +516,7 @@ ORDER BY name;
 ----
 dt	INT32	false	false	false	DATE
 tm	INT64	false	true	false	TIME
+tm_ns	INT64	false	false	true	TIME_NS
 tm_tz	INT64	false	true	false	TIME WITH TIME ZONE
 ts	INT64	false	true	false	TIMESTAMP
 ts_ms	INT64	true	false	false	TIMESTAMP
@@ -573,6 +576,12 @@ true
 query I
 SELECT bool_and(bloom_filter_excludes)
 FROM parquet_bloom_probe('{TEST_DIR}/bloom_temporal.parquet', 'tm', TIME '00:16:41');
+----
+true
+
+query I
+SELECT bool_and(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/bloom_temporal.parquet', 'tm_ns', TIME_NS '00:16:41');
 ----
 true
 
@@ -637,6 +646,12 @@ WHERE tm = TIME '00:16:41';
 ----
 analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
 
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_temporal.parquet'
+WHERE tm_ns = TIME_NS '00:16:41';
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
+
 # Infinite timestamp sentinels are preserved in Parquet regardless of the timestamp unit
 statement ok
 COPY (
@@ -683,7 +698,7 @@ JOIN '{TEST_DIR}/bloom_blob.parquet' rhs ON lhs.b = rhs.b;
 
 # some tests for dictionary_size_limit
 
-# no bloom filter, dict limit too low
+# no bloom filter: dict limit too low, and the sorted values get no fallback filter
 statement ok
 copy (select (r1.range*10)::BIGINT r,
 from range(100) r1, range(100) order by r) to '{TEST_DIR}/bloom2.parquet' (format parquet, ROW_GROUP_SIZE 10000, dictionary_size_limit 10);
@@ -692,6 +707,16 @@ query III
 select row_group_id, bloom_filter_offset IS NOT NULL, bloom_filter_length IS NOT NULL from parquet_metadata('{TEST_DIR}/bloom2.parquet') order by row_group_id;
 ----
 0	false	false
+
+# unsorted values fall back to hashing them
+statement ok
+copy (select (r1.range*10)::BIGINT r,
+from range(100) r1, range(100) order by hash(r)) to '{TEST_DIR}/bloom2.parquet' (format parquet, ROW_GROUP_SIZE 10000, dictionary_size_limit 10);
+
+query III
+select row_group_id, bloom_filter_offset IS NOT NULL, bloom_filter_length IS NOT NULL from parquet_metadata('{TEST_DIR}/bloom2.parquet') order by row_group_id;
+----
+0	true	true
 
 # no bloom filter - disabled explicitly
 statement ok
@@ -803,7 +828,7 @@ bloom_filter_false_positive_ratio must be greater than 0
 
 # some tests for string_dictionary_page_size_limit
 
-# no bloom filter, limit too low
+# no bloom filter: limit too low, and the sorted values get no fallback filter
 statement ok
 copy (select (r1.range*10)::VARCHAR r,
 from range(100) r1, range(100) order by r) to '{TEST_DIR}/bloom9.parquet' (format parquet, ROW_GROUP_SIZE 10000, string_dictionary_page_size_limit 10);
@@ -812,6 +837,16 @@ query III
 select row_group_id, bloom_filter_offset IS NOT NULL, bloom_filter_length IS NOT NULL from parquet_metadata('{TEST_DIR}/bloom9.parquet') order by row_group_id;
 ----
 0	false	false
+
+# unsorted values fall back to hashing them
+statement ok
+copy (select (r1.range*10)::VARCHAR r,
+from range(100) r1, range(100) order by hash(r)) to '{TEST_DIR}/bloom9.parquet' (format parquet, ROW_GROUP_SIZE 10000, string_dictionary_page_size_limit 10);
+
+query III
+select row_group_id, bloom_filter_offset IS NOT NULL, bloom_filter_length IS NOT NULL from parquet_metadata('{TEST_DIR}/bloom9.parquet') order by row_group_id;
+----
+0	true	true
 
 # big enough
 statement ok
@@ -941,3 +976,24 @@ FROM read_parquet('{TEST_DIR}/bloom_nan.parquet')
 WHERE x IS NOT DISTINCT FROM 'NaN'::DOUBLE;
 ----
 2048
+
+# Division by one and the lossless INTEGER-to-DOUBLE cast must expose the Bloom probe.
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r / 1 = 101;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 10.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r::DOUBLE = 101;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 10.*
+
+query I
+SELECT sum(payload) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r / 1 = 101;
+----
+NULL
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r / 1 = 100;
+----
+205

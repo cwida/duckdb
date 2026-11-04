@@ -1,5 +1,6 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
 
@@ -48,6 +49,16 @@ struct JSONTableInOutGlobalState : GlobalTableFunctionState {
 
 	static constexpr idx_t JSON_COLUMN_OFFSET = 0;
 	static constexpr idx_t ROOT_COLUMN_OFFSET = 1;
+
+	//! Progress when used as a source (i.e. with a single input row) - the rows that will be produced, and the rows
+	//! that were produced
+	atomic<idx_t> total_rows {0};
+	atomic<idx_t> produced_rows {0};
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
+	}
 };
 
 static unique_ptr<GlobalTableFunctionState> JSONTableInOutInitGlobal(ClientContext &, TableFunctionInitInput &input) {
@@ -146,9 +157,9 @@ struct JSONTableInOutRecursionNode {
 };
 
 struct JSONTableInOutLocalState : LocalTableFunctionState {
-	explicit JSONTableInOutLocalState(ClientContext &context)
-	    : json_allocator(BufferAllocator::Get(context)), alc(json_allocator.GetYYAlc()), len(DConstants::INVALID_INDEX),
-	      doc(nullptr), initialized(false), total_count(0) {
+	JSONTableInOutLocalState(ClientContext &context, JSONTableInOutGlobalState &gstate)
+	    : gstate(gstate), json_allocator(BufferAllocator::Get(context)), alc(json_allocator.GetYYAlc()),
+	      len(DConstants::INVALID_INDEX), doc(nullptr), initialized(false), total_count(0) {
 	}
 
 	string GetPath() const {
@@ -169,8 +180,12 @@ struct JSONTableInOutLocalState : LocalTableFunctionState {
 		recursion_nodes.emplace_back(str, val);
 	}
 
+	JSONTableInOutGlobalState &gstate;
 	JSONAllocator json_allocator;
 	yyjson_alc *alc;
+	//! The rows the current input row is estimated to produce, and the rows it produced so far
+	idx_t estimated_rows = 0;
+	idx_t produced_rows = 0;
 
 	string path;
 	idx_t len;
@@ -182,8 +197,19 @@ struct JSONTableInOutLocalState : LocalTableFunctionState {
 };
 
 static unique_ptr<LocalTableFunctionState> JSONTableInOutInitLocal(ExecutionContext &context, TableFunctionInitInput &,
-                                                                   GlobalTableFunctionState *) {
-	return make_uniq<JSONTableInOutLocalState>(context.client);
+                                                                   GlobalTableFunctionState *global_state) {
+	return make_uniq<JSONTableInOutLocalState>(context.client, global_state->Cast<JSONTableInOutGlobalState>());
+}
+
+static double JSONTableInOutProgress(ClientContext &, const FunctionData *,
+                                     const GlobalTableFunctionState *global_state) {
+	auto &gstate = global_state->Cast<JSONTableInOutGlobalState>();
+	auto total_rows = gstate.total_rows.load(std::memory_order_relaxed);
+	if (total_rows == 0) {
+		return 0;
+	}
+	auto produced_rows = MinValue<idx_t>(gstate.produced_rows.load(std::memory_order_relaxed), total_rows);
+	return 100.0 * static_cast<double>(produced_rows) / static_cast<double>(total_rows);
 }
 
 template <class T>
@@ -315,6 +341,14 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 	}
 
 	const auto is_container = unsafe_yyjson_is_arr(root) || unsafe_yyjson_is_obj(root);
+	// json_each produces a row per element of the root, json_tree a row per value (the value count is an upper bound)
+	if (TYPE == JSONTableInOutType::TREE) {
+		lstate.estimated_rows = yyjson_doc_get_val_count(lstate.doc);
+	} else {
+		lstate.estimated_rows = is_container ? unsafe_yyjson_get_len(root) : 1;
+	}
+	lstate.produced_rows = 0;
+	lstate.gstate.total_rows.fetch_add(lstate.estimated_rows, std::memory_order_relaxed);
 	if (!is_container || TYPE == JSONTableInOutType::TREE) {
 		result.AddRow<TYPE>(lstate, nullptr, root);
 	}
@@ -384,6 +418,8 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 		}
 	}
 	output.SetChildCardinality(result.count);
+	lstate.produced_rows += result.count;
+	gstate.produced_rows.fetch_add(result.count, std::memory_order_relaxed);
 
 	// Set constant virtual columns ("json", "root", and "empty")
 	if (gstate.json_column_index.IsValid()) {
@@ -403,6 +439,14 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 
 	if (output.size() == 0) {
 		D_ASSERT(recursion_nodes.empty());
+		// the input row is done - correct the estimate to the rows that were actually produced
+		if (lstate.estimated_rows > lstate.produced_rows) {
+			gstate.total_rows.fetch_sub(lstate.estimated_rows - lstate.produced_rows, std::memory_order_relaxed);
+		} else {
+			gstate.total_rows.fetch_add(lstate.produced_rows - lstate.estimated_rows, std::memory_order_relaxed);
+		}
+		lstate.estimated_rows = 0;
+		lstate.produced_rows = 0;
 		lstate.json_allocator.Reset();
 		lstate.initialized = false;
 		return OperatorResultType::NEED_MORE_INPUT;
@@ -423,12 +467,15 @@ virtual_column_map_t GetJSONTableInOutVirtualColumns(ClientContext &, optional_p
 
 template <JSONTableInOutType TYPE>
 TableFunction GetJSONTableInOutFunction(const LogicalType &input_type, const bool &has_path_param) {
-	vector<LogicalType> arguments = {input_type};
+	FunctionSignature signature;
+	signature.AddPositionalOnly("json", input_type);
 	if (has_path_param) {
-		arguments.push_back(LogicalType::VARCHAR);
+		signature.AddPositionalOnly("path", LogicalType::VARCHAR);
 	}
-	TableFunction function(arguments, nullptr, JSONTableInOutBind, JSONTableInOutInitGlobal, JSONTableInOutInitLocal);
+	TableFunction function(std::move(signature), nullptr, JSONTableInOutBind, JSONTableInOutInitGlobal,
+	                       JSONTableInOutInitLocal);
 	function.in_out_function = JSONTableInOutFunction<TYPE>;
+	function.table_scan_progress = JSONTableInOutProgress;
 	function.get_virtual_columns = GetJSONTableInOutVirtualColumns;
 	function.projection_pushdown = true;
 	return function;

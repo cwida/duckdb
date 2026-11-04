@@ -53,7 +53,7 @@ SELECT sum(a + b + c + g)
 FROM read_parquet(['{TEST_DIR}/multifile_a.parquet', '{TEST_DIR}/multifile_b.parquet'])
 WHERE g = 500
 
-# First file we get a fresh scan, so it takes a while to figure out the prefetch_filters
+# This filter is expensive, so a fresh scan learns from whole-group reads.
 query ITTT
 SELECT row_group_id, fully_filtered, strategy, prefetch_groups
 FROM duckdb_logs_parsed('ParquetPrefetch')

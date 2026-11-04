@@ -42,6 +42,7 @@ void SetSeedFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			throw InvalidInputException("SETSEED accepts seed values between -1.0 and 1.0, inclusive");
 		}
 		auto norm_seed = LossyNumericCast<uint32_t>((input_seeds[i] + 1.0) * half_max);
+		lock_guard<mutex> guard(random_engine.lock);
 		random_engine.SetSeed(norm_seed);
 	}
 
@@ -56,7 +57,8 @@ unique_ptr<FunctionData> SetSeedBind(BindScalarFunctionInput &input) {
 } // namespace
 
 ScalarFunction SetseedFun::GetFunction() {
-	ScalarFunction setseed("setseed", {LogicalType::DOUBLE}, LogicalType::SQLNULL, SetSeedFunction, SetSeedBind);
+	ScalarFunction setseed("setseed", {}, LogicalType::SQLNULL, SetSeedFunction, SetSeedBind);
+	setseed.GetSignature().AddParameter("seed", LogicalType::DOUBLE);
 	setseed.SetVolatile();
 	setseed.SetFallible();
 	return setseed;

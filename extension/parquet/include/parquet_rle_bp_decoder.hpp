@@ -149,7 +149,7 @@ private:
 			}
 			for (auto i = 0; i < byte_encoded_len; i++) {
 				auto next_byte = Load<uint8_t>(buffer_.ptr + i);
-				current_value_ |= (next_byte << (i * 8));
+				current_value_ |= (static_cast<uint64_t>(next_byte) << (i * 8));
 			}
 			buffer_.unsafe_inc(byte_encoded_len);
 			// sanity check

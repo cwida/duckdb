@@ -1,0 +1,104 @@
+# name: test/sql/function/autocomplete/sql_format_literals.test
+# description: SQL formatting preserves literal and quoted identifier contents
+# group: [autocomplete]
+
+require autocomplete
+
+query I
+SELECT duckdb_format_sql($query$SELECT 'a
+    b
+    c'$query$) = $query$SELECT 'a
+    b
+    c'$query$;
+----
+true
+
+query I
+SELECT duckdb_format_sql($query$SELECT 42 AS "a
+    b
+    c"$query$) = $query$SELECT 42 AS "a
+    b
+    c"$query$;
+----
+true
+
+query I
+SELECT duckdb_format_sql($query$SELECT 42 AS `a
+    b
+    c`$query$) = $query$SELECT 42 AS `a
+    b
+    c`$query$;
+----
+true
+
+query I
+SELECT duckdb_format_sql($query$SELECT $$a
+    b
+    c$$$query$) = $query$SELECT $$a
+    b
+    c$$$query$;
+----
+true
+
+query T
+SELECT * FROM query(duckdb_format_sql($query$SELECT $value$CASE WHEN x THEN x ELSE y END$value$ AS s$query$, MAP {'inline_threshold': '20'}));
+----
+CASE WHEN x THEN x ELSE y END
+
+query T
+SELECT * FROM query(duckdb_format_sql($query$SELECT coalesce($value$x, (y,z), CASE WHEN x THEN y END$value$, 'fallback') AS s$query$, MAP {'inline_threshold': '20'}));
+----
+x, (y,z), CASE WHEN x THEN y END
+
+# Line comments still end before the following clause.
+query I
+SELECT * FROM query(duckdb_format_sql('SELECT 1 -- first
+FROM range(2)'));
+----
+1
+1
+
+query I
+SELECT duckdb_format_sql('CREATE TABLE "foo(bar,baz)"(a INTEGER, b INTEGER)') = 'CREATE TABLE "foo(bar,baz)"(
+    a INTEGER,
+    b INTEGER
+)';
+----
+true
+
+query I
+SELECT duckdb_format_sql('CREATE TABLE "foo(bar,baz"(a INTEGER, b INTEGER)', MAP {'inline_threshold': '0'}) = 'CREATE TABLE "foo(bar,baz"(
+    a INTEGER,
+    b INTEGER
+)';
+----
+true
+
+query I
+SELECT duckdb_format_sql('CREATE TABLE t(`a,b` INTEGER, c INTEGER)') = 'CREATE TABLE t(
+    `a,b` INTEGER,
+    c INTEGER
+)';
+----
+true
+
+query I
+SELECT duckdb_format_sql('CREATE TABLE t(`a``b,c` INTEGER, c INTEGER)') = 'CREATE TABLE t(
+    `a``b,c` INTEGER,
+    c INTEGER
+)';
+----
+true
+
+query I
+SELECT duckdb_format_sql('CREATE TABLE `foo(bar,baz`(a INTEGER, b INTEGER)', MAP {'inline_threshold': '0'}) = 'CREATE TABLE `foo(bar,baz`(
+    a INTEGER,
+    b INTEGER
+)';
+----
+true
+
+query I
+SELECT "CASE WHEN x THEN y ELSE z END" FROM query(duckdb_format_sql($query$SELECT 42 AS `CASE WHEN x THEN y ELSE z END`$query$, MAP {'inline_threshold': '20'}));
+----
+42

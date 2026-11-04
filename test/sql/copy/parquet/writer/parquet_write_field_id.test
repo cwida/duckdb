@@ -363,3 +363,33 @@ query I
 select field_id from parquet_schema('{TEST_DIR}/my.parquet') where name = 'F'
 ----
 43
+
+# unnamed structs use the TUPLE type and generated element names
+statement ok
+SET debug_verify_serializer=true
+
+statement ok
+copy (select (1, 'a') as t) to '{TEST_DIR}/tuple_explicit.parquet'
+    (FORMAT parquet, FIELD_IDS {t:{__duckdb_field_id:10,element1:11,element2:12}})
+
+query II
+select name, field_id from parquet_schema('{TEST_DIR}/tuple_explicit.parquet')
+where name in ('t', 'element1', 'element2') order by field_id
+----
+t	10
+element1	11
+element2	12
+
+statement ok
+copy (select (1, 'a') as t) to '{TEST_DIR}/tuple_auto.parquet' (FORMAT parquet, FIELD_IDS 'auto')
+
+query II
+select name, field_id from parquet_schema('{TEST_DIR}/tuple_auto.parquet')
+where name in ('t', 'element1', 'element2') order by field_id
+----
+t	0
+element1	1
+element2	2
+
+statement ok
+SET debug_verify_serializer=false

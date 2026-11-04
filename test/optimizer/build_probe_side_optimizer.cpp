@@ -25,7 +25,7 @@ static optional_ptr<LogicalOperator> FindBuildProbeOperator(LogicalOperator &op,
 }
 
 static unique_ptr<LogicalOperator> PlanBuildProbeQuery(Connection &connection, const string &query) {
-	Parser parser(connection.context->GetParserOptions());
+	Parser parser(*connection.context);
 	parser.ParseQuery(query);
 	REQUIRE(parser.statements.size() == 1);
 	Planner planner(*connection.context);

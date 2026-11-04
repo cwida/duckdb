@@ -63,7 +63,7 @@
     },
     {
         "name": "format",
-        "parameters": "format,parameters...",
+        "parameters": "format,...",
         "description": "Formats a string using the fmt syntax.",
         "example": "format('Benchmark \"{}\" took {} seconds', 'CSV', 42)",
         "categories": ["string"],
@@ -249,7 +249,7 @@
     },
     {
         "name": "printf",
-        "parameters": "format,parameters...",
+        "parameters": "format,...",
         "description": "Formats a `string` using printf syntax.",
         "example": "printf('Benchmark \"%s\" took %d seconds', 'CSV', 42)",
         "categories": ["string"],

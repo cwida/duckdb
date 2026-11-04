@@ -218,7 +218,7 @@ ArrowErrorCode ArrowSchemaInitDateTime(struct ArrowSchema *schema, enum ArrowTyp
 /// \brief Make a (recursive) copy of a schema
 ///
 /// Allocates and copies fields of schema into schema_out.
-ArrowErrorCode ArrowSchemaDeepCopy(struct ArrowSchema *schema, struct ArrowSchema *schema_out);
+ArrowErrorCode ArrowSchemaDeepCopy(const struct ArrowSchema *schema, struct ArrowSchema *schema_out);
 
 /// \brief Copy format into schema->format
 ///

@@ -1,0 +1,96 @@
+# name: test/sql/cast/timestamp_casts_icu.test
+# description: Test the ICU-dependent TIMESTAMP cast functions
+# group: [cast]
+
+statement ok
+CREATE TABLE tstz_us AS
+	FROM VALUES
+		(1, TIMESTAMPTZ '2026-01-01 12:34:56.123456+00'),
+		(2, TIMESTAMPTZ '1970-01-01 00:00:00.000001+00'),
+		(3, TIMESTAMPTZ '1969-12-31 23:59:59.999999+00'),
+		(4, TIMESTAMPTZ '1900-06-15 08:00:00.5+00'),
+		(5, TIMESTAMPTZ '2262-04-11 23:47:16.854775+00'),
+		(6, TIMESTAMPTZ 'infinity'),
+		(7, TIMESTAMPTZ '-infinity'),
+		(8, NULL)
+	tbl(i, t);
+
+query III
+SELECT i, t::TIMESTAMPTZ_NS, t::TIMESTAMPTZ_NS::TIMESTAMPTZ = t
+FROM tstz_us
+ORDER BY i;
+----
+1	2026-01-01 12:34:56.123456+00	true
+2	1970-01-01 00:00:00.000001+00	true
+3	1969-12-31 23:59:59.999999+00	true
+4	1900-06-15 08:00:00.5+00	true
+5	2262-04-11 23:47:16.854775+00	true
+6	infinity	true
+7	-infinity	true
+8	NULL	NULL
+
+# The same conversions with ICU loaded and a non-UTC time zone
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone = 'America/Los_Angeles';
+
+query I
+SELECT typeof(CAST(now() AS TIMESTAMPTZ_NS));
+----
+TIMESTAMPTZ_NS
+
+# The instant is unchanged; only the display follows the session zone (PST and PDT)
+query III
+SELECT i, t::TIMESTAMPTZ_NS, t::TIMESTAMPTZ_NS::TIMESTAMPTZ = t
+FROM tstz_us
+ORDER BY i;
+----
+1	2026-01-01 04:34:56.123456-08	true
+2	1969-12-31 16:00:00.000001-08	true
+3	1969-12-31 15:59:59.999999-08	true
+4	1900-06-15 00:00:00.5-08	true
+5	2262-04-11 16:47:16.854775-07	true
+6	infinity	true
+7	-infinity	true
+8	NULL	NULL
+
+query II
+SELECT
+	CAST(TIMESTAMPTZ '2026-07-01 12:34:56.654321+00' AS TIMESTAMPTZ_NS),
+	CAST(TIMESTAMPTZ '2026-07-01 12:34:56.654321+00' AS TIMESTAMPTZ_NS) = '2026-07-01 12:34:56.654321000+00'::TIMESTAMPTZ_NS;
+----
+2026-07-01 05:34:56.654321-07	true
+
+query I
+SELECT CAST(TIMESTAMPTZ '2026-07-01 12:34:56.654321+00' AS TIMESTAMPTZ_NS) =
+       CAST(TIMESTAMPTZ '2026-07-01 12:34:56.654321+00'::VARCHAR AS TIMESTAMPTZ_NS);
+----
+true
+
+statement ok
+SET TimeZone = 'Asia/Kathmandu';
+
+query II
+SELECT
+	CAST(TIMESTAMPTZ '2026-01-01 12:34:56.123456+00' AS TIMESTAMPTZ_NS),
+	CAST(TIMESTAMPTZ '2026-01-01 12:34:56.123456+00' AS TIMESTAMPTZ_NS) = '2026-01-01 12:34:56.123456000+00'::TIMESTAMPTZ_NS;
+----
+2026-01-01 18:19:56.123456+05:45	true
+
+query IIII
+SELECT
+	CAST(TIMESTAMPTZ 'infinity' AS TIMESTAMPTZ_NS),
+	CAST(TIMESTAMPTZ '-infinity' AS TIMESTAMPTZ_NS),
+	TRY_CAST(TIMESTAMPTZ 'infinity' AS TIMESTAMPTZ_NS),
+	TRY_CAST(TIMESTAMPTZ '-infinity' AS TIMESTAMPTZ_NS);
+----
+infinity	-infinity	infinity	-infinity
+
+query I
+SELECT TRY_CAST(TIMESTAMPTZ '2262-04-11 23:47:16.854776+00' AS TIMESTAMPTZ_NS);
+----
+NULL

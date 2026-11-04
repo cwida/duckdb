@@ -1,0 +1,358 @@
+module: instance
+# An instance handle is a DuckDB instance: a buffer pool, a scheduler, a set
+# of GLOBAL settings, and the databases attached to it. Creating the handle,
+# attaching a database, and choosing the default database are separate steps:
+#
+#   instance_create_with_options(env, {"access_mode"}, {"READ_ONLY"}, 1, &instance);  // startup option
+#   instance_attach(instance, NULL, "path/to/file.db", NULL, true);     // like ATTACH, and the default database
+#   instance_get_config(instance, &config);
+#   config_set_option_text(config, "memory_limit", "4GB", DEFAULT);     // SET GLOBAL
+#   connection_create(instance, &conn);
+#
+# The instance exists as soon as instance_create returns. Options that can
+# only be chosen at startup (access_mode, allow_unsigned_extensions, ...) are
+# passed to instance_create_with_options; every other option can be passed there too, or
+# written afterwards through the instance's config, which is SQL `SET GLOBAL`.
+#
+# Nothing is attached until instance_attach: only the system catalog and each
+# connection's temporary catalog exist. Attaching never picks a default
+# database; until instance_set_default names one, statements that need a
+# default database (an unqualified CREATE TABLE, say) fail, while everything
+# else binds against the system and temporary catalogs and against databases
+# referred to by name. Each connection binds to the default database in force
+# when it is created; instance_set_default, or attaching with make_default,
+# changes it for connections created afterwards. instance_detach detaches a database again, and clears the
+# default for new connections if it was the default.
+handles:
+  attach_options:
+    description: |
+      An opaque, owned handle to the `(KEY value)` options of one
+      `[[instance_attach]]` call, as SQL `ATTACH` accepts them. Created from the
+      instance handle it will be used with via `[[attach_options_create]]`; destroy
+      it via `[[attach_options_destroy]]`.
+    cleanup_with: attach_options_destroy
+functions:
+  instance_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Creates an instance under the environment with no startup options.
+
+      The instance is ready on return, with no database attached: attach one
+      with `[[instance_attach]]` and pick the default with
+      `[[instance_set_default]]`, or connect with `[[connection_create]]`.
+      To choose an option that cannot change once the instance exists, such
+      as access_mode, use `[[instance_create_with_options]]` instead. The
+      caller destroys the instance via `[[instance_destroy]]`.
+    role: constructor
+    belongs_to: instance
+    parameters:
+      env:
+        type: environment
+        description: "The environment."
+      out_instance:
+        type: instance
+        indirection: 1
+        kind: OUT
+        description: "Receives the new instance handle."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  instance_create_with_options:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Creates an instance under the environment, configured with startup
+      options.
+
+      Behaves as `[[instance_create]]`, applying the startup options first.
+
+      Startup options are (name, value) pairs in two parallel arrays, the
+      values in the textual form SQL `SET` accepts. They are the only way to
+      choose an option that cannot change once the instance exists, such as
+      access_mode or allow_unsigned_extensions; every other option can be
+      written now or later through `[[instance_get_config]]`. An option that
+      needs a running instance (the logging options, allowed_directories,
+      allowed_paths, disabled_filesystems) returns ERROR_INPUT_INVALID here:
+      write it through the instance's config after creation. A name no core
+      option or loaded extension defines is kept for an extension to consume
+      while the instance starts up, and creation fails with the names none
+      claimed. The caller destroys the instance via `[[instance_destroy]]`.
+    role: constructor
+    belongs_to: instance
+    parameters:
+      env:
+        type: environment
+        description: "The environment."
+      option_names:
+        type: str
+        indirection: 1
+        const: true
+        description: "Optional. An array of option_count option names (canonical or alias). Pass NULL when option_count is 0."
+      option_values:
+        type: str
+        indirection: 1
+        const: true
+        description: "Optional. An array of option_count values, parallel to option_names, in the textual form SQL `SET` accepts. Pass NULL when option_count is 0."
+      option_count:
+        type: idx
+        description: "The number of startup options."
+      out_instance:
+        type: instance
+        indirection: 1
+        kind: OUT
+        description: "Receives the new instance handle."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  instance_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Destroys the instance handle.
+
+      Always succeeds. Every attached database is closed with the instance.
+      The instance itself stays alive for as long as any connection still
+      references it; when the last reference drops, it is destroyed and its
+      database files become available to open again. On success the handle
+      is set to null. Safe to call on an already-null slot.
+    role: destructor
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        indirection: 1
+        description: "The instance handle to destroy."
+    return_type: ERROR
+  instance_attach:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Attaches a database to the instance.
+
+      Attaches the database at `path` exactly like `ATTACH 'path'`:
+        - `:memory:` or an empty view attaches a fresh in-memory database.
+        - any other path attaches that file, creating it if it does not
+          exist.
+      `name` is the name to attach under, like `ATTACH ... AS name`; it is
+      how `[[instance_detach]]` and `[[instance_set_default]]` refer to the
+      database. Null, or an empty view, derives the name from the path the
+      way SQL `ATTACH` without `AS` does:
+        - `memory` for `:memory:` or an empty view;
+        - otherwise the file name up to its first `.`, without any `?query`
+          parameters (`/data/sales.2024.db` attaches as `sales`), with
+          `_db` appended when that is a reserved name such as `system` or
+          `temp`.
+      Naming is how two files with the same base name, or `:memory:` twice,
+      attach side by side. `options`
+      may be null; it carries the `(KEY value)` options of SQL `ATTACH`, for
+      per-database options such as READ_ONLY, BLOCK_SIZE or ENCRYPTION_KEY,
+      and must have been created from this instance handle. `make_default`
+      makes the attached
+      database the default for connections created afterwards, exactly as a
+      `[[instance_set_default]]` call right after the attach would; otherwise the
+      default is left alone. A path that is already attached on this or any
+      other instance of the environment returns ERROR_RESOURCE_IN_USE, and a
+      name that is already attached fails. Options that only apply at startup
+      are passed to `[[instance_create_with_options]]`.
+    role: method
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: "The instance handle."
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Optional. The name to attach under; null or an empty view for the name derived from the path. Borrowed and copied."
+      path:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: "Path to the database file, or `:memory:` / an empty view for an in-memory database."
+      options:
+        type: attach_options
+        description: "Optional attach options created from `instance`, or null to attach with defaults under the derived name."
+      make_default:
+        type: bool
+        description: "Whether to make the attached database the default for connections created afterwards."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  instance_detach:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Detaches the database attached under `name`.
+
+      Detaches it like `DETACH`, checkpointing a file database first. Unlike
+      SQL, the default database may be detached too; new connections then
+      start without a default until `[[instance_set_default]]` names another, and
+      existing connections bound to it keep it alive until their transaction
+      on it ends and fail unqualified DDL afterwards. Returns
+      ERROR_INPUT_INVALID when no database is attached under that name.
+      Connections that still reference the database keep it alive until they
+      release it.
+    role: method
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: "The instance handle."
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The name the database is attached under. Borrowed."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  instance_set_default:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
+    description: |
+      Makes the database attached under `name` the default database for
+      connections created from now on.
+
+      A connection binds to the default database when it is created, so this
+      does not retarget existing connections: their default stays what it was
+      when they connected, or what they chose with `USE`. The default is where
+      unqualified DDL and unqualified table lookups that miss the temporary
+      catalog go. It stays the default for new connections until another
+      `[[instance_set_default]]` call or until it is detached; a connection whose
+      default has been detached fails unqualified DDL with a message saying
+      so until it selects another with `USE`. Returns ERROR_INPUT_INVALID when
+      no database is attached under that name.
+    role: method
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: "The instance handle."
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The name the database is attached under. Borrowed."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  attach_options_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
+    description: |
+      Creates an empty set of attach options for use with `[[instance_attach]]` on
+      `instance`.
+
+      Starts empty. The caller destroys it via `[[attach_options_destroy]]`; the
+      options may be destroyed as soon as the attach call returns, and reused
+      for further attaches before that.
+    role: constructor
+    belongs_to: attach_options
+    parameters:
+      instance:
+        type: instance
+        description: "The instance handle the options will be used with."
+      out_options:
+        type: attach_options
+        indirection: 1
+        kind: OUT
+        description: "Receives the new options handle."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  attach_options_set:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
+    description: |
+      Sets one attach option, like a `(KEY value)` entry of SQL `ATTACH`.
+
+      The key is matched case-insensitively, as an unquoted SQL identifier
+      is. The setting is passed on as the text a quoted SQL literal would
+      produce: the engine casts the options it knows (READ_ONLY,
+      RECOVERY_MODE, TYPE, DEFAULT_TABLE, VACUUM_REBUILD_INDEXES, BLOCK_SIZE,
+      ENCRYPTION_KEY, ...) and hands the rest to the storage extension that
+      ends up owning the database, which decides what they mean. Keys must be
+      valid UTF-8; an unknown or ill-typed option fails the attach. Both views
+      are borrowed and copied. Setting the same key again replaces it.
+    role: setter
+    belongs_to: attach_options
+    parameters:
+      options:
+        type: attach_options
+        description: "The attach options."
+      key:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The option name, e.g. READ_ONLY."
+      setting:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: "The option value, in the textual form a quoted SQL literal would carry."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+  attach_options_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
+    description: |
+      Destroys an attach options handle.
+
+      On success the slot is set to null. Safe to call on an already-null
+      slot.
+    role: destructor
+    belongs_to: attach_options
+    parameters:
+      options:
+        type: attach_options
+        indirection: 1
+        description: "The attach options to destroy."
+    return_type: ERROR
+  library_version:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
+    description: "Returns the version of the linked DuckDB library."
+    role: getter
+    parameters:
+      out_version:
+        type: str
+        indirection: 1
+        const: false
+        kind: OUT
+        description: "The version string."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR

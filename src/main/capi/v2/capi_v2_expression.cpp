@@ -130,8 +130,7 @@ DUCKDB_V2_ERROR duckdb_v2_expression_get_return_type(duckdb_v2_expression_handle
 	DUCKDB_CHECK_ARG(expression);
 	DUCKDB_CHECK_ARG(type);
 	*type = nullptr;
-	return WithErrorHandler(err,
-	                        [&]() { *type = Convert(new duckdb::LogicalType(Convert(expression)->GetReturnType())); });
+	return WithErrorHandler(err, [&]() { *type = Convert(Convert(expression)->GetReturnType()); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_expression_get_child_count(duckdb_v2_expression_handle expression, idx_t *count,

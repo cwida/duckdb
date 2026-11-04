@@ -1,0 +1,33 @@
+# name: test/sql/types/variant/variant_decimal_arithmetic.test
+# description: DECIMAL arithmetic with VARIANT operands raises a binder error
+# group: [variant]
+
+statement error
+SELECT 10.0 % (2.0)::VARIANT;
+----
+Could not convert type VARIANT to a decimal
+
+statement error
+SELECT 10.0 + (2.0)::VARIANT;
+----
+Could not convert type VARIANT to a decimal
+
+statement error
+SELECT 1.5::VARIANT - 1.5;
+----
+Could not convert type VARIANT to a decimal
+
+statement error
+SELECT 10.5 * 1::VARIANT;
+----
+Could not convert type VARIANT to a decimal
+
+statement error
+SELECT TRY(1.5 + 1::VARIANT);
+----
+Could not convert type VARIANT to a decimal
+
+query I
+SELECT 10.5 + (1::VARIANT)::DECIMAL(5,1);
+----
+11.5

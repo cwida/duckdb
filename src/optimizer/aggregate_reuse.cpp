@@ -2,7 +2,7 @@
 
 #include "duckdb/optimizer/aggregate_rewrite_helper.hpp"
 #include "duckdb/optimizer/aggregate_reuse_internal.hpp"
-#include "duckdb/optimizer/builtin_function_lookup.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -600,8 +600,7 @@ bool AggregateReuseOptimizer::TryReuseSemiAggregate(unique_ptr<LogicalOperator> 
 	vector<unique_ptr<Expression>> combine_arguments;
 	combine_arguments.push_back(make_uniq<BoundColumnRefExpression>(state_type, *planned_payload));
 	auto combine_function = GetBuiltinAggregateFunction(optimizer.context, CombineAggrFun::Name, {state_type});
-	auto combined_state =
-	    function_binder.BindAggregateFunction(std::move(combine_function), std::move(combine_arguments));
+	auto combined_state = function_binder.BindAggregateFunction(combine_function, std::move(combine_arguments));
 	if (combined_state->GetReturnType() != state_type) {
 		throw InternalException("Aggregate state changed while binding aggregate reuse combination");
 	}

@@ -10,6 +10,7 @@
 
 #include "duckdb/common/multi_file/multi_file_data.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/condition_variable.hpp"
 #include "duckdb/common/multi_file/multi_file_options.hpp"
 #include "duckdb/common/multi_file/base_file_reader.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
@@ -27,6 +28,8 @@ struct MultiFileReaderInterface;
 struct MultiFileReaderBindData {
 	//! The (global) column id of the filename column (if any)
 	optional_idx filename_idx;
+	//! The (global) column id of the file_row_number column (if any) - it is read from the row number virtual column
+	optional_idx file_row_number_idx;
 	//! The set of hive partitioning indexes (if any)
 	vector<HivePartitioningIndex> hive_partitioning_indexes;
 	//! (optional) The schema set by the multi file reader
@@ -86,7 +89,8 @@ struct MultiFileBindData : public TableFunctionData {
 	//! Table column names - set when using COPY tbl FROM file.parquet
 	vector<string> table_columns;
 	shared_ptr<BaseFileReader> initial_reader;
-	// The union readers are created (when the union_by_name option is on) during binding
+	//! Bound file descriptions, retained independently of consumable readers.
+	//! Contains the first file or all files opened for schema discovery.
 	vector<shared_ptr<BaseUnionData>> union_readers;
 
 	void Initialize(shared_ptr<BaseFileReader> reader) {
@@ -100,6 +104,14 @@ struct MultiFileBindData : public TableFunctionData {
 	}
 
 	unique_ptr<FunctionData> Copy() const override;
+
+	//! Whether an output column is supplied by a filename, row-number or Hive partition role.
+	DUCKDB_API bool IsGeneratedColumn(idx_t column_idx) const;
+	//! Match a physical column to an output column without a generated override or conversion (including collations).
+	DUCKDB_API bool MatchesPhysicalColumn(idx_t column_idx, const Identifier &physical_name,
+	                                      const LogicalType &physical_type) const;
+	//! Whether all physical roots have the output names and types at the same positions, without generated roles.
+	DUCKDB_API bool HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const;
 };
 
 //! Per-file data for the multi file reader
@@ -168,7 +180,10 @@ struct MultiFileGlobalState : public GlobalTableFunctionState {
 	//! Lock
 	mutable mutex lock;
 	//! Signal to other threads that a file failed to open, letting every thread abort.
-	bool error_opening_file = false;
+	//! Atomic because a cancelled file open settles it while the scheduling thread may hold the lock.
+	atomic<bool> error_opening_file {false};
+	//! Signalled when an async file open settles, waking the threads waiting for the front file
+	condition_variable async_open_settled;
 
 	//! Index of file currently up for scanning
 	atomic<idx_t> file_index;
@@ -257,6 +272,8 @@ public:
 	ExpressionExecutor executor;
 	//! Number of rows scanned by this thread (for profiling)
 	idx_t rows_scanned = 0;
+	//! FinalizeScan may have no job, here's a special batch index for it
+	optional_idx finalize_batch_index;
 };
 
 } // namespace duckdb

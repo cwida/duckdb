@@ -44,7 +44,7 @@ PRAGMA profiling_output='{TEST_DIR}/test_2.txt'
 # At least one of the lines should contain the word "Optimizer" to verify that we're getting optimizer timings
 query T
 SELECT COUNT(*) > 0
-FROM read_csv('{TEST_DIR}/test.txt', columns={'c': 'VARCHAR'}, delim=NULL, header=0, quote=NULL, escape=NULL, auto_detect = false)
+FROM read_csv('{TEST_DIR}/test.txt', columns={'c': 'VARCHAR'}, delim='', header=0, quote='', escape='', auto_detect = false)
 WHERE contains(c, 'optimizer');
 ----
 true

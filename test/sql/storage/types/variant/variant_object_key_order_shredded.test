@@ -1,0 +1,61 @@
+# name: test/sql/storage/types/variant/variant_object_key_order_shredded.test
+# description: variant_typeof and the VARCHAR cast describe equal VARIANT values identically in shredded and unshredded row groups
+# group: [variant]
+
+load {TEST_DIR}/variant_object_key_order_shredded.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 1000;
+
+statement ok
+CREATE TABLE t(id BIGINT, v VARIANT);
+
+statement ok
+INSERT INTO t SELECT i, {'o': {'x': 42}, 'l': [42]}::VARIANT FROM range(0, 3000) tt(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+INSERT INTO t SELECT i, {'o': {'x': 42}, 'l': [42]}::VARIANT FROM range(100000, 100005) tt(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT vector_type(v) FROM t WHERE id = 1;
+----
+SHREDDED_VECTOR
+
+query I
+SELECT vector_type(v) FROM t WHERE id = 100000;
+----
+FLAT_VECTOR
+
+query III
+SELECT count(DISTINCT variant_typeof(v)), count(DISTINCT CAST(v AS VARCHAR)), count(*) FROM t;
+----
+1	1	3005
+
+query IIII
+SELECT id, variant_typeof(v), CAST(v AS VARCHAR), CAST(variant_keys(v) AS VARCHAR) FROM t WHERE id IN (1, 100000) ORDER BY id;
+----
+1	OBJECT(l, o)	{'l': [42], 'o': {'x': 42}}	[l, o]
+100000	OBJECT(l, o)	{'l': [42], 'o': {'x': 42}}	[l, o]
+
+query I
+SELECT (SELECT v FROM t WHERE id = 1) = (SELECT v FROM t WHERE id = 100000);
+----
+true
+
+statement error
+SELECT CAST(v AS STRUCT(zz INTEGER)) FROM t WHERE id = 1;
+----
+VARIANT(OBJECT(l,o)) is missing key 'zz'
+
+statement error
+SELECT CAST(v AS STRUCT(zz INTEGER)) FROM t WHERE id = 100000;
+----
+VARIANT(OBJECT(l,o)) is missing key 'zz'

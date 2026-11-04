@@ -13,7 +13,7 @@
 #ifdef DUCKDB_STATIC_BUILD
 #define DUCKDB_API
 #else
-#if defined(DUCKDB_BUILD_LIBRARY) && !defined(DUCKDB_BUILD_LOADABLE_EXTENSION)
+#ifdef DUCKDB_BUILD_LIBRARY
 #define DUCKDB_API __declspec(dllexport)
 #else
 #define DUCKDB_API __declspec(dllimport)

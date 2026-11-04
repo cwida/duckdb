@@ -16,3 +16,65 @@ SELECT * FROM read_parquet('{TEST_DIR}/lists.parquet');
 ----
 [asdf, fdsa]	1
 [asdf, fdsa]	2
+
+statement ok
+COPY (SELECT ['a', 'b'] AS l FROM range(3))
+TO '{TEST_DIR}/repeated_lists_v2.parquet' (FORMAT PARQUET, PARQUET_VERSION V2);
+
+query I
+SELECT l FROM read_parquet('{TEST_DIR}/repeated_lists_v2.parquet');
+----
+[a, b]
+[a, b]
+[a, b]
+
+foreach row_count 3 5000
+
+statement ok
+CREATE OR REPLACE VIEW repeated_lists AS
+SELECT ['a', 'b'] AS strings,
+       ['abcdefghijklmnop', NULL, ''] AS nullable_strings,
+       [['a', 'b'], [], NULL, ['c', NULL]] AS nested_strings,
+       [{'s': 'abcdefghijklmnop', 'l': ['a', 'b']}, NULL] AS structs,
+       MAP(['a', 'b'], ['c', 'd']) AS maps,
+       ['a'::BLOB, '\x00\xFF'::BLOB] AS blobs,
+       []::VARCHAR[] AS empty_list,
+       NULL::VARCHAR[] AS null_list,
+       CASE WHEN range % 7 = 0 THEN NULL
+            WHEN range % 7 = 1 THEN ''
+            ELSE repeat('x', 1 + range % 101) END AS scalar_strings,
+       '' AS empty_string,
+       NULL::VARCHAR AS null_string
+FROM range({row_count});
+
+foreach parquet_version V1 V2
+
+# Exercise both dictionary encoding and the V2 delta-length encoding.
+foreach dictionary_size_limit 0 100
+
+# Exercise multiple data pages as well as multiple row groups.
+foreach data_page_size_limit 4096 104857600
+
+statement ok
+COPY repeated_lists TO '{TEST_DIR}/repeated_lists_nested.parquet'
+(FORMAT PARQUET, PARQUET_VERSION '{parquet_version}', DICTIONARY_SIZE_LIMIT {dictionary_size_limit},
+ ROW_GROUP_SIZE 2048, DATA_PAGE_SIZE_LIMIT {data_page_size_limit});
+
+query I
+SELECT count(*) FROM (
+    (SELECT * FROM read_parquet('{TEST_DIR}/repeated_lists_nested.parquet')
+     EXCEPT ALL SELECT * FROM repeated_lists)
+    UNION ALL
+    (SELECT * FROM repeated_lists
+     EXCEPT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeated_lists_nested.parquet'))
+);
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+endloop

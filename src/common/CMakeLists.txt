@@ -20,11 +20,6 @@ add_subdirectory(value_operations)
 add_subdirectory(vector)
 add_subdirectory(vector_operations)
 
-if(${EXIT_TIME_DESTRUCTORS_WARNING})
-  set(CMAKE_CXX_FLAGS_DEBUG
-      "${CMAKE_CXX_FLAGS_DEBUG} -Wno-exit-time-destructors")
-endif()
-
 if(DEBUG_STACKTRACE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDUCKDB_DEBUG_STACKTRACE")
 endif()
@@ -50,7 +45,7 @@ add_library_unity(
   encryption_types.cpp
   exception.cpp
   exception_format_value.cpp
-  extra_type_info.cpp
+  logical_type_info.cpp
   file_buffer.cpp
   file_system.cpp
   filename_pattern.cpp

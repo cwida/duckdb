@@ -13,6 +13,8 @@
 
 namespace duckdb {
 
+enum class CMExpressionType : uint8_t { NONE, CAST, COMPRESS, DECOMPRESS };
+
 struct CMUtils {
 	//! The types we compress integral types to
 	static const vector<LogicalType> IntegralTypes();
@@ -20,6 +22,15 @@ struct CMUtils {
 	static const vector<LogicalType> StringTypes();
 
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
+	static CMExpressionType GetExpressionType(const BoundFunctionExpression &expression);
+	//! The input wrapped by a compressed materialization expression, or nullptr for any other expression
+	static optional_ptr<const Expression> GetWrappedInput(const Expression &expression);
+	static void MarkCast(BoundFunctionExpression &expression);
+
+private:
+	static CMExpressionType GetIntegralType(const BoundScalarFunction &function);
+	static CMExpressionType GetStringType(const BoundScalarFunction &function);
+	static CMExpressionType GetGeometryType(const BoundScalarFunction &function);
 };
 
 //! Needed for (de)serialization without binding

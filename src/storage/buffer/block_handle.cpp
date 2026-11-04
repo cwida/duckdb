@@ -15,8 +15,7 @@ BlockMemory::BlockMemory(BufferManager &buffer_manager, block_id_t block_id_p, M
     : buffer_manager(buffer_manager), block_id(block_id_p), state(BlockState::BLOCK_UNLOADED), readers(0), tag(tag_p),
       buffer_type(FileBufferType::BLOCK), buffer(nullptr), eviction_seq_num(0), has_queue_entry(false),
       lru_timestamp_msec(), destroy_buffer_upon(DestroyBufferUpon::BLOCK), memory_usage(block_alloc_size_p),
-      memory_charge(tag, buffer_manager.GetBufferPool()), unswizzled(nullptr),
-      eviction_queue_idx(DConstants::INVALID_INDEX) {
+      memory_charge(tag, buffer_manager.GetBufferPool()), eviction_queue_idx(DConstants::INVALID_INDEX) {
 }
 
 BlockMemory::BlockMemory(BufferManager &buffer_manager, block_id_t block_id_p, MemoryTag tag_p,
@@ -25,14 +24,11 @@ BlockMemory::BlockMemory(BufferManager &buffer_manager, block_id_t block_id_p, M
     : buffer_manager(buffer_manager), block_id(block_id_p), state(BlockState::BLOCK_LOADED), readers(0), tag(tag_p),
       buffer_type(buffer_p->GetBufferType()), buffer(std::move(buffer_p)), eviction_seq_num(0), has_queue_entry(false),
       lru_timestamp_msec(), destroy_buffer_upon(destroy_buffer_upon_p), memory_usage(size_p),
-      memory_charge(tag, buffer_manager.GetBufferPool()), unswizzled(nullptr),
-      eviction_queue_idx(DConstants::INVALID_INDEX) {
+      memory_charge(tag, buffer_manager.GetBufferPool()), eviction_queue_idx(DConstants::INVALID_INDEX) {
 	memory_charge = std::move(reservation); // Moved to constructor body due to tidy check.
 }
 
 BlockMemory::~BlockMemory() { // NOLINT: allow internal exceptions
-	// The block memory is being destroyed, meaning that any unswizzled pointers are now binary junk.
-	SetSwizzling(nullptr);
 	D_ASSERT(!GetBuffer() || GetBuffer()->GetBufferType() == GetBufferType());
 	if (HasLiveQueueEntry() && GetBufferType() != FileBufferType::TINY_BUFFER) {
 		// The block still has a live entry in the eviction queue. That entry is now dead;
@@ -106,22 +102,22 @@ void BlockMemory::ResizeBuffer(BlockLock &l, idx_t block_size, idx_t block_heade
 	D_ASSERT(memory_usage == buffer->AllocSize());
 }
 
-bool BlockMemory::CanUnload() const {
+CanUnloadResult BlockMemory::CanUnload() const {
 	if (GetState() == BlockState::BLOCK_UNLOADED) {
 		// The block has already been unloaded.
-		return false;
+		return CanUnloadResult::ALREADY_UNLOADED;
 	}
 	if (GetReaders() > 0) {
 		// There are active readers.
-		return false;
+		return CanUnloadResult::PINNED;
 	}
 	if (BlockId() >= MAXIMUM_BLOCK && MustWriteToTemporaryFile() && !GetBufferManager().HasTemporaryDirectory()) {
 		// The block memory cannot be destroyed upon eviction/unpinning.
 		// In order to unload this block we need to write it to a temporary buffer.
 		// However, no temporary directory is specified, hence, we cannot unload.
-		return false;
+		return CanUnloadResult::NO_TEMP_DIRECTORY;
 	}
-	return true;
+	return CanUnloadResult::CAN_UNLOAD;
 }
 
 unique_ptr<FileBuffer> BlockMemory::UnloadAndTakeBlock(BlockLock &l, QueryContext context) {
@@ -131,8 +127,7 @@ unique_ptr<FileBuffer> BlockMemory::UnloadAndTakeBlock(BlockLock &l, QueryContex
 		// The block was already unloaded: nothing to do.
 		return nullptr;
 	}
-	D_ASSERT(IsSwizzled());
-	D_ASSERT(CanUnload());
+	D_ASSERT(CanUnload() == CanUnloadResult::CAN_UNLOAD);
 
 	if (BlockId() >= MAXIMUM_BLOCK && MustWriteToTemporaryFile()) {
 		// This is a temporary block that cannot be destroyed upon evict/unpin.
@@ -211,17 +206,24 @@ BufferHandle BlockHandle::LoadFromBuffer(BlockLock &l, data_ptr_t data, unique_p
 	memcpy(block->InternalBuffer(), data, block->AllocSize());
 	memory.GetBuffer() = std::move(block);
 	memory.SetState(BlockState::BLOCK_LOADED);
-	memory.SetReaders(1);
+	memory.IncrementReaders(l);
 	memory.GetMemoryCharge() = std::move(reservation);
 	return BufferHandle(shared_from_this(), memory.GetBuffer());
 }
 
-BufferHandle BlockHandle::Load(QueryContext context, unique_ptr<FileBuffer> reusable_buffer) {
+BufferHandle BlockHandle::Load(BlockLock &l, QueryContext context, unique_ptr<FileBuffer> reusable_buffer) {
+	memory.VerifyMutex(l);
 	if (memory.GetState() == BlockState::BLOCK_LOADED) {
 		// The block has already been loaded.
 		D_ASSERT(memory.GetBuffer());
-		memory.IncrementReaders();
+		memory.IncrementReaders(l);
 		return BufferHandle(shared_from_this(), memory.GetBuffer());
+	}
+
+	if (!memory.CanReload()) {
+		// the buffer was destroyed upon unpin/evict, or the handle was replaced and its disk block
+		// may be rewritten in place - the caller must re-resolve the block id
+		return BufferHandle();
 	}
 
 	if (BlockId() < MAXIMUM_BLOCK) {
@@ -229,16 +231,12 @@ BufferHandle BlockHandle::Load(QueryContext context, unique_ptr<FileBuffer> reus
 		block_manager.Read(context, *block);
 		memory.GetBuffer() = std::move(block);
 	} else {
-		if (!memory.MustWriteToTemporaryFile()) {
-			// The buffer was destroyed upon unpin/evict, so there is no temporary buffer to read.
-			return BufferHandle();
-		}
 		auto &buffer_manager = memory.GetBufferManager();
 		auto &buffer = memory.GetBuffer();
 		buffer = buffer_manager.ReadTemporaryBuffer(context, memory.GetMemoryTag(), *this, std::move(reusable_buffer));
 	}
 	memory.SetState(BlockState::BLOCK_LOADED);
-	memory.SetReaders(1);
+	memory.IncrementReaders(l);
 	return BufferHandle(shared_from_this(), memory.GetBuffer());
 }
 

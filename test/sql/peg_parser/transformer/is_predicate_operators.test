@@ -1,0 +1,93 @@
+# name: test/sql/peg_parser/transformer/is_predicate_operators.test
+# description: IS predicates can be followed by comparisons and other operators
+# group: [transformer]
+
+query I
+SELECT 1 IS NULL = FALSE;
+----
+true
+
+query I
+SELECT 1 IS NOT NULL = TRUE;
+----
+true
+
+query I
+SELECT NULL ISNULL = TRUE;
+----
+true
+
+query I
+SELECT NULL NOTNULL = FALSE;
+----
+true
+
+query I
+SELECT 1 IS UNKNOWN = FALSE;
+----
+true
+
+query T
+SELECT 1 IS NULL || '';
+----
+false
+
+query I
+SELECT 1 IS DISTINCT FROM 2;
+----
+true
+
+query I
+SELECT 1 IS NOT DISTINCT FROM 1;
+----
+true
+
+query I
+SELECT 1 = 1 IS DISTINCT FROM FALSE;
+----
+true
+
+query I
+SELECT 1 IS NULL IS DISTINCT FROM TRUE;
+----
+true
+
+query I
+SELECT 1 IS NOT NULL IS NOT DISTINCT FROM TRUE;
+----
+true
+
+query I
+SELECT (1 + 2) IS NULL = FALSE;
+----
+true
+
+query I
+SELECT (1 IS NULL) = FALSE;
+----
+true
+
+query I
+SELECT 1 = 1 IS NULL;
+----
+false
+
+query I
+SELECT (NULL, 1, NULL) <> (5, 6, 7) IS NULL;
+----
+false
+
+query I
+SELECT 'abc' ~ ANY(['z', NULL]) IS NULL;
+----
+true
+
+statement error
+SELECT 1 IS NULL = FALSE = TRUE;
+----
+Parser Error: Chained comparisons are not supported, use AND to combine comparisons
+
+statement error
+SELECT 1 IS NULL IS DISTINCT FROM FALSE IS DISTINCT FROM TRUE;
+----
+Parser Error: Chained comparisons are not supported, use AND to combine comparisons

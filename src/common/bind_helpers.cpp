@@ -9,6 +9,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression_binder/relation_binder.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/main/config.hpp"
 
@@ -21,6 +22,33 @@ Value ConvertVectorToValue(vector<Value> set) {
 		return Value::LIST(LogicalType::BOOLEAN, std::move(set));
 	}
 	return Value::LIST(std::move(set));
+}
+
+idx_t ParseBytesArg(const Identifier &name, const Value &arg) {
+	if (arg.IsNull()) {
+		throw BinderException("NULL is not supported as a valid option for COPY option \"%s\"",
+		                      StringUtil::Upper(name.GetIdentifierName()));
+	}
+	optional_idx result;
+	if (arg.type().id() == LogicalTypeId::VARCHAR) {
+		result = DBConfig::ParseMemoryLimit(arg.ToString());
+	} else {
+		auto cast_arg = arg.DefaultTryCastAs(LogicalType::UBIGINT);
+		if (!cast_arg) {
+			throw BinderException("Unable to parse bytes from \"%s\" for copy option \"%s\" ", arg.ToString(),
+			                      StringUtil::Upper(name.GetIdentifierName()));
+		}
+		auto bytes = cast_arg->GetValue<idx_t>();
+		if (bytes != DConstants::INVALID_INDEX) {
+			result = bytes;
+		}
+	}
+	if (!result.IsValid()) {
+		// e.g. '-1' or 'none', which ParseMemoryLimit parses as unlimited
+		throw BinderException("Copy option \"%s\" must be a valid size, not \"%s\"",
+		                      StringUtil::Upper(name.GetIdentifierName()), arg.ToString());
+	}
+	return result.GetIndex();
 }
 
 vector<bool> ParseColumnList(const vector<Value> &set, const vector<Identifier> &names, const Identifier &option_name) {
@@ -134,6 +162,21 @@ vector<idx_t> ParseColumnsOrdered(const Value &value, const vector<Identifier> &
 	return ParseColumnsOrdered(children, names, option_name);
 }
 
+vector<BoundOrderByNode> BindOrderByNodes(Binder &binder, TableIndex table_index, const Identifier &alias,
+                                          const vector<Identifier> &names, const vector<LogicalType> &types,
+                                          vector<OrderByNode> &orders) {
+	auto child_binder = Binder::CreateBinder(binder.context, &binder);
+	child_binder->bind_context.AddGenericBinding(table_index, alias, names, types);
+	RelationBinder expr_binder(*child_binder, binder.context, "ORDER_BY");
+	vector<BoundOrderByNode> bound_orders;
+	for (auto &order : orders) {
+		auto expression = expr_binder.Bind(order.expression);
+		ExpressionBinder::PushCollation(binder.context, expression, expression->GetReturnType());
+		bound_orders.emplace_back(order.type, order.null_order, std::move(expression));
+	}
+	return bound_orders;
+}
+
 vector<BoundOrderByNode> ParseOrderByColumns(Binder &binder, const vector<Value> &set,
                                              const BoundStatement &bound_statement, const Identifier &option_name) {
 	// Parse
@@ -142,21 +185,16 @@ vector<BoundOrderByNode> ParseOrderByColumns(Binder &binder, const vector<Value>
 		order_by_strings.push_back(value.ToString());
 	}
 	const auto order_by_clause = StringUtil::Join(order_by_strings, ", ");
-	auto parsed_orders = Parser::ParseOrderList(order_by_clause);
+	auto parsed_orders = Parser(binder.context).ParseOrderList(order_by_clause);
 
 	// Bind
 	auto &config = DBConfig::GetConfig(binder.context);
-	auto child_binder = Binder::CreateBinder(binder.context, &binder);
-	auto table_index = binder.GenerateTableIndex();
-	child_binder->bind_context.AddGenericBinding(table_index, "__copy_input", bound_statement.names,
-	                                             bound_statement.types);
-	ExpressionBinder expr_binder(*child_binder, binder.context);
-	vector<BoundOrderByNode> bound_orders;
 	for (auto &parsed_order : parsed_orders) {
-		const auto order_type = config.ResolveOrder(binder.context, parsed_order.type);
-		const auto null_order = config.ResolveNullOrder(binder.context, order_type, parsed_order.null_order);
-		bound_orders.emplace_back(order_type, null_order, expr_binder.Bind(parsed_order.expression));
+		parsed_order.type = config.ResolveOrder(binder.context, parsed_order.type);
+		parsed_order.null_order = config.ResolveNullOrder(binder.context, parsed_order.type, parsed_order.null_order);
 	}
+	auto bound_orders = BindOrderByNodes(binder, binder.GenerateTableIndex(), "__copy_input", bound_statement.names,
+	                                     bound_statement.types, parsed_orders);
 
 	// Convert BoundColumnRefExpression to BoundReferenceExpression
 	vector<Value> name_set;

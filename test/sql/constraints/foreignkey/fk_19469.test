@@ -104,3 +104,23 @@ INSERT INTO fk_19990_data BY NAME
     FROM fk_19990_temp_data;
 ----
 Constraint Error: Violates foreign key constraint because key "reference_id: 3" does not exist in the referenced table
+
+statement ok
+CREATE TABLE fk_local_p(id INT PRIMARY KEY);
+
+statement ok
+CREATE TABLE fk_local_c(pid INT, FOREIGN KEY (pid) REFERENCES fk_local_p(id));
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO fk_local_p VALUES (10), (20);
+
+statement error
+INSERT INTO fk_local_c VALUES (10), (30), (20);
+----
+Constraint Error: Violates foreign key constraint because key "id: 30" does not exist in the referenced table
+
+statement ok
+ROLLBACK;

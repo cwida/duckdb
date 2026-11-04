@@ -1,0 +1,44 @@
+# name: test/sql/types/list/unnest_non_constant_options.test
+# description: Non-constant or NULL UNNEST options raise a binder error
+# group: [list]
+
+statement error
+SELECT UNNEST([[1,2]], max_depth := unnest([2]));
+----
+UNNEST parameter "max_depth" must be a constant
+
+statement error
+SELECT UNNEST([1], recursive := unnest([true]));
+----
+UNNEST parameter "recursive" must be a constant
+
+statement error
+SELECT UNNEST([1], keep_parent_names := unnest([true]));
+----
+UNNEST parameter "keep_parent_names" must be a constant
+
+statement error
+SELECT UNNEST([1], max_depth := sum(1));
+----
+UNNEST parameter "max_depth" must be a constant
+
+statement error
+SELECT UNNEST([1], max_depth := row_number() OVER ());
+----
+UNNEST parameter "max_depth" must be a constant
+
+statement error
+SELECT UNNEST([1], recursive := NULL);
+----
+UNNEST parameter "recursive" cannot be NULL
+
+statement error
+SELECT UNNEST([1], max_depth := NULL);
+----
+UNNEST parameter "max_depth" cannot be NULL
+
+query I
+SELECT UNNEST([[1,2]], max_depth := 1 + 1);
+----
+1
+2

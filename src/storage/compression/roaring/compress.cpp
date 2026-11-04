@@ -364,42 +364,45 @@ void RoaringCompressState::FlushContainer() {
 			D_ASSERT(metadata.IsInverted());
 			auto number_of_runs = metadata.NumberOfRuns();
 			if (number_of_runs >= COMPRESSED_RUN_THRESHOLD) {
-				auto segments = container_state.run_counts;
-				auto data_ptr = container_state.compressed_runs;
+				auto segments = unsafe_array_ptr<const uint8_t>(container_state.run_counts, COMPRESSED_SEGMENT_COUNT);
+				auto data = unsafe_array_ptr<const uint8_t>(container_state.compressed_runs, number_of_runs * 2);
 				scan_state = make_uniq<CompressedRunContainerScanState>(container_index, container_size, number_of_runs,
-				                                                        segments, data_ptr);
+				                                                        segments, data);
 			} else {
-				auto data_ptr = reinterpret_cast<data_ptr_t>(container_state.runs);
+				auto data = unsafe_array_ptr<const RunContainerRLEPair>(container_state.runs, number_of_runs);
 				scan_state =
-				    make_uniq<RunContainerScanState>(container_index, container_size, number_of_runs, data_ptr);
+				    make_uniq<UncompressedRunContainerScanState>(container_index, container_size, number_of_runs, data);
 			}
 		} else {
 			auto cardinality = metadata.Cardinality();
 			if (cardinality >= COMPRESSED_ARRAY_THRESHOLD) {
 				if (metadata.IsInverted()) {
-					auto segments = reinterpret_cast<data_ptr_t>(container_state.array_counts[NULLS]);
-					auto data_ptr = reinterpret_cast<data_ptr_t>(container_state.compressed_arrays[NULLS]);
+					auto segments =
+					    unsafe_array_ptr<const uint8_t>(container_state.array_counts[NULLS], COMPRESSED_SEGMENT_COUNT);
+					auto data = unsafe_array_ptr<const uint8_t>(container_state.compressed_arrays[NULLS], cardinality);
 					scan_state = make_uniq<CompressedArrayContainerScanState<NULLS>>(container_index, container_size,
-					                                                                 cardinality, segments, data_ptr);
+					                                                                 cardinality, segments, data);
 				} else {
-					auto segments = reinterpret_cast<data_ptr_t>(container_state.array_counts[NON_NULLS]);
-					auto data_ptr = reinterpret_cast<data_ptr_t>(container_state.compressed_arrays[NON_NULLS]);
+					auto segments = unsafe_array_ptr<const uint8_t>(container_state.array_counts[NON_NULLS],
+					                                                COMPRESSED_SEGMENT_COUNT);
+					auto data =
+					    unsafe_array_ptr<const uint8_t>(container_state.compressed_arrays[NON_NULLS], cardinality);
 					scan_state = make_uniq<CompressedArrayContainerScanState<NON_NULLS>>(
-					    container_index, container_size, cardinality, segments, data_ptr);
+					    container_index, container_size, cardinality, segments, data);
 				}
 			} else {
 				if (metadata.IsInverted()) {
-					auto data_ptr = reinterpret_cast<data_ptr_t>(container_state.arrays[NULLS]);
-					scan_state = make_uniq<ArrayContainerScanState<NULLS>>(container_index, container_size, cardinality,
-					                                                       data_ptr);
+					auto data = unsafe_array_ptr<const uint16_t>(container_state.arrays[NULLS], cardinality);
+					scan_state = make_uniq<UncompressedArrayContainerScanState<NULLS>>(container_index, container_size,
+					                                                                   cardinality, data);
 				} else {
-					auto data_ptr = reinterpret_cast<data_ptr_t>(container_state.arrays[NON_NULLS]);
-					scan_state = make_uniq<ArrayContainerScanState<NON_NULLS>>(container_index, container_size,
-					                                                           cardinality, data_ptr);
+					auto data = unsafe_array_ptr<const uint16_t>(container_state.arrays[NON_NULLS], cardinality);
+					scan_state = make_uniq<UncompressedArrayContainerScanState<NON_NULLS>>(
+					    container_index, container_size, cardinality, data);
 				}
 			}
 		}
-		scan_state->Verify();
+		scan_state->VerifyWrittenData();
 	}
 
 #endif

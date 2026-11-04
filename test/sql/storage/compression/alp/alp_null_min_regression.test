@@ -1,0 +1,30 @@
+# name: test/sql/storage/compression/alp/alp_null_min_regression.test
+# description: Test regression where leading NULLs corrupt min statistics in ALP and ALPRD
+# group: [alp]
+
+load {TEST_DIR}/test_alp_null_min_regression.db
+
+foreach compression alp alprd
+
+statement ok
+PRAGMA force_compression='{compression}';
+
+foreach type DOUBLE FLOAT
+
+statement ok
+CREATE OR REPLACE TABLE t(x {type});
+
+statement ok
+INSERT INTO t VALUES (NULL), (42.5);
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT MIN(x) FROM t;
+----
+42.5
+
+endloop
+
+endloop

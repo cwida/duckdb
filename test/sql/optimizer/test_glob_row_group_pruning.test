@@ -43,6 +43,17 @@ EXPLAIN ANALYZE SELECT count(*) FROM t WHERE s GLOB 'm?m*';
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
 
+# Leading and trailing wildcards with an internal question mark cannot use a contains filter
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE s GLOB '*m?m*';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
+
+query I
+SELECT count(*) FROM t WHERE s GLOB '*m?m*';
+----
+2048
+
 query I
 SELECT count(*) FROM t WHERE s NOT GLOB 'qqq';
 ----

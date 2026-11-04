@@ -73,6 +73,15 @@ void ColumnLifetimeAnalyzer::VisitOperator(LogicalOperator &op) {
 		analyzer.StandardVisitOperator(op);
 		return;
 	}
+	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
+		ColumnLifetimeAnalyzer producer(optimizer, root);
+		for (auto &binding : op.children[0]->GetColumnBindings()) {
+			producer.column_references.insert(binding);
+		}
+		producer.VisitOperator(*op.children[0]);
+		VisitOperator(*op.children[1]);
+		return;
+	}
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
@@ -114,9 +123,8 @@ void ColumnLifetimeAnalyzer::VisitOperator(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_UNION:
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 	case LogicalOperatorType::LOGICAL_INTERSECT:
-	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
-	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
-		// for set operations/materialized CTEs we don't remove anything, just recursively visit the children
+	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
+		// for set operations/recursive CTEs we don't remove anything, just recursively visit the children
 		// FIXME: for UNION we can remove unreferenced columns as long as everything_referenced is false (i.e. we
 		// encounter a UNION node that is not preceded by a DISTINCT)
 		ColumnLifetimeAnalyzer analyzer(optimizer, root, true);

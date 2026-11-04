@@ -36,6 +36,55 @@ jobs:
       - name: Preliminary checks on CI
         run: echo "Event name is ${{ github.event_name }}"
 
+  clang-tidy:
+    name: Clang-Tidy (${{ matrix.shard }}/4)
+    needs: check-draft
+    runs-on: ${{ github.repository_owner == 'duckdb' && 'namespace-profile-linux-x64' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      CC: gcc
+      CXX: g++
+      GEN: ninja
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install
+        timeout-minutes: 10
+        run: |
+          python3 scripts/ci/retry.py -- make toolsci
+          python3 scripts/ci/retry.py -- sudo apt-get update -y -qq
+          python3 scripts/ci/retry.py -- sudo apt-get install -y -qq clang-tidy-20
+
+      - name: Clang-Tidy
+        shell: bash
+        run: |
+          log_file=clang-tidy-shard-${{ matrix.shard }}.log
+          if make tidy-check \
+              TIDY_BINARY=clang-tidy-20 \
+              TIDY_SHARD_COUNT=4 \
+              TIDY_SHARD_INDEX=$((${{ matrix.shard }} - 1)) \
+              >"${log_file}" 2>&1; then
+            tidy_status=0
+          else
+            tidy_status=$?
+          fi
+          python3 scripts/ci/summarize_clang_tidy.py "${log_file}" --command-exit-code "${tidy_status}"
+          exit "${tidy_status}"
+
+      - name: Upload clang-tidy log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-log-${{ matrix.shard }}
+          path: clang-tidy-shard-${{ matrix.shard }}.log
+          if-no-files-found: error
+
   codeql-analyze:
     name: Analyze (${{ matrix.language }})
     needs: check-draft
@@ -140,7 +189,7 @@ jobs:
       env:
         FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       with:
-        vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
+        vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
 
     - name: Build
       shell: bash
@@ -184,8 +233,12 @@ jobs:
     - uses: ./.github/actions/swap_space
 
     - name: Build
-      shell: bash
-      run: python3 scripts/ci/retry.py -- bash -lc 'UNSAFE_NUMERIC_CAST=1 make relassert'
+      uses: duckdb/duckdb-ci/build-duckdb@main
+      with:
+        build-type: relassert
+        build: python3 scripts/ci/retry.py -- bash -lc 'UNSAFE_NUMERIC_CAST=1 make relassert'
+        vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
+        cache-suffix: nightly_release_assert_osx_storage
 
     - name: Test
       shell: bash
@@ -260,7 +313,7 @@ jobs:
       env:
         FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       with:
-        vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
+        vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
 
     - name: Build
       shell: bash
@@ -320,7 +373,6 @@ jobs:
      name: Sqllogic tests
      runs-on: ubuntu-latest # Secondary task of this CI job is to test building duckdb on latest ubuntu
      needs: linux-memory-leaks
-
      steps:
      - uses: actions/checkout@v6
        with:
@@ -417,7 +469,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: python3 scripts/ci/retry.py -- bash -lc 'CORE_EXTENSIONS="tpch" make'
+        run: python3 scripts/ci/retry.py -- bash -lc 'CORE_EXTENSIONS="tpch" LINK_CORE_EXTENSIONS=1 make'
 
       - name: Start Minio
         working-directory: ${{ github.workspace }}/duckdb-httpfs
@@ -473,12 +525,16 @@ jobs:
      - uses: ./.github/actions/swap_space
 
      - name: Build
-       shell: bash
-       run: |
-         python3 scripts/ci/retry.py -- make
+       uses: duckdb/duckdb-ci/build-duckdb@main
+       with:
+         build-type: release
+         build: |
+           python3 scripts/ci/retry.py -- make
 
-         cd unsafe
-         python3 ../scripts/ci/retry.py -- bash -lc 'UNSAFE_NUMERIC_CAST=1 DISABLE_MEMORY_SAFETY=1 make'
+           cd unsafe
+           python3 ../scripts/ci/retry.py -- bash -lc 'UNSAFE_NUMERIC_CAST=1 DISABLE_MEMORY_SAFETY=1 make'
+         vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
+         cache-suffix: nightly_regression_test_memory_safety
 
      - name: Set up benchmarks
        shell: bash
@@ -582,10 +638,14 @@ jobs:
       - uses: ./.github/actions/swap_space
 
       - name: Build
-        shell: bash
+        uses: duckdb/duckdb-ci/build-duckdb@main
         env:
           DISABLE_SANITIZER: 1
-        run: python3 scripts/ci/retry.py -- make relassert
+        with:
+          build-type: relassert
+          build: python3 scripts/ci/retry.py -- make relassert
+          vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
+          cache-suffix: nightly_force_blocking_sink_source
 
       - name: Test
         shell: bash
@@ -698,15 +758,20 @@ jobs:
      - uses: ./.github/actions/swap_space
 
      - name: Build
-       shell: bash
-       run: python3 scripts/ci/retry.py -- make relassert
+       uses: duckdb/duckdb-ci/build-duckdb@main
+       with:
+         build-type: relassert
+         build: python3 scripts/ci/retry.py -- make relassert
+         vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
+         cache-suffix: nightly_hash_zero
 
      - name: Test
        shell: bash
+       timeout-minutes: 45
        # HASH_ZERO=1 triggers hash collisions; some test statements can turn
-       # into quadratic runtime and thus very slow. Report tests >30s, but only
-       # fail when a test runtime exceeds 2 minutes.
-       run: make unittest_relassert T="--track-runtime 30 --batch-timeout 120 --test-config=test/configs/hash_zero.json"
+       # quadratic. Isolate each test and report body timeouts without failing;
+       # correctness failures and cleanup hangs still fail the job.
+       run: make unittest_relassert T="--track-runtime 30 --batch-size 1 --batch-timeout 60 --timeout-policy warn --test-config=test/configs/hash_zero.json"
 
 
   bwc-build:
@@ -733,10 +798,16 @@ jobs:
         uses: ./.github/actions/ccache-action
 
       - name: Build DuckDB
-        run: |
-          python3 scripts/ci/retry.py -- make release \
-            EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake' \
-            DUCKDB_EXTENSIONS='tpcds;icu;autocomplete;tpch;json'
+        uses: duckdb/duckdb-ci/build-duckdb@main
+        with:
+          build-type: release
+          build: |
+            python3 scripts/ci/retry.py -- make release \
+              EXTENSION_CONFIGS='.github/config/extensions/httpfs.cmake;.github/config/extensions/test-utils.cmake;.github/config/extensions/inet.cmake' \
+              STATICALLY_LINK_EXTENSIONS='core_functions;parquet;json;icu;tpcds;tpch;autocomplete;httpfs;inet;test_utils' \
+              DUCKDB_EXTENSIONS='tpcds;icu;autocomplete;tpch;json'
+          vcpkg-commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
+          cache-suffix: nightly_bwc_build
 
       - name: Upload DuckDB binary
         uses: actions/upload-artifact@v7

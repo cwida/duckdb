@@ -84,7 +84,7 @@ select [
 	$$[(("  test  ")), {'a': (\\  test  \\)}]$$
 ]
 ----
-[[{'a': {'inner': '  test  '}}, {'a': {'inner': \  test  \}}], [{'a': {'inner': '  test  '}}, {'a': {'inner': \\  test  \\}}]]
+[[{'a': {'inner': '  test  '}}, {'a': {'inner': '\\  test  \\'}}], [{'a': {'inner': '  test  '}}, {'a': {'inner': '\\\\  test  \\\\'}}]]
 
 query III
 select [

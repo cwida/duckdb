@@ -1,0 +1,23 @@
+# name: test/sql/copy/parquet/parquet_footer_size_option.test
+# description: Out-of-range footer_size file open options are rejected
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 a, 'hello' b) TO '{TEST_DIR}/footer_size.parquet' (FORMAT PARQUET);
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_size.parquet', 'footer_size': 18446744073709551615::UBIGINT}]);
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_size.parquet', 'footer_size': 4294967296::UBIGINT}]);
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/footer_size.parquet', 'footer_size': 4294967295::UBIGINT}]);
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*

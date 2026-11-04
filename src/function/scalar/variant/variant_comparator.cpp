@@ -352,7 +352,8 @@ unique_ptr<BaseStatistics> VariantComparatorStats(ClientContext &context, Functi
 
 ScalarFunction VariantComparatorFun::GetFunction() {
 	auto variant_type = LogicalType::VARIANT();
-	ScalarFunction function("variant_comparator", {variant_type}, LogicalType::BLOB, VariantComparatorFunction);
+	ScalarFunction function("variant_comparator", {}, LogicalType::BLOB, VariantComparatorFunction);
+	function.GetSignature().AddParameter("input_variant", variant_type);
 	function.SetStatisticsCallback(VariantComparatorStats);
 	return function;
 }

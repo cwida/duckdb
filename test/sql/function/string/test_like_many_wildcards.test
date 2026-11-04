@@ -1,0 +1,38 @@
+# name: test/sql/function/string/test_like_many_wildcards.test
+# description: LIKE patterns with many wildcards must not recurse deeply
+# group: [string]
+
+query I
+SELECT like_escape(repeat('a', 30000), repeat('%a', 30000), '');
+----
+true
+
+query I
+SELECT like_escape(repeat('a', 29999), repeat('%a', 30000), '');
+----
+false
+
+query I
+SELECT repeat('a', 30000) LIKE repeat('%a', 30000);
+----
+true
+
+query I
+SELECT ilike_escape(repeat('A', 30000) || 'b', repeat('%a', 30000) || '%c', '');
+----
+false
+
+query I
+SELECT like_escape(repeat('ab', 1000), repeat('%a_', 1000) || '%', '\');
+----
+true
+
+query I
+SELECT like_escape('x%y%z', '%\%%\%%', '\');
+----
+true
+
+query I
+SELECT like_escape('x%y%z', '%\%%\%%\%%', '\');
+----
+false

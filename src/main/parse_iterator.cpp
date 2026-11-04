@@ -15,8 +15,28 @@
 
 namespace duckdb {
 
-ParseIterator::ParseIterator(ClientContext &context_p, const string &sql_p)
-    : context(context_p), sql(Parser::NormalizeSQLString(sql_p)) {
+ParseIterator::ParseIterator(ClientContext &context_p, const string &sql_p, bool apply_invalidation_policy_p,
+                             optional_ptr<ClientContextLock> held_lock_p)
+    : context(context_p), apply_invalidation_policy(apply_invalidation_policy_p), held_lock(held_lock_p) {
+	try {
+		sql = Parser::NormalizeSQLString(sql_p);
+	} catch (std::exception &ex) {
+		ApplyInvalidationPolicy(ErrorData(ex));
+		throw;
+	}
+}
+
+void ParseIterator::ApplyInvalidationPolicy(const ErrorData &error) {
+	if (!apply_invalidation_policy) {
+		return;
+	}
+	if (held_lock) {
+		context.ApplyInvalidationPolicy(error);
+		return;
+	}
+	// Parsing itself can run without the context lock, but the transaction state must not change underneath us
+	auto lock = context.LockContext();
+	context.ApplyInvalidationPolicy(error);
 }
 
 ParseIterator::~ParseIterator() = default;
@@ -28,7 +48,6 @@ ClientContext &ParseIterator::GetClientContext() {
 }
 
 bool ParseIterator::Peek() {
-	auto &client_context = context;
 	// Already buffered from a prior Peek — just report it.
 	if (current_statement) {
 		return true;
@@ -36,6 +55,20 @@ bool ParseIterator::Peek() {
 	if (exhausted) {
 		return false;
 	}
+	try {
+		return PeekInternal();
+	} catch (std::exception &ex) {
+		// Retrying would parse the failing statement again, and apply the policy again to whatever transaction is
+		// active by then
+		exhausted = true;
+		// Rendering the error for display is left to the caller, since some render errors themselves
+		ApplyInvalidationPolicy(ErrorData(ex));
+		throw;
+	}
+}
+
+bool ParseIterator::PeekInternal() {
+	auto &client_context = context;
 	auto options = client_context.GetParserOptions();
 	// On the very first Peek, give `parser_override` extensions a chance to claim the whole
 	// query. If one does, we yield its statements one at a time and skip the PEG path entirely.
@@ -80,9 +113,9 @@ bool ParseIterator::Peek() {
 		current_statement = std::move((*overridden_statements)[override_cursor++]);
 		return true;
 	}
-	if (!parser) {
-		parser = make_uniq<Parser>(options);
-	}
+	// parser options can change between statements of the same input (SET statements such as
+	// integer_division or active_grammar_extensions), so each statement gets a parser with fresh options
+	Parser parser(options);
 	EnsureTokenized();
 	// Walk the token cursor through the cached `tokens`, calling Parser::ParseTopLevelStatement
 	// repeatedly. A nullptr return with cursor advanced means a separator-only TopLevelStatement
@@ -93,17 +126,7 @@ bool ParseIterator::Peek() {
 			exhausted = true;
 			return false;
 		}
-		unique_ptr<SQLStatement> stmt;
-		try {
-			stmt = parser->ParseTopLevelStatement(*token_iterator);
-		} catch (ParserException &) {
-			// Mirror Parser::ParseQuery's parse_function-extension fallback so extensions like
-			// `quack` can claim a segment that PEG couldn't parse.
-			stmt = parser->TryParseExtensionStatement(*token_iterator, sql);
-			if (!stmt) {
-				throw;
-			}
-		}
+		auto stmt = parser.ParseTopLevelStatement(*token_iterator, sql);
 		if (stmt) {
 			// ParseTopLevelStatement doesn't populate stmt->query (it operates on tokens, not the
 			// source string). Mirror Parser::ParseQuery's per-statement post-processing: extend from

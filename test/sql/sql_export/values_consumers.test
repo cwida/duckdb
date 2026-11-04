@@ -1,0 +1,51 @@
+# name: test/sql/sql_export/values_consumers.test
+# description: SQL export preserves VALUES under consuming joins and CTEs
+# group: [sql_export]
+
+statement ok
+CREATE TABLE values_input(v INTEGER);
+
+statement ok
+INSERT INTO values_input VALUES (1),(1),(2),(NULL);
+
+query I
+SELECT count(*) FROM values_input a,
+values_input b JOIN LATERAL (VALUES (a.v),(-1)) ss(x) ON b.v=ss.x;
+----
+5
+
+query I
+SELECT count(*) FROM values_input a,
+values_input b JOIN LATERAL (VALUES (a.v),(a.v),(NULL)) ss(x) ON b.v=ss.x;
+----
+10
+
+query I
+SELECT count(*) FROM values_input a,
+values_input b LEFT JOIN LATERAL (VALUES (a.v),(a.v)) ss(x) ON b.v=ss.x;
+----
+21
+
+query II rowsort
+SELECT ss.x,count(*) FROM values_input a,
+values_input b JOIN LATERAL (VALUES (a.v),(-1),(NULL)) ss(x) ON b.v IS NOT DISTINCT FROM ss.x
+GROUP BY ss.x;
+----
+1	4
+2	1
+NULL	5
+
+statement ok
+CREATE SEQUENCE values_input_sequence;
+
+query I
+WITH src AS MATERIALIZED (SELECT nextval('values_input_sequence') v FROM range(4))
+SELECT count(*) FROM src a,
+src b JOIN LATERAL (VALUES (a.v),(-1)) ss(x) ON b.v=ss.x;
+----
+4
+
+query I
+SELECT currval('values_input_sequence');
+----
+4

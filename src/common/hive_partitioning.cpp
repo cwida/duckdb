@@ -2,6 +2,7 @@
 
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/table_function.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -28,7 +29,7 @@ GetKnownColumnValues(const string &filename, const HivePartitioningFilterInfo &f
 
 	auto &column_map = filter_info.column_map;
 	if (filter_info.filename_enabled) {
-		auto lookup_column_id = column_map.find("filename");
+		auto lookup_column_id = column_map.find(filter_info.filename_column);
 		if (lookup_column_id != column_map.end()) {
 			result.insert(make_pair(lookup_column_id->second, PartitioningColumnValue(filename)));
 		}
@@ -37,7 +38,7 @@ GetKnownColumnValues(const string &filename, const HivePartitioningFilterInfo &f
 	if (filter_info.hive_enabled) {
 		auto partitions = HivePartitioning::Parse(filename);
 		for (auto &partition : partitions) {
-			auto lookup_column_id = column_map.find(partition.first);
+			auto lookup_column_id = column_map.find(Identifier(partition.first));
 			if (lookup_column_id != column_map.end()) {
 				result.insert(
 				    make_pair(lookup_column_id->second, PartitioningColumnValue(partition.first, partition.second)));
@@ -192,6 +193,10 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 		return;
 	}
 
+	if (!info.extra_info.total_files.IsValid()) {
+		info.extra_info.file_filter_expressions = vector<unique_ptr<Expression>>();
+	}
+
 	for (idx_t i = 0; i < files.size(); i++) {
 		auto &file = files[i];
 		bool should_prune_file = false;
@@ -228,6 +233,35 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 	}
 
 	D_ASSERT(filters.size() >= pruned_filters.size());
+
+	for (idx_t i = 0; i < filters.size() && info.extra_info.file_filter_expressions; i++) {
+		if (have_preserved_filter[i]) {
+			continue;
+		}
+		auto retained = filters[i]->Copy();
+		bool representable = true;
+		ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
+		    retained, [&](auto &column, unique_ptr<Expression> &) {
+			    auto binding = column.Binding();
+			    if (column.Depth() != 0 || binding.table_index != table_index ||
+			        binding.column_index.GetIndex() >= info.column_indexes.size()) {
+				    representable = false;
+				    return;
+			    }
+			    auto &index = info.column_indexes[binding.column_index.GetIndex()];
+			    if (index.IsVirtualColumn() || index.IsPushdownExtract() || index.HasType()) {
+				    representable = false;
+				    return;
+			    }
+			    column.BindingMutable() = ColumnBinding(TableIndex(ExtraOperatorInfo::FILE_FILTER_TABLE_INDEX),
+			                                            ProjectionIndex(index.GetPrimaryIndex()));
+		    });
+		if (!representable) {
+			info.extra_info.file_filter_expressions.reset();
+			break;
+		}
+		info.extra_info.file_filter_expressions->push_back(std::move(retained));
+	}
 
 	info.extra_info.total_files = files.size();
 	info.extra_info.filtered_files = pruned_files.size();

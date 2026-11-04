@@ -65,7 +65,7 @@ private:
 	static constexpr uint8_t OWNERSHIP = 0;
 
 public:
-	DependencySubjectFlags &Apply(DependencySubjectFlags other) {
+	DependencySubjectFlags &Apply(const DependencySubjectFlags &other) {
 		Merge(other.Value());
 		return *this;
 	}
@@ -104,7 +104,7 @@ public:
 	}
 
 public:
-	DependencyDependentFlags &Apply(DependencyDependentFlags other) {
+	DependencyDependentFlags &Apply(const DependencyDependentFlags &other) {
 		Merge(other.Value());
 		return *this;
 	}

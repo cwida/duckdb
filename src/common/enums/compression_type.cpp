@@ -10,7 +10,7 @@ namespace duckdb {
 
 vector<string> ListCompressionTypes(void) {
 	vector<string> compression_types;
-	uint8_t amount_of_compression_options = (uint8_t)CompressionType::COMPRESSION_COUNT;
+	uint8_t amount_of_compression_options = (uint8_t)CompressionType::ENUM_SIZE;
 	compression_types.reserve(amount_of_compression_options);
 	for (uint8_t i = 0; i < amount_of_compression_options; i++) {
 		compression_types.push_back(CompressionTypeToString((CompressionType)i));

@@ -1,0 +1,19 @@
+# name: test/sql/function/table/system_metadata_empty.test
+# description: Exercise system metadata table functions when no extensions registered entries
+# group: [table]
+
+query I
+SELECT count(*) >= 0 FROM duckdb_grammar_extensions();
+----
+true
+
+query I
+SELECT count(*) >= 0 FROM duckdb_coordinate_systems();
+----
+true
+
+query III
+SELECT typeof(database_oid), typeof(crs_oid), typeof(projjson)
+FROM duckdb_coordinate_systems()
+LIMIT 0;
+----

@@ -13,7 +13,7 @@
 using namespace duckdb;
 
 TEST_CASE("Test storing a big string that exceeds buffer manager size", "[storage][.]") {
-	duckdb::unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<QueryResult> result;
 	auto storage_database = TestCreatePath("storage_test");
 	auto config = GetTestConfig();
 	config->SetOptionByName("default_block_size", Value::UBIGINT(DEFAULT_BLOCK_ALLOC_SIZE));
@@ -79,7 +79,7 @@ TEST_CASE("Test storing a big string that exceeds buffer manager size", "[storag
 }
 
 TEST_CASE("Modifying the buffer manager limit at runtime for an in-memory database", "[storage][.]") {
-	duckdb::unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<QueryResult> result;
 
 	DuckDB db(nullptr);
 	Connection con(db);

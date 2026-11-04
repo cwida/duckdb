@@ -1,0 +1,297 @@
+# name: test/sql/progress/test_verify_progress.test
+# description: Test the debug_verify_progress setting
+# group: [progress]
+
+statement ok
+SET threads=1
+
+statement error
+SET debug_verify_progress='unknown'
+----
+<REGEX>:.*unrecognized value "unknown" for enum "DebugProgressVerification".*
+
+statement ok
+CREATE TABLE integers AS SELECT i FROM range(500000) t(i)
+
+statement ok
+SET debug_verify_progress='error'
+
+statement ok
+SET debug_verify_progress_ignore=''
+
+# a sequential scan feeding an ungrouped aggregate reports correct progress
+query I
+SELECT sum(i) FROM integers
+----
+124999750000
+
+# range and generate_series report progress
+query I
+SELECT sum(i) FROM range(500000) t(i)
+----
+124999750000
+
+query I
+SELECT count(*) FROM generate_series(TIMESTAMP '2000-01-01', TIMESTAMP '2001-01-01', INTERVAL 1 MINUTE)
+----
+527041
+
+# repeat and repeat_row report progress
+query I
+SELECT count(*) FROM repeat(42, 100000)
+----
+100000
+
+query I
+SELECT count(*) FROM repeat_row(1, 'hello', num_rows=100000)
+----
+100000
+
+# system table functions report progress
+loop i 0 100
+
+statement ok
+CREATE TABLE wide_{i}(c0 INTEGER, c1 INTEGER, c2 INTEGER, c3 INTEGER, c4 INTEGER, c5 INTEGER, c6 INTEGER, c7 INTEGER, c8 INTEGER, c9 INTEGER, c10 INTEGER, c11 INTEGER, c12 INTEGER, c13 INTEGER, c14 INTEGER, c15 INTEGER, c16 INTEGER, c17 INTEGER, c18 INTEGER, c19 INTEGER, c20 INTEGER, c21 INTEGER, c22 INTEGER, c23 INTEGER, c24 INTEGER, c25 INTEGER, c26 INTEGER, c27 INTEGER, c28 INTEGER, c29 INTEGER, c30 INTEGER, c31 INTEGER, c32 INTEGER, c33 INTEGER, c34 INTEGER, c35 INTEGER, c36 INTEGER, c37 INTEGER, c38 INTEGER, c39 INTEGER, c40 INTEGER, c41 INTEGER, c42 INTEGER, c43 INTEGER, c44 INTEGER, c45 INTEGER, c46 INTEGER, c47 INTEGER, c48 INTEGER, c49 INTEGER)
+
+endloop
+
+query I
+SELECT count(*) > 4096 FROM duckdb_columns()
+----
+true
+
+query I
+SELECT count(*) > 2048 FROM duckdb_functions()
+----
+true
+
+query I
+SELECT count(*) > 0 FROM test_vector_types(NULL::INT, NULL::VARCHAR, NULL::INT[])
+----
+true
+
+# direct multi-file readers report completed files while their readers are still alive
+query I
+SELECT count(*) FROM (SELECT * FROM read_text('test/sql/table_function/files/*.txt') ORDER BY filename)
+----
+3
+
+# limit and top-n report progress
+statement ok
+CREATE TABLE small_integers AS SELECT i FROM range(30000) t(i)
+
+statement ok
+SET threads=4
+
+query I
+SELECT sum(i) FROM (SELECT i FROM small_integers WHERE i % 2 = 0 LIMIT 5000 OFFSET 10)
+----
+25095000
+
+statement ok
+SET threads=1
+
+query I
+SELECT sum(i) FROM (SELECT i FROM range(1000000) t(i) ORDER BY i DESC LIMIT 5000 OFFSET 10)
+----
+4987447500
+
+# perfect hash aggregates report progress
+statement ok
+SET perfect_ht_threshold=16
+
+statement ok
+CREATE TABLE groups AS SELECT (i % 10000)::SMALLINT g FROM range(100000) t(i)
+
+query II
+SELECT count(*), sum(c) FROM (SELECT g, count(*) c FROM groups GROUP BY g)
+----
+10000	100000
+
+statement ok
+RESET perfect_ht_threshold
+
+# update and delete with returning report progress
+statement ok
+CREATE TABLE modified AS SELECT i FROM range(10000) t(i)
+
+query I
+WITH u AS (UPDATE modified SET i = i + 1 RETURNING i) SELECT count(*) FROM u
+----
+10000
+
+query II
+WITH d AS (DELETE FROM modified RETURNING i) SELECT count(*), sum(i) FROM d
+----
+10000	50005000
+
+# reservoir samples report progress
+query I
+SELECT count(*) FROM (SELECT * FROM range(100000) t(i) USING SAMPLE 10000 ROWS)
+----
+10000
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(300000) t(i) USING SAMPLE 10 PERCENT (reservoir, 42))
+----
+30000
+
+# hash aggregates report progress while scanning a partition
+query I
+SELECT count(*) FROM (SELECT i, count(*) FROM range(500000) t(i) GROUP BY i)
+----
+500000
+
+# table scans report progress within a row group
+query I
+SELECT sum(i) FROM (SELECT i FROM integers LIMIT 100000 OFFSET 10)
+----
+5000950000
+
+statement ok
+CREATE INDEX integers_index ON integers(i)
+
+statement ok
+DROP INDEX integers_index
+
+# order by reports progress while sinking and scanning
+query I
+SELECT count(*) FROM (SELECT * FROM range(1000000) t(i) ORDER BY i DESC)
+----
+1000000
+
+# no rows reach the sort
+query I
+SELECT count(*) FROM (SELECT * FROM range(1000000) t(i) WHERE i < 0 ORDER BY i DESC)
+----
+0
+
+statement ok
+SET debug_force_external=true
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(1000000) t(i) ORDER BY i DESC)
+----
+1000000
+
+statement ok
+RESET debug_force_external
+
+# window functions report progress
+query I
+SELECT count(*) FROM (SELECT sum(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM range(100000) t(i))
+----
+100000
+
+query I
+SELECT count(*) FROM (SELECT sum(i) OVER (PARTITION BY i % 7 ORDER BY i) FROM range(100000) t(i))
+----
+100000
+
+query I
+SELECT count(*) FROM (SELECT row_number() OVER () FROM range(100000) t(i))
+----
+100000
+
+# recursive CTEs report an estimated progress
+query I
+WITH RECURSIVE t(i) AS (SELECT * FROM range(100000) UNION ALL SELECT i + 100000 FROM t WHERE i < 400000) SELECT sum(i) FROM t
+----
+124999750000
+
+query I
+WITH RECURSIVE t(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM t WHERE i < 20000) SELECT count(*) FROM t
+----
+20000
+
+# shrinking iterations
+query I
+WITH RECURSIVE t(i) AS (SELECT * FROM range(100000) UNION ALL SELECT i // 2 FROM t WHERE i > 1 AND i % 2 = 0) SELECT count(*) FROM t
+----
+199989
+
+# recursive CTEs with USING KEY and scans of their recurring table report progress
+query II
+WITH RECURSIVE t(k, v) USING KEY (k) AS (SELECT i, 0 FROM range(10000) t(i) UNION (SELECT r.k, r.v + 1 FROM recurring.t r WHERE r.v < 3 AND EXISTS (SELECT 1 FROM t LIMIT 1))) SELECT count(*), sum(v) FROM t
+----
+10000	30000
+
+# the unnest table function does not report progress - this fails the query in error mode
+statement error
+SELECT sum(i) FROM unnest(range(500000)) t(i)
+----
+<REGEX>:Invalid Input Error: Progress verification failed:.*UNSUPPORTED_SOURCE \[UNNEST\] in pipeline UNNEST -> UNGROUPED_AGGREGATE.*debug_verify_progress_ignore='UNSUPPORTED_SOURCE:UNNEST'.*
+
+# violations can be ignored per invariant and operator, per operator, or per invariant
+foreach ignore UNSUPPORTED_SOURCE:UNNEST unsupported_source:unnest *:UNNEST UNSUPPORTED_SOURCE STALLED,UNSUPPORTED_SOURCE:UNNEST
+
+statement ok
+SET debug_verify_progress_ignore='{ignore}'
+
+query I
+SELECT sum(i) FROM unnest(range(500000)) t(i)
+----
+124999750000
+
+endloop
+
+# other invariants or operators are not ignored
+foreach ignore UNSUPPORTED_SINK:UNNEST UNSUPPORTED_SOURCE:SEQ_SCAN STALLED
+
+statement ok
+SET debug_verify_progress_ignore='{ignore}'
+
+statement error
+SELECT sum(i) FROM unnest(range(500000)) t(i)
+----
+<REGEX>:.*UNSUPPORTED_SOURCE \[UNNEST\].*
+
+endloop
+
+statement ok
+SET debug_verify_progress_ignore=''
+
+# single-chunk pipelines are not checked
+query I
+SELECT sum(i) FROM range(2) t(i)
+----
+1
+
+# pipelines that stop early (e.g. because of a LIMIT) are not required to complete
+query I
+SELECT max(i) FROM (SELECT i FROM integers WHERE i % 2 = 0 LIMIT 5000)
+----
+9998
+
+# in log mode, violations are logged instead of failing the query
+statement ok
+SET debug_verify_progress='log'
+
+statement ok
+CALL enable_logging('ProgressVerification')
+
+query I
+SELECT sum(i) FROM unnest(range(500000)) t(i)
+----
+124999750000
+
+query III
+SELECT invariant, operator, pipeline FROM duckdb_logs_parsed('ProgressVerification')
+----
+UNSUPPORTED_SOURCE	UNNEST	UNNEST -> UNGROUPED_AGGREGATE
+
+statement ok
+SET debug_verify_progress='none'
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT sum(i) FROM unnest(range(500000)) t(i)
+----
+124999750000
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ProgressVerification')
+----
+0

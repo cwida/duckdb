@@ -35,6 +35,7 @@ cleanup() {
 	if [ -n "$private_key_file" ]; then
 		rm -f "$private_key_file"
 	fi
+	rm -f "$ext.append" "$ext.hash" "$ext.sign" "$ext.compressed"
 }
 
 trap cleanup EXIT

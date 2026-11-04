@@ -12,8 +12,7 @@ namespace duckdb {
 
 struct BetweenFunctionData : public FunctionData {
 	BetweenFunctionData(bool lower_inclusive, bool upper_inclusive)
-	    : FunctionData(InternalKind::BOUND_BETWEEN), lower_inclusive(lower_inclusive),
-	      upper_inclusive(upper_inclusive) {
+	    : lower_inclusive(lower_inclusive), upper_inclusive(upper_inclusive) {
 	}
 
 	bool lower_inclusive;
@@ -213,8 +212,11 @@ unique_ptr<FunctionData> BetweenFunctionDeserialize(Deserializer &deserializer, 
 }
 
 ScalarFunction BetweenFun::GetFunction() {
-	ScalarFunction between_fun("__between", {LogicalType::ANY, LogicalType::ANY, LogicalType::ANY},
-	                           LogicalType::BOOLEAN, BetweenFunction, BindBetweenFun);
+	ScalarFunction between_fun("__between", {}, LogicalType::BOOLEAN, BetweenFunction, BindBetweenFun);
+	between_fun.GetSignature()
+	    .AddParameter("input", LogicalType::ANY)
+	    .AddParameter("lower", LogicalType::ANY)
+	    .AddParameter("upper", LogicalType::ANY);
 	between_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	between_fun.SetToStringCallback(BetweenToString);
 	between_fun.SetGetExpressionTypeCallback(BetweenGetExpressionType);
@@ -241,8 +243,7 @@ bool BoundBetweenExpression::UpperInclusive(const BoundFunctionExpression &betwe
 }
 
 bool BoundBetweenExpression::HasValidBindData(const BoundFunctionExpression &between_expr) {
-	return between_expr.BindInfo() &&
-	       between_expr.BindInfo()->GetInternalKind() == FunctionData::InternalKind::BOUND_BETWEEN;
+	return between_expr.BindInfo() != nullptr;
 }
 
 const Expression &BoundBetweenExpression::Input(const BoundFunctionExpression &between_expr) {

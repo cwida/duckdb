@@ -367,29 +367,6 @@ void DSNthElementNthElement(HUGE_TYPE N, int nStream) {
 }
 
 /*
- * Routine:
- * Purpose:
- * Algorithm:
- * Data Structures:
- *
- * Params:
- * Returns:
- * Called By:
- * Calls:
- * Assumptions:
- * Side Effects:
- * TODO: None
- */
-int dump_seeds_ds(int tbl) {
-	int i;
-
-	for (i = 0; Streams[i].nColumn != -1; i++)
-		if (Streams[i].nTable == tbl)
-			printf("%04d\t%09d\t%09ld\n", i, Streams[i].nUsed, Streams[i].nSeed);
-	return (0);
-}
-
-/*
  * Routine: gen_charset(char *set, int min, int max)
  * Purpose: generate random characters from set for a random length [min..max]
  * Algorithm:

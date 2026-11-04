@@ -1,0 +1,10 @@
+# name: test/parquet/test_parquet_list_leading_repeat.test
+# description: Parquet file with a list column whose first value repeats a list
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT * FROM 'data/parquet-testing/invalid_list/list_leading_repeat.parquet'
+----
+Corrupt Parquet file: a value in list column "l" repeats a list before any list started

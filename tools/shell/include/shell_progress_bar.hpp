@@ -50,4 +50,24 @@ private:
 	optional_idx previous_terminal_width;
 };
 
+//! Prints a progress line to stderr every few seconds, for consumers that read our output through a pipe (agents)
+class AgentProgressBarDisplay : public duckdb::TerminalProgressBarDisplay {
+public:
+	//! Minimum time between two progress lines
+	static constexpr double PRINT_INTERVAL_SECONDS = 5.0;
+
+public:
+	AgentProgressBarDisplay();
+
+public:
+	void Finish() override;
+
+protected:
+	void PrintProgressInternal(int32_t percentage, double estimated_remaining_seconds, bool is_finished) override;
+
+private:
+	//! When the previous line was printed (seconds since the display was created), if any
+	double last_print_time = -1;
+};
+
 } // namespace duckdb_shell

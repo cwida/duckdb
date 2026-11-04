@@ -91,7 +91,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 			    GetContext(), std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]),
 			    Value::BOOLEAN(false));
 		}
-		outer_constant.GetValueMutable() = std::move(*result_value);
+		outer_constant.SetValue(std::move(*result_value));
 	} else if (op_type == "-") {
 		// [x - 1 COMP 10] O R [1 - x COMP 10]
 		// order matters in subtraction:
@@ -111,7 +111,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 				    GetContext(), std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]),
 				    Value::BOOLEAN(false));
 			}
-			outer_constant.GetValueMutable() = std::move(*result_value);
+			outer_constant.SetValue(std::move(*result_value));
 		} else {
 			// [1 - x COMP 10]
 			// change right side to 1-10=-9
@@ -128,7 +128,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 				    GetContext(), std::move(arithmetic.GetChildrenMutable()[arithmetic_child_index]),
 				    Value::BOOLEAN(false));
 			}
-			outer_constant.GetValueMutable() = std::move(*result_value);
+			outer_constant.SetValue(std::move(*result_value));
 			// in this case, we should also flip the comparison
 			// e.g. if we have [4 - x < 2] then we should have [x > 2]
 			BoundComparisonExpression::FlipType(comparison);
@@ -180,7 +180,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 			// multiply by negative value, need to flip expression
 			BoundComparisonExpression::FlipType(comparison);
 		}
-		outer_constant.GetValueMutable() = std::move(*result_value);
+		outer_constant.SetValue(std::move(*result_value));
 	}
 	// replace left side with x
 	// first extract x from the arithmetic expression
@@ -216,13 +216,8 @@ static unique_ptr<Expression> CreateIsNanCall(ClientContext &context, const Expr
 	vector<unique_ptr<Expression>> children;
 	children.push_back(expr.Copy());
 
-	ErrorData error;
 	FunctionBinder binder(context);
-	auto isnan = binder.BindScalarFunction(Identifier::DefaultSchema(), "isnan", std::move(children), error);
-	if (!isnan) {
-		error.Throw();
-	}
-	return isnan;
+	return binder.BindScalarFunction(Identifier::DefaultSchema(), "isnan", std::move(children));
 }
 
 static unique_ptr<Expression> CreateNotIsNanGuard(ClientContext &context, const Expression &expr) {
@@ -280,6 +275,13 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 	bool nan_guard_disjunctive = false;
 	if (constant_type.IsFloating()) {
 		if (IsOrderedComparison(comparison.GetExpressionType())) {
+			auto constant_value = outer_constant.GetValue();
+			bool constant_is_nan = constant_type.id() == LogicalTypeId::FLOAT
+			                           ? Value::IsNan(FloatValue::Get(constant_value))
+			                           : Value::IsNan(DoubleValue::Get(constant_value));
+			if (constant_is_nan) {
+				return nullptr;
+			}
 			auto &input = *negation.GetChildren()[0];
 			if (!CanDuplicateForNaNGuard(input)) {
 				return nullptr;
@@ -304,7 +306,7 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		if (!result_value) {
 			return nullptr;
 		}
-		outer_constant.GetValueMutable() = std::move(*result_value);
+		outer_constant.SetValue(std::move(*result_value));
 	} else if (constant_type.id() == LogicalTypeId::DECIMAL) {
 		// negate the unscaled integer and reconstruct with the same width/scale
 		hugeint_t negated_value;
@@ -315,19 +317,16 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		auto scale = DecimalType::GetScale(constant_type);
 		switch (constant_type.InternalType()) {
 		case PhysicalType::INT16:
-			outer_constant.GetValueMutable() =
-			    Value::DECIMAL(Cast::Operation<hugeint_t, int16_t>(negated_value), width, scale);
+			outer_constant.SetValue(Value::DECIMAL(Cast::Operation<hugeint_t, int16_t>(negated_value), width, scale));
 			break;
 		case PhysicalType::INT32:
-			outer_constant.GetValueMutable() =
-			    Value::DECIMAL(Cast::Operation<hugeint_t, int32_t>(negated_value), width, scale);
+			outer_constant.SetValue(Value::DECIMAL(Cast::Operation<hugeint_t, int32_t>(negated_value), width, scale));
 			break;
 		case PhysicalType::INT64:
-			outer_constant.GetValueMutable() =
-			    Value::DECIMAL(Cast::Operation<hugeint_t, int64_t>(negated_value), width, scale);
+			outer_constant.SetValue(Value::DECIMAL(Cast::Operation<hugeint_t, int64_t>(negated_value), width, scale));
 			break;
 		case PhysicalType::INT128:
-			outer_constant.GetValueMutable() = Value::DECIMAL(negated_value, width, scale);
+			outer_constant.SetValue(Value::DECIMAL(negated_value, width, scale));
 			break;
 		default:
 			throw InternalException("Unknown DECIMAL physical type");
@@ -347,7 +346,7 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 			return ExpressionRewriter::ConstantOrNull(GetContext(), std::move(negation.GetChildrenMutable()[0]),
 			                                          Value::BOOLEAN(comparison_result));
 		}
-		outer_constant.GetValueMutable() = std::move(*result_value);
+		outer_constant.SetValue(std::move(*result_value));
 	}
 	// [-x COMP c] => [x FLIPPED_COMP -c]
 	auto inner_expr = std::move(negation.GetChildrenMutable()[0]);

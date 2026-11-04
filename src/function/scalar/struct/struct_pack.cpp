@@ -1,3 +1,4 @@
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
@@ -46,34 +47,20 @@ static void StructPackFunction(DataChunk &args, ExpressionState &state, Vector &
 template <bool IS_STRUCT_PACK>
 static unique_ptr<FunctionData> StructPackBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-	identifier_set_t name_collision_set;
+	auto &args = input.GetArguments();
 
-	// collect names and deconflict, construct return type
-	// note: zero arguments is allowed, producing an empty struct
-	child_list_t<LogicalType> struct_children;
-	for (idx_t i = 0; i < arguments.size(); i++) {
-		auto &child = arguments[i];
-		string alias;
-		if (IS_STRUCT_PACK) {
-			if (child->GetAlias().empty()) {
-				throw BinderException("Need named argument for struct pack, e.g. STRUCT_PACK(a := b)");
-			}
-			alias = child->GetAlias().GetIdentifierName();
-			if (name_collision_set.find(Identifier(alias)) != name_collision_set.end()) {
-				throw BinderException("Duplicate struct entry name \"%s\"", alias);
-			}
-			name_collision_set.insert(Identifier(alias));
-		}
-		struct_children.emplace_back(make_pair(alias, arguments[i]->GetReturnType()));
-	}
-
-	// this is more for completeness reasons
-	// row() produces an unnamed TUPLE, struct_pack() produces a named STRUCT
 	if (IS_STRUCT_PACK) {
-		bound_function.SetReturnType(LogicalType::STRUCT(std::move(struct_children)));
+		child_list_t<LogicalType> fields;
+		for (idx_t i = 0; i < args.size(); i++) {
+			fields.emplace_back(input.GetArgumentName(i), args[i]->GetReturnType());
+		}
+		bound_function.SetReturnType(LogicalType::STRUCT(std::move(fields)));
 	} else {
-		bound_function.SetReturnType(LogicalType::TUPLE(std::move(struct_children)));
+		vector<LogicalType> fields;
+		for (idx_t i = 0; i < args.size(); i++) {
+			fields.push_back(args[i]->GetReturnType());
+		}
+		bound_function.SetReturnType(LogicalType::TUPLE(std::move(fields)));
 	}
 	return make_uniq<VariableReturnBindData>(bound_function.GetReturnType());
 }
@@ -90,18 +77,38 @@ static unique_ptr<BaseStatistics> StructPackStats(ClientContext &context, Functi
 }
 
 template <bool IS_STRUCT_PACK>
+static unique_ptr<ParsedExpression> StructPackUnbind(FunctionUnbindInput &input) {
+	auto &expression = input.expression;
+	vector<FunctionArgument> arguments;
+	for (idx_t i = 0; i < input.children.size(); i++) {
+		auto name = IS_STRUCT_PACK ? StructType::GetChildName(expression.GetReturnType(), i) : Identifier();
+		arguments.emplace_back(std::move(name), std::move(input.children[i]));
+	}
+	return make_uniq<FunctionExpression>(expression.Function().GetDefinition()->GetQualifiedName(),
+	                                     std::move(arguments));
+}
+
+template <bool IS_STRUCT_PACK>
 static ScalarFunction GetStructPackFunction() {
 	ScalarFunction fun(IS_STRUCT_PACK ? "struct_pack" : "row", {},
 	                   IS_STRUCT_PACK ? LogicalTypeId::STRUCT : LogicalTypeId::TUPLE, StructPackFunction,
 	                   StructPackBind<IS_STRUCT_PACK>, StructPackStats);
-	fun.SetVarArgs(LogicalType::ANY);
+
+	if (IS_STRUCT_PACK) {
+		// struct_pack derives its field names from argument aliases, so the binder must capture argument expression
+		// aliases as named-argument names. This also preserves the legacy behavior of allowing positional arguments
+		// after named ones (the positional arguments simply take their expression's name as the field name).
+		fun.GetSignature().AddKwargs("kwargs", LogicalType::ANY);
+		fun.SetCaptureArgumentAliases(true);
+	} else {
+		// row produces an unnamed TUPLE, so it ignores the names of its arguments
+		fun.GetSignature().AddArgs("args", LogicalType::ANY);
+	}
+
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	// struct_pack/row derive their (struct field) names from argument aliases, so the binder must capture argument
-	// expression aliases as named-argument names. This also preserves the legacy behavior of allowing positional
-	// arguments after named ones (the positional arguments simply take their expression's name as the field name).
-	fun.SetCaptureArgumentAliases(true);
 	fun.SetSerializeCallback(VariableReturnBindData::Serialize);
 	fun.SetDeserializeCallback(VariableReturnBindData::Deserialize);
+	fun.SetUnbindCallback(StructPackUnbind<IS_STRUCT_PACK>);
 	return fun;
 }
 

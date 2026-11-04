@@ -1,0 +1,121 @@
+# name: test/optimizer/comparison_simplification_narrowing_casts.test
+# description: Comparison simplification must not remove casts that are not invertible
+# group: [optimizer]
+
+# narrowing DECIMAL casts
+statement ok
+CREATE TABLE d AS SELECT * FROM (VALUES (1::DECIMAL(18,0)), (100000::DECIMAL(18,0))) v(d);
+
+query I
+SELECT count(*) FROM d WHERE TRY_CAST(d AS SMALLINT) >= 2;
+----
+0
+
+statement error
+SELECT count(*) FROM d WHERE CAST(d AS SMALLINT) >= 2;
+----
+Conversion Error
+
+query I
+SELECT count(*) FROM d WHERE TRY_CAST(d AS DECIMAL(4,0)) >= 2;
+----
+0
+
+query I
+SELECT count(*) FROM d WHERE TRY_CAST(d AS UTINYINT) >= 0;
+----
+1
+
+statement ok
+CREATE TABLE i AS SELECT * FROM (VALUES (1), (100000), (-5)) v(i);
+
+query I
+SELECT count(*) FROM i WHERE TRY_CAST(i AS DECIMAL(4,0)) >= -10;
+----
+2
+
+statement ok
+CREATE TABLE h AS SELECT * FROM (VALUES (1::HUGEINT), ('170141183460469231731687303715884105727'::HUGEINT)) v(h);
+
+query I
+SELECT count(*) FROM h WHERE TRY_CAST(h AS DECIMAL(38,0)) >= 0;
+----
+1
+
+# widening casts still give the right results
+query I
+SELECT count(*) FROM i WHERE i::DECIMAL(18,2) >= 2.5;
+----
+1
+
+query I
+SELECT count(*) FROM d WHERE d::DECIMAL(20,2) = 100000;
+----
+1
+
+# STRUCT casts that add or drop fields
+statement ok
+CREATE TABLE t1(s STRUCT(a INT));
+
+statement ok
+INSERT INTO t1 VALUES ({'a': 1});
+
+query I
+SELECT s::STRUCT(a INT, b INT) = {'a': 1, 'b': 2} FROM t1;
+----
+false
+
+statement ok
+CREATE TABLE t2(s STRUCT(a INT, b INT));
+
+statement ok
+INSERT INTO t2 VALUES ({'a': 1, 'b': 5});
+
+query I
+SELECT count(*) FROM t2 WHERE s::STRUCT(a INT) = {'a': 1};
+----
+1
+
+query I
+SELECT count(*) FROM t2 WHERE s::STRUCT(a BIGINT, b BIGINT) = {'a': 1, 'b': 5};
+----
+1
+
+# ARRAY casts that change the size
+statement ok
+CREATE TABLE t3(a BIGINT[2]);
+
+statement ok
+INSERT INTO t3 VALUES ([1, 2]);
+
+statement error
+SELECT * FROM t3 WHERE a::INT[3] = [1, 2, 3]::INT[3];
+----
+Cannot cast array of size 2 to array of size 3
+
+statement error
+SELECT * FROM t3 WHERE a::INT[20000] = range(20000)::INT[20000];
+----
+Cannot cast array of size 2 to array of size 20000
+
+query I
+SELECT count(*) FROM t3 WHERE a::INT[2] = [1, 2]::INT[2];
+----
+1
+
+query I
+SELECT count(*) FROM t3 WHERE a::HUGEINT[2] = [1, 2]::HUGEINT[2];
+----
+1
+
+# UNION casts
+statement ok
+CREATE TABLE t4(u UNION(a INT));
+
+statement ok
+INSERT INTO t4 VALUES (1);
+
+query I
+SELECT count(*) FROM t4 WHERE u::UNION(a INT, b VARCHAR) = union_value(b := 'x')::UNION(a INT, b VARCHAR);
+----
+0

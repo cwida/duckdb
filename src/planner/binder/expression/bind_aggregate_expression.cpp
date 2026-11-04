@@ -99,7 +99,8 @@ static void NegatePercentileFractions(ClientContext &context, unique_ptr<Express
 	}
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
-	if (value.type().id() == LogicalTypeId::LIST) {
+	// a NULL list stays NULL, the quantile binder rejects it
+	if (value.type().id() == LogicalTypeId::LIST && !value.IsNull()) {
 		vector<Value> values;
 		for (const auto &element_val : ListValue::GetChildren(value)) {
 			values.push_back(NegatePercentileValue(element_val, desc));
@@ -114,6 +115,10 @@ static void NegatePercentileFractions(ClientContext &context, unique_ptr<Express
 }
 
 BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFunctionCatalogEntry &func, idx_t depth) {
+	auto count_star = binder.TryRewriteQualifiedCountStar(aggr);
+	if (count_star) {
+		return BindAggregate(count_star->Cast<FunctionExpression>(), func, depth);
+	}
 	if (inside_try) {
 		throw BinderException("aggregates are not allowed inside the TRY expression");
 	}
@@ -123,6 +128,21 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	if (inside_aggregate) {
 		throw BinderException(aggr, "aggregate function calls cannot be nested");
 	}
+	// an aggregate is computed over the rows of the query, not over the elements an enclosing lambda is applied to -
+	// so the parameters of the enclosing lambdas can not be referenced in the aggregate
+	struct InaccessibleLambdaBindings {
+		InaccessibleLambdaBindings(ExpressionBinder &binder_p, idx_t count)
+		    : binder(binder_p), previous_count(binder.inaccessible_lambda_binding_count) {
+			binder.inaccessible_lambda_binding_count = count;
+		}
+		~InaccessibleLambdaBindings() {
+			binder.inaccessible_lambda_binding_count = previous_count;
+		}
+		ExpressionBinder &binder;
+		idx_t previous_count;
+	};
+	InaccessibleLambdaBindings inaccessible_lambdas(*this, lambda_bindings ? lambda_bindings->size() : 0);
+
 	// first bind the child of the aggregate expression (if any)
 	this->bound_aggregate = true;
 	unique_ptr<Expression> bound_filter;
@@ -130,6 +150,10 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 
 	inside_aggregate_filter = true;
 	this->inside_aggregate = true;
+	// aggregate arguments are evaluated below the select list projection of the enclosing node, where
+	// a transported error flag has no consumer; nested subqueries in them bind as plain subqueries
+	const auto save_transport_try_errors = transport_try_errors;
+	transport_try_errors = false;
 	auto initial_bound_column_count = GetBoundColumns().size();
 	// Now we bind the filter (if any)
 	unique_ptr<Expression> bound_filter_child;
@@ -190,6 +214,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	}
 
 	inside_aggregate = false;
+	transport_try_errors = save_transport_try_errors;
 	TruncateBoundColumns(initial_bound_column_count);
 	if (error.HasError()) {
 		// the arguments decided that this level owns the aggregate, so a child that does not bind here is an error
@@ -282,7 +307,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	// If the function cannot be used as an aggregate, but can be used as a window function, throw a specific error
 	// message
 	if (!aggregate->Function().CanAggregate() && aggregate->Function().CanWindow()) {
-		auto msg = StringUtil::Format("Function '%s' can only be used as a window function", func.name);
+		auto msg = StringUtil::Format("Function %s can only be used as a window function", func.name);
 		error = BinderException(msg);
 		error.AddQueryLocation(aggr);
 		error.Throw();

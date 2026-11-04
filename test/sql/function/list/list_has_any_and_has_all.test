@@ -172,7 +172,7 @@ select list_has_all([1, 2], 1);
 statement error
 select list_has_any([[1,2], [2,4]], ['abc', 'def']);
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 # Test Function in Function
 

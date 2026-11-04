@@ -1,0 +1,27 @@
+// Generated from extension/loader/extension_describe.c.in. Do not edit.
+// Describes the @NAME@ extension to duckdb_register_static_extension.
+
+#include "duckdb_static_extension.h"
+
+@ENTRY_DECLARATION@
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int32_t duckdb_extension_@NAME@_describe(duckdb_extension_descriptor *descriptor) {
+	if (descriptor->version < 1) {
+		descriptor->set_error(descriptor, "extension @NAME@ needs descriptor layout 1");
+		return 1;
+	}
+	descriptor->version = 1;
+	descriptor->name = "@NAME@";
+	descriptor->extension_version = @EXTENSION_VERSION@;
+	descriptor->api_version = @API_VERSION@;
+	descriptor->@ENTRY_FIELD@ = (void (*)(void))@ENTRY_NAME@;
+	return 0;
+}
+
+#ifdef __cplusplus
+}
+#endif

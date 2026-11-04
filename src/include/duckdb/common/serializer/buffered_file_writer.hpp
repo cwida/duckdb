@@ -41,6 +41,8 @@ public:
 	DUCKDB_API void Close();
 	//! Flush all changes and fsync the file to disk
 	DUCKDB_API void Sync();
+	//! Fsync the file handle without flushing the buffer
+	DUCKDB_API void SyncHandle();
 	//! Flush the buffer to the file (without sync)
 	DUCKDB_API void Flush();
 	//! Returns the current size of the file

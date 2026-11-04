@@ -28,6 +28,11 @@ EXPORT DATABASE '' (FORMAT lower('csv'));
 ----
 Unsupported parameter type for FORMAT: expected e.g. FORMAT 'csv', 'parquet'
 
+statement error
+EXPORT DATABASE '' (FORMAT parquet, FORMAT csv);
+----
+duplicate option
+
 # create a bunch of tables with data and views
 
 statement ok

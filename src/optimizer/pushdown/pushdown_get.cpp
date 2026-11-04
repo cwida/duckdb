@@ -121,7 +121,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 			}
 		}
 	}
-	if (get.function.pushdown_complex_filter) {
+	const bool assigns_ordinality = get.ordinality_idx.IsValid();
+	if (get.function.pushdown_complex_filter && !assigns_ordinality) {
 		// for the remaining filters, check if we can push any of them into the scan as well
 		vector<unique_ptr<Expression>> expressions;
 		expressions.reserve(filters.size());
@@ -144,9 +145,13 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 			filters.push_back(std::move(f));
 		}
 	}
-
-	if (get.table_filters.HasFilters() || !get.function.filter_pushdown) {
-		// the table function does not support filter pushdown: push a LogicalFilter on top
+	// Partial type-based filter pushdown is not implemented for table in-out functions.
+	const bool requires_partial_pushdown = !get.children.empty() && get.function.supports_pushdown_type;
+	// WITH ORDINALITY numbers the rows the function emits, so pushing a filter into the function would renumber the
+	// surviving rows rather than report their original positions
+	if (get.table_filters.HasFilters() || !get.function.filter_pushdown || requires_partial_pushdown ||
+	    assigns_ordinality) {
+		// these filters cannot be pushed into the scan: push a LogicalFilter on top
 		restore_barrier_filters();
 		return FinishPushdown(std::move(op));
 	}

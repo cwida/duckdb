@@ -37,11 +37,7 @@ BoundStatement Binder::BindNode(DeleteQueryNode &node) {
 		return std::move(*expanded);
 	}
 
-	if (!table.temporary) {
-		// delete from persistent table: not read only!
-		auto &properties = GetStatementProperties();
-		properties.RegisterDBModify(table.catalog, context, DatabaseModificationType::DELETE_DATA);
-	}
+	GetStatementProperties().RegisterDBModify(table.catalog, context, DatabaseModificationType::DELETE_DATA);
 
 	// plan any tables from the various using clauses
 	if (!node.using_clauses.empty()) {
@@ -127,7 +123,6 @@ BoundStatement Binder::BindNode(DeleteQueryNode &node) {
 	result.types = {LogicalType::BIGINT};
 
 	auto &properties = GetStatementProperties();
-	properties.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
 	properties.return_type = StatementReturnType::CHANGED_ROWS;
 
 	return result;

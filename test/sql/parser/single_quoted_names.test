@@ -1,0 +1,83 @@
+# name: test/sql/parser/single_quoted_names.test
+# description: Single-quoted names accepted by the legacy parser remain compatible with the PEG parser
+# group: [parser]
+
+# Prepared statement names
+statement ok
+PREPARE 'p' AS SELECT 42;
+
+query I
+EXECUTE 'p';
+----
+42
+
+statement ok
+DEALLOCATE 'p';
+
+# CTE output aliases
+query I
+WITH x('a') AS (SELECT 1)
+SELECT a FROM x;
+----
+1
+
+# JOIN USING columns
+query I
+SELECT *
+FROM (VALUES (1)) a(i)
+JOIN (VALUES (1)) b(i) USING ('i');
+----
+1
+
+# Constraint names
+statement ok
+CREATE TABLE named_constraint(i INT, CONSTRAINT 'u' UNIQUE(i));
+
+statement ok
+INSERT INTO named_constraint VALUES (1);
+
+# DROP CONSTRAINT is not implemented, but the quoted name must reach the transformer.
+statement error
+ALTER TABLE named_constraint DROP CONSTRAINT 'u';
+----
+Not implemented Error: No support for that ALTER TABLE option yet!
+
+# Column and table rename targets
+statement ok
+CREATE TABLE rename_target(i INT);
+
+statement ok
+INSERT INTO rename_target VALUES (1);
+
+statement ok
+ALTER TABLE rename_target RENAME COLUMN i TO 'renamed_i';
+
+statement ok
+ALTER TABLE rename_target RENAME TO 'renamed_table';
+
+query I
+SELECT renamed_i FROM renamed_table;
+----
+1
+
+# ANALYZE and VACUUM column lists
+statement ok
+CREATE TABLE analyze_target(i INT);
+
+statement ok
+ANALYZE analyze_target('i');
+
+statement ok
+VACUUM ANALYZE analyze_target('i');
+
+# COMMENT targets
+statement ok
+CREATE TABLE 'commented'(i INT);
+
+statement ok
+COMMENT ON TABLE 'commented' IS 'hello';
+
+query T
+SELECT comment FROM duckdb_tables() WHERE table_name = 'commented';
+----
+hello

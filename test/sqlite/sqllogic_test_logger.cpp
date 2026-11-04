@@ -10,8 +10,12 @@
 
 namespace duckdb {
 
+//! Process-wide: a failure report is a sequence of writes to stderr, and test files running
+//! concurrently would otherwise shred each other's output.
+mutex SQLLogicTestLogger::log_mutex;
+
 SQLLogicTestLogger::SQLLogicTestLogger(ExecuteContext &context, const Command &command)
-    : connection(command.CommandConnection(context)), log_lock(command.runner.log_lock), file_name(command.file_name),
+    : connection(command.CommandConnection(context)), log_lock(log_mutex), file_name(command.file_name),
       query_line(command.query_line), sql_query(context.sql_query) {
 }
 
@@ -183,7 +187,7 @@ void SQLLogicTestLogger::PrintResultError(const vector<string> &result_values, c
 	PrintExpectedResult(result_values, expected_column_count, false);
 }
 
-string SQLLogicTestLogger::ResultToString(MaterializedQueryResult &result) {
+string SQLLogicTestLogger::ResultToString(QueryResult &result) {
 	if (result.RowCount() < 100) {
 		return result.ToString();
 	}
@@ -194,11 +198,11 @@ string SQLLogicTestLogger::ResultToString(MaterializedQueryResult &result) {
 	return result.ToBox(render_context, config);
 }
 
-void SQLLogicTestLogger::PrintResultString(MaterializedQueryResult &result) {
+void SQLLogicTestLogger::PrintResultString(QueryResult &result) {
 	LogFailure(ResultToString(result));
 }
 
-void SQLLogicTestLogger::PrintResultError(MaterializedQueryResult &result, const vector<string> &values,
+void SQLLogicTestLogger::PrintResultError(QueryResult &result, const vector<string> &values,
                                           idx_t expected_column_count, bool row_wise) {
 	PrintHeader("Expected result:");
 	PrintLineSep();
@@ -209,7 +213,7 @@ void SQLLogicTestLogger::PrintResultError(MaterializedQueryResult &result, const
 	PrintResultString(result);
 }
 
-void SQLLogicTestLogger::UnexpectedFailure(MaterializedQueryResult &result) {
+void SQLLogicTestLogger::UnexpectedFailure(QueryResult &result) {
 	std::ostringstream oss;
 	PrintErrorHeader("Query unexpectedly failed (" + file_name + ":" + to_string(query_line) + ")\n");
 	LogFailure(oss.str());
@@ -220,7 +224,7 @@ void SQLLogicTestLogger::UnexpectedFailure(MaterializedQueryResult &result) {
 	PrintLineSep();
 	PrintResultString(result);
 }
-void SQLLogicTestLogger::OutputResult(MaterializedQueryResult &result, const vector<string> &result_values_string) {
+void SQLLogicTestLogger::OutputResult(QueryResult &result, const vector<string> &result_values_string) {
 	// names
 	for (idx_t c = 0; c < result.ColumnCount(); c++) {
 		if (c != 0) {
@@ -257,9 +261,8 @@ void SQLLogicTestLogger::OutputHash(const string &hash_value) {
 	PrintLineSep();
 }
 
-void SQLLogicTestLogger::ColumnCountMismatch(MaterializedQueryResult &result,
-                                             const vector<string> &result_values_string, idx_t expected_column_count,
-                                             bool row_wise) {
+void SQLLogicTestLogger::ColumnCountMismatch(QueryResult &result, const vector<string> &result_values_string,
+                                             idx_t expected_column_count, bool row_wise) {
 	std::ostringstream oss;
 	PrintErrorHeader("Wrong column count in query!");
 	oss << "Expected " << termcolor::bold << expected_column_count << termcolor::reset << " columns, but got "
@@ -279,7 +282,7 @@ void SQLLogicTestLogger::NotCleanlyDivisible(idx_t expected_column_count, idx_t 
 	           " values were supplied\nThis is not cleanly divisible (i.e. the last row does not have enough values)");
 }
 
-void SQLLogicTestLogger::WrongRowCount(idx_t expected_rows, MaterializedQueryResult &result,
+void SQLLogicTestLogger::WrongRowCount(idx_t expected_rows, QueryResult &result,
                                        const vector<string> &comparison_values, idx_t expected_column_count,
                                        bool row_wise) {
 	std::ostringstream oss;
@@ -294,7 +297,7 @@ void SQLLogicTestLogger::WrongRowCount(idx_t expected_rows, MaterializedQueryRes
 }
 
 void SQLLogicTestLogger::ColumnCountMismatchCorrectResult(idx_t original_expected_columns, idx_t expected_column_count,
-                                                          MaterializedQueryResult &result) {
+                                                          QueryResult &result) {
 	std::ostringstream oss;
 	PrintErrorHeader("Wrong column count in query!");
 	oss << "Expected " << termcolor::bold << original_expected_columns << termcolor::reset << " columns, but got "
@@ -331,7 +334,7 @@ void SQLLogicTestLogger::SplitMismatch(idx_t row_number, idx_t expected_column_c
 	PrintLineSep();
 }
 
-void SQLLogicTestLogger::WrongResultHash(const string &expected_result, MaterializedQueryResult &result,
+void SQLLogicTestLogger::WrongResultHash(const string &expected_result, QueryResult &result,
                                          const string &expected_hash, const string &actual_hash) {
 	PrintErrorHeader("Wrong result hash!");
 	PrintLineSep();
@@ -349,7 +352,7 @@ void SQLLogicTestLogger::WrongResultHash(const string &expected_result, Material
 	PrintResultString(result);
 }
 
-void SQLLogicTestLogger::UnexpectedStatement(bool expect_ok, MaterializedQueryResult &result) {
+void SQLLogicTestLogger::UnexpectedStatement(bool expect_ok, QueryResult &result) {
 	PrintErrorHeader(!expect_ok ? "Query unexpectedly succeeded!" : "Query unexpectedly failed!");
 	PrintLineSep();
 	PrintSQL();
@@ -357,7 +360,7 @@ void SQLLogicTestLogger::UnexpectedStatement(bool expect_ok, MaterializedQueryRe
 	PrintResultString(result);
 }
 
-void SQLLogicTestLogger::ExpectedErrorMismatch(const string &expected_error, MaterializedQueryResult &result) {
+void SQLLogicTestLogger::ExpectedErrorMismatch(const string &expected_error, QueryResult &result) {
 	PrintErrorHeader("Query failed, but error message did not match expected error message: " + expected_error);
 	PrintLineSep();
 	PrintSQL();
@@ -367,7 +370,7 @@ void SQLLogicTestLogger::ExpectedErrorMismatch(const string &expected_error, Mat
 	PrintResultString(result);
 }
 
-void SQLLogicTestLogger::InternalException(MaterializedQueryResult &result) {
+void SQLLogicTestLogger::InternalException(QueryResult &result) {
 	PrintErrorHeader("Query failed with internal exception!");
 	PrintLineSep();
 	PrintSQL();

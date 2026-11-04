@@ -1,0 +1,66 @@
+# name: test/sql/types/union/union_try_cast_member_failure.test
+# description: Test TRY_CAST between unions where a member cast fails
+# group: [union]
+
+statement ok
+CREATE TABLE t AS SELECT union_value(a := 'q' || i::VARCHAR)::UNION(a VARCHAR, b VARCHAR) u FROM range(3000) t(i);
+
+query I
+SELECT count(*) FROM (SELECT try_cast(u AS UNION(a INT, b VARCHAR, c VARCHAR)) x FROM t) WHERE x IS NULL;
+----
+3000
+
+query I
+SELECT max(length(union_extract(try_cast(u AS UNION(a INT, b VARCHAR, c VARCHAR)), 'c'))) FROM t;
+----
+NULL
+
+query I
+SELECT try_cast(u AS UNION(a INT, b INT)) FROM (SELECT union_value(a := 'x')::UNION(a VARCHAR, b INT) u);
+----
+NULL
+
+query II
+SELECT try_cast(union_value(a := 'x')::UNION(a VARCHAR, b INT) AS UNION(a INT, b INT, c INT)),
+       try_cast(union_value(a := '7')::UNION(a VARCHAR, b INT) AS UNION(a INT, b INT, c INT));
+----
+NULL	7
+
+# mix of successful and failing member casts, NULL unions and unions with a NULL member
+statement ok
+CREATE TABLE mixed(u UNION(a VARCHAR, b VARCHAR), i INT);
+
+statement ok
+INSERT INTO mixed SELECT CASE
+	WHEN i % 4 = 0 THEN union_value(a := i::VARCHAR)::UNION(a VARCHAR, b VARCHAR)
+	WHEN i % 4 = 1 THEN union_value(a := 'q' || i::VARCHAR)::UNION(a VARCHAR, b VARCHAR)
+	WHEN i % 4 = 2 THEN union_value(b := 'b' || i::VARCHAR)::UNION(a VARCHAR, b VARCHAR)
+	ELSE NULL END, i
+FROM range(8) t(i);
+
+statement ok
+INSERT INTO mixed VALUES (union_value(a := NULL::VARCHAR)::UNION(a VARCHAR, b VARCHAR), 100);
+
+query IIII
+SELECT i, u, try_cast(u AS UNION(a INT, b VARCHAR, c VARCHAR)) x, union_tag(x) FROM mixed ORDER BY i;
+----
+0	0	0	a
+1	q1	NULL	NULL
+2	b2	b2	b
+3	NULL	NULL	NULL
+4	4	4	a
+5	q5	NULL	NULL
+6	b6	b6	b
+7	NULL	NULL	NULL
+100	NULL	NULL	a
+
+query III
+SELECT count(*), count(x), count(union_extract(x, 'c'))
+FROM (SELECT try_cast(u AS UNION(a INT, b VARCHAR, c VARCHAR)) x FROM mixed, range(1000));
+----
+9000	5000	0
+
+statement error
+SELECT CAST(u AS UNION(a INT, b VARCHAR)) FROM mixed;
+----
+Could not convert string 'q1' to INT32

@@ -1,0 +1,44 @@
+# name: test/sql/types/interval/interval_multiply_overflow.test
+# description: Multiplying/dividing an INTERVAL by a double should use checked arithmetic
+# group: [interval]
+
+# Issue #25829: the fractional months cascade into days without an overflow check
+
+statement error
+SELECT INTERVAL '1952257854 days 3 months' * 1.1;
+----
+<REGEX>:.*Overflow in multiplication of INTERVAL.*
+
+statement error
+SELECT 1.1 * INTERVAL '1952257854 days 3 months';
+----
+<REGEX>:.*Overflow in multiplication of INTERVAL.*
+
+statement error
+SELECT INTERVAL '-1952257855 days -3 months' * 1.1;
+----
+<REGEX>:.*Overflow in multiplication of INTERVAL.*
+
+# division by a double runs through the same code path
+statement error
+SELECT INTERVAL '1952257854 days 3 months' / 0.9090909090909091;
+----
+<REGEX>:.*Overflow in INTERVAL division.*
+
+# cascading just below the limit is fine
+# only the months/days fields are asserted: the microseconds at this magnitude depend on FP contraction
+query II
+SELECT datepart('month', i), datepart('day', i) FROM (SELECT INTERVAL '1952257845 days 3 months' * 1.1 AS i) t;
+----
+3	2147483638
+
+query II
+SELECT datepart('month', i), datepart('day', i) FROM (SELECT INTERVAL '-1952257854 days -3 months' * 1.1 AS i) t;
+----
+-3	-2147483648
+
+# the cascade itself, on values where the arithmetic is exact
+query I
+SELECT INTERVAL '2 days 3 months' * 1.1;
+----
+3 months 11 days 04:48:00

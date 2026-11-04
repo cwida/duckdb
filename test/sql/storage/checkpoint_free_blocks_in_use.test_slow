@@ -1,0 +1,75 @@
+# name: test/sql/storage/checkpoint_free_blocks_in_use.test_slow
+# description: Blocks freed while a scan still uses them are written to the free list by later checkpoints
+# group: [storage]
+
+load {TEST_DIR}/checkpoint_free_blocks_in_use.db
+
+statement ok
+SET threads=1
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+CREATE TABLE big AS SELECT i, i::VARCHAR || 'xxxxxxxxxxxxxxxx' AS s FROM range(200000) t(i)
+
+statement ok
+CREATE TABLE other(i INT)
+
+statement ok
+CHECKPOINT
+
+# the next checkpoint rewrites column s and frees its old blocks
+statement ok
+UPDATE big SET s = s || 'y' WHERE i % 2 = 0
+
+concurrentloop threadid 0 2
+
+# a scan of about three seconds that keeps the old blocks alive
+onlyif threadid=0
+query I
+SELECT count(sleep_ms(1)) FROM big WHERE i < 3000
+----
+0
+
+# both checkpoints run while the scan still uses the freed blocks
+onlyif threadid=1
+statement ok
+SELECT sleep_ms(500)
+
+onlyif threadid=1
+statement ok
+CHECKPOINT
+
+onlyif threadid=1
+statement ok
+INSERT INTO other VALUES (1)
+
+onlyif threadid=1
+statement ok
+CHECKPOINT
+
+endloop
+
+# the WAL is empty, so the free list of the last checkpoint is what gets loaded
+restart
+
+statement ok
+SET debug_verify_blocks=true
+
+statement ok
+INSERT INTO other VALUES (2)
+
+statement ok
+CHECKPOINT
+
+query III
+SELECT count(*), count(*) FILTER (WHERE s LIKE '%y'), sum(i) FROM big
+----
+200000	100000	19999900000
+
+query I
+SELECT i FROM other ORDER BY i
+----
+1
+2

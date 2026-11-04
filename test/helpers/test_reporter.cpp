@@ -5,9 +5,11 @@
 namespace duckdb {
 
 //! Reporter used when no driver installed one: failures become exceptions, everything else is
-//! tallied on the reporter itself. This is what the unittester extension runs on.
+//! tallied on the reporter itself.
 static TestReporter default_reporter;
-static TestReporter *active_reporter = &default_reporter;
+//! Per thread, so that test files running concurrently each report into their own reporter. A
+//! thread that spawns workers mid-test (concurrentloop) hands them its reporter explicitly.
+static thread_local TestReporter *active_reporter = nullptr;
 
 void TestReporter::Fail(const string &message, const string &file, idx_t line) {
 	throw TestFailureException(message, file, line);
@@ -34,7 +36,7 @@ void TestReporter::Require(bool condition, const char *expression) {
 }
 
 TestReporter &TestReporter::Get() {
-	return *active_reporter;
+	return active_reporter ? *active_reporter : default_reporter;
 }
 
 void TestReporter::Set(optional_ptr<TestReporter> reporter) {

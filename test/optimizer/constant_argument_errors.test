@@ -1,0 +1,59 @@
+# name: test/optimizer/constant_argument_errors.test
+# description: Rewrites that evaluate a constant argument leave its error to execution, which may never evaluate it
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+# a dead CASE branch is never evaluated
+query I
+SELECT CASE WHEN false THEN 'x' || ''::DOUBLE END;
+----
+NULL
+
+# neither is an expression over an empty table
+query I
+SELECT s || ''::DOUBLE FROM t;
+----
+
+query I
+SELECT prefix(s, ''::DOUBLE::VARCHAR) FROM t;
+----
+
+query I
+SELECT contains(s, ''::DOUBLE::VARCHAR) FROM t;
+----
+
+query I
+SELECT suffix(s, ''::DOUBLE::VARCHAR) FROM t;
+----
+
+query II
+SELECT * FROM t LEFT JOIN t t2 ON true WHERE ''::DOUBLE = 1;
+----
+
+statement ok
+INSERT INTO t VALUES ('a'), (NULL);
+
+# once a row reaches the expression, the error surfaces
+statement error
+SELECT s || ''::DOUBLE FROM t;
+----
+<REGEX>:Conversion Error.*Could not convert string '' to DOUBLE.*
+
+statement error
+SELECT prefix(s, ''::DOUBLE::VARCHAR) FROM t;
+----
+<REGEX>:Conversion Error.*Could not convert string '' to DOUBLE.*
+
+statement error
+SELECT * FROM t LEFT JOIN t t2 ON true WHERE ''::DOUBLE = 1;
+----
+<REGEX>:Conversion Error.*Could not convert string '' to DOUBLE.*
+
+# the rewrites still apply to constants that can be evaluated
+query II
+SELECT s || '', prefix(s, '') FROM t ORDER BY s NULLS LAST;
+----
+a	true
+NULL	NULL

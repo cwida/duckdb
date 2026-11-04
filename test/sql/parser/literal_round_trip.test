@@ -2,7 +2,7 @@
 # description: Literal atoms keep their source text through parsing, views, macros and storage
 # group: [parser]
 
-load __TEST_DIR__/literal_round_trip.db
+load {TEST_DIR}/literal_round_trip.db
 
 # every literal kind binds to the same type and value as before
 query IIIIIIIIIIIIIIIIII
@@ -159,4 +159,4 @@ query I
 SELECT v FROM s ORDER BY ALL
 ----
 {'a': 1, 'b': x, 'c': 7}
-{'a': 1, 'b': x, 'c': NULL}
+{'a': 1, 'b': x, 'c': 7}

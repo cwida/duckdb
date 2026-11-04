@@ -57,7 +57,7 @@ struct ModeFun {
 
 struct QuantileDiscFun {
 	static constexpr const char *Name = "quantile_disc";
-	static constexpr const char *Parameters = "x,pos";
+	static constexpr const char *Parameters = "x,quantile";
 	static constexpr const char *Description = "Returns the exact quantile number between 0 and 1 . If pos is a LIST of FLOATs, then the result is a LIST of the corresponding exact quantiles.";
 	static constexpr const char *Example = "quantile_disc(x, 0.5)";
 	static constexpr const char *Categories = "";
@@ -73,7 +73,7 @@ struct QuantileFun {
 
 struct QuantileContFun {
 	static constexpr const char *Name = "quantile_cont";
-	static constexpr const char *Parameters = "x,pos";
+	static constexpr const char *Parameters = "x,quantile";
 	static constexpr const char *Description = "Returns the interpolated quantile number between 0 and 1 . If pos is a LIST of FLOATs, then the result is a LIST of the corresponding interpolated quantiles.	";
 	static constexpr const char *Example = "quantile_cont(x, 0.5)";
 	static constexpr const char *Categories = "";

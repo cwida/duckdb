@@ -147,16 +147,16 @@ TEST_CASE("Aggregate rewrite plans support fan-out and branch joins", "[optimize
 	                        "FROM (VALUES (1, 2), (1, 4), (1, 4), (2, 3), (NULL, 2), (NULL, 5)) t(g, v) "
 	                        "GROUP BY g ORDER BY g NULLS LAST");
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->GetValue(1, 0).GetValue<int64_t>() == 6);
-	REQUIRE(result->GetValue(1, 1).GetValue<int64_t>() == 6);
-	REQUIRE(result->GetValue(1, 2).GetValue<int64_t>() == 7);
+	REQUIRE(result->Collection().GetValue(1, 0).GetValue<int64_t>() == 6);
+	REQUIRE(result->Collection().GetValue(1, 1).GetValue<int64_t>() == 6);
+	REQUIRE(result->Collection().GetValue(1, 2).GetValue<int64_t>() == 7);
 	REQUIRE(rewrite_calls == 1);
 
 	rewrite_calls = 0;
 	REQUIRE_NO_FAIL(*con.Query("SET enable_optimizer=false"));
 	result = con.Query("SELECT test_dag_aggregate(v::BIGINT) FROM (VALUES (2), (4), (4)) t(v)");
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 6);
+	REQUIRE(result->Collection().GetValue(0, 0).GetValue<int64_t>() == 6);
 	REQUIRE(rewrite_calls == 1);
 }
 
@@ -171,7 +171,7 @@ TEST_CASE("Aggregate rewrite policies own strategy selection", "[optimizer][aggr
 	cost_saw_cardinality = false;
 	auto result = con.Query("SELECT test_costed_dag_aggregate(i::BIGINT) FROM range(2, 5) t(i)");
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 6);
+	REQUIRE(result->Collection().GetValue(0, 0).GetValue<int64_t>() == 6);
 	REQUIRE(cost_calls == 1);
 	REQUIRE(cost_saw_cardinality);
 	REQUIRE(rewrite_calls == 1);
@@ -181,7 +181,7 @@ TEST_CASE("Aggregate rewrite policies own strategy selection", "[optimizer][aggr
 	cost_calls = 0;
 	result = con.Query("SELECT test_costed_dag_aggregate(i::BIGINT) FROM range(2, 5) t(i)");
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 3);
+	REQUIRE(result->Collection().GetValue(0, 0).GetValue<int64_t>() == 3);
 	REQUIRE(cost_calls == 0);
 	REQUIRE(rewrite_calls == 0);
 }

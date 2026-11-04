@@ -57,7 +57,7 @@ ColumnReader &StructColumnReader::GetChildReader(idx_t child_idx) {
 }
 
 void StructColumnReader::InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows,
-                                        const vector<ColumnChunk> &columns, TProtocol &protocol_p) {
+                                        const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p) {
 	for (auto &child : child_readers) {
 		if (!child) {
 			continue;
@@ -132,15 +132,22 @@ void StructColumnReader::RegisterPrefetch(ThriftFileTransport &transport, bool a
 	}
 }
 
-uint64_t StructColumnReader::TotalCompressedSize() {
-	uint64_t size = 0;
+void StructColumnReader::InitializePageIndex(const ParquetRowGroupPageIndex &page_index) {
 	for (auto &child : child_readers) {
 		if (!child) {
 			continue;
 		}
-		size += child->TotalCompressedSize();
+		child->InitializePageIndex(page_index);
 	}
-	return size;
+}
+
+void StructColumnReader::GatherColumnChunks(unordered_set<idx_t> &column_chunks) {
+	for (auto &child : child_readers) {
+		if (!child) {
+			continue;
+		}
+		child->GatherColumnChunks(column_chunks);
+	}
 }
 
 static bool TypeHasExactRowCount(const LogicalType &type) {
@@ -149,6 +156,7 @@ static bool TypeHasExactRowCount(const LogicalType &type) {
 	case LogicalTypeId::MAP:
 		return false;
 	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
 		for (auto &kv : StructType::GetChildTypes(type)) {
 			if (TypeHasExactRowCount(kv.second)) {
 				return true;

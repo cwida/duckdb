@@ -33,3 +33,23 @@ select x from read_parquet('{DATA_DIR}/parquet-testing/float16.parquet') where x
 inf
 nan
 -nan
+
+# Replace the zero half-float in the fixture with the smallest positive subnormal
+query T
+SELECT substr(hex(content), 41, 4)
+FROM read_blob('{DATA_DIR}/parquet-testing/float16.parquet')
+----
+0000
+
+statement ok
+COPY (
+	SELECT from_hex(substr(hex(content), 1, 40) || '0100' || substr(hex(content), 45))
+	FROM read_blob('{DATA_DIR}/parquet-testing/float16.parquet')
+) TO '{TEST_DIR}/float16_subnormal.parquet' (FORMAT BLOB);
+
+query T
+SELECT printf('%.12g', x)
+FROM read_parquet('{TEST_DIR}/float16_subnormal.parquet')
+WHERE x > 0 AND x < 0.5
+----
+5.96046447754e-08

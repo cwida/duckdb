@@ -741,5 +741,8 @@ $.my_array[1].my_key	$.my_array[1]
 statement ok
 create table all_types as select * exclude(small_enum, medium_enum, large_enum) from test_all_types() limit 0;
 
-statement ok
+# an integer does not reach a VARCHAR parameter by an implicit cast, the same as for a scalar function
+statement error
 SELECT NULL FROM json_each(6051, NULL)
+----
+<REGEX>:Binder Error:.*No function matches.*

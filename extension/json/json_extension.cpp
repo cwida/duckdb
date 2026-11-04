@@ -9,7 +9,6 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
-#include "duckdb/parser/peg/compiled_grammar.hpp"
 
 namespace duckdb {
 
@@ -84,14 +83,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	geojson_copy_fun.SetName("geojsonl");
 	loader.RegisterFunction(geojson_copy_fun);
 
-	ParserOptions parser_options;
-	parser_options.compiled_grammar = loader.GetDatabaseInstance().GetParserCache().GetMatcher();
 	for (idx_t index = 0; JSON_MACROS[index].name != nullptr; index++) {
-		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(JSON_MACROS[index], parser_options);
+		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(JSON_MACROS[index]);
 		loader.RegisterFunction(*info);
 	}
 }
 
+// LCOV_EXCL_START
 void JsonExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
@@ -107,6 +105,7 @@ std::string JsonExtension::Version() const {
 	return "";
 #endif
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb
 

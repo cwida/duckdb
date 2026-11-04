@@ -1,0 +1,247 @@
+# name: test/sql/sql_export/result_modifiers.test
+# description: SQL export preserves ordering, limits, grouping and set multiplicities
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I
+SELECT x FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY x DESC NULLS LAST, y;
+----
+3
+3
+1
+NULL
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT x FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY x DESC NULLS LAST, y;
+----
+sql	<REGEX>:.*ORDER BY .* DESC NULLS LAST, .*
+
+query II
+SELECT x,y FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY y DESC LIMIT 2 OFFSET 1;
+----
+NULL	40
+3	30
+
+query TT
+EXPLAIN (SQL) SELECT x,y FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY y DESC LIMIT 2 OFFSET 1;
+----
+sql	<REGEX>:.*ORDER BY .* DESC.*LIMIT .*2.*OFFSET .*1.*
+
+query II
+SELECT x,y FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY y LIMIT 60% OFFSET 1;
+----
+3	20
+3	30
+NULL	40
+
+query TT
+EXPLAIN (SQL) SELECT x,y FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY y LIMIT 60% OFFSET 1;
+----
+sql	<REGEX>:.*ORDER BY .*LIMIT .*60.*%.*OFFSET .*1.*
+
+query I
+SELECT y FROM (SELECT x,y FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY y LIMIT 4) q LIMIT 2 OFFSET 1;
+----
+20
+30
+
+query I rowsort
+SELECT DISTINCT x FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y);
+----
+1
+3
+NULL
+
+query II
+SELECT DISTINCT ON (x) x,y FROM (VALUES (3,30), (1,10), (NULL,40), (3,20), (NULL,50)) t(x,y) ORDER BY x NULLS FIRST,y DESC;
+----
+NULL	50
+1	10
+3	30
+
+query II rowsort
+SELECT x,sum(y) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY x;
+----
+1	30
+2	NULL
+NULL	5
+
+query TT
+EXPLAIN (SQL) SELECT x,sum(y) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY x;
+----
+sql	<REGEX>:.*GROUP BY [^,()]+$
+
+statement ok
+SET disabled_optimizers='grouping_sets,common_subplan';
+
+query IIII rowsort
+SELECT x,y,grouping(x,y),sum(y) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY GROUPING SETS ((x),(y),(),(x));
+----
+1	NULL	1	30
+1	NULL	1	30
+2	NULL	1	NULL
+2	NULL	1	NULL
+NULL	10	2	10
+NULL	20	2	20
+NULL	5	2	5
+NULL	NULL	1	5
+NULL	NULL	1	5
+NULL	NULL	2	NULL
+NULL	NULL	3	35
+
+statement ok
+SET disabled_optimizers='grouping_sets';
+
+query IIII rowsort
+SELECT x,x+0,grouping(x,x+0),count(*) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY GROUPING SETS ((x),(x+0),(),(x));
+----
+1	NULL	1	2
+1	NULL	1	2
+2	NULL	1	2
+2	NULL	1	2
+NULL	1	2	2
+NULL	2	2	2
+NULL	NULL	1	1
+NULL	NULL	1	1
+NULL	NULL	2	1
+NULL	NULL	3	5
+
+query IIII rowsort
+SELECT x,x*1,grouping(x,x*1),count(*) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY GROUPING SETS ((x),(x*1),(),(x));
+----
+1	NULL	1	2
+1	NULL	1	2
+2	NULL	1	2
+2	NULL	1	2
+NULL	1	2	2
+NULL	2	2	2
+NULL	NULL	1	1
+NULL	NULL	1	1
+NULL	NULL	2	1
+NULL	NULL	3	5
+
+query IIII rowsort
+SELECT x,x::INTEGER,grouping(x,x::INTEGER),count(*) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY GROUPING SETS ((x),(x::INTEGER),(),(x));
+----
+1	NULL	1	2
+1	NULL	1	2
+2	NULL	1	2
+2	NULL	1	2
+NULL	1	2	2
+NULL	2	2	2
+NULL	NULL	1	1
+NULL	NULL	1	1
+NULL	NULL	2	1
+NULL	NULL	3	5
+
+statement ok
+SET disabled_optimizers='grouping_sets,compressed_materialization';
+
+query II rowsort
+SELECT grouping(1+1,2+0),count(*) FROM (VALUES(1),(2))t(x) GROUP BY GROUPING SETS ((1+1),(2+0),());
+----
+1	2
+2	2
+3	2
+
+statement ok
+SET disabled_optimizers='';
+
+query I rowsort
+SELECT 1;
+----
+1
+
+statement ok
+SET disabled_optimizers='distinct_aggregate_rewrite';
+
+query IIT rowsort
+SELECT x,sum(DISTINCT y) FILTER (WHERE y>5), list(y ORDER BY y DESC NULLS FIRST) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) GROUP BY x;
+----
+1	30	[20, 10]
+2	NULL	[NULL, NULL]
+NULL	NULL	[5]
+
+statement ok
+SET disabled_optimizers='';
+
+query II rowsort
+SELECT x,sum(y) FROM (VALUES (1,10),(1,20),(NULL,5),(2,NULL),(2,NULL)) t(x,y) WHERE false GROUP BY x;
+----
+
+query RTT rowsort
+SELECT NULL::DECIMAL(9,2) a, [1,NULL] b, {'x': 2} c WHERE false;
+----
+
+query TT
+EXPLAIN (SQL) SELECT NULL::DECIMAL(9,2) a, [1,NULL] b, {'x': 2} c WHERE false;
+----
+sql	<REGEX>:.*WHERE .*FALSE.*
+
+# A typed empty relation retains COUNT's canonical ANY signature under strict SQL export.
+query T
+SELECT * FROM (SELECT count(x) EXPORT_STATE s FROM (VALUES(1))t(x))t WHERE false;
+----
+
+query TT
+EXPLAIN (SQL) SELECT * FROM (SELECT count(x) EXPORT_STATE s FROM (VALUES(1))t(x))t WHERE false;
+----
+sql	<REGEX>:.*to_aggregate_state.*ANY.*
+
+query I rowsort
+(VALUES (1),(1),(1),(NULL),(NULL),(2)) UNION (VALUES (1),(1),(NULL),(3));
+----
+1
+2
+3
+NULL
+
+query I rowsort
+(VALUES (1),(1),(1),(NULL),(NULL),(2)) UNION ALL (VALUES (1),(1),(NULL),(3));
+----
+1
+1
+1
+1
+1
+2
+3
+NULL
+NULL
+NULL
+
+query I rowsort
+(VALUES (1),(1),(1),(NULL),(NULL),(2)) EXCEPT (VALUES (1),(1),(NULL),(3));
+----
+2
+
+query I rowsort
+(VALUES (1),(1),(1),(NULL),(NULL),(2)) EXCEPT ALL (VALUES (1),(1),(NULL),(3));
+----
+1
+2
+NULL
+
+query I rowsort
+(VALUES (1),(1),(1),(NULL),(NULL),(2)) INTERSECT (VALUES (1),(1),(NULL),(3));
+----
+1
+NULL
+
+query I rowsort
+(VALUES (1),(1),(1),(NULL),(NULL),(2)) INTERSECT ALL (VALUES (1),(1),(NULL),(3));
+----
+1
+1
+NULL
+
+
+statement ok
+SET debug_verify_serializer=true;
+
+query T
+SELECT * FROM (SELECT sum(x) EXPORT_STATE s FROM (VALUES(1))t(x))t WHERE false;
+----

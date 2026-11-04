@@ -1,0 +1,171 @@
+# name: test/sql/optimizer/variant_json_cast_pushdown.test
+# description: JSON casts preserve the logical input type while field extraction is pushed down
+# group: [optimizer]
+
+require parquet
+
+require json
+
+load {TEST_DIR}/variant_json_cast_pushdown.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE strings AS
+SELECT id, {'k': s, 'nested': {'k': s}}::VARIANT AS v
+FROM (VALUES
+    (1, 'true'),
+    (2, 'x'),
+    (3, '1'),
+    (4, 'false'),
+    (5, 'null'),
+    (6, '[]'),
+    (7, '{"n":1}'),
+    (8, E'quote"\\line\n'),
+    (9, ''),
+    (10, NULL)
+) t(id, s);
+
+statement ok
+COPY strings TO '{TEST_DIR}/variant_json_unshredded.parquet' (SHREDDING {'v': 'NULL'});
+
+statement ok
+COPY strings TO '{TEST_DIR}/variant_json_shredded.parquet'
+(SHREDDING {'v': 'STRUCT(k VARCHAR, nested STRUCT(k VARCHAR))'});
+
+statement ok
+CHECKPOINT;
+
+restart
+
+foreach SOURCE strings read_parquet('{TEST_DIR}/variant_json_unshredded.parquet') read_parquet('{TEST_DIR}/variant_json_shredded.parquet')
+
+# The JSON cast stays above the scan, but reading only the field is still allowed.
+query II
+EXPLAIN SELECT v.k::JSON FROM {SOURCE};
+----
+physical_plan	<REGEX>:.*CAST\(v AS JSON\).*Projections: v\.k.*
+
+# JSON-looking strings must not change type when a cast is pushed into the scan.
+query ITT
+SELECT id, (variant_extract(v, 'k')::JSON)::VARCHAR,
+       json_type(variant_extract(v, 'k')::JSON)
+FROM {SOURCE} WHERE id IN (1, 3) ORDER BY id;
+----
+1	"true"	VARCHAR
+3	"1"	VARCHAR
+
+# Text that is not a valid JSON document is still a valid VARIANT string.
+query T
+SELECT (variant_extract(v, 'k')::JSON)::VARCHAR
+FROM {SOURCE} WHERE id = 2;
+----
+"x"
+
+foreach EXPR variant_extract(v,'k') v.nested.k
+
+query ITT
+SELECT id, ({EXPR}::JSON)::VARCHAR, json_type({EXPR}::JSON)
+FROM {SOURCE} ORDER BY id;
+----
+1	"true"	VARCHAR
+2	"x"	VARCHAR
+3	"1"	VARCHAR
+4	"false"	VARCHAR
+5	"null"	VARCHAR
+6	"[]"	VARCHAR
+7	"{\"n\":1}"	VARCHAR
+8	"quote\"\\line\n"	VARCHAR
+9	""	VARCHAR
+10	NULL	NULL
+
+# Keep TRY_CAST separate: sharing the extracted VARIANT can inhibit cast pushdown.
+query IT
+SELECT id, TRY_CAST({EXPR} AS JSON)::VARCHAR
+FROM {SOURCE} WHERE id IN (1, 2, 3, 10) ORDER BY id;
+----
+1	"true"
+2	"x"
+3	"1"
+10	NULL
+
+query IT
+SELECT id, to_json({EXPR})::VARCHAR
+FROM {SOURCE} WHERE id IN (1, 2, 3, 10) ORDER BY id;
+----
+1	"true"
+2	"x"
+3	"1"
+10	NULL
+
+query I
+SELECT id FROM {SOURCE}
+WHERE ({EXPR}::JSON)::VARCHAR = '"true"';
+----
+1
+
+query I
+SELECT count(*) FROM {SOURCE}
+WHERE json_type({EXPR}::JSON) = 'VARCHAR';
+----
+9
+
+query I
+SELECT count(*) FROM {SOURCE}
+WHERE ({EXPR}::JSON) IS NULL;
+----
+1
+
+endloop
+
+endloop
+
+# Homogeneous non-string fields still produce JSON primitives, including SQL NULLs.
+statement ok
+COPY (
+    SELECT id, {'b': b, 'i': i, 'd': d}::VARIANT AS v
+    FROM (VALUES
+        (1, true, 1, 1.5::DOUBLE),
+        (2, false, -1, -1.5::DOUBLE),
+        (3, NULL, NULL, NULL)
+    ) t(id, b, i, d)
+) TO '{TEST_DIR}/variant_json_primitives.parquet'
+(SHREDDING {'v': 'STRUCT(b BOOLEAN, i INTEGER, d DOUBLE)'});
+
+query ITTTTTT
+SELECT id, (v.b::JSON)::VARCHAR, json_type(v.b::JSON),
+       (v.i::JSON)::VARCHAR, json_type(v.i::JSON),
+       (v.d::JSON)::VARCHAR, json_type(v.d::JSON)
+FROM '{TEST_DIR}/variant_json_primitives.parquet' ORDER BY id;
+----
+1	true	BOOLEAN	1	UBIGINT	1.5	DOUBLE
+2	false	BOOLEAN	-1	BIGINT	-1.5	DOUBLE
+3	NULL	NULL	NULL	NULL	NULL	NULL
+
+# A VARCHAR field still uses JSON parsing rather than VARIANT string serialization.
+statement ok
+CREATE TABLE struct_strings AS
+SELECT id, {'k': s} AS v
+FROM (VALUES (1, 'true'), (2, '"x"'), (3, '1'), (4, NULL)) t(id, s);
+
+statement ok
+COPY struct_strings TO '{TEST_DIR}/struct_json_cast.parquet';
+
+foreach SOURCE struct_strings read_parquet('{TEST_DIR}/struct_json_cast.parquet')
+
+query II
+EXPLAIN SELECT v.k::JSON FROM {SOURCE};
+----
+physical_plan	<REGEX>:.*Projections: v\.k.*
+
+query ITT
+SELECT id, (v.k::JSON)::VARCHAR, json_type(v.k::JSON)
+FROM {SOURCE} ORDER BY id;
+----
+1	true	BOOLEAN
+2	"x"	VARCHAR
+3	1	UBIGINT
+4	NULL	NULL
+
+endloop

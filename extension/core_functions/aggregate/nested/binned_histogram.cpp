@@ -336,11 +336,13 @@ AggregateFunction GetHistogramBinFunction(const LogicalType &type) {
 	const char *function_name = HIST::EXACT ? "histogram_exact" : "histogram";
 
 	auto struct_type = LogicalType::MAP(type, LogicalType::UBIGINT);
-	return AggregateFunction(
-	    function_name, {type, LogicalType::LIST(type)}, struct_type, AggregateFunction::StateSize<STATE_TYPE>,
+	AggregateFunction function(
+	    function_name, {}, struct_type, AggregateFunction::StateSize<STATE_TYPE>,
 	    AggregateFunction::StateInitialize<STATE_TYPE, HistogramBinFunction>, HistogramBinUpdateFunction<OP, T, HIST>,
 	    AggregateFunction::StateCombine<STATE_TYPE, HistogramBinFunction>, HistogramBinFinalizeFunction<OP, T>, nullptr,
 	    nullptr, AggregateFunction::StateDestroy<STATE_TYPE, HistogramBinFunction>);
+	function.GetSignature().AddParameter("arg", type).AddParameter("bins", LogicalType::LIST(type));
+	return function;
 }
 
 template <class HIST>
@@ -397,20 +399,27 @@ unique_ptr<FunctionData> HistogramBinBindFunction(BindAggregateFunctionInput &in
 } // namespace
 
 AggregateFunction HistogramFun::BinnedHistogramFunction() {
-	return AggregateFunction("histogram", {LogicalType::ANY, LogicalType::LIST(LogicalType::ANY)}, LogicalTypeId::MAP,
-	                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-	                         HistogramBinBindFunction<HistogramRange>, nullptr);
+	AggregateFunction function("histogram", {}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                           nullptr, HistogramBinBindFunction<HistogramRange>, nullptr);
+	function.GetSignature()
+	    .AddParameter("arg", LogicalType::ANY)
+	    .AddParameter("bins", LogicalType::LIST(LogicalType::ANY));
+	return function;
 }
 
 AggregateFunction HistogramExactFun::GetFunction() {
-	return AggregateFunction("histogram_exact", {LogicalType::ANY, LogicalType::LIST(LogicalType::ANY)},
-	                         LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-	                         HistogramBinBindFunction<HistogramExact>, nullptr);
+	AggregateFunction function("histogram_exact", {}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                           nullptr, HistogramBinBindFunction<HistogramExact>, nullptr);
+	function.GetSignature()
+	    .AddParameter("arg", LogicalType::ANY)
+	    .AddParameter("bins", LogicalType::LIST(LogicalType::ANY));
+	return function;
 }
 
 ScalarFunction IsHistogramOtherBinFun::GetFunction() {
-	return ScalarFunction("is_histogram_other_bin", {LogicalType::ANY}, LogicalType::BOOLEAN,
-	                      IsHistogramOtherBinFunction);
+	ScalarFunction fun("is_histogram_other_bin", {}, LogicalType::BOOLEAN, IsHistogramOtherBinFunction);
+	fun.GetSignature().AddParameter("val", LogicalType::ANY);
+	return fun;
 }
 
 } // namespace duckdb

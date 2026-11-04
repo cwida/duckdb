@@ -1,0 +1,51 @@
+# name: test/sql/types/nested/array/array_case.test
+# description: CASE and COALESCE producing ARRAY values
+# group: [array]
+
+query I
+SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE [i]::INT[1] END FROM range(5) t(i);
+----
+NULL
+[1]
+[2]
+NULL
+[4]
+
+query I
+SELECT CASE WHEN i % 2 = 0 THEN [i, i + 1]::INT[2] WHEN i % 3 = 0 THEN NULL ELSE [i * 10, NULL]::INT[2] END FROM range(7) t(i);
+----
+[0, 1]
+[10, NULL]
+[2, 3]
+NULL
+[4, 5]
+[50, NULL]
+[6, 7]
+
+query I
+SELECT CASE WHEN i % 2 = 0 THEN [[i::VARCHAR, 'a long string that is not inlined'], NULL]::VARCHAR[2][2] ELSE [NULL, ['z', NULL]]::VARCHAR[2][2] END FROM range(4) t(i);
+----
+[[0, a long string that is not inlined], NULL]
+[NULL, [z, NULL]]
+[[2, a long string that is not inlined], NULL]
+[NULL, [z, NULL]]
+
+query I
+SELECT COALESCE(CASE WHEN i % 2 = 0 THEN [i, i]::INT[2] END, [-1, -1]::INT[2]) FROM range(4) t(i);
+----
+[0, 0]
+[-1, -1]
+[2, 2]
+[-1, -1]
+
+query I
+SELECT CASE WHEN i % 2 = 0 THEN {'a': [i, i]::INT[2], 'b': [[i]]} ELSE {'a': NULL, 'b': [[i, NULL]]} END FROM range(3) t(i);
+----
+{'a': [0, 0], 'b': [[0]]}
+{'a': NULL, 'b': [[1, NULL]]}
+{'a': [2, 2], 'b': [[2]]}
+
+query I
+SELECT sum(len(CASE WHEN i % 2 = 0 THEN [i::VARCHAR, 'x']::VARCHAR[2] END)) FROM range(100000) t(i);
+----
+100000

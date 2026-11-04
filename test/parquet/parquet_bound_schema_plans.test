@@ -1,0 +1,147 @@
+# name: test/parquet/parquet_bound_schema_plans.test
+# description: Bound reader metadata safeguards retain safe native optimizations
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing':'upper'}
+
+statement ok
+COPY (SELECT 'longer' b, 'x' a) TO '{TEST_DIR}/bound_plan_strings.parquet' (FORMAT parquet)
+
+# Same names and types, wrong physical ordinal: scalar projection stays outside.
+query II
+EXPLAIN SELECT strlen(a) FROM read_parquet('{TEST_DIR}/bound_plan_strings.parquet', bound_schema={'a':'VARCHAR','b':'VARCHAR'}, hive_partitioning=false)
+----
+physical_plan	<REGEX>:.*PROJECTION.*
+
+# Same physical ordinal/type: the native byte-length reader is still available.
+query II
+EXPLAIN SELECT strlen(a) FROM read_parquet('{TEST_DIR}/bound_plan_strings.parquet', bound_schema={'b':'VARCHAR','a':'VARCHAR'}, hive_partitioning=false)
+----
+physical_plan	<!REGEX>:.*PROJECTION.*
+
+query I
+SELECT strlen(a) FROM read_parquet('{TEST_DIR}/bound_plan_strings.parquet', bound_schema={'b':'VARCHAR','a':'VARCHAR'}, hive_partitioning=false)
+----
+1
+
+statement ok
+COPY (SELECT '9' v UNION ALL SELECT '10') TO '{TEST_DIR}/bound_plan_numeric.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 9::BIGINT v UNION ALL SELECT 10::BIGINT) TO '{TEST_DIR}/bound_plan_identity.parquet' (FORMAT parquet)
+
+# These two plans test the ordinary min/max metadata optimization. State-export
+# verification changes the aggregate shape, so restore that mode before results.
+statement ok
+SET VARIABLE bound_schema_saved_state_export = current_setting('debug_verify_aggregate_state_export')
+
+statement ok
+SET debug_verify_aggregate_state_export = false
+
+# Numeric ordering cannot use the physical string min/max accessor.
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('{TEST_DIR}/bound_plan_numeric.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+physical_plan	<REGEX>:.*READ_PARQUET.*
+
+# Native partition min/max exactness remains usable for an identity mapping.
+query II
+EXPLAIN SELECT min(v), max(v) FROM read_parquet('{TEST_DIR}/bound_plan_identity.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+physical_plan	<!REGEX>:.*READ_PARQUET.*
+
+# Same types and names but different physical positions cannot use partition accessors.
+statement ok
+COPY (SELECT 1000::BIGINT b, 7::BIGINT a UNION ALL SELECT 2000, 8) TO '{TEST_DIR}/bound_plan_reordered.parquet' (FORMAT parquet)
+
+query II
+EXPLAIN SELECT min(a) FROM read_parquet('{TEST_DIR}/bound_plan_reordered.parquet', bound_schema={'a':'BIGINT','b':'BIGINT'}, hive_partitioning=false)
+----
+physical_plan	<REGEX>:.*READ_PARQUET.*
+
+query II
+EXPLAIN SELECT min(a) FROM read_parquet('{TEST_DIR}/bound_plan_reordered.parquet', bound_schema={'b':'BIGINT','a':'BIGINT'}, hive_partitioning=false)
+----
+physical_plan	<!REGEX>:.*READ_PARQUET.*
+
+statement ok
+SET debug_verify_aggregate_state_export = getvariable('bound_schema_saved_state_export')
+
+statement ok
+RESET VARIABLE bound_schema_saved_state_export
+
+query II
+SELECT min(v), max(v) FROM read_parquet('{TEST_DIR}/bound_plan_numeric.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+9	10
+
+query II
+SELECT min(v), max(v) FROM read_parquet('{TEST_DIR}/bound_plan_identity.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+9	10
+
+# Safe physical bounds still allow impossible filters to become empty.
+query II
+EXPLAIN SELECT v FROM read_parquet('{TEST_DIR}/bound_plan_identity.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false) WHERE v > 10
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+# Explicit statistics are already in the target domain, even when physical types differ.
+query II
+EXPLAIN SELECT v FROM read_parquet('{TEST_DIR}/bound_plan_numeric.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false, column_statistics=MAP {'v':MAP {'min':'9','max':'10','count':'2','null_count':'0'}}) WHERE v > 10
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+statement ok
+COPY (SELECT 'stored' filename) TO '{TEST_DIR}/bound_plan_filename.parquet' (FORMAT parquet)
+
+# Generated filename bounds cannot come from a same-name/type/ordinal physical shadow.
+query II
+EXPLAIN SELECT filename FROM read_parquet('{TEST_DIR}/bound_plan_filename.parquet', bound_schema={'filename':'VARCHAR'}, filename=true, hive_partitioning=false) WHERE filename <> 'stored'
+----
+physical_plan	<!REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT filename <> 'stored' FROM read_parquet('{TEST_DIR}/bound_plan_filename.parquet', bound_schema={'filename':'VARCHAR'}, filename=true, hive_partitioning=false)
+----
+true
+
+# Collation is part of physical/output compatibility even when names and type IDs match.
+statement ok
+COPY (SELECT 'Z' v UNION ALL SELECT 'a') TO '{TEST_DIR}/bound_plan_collation.parquet' (FORMAT parquet)
+
+query TT
+SELECT min(v), max(v) FROM read_parquet('{TEST_DIR}/bound_plan_collation.parquet', bound_schema={'v':'VARCHAR COLLATE nocase'}, hive_partitioning=false)
+----
+a	Z
+
+query T
+SELECT v FROM read_parquet('{TEST_DIR}/bound_plan_collation.parquet', bound_schema={'v':'VARCHAR COLLATE nocase'}, hive_partitioning=false) WHERE v='z'
+----
+Z
+
+# A collated target must not delegate its expression to the uncollated physical column.
+query II
+EXPLAIN SELECT strlen(v) FROM read_parquet('{TEST_DIR}/bound_plan_collation.parquet', bound_schema={'v':'VARCHAR COLLATE nocase'}, hive_partitioning=false)
+----
+physical_plan	<REGEX>:.*PROJECTION.*
+
+query I rowsort
+SELECT strlen(v) FROM read_parquet('{TEST_DIR}/bound_plan_collation.parquet', bound_schema={'v':'VARCHAR COLLATE nocase'}, hive_partitioning=false)
+----
+1
+1
+
+# The same physical column is still eligible when the complete type matches.
+query II
+EXPLAIN SELECT strlen(v) FROM read_parquet('{TEST_DIR}/bound_plan_collation.parquet', bound_schema={'v':'VARCHAR'}, hive_partitioning=false)
+----
+physical_plan	<!REGEX>:.*PROJECTION.*
+
+query II
+SELECT min(a), max(b) FROM read_parquet('{TEST_DIR}/bound_plan_reordered.parquet', bound_schema={'a':'BIGINT','b':'BIGINT'}, hive_partitioning=false)
+----
+7	2000

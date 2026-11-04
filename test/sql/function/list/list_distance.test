@@ -45,3 +45,41 @@ SELECT list_distance([], []);
 0.0
 
 endloop
+
+# list distance operator
+query R
+SELECT [1.0, 2.0] <-> [2.0, 4.0];
+----
+2.23606797749979
+
+# no whitespace around the operator
+query R
+SELECT [1.0, 2.0]<->[2.0, 4.0];
+----
+2.23606797749979
+
+# parenthesized expression
+query R
+SELECT ([0.0, 0.0] <-> [3.0, 4.0]) + 1;
+----
+6.0
+
+# comparison has lower precedence than the list distance operator
+query I
+SELECT [0.0, 0.0] <-> [3.0, 4.0] = 5.0;
+----
+true
+
+# cosine distance remains a distinct operator
+query R
+SELECT [1.0, 2.0] <=> [2.0, 4.0];
+----
+0.0
+
+statement ok
+PREPARE list_distance_operator AS SELECT $1::DOUBLE[] <-> $2::DOUBLE[];
+
+query R
+EXECUTE list_distance_operator([1.0, 2.0], [2.0, 4.0]);
+----
+2.23606797749979

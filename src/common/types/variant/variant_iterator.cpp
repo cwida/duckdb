@@ -4,6 +4,7 @@
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/serializer/varint.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 
 #include <algorithm>
 
@@ -28,25 +29,41 @@ namespace {
 
 //! Decode the (length-prefixed) string payload of a value at the given byte offset in the blob
 string_t DecodeStringData(const string_t &blob, uint32_t byte_offset) {
-	auto ptr = const_data_ptr_cast(blob.GetData()) + byte_offset;
+	auto blob_size = blob.GetSize();
+	VariantUtils::Available(blob_size, byte_offset, 1);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = data + byte_offset;
 	auto length = VarintDecode<uint32_t>(ptr);
+	VariantUtils::Available(blob_size, NumericCast<idx_t>(ptr - data), length);
 	return string_t(reinterpret_cast<const char *>(ptr), length);
 }
 
 //! Decode the (width, scale, value pointer) of a DECIMAL value at the given byte offset
 VariantDecimalData DecodeDecimalData(const string_t &blob, uint32_t byte_offset) {
-	auto ptr = const_data_ptr_cast(blob.GetData()) + byte_offset;
+	auto blob_size = blob.GetSize();
+	VariantUtils::Available(blob_size, byte_offset, 1);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = data + byte_offset;
 	auto width = VarintDecode<uint32_t>(ptr);
 	auto scale = VarintDecode<uint32_t>(ptr);
+	VariantUtils::Available(blob_size, NumericCast<idx_t>(ptr - data), 0);
 	return VariantDecimalData(width, scale, ptr);
 }
 
 //! Decode the (child_count, children_idx) of an OBJECT/ARRAY value at the given byte offset
 VariantNestedData DecodeNestedData(const string_t &blob, uint32_t byte_offset) {
-	auto ptr = const_data_ptr_cast(blob.GetData()) + byte_offset;
+	auto blob_size = blob.GetSize();
+	VariantUtils::Available(blob_size, byte_offset, 1);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = data + byte_offset;
 	VariantNestedData result;
 	result.child_count = VarintDecode<uint32_t>(ptr);
-	result.children_idx = result.child_count ? VarintDecode<uint32_t>(ptr) : 0;
+	if (result.child_count) {
+		VariantUtils::Available(blob_size, NumericCast<idx_t>(ptr - data), 1);
+		result.children_idx = VarintDecode<uint32_t>(ptr);
+	} else {
+		result.children_idx = 0;
+	}
 	return result;
 }
 

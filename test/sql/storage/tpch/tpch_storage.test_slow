@@ -97,7 +97,7 @@ AIR	TRUCK	6001215
 query III
 SELECT MIN(l_comment), MAX(l_comment), COUNT(l_comment) FROM lineitem;
 ----
- Tiresias 	zzle? furiously iro	6001215
+ Tiresias 	zzle? slyly final platelets sleep quickly. 	6001215
 
 
 query IIII
@@ -143,7 +143,7 @@ SELECT MIN(p_retailprice), MAX(p_retailprice), AVG(p_retailprice), COUNT(p_retai
 query III
 SELECT MIN(p_comment), MAX(p_comment), COUNT(p_comment) FROM part;
 ----
- Tires	zzle? fur	200000
+ Tire	zzle. quickly si	200000
 
 loop i 1 9
 

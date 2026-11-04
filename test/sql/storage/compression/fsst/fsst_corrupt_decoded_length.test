@@ -1,0 +1,22 @@
+# name: test/sql/storage/compression/fsst/fsst_corrupt_decoded_length.test
+# description: Reject an FSST string that exceeds the vector's decompression buffer
+# group: [fsst]
+
+# The database is written with a vector size of 2048.
+require vector_size 2048
+
+unzip data/storage/corrupt/fsst_corrupt_decoded_length.db.gz {TEST_DIR}/fsst_corrupt_decoded_length.db
+
+load {TEST_DIR}/fsst_corrupt_decoded_length.db readonly
+
+statement ok
+USE fsst_corrupt_decoded_length
+
+statement ok
+SET enable_fsst_vectors = true
+
+# array_value reads individual values from the FSST vector through its fixed-size decompression buffer.
+statement error
+SELECT array_value(a) FROM t
+----
+Data Corruption Error: Failed to decompress FSST string - decoded size exceeds the output buffer

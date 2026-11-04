@@ -107,6 +107,10 @@ bool ColumnIndex::IsChildPathOf(const ColumnIndex &path) const {
 				return false;
 			}
 		}
+		if (a.get().type != b.get().type) {
+			// A cast parent cannot replace a path through the uncast value.
+			return false;
+		}
 		const bool a_has_children = a.get().HasChildren();
 		const bool b_has_children = b.get().HasChildren();
 		if (!a_has_children && !b_has_children) {

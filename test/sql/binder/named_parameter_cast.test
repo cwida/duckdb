@@ -1,0 +1,26 @@
+# name: test/sql/binder/named_parameter_cast.test
+# description: A named table function parameter is cast to its declared type like an explicit cast, extension casts included
+# group: [binder]
+
+require icu
+
+statement ok
+SET TimeZone='America/Los_Angeles';
+
+statement ok
+COPY (SELECT 42 AS a) TO '{TEST_DIR}/named_parameter_cast.csv' (HEADER false);
+
+# -----------------------------------------------------------------------------
+# ICU's TIMESTAMPTZ -> VARCHAR cast prints in the session time zone
+#
+
+# names is a LIST(VARCHAR) parameter, so the binder casts the timestamp into a column name
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/named_parameter_cast.csv', names => [TIMESTAMPTZ '2024-01-01 12:00:00+00']));
+----
+2024-01-01 04:00:00-08
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/named_parameter_cast.csv', names => [TIMESTAMPTZ '2024-01-01 12:00:00+00'::VARCHAR]));
+----
+2024-01-01 04:00:00-08

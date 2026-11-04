@@ -10,10 +10,9 @@ include_directories(dbgen/include)
 include_directories(include)
 add_subdirectory(dbgen)
 
-build_static_extension(tpch tpch_extension.cpp ${DBGEN_OBJECT_FILES})
-set(PARAMETERS "-warnings")
-build_loadable_extension(tpch ${PARAMETERS} tpch_extension.cpp
-                         ${DBGEN_OBJECT_FILES})
+# test/api reaches TPC internals through the shared libduckdb
+build_extension_library(tpch DEFAULT_VISIBILITY tpch_extension.cpp
+                        ${DBGEN_OBJECT_FILES})
 
 install(
   TARGETS tpch_extension

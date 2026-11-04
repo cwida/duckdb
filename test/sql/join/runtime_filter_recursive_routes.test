@@ -1,0 +1,125 @@
+# name: test/sql/join/runtime_filter_recursive_routes.test
+# description: Runtime filter routes preserve recursive results and invariant builds
+# group: [join]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE lookup AS SELECT i AS id,i%8 AS k FROM range(256) t(i);
+
+statement ok
+CREATE TABLE ids AS SELECT id FROM lookup;
+
+statement ok
+INSERT INTO lookup VALUES (256,NULL),(264,NULL);
+
+statement ok
+CREATE TABLE wanted AS SELECT 0::BIGINT AS k;
+
+statement ok
+PREPARE nested_build AS
+WITH RECURSIVE r(i) AS (VALUES (0) UNION ALL SELECT i+1 FROM r WHERE i<2)
+SELECT count(*),coalesce(sum(cnt),0) FROM (
+    SELECT b.k,count(*) AS cnt FROM ids a JOIN lookup b USING(id) CROSS JOIN r GROUP BY b.k
+) p JOIN wanted USING(k);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query II
+EXECUTE nested_build;
+----
+1	96
+
+statement ok
+UPDATE wanted SET k=(k+1)%8;
+
+query II
+EXECUTE nested_build;
+----
+1	96
+
+statement ok
+DELETE FROM wanted;
+
+query II
+EXECUTE nested_build;
+----
+0	0
+
+statement ok
+INSERT INTO wanted VALUES (7);
+
+query II
+EXECUTE nested_build;
+----
+1	96
+
+# Changing recursive keys must retain complete window partitions.
+query IIII
+WITH RECURSIVE walk(n,k,total) AS (
+    VALUES (0,0::BIGINT,0::BIGINT)
+    UNION ALL
+    SELECT w.n+1,(w.k+1)%8,w.total+p.id
+    FROM (
+        SELECT id,k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn FROM lookup
+    ) p JOIN walk w ON p.k=w.k
+    WHERE p.rn=2 AND w.n<12
+)
+SELECT count(*),max(n),max(total),sum(total) FROM walk;
+----
+13	12	130	830
+
+# The nested build can be reused while recursive keys change.
+query IIII
+WITH RECURSIVE walk(n,k,total) AS (
+    VALUES (0,0::BIGINT,0::BIGINT)
+    UNION ALL
+    SELECT w.n+1,(w.k+1)%8,w.total+p.cnt
+    FROM (
+        SELECT b.k,count(*) AS cnt FROM ids a JOIN lookup b USING(id) GROUP BY b.k
+    ) p JOIN walk w ON p.k=w.k
+    WHERE w.n<12
+)
+SELECT count(*),max(n),max(total),sum(total) FROM walk;
+----
+13	12	384	2496
+
+# Alternating NULL and non-NULL keys must retain all required window partitions.
+query IIII
+WITH RECURSIVE walk(n,k,total) AS (
+    VALUES (0,NULL::BIGINT,0::BIGINT)
+    UNION ALL
+    SELECT w.n+1,CASE w.n%3 WHEN 0 THEN 0 WHEN 1 THEN 1 ELSE NULL END,w.total+p.id
+    FROM (
+        SELECT id,k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn FROM lookup
+    ) p JOIN walk w ON p.k IS NOT DISTINCT FROM w.k
+    WHERE p.rn=2 AND w.n<9
+)
+SELECT count(*),max(n),max(total),sum(total) FROM walk;
+----
+10	9	843	4980
+
+# The materialized wrapper's producer remains independent from the recursive input.
+query IIII
+WITH RECURSIVE walk(n,k,total) AS (
+    VALUES (0,0::BIGINT,0::BIGINT)
+    UNION ALL
+    SELECT w.n+1,(w.k+1)%8,w.total+p.id
+    FROM (
+        WITH q AS MATERIALIZED (SELECT * FROM range(1))
+        SELECT id,k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn FROM lookup CROSS JOIN q
+    ) p JOIN walk w ON p.k=w.k
+    WHERE p.rn=2 AND w.n<12
+)
+SELECT count(*),max(n),max(total),sum(total) FROM walk;
+----
+13	12	130	830
+
+endloop
+
+statement ok
+RESET disabled_optimizers;

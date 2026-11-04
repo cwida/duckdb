@@ -1,0 +1,20 @@
+# name: benchmark/micro/result_collection/arrow_stream_64mb.benchmark
+# description: Arrow result stream with a 64MB cap, so the cap's effect on parallel conversion is on record
+# group: [result_collection]
+
+name arrow_stream_64mb
+group micro
+subgroup result_collection
+
+resultmode arrow_stream 131072
+
+cache stream_drain_data.duckdb
+
+init
+set max_streaming_buffer_size='64MB';
+
+load
+create table tbl as select 'this is a reasonably long string ' || i as a from range(25000000) t(i);
+
+run
+select * from tbl;

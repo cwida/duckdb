@@ -1,0 +1,20 @@
+# name: test/sql/types/struct/struct_key_collation_and_combine.test
+# description: Collations of STRUCT keys and combining STRUCT types with overlapping fields
+# group: [struct]
+
+# a collated field is still collated when the struct is used as a grouping key
+query I
+SELECT count(*) FROM (SELECT DISTINCT {'a': x COLLATE NOCASE, 'b': 1} FROM (VALUES ('A'), ('a'), ('b')) t(x));
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT {'a': x, 'b': 1} FROM (VALUES ('A'), ('a'), ('b')) t(x));
+----
+3
+
+# the fields of both structs are combined: left fields first, then the remaining right fields in order
+query I
+SELECT typeof([{'a': 1, 'b': 2}, {'c': 3::BIGINT, 'b': 4::BIGINT, 'd': 5}]);
+----
+STRUCT(a INTEGER, b BIGINT, c BIGINT, d INTEGER)[]

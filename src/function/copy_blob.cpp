@@ -43,6 +43,9 @@ unique_ptr<FunctionData> WriteBlobBind(ClientContext &context, CopyFunctionBindI
 
 	for (auto &[option_name, option_values] : input.info.options) {
 		if (option_name == "compression") {
+			if (option_values.empty()) {
+				throw BinderException("COPY (FORMAT BLOB) option %s requires a value", SQLIdentifier(option_name));
+			}
 			auto compression_str = ParseStringOption(option_values[0], option_name);
 			result->compression_type = FileCompressionType(compression_str);
 		} else {

@@ -38,6 +38,9 @@ public:
 	//! Removes the column(s) and outputs the new column indices
 	vector<LogicalIndex> RemoveColumn(LogicalIndex index, idx_t column_amount);
 
+	//! Return a deep copy (the copy constructor is deleted to prevent accidental copies)
+	ColumnDependencyManager Copy() const;
+
 	bool IsDependencyOf(LogicalIndex dependent, LogicalIndex dependency) const;
 	bool HasDependencies(LogicalIndex index) const;
 	const logical_index_set_t &GetDependencies(LogicalIndex index) const;

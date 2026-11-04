@@ -41,7 +41,7 @@ SELECT 4 / 0
 <REGEX>:.*Division by zero.*
 
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 # division by zero
 query I

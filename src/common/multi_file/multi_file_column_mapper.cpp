@@ -1,4 +1,6 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -118,7 +120,9 @@ struct FieldIdMapper : public ColumnMapper {
 	static unique_ptr<Expression> GetDefault(ClientContext &context, const MultiFileColumnDefinition &column) {
 		auto &default_val = column.default_expression;
 		if (!default_val) {
-			throw InternalException("No default expression in FieldId Map");
+			throw InvalidInputException("Field %s (field id %d) is missing from the file schema and has no default "
+			                            "expression",
+			                            column.name, column.GetIdentifierFieldId());
 		}
 		auto binder = Binder::CreateBinder(context);
 		binder->SetCanContainNulls(true);
@@ -318,9 +322,12 @@ static ColumnMapResult MapColumnList(ClientContext &context, const MultiFileColu
 		default_expressions.push_back(std::move(child_map.default_value));
 
 		// auto default_type = LogicalType::STRUCT(std::move(default_type_list));
-		result.default_value = StructPackFun::GetFunction().Bind(context, std::move(default_expressions));
+		result.default_value = BindBuiltinScalarFunction(context, StructPackFun::Name, std::move(default_expressions));
 	}
 	result.column_index = make_uniq<ColumnIndex>(local_id.GetIndex(), std::move(child_indexes));
+	if (global_index.HasType()) {
+		result.column_index->SetType(local_column.type);
+	}
 	result.mapping = std::move(mapping);
 	return result;
 }
@@ -439,12 +446,15 @@ static ColumnMapResult MapColumnMap(ClientContext &context, const MultiFileColum
 	}
 	if (!default_expressions.empty()) {
 		// we have default values at a previous level wrap it in a "list"
-		result.default_value = StructPackFun::GetFunction().Bind(context, std::move(default_expressions));
+		result.default_value = BindBuiltinScalarFunction(context, StructPackFun::Name, std::move(default_expressions));
 	}
 	vector<ColumnIndex> map_indexes;
 	map_indexes.emplace_back(0, std::move(child_indexes));
 
 	result.column_index = make_uniq<ColumnIndex>(local_id.GetIndex(), std::move(map_indexes));
+	if (global_index.HasType()) {
+		result.column_index->SetType(local_column.type);
+	}
 	result.mapping = std::move(mapping);
 	return result;
 }
@@ -467,10 +477,22 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 		auto child_mapping = MapColumn(context, child_column, child_index, local_column.children, *nested_mapper);
 
 		if (child_mapping.column_index) {
+			auto &child_column_index = *child_mapping.column_index;
+			if (child_mapping.local_column && child_mapping.local_column->type.id() == LogicalTypeId::STRUCT &&
+			    !child_column_index.IsPushdownExtract()) {
+				// the extracted field is read with the type it has in this file, and then remapped to the global type
+				// (the fields of a nested struct can differ between files, e.g. with union_by_name)
+				child_column_index.SetType(child_mapping.local_column->type);
+				if (child_mapping.column_map.type().id() == LogicalTypeId::TUPLE) {
+					// the mapping of a nested struct is (local name, mapping) - we extract the field directly
+					auto map_entry = StructValue::GetChildren(child_mapping.column_map)[1];
+					child_mapping.column_map = std::move(map_entry);
+				}
+			}
 			vector<ColumnIndex> single_child;
 			single_child.push_back(std::move(*child_mapping.column_index));
 			child_mapping.column_index = make_uniq<ColumnIndex>(local_id.GetIndex(), single_child);
-			child_mapping.column_index->SetType(global_column.type);
+			child_mapping.column_index->SetType(local_column.type);
 			child_mapping.column_index->SetPushdownExtract();
 
 			mapping->child_mapping.emplace(MultiFileGlobalIndex(0), std::move(child_mapping.mapping));
@@ -544,11 +566,11 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 	}
 
 	if (!default_expressions.empty()) {
-		result.default_value = StructPackFun::GetFunction().Bind(context, std::move(default_expressions));
+		result.default_value = BindBuiltinScalarFunction(context, StructPackFun::Name, std::move(default_expressions));
 	}
 	result.column_index = make_uniq<ColumnIndex>(local_id.GetIndex(), std::move(child_indexes));
 	if (global_index.HasType()) {
-		result.column_index->SetType(global_column.type);
+		result.column_index->SetType(local_column.type);
 	}
 	result.mapping = std::move(mapping);
 	return result;
@@ -568,10 +590,19 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
 	}
 	// the field exists! get the local column
 	auto &local_column = local_columns[local_idx];
+	if (local_column.type.id() == LogicalTypeId::SQLNULL) {
+		// An explicitly NULL field can represent any result type, including a nested field.
+		// Do not feed it into remap_struct, which requires matching nested source types.
+		auto &type = (is_root || global_index.IsPushdownExtract()) && global_index.HasType()
+		                 ? global_index.GetScanType()
+		                 : global_column.type;
+		result.default_value = make_uniq<BoundConstantExpression>(Value(type));
+		return result;
+	}
 	auto mapping_idx = is_root ? top_level_index : local_idx;
 	auto mapping = make_uniq<MultiFileIndexMapping>(mapping_idx);
-	if (global_column.children.empty()) {
-		// not a struct - map the column directly
+	if (global_column.children.empty() || !local_column.type.IsNested()) {
+		// Map directly when no child remapping is needed or the source requires a scalar cast.
 		result.column_map = Value(local_column.name);
 		result.column_index = make_uniq<ColumnIndex>(global_index.RemapRootIndex(local_idx.GetIndex()));
 		result.mapping = std::move(mapping);
@@ -581,6 +612,11 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
 
 	// nested type - check if the field identifiers match and if we need to remap
 	D_ASSERT(global_column.type.IsNested());
+	if (global_column.type.id() != local_column.type.id()) {
+		throw BinderException("Failed to map file-column of type '%s' to result-column of type '%s'", local_column.type,
+		                      global_column.type);
+	}
+
 	switch (global_column.type.id()) {
 	case LogicalTypeId::STRUCT:
 		return MapColumnStruct(context, global_column, global_index, local_column, local_idx, mapper,
@@ -604,13 +640,22 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
                                                      ColumnMapResult &mapping, const LogicalType &global_column_type,
                                                      const LogicalType &local_column_type, bool is_trivially_mappable) {
 	unique_ptr<Expression> expr = make_uniq<BoundReferenceExpression>(local_column_type, local_idx.GetIndex());
+	if (mapping.column_map.type().id() == LogicalTypeId::TUPLE) {
+		// A pushed-down extract already selects the source column; retain only its child mapping.
+		auto child_mapping = StructValue::GetChildren(mapping.column_map)[1];
+		mapping.column_map = std::move(child_mapping);
+	}
 	const bool can_use_remap_struct =
 	    global_column_type.IsNested() &&
 	    (mapping.column_map.IsNull() || mapping.column_map.type().id() == LogicalTypeId::STRUCT) &&
 	    !is_trivially_mappable && local_column_type.IsNested();
 	if (!can_use_remap_struct) {
 		// not a struct - potentially add a cast
-		if (local_column_type != global_column_type) {
+		if (local_column_type.id() == LogicalTypeId::VARCHAR && global_column_type.id() == LogicalTypeId::BLOB) {
+			// the text in a file becomes its UTF-8 bytes, it is not a blob literal with \x escapes
+			expr = BoundCastExpression::Create(std::move(expr), global_column_type,
+			                                   BoundCastInfo(DefaultCasts::ReinterpretCast));
+		} else if (local_column_type != global_column_type) {
 			expr = BoundCastExpression::AddCastToType(context, std::move(expr), global_column_type);
 		}
 		return expr;
@@ -625,7 +670,7 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
 	} else {
 		children.push_back(std::move(mapping.default_value));
 	}
-	return RemapStructFun::GetFunction().Bind(context, std::move(children));
+	return BindBuiltinScalarFunction(context, RemapStructFun::Name, std::move(children));
 }
 
 ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const ColumnMapper &mapper) {
@@ -739,7 +784,9 @@ ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const Col
 			// reader is responsible for converting types - perform a top-level match only
 			auto entry = mapper.Find(global_column);
 			if (!entry.IsValid()) {
-				ThrowColumnNotFoundError(global_column.name.GetIdentifierName());
+				// the file lacks the column - it takes its default value, and is an error when it has none
+				reader_data.expressions.push_back(mapper.GetDefaultExpression(context, global_column, true));
+				continue;
 			}
 			MultiFileLocalColumnId local_id(entry.GetIndex());
 			auto local_index = global_id.RemapRootIndex(local_id.GetId());
@@ -839,7 +886,7 @@ Value MultiFileColumnMapper::GetConstantValue(MultiFileGlobalIndex global_index)
 		}
 	}
 	auto &global_column = global_columns[global_column_id];
-	throw InternalException("Column '%s' is not present in the file, but no constant_map entry exists for it!",
+	throw InternalException("Column %s is not present in the file, but no constant_map entry exists for it!",
 	                        global_column.name);
 }
 
@@ -892,14 +939,49 @@ static unique_ptr<Expression> CreateStructExtractExpression(unique_ptr<Expressio
 	                                          StructExtractAtFun::GetBindData(child_idx));
 }
 
-static bool TryCastConstant(Value &constant, const LogicalType &target_type) {
-	// this filter replaces the global one in the reader, so a constant that does not survive the cast
-	// exactly would silently change which rows match
-	if (!BoundCastExpression::CastIsInvertible(constant.type(), target_type)) {
+//! A cast matches STRUCT fields by name, so nested fields need the same names and positions and invertible casts
+static bool MappedCastIsInvertible(const MultiFileIndexMapping &mapping, const LogicalType &source_type,
+                                   const LogicalType &target_type) {
+	if (!BoundCastExpression::CastIsInvertible(source_type, target_type)) {
+		return false;
+	}
+	if (!source_type.IsNested()) {
+		return true;
+	}
+	// the reader only maps the children of STRUCT, LIST and MAP one by one
+	auto type_id = source_type.id();
+	if (type_id != target_type.id() ||
+	    (type_id != LogicalTypeId::STRUCT && type_id != LogicalTypeId::LIST && type_id != LogicalTypeId::MAP)) {
+		return false;
+	}
+	auto source_children = LogicalType::GetNamedChildTypes(source_type);
+	auto target_children = LogicalType::GetNamedChildTypes(target_type);
+	if (source_children.size() != target_children.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < source_children.size(); i++) {
+		auto entry = mapping.child_mapping.find(MultiFileGlobalIndex(i));
+		if (entry == mapping.child_mapping.end() || entry->second->index.GetIndex() != i ||
+		    !(source_children[i].first == target_children[i].first) ||
+		    !MappedCastIsInvertible(*entry->second, source_children[i].second, target_children[i].second)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool TryCastConstant(Value &constant, const MultiFileIndexMapping &mapping, const LogicalType &target_type) {
+	// this filter replaces the global one, so both casts must preserve which rows match
+	if (!BoundCastExpression::CastIsInvertible(constant.type(), target_type) ||
+	    !MappedCastIsInvertible(mapping, target_type, constant.type())) {
 		return false;
 	}
 	auto cast = constant.DefaultTryCastAs(target_type);
 	if (!cast) {
+		return false;
+	}
+	auto roundtrip = cast->DefaultTryCastAs(constant.type());
+	if (!roundtrip || *roundtrip != constant) {
 		return false;
 	}
 	constant = std::move(*cast);
@@ -950,13 +1032,14 @@ static RewrittenMappedExpression RewriteMappedValueExpression(const Expression &
 }
 
 static unique_ptr<Expression> RewriteDynamicFilterExpression(const shared_ptr<DynamicFilterData> &filter_data,
+                                                             const MultiFileIndexMapping &mapping,
                                                              const LogicalType &target_type) {
 	if (!filter_data || !filter_data->initialized) {
 		return nullptr;
 	}
-	lock_guard<mutex> lock(filter_data->lock);
+	annotated_shared_lock<annotated_shared_mutex> lock(filter_data->lock);
 	auto new_constant = filter_data->constant;
-	if (!TryCastConstant(new_constant, target_type)) {
+	if (!TryCastConstant(new_constant, mapping, target_type)) {
 		return nullptr;
 	}
 	return BoundComparisonExpression::Create(filter_data->comparison_type, CreateReferenceExpression(target_type),
@@ -968,30 +1051,19 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_FUNCTION: {
 		auto &func = expr.Cast<BoundFunctionExpression>();
-		if (func.Function().GetName() == OptionalFilterScalarFun::NAME) {
-			if (!func.BindInfo()) {
-				return CreateOptionalFilterExpression(nullptr, target_type);
-			}
-			auto &data = func.BindInfo()->Cast<OptionalFilterFunctionData>();
-			auto child_expr = data.child_filter_expr
-			                      ? TryCastFilterExpression(*data.child_filter_expr, mapping, target_type)
-			                      : nullptr;
-			if (data.child_filter_expr && !child_expr) {
+		if (ExpressionFilter::IsRootOptionalExpression(expr)) {
+			auto optional_child = ExpressionFilter::GetOptionalFilterChild(expr);
+			auto child_expr = optional_child ? TryCastFilterExpression(*optional_child, mapping, target_type) : nullptr;
+			if (optional_child && !child_expr) {
 				return nullptr;
 			}
-			return CreateOptionalFilterExpression(std::move(child_expr), target_type);
-		}
-		if (func.Function().GetName() == SelectivityOptionalFilterScalarFun::NAME) {
+			if (func.Function().GetName() == OptionalFilterScalarFun::NAME) {
+				return CreateOptionalFilterExpression(std::move(child_expr), target_type);
+			}
 			if (!func.BindInfo()) {
-				return CreateSelectivityOptionalFilterExpression(nullptr, target_type, 0.5f, idx_t(6));
+				return CreateSelectivityOptionalFilterExpression(std::move(child_expr), target_type, 0.5f, idx_t(6));
 			}
 			auto &data = func.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>();
-			auto child_expr = data.child_filter_expr
-			                      ? TryCastFilterExpression(*data.child_filter_expr, mapping, target_type)
-			                      : nullptr;
-			if (data.child_filter_expr && !child_expr) {
-				return nullptr;
-			}
 			return CreateSelectivityOptionalFilterExpression(std::move(child_expr), target_type,
 			                                                 data.selectivity_threshold, data.n_vectors_to_check);
 		}
@@ -1000,7 +1072,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 				return nullptr;
 			}
 			auto &data = func.BindInfo()->Cast<DynamicFilterFunctionData>();
-			return RewriteDynamicFilterExpression(data.filter_data, target_type);
+			return RewriteDynamicFilterExpression(data.filter_data, mapping, target_type);
 		}
 		if (!BoundComparisonExpression::IsComparison(expr)) {
 			return nullptr;
@@ -1016,7 +1088,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 			return nullptr;
 		}
 		auto constant = right.Cast<BoundConstantExpression>().GetValue();
-		if (!TryCastConstant(constant, *lhs.type)) {
+		if (!TryCastConstant(constant, *lhs.mapping, *lhs.type)) {
 			return nullptr;
 		}
 		return BoundComparisonExpression::Create(comparison.GetExpressionType(), std::move(lhs.expr),
@@ -1065,7 +1137,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 					return nullptr;
 				}
 				auto constant = op.GetChildren()[i]->Cast<BoundConstantExpression>().GetValue();
-				if (!TryCastConstant(constant, *lhs.type)) {
+				if (!TryCastConstant(constant, *lhs.mapping, *lhs.type)) {
 					return nullptr;
 				}
 				result->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(std::move(constant)));

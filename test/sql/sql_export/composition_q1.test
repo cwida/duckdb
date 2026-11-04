@@ -1,0 +1,107 @@
+# name: test/sql/sql_export/composition_q1.test
+# description: TPC-H Q1 retains row arithmetic but composes grouping, final expressions, and ordering
+# group: [sql_export]
+
+statement ok
+CREATE TABLE lineitem(l_orderkey BIGINT,l_partkey BIGINT,l_suppkey BIGINT,l_linenumber BIGINT,l_quantity DECIMAL(15,2),l_extendedprice DECIMAL(15,2),l_discount DECIMAL(15,2),l_tax DECIMAL(15,2),l_returnflag VARCHAR,l_linestatus VARCHAR,l_shipdate DATE,l_commitdate DATE,l_receiptdate DATE,l_shipinstruct VARCHAR,l_shipmode VARCHAR,l_comment VARCHAR);
+
+statement ok
+INSERT INTO lineitem SELECT i,i%17,i%7,1,i%50+1,100+i,i%10/100.0,i%8/100.0,CASE WHEN i%3=0 THEN 'R' ELSE 'N' END,CASE WHEN i%2=0 THEN 'O' ELSE 'F' END,DATE '1998-08-01'+(i%60)::INTEGER,DATE '1998-08-02',DATE '1998-08-03','DELIVER IN PERSON','AIR','synthetic' FROM range(200) t(i);
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query TTTTTTRRRI
+SELECT
+    l_returnflag,
+    l_linestatus,
+    sum(l_quantity) AS sum_qty,
+    sum(l_extendedprice) AS sum_base_price,
+    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+    avg(l_quantity) AS avg_qty,
+    avg(l_extendedprice) AS avg_price,
+    avg(l_discount) AS avg_disc,
+    count(*) AS count_order
+FROM
+    lineitem
+WHERE
+    l_shipdate <= CAST('1998-09-02' AS date)
+GROUP BY
+    l_returnflag,
+    l_linestatus
+ORDER BY
+    l_returnflag,
+    l_linestatus;
+----
+N	F	1146.00	7856.00	7487.6200	7789.620600	28.65	196.4	0.0465	40
+N	O	1099.00	7560.00	7267.1200	7488.348800	28.17948717948718	193.84615384615384	0.038461538461538464	39
+R	F	510.00	3492.00	3311.5000	3454.174000	28.333333333333332	194.0	0.051111111111111114	18
+R	O	578.00	4306.00	4154.1600	4278.958400	26.272727272727273	195.72727272727272	0.034545454545454546	22
+
+endloop
+
+endloop
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+UPDATE lineitem SET l_quantity=NULL, l_discount=NULL WHERE l_orderkey%5=0;
+
+statement ok
+SELECT
+    l_returnflag,
+    l_linestatus,
+    sum(l_quantity) AS sum_qty,
+    sum(l_extendedprice) AS sum_base_price,
+    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+    avg(l_quantity) AS avg_qty,
+    avg(l_extendedprice) AS avg_price,
+    avg(l_discount) AS avg_disc,
+    count(*) AS count_order
+FROM
+    lineitem
+WHERE
+    l_shipdate <= CAST('1998-09-02' AS date)
+GROUP BY
+    l_returnflag,
+    l_linestatus
+ORDER BY
+    l_returnflag,
+    l_linestatus;
+
+statement ok
+DELETE FROM lineitem;
+
+query TTTTTTRRRI
+SELECT
+    l_returnflag,
+    l_linestatus,
+    sum(l_quantity) AS sum_qty,
+    sum(l_extendedprice) AS sum_base_price,
+    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+    avg(l_quantity) AS avg_qty,
+    avg(l_extendedprice) AS avg_price,
+    avg(l_discount) AS avg_disc,
+    count(*) AS count_order
+FROM
+    lineitem
+WHERE
+    l_shipdate <= CAST('1998-09-02' AS date)
+GROUP BY
+    l_returnflag,
+    l_linestatus
+ORDER BY
+    l_returnflag,
+    l_linestatus;
+----

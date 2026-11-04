@@ -200,8 +200,6 @@ SELECT messageYear, isComment, lengthCategory
 ;
 
 # Q2. Top tags for country, age, gender, time
-# FIXME: date_part from interval
-mode skip unsupported
 
 statement ok
 SELECT co.pl_name AS "country.name"
@@ -233,8 +231,9 @@ HAVING count(*) > 100
 
 
 # Q3. Tag evolution
-# make_date -> year,month,day
-# make_interval
+# make_interval is not supported.
+mode skip unsupported
+
 statement ok
 WITH detail AS (
 SELECT t.t_name
@@ -637,9 +636,7 @@ HAVING count(*) > 400
  LIMIT 100
 ;
 
-mode skip unsupported
 # Q13. Popular Tags per month in a country
-# unsupported: ARRAY syntax
 statement ok
 WITH detail AS (
 SELECT extract(YEAR FROM m.m_creationdate) as year
@@ -675,7 +672,6 @@ SELECT year, month
  LIMIT 100
 ;
 
-mode unskip
 
 #  Q14. Top thread initiators
 statement ok
@@ -893,4 +889,3 @@ SELECT tt.root_tagclassname AS "tagClass.name"
  ORDER BY messageCount DESC, tt.root_tagclassname
  LIMIT 100
 ;
-

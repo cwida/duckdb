@@ -1,0 +1,145 @@
+# name: test/sql/json/test_json_deserialize_invalid_values.test
+# description: Deserialized constants must be within the domain of their type
+# group: [json]
+
+require json
+
+# ENUM index beyond the dictionary
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"ENUM","type_info":{"type":"ENUM_TYPE_INFO","alias":"","extension_info":null,"values_count":2,"values":["a","b"]}},"is_null":false,"value":200}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type ENUM('a', 'b')
+
+# ENUM index beyond the dictionary
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"ENUM","type_info":{"type":"ENUM_TYPE_INFO","alias":"","extension_info":null,"values_count":2,"values":["a","b"]}},"is_null":false,"value":200}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type ENUM('a', 'b')
+
+# TIME beyond a day
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME","type_info":null},"is_null":false,"value":999999999999999}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME
+
+# TIME beyond a day
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME","type_info":null},"is_null":false,"value":999999999999999}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME
+
+# negative TIME
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME","type_info":null},"is_null":false,"value":-1}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME
+
+# negative TIME
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME","type_info":null},"is_null":false,"value":-1}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME
+
+# TIME_NS beyond a day
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME_NS","type_info":null},"is_null":false,"value":9223372036854775806}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME_NS
+
+# TIME_NS beyond a day
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME_NS","type_info":null},"is_null":false,"value":9223372036854775806}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME_NS
+
+# TIMETZ with an invalid offset
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME WITH TIME ZONE","type_info":null},"is_null":false,"value":18446744073709551615}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME WITH TIME ZONE
+
+# TIMETZ with an invalid offset
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME WITH TIME ZONE","type_info":null},"is_null":false,"value":18446744073709551615}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type TIME WITH TIME ZONE
+
+# DECIMAL beyond its width
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","extension_info":null,"width":4,"scale":2}},"is_null":false,"value":12345}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type DECIMAL(4,2)
+
+# DECIMAL beyond its width
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","extension_info":null,"width":4,"scale":2}},"is_null":false,"value":12345}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type DECIMAL(4,2)
+
+query I
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"ENUM","type_info":{"type":"ENUM_TYPE_INFO","alias":"","extension_info":null,"values_count":2,"values":["a","b"]}},"is_null":false,"value":1}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+b
+
+query I
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"TIME","type_info":null},"is_null":false,"value":86400000000}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+24:00:00
+
+query I
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"DECIMAL","type_info":{"type":"DECIMAL_TYPE_INFO","alias":"","extension_info":null,"width":4,"scale":2}},"is_null":false,"value":-9999}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+-99.99
+
+# UNION tag beyond its members
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"UNION","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","extension_info":null,"child_types":[{"first":"","second":{"id":"UTINYINT","type_info":null}},{"first":"a","second":{"id":"INTEGER","type_info":null}}]}},"is_null":false,"value":{"children":[{"type":{"id":"UTINYINT","type_info":null},"is_null":false,"value":5},{"type":{"id":"INTEGER","type_info":null},"is_null":false,"value":1}]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type UNION(a INTEGER)
+
+query I
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"UNION","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","extension_info":null,"child_types":[{"first":"","second":{"id":"UTINYINT","type_info":null}},{"first":"a","second":{"id":"INTEGER","type_info":null}}]}},"is_null":false,"value":{"children":[{"type":{"id":"UTINYINT","type_info":null},"is_null":false,"value":0},{"type":{"id":"INTEGER","type_info":null},"is_null":false,"value":1}]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+1
+
+# BIT without data bytes
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"BIT","type_info":null},"is_null":false,"value":""}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type BIT
+
+# BIT with a padding of more than 7 bits
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"BIT","type_info":null},"is_null":false,"value":"\u0009a"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type BIT
+
+# BIT with unset padding bits
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"BIT","type_info":null},"is_null":false,"value":"\u0001\u0040"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type BIT
+
+# MAP with a child that is not a STRUCT
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"MAP","type_info":{"type":"LIST_TYPE_INFO","alias":"","extension_info":null,"child_type":{"id":"STRUCT","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","extension_info":null,"child_types":[{"first":"key","second":{"id":"INTEGER","type_info":null}},{"first":"value","second":{"id":"INTEGER","type_info":null}}]}}}},"is_null":false,"value":{"children":[{"type":{"id":"INTEGER","type_info":null},"is_null":false,"value":5}]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type MAP(INTEGER, INTEGER)
+
+# STRUCT with more children than its type
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"STRUCT","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","extension_info":null,"child_types":[{"first":"key","second":{"id":"INTEGER","type_info":null}}]}},"is_null":false,"value":{"children":[{"is_null":false,"value":1},{"is_null":false,"value":2}]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+too many children for type STRUCT
+
+# STRUCT with a child of the wrong type
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"STRUCT","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","extension_info":null,"child_types":[{"first":"key","second":{"id":"INTEGER","type_info":null}}]}},"is_null":false,"value":{"children":[{"type":{"id":"VARCHAR","type_info":null},"is_null":false,"value":"x"}]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+value is not valid for type STRUCT
+
+# a valid MAP
+query I
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"value":{"type":{"id":"MAP","type_info":{"type":"LIST_TYPE_INFO","alias":"","extension_info":null,"child_type":{"id":"STRUCT","type_info":{"type":"STRUCT_TYPE_INFO","alias":"","extension_info":null,"child_types":[{"first":"key","second":{"id":"INTEGER","type_info":null}},{"first":"value","second":{"id":"INTEGER","type_info":null}}]}}}},"is_null":false,"value":{"children":[{"is_null":false,"value":{"children":[{"is_null":false,"value":1},{"is_null":false,"value":2}]}}]}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":0,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}')
+----
+{1=2}

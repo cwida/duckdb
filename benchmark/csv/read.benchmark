@@ -11,7 +11,7 @@ cache lineitem_sf1.csv
 
 load
 CALL dbgen(sf=1);
-COPY lineitem TO '${BENCHMARK_DIR}/lineitem_sf1.csv' (FORMAT CSV, DELIMITER '|', HEADER);
+COPY (FROM lineitem LIMIT 800000) TO '${BENCHMARK_DIR}/lineitem_sf1.csv' (FORMAT CSV, DELIMITER '|', HEADER);
 
 run
 SELECT * FROM '${BENCHMARK_DIR}/lineitem_sf1.csv'

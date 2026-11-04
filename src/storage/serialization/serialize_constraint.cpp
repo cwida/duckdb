@@ -85,6 +85,9 @@ void UniqueConstraint::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(200, "is_primary_key", is_primary_key);
 	serializer.WriteProperty<LogicalIndex>(201, "index", index);
 	serializer.WritePropertyWithDefault<vector<Identifier>>(202, "columns", columns);
+	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		serializer.WritePropertyWithDefault<ConstraintCheckMode>(203, "check_mode", check_mode, ConstraintCheckMode::DEFAULT);
+	}
 }
 
 unique_ptr<Constraint> UniqueConstraint::Deserialize(Deserializer &deserializer) {
@@ -92,6 +95,7 @@ unique_ptr<Constraint> UniqueConstraint::Deserialize(Deserializer &deserializer)
 	deserializer.ReadPropertyWithDefault<bool>(200, "is_primary_key", result->is_primary_key);
 	deserializer.ReadProperty<LogicalIndex>(201, "index", result->index);
 	deserializer.ReadPropertyWithDefault<vector<Identifier>>(202, "columns", result->columns);
+	deserializer.ReadPropertyWithExplicitDefault<ConstraintCheckMode>(203, "check_mode", result->check_mode, ConstraintCheckMode::DEFAULT);
 	return std::move(result);
 }
 

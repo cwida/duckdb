@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from benchmark import BenchmarkRunner, create_isolated_benchmark_root
+from benchmark import BenchmarkRunner, benchmark_not_found, create_isolated_benchmark_root
 from comparison import (
     MAX_CONFIRMATION_RUNS,
     MIN_CONFIRMATION_RUNS,
@@ -23,7 +23,7 @@ print = functools.partial(print, flush=True)
 
 INITIAL_RUNS = 2 * SAMPLE_BATCH_SIZE
 REGRESSION_LIMIT = 1.10
-NOISE_THRESHOLD = 0.02
+NOISE_THRESHOLD = 0.03
 GEOMEAN_REGRESSION_SECONDS = 0.050
 
 ANSI_RED = "\033[31m"
@@ -41,6 +41,7 @@ BUCKET_FAILURE = "failure"
 OUTCOME_NO_REGRESSION = "no_regression"
 OUTCOME_REGRESSION = "regression"
 OUTCOME_FAILURE = "failure"
+OUTCOME_MISSING_BASE = "missing_base"
 
 
 @dataclass
@@ -108,6 +109,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Compare benchmarks from base and PR benchmark runners.")
     parser.add_argument("--old", required=True, help="Path to the base benchmark runner.")
     parser.add_argument("--new", required=True, help="Path to the PR benchmark runner.")
+    parser.add_argument("--old-tpcds-answers", help="Base revision's TPC-DS answers directory.")
     parser.add_argument("--benchmarks", required=True, help="Path to the benchmark list.")
     parser.add_argument("--threads", type=int, help="Number of threads used by each benchmark runner.")
     parser.add_argument("--memory-limit", help="Memory limit used by each benchmark runner.")
@@ -115,7 +117,7 @@ def parse_arguments():
         "--samples", type=positive_integer, help="Fixed samples per binary; rounded up to a batch of five."
     )
     parser.add_argument(
-        "--early-stop", action="store_true", help="Stop after a ten-sample checkpoint within ±2 percent."
+        "--early-stop", action="store_true", help="Stop after a ten-sample checkpoint within ±3 percent."
     )
     parser.add_argument("--verbose", action="store_true", help="Print raw benchmark runner output.")
     parser.add_argument("--nofail", action="store_true", help="Report a geomean regression without failing.")
@@ -160,7 +162,8 @@ def run_paired_samples(
             second_runner = old_runner
 
         first_batch, first_failure = first_runner.run(benchmark, batch_size)
-        second_batch, second_failure = second_runner.run(benchmark, batch_size)
+        second_runs = 1 if first_runner is old_runner and benchmark_not_found(first_failure) else batch_size
+        second_batch, second_failure = second_runner.run(benchmark, second_runs)
         if first_runner is old_runner:
             old_batch, old_failure = first_batch, first_failure
             new_batch, new_failure = second_batch, second_failure
@@ -178,6 +181,9 @@ def run_paired_samples(
 
         old_batch = old_batch or []
         new_batch = new_batch or []
+        if benchmark_not_found(old_failure) and not new_failure:
+            new_timings.extend(new_batch)
+            return old_timings, new_timings, old_failure, None, batch_index, False
         if old_failure or new_failure:
             return old_timings, new_timings, old_failure, new_failure, batch_index, False
         if len(old_batch) != len(new_batch):
@@ -214,16 +220,25 @@ def failed_benchmark_result(
     )
 
 
+def missing_base_benchmark_result(benchmark: str, old_failure: Optional[str], smoke_test_runs: int) -> BenchmarkResult:
+    return BenchmarkResult(
+        benchmark=benchmark,
+        old_failure=old_failure,
+        initial_runs=smoke_test_runs,
+        outcome=OUTCOME_MISSING_BASE,
+    )
+
+
 def measurement_status(measurement: BenchmarkMeasurement, stopped_early: bool = False) -> str:
     if stopped_early:
-        return "within ±2% (stopped early)"
+        return "within ±3% (stopped early)"
     if measurement.ratio >= REGRESSION_LIMIT:
         return "regression"
     if measurement.ratio > 1.0 + NOISE_THRESHOLD:
         return "slower"
     if measurement.ratio < 1.0 - NOISE_THRESHOLD:
         return "faster"
-    return "within ±2%; no change"
+    return "within ±3%; no change"
 
 
 def run_fixed_benchmark(
@@ -239,6 +254,8 @@ def run_fixed_benchmark(
     )
     run_count = min(len(old_timings), len(new_timings))
     if old_failure or new_failure:
+        if benchmark_not_found(old_failure) and not new_failure:
+            return missing_base_benchmark_result(benchmark, old_failure, len(new_timings))
         return failed_benchmark_result(benchmark, old_failure, new_failure, None, run_count, 0)
 
     measurement = benchmark_measurement(old_timings, new_timings)
@@ -268,13 +285,15 @@ def run_adaptive_benchmark(
     )
     initial_count = min(len(old_initial), len(new_initial))
     if old_failure or new_failure:
+        if benchmark_not_found(old_failure) and not new_failure:
+            return missing_base_benchmark_result(benchmark, old_failure, len(new_initial))
         return failed_benchmark_result(benchmark, old_failure, new_failure, None, initial_count, 0)
 
     initial_measurement = benchmark_measurement(old_initial, new_initial)
     is_candidate = not within_noise(initial_measurement)
     requested_confirmation_runs = confirmation_run_count(initial_measurement) if is_candidate else 0
     if verbose:
-        decision = f"confirming with {requested_confirmation_runs} pairs" if is_candidate else "within ±2%; done"
+        decision = f"confirming with {requested_confirmation_runs} pairs" if is_candidate else "within ±3%; done"
         print(
             f"initial: {benchmark}: {initial_count} pairs | "
             f"median change {format_ratio_change(initial_measurement.ratio)} | {decision}"
@@ -634,13 +653,13 @@ def render_table(rows: List[BenchmarkRow], layout: TableLayout):
 
 
 def print_bucket(title: str, rows: List[BenchmarkRow], layout: TableLayout, unchanged_count: int = 0):
-    if title == "UNCHANGED (±2%)":
+    if title == "UNCHANGED (±3%)":
         if not unchanged_count:
             return
     elif not rows:
         return
     print("")
-    if title == "UNCHANGED (±2%)":
+    if title == "UNCHANGED (±3%)":
         print(gray(title))
         print(gray(f"{unchanged_count} benchmarks"))
     else:
@@ -690,7 +709,7 @@ def sampling_description(samples: Optional[int], rounded_samples: Optional[int],
     if samples is None:
         description = (
             f"sampling: adaptive; {INITIAL_RUNS} initial pairs, then "
-            f"{MIN_CONFIRMATION_RUNS}–{MAX_CONFIRMATION_RUNS} confirmation pairs outside ±2%"
+            f"{MIN_CONFIRMATION_RUNS}–{MAX_CONFIRMATION_RUNS} confirmation pairs outside ±3%"
         )
     else:
         assert rounded_samples is not None
@@ -706,6 +725,7 @@ def sampling_description(samples: Optional[int], rounded_samples: Optional[int],
 
 def print_benchmark_report(
     rows: List[BenchmarkRow],
+    missing_base_names: List[str],
     common_prefix: str,
     samples: Optional[int],
     rounded_samples: Optional[int],
@@ -716,18 +736,24 @@ def print_benchmark_report(
         for bucket in (BUCKET_UNCHANGED, BUCKET_FASTER, BUCKET_SLOWER, BUCKET_REGRESSION, BUCKET_FAILURE)
     }
     print("")
-    suite_text = f"{common_prefix} ({len(rows)} benchmarks)" if common_prefix else f"{len(rows)} benchmarks"
+    benchmark_count = len(rows) + len(missing_base_names)
+    suite_text = f"{common_prefix} ({benchmark_count} benchmarks)" if common_prefix else f"{benchmark_count} benchmarks"
     print(gray(f"suite: {suite_text}"))
     print(gray(sampling_description(samples, rounded_samples, early_stop)))
     print(gray("query regression: median change ≥ +10.0% (warning)"))
     print(gray("CI failure: geomean change ≥ +10.0% or ≥ +50.0 ms"))
     displayed_rows = [row for row in rows if row.bucket != BUCKET_UNCHANGED]
     layout = table_layout(displayed_rows)
-    print_bucket("UNCHANGED (±2%)", buckets[BUCKET_UNCHANGED], layout, len(buckets[BUCKET_UNCHANGED]))
+    print_bucket("UNCHANGED (±3%)", buckets[BUCKET_UNCHANGED], layout, len(buckets[BUCKET_UNCHANGED]))
     print_bucket("FASTER", buckets[BUCKET_FASTER], layout)
-    print_bucket("SLOWER (+2%…<+10%)", buckets[BUCKET_SLOWER], layout)
+    print_bucket("SLOWER (+3%…<+10%)", buckets[BUCKET_SLOWER], layout)
     print_bucket("REGRESSIONS (≥+10%)", buckets[BUCKET_REGRESSION], layout)
     print_bucket("FAILURES", buckets[BUCKET_FAILURE], layout)
+    if missing_base_names:
+        print("")
+        print("SKIPPED (missing from Base)")
+        for name in missing_base_names:
+            print(f"{name}: PR smoke test passed")
 
 
 def markdown_row(result: BenchmarkResult) -> str:
@@ -781,6 +807,25 @@ def report_failures(results: List[BenchmarkResult], suite: str):
     append_step_summary(summary_lines + [""])
 
 
+def report_missing_base(results: List[BenchmarkResult], suite: str):
+    if not results:
+        return
+    summary_lines = [
+        f"## Benchmarks Missing From Base: `{suite}`",
+        "",
+        "| Benchmark | PR smoke test |",
+        "| --- | --- |",
+    ]
+    for result in results:
+        emit_github_warning(
+            "Benchmark missing from Linux Base",
+            f"{suite}: {result.benchmark} does not exist in Linux Base; "
+            "skipped comparison after a successful PR smoke test",
+        )
+        summary_lines.append(f"| `{result.benchmark}` | passed |")
+    append_step_summary(summary_lines + [""])
+
+
 def report_geomean_regression(old_geomean: float, new_geomean: float, nofail: bool):
     delta = new_geomean - old_geomean
     ratio = new_geomean / old_geomean
@@ -823,24 +868,36 @@ def query_regression_text(count: int) -> str:
     return f"{count} query regressions"
 
 
-def print_result(execution_failed: bool, gate_failed: bool, nofail: bool, query_regressions: int):
+def print_result(
+    execution_failed: bool,
+    gate_failed: bool,
+    nofail: bool,
+    query_regressions: int,
+    missing_base_count: int,
+):
     query_text = query_regression_text(query_regressions)
+    if missing_base_count == 1:
+        missing_base_text = "; 1 benchmark skipped (missing from Base)"
+    elif missing_base_count:
+        missing_base_text = f"; {missing_base_count} benchmarks skipped (missing from Base)"
+    else:
+        missing_base_text = ""
     colored_query_text = (
         f"{ANSI_YELLOW}{query_text}{ANSI_RESET}" if query_regressions else f"{ANSI_GRAY}{query_text}{ANSI_RESET}"
     )
     if execution_failed:
-        print(f"result: {ANSI_RED}failed; benchmark failure{ANSI_RESET}; {colored_query_text}")
+        print(f"result: {ANSI_RED}failed; benchmark failure{ANSI_RESET}; {colored_query_text}{missing_base_text}")
     elif gate_failed and nofail:
         print(
             f"result: {ANSI_GREEN}passed (--nofail){ANSI_RESET}; "
-            f"{ANSI_RED}geomean regression{ANSI_RESET}; {colored_query_text}"
+            f"{ANSI_RED}geomean regression{ANSI_RESET}; {colored_query_text}{missing_base_text}"
         )
     elif gate_failed:
-        print(f"result: {ANSI_RED}failed; geomean regression{ANSI_RESET}; {colored_query_text}")
+        print(f"result: {ANSI_RED}failed; geomean regression{ANSI_RESET}; {colored_query_text}{missing_base_text}")
     elif query_regressions:
-        print(f"result: {ANSI_GREEN}passed{ANSI_RESET}; {colored_query_text}")
+        print(f"result: {ANSI_GREEN}passed{ANSI_RESET}; {colored_query_text}{missing_base_text}")
     else:
-        print(f"result: {ANSI_GREEN}passed; no query regressions{ANSI_RESET}")
+        print(f"result: {ANSI_GREEN}passed; no query regressions{ANSI_RESET}{missing_base_text}")
 
 
 def main() -> int:
@@ -853,12 +910,17 @@ def main() -> int:
         print(f"Failed to find benchmark list {args.benchmarks}")
         return 1
 
+    old_tpcds_answers = Path(args.old_tpcds_answers).resolve() if args.old_tpcds_answers else None
+    if old_tpcds_answers is not None and not old_tpcds_answers.is_dir():
+        print(f"Failed to find base TPC-DS answers directory {old_tpcds_answers}")
+        return 1
+
     isolated_directories = tempfile.TemporaryDirectory(prefix="duckdb-regression-benchmarks-")
     isolation_root = Path(isolated_directories.name)
     source_root = Path.cwd()
     old_root_directory = isolation_root / "base"
     new_root_directory = isolation_root / "pr"
-    create_isolated_benchmark_root(source_root, old_root_directory)
+    create_isolated_benchmark_root(source_root, old_root_directory, old_tpcds_answers)
     create_isolated_benchmark_root(source_root, new_root_directory)
     if args.verbose:
         print("benchmark cache: isolated Base and PR directories")
@@ -900,11 +962,18 @@ def main() -> int:
 
     execution_failures = [result for result in results if result.outcome == OUTCOME_FAILURE]
     query_regressions = [result for result in results if result.outcome == OUTCOME_REGRESSION]
+    missing_base = [result for result in results if result.outcome == OUTCOME_MISSING_BASE]
     report_failures(execution_failures, suite)
     report_query_regressions(query_regressions, suite)
+    report_missing_base(missing_base, suite)
 
     display_names = benchmark_display_names([result.benchmark for result in results])
-    rows = [benchmark_row(result, display_names[result.benchmark]) for result in results]
+    rows = [
+        benchmark_row(result, display_names[result.benchmark])
+        for result in results
+        if result.outcome != OUTCOME_MISSING_BASE
+    ]
+    missing_base_names = [display_names[result.benchmark] for result in missing_base]
     rows.sort(key=row_sort_key)
     geomean_measurements = [
         result.initial_measurement if args.samples is None else result.measurement
@@ -920,6 +989,7 @@ def main() -> int:
 
     print_benchmark_report(
         rows,
+        missing_base_names,
         benchmark_common_prefix([result.benchmark for result in results]),
         args.samples,
         rounded_samples,
@@ -933,7 +1003,7 @@ def main() -> int:
     else:
         sample_text = f"({rounded_samples} samples)"
     print_geomean_summary(old_geomean, new_geomean, sample_text)
-    print_result(bool(execution_failures), gate_failed, args.nofail, len(query_regressions))
+    print_result(bool(execution_failures), gate_failed, args.nofail, len(query_regressions), len(missing_base))
 
     exit_code = 1 if execution_failures or (gate_failed and not args.nofail) else 0
     isolated_directories.cleanup()

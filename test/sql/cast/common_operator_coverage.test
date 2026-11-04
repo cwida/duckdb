@@ -1,0 +1,44 @@
+# name: test/sql/cast/common_operator_coverage.test
+# description: Cover shared scalar cast error and precision paths
+# group: [cast]
+
+statement ok
+CREATE TABLE temporal_cast_input(id INTEGER, value VARCHAR)
+
+statement ok
+INSERT INTO temporal_cast_input VALUES
+	(1, 'not-a-temporal-value'),
+	(2, '294247-01-10 04:00:54.775806'),
+	(3, '24:00:00.000000001')
+
+query III
+SELECT
+	TRY_CAST(value AS TIMESTAMP_S) IS NULL,
+	TRY_CAST(value AS TIMESTAMP_MS) IS NULL,
+	TRY_CAST(value AS TIMESTAMPTZ_NS) IS NULL
+FROM temporal_cast_input
+WHERE id = 1
+----
+true	true	true
+
+query I
+SELECT TRY_CAST(value AS TIMESTAMPTZ_NS) IS NULL
+FROM temporal_cast_input
+WHERE id = 2
+----
+true
+
+query II
+SELECT id, TRY_CAST(value AS TIME_NS) IS NULL
+FROM temporal_cast_input
+WHERE id IN (1, 3)
+ORDER BY id
+----
+1	true
+3	true
+
+query II
+SELECT value::FLOAT, value::DOUBLE
+FROM (SELECT 0::DECIMAL(38, 38) AS value)
+----
+0.0	0.0

@@ -1,0 +1,229 @@
+# name: test/sql/copy/return_stats_variant.test
+# description: RETURN_STATS distinguishes null VARIANTs, shredded containers and unshredded values
+# group: [copy]
+
+require parquet
+
+statement ok
+CREATE TABLE list_variants AS
+SELECT * FROM (VALUES
+    (0, NULL::VARIANT),
+    (1, []::INTEGER[]::VARIANT),
+    (2, [NULL]::INTEGER[]::VARIANT),
+    (3, [1, NULL]::VARIANT),
+    (4, 'fallback'::VARIANT)
+) t(id, v);
+
+# SQL NULL is a null VARIANT group; empty lists and lists of nulls are present groups.
+query II rowsort
+WITH stats AS (
+    COPY list_variants TO '{TEST_DIR}/variant_list_stats.parquet'
+    (SHREDDING {v: 'INTEGER[]'}, RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"v"	{null_count=1, num_values=5}
+"v"."typed_value"	{null_count=1, num_values=4}
+"v"."typed_value"."element"	{null_count=0, num_values=3}
+
+# Fully shredded list containers have no typed_value nulls, even with SQL NULLs and null elements.
+query III
+WITH stats AS (
+    COPY (SELECT v FROM list_variants WHERE id < 4)
+    TO '{TEST_DIR}/variant_fully_shredded_list_stats.parquet'
+    (SHREDDING {v: 'INTEGER[]'}, RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"'],
+       column_statistics['"v"."value"']['null_count'] = column_statistics['"v"."value"']['num_values']
+FROM stats;
+----
+{null_count=1, num_values=4}	{null_count=0, num_values=3}	true
+
+# Automatic shredding emits the same root and container counts.
+query II
+WITH stats AS (
+    COPY list_variants TO '{TEST_DIR}/variant_auto_stats.parquet' (RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"'] FROM stats;
+----
+{null_count=1, num_values=5}	{null_count=1, num_values=4}
+
+# Empty objects have no fields to shred, but still need VARIANT root statistics.
+statement ok
+CREATE TABLE unshredded_variants AS SELECT empty_struct::VARIANT v FROM test_all_types();
+
+query III
+WITH stats AS (
+    COPY unshredded_variants TO '{TEST_DIR}/variant_unshredded_stats.parquet' (RETURN_STATS)
+)
+SELECT column_statistics['"v"']['null_count']::BIGINT =
+           (SELECT count(*) FROM unshredded_variants WHERE v IS NULL),
+       column_statistics['"v"']['num_values']::BIGINT = (SELECT count(*) FROM unshredded_variants),
+       map_contains(column_statistics, '"v"."typed_value"')
+FROM stats;
+----
+true	true	false
+
+query I
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/variant_unshredded_stats.parquet') WHERE v IS NULL) =
+       (SELECT count(*) FROM unshredded_variants WHERE v IS NULL);
+----
+true
+
+# Primitive typed_value statistics include inherited root nulls in their leaf null count.
+query III
+WITH stats AS (
+    COPY (SELECT v FROM (VALUES (NULL::VARIANT), (42::VARIANT), ('fallback'::VARIANT)) t(v))
+    TO '{TEST_DIR}/variant_primitive_stats.parquet'
+    (SHREDDING {v: 'INTEGER'}, RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"']['null_count'],
+       column_statistics['"v"."typed_value"']['num_values']
+FROM stats;
+----
+{null_count=1, num_values=3}	2	3
+
+# For a fully shredded primitive, every null typed value comes from a null VARIANT.
+query II
+WITH stats AS (
+    COPY (SELECT v FROM (VALUES (NULL::VARIANT), (42::VARIANT)) t(v))
+    TO '{TEST_DIR}/variant_fully_shredded_primitive_stats.parquet'
+    (SHREDDING {v: 'INTEGER'}, RETURN_STATS)
+)
+SELECT column_statistics['"v"'],
+       column_statistics['"v"."typed_value"']['null_count'] = column_statistics['"v"']['null_count']
+FROM stats;
+----
+{null_count=1, num_values=2}	true
+
+statement ok
+CREATE TABLE object_variants AS
+SELECT * FROM (VALUES
+    (0, NULL::VARIANT),
+    (1, {'a': NULL}::VARIANT),
+    (2, {'a': []::INTEGER[]}::VARIANT),
+    (3, {'a': [1], 'extra': true}::VARIANT),
+    (4, {'b': 42}::VARIANT),
+    (5, 'fallback'::VARIANT)
+) t(id, v);
+
+# Missing or null object fields do not make the typed object itself null.
+query II rowsort
+WITH stats AS (
+    COPY object_variants TO '{TEST_DIR}/variant_object_stats.parquet'
+    (SHREDDING {v: 'STRUCT(a INTEGER[])'}, RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"v"	{null_count=1, num_values=6}
+"v"."typed_value"	{null_count=1, num_values=5}
+"v"."typed_value"."a"	{null_count=0, num_values=4}
+"v"."typed_value"."a"."typed_value"	{null_count=2, num_values=4}
+"v"."typed_value"."a"."typed_value"."element"	{null_count=0, num_values=1}
+
+# A present typed object can still have excess fields stored in value.
+query IIII
+WITH stats AS (
+    COPY (SELECT v FROM object_variants WHERE id = 3)
+    TO '{TEST_DIR}/variant_object_leftover_stats.parquet'
+    (SHREDDING {v: 'STRUCT(a INTEGER[])'}, RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"'],
+       column_statistics['"v"."value"']['null_count'], column_statistics['"v"."value"']['num_values']
+FROM stats;
+----
+{null_count=0, num_values=1}	{null_count=0, num_values=1}	0	1
+
+# Null children and empty lists leave the object container fully shredded.
+query III
+WITH stats AS (
+    COPY (SELECT v FROM object_variants WHERE id < 3)
+    TO '{TEST_DIR}/variant_fully_shredded_object_stats.parquet'
+    (SHREDDING {v: 'STRUCT(a INTEGER[])'}, RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"'],
+       column_statistics['"v"."value"']['null_count'] = column_statistics['"v"."value"']['num_values']
+FROM stats;
+----
+{null_count=1, num_values=3}	{null_count=0, num_values=2}	true
+
+# No typed containers exist beneath all-null VARIANT groups.
+query II rowsort
+WITH stats AS (
+    COPY (SELECT NULL::VARIANT v FROM range(3))
+    TO '{TEST_DIR}/variant_all_null_stats.parquet'
+    (SHREDDING {v: 'INTEGER[]'}, RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"v"	{null_count=3, num_values=3}
+"v"."typed_value"	{null_count=0, num_values=0}
+"v"."typed_value"."element"	{null_count=0, num_values=0}
+
+# Empty files still contain entries for the VARIANT and its shredded containers.
+query II rowsort
+WITH stats AS (
+    COPY (SELECT v FROM list_variants WHERE false)
+    TO '{TEST_DIR}/variant_empty_stats.parquet'
+    (SHREDDING {v: 'INTEGER[]'}, RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"v"	{null_count=0, num_values=0}
+"v"."typed_value"	{null_count=0, num_values=0}
+"v"."typed_value"."element"	{null_count=0, num_values=0}
+
+# Round-trip both explicit and automatic shredding.
+foreach STORAGE list auto
+
+query I
+SELECT count(*) FROM (
+    (SELECT id, v::VARCHAR, v IS NULL FROM list_variants EXCEPT ALL
+     SELECT id, v::VARCHAR, v IS NULL FROM read_parquet('{TEST_DIR}/variant_{STORAGE}_stats.parquet'))
+    UNION ALL
+    (SELECT id, v::VARCHAR, v IS NULL FROM read_parquet('{TEST_DIR}/variant_{STORAGE}_stats.parquet') EXCEPT ALL
+     SELECT id, v::VARCHAR, v IS NULL FROM list_variants)
+);
+----
+0
+
+endloop
+
+# Reading a shredded vector and writing it again preserves its SQL NULLs.
+query II
+WITH stats AS (
+    COPY (SELECT v FROM read_parquet('{TEST_DIR}/variant_list_stats.parquet'))
+    TO '{TEST_DIR}/variant_rewritten_stats.parquet'
+    (SHREDDING {v: 'INTEGER[]'}, RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"'] FROM stats;
+----
+{null_count=1, num_values=5}	{null_count=1, num_values=4}
+
+statement ok
+CREATE TABLE repeated_variants AS SELECT v FROM range(2048), list_variants;
+
+foreach PRESERVE_INSERTION_ORDER true false
+
+statement ok
+SET preserve_insertion_order={PRESERVE_INSERTION_ORDER};
+
+query III
+WITH stats AS (
+    COPY repeated_variants TO '{TEST_DIR}/variant_repeated_stats.parquet'
+    (SHREDDING {v: 'INTEGER[]'}, ROW_GROUP_SIZE 2048, RETURN_STATS)
+)
+SELECT column_statistics['"v"'], column_statistics['"v"."typed_value"'],
+       extra_info['row_group_count']::INTEGER > 1 FROM stats;
+----
+{null_count=2048, num_values=10240}	{null_count=2048, num_values=8192}	true
+
+endloop

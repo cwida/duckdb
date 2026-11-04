@@ -1,16 +1,17 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "json_stack.hpp"
 
 namespace duckdb {
 
 //! Coalescing deep merge: null in patch means "absent/unknown", keeps the original value.
-//! Non-null patch values overwrite. Nested objects are merged recursively.
+//! Non-null patch values overwrite.
 static yyjson_mut_val *DeepMerge(yyjson_mut_doc *doc, yyjson_mut_val *orig_root, yyjson_mut_val *patch_root) {
 	if (!yyjson_mut_is_obj(orig_root) || !yyjson_mut_is_obj(patch_root)) {
 		if (unsafe_yyjson_is_null(patch_root)) {
-			return yyjson_mut_val_mut_copy(doc, orig_root);
+			return JSONCommon::MutValMutCopy(doc, orig_root);
 		}
-		return yyjson_mut_val_mut_copy(doc, patch_root);
+		return JSONCommon::MutValMutCopy(doc, patch_root);
 	}
 
 	auto root_builder = yyjson_mut_obj(doc);
@@ -22,13 +23,12 @@ static yyjson_mut_val *DeepMerge(yyjson_mut_doc *doc, yyjson_mut_val *orig_root,
 		yyjson_mut_val *patch_node;
 		yyjson_mut_val *builder;
 	};
-	auto stack = std::vector<stack_item>();
-	stack.emplace_back(stack_item {nullptr, orig_root, patch_root, root_builder});
+	Stack<stack_item> stack;
+	stack.Push(stack_item {nullptr, orig_root, patch_root, root_builder});
 
 	// loop over each level of nesting
-	while (!stack.empty()) {
-		auto nodes = stack.back();
-		stack.pop_back();
+	while (!stack.Empty()) {
+		auto nodes = stack.Pop();
 
 		auto builder = nodes.builder;
 
@@ -36,12 +36,13 @@ static yyjson_mut_val *DeepMerge(yyjson_mut_doc *doc, yyjson_mut_val *orig_root,
 		{
 			idx_t idx, max;
 			yyjson_mut_val *key, *orig_val;
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast): yyjson iteration macro
 			yyjson_mut_obj_foreach(nodes.orig_node, idx, max, key, orig_val) {
 				auto patch_val =
 				    yyjson_mut_obj_getn(nodes.patch_node, unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key));
 				if (!patch_val || unsafe_yyjson_is_null(patch_val)) {
-					auto mut_key = yyjson_mut_val_mut_copy(doc, key);
-					auto mut_val = yyjson_mut_val_mut_copy(doc, orig_val);
+					auto mut_key = JSONCommon::MutValMutCopy(doc, key);
+					auto mut_val = JSONCommon::MutValMutCopy(doc, orig_val);
 					yyjson_mut_obj_add(builder, mut_key, mut_val);
 				}
 			}
@@ -51,6 +52,7 @@ static yyjson_mut_val *DeepMerge(yyjson_mut_doc *doc, yyjson_mut_val *orig_root,
 		{
 			idx_t idx, max;
 			yyjson_mut_val *key, *patch_val;
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast): yyjson iteration macro
 			yyjson_mut_obj_foreach(nodes.patch_node, idx, max, key, patch_val) {
 				if (unsafe_yyjson_is_null(patch_val)) {
 					continue; // null entries handled in the first pass
@@ -58,7 +60,7 @@ static yyjson_mut_val *DeepMerge(yyjson_mut_doc *doc, yyjson_mut_val *orig_root,
 
 				auto orig_val =
 				    yyjson_mut_obj_getn(nodes.orig_node, unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key));
-				auto mut_key = yyjson_mut_val_mut_copy(doc, key);
+				auto mut_key = JSONCommon::MutValMutCopy(doc, key);
 
 				// at least one of (patch_val, orig_val) is not an object, then we copy the patch if it's not null, and
 				// the original otherwise
@@ -69,15 +71,15 @@ static yyjson_mut_val *DeepMerge(yyjson_mut_doc *doc, yyjson_mut_val *orig_root,
 
 					yyjson_mut_val *mut_val;
 					if (unsafe_yyjson_is_null(patch_val) && orig_val) {
-						mut_val = yyjson_mut_val_mut_copy(doc, orig_val);
+						mut_val = JSONCommon::MutValMutCopy(doc, orig_val);
 					} else {
-						mut_val = yyjson_mut_val_mut_copy(doc, patch_val);
+						mut_val = JSONCommon::MutValMutCopy(doc, patch_val);
 					}
 					yyjson_mut_obj_add(builder, mut_key, mut_val);
 				} else {
 					auto child_builder = yyjson_mut_obj(doc);
 					// now we know that both are objects and we need to check them, so we add them to the stack
-					stack.emplace_back(stack_item {mut_key, orig_val, patch_val, child_builder});
+					stack.Push(stack_item {mut_key, orig_val, patch_val, child_builder});
 					yyjson_mut_obj_add(builder, mut_key, child_builder);
 				}
 			}
@@ -141,9 +143,10 @@ static void DeepMergeFunction(DataChunk &args, ExpressionState &state, Vector &r
 }
 
 ScalarFunctionSet JSONFunctions::GetDeepMergeFunction() {
-	ScalarFunction fun("json_deep_merge", {LogicalType::JSON(), LogicalType::JSON()}, LogicalType::JSON(),
-	                   DeepMergeFunction, nullptr, nullptr, JSONFunctionLocalState::Init);
-	fun.SetVarArgs(LogicalType::JSON());
+	ScalarFunction fun("json_deep_merge", {}, LogicalType::JSON(), DeepMergeFunction, nullptr, nullptr,
+	                   JSONFunctionLocalState::Init);
+	fun.GetSignature().AddParameter("json1", LogicalType::JSON()).AddParameter("json2", LogicalType::JSON());
+	fun.GetSignature().AddArgs("args", LogicalType::JSON());
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetFallible();
 

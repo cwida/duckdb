@@ -8,7 +8,7 @@ using namespace std;
 static Value EvalScalar(Connection &con, const string &expr) {
 	auto result = con.Query("SELECT " + expr);
 	REQUIRE_NO_FAIL(*result);
-	return result->GetValue(0, 0);
+	return result->Collection().GetValue(0, 0);
 }
 
 // Asserts the round-trip contract of Value::ToSQLString(): rendering a Value to

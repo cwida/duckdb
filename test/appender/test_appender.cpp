@@ -4,10 +4,13 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <future>
 #include <vector>
-#include <thread>
 
 using namespace duckdb;
 
@@ -323,8 +326,8 @@ TEST_CASE("Test default value appender", "[appender]") {
 		REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i iNTEGER, j TIMESTAMPTZ DEFAULT now())"));
 		con.Query("BEGIN TRANSACTION");
 		result = con.Query("select now()");
-		auto &materialized_result = result->Cast<MaterializedQueryResult>();
-		auto current_time = materialized_result.GetValue(0, 0);
+		auto &materialized_result = *result;
+		auto current_time = materialized_result.Collection().GetValue(0, 0);
 		{
 			Appender appender(con, "integers");
 			appender.BeginRow();
@@ -799,56 +802,97 @@ TEST_CASE("Appender::Clear() clears the data", "[appender]") {
 }
 
 TEST_CASE("Interrupted QueryAppender flow: interrupt -> clear -> close finishes", "[appender]") {
+	std::promise<void> execution_started;
+	std::promise<void> resume_execution;
+	auto started = execution_started.get_future();
+	auto resume = resume_execution.get_future();
+	atomic<idx_t> execution_count {0};
 	DuckDB db(nullptr);
 	Connection con(db);
 
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE ints(i INTEGER)"));
 
-	// Prepare a long time running QueryAppender
+	ScalarFunction probe("interrupt_probe", {LogicalType::INTEGER}, LogicalType::INTEGER,
+	                     [&](DataChunk &args, ExpressionState &, Vector &result) {
+		                     if (execution_count.fetch_add(1) == 0) {
+			                     execution_started.set_value();
+			                     resume.wait();
+		                     }
+		                     result.Reference(args.data[0]);
+	                     });
+	probe.SetVolatile();
+	CreateScalarFunctionInfo info(probe);
+	con.context->RegisterFunction(info);
+
 	duckdb::vector<LogicalType> types = {LogicalType::INTEGER};
 	duckdb::vector<duckdb::Identifier> names = {"i"};
-	// This query will run for a long time by cross joining a huge range
-	string long_query = "INSERT INTO ints SELECT i FROM appended_data, range(1000000000000)";
-	QueryAppender app(con, long_query, types, names);
-
-	// Append a single row so we actually have something to flush
+	QueryAppender app(con, "INSERT INTO ints SELECT interrupt_probe(i) FROM appended_data", types, names);
 	app.AppendRow(1);
 
-	atomic<bool> flush_started {false};
+	struct ResumeAndWait {
+		std::promise<void> &resume;
+		std::future<void> &flush;
 
-	std::thread t([&]() {
-		flush_started.store(true);
-		try {
-			app.Flush();
-		} catch (std::exception &ex) {
-			ErrorData error_data(ex);
-			REQUIRE((error_data.Type() == ExceptionType::INTERRUPT));
+		~ResumeAndWait() {
+			resume.set_value();
+			flush.wait();
 		}
-	});
+	};
 
-	// Wait until the flush thread starts, then interrupt
-	while (!flush_started.load()) {
-		std::this_thread::yield();
-	}
-	// Give the flush a tiny moment to get into execution before interrupting
-	std::this_thread::sleep_for(std::chrono::milliseconds(50));
-	con.Interrupt();
-
-	t.join();
-
-	// Now clear pending buffers so Close will not attempt to flush again
-	app.Clear();
-
-	// Should finish eventually. Close must complete quickly since no data remains to flush
-	auto future = std::async(std::launch::async, [&]() { app.Close(); });
-
-	auto status = future.wait_for(std::chrono::milliseconds(50));
-
-	if (status == std::future_status::ready) {
-		REQUIRE_NOTHROW(future.get());
-	} else {
+	auto flush = std::async(std::launch::async, [&]() { app.Flush(); });
+	bool reached_execution;
+	{
+		ResumeAndWait cleanup {resume_execution, flush};
+		// Query initialization clears interrupts, so wait until execution has begun.
+		reached_execution = started.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+		// Also request cancellation on timeout before releasing and waiting for the worker.
 		con.Interrupt();
-		FAIL("app.Close() did not finish within a second");
+	}
+	REQUIRE(reached_execution);
+
+	bool interrupted = false;
+	try {
+		flush.get();
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		INFO(error.Message());
+		REQUIRE(error.Type() == ExceptionType::INTERRUPT);
+		interrupted = true;
+	}
+	REQUIRE(interrupted);
+	REQUIRE(execution_count.load() == 1);
+
+	idx_t rows_to_discard = 0;
+	bool append_after_clear = false;
+	SECTION("Clear after the interrupted flush") {
+		rows_to_discard = 0;
+	}
+	SECTION("Clear also discards newly buffered rows") {
+		rows_to_discard = STANDARD_VECTOR_SIZE + 1;
+	}
+	SECTION("Fresh rows can be appended after Clear") {
+		rows_to_discard = STANDARD_VECTOR_SIZE + 1;
+		append_after_clear = true;
+	}
+	// Flush resets its collection on error; also exercise Clear with both buffers populated.
+	for (idx_t i = 0; i < rows_to_discard; i++) {
+		app.AppendRow(2);
+	}
+	app.Clear();
+	REQUIRE(execution_count.load() == 1);
+	if (append_after_clear) {
+		app.AppendRow(3);
+	}
+
+	REQUIRE_NOTHROW(app.Close());
+	auto result = con.Query("SELECT i FROM ints");
+	REQUIRE_NO_FAIL(*result);
+	if (append_after_clear) {
+		REQUIRE(execution_count.load() == 2);
+		REQUIRE(CHECK_COLUMN(result, 0, {3}));
+	} else {
+		REQUIRE(execution_count.load() == 1);
+		REQUIRE(result->RowCount() == 0);
 	}
 }
 

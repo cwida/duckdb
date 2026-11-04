@@ -1,0 +1,13 @@
+# name: test/sql/copy/csv/26049.test
+# description: Test projection pushdown with an escaped value in an extra column
+# group: [csv]
+
+query I
+SELECT col1 FROM read_csv('data/csv/26049.csv', columns={'col1': 'VARCHAR', 'col2': 'VARCHAR'}, escape='\', header=true, auto_detect=false, strict_mode=false);
+----
+a
+
+statement error
+SELECT col1 FROM read_csv('data/csv/26049.csv', columns={'col1': 'VARCHAR', 'col2': 'VARCHAR'}, escape='\', header=true, auto_detect=false, strict_mode=true);
+----
+Expected Number of Columns: 2 Found: 3

@@ -63,6 +63,9 @@ jobs:
       shell: pwsh
       run: |
         $commands = Get-Content compile_commands.json -Raw
+        if (!$commands.Contains('clang-cl')) {
+          throw 'Windows amd64 Release compile commands are not using clang-cl'
+        }
         if (!$commands.Contains('-march=haswell') -or !$commands.Contains('-mtune=generic')) {
           throw 'Windows amd64 Release compile commands are missing the CLI architecture flags'
         }
@@ -119,13 +122,10 @@ jobs:
       run: |
         ./duckdb.exe -c "PRAGMA platform; PRAGMA version;"
         if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          # Fail on non-zero major version.
+          # Fail on a zero major version.
           ./duckdb.exe -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v';
         fi
 
-    - name: Bundle static libraries
-      shell: bash
-      run: make gather-libs GATHER_LIBS_BUILD_DIR=. GATHER_LIBS_PREFIX= GATHER_LIBS_EXTENSION=lib
 
     - name: Deploy
       shell: bash
@@ -135,13 +135,19 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
       run: |
         make cli-release-artifact ARTIFACT_SUFFIX=windows-amd64 CLI_BINARY=duckdb.exe
+        make cli-zip-release-artifact ARTIFACT_SUFFIX=windows-amd64 CLI_BINARY=duckdb.exe
         make shared-libs-release-artifact ARTIFACT_SUFFIX=windows-amd64 SHARED_LIBRARIES="src/duckdb.dll src/duckdb.lib"
-        make static-libs-release-artifact ARTIFACT_SUFFIX=windows-amd64 STATIC_LIBRARIES="libs/*"
-        ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-amd64.tar.gz duckdb-shared-libs-windows-amd64.tar.gz duckdb-static-libs-windows-amd64.tar.gz
+        make static-libs-release-artifact ARTIFACT_SUFFIX=windows-amd64 STATIC_LIBRARIES="src/duckdb_static.lib src/duckdb_shell.lib src/main/http/duckdb_httplib.lib src/main/extension/duckdb_loadable_extensions.lib extension/*/*_extension.lib"
+        ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-amd64.tar.gz duckdb-cli-windows-amd64.zip duckdb-shared-libs-windows-amd64.tar.gz duckdb-static-libs-windows-amd64.tar.gz
 
     - uses: actions/upload-artifact@v7
       with:
         path: duckdb-cli-windows-amd64.tar.gz
+        archive: false
+
+    - uses: actions/upload-artifact@v7
+      with:
+        path: duckdb-cli-windows-amd64.zip
         archive: false
 
     - uses: actions/upload-artifact@v7
@@ -154,14 +160,33 @@ jobs:
         path: duckdb-static-libs-windows-amd64.tar.gz
         archive: false
 
+    - uses: actions/upload-artifact@v7
+      with:
+        name: release-core-extensions-windows-amd64
+        path: repository
+        if-no-files-found: error
+
+    - name: Package release artifact
+      shell: bash
+      run: make release-artifact RELEASE_ARTIFACT_SOURCE_DIR=. RELEASE_ARTIFACT_TARBALL=build/windows-release-amd64-build.tar.gz
+
+    - uses: actions/upload-artifact@v7
+      with:
+        path: build/windows-release-amd64-build.tar.gz
+        if-no-files-found: error
+        archive: false
+
  win-release-32:
     name: Windows (32 Bit)
     needs:
       - win-release-64
-    if: ${{ github.ref_name == 'main' || github.repository != 'duckdb/duckdb' || inputs.run_all }}
+    if: ${{ inputs.run_all }}
     runs-on: ${{ fromJSON(inputs.runners).windows_2022_x64 || 'windows-2022' }}
     env:
       GEN: ninja
+      CC: clang-cl
+      CXX: clang-cl
+      EXTRA_CMAKE_VARIABLES: -DCMAKE_C_COMPILER_TARGET=i686-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=i686-pc-windows-msvc
 
     steps:
     - name: "Checkout"
@@ -185,7 +210,16 @@ jobs:
     - name: Build
       shell: bash
       run: |
+        clang-cl --version
         python scripts/ci/retry.py -- make windows_release_32
+
+    - name: Verify compiler
+      shell: pwsh
+      run: |
+        $commands = Get-Content compile_commands.json -Raw
+        if (!$commands.Contains('clang-cl')) {
+          throw 'Windows 32-bit compile commands are not using clang-cl'
+        }
 
     - name: Test
       shell: bash
@@ -203,13 +237,13 @@ jobs:
    name: Windows (ARM64)
    needs:
     - win-release-64
-   if: ${{ github.ref_name == 'main' || github.repository != 'duckdb/duckdb' || inputs.run_all }}
+   if: ${{ inputs.run_all }}
    runs-on: windows-2025-vs2026
    env:
      GEN: ninja
      CC: clang-cl
      CXX: clang-cl
-     EXTRA_CMAKE_VARIABLES: -DBUILD_UNITTESTS=FALSE -DCMAKE_C_COMPILER_TARGET=arm64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=arm64-pc-windows-msvc
+     EXTRA_CMAKE_VARIABLES: -DCMAKE_C_COMPILER_TARGET=arm64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=arm64-pc-windows-msvc
 
    steps:
      - uses: actions/checkout@v6
@@ -238,6 +272,9 @@ jobs:
        shell: pwsh
        run: |
          $commands = Get-Content compile_commands.json -Raw
+         if (!$commands.Contains('clang-cl')) {
+           throw 'Windows ARM64 Release compile commands are not using clang-cl'
+         }
          if (!$commands.Contains('-march=armv8-a') -or !$commands.Contains('-mtune=generic')) {
            throw 'Windows ARM64 Release compile commands are missing the architecture flags'
          }
@@ -259,9 +296,6 @@ jobs:
          timestamp-rfc3161:            http://timestamp.acs.microsoft.com
          timestamp-digest:             SHA256
 
-     - name: Bundle static libraries
-       shell: bash
-       run: make gather-libs GATHER_LIBS_BUILD_DIR=. GATHER_LIBS_PREFIX= GATHER_LIBS_EXTENSION=lib
 
      - name: Deploy
        shell: bash
@@ -271,13 +305,19 @@ jobs:
          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
        run: |
          make cli-release-artifact ARTIFACT_SUFFIX=windows-arm64 CLI_BINARY=duckdb.exe
+         make cli-zip-release-artifact ARTIFACT_SUFFIX=windows-arm64 CLI_BINARY=duckdb.exe
          make shared-libs-release-artifact ARTIFACT_SUFFIX=windows-arm64 SHARED_LIBRARIES="src/duckdb.dll src/duckdb.lib"
-         make static-libs-release-artifact ARTIFACT_SUFFIX=windows-arm64 STATIC_LIBRARIES="libs/*"
-         ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-arm64.tar.gz duckdb-shared-libs-windows-arm64.tar.gz duckdb-static-libs-windows-arm64.tar.gz
+         make static-libs-release-artifact ARTIFACT_SUFFIX=windows-arm64 STATIC_LIBRARIES="src/duckdb_static.lib src/duckdb_shell.lib src/main/http/duckdb_httplib.lib src/main/extension/duckdb_loadable_extensions.lib extension/*/*_extension.lib"
+         ./scripts/upload-assets-to-staging.sh github_release duckdb-cli-windows-arm64.tar.gz duckdb-cli-windows-arm64.zip duckdb-shared-libs-windows-arm64.tar.gz duckdb-static-libs-windows-arm64.tar.gz
 
      - uses: actions/upload-artifact@v7
        with:
          path: duckdb-cli-windows-arm64.tar.gz
+         archive: false
+
+     - uses: actions/upload-artifact@v7
+       with:
+         path: duckdb-cli-windows-arm64.zip
          archive: false
 
      - uses: actions/upload-artifact@v7
@@ -290,16 +330,34 @@ jobs:
          path: duckdb-static-libs-windows-arm64.tar.gz
          archive: false
 
+     - uses: actions/upload-artifact@v7
+       with:
+         name: release-core-extensions-windows-arm64
+         path: repository
+         if-no-files-found: error
+
+     - name: Package release artifact
+       shell: bash
+       run: make release-artifact RELEASE_ARTIFACT_SOURCE_DIR=. RELEASE_ARTIFACT_TARBALL=build/windows-release-arm64-build.tar.gz
+
+     - uses: actions/upload-artifact@v7
+       with:
+         path: build/windows-release-arm64-build.tar.gz
+         if-no-files-found: error
+         archive: false
+
  mingw:
      name: MinGW (64 Bit)
      needs:
       - win-release-64
+     if: ${{ inputs.run_all }}
      runs-on: ${{ fromJSON(inputs.runners).windows_2022_x64 || 'windows-2022' }}
      env:
        GEN: ninja
+       CC: C:/rtools42/x86_64-w64-mingw32.static.posix/bin/gcc.exe
+       CXX: C:/rtools42/x86_64-w64-mingw32.static.posix/bin/g++.exe
        EXTENSION_CONFIGS: '${GITHUB_WORKSPACE}/.github/config/bundled_extensions.cmake'
-       ENABLE_EXTENSION_AUTOLOADING: 1
-       ENABLE_EXTENSION_AUTOINSTALL: 1
+       DUCKDB_CAPABILITIES: 'httplib loadable_extensions'
      steps:
        - name: "Checkout"
          uses: duckdb/duckdb-ci/.github/actions/checkout@main
@@ -311,15 +369,19 @@ jobs:
          with:
            python-version: '3.12'
 
+       - name: Setup Rtools
+         uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+         with:
+           r-version: devel
+           update-rtools: true
+           rtools-version: '42'
+
        - name: Dependencies
          shell: bash
          run: |
            python scripts/ci/retry.py -- choco install \
              ccache \
              make \
-             --no-progress
-           python scripts/ci/retry.py -- choco install \
-             mingw --version 14.2.0 \
              --no-progress
 
        - uses: ./.github/actions/ccache-action
@@ -332,8 +394,8 @@ jobs:
              echo 'C:/Program Files/Git/bin'
              # make, ninja and ccache from Chocolatey
              echo 'C:/ProgramData/Chocolatey/bin'
-             # g++ from Chocolatey
-             echo 'C:/ProgramData/mingw64/mingw64/bin'
+             # gcc and g++ from Rtools42
+             echo 'C:/rtools42/x86_64-w64-mingw32.static.posix/bin'
            } >> "${GITHUB_PATH}"
 
        - name: Build Environment Check
@@ -372,8 +434,6 @@ jobs:
          if: ${{ !inputs.skip_tests }}
          run: python build/release/test/run.py
 
-       - name: Bundle static libraries
-         run: make gather-libs
 
        - name: Deploy static libraries
          shell: bash
@@ -382,10 +442,26 @@ jobs:
            AWS_ACCESS_KEY_ID: ${{ secrets.S3_DUCKDB_STAGING_ID }}
            AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
          run: |
-           make static-libs-release-artifact ARTIFACT_SUFFIX=windows-mingw STATIC_LIBRARIES="build/release/libs/*"
+           make static-libs-release-artifact ARTIFACT_SUFFIX=windows-mingw STATIC_LIBRARIES="build/release/src/libduckdb_static.a build/release/src/libduckdb_shell.a build/release/src/main/http/libduckdb_httplib.a build/release/src/main/extension/libduckdb_loadable_extensions.a build/release/extension/*/lib*_extension.a"
            ./scripts/upload-assets-to-staging.sh github_release duckdb-static-libs-windows-mingw.tar.gz
 
        - uses: actions/upload-artifact@v7
          with:
            path: duckdb-static-libs-windows-mingw.tar.gz
+           archive: false
+
+       - uses: actions/upload-artifact@v7
+         with:
+           name: release-core-extensions-windows-mingw
+           path: build/release/repository
+           if-no-files-found: error
+
+       - name: Package release artifact
+         shell: bash
+         run: make release-artifact RELEASE_ARTIFACT_TARBALL=build/windows-release-mingw-build.tar.gz
+
+       - uses: actions/upload-artifact@v7
+         with:
+           path: build/windows-release-mingw-build.tar.gz
+           if-no-files-found: error
            archive: false

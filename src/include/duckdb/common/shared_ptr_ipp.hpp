@@ -16,6 +16,10 @@ public:
 	using original = std::shared_ptr<T>;
 	using element_type = typename original::element_type;
 	using weak_type = weak_ptr<T, SAFE>;
+#if defined(_LIBCPP_VERSION)
+	// libc++ relocates elements of this type with memcpy when the typedef names the class itself
+	using __trivially_relocatable = shared_ptr; // NOLINT: libc++ extension point
+#endif
 
 private:
 	static inline void AssertNotNull(const bool null) {
@@ -55,7 +59,7 @@ public:
 	}
 	// From raw pointer of type T with custom DELETER
 	template <typename DELETER>
-	shared_ptr(T *ptr, DELETER deleter) : internal(ptr, deleter) {
+	shared_ptr(T *ptr, DELETER deleter) : internal(ptr, std::move(deleter)) {
 		__enable_weak_this(internal.get(), internal.get());
 	}
 	// Aliasing constructor: shares ownership information with ref but contains ptr instead
@@ -92,7 +96,7 @@ public:
 	}
 
 	// Construct from std::shared_ptr
-	explicit shared_ptr(std::shared_ptr<T> other) : internal(other) {
+	explicit shared_ptr(std::shared_ptr<T> other) : internal(std::move(other)) {
 		// FIXME: should we __enable_weak_this here?
 		// *our* enable_shared_from_this hasn't initialized yet, so I think so?
 		__enable_weak_this(internal.get(), internal.get());
@@ -100,7 +104,7 @@ public:
 
 	// Construct from weak_ptr
 	template <class U>
-	explicit shared_ptr(weak_ptr<U> other) : internal(other.internal) {
+	explicit shared_ptr(const weak_ptr<U> &other) : internal(other.internal) {
 	}
 
 	// Construct from unique_ptr, takes over ownership of the unique_ptr

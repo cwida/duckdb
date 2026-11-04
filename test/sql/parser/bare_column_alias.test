@@ -1,0 +1,252 @@
+# name: test/sql/parser/bare_column_alias.test
+# description: Only bare-label keywords can be used as a column alias without AS
+# group: [parser]
+
+statement ok
+CREATE TABLE t(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 2), (3, 4);
+
+# plain identifiers and bare-label keywords work without AS
+query IIII
+SELECT a foo, b type, a name, b value FROM t ORDER BY a;
+----
+1	2	1	2
+3	4	3	4
+
+query II
+SELECT a first, b last FROM t ORDER BY a;
+----
+1	2
+3	4
+
+query III
+SELECT a nulls, b rows, a range FROM t ORDER BY a;
+----
+1	2	1
+3	4	3
+
+query I
+SELECT typeof(a + b) type FROM t LIMIT 1;
+----
+INTEGER
+
+# keyword matching is case-insensitive
+query II
+SELECT a NAME, b Type FROM t ORDER BY a;
+----
+1	2
+3	4
+
+# the same rule applies to every target list, e.g. RETURNING and UNPIVOT
+query II
+INSERT INTO t VALUES (5, 6) RETURNING a name, b value;
+----
+5	6
+
+statement error
+INSERT INTO t VALUES (7, 8) RETURNING a day;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement ok
+DELETE FROM t WHERE a = 5;
+
+query II
+UNPIVOT (SELECT 1 AS x, 2 AS y) ON x key, y INTO NAME col VALUE val;
+----
+key	1
+y	2
+
+statement error
+UNPIVOT (SELECT 1 AS x, 2 AS y) ON x day, y INTO NAME col VALUE val;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement ok
+CREATE TABLE p(k VARCHAR, a INTEGER);
+
+statement ok
+INSERT INTO p VALUES ('x', 1), ('y', 2);
+
+query II
+PIVOT p ON k USING sum(a) total;
+----
+1	2
+
+statement error
+PIVOT p ON k USING sum(a) filter;
+----
+<REGEX>:Parser Error: syntax error.*
+
+# bare aliases propagate through CTEs, subqueries and macros
+query I
+WITH c AS (SELECT a name FROM t) SELECT name FROM c ORDER BY name LIMIT 1;
+----
+1
+
+query I
+SELECT (SELECT 1 name) sub;
+----
+1
+
+statement ok
+CREATE MACRO m() AS TABLE SELECT 1 name, 2 type;
+
+query II
+SELECT name, type FROM m();
+----
+1	2
+
+# nested type expressions take bare aliases too
+query III
+SELECT [1, 2] list, {'a': 1} struct_val, MAP {1: 2} map_val;
+----
+[1, 2]	{'a': 1}	{1=2}
+
+# a named window after OVER is still a window reference, not an alias
+query I
+SELECT sum(a) OVER w total FROM t WINDOW w AS () LIMIT 1;
+----
+4
+
+# interval units can follow an expression, so they are not bare labels
+statement error
+SELECT DATE '2020-01-01' + 1 month;
+----
+<REGEX>:Parser Error: syntax error at or near "month".*
+
+statement error
+SELECT DATE '2020-01-01' - 2 weeks;
+----
+<REGEX>:Parser Error: syntax error at or near "weeks".*
+
+statement error
+SELECT DATE '2020-01-01' + 1 year, 5;
+----
+<REGEX>:Parser Error: syntax error at or near "year".*
+
+statement error
+SELECT INTERVAL '1' day hour;
+----
+<REGEX>:Parser Error: syntax error at or near "hour".*
+
+# function suffixes
+statement error
+SELECT count(*) filter FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement error
+SELECT sum(a) over FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement error
+SELECT first(a) ignore FROM t;
+----
+<REGEX>:Parser Error: syntax error at or near "ignore".*
+
+statement error
+SELECT first(a) respect FROM t;
+----
+<REGEX>:Parser Error: syntax error at or near "respect".*
+
+statement error
+SELECT string_agg(a, ',') within FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+# ESCAPE trails a LIKE expression
+statement error
+SELECT 'a' LIKE 'b' escape FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+# type suffixes
+statement error
+SELECT '2020-01-01'::TIMESTAMP without FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement error
+SELECT 1::CHARACTER VARYING varying;
+----
+<REGEX>:Parser Error: syntax error at or near "varying".*
+
+statement error
+SELECT 1::INTEGER precision;
+----
+<REGEX>:Parser Error: syntax error at or near "precision".*
+
+# star modifiers
+statement error
+SELECT * exclude FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement error
+SELECT * replace FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+statement error
+SELECT * rename FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+# reserved and type/function keywords were never bare labels
+statement error
+SELECT a select FROM t;
+----
+<REGEX>:Parser Error: syntax error at or near "select".*
+
+statement error
+SELECT a at FROM t;
+----
+<REGEX>:Parser Error: syntax error.*
+
+# AS and quoting still allow any keyword as alias
+query IIII
+SELECT a AS month, b AS filter, a "over", b `without` FROM t ORDER BY a;
+----
+1	2	1	2
+3	4	3	4
+
+# the intended clauses keep working
+query I
+SELECT (DATE '2020-01-01' + INTERVAL 1 month)::DATE;
+----
+2020-02-01
+
+query I
+SELECT INTERVAL '1' day;
+----
+1 day
+
+query I
+SELECT 'a%' LIKE 'a\%' ESCAPE '\';
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE a > 1) FROM t;
+----
+1
+
+query I
+SELECT sum(a) OVER () FROM t LIMIT 1;
+----
+4
+
+query I
+SELECT '2020-01-01'::TIMESTAMP WITHOUT TIME ZONE;
+----
+2020-01-01 00:00:00
+
+query I
+SELECT * EXCLUDE (b) FROM t ORDER BY a;
+----
+1
+3

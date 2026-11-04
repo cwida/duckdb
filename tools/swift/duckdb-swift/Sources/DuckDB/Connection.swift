@@ -49,7 +49,7 @@ internal import Cduckdb
 ///   // handle error
 /// }
 /// ```
-public final class Connection: Sendable {
+public final class Connection: @unchecked Sendable {
 
   private let database: Database
   private let ptr = UnsafeMutablePointer<duckdb_connection?>.allocate(capacity: 1)

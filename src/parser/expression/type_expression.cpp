@@ -7,7 +7,29 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/common/types/hash.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/unordered_set.hpp"
 namespace duckdb {
+
+bool TypeExpression::IsSQLType(LogicalTypeId id) {
+	static const auto admitted_ids = [] {
+		// TYPE has SQL syntax but is not included in AllTypes.
+		unordered_set<LogicalTypeId> ids {LogicalTypeId::SQLNULL, LogicalTypeId::TYPE};
+		for (auto &type : LogicalType::AllTypes()) {
+			ids.insert(type.id());
+		}
+		return ids;
+	}();
+	return admitted_ids.count(id) != 0;
+}
+
+bool TypeExpression::CanRepresent(const LogicalType &type) {
+	return type.IsComplete() && !TypeVisitor::Contains(type, [](const LogicalType &child) {
+		       const bool empty_tuple = child.id() == LogicalTypeId::TUPLE && StructType::GetChildCount(child) == 0;
+		       const bool empty_enum = child.id() == LogicalTypeId::ENUM && EnumType::GetSize(child) == 0;
+		       return !IsSQLType(child.id()) || empty_tuple || empty_enum;
+	       });
+}
 
 TypeExpression::TypeExpression(QualifiedName qualified_name_p, vector<unique_ptr<ParsedExpression>> children_p)
     : ParsedExpression(ExpressionType::TYPE, ExpressionClass::TYPE), qualified_name(std::move(qualified_name_p)),
@@ -26,89 +48,103 @@ TypeExpression::TypeExpression(const string &type_name, vector<unique_ptr<Parsed
 TypeExpression::TypeExpression() : ParsedExpression(ExpressionType::TYPE, ExpressionClass::TYPE) {
 }
 
-string TypeExpression::ToString() const {
-	auto &type_name = qualified_name.Name();
-	// render the full qualification - the schema path can be nested (e.g. s1.s2.s3.my_type)
-	string result = qualified_name.QualificationToString();
+struct StackItem {
+	optional_ptr<const TypeExpression> node;
+	string text;
+};
 
-	auto &params = children;
-
-	// LIST and ARRAY have special syntax
-	if (result.empty() && type_name == "LIST" && params.size() == 1) {
-		return params[0]->ToString() + "[]";
-	}
-	if (result.empty() && type_name == "ARRAY" && params.size() == 2) {
-		auto &type_param = params[0];
-		auto &size_param = params[1];
-		return type_param->ToString() + "[" + size_param->ToString() + "]";
-	}
-	// So does STRUCT, MAP and UNION
-	if (result.empty() && type_name == "STRUCT") {
-		if (params.empty()) {
-			return "STRUCT";
-		}
-		string struct_result = "STRUCT(";
-		for (idx_t i = 0; i < params.size(); i++) {
-			struct_result += SQLIdentifier(params[i]->GetAlias()) + " " + params[i]->ToString();
-			if (i < params.size() - 1) {
-				struct_result += ", ";
-			}
-		}
-		struct_result += ")";
-		return struct_result;
-	}
-	if (result.empty() && type_name == "UNION") {
-		if (params.empty()) {
-			return "UNION";
-		}
-		string union_result = "UNION(";
-		for (idx_t i = 0; i < params.size(); i++) {
-			union_result += SQLIdentifier(params[i]->GetAlias()) + " " + params[i]->ToString();
-			if (i < params.size() - 1) {
-				union_result += ", ";
-			}
-		}
-		union_result += ")";
-		return union_result;
-	}
-
-	if (result.empty() && type_name == "MAP" && params.size() == 2) {
-		return "MAP(" + params[0]->ToString() + ", " + params[1]->ToString() + ")";
-	}
-
-	if (result.empty() && type_name == "VARCHAR" && !params.empty()) {
-		if (params.back()->HasAlias() && params.back()->GetAlias() == "collation") {
-			// Special case for VARCHAR with collation
-			auto &collate_expr = params.back()->Cast<ConstantExpression>();
-			return StringUtil::Format("VARCHAR COLLATE %s",
-			                          SQLIdentifier(collate_expr.GetLiteral().ToValue().ToString()));
-		}
-	}
-
-	if (result.empty() && type_name == "INTERVAL" && !params.empty()) {
-		// We ignore interval types parameters.
-		return "INTERVAL";
-	}
-
-	auto type_id = TransformStringToLogicalTypeId(type_name.GetIdentifierName());
-	if (type_id != LogicalTypeId::UNBOUND && type_id != LogicalTypeId::SQLNULL) {
-		// Built-in type name
-		result += type_name.GetIdentifierName();
+static void PushChild(vector<StackItem> &stack, const ParsedExpression &child) {
+	if (child.GetExpressionClass() == ExpressionClass::TYPE) {
+		stack.push_back(StackItem {&child.Cast<TypeExpression>(), ""});
 	} else {
-		result += SQLIdentifier(type_name);
+		stack.push_back(StackItem {nullptr, child.ToString()});
 	}
+}
 
-	if (!params.empty()) {
-		result += "(";
-		for (idx_t i = 0; i < params.size(); i++) {
-			result += params[i]->ToString();
-			if (i < params.size() - 1) {
-				result += ", ";
+string TypeExpression::ToString() const {
+	string output;
+	vector<StackItem> stack;
+	stack.push_back(StackItem {this, ""});
+
+	while (!stack.empty()) {
+		auto item = std::move(stack.back());
+		stack.pop_back();
+
+		if (!item.node) {
+			output += item.text;
+		} else {
+			auto &node = *item.node;
+			auto &type_name = node.qualified_name.Name();
+			auto qual = node.qualified_name.QualificationToString();
+			auto &params = node.children;
+
+			// LIST and ARRAY have special syntax
+			if (qual.empty() && type_name == "LIST" && params.size() == 1) {
+				stack.push_back(StackItem {nullptr, "[]"});
+				PushChild(stack, *params[0]);
+			} else if (qual.empty() && type_name == "ARRAY" && params.size() == 2) {
+				stack.push_back(StackItem {nullptr, "]"});
+				PushChild(stack, *params[1]);
+				stack.push_back(StackItem {nullptr, "["});
+				PushChild(stack, *params[0]);
+			} else if (qual.empty() && (type_name == "STRUCT" || type_name == "UNION")) {
+				// STRUCT and UNION share the NAME(alias type, ...) syntax
+				string head = type_name == "STRUCT" ? "STRUCT" : "UNION";
+				if (params.empty()) {
+					stack.push_back(StackItem {nullptr, head});
+					continue;
+				}
+				stack.push_back(StackItem {nullptr, ")"});
+				for (idx_t i = params.size(); i > 0; i--) {
+					auto &curr_param = *params[i - 1];
+					PushChild(stack, curr_param);
+					stack.push_back(StackItem {nullptr, SQLIdentifier(curr_param.GetAlias()) + " "});
+					if (i > 1) {
+						stack.push_back(StackItem {nullptr, ", "});
+					}
+				}
+				stack.push_back(StackItem {nullptr, head + "("});
+			} else if (qual.empty() && type_name == "MAP" && params.size() == 2) {
+				stack.push_back(StackItem {nullptr, ")"});
+				PushChild(stack, *params[1]);
+				stack.push_back(StackItem {nullptr, ", "});
+				PushChild(stack, *params[0]);
+				stack.push_back(StackItem {nullptr, "MAP("});
+			} else if (qual.empty() && type_name == "VARCHAR" && !params.empty() && params.back()->HasAlias() &&
+			           params.back()->GetAlias() == "collation") {
+				// the constructor form parses in every type position, a COLLATE clause only in column definitions
+				auto &collate_expr = params.back()->Cast<ConstantExpression>();
+				stack.push_back(
+				    StackItem {nullptr, StringUtil::Format("VARCHAR(%s)",
+				                                           SQLString(collate_expr.GetLiteral().ToValue().ToString()))});
+			} else if (qual.empty() && type_name == "INTERVAL" && !params.empty()) {
+				// We ignore interval types parameters.
+				stack.push_back(StackItem {nullptr, "INTERVAL"});
+			} else {
+				string result = qual;
+				auto type_id = TransformStringToLogicalTypeId(type_name.GetIdentifierName());
+				if (type_id != LogicalTypeId::UNBOUND && type_id != LogicalTypeId::SQLNULL) {
+					// Built-in type name
+					result += type_name.GetIdentifierName();
+				} else {
+					result += SQLIdentifier(type_name);
+				}
+				if (params.empty()) {
+					stack.push_back(StackItem {nullptr, result});
+					continue;
+				}
+				stack.push_back(StackItem {nullptr, ")"});
+				for (idx_t i = params.size(); i > 0; i--) {
+					PushChild(stack, *params[i - 1]);
+					if (i > 1) {
+						stack.push_back(StackItem {nullptr, ", "});
+					}
+				}
+				stack.push_back(StackItem {nullptr, result + "("});
 			}
 		}
-		result += ")";
 	}
-	return result;
+	return output;
 }
 
 //===--------------------------------------------------------------------===//

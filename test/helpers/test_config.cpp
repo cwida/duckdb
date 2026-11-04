@@ -166,7 +166,7 @@ void TestConfiguration::UpdateEnvironment() {
 
 	// XXX: UUID used by ducklake to avoid collisions, is there a better way?
 	test_env["TEST_UUID"] = test_uuid;
-	test_env["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
+	test_env["BUILD_DIR"] = TestBuildDirectory();
 	test_env["WORKING_DIR"] = working_dir; // can be overridden per runner
 	// DATA_DIR: an explicit override (--data-dir / DUCKDB_TEST_DATA_DIR / config data_dir) is read fresh
 	// here, so it survives cwd changes -- an absolute/remote value stays put, a relative value is resolved
@@ -934,6 +934,10 @@ idx_t FailureSummary::GetSummaryCounter() {
 	return ++summary.failures_summary_counter;
 }
 
+// don't log the same test failure many times:
+// e.g. log only the first failure in
+// `./build/debug/test/unittest --on-init "SET max_memory='400kb';"
+// test/fuzzer/pedro/concurrent_catalog_usage.test`
 bool FailureSummary::SkipLoggingSameError(const string &file_name) {
 	return Instance().SkipLoggingSameErrorInternal(file_name);
 }

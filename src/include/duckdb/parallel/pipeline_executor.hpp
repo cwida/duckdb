@@ -173,6 +173,8 @@ private:
 	bool has_executed = false;
 	//! Whether an externally-fed sink has observed its initial batch
 	bool external_batch_initialized = false;
+	//! Rows of the last source chunk that have not been reported to the progress verifier yet
+	idx_t unsampled_progress_rows = 0;
 
 private:
 	void StartOperator(PhysicalOperator &op);
@@ -181,6 +183,8 @@ private:
 	//! Reset the operator index to the first operator
 	void GoToSource(idx_t &current_idx, idx_t initial_idx);
 	SourceFetchResult FetchFromSource(DataChunk &result);
+	//! Reports the last source chunk to the progress verifier (if any), once it has been fully processed
+	void SampleProgress();
 
 	void FinishProcessing(int32_t operator_idx = -1);
 	void NotifySourceFinished();

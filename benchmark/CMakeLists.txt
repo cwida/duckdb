@@ -11,7 +11,6 @@ if(${_index} GREATER -1)
   add_subdirectory(tpch)
 endif()
 
-add_extension_definitions()
 set(BENCHMARK_ROOT_DIRECTORY
     ""
     CACHE

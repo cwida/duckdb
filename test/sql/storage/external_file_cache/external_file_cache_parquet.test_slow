@@ -73,9 +73,9 @@ select round(memory_usage_bytes / 1048576) from duckdb_memory() where tag = 'EXT
 ----
 58.0
 
-# set the memory so low that blocks should be unloaded
+# set the memory so low that blocks should be unloaded, but above the metadata of the cached blocks
 statement ok
-set memory_limit='512KiB';
+set memory_limit='8MB';
 
 # set it back to something reasonable so we can actually do the following queries
 statement ok

@@ -1,0 +1,99 @@
+# name: test/sql/join/semianti/constant_comparison_join.test
+# description: Right semi/anti joins retain separable comparisons with scalar operands
+# group: [semianti]
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+statement ok
+CREATE OR REPLACE TABLE left_input(i INTEGER);
+
+statement ok
+INSERT INTO left_input VALUES (1),(2),(2),(NULL);
+
+statement ok
+CREATE OR REPLACE TABLE right_input(i INTEGER);
+
+statement ok
+INSERT INTO right_input VALUES (1),(3),(3),(NULL);
+
+query I rowsort
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_SEMI) right_input r ON l.i=1;
+----
+1
+3
+3
+NULL
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_ANTI) right_input r ON l.i=1;
+----
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_SEMI) right_input r ON 1=r.i;
+----
+1
+
+query I rowsort
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_ANTI) right_input r ON r.i=1;
+----
+3
+3
+NULL
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_SEMI) right_input r ON NULL::INTEGER=l.i;
+----
+
+query I rowsort
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_ANTI) right_input r ON NULL::INTEGER=l.i;
+----
+1
+3
+3
+NULL
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_SEMI) right_input r ON r.i IS NOT DISTINCT FROM NULL;
+----
+NULL
+
+query I rowsort
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_ANTI) right_input r ON r.i IS NOT DISTINCT FROM NULL;
+----
+1
+3
+3
+
+statement ok
+DELETE FROM left_input;
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_SEMI) right_input r ON l.i=1;
+----
+
+query I rowsort
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_ANTI) right_input r ON l.i=1;
+----
+1
+3
+3
+NULL
+
+statement ok
+DELETE FROM right_input;
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_SEMI) right_input r ON l.i=1;
+----
+
+query I
+SELECT r.i FROM left_input l JOIN BY (TYPE RIGHT_ANTI) right_input r ON l.i=1;
+----
+
+endloop
+
+statement ok
+SET debug_disable_optimizer=false;

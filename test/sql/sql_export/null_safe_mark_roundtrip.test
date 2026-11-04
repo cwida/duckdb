@@ -1,0 +1,120 @@
+# name: test/sql/sql_export/null_safe_mark_roundtrip.test
+# description: Round-trip native MARK joins with null-safe equality and distinctness conditions
+# group: [sql_export]
+
+require parquet
+
+statement ok
+COPY (SELECT i AS order_key, (i * 7 + j) % 13 AS supplier_key, (i + j) % 5 AS receipt, 2 AS committed
+      FROM range(200) r(i), range(3) m(j)) TO '{TEST_DIR}/lines.parquet' (FORMAT parquet);
+
+statement ok
+COPY (SELECT i AS supplier_key, 'supplier_' || i AS name FROM range(13) r(i))
+TO '{TEST_DIR}/suppliers.parquet' (FORMAT parquet);
+
+statement ok
+CREATE VIEW lines AS FROM read_parquet('{TEST_DIR}/lines.parquet');
+
+statement ok
+CREATE VIEW suppliers AS FROM read_parquet('{TEST_DIR}/suppliers.parquet');
+
+statement ok
+SET delim_join_as_cte=true;
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+# Decorrelation produces a null-safe equality hash key and a DISTINCT FROM comparison.
+# Strict verification executes the exported SQL; the listed results check its semantics.
+query TI
+SELECT s.name, count(*) AS waiting
+FROM suppliers s, lines l1
+WHERE s.supplier_key = l1.supplier_key AND l1.receipt > l1.committed
+  AND EXISTS (SELECT * FROM lines l2 WHERE l2.order_key = l1.order_key AND l2.supplier_key <> l1.supplier_key)
+  AND NOT EXISTS (SELECT * FROM lines l3 WHERE l3.order_key >= l1.order_key + 190
+                  AND l3.supplier_key <> l1.supplier_key AND l3.receipt > l3.committed)
+GROUP BY s.name ORDER BY waiting DESC, s.name LIMIT 5;
+----
+supplier_0	18
+supplier_1	18
+supplier_10	18
+supplier_2	18
+supplier_3	18
+
+statement ok
+CREATE TABLE probes(id INTEGER, g VARCHAR COLLATE nocase, v INTEGER[], w INTEGER);
+
+statement ok
+INSERT INTO probes VALUES (0,'A',[1,NULL],0),(1,'a',NULL,NULL),(2,NULL,[2],1),
+                          (3,'missing',NULL,0),(4,'b',[3],2),(5,'A',[1,NULL],0);
+
+statement ok
+CREATE TABLE candidates(g VARCHAR COLLATE nocase, v INTEGER[], w INTEGER);
+
+statement ok
+INSERT INTO candidates VALUES ('a',[1,NULL],0),('A',NULL,1),(NULL,NULL,2),
+                              ('B',[3],2),('a',[1,NULL],0);
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+foreach serialize false true
+
+statement ok
+SET debug_verify_serializer={serialize};
+
+query II
+SELECT id,__mark_join_marker FROM probes p JOIN BY(TYPE MARK) candidates c
+ON p.g IS NOT DISTINCT FROM c.g AND p.v IS DISTINCT FROM c.v ORDER BY id;
+----
+0	true
+1	true
+2	true
+3	false
+4	false
+5	true
+
+# Condition order and multiple residuals must not change hash-key selection.
+query II
+SELECT id,__mark_join_marker FROM probes p JOIN BY(TYPE MARK) candidates c
+ON p.v IS DISTINCT FROM c.v AND p.w IS DISTINCT FROM c.w
+AND p.g IS NOT DISTINCT FROM c.g ORDER BY id;
+----
+0	true
+1	true
+2	true
+3	false
+4	false
+5	true
+
+query II
+SELECT id,__mark_join_marker FROM probes p
+JOIN BY(TYPE MARK) (SELECT * FROM candidates WHERE false) c
+ON p.g IS NOT DISTINCT FROM c.g AND p.v IS DISTINCT FROM c.v ORDER BY id;
+----
+0	false
+1	false
+2	false
+3	false
+4	false
+5	false
+
+# A nullable comparison is outside this two-valued family.
+statement error
+SELECT __mark_join_marker FROM probes p JOIN BY(TYPE MARK) candidates c
+ON p.g=c.g AND p.v IS DISTINCT FROM c.v;
+----
+Unsupported explicit MARK join conditions
+
+# DISTINCT FROM alone supplies no hash key. Its existing refusal is preserved.
+statement error
+SELECT __mark_join_marker FROM probes p JOIN BY(TYPE MARK) candidates c
+ON p.g IS DISTINCT FROM c.g AND p.v IS DISTINCT FROM c.v;
+----
+Unsupported explicit MARK join conditions
+
+endloop
+
+endloop

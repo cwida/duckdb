@@ -1,0 +1,40 @@
+# name: test/sql/window/window_distinct_build_oom.test
+# description: Issue #27591: a DISTINCT window aggregate fails cleanly instead of livelocking when the tree build runs out of memory
+# group: [window]
+
+require 64bit
+
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE t AS
+	SELECT p, j, lpad((p * 521 + j)::VARCHAR, 20, '0') AS s
+	FROM range(257) parts(p), range(521) rows(j);
+
+# The distinct sort tree keeps a running aggregate state per row and tree level,
+# so this limit is hit while the tree is being built in parallel.
+# The threads waiting for the level that can no longer complete must rethrow the error
+# instead of spinning forever.
+statement ok
+SET memory_limit = '1GB';
+
+statement error
+SELECT sum(length(x))
+FROM (
+	SELECT string_agg(DISTINCT s, '|') OVER (PARTITION BY p ORDER BY j ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS x
+	FROM t
+);
+----
+Out of Memory
+
+# The aggregator still works afterwards in the same connection
+query I
+SELECT sum(length(x))
+FROM (
+	SELECT string_agg(DISTINCT s, '|') OVER (PARTITION BY p ORDER BY j ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS x
+	FROM t
+	WHERE p < 8
+);
+----
+344936

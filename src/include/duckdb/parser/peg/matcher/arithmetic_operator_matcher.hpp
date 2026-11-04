@@ -36,6 +36,10 @@ public:
 		return "ARITHMETICOPERATOR";
 	}
 
+	void InitializeFirstSet(MatcherFirstSet &first_set, const GrammarLiteralTable &table) const override {
+		first_set.class_mask = MatcherTokenClass::OPERATOR;
+	}
+
 private:
 	bool MatchArithmeticOperator(MatchState &state) const {
 		auto token = state.token_iterator.Current();

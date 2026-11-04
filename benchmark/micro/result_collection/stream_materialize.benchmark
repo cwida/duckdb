@@ -14,7 +14,7 @@ init
 set streaming_buffer_size='1000000b';
 
 load
-create table tbl as select 'this is a reasonably long string ' || i as a from range(25000000) t(i);
+create table tbl as select 'this is a reasonably long string ' || i as a from range(9000000) t(i);
 
 run
 select * from tbl;

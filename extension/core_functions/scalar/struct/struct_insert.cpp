@@ -7,6 +7,7 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
 
 namespace duckdb {
 
@@ -32,8 +33,10 @@ static void StructInsertFunction(DataChunk &args, ExpressionState &state, Vector
 static unique_ptr<FunctionData> StructInsertBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	if (arguments.empty()) {
-		throw InvalidInputException("Missing required arguments for struct_insert function.");
+	for (auto &argument : arguments) {
+		if (argument->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
+			throw ParameterNotResolvedException();
+		}
 	}
 	if (LogicalTypeId::STRUCT != arguments[0]->GetReturnType().id()) {
 		throw InvalidInputException("The first argument to struct_insert must be a STRUCT");
@@ -52,17 +55,14 @@ static unique_ptr<FunctionData> StructInsertBind(BindScalarFunctionInput &input)
 		new_children.push_back(make_pair(child.first, child.second));
 	}
 
-	// Loop through the additional arguments (name/value pairs)
+	// Loop through the fields that are inserted
 	for (idx_t i = 1; i < arguments.size(); i++) {
-		auto &child = arguments[i];
-		if (child->GetAlias().empty()) {
-			throw BinderException("Need named argument for struct insert, e.g., a := b");
+		auto &name = input.GetArgumentName(i);
+		if (name_collision_set.find(name) != name_collision_set.end()) {
+			throw BinderException("Duplicate struct entry name %s", name);
 		}
-		if (name_collision_set.find(child->GetAlias()) != name_collision_set.end()) {
-			throw BinderException("Duplicate struct entry name \"%s\"", child->GetAlias());
-		}
-		name_collision_set.insert(child->GetAlias());
-		new_children.emplace_back(make_pair(child->GetAlias(), arguments[i]->GetReturnType()));
+		name_collision_set.insert(name);
+		new_children.emplace_back(make_pair(name, arguments[i]->GetReturnType()));
 	}
 
 	bound_function.SetReturnType(LogicalType::STRUCT(new_children));
@@ -89,13 +89,35 @@ static unique_ptr<BaseStatistics> StructInsertStats(ClientContext &context, Func
 	return new_stats.ToUnique();
 }
 
+static unique_ptr<ParsedExpression> StructInsertUnbind(FunctionUnbindInput &input) {
+	auto &function = input.expression.Function();
+	auto &types = function.GetLogicalArguments();
+	auto &return_type = function.GetLogicalReturnType();
+	if (types.empty() || types[0].id() != LogicalTypeId::STRUCT || return_type.id() != LogicalTypeId::STRUCT ||
+	    input.children.size() != types.size()) {
+		return nullptr;
+	}
+	auto existing_count = StructType::GetChildCount(types[0]);
+	auto &return_children = StructType::GetChildTypes(return_type);
+	if (return_children.size() != existing_count + types.size() - 1) {
+		return nullptr;
+	}
+	vector<FunctionArgument> arguments;
+	arguments.emplace_back(std::move(input.children[0]));
+	for (idx_t i = 1; i < input.children.size(); i++) {
+		arguments.emplace_back(return_children[existing_count + i - 1].first, std::move(input.children[i]));
+	}
+	return make_uniq<FunctionExpression>(function.GetDefinition()->GetQualifiedName(), std::move(arguments));
+}
+
 ScalarFunction StructInsertFun::GetFunction() {
 	ScalarFunction fun({}, LogicalTypeId::STRUCT, StructInsertFunction, StructInsertBind, StructInsertStats);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	fun.SetVarArgs(LogicalType::ANY);
+	fun.GetSignature().AddParameter("struct", LogicalType::ANY).AddKwargs("kwargs", LogicalType::ANY);
 	fun.GetProperties().SetRequiresExpressionNames(true);
 	fun.SetSerializeCallback(VariableReturnBindData::Serialize);
 	fun.SetDeserializeCallback(VariableReturnBindData::Deserialize);
+	fun.SetUnbindCallback(StructInsertUnbind);
 	return fun;
 }
 

@@ -1,0 +1,187 @@
+# name: test/sql/storage/overflow_strings/blob_row_fetch.test
+# description: Selective lookups on overflow string columns fetch only the selected rows
+# group: [overflow_strings]
+
+# Every string at or above the string block limit gets its own overflow buffer,
+# so scanning a whole vector to return a handful of rows materializes
+# STANDARD_VECTOR_SIZE buffers. The memory limit set below is far smaller than a
+# whole vector of blobs but much larger than the rows the queries return, so it
+# only holds if the compression specific Select writes just the selected rows -
+# including for vectors that span more than one column segment.
+
+require vector_size 2048
+
+statement ok
+ATTACH '{TEST_DIR}/blob_row_fetch.db' AS db (BLOCK_SIZE 16384);
+
+# the blobs below are highly compressible, so keep them uncompressed to get the
+# overflow buffers this test is about
+statement ok
+SET force_compression='uncompressed';
+
+statement ok
+CREATE TABLE db.t(id INTEGER, val BLOB);
+
+statement ok
+INSERT INTO db.t SELECT i, ('row' || i || repeat('Y', 50000))::BLOB FROM range(2500) tbl(i);
+
+# NULLs must not leak between vectors, and updates have to be visible. The blobs
+# are smaller here because the update path materializes a whole vector of its
+# own, which is beyond what the memory limit below allows.
+statement ok
+CREATE TABLE db.t2(id INTEGER, val BLOB);
+
+statement ok
+INSERT INTO db.t2 SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE ('row' || i || repeat('Y', 5000))::BLOB END FROM range(2500) tbl(i);
+
+statement ok
+CHECKPOINT db;
+
+# the lookups below only stay within the memory limit while these hold: the
+# column is stored uncompressed, every value has an overflow buffer, and the rows
+# are spread over more than one segment so that a vector spans segments
+query I
+SELECT compression FROM pragma_storage_info('db.t') WHERE segment_type = 'BLOB' AND compression != 'Uncompressed';
+----
+
+query I
+SELECT bool_and(len(additional_block_ids) > 0) FROM pragma_storage_info('db.t') WHERE segment_type = 'BLOB';
+----
+true
+
+query I
+SELECT count(*) > 1 FROM pragma_storage_info('db.t') WHERE segment_type = 'BLOB';
+----
+true
+
+query I
+SELECT count(*) > 1 FROM pragma_storage_info('db.t2') WHERE segment_type = 'BLOB';
+----
+true
+
+# re-attach so the columns are loaded from the persisted data pointers - the
+# compression function of a column is only known once its segments are appended
+# through ColumnData, which checkpointing in the same session does not do
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/blob_row_fetch.db' AS db (BLOCK_SIZE 16384);
+
+statement ok
+SET threads=1;
+
+# disable spilling so the memory limit actually bites
+statement ok
+PRAGMA temp_directory='';
+
+statement ok
+PRAGMA max_temp_directory_size='0B';
+
+# a vector of 2048 blobs needs over 100MB of overflow buffers and does not fit in
+# this limit, while the handful of rows the queries below return needs 50KB each
+statement ok
+SET memory_limit='90MB';
+
+# the first row of the first segment
+query I
+SELECT val = ('row0' || repeat('Y', 50000))::BLOB FROM db.t WHERE id = 0;
+----
+true
+
+# the rows on both sides of the first segment boundary
+query I
+SELECT val = ('row1022' || repeat('Y', 50000))::BLOB FROM db.t WHERE id = 1022;
+----
+true
+
+query I
+SELECT val = ('row1023' || repeat('Y', 50000))::BLOB FROM db.t WHERE id = 1023;
+----
+true
+
+# the rows on both sides of the first vector boundary
+query I
+SELECT val = ('row2047' || repeat('Y', 50000))::BLOB FROM db.t WHERE id = 2047;
+----
+true
+
+query I
+SELECT val = ('row2048' || repeat('Y', 50000))::BLOB FROM db.t WHERE id = 2048;
+----
+true
+
+# the last row of the last segment
+query I
+SELECT val = ('row2499' || repeat('Y', 50000))::BLOB FROM db.t WHERE id = 2499;
+----
+true
+
+# a range of rows straddling a segment boundary
+query II
+SELECT count(*), bool_and(val = ('row' || id || repeat('Y', 50000))::BLOB)
+FROM db.t WHERE id BETWEEN 1020 AND 1026;
+----
+7	true
+
+statement ok
+SET memory_limit='2GB';
+
+query I
+SELECT val IS NULL FROM db.t2 WHERE id = 1022;
+----
+true
+
+query I
+SELECT val = ('row1023' || repeat('Y', 5000))::BLOB FROM db.t2 WHERE id = 1023;
+----
+true
+
+# a range mixing NULL and non-NULL rows across a segment boundary
+query III
+SELECT count(*), count(val), bool_and(val IS NULL OR val = ('row' || id || repeat('Y', 5000))::BLOB)
+FROM db.t2 WHERE id BETWEEN 1015 AND 1030;
+----
+16	13	true
+
+# Keep nullable overflow strings while the scan advances through later segments.
+statement ok
+CREATE TEMP TABLE retained AS SELECT * FROM db.t2 WHERE id%1024<2 OR id%1024 BETWEEN 12 AND 13 OR id%1024>=1022;
+
+statement ok
+UPDATE db.t2 SET val = ('upd' || id || repeat('Z', 5000))::BLOB WHERE id IN (1500, 1505);
+
+statement ok
+UPDATE db.t2 SET val = NULL WHERE id = 1501;
+
+query I
+SELECT val = ('upd1500' || repeat('Z', 5000))::BLOB FROM db.t2 WHERE id = 1500;
+----
+true
+
+query I
+SELECT val IS NULL FROM db.t2 WHERE id = 1501;
+----
+true
+
+query I
+SELECT val = ('row1502' || repeat('Y', 5000))::BLOB FROM db.t2 WHERE id = 1502;
+----
+true
+
+query II
+SELECT count(*), bool_and(CASE
+	WHEN id IN (1500, 1505) THEN val = ('upd' || id || repeat('Z', 5000))::BLOB
+	WHEN id = 1501 OR id % 7 = 0 THEN val IS NULL
+	ELSE val = ('row' || id || repeat('Y', 5000))::BLOB END)
+FROM db.t2 WHERE id BETWEEN 1495 AND 1510;
+----
+16	true
+
+statement ok
+DETACH db;
+
+query II
+SELECT count(*), bool_and(val IS NOT DISTINCT FROM CASE WHEN id%7=0 THEN NULL ELSE ('row' || id || repeat('Y',5000))::BLOB END) FROM retained;
+----
+16	true

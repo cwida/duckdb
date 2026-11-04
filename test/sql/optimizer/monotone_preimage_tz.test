@@ -1,0 +1,64 @@
+# name: test/sql/optimizer/monotone_preimage_tz.test
+# description: Monotone preimage bounds on the edge of the TIMESTAMP WITH TIME ZONE domain
+# group: [optimizer]
+
+require icu
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+SET TimeZone = 'UTC';
+
+# TIMESTAMP WITH TIME ZONE shares the int64 domain of TIMESTAMP: the smallest and largest finite values
+# (make_timestamptz(INT64_MIN + 2) / make_timestamptz(INT64_MAX - 1)) are valid rows that a rewritten
+# comparison must keep, and a bound on the domain edge is written against the ±infinity sentinel
+statement ok
+CREATE TABLE edge_tz(t TIMESTAMPTZ);
+
+statement ok
+INSERT INTO edge_tz VALUES
+  (make_timestamptz(-9223372036854775806)), ('2000-01-01'), (make_timestamptz(9223372036854775806)),
+  ('-infinity'), ('infinity'), (NULL);
+
+query I
+SELECT count(*) FROM edge_tz WHERE epoch(t) > -9223372036854775807;
+----
+3
+
+query I
+SELECT count(*) FROM edge_tz WHERE epoch(t) < 9223372036854775807;
+----
+3
+
+query I
+SELECT count(*) FROM edge_tz WHERE epoch_us(t) >= -9223372036854775806;
+----
+3
+
+query I
+SELECT count(*) FROM edge_tz WHERE epoch_us(t) > -9223372036854775806;
+----
+2
+
+statement ok
+EXPLAIN SELECT count(*) FROM edge_tz WHERE epoch(t) > -9223372036854775807;
+
+statement ok
+EXPLAIN ANALYZE SELECT count(*) FROM edge_tz WHERE epoch(t) < 9223372036854775807;
+
+statement ok
+EXPLAIN SELECT count(*) FROM edge_tz WHERE epoch_us(t) > -9223372036854775806;
+
+# the finite INT64_MIN sorts below the -infinity sentinel
+statement ok
+CREATE TABLE below_tz(t TIMESTAMPTZ);
+
+statement ok
+INSERT INTO below_tz VALUES (make_timestamptz(-9223372036854775807 - 1)), (make_timestamptz(-9223372036854775806)), ('-infinity'), (NULL);
+
+query III
+SELECT (SELECT count(*) FROM below_tz WHERE epoch_us(t) <= -9223372036854775806), (SELECT count(*) FROM below_tz WHERE epoch_us(t) < 0),
+       (SELECT count(*) FROM below_tz WHERE epoch_us(t) >= -9223372036854775806);
+----
+2	2	1

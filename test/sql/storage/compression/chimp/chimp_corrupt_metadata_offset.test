@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/chimp/chimp_corrupt_metadata_offset.test
+# description: A Chimp metadata end outside the segment must be rejected
+# group: [chimp]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/chimp_corrupt_metadata_offset.db.gz {TEST_DIR}/chimp_corrupt_metadata_offset.db
+
+load {TEST_DIR}/chimp_corrupt_metadata_offset.db readonly
+
+statement ok
+USE chimp_corrupt_metadata_offset;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE segment_type='DOUBLE' LIMIT 1;
+----
+Chimp
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error
+
+restart
+
+statement ok
+USE chimp_corrupt_metadata_offset;
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error

@@ -40,8 +40,25 @@ HTTPClientPool::HTTPClientPool(idx_t capacity_p) : capacity(capacity_p) {
 	non_empty_buckets.reserve(capacity);
 }
 
+void HTTPClientPool::SetCapacity(idx_t new_capacity) {
+	D_ASSERT(new_capacity > 0);
+	if (new_capacity > capacity) {
+		client_buckets.reserve(new_capacity);
+		non_empty_buckets.reserve(new_capacity);
+		for (auto &entry : client_buckets) {
+			entry.second.idle_clients.reserve(new_capacity);
+		}
+	}
+	capacity = new_capacity;
+	WakeNextAdmission();
+}
+
+idx_t HTTPClientPool::GetCapacity() const {
+	return capacity;
+}
+
 bool HTTPClientPool::HasAdmissionResource() const {
-	return reserved_clients < capacity || !non_empty_buckets.empty();
+	return reserved_clients < capacity || (reserved_clients == capacity && !non_empty_buckets.empty());
 }
 
 void HTTPClientPool::WaitForAdmission(annotated_unique_lock<annotated_mutex> &guard, bool owns_capacity) {
@@ -179,6 +196,7 @@ void HTTPClientPool::AdoptPreparedBucket(Reservation &reservation) {
 		reservation.bucket = BucketHandle(exact->second);
 		return;
 	}
+	prepared.idle_clients.reserve(capacity);
 	auto inserted = client_buckets.insert(std::move(reservation.bucket_node.node));
 	reservation.bucket = BucketHandle(inserted->second);
 }
@@ -198,6 +216,9 @@ void HTTPClientPool::Return(BucketHandle handle, unique_ptr<HTTPClient> client) 
 
 HTTPClientPool::Reservation HTTPClientPool::TakeIdleForDisposal(IdleFilter filter, idx_t first, uint64_t second) {
 	Reservation result;
+	if (filter == IdleFilter::EXCESS && reserved_clients <= capacity) {
+		return result;
+	}
 	for (auto &entry : client_buckets) {
 		if (!entry.second.idle_clients.empty() && MatchesFilter(entry.first, filter, first, second)) {
 			result.bucket = BucketHandle(entry.second);
@@ -311,6 +332,7 @@ bool HTTPClientPool::MatchesFilter(const ClientKey &key, IdleFilter filter, idx_
 		return key.provider_epoch == first && key.connection_epoch < second;
 	case IdleFilter::SESSION:
 		return key.session_id == first;
+	case IdleFilter::EXCESS:
 	case IdleFilter::ALL:
 		return true;
 	}

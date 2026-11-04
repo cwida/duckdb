@@ -89,7 +89,8 @@ static auto FromWKBStats(ClientContext &context, FunctionStatisticsInput &input)
 }
 
 ScalarFunction StGeomfromwkbFun::GetFunction() {
-	ScalarFunction function({LogicalType::BLOB}, LogicalType::GEOMETRY(), FromWKBFunction);
+	ScalarFunction function({}, LogicalType::GEOMETRY(), FromWKBFunction);
+	function.GetSignature().AddParameter("wkb", LogicalType::BLOB);
 	function.SetStatisticsCallback(FromWKBStats);
 	// throws when the input is not valid WKB
 	function.SetFallible();
@@ -106,7 +107,8 @@ static void ToWKBFunction(DataChunk &input, ExpressionState &state, Vector &resu
 }
 
 ScalarFunction StAswkbFun::GetFunction() {
-	ScalarFunction function({LogicalType::GEOMETRY()}, LogicalType::BLOB, ToWKBFunction);
+	ScalarFunction function({}, LogicalType::BLOB, ToWKBFunction);
+	function.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
 	return function;
 }
 
@@ -117,7 +119,8 @@ static void ToWKTFunction(DataChunk &input, ExpressionState &state, Vector &resu
 }
 
 ScalarFunction StAstextFun::GetFunction() {
-	ScalarFunction function({LogicalType::GEOMETRY()}, LogicalType::VARCHAR, ToWKTFunction);
+	ScalarFunction function({}, LogicalType::VARCHAR, ToWKTFunction);
+	function.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
 	return function;
 }
 
@@ -198,8 +201,10 @@ static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatistic
 }
 
 ScalarFunction StIntersectsExtentFun::GetFunction() {
-	ScalarFunction function({LogicalType::GEOMETRY(), LogicalType::GEOMETRY()}, LogicalType::BOOLEAN,
-	                        IntersectsExtentFunction);
+	ScalarFunction function({}, LogicalType::BOOLEAN, IntersectsExtentFunction);
+	function.GetSignature()
+	    .AddParameter("geom1", LogicalType::GEOMETRY())
+	    .AddParameter("geom2", LogicalType::GEOMETRY());
 	function.SetFilterPruneCallback(IntersectsExtentFilterPrune);
 	return function;
 }
@@ -228,21 +233,20 @@ static unique_ptr<Expression> BindCRSFunctionExpression(FunctionBindExpressionIn
 	return make_uniq<BoundConstantExpression>(GetCRSValue(return_type));
 }
 
-static unique_ptr<FunctionData> BindCRSFunction(BindScalarFunctionInput &input) {
-	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-
-	if (arguments[0]->GetReturnType().id() != LogicalTypeId::GEOMETRY) {
-		return nullptr;
+static void CRSFunctionResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	auto &argument_type = input.GetArgumentType(0);
+	if (argument_type.id() != LogicalTypeId::GEOMETRY) {
+		return;
 	}
 
 	// Propagate the CRS from the input argument to the parameter type
-	bound_function.GetArguments()[0] = arguments[0]->GetReturnType();
-	return nullptr;
+	input.GetBoundFunction().GetArguments()[0] = argument_type;
 }
 
 ScalarFunction StCrsFun::GetFunction() {
-	ScalarFunction geom_func({LogicalType::GEOMETRY()}, LogicalType::VARCHAR, CRSFunction, BindCRSFunction);
+	ScalarFunction geom_func({}, LogicalType::VARCHAR, CRSFunction);
+	geom_func.SetResolveTypesCallback(CRSFunctionResolveTypes);
+	geom_func.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
 	geom_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	geom_func.SetBindExpressionCallback(BindCRSFunctionExpression);
 	return geom_func;
@@ -276,8 +280,8 @@ static void SetCRSFunction(DataChunk &args, ExpressionState &state, Vector &resu
 }
 
 ScalarFunction StSetcrsFun::GetFunction() {
-	ScalarFunction geom_func({{"geom", LogicalType::GEOMETRY()}, {"crs", LogicalType::VARCHAR}},
-	                         LogicalType::GEOMETRY(), SetCRSFunction, SetCRSBind);
+	ScalarFunction geom_func({}, LogicalType::GEOMETRY(), SetCRSFunction, SetCRSBind);
+	geom_func.GetSignature().AddParameter("geom", LogicalType::GEOMETRY()).AddParameter("crs", LogicalType::VARCHAR);
 	return geom_func;
 }
 

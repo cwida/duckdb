@@ -1,0 +1,226 @@
+# name: test/sql/join/inner/test_dense_prefix_range_filter.test
+# description: Dense prefix range filters preserve bounds, NULLs and row selections
+# group: [inner]
+
+load {TEST_DIR}/dense_prefix_range_filter.db
+
+statement ok
+SET threads=4;
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization';
+
+foreach type TINYINT SMALLINT INTEGER BIGINT
+
+statement ok
+CREATE OR REPLACE TABLE probe AS
+SELECT i, CASE WHEN i%19<>0 THEN (i%221-100)::{type} END AS k, (i%7)::INTEGER AS g
+FROM range(10003) t(i);
+
+foreach width 2 63 64 65 127 128 129
+
+statement ok
+CREATE OR REPLACE TABLE build AS
+SELECT (i%{width}-40)::{type} AS k FROM range(2*{width}) t(i);
+
+# Includes negative bounds, a partially filled final word, duplicates and partial vectors.
+query I
+WITH actual AS (
+    SELECT p.i, p.k FROM probe p JOIN build b ON p.k=b.k WHERE p.g<3
+), expected AS (
+    SELECT i, k FROM probe, range(2) WHERE g<3 AND k BETWEEN -40 AND {width}-41
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+# A hole in an otherwise dense range must keep the bitmap path available.
+statement ok
+DELETE FROM build WHERE k=-39;
+
+query I
+WITH actual AS (
+    SELECT p.i, p.k FROM probe p JOIN build b ON p.k=b.k WHERE p.g>=3
+), expected AS (
+    SELECT i, k FROM probe, range(2)
+    WHERE g>=3 AND k BETWEEN -40 AND {width}-41 AND k<>-39
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+endloop
+
+endloop
+
+# Unsigned arithmetic at the upper endpoint must not admit wrapped keys.
+statement ok
+CREATE OR REPLACE TABLE probe AS
+SELECT i, CASE WHEN i%19<>0 THEN (18446744073709551615::UBIGINT-i%256)::UBIGINT END AS k
+FROM range(10003) t(i);
+
+statement ok
+CREATE OR REPLACE TABLE build AS
+SELECT (18446744073709551615::UBIGINT-i)::UBIGINT AS k FROM range(129) t(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+----
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+----
+4784
+
+# Prepared executions rebuild the filter as its key set changes.
+statement ok
+PREPARE prf_query AS SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+
+statement ok
+DELETE FROM build WHERE k%2=0;
+
+query I
+EXECUTE prf_query;
+----
+2410
+
+statement ok
+DELETE FROM build;
+
+query I
+EXECUTE prf_query;
+----
+0
+
+# Finalization merges multiple build lanes before the range shortcut is published.
+statement ok
+CREATE OR REPLACE TABLE probe AS SELECT i-1 AS k FROM range(1100003) t(i);
+
+statement ok
+CREATE OR REPLACE TABLE build AS SELECT i AS k FROM range(1100003) t(i);
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+SET perfect_ht_threshold=0;
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+skipif external=true
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+----
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
+
+# Forced external joins publish the sink-built bloom filter, a prefix range filter when load factor
+# reduction keeps the join in memory, or min/max filters when the bloom filter is not worth publishing.
+skipif external=false
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+----
+analyzed_plan	<REGEX>:(?s).*(?:IN.*(?:BF|PRF).*\(k\)|Dynamic.*Filters:.*optional:.*\(k.*>=.*).*
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+----
+1100002
+
+endloop
+
+statement ok
+RESET debug_force_external;
+
+# Persisted nullable RLE requires row filtering; a preceding predicate leaves a partial selection.
+statement ok
+CREATE TABLE rle_probe(k BIGINT USING COMPRESSION RLE, g INTEGER);
+
+statement ok
+INSERT INTO rle_probe
+SELECT CASE WHEN i%61<>0 THEN (i//32)%2000-1000 END, i%17 FROM range(300007) t(i);
+
+statement ok
+CREATE TABLE rle_build AS SELECT i-1000 AS k FROM range(500,620) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+query I
+WITH actual AS (
+    SELECT p.k, p.g FROM rle_probe p JOIN rle_build b ON p.k=b.k WHERE p.g<3
+), expected AS (
+    SELECT k, g FROM rle_probe WHERE g<3 AND k BETWEEN -500 AND -381
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+# String prefix buckets can also form a dense range.
+statement ok
+CREATE OR REPLACE TABLE probe AS
+SELECT i, CASE WHEN i%17<>0 THEN 'abc'||chr(65+(i%26)::INTEGER)||i::VARCHAR END AS k
+FROM range(10003) t(i);
+
+statement ok
+CREATE OR REPLACE TABLE build AS SELECT k FROM probe WHERE i BETWEEN 100 AND 1100;
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
+----
+942
+
+# Reconstructed filter inputs use the generic expression executor.
+statement ok
+CREATE OR REPLACE TABLE probe AS
+SELECT i, CASE WHEN i%13=0 THEN 40000 ELSE i%257-100 END AS k
+FROM range(10003) t(i);
+
+statement ok
+CREATE OR REPLACE TABLE build AS SELECT i::SMALLINT AS k FROM range(-32,97) t(i);
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query II
+EXPLAIN ANALYZE
+SELECT count(*) FROM probe p JOIN build b ON TRY_CAST(p.k AS SMALLINT)=b.k;
+----
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
+
+query I
+WITH actual AS (
+    SELECT p.i FROM probe p JOIN build b ON TRY_CAST(p.k AS SMALLINT)=b.k
+), expected AS (
+    SELECT i FROM probe WHERE i%13<>0 AND i%257-100 BETWEEN -32 AND 96
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0

@@ -1,5 +1,15 @@
 {
   "description": "Run with debug_verification_mode set to verify_vectors - enabling aggressive internal vector verification",
   "on_init": "SET debug_verification_mode='verify_vectors';",
-  "skip_compiled": "true"
+  "skip_compiled": "true",
+  "skip_tests": [
+    {
+      "reason": "quack_serve returns a chunk whose vector size does not match, which this config verifies.",
+      "paths": [
+        "test/sql/attach/external_resource_lifecycle.test",
+        "test/sql/attach/attach_to_external_resource.test",
+        "test/sql/attach/external_resource_logging.test"
+      ]
+    }
+  ]
 }

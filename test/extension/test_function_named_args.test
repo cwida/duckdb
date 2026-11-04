@@ -278,25 +278,25 @@ SELECT test_named_ambig(1::INTEGER, 2::BIGINT);
 # Error paths
 #===--------------------------------------------------------------------===#
 
-# No arguments at all: fewer than the minimum required, so no overload matches
+# No arguments at all: the required 'a' cannot be filled, so no overload matches
 statement error
 SELECT test_named_inspect();
 ----
 <REGEX>:Binder Error:.*No function matches.*
 
-# A named argument fills an optional slot, but the required 'a' is still missing.
-# Here the argument count is enough to match the overload, so the error comes from
-# argument resolution rather than from "no matching function".
+# A named argument fills an optional slot, but the required 'a' is still missing. An overload that cannot fill one
+# of its parameters is not a candidate, so this is reported the same way as passing no arguments at all - counting
+# the arguments instead would let the named 'b' stand in for the positional 'a'.
 statement error
 SELECT test_named_inspect(b := 2);
 ----
-<REGEX>:Binder Error:.*Missing value for parameter "a".*
+<REGEX>:Binder Error:.*No function matches.*
 
 # A named vararg cannot satisfy a required positional parameter
 statement error
 SELECT test_named_varargs(x := 5);
 ----
-<REGEX>:Binder Error:.*Missing value for parameter "a".*
+<REGEX>:Binder Error:.*No function matches.*
 
 # Unknown parameter name on a function without varargs -> no candidate overload
 statement error
@@ -376,7 +376,7 @@ SELECT test_named_agg_inspect(x, c := 9) FROM (VALUES (5)) t(x);
 statement error
 SELECT test_named_agg_inspect(b := 2);
 ----
-<REGEX>:Binder Error:.*Missing value for parameter "a".*
+<REGEX>:Binder Error:.*No function matches.*
 
 ###===--------------------------------------------------------------------===#
 ## Automatic capturing of aliases as named arguments

@@ -10,11 +10,11 @@ TEST_CASE("Parsing multiple statements including a PIVOT in one go results in a 
 	Connection con(db);
 	auto query = "PIVOT (SELECT 'a' AS col) ON col using first(col);SELECT 42;";
 
-	// Check that the SELECT 42 statement is last in the parsed statements list. PIVOT is a
-	// multi-statement that preprocessing unpacks, so the engine-facing count is 3 (2 + SELECT).
+	// Check that the SELECT 42 statement is last in the parsed statements list. The PIVOT expands when it is
+	// submitted, so extraction yields it as one statement
 	auto statements = con.ExtractStatements(query);
-	REQUIRE(statements.size() == 3);
-	// REQUIRE(statements.back()->query == "SELECT 42;");
+	REQUIRE(statements.size() == 2);
+	REQUIRE(statements.back()->query == "SELECT 42;");
 
 	// Execute the query
 	auto result = con.Query(query);

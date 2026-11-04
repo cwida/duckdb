@@ -22,6 +22,7 @@
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 
 #include <cmath>
+#include <functional>
 
 namespace duckdb {
 
@@ -66,7 +67,7 @@ public:
 	//! Create a VARCHAR value
 	DUCKDB_API Value(String val); // NOLINT: Allow implicit conversion from `string`
 	//! Create a VARCHAR value
-	DUCKDB_API Value(std::string_view val);
+	DUCKDB_API Value(std::string_view val); // NOLINT: Allow implicit conversion from `std::string_view`
 	//! Copy constructor
 	DUCKDB_API Value(const Value &other);
 	//! Move constructor
@@ -85,6 +86,8 @@ public:
 	inline bool IsNull() const {
 		return is_null;
 	}
+	//! Whether the value is within the domain of its type (e.g. valid UTF-8, ENUM index within the dictionary)
+	DUCKDB_API bool IsValid() const;
 
 	//! Create the lowest possible value of a given type (numeric only)
 	DUCKDB_API static Value MinimumValue(const LogicalType &type);
@@ -203,7 +206,9 @@ public:
 		return Value::BLOB(const_data_ptr_cast(data.c_str()), data.size());
 	}
 	static Value BLOB_RAW(std::string_view data) {
-		return Value::BLOB(const_data_ptr_cast(data.data()), data.size());
+		return Value::BLOB(
+		    const_data_ptr_cast(data.data()), // NOLINT(bugprone-suspicious-stringview-data-usage): length is passed
+		    data.size());
 	}
 	//! Creates a blob by casting a specified string to a blob (i.e. interpreting \x characters)
 	DUCKDB_API static Value BLOB(const string &data);
@@ -249,6 +254,9 @@ public:
 	DUCKDB_API string ToString() const;
 	//! Convert this value to a SQL-parseable string
 	DUCKDB_API string ToSQLString() const;
+	//! Render a nested value as SQL via child_to_sql
+	DUCKDB_API static string NestedToSQLString(const Value &value,
+	                                           const std::function<string(const Value &)> &child_to_sql);
 
 	DUCKDB_API uintptr_t GetPointer() const;
 

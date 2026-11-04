@@ -1,0 +1,29 @@
+# name: test/issues/general/test_26274.test
+# description: Issue 26274: Use-after-free when pipeline construction fails inside a recursive CTE
+# group: [general]
+
+statement ok
+CREATE TABLE b (k INTEGER);
+
+statement ok
+INSERT INTO b VALUES (1);
+
+statement ok
+CREATE VIEW l1 AS WITH RECURSIVE r AS (SELECT k, 0 AS l FROM b UNION ALL SELECT k, l+1 FROM r WHERE l < 0) SELECT k FROM r;
+
+statement ok
+CREATE VIEW t AS SELECT x.k FROM l1 AS x ASOF LEFT JOIN l1 AS y ON x.k >= y.k;
+
+loop i 0 3
+
+statement maybe
+WITH RECURSIVE q(n) AS (SELECT min(k) FROM t UNION ALL SELECT n+1 FROM q WHERE n < (SELECT max(k) FROM t)) SELECT count(*) FROM q;
+----
+AsOf joins are not supported in recursive CTEs yet
+
+endloop
+
+query I
+SELECT count(*) FROM t;
+----
+1

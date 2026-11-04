@@ -1,0 +1,43 @@
+# name: test/sql/join/mark/group_reconstruction_limits.test
+# description: Document the grouped UNION reconstruction limitation without restricting native quantifiers
+# group: [mark]
+
+statement ok
+CREATE TABLE union_probes(g INTEGER, u UNION(i INTEGER,s VARCHAR));
+
+statement ok
+INSERT INTO union_probes VALUES (0,union_value(i:=1)),(1,union_value(i:=2)),(2,NULL),(3,union_value(i:=3));
+
+statement ok
+CREATE TABLE union_candidates(g INTEGER, u UNION(i INTEGER,s VARCHAR));
+
+statement ok
+INSERT INTO union_candidates VALUES (0,union_value(i:=1)),(1,union_value(i:=NULL)),(3,NULL);
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+# Native correlated UNION quantifiers already work, including NULL and empty groups.
+query II
+SELECT g,u=ANY(SELECT b.u FROM union_candidates b WHERE b.g=p.g) FROM union_probes p ORDER BY g;
+----
+0	true
+1	false
+2	false
+3	NULL
+
+# The equivalent explicit grouped form cannot currently reconstruct its metadata.
+statement error
+SELECT __mark_join_marker FROM union_probes p JOIN BY(TYPE MARK) union_candidates b ON p.g IS NOT DISTINCT FROM b.g AND p.u=b.u;
+----
+Unsupported explicit MARK join conditions
+
+# SQL operands that coerce to the same bound type are still accepted.
+query I
+SELECT __mark_join_marker FROM (VALUES (0,1::INTEGER)) p(g,v) JOIN BY(TYPE MARK) (VALUES (0,1::BIGINT)) b(g,v) ON p.g IS NOT DISTINCT FROM b.g AND p.v=b.v;
+----
+true
+
+endloop

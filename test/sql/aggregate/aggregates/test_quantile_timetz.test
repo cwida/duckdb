@@ -1,0 +1,36 @@
+# name: test/sql/aggregate/aggregates/test_quantile_timetz.test
+# description: Quantiles of TIMETZ values are computed on their normalized time
+# group: [aggregates]
+
+statement ok
+CREATE TABLE z AS FROM (VALUES ('10:00:00+05'::TIMETZ), ('09:00:00+00'::TIMETZ), ('07:00:00+00'::TIMETZ)) v(x);
+
+# 10:00:00+05 is 05:00:00 UTC
+query IIII
+SELECT quantile_disc(x, 0.5), median(x), quantile_cont(x, 0.25), quantile_disc(x, [0.0, 1.0]) FROM z
+----
+07:00:00+00	07:00:00+00	06:00:00+00	['10:00:00+05', '09:00:00+00']
+
+query II
+SELECT median(x) OVER (ORDER BY x ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), quantile_disc(x, 0.5) OVER () FROM z ORDER BY x
+----
+10:00:00+05	07:00:00+00
+06:00:00+00	07:00:00+00
+08:00:00+00	07:00:00+00
+
+query I
+SELECT finalize(median(x) EXPORT_STATE) FROM z
+----
+07:00:00+00
+
+# interpolated results have a valid offset
+query I
+SELECT quantile_cont(x, 0.5)::VARCHAR FROM (VALUES (TIMETZ '00:00:00+15:59:59'), (TIMETZ '00:00:00.000001+15:59:59')) t(x)
+----
+08:00:01.000001+00
+
+# the median of equal values is that value
+query I
+SELECT median(x)::VARCHAR FROM (VALUES (TIMETZ '24:00:00-15:59:59'), (TIMETZ '24:00:00-15:59:59')) t(x)
+----
+24:00:00-15:59:59

@@ -1,0 +1,33 @@
+# name: test/sql/join/comparison_operand_extraction.test
+# description: Inseparable comparison operands remain arbitrary join predicates
+# group: [join]
+
+statement ok
+SET debug_disable_optimizer=true;
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+SET profiling_renderer_settings=MAP {'operator_casing': 'upper'};
+
+foreach condition a=a+1 b=b+1 a+b=1 1=a+b
+
+query II
+EXPLAIN SELECT * FROM (VALUES (1)) l(a) FULL JOIN (VALUES (2)) r(b) ON {condition};
+----
+logical_opt	<REGEX>:.*ANY_JOIN.*
+
+query II rowsort
+SELECT * FROM (VALUES (1)) l(a) FULL JOIN (VALUES (2)) r(b) ON {condition};
+----
+1	NULL
+NULL	2
+
+endloop
+
+# Independently evaluable operands still use a comparison join.
+query II
+EXPLAIN SELECT * FROM (VALUES (1)) l(a) FULL JOIN (VALUES (2)) r(b) ON a=b;
+----
+logical_opt	<REGEX>:.*COMPARISON_JOIN.*

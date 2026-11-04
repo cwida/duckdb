@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/secure_view_statistics.test
-# description: Test that statistics do not propagate out of a secure view
+# description: Test which statistics propagate out of a secure view
 # group: [optimizer]
 
 statement ok
@@ -20,19 +20,43 @@ SELECT stats(i)::VARCHAR FROM regular_view LIMIT 1
 ----
 {'approx_unique': 1000, 'has_no_null': true, 'has_null': false, 'max': 999, 'min': 0}
 
-# a secure view exposes nothing: no min, no max, no distinct count, no null information
+# a secure view that emits every row it reads exposes them as well: the statistics describe values that the caller
+# can observe through the view anyway
 query I
 SELECT stats(i)::VARCHAR FROM secure_view LIMIT 1
 ----
-{'has_no_null': true, 'has_null': true}
+{'approx_unique': 1000, 'has_no_null': true, 'has_null': false, 'max': 999, 'min': 0}
+
+# a filter that the caller writes on top of the view is the caller's own - it does not turn the view into one that
+# hides rows, so the statistics still propagate
+query I
+SELECT stats(i)::VARCHAR FROM secure_view WHERE i > 500 LIMIT 1
+----
+{'approx_unique': 1000, 'has_no_null': true, 'has_null': false, 'max': 999, 'min': 500}
+
+# a view that only projects a subset of the columns exposes the statistics of the columns it emits
+statement ok
+CREATE TABLE employees AS SELECT i AS id, ('emp' || i) AS name, i * 1000 AS salary FROM range(10) t(i);
+
+statement ok
+CREATE SECURE VIEW public_employees AS SELECT id, name FROM employees;
 
 query I
-SELECT stats(s)::VARCHAR FROM secure_view LIMIT 1
+SELECT stats(id)::VARCHAR FROM public_employees LIMIT 1
 ----
-{'has_no_null': true, 'has_null': true, 'has_unicode': true}
+{'approx_unique': 10, 'has_no_null': true, 'has_null': false, 'max': 9, 'min': 0}
 
-# the same holds when the secure view only returns a subset of the rows - the statistics of the rows that are
-# filtered out must not become visible either
+# ordering the rows does not hide any of them either
+statement ok
+CREATE SECURE VIEW ordered_secure_view AS SELECT * FROM integers ORDER BY i;
+
+query I
+SELECT stats(i)::VARCHAR FROM ordered_secure_view LIMIT 1
+----
+{'approx_unique': 1000, 'has_no_null': true, 'has_null': false, 'max': 999, 'min': 0}
+
+# as soon as the view hides rows, nothing is exposed: no min, no max, no distinct count, no null information.
+# statistics describe the data itself, and the statistics of the view contents also cover the rows it filters out
 statement ok
 CREATE SECURE VIEW filtered_secure_view AS SELECT * FROM integers WHERE i < 10;
 
@@ -41,50 +65,127 @@ SELECT stats(i)::VARCHAR FROM filtered_secure_view LIMIT 1
 ----
 {'has_no_null': true, 'has_null': true}
 
-# ... and when the secure view is wrapped in a regular view
+query I
+SELECT stats(s)::VARCHAR FROM filtered_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true, 'has_unicode': true}
+
+# the same holds for every other way of emitting fewer rows than are read
+statement ok
+CREATE SECURE VIEW limited_secure_view AS SELECT * FROM integers LIMIT 10;
+
+query I
+SELECT stats(i)::VARCHAR FROM limited_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+statement ok
+CREATE SECURE VIEW distinct_secure_view AS SELECT DISTINCT i FROM integers;
+
+query I
+SELECT stats(i)::VARCHAR FROM distinct_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+statement ok
+CREATE SECURE VIEW sampled_secure_view AS SELECT * FROM integers USING SAMPLE 10 ROWS;
+
+query I
+SELECT stats(i)::VARCHAR FROM sampled_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+statement ok
+CREATE SECURE VIEW grouped_secure_view AS SELECT i, count(*) AS c FROM integers GROUP BY i;
+
+query I
+SELECT stats(i)::VARCHAR FROM grouped_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+statement ok
+CREATE SECURE VIEW joined_secure_view AS SELECT i1.i FROM integers i1 JOIN integers i2 USING (i);
+
+query I
+SELECT stats(i)::VARCHAR FROM joined_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+# a view that hides rows keeps hiding its statistics when it is wrapped in another view
+statement ok
+CREATE VIEW view_over_filtered_secure_view AS SELECT * FROM filtered_secure_view;
+
+query I
+SELECT stats(i)::VARCHAR FROM view_over_filtered_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+statement ok
+CREATE SECURE VIEW secure_view_over_filtered_secure_view AS SELECT * FROM filtered_secure_view;
+
+query I
+SELECT stats(i)::VARCHAR FROM secure_view_over_filtered_secure_view LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+# ... and a view that does not hide any keeps exposing them
 statement ok
 CREATE VIEW view_over_secure_view AS SELECT * FROM secure_view;
 
 query I
 SELECT stats(i)::VARCHAR FROM view_over_secure_view LIMIT 1
 ----
-{'has_no_null': true, 'has_null': true}
+{'approx_unique': 1000, 'has_no_null': true, 'has_null': false, 'max': 999, 'min': 0}
 
-# statistics must not be used to prune a secure view away either - otherwise the plan itself reveals whether any
-# hidden row can satisfy the predicate. The filter is pushed into the view (see secure_view_pushdown.test), but the
-# boundary node always survives.
+statement ok
+CREATE SECURE VIEW secure_view_over_secure_view AS SELECT * FROM secure_view;
+
+query I
+SELECT stats(i)::VARCHAR FROM secure_view_over_secure_view LIMIT 1
+----
+{'approx_unique': 1000, 'has_no_null': true, 'has_null': false, 'max': 999, 'min': 0}
+
+# statistics must not be used to prune a view that hides rows away either - otherwise the plan itself reveals whether
+# any hidden row can satisfy the predicate. The filter is pushed into the view (see secure_view_pushdown.test), but
+# the boundary node always survives.
 query II
 EXPLAIN SELECT * FROM regular_view WHERE i > 100000
 ----
 physical_plan	<REGEX>:[\s\S]*EMPTY_RESULT[\s\S]*
 
 query II
-EXPLAIN SELECT * FROM secure_view WHERE i > 100000
+EXPLAIN SELECT * FROM filtered_secure_view WHERE i > 100000
 ----
 physical_plan	<!REGEX>:[\s\S]*EMPTY_RESULT[\s\S]*
 
 query II
-EXPLAIN SELECT * FROM secure_view WHERE i > 100000
+EXPLAIN SELECT * FROM filtered_secure_view WHERE i > 100000
 ----
 physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*
 
 query I
-SELECT count(*) FROM secure_view WHERE i > 100000
+SELECT count(*) FROM filtered_secure_view WHERE i > 100000
 ----
 0
 
-# the cardinality estimate reported for the boundary node is frozen before anything is pushed into the view: it must
+# the cardinality estimate reported for a view that hides rows is frozen before anything is pushed into it: it must
 # not report what the statistics of the view contents say about the caller's predicate. Both of these return zero
 # rows, so an estimate that differed between them would be an oracle for the maximum of the hidden rows.
 query II
-EXPLAIN SELECT * FROM secure_view WHERE i > 100000
+EXPLAIN SELECT * FROM filtered_secure_view WHERE i > 100000
 ----
 physical_plan	<REGEX>:[\s\S]*~1,000 rows[\s\S]*
 
 query II
-EXPLAIN SELECT * FROM secure_view WHERE i > 1000000000
+EXPLAIN SELECT * FROM filtered_secure_view WHERE i > 1000000000
 ----
 physical_plan	<REGEX>:[\s\S]*~1,000 rows[\s\S]*
+
+# a view that hides no rows does report the estimate - the caller can derive it above the boundary anyway
+query II
+EXPLAIN SELECT * FROM secure_view WHERE i > 500
+----
+physical_plan	<REGEX>:[\s\S]*~200 rows[\s\S]*
 
 # Statistics are still propagated *within* the view definition, so the view body is optimized as usual. This is
 # deliberately not observable from the outside - neither the plan nor the metrics of the operators inside a secure
@@ -110,13 +211,23 @@ SELECT count(*) FROM impossible_secure_view
 ----
 0
 
-# blocking statistics does not change results
+# propagating statistics does not change results
 query II
 SELECT * FROM secure_view WHERE i = 42
 ----
 42	v42
 
+query II
+SELECT * FROM filtered_secure_view WHERE i = 5
+----
+5	v5
+
 query I
 SELECT count(*) FROM secure_view JOIN integers USING (i) WHERE integers.i < 10
+----
+10
+
+query I
+SELECT count(*) FROM filtered_secure_view JOIN integers USING (i) WHERE integers.i < 10
 ----
 10

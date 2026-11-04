@@ -12,6 +12,9 @@
 
 namespace duckdb {
 
+class Serializer;
+class Deserializer;
+
 //! The AT clause specifies which version of a table to read
 class BoundAtClause {
 public:
@@ -25,6 +28,9 @@ public:
 	const Value &GetValue() const {
 		return val;
 	}
+
+	void Serialize(Serializer &serializer) const;
+	static unique_ptr<BoundAtClause> Deserialize(Deserializer &deserializer);
 
 private:
 	//! The unit (e.g. TIMESTAMP or VERSION)

@@ -1,18 +1,11 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 
+#include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 
 namespace duckdb {
 namespace capiv2 {
-
-static auto Convert(ColumnDataCollection *cdc) -> duckdb_v2_column_data_collection_handle {
-	return reinterpret_cast<duckdb_v2_column_data_collection_handle>(cdc);
-}
-
-static auto Convert(duckdb_v2_column_data_collection_handle cdc) -> ColumnDataCollection * {
-	return reinterpret_cast<ColumnDataCollection *>(cdc);
-}
 
 static auto Convert(ColumnDataAppendState *state) -> duckdb_v2_column_data_collection_append_state_handle {
 	return reinterpret_cast<duckdb_v2_column_data_collection_append_state_handle>(state);
@@ -38,7 +31,7 @@ static auto Convert(duckdb_v2_column_data_collection_worker_scan_state_handle st
 	return reinterpret_cast<ColumnDataLocalScanState *>(state);
 }
 
-static void CreateColumnDataCollection(ClientContext &context, const duckdb_v2_logical_type_handle *types_array,
+static void CreateColumnDataCollection(DatabaseInstance &db, const duckdb_v2_logical_type_handle *types_array,
                                        idx_t types_count, duckdb_v2_column_data_collection_handle *out_collection,
                                        const char *function_name) {
 	*out_collection = nullptr;
@@ -51,7 +44,8 @@ static void CreateColumnDataCollection(ClientContext &context, const duckdb_v2_l
 		if (!types_array[i]) {
 			throw InvalidInputException("null logical type at index %llu", i);
 		}
-		const auto &type = *Convert(types_array[i]);
+		auto type_ref = Convert(types_array[i]);
+		const auto &type = *type_ref;
 		// ANY is a signature wildcard with no physical layout; a collection
 		// allocates storage, so reject it (mirrors data_chunk_create).
 		if (TypeVisitor::Contains(type, LogicalTypeId::ANY)) {
@@ -59,7 +53,7 @@ static void CreateColumnDataCollection(ClientContext &context, const duckdb_v2_l
 		}
 		types.push_back(type);
 	}
-	auto collection = make_uniq<ColumnDataCollection>(context, std::move(types));
+	auto collection = make_uniq<ColumnDataCollection>(BufferManager::GetBufferManager(db), std::move(types));
 	*out_collection = Convert(collection.release());
 }
 
@@ -85,27 +79,17 @@ static void VerifyChunkTypes(const ColumnDataCollection &collection, const DataC
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_column_data_collection_create_with_connection(
-    duckdb_v2_connection_handle conn, const duckdb_v2_logical_type_handle *types_array, idx_t types_count,
-    duckdb_v2_column_data_collection_handle *out_collection, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(conn);
+DUCKDB_V2_ERROR duckdb_v2_column_data_collection_create(duckdb_v2_factory_handle factory,
+                                                        const duckdb_v2_logical_type_handle *types_array,
+                                                        idx_t types_count,
+                                                        duckdb_v2_column_data_collection_handle *out_collection,
+                                                        duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(types_array);
 	DUCKDB_CHECK_ARG(out_collection);
 	return WithErrorHandler(err, [&]() {
-		CreateColumnDataCollection(*Convert(conn)->context, types_array, types_count, out_collection,
-		                           "duckdb_v2_column_data_collection_create_with_connection");
-	});
-}
-
-DUCKDB_V2_ERROR duckdb_v2_column_data_collection_create_with_context(
-    duckdb_v2_context_handle context, const duckdb_v2_logical_type_handle *types_array, idx_t types_count,
-    duckdb_v2_column_data_collection_handle *out_collection, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(context);
-	DUCKDB_CHECK_ARG(types_array);
-	DUCKDB_CHECK_ARG(out_collection);
-	return WithErrorHandler(err, [&]() {
-		CreateColumnDataCollection(*Convert(context), types_array, types_count, out_collection,
-		                           "duckdb_v2_column_data_collection_create_with_context");
+		CreateColumnDataCollection(Convert(factory)->GetDatabase(), types_array, types_count, out_collection,
+		                           "duckdb_v2_column_data_collection_create");
 	});
 }
 

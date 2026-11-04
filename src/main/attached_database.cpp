@@ -7,8 +7,10 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
+#include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/storage/storage_manager.hpp"
@@ -42,17 +44,26 @@ AttachOptions::AttachOptions(const DBConfigOptions &options)
     : access_mode(options.access_mode), db_type(options.database_type) {
 }
 
+//! The spellings of the access mode option, and whether `true` means read-only for each.
+static const unordered_map<string, bool> ACCESS_MODE_OPTIONS = {
+    {"readonly", true}, {"read_only", true}, {"readwrite", false}, {"read_write", false}};
+
+string AttachOptions::OptionSetting(const string &name) {
+	auto lower = StringUtil::Lower(name);
+	if (ACCESS_MODE_OPTIONS.find(lower) != ACCESS_MODE_OPTIONS.end()) {
+		return "access_mode";
+	}
+	return lower;
+}
+
 AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options, const AccessMode default_access_mode)
     : access_mode(default_access_mode) {
 	for (auto &entry : attach_options) {
-		if (entry.first == "readonly" || entry.first == "read_only") {
-			// Extract the read access mode.
-			auto read_only = BooleanValue::Get(entry.second.DefaultCastAs(LogicalType::BOOLEAN));
-			if (read_only) {
-				access_mode = AccessMode::READ_ONLY;
-			} else {
-				access_mode = AccessMode::READ_WRITE;
-			}
+		auto access_mode_option = ACCESS_MODE_OPTIONS.find(entry.first);
+		if (access_mode_option != ACCESS_MODE_OPTIONS.end()) {
+			// Extract the access mode; the option reads inverted for the readwrite spellings.
+			auto value = BooleanValue::Get(entry.second.DefaultCastAs(LogicalType::BOOLEAN));
+			access_mode = value == access_mode_option->second ? AccessMode::READ_ONLY : AccessMode::READ_WRITE;
 			continue;
 		}
 
@@ -60,17 +71,6 @@ AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options,
 			// Extract the recovery mode.
 			auto mode_str = StringValue::Get(entry.second.DefaultCastAs(LogicalType::VARCHAR));
 			recovery_mode = EnumUtil::FromString<RecoveryMode>(mode_str);
-			continue;
-		}
-
-		if (entry.first == "readwrite" || entry.first == "read_write") {
-			// Extract the write access mode.
-			auto read_write = BooleanValue::Get(entry.second.DefaultCastAs(LogicalType::BOOLEAN));
-			if (!read_write) {
-				access_mode = AccessMode::READ_ONLY;
-			} else {
-				access_mode = AccessMode::READ_WRITE;
-			}
 			continue;
 		}
 
@@ -149,6 +149,11 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, Catalog &catalog_p, Ide
 	ephemeral = options.ephemeral;
 	vacuum_rebuild_threshold = options.vacuum_rebuild_indexes_threshold;
 	original_path = options.original_path;
+	deleter_function = options.deleter_function;
+	deleter_payload = options.deleter_payload;
+	deleter_resource_type = options.deleter_resource_type;
+	deleter_resource_name = options.deleter_resource_name;
+	borrowed_resource_name = options.borrowed_resource_name;
 
 	// We create the storage after the catalog to guarantee we allow extensions to instantiate the DuckCatalog.
 	catalog = make_uniq<DuckCatalog>(*this);
@@ -173,6 +178,11 @@ AttachedDatabase::AttachedDatabase(DatabaseInstance &db, Catalog &catalog_p, Sto
 	ephemeral = options.ephemeral;
 	vacuum_rebuild_threshold = options.vacuum_rebuild_indexes_threshold;
 	original_path = options.original_path;
+	deleter_function = options.deleter_function;
+	deleter_payload = options.deleter_payload;
+	deleter_resource_type = options.deleter_resource_type;
+	deleter_resource_name = options.deleter_resource_name;
+	borrowed_resource_name = options.borrowed_resource_name;
 
 	optional_ptr<StorageExtensionInfo> storage_info = storage_extension->storage_info.get();
 	catalog = storage_extension->attach(storage_info, context, *this, name.GetIdentifierName(), info, options);
@@ -221,6 +231,13 @@ idx_t AttachedDatabase::GetVacuumRebuildIndexThreshold() const {
 		return vacuum_rebuild_threshold.GetIndex();
 	}
 	return Settings::Get<VacuumRebuildIndexesSetting>(db);
+}
+
+shared_ptr<CompiledGrammar> AttachedDatabase::GetConnectedGrammar(const ClientContext &context) {
+	if (connected_grammar) {
+		return connected_grammar;
+	}
+	return db.GetParserCache().GetPassthroughMatcher(context);
 }
 
 string AttachedDatabase::StoredPath() const {
@@ -361,6 +378,16 @@ void AttachedDatabase::OnDetach(ClientContext &context) {
 	if (stored_database_path && visibility != AttachVisibility::HIDDEN) {
 		stored_database_path->OnDetach();
 	}
+}
+
+unique_ptr<ResourceDeleter> AttachedDatabase::ExtractDeleter() {
+	if (deleter_function.empty()) {
+		return nullptr;
+	}
+	auto result = make_uniq<ResourceDeleter>(db, std::move(deleter_function), std::move(deleter_payload),
+	                                         std::move(deleter_resource_type), std::move(deleter_resource_name));
+	deleter_function.clear();
+	return result;
 }
 
 void AttachedDatabase::Close(const DatabaseCloseAction action) {

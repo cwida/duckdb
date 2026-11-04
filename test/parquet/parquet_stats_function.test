@@ -43,3 +43,69 @@ query IIII
 select s.min, s.max, s.has_null, s.has_no_null from (select stats(i) s from read_parquet('{TEST_DIR}/parquet_stats_function*.parquet', union_by_name=true) limit 1)
 ----
 0	109	true	true
+
+# nan_count overrides can_have_nan in optimizer statistics
+# 4096 rows: half NaN, a quarter 1, a quarter NULL - two row groups
+statement ok
+CREATE VIEW nan_data AS
+SELECT x::FLOAT f, x::DOUBLE d FROM (SELECT CASE WHEN i%4<2 THEN 'nan'::DOUBLE WHEN i%4=2 THEN 1 ELSE NULL END x FROM range(4096) t(i))
+
+# dictionary (default), PLAIN and BYTE_STREAM_SPLIT encoding
+statement ok
+COPY nan_data TO '{TEST_DIR}/nan_count_dict.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048)
+
+statement ok
+COPY nan_data TO '{TEST_DIR}/nan_count_plain.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, PARQUET_VERSION V1, DICTIONARY_SIZE_LIMIT 0)
+
+statement ok
+COPY nan_data TO '{TEST_DIR}/nan_count_bss.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, PARQUET_VERSION V2, DICTIONARY_SIZE_LIMIT 0)
+
+statement ok
+COPY (SELECT i::FLOAT f, i::DOUBLE d, i::HUGEINT h, i FROM range(10) t(i)) TO '{TEST_DIR}/nan_count_zero.parquet'
+
+# a present nan_count is used instead of the can_have_nan option
+# NaN-free file: the upper bound is kept even with can_have_nan=true
+query II
+SELECT stats(f), stats(d) FROM read_parquet('{TEST_DIR}/nan_count_zero.parquet', can_have_nan=true) LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 9.0, 'min': 0.0}	{'has_no_null': true, 'has_null': false, 'max': 9.0, 'min': 0.0}
+
+query II
+EXPLAIN SELECT * FROM read_parquet('{TEST_DIR}/nan_count_zero.parquet', can_have_nan=true) WHERE d > 10
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+foreach encoding dict plain bss
+
+foreach column f d
+
+query I
+SELECT stats({column}) FROM read_parquet('{TEST_DIR}/nan_count_{encoding}.parquet', can_have_nan=false) LIMIT 1
+----
+{'has_no_null': true, 'has_null': true}
+
+endloop
+
+endloop
+
+# Legacy files without nan_count still use can_have_nan
+query II
+SELECT stats(f), stats(d) FROM read_parquet('{DATA_DIR}/parquet-testing/arrow_nan.parquet', can_have_nan=false) LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 1.0, 'min': -1.0}	{'has_no_null': true, 'has_null': false, 'max': 1.0, 'min': -1.0}
+
+query II
+SELECT stats(f), stats(d) FROM read_parquet('{DATA_DIR}/parquet-testing/arrow_nan.parquet', can_have_nan=true) LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': nan, 'min': -1.0}	{'has_no_null': true, 'has_null': false, 'max': nan, 'min': -1.0}
+
+# Positive nan_count with finite bounds must retain NaN in the optimizer statistics
+foreach column f d
+
+# the optimizer statistics keep NaN as the upper bound
+query I
+SELECT stats({column}) FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan=false) LIMIT 1
+----
+{'has_no_null': true, 'has_null': true, 'max': nan, 'min': 1.0}
+
+endloop

@@ -141,6 +141,10 @@ bool VariantColumnData::PushdownShreddedFieldExtract(const StorageIndex &variant
 		return false;
 	}
 	if (root_type.id() != LogicalTypeId::INVALID) {
+		if (!VariantUtils::ShreddedCastMatchesVariantCast(shredded_stats.get().GetType(), root_type)) {
+			//! The cast has to be applied to the VARIANT
+			return false;
+		}
 		column_index.SetPushdownExtractType(shredded.type, root_type);
 	}
 
@@ -747,9 +751,8 @@ unique_ptr<ColumnCheckpointState> VariantColumnData::Checkpoint(const RowGroup &
 
 	LogicalType shredded_type;
 	if (should_shred) {
-		if (config.options.force_variant_shredding.id() != LogicalTypeId::INVALID) {
-			shredded_type = config.options.force_variant_shredding;
-		} else {
+		shredded_type = config.GetForceVariantShredding();
+		if (shredded_type.id() == LogicalTypeId::INVALID) {
 			shredded_type = GetShreddedType();
 		}
 		D_ASSERT(shredded_type.id() == LogicalTypeId::STRUCT);

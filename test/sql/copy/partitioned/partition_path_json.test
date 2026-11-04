@@ -1,0 +1,34 @@
+# name: test/sql/copy/partitioned/partition_path_json.test
+# description: Test PARTITION_PATH with the JSON writer, which rewrites the COPY into a CSV COPY
+# group: [partitioned]
+
+require json
+
+statement ok
+CREATE TABLE sales AS
+SELECT i AS id, CASE i % 3 WHEN 0 THEN 'eu' WHEN 1 THEN 'us' ELSE NULL END AS region
+FROM range(10) t(i);
+
+statement ok
+COPY sales TO '{TEST_DIR}/partition_path_json' (FORMAT json, PARTITION_BY (region), PARTITION_PATH coalesce(region, 'none'));
+
+query II
+SELECT regexp_extract(replace(filename, '\', '/'), 'partition_path_json/(.*)/[^/]*$', 1) AS dir, count(*)
+FROM read_json('{TEST_DIR}/partition_path_json/*/*.json', hive_partitioning = false, filename = true)
+GROUP BY dir ORDER BY dir;
+----
+eu	4
+none	3
+us	3
+
+statement ok
+COPY sales TO '{TEST_DIR}/partition_path_json_columns' (FORMAT json, PARTITION_BY (region), PARTITION_PATH 'region_' || coalesce(region, 'none'), WRITE_PARTITION_COLUMNS);
+
+query III
+SELECT regexp_extract(replace(filename, '\', '/'), 'partition_path_json_columns/(.*)/[^/]*$', 1) AS dir, count(*), count(region)
+FROM read_json('{TEST_DIR}/partition_path_json_columns/*/*.json', hive_partitioning = false, filename = true)
+GROUP BY dir ORDER BY dir;
+----
+region_eu	4	4
+region_none	3	0
+region_us	3	3

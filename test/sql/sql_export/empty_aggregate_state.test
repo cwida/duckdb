@@ -1,0 +1,80 @@
+# name: test/sql/sql_export/empty_aggregate_state.test
+# description: SQL export reconstructs typed empty aggregate state inputs
+# group: [sql_export]
+
+statement ok
+CREATE TABLE states AS SELECT avg(i) EXPORT_STATE a, sum(i) EXPORT_STATE s,
+    count(*) EXPORT_STATE c, approx_quantile(i, 0.5) EXPORT_STATE q FROM range(10) t(i);
+
+statement ok
+CREATE TABLE nested_states AS SELECT [s] l, {'state': s} t FROM states;
+
+query IIII
+SELECT finalize(combine_aggr(a)), finalize(combine_aggr(s)),
+       finalize(combine_aggr(c)), finalize(combine_aggr(q)) FROM states WHERE false
+----
+NULL	NULL	0	NULL
+
+query IIII
+SELECT a, s, c, q FROM states WHERE false
+----
+
+query TTTT
+SELECT typeof(finalize(combine_aggr(a))), typeof(finalize(combine_aggr(s))),
+       typeof(finalize(combine_aggr(c))), typeof(finalize(combine_aggr(q))) FROM states WHERE false
+----
+DOUBLE	HUGEINT	BIGINT	BIGINT
+
+query TT
+SELECT l, t FROM nested_states WHERE false
+----
+
+query II
+SELECT finalize(l[1]), finalize(t.state) FROM nested_states
+----
+45	45
+
+# Canonical ANY signatures must also survive optimizer-produced typed empty inputs.
+statement ok
+CREATE TABLE any_states AS SELECT count(v) EXPORT_STATE c, approx_count_distinct(v) EXPORT_STATE a,
+    string_agg(s, '|' ORDER BY v DESC NULLS LAST) EXPORT_STATE o,
+    approx_quantile(v, 0.5) EXPORT_STATE q
+FROM (VALUES (1::BIGINT,'a'),(NULL,NULL),(1,'a'),(2,'b')) input(v,s);
+
+query IIII
+SELECT finalize(combine_aggr(c)), finalize(combine_aggr(a)),
+       finalize(combine_aggr(o)), finalize(combine_aggr(q)) FROM any_states WHERE false;
+----
+0	0	NULL	NULL
+
+query TTTT
+SELECT typeof(finalize(combine_aggr(c))), typeof(finalize(combine_aggr(a))),
+       typeof(finalize(combine_aggr(o))), typeof(finalize(combine_aggr(q))) FROM any_states WHERE false;
+----
+BIGINT	BIGINT	VARCHAR	BIGINT
+
+query IIII
+SELECT c, a, o, q FROM any_states WHERE false;
+----
+
+query IIT
+SELECT finalize(c), finalize(a), finalize(o) FROM any_states;
+----
+3	2	b|a|a
+
+statement ok
+CREATE TABLE nested_any_states AS SELECT [c] l, {'state': a, 'ordered': o} t FROM any_states;
+
+query TT
+SELECT l, t FROM nested_any_states WHERE false;
+----
+
+query IIT
+SELECT finalize(l[1]), finalize(t.state), finalize(t.ordered) FROM nested_any_states;
+----
+3	2	b|a|a
+
+query II
+SELECT finalize(combine_aggr(l[1])), finalize(combine_aggr(t.state)) FROM nested_any_states WHERE false;
+----
+0	0

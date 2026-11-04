@@ -10,7 +10,8 @@ ExplainStatement::ExplainStatement(unique_ptr<SQLStatement> stmt, ExplainType ex
 }
 
 ExplainStatement::ExplainStatement(const ExplainStatement &other)
-    : SQLStatement(other), stmt(other.stmt->Copy()), explain_type(other.explain_type), format(other.format) {
+    : SQLStatement(other), stmt(other.stmt->Copy()), explain_type(other.explain_type),
+      allow_unsupported_sql(other.allow_unsupported_sql), format(other.format) {
 }
 
 unique_ptr<SQLStatement> ExplainStatement::Copy() const {
@@ -18,6 +19,9 @@ unique_ptr<SQLStatement> ExplainStatement::Copy() const {
 }
 
 string ExplainStatement::OptionsToString() const {
+	if (explain_type == ExplainType::EXPLAIN_SQL) {
+		return "(SQL)";
+	}
 	string options;
 	if (explain_type == ExplainType::EXPLAIN_ANALYZE) {
 		options += "(";

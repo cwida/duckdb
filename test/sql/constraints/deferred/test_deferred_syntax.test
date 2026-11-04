@@ -1,0 +1,62 @@
+# name: test/sql/constraints/deferred/test_deferred_syntax.test
+# description: Test constraint check mode for primary key and unique constraints
+# group: [deferred]
+
+statement ok
+CREATE TABLE t(i INTEGER UNIQUE DEFERRED);
+
+statement ok
+DROP TABLE t;
+
+statement ok
+CREATE TABLE t(i INTEGER PRIMARY KEY DEFERRED);
+
+statement ok
+DROP TABLE t;
+
+statement ok
+CREATE TABLE t(i INTEGER, UNIQUE(i) DEFERRED);
+
+statement ok
+DROP TABLE t;
+
+statement ok
+CREATE TABLE t(i INTEGER, PRIMARY KEY(i) DEFERRED);
+
+statement ok
+DROP TABLE t;
+
+# Preserve explicit timing when copying or reparsing statements.
+foreach mode NONE COPY_STATEMENT REPARSE_STATEMENT
+
+statement ok
+SET debug_verify_statement='{mode}'
+
+statement ok
+CREATE TABLE t(i INTEGER UNIQUE IMMEDIATE, j INTEGER PRIMARY KEY IMMEDIATE);
+
+query I rowsort
+SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 't' AND constraint_type <> 'NOT NULL';
+----
+PRIMARY KEY(j) IMMEDIATE
+UNIQUE(i) IMMEDIATE
+
+statement ok
+DROP TABLE t;
+
+statement ok
+CREATE TABLE t(i INTEGER, j INTEGER, UNIQUE(i) IMMEDIATE, PRIMARY KEY(j) IMMEDIATE);
+
+query I rowsort
+SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 't' AND constraint_type <> 'NOT NULL';
+----
+PRIMARY KEY(j) IMMEDIATE
+UNIQUE(i) IMMEDIATE
+
+statement ok
+DROP TABLE t;
+
+statement ok
+RESET debug_verify_statement
+
+endloop

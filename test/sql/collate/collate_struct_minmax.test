@@ -1,0 +1,39 @@
+# name: test/sql/collate/collate_struct_minmax.test
+# description: min/max must agree with ORDER BY on collated struct fields
+# group: [collate]
+
+statement ok
+CREATE TABLE tuples AS SELECT * FROM (VALUES ('a' COLLATE NOCASE, 0), ('B', 0)) v(s, i)
+
+query I
+SELECT (s, i) FROM tuples ORDER BY (s, i) DESC LIMIT 1
+----
+(B, 0)
+
+query I
+SELECT max((s, i)) FROM tuples
+----
+(B, 0)
+
+query I
+SELECT min((s, i)) FROM tuples
+----
+(a, 0)
+
+statement ok
+CREATE TABLE structs AS SELECT * FROM (VALUES ({'x': 'a' COLLATE NOCASE}), ({'x': 'B'})) v(s)
+
+query I
+SELECT s FROM structs ORDER BY s DESC LIMIT 1
+----
+{'x': B}
+
+query I
+SELECT max(s) FROM structs
+----
+{'x': B}
+
+query I
+SELECT min(s) FROM structs
+----
+{'x': a}

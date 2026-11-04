@@ -1,0 +1,18 @@
+# name: benchmark/micro/optimizer/right_semi_distinct_filter.benchmark
+# description: IN with a DISTINCT subquery over a large table, where the small outer side becomes the build side
+# group: [optimizer]
+
+name Right Semi Join Distinct Filter
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE probe(k INTEGER);
+INSERT INTO probe VALUES (0);
+CREATE TABLE build AS SELECT i::INTEGER AS k FROM range(10000000) r(i);
+
+run
+SELECT count(*) FROM probe WHERE k IN (SELECT DISTINCT k FROM build);
+
+result I
+1

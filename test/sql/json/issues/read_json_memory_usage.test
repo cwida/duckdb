@@ -26,3 +26,18 @@ statement error
 SELECT * FROM read_json_objects('{DATA_DIR}/json/example_rn.ndjson', format='nd');
 ----
 Out of Memory Error
+
+# union_by_name must not keep a full buffer alive per file
+statement ok
+SET threads=2;
+
+statement ok
+SET memory_limit='500MiB';
+
+statement ok
+COPY (SELECT 1 AS a) TO '{TEMP_DIR}/union_by_name_one.json';
+
+query I
+SELECT count(*) FROM read_json(list_transform(range(100), lambda i: '{TEMP_DIR}/union_by_name_one.json'), union_by_name = true);
+----
+100

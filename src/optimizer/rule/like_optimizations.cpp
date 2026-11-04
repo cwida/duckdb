@@ -1,7 +1,7 @@
 #include "duckdb/optimizer/rule/like_optimizations.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
-#include "duckdb/optimizer/builtin_function_lookup.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -17,9 +17,10 @@ LikeOptimizationRule::LikeOptimizationRule(ExpressionRewriter &rewriter) : Rule(
 	func->matchers.push_back(make_uniq<ExpressionMatcher>());
 	func->matchers.push_back(make_uniq<ConstantExpressionMatcher>());
 	func->policy = SetMatcher::Policy::ORDERED;
-	// we match on LIKE ("~~"), NOT LIKE ("!~~"), GLOB ("~~~"), and NOT GLOB ("!~~~")
-	func->function = make_uniq<ManyFunctionMatcher>(
-	    identifier_set_t {Identifier("!~~"), Identifier("~~"), Identifier("!~~~"), Identifier("~~~")});
+	// we match on LIKE ("~~"), NOT LIKE ("!~~"), GLOB ("~~~"), NOT GLOB ("!~~~"), ILIKE ("~~*"), and NOT ILIKE ("!~~*")
+	func->function =
+	    make_uniq<ManyFunctionMatcher>(identifier_set_t {Identifier("!~~"), Identifier("~~"), Identifier("!~~~"),
+	                                                     Identifier("~~~"), Identifier("~~*"), Identifier("!~~*")});
 	root = std::move(func);
 }
 
@@ -139,12 +140,20 @@ unique_ptr<Expression> LikeOptimizationRule::Apply(LogicalOperator &op, vector<r
 		return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 	}
 
+	bool is_ilike = root.Function().GetName() == "~~*" || root.Function().GetName() == "!~~*";
+	if (is_ilike) {
+		return nullptr;
+	}
+
 	// the constant_expr is a scalar expression that we have to fold
 	if (!constant_expr.IsFoldable()) {
 		return nullptr;
 	}
 
-	auto constant_value = ExpressionExecutor::EvaluateScalar(GetContext(), constant_expr);
+	Value constant_value;
+	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, constant_value)) {
+		return nullptr;
+	}
 	D_ASSERT(constant_value.type() == constant_expr.GetReturnType());
 	auto &patt_str = StringValue::Get(constant_value);
 

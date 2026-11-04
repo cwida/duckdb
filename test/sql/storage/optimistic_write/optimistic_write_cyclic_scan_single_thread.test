@@ -1,0 +1,42 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_cyclic_scan_single_thread.test
+# description: Single-threaded self-referencing INSERT where the append completes a row group (triggering an optimistic flush) while the scan is still reading from it
+# group: [optimistic_write]
+
+require skip_reload
+
+load {TEST_DIR}/optimistic_write_cyclic_scan_single_thread.db
+
+statement ok
+PRAGMA threads=1;
+
+# flush every completed row group deterministically
+statement ok
+SET write_buffer_row_group_count=1;
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+BEGIN;
+
+# one partial row group in local storage
+statement ok
+INSERT INTO t SELECT range FROM range(100000) tbl(range);
+
+# the append completes row group 0 after 22880 rows while the scan still has
+# rows left to read from it - this must not free the row group under the scan
+statement ok
+INSERT INTO t SELECT * FROM t;
+
+query II
+SELECT count(*), sum(a) FROM t;
+----
+200000	9999900000
+
+statement ok
+COMMIT;
+
+query II
+SELECT count(*), sum(a) FROM t;
+----
+200000	9999900000

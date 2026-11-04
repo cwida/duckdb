@@ -49,7 +49,7 @@ public:
 		FormatException(error_msg + std::string(": ") + (err ? err : "Unknown error code"));
 	}
 
-	void Decompress(const char *compressed_data, size_t compressed_size, char *out_data, size_t out_size) {
+	size_t Decompress(const char *compressed_data, size_t compressed_size, char *out_data, size_t out_size) {
 		type = MiniZStreamType::MINIZ_TYPE_INFLATE;
 
 		// Loop over blocks
@@ -86,6 +86,9 @@ public:
 			mz_inflateEnd(&stream);
 
 			// Update indices
+			if (stream.total_in > compressed_size || compressed_size - stream.total_in < GZIP_FOOTER_SIZE) {
+				FormatException("Failed to decompress GZIP block: incomplete GZIP member footer");
+			}
 			compressed_data += GZIP_FOOTER_SIZE + stream.total_in;
 			compressed_size -= GZIP_FOOTER_SIZE + stream.total_in;
 			out_data += stream.total_out;
@@ -93,6 +96,7 @@ public:
 
 			ResetStreamInternal();
 		}
+		return out_size;
 	}
 
 	static size_t MaxCompressedLength(size_t input_size) {

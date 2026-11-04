@@ -4,7 +4,7 @@
 
 require vector_size 2048
 
-unzip data/storage/dict_corrupted_offset.db.gz {TEST_DIR}/dict_corrupted_offset.db
+unzip data/storage/corrupt/dict_corrupted_offset.db.gz {TEST_DIR}/dict_corrupted_offset.db
 
 statement ok
 ATTACH '{TEST_DIR}/dict_corrupted_offset.db' AS db2

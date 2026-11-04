@@ -1,0 +1,21 @@
+diff --git a/third_party/avro-c/lang/c/CMakeLists.txt b/third_party/avro-c/lang/c/CMakeLists.txt
+index d842af8..2ff6cc9 100644
+--- a/third_party/avro-c/lang/c/CMakeLists.txt
++++ b/third_party/avro-c/lang/c/CMakeLists.txt
+@@ -111,10 +111,13 @@ if(CMAKE_COMPILER_IS_GNUCC)
+     add_definitions(-W -Wall)
+ endif(CMAKE_COMPILER_IS_GNUCC)
+ 
+-if (WIN32)
+-   # Compile win32 in C++ to allow declarations after statements
++if (WIN32 AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
++   # Compile win32 in C++ to allow declarations after statements.
++   # Only needed for MSVC's cl.exe: clang-cl supports C99 natively, and
++   # compiling this C code as C++ fails under clang's stricter conversion
++   # rules (e.g. string literal to void* in datafile.c).
+    add_definitions(/TP)
+-endif(WIN32)
++endif()
+ 
+ # Uncomment to allow missing fields in the resolved-writer
+ # add_definitions(-DAVRO_ALLOW_MISSING_FIELDS_IN_RESOLVED_WRITER)

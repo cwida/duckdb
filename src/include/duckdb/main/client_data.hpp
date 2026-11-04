@@ -44,6 +44,9 @@ public:
 
 	//! The catalog search path.
 	unique_ptr<CatalogSearchPath> catalog_search_path;
+	//! The instance's default database as it was when this client connected; later DatabaseManager::SetDefaultDatabase
+	//! calls only affect new clients. Empty when there was none.
+	Identifier default_database;
 
 	//! The file opener of the client context.
 	unique_ptr<FileOpener> file_opener;

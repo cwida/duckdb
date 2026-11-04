@@ -42,6 +42,9 @@ enums:
       ERROR_INPUT_OBJECT_SIZE:
         value: 2004
         description: "An object exceeded its maximum permitted size."
+      ERROR_INPUT_METADATA_DEFERRED:
+        value: 2005
+        description: "The metadata asked for is known only once execution binds the statement that produces it, because the statement expands into several. Step the result and ask again."
       # Resource: errors related to resource availability and lifecycle
       ERROR_RESOURCE_IN_USE:
         value: 3001

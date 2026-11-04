@@ -74,6 +74,12 @@ SELECT 'a' GLOB '[0-9]'
 ----
 0
 
+# trailing hyphen in a bracket is a literal character
+query TTT
+SELECT 'a' GLOB '[a-]', '-' GLOB '[a-]', 'b' GLOB '[a-]'
+----
+1	1	0
+
 # multiple brackets in a row
 query T
 SELECT '012' GLOB '[0-9][0-9][0-9]'

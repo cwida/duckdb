@@ -1,0 +1,42 @@
+# name: test/sql/types/variant/variant_binary_duplicate_keys.test
+# description: Binary Variant objects with duplicate keys are rejected
+# group: [variant]
+
+require parquet
+
+# {"a": 0, "a": 1}
+statement error
+SELECT variant_bytes_to_variant('\x01\x01\x00\x01\x61\x02\x02\x00\x00\x00\x02\x04\x0C\x00\x0C\x01'::BLOB)
+----
+object contains the key "a" more than once
+
+statement error
+SELECT variant_normalize(variant_bytes_to_variant('\x01\x01\x00\x01\x61\x02\x02\x00\x00\x00\x02\x04\x0C\x00\x0C\x01'::BLOB))::VARCHAR
+----
+object contains the key "a" more than once
+
+# dictionary ['b', 'a'] and fields b, a, a, a, a
+statement error
+SELECT variant_normalize(variant_bytes_to_variant('\x01\x02\x00\x01\x02\x62\x61\x02\x05\x00\x01\x01\x01\x01\x00\x02\x04\x06\x08\x0A\x0C\x00\x0C\x01\x0C\x02\x0C\x03\x0C\x04'::BLOB))::VARCHAR
+----
+object contains the key "a" more than once
+
+statement ok
+SET variant_minimum_shredding_size=0
+
+statement ok
+ATTACH '{TEST_DIR}/variant_dup_keys.db' AS s
+
+statement error
+CREATE TABLE s.t AS SELECT variant_bytes_to_variant('\x01\x01\x00\x01\x61\x02\x02\x00\x00\x00\x02\x04\x0C\x00\x0C\x01'::BLOB) v
+----
+object contains the key "a" more than once
+
+statement ok
+CHECKPOINT s
+
+# objects with unique keys still work: {"a": 0, "b": 1}
+query I
+SELECT variant_bytes_to_variant('\x01\x02\x00\x01\x02\x61\x62\x02\x02\x00\x01\x00\x02\x04\x0C\x00\x0C\x01'::BLOB)::VARCHAR
+----
+{'a': 0, 'b': 1}

@@ -75,7 +75,7 @@ SELECT CAST(LIST(timestamp_ns)::VARCHAR AS TIME[]) FROM test_all_types();
 query I
 SELECT CAST(LIST(blob)::VARCHAR AS BLOB[]) FROM test_all_types();
 ----
-[thisisalongblob\x00withnullbytes, \x00\x00\x00a, NULL]
+['thisisalongblob\\x00withnullbytes', '\\x00\\x00\\x00a', NULL]
 
 query I
 SELECT CAST(LIST(interval)::VARCHAR AS INTERVAL[]) FROM test_all_types();
@@ -188,8 +188,8 @@ SELECT CAST(struct_pack(A=>timestamp_ns)::VARCHAR AS STRUCT(A TIME)) FROM test_a
 query I
 SELECT CAST(struct_pack(A=>blob)::VARCHAR AS STRUCT(A BLOB)) FROM test_all_types();
 ----
-{'A': thisisalongblob\x00withnullbytes}
-{'A': \x00\x00\x00a}
+{'A': 'thisisalongblob\\x00withnullbytes'}
+{'A': '\\x00\\x00\\x00a'}
 {'A': NULL}
 
 query I

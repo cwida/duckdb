@@ -199,6 +199,7 @@ void PEGParser::ParseRules(const char *grammar) {
 			// if we see a newline while we are parsing a rule definition we can complete the rule
 			auto new_rule = PEGRule(std::move(parameters), BuildExpression(tokens));
 			AddRule(rule_name, std::move(new_rule));
+			parameters = string_map_t<idx_t>();
 			rule_name = string_t();
 			// look for the subsequent rule
 			parse_state = PEGParseState::RULE_NAME;

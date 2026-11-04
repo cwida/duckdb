@@ -1,0 +1,207 @@
+# name: test/sql/subquery/lateral/lateral_recursive_filter_pushdown.test
+# description: Push outer filters through projections before materializing lateral recursive inputs
+# group: [lateral]
+
+statement ok
+CREATE TABLE vertices AS SELECT i::INTEGER AS id FROM range(1, 101) t(i);
+
+query I
+SELECT count(*) FROM (
+SELECT t.id, r.depth
+FROM vertices t,
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk
+) r
+) q WHERE id = 3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM (
+SELECT t.id, r.depth
+FROM vertices t,
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk
+) r
+) q WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+statement ok
+CREATE VIEW walk_rows AS
+SELECT t.id, r.depth
+FROM vertices t,
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk
+) r;
+
+# Aliases, reordered columns and multiple projections preserve the input binding.
+query I
+SELECT count(*) FROM (SELECT depth, key AS id FROM (SELECT depth, id AS key FROM walk_rows) a) b WHERE id = 3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT depth, key AS id FROM (SELECT depth, id AS key FROM walk_rows) a) b WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# Unreferenced safe computed columns do not block pushdown.
+query II
+SELECT sum(tag), count_if(missing) FROM (SELECT id, depth, 1 AS tag, id IS NULL AS missing FROM walk_rows) q WHERE id = 3;
+----
+8	0
+
+query II
+EXPLAIN SELECT sum(tag), count_if(missing) FROM (SELECT id, depth, 1 AS tag, id IS NULL AS missing FROM walk_rows) q WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# Keep predicates on the recursive result above the join.
+query I
+SELECT count(*) FROM walk_rows WHERE id = 3 AND depth > 4;
+----
+3
+
+query II
+EXPLAIN SELECT count(*) FROM walk_rows WHERE id = 3 AND depth > 4;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# Failed mapping must leave the original predicate intact.
+query I
+SELECT count(*) FROM (SELECT id, id IS NULL AS missing FROM walk_rows) q WHERE id = 3 OR missing;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT id + 1 AS next_id FROM walk_rows) q WHERE next_id = 4;
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# These projections are above the filtered join; producer restriction does not move their expressions.
+statement ok
+SET enable_optimizer=true;
+
+query II
+EXPLAIN SELECT sum(v) FROM (SELECT id, random() AS v FROM walk_rows) q WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+query II
+EXPLAIN SELECT sum(v) FROM (SELECT id, id::VARCHAR::INTEGER AS v FROM walk_rows) q WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+query II
+EXPLAIN SELECT sum(v) FROM (SELECT id, __internal_barrier(id) AS v FROM walk_rows) q WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# Global limits and observable predicates remain barriers to producer restriction.
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM walk_rows LIMIT 1) q WHERE id = 3;
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM walk_rows WHERE __internal_barrier(id = 3);
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM walk_rows WHERE id::VARCHAR::INTEGER = 3;
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM walk_rows WHERE id + random() = 3;
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# Duplicate and NULL input rows retain their multiplicities.
+statement ok
+INSERT INTO vertices VALUES (3), (NULL);
+
+query I
+SELECT count(*) FROM walk_rows WHERE id = 3;
+----
+16
+
+query I
+SELECT count(*) FROM walk_rows WHERE id IS NULL;
+----
+1
+
+query I
+SELECT count(*) FROM walk_rows WHERE id = 1000;
+----
+0
+
+# A left lateral join preserves rows with an empty recursive result.
+query II
+SELECT count(*), count(depth) FROM (
+SELECT t.id, r.depth
+FROM vertices t LEFT JOIN
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk WHERE depth > 7
+) r ON true
+) q WHERE id = 3;
+----
+2	0
+
+query II
+EXPLAIN SELECT count(*), count(depth) FROM (
+SELECT t.id, r.depth
+FROM vertices t LEFT JOIN
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk WHERE depth > 7
+) r ON true
+) q WHERE id = 3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+statement ok
+DELETE FROM vertices;
+
+query I
+SELECT count(*) FROM (
+SELECT t.id, r.depth
+FROM vertices t,
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk
+) r
+) q WHERE id = 3;
+----
+0

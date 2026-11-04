@@ -27,6 +27,8 @@ void ParseGroupNameList(const string &function_name, const Value &list_val, cons
                         child_list_t<LogicalType> &out_struct_children);
 
 idx_t AdvanceOneUTF8Basic(const duckdb_re2::StringPiece &input, idx_t base);
+//! Throws if a regex result is not valid UTF-8
+void VerifyUTF8Result(const char *data, idx_t size);
 
 inline duckdb_re2::StringPiece CreateStringPiece(const string_t &input) {
 	return duckdb_re2::StringPiece(input.GetData(), input.GetSize());

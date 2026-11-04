@@ -1,0 +1,22 @@
+# name: test/sql/optimizer/expression/enum_compare_null.test
+# description: Test enum-to-VARCHAR comparisons with NULL constants
+# group: [expression]
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok')
+
+statement ok
+CREATE TABLE moods(m mood)
+
+statement ok
+INSERT INTO moods VALUES ('sad'), ('ok'), (NULL)
+
+query I
+SELECT count(*) FROM moods WHERE m::VARCHAR IS NOT DISTINCT FROM NULL::VARCHAR
+----
+1
+
+query I
+SELECT count(*) FROM moods WHERE NULL::VARCHAR IS DISTINCT FROM m::VARCHAR
+----
+2

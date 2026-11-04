@@ -1,6 +1,7 @@
 #include "duckdb/function/table/system_functions.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -44,6 +45,9 @@ static unique_ptr<FunctionData> PragmaMetadataInfoBind(ClientContext &context, T
 		db_name = Identifier(StringValue::Get(input.inputs[0]));
 	}
 	auto &catalog = Catalog::GetCatalog(context, db_name);
+	if (catalog.GetAttached().IsSystem() || catalog.GetAttached().IsTemporary()) {
+		throw BinderException("Database \"%s\" does not have storage", db_name.GetIdentifierName());
+	}
 	auto result = make_uniq<PragmaMetadataFunctionData>();
 	result->metadata_info = catalog.GetMetadataInfo(context);
 	return std::move(result);
@@ -86,7 +90,8 @@ void PragmaMetadataInfo::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet metadata_info("pragma_metadata_info");
 	metadata_info.AddFunction(
 	    TableFunction({}, PragmaMetadataInfoFunction, PragmaMetadataInfoBind, PragmaMetadataInfoInit));
-	metadata_info.AddFunction(TableFunction({LogicalType::VARCHAR}, PragmaMetadataInfoFunction, PragmaMetadataInfoBind,
+	metadata_info.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("database", LogicalType::VARCHAR),
+	                                        PragmaMetadataInfoFunction, PragmaMetadataInfoBind,
 	                                        PragmaMetadataInfoInit));
 	set.AddFunction(metadata_info);
 }

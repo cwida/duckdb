@@ -5,7 +5,6 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/common/limits.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "parquet_types.h"
@@ -42,15 +41,15 @@ double ParquetDecimalUtils::ReadDecimalValue(const_data_ptr_t pointer, idx_t siz
 		return res;
 	}
 	bool positive = (*pointer & 0x80) == 0;
-	for (idx_t i = 0; i < size; i += 8) {
+	for (idx_t i = 0; i < size; i += sizeof(uint64_t)) {
+		// the trailing chunk can hold fewer than 8 bytes - scale by the bytes actually consumed
 		auto byte_size = MinValue<idx_t>(sizeof(uint64_t), size - i);
 		uint64_t input = 0;
-		auto res_ptr = reinterpret_cast<uint8_t *>(&input);
 		for (idx_t k = 0; k < byte_size; k++) {
 			auto byte = pointer[i + k];
-			res_ptr[sizeof(uint64_t) - k - 1] = positive ? byte : byte ^ 0xFF;
+			input = (input << 8) | static_cast<uint64_t>(positive ? byte : byte ^ 0xFF);
 		}
-		res *= double(NumericLimits<uint64_t>::Maximum()) + 1;
+		res = std::ldexp(res, static_cast<int>(8 * byte_size));
 		res += static_cast<double>(input);
 	}
 	if (!positive) {

@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/zstd/zstd_corrupt_page_id.test
+# description: The first Zstd page must be owned by the segment
+# group: [zstd]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/zstd_corrupt_page_id.db.gz {TEST_DIR}/zstd_corrupt_page_id.db
+
+load {TEST_DIR}/zstd_corrupt_page_id.db readonly
+
+statement ok
+USE zstd_corrupt_page_id;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='ZSTD' LIMIT 1;
+----
+ZSTD
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Data Corruption Error: Corrupted uncompressed string segment: overflow string block is not owned by the segment
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Data Corruption Error: Corrupted uncompressed string segment: overflow string block is not owned by the segment

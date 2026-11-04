@@ -2,6 +2,7 @@
 
 #include <numeric>
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/common/sorting/sort_key.hpp"
 #include "duckdb/common/types/row/block_iterator.hpp"
@@ -798,6 +799,7 @@ public:
 	}
 
 	TupleDataCollection &payload;
+	atomic<idx_t> rows_scanned {0};
 
 public:
 	idx_t MaxThreads() override {
@@ -825,6 +827,15 @@ public:
 unique_ptr<GlobalSourceState> PhysicalPiecewiseMergeJoin::GetGlobalSourceState(ClientContext &context) const {
 	auto &gsink = sink_state->Cast<MergeJoinGlobalState>();
 	return make_uniq<PiecewiseJoinGlobalScanState>(*gsink.table->sorted->payload_data);
+}
+
+ProgressData PhysicalPiecewiseMergeJoin::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &state = gstate.Cast<PiecewiseJoinGlobalScanState>();
+	const auto total = state.payload.Count();
+	if (total == 0) {
+		return ProgressData {1.0, 1.0, false};
+	}
+	return ProgressData {double(state.rows_scanned.load()), double(total), false};
 }
 
 unique_ptr<LocalSourceState> PhysicalPiecewiseMergeJoin::GetLocalSourceState(ExecutionContext &context,
@@ -879,6 +890,9 @@ SourceResultType PhysicalPiecewiseMergeJoin::GetDataInternal(ExecutionContext &c
 			for (idx_t col_idx = 0; col_idx < right_column_count; ++col_idx) {
 				result.data[left_column_count + col_idx].Slice(rhs_chunk.data[col_idx], rsel, result_count);
 			}
+		}
+		gsource.rows_scanned.fetch_add(count, std::memory_order_relaxed);
+		if (result_count > 0) {
 			break;
 		}
 	}

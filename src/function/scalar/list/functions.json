@@ -64,7 +64,7 @@
     },
     {
         "name": "list_resize",
-        "parameters": "list,size[,value]",
+        "parameters": "list,size,value",
         "description": "Resizes the `list` to contain `size` elements. Initializes new elements with `value` or `NULL` if `value` is not set.",
         "example": "list_resize([1, 2, 3], 5, 0)",
         "categories": ["list"],
@@ -94,7 +94,7 @@
             },
             {
                 "parameters": [
-                    {"name": "struct", "type": "STRUCT"},
+                    {"name": "tuple", "type": "STRUCT"},
                     {"name": "index", "type": "ANY"}
                 ],
                 "description": "Extracts the entry from an unnamed `STRUCT` (tuple) using an index (1-based).",

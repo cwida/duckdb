@@ -1,0 +1,52 @@
+# name: test/sql/storage/temp_directory/test_runner_temp_directory.test
+# description: Isolate default in-memory runner spill directories after database initialization
+# group: [temp_directory]
+
+require noforcestorage
+
+query I
+SELECT contains(current_setting('temp_directory'), 'sqllogic_temp_');
+----
+1
+
+statement ok
+SET temp_directory='{TEST_DIR}/explicit_temp';
+
+query I
+SELECT current_setting('temp_directory') = '{TEST_DIR}/explicit_temp';
+----
+1
+
+load
+
+query I
+SELECT contains(current_setting('temp_directory'), 'sqllogic_temp_');
+----
+1
+
+load {TEST_DIR}/runner_temp_directory.db
+
+query I
+SELECT ends_with(current_setting('temp_directory'), 'runner_temp_directory.db.tmp');
+----
+1
+
+load
+
+statement ok
+RESET temp_directory;
+
+statement ok
+SET enable_external_access=false;
+
+restart
+
+query I
+SELECT 42;
+----
+42
+
+query I
+SELECT current_setting('enable_external_access');
+----
+0

@@ -4,8 +4,8 @@
 
 require parquet
 
-# FIXME: re-enable when or pushdown is fixed
-mode skip instable
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # Multiple column in the root OR node, don't push down
 query II
@@ -13,54 +13,126 @@ EXPLAIN  SELECT tbl.a, tbl.b FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_pla
 ----
 physical_plan	<!REGEX>:.*PARQUET_SCAN.*Filters:.*
 
+query II
+SELECT tbl.a, tbl.b FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a, b) WHERE a=1 OR b=false ORDER BY a
+----
+1	false
+3	false
+5	false
+7	false
 
-# Single column in the root OR node
+# Consecutive integer equalities become a range filter.
 query II
 EXPLAIN SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a=1 OR a=2
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a=1 OR a=2.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a >= 1.*AND.*a <= 2.*
+
+query I
+SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a=1 OR a=2 ORDER BY a
+----
+1
+2
 
 # Single column + root OR node with AND
 query II
 EXPLAIN SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a=1 OR (a>3 AND a<5)
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a=1 OR a>3 AND a<5|.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a = 1.*OR.*a > 3.*AND.*a < 5.*
 
+query I
+SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a=1 OR (a>3 AND a<5) ORDER BY a
+----
+1
+4
 
-# Single column multiple ORs
+# More complex OR filters are pushed down as optional row-group filters.
 query II
 EXPLAIN SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a=1 OR a>3 OR a<5
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a=1 OR a>3 OR a<5|.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*optional:.*a = 1.*OR.*a > 3.*OR.*a < 5.*
 
-
+query I
+SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a=1 OR a>3 OR a<5 ORDER BY a
+----
+0
+1
+2
+3
+4
+5
+6
+7
 
 # Testing not equal
 query II
 EXPLAIN SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a!=1 OR a>3 OR a<2
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a!=1 OR a>3 OR a<2|.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*optional:.*a != 1.*OR.*a > 3.*OR.*a < 2.*
 
+query I
+SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a!=1 OR a>3 OR a<2 ORDER BY a
+----
+0
+1
+2
+3
+4
+5
+6
+7
 
 # Multiple OR filters connected with ANDs
 query II
 EXPLAIN SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a,b,c) WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=false OR c=1);
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a<2 OR a>3 AND a=1.*OR a=4.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a < 2.*OR.*a > 3.*AND.*a IN \(1, 4\).*
 
+query III
+SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a,b,c) WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=false OR c=1) ORDER BY a;
+----
+1	false	1
 
 # Testing the number of rows filtered (column "a" has eight values: 0 .. 7)
-statement ok
-PRAGMA enable_profiling
-
 # should return 2 rows: 0 and 7
 query II
 EXPLAIN ANALYZE SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a<1 OR a>6;
 ----
-analyzed_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a<1 OR a>6.*2[ \t].*
+analyzed_plan	<REGEX>:.*FILTER.*a < 1.*OR.*a > 6.*2 rows.*TABLE_SCAN.*PARQUET_SCAN.*Filters:.*optional:.*a < 1.*OR.*a > 6.*
+
+query I
+SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a<1 OR a>6 ORDER BY a;
+----
+0
+7
 
 # should return 1 row: 0
 query II
 EXPLAIN ANALYZE SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a<1 OR a>8;
 ----
-analyzed_plan	<REGEX>:.*PARQUET_SCAN.*Filters: a<1 OR a>8.*1[ \t].*
+analyzed_plan	<REGEX>:.*FILTER.*a < 1.*OR.*a > 8.*1 row.*TABLE_SCAN.*PARQUET_SCAN.*Filters:.*optional:.*a < 1.*OR.*a > 8.*
+
+query I
+SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a<1 OR a>8 ORDER BY a;
+----
+0
+
+# An optional OR filter must prune the interior row groups, while the runtime filter
+# removes nonmatching rows from the first and last groups.
+statement ok
+SET threads = 1;
+
+statement ok
+COPY (SELECT range AS a FROM range(16384)) TO '{TEST_DIR}/or_pushdown.parquet' (ROW_GROUP_SIZE 2048);
+
+query II
+EXPLAIN ANALYZE SELECT a FROM '{TEST_DIR}/or_pushdown.parquet' WHERE a < 2 OR a > 16381;
+----
+analyzed_plan	<REGEX>:.*FILTER.*4 rows.*TABLE_SCAN.*Filters:.*optional:.*a < 2.*OR.*a > 16381.*Row Groups Scanned: 2 / 8.*
+
+query I
+SELECT a FROM '{TEST_DIR}/or_pushdown.parquet' WHERE a < 2 OR a > 16381 ORDER BY a;
+----
+0
+1
+16382
+16383

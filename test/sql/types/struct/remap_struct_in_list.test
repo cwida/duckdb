@@ -68,3 +68,37 @@ FROM (
 )
 ----
 5000	2500	6247500
+
+# NULL-typed list elements can become nested types without changing the list length.
+query II
+SELECT typeof(mapped) = typeof(NULL::STRUCT(a INTEGER)[]), mapped
+FROM (SELECT remap_struct(
+    [NULL::"NULL", NULL::"NULL"],
+    NULL::STRUCT(a INTEGER)[],
+    {'list': 'list'},
+    NULL
+) AS mapped);
+----
+true	[NULL, NULL]
+
+query II
+SELECT typeof(mapped) = typeof(NULL::INTEGER[][]), mapped
+FROM (SELECT remap_struct(
+    [NULL::"NULL", NULL::"NULL"],
+    NULL::INTEGER[][],
+    {'list': 'list'},
+    NULL
+) AS mapped);
+----
+true	[NULL, NULL]
+
+query II
+SELECT typeof(mapped) = typeof(NULL::MAP(VARCHAR, INTEGER)[]), mapped
+FROM (SELECT remap_struct(
+    [NULL::"NULL", NULL::"NULL"],
+    NULL::MAP(VARCHAR, INTEGER)[],
+    {'list': 'list'},
+    NULL
+) AS mapped);
+----
+true	[NULL, NULL]

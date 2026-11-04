@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
 #include "duckdb/common/types/row/tuple_data_states.hpp"
 #include "duckdb/common/arena_containers/arena_vector.hpp"
@@ -78,6 +79,8 @@ public:
 	idx_t RowBlockCount() const;
 	//! Number of heap blocks
 	idx_t HeapBlockCount() const;
+	//! Cached allocation size of retained row and heap blocks
+	idx_t GetBlockAllocationSize() const;
 	//! Sets the partition index of this tuple data allocator
 	void SetPartitionIndex(idx_t index);
 	//! Gets the partition index of this tuple data allocator
@@ -122,11 +125,9 @@ private:
 	                                  unsafe_vector<reference<TupleDataChunkPart>> &parts,
 	                                  optional_ptr<SortKeyPayloadState> sort_key_payload_state = nullptr);
 	//! Internal function for ReleaseOrStoreHandles
-	static void ReleaseOrStoreHandlesInternal(TupleDataSegment &segment,
-	                                          unsafe_arena_vector<BufferHandle> &pinned_row_handles,
-	                                          buffer_handle_map_t &handles, const ContinuousIdSet &block_ids,
-	                                          unsafe_arena_vector<TupleDataBlock> &blocks,
-	                                          TupleDataPinProperties properties);
+	void ReleaseOrStoreHandlesInternal(TupleDataSegment &segment, unsafe_arena_vector<BufferHandle> &pinned_row_handles,
+	                                   buffer_handle_map_t &handles, const ContinuousIdSet &block_ids,
+	                                   unsafe_arena_vector<TupleDataBlock> &blocks, TupleDataPinProperties properties);
 	//! Create a row/heap block, store the handle in pin_state so the block stays pinned
 	void CreateRowBlock(TupleDataSegment &segment, TupleDataPinState &pin_state);
 	void CreateHeapBlock(TupleDataSegment &segment, TupleDataPinState &pin_state, idx_t size);
@@ -157,6 +158,8 @@ private:
 	unsafe_arena_vector<TupleDataBlock> row_blocks;
 	//! Blocks storing the variable-size data of the fixed-size rows (e.g., string, list)
 	unsafe_arena_vector<TupleDataBlock> heap_blocks;
+	//! Blocks can be released by parallel scans of separate segments
+	atomic<idx_t> block_allocation_size {0};
 };
 
 } // namespace duckdb

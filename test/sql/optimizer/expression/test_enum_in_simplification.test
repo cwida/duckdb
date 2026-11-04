@@ -496,6 +496,14 @@ WHERE sym = '0';
 ----
 physical_plan	<!REGEX>:.*AS VARCHAR.*
 
+# Comparisons are simplified when the constant is on the left-hand side as well
+query II
+EXPLAIN
+FROM quote
+WHERE '0' = sym::VARCHAR;
+----
+physical_plan	<!REGEX>:.*AS VARCHAR.*
+
 query II
 EXPLAIN
 FROM quote
@@ -544,4 +552,3 @@ FROM quote
 WHERE sym IS DISTINCT FROM '100';
 ----
 physical_plan	<!REGEX>:.*AS VARCHAR.*
-

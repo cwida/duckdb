@@ -2,8 +2,6 @@
 # description: Test analyze and vacuum statements in peg parser
 # group: [transformer]
 
-mode skip instable
-
 require autocomplete
 
 require skip_reload
@@ -20,4 +18,4 @@ set extension_directory='{TEST_DIR}/install_extension'
 statement error
 INSTALL will_never_exist;
 ----
-Failed to download extension "will_never_exist" at URL "http://extensions.duckdb.org"
+<REGEX>:.*Failed to download extension "will_never_exist" at URL "http://extensions\.duckdb\.org(/[^"]*)?".*

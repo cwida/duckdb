@@ -1,0 +1,162 @@
+# name: test/sql/attach/external_resource_option_collision.test
+# description: a statement cannot quietly override an option the resource itself supplies
+# group: [attach]
+
+statement ok
+CALL enable_logging('ExternalResource', storage='memory');
+
+statement ok
+CREATE SEQUENCE destroy_seq;
+
+statement ok
+ATTACH '{TEST_DIR}/er_collision.db' AS seed;
+
+statement ok
+CREATE TABLE seed.t AS SELECT 42 AS x;
+
+statement ok
+DETACH seed;
+
+statement ok
+CREATE MACRO c_create(p) AS TABLE SELECT MAP {'id': 'c1'} AS handle;
+
+statement ok
+CREATE MACRO c_destroy(h) AS TABLE SELECT nextval('destroy_seq') AS status;
+
+# This recipe dictates read_only itself.
+statement ok
+CREATE MACRO ro_status(h) AS TABLE SELECT 'ready' AS state,
+  MAP {'uri': '{TEST_DIR}/er_collision.db', 'attached_db_type': 'duckdb', 'read_only': 'true'} AS result;
+
+statement ok
+CALL register_external_resource_type('ro@local', kind := 'catalog', create_function := 'c_create',
+    status_function := 'ro_status', destroy_function := 'c_destroy');
+
+statement ok
+CREATE EXTERNAL RESOURCE 'ro@local' AS pinned_ro;
+
+# Asking for the opposite is refused rather than silently discarded.
+statement error
+ATTACH TO EXTERNAL RESOURCE pinned_ro AS b1 (READ_ONLY 0);
+----
+<REGEX>:.*the resource supplies "read_only".*cannot also be given as an option.*
+
+# Even agreeing is refused: the resource owns that key.
+statement error
+ATTACH TO EXTERNAL RESOURCE pinned_ro AS b1 (READ_ONLY 1);
+----
+<REGEX>:.*the resource supplies "read_only".*
+
+# READONLY is a second spelling of the same option, so it collides too.
+statement error
+ATTACH TO EXTERNAL RESOURCE pinned_ro AS b1 (READONLY 0);
+----
+<REGEX>:.*the resource supplies "read_only".*
+
+# READWRITE and READ_WRITE are the same option again, phrased the other way round.
+statement error
+ATTACH TO EXTERNAL RESOURCE pinned_ro AS b1 (READWRITE 1);
+----
+<REGEX>:.*the resource supplies "read_only".*
+
+statement error
+ATTACH TO EXTERNAL RESOURCE pinned_ro AS b1 (READ_WRITE 0);
+----
+<REGEX>:.*the resource supplies "read_only".*
+
+# ... and the same for the db type the resource dictates.
+statement error
+ATTACH TO EXTERNAL RESOURCE pinned_ro AS b1 (TYPE 'duckdb');
+----
+<REGEX>:.*the resource supplies "type".*
+
+# Nothing was attached by any of the above.
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'b1';
+----
+0
+
+statement ok
+DESTROY EXTERNAL RESOURCE pinned_ro;
+
+# A rejection on a resource we just PROVISIONED must still reap it: the collision is detected after
+# create/status ran, so nothing owns the resource at that point.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'ro@local' AS fresh (READ_ONLY 0);
+----
+<REGEX>:.*the resource supplies "read_only".*
+
+query II
+SELECT operation, outcome FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+create	ok
+status	ok
+destroy	ok
+
+# 2, not 1: the explicit DESTROY above already fired the deleter once.
+query I
+SELECT currval('destroy_seq');
+----
+2
+
+# A NULL from the recipe is refused rather than passed on. Nothing downstream checks for NULL before
+# unwrapping, so it would be read as a value -- read_only NULL used to yield a READ-ONLY database.
+statement ok
+CREATE MACRO null_status(h) AS TABLE SELECT 'ready' AS state,
+  MAP {'uri': '{TEST_DIR}/er_collision.db', 'attached_db_type': 'duckdb', 'read_only': NULL} AS result;
+
+statement ok
+CALL register_external_resource_type('null@local', kind := 'catalog', create_function := 'c_create',
+    status_function := 'null_status', destroy_function := 'c_destroy');
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'null@local' AS nulled;
+----
+<REGEX>:.*NULL is not supported as a valid option for "read_only".*
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'nulled';
+----
+0
+
+# A recipe that supplies only uri + type leaves every other option to the statement, so a resource can
+# be borrowed read-only twice over the same file.
+statement ok
+CREATE MACRO plain_status(h) AS TABLE SELECT 'ready' AS state,
+  MAP {'uri': '{TEST_DIR}/er_collision.db', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CALL register_external_resource_type('plain@local', kind := 'catalog', create_function := 'c_create',
+    status_function := 'plain_status', destroy_function := 'c_destroy');
+
+statement ok
+CREATE EXTERNAL RESOURCE 'plain@local' AS shared;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared AS b1 (READ_ONLY);
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared AS b2 (READ_ONLY);
+
+# Both borrowers reached the same store.
+query II
+SELECT (SELECT x FROM b1.t), (SELECT x FROM b2.t);
+----
+42	42
+
+query II
+SELECT count(*), bool_and(readonly) FROM duckdb_databases() WHERE database_name IN ('b1', 'b2');
+----
+2	true
+
+# DESTROY detaches both borrowers.
+statement ok
+DESTROY EXTERNAL RESOURCE shared;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name IN ('b1', 'b2');
+----
+0

@@ -1,0 +1,51 @@
+# name: test/optimizer/pullup_join_expression_errors.test
+# description: Preserve projected errors when pulling up join predicates
+# group: [optimizer]
+
+statement ok
+SET max_execution_time=5000
+
+statement ok
+CREATE TABLE dimensions(k BIGINT)
+
+statement ok
+INSERT INTO dimensions VALUES (1), (1), (2), (2), (3), (4), (NULL)
+
+statement ok
+CREATE TABLE guarded_strings(i BIGINT, value VARCHAR)
+
+statement ok
+INSERT INTO guarded_strings VALUES (0, 'bad'), (1, '1'), (2, '2'), (NULL, NULL)
+
+foreach optimizer true false
+
+statement ok
+SET enable_optimizer={optimizer}
+
+# Filtering at the outer join must not hide an error in the inner projection.
+statement error
+SELECT count(*), sum(payload)
+FROM (SELECT * FROM dimensions WHERE k > 2) d2 JOIN (
+    SELECT *, s.value::BIGINT AS payload
+    FROM dimensions d1 JOIN guarded_strings s ON d1.k = s.i + 1
+) a ON d2.k = a.i + 2
+----
+<REGEX>:.*Conversion Error.*bad.*
+
+endloop
+
+statement ok
+SET enable_optimizer=true
+
+# Throwing filter referencing another relation must remain above a row-eliminating join
+query I
+SELECT count(*)
+FROM (
+	SELECT a.k, a.v
+	FROM (VALUES (1, 1), (2, 1)) a(k, v)
+	JOIN (VALUES (0), (0), (0), (0)) b(q) ON a.k % 2 = b.q
+) mixed_v
+JOIN (VALUES (1, 0), (2, 1)) c(k, x) USING (k)
+WHERE v // x > 0;
+----
+4

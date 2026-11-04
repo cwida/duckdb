@@ -1,0 +1,17 @@
+# name: test/sql/copy/partitioned/partition_null_row_group_size_bytes.test
+# description: Partitioned COPY with ROW_GROUP_SIZE_BYTES and a NULL partition value
+# group: [partitioned]
+
+require parquet
+
+statement ok
+COPY (
+	SELECT repeat('w', 1024) AS name, CASE WHEN i < 2048 THEN 'a' ELSE NULL END AS part
+	FROM range(4096) t(i)
+) TO '{TEMP_DIR}/partition_null_rgsb' (FORMAT PARQUET, PARTITION_BY (part), ROW_GROUP_SIZE_BYTES '256KiB', OVERWRITE_OR_IGNORE);
+
+query II
+SELECT part, count(*) FROM read_parquet('{TEMP_DIR}/partition_null_rgsb/**/*.parquet', hive_partitioning=true) GROUP BY ALL ORDER BY ALL;
+----
+a	2048
+NULL	2048

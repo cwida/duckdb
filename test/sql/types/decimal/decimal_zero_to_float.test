@@ -1,0 +1,29 @@
+# name: test/sql/types/decimal/decimal_zero_to_float.test
+# description: Casting a zero DECIMAL with a large scale to FLOAT/DOUBLE must yield +0.0 (oss-fuzz: uninitialized sign)
+# group: [decimal]
+
+statement ok
+PRAGMA enable_verification
+
+# a scale beyond the exact power-of-ten range takes the slow (digit-based) conversion path
+query IIII
+SELECT CAST(0::DECIMAL(38, 30) AS DOUBLE), signbit(CAST(0::DECIMAL(38, 30) AS DOUBLE)),
+       CAST(0::DECIMAL(38, 30) AS FLOAT), signbit(CAST(0::DECIMAL(38, 30) AS FLOAT))
+----
+0.0	false	0.0	false
+
+query II
+SELECT CAST(0::DECIMAL(25, 23) AS DOUBLE), signbit(CAST(0::DECIMAL(25, 23) AS DOUBLE))
+----
+0.0	false
+
+query II
+SELECT CAST(0::DECIMAL(18, 15) AS FLOAT), signbit(CAST(0::DECIMAL(18, 15) AS FLOAT))
+----
+0.0	false
+
+# the original fuzzer query: a zero DECIMAL(24, 23) multiplied with a DOUBLE
+query I
+SELECT .00000000000000000000000 * 0 * 340282366920938463463374607431766427829. - 4
+----
+-4.0

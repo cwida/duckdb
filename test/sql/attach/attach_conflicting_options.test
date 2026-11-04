@@ -1,0 +1,8 @@
+# name: test/sql/attach/attach_conflicting_options.test
+# description: ATTACH conflict handling options are mutually exclusive
+# group: [attach]
+
+statement error
+ATTACH OR REPLACE IF NOT EXISTS ':memory:' AS conflicting_options;
+----
+Cannot specify both OR REPLACE and IF NOT EXISTS

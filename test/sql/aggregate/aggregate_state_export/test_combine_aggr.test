@@ -135,6 +135,28 @@ FROM states;
 ----
 18	2
 
+# Average states with specialized implementations support multiplicity
+query IIIIII
+WITH states AS (
+    SELECT
+        avg(3::SMALLINT) EXPORT_STATE AS smallint_s,
+        avg(3::HUGEINT) EXPORT_STATE AS hugeint_s,
+        avg(3::DOUBLE) EXPORT_STATE AS double_s,
+        avg(INTERVAL '3 days') EXPORT_STATE AS interval_s,
+        avg(TIMESTAMP '2020-01-03 12:00:00') EXPORT_STATE AS timestamp_s,
+        avg(TIMETZ '12:00:00+02') EXPORT_STATE AS timetz_s
+)
+SELECT
+    finalize(combine_aggr(smallint_s, 3)) = 3,
+    finalize(combine_aggr(hugeint_s, 3)) = 3,
+    finalize(combine_aggr(double_s, 3)) = 3,
+    finalize(combine_aggr(interval_s, 3)) = INTERVAL '3 days',
+    finalize(combine_aggr(timestamp_s, 3)) = TIMESTAMP '2020-01-03 12:00:00',
+    finalize(combine_aggr(timetz_s, 3)) = TIMETZ '10:00:00+00'
+FROM states;
+----
+1	1	1	1	1	1
+
 # List-backed aggregate states honor per-state multiplicities
 query TRRR
 WITH states AS (
@@ -225,12 +247,14 @@ select finalize(finalize(combine_aggr(state))) from states;
 
 # skewness states are struct-based and can be combined
 statement ok
-CREATE TABLE skew_states AS (SELECT g, (skewness(d) export_state) state FROM dummy GROUP BY g);
+CREATE TABLE skew_states AS (SELECT g, (skewness(d) export_state) state, (skewness(d * d) export_state) state_sq FROM dummy GROUP BY g);
 
-query I nosort skew_res
-select skewness(d) from dummy;
+query II
+select skewness(d), skewness(d * d) from dummy;
 ----
+0.0	0.653941
 
-query I nosort skew_res
-select finalize(combine_aggr(state)) from skew_states;
+query II
+select finalize(combine_aggr(state)), finalize(combine_aggr(state_sq)) from skew_states;
 ----
+0.0	0.653941

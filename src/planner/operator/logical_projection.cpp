@@ -1,11 +1,26 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 
 #include "duckdb/main/config.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
 namespace duckdb {
 
 LogicalProjection::LogicalProjection(TableIndex table_index, vector<unique_ptr<Expression>> select_list)
     : LogicalOperator(LogicalOperatorType::LOGICAL_PROJECTION, std::move(select_list)), table_index(table_index) {
+}
+
+unique_ptr<LogicalProjection> LogicalProjection::CreateIdentity(TableIndex table_index,
+                                                                unique_ptr<LogicalOperator> child) {
+	child->ResolveOperatorTypes();
+	auto bindings = child->GetColumnBindings();
+	vector<unique_ptr<Expression>> expressions;
+	expressions.reserve(bindings.size());
+	for (idx_t i = 0; i < bindings.size(); i++) {
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(child->types[i], bindings[i]));
+	}
+	auto projection = make_uniq<LogicalProjection>(table_index, std::move(expressions));
+	projection->children.push_back(std::move(child));
+	return projection;
 }
 
 vector<ColumnBinding> LogicalProjection::GetColumnBindings() {

@@ -365,6 +365,18 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 		}
 	}
 
+	// a positional join pads the shorter side with NULLs
+	const bool full_outer = result->type == JoinType::OUTER || ref.ref_type == JoinRefType::POSITIONAL;
+	if (result->type == JoinType::LEFT || full_outer) {
+		for (auto &binding : right_binder.bind_context.GetBindingsList()) {
+			binding->SetNullExtended();
+		}
+	}
+	if (result->type == JoinType::RIGHT || full_outer) {
+		for (auto &binding : left_binder.bind_context.GetBindingsList()) {
+			binding->SetNullExtended();
+		}
+	}
 	auto right_bindings = right_binder.bind_context.GetBindingAliases();
 	auto left_bindings = left_binder.bind_context.GetBindingAliases();
 	bind_context.AddContext(std::move(left_binder.bind_context));

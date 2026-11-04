@@ -203,14 +203,14 @@
     },
     {
         "name": "log",
-        "parameters": "b, x",
+        "parameters": "b,x",
         "description": "Computes the logarithm of x to base b. b may be omitted, in which case the default 10",
         "example": "log(2, 64)",
         "type": "scalar_function_set"
      },
     {
         "name": "nextafter",
-        "parameters": "x, y",
+        "parameters": "x,y",
         "description": "Returns the next floating point value after x in the direction of y",
         "example": "nextafter(1::float, 2::float)",
         "type": "scalar_function_set",
@@ -282,7 +282,7 @@
     },
     {
         "name": "trunc",
-        "parameters": "x",
+        "parameters": "x,precision",
         "description": "Truncates the number",
         "example": "trunc(17.4)",
         "type": "scalar_function_set"

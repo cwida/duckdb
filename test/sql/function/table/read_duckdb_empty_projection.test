@@ -1,0 +1,33 @@
+# name: test/sql/function/table/read_duckdb_empty_projection.test
+# description: read_duckdb without any projected columns
+# group: [table]
+
+statement ok
+ATTACH '{TEST_DIR}/rd_empty_projection.db' AS x
+
+statement ok
+CREATE TABLE x.t AS SELECT i FROM range(5000) r(i)
+
+statement ok
+DETACH x
+
+query I
+SELECT count(*) FROM read_duckdb('{TEST_DIR}/rd_empty_projection.db', table_name := 't')
+----
+5000
+
+query I
+SELECT 42 FROM read_duckdb('{TEST_DIR}/rd_empty_projection.db', table_name := 't') LIMIT 2
+----
+42
+42
+
+query I
+SELECT count(*) FROM read_duckdb(['{TEST_DIR}/rd_empty_projection.db', '{TEST_DIR}/rd_empty_projection.db'], table_name := 't')
+----
+10000
+
+query II
+SELECT count(i), count(*) FROM read_duckdb('{TEST_DIR}/rd_empty_projection.db', table_name := 't')
+----
+5000	5000

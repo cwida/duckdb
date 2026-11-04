@@ -1,0 +1,44 @@
+# name: test/sql/cte/using_key_aggregate_qualification.test
+# description: Recursive payload aggregates honor the complete function qualification
+# group: [cte]
+
+query II
+WITH RECURSIVE r(k,v) USING KEY(k,system.main.max(v)) AS (VALUES(1,10) UNION ALL SELECT k+1,v+1 FROM r WHERE k<3) SELECT * FROM r ORDER BY k;
+----
+1	10
+2	11
+3	12
+
+query II
+WITH RECURSIVE r(k,v) USING KEY(k,max(v)) AS (VALUES(1,10) UNION ALL SELECT k+1,v+1 FROM r WHERE k<3) SELECT * FROM r ORDER BY k;
+----
+1	10
+2	11
+3	12
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,system.not_a_schema.max(v)) AS (VALUES(1,10) UNION ALL SELECT k+1,v+1 FROM r WHERE k<3) SELECT * FROM r;
+----
+can't be used
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,system.not_a_schema.also_missing.max(v)) AS (VALUES(1,10) UNION ALL SELECT k+1,v+1 FROM r WHERE k<3) SELECT * FROM r;
+----
+can't be used
+
+statement ok
+CREATE SCHEMA "payload calls";
+
+statement ok
+CREATE MACRO "payload calls".max(x) AS min(x);
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,"payload calls".max(v)) AS (VALUES(1,10) UNION ALL SELECT k+1,v+1 FROM r WHERE k<3) SELECT * FROM r;
+----
+can't be used
+
+query II
+WITH RECURSIVE r(k,v) USING KEY(k,system.max(v)) AS (VALUES(1,10) UNION ALL SELECT k+1,v FROM r WHERE k<2) SELECT * FROM r ORDER BY k;
+----
+1	10
+2	10

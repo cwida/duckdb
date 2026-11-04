@@ -211,7 +211,7 @@ Invalid Input Error: Window ROWS PRECEDING expression cannot be negative
 
 statement error
 SELECT COUNT(*) OVER (
-  ORDER BY id ROWS BETWEEN off FOLLOWING AND CURRENT ROW
+  ORDER BY id ROWS BETWEEN off FOLLOWING AND UNBOUNDED FOLLOWING
 )
 FROM (VALUES (1, -1)) AS src(id, off);
 ----
@@ -219,7 +219,7 @@ Invalid Input Error: Window ROWS FOLLOWING expression cannot be negative
 
 statement error
 SELECT COUNT(*) OVER (
-  ORDER BY id ROWS BETWEEN CURRENT ROW AND off PRECEDING
+  ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND off PRECEDING
 )
 FROM (VALUES (1, -1)) AS src(id, off);
 ----

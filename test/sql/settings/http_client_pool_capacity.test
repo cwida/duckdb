@@ -1,0 +1,51 @@
+# name: test/sql/settings/http_client_pool_capacity.test
+# description: HTTP client pool capacity can be overridden and reset
+# group: [settings]
+
+statement ok
+SET VARIABLE default_http_capacity = current_setting('http_client_pool_capacity')
+
+foreach capacity 2 8 1
+
+statement ok
+SET http_client_pool_capacity = {capacity}
+
+query I
+SELECT current_setting('http_client_pool_capacity') = {capacity}
+----
+true
+
+endloop
+
+foreach capacity 0 -1 NULL
+
+statement error
+SET http_client_pool_capacity = {capacity}
+----
+positive integer
+
+endloop
+
+statement ok
+SET async_threads = 0
+
+query I
+SELECT current_setting('http_client_pool_capacity')
+----
+1
+
+statement ok
+RESET http_client_pool_capacity
+
+query I
+SELECT current_setting('http_client_pool_capacity') >= 1
+----
+true
+
+statement ok
+RESET async_threads
+
+query I
+SELECT current_setting('http_client_pool_capacity') = getvariable('default_http_capacity')
+----
+true

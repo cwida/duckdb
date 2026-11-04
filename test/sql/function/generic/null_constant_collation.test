@@ -1,0 +1,78 @@
+# name: test/sql/function/generic/null_constant_collation.test
+# description: Typed NULL function folding retains the collation of the bound result
+# group: [generic]
+
+query II
+SELECT get_type(lower(NULL::VARCHAR COLLATE NOCASE))=get_type(NULL::VARCHAR COLLATE NOCASE),
+       get_type(upper(NULL::VARCHAR COLLATE NOCASE))=get_type(NULL::VARCHAR COLLATE NOCASE);
+----
+true	true
+
+# A nested call must retain the collation as well.
+query II
+SELECT get_type(lower(upper(NULL::VARCHAR COLLATE NOCASE)))=get_type(NULL::VARCHAR COLLATE NOCASE),
+       lower(upper(NULL::VARCHAR COLLATE NOCASE)) IS NULL;
+----
+true	true
+
+# Compare with the non-foldable table-column path, including a non-NULL value.
+statement ok
+CREATE TABLE null_collation_input(s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO null_collation_input VALUES (NULL), ('A');
+
+query II
+SELECT bool_and(get_type(lower(s))=get_type(lower(NULL::VARCHAR COLLATE NOCASE))),
+       bool_and(get_type(upper(s))=get_type(upper(NULL::VARCHAR COLLATE NOCASE)))
+FROM null_collation_input;
+----
+true	true
+
+# Uncollated and untyped NULL behavior remains unchanged.
+query III
+SELECT get_type(lower(NULL::VARCHAR))=get_type(NULL::VARCHAR),
+       typeof(NULL || 'x'), lower(NULL::VARCHAR) IS NULL;
+----
+true	"NULL"	true
+
+# The collation remains observable after folding into a containing type.
+query I
+SELECT get_type(struct_pack(s := lower(NULL::VARCHAR COLLATE NOCASE)))=
+       get_type(struct_pack(s := NULL::VARCHAR COLLATE NOCASE));
+----
+true
+
+# Untyped behavior and skipped value casts are unchanged.
+query IT
+SELECT typeof(lower(NULL)), lpad(NULL::VARCHAR, CAST('bad' AS INTEGER), 'x');
+----
+VARCHAR	NULL
+
+# A bind-time format validation is still bypassed for a typed NULL argument.
+query T
+SELECT strftime(NULL::DATE, '%Q');
+----
+NULL
+
+# Known return types do not invoke catalog-dependent resolve_types callbacks.
+query I
+SELECT index_key(NULL::STRUCT(t VARCHAR), 1);
+----
+NULL
+
+query I
+SELECT get_type(lower(string := NULL::VARCHAR COLLATE NOCASE))=get_type(NULL::VARCHAR COLLATE NOCASE);
+----
+true
+
+# Conflicting supplied collations cannot define one result collation, even for a typed NULL.
+statement error
+SELECT replace(NULL::VARCHAR COLLATE NOCASE, 'a' COLLATE NOACCENT, 'b');
+----
+Cannot combine types with different collation
+
+statement error
+SELECT replace('a' COLLATE NOCASE, 'a' COLLATE NOACCENT, 'b');
+----
+Cannot combine types with different collation

@@ -1,0 +1,27 @@
+# name: test/sql/aggregate/group/perfect_ht_memory_limit.test
+# description: Perfect hash aggregate states are allocated through the buffer manager and respect the memory limit
+# group: [group]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output='physical_only';
+
+statement ok
+PRAGMA memory_limit='100MB'
+
+statement ok
+CREATE TABLE t AS SELECT (i%16)::INT g FROM range(300000) t(i);
+
+# the perfect hash aggregate must be used for this query
+query II
+EXPLAIN SELECT g, list(repeat('x', 1000)) FROM t GROUP BY g
+----
+physical_plan	<REGEX>:.*PERFECT_HASH_GROUP_BY.*
+
+# 300MB of list payload does not fit in the 100MB limit
+statement error
+SELECT g, list(repeat('x', 1000)) FROM t GROUP BY g
+----
+Out of Memory

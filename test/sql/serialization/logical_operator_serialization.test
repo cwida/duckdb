@@ -1,0 +1,85 @@
+# name: test/sql/serialization/logical_operator_serialization.test
+# description: Serialize maintenance, DDL and mutation operators
+# group: [serialization]
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement ok
+CREATE TABLE operator_vacuum(i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO operator_vacuum VALUES (1,2);
+
+statement ok
+VACUUM operator_vacuum(i);
+
+statement ok
+CREATE INDEX operator_vacuum_idx ON operator_vacuum((i + j));
+
+statement ok
+CREATE TABLE operator_update(i INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO operator_update VALUES (1,[1]);
+
+statement ok
+UPDATE operator_update SET l=[2] WHERE i=1;
+
+query IT
+SELECT * FROM operator_update;
+----
+1	[2]
+
+statement ok
+CREATE TABLE operator_merge_target(id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO operator_merge_target VALUES (1,10);
+
+statement ok
+CREATE TABLE operator_merge_source(id INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO operator_merge_source VALUES (1,20),(2,30);
+
+statement ok
+MERGE INTO operator_merge_target t
+USING operator_merge_source s ON t.id=s.id
+WHEN MATCHED THEN UPDATE SET v=s.v
+WHEN NOT MATCHED THEN INSERT VALUES(s.id,s.v);
+
+query II
+SELECT * FROM operator_merge_target ORDER BY id;
+----
+1	20
+2	30
+
+statement ok
+ATTACH ':memory:' AS operator_attached;
+
+statement ok
+CREATE TABLE operator_attached.t(i INTEGER);
+
+statement ok
+DETACH operator_attached;
+
+statement ok
+ATTACH ':memory:' AS operator_copy_source;
+
+statement ok
+CREATE TABLE operator_copy_source.t(i INTEGER);
+
+statement ok
+INSERT INTO operator_copy_source.t VALUES (1);
+
+statement ok
+ATTACH ':memory:' AS operator_copy_target;
+
+statement ok
+COPY FROM DATABASE operator_copy_source TO operator_copy_target;
+
+query I
+SELECT * FROM operator_copy_target.t;
+----
+1

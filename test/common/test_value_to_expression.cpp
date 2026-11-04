@@ -13,7 +13,7 @@ using namespace std;
 static Value EvalConstantExpression(Connection &con, const string &expr) {
 	auto result = con.Query("SELECT " + expr);
 	REQUIRE_NO_FAIL(*result);
-	return result->GetValue(0, 0);
+	return result->Collection().GetValue(0, 0);
 }
 
 // Binds the parsed expression directly (no SQL text in between) and evaluates it.
@@ -33,6 +33,7 @@ static void RequireSameExpressionValue(const Value &actual, const Value &expecte
 	               << ") expected=" << expected.ToSQLString() << " (" << expected.type().ToString() << ")");
 	REQUIRE(actual.type() == expected.type());
 	REQUIRE(!ValueOperations::DistinctFrom(actual, expected));
+	REQUIRE(actual.type().EqualsIncludingCollation(expected.type()));
 }
 
 // Asserts the round-trip contract of ConstantExpression::FromValue: the expression binds back to the same
@@ -65,12 +66,13 @@ TEST_CASE("ConstantExpression::FromValue emits bare literals only when they re-b
 	REQUIRE(Render(Value::DATE(date_t::epoch())) == "CAST('1970-01-01' AS DATE)");
 	REQUIRE(Render(Value::BLOB_RAW(string("\x00\xff", 2))) == "X'00FF'");
 	REQUIRE(Render(Value::BIT("0101")) == "B'0101'");
-	REQUIRE(Render(Value::LIST(LogicalType::INTEGER, {})) == "CAST(list_value() AS INTEGER[])");
-	REQUIRE(Render(Value::LIST(LogicalType::INTEGER, {Value::INTEGER(1), Value::INTEGER(2)})) == "list_value(1, 2)");
+	REQUIRE(Render(Value::LIST(LogicalType::INTEGER, {})) == "CAST(\"system\".main.list_value() AS INTEGER[])");
+	REQUIRE(Render(Value::LIST(LogicalType::INTEGER, {Value::INTEGER(1), Value::INTEGER(2)})) ==
+	        "\"system\".main.list_value(1, 2)");
 	child_list_t<Value> fields;
 	fields.emplace_back("a", Value::INTEGER(1));
 	fields.emplace_back("b", Value("x"));
-	REQUIRE(Render(Value::STRUCT(std::move(fields))) == "struct_pack(a := 1, b := 'x')");
+	REQUIRE(Render(Value::STRUCT(std::move(fields))) == "\"system\".main.struct_pack(a := 1, b := 'x')");
 }
 
 TEST_CASE("ConstantExpression::FromValue round-trips scalar values", "[api]") {
@@ -116,6 +118,10 @@ TEST_CASE("ConstantExpression::FromValue round-trips scalar values", "[api]") {
 	RequireExpressionRoundTrip(con, "TIMESTAMP '2020-01-02 12:34:56.789'");
 	RequireExpressionRoundTrip(con, "TIMESTAMP_NS '2020-01-02 12:34:56.789123456'");
 	RequireExpressionRoundTrip(con, "INTERVAL '1 day 2 hours'");
+	RequireExpressionRoundTrip(con,
+	                           "to_months(-2147483648)+to_days(-2147483648)+to_microseconds(-9223372036854775808)");
+	RequireExpressionRoundTrip(con, "'POINT ZM(1.25 -2.5 3.75 4.5)'::GEOMETRY('OGC:CRS84')");
+	RequireExpressionRoundTrip(con, "NULL::GEOMETRY('OGC:CRS84')");
 	RequireExpressionRoundTrip(con, "'5ecb6a72-1fc3-4b5f-9d8a-0d3a4b5c6d7e'::UUID");
 	RequireExpressionRoundTrip(con, "'a'::ENUM('a', 'b')");
 	// the JSON alias only exists when the json extension is part of the build
@@ -128,7 +134,7 @@ TEST_CASE("ConstantExpression::FromValue round-trips pointer values", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
-	for (auto pointer : {uintptr_t(0), uintptr_t(42), uintptr_t(1) << 40, ~uintptr_t(0)}) {
+	for (auto pointer : {uintptr_t(0), uintptr_t(42), uintptr_t(1) << (sizeof(uintptr_t) * 4), ~uintptr_t(0)}) {
 		auto original = Value::POINTER(pointer);
 		auto parsed = ConstantExpression::FromValue(original);
 		REQUIRE(parsed->Cast<ConstantExpression>().GetLiteral().IsPointer());
@@ -164,4 +170,19 @@ TEST_CASE("ConstantExpression::FromValue round-trips nested values", "[api]") {
 	RequireExpressionRoundTrip(con, "NULL::STRUCT(a INTEGER)");
 	RequireExpressionRoundTrip(con, "NULL::INTEGER[]");
 	RequireExpressionRoundTrip(con, "NULL::MAP(VARCHAR, INTEGER)");
+	RequireExpressionRoundTrip(con, "'A' COLLATE nocase");
+	RequireExpressionRoundTrip(con, "['A' COLLATE nocase, NULL]");
+	RequireExpressionRoundTrip(con, "CASE WHEN false THEN ['A' COLLATE nocase] ELSE [] END");
+	RequireExpressionRoundTrip(con, "CASE WHEN false THEN {'s': 'A' COLLATE nocase} ELSE NULL END");
+	RequireExpressionRoundTrip(con, "CASE WHEN false THEN map([1], ['A' COLLATE nocase]) ELSE NULL END");
+	RequireExpressionRoundTrip(con, "get_type(['A' COLLATE nocase])");
+	RequireExpressionRoundTrip(con, "[get_type(42), NULL]");
+	RequireExpressionRoundTrip(con, "(SELECT sum(i) EXPORT_STATE FROM range(3) t(i))");
+
+	// Parent metadata need not be repeated in the stored child Values.
+	auto collated = Value::ARRAY(LogicalType::VARCHAR, {Value("A")})
+	                    .WithType(LogicalType::ARRAY(LogicalType::VARCHAR_COLLATION("nocase"), 1));
+	auto expression = ConstantExpression::FromValue(collated);
+	RequireSameExpressionValue(BindAndEvaluate(con, expression->Copy()), collated);
+	RequireSameExpressionValue(EvalConstantExpression(con, expression->ToString()), collated);
 }
