@@ -1,0 +1,63 @@
+# name: test/sql/aggregate/aggregates/test_filter_clause_sharing_many.test
+# description: Hundreds of filtered aggregates share one scan
+# group: [aggregates]
+
+require 64bit
+
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+PRAGMA threads=8
+
+# hundreds of filtered aggregates, one FILTER per key as a PIVOT produces them
+statement ok
+CREATE OR REPLACE TABLE many AS SELECT (i % 300)::INTEGER AS k, ((i // 300) % 10)::INTEGER AS g, (hash(i) % 1000)::INTEGER AS v FROM range(6000) tbl(i)
+
+statement ok
+CREATE MACRO filtered(aggr, n) AS list_aggregate(list_transform(range(n), lambda i: format(aggr || ' FILTER (WHERE k = {})', i)), 'string_agg', ', ')
+
+# ungrouped: the columns hold the per-key results of a GROUP BY
+query I
+SELECT [*COLUMNS(*)] = (SELECT list(m ORDER BY k) FROM (SELECT k, max(v) m FROM many GROUP BY k)) FROM query('SELECT ' || filtered('max(v)', 300) || ' FROM many')
+----
+true
+
+query I
+SELECT [*COLUMNS(*)] = (SELECT list(d ORDER BY k) FROM (SELECT k, count(DISTINCT v) d FROM many GROUP BY k)) FROM query('SELECT ' || filtered('count(DISTINCT v)', 300) || ' FROM many')
+----
+true
+
+query III
+SELECT list_sum(l), list_min(l), len(l) FROM (SELECT [*COLUMNS(*)] AS l FROM query('SELECT ' || filtered('count(*)', 300) || ' FROM many'))
+----
+6000	20	300
+
+# grouped: perfect hash and hash aggregate
+foreach threshold 0 32
+
+statement ok
+SET perfect_ht_threshold={threshold}
+
+query I
+WITH f AS (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('max(v)', 300) || ' FROM many GROUP BY g')), r AS (SELECT g, list(m ORDER BY k) AS l FROM (SELECT g, k, max(v) m FROM many GROUP BY g, k) GROUP BY g) SELECT count(*) FROM f JOIN r USING (g, l)
+----
+10
+
+# two aggregates per filter
+query I
+WITH f AS (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('max(v)', 300) || ', ' || filtered('sum(v)', 300) || ' FROM many GROUP BY g')), r AS (SELECT g, list(x ORDER BY n, k) AS l FROM (SELECT g, k, 0 AS n, max(v) AS x FROM many GROUP BY g, k UNION ALL SELECT g, k, 1, sum(v) FROM many GROUP BY g, k) GROUP BY g) SELECT count(*) FROM f JOIN r USING (g, l)
+----
+10
+
+query I
+WITH f AS (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('count(DISTINCT v)', 50) || ' FROM many GROUP BY g')), r AS (SELECT g, list(d ORDER BY k) AS l FROM (SELECT g, k, count(DISTINCT v) d FROM many WHERE k < 50 GROUP BY g, k) GROUP BY g) SELECT count(*) FROM f JOIN r USING (g, l)
+----
+10
+
+query I
+SELECT count(*) FROM (SELECT g, [*COLUMNS(* EXCLUDE g)] AS l FROM query('SELECT g, ' || filtered('count(*)', 300) || ' FROM many GROUP BY g')) WHERE list_sum(l) = 600 AND list_min(l) = 2 AND len(l) = 300
+----
+10
+
+endloop
