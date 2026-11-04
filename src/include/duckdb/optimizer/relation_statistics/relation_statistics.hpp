@@ -16,6 +16,8 @@
 
 namespace duckdb {
 
+class BaseStatistics;
+
 enum class DistinctCountSource : uint8_t { CARDINALITY, MIN_MAX, HLL, EXACT };
 
 struct DistinctCount {
@@ -57,6 +59,10 @@ public:
 	DistinctCount current_domain;
 	//! Structural evidence that permits using current_domain for SEMI/ANTI joins.
 	SemiAntiJoinDomainEvidence semi_anti_join_domain_evidence;
+	//! For list columns: type-level statistics carrying the estimated total element count
+	//! (ListStats), produced by aggregate and scalar statistics callbacks and consumed by
+	//! UNNEST estimation. Shared, treated as immutable: rescaling replaces the pointer.
+	shared_ptr<BaseStatistics> list_stats;
 	Identifier name;
 };
 

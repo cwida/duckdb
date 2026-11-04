@@ -1,0 +1,183 @@
+# name: test/optimizer/joins/unnest_list_aggregate_estimate.test
+# description: UNNEST of a list aggregate is estimated at the aggregate's input cardinality
+# group: [joins]
+
+statement ok
+CREATE TABLE vertices AS SELECT i::INT AS v FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE arcs AS
+SELECT ((i * 48271 + 11) % 1000)::INT AS src, ((i * 69621 + 12345) % 1000)::INT AS dst
+FROM range(4000) t(i);
+
+statement ok
+SET explain_output='optimized_only';
+
+# unnest((SELECT list(v) FROM vertices)) re-expands the aggregate's 1000 input rows
+query II
+EXPLAIN (FORMAT JSON) SELECT unnest((SELECT list(v) FROM vertices)) AS x;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(SUBQUERY\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# a genuinely one-row list source keeps its small estimate
+statement ok
+CREATE TABLE single_vertex AS SELECT 42::INT AS v;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT unnest((SELECT list(v) FROM single_vertex)) AS x;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(SUBQUERY\)",\s*"Estimated Cardinality":\s*"1".*
+
+# list(... ORDER BY ...) is rewritten into list_sort(list(...)): the element count carries through the sort
+query II
+EXPLAIN (FORMAT JSON) SELECT unnest((SELECT list(v ORDER BY v) FROM vertices)) AS x;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(SUBQUERY\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# an aggregate FILTER keeps only part of the input: the estimate scales down
+query II
+EXPLAIN (FORMAT JSON) SELECT unnest((SELECT list(v) FILTER (WHERE v = 0) FROM vertices)) AS x;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(SUBQUERY\)",\s*"Estimated Cardinality":\s*"200".*
+
+# a window between the aggregate and the unnest passes the list binding through
+query II
+EXPLAIN (FORMAT JSON) SELECT unnest(xs), rn
+FROM (SELECT list(v) AS xs, row_number() OVER () AS rn FROM vertices) s;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# a join that duplicates the list rows scales the element count along
+query II
+EXPLAIN (FORMAT JSON) SELECT r.v, unnest(s.xs)
+FROM (SELECT list(v) AS xs FROM vertices) s, vertices r;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000000".*
+
+# the scaling is independent of the relation order
+query II
+EXPLAIN (FORMAT JSON) SELECT r.v, unnest(s.xs)
+FROM vertices r, (SELECT list(v) AS xs FROM vertices) s;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000000".*
+
+# first(...) over more than one input row picks a single list: the total does not carry
+query II
+EXPLAIN (FORMAT JSON) WITH g AS MATERIALIZED (SELECT v, list(v) AS xs FROM vertices GROUP BY v)
+SELECT unnest(first(xs)) FROM g;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(\\"first\\"\(xs\)\)",\s*"Estimated Cardinality":\s*"1".*
+
+# null extension is not duplication: the nullable side keeps its source total
+query II
+EXPLAIN (FORMAT JSON) WITH g AS MATERIALIZED (SELECT max(v) AS k, list(v) AS xs FROM vertices)
+SELECT unnest(g.xs) FROM vertices l LEFT JOIN g ON l.v = g.k;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# the kept total survives a preserved side smaller than the list count
+statement ok
+CREATE TABLE probe AS SELECT i::INT AS v FROM range(10) t(i);
+
+query II
+EXPLAIN (FORMAT JSON) WITH g AS MATERIALIZED (SELECT max(v) AS k, list(v) AS xs FROM vertices)
+SELECT unnest(g.xs) FROM probe l LEFT JOIN g ON l.v = g.k;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# the same holds on the non-reorderable path of a FULL join
+query II
+EXPLAIN (FORMAT JSON) WITH g AS MATERIALIZED (SELECT max(v) AS k, list(v) AS xs FROM vertices)
+SELECT unnest(g.xs) FROM vertices l FULL JOIN g ON l.v = g.k;
+----
+logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# interaction with the inequality join floor: two unnest-seeded sides joined only on <>
+# estimate near the 1000 x 1000 cross product instead of a single-row pairing
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS a) x
+    JOIN (SELECT unnest((SELECT list(v) FROM vertices)) AS b) y ON x.a <> y.b;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"9[0-9]{5}".*
+
+statement ok
+SET explain_output='physical_only';
+
+# the triangle pairs each unnest side with the arcs via hash joins,
+# not the two unnest sides with each other via a nested loop on the inequality
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS v) x,
+    arcs e,
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS v) y
+WHERE x.v = e.src AND y.v = e.dst AND x.v != y.v;
+----
+physical_plan	<!REGEX>:.*"name":\s*"NESTED_LOOP_JOIN".*
+
+# the same triangle resolves both equality conditions through hash joins
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS v) x,
+    arcs e,
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS v) y
+WHERE x.v = e.src AND y.v = e.dst AND x.v != y.v;
+----
+physical_plan	<REGEX>:.*"name":\s*"HASH_JOIN".*"name":\s*"HASH_JOIN".*
+
+# the unnest-seeded triangle returns the same result as the table-seeded control
+query I
+SELECT count(*) FROM
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS v) x,
+    arcs e,
+    (SELECT unnest((SELECT list(v) FROM vertices)) AS v) y
+WHERE x.v = e.src AND y.v = e.dst AND x.v != y.v;
+----
+4000
+
+query I
+SELECT count(*) FROM
+    (SELECT v FROM vertices) x,
+    arcs e,
+    (SELECT v FROM vertices) y
+WHERE x.v = e.src AND y.v = e.dst AND x.v != y.v;
+----
+4000
+
+# a recursion seeded through unnest(list(...)) pairs its recurring scans through the
+# edge relation instead of a nested loop on the inequality
+query II
+EXPLAIN (FORMAT JSON) WITH RECURSIVE cc(node, comp) USING KEY (node) AS (
+    (SELECT node, node AS comp FROM (SELECT unnest((SELECT list(v) FROM vertices)) AS node) unl)
+    UNION
+    (SELECT y.node, min(least(x.comp, y.comp)) AS comp
+     FROM recurring.cc x, arcs e, recurring.cc y
+     WHERE x.node = e.src AND y.node = e.dst AND x.comp != y.comp
+     GROUP BY y.node)
+)
+SELECT count(*), sum(comp::BIGINT) FROM cc;
+----
+physical_plan	<!REGEX>:.*"name":\s*"NESTED_LOOP_JOIN".*
+
+# both seed variants reach the same fixpoint
+query II
+SELECT * FROM (WITH RECURSIVE cc(node, comp) USING KEY (node) AS (
+    (SELECT node, node AS comp FROM (SELECT unnest((SELECT list(v) FROM vertices)) AS node) unl)
+    UNION
+    (SELECT y.node, min(least(x.comp, y.comp)) AS comp
+     FROM recurring.cc x, arcs e, recurring.cc y
+     WHERE x.node = e.src AND y.node = e.dst AND x.comp != y.comp
+     GROUP BY y.node)
+)
+SELECT count(*), sum(comp::BIGINT) FROM cc)
+EXCEPT
+SELECT * FROM (WITH RECURSIVE cc(node, comp) USING KEY (node) AS (
+    (SELECT v AS node, v AS comp FROM vertices)
+    UNION
+    (SELECT y.node, min(least(x.comp, y.comp)) AS comp
+     FROM recurring.cc x, arcs e, recurring.cc y
+     WHERE x.node = e.src AND y.node = e.dst AND x.comp != y.comp
+     GROUP BY y.node)
+)
+SELECT count(*), sum(comp::BIGINT) FROM cc);
+----

@@ -3,12 +3,15 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_unnest_expression.hpp"
 #include "duckdb/planner/operator/list.hpp"
 
 namespace duckdb {
 
-static optional<RelationStats>
-ProjectChildStats(LogicalOperator &op, const vector<reference<const RelationStats>> &children, idx_t cardinality) {
+static optional<RelationStats> ProjectChildStats(LogicalOperator &op,
+                                                 const vector<reference<const RelationStats>> &children,
+                                                 idx_t cardinality, const vector<bool> &null_extended_children = {}) {
 	RelationStats result;
 	result.cardinality = cardinality;
 	result.stats_initialized = true;
@@ -23,6 +26,24 @@ ProjectChildStats(LogicalOperator &op, const vector<reference<const RelationStat
 			return {};
 		}
 		result.columns.emplace_back(binding, source->total_domain, source->current_domain, source->name);
+		if (source->list_stats) {
+			idx_t source_cardinality = 0;
+			bool null_extended = false;
+			for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
+				if (children[child_idx].get().GetColumnStats(binding)) {
+					source_cardinality = children[child_idx].get().cardinality;
+					null_extended = child_idx < null_extended_children.size() && null_extended_children[child_idx];
+					break;
+				}
+			}
+			if (null_extended) {
+				// null-extended join sides grow through rows that hold no lists: keep the source total
+				result.columns.back().list_stats = source->list_stats;
+			} else {
+				result.columns.back().list_stats =
+				    RelationStatisticsHelper::ScaleListStats(source->list_stats, source_cardinality, cardinality);
+			}
+		}
 	}
 	result.CapCurrentDomainsToCardinality();
 	result.Verify(op.GetColumnBindings());
@@ -165,16 +186,39 @@ static optional<RelationStats> ExtractGetWithChildStats(LogicalGet &get, ClientC
 
 static optional<RelationStats> ExtractUnnestStats(LogicalOperator &op, const RelationStats &child_stats) {
 	auto &unnest = op.Cast<LogicalUnnest>();
+	RelationColumnStatsLookup child_columns(child_stats);
+	// UNNEST multiplies its input by the list lengths, which plain child cardinality cannot capture:
+	// unnest((SELECT list(x) FROM tbl)) collapses to a single-row estimate and derails join ordering.
+	// When the unnested column carries list statistics with an element count, use it as the estimate.
+	idx_t element_cardinality = 0;
+	for (auto &expr : op.expressions) {
+		if (expr->GetExpressionClass() != ExpressionClass::BOUND_UNNEST) {
+			continue;
+		}
+		auto &unnest_child = *expr->Cast<BoundUnnestExpression>().Child();
+		if (unnest_child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			continue;
+		}
+		auto child_column = child_columns.Find(unnest_child.Cast<BoundColumnRefExpression>().Binding());
+		if (!child_column || !child_column->list_stats) {
+			continue;
+		}
+		auto element_count = ListStats::TotalListLength(*child_column->list_stats);
+		if (element_count.IsValid()) {
+			element_cardinality = MaxValue(element_cardinality, element_count.GetIndex());
+		}
+	}
 	RelationStats result;
-	result.cardinality = child_stats.cardinality;
+	result.cardinality = MaxValue(child_stats.cardinality, element_cardinality);
 	result.stats_initialized = true;
 	result.table_name = Identifier(op.GetName());
-	RelationColumnStatsLookup child_columns(child_stats);
 	for (auto &binding : op.GetColumnBindings()) {
 		auto child_column = child_columns.Find(binding);
 		if (child_column) {
 			result.columns.emplace_back(binding, child_column->total_domain, child_column->current_domain,
 			                            child_column->name);
+			result.columns.back().list_stats = RelationStatisticsHelper::ScaleListStats(
+			    child_column->list_stats, child_stats.cardinality, result.cardinality);
 		} else if (binding.table_index == unnest.unnest_index) {
 			result.columns.emplace_back(binding, DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
 			                            Identifier("unnest"));
@@ -204,7 +248,25 @@ static optional<RelationStats> ExtractComparisonJoinStats(LogicalComparisonJoin 
 		return result;
 	}
 	auto cardinality = JoinCardinality(join, child_stats[0], child_stats[1]);
-	auto result = ProjectChildStats(join, child_stats, cardinality);
+	// join sides that can be null-extended must not scale their list element counts
+	vector<bool> null_extended_children(2, false);
+	switch (join.join_type) {
+	case JoinType::LEFT:
+	case JoinType::SINGLE:
+	case JoinType::MARK:
+		null_extended_children[1] = true;
+		break;
+	case JoinType::RIGHT:
+		null_extended_children[0] = true;
+		break;
+	case JoinType::OUTER:
+		null_extended_children[0] = true;
+		null_extended_children[1] = true;
+		break;
+	default:
+		break;
+	}
+	auto result = ProjectChildStats(join, child_stats, cardinality, null_extended_children);
 	if (result || join.join_type != JoinType::MARK) {
 		return result;
 	}
@@ -218,6 +280,8 @@ static optional<RelationStats> ExtractComparisonJoinStats(LogicalComparisonJoin 
 		auto column = left_columns.Find(binding);
 		if (column) {
 			mark_result.columns.emplace_back(binding, column->total_domain, column->current_domain, column->name);
+			mark_result.columns.back().list_stats = RelationStatisticsHelper::ScaleListStats(
+			    column->list_stats, child_stats[0].get().cardinality, cardinality);
 		} else if (binding.table_index == join.mark_index) {
 			mark_result.columns.emplace_back(
 			    binding, DistinctCount(MinValue<idx_t>(cardinality, 3), DistinctCountSource::CARDINALITY),
@@ -365,7 +429,7 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 	case LogicalOperatorType::LOGICAL_CHUNK_GET:
 		return ExtractColumnDataGetStats(op.Cast<LogicalColumnDataGet>(), context);
 	case LogicalOperatorType::LOGICAL_PROJECTION:
-		return ExtractProjectionStats(op.Cast<LogicalProjection>(), child_stats[0].get());
+		return ExtractProjectionStats(op.Cast<LogicalProjection>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		return ExtractAggregationStats(op.Cast<LogicalAggregate>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_WINDOW:

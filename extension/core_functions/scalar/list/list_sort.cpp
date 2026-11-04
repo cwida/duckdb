@@ -470,6 +470,14 @@ static void SetListSortSerialization(ScalarFunction &function) {
 	function.SetDeserializeCallback(ListSortBindData::Deserialize);
 }
 
+static unique_ptr<BaseStatistics> ListSortStats(ClientContext &context, FunctionStatisticsInput &input) {
+	// sorting reorders the lists without changing their contents: forward the input statistics
+	if (input.child_stats.empty() || input.child_stats[0].GetType() != input.expr.GetReturnType()) {
+		return nullptr;
+	}
+	return input.child_stats[0].ToUnique();
+}
+
 ScalarFunctionSet ListSortFun::GetFunctions() {
 	// one parameter: list
 	ScalarFunction sort({}, LogicalType::LIST(LogicalType::ANY), ListSortFunction, ListNormalSortBind);
@@ -493,6 +501,9 @@ ScalarFunctionSet ListSortFun::GetFunctions() {
 	sort_order.SetResolveTypesCallback(ListSortResolveTypes);
 	SetListSortSerialization(sort_orders);
 	sort_orders.SetResolveTypesCallback(ListSortResolveTypes);
+	sort.SetStatisticsCallback(ListSortStats);
+	sort_order.SetStatisticsCallback(ListSortStats);
+	sort_orders.SetStatisticsCallback(ListSortStats);
 
 	ScalarFunctionSet list_sort;
 	list_sort.AddFunction(sort);
@@ -544,6 +555,8 @@ ScalarFunctionSet ListReverseSortFun::GetFunctions() {
 	sort_reverse.SetResolveTypesCallback(ListSortResolveTypes);
 	SetListSortSerialization(sort_reverse_null_order);
 	sort_reverse_null_order.SetResolveTypesCallback(ListSortResolveTypes);
+	sort_reverse.SetStatisticsCallback(ListSortStats);
+	sort_reverse_null_order.SetStatisticsCallback(ListSortStats);
 
 	ScalarFunctionSet list_reverse_sort;
 	list_reverse_sort.AddFunction(sort_reverse);

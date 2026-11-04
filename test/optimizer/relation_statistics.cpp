@@ -994,14 +994,16 @@ TEST_CASE("Owned INNER residuals wait for their complete operator", "[optimizer]
 }
 
 TEST_CASE("Projection and window preserve the statistics source", "[optimizer][relation_statistics]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
 	auto input = ColumnBinding(TableIndex(10), ProjectionIndex(0));
 	auto child_stats = CreateStats({input}, {10}, 100);
 	child_stats.row_retention = 0.04;
 	child_stats.columns[0].total_domain = DistinctCount(100, DistinctCountSource::EXACT);
 	child_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(10);
 	auto projection = CreateProjectedDummy(TableIndex(10), TableIndex(20));
-	auto projected =
-	    RelationStatisticsHelper::ExtractProjectionStats(projection->Cast<LogicalProjection>(), child_stats);
+	auto projected = RelationStatisticsHelper::ExtractProjectionStats(projection->Cast<LogicalProjection>(),
+	                                                                  child_stats, *connection.context);
 	REQUIRE(projected);
 	REQUIRE(projected->row_retention == child_stats.row_retention);
 	REQUIRE(projected->columns[0].GetSupportedSemiAntiDomainSize().GetIndex() == 10);

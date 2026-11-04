@@ -89,6 +89,8 @@ struct FunctionStatisticsInput {
 	BoundFunctionExpression &expr;
 	optional_ptr<FunctionData> bind_data;
 	vector<BaseStatistics> &child_stats;
+	//! Owning slot of the expression for statistics-based rewrites. Null when the callback is
+	//! invoked outside the statistics propagator (e.g. join-order cardinality estimation).
 	unique_ptr<Expression> *expr_ptr;
 };
 

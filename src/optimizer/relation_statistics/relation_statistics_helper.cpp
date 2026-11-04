@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -178,8 +179,31 @@ static ExpressionBinding GetChildColumnBinding(Expression &expr) {
 	return result;
 }
 
+//! Whether the expression and its children have fully resolved types. Unresolved prepared
+//! parameters can leave UNKNOWN types in a plan, which the statistics callbacks' input
+//! contract does not cover - such plans are re-optimized once the parameters are bound.
+static bool TypeIsResolved(const LogicalType &type) {
+	return !TypeVisitor::Contains(type, [](const LogicalType &entry) {
+		return entry.id() == LogicalTypeId::UNKNOWN || entry.id() == LogicalTypeId::ANY;
+	});
+}
+
+static bool ExpressionTypesResolved(const Expression &expr) {
+	if (!TypeIsResolved(expr.GetReturnType())) {
+		return false;
+	}
+	bool resolved = true;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!TypeIsResolved(child.GetReturnType())) {
+			resolved = false;
+		}
+	});
+	return resolved;
+}
+
 optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(LogicalProjection &projection,
-                                                                         const RelationStats &child_stats) {
+                                                                         const RelationStats &child_stats,
+                                                                         ClientContext &context) {
 	RelationStats result;
 	result.cardinality = child_stats.cardinality;
 	result.row_retention = child_stats.row_retention;
@@ -212,9 +236,76 @@ optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(Logical
 		}
 		result.columns.emplace_back(bindings[expression_idx], distinct_count, current_domain,
 		                            Identifier(expression.GetName()), semi_anti_join_domain_evidence);
+		if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF && child_column) {
+			result.columns.back().list_stats = child_column->list_stats;
+		} else if (expression.GetReturnType().id() == LogicalTypeId::LIST &&
+		           expression.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+			// let the function's statistics callback derive the projected list statistics,
+			// e.g. list_sort forwards its input statistics unchanged
+			auto &bound_function = expression.Cast<BoundFunctionExpression>();
+			if (!bound_function.Function().HasStatisticsCallback() || !ExpressionTypesResolved(expression)) {
+				continue;
+			}
+			vector<BaseStatistics> callback_child_stats;
+			for (auto &function_child : bound_function.GetChildren()) {
+				optional_ptr<const RelationColumnStats> function_child_column;
+				if (function_child->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					function_child_column =
+					    child_columns.Find(function_child->Cast<BoundColumnRefExpression>().Binding());
+				}
+				if (function_child_column && function_child_column->list_stats) {
+					callback_child_stats.push_back(function_child_column->list_stats->Copy());
+				} else {
+					callback_child_stats.push_back(BaseStatistics::CreateUnknown(function_child->GetReturnType()));
+				}
+			}
+			FunctionStatisticsInput callback_input(bound_function, bound_function.BindInfoMutable().get(),
+			                                       callback_child_stats, nullptr);
+			auto callback_stats = bound_function.Function().GetStatisticsCallback()(context, callback_input);
+			if (callback_stats && callback_stats->GetStatsType() == StatisticsType::LIST_STATS) {
+				result.columns.back().list_stats = shared_ptr<BaseStatistics>(callback_stats.release());
+			}
+		}
 	}
 	result.Verify(bindings);
 	return result;
+}
+
+//! Scale the total list lengths of every list level by the row-duplication factor.
+//! Duplicating rows leaves the per-list length bounds unchanged.
+static bool ScaleListTotals(BaseStatistics &stats, double factor) {
+	bool scaled_any = false;
+	if (stats.GetStatsType() == StatisticsType::LIST_STATS) {
+		auto element_count = ListStats::TotalListLength(stats);
+		if (element_count.IsValid()) {
+			auto scaled = double(element_count.GetIndex()) * factor;
+			auto total = scaled >= double(NumericLimits<idx_t>::Maximum()) ? NumericLimits<idx_t>::Maximum()
+			                                                               : LossyNumericCast<idx_t>(scaled);
+			auto length_data = ListStats::GetLengthData(stats);
+			length_data.has_total_list_length = true;
+			length_data.total_list_length = total;
+			ListStats::SetLengthData(stats, length_data);
+			scaled_any = true;
+		}
+		scaled_any = ScaleListTotals(ListStats::GetChildStats(stats), factor) || scaled_any;
+	}
+	return scaled_any;
+}
+
+shared_ptr<BaseStatistics> RelationStatisticsHelper::ScaleListStats(const shared_ptr<BaseStatistics> &list_stats,
+                                                                    idx_t source_cardinality,
+                                                                    idx_t result_cardinality) {
+	if (!list_stats || result_cardinality <= source_cardinality || source_cardinality == 0) {
+		// keep the source totals when rows are removed: the overestimate protects against degenerate seeds
+		return list_stats;
+	}
+	// the rows holding the lists are duplicated: scale the element totals of every nesting level along
+	auto factor = double(result_cardinality) / double(source_cardinality);
+	auto rescaled = list_stats->ToUnique();
+	if (!ScaleListTotals(*rescaled, factor)) {
+		return list_stats;
+	}
+	return shared_ptr<BaseStatistics>(rescaled.release());
 }
 
 idx_t RelationStatisticsHelper::EstimateDistinctCardinality(const vector<DistinctCount> &distinct_counts,
@@ -483,6 +574,72 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 		result.columns.emplace_back(bindings[result.columns.size()],
 		                            DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
 		                            Identifier(expression->GetName()));
+		if (expression->GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+			continue;
+		}
+		auto &bound_aggr = expression->Cast<BoundAggregateExpression>();
+		auto &aggr_function = bound_aggr.Function();
+		if (expression->GetReturnType().id() != LogicalTypeId::LIST || !aggr_function.HasStatisticsCallback() ||
+		    !ExpressionTypesResolved(*expression)) {
+			continue;
+		}
+		// invoke the aggregate's statistics callback with the extraction's cardinality estimate
+		vector<BaseStatistics> callback_child_stats;
+		for (auto &aggr_child : bound_aggr.GetChildren()) {
+			optional_ptr<const RelationColumnStats> child_column;
+			if (aggr_child->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+				child_column = child_columns.Find(aggr_child->Cast<BoundColumnRefExpression>().Binding());
+			}
+			if (child_column && child_column->list_stats) {
+				callback_child_stats.push_back(child_column->list_stats->Copy());
+			} else {
+				callback_child_stats.push_back(BaseStatistics::CreateUnknown(aggr_child->GetReturnType()));
+			}
+		}
+		NodeStatistics node_stats(child_stats.cardinality);
+		AggregateStatisticsInput callback_input(bound_aggr.BindInfoMutable().get(), callback_child_stats, &node_stats);
+		auto callback_stats = aggr_function.GetStatisticsCallback()(extractor.GetContext(), bound_aggr, callback_input);
+		if (!callback_stats || callback_stats->GetStatsType() != StatisticsType::LIST_STATS) {
+			continue;
+		}
+		auto element_count = ListStats::TotalListLength(*callback_stats);
+		if (aggr_function.HasSingleValueIdentity()) {
+			// identity aggregates forward one input value: the input total only describes
+			// the output when a single row reaches a single group. The callback resets
+			// additive statistics, so restore the total from the carried input statistics.
+			element_count = optional_idx();
+			if (child_stats.cardinality <= 1 && aggregate.grouping_sets.size() <= 1 && !callback_child_stats.empty() &&
+			    callback_child_stats[0].GetStatsType() == StatisticsType::LIST_STATS) {
+				element_count = ListStats::TotalListLength(callback_child_stats[0]);
+			}
+		}
+		if (element_count.IsValid()) {
+			if (aggr_function.HasSingleValueIdentity()) {
+				// restored from the single-row input above: no adjustment
+			} else {
+				// assumed callback contract: the returned total counts one element per input row
+				// (list/array_agg), so grouping-set replication and FILTER selectivity apply here
+				auto total = double(element_count.GetIndex());
+				total *= double(MaxValue<idx_t>(aggregate.grouping_sets.size(), 1));
+				if (bound_aggr.GetFilter()) {
+					// an aggregate FILTER keeps only part of the input in the lists
+					total *= RelationStatisticsHelper::DEFAULT_SELECTIVITY;
+				}
+				element_count = total >= double(NumericLimits<idx_t>::Maximum())
+				                    ? optional_idx(NumericLimits<idx_t>::Maximum())
+				                    : optional_idx(MaxValue<idx_t>(LossyNumericCast<idx_t>(total), 1));
+			}
+		}
+		if (element_count.IsValid()) {
+			auto length_data = ListStats::GetLengthData(*callback_stats);
+			length_data.has_total_list_length = true;
+			length_data.total_list_length = element_count.GetIndex();
+			ListStats::SetLengthData(*callback_stats, length_data);
+		} else if (callback_stats->GetStatsType() == StatisticsType::LIST_STATS) {
+			// no reliable total for this column: keep the value statistics and length bounds
+			ListStats::ResetTotalListLength(*callback_stats);
+		}
+		result.columns.back().list_stats = shared_ptr<BaseStatistics>(callback_stats.release());
 	}
 	for (idx_t grouping_idx = 0; grouping_idx < aggregate.grouping_functions.size(); grouping_idx++) {
 		auto grouping_count = MinValue<idx_t>(result.cardinality, MaxValue<idx_t>(aggregate.grouping_sets.size(), 1));
@@ -523,6 +680,7 @@ optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWind
 		if (child_column) {
 			result.columns.emplace_back(binding, child_column->total_domain, child_column->current_domain,
 			                            child_column->name, child_column->semi_anti_join_domain_evidence);
+			result.columns.back().list_stats = child_column->list_stats;
 		} else if (binding.table_index == window.window_index) {
 			result.columns.emplace_back(binding, DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
 			                            Identifier("window"));

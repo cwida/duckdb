@@ -73,6 +73,11 @@ public:
 	bool ExtractFilterBindings(const Expression &expression, unordered_set<RelationIndex> &bindings);
 	bool TryNormalizeBinding(ColumnBinding binding, ColumnBinding &normalized) const;
 	bool HasCompleteStats() const;
+	//! Whether a relation sits on a join side that can be null-extended, so its list element
+	//! counts must not scale with the combined cardinality
+	bool RelationIsNullExtended(idx_t relation_idx) const {
+		return null_extended_relations.count(relation_idx) > 0;
+	}
 	bool AddRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, const RelationStats &stats);
 	bool HasRecursiveRelations() const;
 	const SingleJoinRelation &GetRelation(RelationIndex index) const;
@@ -115,6 +120,7 @@ private:
 	column_binding_map_t<ColumnBinding> normalized_bindings;
 	unordered_set<TableIndex> active_recursive_ctes;
 	bool has_recursive_relations = false;
+	unordered_set<idx_t> null_extended_relations;
 	bool stats_complete = true;
 	shared_ptr<const JoinOrderSourceStats> source_stats;
 	join_column_sources_t column_sources;

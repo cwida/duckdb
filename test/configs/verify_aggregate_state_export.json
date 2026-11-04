@@ -33,6 +33,7 @@
         "test/optimizer/statistics/statistics_count_not_null_pruning.test",
         "test/optimizer/statistics/statistics_join_aggregate_bounds.test",
         "test/optimizer/test_aggregate_function_rewrite.test",
+        "test/optimizer/joins/unnest_list_aggregate_estimate.test",
         "test/optimizer/ordered_aggregate.test",
         "test/sql/copy/parquet/parquet_encryption.test",
         "test/sql/copy/parquet/parquet_glob_cache.test",

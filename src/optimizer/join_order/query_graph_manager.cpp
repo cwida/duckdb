@@ -8,6 +8,7 @@
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
+#include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -401,8 +402,11 @@ optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<Col
 	}
 	result.stats_initialized = true;
 	column_binding_map_t<reference<const RelationColumnStats>> source_columns;
-	for (auto &input : inputs) {
-		auto &stats = input.get();
+	// the input vector can be a local pair or leaf during reconstruction: track the owning input
+	// per column, since the normalized table index is a global relation id and cannot index it
+	column_binding_map_t<idx_t> source_inputs;
+	for (idx_t input_idx = 0; input_idx < inputs.size(); input_idx++) {
+		auto &stats = inputs[input_idx].get();
 		if (!stats.stats_initialized) {
 			return {};
 		}
@@ -418,6 +422,7 @@ optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<Col
 				return {};
 			}
 			source_columns.emplace(normalized, column);
+			source_inputs.emplace(normalized, input_idx);
 		}
 	}
 
@@ -433,6 +438,18 @@ optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<Col
 		}
 		result.columns.push_back(
 		    CombineColumnStats(binding, normalized, source_entry->second.get(), equality_bounds, inputs.size() == 1));
+		auto &source = source_entry->second.get();
+		if (source.list_stats) {
+			if (relation_manager.RelationIsNullExtended(normalized.table_index.index)) {
+				// null extension grows the output through rows that hold no lists: keep the source totals
+				result.columns.back().list_stats = source.list_stats;
+			} else {
+				auto owning_input = source_inputs.find(normalized);
+				D_ASSERT(owning_input != source_inputs.end());
+				result.columns.back().list_stats = RelationStatisticsHelper::ScaleListStats(
+				    source.list_stats, inputs[owning_input->second].get().cardinality, root_cardinality);
+			}
+		}
 	}
 	result.CapCurrentDomainsToCardinality();
 	result.Verify(bindings);
