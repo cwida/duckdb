@@ -13465,8 +13465,11 @@ namespace Catch {
             GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
             return csbi.srWindow.Right - csbi.srWindow.Left + 1;
 #else
-            struct winsize w;
+            struct winsize w = {};
             ioctl(0, TIOCGWINSZ, &w);
+            if (w.ws_col == 0) {
+               return 120;
+            }
             return w.ws_col;
 #endif
         }

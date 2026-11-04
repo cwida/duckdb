@@ -194,6 +194,8 @@ public:
 	//! commit (e.g. because of an I/O exception)
 	void RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
+	//! Revert an append that failed before it was finalized
+	void RevertFailedAppend(TableAppendState &state);
 
 	void ScanTableSegment(DuckTransaction &transaction, idx_t start_row, idx_t count,
 	                      const std::function<void(DataChunk &chunk)> &function);

@@ -154,8 +154,9 @@ string MakeTestContent(idx_t size) {
 	return content;
 }
 
-string ReadFull(CachingFileHandle &handle, idx_t size, idx_t offset = 0) {
-	auto group = handle.Read(size, offset);
+string ReadFull(CachingFileHandle &handle, idx_t size, idx_t offset = 0,
+                const vector<pair<idx_t, idx_t>> &absorb_ranges = {}) {
+	auto group = handle.Read(size, offset, absorb_ranges);
 	string result(size, '\0');
 	group.CopyTo(reinterpret_cast<data_ptr_t>(&result[0]), size);
 	return result;
@@ -468,6 +469,57 @@ TEST_CASE("Small cached ranges are kept when fetching them with the gaps saves n
 	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{0, 8192}, {12288, 61440}});
 	REQUIRE(CountCachedBlocks(cache) == 3);
 	REQUIRE(TotalCachedBytes(cache) == FILE_SIZE);
+}
+
+TEST_CASE("A read re-fetches the cached ranges with the gaps only within the ranges it asks for",
+          "[external_file_cache]") {
+	DuckDB db = MakeCacheLocalFilesDB();
+	auto &db_instance = *db.instance;
+	auto recording_fs = make_uniq<EFCTrackingFileSystem>();
+
+	const idx_t BLOCK_SIZE = 65536;
+	Connection con(db);
+	con.Query(StringUtil::Format("SET external_file_cache_local_max_block_size=%llu", BLOCK_SIZE));
+
+	const idx_t FILE_SIZE = 100000;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard plain_file("test_efc_absorb_plain.bin", content);
+	EFCTestFileGuard elsewhere_file("test_efc_absorb_elsewhere.bin", content);
+	EFCTestFileGuard absorbed_file("test_efc_absorb_asked.bin", content);
+
+	CachingFileSystem cfs(*recording_fs, db_instance);
+	auto &cache = db_instance.GetExternalFileCache();
+	const vector<pair<idx_t, idx_t>> kept_reads {
+	    {0, 8192}, {24576, BLOCK_SIZE}, {24576 + BLOCK_SIZE, FILE_SIZE - 24576 - BLOCK_SIZE}};
+
+	// a cached range larger than an eighth of the block is kept by an ordinary read: the gaps around it are fetched
+	auto plain = cfs.OpenFile(MakeTestOpenFileInfo(plain_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*plain, 16384, 8192) == content.substr(8192, 16384));
+	recording_fs->TakeReads();
+	REQUIRE(ReadFull(*plain, FILE_SIZE) == content);
+	REQUIRE(recording_fs->TakeReads() == kept_reads);
+	REQUIRE(CountCachedBlocks(cache) == 4);
+
+	// a read that asks for absorption elsewhere in the file keeps the range as well
+	auto elsewhere = cfs.OpenFile(MakeTestOpenFileInfo(elsewhere_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*elsewhere, 16384, 8192) == content.substr(8192, 16384));
+	recording_fs->TakeReads();
+	REQUIRE(ReadFull(*elsewhere, FILE_SIZE, 0, {{50000, FILE_SIZE}}) == content);
+	REQUIRE(recording_fs->TakeReads() == kept_reads);
+	REQUIRE(CountCachedBlocks(cache) == 8);
+
+	// a read whose asked-for range covers it re-fetches it with its gaps, saving a request
+	auto absorbed = cfs.OpenFile(MakeTestOpenFileInfo(absorbed_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*absorbed, 16384, 8192) == content.substr(8192, 16384));
+	recording_fs->TakeReads();
+	REQUIRE(ReadFull(*absorbed, FILE_SIZE, 0, {{0, 30000}}) == content);
+	REQUIRE(recording_fs->TakeReads() ==
+	        vector<pair<idx_t, idx_t>> {{0, BLOCK_SIZE}, {BLOCK_SIZE, FILE_SIZE - BLOCK_SIZE}});
+	REQUIRE(CountCachedBlocks(cache) == 10);
+	REQUIRE(TotalCachedBytes(cache) == 3 * FILE_SIZE);
+
+	REQUIRE(ReadFull(*absorbed, FILE_SIZE) == content);
+	REQUIRE(recording_fs->TakeReads().empty());
 }
 
 TEST_CASE("Cached ranges of local files between gaps are kept at the default block size", "[external_file_cache]") {

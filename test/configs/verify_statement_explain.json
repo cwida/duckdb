@@ -25,6 +25,12 @@
       ]
     },
     {
+      "reason": "Planning the explained statement draws a second sample seed, which moves the seeded sequence on",
+      "paths": [
+        "test/sql/function/numeric/setseed_pinned_values.test"
+      ]
+    },
+    {
       "reason": "Explain exceeds 300KB memory limit",
       "paths": [
         "test/issues/internal/test_5457.test"

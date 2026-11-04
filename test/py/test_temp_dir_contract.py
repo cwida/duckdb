@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -627,6 +628,17 @@ SELECT '{ONE}', '{TWO}'
 # -----------------------------------------------------------------------------
 # Option surface: CLI, DUCKDB_TEST_<NAME> and --test-config must agree
 #
+
+
+def test_auto_run_id_is_compact_uuid(probe, tmp_path):
+    """Keep full UUID entropy without consuming path space on a timestamp or mnemonic."""
+    identifiers = [probe("--temp-dir-root", str(tmp_path / "root"))["run_id"] for _ in range(2)]
+    for identifier in identifiers:
+        random_id = uuid.UUID(identifier)
+        assert str(random_id) == identifier
+        assert random_id.version == 4
+        assert random_id.variant == uuid.RFC_4122
+    assert identifiers[0] != identifiers[1]
 
 
 def test_run_id_via_cli_env_and_config_agree(probe, tmp_path):

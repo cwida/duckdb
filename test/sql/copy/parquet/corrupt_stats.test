@@ -7,7 +7,7 @@ require parquet
 statement error
 SELECT a FROM '{DATA_DIR}/parquet-testing/corrupt_stats.parquet' GROUP BY a;
 ----
-This likely means that the statistics in your data source are corrupt
+Data Corruption Error: Perfect hash aggregate:
 
 statement ok
 PRAGMA disable_optimizer

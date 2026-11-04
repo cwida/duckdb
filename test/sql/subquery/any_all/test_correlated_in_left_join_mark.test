@@ -1,0 +1,62 @@
+# name: test/sql/subquery/any_all/test_correlated_in_left_join_mark.test
+# description: Mark join above a LEFT JOIN whose ON clause contains a correlated IN subquery
+# group: [any_all]
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (NULL);
+
+statement ok
+CREATE TABLE s(i INTEGER);
+
+statement ok
+INSERT INTO s VALUES (1), (3);
+
+statement ok
+CREATE VIEW v AS SELECT 42 AS x;
+
+query I
+SELECT *
+FROM v
+WHERE (
+    SELECT COUNT(*)
+    FROM (
+        SELECT a.i,
+               b.i <> ANY (SELECT i FROM s)
+        FROM t AS a
+        LEFT JOIN t AS b ON b.i IN (
+            SELECT CASE
+                WHEN v.x IS NULL OR NOT v.x IS NULL
+                THEN i ELSE i
+            END AS i
+            FROM s
+        )
+    ) AS q
+) = 3;
+----
+42
+
+# uncorrelated IN above the LEFT JOIN
+query II
+SELECT x, (
+    SELECT COUNT(*)
+    FROM t a LEFT JOIN t b ON b.i IN (SELECT v.x FROM s)
+    WHERE b.i IN (SELECT i FROM s)
+) FROM t v(x) ORDER BY x NULLS LAST;
+----
+1	3
+2	0
+NULL	0
+
+# correlated IN above the LEFT JOIN
+query II
+SELECT x, (
+    SELECT SUM((b.i IN (SELECT v.x - 1 + i FROM s))::INTEGER)
+    FROM t a LEFT JOIN t b ON b.i IN (SELECT v.x FROM s)
+) FROM t v(x) ORDER BY x NULLS LAST;
+----
+1	3
+2	3
+NULL	NULL

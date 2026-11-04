@@ -24,6 +24,7 @@ constexpr LogLevel CheckpointLogType::LEVEL;
 constexpr LogLevel AdaptiveFilterLogType::LEVEL;
 constexpr LogLevel ParquetPrefetchLogType::LEVEL;
 constexpr LogLevel AsyncTaskScheduleLogType::LEVEL;
+constexpr LogLevel ReadAheadBudgetLogType::LEVEL;
 constexpr LogLevel ProgressVerificationLogType::LEVEL;
 
 //===--------------------------------------------------------------------===//
@@ -128,6 +129,9 @@ static const case_insensitive_set_t &HTTPRequestHeaderAllowList() {
 
 	    // S3 session authorization (https://docs.aws.amazon.com/AmazonS3/latest/API/API_CreateSession.html).
 	    // "x-amz-s3session-token", // Contains S3 Express session credentials.
+
+	    // AWS JSON protocol (https://smithy.io/2.0/aws/protocols/aws-json-1_1-protocol.html), e.g. AWS Glue.
+	    "x-amz-target", // Service and operation name, e.g. AWSGlue.GetTable.
 	};
 	return allow_list;
 }
@@ -557,6 +561,30 @@ string AsyncTaskScheduleLogType::ConstructLogMessage(const string &pool, idx_t t
 	child_list_t<Value> child_list = {
 	    {"pool", Value(pool)},
 	    {"task_count", Value::BIGINT(static_cast<int64_t>(task_count))},
+	};
+	return Value::STRUCT(std::move(child_list)).ToString();
+}
+
+//===--------------------------------------------------------------------===//
+// ReadAheadBudgetLogType
+//===--------------------------------------------------------------------===//
+ReadAheadBudgetLogType::ReadAheadBudgetLogType() : LogType(NAME, LEVEL, GetLogType()) {
+}
+
+LogicalType ReadAheadBudgetLogType::GetLogType() {
+	child_list_t<LogicalType> child_list = {
+	    {"pending_bytes", LogicalType::UBIGINT},
+	    {"budget_bytes", LogicalType::UBIGINT},
+	    {"active_jobs", LogicalType::UBIGINT},
+	};
+	return LogicalType::STRUCT(child_list);
+}
+
+string ReadAheadBudgetLogType::ConstructLogMessage(idx_t pending_bytes, idx_t budget_bytes, idx_t active_jobs) {
+	child_list_t<Value> child_list = {
+	    {"pending_bytes", Value::UBIGINT(pending_bytes)},
+	    {"budget_bytes", Value::UBIGINT(budget_bytes)},
+	    {"active_jobs", Value::UBIGINT(active_jobs)},
 	};
 	return Value::STRUCT(std::move(child_list)).ToString();
 }

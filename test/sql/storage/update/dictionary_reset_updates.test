@@ -1,0 +1,33 @@
+# name: test/sql/storage/update/dictionary_reset_updates.test
+# description: Reused dictionary scan output still merges updates in later row groups
+# group: [update]
+
+require no_latest_storage
+
+load {TEST_DIR}/dictionary_reset_updates.db readwrite v1.0.0
+
+statement ok
+SET threads=1
+
+statement ok
+SET force_compression='dictionary'
+
+statement ok
+CREATE TABLE t AS SELECT (i % 5)::VARCHAR AS s FROM range(250000) t(i)
+
+statement ok
+CHECKPOINT
+
+query T
+SELECT DISTINCT compression FROM pragma_storage_info('t') WHERE segment_type='VARCHAR'
+----
+Dictionary
+
+statement ok
+UPDATE t SET s='updated' WHERE rowid=200000
+
+# Scan the clean row group before the updated row group without filter pushdown.
+query II
+SELECT count(*) FILTER (WHERE s='updated'), count(*) FROM t
+----
+1	250000

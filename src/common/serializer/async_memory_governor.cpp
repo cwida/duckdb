@@ -38,6 +38,7 @@ void ManagedAsyncMemoryGovernor::UpdateReservation(idx_t current_pending_bytes) 
 		return;
 	}
 
+	lock_guard<mutex> guard(reservation_lock);
 	auto current_reservation = memory_state->GetReservation();
 	while (current_pending_bytes > MinValue(current_reservation, max_pending_bytes)) {
 		idx_t next_request;
@@ -87,7 +88,11 @@ idx_t ManagedAsyncMemoryGovernor::BackpressureBudget() const {
 }
 
 void ManagedAsyncMemoryGovernor::Release() {
-	if (!memory_state || memory_request_bytes == 0) {
+	if (!memory_state) {
+		return;
+	}
+	lock_guard<mutex> guard(reservation_lock);
+	if (memory_request_bytes == 0) {
 		return;
 	}
 	memory_state->SetZero();

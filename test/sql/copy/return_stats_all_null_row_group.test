@@ -1,0 +1,30 @@
+# name: test/sql/copy/return_stats_all_null_row_group.test
+# description: RETURN_STATS keeps a column's min/max when a row group holds only NULLs for that column
+# group: [copy]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+# row groups of 2048 rows: i is NULL throughout the first row group, s throughout the second, n everywhere
+query IIIIIII
+COPY (SELECT CASE WHEN r < 2048 THEN NULL ELSE r END AS i,
+             CASE WHEN r < 2048 THEN 'row_' || r END AS s,
+             NULL::INTEGER AS n
+      FROM range(4096) t(r))
+TO '{TEST_DIR}/all_null_row_group.parquet' (ROW_GROUP_SIZE 2048, RETURN_STATS);
+----
+<REGEX>:.*all_null_row_group.parquet	4096	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"i"'={column_size_bytes=\d+, max=4095, max_is_exact=true, min=2048, min_is_exact=true, null_count=2048, num_values=4096}, '"n"'={column_size_bytes=\d+, null_count=4096, num_values=4096}, '"s"'={column_size_bytes=\d+, max=row_999, max_is_exact=true, min=row_0, min_is_exact=true, null_count=2048, num_values=4096}}	NULL	{row_group_count=2}
+
+# the file's own row group statistics agree
+query IIII
+SELECT path_in_schema, row_group_id, stats_min_value, stats_max_value
+FROM parquet_metadata('{TEST_DIR}/all_null_row_group.parquet')
+WHERE path_in_schema IN ('i', 's')
+ORDER BY path_in_schema, row_group_id;
+----
+i	0	NULL	NULL
+i	1	2048	4095
+s	0	row_0	row_999
+s	1	NULL	NULL

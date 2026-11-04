@@ -372,6 +372,6 @@ template <class... METRICS>
 struct MetricList {};
 
 // The metrics marked "live": they can be read while the query runs
-using LiveMetrics = MetricList<MetricSystemTotalMemoryAllocated, MetricIOTotalBytesRead, MetricIOTotalBytesWritten>;
+using LiveMetrics = MetricList<MetricSystemTotalBytesSpilled, MetricSystemTotalMemoryAllocated, MetricIOTotalBytesRead, MetricIOTotalBytesWritten, MetricIOTotalReadOperations, MetricIOTotalReadTime, MetricIOTotalWriteOperations, MetricIOTotalWriteTime>;
 
 } // namespace duckdb

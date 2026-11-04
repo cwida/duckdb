@@ -1,0 +1,73 @@
+# name: test/sql/cast/boolean_to_decimal_cast.test
+# description: Casting true to a DECIMAL without integer digits fails
+# group: [cast]
+
+# every internal width of a DECIMAL whose width equals its scale
+foreach width 1 4 5 9 10 18 19 38
+
+statement error
+SELECT true::DECIMAL({width}, {width})
+----
+Could not cast value true to DECIMAL(
+
+query II
+SELECT TRY_CAST(true AS DECIMAL({width}, {width})) IS NULL, false::DECIMAL({width}, {width}) = 0
+----
+true	true
+
+endloop
+
+# one integer digit is enough
+query IIIII
+SELECT true::DECIMAL(2,1), true::DECIMAL(5,4), true::DECIMAL(10,9), true::DECIMAL(19,18), true::DECIMAL(38,37)
+----
+1.0	1.0000	1.000000000	1.000000000000000000	1.0000000000000000000000000000000000000
+
+# more than one vector of true, false and NULL
+statement ok
+CREATE TABLE bools AS SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE i % 3 = 1 END AS b FROM range(5000) t(i);
+
+statement error
+SELECT b::DECIMAL(4,4) FROM bools
+----
+Could not cast value true to DECIMAL(4,4)
+
+query IIIII
+SELECT count(*), count(TRY_CAST(b AS DECIMAL(4,4))), count(TRY_CAST(b AS DECIMAL(18,18))),
+       count(TRY_CAST(b AS DECIMAL(38,38))), sum(TRY_CAST(b AS DECIMAL(9,9))) = 0
+FROM bools
+----
+5000	1666	1666	1666	true
+
+query II
+SELECT count(*), sum(b::DECIMAL(4,4)) = 0 FROM bools WHERE NOT b
+----
+1666	true
+
+query I
+SELECT count(*) FROM bools WHERE b::DECIMAL(4,3) = 1
+----
+1667
+
+# implicit casts on insert
+statement ok
+CREATE TABLE dt (x DECIMAL(2,2));
+
+statement error
+INSERT INTO dt VALUES (true)
+----
+Could not cast value true to DECIMAL(2,2)
+
+statement error
+INSERT INTO dt SELECT b FROM bools
+----
+Could not cast value true to DECIMAL(2,2)
+
+statement ok
+INSERT INTO dt VALUES (false), (NULL)
+
+query I
+SELECT x = 0 FROM dt ORDER BY x NULLS LAST
+----
+true
+NULL

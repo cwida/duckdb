@@ -52,6 +52,14 @@ StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpressi
 BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto stack_checker = StackCheck(*expr);
 
+	if (binder.HasEnclosingScope()) {
+		// an expression an enclosing query groups by is a reference to that group, e.g. `(SELECT x::DATE)`
+		// inside a query that groups by `x::DATE`
+		auto owner = ResolveOuterGroupOwner(*expr);
+		if (owner.IsValid()) {
+			return BindGroupInEnclosingScope(expr, owner.GetIndex(), depth);
+		}
+	}
 	auto &expr_ref = *expr;
 	switch (expr_ref.GetExpressionClass()) {
 	case ExpressionClass::BETWEEN:

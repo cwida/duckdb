@@ -315,8 +315,7 @@ bool GroupingSetsOptimizer::TryRewriteGroupingSets(unique_ptr<LogicalOperator> &
 				    state_types[aggr_idx], ColumnBinding(cte_ref_index, ProjectionIndex(state_pos))));
 				auto combine_function =
 				    GetBuiltinAggregateFunction(optimizer.context, CombineAggrFun::Name, {state_types[aggr_idx]});
-				auto combine_aggregate =
-				    function_binder.BindAggregateFunction(std::move(combine_function), std::move(arguments));
+				auto combine_aggregate = function_binder.BindAggregateFunction(combine_function, std::move(arguments));
 				if (combine_aggregate->GetReturnType() != state_types[aggr_idx]) {
 					return false;
 				}
@@ -433,8 +432,11 @@ bool GroupingSetsOptimizer::TryRewriteGroupingSets(unique_ptr<LogicalOperator> &
 			continue;
 		}
 		auto cte_name = Identifier(StringUtil::Format("__grouping_sets_cte_%llu", level.cte_index.index));
+		// cap the aggregate with a projection so later binding remaps cannot change the CTE's column layout
+		auto cte_definition =
+		    LogicalProjection::CreateIdentity(optimizer.binder.GenerateTableIndex(), std::move(level.aggregate));
 		auto cte = make_uniq<LogicalMaterializedCTE>(std::move(cte_name), level.cte_index, level.output_types.size(),
-		                                             std::move(level.aggregate), std::move(result),
+		                                             std::move(cte_definition), std::move(result),
 		                                             CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
 		if (aggr.has_estimated_cardinality) {
 			cte->SetEstimatedCardinality(aggr.estimated_cardinality);

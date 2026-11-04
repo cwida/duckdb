@@ -876,7 +876,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			active_query->handle = handle.get();
 			active_query->SetOpenResult(*handle);
 		}
-		result = SubmitStatementInternal(lock, active_query->TakeNextStatement(), parameters);
+		auto statement = active_query->TakeNextStatement();
+		NotifyStatementBeginInternal(lock);
+		result = SubmitStatementInternal(lock, std::move(statement), parameters);
 		if (!result && ClientConfig::GetConfig(*this).get_result_collector) {
 			result = RunToResultStatementInternal(lock, *handle);
 		}
@@ -1175,7 +1177,12 @@ void ClientContext::Interrupt() {
 }
 
 bool ClientContext::IsInterrupted() const {
-	return interrupt_state.load(std::memory_order_relaxed) == ClientInterruptState::INTERRUPTED;
+	auto state = interrupt_state.load(std::memory_order_relaxed);
+	if (state == ClientInterruptState::INTERRUPTS_SUPPRESSED) {
+		return false;
+	}
+	// an internal connection is also interrupted when its base client is
+	return state == ClientInterruptState::INTERRUPTED || (base_context && base_context->IsInterrupted());
 }
 
 void ClientContext::ClearInterrupt() {
@@ -1191,11 +1198,11 @@ void ClientContext::InterruptCheck() const {
 	static constexpr uint32_t TIMEOUT_CHECK_INTERVAL = 256;
 	thread_local uint32_t timeout_check_counter = 0;
 
-	if (interrupt_state.load(std::memory_order_relaxed) == ClientInterruptState::INTERRUPTED) {
+	if (IsInterrupted()) {
 		throw InterruptException();
 	}
 	// Only check timeout every N calls to avoid expensive steady_clock::now() syscall
-	if (query_deadline.IsValid() && ++timeout_check_counter % TIMEOUT_CHECK_INTERVAL == 0) {
+	if (HasQueryDeadline() && ++timeout_check_counter % TIMEOUT_CHECK_INTERVAL == 0) {
 		BlockingInterruptCheck();
 	}
 }
@@ -1209,12 +1216,19 @@ void ClientContext::BlockingInterruptCheck() const {
 	}
 }
 
+bool ClientContext::HasQueryDeadline() const {
+	return query_deadline.IsValid() || (base_context && base_context->HasQueryDeadline());
+}
+
 bool ClientContext::QueryDeadlinePassed() const {
-	if (!query_deadline.IsValid()) {
-		return false;
+	if (query_deadline.IsValid()) {
+		auto now = NumericCast<idx_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+		if (now >= query_deadline.GetIndex()) {
+			return true;
+		}
 	}
-	auto now = NumericCast<idx_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
-	return now >= query_deadline.GetIndex();
+	// an internal connection is also out of time when the query it runs on behalf of is
+	return base_context && base_context->QueryDeadlinePassed();
 }
 
 void ClientContext::CancelTransaction() {

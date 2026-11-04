@@ -62,7 +62,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(tag, block_size, can_destroy);
+		auto result = buffer_manager.Allocate(QueryContext(context), tag, block_size, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
@@ -70,7 +70,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(tag, block_manager, can_destroy);
+		auto result = buffer_manager.Allocate(QueryContext(context), tag, block_manager, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
@@ -93,7 +93,7 @@ public:
 		return result;
 	}
 	BufferHandle Pin(shared_ptr<BlockHandle> &handle) override {
-		return Pin(QueryContext(), handle);
+		return Pin(QueryContext(context), handle);
 	}
 	BufferHandle Pin(const QueryContext &context, shared_ptr<BlockHandle> &handle) override {
 		return buffer_manager.Pin(context, handle);

@@ -602,6 +602,8 @@ char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 		}
 		free(zPrior);
 		zPrior = nullptr;
+		// probing the terminal inside the line editor is not possible - detect before editing
+		DetectDarkLightMode();
 		return linenoise(prompt_text);
 	}
 #endif
@@ -1318,7 +1320,8 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 #endif
 		db->LoadStaticExtension<duckdb::ShellExtension>();
 		// bare expressions / table names as statements - only in the CLI, so it is opt-in grammar
-		ExecuteQuery("SET active_grammar_extensions=['shell']");
+		// appended rather than SET, so grammar extensions that activated themselves on this connection stay active
+		ExecuteQuery("CALL add_grammar_extension('shell')");
 		if (stdout_is_console || agent_mode_active) {
 			ExecuteQuery("PRAGMA enable_progress_bar");
 			ExecuteQuery("PRAGMA enable_print_progress_bar");
@@ -2558,7 +2561,7 @@ LIMIT 5)");
 		if (!style.layout_on.empty()) {
 			style.layout_off = ShellHighlight::ResetTerminalCode();
 		}
-		if (linenoiseGetTerminalColorMode() == LINENOISE_LIGHT_MODE) {
+		if (highlight_mode == HighlightMode::LIGHT_MODE) {
 			style.heading_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::BOLD);
 			style.path_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::STANDARD);
 		} else {
@@ -3761,6 +3764,10 @@ void ShellState::PrintQueryEstimate(const string &sql, const duckdb::SQLStatemen
 void ShellState::DetectDarkLightMode() {
 #ifdef HAVE_LINENOISE
 	ShellHighlight highlight(*this);
+	if (!ShellHighlight::IsEnabled()) {
+		// no colors are printed - no need to detect
+		return;
+	}
 	if (highlight_mode != HighlightMode::AUTOMATIC) {
 		// highlight mode is specified by the user - avoid setting manually
 		return;
@@ -3770,7 +3777,9 @@ void ShellState::DetectDarkLightMode() {
 		return;
 	}
 	// detect terminal colors
-	auto terminal_color = linenoiseGetTerminalColorMode();
+	// the terminal is not queried while stdin is read by the shell itself (-batch) - only COLORFGBG is used then
+	auto terminal_color =
+	    linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && (stdin_is_interactive || !readStdin));
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
@@ -3840,6 +3849,12 @@ int RunShell(int argc, const char **argv) {
 	data.stderr_is_console = IsStdStreamAConsole(2);
 
 	data.Initialize();
+
+	auto no_color = getenv("NO_COLOR");
+	if (no_color && no_color[0]) {
+		// https://no-color.org - can still be turned on explicitly with .highlight on
+		ShellHighlight::SetHighlighting(false);
+	}
 
 	/* On Windows, we must translate command-line arguments into UTF-8.
 	 */
@@ -3958,8 +3973,6 @@ int RunShell(int argc, const char **argv) {
 		data.PrintAgentHelp(PrintOutput::STDERR, true);
 	}
 
-	data.DetectDarkLightMode();
-
 	/* Make a second pass through the command-line argument and set
 	** options.  This second pass is delayed until after the initialization
 	** file is processed so that the command-line arguments will override
@@ -4036,6 +4049,8 @@ int RunShell(int argc, const char **argv) {
 #endif
 			ShellHistory history(data, zHistory);
 			data.in = 0;
+			// the line editor needs the colors up front
+			data.DetectDarkLightMode();
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;

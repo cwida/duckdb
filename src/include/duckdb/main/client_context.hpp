@@ -123,6 +123,11 @@ public:
 	atomic<ClientInterruptState> interrupt_state {ClientInterruptState::NOT_INTERRUPTED};
 	//! The deadline for the current query (milliseconds since epoch)
 	optional_idx query_deadline;
+	//! For an internal connection created on behalf of another client: the outermost client, whose interrupts and
+	//! query deadline also apply. An internal connection runs within a query of its base client.
+	shared_ptr<ClientContext> base_context;
+	//! The number of internal connections between this client and its base client (0 for a base client)
+	idx_t internal_depth = 0;
 	//! Set of optional states (e.g. Caches) that can be held by the ClientContext
 	unique_ptr<RegisteredStateManager> registered_state;
 	//! The logger to be used by this ClientContext
@@ -301,6 +306,9 @@ public:
 
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
+	//! Whether the statement that runs now is the last of the active query. A statement that expands into several
+	//! runs them as one query in one transaction; for any other query this is always true
+	DUCKDB_API bool ActiveQueryIsLastStatement() const;
 
 	connection_t GetConnectionId() const;
 
@@ -418,9 +426,12 @@ private:
 	//! Ends the statement that finished and starts the next one. Returns the result object a collector built for it,
 	//! which only a statement started inside the submission may have
 	unique_ptr<QueryResult> AdvanceStatementInternal(ClientContextLock &lock);
+	//! Whether this query or, for an internal connection, the base client's query has a deadline
+	bool HasQueryDeadline() const;
 	bool QueryDeadlinePassed() const;
-	//! Ends the statement of the active query that finished, when another one follows
-	void EndStatementInternal(ClientContextLock &lock);
+	//! Ends the statement that finished: releases its executor and plan and notifies registered state
+	void EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
+	void NotifyStatementBeginInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);
 	//! End the query in the profiler; a failure to emit the profile becomes the error unless there is one already

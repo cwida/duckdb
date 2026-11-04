@@ -1,0 +1,57 @@
+# name: test/sql/filter/dense_integral_selection.test
+# description: Dense integral comparisons preserve row mappings, tails, and nullable fallbacks
+# group: [filter]
+
+foreach type TINYINT SMALLINT INTEGER BIGINT
+
+statement ok
+CREATE TABLE dense_selection AS
+SELECT i, ((i * 37) % 100 - 50)::{type} AS v FROM range(4099) r(i)
+
+query II
+SELECT count(*), sum(i) FROM dense_selection WHERE v < 0
+----
+2050	4199425
+
+query II
+SELECT count(*), sum(i) FROM dense_selection WHERE v = 7
+----
+41	84501
+
+query II
+SELECT count(*), sum(i) FROM dense_selection WHERE v BETWEEN -13 AND 29
+----
+1762	3610543
+
+query II
+SELECT count(*), sum(i) FROM dense_selection WHERE v < -25 OR v > 31
+----
+1763	3612797
+
+query II
+SELECT count(*), sum(i) FROM dense_selection WHERE v < 0 AND i % 7 <> 0
+----
+1757	3599553
+
+query I
+SELECT sum(CASE WHEN v < 0 THEN i ELSE -i END) FROM dense_selection
+----
+-1
+
+statement ok
+UPDATE dense_selection SET v = NULL WHERE i % 7 = 0
+
+query II
+SELECT count(*), sum(i) FROM dense_selection WHERE v < 0
+----
+1757	3599553
+
+query I
+SELECT sum(CASE WHEN v < 0 THEN i ELSE -i END) FROM dense_selection
+----
+-1199745
+
+statement ok
+DROP TABLE dense_selection
+
+endloop

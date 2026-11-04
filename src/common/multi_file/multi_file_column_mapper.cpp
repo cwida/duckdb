@@ -1,4 +1,5 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -650,7 +651,11 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
 	    !is_trivially_mappable && local_column_type.IsNested();
 	if (!can_use_remap_struct) {
 		// not a struct - potentially add a cast
-		if (local_column_type != global_column_type) {
+		if (local_column_type.id() == LogicalTypeId::VARCHAR && global_column_type.id() == LogicalTypeId::BLOB) {
+			// the text in a file becomes its UTF-8 bytes, it is not a blob literal with \x escapes
+			expr = BoundCastExpression::Create(std::move(expr), global_column_type,
+			                                   BoundCastInfo(DefaultCasts::ReinterpretCast));
+		} else if (local_column_type != global_column_type) {
 			expr = BoundCastExpression::AddCastToType(context, std::move(expr), global_column_type);
 		}
 		return expr;

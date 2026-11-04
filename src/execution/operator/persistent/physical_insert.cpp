@@ -669,7 +669,8 @@ SinkCombineResultType PhysicalInsert::Combine(ExecutionContext &context, Operato
 	const idx_t row_group_size = storage.GetRowGroupSize();
 
 	// parallel append: finalize the append
-	auto tdata = TransactionData::Unversioned();
+	// the transaction id keeps the rows invisible to other transactions until the commit
+	TransactionData tdata(DuckTransaction::Get(context.client, table.catalog));
 	auto &data_table = gstate.table.GetStorage();
 	auto &optimistic_collection = data_table.GetOptimisticCollection(context.client, lstate.collection_index);
 	auto &collection = *optimistic_collection.collection;

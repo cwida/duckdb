@@ -1,0 +1,129 @@
+# name: test/optimizer/statistics/shared_join_filter_domain.test
+# description: Finite join-key filters restrict known shared domains
+# group: [statistics]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (SELECT i AS id, (i % 10)::INTEGER AS n, 'key_' || (i % 10) AS k FROM range(200) t(i))
+TO '{TEST_DIR}/shared_domain_a.parquet';
+
+statement ok
+COPY (SELECT (i % 10)::INTEGER AS n, 'key_' || (i % 10) AS k FROM range(1000) t(i))
+TO '{TEST_DIR}/shared_domain_b.parquet';
+
+statement ok
+COPY (SELECT i::INTEGER AS n, 'key_' || i AS k FROM range(10) t(i))
+TO '{TEST_DIR}/shared_domain_c.parquet';
+
+statement ok
+CREATE VIEW a AS SELECT * FROM read_parquet('{TEST_DIR}/shared_domain_a.parquet');
+
+statement ok
+CREATE VIEW b AS SELECT * FROM read_parquet('{TEST_DIR}/shared_domain_b.parquet');
+
+statement ok
+CREATE VIEW c AS SELECT * FROM read_parquet('{TEST_DIR}/shared_domain_c.parquet');
+
+query II
+EXPLAIN SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k);
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*~20,000 rows.*
+
+# Numeric min/max provides ten values. Filtering every key to one value must
+# also restrict the common join denominator.
+query I
+SELECT count(*) FROM a JOIN b USING (n) JOIN c USING (n) WHERE a.n = 3;
+----
+2000
+
+query II
+EXPLAIN SELECT count(*) FROM a JOIN b USING (n) JOIN c USING (n) WHERE a.n = 3;
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*~2,000 rows.*
+
+# Missing NDV still uses the existing filter selectivity and shared domain.
+# Changing only the denominator would amplify the scan-estimation error.
+query I
+SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k) WHERE a.k = 'key_3';
+----
+2000
+
+query II
+EXPLAIN SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k) WHERE a.k = 'key_3';
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*~160 rows.*
+
+query I
+SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k) WHERE a.k IN ('key_3', 'key_7');
+----
+4000
+
+query II
+EXPLAIN SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k) WHERE a.k IN ('key_3', 'key_7');
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*~4,000 rows.*
+
+# A redundant equality must not apply another selectivity factor.
+query II
+EXPLAIN SELECT count(*) FROM a JOIN b ON a.n = b.n JOIN c ON b.n = c.n AND a.n = c.n
+WHERE a.n = 3;
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*~2,000 rows.*
+
+# Leave unrelated filter selectivities unchanged.
+query I
+SELECT count(*) FROM (SELECT n FROM a WHERE id = 3) x JOIN b USING (n) JOIN c USING (n)
+WHERE x.n = 3;
+----
+100
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT n FROM a WHERE id = 3) x JOIN b USING (n) JOIN c USING (n)
+WHERE x.n = 3;
+----
+physical_plan	<REGEX>:(?s).*HASH_JOIN.*~100 rows.*
+
+query I
+WITH x AS MATERIALIZED (SELECT n AS key FROM a WHERE n = 3)
+SELECT count(*) FROM x JOIN b ON x.key = b.n JOIN c ON b.n = c.n;
+----
+2000
+
+# Nonmatching and null keys retain ordinary join semantics.
+query I
+SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k)
+WHERE a.k = 'key_3' AND c.k = 'key_4';
+----
+0
+
+query I
+SELECT count(*) FROM a LEFT JOIN b ON a.k = b.k AND b.k = 'key_3';
+----
+2180
+
+query I
+SELECT count(*) FROM a SEMI JOIN b ON a.k = b.k WHERE a.k = 'key_3';
+----
+20
+
+query I
+SELECT count(*) FROM a ANTI JOIN b ON a.k = b.k WHERE a.k = 'key_3';
+----
+0
+
+statement ok
+PREPARE filtered_join AS SELECT count(*) FROM a JOIN b USING (k) JOIN c USING (k) WHERE a.k = $1;
+
+query I
+EXECUTE filtered_join('key_7');
+----
+2000
+
+query I
+EXECUTE filtered_join(NULL);
+----
+0

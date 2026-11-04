@@ -1,0 +1,68 @@
+# name: test/sql/copy/partitioned/partitioned_written_key_edges.test
+# description: Omitted constant variable partition keys do not contribute to COPY batch sizes
+# group: [partitioned]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+statement ok
+SET max_execution_time=60000;
+
+statement ok
+SET partitioned_write_flush_threshold=8000;
+
+statement ok
+CREATE MACRO batches() AS TABLE
+SELECT regexp_extract(message, 'rows=(\d+)', 1)::BIGINT AS rows,
+       regexp_extract(message, 'size=(\d+)', 1)::BIGINT AS bytes
+FROM duckdb_logs WHERE type='PhysicalOperator' AND message LIKE '%FlushBatch%';
+
+statement ok
+CREATE TABLE key_input AS
+SELECT i AS k, repeat(md5(i::VARCHAR),8) AS s,
+       NULL::VARCHAR AS null_key, 'short' AS inline_key,
+       [repeat('a',80), NULL, repeat('b',80)] AS list_key,
+       struct_pack(s := repeat('a',160), ys := [1::BIGINT,NULL,2::BIGINT]) AS struct_key,
+       [repeat('a',80), NULL, repeat('b',80)]::VARCHAR[3] AS array_key
+FROM range(8000) t(i);
+
+# Each input has one key and no ORDER_BY, so it uses the direct tuple shortcut.
+# The written row has 8 fixed integer bytes, a 16-byte string reference and 256 payload bytes.
+foreach key null_key inline_key list_key struct_key array_key
+
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY (SELECT k,s,{key} AS part FROM key_input) TO '{TEST_DIR}/{key}'
+(FORMAT PARQUET, PARTITION_BY part, PARTITION_PATH 'one',
+ ROW_GROUP_SIZE 4194304, ROW_GROUP_SIZE_BYTES 1048576);
+
+# Two batches reach the byte limit. Only the final tail may be shorter.
+query IIII
+SELECT count(*) FILTER (WHERE bytes >= 1048576) >= 2,
+       count(*) FILTER (WHERE bytes < 1048576) <= 1,
+       max(rows) <= (1048576 + 279) // 280,
+       sum(rows)=8000
+FROM batches();
+----
+true	true	true	true
+
+statement ok
+COMMIT;
+
+query II
+SELECT (SELECT count(*) FROM (SELECT k,s FROM key_input EXCEPT ALL SELECT k,s FROM read_parquet('{TEST_DIR}/{key}/**/*.parquet',hive_partitioning=false))),
+       (SELECT count(*) FROM (SELECT k,s FROM read_parquet('{TEST_DIR}/{key}/**/*.parquet',hive_partitioning=false) EXCEPT ALL SELECT k,s FROM key_input));
+----
+0	0
+
+endloop

@@ -193,3 +193,9 @@ query II
 EXPLAIN SELECT * FROM (VALUES(5000,5000)) tbl1(i,j), (VALUES(NULL, NULL, 5000, 5000)) tbl2(A, B, k,l) WHERE i<4999 AND k<=j AND j<=i AND l<=k;
 ----
 logical_opt	<REGEX>:.*(k < 4999.*l < 4999|l < 4999.*k < 4999).*
+
+# A column is not mirrored onto itself, which would duplicate the filter.
+query II
+EXPLAIN SELECT * FROM (VALUES(2)) tbl(i) WHERE i < 1 AND abs(i) = 1;
+----
+logical_opt	<!REGEX>:.*abs\(i\) = 1.*abs\(i\) = 1.*

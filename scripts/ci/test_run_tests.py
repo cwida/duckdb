@@ -5,6 +5,7 @@ import shlex
 import sys
 import tempfile
 import textwrap
+
 import threading
 import unittest
 from io import BytesIO, StringIO, TextIOWrapper
@@ -340,9 +341,89 @@ class RunTestsScriptTest(unittest.TestCase):
                 "--force-storage --label 'two words'",
                 "--test-config",
                 "test/configs/a config.json",
-                '"test/sql/a.test","Compiled, test\'s name"',
+                '"test/sql/a.test","Compiled\\, test\'s name"',
             ],
         )
+
+    def test_batch_filter_preserves_literal_sql_paths_and_escapes_catch_names(self):
+        cases = [
+            (
+                ["test/sql/a,b.test", "test/sql/c,d.test_slow", "test/sql/e,f.test_coverage"],
+                "test/sql/a,b.test\ntest/sql/c,d.test_slow\ntest/sql/e,f.test_coverage\n",
+            ),
+            (
+                ["test/sql/a,b.test", "Compiled, test"],
+                '"test/sql/a\\,b.test"\n"Compiled\\, test"\n',
+            ),
+            (
+                ["Compiled, test", "test/sql/a,b.test"],
+                '"Compiled\\, test"\n"test/sql/a\\,b.test"\n',
+            ),
+            (
+                ['Compiled "quoted", test', r"Compiled\test"],
+                '"Compiled \\"quoted\\"\\, test"\n"Compiled\\\\test"\n',
+            ),
+        ]
+        for names, expected in cases:
+            with self.subTest(names=names):
+                test_list = create_temp_file("{names}", names="\n".join(names))
+                helper = create_temp_file(
+                    """
+                    import sys
+                    from pathlib import Path
+                    actual = Path(sys.argv[1]).read_text()
+                    assert actual == {expected!r}, repr(actual)
+                    """,
+                    expected=expected,
+                )
+                try:
+                    proc = start_runner(
+                        [
+                            "unused-binary",
+                            "--test-list",
+                            str(test_list),
+                            "--workers",
+                            "1",
+                            "--retry",
+                            "0",
+                            "--test-command",
+                            f"{shlex.quote(sys.executable)} {shlex.quote(str(helper))} {{test_list}}",
+                        ]
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                finally:
+                    test_list.unlink(missing_ok=True)
+                    helper.unlink(missing_ok=True)
+
+    def test_invalid_catch_filter_is_not_counted_as_a_pass(self):
+        test_list = create_temp_file("compiled,test\n")
+        helper = create_temp_file(
+            """
+            print('Invalid Filter: "compiled,test"')
+            print('All tests passed (1 assertion in 1 test case)')
+            """
+        )
+        try:
+            proc = start_runner(
+                [
+                    "unused-binary",
+                    "--test-list",
+                    str(test_list),
+                    "--workers",
+                    "1",
+                    "--retry",
+                    "2",
+                    "--test-command",
+                    f"{shlex.quote(sys.executable)} {shlex.quote(str(helper))} {{test_list}}",
+                ]
+            )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn('Invalid Filter: "compiled,test"', proc.stdout)
+            self.assertNotIn("retrying failed test", proc.stdout)
+            self.assertNotIn("ran tests: 1 passed", proc.stdout)
+        finally:
+            test_list.unlink(missing_ok=True)
+            helper.unlink(missing_ok=True)
 
     def test_summarizes_wrong_result_failure(self):
         stderr = """
@@ -793,7 +874,7 @@ require windows: 2
         helper_path = create_temp_file(
             """
             #!/bin/sh
-            cat <<'EOF'
+            cat <<'EOF' >&2
             Skipped tests for the following reasons:
             require mysql_scanner: 56
             require postgres_scanner: 2

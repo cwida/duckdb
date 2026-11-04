@@ -60,8 +60,12 @@ shared_ptr<BlockHandle> BlockManager::RegisterBlock(block_id_t block_id, MemoryT
 shared_ptr<BlockHandle> BlockManager::ConvertToPersistent(QueryContext context, block_id_t block_id,
                                                           shared_ptr<BlockHandle> old_block, BufferHandle old_handle,
                                                           ConvertToPersistentMode mode, optional<MemoryTag> tag) {
+	auto default_tag = old_block->GetMemory().GetMemoryTag();
+	if (default_tag == MemoryTag::IN_MEMORY_TABLE) {
+		default_tag = MemoryTag::BASE_TABLE;
+	}
 	// register a block with the new block id
-	auto new_block = RegisterBlock(block_id, tag.value_or(old_block->GetMemory().GetMemoryTag()));
+	auto new_block = RegisterBlock(block_id, tag.value_or(default_tag));
 	D_ASSERT(new_block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
 	D_ASSERT(new_block->GetMemory().GetReaders() == 0);
 

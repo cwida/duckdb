@@ -239,7 +239,7 @@ struct ApproxTopKOperation {
 			return;
 		}
 		source.Verify();
-		auto min_source = source.values.back().get().count;
+		auto min_source = source.values.size() < source.capacity ? 0 : source.values.back().get().count;
 		idx_t min_target;
 		if (target.values.empty()) {
 			min_target = 0;
@@ -249,7 +249,7 @@ struct ApproxTopKOperation {
 				throw NotImplementedException("Approx Top K - cannot combine approx_top_K with different k values. "
 				                              "K values must be the same for all entries within the same group");
 			}
-			min_target = target.values.back().get().count;
+			min_target = target.values.size() < target.capacity ? 0 : target.values.back().get().count;
 		}
 		// for all entries in target
 		// check if they are tracked in source
@@ -559,6 +559,10 @@ void ApproxTopKImportState(AggregateImportInputData &input) {
 				throw InvalidInputException("Invalid approx_top_k state - the filter values cannot be NULL");
 			}
 			target.filter[filter_idx] = filter_data[filter_entry_idx];
+			if (target.filter[filter_idx] != 0 && target.values.size() < target.capacity) {
+				throw InvalidInputException(
+				    "Invalid approx_top_k state - the filter must be empty unless the state holds 3 * k values");
+			}
 		}
 		target.Verify();
 		state.state = internal_state.release();
@@ -599,6 +603,7 @@ AggregateFunction ApproxTopKFun::GetFunction() {
 	fun.GetSignature().AddParameter("val", LogicalTypeId::ANY).AddParameter("k", LogicalType::BIGINT);
 	fun.SetStateExportCallbacks(ApproxTopKGetStateType, ApproxTopKExportState<HistogramGenericFunctor>,
 	                            ApproxTopKImportState<HistogramGenericFunctor>);
+	fun.SetFallible(); // the update callback rejects NULL and out-of-range k values at runtime
 	return fun;
 }
 

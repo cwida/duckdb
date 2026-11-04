@@ -610,6 +610,7 @@ WindowFunction LeadFun::GetTypedFunction(const LogicalType &type, idx_t nargs) {
 	if (nargs > 2) {
 		func.GetSignature().GetParameter(2).SetType(type);
 	}
+	func.GetSignature().SetReturnType(type);
 	return func;
 }
 

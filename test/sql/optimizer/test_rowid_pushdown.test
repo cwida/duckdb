@@ -63,7 +63,7 @@ SELECT * FROM t1 where rowid = 6 OR rowid = 9 ORDER BY ALL;
 query II
 EXPLAIN SELECT * FROM t1 where rowid = 6 OR rowid = 9 ORDER BY ALL;
 ----
-physical_plan	<REGEX>:(?s).*Filters.*rowid.*6.*rowid.*9.*
+physical_plan	<REGEX>:(?s).*Filters.*rowid IN \(6, 9\).*
 
 statement ok
 CREATE TABLE nested_columns(s STRUCT(a INTEGER, b INTEGER));

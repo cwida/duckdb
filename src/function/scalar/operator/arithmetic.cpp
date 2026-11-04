@@ -7,6 +7,7 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/interpolate.hpp"
 #include "duckdb/common/operator/multiply.hpp"
@@ -1774,6 +1775,36 @@ ScalarFunctionSet OperatorModuloFun::GetFunctions() {
 }
 
 //===--------------------------------------------------------------------===//
+// fmod [floored modulo]
+//===--------------------------------------------------------------------===//
+struct FlooredModuloOperator {
+	template <class TA, class TB, class TR>
+	static inline TR Operation(TA left, TB right) {
+		// the remainder is exact, but takes the sign of the dividend
+		auto result = ModuloOperator::Operation<TA, TB, TR>(left, right);
+		// a zero remainder is returned as a positive zero
+		if (result == TR(0)) {
+			return TR(0);
+		}
+		if ((result < TR(0)) != (right < TB(0))) {
+			result += right;
+		}
+		return result;
+	}
+};
+
+ScalarFunctionSet FmodFun::GetFunctions() {
+	ScalarFunctionSet fmod;
+	for (auto &type : {LogicalType::FLOAT, LogicalType::DOUBLE}) {
+		ScalarFunction function({}, type, nullptr, BindBinaryFloatingPoint<FlooredModuloOperator>);
+		function.GetSignature().AddParameter("x", type).AddParameter("y", type);
+		fmod.AddFunction(std::move(function));
+	}
+	fmod.SetFallible();
+	return fmod;
+}
+
+//===--------------------------------------------------------------------===//
 // Linear Interpolation
 //===--------------------------------------------------------------------===//
 
@@ -1782,13 +1813,33 @@ double InterpolateOperator::Operation(const double &lo, const double d, const do
 	return lo * (1.0 - d) + hi * d;
 }
 
-//! Interpolates between two integers without going through a double for the values themselves
+//! Interpolates between two integers without going through a double for the values themselves.
+//! The result lies between the two values, but the double arithmetic can round past them (and past the int64 range,
+//! where llround is undefined), so bound it against the endpoints before converting back.
 static int64_t InterpolateInt64(const int64_t lo, const double d, const int64_t hi) {
 	int64_t delta;
 	if (!TrySubtractOperator::Operation(hi, lo, delta)) {
-		return std::llround(static_cast<double>(lo) * (1.0 - d) + static_cast<double>(hi) * d);
+		const auto range_min = MinValue(lo, hi);
+		const auto range_max = MaxValue(lo, hi);
+		const auto mixed = static_cast<double>(lo) * (1.0 - d) + static_cast<double>(hi) * d;
+		if (mixed <= static_cast<double>(range_min)) {
+			return range_min;
+		}
+		if (mixed >= static_cast<double>(range_max)) {
+			return range_max;
+		}
+		return std::llround(mixed);
 	}
-	return lo + std::llround(static_cast<double>(delta) * d);
+	const auto offset_min = MinValue<int64_t>(delta, 0);
+	const auto offset_max = MaxValue<int64_t>(delta, 0);
+	const auto offset = static_cast<double>(delta) * d;
+	if (offset <= static_cast<double>(offset_min)) {
+		return lo + offset_min;
+	}
+	if (offset >= static_cast<double>(offset_max)) {
+		return lo + offset_max;
+	}
+	return lo + std::llround(offset);
 }
 
 template <>
@@ -1816,6 +1867,13 @@ dtime_tz_t InterpolateOperator::Operation(const dtime_tz_t &lo, const double d, 
 
 template <>
 timestamp_t InterpolateOperator::Operation(const timestamp_t &lo, const double d, const timestamp_t &hi) {
+	if (lo == hi) {
+		return lo;
+	}
+	// the infinities are sentinel values, and interpolating with their raw encodings produces nonsense
+	if (!Value::IsFinite(lo) || !Value::IsFinite(hi)) {
+		throw ConversionException("Cannot interpolate infinite TIMESTAMP values");
+	}
 	return timestamp_t(InterpolateInt64(lo.value, d, hi.value));
 }
 

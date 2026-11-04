@@ -89,6 +89,8 @@ public:
 	DUCKDB_API int64_t WriteData(data_ptr_t buffer, int64_t nr_bytes);
 	DUCKDB_API void Close() override;
 	DUCKDB_API void AbortCompressedWrite();
+	//! Counts bytes the stream read from the child handle itself, outside ReadData (e.g. a header), as consumed
+	DUCKDB_API void AddConsumedBytes(idx_t bytes);
 
 private:
 	void Clear(); // for Initialize re-use to support FS.Reset()

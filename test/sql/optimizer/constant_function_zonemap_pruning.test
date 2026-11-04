@@ -114,7 +114,7 @@ EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE length_grapheme(s)
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
 
-# CONSISTENT_WITHIN_QUERY fails the CONSISTENT guard: no statistics are derived, so every RG is scanned.
+# CONSISTENT_WITHIN_QUERY functions are consistent within the query, so RGs 1-3 use constant evaluation and RG 4 is scanned.
 query I
 SELECT count(*) FROM const_db.constant_strings WHERE in_search_path('const_db', s);
 ----
@@ -123,7 +123,7 @@ SELECT count(*) FROM const_db.constant_strings WHERE in_search_path('const_db', 
 query II
 EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE in_search_path('const_db', s);
 ----
-analyzed_plan	<REGEX>:.*Row Groups Scanned: 4 / 4.*
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
 
 # Identical inexact bounds must not be treated as a constant input.
 query I

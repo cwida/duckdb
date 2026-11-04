@@ -84,6 +84,10 @@ public:
 		q.pop();
 		return true;
 	}
+	//! The single-threaded queue has no separate producer queues.
+	bool try_dequeue_from_producer(ProducerToken const &, T &) {
+		return false;
+	}
 	//! Get the size of the queue.
 	size_t size_approx() const {
 		return q.size();

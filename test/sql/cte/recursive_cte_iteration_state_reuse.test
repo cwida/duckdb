@@ -77,8 +77,7 @@ SELECT count(*), max(k), max(v) FROM walk;
 ----
 51	50	50
 
-# a per-iteration runtime bloom filter: the probe side is a base-table scan, the build keys shift
-# every iteration, and the filter is rebuilt, sealed, and published to the scan each round
+# The probe side is a base-table scan and the recursive build keys shift every iteration.
 statement ok
 SET disabled_optimizers='join_order,build_side_probe_side';
 
@@ -128,8 +127,7 @@ SELECT count(*), max(v) FROM m;
 ----
 51	76
 
-# two producer pipelines share one hash-join build sink: the per-iteration reset must run exactly
-# once per sink, so a bloom filter parked for recycling survives the second producer's reset
+# Two producer pipelines share one hash-join build sink across recursive iterations.
 statement ok
 SET disabled_optimizers='join_order,build_side_probe_side';
 

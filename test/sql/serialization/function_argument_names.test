@@ -1,0 +1,147 @@
+# name: test/sql/serialization/function_argument_names.test
+# description: Argument aliases must not be reinterpreted as argument names when a plan round-trips
+# group: [serialization]
+
+statement ok
+SET debug_verify_serializer=true;
+
+# pin the serialization format, both sections of this file test a specific one
+statement ok
+SET storage_compatibility_version='v2.0.0';
+
+# flattened scalar subqueries leave an alias on their replacement column reference - round-tripping the
+# plan used to consume those aliases as named-argument names of any kwargs-capable function
+
+# multiple trailing subqueries used to fail with: Duplicate named argument "SUBQUERY"
+query I
+SELECT least((SELECT 41), (SELECT 42), (SELECT 43));
+----
+41
+
+query I
+SELECT greatest((SELECT 41), (SELECT 42), (SELECT 43));
+----
+43
+
+query I
+SELECT concat((SELECT 'x'), (SELECT 'y'), (SELECT 'z'));
+----
+xyz
+
+# a single trailing subquery used to silently rebind as the named argument "SUBQUERY" through the
+# kwargs catch-all - the call must stay positional
+query I
+SELECT least(100, (SELECT 1));
+----
+1
+
+query I
+SELECT least(10, 20, (SELECT 3));
+----
+3
+
+query I
+SELECT greatest(1, 2, (SELECT 30));
+----
+30
+
+query I
+SELECT concat('a', 'b', (SELECT 'c'));
+----
+abc
+
+# subqueries in every argument position, including non-trailing ones
+query I
+SELECT least((SELECT 5), 4, (SELECT 3));
+----
+3
+
+# nested kwargs-capable calls with subquery arguments
+query I
+SELECT least(9, (SELECT greatest(1, (SELECT 8))));
+----
+8
+
+# genuine named arguments still round-trip, with their names intact
+query I
+SELECT least(3, x := 2);
+----
+2
+
+# the printed struct values carry the field names through the round trip - typeof folds to a constant
+# at bind time and would not see the deserialized plan
+query T
+SELECT struct_pack(a := 1, b := (SELECT 2));
+----
+{'a': 1, 'b': 2}
+
+query T
+SELECT struct_insert({'a': 1}, b := (SELECT 2));
+----
+{'a': 1, 'b': 2}
+
+query T
+SELECT union_value(k := (SELECT 7));
+----
+7
+
+# the legacy positional struct_pack call captures its argument names as named arguments
+query T
+SELECT struct_pack(v, w) FROM (SELECT 1, 2) t(v, w);
+----
+{'v': 1, 'w': 2}
+
+# a call without arguments round-trips as well
+query T
+SELECT struct_pack();
+----
+{}
+
+# named arguments of table functions round-trip as well
+query I
+SELECT * FROM repeat_row(7, num_rows := 2);
+----
+7
+7
+
+# plans serialized for older versions cannot record argument names in their own fields - the names of a
+# function that takes only keyword arguments travel in the aliases of its children, while the arguments
+# of a "*args" function are folded into the positional list and must be read back positionally
+
+statement ok
+SET storage_compatibility_version='v1.4.4';
+
+query I
+SELECT least((SELECT 41), (SELECT 42), (SELECT 43));
+----
+41
+
+query I
+SELECT least(10, 20, (SELECT 3));
+----
+3
+
+query I
+SELECT least(3, x := 2);
+----
+2
+
+query T
+SELECT struct_pack(a := 1, b := (SELECT 2));
+----
+{'a': 1, 'b': 2}
+
+query T
+SELECT struct_pack(v, w) FROM (SELECT 1, 2) t(v, w);
+----
+{'v': 1, 'w': 2}
+
+query T
+SELECT struct_insert({'a': 1}, b := (SELECT 2));
+----
+{'a': 1, 'b': 2}
+
+query T
+SELECT struct_pack();
+----
+{}

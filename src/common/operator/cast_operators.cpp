@@ -10,6 +10,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
@@ -35,6 +36,10 @@
 #include <cstdlib>
 
 namespace duckdb {
+
+void TryCast::ThrowUnimplemented(PhysicalType source, PhysicalType target, optional_ptr<CastParameters> parameters) {
+	throw UnimplementedErrorMessage(source, target, parameters);
+}
 
 ConversionException TryCast::UnimplementedErrorMessage(PhysicalType source, PhysicalType target,
                                                        optional_ptr<CastParameters> parameters) {
@@ -1797,7 +1802,7 @@ string_t CastFromUUIDToBlob::Operation(hugeint_t input, StringHeap &heap) {
 //===--------------------------------------------------------------------===//
 template <>
 bool TryCastToUUID::Operation(string_t input, hugeint_t &result, Vector &result_vector, CastParameters &parameters) {
-	return UUID::FromString(input.GetString(), result, parameters.strict);
+	return UUID::FromString(input, result, parameters.strict);
 }
 
 //===--------------------------------------------------------------------===//
@@ -2518,12 +2523,14 @@ string_t StringCastFromDecimal::Operation(hugeint_t input, uint8_t width, uint8_
 //===--------------------------------------------------------------------===//
 template <class T, class OP = NumericHelper>
 bool TryCastBoolToDecimal(bool input, T &result, CastParameters &parameters, uint8_t width, uint8_t scale) {
-	if (width > scale) {
-		result = UnsafeNumericCast<T>(input ? OP::POWERS_OF_TEN[scale] : 0);
-		return true;
-	} else {
-		return TryCast::Operation<bool, T>(input, result);
+	// a decimal without integer digits cannot hold true
+	if (input && width <= scale) {
+		string error = StringUtil::Format("Could not cast value true to DECIMAL(%d,%d)", width, scale);
+		HandleCastError::AssignError(error, parameters);
+		return false;
 	}
+	result = UnsafeNumericCast<T>(input ? OP::POWERS_OF_TEN[scale] : 0);
+	return true;
 }
 
 template <>
@@ -2908,7 +2915,7 @@ bool TryCastToDecimal::Operation(uhugeint_t input, hugeint_t &result, CastParame
 template <class SRC, class DST>
 bool DoubleToDecimalCast(SRC input, DST &result, CastParameters &parameters, uint8_t width, uint8_t scale) {
 	double value = input * NumericHelper::DOUBLE_POWERS_OF_TEN[scale];
-	double roundedValue = round(value);
+	double roundedValue = RoundToNearestAwayFromZero(value);
 	if (roundedValue <= -NumericHelper::DOUBLE_POWERS_OF_TEN[width] ||
 	    roundedValue >= NumericHelper::DOUBLE_POWERS_OF_TEN[width] || !Value::IsFinite(roundedValue)) {
 		string error = StringUtil::Format("Could not cast value %f to DECIMAL(%d,%d)", input, width, scale);

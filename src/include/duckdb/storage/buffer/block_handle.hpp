@@ -79,22 +79,29 @@ public:
 	//! Increments the number of readers prior to returning it.
 	int32_t IncrementReaders(BlockLock &l) {
 		VerifyMutex(l);
-		// Tiny buffers do not decrement on unpin, so their reader count can wrap.
-		auto new_readers = static_cast<int32_t>(static_cast<uint32_t>(readers.load(std::memory_order_relaxed)) + 1);
-		readers.store(new_readers, std::memory_order_relaxed);
-		return new_readers;
+		if (readers.load(std::memory_order_relaxed) == 0) {
+			// Without readers, only the lock holder updates the count
+			readers.store(1, std::memory_order_release);
+			return 1;
+		}
+		return readers.fetch_add(1, std::memory_order_acq_rel) + 1;
 	}
 	//! Decrements the number of readers prior to returning it.
 	int32_t DecrementReaders(BlockLock &l) {
 		VerifyMutex(l);
-		auto new_readers = static_cast<int32_t>(static_cast<uint32_t>(readers.load(std::memory_order_relaxed)) - 1);
-		readers.store(new_readers, std::memory_order_relaxed);
-		return new_readers;
+		return readers.fetch_sub(1, std::memory_order_acq_rel) - 1;
 	}
-	//! Sets the number of readers.
-	void SetReaders(BlockLock &l, int32_t n) {
-		VerifyMutex(l);
-		readers.store(n, std::memory_order_relaxed);
+	//! Adds a reader without the block lock if the block is already pinned
+	bool TryIncrementPinnedReaders() {
+		auto current = readers.load(std::memory_order_relaxed);
+		return current > 0 && readers.compare_exchange_strong(current, current + 1, std::memory_order_acquire,
+		                                                      std::memory_order_relaxed);
+	}
+	//! Removes a reader without the block lock if it is not the last one
+	bool TryDecrementPinnedReaders() {
+		auto current = readers.load(std::memory_order_relaxed);
+		return current > 1 && readers.compare_exchange_strong(current, current - 1, std::memory_order_release,
+		                                                      std::memory_order_relaxed);
 	}
 	//! Returns the memory tag.
 	MemoryTag GetMemoryTag() const {
@@ -231,7 +238,7 @@ private:
 	mutex lock;
 	//! Whether the block is loaded or unloaded.
 	atomic<BlockState> state;
-	//! The number of concurrent readers. Writers hold the block lock; reads may be unlocked.
+	//! The number of concurrent readers. Only the block lock holder changes it from or to zero.
 	atomic<int32_t> readers;
 	//! The memory tag.
 	const MemoryTag tag;

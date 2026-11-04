@@ -33,10 +33,10 @@ bool operator==(const string &a, const Identifier &b) {
 	return StringUtil::CIEquals(a, b.GetIdentifierName());
 }
 bool operator==(const Identifier &a, const char *b) {
-	return StringUtil::CIEquals(a.GetIdentifierName(), string(b));
+	return StringUtil::CIEquals(a.GetIdentifierName(), b);
 }
 bool operator==(const char *a, const Identifier &b) {
-	return StringUtil::CIEquals(string(a), b.GetIdentifierName());
+	return StringUtil::CIEquals(a, b.GetIdentifierName());
 }
 
 bool operator<(const Identifier &a, const Identifier &b) {

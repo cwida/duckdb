@@ -105,6 +105,8 @@ public:
 	void AppendToTable(DuckTransaction &transaction, TableAppendState &append_state);
 	ErrorData AppendToIndexes(DuckTransaction &transaction, RowGroupCollection &source, TableIndexList &index_list,
 	                          const vector<LogicalType> &table_types, row_t &start_row);
+	//! Removes the rows of this storage that were appended to the indexes of the table at [row_start, row_end)
+	ErrorData RevertAppendToIndexes(DuckTransaction &transaction, row_t row_start, row_t row_end);
 	void AppendToDeleteIndexes(Vector &row_ids, DataChunk &delete_chunk);
 	//! Track the start of the append range for the given statement number
 	void TrackAppendForQuery(transaction_t query_number);

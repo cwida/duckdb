@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/global_csv_state.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
@@ -186,7 +187,7 @@ void FillScanErrorTable(InternalAppender &scan_appender, idx_t scan_idx, idx_t f
 	std::ostringstream columns;
 	columns << "{";
 	for (idx_t i = 0; i < types.size(); i++) {
-		columns << "'" << names[i] << "': '" << types[i].ToString() << "'";
+		columns << SQLString::ToString(names[i]) << ": " << SQLString::ToString(types[i].ToString());
 		if (i != types.size() - 1) {
 			columns << ",";
 		}

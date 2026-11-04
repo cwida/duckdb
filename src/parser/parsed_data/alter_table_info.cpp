@@ -416,13 +416,6 @@ string ChangeColumnTypeInfo::ToString() const {
 	if (target_type.IsValid()) {
 		result += target_type.ToString();
 	}
-	auto &type_info = target_type.GetTypeInfo();
-	if (type_info.type == LogicalTypeInfoType::STRING_TYPE_INFO) {
-		auto &string_info = type_info.Cast<StringTypeInfo>();
-		if (!string_info.collation.empty()) {
-			result += " COLLATE " + string_info.collation;
-		}
-	}
 	if (expression) {
 		result += " USING ";
 		result += expression->ToString();

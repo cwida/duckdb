@@ -50,7 +50,8 @@ static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &tra
 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(TokenIterator &token_iterator,
                                                                            ParserOptions &options,
-                                                                           const CompiledGrammar &grammar) {
+                                                                           const CompiledGrammar &grammar,
+                                                                           optional_idx &failure_index) {
 	if (!token_iterator.Current()) {
 		return nullptr;
 	}
@@ -67,22 +68,8 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(Token
 	auto match_result = grammar.TopLevelStatementMatcher().MatchParseResult(state);
 	process_allocator.FreeAll();
 	if (!match_result.IsSuccess()) {
-		// syntax error — surface as a parser exception in the same shape as Transform()
-		auto token_stream = token_iterator.ToString();
-		idx_t error_token_idx = state.GetMaxTokenIndex();
-		if (error_token_idx >= token_iterator.Size()) {
-			error_token_idx = token_iterator.Size() - 1;
-		}
-		// Walk back past the EOI sentinel so the error message names a real token.
-		if (error_token_idx > 0 &&
-		    (token_iterator.GetToken(error_token_idx).type == TokenType::END_OF_INPUT ||
-		     token_iterator.GetToken(error_token_idx).type == TokenType::END_OF_INPUT_AUTOCOMPLETE)) {
-			error_token_idx--;
-		}
-		auto &error_token = token_iterator.GetToken(error_token_idx);
-		auto error_message = "syntax error at or near \"" + error_token.text + "\"";
-		throw ParserException::SyntaxError(token_stream, error_message,
-		                                   QueryLocation(error_token.offset, error_token.length));
+		failure_index = state.GetMaxTokenIndex();
+		return nullptr;
 	}
 	D_ASSERT(match_result.HasParseResult());
 
@@ -192,20 +179,32 @@ void PEGTransformerFactory::RegisterDefaultTransforms(ParsedGrammar &grammar) {
 	PEGTransformerFactory factory(grammar);
 }
 
-vector<reference<ParseResult>> PEGTransformerFactory::ExtractParseResultsFromList(ParseResult &parse_result) {
-	// List(D) <- D (',' D)* ','?
-	vector<reference<ParseResult>> result;
+template <class FUNC>
+static idx_t VisitParseResultsFromList(ParseResult &parse_result, FUNC &&func) {
+	// List(D) <- D (',' D)* ','?; validate every child before returning, including when only counting.
 	auto &list_pr = parse_result.Cast<ListParseResult>();
-	result.push_back(list_pr.GetChild(0));
+	func(list_pr.GetChild(0));
+	idx_t count = 1;
 	auto &opt_child = list_pr.Child<OptionalParseResult>(1);
 	if (opt_child.HasResult()) {
 		auto &repeat_result = opt_child.GetResult().Cast<RepeatParseResult>();
 		for (auto &child : repeat_result.GetChildren()) {
 			auto &list_child = child.get().Cast<ListParseResult>();
-			result.push_back(list_child.GetChild(1));
+			func(list_child.GetChild(1));
+			count++;
 		}
 	}
+	return count;
+}
+
+vector<reference<ParseResult>> PEGTransformerFactory::ExtractParseResultsFromList(ParseResult &parse_result) {
+	vector<reference<ParseResult>> result;
+	VisitParseResultsFromList(parse_result, [&result](ParseResult &child) { result.push_back(child); });
 	return result;
+}
+
+idx_t PEGTransformerFactory::CountParseResultsFromList(ParseResult &parse_result) {
+	return VisitParseResultsFromList(parse_result, [](ParseResult &) {});
 }
 
 ParseResult &PEGTransformerFactory::ExtractResultFromParens(ParseResult &parse_result) {
