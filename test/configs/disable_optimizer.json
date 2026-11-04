@@ -233,6 +233,17 @@
         "test/sql/sql_export/recursive_state.test",
         "test/sql/sql_export/single_child_union.test"
       ]
+    },
+    {
+      "reason": "Without the optimizer the CTE is not inlined, so the serialized statement executes once instead of per recursive iteration.",
+      "paths": [
+        "test/sql/json/test_execute_serialized_reexecute.test"
+      ]
+    },
+    {
+      "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"      ]
     }
   ]
 }
