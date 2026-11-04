@@ -38,3 +38,23 @@ query II
 EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=1) WHERE i > 1000
 ----
 physical_plan	<REGEX>:(?s).*Read Parquet.*
+
+# an empty file has no statistics and is skipped
+statement ok
+COPY (SELECT range AS i FROM range(0, 0)) TO '{TEST_DIR}/sample_stats_empty.parquet'
+
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_empty.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=3) WHERE i > 1000
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+# the count is exact: a LIMIT above it is dropped
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet'], maximum_files_for_stats=2) LIMIT 100
+----
+physical_plan	<REGEX>:(?s)^([^L]|L[^i]|Li[^m])*$
+
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet']) LIMIT 100
+----
+physical_plan	<REGEX>:(?s).*Limit.*
