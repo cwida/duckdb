@@ -32,6 +32,7 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"row_group_pruner", OptimizerType::ROW_GROUP_PRUNER},
     {"top_n", OptimizerType::TOP_N},
     {"top_n_window_elimination", OptimizerType::TOP_N_WINDOW_ELIMINATION},
+    {"window_fusion", OptimizerType::WINDOW_FUSION},
     {"build_side_probe_side", OptimizerType::BUILD_SIDE_PROBE_SIDE},
     {"compressed_materialization", OptimizerType::COMPRESSED_MATERIALIZATION},
     {"duplicate_groups", OptimizerType::DUPLICATE_GROUPS},
