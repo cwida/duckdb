@@ -1093,14 +1093,21 @@ void MultiFileReader::ReadFilesForStatistics(ClientContext &context, MultiFileLi
 	if (count.type != FileExpansionType::ALL_FILES_EXPANDED || count.count < 2 || count.count > max_files) {
 		return;
 	}
-	// a file that cannot be read gives no statistics rather than failing the bind: the scan reports it
-	auto readers = UnionByName::ReadUnionData(context, files.GetAllFiles(), options, file_options, *this,
-	                                          *result.interface, true, TaskSchedulerType::ASYNC);
+	// the first file is already open: only the others are read. A file that cannot be read gives no statistics rather
+	// than failing the bind: the scan reports it
+	auto all_files = files.GetAllFiles();
+	if (!result.initial_reader || result.initial_reader->GetFileName() != all_files[0].path) {
+		return;
+	}
+	vector<OpenFileInfo> other_files(all_files.begin() + 1, all_files.end());
+	auto readers = UnionByName::ReadUnionData(context, other_files, options, file_options, *this, *result.interface,
+	                                          true, TaskSchedulerType::ASYNC);
 	for (auto &reader : readers) {
 		if (!reader) {
 			return;
 		}
 	}
+	readers.insert(readers.begin(), result.initial_reader->GetUnionData(0));
 	std::move(readers.begin(), readers.end(), std::back_inserter(result.union_readers));
 }
 
