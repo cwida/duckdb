@@ -133,7 +133,7 @@ TEST_CASE("V2 table description: missing tables and views are rejected", "[capi_
 	REQUIRE(DescribeError(fx.conn, {"no_such_table"}).find("does not exist") != std::string::npos);
 
 	// A name that resolves to a view: a description snapshots a base table.
-	REQUIRE(DescribeError(fx.conn, {"v"}).find("is not a") != std::string::npos);
+	REQUIRE(DescribeError(fx.conn, {"v"}).find("does not exist") != std::string::npos);
 
 	// Null arguments are rejected.
 	auto qname = MakeQName({"v"});
@@ -142,6 +142,23 @@ TEST_CASE("V2 table description: missing tables and views are rejected", "[capi_
 	REQUIRE(duckdb_v2_connection_describe_table(fx.conn, nullptr, &desc, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_connection_describe_table(fx.conn, qname, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_qname_destroy(&qname);
+}
+
+TEST_CASE("V2 table description: describing a view keeps the open transaction", "[capi_v2][catalog]") {
+	EnvFixture fx;
+	ExecSQL(fx.conn, "CREATE TABLE u(k INTEGER)");
+	ExecSQL(fx.conn, "CREATE VIEW v AS SELECT 42 AS i");
+
+	REQUIRE(RunSql(fx.conn, "BEGIN TRANSACTION") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "INSERT INTO u VALUES (1)") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(DescribeError(fx.conn, {"v"}).find("does not exist") != std::string::npos);
+	REQUIRE(RunSql(fx.conn, "INSERT INTO u VALUES (2)") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "COMMIT") == DUCKDB_V2_ERROR_NONE);
+
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(fx.conn, "SELECT k FROM u WHERE k IN (1, 2)", &result) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(DrainRowCount(result) == 2);
+	duckdb_v2_result_destroy(&result);
 }
 
 TEST_CASE("V2 table description: column descriptions", "[capi_v2][catalog]") {

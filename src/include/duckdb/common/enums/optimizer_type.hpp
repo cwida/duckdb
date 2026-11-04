@@ -65,7 +65,8 @@ enum class OptimizerType : uint32_t {
 	REDUNDANT_ORDER = 48,
 	WINDOW_JOIN_PUSHDOWN = 49,
 	SELF_JOIN_AGGREGATE = 50,
-	WINDOW_FUSION = 51
+	SCALAR_AGGREGATE_MERGE = 51,
+	WINDOW_FUSION = 52
 };
 
 string OptimizerTypeToString(OptimizerType type);

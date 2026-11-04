@@ -367,7 +367,7 @@ void ColumnData::FetchUpdateRow(TransactionData transaction, row_t row_id, Vecto
 }
 
 void ColumnData::UpdateInternal(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-                                Vector &update_vector, row_t *row_ids, idx_t update_count, Vector &base_vector,
+                                Vector &update_vector, row_t *row_ids, idx_t update_count, const Vector &base_vector,
                                 idx_t row_group_start) {
 	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
@@ -760,18 +760,6 @@ void ColumnData::RevertAppend(row_t new_count_p) {
 	this->count = new_count;
 }
 
-idx_t ColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	if (UnsafeNumericCast<idx_t>(row_id) > count) {
-		throw InternalException("ColumnData::Fetch - row_id out of range");
-	}
-	D_ASSERT(row_id >= 0);
-	// perform the fetch within the segment
-	state.offset_in_column = UnsafeNumericCast<idx_t>(row_id) / STANDARD_VECTOR_SIZE * STANDARD_VECTOR_SIZE;
-	state.current = data.GetSegment(state.offset_in_column);
-	state.internal_index = state.current->GetRowStart();
-	return ScanVector(state, result, STANDARD_VECTOR_SIZE, ScanVectorType::SCAN_FLAT_VECTOR);
-}
-
 void ColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
                            const idx_t *offsets, const SelectionVector &sel, idx_t fetch_count, Vector &result,
                            idx_t result_offset) {
@@ -898,20 +886,22 @@ void ColumnData::FetchBaseRows(const QueryContext &context, const idx_t *offsets
 	}
 }
 
-idx_t ColumnData::FetchUpdateData(ColumnScanState &state, row_t *row_ids, Vector &base_vector, idx_t row_group_start) {
-	if (row_ids[0] < UnsafeNumericCast<row_t>(row_group_start)) {
-		throw InternalException("ColumnData::FetchUpdateData out of range");
+void ColumnData::FetchBaseRows(const row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start) {
+	D_ASSERT(count > 0 && count <= STANDARD_VECTOR_SIZE);
+	vector<idx_t> offsets(count);
+	for (idx_t i = 0; i < count; i++) {
+		if (row_ids[i] < UnsafeNumericCast<row_t>(row_group_start)) {
+			throw InternalException("ColumnData::FetchBaseRows - row id out of range");
+		}
+		offsets[i] = UnsafeNumericCast<idx_t>(row_ids[i]) - row_group_start;
 	}
-	auto fetch_count = ColumnData::Fetch(state, row_ids[0] - UnsafeNumericCast<row_t>(row_group_start), base_vector);
-	base_vector.Flatten();
-	return fetch_count;
+	FetchBaseRows(QueryContext(), offsets.data(), *FlatVector::IncrementalSelectionVector(), count, result, 0);
 }
 
 void ColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                         Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
-	Vector base_vector(type);
-	ColumnScanState state(nullptr);
-	FetchUpdateData(state, row_ids, base_vector, row_group_start);
+	Vector base_vector(type, update_count);
+	FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
 	               row_group_start);
