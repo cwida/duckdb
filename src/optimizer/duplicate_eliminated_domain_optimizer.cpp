@@ -295,19 +295,33 @@ static bool HasSharedSource(LogicalOperator &op) {
 	return false;
 }
 
-static double SumWork(std::initializer_list<double> terms) {
-	double sum = 0;
-	double correction = 0;
-	for (auto term : terms) {
-		if (!std::isfinite(term) || term < 0) {
-			return std::numeric_limits<double>::quiet_NaN();
-		}
-		auto adjusted = term - correction;
-		auto next = sum + adjusted;
-		correction = (next - sum) - adjusted;
-		sum = next;
+static bool IsCheaper(double candidate, double original) {
+	auto tolerance = 32 * std::numeric_limits<double>::epsilon() * MaxValue(original, candidate);
+	return std::isfinite(original) && std::isfinite(candidate) && original - candidate > tolerance;
+}
+
+static double EstimateAggregateWork(const LogicalAggregate &aggregate, double input_rows, double group_count) {
+	auto aggregate_work_per_row = static_cast<double>(aggregate.expressions.size()) + 1;
+	return aggregate_work_per_row * input_rows + (aggregate_work_per_row + 1) * group_count;
+}
+
+static double EstimateSemiJoinWork(double input_rows, double output_rows, double key_rows) {
+	return key_rows + input_rows + output_rows;
+}
+
+static double EstimateFixedDomainWork(double key_rows, double distinct_key_rows) {
+	return 2 * key_rows + distinct_key_rows + 3;
+}
+
+static double EstimateAggregateWork(const LogicalAggregate &aggregate, const RelationStats &input,
+                                    ColumnBinding group_binding) {
+	auto column = input.GetColumnStats(group_binding);
+	if (!column) {
+		return std::numeric_limits<double>::quiet_NaN();
 	}
-	return sum;
+	auto group_count =
+	    RelationStatisticsHelper::EstimateDistinctCardinality({column->current_domain}, input.cardinality);
+	return EstimateAggregateWork(aggregate, static_cast<double>(input.cardinality), static_cast<double>(group_count));
 }
 
 static bool HasRuntimeFilterTargets(LogicalAggregate &aggregate) {
@@ -346,42 +360,15 @@ static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, Lo
 	auto restricted_groups = static_cast<double>(group_count);
 	auto fixed_key_rows = static_cast<double>(domain.children[0]->Cast<LogicalExpressionGet>().expressions.size());
 	auto distinct_key_rows = static_cast<double>(keys->cardinality);
-	auto aggregate_work_per_row = static_cast<double>(aggregate.expressions.size()) + 1;
 	// Cancel unchanged input/caller work and the consumer's identical output.
-	auto canonical =
-	    SumWork({aggregate_work_per_row * input_rows, aggregate_work_per_row * original_groups, original_groups});
-	auto candidate = SumWork({aggregate_work_per_row * restricted_rows, aggregate_work_per_row * restricted_groups,
-	                          restricted_groups, fixed_key_rows, fixed_key_rows, distinct_key_rows, input_rows,
-	                          distinct_key_rows, restricted_rows, 3});
-	auto tolerance = 32 * std::numeric_limits<double>::epsilon() * MaxValue(canonical, candidate);
-	return std::isfinite(canonical) && std::isfinite(candidate) && canonical - candidate > tolerance;
+	auto canonical = EstimateAggregateWork(aggregate, input_rows, original_groups);
+	auto candidate = EstimateAggregateWork(aggregate, restricted_rows, restricted_groups) +
+	                 EstimateSemiJoinWork(input_rows, restricted_rows, distinct_key_rows) +
+	                 EstimateFixedDomainWork(fixed_key_rows, distinct_key_rows);
+	return IsCheaper(candidate, canonical);
 }
 
 enum class RestrictionAction { KEEP, REPLACE, REMOVE };
-
-static optional<RelationStats> ProjectRestrictionInput(RelationStats input,
-                                                       const vector<reference<LogicalProjection>> &projections) {
-	optional<RelationStats> result = std::move(input);
-	for (auto projection = projections.rbegin(); projection != projections.rend(); ++projection) {
-		result = RelationStatisticsHelper::ExtractProjectionStats(projection->get(), *result);
-		if (!result) {
-			return {};
-		}
-	}
-	return result;
-}
-
-static double EstimateAggregateWork(LogicalAggregate &aggregate, const RelationStats &input) {
-	auto column = input.GetColumnStats(aggregate.groups[0]->Cast<BoundColumnRefExpression>().Binding());
-	if (!column) {
-		return std::numeric_limits<double>::quiet_NaN();
-	}
-	auto group_count =
-	    RelationStatisticsHelper::EstimateDistinctCardinality({column->current_domain}, input.cardinality);
-	auto aggregate_work = static_cast<double>(aggregate.expressions.size()) + 1;
-	return SumWork({aggregate_work * static_cast<double>(input.cardinality),
-	                (aggregate_work + 1) * static_cast<double>(group_count)});
-}
 
 static bool CanRemoveRestriction(const vector<reference<LogicalProjection>> &projections) {
 	for (auto &projection : projections) {
@@ -414,36 +401,29 @@ static RestrictionAction ChooseRestrictionAction(Optimizer &optimizer, LogicalAg
 	                                    condition.GetComparisonType());
 	auto restricted = *input;
 	RelationStatisticsHelper::ApplySemiAntiJoinStats(replacement, *input, *new_keys, restricted);
-	auto new_input = ProjectRestrictionInput(std::move(restricted), projections);
-	if (!new_input) {
-		return RestrictionAction::KEEP;
-	}
+	// The projections preserve row counts and directly alias this grouping key.
+	auto group_binding = condition.GetLHS().Cast<BoundColumnRefExpression>().Binding();
 	auto input_rows = static_cast<double>(input->cardinality);
-	auto aggregate_work = static_cast<double>(aggregate.expressions.size()) + 1;
+	auto old_input_rows = static_cast<double>(old_input->cardinality);
+	auto distinct_key_rows = static_cast<double>(new_keys->cardinality);
 	// Ignore other removed producer work: its build rows alone are a saving.
-	auto best_work =
-	    SumWork({aggregate_work * static_cast<double>(old_input->cardinality),
-	             (aggregate_work + 1) * static_cast<double>(old_groups->cardinality),
-	             static_cast<double>(old_keys->cardinality), input_rows, static_cast<double>(old_input->cardinality)});
+	auto best_work = EstimateAggregateWork(aggregate, old_input_rows, static_cast<double>(old_groups->cardinality)) +
+	                 EstimateSemiJoinWork(input_rows, old_input_rows, static_cast<double>(old_keys->cardinality));
 	auto action = RestrictionAction::KEEP;
 	auto consider = [&](double work, RestrictionAction alternative) {
-		auto tolerance = 32 * std::numeric_limits<double>::epsilon() * MaxValue(best_work, work);
-		if (std::isfinite(best_work) && std::isfinite(work) && best_work - work > tolerance) {
+		if (IsCheaper(work, best_work)) {
 			best_work = work;
 			action = alternative;
 		}
 	};
-	consider(SumWork({EstimateAggregateWork(aggregate, *new_input), 2 * static_cast<double>(fixed.expressions.size()),
-	                  2 * static_cast<double>(new_keys->cardinality), input_rows,
-	                  static_cast<double>(new_input->cardinality), 3}),
+	consider(EstimateAggregateWork(aggregate, restricted, group_binding) +
+	             EstimateSemiJoinWork(input_rows, static_cast<double>(restricted.cardinality), distinct_key_rows) +
+	             EstimateFixedDomainWork(static_cast<double>(fixed.expressions.size()), distinct_key_rows),
 	         RestrictionAction::REPLACE);
 	if (CanRemoveRestriction(projections)) {
-		auto expanded = ProjectRestrictionInput(*input, projections);
-		if (expanded) {
-			// Charge the NULL filter without taking credit for rows it removes.
-			consider(SumWork({EstimateAggregateWork(aggregate, *expanded), filter_null_keys ? input_rows : 0}),
-			         RestrictionAction::REMOVE);
-		}
+		// Charge the NULL filter without taking credit for rows it removes.
+		consider(EstimateAggregateWork(aggregate, *input, group_binding) + (filter_null_keys ? input_rows : 0),
+		         RestrictionAction::REMOVE);
 	}
 	return action;
 }
