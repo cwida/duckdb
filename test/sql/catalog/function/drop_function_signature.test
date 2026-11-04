@@ -429,6 +429,82 @@ DROP SCHEMA dep_s1 CASCADE;
 statement ok
 DROP SCHEMA dep_s2 CASCADE;
 
+# a create-time dependency resolved outside the entry's schema survives the rebuild: the rebind's
+# own resolution does not replace it
+statement ok
+CREATE SCHEMA amb_s1;
+
+statement ok
+CREATE SCHEMA amb_s2;
+
+statement ok
+CREATE TABLE amb_s1.src(i INTEGER);
+
+statement ok
+CREATE TABLE amb_s2.src(i INTEGER);
+
+statement ok
+USE amb_s2;
+
+statement ok
+CREATE MACRO amb_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
+
+statement ok
+DROP MACRO TABLE amb_s1.holder(VARCHAR);
+
+# the macro bound amb_s2.src at CREATE, the registered dependency must still block its drop
+statement error
+DROP TABLE amb_s2.src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+USE memory.main;
+
+statement ok
+DROP SCHEMA amb_s2 CASCADE;
+
+statement ok
+DROP SCHEMA amb_s1 CASCADE;
+
+# a dependency shared by the removed member and a drifting survivor is kept: the rebind's
+# attribution is only trusted when rebinding all original members reproduces the registered list
+statement ok
+CREATE SCHEMA sh_s1;
+
+statement ok
+CREATE SCHEMA sh_s2;
+
+statement ok
+CREATE TABLE sh_s1.src(i INTEGER);
+
+statement ok
+CREATE TABLE sh_s2.src(i INTEGER);
+
+statement ok
+USE sh_s2;
+
+statement ok
+CREATE MACRO sh_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT i FROM sh_s2.src);
+
+statement ok
+DROP MACRO TABLE sh_s1.holder(VARCHAR);
+
+# both members bound sh_s2.src at CREATE, the survivor's protection must not be subtracted
+statement error
+DROP TABLE sh_s2.src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+USE memory.main;
+
+statement ok
+DROP SCHEMA sh_s2 CASCADE;
+
+statement ok
+DROP SCHEMA sh_s1 CASCADE;
+
 statement ok
 SET enable_macro_dependencies = false;
 

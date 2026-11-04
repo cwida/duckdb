@@ -433,12 +433,13 @@ bool DuckSchemaEntry::DropMacroFunctionMember(CatalogTransaction transaction, Dr
 	// replace the entry with one that carries the remaining members
 	auto new_info_base = existing.GetInfo();
 	auto &new_info = new_info_base->Cast<CreateMacroInfo>();
+	auto removed_member = std::move(new_info.macros[member_idx.GetIndex()]);
 	new_info.macros.erase(new_info.macros.begin() + NumericCast<int64_t>(member_idx.GetIndex()));
 	new_info.temporary = existing.temporary;
 	if (transaction.context) {
 		// rebuild the dependency list from the surviving members: a dependency owned only by the
 		// removed member must not tie the replacement to a later cascade
-		Binder::CollectMacroDependencies(transaction.GetContext(), catalog, new_info, &existing);
+		Binder::CollectMacroDependencies(transaction.GetContext(), catalog, new_info, &existing, removed_member.get());
 	}
 	auto function = MacroCatalogEntry::Create(catalog, *this, new_info);
 	function->internal = existing.internal;

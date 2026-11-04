@@ -425,7 +425,7 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 }
 
 void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, CreateMacroInfo &info,
-                                      optional_ptr<CatalogEntry> exclude) {
+                                      optional_ptr<CatalogEntry> exclude, optional_ptr<MacroFunction> removed_member) {
 	auto original_dependencies = std::move(info.dependencies);
 	info.dependencies = LogicalDependencyList();
 	if (!Settings::Get<EnableMacroDependenciesSetting>(context) && original_dependencies.Set().empty()) {
@@ -436,25 +436,24 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 	// resolve unqualified references from the entry's own schema, not the caller's search path
 	auto macro_search_path = binder->GetSearchPath(catalog, info.GetQualifiedName().SchemaPath(), true);
 	binder->entry_retriever.SetSearchPath(std::move(macro_search_path));
-	auto &dependencies = info.dependencies;
-	const auto binder_callback = [&dependencies, &catalog, exclude](CatalogEntry &entry) {
-		if (&catalog != &entry.ParentCatalog()) {
-			// Don't register any cross-catalog dependencies
-			return;
-		}
-		if (exclude.get() == &entry) {
-			// a replacement cannot depend on the entry it replaces
-			return;
-		}
-		dependencies.AddDependency(entry);
-	};
-	bool rebind_failed = false;
-	for (auto &function : info.macros) {
+	// binds one member and collects its dependencies, returns false when the bind failed
+	const auto bind_member = [&](MacroFunction &function, LogicalDependencyList &target) {
+		const auto binder_callback = [&target, &catalog, exclude](CatalogEntry &entry) {
+			if (&catalog != &entry.ParentCatalog()) {
+				// Don't register any cross-catalog dependencies
+				return;
+			}
+			if (exclude.get() == &entry) {
+				// a replacement cannot depend on the entry it replaces
+				return;
+			}
+			target.AddDependency(entry);
+		};
 		vector<LogicalType> dummy_types;
 		vector<Identifier> dummy_names;
-		for (idx_t param_idx = 0; param_idx < function->parameters.size(); param_idx++) {
-			dummy_types.emplace_back(function->types.empty() ? LogicalType::UNKNOWN : function->types[param_idx]);
-			dummy_names.emplace_back(function->parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName());
+		for (idx_t param_idx = 0; param_idx < function.parameters.size(); param_idx++) {
+			dummy_types.emplace_back(function.types.empty() ? LogicalType::UNKNOWN : function.types[param_idx]);
+			dummy_names.emplace_back(function.parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName());
 		}
 		auto this_macro_binding =
 		    make_uniq<DummyBinding>(dummy_types, dummy_names, info.GetFunctionName().GetIdentifierName());
@@ -464,7 +463,7 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 			BoundSelectNode sel_node;
 			SelectBinder select_binder(*binder, context, sel_node);
 			select_binder.SetCatalogLookupCallback(binder_callback);
-			auto expression = function->Cast<ScalarMacroFunction>().expression->Copy();
+			auto expression = function.Cast<ScalarMacroFunction>().expression->Copy();
 			ExpressionBinder::QualifyColumnNames(*binder, expression);
 			try {
 				auto bind_result = select_binder.Bind(expression, 0, false);
@@ -479,7 +478,7 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 			auto dummy_binder = Binder::CreateBinder(context, binder.get());
 			dummy_binder->macro_binding = this_macro_binding.get();
 			dummy_binder->SetCatalogLookupCallback(binder_callback);
-			auto query_node = function->Cast<TableMacroFunction>().query_node->Copy();
+			auto query_node = function.Cast<TableMacroFunction>().query_node->Copy();
 			ParsedExpressionIterator::EnumerateQueryNodeChildren(
 			    *query_node, [&dummy_binder](unique_ptr<ParsedExpression> &child) {
 				    ExpressionBinder::QualifyColumnNames(*dummy_binder, child);
@@ -497,13 +496,26 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 			}
 			// unresolved parameters are expected for untyped members, like at CREATE
 			if (error.Type() != ExceptionType::PARAMETER_NOT_RESOLVED) {
-				rebind_failed = true;
+				return false;
 			}
 		}
+		return true;
+	};
+	LogicalDependencyList survivor_dependencies;
+	bool rebind_ok = true;
+	for (auto &function : info.macros) {
+		rebind_ok = bind_member(*function, survivor_dependencies) && rebind_ok;
 	}
-	if (rebind_failed) {
-		// a member that no longer binds leaves its dependencies unknown: keep the original list as
-		// a conservative superset instead of silently dropping protection
+	LogicalDependencyList rebound_dependencies = survivor_dependencies;
+	bool removed_ok = false;
+	if (removed_member) {
+		removed_ok = bind_member(*removed_member, rebound_dependencies);
+	}
+	info.dependencies = std::move(survivor_dependencies);
+	// the rebind proves which dependencies belong to the removed member only when rebinding the
+	// complete original member set reproduces the registered list: any drift means the create-time
+	// attribution is unknowable and every original dependency is kept
+	if (!rebind_ok || !removed_ok || !(rebound_dependencies == original_dependencies)) {
 		for (auto &dep : original_dependencies.Set()) {
 			info.dependencies.AddDependency(dep);
 		}
