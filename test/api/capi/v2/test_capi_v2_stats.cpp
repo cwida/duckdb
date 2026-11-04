@@ -619,6 +619,8 @@ DUCKDB_V2_ERROR SetStatsStruct(duckdb_v2_factory_handle factory, duckdb_v2_stats
 	return rc;
 }
 
+struct ValueField;
+
 // A value spelled as a tree, the compact way to write a nested statistics struct in a test case; BuildValue turns it
 // into a value with the typed constructors, duckdb_v2_value_create_struct and duckdb_v2_value_create_list.
 struct ValueSpec {
@@ -628,8 +630,14 @@ struct ValueSpec {
 	int32_t i = 0;
 	double d = 0;
 	const char *s = nullptr;
-	std::vector<std::pair<const char *, ValueSpec>> fields;
+	std::vector<ValueField> fields;
 	std::vector<ValueSpec> items;
+};
+
+// A named struct field of a ValueSpec, complete only here so the vector above never holds a pair of an incomplete type.
+struct ValueField {
+	const char *name;
+	ValueSpec value;
 };
 
 ValueSpec Null() {
@@ -659,7 +667,7 @@ ValueSpec Str(const char *s) {
 	spec.s = s;
 	return spec;
 }
-ValueSpec Obj(std::initializer_list<std::pair<const char *, ValueSpec>> fields) {
+ValueSpec Obj(std::initializer_list<ValueField> fields) {
 	ValueSpec spec;
 	spec.kind = ValueSpec::Kind::STRUCT;
 	spec.fields.assign(fields.begin(), fields.end());
@@ -704,8 +712,8 @@ duckdb_v2_value_handle BuildValue(duckdb_v2_factory_handle factory, const ValueS
 	case ValueSpec::Kind::STRUCT: {
 		bool ok = true;
 		for (auto &field : spec.fields) {
-			names.push_back(StatsIdent(field.first));
-			children.push_back(BuildValue(factory, field.second, err));
+			names.push_back(StatsIdent(field.name));
+			children.push_back(BuildValue(factory, field.value, err));
 			ok = ok && children.back();
 		}
 		if (ok) {
