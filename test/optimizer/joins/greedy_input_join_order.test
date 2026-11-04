@@ -41,6 +41,7 @@ WHERE md5(md5(md5(md5(concat(o.order_id, s.name, t.name))))) LIKE '%ab%';
 26134
 
 # The filter's input contains just the two server joins above the orders scan.
+# Internal compression can insert unary projections between these operators.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT count(*)
@@ -51,7 +52,7 @@ LEFT JOIN address a ON o.customer_id = a.customer_id
 LEFT JOIN address b ON o.customer_id = b.customer_id
 WHERE md5(md5(md5(md5(concat(o.order_id, s.name, t.name))))) LIKE '%ab%';
 ----
-physical_plan	<REGEX>:.*"name": "FILTER",\s*"children": \[\s*\{\s*"name": "HASH_JOIN",\s*"children": \[\s*\{\s*"name": "HASH_JOIN",\s*"children": \[\s*\{\s*"name": "SEQ_SCAN".*
+physical_plan	<REGEX>:.*"name": "FILTER",\s*"children": \[\s*\{\s*(?:"name": "PROJECTION",\s*"children": \[\s*\{\s*)*"name": "HASH_JOIN",\s*"children": \[\s*\{\s*(?:"name": "PROJECTION",\s*"children": \[\s*\{\s*)*"name": "HASH_JOIN",\s*"children": \[\s*\{\s*(?:"name": "PROJECTION",\s*"children": \[\s*\{\s*)*"name": "SEQ_SCAN",\s*"children": \[\],\s*"extra_info": \{\s*"Table": "[^"]*\.orders".*
 
 statement ok
 RESET approximate_join_order_threshold;
