@@ -96,7 +96,12 @@ struct VarPopOperation : public STDDevBaseOperation {
 		if (state.count == 0) {
 			finalize_data.ReturnNull();
 		} else {
-			target = state.count > 1 ? (state.dsquared / state.count) : 0;
+			// With a single value Welford's dsquared is (x - x) * x, which is 0 for a
+			// finite x and NaN for a NaN/inf input (0 * NaN is NaN). Dividing
+			// unconditionally therefore yields 0 for finite single values and NaN for a
+			// lone non-finite value, matching covar_pop(x, x), sem(x) and the multi-row
+			// case. A special-case returning 0 for count == 1 would hide that NaN.
+			target = state.dsquared / state.count;
 		}
 	}
 };
@@ -118,7 +123,8 @@ struct STDDevPopOperation : public STDDevBaseOperation {
 		if (state.count == 0) {
 			finalize_data.ReturnNull();
 		} else {
-			target = state.count > 1 ? sqrt(state.dsquared / state.count) : 0;
+			// sqrt of the (possibly NaN) population variance; see VarPopOperation::Finalize.
+			target = sqrt(state.dsquared / state.count);
 		}
 	}
 };
