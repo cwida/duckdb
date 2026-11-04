@@ -198,12 +198,37 @@ static bool PushdownProjectionExpressionMultiFile(ClientContext &context,
 	return true;
 }
 
+//! Whether a bound read_csv scan may be shared or repeated - see table_function_is_repeatable_t
+static bool ReadCSVIsRepeatable(optional_ptr<const FunctionData> bind_data_p) {
+	if (!bind_data_p) {
+		return false;
+	}
+	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	// the normalized CSV options live on the per-file bind data - take the bind that determined the schema, or the
+	// first bound file when the schema was combined by type
+	optional_ptr<const FunctionData> file_bind_data = data.options.schema_bind_data.get();
+	if (!file_bind_data && !bind_data.union_readers.empty()) {
+		file_bind_data = bind_data.union_readers[0]->Cast<TableFunctionUnionData>().bind_data.get();
+	}
+	if (!file_bind_data) {
+		// no bound file to inspect the options on (e.g. the schema was given upfront) - stay conservative
+		return false;
+	}
+	// store_rejects writes reject tables, an observable side effect per execution. CSVReaderOptions::Verify folds
+	// the rejects_table and rejects_scan options into store_rejects, so checking it covers those spellings too
+	return !file_bind_data->Cast<ReadCSVData>().options.store_rejects.GetValue();
+}
+
 TableFunction ReadCSVTableFunction::GetFunction() {
 	// the multi-file CSV reader is the single-file CSV reader wrapped into a multi-file function
 	auto read_csv = ReadCSVTableFunction::GetMultiFileFunction("read_csv");
 	read_csv.serialize = CSVReaderSerialize;
 	read_csv.deserialize = CSVReaderDeserialize;
 	read_csv.projection_expression_pushdown = PushdownProjectionExpressionMultiFile;
+	// the file list is fixed at bind and file content is assumed stable within one query, so the scan is repeatable
+	// unless an option gives an execution observable side effects
+	read_csv.is_repeatable = ReadCSVIsRepeatable;
 	return read_csv;
 }
 

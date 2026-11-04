@@ -282,10 +282,18 @@ static unique_ptr<FunctionData> ParquetMultiFileBind(ClientContext &context, Tab
 	                                                        ParquetScanFunction::GetMultiFileSettings());
 }
 
+//! Whether a bound read_parquet scan may be shared or repeated - see table_function_is_repeatable_t
+static bool ParquetScanIsRepeatable(optional_ptr<const FunctionData>) {
+	// the file list is fixed at bind, file content is assumed stable within one query, and reading parquet files
+	// has no per-execution side effects
+	return true;
+}
+
 TableFunction ParquetScanFunction::GetMultiFileFunction(Identifier name) {
 	// the multi-file parquet reader is the single-file parquet reader wrapped into a multi-file function
 	auto result = TableFunctionMultiFileWrapper::CreateFunction(GetSingleFileFunction(), std::move(name),
 	                                                            GetMultiFileSettings(), ParquetMultiFileBind);
+	result.is_repeatable = ParquetScanIsRepeatable;
 	result.GetSignature().ExtendTypedKwargs(
 	    [](TypedKwargs &options) { options.Add("bound_schema", LogicalType::ANY); });
 	// the callbacks below describe the scan rather than one of its files, so they are set on the wrapper

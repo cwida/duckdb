@@ -378,8 +378,12 @@ typedef bool (*table_function_supports_pushdown_type_t)(const FunctionData &bind
 
 typedef bool (*table_function_supports_pushdown_extract_t)(const FunctionData &bind_data, const LogicalIndex &col_idx);
 
-//! Whether repeated executions with the same bound data and input rows produce equivalent rows within one query.
-//! Used by optimizers that may share or repeat a scan. Do not opt in when execution reads mutable external state.
+//! Whether repeated executions with the same bound data and input rows are equivalent within one query: returning
+//! true guarantees both that every execution produces equivalent rows and that changing how often the scan executes
+//! has no observable side effects (e.g. no counters, logs, or tables written per execution).
+//! Used by optimizers that may share or repeat a scan. Separately bound scans additionally need equivalent
+//! identities before their results may be shared - repeatability alone does not establish that two calls are the
+//! same scan. Do not opt in when execution reads mutable external state or writes any state per execution.
 typedef bool (*table_function_is_repeatable_t)(optional_ptr<const FunctionData> bind_data);
 
 typedef double (*table_function_progress_t)(ClientContext &context, const FunctionData *bind_data,

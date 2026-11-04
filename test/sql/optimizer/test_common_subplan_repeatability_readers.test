@@ -50,3 +50,21 @@ query II
 EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv');
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# A store_rejects CSV scan writes reject tables - an observable side effect per execution - so it is not
+# repeatable and must never be shared, independently of the identity guard above.
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('oops'), ('3')) t(k)) TO '{TEST_DIR}/repeatability_rejects.csv' (FORMAT csv, HEADER);
+
+query I
+SELECT count(*) FROM (
+    SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true)
+    INTERSECT ALL
+    SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true));
+----
+2
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true) INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*

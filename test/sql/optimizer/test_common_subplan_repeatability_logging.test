@@ -7,6 +7,8 @@
 
 require parquet
 
+require json
+
 statement ok
 SET enable_caching_operators=true;
 
@@ -118,6 +120,82 @@ query I
 SELECT info.retained_build_executions::UBIGINT >= 1
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+statement ok
+COPY (SELECT to_json(reader_rows) AS record FROM reader_rows) TO '{TEST_DIR}/repeatability_logging_rows.json' (FORMAT csv, QUOTE '', HEADER false);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, total) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.total
+    FROM r
+    JOIN (
+        SELECT i AS k, sum(i) OVER ()::BIGINT AS total
+        FROM read_json('{TEST_DIR}/repeatability_logging_rows.json')
+    ) build ON build.k = r.i
+    WHERE r.i < 3
+)
+SELECT list(total ORDER BY i) FROM r;
+----
+[0, 4950, 4950, 4950]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+# rejects_table implies store_rejects (CSVReaderOptions::Verify), and a store_rejects scan writes a reject
+# per execution - its hash build must not be retained across iterations.
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('2'), ('3'), ('oops')) t(k)) TO '{TEST_DIR}/repeatability_logging_rejects.csv' (FORMAT csv, HEADER);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i) AS (
+    VALUES (0)
+    UNION ALL
+    SELECT r.i + 1
+    FROM r
+    JOIN (
+        SELECT k FROM read_csv('{TEST_DIR}/repeatability_logging_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, rejects_table='csv_rejects')
+    ) build ON build.k = r.i + 1
+    WHERE r.i < 3
+)
+SELECT list(i ORDER BY i) FROM r;
+----
+[0, 1, 2, 3]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics' AND info.retained_build_executions::UBIGINT >= 1;
+----
+0
+
+# Each execution of the scan appended its reject row - a retained build would have appended exactly one.
+query I
+SELECT count(*) >= 2 FROM csv_rejects;
 ----
 1
 

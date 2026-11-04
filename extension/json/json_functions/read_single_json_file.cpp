@@ -334,6 +334,13 @@ TableFunction JSONFunctions::GetReadSingleJSONFileTableFunction(shared_ptr<JSONS
 	return table_function;
 }
 
+//! Whether a bound read_json scan may be shared or repeated - see table_function_is_repeatable_t
+static bool ReadJSONIsRepeatable(optional_ptr<const FunctionData>) {
+	// the file list is fixed at bind, file content is assumed stable within one query, and reading JSON files has
+	// no per-execution side effects
+	return true;
+}
+
 TableFunction JSONFunctions::GetJSONTableFunction(Identifier name, shared_ptr<JSONScanInfo> function_info) {
 	// every JSON read function is the single-file JSON reader wrapped into a multi-file function
 	auto single_file_function = GetReadSingleJSONFileTableFunction(std::move(function_info));
@@ -347,8 +354,10 @@ TableFunction JSONFunctions::GetJSONTableFunction(Identifier name, shared_ptr<JS
 	settings.claim_batch = ReadSingleJSONFileClaimBatch;
 	settings.finish_batch = ReadSingleJSONFileFinishBatch;
 	settings.reports_bytes_scanned = true;
-	return TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
-	                                                     std::move(settings));
+	auto result = TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
+	                                                            std::move(settings));
+	result.is_repeatable = ReadJSONIsRepeatable;
+	return result;
 }
 
 static TableFunctionSet CreateJSONFunctionSet(Identifier name, shared_ptr<JSONScanInfo> function_info) {
