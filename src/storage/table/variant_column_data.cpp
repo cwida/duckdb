@@ -350,12 +350,14 @@ void VariantColumnData::Skip(ColumnScanState &state, idx_t count) {
 
 void VariantColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnAppendState validity_append;
+	validity_append.transient = state.transient;
 	validity->InitializeAppend(validity_append);
 	state.child_appends.push_back(std::move(validity_append));
 
 	for (idx_t i = 0; i < sub_columns.size(); i++) {
 		auto &sub_column = sub_columns[i];
 		ColumnAppendState child_append;
+		child_append.transient = state.transient;
 		sub_column->InitializeAppend(child_append);
 		state.child_appends.push_back(std::move(child_append));
 	}
