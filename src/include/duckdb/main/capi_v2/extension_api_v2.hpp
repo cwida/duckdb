@@ -1485,10 +1485,10 @@ typedef struct {
 	(duckdb_v2_stats_handle stats, duckdb_v2_stats_handle other, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_stats_assign)
 	(duckdb_v2_stats_handle stats, duckdb_v2_stats_handle other, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_stats_get_variant)
-	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *variant, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_variant)
-	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle variant, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_get_value)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_value)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
 } duckdb_ext_api_v2;
 
 //===--------------------------------------------------------------------===//
@@ -2175,8 +2175,8 @@ inline duckdb_ext_api_v2 CreateAPIv2(void) {
 	result.duckdb_v2_stats_destroy = duckdb_v2_stats_destroy;
 	result.duckdb_v2_stats_merge = duckdb_v2_stats_merge;
 	result.duckdb_v2_stats_assign = duckdb_v2_stats_assign;
-	result.duckdb_v2_stats_get_variant = duckdb_v2_stats_get_variant;
-	result.duckdb_v2_stats_set_variant = duckdb_v2_stats_set_variant;
+	result.duckdb_v2_stats_get_value = duckdb_v2_stats_get_value;
+	result.duckdb_v2_stats_set_value = duckdb_v2_stats_set_value;
 	return result;
 }
 

@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // V2 stats callback tests. The functions here deliberately produce data their stats callback denies: a query that
@@ -592,21 +593,39 @@ TEST_CASE("V2 stats: null arguments", "[capi_v2][stats]") {
 }
 
 // ---------------------------------------------------------------------------
-// Bounds: a table function reports min/max through the stats callback as a VARIANT, and checks predicates against
+// Bounds: a table function reports min/max through the stats callback as a STRUCT value, and checks predicates against
 // statistics it builds itself. The function produces data its statistics exclude, so a query whose filter the
 // statistics make unsatisfiable returns a wrong count exactly when the optimizer acted on them.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Sets statistics from JSON text, the simplest way to build the VARIANT.
+// Builds a STRUCT from parallel field names and values with the value API, and sets the statistics from it.
+DUCKDB_V2_ERROR SetStatsStruct(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats,
+                               const std::vector<const char *> &names,
+                               const std::vector<duckdb_v2_value_handle> &children, duckdb_v2_error_info_handle *err) {
+	std::vector<duckdb_v2_identifier_t> idents;
+	for (auto name : names) {
+		idents.push_back(StatsIdent(name));
+	}
+	duckdb_v2_value_handle value = nullptr;
+	auto rc = duckdb_v2_value_create_struct(factory, idents.data(), children.data(), children.size(), &value, err);
+	if (rc == DUCKDB_V2_ERROR_NONE) {
+		rc = duckdb_v2_stats_set_value(stats, value, err);
+	}
+	duckdb_v2_value_destroy(&value);
+	return rc;
+}
+
+// Sets statistics from JSON text, the compact way to spell a test case: the text is accepted like the output of
+// stats().
 DUCKDB_V2_ERROR SetStatsJSON(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const char *json,
                              duckdb_v2_error_info_handle *err) {
 	duckdb_v2_value_handle value = nullptr;
 	auto text = Convert(json);
 	auto rc = duckdb_v2_value_create_varchar(factory, &text, &value, err);
 	if (rc == DUCKDB_V2_ERROR_NONE) {
-		rc = duckdb_v2_stats_set_variant(stats, value, err);
+		rc = duckdb_v2_stats_set_value(stats, value, err);
 	}
 	duckdb_v2_value_destroy(&value);
 	return rc;
@@ -615,12 +634,49 @@ DUCKDB_V2_ERROR SetStatsJSON(duckdb_v2_factory_handle factory, duckdb_v2_stats_h
 // The statistics rendered as text, "<error>" when they cannot be read.
 std::string StatsText(duckdb_v2_stats_handle stats) {
 	duckdb_v2_value_handle value = nullptr;
-	if (duckdb_v2_stats_get_variant(stats, &value, nullptr) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_stats_get_value(stats, &value, nullptr) != DUCKDB_V2_ERROR_NONE) {
 		return "<error>";
 	}
 	auto text = Render(value);
 	duckdb_v2_value_destroy(&value);
 	return text;
+}
+
+// The owned value of one field of the statistics struct, found by name through the struct type; null when absent.
+duckdb_v2_value_handle StatsField(duckdb_v2_stats_handle stats, const char *name) {
+	duckdb_v2_value_handle value = nullptr;
+	if (duckdb_v2_stats_get_value(stats, &value, nullptr) != DUCKDB_V2_ERROR_NONE) {
+		return nullptr;
+	}
+	duckdb_v2_logical_type_handle type = nullptr;
+	idx_t count = 0;
+	duckdb_v2_value_handle field = nullptr;
+	if (duckdb_v2_value_get_logical_type(value, &type, nullptr) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_logical_type_get_param_count(type, &count, nullptr) == DUCKDB_V2_ERROR_NONE) {
+		for (idx_t i = 0; i < count && !field; i++) {
+			duckdb_v2_identifier_t field_name = {nullptr, 0};
+			duckdb_v2_value_handle field_type = nullptr;
+			if (duckdb_v2_logical_type_get_param(type, i, &field_name, &field_type, nullptr) == DUCKDB_V2_ERROR_NONE &&
+			    Convert(field_name) == name) {
+				duckdb_v2_value_get_child(value, i, &field, nullptr);
+			}
+			duckdb_v2_value_destroy(&field_type);
+		}
+	}
+	duckdb_v2_logical_type_destroy(&type);
+	duckdb_v2_value_destroy(&value);
+	return field;
+}
+
+// The type id of a value.
+DUCKDB_V2_LOGICAL_TYPE_ID TypeIdOf(duckdb_v2_value_handle value) {
+	duckdb_v2_logical_type_handle type = nullptr;
+	auto id = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
+	if (duckdb_v2_value_get_logical_type(value, &type, nullptr) == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_logical_type_get_id(type, &id, nullptr);
+	}
+	duckdb_v2_logical_type_destroy(&type);
+	return id;
 }
 
 // Owned statistics of a type given as text, or null when they cannot be built.
@@ -636,15 +692,50 @@ duckdb_v2_stats_handle StatsOfText(duckdb_v2_factory_handle factory, const char 
 	return stats;
 }
 
-// Owned INTEGER statistics bounded by [min, max] without NULLs, or null when they cannot be built.
+// Owned INTEGER statistics bounded by [min, max] without NULLs, set from a STRUCT built with the value API; null when
+// they cannot be built.
 duckdb_v2_stats_handle IntStats(duckdb_v2_factory_handle factory, int32_t min, int32_t max,
                                 duckdb_v2_error_info_handle *err) {
 	auto stats = StatsOfText(factory, "INTEGER", err);
-	if (stats) {
-		auto json = "{\"min\": " + std::to_string(min) + ", \"max\": " + std::to_string(max) + ", \"has_null\": false}";
-		SetStatsJSON(factory, stats, json.c_str(), err);
+	if (!stats) {
+		return nullptr;
 	}
+	duckdb_v2_value_handle lower = nullptr;
+	duckdb_v2_value_handle upper = nullptr;
+	duckdb_v2_value_handle no_nulls = nullptr;
+	if (duckdb_v2_value_create_int(factory, min, &lower, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_int(factory, max, &upper, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_bool(factory, false, &no_nulls, err) == DUCKDB_V2_ERROR_NONE) {
+		SetStatsStruct(factory, stats, {"min", "max", "has_null"}, {lower, upper, no_nulls}, err);
+	}
+	duckdb_v2_value_destroy(&lower);
+	duckdb_v2_value_destroy(&upper);
+	duckdb_v2_value_destroy(&no_nulls);
 	return stats;
+}
+
+// Sets string bounds from two VARCHAR values built with the value API.
+DUCKDB_V2_ERROR SetTextBounds(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const char *min,
+                              const char *max, duckdb_v2_error_info_handle *err) {
+	duckdb_v2_value_handle lower = nullptr;
+	duckdb_v2_value_handle upper = nullptr;
+	duckdb_v2_value_handle no_nulls = nullptr;
+	auto min_text = Convert(min);
+	auto max_text = Convert(max);
+	auto rc = duckdb_v2_value_create_varchar(factory, &min_text, &lower, err);
+	if (rc == DUCKDB_V2_ERROR_NONE) {
+		rc = duckdb_v2_value_create_varchar(factory, &max_text, &upper, err);
+	}
+	if (rc == DUCKDB_V2_ERROR_NONE) {
+		rc = duckdb_v2_value_create_bool(factory, false, &no_nulls, err);
+	}
+	if (rc == DUCKDB_V2_ERROR_NONE) {
+		rc = SetStatsStruct(factory, stats, {"min", "max", "has_null"}, {lower, upper, no_nulls}, err);
+	}
+	duckdb_v2_value_destroy(&lower);
+	duckdb_v2_value_destroy(&upper);
+	duckdb_v2_value_destroy(&no_nulls);
+	return rc;
 }
 
 // What a function's stats / pushdown callback does, passed as its user data.
@@ -654,6 +745,8 @@ struct MinMaxMode {
 	bool merged = false;
 	// The stats callback builds owned statistics and assigns them to the result instead of narrowing it in place.
 	bool via_assign = false;
+	// The VARCHAR column holds the five characters a\x41 (a backslash, no escape) and is bounded by exactly that.
+	bool backslash = false;
 };
 
 // What the last stats / pushdown callback saw.
@@ -717,14 +810,17 @@ void MinMaxInitGlobalCb(duckdb_v2_table_function_init_global_info_handle info, d
 void MinMaxExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle context,
                   duckdb_v2_error_info_handle *err) {
 	void *global_ptr = nullptr;
+	void *user_data = nullptr;
 	duckdb_v2_data_chunk_handle chunk = nullptr;
 	duckdb_v2_factory_handle factory = nullptr;
 	if (duckdb_v2_table_function_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_table_function_exec_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
 	    duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE ||
 	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	g_mm.exec_calls++;
+	auto *mode = static_cast<MinMaxMode *>(user_data);
 	auto &global = *static_cast<MinMaxGlobal *>(global_ptr);
 	idx_t produced = global.produced < 3 ? 1 : 0;
 	global.produced += produced;
@@ -742,13 +838,13 @@ void MinMaxExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_cont
 					static_cast<int32_t *>(raw)[row] = 7;
 				}
 			} else {
-				// Every row holds 'zebra' - a value after the reported maximum 'pear'.
-				duckdb_v2_value_handle zebra = nullptr;
-				auto text = Convert("zebra");
-				if (duckdb_v2_value_create_varchar(factory, &text, &zebra, err) == DUCKDB_V2_ERROR_NONE) {
-					duckdb_v2_vector_set_value(vec, row, zebra, err);
+				// Every row holds 'zebra' - a value after the reported maximum 'pear' - or the five characters a\x41.
+				duckdb_v2_value_handle text_value = nullptr;
+				auto text = Convert(mode && mode->backslash ? "a\\x41" : "zebra");
+				if (duckdb_v2_value_create_varchar(factory, &text, &text_value, err) == DUCKDB_V2_ERROR_NONE) {
+					duckdb_v2_vector_set_value(vec, row, text_value, err);
 				}
-				duckdb_v2_value_destroy(&zebra);
+				duckdb_v2_value_destroy(&text_value);
 			}
 		}
 	}
@@ -776,9 +872,12 @@ void MinMaxStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_co
 	}
 
 	if (column == 2) {
-		// The VARCHAR column: bounds in binary order, as a file format stores them
-		g_mm.set_rc =
-		    SetStatsJSON(factory, result, "{\"min\": \"apple\", \"max\": \"pear\", \"has_null\": false}", err);
+		// The VARCHAR column: bounds in binary order, as a file format stores them, taken as the bytes they are
+		if (mode->backslash) {
+			g_mm.set_rc = SetTextBounds(factory, result, "a\\x41", "a\\x41", err);
+		} else {
+			g_mm.set_rc = SetTextBounds(factory, result, "apple", "pear", err);
+		}
 		g_mm.result_text = StatsText(result);
 		return;
 	}
@@ -884,6 +983,8 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	RegisterMinMax(fx.conn, "mm_silent", &silent, true, false);
 	static MinMaxMode assigned {true, false, true};
 	RegisterMinMax(fx.conn, "mm_assigned", &assigned, true, false);
+	static MinMaxMode backslash {true, false, false, true};
+	RegisterMinMax(fx.conn, "mm_backslash", &backslash, true, false);
 
 	// The data is 7; the reported minimum 20 makes "i < 15" unsatisfiable, so acting on the statistics yields 0 and the
 	// scan never runs.
@@ -896,7 +997,7 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	REQUIRE(g_mm.exec_calls == 0);
 	REQUIRE(g_mm.user_data == &report);
 	REQUIRE(g_mm.column_index == 0);
-	REQUIRE(g_mm.result_text == "{'has_no_null': true, 'has_null': false, 'max': 30, 'min': 20}");
+	REQUIRE(g_mm.result_text == "{'min': 20, 'max': 30, 'has_null': false, 'has_no_null': true}");
 	REQUIRE(g_mm.string_on_numeric_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(g_mm.destroy_borrowed_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(g_mm.borrowed_survives);
@@ -907,12 +1008,25 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	REQUIRE(g_mm.set_rc == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(g_mm.column_index == 2);
 	REQUIRE(g_mm.result_text ==
-	        "{'has_no_null': true, 'has_null': false, 'has_unicode': true, 'max': pear, 'min': apple}");
+	        "{'min': apple, 'max': pear, 'has_unicode': true, 'has_null': false, 'has_no_null': true}");
 	REQUIRE(g_mm.exec_calls == 0);
 	// 'banana' lies within the bounds: the scan runs
 	g_mm = MinMaxObserved {};
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE s > 'banana'") == 3);
 	REQUIRE(g_mm.exec_calls > 0);
+
+	// A string bound is the bytes it is given: the backslash in a\x41 is a character, not an escape, so the rows that
+	// hold exactly those five characters stay, while 'aA' (what the escape would decode to) is excluded. (The text
+	// rendering quotes such a string and doubles its backslash.)
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_backslash() WHERE s = 'a\\x41'") == 3);
+	REQUIRE(g_mm.set_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_mm.result_text ==
+	        "{'min': 'a\\\\x41', 'max': 'a\\\\x41', 'has_unicode': true, 'has_null': false, 'has_no_null': true}");
+	REQUIRE(g_mm.exec_calls > 0);
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_backslash() WHERE s = 'aA'") == 0);
+	REQUIRE(g_mm.exec_calls == 0);
 
 	// A function whose callback leaves the statistics unknown is scanned and returns every row.
 	g_mm = MinMaxObserved {};
@@ -923,7 +1037,7 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	g_mm = MinMaxObserved {};
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_assigned() WHERE i < 15") == 0);
 	REQUIRE(g_mm.assign_rc == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(g_mm.result_text == "{'has_no_null': true, 'has_null': false, 'max': 30, 'min': 20}");
+	REQUIRE(g_mm.result_text == "{'min': 20, 'max': 30, 'has_null': false, 'has_no_null': true}");
 	REQUIRE(g_mm.exec_calls == 0);
 }
 
@@ -1094,9 +1208,9 @@ TEST_CASE("V2 stats: shredded VARIANT statistics reach variant_extract", "[capi_
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_report() WHERE variant_extract(v, 'x') IS NULL") == 0);
 	REQUIRE(g_shredded.malformed_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(g_shredded.set_rc == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(g_shredded.result_text == "{'fully_shredded': {'x': {'stats': {'has_no_null': true, 'has_null': false, "
-	                                  "'max': 5, 'min': 1}, 'type': INTEGER}}, 'has_no_null': true, 'has_null': false, "
-	                                  "'shredding_state': SHREDDED}");
+	REQUIRE(g_shredded.result_text ==
+	        "{'shredding_state': SHREDDED, 'fully_shredded': {'x': {'type': INTEGER, 'stats': {'min': 1, 'max': 5, "
+	        "'has_null': false, 'has_no_null': true}}}, 'has_null': false, 'has_no_null': true}");
 	REQUIRE(g_shredded.exec_calls == 0);
 	// "IS NOT NULL" always holds: nothing is pruned and the (empty) function is scanned.
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_report() WHERE variant_extract(v, 'x') IS NOT NULL") == 0);
@@ -1131,6 +1245,18 @@ std::string SetStatsJSONMessage(duckdb_v2_factory_handle factory, duckdb_v2_stat
 	return message;
 }
 
+// Owned statistics of the type with the same bounds as `stats`, set from what `stats` reads back as.
+duckdb_v2_stats_handle CopyThroughValue(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats,
+                                        const char *type_text) {
+	duckdb_v2_value_handle value = nullptr;
+	REQUIRE(duckdb_v2_stats_get_value(stats, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto copy = StatsOfText(factory, type_text, nullptr);
+	REQUIRE(copy != nullptr);
+	REQUIRE(duckdb_v2_stats_set_value(copy, value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_destroy(&value);
+	return copy;
+}
+
 } // namespace
 
 TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stats][statistics]") {
@@ -1143,25 +1269,47 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	bool can_have_null = false;
 	REQUIRE(duckdb_v2_stats_can_have_null(stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(can_have_null);
-	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': true}");
+	REQUIRE(StatsText(stats) == "{'has_null': true, 'has_no_null': true}");
 
 	// A STRUCT value built with the value API sets the parts it mentions, the rest keeps its value.
-	duckdb_v2_value_handle five = nullptr;
-	duckdb_v2_value_handle ten = nullptr;
-	REQUIRE(duckdb_v2_value_create_int(fx.factory, 5, &five, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_value_create_int(fx.factory, 10, &ten, nullptr) == DUCKDB_V2_ERROR_NONE);
-	const duckdb_v2_identifier_t names[] = {StatsIdent("min"), StatsIdent("max")};
-	const duckdb_v2_value_handle children[] = {five, ten};
-	duckdb_v2_value_handle bounds = nullptr;
-	REQUIRE(duckdb_v2_value_create_struct(fx.factory, names, children, 2, &bounds, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_variant(stats, bounds, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': true, 'max': 10, 'min': 5}");
+	auto five = MakeInt32Value(fx.factory, 5);
+	auto ten = MakeInt32Value(fx.factory, 10);
+	REQUIRE(SetStatsStruct(fx.factory, stats, {"min", "max"}, {five, ten}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'min': 5, 'max': 10, 'has_null': true, 'has_no_null': true}");
 	REQUIRE(duckdb_v2_stats_set_can_have_null(stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"approx_unique\": 6}", nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(StatsText(stats) == "{'approx_unique': 6, 'has_no_null': true, 'has_null': false, 'max': 10, 'min': 5}");
-	// A bound given as a JSON number is cast to the column's type
+	REQUIRE(StatsText(stats) == "{'min': 5, 'max': 10, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
+	// A bound of another type is cast to the column's type
 	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"min\": 4.0}", nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(StatsText(stats) == "{'approx_unique': 6, 'has_no_null': true, 'has_null': false, 'max': 10, 'min': 4}");
+	REQUIRE(StatsText(stats) == "{'min': 4, 'max': 10, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
+	// A NULL field leaves that statistic unchanged, whether built as a value or given as JSON
+	duckdb_v2_logical_type_handle integer_type = nullptr;
+	duckdb_v2_value_handle null_int = nullptr;
+	auto eight = MakeInt32Value(fx.factory, 8);
+	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0,
+	                                              &integer_type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_value_create_null(fx.factory, integer_type, &null_int, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(SetStatsStruct(fx.factory, stats, {"min", "max"}, {null_int, eight}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'min': 4, 'max': 8, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
+	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"max\": null, \"approx_unique\": null, \"has_null\": true}", nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'min': 4, 'max': 8, 'has_null': true, 'has_no_null': true, 'approx_unique': 6}");
+	REQUIRE(duckdb_v2_stats_set_can_have_null(stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
+
+	// The output of stats() is accepted too: the same struct as a VARIANT value sets the same statistics
+	duckdb_v2_logical_type_handle variant_type = nullptr;
+	auto variant_text = Convert("VARIANT");
+	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &variant_text, &variant_type, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_value_handle bounds = nullptr;
+	duckdb_v2_value_handle bounds_variant = nullptr;
+	const duckdb_v2_identifier_t bound_names[] = {StatsIdent("min"), StatsIdent("max")};
+	const duckdb_v2_value_handle bound_values[] = {five, ten};
+	REQUIRE(duckdb_v2_value_create_struct(fx.factory, bound_names, bound_values, 2, &bounds, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_value_cast(fx.factory, bounds, variant_type, &bounds_variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_stats_set_value(stats, bounds_variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'min': 5, 'max': 10, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
 
 	// Merge in a wider part of the column: the bounds widen to [1, 20], and NULLs can occur again.
 	auto other = IntStats(fx.factory, 1, 20, nullptr);
@@ -1169,12 +1317,12 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	REQUIRE(duckdb_v2_stats_merge(stats, other, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_can_have_null(stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(can_have_null);
-	REQUIRE(StatsText(stats) == "{'approx_unique': 6, 'has_no_null': true, 'has_null': true, 'max': 20, 'min': 1}");
+	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': true, 'has_no_null': true, 'approx_unique': 6}");
 
 	// Assigning replaces everything: the NULL-free [1, 20] of "other" is taken over, after narrowing it.
 	REQUIRE(duckdb_v2_stats_set_can_have_null(other, false, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_assign(stats, other, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
+	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
 
 	// Statistics of another type do not merge or assign.
 	auto text_stats = StatsOfText(fx.factory, "VARCHAR", nullptr);
@@ -1189,32 +1337,35 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	message = SetStatsJSONMessage(fx.factory, stats, "{\"min\": 0, \"has_unicode\": false}", rc);
 	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(message.find("'has_unicode'") != std::string::npos);
-	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
+	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
 	REQUIRE(SetStatsJSONMessage(fx.factory, stats, "{\"has_null\": \"maybe\"}", rc).find("'has_null'") !=
 	        std::string::npos);
 	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	// Values that are not a struct of statistics
 	REQUIRE(SetStatsJSON(fx.factory, stats, "42", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(SetStatsJSON(fx.factory, stats, "[1, 2]", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(SetStatsJSON(fx.factory, stats, "not json", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(SetStatsJSON(fx.factory, stats, "null", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_stats_set_variant(stats, five, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	duckdb_v2_value_handle null_value = nullptr;
-	duckdb_v2_logical_type_handle variant_type = nullptr;
-	auto variant_text = Convert("VARIANT");
-	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &variant_text, &variant_type, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_value_create_null(fx.factory, variant_type, &null_value, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_variant(stats, null_value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
-	// An empty object describes nothing
+	REQUIRE(duckdb_v2_stats_set_value(stats, five, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_value_handle null_variant = nullptr;
+	REQUIRE(duckdb_v2_value_create_null(fx.factory, variant_type, &null_variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_stats_set_value(stats, null_variant, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_stats_set_value(stats, null_int, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
+	// An empty struct describes nothing
 	REQUIRE(SetStatsJSON(fx.factory, stats, "{}", nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
+	REQUIRE(SetStatsStruct(fx.factory, stats, {}, {}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
 
-	duckdb_v2_value_destroy(&null_value);
-	duckdb_v2_logical_type_destroy(&variant_type);
+	duckdb_v2_value_destroy(&null_variant);
+	duckdb_v2_value_destroy(&null_int);
+	duckdb_v2_value_destroy(&bounds_variant);
 	duckdb_v2_value_destroy(&bounds);
+	duckdb_v2_logical_type_destroy(&variant_type);
+	duckdb_v2_logical_type_destroy(&integer_type);
 	duckdb_v2_value_destroy(&five);
 	duckdb_v2_value_destroy(&ten);
+	duckdb_v2_value_destroy(&eight);
 	duckdb_v2_stats_destroy(&text_stats);
 	duckdb_v2_stats_destroy(&other);
 	duckdb_v2_stats_destroy(&stats);
@@ -1226,7 +1377,126 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	REQUIRE(duckdb_v2_stats_destroy(&already_null) == DUCKDB_V2_ERROR_NONE);
 }
 
-TEST_CASE("V2 stats: statistics of every kind round-trip through a VARIANT", "[capi_v2][stats][statistics]") {
+TEST_CASE("V2 stats: bounds keep the column's type", "[capi_v2][stats][statistics]") {
+	EnvFixture fx;
+
+	// A DATE bound is a DATE value, or text that casts to one; a number is not a date.
+	auto dates = StatsOfText(fx.factory, "DATE", nullptr);
+	REQUIRE(dates != nullptr);
+	duckdb_v2_value_handle first = nullptr;
+	const int32_t days_2024_01_01 = 19723;
+	REQUIRE(duckdb_v2_value_create_date(fx.factory, days_2024_01_01, &first, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto last = MakeVarcharValue(fx.factory, "2024-12-31");
+	REQUIRE(SetStatsStruct(fx.factory, dates, {"min", "max"}, {first, last}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(dates) == "{'min': 2024-01-01, 'max': 2024-12-31, 'has_null': true, 'has_no_null': true}");
+	auto min_field = StatsField(dates, "min");
+	REQUIRE(min_field != nullptr);
+	REQUIRE(TypeIdOf(min_field) == DUCKDB_V2_LOGICAL_TYPE_ID_DATE);
+	int32_t min_days = 0;
+	REQUIRE(duckdb_v2_value_get_date(min_field, &min_days, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(min_days == days_2024_01_01);
+	duckdb_v2_value_destroy(&min_field);
+	DUCKDB_V2_ERROR rc;
+	auto message = SetStatsJSONMessage(fx.factory, dates, "{\"min\": 0}", rc);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("'min'") != std::string::npos);
+	REQUIRE(StatsText(dates) == "{'min': 2024-01-01, 'max': 2024-12-31, 'has_null': true, 'has_no_null': true}");
+	duckdb_v2_value_destroy(&first);
+	duckdb_v2_value_destroy(&last);
+	duckdb_v2_stats_destroy(&dates);
+
+	// A DECIMAL bound is a DECIMAL value of the column's width and scale.
+	auto decimals = StatsOfText(fx.factory, "DECIMAL(10, 2)", nullptr);
+	REQUIRE(SetStatsJSON(fx.factory, decimals, "{\"min\": 1.5, \"max\": 2.25}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto max_field = StatsField(decimals, "max");
+	REQUIRE(max_field != nullptr);
+	REQUIRE(TypeIdOf(max_field) == DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL);
+	REQUIRE(Render(max_field) == "2.25");
+	duckdb_v2_value_destroy(&max_field);
+	duckdb_v2_stats_destroy(&decimals);
+}
+
+TEST_CASE("V2 stats: string bounds are the bytes they are given", "[capi_v2][stats][statistics]") {
+	EnvFixture fx;
+
+	// A VARCHAR bound is taken verbatim: a backslash is a character, not the start of an escape.
+	auto text = StatsOfText(fx.factory, "VARCHAR", nullptr);
+	REQUIRE(text != nullptr);
+	REQUIRE(SetTextBounds(fx.factory, text, "C:\\temp", "a\\x41", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(text) ==
+	        "{'min': 'C:\\\\temp', 'max': 'a\\\\x41', 'has_unicode': true, 'has_null': false, 'has_no_null': true}");
+	auto field = StatsField(text, "min");
+	REQUIRE(field != nullptr);
+	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	REQUIRE(ConsumeValue<std::string>(field) == "C:\\temp");
+	field = StatsField(text, "max");
+	REQUIRE(ConsumeValue<std::string>(field) == "a\\x41");
+	// What was read back sets the same bounds again
+	auto copy = CopyThroughValue(fx.factory, text, "VARCHAR");
+	REQUIRE(StatsText(copy) == StatsText(text));
+	duckdb_v2_stats_destroy(&copy);
+
+	// Valid UTF-8 beyond ASCII stays a VARCHAR; a BLOB value with valid UTF-8 bytes reads back as a VARCHAR too.
+	const unsigned char e_acute[] = {0xC3, 0xA9};
+	auto lower = MakeBlobValue(fx.factory, e_acute, sizeof(e_acute));
+	auto upper = MakeVarcharValue(fx.factory, "\xC3\xA9z");
+	REQUIRE(SetStatsStruct(fx.factory, text, {"min", "max"}, {lower, upper}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	field = StatsField(text, "min");
+	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	REQUIRE(ConsumeValue<std::string>(field) == "\xC3\xA9");
+	field = StatsField(text, "max");
+	REQUIRE(ConsumeValue<std::string>(field) == "\xC3\xA9z");
+	duckdb_v2_value_destroy(&lower);
+	duckdb_v2_value_destroy(&upper);
+
+	// Bytes that are not valid UTF-8 (as a truncated prefix of a VARCHAR may be) are given and read back as a BLOB.
+	const unsigned char byte_80[] = {0x61, 0x80};
+	const unsigned char byte_ff[] = {0xFF};
+	lower = MakeBlobValue(fx.factory, byte_80, sizeof(byte_80));
+	upper = MakeBlobValue(fx.factory, byte_ff, sizeof(byte_ff));
+	REQUIRE(SetStatsStruct(fx.factory, text, {"min", "max"}, {lower, upper}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	field = StatsField(text, "min");
+	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB);
+	REQUIRE(ConsumeBlob(field) == std::string("a\x80", 2));
+	field = StatsField(text, "max");
+	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB);
+	REQUIRE(ConsumeBlob(field) == std::string("\xFF", 1));
+	copy = CopyThroughValue(fx.factory, text, "VARCHAR");
+	REQUIRE(StatsText(copy) == StatsText(text));
+	field = StatsField(copy, "min");
+	REQUIRE(ConsumeBlob(field) == std::string("a\x80", 2));
+	duckdb_v2_stats_destroy(&copy);
+	duckdb_v2_value_destroy(&lower);
+	duckdb_v2_value_destroy(&upper);
+	duckdb_v2_stats_destroy(&text);
+
+	// The bounds of a BLOB column are BLOB values; a VARCHAR bound on it is its characters, escapes included.
+	auto blobs = StatsOfText(fx.factory, "BLOB", nullptr);
+	REQUIRE(blobs != nullptr);
+	const unsigned char nul_backslash[] = {0x00, 0x5C};
+	lower = MakeBlobValue(fx.factory, nul_backslash, sizeof(nul_backslash));
+	upper = MakeBlobValue(fx.factory, byte_ff, sizeof(byte_ff));
+	REQUIRE(SetStatsStruct(fx.factory, blobs, {"min", "max"}, {lower, upper}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(blobs) == "{'min': '\\\\x00\\\\x5C', 'max': '\\\\xFF', 'has_unicode': true, 'has_null': true, "
+	                            "'has_no_null': true}");
+	field = StatsField(blobs, "min");
+	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB);
+	REQUIRE(ConsumeBlob(field) == std::string("\x00\x5C", 2));
+	copy = CopyThroughValue(fx.factory, blobs, "BLOB");
+	REQUIRE(StatsText(copy) == StatsText(blobs));
+	duckdb_v2_stats_destroy(&copy);
+	duckdb_v2_value_destroy(&lower);
+	duckdb_v2_value_destroy(&upper);
+	auto escaped = MakeVarcharValue(fx.factory, "\\x00");
+	REQUIRE(SetStatsStruct(fx.factory, blobs, {"max"}, {escaped}, nullptr) == DUCKDB_V2_ERROR_NONE);
+	field = StatsField(blobs, "max");
+	REQUIRE(TypeIdOf(field) == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB);
+	REQUIRE(ConsumeBlob(field) == "\\x00");
+	duckdb_v2_value_destroy(&escaped);
+	duckdb_v2_stats_destroy(&blobs);
+}
+
+TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[capi_v2][stats][statistics]") {
 	EnvFixture fx;
 
 	// Each case: the type, JSON text to set, and what the statistics read back as.
@@ -1237,54 +1507,60 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a VARIANT", "[c
 	};
 	const RoundTrip cases[] = {
 	    {"DECIMAL(10, 2)", "{\"min\": 1.5, \"max\": 2.25, \"has_null\": false}",
-	     "{'has_no_null': true, 'has_null': false, 'max': 2.25, 'min': 1.50}"},
+	     "{'min': 1.50, 'max': 2.25, 'has_null': false, 'has_no_null': true}"},
 	    {"DATE", "{\"min\": \"2024-01-01\", \"max\": \"2024-12-31\"}",
-	     "{'has_no_null': true, 'has_null': true, 'max': 2024-12-31, 'min': 2024-01-01}"},
+	     "{'min': 2024-01-01, 'max': 2024-12-31, 'has_null': true, 'has_no_null': true}"},
 	    // a single bound is kept, but only rendered once both are known
-	    {"DOUBLE", "{\"max\": 1.5}", "{'has_no_null': true, 'has_null': true}"},
+	    {"DOUBLE", "{\"max\": 1.5}", "{'has_null': true, 'has_no_null': true}"},
 	    {"VARCHAR",
 	     "{\"min\": \"a\", \"max\": \"z\", \"has_unicode\": false, \"min_string_length\": 1, \"max_string_length\": 8, "
 	     "\"total_string_length\": 1234}",
-	     "{'has_no_null': true, 'has_null': true, 'has_unicode': false, 'max': z, 'max_string_length': 8, 'min': a, "
-	     "'min_string_length': 1, 'total_string_length': 1234}"},
-	    // non-ASCII bytes and backslashes are rendered as \xNN, and read back from that rendering
-	    {"BLOB", "{\"min\": \"\\\\x00\\\\x5C\", \"max\": \"\\\\xFF\"}",
-	     "{'has_no_null': true, 'has_null': true, 'has_unicode': true, 'max': '\\\\xFF', 'min': '\\\\x00\\\\x5C'}"},
+	     "{'min': a, 'max': z, 'has_unicode': false, 'min_string_length': 1, 'max_string_length': 8, "
+	     "'total_string_length': 1234, 'has_null': true, 'has_no_null': true}"},
+	    // a backslash in a string bound is a character
+	    {"VARCHAR", "{\"min\": \"C:\\\\temp\", \"max\": \"a\\\\x41\"}",
+	     "{'min': 'C:\\\\temp', 'max': 'a\\\\x41', 'has_unicode': true, 'has_null': true, 'has_no_null': true}"},
 	    {"INTEGER[]", "{\"child_stats\": {\"min\": 1, \"max\": 3, \"has_null\": false}, \"has_null\": false}",
-	     "{'child_stats': {'has_no_null': true, 'has_null': false, 'max': 3, 'min': 1}, 'has_no_null': true, "
-	     "'has_null': false}"},
+	     "{'child_stats': {'min': 1, 'max': 3, 'has_null': false, 'has_no_null': true}, 'has_null': false, "
+	     "'has_no_null': true}"},
 	    {"INTEGER[2]", "{\"child_stats\": {\"min\": 1, \"max\": 3}}",
-	     "{'child_stats': {'has_no_null': true, 'has_null': true, 'max': 3, 'min': 1}, 'has_no_null': true, "
-	     "'has_null': true}"},
+	     "{'child_stats': {'min': 1, 'max': 3, 'has_null': true, 'has_no_null': true}, 'has_null': true, "
+	     "'has_no_null': true}"},
 	    {"STRUCT(a INTEGER, b VARCHAR)",
 	     "{\"child_stats\": {\"b\": {\"min\": \"d\", \"max\": \"m\", \"has_null\": false}}}",
-	     "{'child_stats': {'a': {'has_no_null': true, 'has_null': true}, 'b': {'has_no_null': true, 'has_null': false, "
-	     "'has_unicode': true, 'max': m, 'min': d}}, 'has_no_null': true, 'has_null': true}"},
+	     "{'child_stats': {'a': {'has_null': true, 'has_no_null': true}, 'b': {'min': d, 'max': m, 'has_unicode': "
+	     "true, "
+	     "'has_null': false, 'has_no_null': true}}, 'has_null': true, 'has_no_null': true}"},
+	    // a NULL child leaves that field's statistics unchanged
+	    {"STRUCT(a INTEGER, b VARCHAR)", "{\"child_stats\": {\"a\": null, \"b\": {\"min\": \"d\", \"max\": \"m\"}}}",
+	     "{'child_stats': {'a': {'has_null': true, 'has_no_null': true}, 'b': {'min': d, 'max': m, 'has_unicode': "
+	     "true, "
+	     "'has_null': true, 'has_no_null': true}}, 'has_null': true, 'has_no_null': true}"},
 	    {"MAP(VARCHAR, INTEGER)", "{\"child_stats\": {\"child_stats\": {\"value\": {\"min\": 0, \"max\": 7}}}}",
-	     "{'child_stats': {'child_stats': {'key': {'has_no_null': true, 'has_null': true, 'has_unicode': true}, "
-	     "'value': {'has_no_null': true, 'has_null': true, 'max': 7, 'min': 0}}, 'has_no_null': true, "
-	     "'has_null': true}, 'has_no_null': true, 'has_null': true}"},
+	     "{'child_stats': {'child_stats': {'key': {'has_unicode': true, 'has_null': true, 'has_no_null': true}, "
+	     "'value': {'min': 0, 'max': 7, 'has_null': true, 'has_no_null': true}}, 'has_null': true, "
+	     "'has_no_null': true}, 'has_null': true, 'has_no_null': true}"},
 	    {"GEOMETRY",
 	     "{\"extent\": {\"x_min\": 0, \"x_max\": 10, \"y_min\": -5, \"y_max\": 5, \"z_min\": 1, \"z_max\": 2}, "
 	     "\"types\": [\"point\", \"polygon_z\"], \"has_empty_geom\": false, \"has_empty_part\": false}",
-	     "{'extent': {'x_max': 10.0, 'x_min': 0.0, 'y_max': 5.0, 'y_min': -5.0, 'z_max': 2.0, 'z_min': 1.0}, "
-	     "'has_empty_geom': false, 'has_empty_part': false, 'has_no_null': true, 'has_non_empty_geom': true, "
-	     "'has_non_empty_part': true, 'has_null': true, 'types': [point, polygon_z]}"},
+	     "{'extent': {'x_min': 0.0, 'x_max': 10.0, 'y_min': -5.0, 'y_max': 5.0, 'z_min': 1.0, 'z_max': 2.0}, "
+	     "'types': [point, polygon_z], 'has_empty_geom': false, 'has_non_empty_geom': true, 'has_empty_part': false, "
+	     "'has_non_empty_part': true, 'has_null': true, 'has_no_null': true}"},
 	    {"VARIANT", "{\"shredding_state\": \"NOT_SHREDDED\"}",
-	     "{'has_no_null': true, 'has_null': true, 'shredding_state': NOT_SHREDDED}"},
+	     "{'shredding_state': NOT_SHREDDED, 'has_null': true, 'has_no_null': true}"},
 	    // a list of objects whose field n is a BIGINT throughout
 	    {"VARIANT",
 	     "{\"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"child_stats\": {\"n\": {\"type\": \"BIGINT\", "
 	     "\"stats\": {\"min\": 1, \"max\": 9, \"has_null\": false}}}}}",
-	     "{'fully_shredded': {'child_stats': {'n': {'stats': {'has_no_null': true, 'has_null': false, 'max': 9, "
-	     "'min': 1}, 'type': BIGINT}}}, 'has_no_null': true, 'has_null': true, 'shredding_state': SHREDDED}"},
+	     "{'shredding_state': SHREDDED, 'fully_shredded': {'child_stats': {'n': {'type': BIGINT, 'stats': {'min': 1, "
+	     "'max': 9, 'has_null': false, 'has_no_null': true}}}}, 'has_null': true, 'has_no_null': true}"},
 	    // a list of objects whose field s is a VARCHAR for some values, with others in the generic layout
 	    {"VARIANT",
 	     "{\"shredding_state\": \"SHREDDED\", \"partially_shredded\": {\"child_stats\": {\"s\": {\"type\": "
 	     "\"VARCHAR\", \"stats\": {\"min\": \"a\", \"max\": \"c\"}}}}}",
-	     "{'has_no_null': true, 'has_null': true, 'partially_shredded': {'child_stats': {'s': {'stats': "
-	     "{'has_no_null': true, 'has_null': true, 'has_unicode': true, 'max': c, 'min': a}, 'type': VARCHAR}}}, "
-	     "'shredding_state': SHREDDED}"},
+	     "{'shredding_state': SHREDDED, 'partially_shredded': {'child_stats': {'s': {'type': VARCHAR, 'stats': "
+	     "{'min': a, 'max': c, 'has_unicode': true, 'has_null': true, 'has_no_null': true}}}}, 'has_null': true, "
+	     "'has_no_null': true}"},
 	};
 	for (auto &test : cases) {
 		auto stats = StatsOfText(fx.factory, test.type, nullptr);
@@ -1296,27 +1572,21 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a VARIANT", "[c
 		REQUIRE(StatsText(stats) == test.expected);
 
 		// What was read back sets the same statistics again
-		duckdb_v2_value_handle variant = nullptr;
-		REQUIRE(duckdb_v2_stats_get_variant(stats, &variant, nullptr) == DUCKDB_V2_ERROR_NONE);
-		auto again = StatsOfText(fx.factory, test.type, nullptr);
-		REQUIRE(duckdb_v2_stats_set_variant(again, variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+		auto again = CopyThroughValue(fx.factory, stats, test.type);
 		REQUIRE(StatsText(again) == test.expected);
-		duckdb_v2_value_destroy(&variant);
 		duckdb_v2_stats_destroy(&again);
 		duckdb_v2_stats_destroy(&stats);
 	}
 
 	// Unknown statistics read back as they are: a GEOMETRY extent renders its unknown bounds as infinities.
 	auto geometry = StatsOfText(fx.factory, "GEOMETRY", nullptr);
-	auto unknown_geometry = "{'extent': {'x_max': inf, 'x_min': -inf, 'y_max': inf, 'y_min': -inf}, 'has_empty_geom': "
-	                        "true, 'has_empty_part': true, 'has_no_null': true, 'has_non_empty_geom': true, "
-	                        "'has_non_empty_part': true, 'has_null': true}";
+	auto unknown_geometry = "{'extent': {'x_min': -inf, 'x_max': inf, 'y_min': -inf, 'y_max': inf}, 'has_empty_geom': "
+	                        "true, 'has_non_empty_geom': true, 'has_empty_part': true, 'has_non_empty_part': true, "
+	                        "'has_null': true, 'has_no_null': true}";
 	REQUIRE(StatsText(geometry) == unknown_geometry);
-	duckdb_v2_value_handle variant = nullptr;
-	REQUIRE(duckdb_v2_stats_get_variant(geometry, &variant, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_variant(geometry, variant, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(StatsText(geometry) == unknown_geometry);
-	duckdb_v2_value_destroy(&variant);
+	auto again = CopyThroughValue(fx.factory, geometry, "GEOMETRY");
+	REQUIRE(StatsText(again) == unknown_geometry);
+	duckdb_v2_stats_destroy(&again);
 
 	// Malformed parts are refused with a message naming the field, and leave the statistics as they were.
 	struct Malformed {
@@ -1329,11 +1599,11 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a VARIANT", "[c
 	    {"INTEGER[]", "{\"child_stats\": 5}", "'child_stats'"},
 	    {"STRUCT(a INTEGER)", "{\"child_stats\": {\"b\": {\"min\": 1}}}", "'child_stats.b'"},
 	    {"STRUCT(a INTEGER)", "{\"child_stats\": {\"a\": {\"min\": 1, \"other\": 2}}}", "'child_stats.a.other'"},
+	    {"DATE", "{\"min\": \"2024-01-01\", \"max\": 20241231}", "'max'"},
 	    {"GEOMETRY", "{\"extent\": {\"x_min\": \"left\"}}", "'extent.x_min'"},
 	    {"GEOMETRY", "{\"extent\": {\"w_min\": 1}}", "'extent.w_min'"},
 	    {"GEOMETRY", "{\"types\": [\"circle\"]}", "'types'"},
 	    {"GEOMETRY", "{\"types\": \"point\"}", "'types'"},
-	    {"VARCHAR", "{\"min\": \"\\\\xZZ\"}", "'min'"},
 	    {"VARIANT", "{\"shredding_state\": \"SOMEWHAT\"}", "'shredding_state'"},
 	    {"VARIANT",
 	     "{\"shredding_state\": \"NOT_SHREDDED\", \"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {}}}",
@@ -1344,6 +1614,8 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a VARIANT", "[c
 	     "'fully_shredded.stats.min'"},
 	    {"VARIANT", "{\"fully_shredded\": {\"x\": {\"type\": \"INTEGER\"}}}", "'fully_shredded.x"},
 	    {"VARIANT", "{\"fully_shredded\": {}}", "'fully_shredded'"},
+	    // a NULL node describes nothing, so the tree is empty
+	    {"VARIANT", "{\"fully_shredded\": {\"x\": null}}", "'fully_shredded'"},
 	    {"VARIANT",
 	     "{\"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {}}, \"partially_shredded\": {\"type\": "
 	     "\"INTEGER\", \"stats\": {}}}",

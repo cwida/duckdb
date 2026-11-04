@@ -472,29 +472,29 @@ BaseStatistics BaseStatistics::Deserialize(Deserializer &deserializer) {
 	return stats;
 }
 
-Value BaseStatistics::ToStruct() const {
+Value BaseStatistics::ToStruct(bool exact_string_bounds) const {
 	child_list_t<Value> children;
 	switch (GetStatsType()) {
 	case StatisticsType::NUMERIC_STATS:
 		children = NumericStats::ToStruct(*this);
 		break;
 	case StatisticsType::STRING_STATS:
-		children = StringStats::ToStruct(*this);
+		children = StringStats::ToStruct(*this, exact_string_bounds);
 		break;
 	case StatisticsType::LIST_STATS:
-		children = ListStats::ToStruct(*this);
+		children = ListStats::ToStruct(*this, exact_string_bounds);
 		break;
 	case StatisticsType::STRUCT_STATS:
-		children = StructStats::ToStruct(*this);
+		children = StructStats::ToStruct(*this, exact_string_bounds);
 		break;
 	case StatisticsType::ARRAY_STATS:
-		children = ArrayStats::ToStruct(*this);
+		children = ArrayStats::ToStruct(*this, exact_string_bounds);
 		break;
 	case StatisticsType::GEOMETRY_STATS:
 		children = GeometryStats::ToStruct(*this);
 		break;
 	case StatisticsType::VARIANT_STATS:
-		children = VariantStats::ToStruct(*this);
+		children = VariantStats::ToStruct(*this, exact_string_bounds);
 		break;
 	default:
 		break;
@@ -509,12 +509,6 @@ Value BaseStatistics::ToStruct() const {
 
 string BaseStatistics::ToString() const {
 	return ToStruct().ToString();
-}
-
-BaseStatistics BaseStatistics::FromStruct(const LogicalType &type, const Value &value) {
-	auto result = CreateUnknown(type);
-	result.SetFromStruct(value);
-	return result;
 }
 
 void BaseStatistics::SetFromStruct(const Value &value, const string &path) {

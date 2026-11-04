@@ -120,12 +120,12 @@ void StructStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) 
 	});
 }
 
-child_list_t<Value> StructStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> StructStats::ToStruct(const BaseStatistics &stats, bool exact_string_bounds) {
 	child_list_t<Value> result;
 	child_list_t<Value> child_info;
 	auto &child_types = StructType::GetChildTypes(stats.GetType());
 	for (idx_t i = 0; i < child_types.size(); i++) {
-		child_info.emplace_back(child_types[i].first, stats.child_stats[i].ToStruct());
+		child_info.emplace_back(child_types[i].first, stats.child_stats[i].ToStruct(exact_string_bounds));
 	}
 	result.emplace_back("child_stats", Value::STRUCT(std::move(child_info)));
 	return result;

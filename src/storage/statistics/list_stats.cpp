@@ -86,10 +86,10 @@ void ListStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
 	deserializer.Unset<LogicalType>();
 }
 
-child_list_t<Value> ListStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> ListStats::ToStruct(const BaseStatistics &stats, bool exact_string_bounds) {
 	auto &child_stats = ListStats::GetChildStats(stats);
 	child_list_t<Value> result;
-	result.emplace_back("child_stats", child_stats.ToStruct());
+	result.emplace_back("child_stats", child_stats.ToStruct(exact_string_bounds));
 	return result;
 }
 

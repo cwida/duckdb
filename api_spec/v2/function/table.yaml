@@ -1866,8 +1866,8 @@ functions:
       Retrieves the statistics of the column, for the callback to narrow.
 
       The statistics start out unknown, with every kind of value possible, and are of the column's type as the bind
-      callback declared it. The callback narrows them with `[[stats_set_variant]]`, from a VARIANT in the shape the SQL
-      function `stats()` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or the
+      callback declared it. The callback narrows them with `[[stats_set_value]]`, from a STRUCT value in the shape
+      `[[stats_get_value]]` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or the
       statistics of the fields of a STRUCT column under `child_stats` - and with `[[stats_set_can_have_null]]` /
       `[[stats_set_can_have_valid]]`. Statistics built with `[[stats_create]]`, e.g. combined from the files of a scan
       with `[[stats_merge]]`, are copied in with `[[stats_assign]]`. They describe every value the scan produces for

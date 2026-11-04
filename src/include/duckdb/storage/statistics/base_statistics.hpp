@@ -137,11 +137,10 @@ public:
 	void Verify(const Vector &vector, const SelectionVector &sel, idx_t count, bool ignore_has_null = false) const;
 	void Verify(const Vector &vector, idx_t count) const;
 
-	Value ToStruct() const;
+	//! The statistics as a struct; with exact_string_bounds, string bounds are VARCHAR / BLOB values holding their
+	//! bytes instead of a rendering with \xNN escapes
+	Value ToStruct(bool exact_string_bounds = false) const;
 	string ToString() const;
-	//! Builds statistics of `type` from a struct (or VARIANT object) in the shape ToStruct produces: the parts
-	//! it describes are set, the rest stays unknown
-	DUCKDB_API static BaseStatistics FromStruct(const LogicalType &type, const Value &value);
 	//! Sets the parts of the statistics a struct (or VARIANT object) in the shape ToStruct produces describes;
 	//! `path` prefixes the field names in error messages
 	DUCKDB_API void SetFromStruct(const Value &value, const string &path = string());

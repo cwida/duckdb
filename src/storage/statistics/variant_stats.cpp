@@ -400,7 +400,7 @@ void VariantStats::Deserialize(Deserializer &deserializer, BaseStatistics &base)
 	}
 }
 
-static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shredded) {
+static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shredded, bool exact_string_bounds) {
 	if (VariantShreddedStats::IsFullyShredded(stats) != fully_shredded) {
 		return Value();
 	}
@@ -411,7 +411,7 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 		// list
 		auto &child_stats = ListStats::GetChildStats(typed_value);
 		child_list_t<Value> result;
-		auto result_stats = GetShreddedStatsStruct(child_stats, fully_shredded);
+		auto result_stats = GetShreddedStatsStruct(child_stats, fully_shredded, exact_string_bounds);
 		if (result_stats.IsNull()) {
 			return Value();
 		}
@@ -435,7 +435,7 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 		for (idx_t i = 0; i < indices.size(); i++) {
 			auto &child_stats = StructStats::GetChildStats(typed_value, indices[i]);
 			auto &field = fields[indices[i]];
-			auto child_stats_entry = GetShreddedStatsStruct(child_stats, fully_shredded);
+			auto child_stats_entry = GetShreddedStatsStruct(child_stats, fully_shredded, exact_string_bounds);
 			if (child_stats_entry.IsNull()) {
 				continue;
 			}
@@ -448,21 +448,21 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 	}
 	child_list_t<Value> result;
 	result.emplace_back("type", Value(typed_value.GetType().ToString()));
-	result.emplace_back("stats", typed_value.ToStruct());
+	result.emplace_back("stats", typed_value.ToStruct(exact_string_bounds));
 	return Value::STRUCT(std::move(result));
 }
 
-child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats, bool exact_string_bounds) {
 	child_list_t<Value> result;
 	bool is_shredded = IsShredded(stats);
 	auto &data = GetDataUnsafe(stats);
 	result.emplace_back("shredding_state", Value(EnumUtil::ToString(data.shredding_state)));
 	if (is_shredded) {
-		auto fully_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], true);
+		auto fully_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], true, exact_string_bounds);
 		if (!fully_shredded_stats.IsNull()) {
 			result.emplace_back("fully_shredded", std::move(fully_shredded_stats));
 		}
-		auto partially_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], false);
+		auto partially_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], false, exact_string_bounds);
 		if (!partially_shredded_stats.IsNull()) {
 			result.emplace_back("partially_shredded", std::move(partially_shredded_stats));
 		}
@@ -578,12 +578,13 @@ static BaseStatistics VariantStatsBuildNode(optional_ptr<StatsStructFields> full
 		break;
 	}
 	case VariantStatsNodeKind::OBJECT: {
-		// the fields of the fully shredded rendering first, then those only the partially shredded one has
+		// the fields of the fully shredded rendering first, then those only the partially shredded one has; a NULL
+		// field is absent
 		vector<string> names;
 		for (auto source : {fully, partially}) {
 			for (idx_t i = 0; source && i < source->FieldCount(); i++) {
 				auto &name = source->FieldName(i);
-				if (std::find(names.begin(), names.end(), name) == names.end()) {
+				if (source->FieldValue(i) && std::find(names.begin(), names.end(), name) == names.end()) {
 					names.push_back(name);
 				}
 			}

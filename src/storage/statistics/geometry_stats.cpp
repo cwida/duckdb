@@ -194,6 +194,18 @@ child_list_t<Value> GeometryStats::ToStruct(const BaseStatistics &stats) {
 	return result;
 }
 
+//! A bound of the extent, by the field name ToStruct gives it
+struct GeometryExtentBound {
+	const char *name;
+	double &bound;
+};
+
+//! A flag of the statistics, by the field name ToStruct gives it
+struct GeometryStatsFlag {
+	const char *name;
+	bool &value;
+};
+
 void GeometryStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
 	auto &data = GetDataUnsafe(stats);
 	Value field;
@@ -201,13 +213,13 @@ void GeometryStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fiel
 	auto extent = fields.Get("extent");
 	if (extent) {
 		StatsStructFields bounds(*extent, fields.FieldPath("extent"));
-		const std::pair<const char *, double &> axes[] = {{"x_min", data.extent.x_min}, {"x_max", data.extent.x_max},
-		                                                  {"y_min", data.extent.y_min}, {"y_max", data.extent.y_max},
-		                                                  {"z_min", data.extent.z_min}, {"z_max", data.extent.z_max},
-		                                                  {"m_min", data.extent.m_min}, {"m_max", data.extent.m_max}};
+		const GeometryExtentBound axes[] = {{"x_min", data.extent.x_min}, {"x_max", data.extent.x_max},
+		                                    {"y_min", data.extent.y_min}, {"y_max", data.extent.y_max},
+		                                    {"z_min", data.extent.z_min}, {"z_max", data.extent.z_max},
+		                                    {"m_min", data.extent.m_min}, {"m_max", data.extent.m_max}};
 		for (auto &axis : axes) {
-			if (bounds.TryGet(axis.first, LogicalType::DOUBLE, field)) {
-				axis.second = DoubleValue::Get(field);
+			if (bounds.TryGet(axis.name, LogicalType::DOUBLE, field)) {
+				axis.bound = DoubleValue::Get(field);
 			}
 		}
 		bounds.VerifyAllRead(stats.GetType());
@@ -236,13 +248,13 @@ void GeometryStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fiel
 	bool has_non_empty_geom = data.flags.HasNonEmptyGeometry();
 	bool has_empty_part = data.flags.HasEmptyPart();
 	bool has_non_empty_part = data.flags.HasNonEmptyPart();
-	const std::pair<const char *, bool &> flags[] = {{"has_empty_geom", has_empty_geom},
-	                                                 {"has_non_empty_geom", has_non_empty_geom},
-	                                                 {"has_empty_part", has_empty_part},
-	                                                 {"has_non_empty_part", has_non_empty_part}};
+	const GeometryStatsFlag flags[] = {{"has_empty_geom", has_empty_geom},
+	                                   {"has_non_empty_geom", has_non_empty_geom},
+	                                   {"has_empty_part", has_empty_part},
+	                                   {"has_non_empty_part", has_non_empty_part}};
 	for (auto &flag : flags) {
-		if (fields.TryGet(flag.first, LogicalType::BOOLEAN, field)) {
-			flag.second = BooleanValue::Get(field);
+		if (fields.TryGet(flag.name, LogicalType::BOOLEAN, field)) {
+			flag.value = BooleanValue::Get(field);
 		}
 	}
 	auto new_flags = GeometryStatsFlags::Empty();

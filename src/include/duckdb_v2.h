@@ -4860,28 +4860,33 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_valid(duckdb_v2_stats_
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
- * Returns the statistics as a VARIANT value: an object with one field per known statistic, exactly what the SQL
- * function `stats()` returns for the same statistics. `stats(42)` for example gives `{'approx_unique': 1,
- * 'has_no_null': true, 'has_null': false, 'max': 42, 'min': 42}`.
+ * Returns the statistics as a STRUCT value with one field per known statistic, the shape the SQL function `stats()`
+ * shows for the same statistics: `stats(42)` for example gives `{'min': 42, 'max': 42, 'has_null': false,
+ * 'has_no_null': true, 'approx_unique': 1}`. Every field keeps the type of what it describes, so a bound is a value of
+ * the column's type: a DATE for a DATE column, a DECIMAL for a DECIMAL column. Read the fields with
+ * `duckdb_v2_value_get_child_count()` and `duckdb_v2_value_get_child()`, and their names from the struct type
+ * (`duckdb_v2_value_get_logical_type()`, `duckdb_v2_logical_type_get_param()`).
  *
- * Every statistics object has `has_null` and `has_no_null` (whether NULLs and non-NULL values can occur) and, when
+ * Every statistics struct has `has_null` and `has_no_null` (whether NULLs and non-NULL values can occur) and, when
  * known, `approx_unique` (the estimated number of distinct values). The other fields depend on the type, and a field is
  * absent when that statistic is unknown:
  *
  * - numeric types (integers, floating point numbers, DECIMAL, dates, times, timestamps, INTERVAL, UUID, BOOLEAN): `min`
  * and `max`, values of the column's type;
- * - VARCHAR and BLOB: `min` and `max` (bounds in binary order, rendered like a BLOB: non-ASCII bytes and backslashes as
- * `\xNN` escapes), `has_unicode`, `min_string_length`, `max_string_length` and `total_string_length`;
- * - LIST and ARRAY: `child_stats`, the statistics object of the elements;
- * - STRUCT: `child_stats`, an object with the statistics of each field by name; a MAP is a LIST of `STRUCT(key, value)`
+ * - VARCHAR and BLOB: `min` and `max` (bounds in binary order, possibly truncated prefixes), `has_unicode`,
+ * `min_string_length`, `max_string_length` and `total_string_length`. A bound holds its bytes as they are: as a VARCHAR
+ * for a VARCHAR column, unless a truncated prefix is not valid UTF-8, in which case it is a BLOB; as a BLOB for a BLOB
+ * column. (`stats()` instead renders string bounds as text, with `\xNN` escapes for bytes outside printable ASCII);
+ * - LIST and ARRAY: `child_stats`, the statistics struct of the elements;
+ * - STRUCT: `child_stats`, a struct with the statistics of each field by name; a MAP is a LIST of `STRUCT(key, value)`
  * entries, so its keys and values are `child_stats.child_stats.key` and `child_stats.child_stats.value`;
- * - GEOMETRY: `extent`, an object with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the geometries
- * have those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types the column holds
+ * - GEOMETRY: `extent`, a struct with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the geometries have
+ * those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types the column holds
  * (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...); and the flags `has_empty_geom`,
  * `has_non_empty_geom`, `has_empty_part` and `has_non_empty_part`;
  * - VARIANT: `shredding_state` (`'SHREDDED'` when the values are stored in a structured layout, `'NOT_SHREDDED'`,
  * `'INCONSISTENT'` or `'UNINITIALIZED'`), and for a shredded column `fully_shredded` and `partially_shredded`: trees
- * over the structured layout whose leaves are `{'type': <type name>, 'stats': <statistics object>}` for the values
+ * over the structured layout whose leaves are `{'type': <type name>, 'stats': <statistics struct>}` for the values
  * shredded on that type, whose arrays are `{'child_stats': <node>}` and whose objects hold a node per field. A node
  * under `fully_shredded` has every value in the structured layout, so that a filter on it can be answered from its
  * statistics; a node under `partially_shredded` also has values that fell back to the generic layout.
@@ -4894,47 +4899,56 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_valid(duckdb_v2_stats_
  * - unstable: v2.0.0
  *
  * @param stats The statistics to read.
- * @param variant Receives the owned VARIANT value.
+ * @param value Receives the owned STRUCT value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_variant(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *variant,
-                                                         duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_value(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value,
+                                                       duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
- * Sets the statistics from a VARIANT value in the shape `duckdb_v2_stats_get_variant()` returns: every field the object
- * has replaces that statistic, what it does not mention keeps its value. The result statistics of a stats callback
- * start out unknown, so `{'min': 20, 'max': 30, 'has_null': false}` on an INTEGER column reports exactly those bounds
- * and the absence of NULLs; a nested field such as `child_stats.x` or `extent.z_min` narrows that part only, and a
- * `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as a whole.
+ * Sets the statistics from a STRUCT value in the shape `duckdb_v2_stats_get_value()` returns: every field whose value
+ * is not NULL replaces that statistic, a NULL field or an absent one leaves it unchanged. The result statistics of a
+ * stats callback start out unknown, so `{'min': 20, 'max': 30, 'has_null': false}` on an INTEGER column reports exactly
+ * those bounds and the absence of NULLs; a nested field such as `child_stats.x` or `extent.z_min` narrows that part
+ * only, and a `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as a whole.
  *
- * The value is a VARIANT, or anything that converts to one with the built-in casts: a STRUCT built with
- * `duckdb_v2_value_create_struct()` (`{'min': 20, 'max': 30}`), or a VARCHAR holding JSON text (`{"min": 20, "max":
- * 30}`), which is parsed as JSON. Bounds are cast to the column's type, so a JSON number sets the minimum of a DECIMAL
- * or DATE column; string bounds are rendered like BLOBs and may be truncated prefixes, as a file format stores them.
+ * The simplest way to build the value is `duckdb_v2_value_create_struct()` over the fields: for the example above the
+ * names `min`, `max` and `has_null` with the values of `duckdb_v2_value_create_int()` and
+ * `duckdb_v2_value_create_bool()`. A bound is a value of the column's type, or one that casts to it: a DATE column
+ * takes `duckdb_v2_value_create_date()` or the VARCHAR `'2024-01-01'`, but not a number. A string bound is taken as it
+ * is: the bytes of a VARCHAR or BLOB value are the bound, nothing in them is interpreted (`'C:\temp'` is the seven
+ * characters it shows), and a bound may be a truncated prefix, as a file format stores them. A geometry `types` list
+ * names the types the column holds with the names `duckdb_v2_stats_get_value()` returns; a shredded `type` is a type
+ * name such as `'INTEGER'` or `'DECIMAL(10, 2)'`.
+ *
+ * The output of the SQL function `stats()` is accepted too: a VARIANT is read as the struct it holds, and a VARCHAR is
+ * parsed as JSON text (`{"min": 20, "max": 30}`), with the field values cast as above. Note that `stats()` renders
+ * string bounds as text, with `\xNN` escapes for bytes outside printable ASCII, and that text is the bound it sets;
+ * copy exact bounds with `duckdb_v2_stats_get_value()`.
+ *
  * Each statistic states what can occur: a bound that excludes a value the scan then produces, or `has_null: false` for
- * a column with NULLs, produces wrong query results. A geometry `types` list names the types the column holds with the
- * names `duckdb_v2_stats_get_variant()` returns; a shredded `type` is a type name such as `'INTEGER'` or `'DECIMAL(10,
- * 2)'`.
+ * a column with NULLs, produces wrong query results.
  *
- * Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not an object, a field the statistics of the type
- * do not have, a field whose value does not convert (the message names the field, e.g. `child_stats.a.min`), or
- * read-only statistics such as those of an argument. A failure leaves the statistics as they were.
+ * Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not a STRUCT (or does not convert to one), a field
+ * the statistics of the type do not have, a field whose value does not convert (the message names the field, e.g.
+ * `child_stats.a.min`), or read-only statistics such as those of an argument. A failure leaves the statistics as they
+ * were.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param stats The statistics to set.
- * @param variant The statistics as a VARIANT value, or a value that converts to one. Borrowed.
+ * @param value The statistics as a STRUCT value, or the output of `stats()`. Borrowed.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_variant(duckdb_v2_stats_handle stats, duckdb_v2_value_handle variant,
-                                                         duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_value(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value,
+                                                       duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -4943,9 +4957,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_variant(duckdb_v2_stats_handle 
  *
  * The statistics start out unknown: they claim nothing about the values (NULLs and non-NULL values may occur, no
  * bounds, and the statistics of the children of a nested type are unknown too). Narrow them with
- * `duckdb_v2_stats_set_variant()`, `duckdb_v2_stats_set_can_have_null()` and `duckdb_v2_stats_set_can_have_valid()`.
- * The caller owns the returned handle and must destroy it with `duckdb_v2_stats_destroy()`. A stats callback does not
- * need this: it narrows the result statistics it receives in place.
+ * `duckdb_v2_stats_set_value()`, `duckdb_v2_stats_set_can_have_null()` and `duckdb_v2_stats_set_can_have_valid()`. The
+ * caller owns the returned handle and must destroy it with `duckdb_v2_stats_destroy()`. A stats callback does not need
+ * this: it narrows the result statistics it receives in place.
  *
  * history:
  * - unstable: v2.0.0
@@ -14597,10 +14611,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_stats_get_column_index(
  * Retrieves the statistics of the column, for the callback to narrow.
  *
  * The statistics start out unknown, with every kind of value possible, and are of the column's type as the bind
- * callback declared it. The callback narrows them with `duckdb_v2_stats_set_variant()`, from a VARIANT in the shape the
- * SQL function `stats()` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or the
- * statistics of the fields of a STRUCT column under `child_stats` - and with `duckdb_v2_stats_set_can_have_null()` /
- * `duckdb_v2_stats_set_can_have_valid()`. Statistics built with `duckdb_v2_stats_create()`, e.g. combined from the
+ * callback declared it. The callback narrows them with `duckdb_v2_stats_set_value()`, from a STRUCT value in the shape
+ * `duckdb_v2_stats_get_value()` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or
+ * the statistics of the fields of a STRUCT column under `child_stats` - and with `duckdb_v2_stats_set_can_have_null()`
+ * / `duckdb_v2_stats_set_can_have_valid()`. Statistics built with `duckdb_v2_stats_create()`, e.g. combined from the
  * files of a scan with `duckdb_v2_stats_merge()`, are copied in with `duckdb_v2_stats_assign()`. They describe every
  * value the scan produces for the column. Borrowed; valid only for the duration of the callback.
  *

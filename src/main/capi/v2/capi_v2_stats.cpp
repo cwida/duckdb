@@ -2,6 +2,7 @@
 #include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
 
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 
 namespace duckdb::capiv2 {
 
@@ -12,22 +13,19 @@ BaseStatistics &CV2Stats::GetMutableStats(const char *function_name) {
 	return *mutable_stats;
 }
 
-//! The statistics value as a VARIANT: a VARCHAR holds JSON text, any other value is cast with the built-in casts
-static Value StatsValueAsVariant(const Value &input) {
-	if (input.type().id() == LogicalTypeId::VARIANT) {
-		return input;
-	}
-	auto value = input;
-	if (value.type().id() == LogicalTypeId::VARCHAR && !value.type().IsJSONType()) {
-		value = value.WithType(LogicalType::JSON());
+//! The statistics value as a STRUCT: a VARCHAR holds JSON text and a VARIANT (such as the output of stats()) is
+//! converted; anything else is left to StatsStructFields, which refuses what is not a STRUCT
+static Value StatsValueAsStruct(const Value &input) {
+	if (input.type().id() != LogicalTypeId::VARCHAR || input.IsNull()) {
+		return StatsStructFields::Plain(input);
 	}
 	try {
-		return value.DefaultCastAs(LogicalType::VARIANT());
+		auto json = input.type().IsJSONType() ? input : input.WithType(LogicalType::JSON());
+		return StatsStructFields::Plain(json.DefaultCastAs(LogicalType::VARIANT()));
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
-		throw InvalidInputException(
-		    "duckdb_v2_stats_set_variant: the value of type %s does not convert to a VARIANT: %s",
-		    input.type().ToString(), error.RawMessage());
+		throw InvalidInputException("duckdb_v2_stats_set_value: the text is not a JSON object of statistics: %s",
+		                            error.RawMessage());
 	}
 }
 
@@ -82,30 +80,30 @@ DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_valid(duckdb_v2_stats_handle stats,
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-// Statistics as a VARIANT
+// Statistics as a value
 //----------------------------------------------------------------------------------------------------------------------
 
-DUCKDB_V2_ERROR duckdb_v2_stats_get_variant(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *variant,
-                                            duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_stats_get_value(duckdb_v2_stats_handle stats, duckdb_v2_value_handle *value,
+                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(stats);
-	DUCKDB_CHECK_ARG(variant);
-	*variant = nullptr;
+	DUCKDB_CHECK_ARG(value);
+	*value = nullptr;
 	return WithErrorHandler(err, [&]() {
-		auto value = Convert(stats)->GetStats().ToStruct().DefaultCastAs(LogicalType::VARIANT());
-		*variant = Convert(new Value(std::move(value)));
+		// string bounds as the bytes they are, not as the rendering stats() shows
+		*value = Convert(new Value(Convert(stats)->GetStats().ToStruct(true)));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_stats_set_variant(duckdb_v2_stats_handle stats, duckdb_v2_value_handle variant,
-                                            duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_stats_set_value(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value,
+                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(stats);
-	DUCKDB_CHECK_ARG(variant);
+	DUCKDB_CHECK_ARG(value);
 	return WithErrorHandler(err, [&]() {
-		auto &result = Convert(stats)->GetMutableStats("duckdb_v2_stats_set_variant");
-		auto value = StatsValueAsVariant(*Convert(variant));
+		auto &result = Convert(stats)->GetMutableStats("duckdb_v2_stats_set_value");
+		auto fields = StatsValueAsStruct(*Convert(value));
 		// set a copy so that a refused value leaves the statistics as they were
 		auto updated = result.Copy();
-		updated.SetFromStruct(value);
+		updated.SetFromStruct(fields);
 		result = std::move(updated);
 	});
 }
