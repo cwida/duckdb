@@ -1147,6 +1147,9 @@ static const TransformFrameOps DELETE_USING_CLAUSE_OPS = {"DeleteUsingClause",
 static const TransformFrameOps DESCRIBE_STATEMENT_OPS = {"DescribeStatement",
                                                          &PEGTransformerFactory::InitializeDescribeStatementTrampoline,
                                                          &PEGTransformerFactory::FinalizeDescribeStatementTrampoline};
+static const TransformFrameOps SHOW_EXTERNAL_RESOURCES_OPS = {
+    "ShowExternalResources", &PEGTransformerFactory::InitializeShowExternalResourcesTrampoline,
+    &PEGTransformerFactory::FinalizeShowExternalResourcesTrampoline};
 static const TransformFrameOps SHOW_DEPRECATED_SELECT_OPS = {
     "ShowDeprecatedSelect", &PEGTransformerFactory::InitializeShowDeprecatedSelectTrampoline,
     &PEGTransformerFactory::FinalizeShowDeprecatedSelectTrampoline};
@@ -2151,12 +2154,6 @@ static const TransformFrameOps REGISTER_EXTERNAL_RESOURCE_STMT_OPS = {
 static const TransformFrameOps DESTROY_EXTERNAL_RESOURCE_STMT_OPS = {
     "DestroyExternalResourceStmt", &PEGTransformerFactory::InitializeDestroyExternalResourceStmtTrampoline,
     &PEGTransformerFactory::FinalizeDestroyExternalResourceStmtTrampoline};
-static const TransformFrameOps SHOW_EXTERNAL_RESOURCES_STMT_OPS = {
-    "ShowExternalResourcesStmt", &PEGTransformerFactory::InitializeShowExternalResourcesStmtTrampoline,
-    &PEGTransformerFactory::FinalizeShowExternalResourcesStmtTrampoline};
-static const TransformFrameOps SHOW_ALL_MODIFIER_OPS = {"ShowAllModifier",
-                                                        &PEGTransformerFactory::InitializeShowAllModifierTrampoline,
-                                                        &PEGTransformerFactory::FinalizeShowAllModifierTrampoline};
 static const TransformFrameOps EXTERNAL_RESOURCE_CREATION_OPTIONS_OPS = {
     "ExternalResourceCreationOptions", &PEGTransformerFactory::InitializeExternalResourceCreationOptionsTrampoline,
     &PEGTransformerFactory::FinalizeExternalResourceCreationOptionsTrampoline};
@@ -3509,6 +3506,7 @@ const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::
 	    {"TargetAlias", &TARGET_ALIAS_OPS},
 	    {"DeleteUsingClause", &DELETE_USING_CLAUSE_OPS},
 	    {"DescribeStatement", &DESCRIBE_STATEMENT_OPS},
+	    {"ShowExternalResources", &SHOW_EXTERNAL_RESOURCES_OPS},
 	    {"ShowDeprecatedSelect", &SHOW_DEPRECATED_SELECT_OPS},
 	    {"DescribeSelect", &DESCRIBE_SELECT_OPS},
 	    {"ShowAllTables", &SHOW_ALL_TABLES_OPS},
@@ -3857,8 +3855,6 @@ const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::
 	    {"CreateExternalResourceStmt", &CREATE_EXTERNAL_RESOURCE_STMT_OPS},
 	    {"RegisterExternalResourceStmt", &REGISTER_EXTERNAL_RESOURCE_STMT_OPS},
 	    {"DestroyExternalResourceStmt", &DESTROY_EXTERNAL_RESOURCE_STMT_OPS},
-	    {"ShowExternalResourcesStmt", &SHOW_EXTERNAL_RESOURCES_STMT_OPS},
-	    {"ShowAllModifier", &SHOW_ALL_MODIFIER_OPS},
 	    {"ExternalResourceCreationOptions", &EXTERNAL_RESOURCE_CREATION_OPTIONS_OPS},
 	    {"AttachToExternalResource", &ATTACH_TO_EXTERNAL_RESOURCE_OPS},
 	    {"ConnectToExternalResource", &CONNECT_TO_EXTERNAL_RESOURCE_OPS},
@@ -12074,6 +12070,25 @@ PEGTransformerFactory::FinalizeDescribeStatementTrampoline(PEGTransformer &trans
 	return transformer.MakeResult<unique_ptr<SelectStatement>>(std::move(result));
 }
 
+void PEGTransformerFactory::InitializeShowExternalResourcesTrampoline(PEGTransformer &transformer,
+                                                                      GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	process.PushChild({transformer.GetRule(PEGRuleId::ShowRule), list_pr.GetChild(0)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeShowExternalResourcesTrampoline(PEGTransformer &transformer,
+                                                               GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto show_rule = process.TakeResult<ShowType>(0);
+	bool has_result {};
+	auto &has_result_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
+	has_result = has_result_opt.HasResult();
+	auto result = TransformShowExternalResources(transformer, show_rule, has_result);
+	return transformer.MakeResult<unique_ptr<QueryNode>>(std::move(result));
+}
+
 void PEGTransformerFactory::InitializeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
                                                                      GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
@@ -19319,39 +19334,6 @@ PEGTransformerFactory::FinalizeDestroyExternalResourceStmtTrampoline(PEGTransfor
 	auto col_id = process.TakeResult<Identifier>(0);
 	auto result = TransformDestroyExternalResourceStmt(transformer, col_id);
 	return transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(result));
-}
-
-void PEGTransformerFactory::InitializeShowExternalResourcesStmtTrampoline(PEGTransformer &transformer,
-                                                                          GeneratedTransformProcess &process) {
-	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	process.ReserveChildSlots(1);
-	auto &show_all_modifier_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
-	if (show_all_modifier_opt.HasResult()) {
-		process.PushChild({transformer.GetRule(PEGRuleId::ShowAllModifier), show_all_modifier_opt.GetResult()}, 0);
-	}
-}
-
-arena_ptr<TransformResultValue>
-PEGTransformerFactory::FinalizeShowExternalResourcesStmtTrampoline(PEGTransformer &transformer,
-                                                                   GeneratedTransformProcess &process) {
-	optional<bool> show_all_modifier {};
-	if (process.child_results[0]) {
-		show_all_modifier = process.TakeResult<bool>(0);
-	}
-	auto result = TransformShowExternalResourcesStmt(transformer, show_all_modifier);
-	return transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(result));
-}
-
-void PEGTransformerFactory::InitializeShowAllModifierTrampoline(PEGTransformer &transformer,
-                                                                GeneratedTransformProcess &process) {
-	process.ReserveChildSlots(0);
-}
-
-arena_ptr<TransformResultValue>
-PEGTransformerFactory::FinalizeShowAllModifierTrampoline(PEGTransformer &transformer,
-                                                         GeneratedTransformProcess &process) {
-	auto result = TransformShowAllModifier(transformer);
-	return transformer.MakeResult<bool>(result);
 }
 
 void PEGTransformerFactory::InitializeExternalResourceCreationOptionsTrampoline(PEGTransformer &transformer,

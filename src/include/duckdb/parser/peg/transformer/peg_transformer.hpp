@@ -2001,6 +2001,10 @@ public:
 	static void InitializeDescribeStatementTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDescribeStatementTrampoline(PEGTransformer &transformer,
 	                                                                           GeneratedTransformProcess &process);
+	static void InitializeShowExternalResourcesTrampoline(PEGTransformer &transformer,
+	                                                      GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeShowExternalResourcesTrampoline(PEGTransformer &transformer,
+	                                                                               GeneratedTransformProcess &process);
 	static void InitializeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
 	                                                     GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
@@ -3141,13 +3145,6 @@ public:
 	                                                            GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeDestroyExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static void InitializeShowExternalResourcesStmtTrampoline(PEGTransformer &transformer,
-	                                                          GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue>
-	FinalizeShowExternalResourcesStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static void InitializeShowAllModifierTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeShowAllModifierTrampoline(PEGTransformer &transformer,
-	                                                                         GeneratedTransformProcess &process);
 	static void InitializeExternalResourceCreationOptionsTrampoline(PEGTransformer &transformer,
 	                                                                GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
@@ -4819,6 +4816,8 @@ public:
 	                                                               vector<unique_ptr<TableRef>> table_ref);
 	static unique_ptr<SelectStatement> TransformDescribeStatement(PEGTransformer &transformer,
 	                                                              unique_ptr<QueryNode> child);
+	static unique_ptr<QueryNode> TransformShowExternalResources(PEGTransformer &transformer, const ShowType &show_rule,
+	                                                            const bool &has_result);
 	static unique_ptr<QueryNode> TransformShowDeprecatedSelect(PEGTransformer &transformer, const ShowType &show_rule,
 	                                                           unique_ptr<SelectStatement> select_statement_internal);
 	static unique_ptr<QueryNode> TransformDescribeSelect(PEGTransformer &transformer,
@@ -5417,9 +5416,6 @@ public:
 	                                                                      unique_ptr<ParsedExpression> expression);
 	static unique_ptr<SQLStatement> TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
 	                                                                     const Identifier &col_id);
-	static unique_ptr<SQLStatement> TransformShowExternalResourcesStmt(PEGTransformer &transformer,
-	                                                                   const optional<bool> &show_all_modifier);
-	static bool TransformShowAllModifier(PEGTransformer &transformer);
 	static unique_ptr<SQLStatement> TransformAttachToExternalResource(
 	    PEGTransformer &transformer, unique_ptr<ExternalResourceOptions> external_resource_source,
 	    const Identifier &attach_alias, const optional<vector<GenericCopyOption>> &attach_options);
