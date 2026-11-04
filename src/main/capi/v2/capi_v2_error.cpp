@@ -22,7 +22,6 @@ DUCKDB_V2_ERROR duckdb_v2_error_info_get_raw_text(duckdb_v2_error_info_handle in
 
 DUCKDB_V2_ERROR duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, const duckdb_v2_str *text) {
 	if (!info) {
-		// Null-safe, like error_info_destroy: there is nothing to update.
 		return DUCKDB_V2_ERROR_NONE;
 	}
 	if (IsNullArgument(text)) {
@@ -45,7 +44,6 @@ DUCKDB_V2_ERROR duckdb_v2_error_info_get_code(duckdb_v2_error_info_handle info, 
 
 DUCKDB_V2_ERROR duckdb_v2_error_info_set_code(duckdb_v2_error_info_handle info, DUCKDB_V2_ERROR code) {
 	if (!info) {
-		// Null-safe, like error_info_destroy: there is nothing to update.
 		return DUCKDB_V2_ERROR_NONE;
 	}
 	const auto ei = Convert(info);
