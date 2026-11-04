@@ -707,8 +707,9 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	bool parallel_source_pays = false;
 	if ((plan.has_source_tasks || plan.has_parallel_source) &&
 	    plan.max_independent_source_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS) {
-		const auto source_row_limit =
-		    (plan.max_independent_source_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
+		// overflow-safe ceiling division: estimates may legitimately saturate at the maximum idx_t
+		const auto source_row_limit = plan.max_independent_source_rows / TRAMPOLINE_ROWS_PER_THREAD +
+		                              (plan.max_independent_source_rows % TRAMPOLINE_ROWS_PER_THREAD != 0 ? 1 : 0);
 		source_task_workers = MaxValue<idx_t>(MinValue(source_row_limit, configured_threads), 1);
 		parallel_source_pays = source_task_workers > 1;
 	}
