@@ -706,12 +706,7 @@ void RecursiveDependentJoinPlanner::PlanJoinExpressions(LogicalOperator &op) {
 	}
 }
 
-static bool OperandRequiresOwnChildEvaluation(const Expression &expr, bool volatile_requires_child) {
-	// a volatile operand moves only into a child whose rows the join evaluates unconditionally,
-	// pinning its evaluation to once per owning child row per domain
-	if (volatile_requires_child && expr.IsVolatile()) {
-		return true;
-	}
+static bool OperandIsCorrelated(const Expression &expr) {
 	bool correlated = false;
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
 	    expr, [&](const BoundColumnRefExpression &colref) { correlated |= colref.Depth() > 0; });
@@ -734,20 +729,18 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::NormalizeJoinConditionOpe
 	auto &join = op->Cast<LogicalComparisonJoin>();
 	for (idx_t side = 0; side < 2; side++) {
 		// a comparison condition operand evaluates in its owning child's scope, but ownership
-		// does not imply permission to evaluate eagerly: every join strategy streams the probe
-		// input and may skip its operands entirely over an empty build, so probe operands keep
-		// their computation at the join and hoist only their outer references into the child;
-		// the build input is always materialized and every split-comparison strategy keys it
-		// per row, so build operands containing outer references or volatile expressions move
-		// into the child entirely
-		const bool hoist_references_only = side == 0;
+		// does not imply permission to evaluate eagerly: joins may skip either operand entirely
+		// (an empty build short-circuits the probe, input swapping exchanges the roles, and the
+		// blockwise join evaluates nothing without candidate pairs), so operands always keep
+		// their computation at the join and only their outer references move into the child,
+		// where decorrelation rewrites them in the owning child's domain
 		vector<optional_ptr<unique_ptr<Expression>>> operands;
 		for (auto &cond : join.conditions) {
 			if (!cond.IsComparison()) {
 				continue;
 			}
 			auto &operand = side == 0 ? cond.LeftReference() : cond.RightReference();
-			if (OperandRequiresOwnChildEvaluation(*operand, !hoist_references_only)) {
+			if (OperandIsCorrelated(*operand)) {
 				operands.push_back(&operand);
 			}
 		}
@@ -765,29 +758,21 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::NormalizeJoinConditionOpe
 			expressions.push_back(make_uniq<BoundColumnRefExpression>(child_types[i], child_bindings[i]));
 		}
 		for (auto &operand_ptr : operands) {
-			auto &operand = *operand_ptr;
-			if (hoist_references_only) {
-				// hoist each outer reference into the projection and keep the operand in place
-				std::function<void(unique_ptr<Expression> &)> hoist = [&](unique_ptr<Expression> &expr) {
-					if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-						auto &colref = expr->Cast<BoundColumnRefExpression>();
-						if (colref.Depth() > 0) {
-							auto hoisted_binding = ColumnBinding(projection_index, ProjectionIndex(expressions.size()));
-							auto local = make_uniq<BoundColumnRefExpression>(colref.GetReturnType(), hoisted_binding);
-							expressions.push_back(std::move(expr));
-							expr = std::move(local);
-						}
-						return;
+			// hoist each outer reference into the projection and keep the operand in place
+			std::function<void(unique_ptr<Expression> &)> hoist = [&](unique_ptr<Expression> &expr) {
+				if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					auto &colref = expr->Cast<BoundColumnRefExpression>();
+					if (colref.Depth() > 0) {
+						auto hoisted_binding = ColumnBinding(projection_index, ProjectionIndex(expressions.size()));
+						auto local = make_uniq<BoundColumnRefExpression>(colref.GetReturnType(), hoisted_binding);
+						expressions.push_back(std::move(expr));
+						expr = std::move(local);
 					}
-					ExpressionIterator::EnumerateChildren(*expr, hoist);
-				};
-				hoist(operand);
-				continue;
-			}
-			auto operand_binding = ColumnBinding(projection_index, ProjectionIndex(expressions.size()));
-			auto normalized = make_uniq<BoundColumnRefExpression>(operand->GetReturnType(), operand_binding);
-			expressions.push_back(std::move(operand));
-			operand = std::move(normalized);
+					return;
+				}
+				ExpressionIterator::EnumerateChildren(*expr, hoist);
+			};
+			hoist(*operand_ptr);
 		}
 		auto projection = make_uniq<LogicalProjection>(projection_index, std::move(expressions));
 		projection->children.push_back(std::move(child));
@@ -803,7 +788,7 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::NormalizeJoinConditionOpe
 		replacer.BuildIndex();
 		replacer.VisitOperatorBindings(*op);
 
-		// the operand columns are internal to the condition and must not join the output
+		// the hoisted columns are internal to the condition and must not join the output
 		if (JoinSideContributesOutput(join.join_type, side)) {
 			auto &projection_map = side == 0 ? join.left_projection_map : join.right_projection_map;
 			if (projection_map.empty()) {

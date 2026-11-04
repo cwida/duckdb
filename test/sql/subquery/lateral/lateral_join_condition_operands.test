@@ -526,6 +526,24 @@ FROM (VALUES ('bad')) o(k), LATERAL (
 ----
 bad	1
 
+# build operands are retained at the join as well: input swapping and the blockwise
+# join can skip them, so an empty probe input never evaluates them either
+statement ok
+CREATE SEQUENCE seq_build_lazy START 1;
+
+query II
+SELECT l.x, r.y
+FROM range(0) l(x)
+FULL JOIN (VALUES ('bad')) r(y)
+    ON [l.x] > [r.y::BIGINT + nextval('seq_build_lazy')];
+----
+NULL	bad
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_build_lazy';
+----
+NULL
+
 # a volatile probe operand over an empty build input never evaluates
 statement ok
 CREATE SEQUENCE seq_probe_lazy START 1;
@@ -562,7 +580,7 @@ JOIN (VALUES (2::BIGINT)) r(y)
 ----
 10	2
 
-# a volatile build operand is projected into the build child and evaluated once per build row
+# a volatile build operand also stays at the join and is keyed once per build row
 statement ok
 CREATE SEQUENCE seq_pmj_build START 1;
 
@@ -593,7 +611,7 @@ ORDER BY ALL;
 1	NULL
 10	2
 
-# a RIGHT join flips to LEFT at plan time: the moved operand then prunes the probe layout
+# a RIGHT join flips to LEFT at plan time with the retained operand on the new probe
 statement ok
 CREATE SEQUENCE seq_pmj_right START 1;
 

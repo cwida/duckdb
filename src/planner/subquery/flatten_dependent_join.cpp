@@ -150,10 +150,10 @@ bool FlattenDependentJoins::RequiresDomain(LogicalOperator &op) const {
 	return access.correlated || (!perform_delim && access.volatile_expression);
 }
 
-bool FlattenDependentJoins::ProbeOperandRequiresDomain(LogicalOperator &op) const {
-	// probe-side condition operands keep their computation at the join for empty-build laziness,
-	// so a volatile probe operand is invisible to RequiresDomain on the child subtree; it still
-	// pins the probe input to the domain under the same rule as a volatile child expression
+bool FlattenDependentJoins::JoinOperandRequiresDomain(LogicalOperator &op, idx_t side) const {
+	// condition operands keep their computation at the join for evaluation-timing reasons,
+	// so a volatile operand is invisible to RequiresDomain on the owning child subtree; it
+	// still pins that child to the domain under the same rule as a volatile child expression
 	if (perform_delim) {
 		return false;
 	}
@@ -162,7 +162,11 @@ bool FlattenDependentJoins::ProbeOperandRequiresDomain(LogicalOperator &op) cons
 	}
 	auto &join = op.Cast<LogicalComparisonJoin>();
 	for (auto &cond : join.conditions) {
-		if (cond.IsComparison() && cond.GetLHS().IsVolatile()) {
+		if (!cond.IsComparison()) {
+			continue;
+		}
+		auto &operand = side == 0 ? cond.GetLHS() : cond.GetRHS();
+		if (operand.IsVolatile()) {
 			return true;
 		}
 	}
@@ -1174,8 +1178,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
                                                                           vector<ColumnBinding> state) {
 	auto join_type = plan->Cast<LogicalJoin>().join_type;
 	D_ASSERT(plan->children.size() == 2);
-	bool left_requires_domain = RequiresDomain(*plan->children[0]) || ProbeOperandRequiresDomain(*plan);
-	bool right_requires_domain = RequiresDomain(*plan->children[1]);
+	bool left_requires_domain = RequiresDomain(*plan->children[0]) || JoinOperandRequiresDomain(*plan, 0);
+	bool right_requires_domain = RequiresDomain(*plan->children[1]) || JoinOperandRequiresDomain(*plan, 1);
 
 	// An ASOF join selects at most one match per left row from its entire right input. If the right input
 	// varies per domain, the left input must carry the domain too, so the selection partitions per domain.
