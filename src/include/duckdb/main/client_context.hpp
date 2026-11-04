@@ -133,9 +133,6 @@ public:
 	unique_ptr<RegisteredStateManager> registered_state;
 	//! The logger to be used by this ClientContext
 	shared_ptr<Logger> logger;
-	//! The log config used to create loggers for this ClientContext and its ThreadContexts. Only refreshed (with the
-	//! logger) at query begin and end, when no tasks that could read it from other threads are running
-	LogConfigSnapshot log_config;
 	//! The client configuration
 	ClientConfig config;
 	//! The set of client-specific data
@@ -307,6 +304,9 @@ public:
 
 	//! Return the current logger
 	Logger &GetLogger() const;
+	const LogConfigSnapshot &GetLogConfig() const {
+		return log_config;
+	}
 
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
@@ -482,6 +482,9 @@ private:
 	QueryProgress query_progress;
 	//! The connection corresponding to this client context
 	connection_t connection_id;
+	//! The log config used to create loggers for this ClientContext and its ThreadContexts. Only refreshed (with the
+	//! logger) at query begin and end, when no tasks that could read it from other threads are running
+	LogConfigSnapshot log_config;
 	//! Type of connection (USER or INTERNAL)
 	ConnectionType connection_type = ConnectionType::USER;
 	//! Routing target for SQL execution while CONNECT-ed (CONNECT/DISCONNECT). When is_connected is
