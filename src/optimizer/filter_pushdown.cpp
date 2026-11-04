@@ -137,7 +137,7 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 		return PushdownDistinct(std::move(op));
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		// we can just push directly through these operations without any rewriting
-		op->children[0] = Rewrite(std::move(op->children[0]));
+		RewriteChild(*op, 0);
 		return op;
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 		// we can't push filters into the materialized CTE (LHS), but we do want to recurse into it
@@ -272,11 +272,11 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFinalFilters(unique_ptr<LogicalO
 unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<LogicalOperator> op) {
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto &f = *filters[i];
-		for (auto &child : op->children) {
+		for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
 			FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
 
 			// check if filter bindings can be applied to the child bindings.
-			auto child_bindings = child->GetColumnBindings();
+			auto child_bindings = op->children[child_idx]->GetColumnBindings();
 			unordered_set<TableIndex> child_bindings_table;
 			for (auto &binding : child_bindings) {
 				child_bindings_table.insert(binding.table_index);
@@ -303,7 +303,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<
 
 			// push the filter into the child.
 			pushdown.GenerateFilters();
-			child = pushdown.Rewrite(std::move(child));
+			pushdown.RewriteChild(*op, child_idx);
 
 			// Don't push same filter again
 			filters.erase_at(i);
@@ -316,12 +316,50 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<
 
 unique_ptr<LogicalOperator> FilterPushdown::FinishPushdown(unique_ptr<LogicalOperator> op) {
 	// unhandled type, first perform filter pushdown in its children
-	for (auto &child : op->children) {
+	for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
 		FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
-		child = pushdown.Rewrite(std::move(child));
+		pushdown.RewriteChild(*op, child_idx);
 	}
 	// now push any existing filters
 	return PushFinalFilters(std::move(op));
+}
+
+void FilterPushdown::RewriteChild(LogicalOperator &op, idx_t child_idx) {
+	auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, child_idx);
+	if (!projection_map || projection_map->empty()) {
+		op.children[child_idx] = Rewrite(std::move(op.children[child_idx]));
+		return;
+	}
+	auto child_bindings_before = op.children[child_idx]->GetColumnBindings();
+	op.children[child_idx] = Rewrite(std::move(op.children[child_idx]));
+	RemapProjectionMap(op, child_idx, child_bindings_before);
+}
+
+void FilterPushdown::RemapProjectionMap(LogicalOperator &op, idx_t child_idx,
+                                        const vector<ColumnBinding> &child_bindings_before) {
+	auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, child_idx);
+	if (!projection_map || projection_map->empty()) {
+		return;
+	}
+	auto child_bindings_after = op.children[child_idx]->GetColumnBindings();
+	if (child_bindings_before == child_bindings_after) {
+		return;
+	}
+	// a MARK join turned into a SEMI or ANTI join drops its marker, which nothing above reads
+	vector<ProjectionIndex> new_projection_map;
+	new_projection_map.reserve(projection_map->size());
+	for (auto projection_index : *projection_map) {
+		auto &binding = child_bindings_before[projection_index.GetIndex()];
+		auto entry = std::find(child_bindings_after.begin(), child_bindings_after.end(), binding);
+		if (entry == child_bindings_after.end()) {
+			continue;
+		}
+		new_projection_map.emplace_back(NumericCast<idx_t>(entry - child_bindings_after.begin()));
+	}
+	if (new_projection_map.empty()) {
+		throw InternalException("Filter pushdown removed every column selected by a projection map");
+	}
+	*projection_map = std::move(new_projection_map);
 }
 
 void FilterPushdown::Filter::ExtractBindings() {
