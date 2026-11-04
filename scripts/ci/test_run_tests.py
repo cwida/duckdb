@@ -254,6 +254,11 @@ class RunTestsScriptTest(unittest.TestCase):
         self.assertEqual(stdout_buffer.getvalue(), b"\\u274c ran tests\n")
         self.assertEqual(stderr_buffer.getvalue(), b"\\u274c failed\n")
 
+    def test_protocol_runner_rejects_undefined_test_flags(self):
+        proc = start_runner(["--test-flags=--force-storage", "unused-binary"])
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("--test-flags is not supported by test_run yet", proc.stderr)
+
     def test_highlight_stack_trace_lines_colors_frame_index_and_function_name(self):
         lines = run_tests.highlight_stack_trace_lines(
             [

@@ -2594,6 +2594,9 @@ def main_impl(argv: list[str] | None = None):
     TEST_ROOT_OVERRIDES = args.test_root
     TEST_BUNDLE_ROOT_OVERRIDES = args.test_bundle_root
     args.coverage_profile_dir = None
+    if args.test_flags and args.test_command is None:
+        print("error: --test-flags is not supported by test_run yet", file=sys.stderr)
+        return 1
     if args.timeout_policy == "warn" and args.batch_size != 1:
         print("error: --timeout-policy warn requires --batch-size 1")
         return 1
