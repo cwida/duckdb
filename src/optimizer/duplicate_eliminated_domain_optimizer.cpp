@@ -59,7 +59,6 @@ static bool HasImplicitBitstringAggregate(const LogicalOperator &op) {
 void DuplicateEliminatedDomainOptimizer::Optimize(unique_ptr<LogicalOperator> &op) {
 	// Implicit bitstring bounds depend on statistics, including those propagated through CTE references.
 	if (!HasImplicitBitstringAggregate(*op)) {
-		op->ResolveOperatorTypes();
 		VisitOperator(op);
 		op->ResolveOperatorTypes();
 	}
@@ -499,18 +498,17 @@ static optional_ptr<LogicalCTERef> FindSharedKey(LogicalOperator &op, idx_t &key
 	return reference.is_recurring || reference.correlated_columns ? nullptr : &reference;
 }
 
-bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<LogicalOperator> &op,
-                                                                  LogicalAggregate &aggregate, idx_t aggregate_side,
-                                                                  idx_t demand_index) {
-	auto &join = op->Cast<LogicalComparisonJoin>();
-	if (join.join_type != JoinType::SINGLE && HasRuntimeFilterTargets(aggregate)) {
-		return false;
-	}
-	auto &demand = *join.children[1 - aggregate_side];
-	auto source_key = demand_index;
-	auto shared = FindSharedKey(demand, source_key);
-	optional_ptr<LogicalOperator> source;
-	TableIndex owner_index;
+struct RuntimeDomainSource {
+	optional_ptr<LogicalOperator> input;
+	optional_ptr<const LogicalMaterializedCTE> owner;
+	idx_t key = 0;
+};
+
+static bool TryGetRuntimeDomainSource(LogicalOperator &demand, LogicalAggregate &aggregate, idx_t demand_index,
+                                      const vector<optional_ptr<LogicalMaterializedCTE>> &cte_scopes,
+                                      RuntimeDomainSource &source) {
+	source.key = demand_index;
+	auto shared = FindSharedKey(demand, source.key);
 	if (shared) {
 		if (cte_scopes.size() != 1 || !cte_scopes[0]) {
 			return false;
@@ -520,69 +518,92 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<Log
 		if (shared->cte_index != owner.table_index || owner.filter_dependency || HasSharedSource(*owner.children[0])) {
 			return false;
 		}
-		source = *owner.children[0];
-		owner_index = owner.table_index;
+		source.input = *owner.children[0];
+		source.owner = owner;
 	} else {
 		if (!cte_scopes.empty() || HasSharedSource(demand) || HasSharedSource(aggregate) ||
 		    !LogicalSubtreeIsRepeatable(demand)) {
 			return false;
 		}
-		source = demand;
-		source_key = demand_index;
-		owner_index = optimizer.binder.GenerateTableIndex();
+		source.input = demand;
+		source.key = demand_index;
 	}
+	return true;
+}
+
+static BindingReplacementGraph MaterializeRuntimeDomain(Optimizer &optimizer, unique_ptr<LogicalOperator> &op,
+                                                        idx_t demand_side, const LogicalCTERef &domain) {
+	BindingReplacementGraph replacements;
+	unique_ptr<LogicalOperator> definition;
+	ColumnBindingRewrite::RewriteChild(
+	    op, demand_side, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &bindings) {
+		    auto reference = make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), domain.cte_index,
+		                                              domain.chunk_types, domain.bound_columns);
+		    auto old_bindings = child->GetColumnBindings();
+		    auto new_bindings = reference->GetColumnBindings();
+		    for (idx_t index = 0; index < old_bindings.size(); index++) {
+			    if (!bindings.Find(old_bindings[index])) {
+				    bindings.Add(old_bindings[index], new_bindings[index]);
+			    }
+		    }
+		    replacements.Merge(bindings);
+		    definition = std::move(child);
+		    child = std::move(reference);
+	    });
+	op =
+	    make_uniq<LogicalMaterializedCTE>("domain_source", domain.cte_index, domain.chunk_types.size(),
+	                                      std::move(definition), std::move(op), CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	return replacements;
+}
+
+bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<LogicalOperator> &op,
+                                                                  LogicalAggregate &aggregate, idx_t aggregate_side,
+                                                                  idx_t demand_index) {
+	auto &join = op->Cast<LogicalComparisonJoin>();
+	if (join.join_type != JoinType::SINGLE && HasRuntimeFilterTargets(aggregate)) {
+		return false;
+	}
+	RuntimeDomainSource source;
+	if (!TryGetRuntimeDomainSource(*join.children[1 - aggregate_side], aggregate, demand_index, cte_scopes, source)) {
+		return false;
+	}
+	auto owner_index = source.owner ? source.owner->table_index : optimizer.binder.GenerateTableIndex();
 	RelationStatsExtractor extractor(optimizer.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
-		return index == owner_index ? source : nullptr;
+		return index == owner_index ? source.input : nullptr;
 	});
-	auto source_stats = extractor.Extract(*source);
+	auto source_stats = extractor.Extract(*source.input);
 	if (!source_stats) {
 		return false;
 	}
-	source->ResolveOperatorTypes();
-	auto source_types = source->types;
-	auto names = AggregateRewriteHelper::GenerateColumnNames("domain", source_types.size());
+	source.input->ResolveOperatorTypes();
+	auto &source_types = source.input->types;
 	auto key_reference =
-	    make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), owner_index, source_types, names);
+	    make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), owner_index, source_types,
+	                             AggregateRewriteHelper::GenerateColumnNames("domain", source_types.size()));
+	auto &domain_reference = *key_reference;
 	vector<unique_ptr<Expression>> key_expression;
 	key_expression.push_back(
-	    make_uniq<BoundColumnRefExpression>(source_types[source_key], key_reference->GetColumnBindings()[source_key]));
+	    make_uniq<BoundColumnRefExpression>(source_types[source.key], key_reference->GetColumnBindings()[source.key]));
 	auto projection = make_uniq<LogicalProjection>(optimizer.binder.GenerateTableIndex(), std::move(key_expression));
 	projection->children.push_back(std::move(key_reference));
 	auto domain = make_uniq<LogicalDistinct>(DistinctType::DISTINCT);
 	domain->distinct_targets.push_back(
-	    make_uniq<BoundColumnRefExpression>(source_types[source_key], projection->GetColumnBindings()[0]));
+	    make_uniq<BoundColumnRefExpression>(source_types[source.key], projection->GetColumnBindings()[0]));
 	domain->children.push_back(std::move(projection));
 	auto restriction = make_uniq<LogicalComparisonJoin>(JoinType::SEMI);
 	restriction->conditions.emplace_back(aggregate.groups[0]->Copy(), domain->distinct_targets[0]->Copy(),
 	                                     join.conditions[0].GetComparisonType());
 	auto source_rows = static_cast<double>(source_stats->cardinality);
 	// CTE readers scan the full row. A new owner also writes it and replaces the consumer with another reader.
-	auto source_read_write_work = (shared ? 1 : 3) * source_rows * static_cast<double>(source_types.size());
+	auto source_read_write_work = (source.owner ? 1 : 3) * source_rows * static_cast<double>(source_types.size());
 	if (!IsProfitable(extractor, aggregate, *restriction, *domain, source_rows, source_read_write_work)) {
 		return false;
 	}
 	restriction->children.push_back(std::move(aggregate.children[0]));
 	restriction->children.push_back(std::move(domain));
 	aggregate.children[0] = std::move(restriction);
-	if (!shared) {
-		unique_ptr<LogicalOperator> definition;
-		ColumnBindingRewrite::RewriteChild(
-		    op, 1 - aggregate_side, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &bindings) {
-			    auto reference =
-			        make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), owner_index, source_types, names);
-			    auto old_bindings = child->GetColumnBindings();
-			    auto new_bindings = reference->GetColumnBindings();
-			    for (idx_t index = 0; index < old_bindings.size(); index++) {
-				    if (!bindings.Find(old_bindings[index])) {
-					    bindings.Add(old_bindings[index], new_bindings[index]);
-				    }
-			    }
-			    replacements.Merge(bindings);
-			    definition = std::move(child);
-			    child = std::move(reference);
-		    });
-		op = make_uniq<LogicalMaterializedCTE>("domain_source", owner_index, source_types.size(), std::move(definition),
-		                                       std::move(op), CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	if (!source.owner) {
+		replacements.Merge(MaterializeRuntimeDomain(optimizer, op, 1 - aggregate_side, domain_reference));
 	}
 	return true;
 }
