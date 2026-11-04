@@ -39,6 +39,7 @@
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/parsed_data/extra_drop_info.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
@@ -434,6 +435,11 @@ bool DuckSchemaEntry::DropMacroFunctionMember(CatalogTransaction transaction, Dr
 	auto &new_info = new_info_base->Cast<CreateMacroInfo>();
 	new_info.macros.erase(new_info.macros.begin() + NumericCast<int64_t>(member_idx.GetIndex()));
 	new_info.temporary = existing.temporary;
+	if (transaction.context) {
+		// rebuild the dependency list from the surviving members: a dependency owned only by the
+		// removed member must not tie the replacement to a later cascade
+		Binder::CollectMacroDependencies(transaction.GetContext(), catalog, new_info, &existing);
+	}
 	auto function = MacroCatalogEntry::Create(catalog, *this, new_info);
 	function->internal = existing.internal;
 	// the replacement is a fresh entry on purpose: the changed oid is what makes the existing

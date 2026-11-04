@@ -424,6 +424,65 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 	}
 }
 
+void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, CreateMacroInfo &info,
+                                      optional_ptr<CatalogEntry> exclude) {
+	info.dependencies = LogicalDependencyList();
+	if (!Settings::Get<EnableMacroDependenciesSetting>(context)) {
+		return;
+	}
+	auto binder = Binder::CreateBinder(context);
+	auto &dependencies = info.dependencies;
+	const auto binder_callback = [&dependencies, &catalog, exclude](CatalogEntry &entry) {
+		if (&catalog != &entry.ParentCatalog()) {
+			// Don't register any cross-catalog dependencies
+			return;
+		}
+		if (exclude.get() == &entry) {
+			// a replacement cannot depend on the entry it replaces
+			return;
+		}
+		dependencies.AddDependency(entry);
+	};
+	for (auto &function : info.macros) {
+		vector<LogicalType> dummy_types;
+		vector<Identifier> dummy_names;
+		for (idx_t param_idx = 0; param_idx < function->parameters.size(); param_idx++) {
+			dummy_types.emplace_back(function->types.empty() ? LogicalType::UNKNOWN : function->types[param_idx]);
+			dummy_names.emplace_back(function->parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName());
+		}
+		auto this_macro_binding =
+		    make_uniq<DummyBinding>(dummy_types, dummy_names, info.GetFunctionName().GetIdentifierName());
+		binder->macro_binding = this_macro_binding.get();
+		// a member that fails to bind contributes no dependencies instead of blocking the caller
+		if (info.type == CatalogType::MACRO_ENTRY) {
+			BoundSelectNode sel_node;
+			SelectBinder select_binder(*binder, context, sel_node);
+			select_binder.SetCatalogLookupCallback(binder_callback);
+			auto expression = function->Cast<ScalarMacroFunction>().expression->Copy();
+			ExpressionBinder::QualifyColumnNames(*binder, expression);
+			try {
+				auto bind_result = select_binder.Bind(expression, 0, false);
+				(void)bind_result;
+			} catch (const std::exception &) { // NOLINT: bind failures are intentionally non-fatal here
+			}
+		} else {
+			D_ASSERT(info.type == CatalogType::TABLE_MACRO_ENTRY);
+			auto dummy_binder = Binder::CreateBinder(context, binder.get());
+			dummy_binder->macro_binding = this_macro_binding.get();
+			dummy_binder->SetCatalogLookupCallback(binder_callback);
+			auto query_node = function->Cast<TableMacroFunction>().query_node->Copy();
+			ParsedExpressionIterator::EnumerateQueryNodeChildren(
+			    *query_node, [&dummy_binder](unique_ptr<ParsedExpression> &child) {
+				    ExpressionBinder::QualifyColumnNames(*dummy_binder, child);
+			    });
+			try {
+				dummy_binder->Bind(*query_node);
+			} catch (const std::exception &) { // NOLINT: bind failures are intentionally non-fatal here
+			}
+		}
+	}
+}
+
 SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	//! Set to identify exact matches in macro overloads
 	struct VectorOfLogicalTypeHash {
