@@ -159,6 +159,9 @@ int64_t CompressedFile::ReadData(void *buffer, int64_t remaining) {
 }
 
 int64_t CompressedFile::WriteData(data_ptr_t buffer, int64_t nr_bytes) {
+	if (!stream_wrapper) {
+		Initialize(context, true);
+	}
 	stream_wrapper->Write(*this, stream_data, buffer, nr_bytes);
 	return nr_bytes;
 }
@@ -202,6 +205,13 @@ void CompressedFile::Close() {
 	if (child) {
 		child->Close();
 	}
+}
+
+void CompressedFile::Sync() {
+	if (write) {
+		Clear();
+	}
+	child_handle->Sync();
 }
 
 void CompressedFile::AbortCompressedWrite() {
@@ -264,6 +274,10 @@ bool CompressedFileSystem::CanSeek() {
 
 void CompressedFileSystem::AbortFileWrite(FileHandle &handle) {
 	handle.Cast<CompressedFile>().AbortCompressedWrite();
+}
+
+void CompressedFileSystem::FileSync(FileHandle &handle) {
+	handle.Cast<CompressedFile>().Sync();
 }
 
 } // namespace duckdb
