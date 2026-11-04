@@ -9,7 +9,6 @@
 #pragma once
 
 #include "duckdb/optimizer/column_binding_replacer.hpp"
-#include "duckdb/optimizer/remove_unused_columns.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/common/enums/order_type.hpp"
 
@@ -35,15 +34,17 @@ struct TopNWindowEliminationParameters {
 	bool row_ids_may_have_duplicates = false;
 };
 
-class TopNWindowElimination : public BaseColumnPruner {
+class TopNWindowElimination : public LogicalOperatorVisitor {
 public:
 	explicit TopNWindowElimination(ClientContext &context, Optimizer &optimizer,
 	                               optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats_p);
 
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
+	//	Returns the <= index for TopN, if any
+	static optional_idx CanOptimize(LogicalOperator &op);
+
 private:
-	bool CanOptimize(LogicalOperator &op);
 	unique_ptr<LogicalOperator> OptimizeInternal(unique_ptr<LogicalOperator> op, ColumnBindingReplacer &replacer);
 
 	unique_ptr<LogicalOperator> CreateAggregateOperator(LogicalWindow &window, vector<unique_ptr<Expression>> args,
