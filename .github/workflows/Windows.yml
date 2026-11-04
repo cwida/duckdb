@@ -78,6 +78,23 @@ jobs:
       shell: bash
       run: echo "$DUCKDB_INSTALL_LIB"
 
+    - name: Diagnose entropy with SQL trace
+      shell: bash
+      if: ${{ !inputs.skip_tests }}
+      run: |
+        python - <<'PYTHON'
+        from pathlib import Path
+        import subprocess
+        import sys
+        fixture = Path("test/sql/aggregate/aggregates/test_entropy.test").read_text()
+        result = subprocess.run(
+            [str(Path("test/unittest.exe").resolve()), "--stdin"],
+            input="mode debug\n\n" + fixture,
+            text=True,
+        )
+        sys.exit(result.returncode)
+        PYTHON
+
     - name: Test
       shell: bash
       if: ${{ !inputs.skip_tests }}
