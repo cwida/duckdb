@@ -7,6 +7,7 @@
 #include "test_helpers.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <sstream>
 
 #ifdef DUCKDB_TEST_BUNDLE_DEBUG_FS
@@ -48,6 +49,14 @@ struct StreamCapture {
 	std::ostringstream output;
 	std::streambuf *old_stdout;
 	std::streambuf *old_stderr;
+};
+
+struct TempDirReclaimer {
+	~TempDirReclaimer() {
+		DestroyTempDir(success);
+	}
+
+	bool success = false;
 };
 
 static thread_local optional_ptr<CaptureState> current_capture;
@@ -127,6 +136,16 @@ static void InitializeTestEnvironment() {
 	if (!config.ValidateDataDirs(error)) {
 		throw InvalidInputException("%s", error);
 	}
+	auto home_dir = TestMakeAbsolute(GetTempDirHome(), TestGetCurrentDirectory());
+#ifdef DUCKDB_WINDOWS
+	if (_putenv_s("USERPROFILE", home_dir.c_str()) != 0) {
+		throw IOException("Failed to set USERPROFILE environment variable");
+	}
+#else
+	if (setenv("HOME", home_dir.c_str(), 1) != 0) {
+		throw IOException("Failed to set HOME environment variable");
+	}
+#endif
 #ifdef DUCKDB_TEST_BUNDLE_DEBUG_FS
 	SetStaticExtensionLoader([](DuckDB &db) { db.LoadStaticExtension<DebugFsExtension>(); });
 #endif
@@ -146,6 +165,8 @@ static void EnumerateTests(void *, test_case_callback_t callback, void *callback
 static void RunTests(void *, const char *const *test_names, uint64_t test_count, test_result_callback_t callback,
                      void *callback_data) {
 	InitializeTestEnvironment();
+	TempDirReclaimer temp_dir_reclaimer;
+	temp_dir_reclaimer.success = true;
 	for (uint64_t test_idx = 0; test_idx < test_count; test_idx++) {
 		string test_name(test_names[test_idx]);
 		CaptureState capture;
@@ -178,6 +199,9 @@ static void RunTests(void *, const char *const *test_names, uint64_t test_count,
 		auto status = return_code == 0 ? TestStatus::PASSED : TestStatus::FAILED;
 		if (capture.skipped) {
 			status = TestStatus::SKIPPED;
+		}
+		if (status == TestStatus::FAILED) {
+			temp_dir_reclaimer.success = false;
 		}
 		auto duration = std::chrono::duration<double, std::milli>(end - start).count();
 		auto message = capture.skip_reason;

@@ -14,6 +14,7 @@
 #include "test_reporter.hpp"
 
 #include <chrono>
+#include <cstdlib>
 
 namespace duckdb {
 
@@ -62,8 +63,16 @@ struct TestRunData : public TableFunctionData {
 };
 
 struct TestRunState : public GlobalTableFunctionState {
+	~TestRunState() override {
+		if (environment_initialized) {
+			DestroyTempDir(success);
+		}
+	}
+
 	vector<TestResult> results;
 	idx_t offset = 0;
+	bool environment_initialized = false;
+	bool success = false;
 };
 
 struct SQLTestReporter : public TestReporter {
@@ -327,7 +336,8 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
 			test.tags = is_sqlite_root ? "[sqlitelogic][.]" : SQLTestTags(normalized_path);
 			test.source = normalized_path;
 			test.is_slow = test.tags.find("[.]") != string::npos;
-			test.auto_switch_test_dir = StringUtil::EndsWith(normalized_root, "/test/sql");
+			test.auto_switch_test_dir =
+			    StringUtil::EndsWith(normalized_root, "/test/sql") && normalized_path.find("/test/sql") != string::npos;
 			result.push_back(std::move(test));
 		});
 	}
@@ -405,6 +415,16 @@ static void InitializeSQLTestEnvironment() {
 	if (!config.ValidateDataDirs(error)) {
 		throw InvalidInputException("%s", error);
 	}
+	auto home_dir = TestMakeAbsolute(GetTempDirHome(), TestGetCurrentDirectory());
+#ifdef DUCKDB_WINDOWS
+	if (_putenv_s("USERPROFILE", home_dir.c_str()) != 0) {
+		throw IOException("Failed to set USERPROFILE environment variable");
+	}
+#else
+	if (setenv("HOME", home_dir.c_str(), 1) != 0) {
+		throw IOException("Failed to set HOME environment variable");
+	}
+#endif
 	SetStaticExtensionLoader([](DuckDB &db) { db.LoadStaticExtension<DebugFsExtension>(); });
 	initialized = true;
 }
@@ -508,6 +528,7 @@ static unique_ptr<GlobalTableFunctionState> TestRunInit(ClientContext &context, 
 	auto result = make_uniq<TestRunState>();
 	auto &data = input.bind_data->Cast<TestRunData>();
 	InitializeSQLTestEnvironment();
+	result->environment_initialized = true;
 
 	unordered_map<string, vector<string>> bundle_tests;
 	for (auto &test : data.tests) {
@@ -542,6 +563,8 @@ static unique_ptr<GlobalTableFunctionState> TestRunInit(ClientContext &context, 
 	if (result->results.size() != data.tests.size()) {
 		throw InternalException("A DuckDB test bundle did not return a result for every requested test");
 	}
+	result->success = std::all_of(result->results.begin(), result->results.end(),
+	                              [](const TestResult &test) { return test.status != "failed"; });
 	return std::move(result);
 }
 
