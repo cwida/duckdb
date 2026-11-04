@@ -601,8 +601,17 @@ public:
 
 	Pipeline &pipeline;
 	PipelineExecutor &pipeline_executor;
-	//! Wakes the coordinating thread's event wait when this task finishes
+	//! Wakes the coordinating thread's event wait when this task finishes or is requeued
 	shared_ptr<RecursiveInterruptSignalState> completion_signal;
+
+	void Reschedule() override {
+		// a blocked task's continuation requeues through the executor's own condition
+		// variable; forward the wakeup so the waiter can run the task itself
+		ExecutorTask::Reschedule();
+		if (completion_signal) {
+			completion_signal->Signal();
+		}
+	}
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
 		pipeline_executor.SetTaskForInterrupts(shared_from_this());
@@ -726,8 +735,11 @@ public:
 	    : EVENT(std::move(pipeline_p)), completion_signal(std::move(signal_p)) {
 	}
 
-	void FinishEvent() override {
-		EVENT::FinishEvent();
+	void FinalizeFinish() override {
+		// runs after Finish() stored the finished flag and completed the dependents, so a
+		// woken waiter observes the completion instead of consuming the signal early and
+		// sleeping the full bound
+		EVENT::FinalizeFinish();
 		if (completion_signal) {
 			completion_signal->Signal();
 		}
