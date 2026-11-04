@@ -10,7 +10,7 @@
 
 namespace duckdb {
 
-unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_safe, bool mutable_settings) {
+unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, bool thread_safe, bool mutable_settings) {
 	annotated_unique_lock<annotated_mutex> lck(lock);
 	if (mutable_settings) {
 		return make_uniq<MutableLogger>(*config, RegisterLoggingContextInternal(context), *this);
@@ -21,7 +21,7 @@ unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_
 	return CreateLoggerInternal(context, config);
 }
 
-unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, const LogConfigSnapshot &snapshot) {
+unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, const LogConfigSnapshot &snapshot) {
 	if (snapshot.config && snapshot.version == config_version.load()) {
 		return CreateLoggerInternal(context, snapshot.config);
 	}
@@ -29,7 +29,7 @@ unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, const LogCon
 	return CreateLoggerInternal(context, config);
 }
 
-unique_ptr<Logger> LogManager::CreateLoggerInternal(LoggingContext &context,
+unique_ptr<Logger> LogManager::CreateLoggerInternal(const LoggingContext &context,
                                                     const shared_ptr<const LogConfig> &logger_config) {
 	if (!logger_config->enabled) {
 		return make_uniq<NopLogger>(*this);
@@ -46,7 +46,7 @@ void LogManager::RefreshConfigSnapshot(LogConfigSnapshot &snapshot) {
 	snapshot.version = config_version.load();
 }
 
-RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &context) {
+RegisteredLoggingContext LogManager::RegisterLoggingContext(const LoggingContext &context) {
 	return RegisterLoggingContextInternal(context);
 }
 
@@ -101,7 +101,7 @@ LogManager &LogManager::Get(ClientContext &context) {
 	return context.db->GetLogManager();
 }
 
-RegisteredLoggingContext LogManager::RegisterLoggingContextInternal(LoggingContext &context) {
+RegisteredLoggingContext LogManager::RegisterLoggingContextInternal(const LoggingContext &context) {
 	auto context_id = next_registered_logging_context_index++;
 	if (context_id >= NumericLimits<idx_t>::Maximum() - 1) {
 		throw InternalException("Ran out of available log context ids.");

@@ -93,7 +93,7 @@ void ClientContext::RefreshLoggerInternal() {
 	DUCKDB_LOG(*this, QueryLogType, active_query->query);
 }
 
-void ClientContext::ResetLoggerInternal(LoggingContext logging_context) {
+void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
 	auto &log_manager = db->GetLogManager();
 	log_manager.RefreshConfigSnapshot(log_config);
 	logger = log_manager.CreateLogger(logging_context, log_config);

@@ -33,13 +33,14 @@ public:
 	void Initialize();
 
 	DUCKDB_API static LogManager &Get(ClientContext &context);
-	unique_ptr<Logger> CreateLogger(LoggingContext context, bool thread_safe = true, bool mutable_settings = false);
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, bool thread_safe = true,
+	                                bool mutable_settings = false);
 	//! Creates a logger from the snapshot without locking, unless the config changed since the snapshot was taken
-	unique_ptr<Logger> CreateLogger(LoggingContext context, const LogConfigSnapshot &snapshot);
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, const LogConfigSnapshot &snapshot);
 	//! Brings the snapshot up to date, only locking if the config changed since it was taken
 	void RefreshConfigSnapshot(LogConfigSnapshot &snapshot);
 
-	RegisteredLoggingContext RegisterLoggingContext(LoggingContext &context);
+	RegisteredLoggingContext RegisterLoggingContext(const LoggingContext &context);
 
 	DUCKDB_API bool RegisterLogStorage(const string &name, shared_ptr<LogStorage> &storage);
 
@@ -79,7 +80,7 @@ public:
 	DUCKDB_API void RegisterDefaultLogTypes();
 
 protected:
-	RegisteredLoggingContext RegisterLoggingContextInternal(LoggingContext &context);
+	RegisteredLoggingContext RegisterLoggingContextInternal(const LoggingContext &context);
 
 	// This is to be called by the Loggers only, it does not verify log_level and log_type
 	void WriteLogEntry(timestamp_t, const char *log_type, LogLevel log_level, const char *log_message,
@@ -95,7 +96,8 @@ protected:
 
 	//! The only way to change the config: publishes it to the global logger and to newly created loggers
 	void SetConfigInternal(LogConfig new_config) DUCKDB_REQUIRES(lock);
-	unique_ptr<Logger> CreateLoggerInternal(LoggingContext &context, const shared_ptr<const LogConfig> &logger_config);
+	unique_ptr<Logger> CreateLoggerInternal(const LoggingContext &context,
+	                                        const shared_ptr<const LogConfig> &logger_config);
 
 protected:
 	annotated_mutex lock;
