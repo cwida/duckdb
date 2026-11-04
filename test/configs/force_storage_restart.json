@@ -27,6 +27,8 @@
         "test/sql/table_function/external_resource_discovery.test",
         "test/sql/table_function/external_resource_discovery_error.test",
         "test/sql/table_function/external_resource_callback_recursion.test",
+        "test/sql/table_function/external_resources_type_pruning.test",
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/sql/attach/external_resource_discovery.test"
       ]
     },
