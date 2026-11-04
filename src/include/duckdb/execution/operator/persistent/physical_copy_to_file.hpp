@@ -32,6 +32,22 @@ struct CopyToFileInfo {
 	Value partition_keys;
 };
 
+//! The naming, size limit and overwrite mode of the files a COPY writes
+struct CopyToFileOptions {
+	//! Pattern to use for the file names
+	FilenamePattern filename_pattern;
+	//! File extension, e.g., "parquet"
+	string file_extension;
+	//! The size at which a file is rotated, if files are rotated by size
+	optional_idx file_size_bytes;
+	//! What to do when the "file_path" conflicts with an existing file
+	CopyOverwriteMode overwrite_mode = CopyOverwriteMode::COPY_ERROR_ON_CONFLICT;
+
+	bool RotatesFiles() const {
+		return file_size_bytes.IsValid();
+	}
+};
+
 //! Copy the contents of a query into a table
 class PhysicalCopyToFile : public PhysicalOperator {
 public:
@@ -124,10 +140,8 @@ public:
 
 	//! Where to write the file
 	string file_path;
-	//! Pattern to use for the file names
-	FilenamePattern filename_pattern;
-	//! File extension, e.g., "parquet"
-	string file_extension;
+	//! The naming, size limit and overwrite mode of the files
+	CopyToFileOptions file_options;
 
 	//! Whether we can write in parallel
 	bool parallel;
@@ -138,12 +152,9 @@ public:
 	optional_idx batch_size;
 	optional_idx batch_size_bytes;
 	optional_idx batches_per_file;
-	optional_idx file_size_bytes;
 
 	//! Whether to write to a temp file before writing to the file at "file_path"
 	bool use_tmp_file;
-	//! What to do when the "file_path" conflicts with an existing file
-	CopyOverwriteMode overwrite_mode;
 	//! What to return, e.g., number of written rows
 	CopyFunctionReturnType return_type;
 	//! The names and types of the copied query, for RETURN_COLUMN_TYPES

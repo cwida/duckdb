@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include "duckdb/common/enums/copy_overwrite_mode.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/filename_pattern.hpp"
+#include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
@@ -42,16 +42,8 @@ public:
 	//! Fine-grained control over writes
 	optional_idx batch_size;
 	optional_idx batch_size_bytes;
-	//! With file_size_bytes the files are written into the directory file_path, named by the pattern and extension,
-	//! and once a file reached the size the next batch starts a new one
-	optional_idx file_size_bytes;
-	FilenamePattern filename_pattern;
-	string file_extension;
-	CopyOverwriteMode overwrite_mode = CopyOverwriteMode::COPY_ERROR_ON_CONFLICT;
-
-	bool RotatesFiles() const {
-		return file_size_bytes.IsValid();
-	}
+	//! The files written into the directory file_path when rotating by file_size_bytes
+	CopyToFileOptions file_options;
 
 public:
 	// Source interface

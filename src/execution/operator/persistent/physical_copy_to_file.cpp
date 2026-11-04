@@ -4195,7 +4195,8 @@ optional<PartitionFileRequest> PartitionFileRequestBuilder::Build() {
 	reservation = partitioned_copy.partition_writes.ReserveFileState(reservation_lock, values, reason);
 
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto full_path = op.filename_pattern.CreateFilename(fs, directory.path, op.file_extension, reservation.offset);
+	auto full_path = op.file_options.filename_pattern.CreateFilename(fs, directory.path, op.file_options.file_extension,
+	                                                                 reservation.offset);
 	auto pending_file_state_open =
 	    partitioned_copy.copy_gstate.CreatePartitionFileStateOpenLocked(file_state, std::move(full_path), values);
 	D_ASSERT(pending_file_state_open);
@@ -4537,8 +4538,8 @@ void PhysicalCopyToFile::PrepareOutputDirectory(FileSystem &fs, const string &fi
 }
 
 void CopyToFileGlobalState::PrepareOutputDirectory() {
-	PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path, op.overwrite_mode,
-	                                           output_lifecycle);
+	PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path,
+	                                           op.file_options.overwrite_mode, output_lifecycle);
 }
 
 void CopyToFileGlobalState::ScheduleOutputDirectorySetup() {
@@ -4573,7 +4574,8 @@ PendingFileState CopyToFileGlobalState::PrepareFileStateLocked(string output_pat
                                                                optional_ptr<const vector<Value>> partition_values) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (output_path.empty()) {
-		output_path = op.filename_pattern.CreateFilename(fs, op.file_path, op.file_extension, last_file_offset++);
+		output_path = op.file_options.filename_pattern.CreateFilename(fs, op.file_path, op.file_options.file_extension,
+		                                                              last_file_offset++);
 	}
 	auto result = output_files.ReserveFile(std::move(output_path), partition_values);
 	output_files.PublishCreatedPath(result, result.output_path);
@@ -4671,13 +4673,13 @@ void PartitionFileOpenRequest::Run(CopyToFileGlobalState &copy_gstate) {
 	}
 
 	auto output_path = std::move(pending_file_state.output_path);
-	if (copy_gstate.op.overwrite_mode == CopyOverwriteMode::COPY_APPEND) {
+	if (copy_gstate.op.file_options.overwrite_mode == CopyOverwriteMode::COPY_APPEND) {
 		while (fs.FileExists(output_path)) {
-			if (!copy_gstate.op.filename_pattern.HasUUID()) {
+			if (!copy_gstate.op.file_options.filename_pattern.HasUUID()) {
 				throw InternalException("CopyOverwriteMode::COPY_APPEND without {uuid} - and file exists");
 			}
-			output_path = copy_gstate.op.filename_pattern.CreateFilename(fs, directory.path,
-			                                                             copy_gstate.op.file_extension, offset);
+			output_path = copy_gstate.op.file_options.filename_pattern.CreateFilename(
+			    fs, directory.path, copy_gstate.op.file_options.file_extension, offset);
 		}
 	}
 	{
@@ -4935,7 +4937,7 @@ void PhysicalCopyToFile::ReturnNoFileStatistics(DataChunk &chunk) {
 }
 
 bool PhysicalCopyToFile::Rotate() const {
-	return file_size_bytes.IsValid() || batches_per_file.IsValid();
+	return file_options.RotatesFiles() || batches_per_file.IsValid();
 }
 
 static bool PhysicalCopyRotateNow(const PhysicalCopyToFile &op, GlobalFileState &global_state)
@@ -4946,8 +4948,8 @@ static bool PhysicalCopyRotateNow(const PhysicalCopyToFile &op, GlobalFileState 
 		return false;
 	}
 	// either rotation limit rotates the file
-	if (op.file_size_bytes.IsValid() &&
-	    op.function.file_size_bytes(*global_state.data) >= op.file_size_bytes.GetIndex()) {
+	if (op.file_options.RotatesFiles() &&
+	    op.function.file_size_bytes(*global_state.data) >= op.file_options.file_size_bytes.GetIndex()) {
 		return true;
 	}
 	if (op.batches_per_file.IsValid() && global_state.num_batches >= op.batches_per_file.GetIndex()) {
@@ -5132,7 +5134,7 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 	if (use_tmp_file) {
 		D_ASSERT(!per_thread_output);
 		D_ASSERT(!partition_output);
-		D_ASSERT(!file_size_bytes.IsValid());
+		D_ASSERT(!file_options.RotatesFiles());
 		D_ASSERT(!Rotate());
 		MoveTmpFile(context, file_path);
 	}

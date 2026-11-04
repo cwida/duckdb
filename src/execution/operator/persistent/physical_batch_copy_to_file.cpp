@@ -47,8 +47,8 @@ PhysicalBatchCopyToFile::PhysicalBatchCopyToFile(PhysicalPlan &physical_plan, ve
 InsertionOrderPreservingMap<string> PhysicalBatchCopyToFile::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	result["FORMAT"] = StringUtil::Upper(function.name.GetIdentifierName());
-	if (RotatesFiles()) {
-		result["FILE_SIZE_BYTES"] = to_string(file_size_bytes.GetIndex());
+	if (file_options.RotatesFiles()) {
+		result["FILE_SIZE_BYTES"] = to_string(file_options.file_size_bytes.GetIndex());
 	}
 	return result;
 }
@@ -137,9 +137,9 @@ public:
 		if (initialized.load(std::memory_order_relaxed)) {
 			return;
 		}
-		if (op.RotatesFiles()) {
+		if (op.file_options.RotatesFiles()) {
 			PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path,
-			                                           op.overwrite_mode, output_lifecycle);
+			                                           op.file_options.overwrite_mode, output_lifecycle);
 		}
 		first_file_state = OpenFile(context, op);
 		global_state = first_file_state.get();
@@ -149,9 +149,10 @@ public:
 	//! Opens the next file and returns its state
 	unique_ptr<GlobalFunctionData> OpenFile(ClientContext &context, const PhysicalBatchCopyToFile &op) {
 		auto file_path = op.file_path;
-		if (op.RotatesFiles()) {
+		if (op.file_options.RotatesFiles()) {
 			auto &fs = FileSystem::GetFileSystem(context);
-			file_path = op.filename_pattern.CreateFilename(fs, op.file_path, op.file_extension, written_files.size());
+			file_path = op.file_options.filename_pattern.CreateFilename(
+			    fs, op.file_path, op.file_options.file_extension, written_files.size());
 		}
 		output_lifecycle.RegisterFile(file_path);
 		auto new_global_state = op.function.copy_to_initialize_global(context, *op.bind_data, file_path);
@@ -181,8 +182,8 @@ public:
 
 	//! Whether the file being written holds batches and reached the size, so the next batch starts a new file
 	bool FileReachedSize(const PhysicalBatchCopyToFile &op) {
-		return op.RotatesFiles() && file_batches > 0 &&
-		       op.function.file_size_bytes(*global_state) >= op.file_size_bytes.GetIndex();
+		return op.file_options.RotatesFiles() && file_batches > 0 &&
+		       op.function.file_size_bytes(*global_state) >= op.file_options.file_size_bytes.GetIndex();
 	}
 
 	//! Finishes the first file and the file being written, once every batch is flushed
