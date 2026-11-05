@@ -459,7 +459,9 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
                                              const vector<string> &test_flags) {
 	ConfigureTestFlags(test_flags);
 	auto &config = TestConfiguration::Get();
-	DiscoverBundles(context, extension_roots);
+	if (!config.GetSkipCompiledTests()) {
+		DiscoverBundles(context, extension_roots);
+	}
 	vector<TestDescription> result;
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto working_directory = NormalizePath(FileSystem::GetWorkingDirectory());
@@ -495,9 +497,11 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
 			result.push_back(std::move(test));
 		});
 	}
-	for (auto &entry : GetRegisteredBundles(registry)) {
-		EnumerateContext enumerate_context {result, entry.name};
-		entry.bundle->enumerate(entry.bundle->data, AddBundleTest, &enumerate_context);
+	if (!config.GetSkipCompiledTests()) {
+		for (auto &entry : GetRegisteredBundles(registry)) {
+			EnumerateContext enumerate_context {result, entry.name};
+			entry.bundle->enumerate(entry.bundle->data, AddBundleTest, &enumerate_context);
+		}
 	}
 	std::sort(result.begin(), result.end(),
 	          [](const TestDescription &left, const TestDescription &right) { return left.test_id < right.test_id; });

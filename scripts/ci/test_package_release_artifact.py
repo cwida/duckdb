@@ -175,6 +175,7 @@ class PackageReleaseArtifactTest(unittest.TestCase):
             root = Path(temp_dir)
             source = root / "windows-build"
             (source / "src").mkdir(parents=True)
+            (source / "test" / "extension").mkdir(parents=True)
             (source / "test" / "extensions").mkdir(parents=True)
             (source / "extension" / "json").mkdir(parents=True)
             (source / "extension" / "test").mkdir(parents=True)
@@ -187,6 +188,7 @@ class PackageReleaseArtifactTest(unittest.TestCase):
             (source / "src" / "duckdb_static.lib").write_bytes(b"static")
             (source / "extension" / "json" / "json_extension.lib").write_bytes(b"extension library")
             (source / "extension" / "test" / "test.duckdb_extension").write_bytes(b"test extension")
+            (source / "test" / "extension" / "loadable_extension_demo.duckdb_extension").write_bytes(b"test fixture")
             (source / "test" / "extensions" / "duckdb_tests.duckdb_extension").write_bytes(b"test bundle")
 
             archive_path = root / "release-artifact.tar.gz"
@@ -216,6 +218,7 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                     "release/src/duckdb_static.lib",
                     "release/extension/json/json_extension.lib",
                     "release/extension/test/test.duckdb_extension",
+                    "release/test/extension/loadable_extension_demo.duckdb_extension",
                     "release/test/extensions/duckdb_tests.duckdb_extension",
                 }
                 self.assertTrue(expected.issubset(members))

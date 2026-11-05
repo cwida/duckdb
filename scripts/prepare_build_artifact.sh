@@ -109,6 +109,11 @@ for extension in "$BUILD_DIR"/test/extensions/*.duckdb_extension; do
 	copy_file "$extension" "test/extensions/$(basename "$extension")"
 done
 
+# SQL and C++ tests load these fixture extensions from {BUILD_DIRECTORY}.
+for extension in "$BUILD_DIR"/test/extension/*.duckdb_extension; do
+	copy_file "$extension" "test/extension/$(basename "$extension")"
+done
+
 # Required by tests that use the local extension repository under the build directory.
 if [[ -d "$BUILD_DIR/repository" ]]; then
 	cp -a "$BUILD_DIR/repository" "$ARTIFACT_DIR/"

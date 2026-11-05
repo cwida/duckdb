@@ -27,6 +27,7 @@ else()
       shell_profiler_renderer.cpp
       shell_progress_bar.cpp
       shell_render_table_metadata.cpp
+      shell_thread_stack_size.cpp
       shell_windows.cpp
       $<TARGET_OBJECTS:duckdb_linenoise>)
 

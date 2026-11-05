@@ -44,6 +44,10 @@ TEST_ROOT_OVERRIDES: list[Path] = []
 TEST_BUNDLE_ROOT_OVERRIDES: list[Path] = []
 
 
+class TestRunnerError(RuntimeError):
+    pass
+
+
 def enable_line_buffering():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True, write_through=True, errors="backslashreplace")
@@ -294,6 +298,14 @@ def load_tests(path: Path):
     return tests
 
 
+def test_id_to_list_name(test_id: str):
+    if test_id.startswith("sql:"):
+        return test_id[4:]
+    if test_id.startswith("cpp:"):
+        return test_id.split(":", 2)[2]
+    return test_id
+
+
 def sql_string(value: str | Path):
     return "'" + os.fspath(value).replace("'", "''") + "'"
 
@@ -328,12 +340,41 @@ def core_functions_load_statement(duckdb_bin: str):
 
 def build_test_protocol_sql(duckdb_bin: str, query: str):
     test_extension, _, _ = resolve_test_protocol_paths(duckdb_bin)
-    return (
-        core_functions_load_statement(duckdb_bin)
-        + f"LOAD {sql_string(test_extension)};\n"
-        + query
-        + "\n"
-    )
+    return core_functions_load_statement(duckdb_bin) + f"LOAD {sql_string(test_extension)};\n" + query + "\n"
+
+
+def split_process_test_flags(test_flags: str):
+    try:
+        flags = shlex.split(test_flags)
+    except ValueError as exc:
+        raise TestRunnerError(f"invalid --test-flags: {exc}") from exc
+    remaining_flags = []
+    thread_stack_size = None
+    index = 0
+    while index < len(flags):
+        flag = flags[index]
+        if flag != "--thread-stack-size":
+            remaining_flags.append(flag)
+            index += 1
+            continue
+        if thread_stack_size is not None:
+            raise TestRunnerError("--thread-stack-size may only be specified once")
+        index += 1
+        if index >= len(flags):
+            raise TestRunnerError("--thread-stack-size expected a size in bytes")
+        thread_stack_size = flags[index]
+        if not thread_stack_size.isdigit() or int(thread_stack_size) == 0:
+            raise TestRunnerError("--thread-stack-size expected a positive integer size in bytes")
+        index += 1
+    return remaining_flags, thread_stack_size
+
+
+def test_protocol_command(duckdb_bin: str, thread_stack_size: str | None = None):
+    command = [duckdb_bin]
+    if thread_stack_size is not None:
+        command.extend(["--thread-stack-size", thread_stack_size])
+    command.extend(["-unsigned", "-batch", "-jsonlines"])
+    return command
 
 
 def run_test_protocol_query(
@@ -341,6 +382,7 @@ def run_test_protocol_query(
     query: str,
     coverage_profile_dir: Path | None = None,
     test_config: str | None = None,
+    thread_stack_size: str | None = None,
 ):
     child_env = os.environ.copy()
     if test_config is not None:
@@ -349,7 +391,7 @@ def run_test_protocol_query(
         coverage_profile_dir.mkdir(parents=True, exist_ok=True)
         child_env["LLVM_PROFILE_FILE"] = coverage_profile_file_pattern(coverage_profile_dir)
     return subprocess.run(
-        [duckdb_bin, "-unsigned", "-batch", "-jsonlines"],
+        test_protocol_command(duckdb_bin, thread_stack_size),
         input=build_test_protocol_sql(duckdb_bin, query),
         text=True,
         encoding="utf8",
@@ -475,7 +517,7 @@ def generate_test_list(
         )
         if proc.returncode != 0 and not proc.stdout:
             print("Stderr:", proc.stderr, end="", file=error_output if error_output is not None else sys.stderr)
-            raise RuntimeError(f"failed to generate test list from {unittest_bin} (exit: {proc.returncode})")
+            raise TestRunnerError(f"failed to generate test list from {unittest_bin} (exit: {proc.returncode})")
         test_file.write(proc.stdout)
         test_file.flush()
         return
@@ -486,12 +528,19 @@ def generate_test_list(
         selector == "*" or selector.endswith((".test_slow", ".test_coverage")) or "[.]" in selector
         for selector in selectors
     )
+    configuration_flags, thread_stack_size = split_process_test_flags(test_flags)
     query = (
         "SELECT test_id, is_slow FROM test_scan("
         f"{sql_string_list(selectors)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
-        f"{'true' if include_slow else 'false'}, {sql_string_list(shlex.split(test_flags))});"
+        f"{'true' if include_slow else 'false'}, {sql_string_list(configuration_flags)});"
     )
-    proc = run_test_protocol_query(unittest_bin, query, coverage_profile_dir, test_config)
+    proc = run_test_protocol_query(
+        unittest_bin,
+        query,
+        coverage_profile_dir,
+        test_config,
+        thread_stack_size,
+    )
     if proc.returncode != 0:
         print(
             "Stderr:",
@@ -500,7 +549,7 @@ def generate_test_list(
             file=error_output if error_output is not None else sys.stderr,
             flush=True,
         )
-        raise RuntimeError(f"failed to scan tests using {unittest_bin} (exit: {proc.returncode})")
+        raise TestRunnerError(f"failed to scan tests using {unittest_bin} (exit: {proc.returncode})")
     for line in proc.stdout.splitlines():
         try:
             row = json.loads(line)
@@ -1892,10 +1941,11 @@ def run_batch(config: TestRunnerConfig, batch):
         child_env["LLVM_PROFILE_FILE"] = coverage_profile_file_pattern(config.coverage_profile_dir)
 
     _, test_roots, bundle_roots = resolve_test_protocol_paths(config.unittest_bin)
+    configuration_flags, thread_stack_size = split_process_test_flags(config.test_flags)
     query = (
         "SELECT * FROM test_run("
         f"{sql_string_list(batch)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
-        f"{sql_string_list(shlex.split(config.test_flags))});"
+        f"{sql_string_list(configuration_flags)});"
     )
     sql = build_test_protocol_sql(config.unittest_bin, query)
     # Capture the child's stdout/stderr to temp files rather than pipes, avoid deadlock
@@ -1912,7 +1962,7 @@ def run_batch(config: TestRunnerConfig, batch):
 
     try:
         proc = subprocess.Popen(
-            [config.unittest_bin, "-unsigned", "-batch", "-jsonlines"],
+            test_protocol_command(config.unittest_bin, thread_stack_size),
             stdin=subprocess.PIPE,
             stdout=stdout_capture,
             stderr=stderr_capture,
@@ -1971,13 +2021,11 @@ def run_batch(config: TestRunnerConfig, batch):
             event_lines = []
             failure_lines = []
             skipped_rows = []
+            missing_test_ids = []
             for test_id in batch:
                 row = rows.get(test_id)
                 if row is None:
-                    failed = True
-                    allow_retry = False
-                    message = f"test_run did not return a result for {test_id}"
-                    failure_lines.extend([f"1. {test_id}:1", message])
+                    missing_test_ids.append(test_id)
                     continue
                 status = row.get("status")
                 duration_ms = row.get("duration_ms")
@@ -2012,6 +2060,25 @@ def run_batch(config: TestRunnerConfig, batch):
                 if row.get("message"):
                     event["data"] = row["message"]
                 event_lines.append(TEST_EVENT_MARKER + json.dumps(event, separators=(",", ":")))
+
+            if missing_test_ids:
+                failed = True
+                process_lost = proc.returncode != 0 and (proc.returncode < 0 or not stderr.strip())
+                if process_lost:
+                    message = (
+                        f"test_run process exited with return code {proc.returncode} before returning "
+                        f"{len(missing_test_ids)} result(s)"
+                    )
+                else:
+                    allow_retry = False
+                    message = f"test_run did not return a result for {missing_test_ids[0]}"
+                    for test_id in missing_test_ids:
+                        failure_lines.extend(
+                            [
+                                f"1. {test_id}:1",
+                                f"test_run did not return a result for {test_id}",
+                            ]
+                        )
 
             if config.fail_require_skip and skipped_rows:
                 failed = True
@@ -2210,6 +2277,7 @@ def parse_args(argv: list[str] | None = None):
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--test-list", type=Path)
+    parser.add_argument("--list-tests", action="store_true", help="list matching tests without running them")
     parser.add_argument("--changed-tests", type=Path, help="extra test list file; requires --test-list")
     parser.add_argument(
         "--stabilize-tests",
@@ -2615,6 +2683,38 @@ def main_impl(argv: list[str] | None = None):
 
     test_list_files = [path for path in [args.test_list, args.changed_tests] if path is not None]
     config_invocations = build_config_invocations(args.test_config, args.test_flags)
+    if args.list_tests:
+        if len(config_invocations) != 1:
+            print("error: --list-tests accepts at most one --test-config", file=sys.stderr)
+            return 1
+        invocation = config_invocations[0]
+        output = StringIO()
+        try:
+            generate_test_list(
+                output,
+                args.unittest_bin,
+                invocation.test_flags,
+                args.patterns,
+                test_list_files,
+                test_config=invocation.test_config,
+                test_command=args.test_command,
+            )
+        except TestRunnerError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        try:
+            print("name\tgroup")
+            for line in output.getvalue().splitlines():
+                test_id, separator, group = line.partition("\t")
+                print(test_id_to_list_name(test_id) + separator + group)
+        except BrokenPipeError:
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull_fd, sys.stdout.fileno())
+            finally:
+                os.close(devnull_fd)
+        return 0
+
     is_ci = bool(os.environ.get("CI"))
     use_config_groups = is_ci and len(config_invocations) > 1
     max_failures = args.max_failures
@@ -2660,7 +2760,8 @@ def main_impl(argv: list[str] | None = None):
                 )
             except Exception as exc:
                 print(f"error: {exc}")
-                traceback.print_exc()
+                if not isinstance(exc, TestRunnerError):
+                    traceback.print_exc()
                 config_results[0] = failed_config_run_result()
             print_config_run_summary(config_results[0])
         else:
@@ -2711,7 +2812,8 @@ def main_impl(argv: list[str] | None = None):
                             run_result = future.result()
                         except Exception as exc:
                             print(f"error: {exc}", file=buffers[config_idx])
-                            traceback.print_exc(file=buffers[config_idx])
+                            if not isinstance(exc, TestRunnerError):
+                                traceback.print_exc(file=buffers[config_idx])
                             run_result = failed_config_run_result()
                         config_results[config_idx] = run_result
                         print_buffered_config_run(

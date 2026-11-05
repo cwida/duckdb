@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import json
+import signal
 import shlex
 import sys
 import tempfile
@@ -267,6 +268,96 @@ class RunTestsScriptTest(unittest.TestCase):
 
         sql = query.call_args.args[1]
         self.assertIn("['--force-storage', '--on-init', 'SET threads=1']", sql)
+
+    def test_protocol_scan_failure_is_an_expected_runner_error(self):
+        test_file = StringIO()
+        error_output = StringIO()
+        result = mock.Mock(returncode=1, stdout="", stderr="Invalid test flag\n")
+        with (
+            mock.patch("scripts.ci.run_tests.run_test_protocol_query", return_value=result),
+            self.assertRaisesRegex(run_tests.TestRunnerError, "failed to scan tests"),
+        ):
+            run_tests.generate_test_list(
+                test_file,
+                "unused-binary",
+                "--thread-stack-size 131072",
+                [],
+                error_output=error_output,
+            )
+
+        self.assertEqual(error_output.getvalue(), "Stderr: Invalid test flag\n")
+
+    def test_protocol_runner_applies_thread_stack_size_to_duckdb_process(self):
+        test_file = StringIO()
+        result = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.ci.run_tests.run_test_protocol_query", return_value=result) as query:
+            run_tests.generate_test_list(
+                test_file,
+                "unused-binary",
+                "--force-storage --thread-stack-size 131072",
+                [],
+            )
+
+        self.assertEqual(query.call_args.args[4], "131072")
+        self.assertIn("['--force-storage']", query.call_args.args[1])
+        self.assertNotIn("--thread-stack-size", query.call_args.args[1])
+
+    def test_protocol_command_sets_thread_stack_size_before_shell_startup(self):
+        self.assertEqual(
+            run_tests.test_protocol_command("duckdb", "131072"),
+            ["duckdb", "--thread-stack-size", "131072", "-unsigned", "-batch", "-jsonlines"],
+        )
+
+    def test_list_tests_prints_protocol_results(self):
+        with mock.patch("scripts.ci.run_tests.generate_test_list") as generate:
+            generate.side_effect = lambda output, *_args, **_kwargs: output.write("sql:test/sql/a.test\t\n")
+            proc = start_runner(["--list-tests", "unused-binary"])
+
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout, "name\tgroup\ntest/sql/a.test\t\n")
+
+    def test_lost_protocol_process_allows_retry(self):
+        class LostProcess:
+            returncode = -signal.SIGKILL
+            pid = os.getpid()
+
+            def __init__(self):
+                self.stdin = StringIO()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self):
+                return self.returncode
+
+        config = run_tests.TestRunnerConfig(
+            test_list=Path("unused"),
+            unittest_bin="duckdb",
+            test_config=None,
+            test_flags="",
+            patterns=[],
+            test_command=None,
+            workers=1,
+            retry=2,
+            max_retries=4,
+            batch_size=10,
+            batch_timeout_seconds=10,
+            rss_memory_threshold_mib=None,
+            runtime_threshold_seconds=None,
+            max_failures=None,
+            fail_require_skip=False,
+            coverage_profile_dir=None,
+        )
+        with (
+            mock.patch("scripts.ci.run_tests.subprocess.Popen", return_value=LostProcess()),
+            mock.patch("scripts.ci.run_tests.get_process_rss_bytes", return_value=None),
+        ):
+            result = run_tests.run_batch(config, ["sql:test/sql/a.test"])
+
+        self.assertTrue(result["failed"])
+        self.assertTrue(result["allow_retry"])
+        self.assertEqual(result["returncode"], -signal.SIGKILL)
+        self.assertIn("before returning 1 result", result["message"])
 
     def test_highlight_stack_trace_lines_colors_frame_index_and_function_name(self):
         lines = run_tests.highlight_stack_trace_lines(
