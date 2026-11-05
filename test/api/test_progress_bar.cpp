@@ -242,6 +242,32 @@ TEST_CASE("Test Progress Bar", "[progress-bar][.]") {
 	REQUIRE(!stream->HasError());
 }
 
+TEST_CASE("Test progress of materialized CTEs fed directly by their producer", "[progress-bar]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar=true"));
+	REQUIRE_NO_FAIL(con.Query("SET enable_progress_bar_print=false"));
+
+	auto check_progress = [&](const string &query) {
+		INFO(query);
+		auto result = con.Submit(query);
+		result->Materialize();
+		// the call that finishes the query also resets its progress, so keep the highest value seen before that
+		double max_percentage = -1;
+		while (!IsTerminal(result->ExecuteTask())) {
+			max_percentage = MaxValue<double>(max_percentage, con.context->GetQueryProgress().GetPercentage());
+		}
+		REQUIRE(!result->HasError());
+		CAPTURE(max_percentage);
+		CHECK(max_percentage >= 99);
+	};
+	check_progress("WITH c AS MATERIALIZED (SELECT i FROM range(1000000) t(i)) SELECT sum(hash(i) % 7) FROM c");
+	check_progress("WITH c AS MATERIALIZED (SELECT i FROM range(1000000) t(i)) "
+	               "SELECT (SELECT sum(hash(i) % 7) FROM c), (SELECT max(hash(i) % 7) FROM c)");
+}
+
 TEST_CASE("Test Progress Bar CSV", "[progress-bar][.]") {
 	DuckDB db(nullptr);
 	Connection con(db);
