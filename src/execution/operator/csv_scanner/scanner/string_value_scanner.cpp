@@ -109,7 +109,9 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 	}
 
 	for (idx_t i = 0; i < logical_types.size(); i++) {
-		validates_utf8 = validates_utf8 || parse_types[i].validate_utf8;
+		// only values stored as strings reach the check, the directly cast types never do
+		validates_utf8 =
+		    validates_utf8 || (parse_types[i].validate_utf8 && parse_types[i].type_id == LogicalTypeId::VARCHAR);
 	}
 	// Initialize Parse Chunk
 	parse_chunk.Initialize(buffer_allocator, logical_types, result_size);
