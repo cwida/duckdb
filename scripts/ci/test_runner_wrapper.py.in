@@ -13,11 +13,12 @@ TEST_ROOTS = [
     str(SOURCE_ROOT / "third_party" / "sqllogictest" / "test"),
     *filter(None, r"@RUN_WRAPPER_TEST_ROOTS@".split(";")),
 ]
+DEFAULT_ARGS = [*filter(None, r"@RUN_WRAPPER_DEFAULT_ARGS@".split(";"))]
 
 if __name__ == "__main__":
     raise SystemExit(
         main(
-            sys.argv[1:],
+            [*DEFAULT_ARGS, *sys.argv[1:]],
             wrapper_path=__file__,
             source_root=SOURCE_ROOT,
             duckdb_name="@RUN_WRAPPER_DUCKDB_NAME@",

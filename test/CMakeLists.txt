@@ -153,24 +153,35 @@ foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
          "${DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_TEST_PATH}")
   endif()
 endforeach()
+set(RUN_WRAPPER_DEFAULT_ARGS "")
 if(WIN32)
   set(RUN_WRAPPER_DUCKDB_NAME "duckdb.exe")
   configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.py.in"
                  "${CMAKE_CURRENT_BINARY_DIR}/run.py" @ONLY)
   configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.bat.in"
                  "${CMAKE_CURRENT_BINARY_DIR}/run.bat" @ONLY)
+  set(RUN_WRAPPER_DEFAULT_ARGS "--workers;1")
+  configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.py.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/unittest.py" @ONLY)
+  configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_unittest_wrapper.bat.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/unittest.bat" @ONLY)
 else()
   configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.py.in"
                  "${CMAKE_CURRENT_BINARY_DIR}/run" @ONLY)
-  file(
-    CHMOD
-    "${CMAKE_CURRENT_BINARY_DIR}/run"
-    PERMISSIONS
-    OWNER_READ
-    OWNER_WRITE
-    OWNER_EXECUTE
-    GROUP_READ
-    GROUP_EXECUTE
-    WORLD_READ
-    WORLD_EXECUTE)
+  set(RUN_WRAPPER_DEFAULT_ARGS "--workers;1")
+  configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.py.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/unittest" @ONLY)
+  foreach(RUN_WRAPPER_NAME run unittest)
+    file(
+      CHMOD
+      "${CMAKE_CURRENT_BINARY_DIR}/${RUN_WRAPPER_NAME}"
+      PERMISSIONS
+      OWNER_READ
+      OWNER_WRITE
+      OWNER_EXECUTE
+      GROUP_READ
+      GROUP_EXECUTE
+      WORLD_READ
+      WORLD_EXECUTE)
+  endforeach()
 endif()

@@ -184,6 +184,8 @@ class PackageReleaseArtifactTest(unittest.TestCase):
             (source / "duckdb.exe").chmod(0o644)
             (source / "test" / "run.py").write_text("# runner\n", encoding="utf-8")
             (source / "test" / "run.bat").write_text("@echo off\n", encoding="utf-8")
+            (source / "test" / "unittest.py").write_text("# compatibility runner\n", encoding="utf-8")
+            (source / "test" / "unittest.bat").write_text("@echo off\n", encoding="utf-8")
             (source / "src" / "duckdb.dll").write_bytes(b"shared")
             (source / "src" / "duckdb_static.lib").write_bytes(b"static")
             (source / "extension" / "json" / "json_extension.lib").write_bytes(b"extension library")
@@ -214,6 +216,8 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                     "release/duckdb.exe",
                     "release/test/run.py",
                     "release/test/run.bat",
+                    "release/test/unittest.py",
+                    "release/test/unittest.bat",
                     "release/src/duckdb.dll",
                     "release/src/duckdb_static.lib",
                     "release/extension/json/json_extension.lib",
