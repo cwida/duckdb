@@ -384,3 +384,91 @@ SELECT shared();
 
 statement ok
 DROP MACRO shared;
+
+# a schema-qualified drop resolves signature types from the entry's schema first
+statement ok
+CREATE SCHEMA ty_s1;
+
+statement ok
+CREATE SCHEMA ty_s2;
+
+statement ok
+CREATE TYPE ty_s1.mood AS ENUM ('ok');
+
+statement ok
+CREATE TYPE ty_s2.mood AS ENUM ('nope', 'x');
+
+statement ok
+SET schema = 'ty_s1';
+
+statement ok
+CREATE MACRO m_ty(x mood) AS 1, (x INTEGER) AS 2;
+
+statement ok
+SET schema = 'ty_s2';
+
+statement ok
+DROP MACRO ty_s1.m_ty(mood);
+
+query T
+SELECT ty_s1.m_ty(1);
+----
+2
+
+statement ok
+SET schema = 'main';
+
+statement ok
+DROP SCHEMA ty_s1 CASCADE;
+
+statement ok
+DROP SCHEMA ty_s2 CASCADE;
+
+# a TEMP macro drops members by signature too
+statement ok
+CREATE TEMP MACRO tmp_m(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+statement ok
+DROP MACRO temp.main.tmp_m(VARCHAR);
+
+query T
+SELECT tmp_m(1);
+----
+1
+
+statement error
+SELECT tmp_m('x');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement ok
+DROP MACRO temp.main.tmp_m;
+
+# two connections dropping different overloads: the loser's replacement conflicts
+statement ok con1
+CREATE MACRO cc(x INTEGER) AS 1, (x VARCHAR) AS 2, (x DATE) AS 3;
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+DROP MACRO cc(INTEGER);
+
+statement error con2
+DROP MACRO cc(VARCHAR);
+----
+<REGEX>:.*(conflict|lock|transaction|exist).*
+
+statement ok con1
+COMMIT;
+
+statement ok con1
+DROP MACRO cc(VARCHAR);
+
+query T con2
+SELECT cc(DATE '2024-01-01');
+----
+3
+
+statement ok con1
+DROP MACRO cc;

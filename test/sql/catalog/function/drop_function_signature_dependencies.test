@@ -401,3 +401,89 @@ DETACH attr_dst;
 
 statement ok
 SET enable_macro_dependencies = false;
+
+# any dependent blocks a member drop, and the error explains that CASCADE cannot help
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+CREATE MACRO blocked_f(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement ok
+CREATE MACRO blocked_g() AS blocked_f(1);
+
+statement error
+DROP MACRO blocked_f(VARCHAR);
+----
+<REGEX>:.*CASCADE cannot scope to one overload.*
+
+statement error
+DROP MACRO blocked_f(VARCHAR) CASCADE;
+----
+<REGEX>:.*Cannot drop an overload.*CASCADE.*
+
+statement ok
+DROP MACRO blocked_g;
+
+statement ok
+DROP MACRO blocked_f(VARCHAR);
+
+query T
+SELECT blocked_f(1);
+----
+1
+
+statement ok
+DROP MACRO blocked_f;
+
+statement ok
+SET enable_macro_dependencies = false;
+
+# a trigger using a macro whose unused argument references another catalog still binds: the
+# expansion's qualification probes stay out of the trigger's dependency collector
+statement ok
+ATTACH ':memory:' AS probe_other;
+
+statement ok
+CREATE MACRO probe_other.helper() AS 1;
+
+statement ok
+CREATE MACRO probe_ignore(x) AS 42;
+
+statement ok
+CREATE MACRO probe_callee() AS probe_ignore(probe_other.helper());
+
+statement ok
+CREATE TABLE probe_t(i INT);
+
+statement ok
+CREATE TABLE probe_log(i INT);
+
+statement ok
+CREATE TRIGGER probe_tr AFTER INSERT ON probe_t FOR EACH STATEMENT INSERT INTO probe_log VALUES (probe_callee());
+
+statement ok
+INSERT INTO probe_t VALUES (1);
+
+query I
+SELECT i FROM probe_log;
+----
+42
+
+statement ok
+DROP TRIGGER probe_tr ON probe_t;
+
+statement ok
+DROP TABLE probe_t;
+
+statement ok
+DROP TABLE probe_log;
+
+statement ok
+DROP MACRO probe_callee;
+
+statement ok
+DROP MACRO probe_ignore;
+
+statement ok
+DETACH probe_other;
