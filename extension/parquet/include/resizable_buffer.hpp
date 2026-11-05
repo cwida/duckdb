@@ -146,13 +146,10 @@ public:
 	}
 
 	void Resize(BufferManager &buffer_manager, const idx_t new_size) {
-		if (PrepareResize(new_size)) {
-			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);
-			block_handle = handle.GetBlockHandle();
-			ptr = handle.GetDataMutable();
-		} else if (new_size > 0 && block_handle && !handle.IsValid()) {
-			// Reusing after an unpin: every caller overwrites the contents, so allocate fresh
-			// rather than re-pin, which could reload a spilled block only to discard it.
+		// Unpinned reuse is overwritten anyway; allocate fresh instead of reloading a spilled block.
+		if (PrepareResize(new_size) || (new_size > 0 && block_handle && !handle.IsValid())) {
+			handle.Destroy();
+			block_handle.reset(); // release before allocating, so old and new aren't counted at once
 			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);
 			block_handle = handle.GetBlockHandle();
 			ptr = handle.GetDataMutable();

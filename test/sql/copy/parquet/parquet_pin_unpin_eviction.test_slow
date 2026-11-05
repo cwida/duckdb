@@ -12,13 +12,14 @@ CREATE TABLE source AS
 SELECT
     i AS id,
     (i % 20)::VARCHAR AS low_card,       -- forces DICTIONARY encoding (20 distinct values)
-    md5(i::VARCHAR) || md5((i+1)::VARCHAR) AS high_card,  -- 64-byte unique strings: PLAIN in V1, DELTA_LENGTH_BYTE_ARRAY in V2
+    md5(i::VARCHAR) || md5((i+1)::VARCHAR) AS high_card,  -- 64-byte unique strings, not inlined
     i::DOUBLE / 3 AS val
 FROM range(800000) t(i);
 
 statement ok
 COPY source TO '{TEST_DIR}/pin_unpin_eviction.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V2');
 
+# V1 strings take the PLAIN path; V2 strings use DELTA_LENGTH_BYTE_ARRAY
 statement ok
 COPY source TO '{TEST_DIR}/pin_unpin_eviction_v1.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V1');
 
