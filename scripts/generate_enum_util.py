@@ -9,6 +9,7 @@ os.chdir(os.path.dirname(__file__))
 # Dont generate serialization for these enums
 blacklist = [
     "CMExpressionType",
+    "WakeState",
     "RegexOptions",
     "Flags",
     "FlushState",

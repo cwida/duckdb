@@ -11,12 +11,15 @@
 
 namespace duckdb {
 
+class InterruptState;
 class Logger;
 
 enum class RecursiveCTESourcePhase : uint8_t {
 	INITIAL,
 	SCANNING_UNION,
 	RECURSING_KEY,
+	//! A recursive epoch is in progress; its per-iteration setup already ran and must not rerun
+	EXECUTING_RECURSION,
 	DRAINING_FINAL_KEY_STATE,
 	FINISHED
 };
@@ -96,9 +99,10 @@ public:
 	virtual unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const = 0;
 	virtual SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) = 0;
 	virtual SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) = 0;
-	//! Source side: hands out result rows and drives the recursive iterations
-	virtual SourceResultType GetData(ExecutionContext &context, DataChunk &chunk,
-	                                 RecursiveCTEGlobalSourceState &source) = 0;
+	//! Source side: hands out result rows and drives the recursive iterations. May return BLOCKED
+	//! while a recursive epoch waits for blocked inner work; the interrupt state re-enters it.
+	virtual SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, RecursiveCTEGlobalSourceState &source,
+	                                 const InterruptState &interrupt_state) = 0;
 	//! Frontier the recursive member scans in the current iteration
 	virtual const ColumnDataCollection &CurrentInputTable() const = 0;
 	//! Rows and chunks of the recurring state the member can scan in the current iteration
@@ -129,6 +133,9 @@ public:
 	const RecursiveCTESchedulerState &GetScheduler() const {
 		return scheduler;
 	}
+	RecursiveCTEEpochProgress &GetEpochProgress() {
+		return epoch_progress;
+	}
 	bool AllowsExecutorReuse() const {
 		return allow_executor_reuse;
 	}
@@ -148,6 +155,7 @@ protected:
 	const bool allow_executor_reuse;
 	RecursiveCTEMetrics metrics;
 	RecursiveCTESchedulerState scheduler;
+	RecursiveCTEEpochProgress epoch_progress;
 	RecursiveCTESourcePhase source_phase = RecursiveCTESourcePhase::INITIAL;
 	//! Whether invariant recursive meta-pipelines have already been materialized for this state
 	bool invariant_meta_pipelines_materialized = false;

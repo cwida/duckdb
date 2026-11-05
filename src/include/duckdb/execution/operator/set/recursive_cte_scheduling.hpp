@@ -15,6 +15,7 @@
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/table_index.hpp"
 #include "duckdb/execution/executor.hpp"
+#include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/interrupt.hpp"
 #include "duckdb/parallel/pipeline_schedule.hpp"
 
@@ -326,6 +327,76 @@ struct RecursiveSchedulingContext {
 	shared_ptr<RecursiveInterruptSignalState> completion_signal;
 };
 
+//! Wakes the recursive source that returned BLOCKED up the stack: fires the outer task's
+//! interrupt callback once every dependency has finished, so the regular executor flow reschedules
+//! the operator. Arm() decides atomically whether the callback will fire. It returns true when the
+//! dependencies were still outstanding at arming time, so the caller must return BLOCKED and will
+//! be woken. It returns false when they had already finished: the caller proceeds synchronously
+//! and no callback fires. Calling Arm() again after the callback fired returns false, so a resumed
+//! caller uses the same call to observe completion.
+class RecursiveCTEWakeEvent : public Event {
+public:
+	RecursiveCTEWakeEvent(Executor &executor_p, InterruptState interrupt_state_p)
+	    : Event(executor_p), interrupt_state(std::move(interrupt_state_p)) {
+	}
+
+	void Schedule() override {
+	}
+
+	void FinalizeFinish() override {
+		if (wake_state.exchange(WakeState::FINISHED) == WakeState::ARMED) {
+			interrupt_state.Callback();
+		}
+	}
+
+	bool Arm() {
+		return wake_state.exchange(WakeState::ARMED) != WakeState::FINISHED;
+	}
+
+private:
+	enum class WakeState : uint8_t { PENDING, ARMED, FINISHED };
+
+	InterruptState interrupt_state;
+	atomic<WakeState> wake_state {WakeState::PENDING};
+};
+
+//! Progress of an inline stage within a suspended recursive epoch
+enum class RecursiveCTEStageStep : uint8_t { START, PIPELINE_RUNNING, EVENT_WAIT, FINISH_FINALIZE, FINISH_EVENT_WAIT };
+
+//! Progress of one recursive epoch (or trampoline wave) across BLOCKED suspensions of the
+//! operator's source. The epoch prologue runs exactly once (active flag), the drive advances this
+//! state and suspends by returning BLOCKED up the stack, and the epilogue resets it.
+struct RecursiveCTEEpochProgress {
+	RecursiveCTEEpochProgress();
+	~RecursiveCTEEpochProgress();
+
+	//! Whether an epoch is in progress (the prologue has run)
+	bool active = false;
+	//! Whether this epoch runs the cached inline dependency plan or the event schedule
+	bool inline_execution = false;
+	//! Position in the inline ready-stage list and progress within the current stage
+	idx_t ready_idx = 0;
+	RecursiveCTEStageStep step = RecursiveCTEStageStep::START;
+	//! Operator-finalize resume point of a suspended inline finish stage
+	idx_t finish_operator_idx = 0;
+	//! Stage event of a suspended inline wait and the wake event that re-enters the source
+	shared_ptr<Event> stage_event;
+	shared_ptr<Event> wake_event;
+	//! Live events of an event-schedule epoch
+	vector<shared_ptr<Event>> events;
+	//! Prologue decisions and metric snapshots consumed by the epilogue
+	idx_t max_worker_count = 1;
+	idx_t scheduler_input_rows = 0;
+	idx_t frontier_rows = 0;
+	idx_t frontier_chunks = 0;
+	idx_t frontier_storage_bytes = 0;
+	idx_t frontier_allocation_bytes = 0;
+	idx_t epoch_task_start = 0;
+	std::chrono::steady_clock::time_point epoch_start;
+
+	void Reset();
+};
+
 //! Shared with the trampoline operator: schedule-plan construction and the single-threaded inline execution helpers
 unique_ptr<RecursiveCTEPipelineSchedulePlan>
 BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
@@ -340,6 +411,14 @@ void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor
 //! finish event machinery and mark the sink READY.
 void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context,
                                 const RecursiveCTEPipelineSchedulePlan &plan);
+//! Drives the cached inline dependency plan with the shared operator-state lifecycle, resuming
+//! from the suspended position in the epoch progress. The scheduler's inline plan must have been
+//! initialized once per epoch, before the first drive. Returns false when a stage suspended on
+//! blocked work: the operator's source then returns BLOCKED up the stack and the registered
+//! interrupt state re-enters it. Stages flagged trivial_finish skip the finish event machinery
+//! and mark the sink READY.
+bool DriveRecursiveInlinePlan(const RecursiveSchedulingContext &context, RecursiveCTEEpochProgress &progress,
+                              const RecursiveCTEPipelineSchedulePlan &plan, const InterruptState &interrupt_state);
 //! Retention accounting beside its state transition, shared by recursive CTE and trampoline
 void RecordInvariantRetentionTransition(RecursiveCTEMetrics &metrics,
                                         const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
@@ -355,8 +434,12 @@ FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta
 void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
                                            bool preserve_build);
 bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
+//! Schedules the per-epoch event graph. When a wake event is given, it is wired as a parent of
+//! every scheduled event before any of them can run, so its FinalizeFinish observes the whole
+//! schedule's completion and re-enters the suspended source through the interrupt callback.
 void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
-                           vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism);
+                           vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism,
+                           optional_ptr<Event> wake_event = nullptr);
 void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
                                          idx_t worker_limit, idx_t max_threads,
                                          RecursiveCTEPipelineMetricType metric_type);
