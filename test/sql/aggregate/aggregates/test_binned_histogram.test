@@ -205,6 +205,30 @@ SELECT typeof(histogram(1::INTEGER, [1::BIGINT]))
 ----
 MAP(BIGINT, UBIGINT)
 
+# key types for argument and bin pairs that unify to a wider type
+query IIII
+SELECT typeof(histogram(true, [0, 1])), typeof(histogram(1::SMALLINT, [10, 20])), typeof(histogram(1::UBIGINT, [10, 20])), typeof(histogram(1::UHUGEINT, [10, 20]))
+----
+MAP(INTEGER, UBIGINT)	MAP(INTEGER, UBIGINT)	MAP(HUGEINT, UBIGINT)	MAP(DOUBLE, UBIGINT)
+
+# bin values outside the argument type's range work through promotion instead of failing in a forced cast
+query I
+SELECT histogram(v, [100000]) FROM (VALUES (1::SMALLINT)) t(v)
+----
+{100000=1}
+
+# the whole UHUGEINT range reaches the overflow bin through the DOUBLE combination
+query I
+SELECT histogram(v, [10, 20]) FROM (VALUES (170141183460469231731687303715884105728::UHUGEINT)) t(v)
+----
+{10.0=0, 20.0=0, inf=1}
+
+# TIMESTAMP bins promote a DATE argument
+query I
+SELECT histogram(d, [TIMESTAMP '2020-06-01']) FROM (VALUES (DATE '2020-01-01')) t(d)
+----
+{'2020-06-01 00:00:00'=1}
+
 # bins may omit struct members that the cast fills with NULL
 query I
 SELECT histogram(s, b) FROM (VALUES ({'a': 1, 'b': NULL::INTEGER[]}, [{'a': 1}])) t(s, b)
@@ -220,6 +244,12 @@ NULL
 # VARCHAR bins for a DATE argument are rejected like in any templated function
 statement error
 SELECT histogram(d, b) FROM (VALUES (DATE '2020-01-01', ['2020-06-01'])) t(d, b)
+----
+<REGEX>:Binder Error.*Cannot deduce template type 'T'.*
+
+# bare string-literal bins are a VARCHAR list by the time histogram binds, so they are rejected too
+statement error
+SELECT histogram(DATE '2020-01-01', ['2020-06-01'])
 ----
 <REGEX>:Binder Error.*Cannot deduce template type 'T'.*
 
@@ -254,6 +284,12 @@ query I
 SELECT histogram(v, ['a'::small_enum, 'b'::small_enum]) FROM (VALUES ('a'), ('b')) t(v)
 ----
 {a=1, b=1}
+
+# an ENUM argument with VARCHAR bins unifies to VARCHAR
+query I
+SELECT typeof(histogram(v, ['a', 'b'])) FROM (VALUES ('a'::small_enum)) t(v)
+----
+MAP(VARCHAR, UBIGINT)
 
 # enum bins for an integer argument are rejected at bind time
 statement error
