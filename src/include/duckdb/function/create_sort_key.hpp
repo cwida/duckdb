@@ -51,6 +51,9 @@ struct CreateSortKeyHelpers {
 	static void CreateSortKey(DataChunk &input, const vector<OrderModifiers> &modifiers, Vector &result);
 	static void CreateSortKey(const Vector &input, OrderModifiers modifiers, Vector &result);
 	static void CreateSortKey(const Vector &input, idx_t count, OrderModifiers modifiers, Vector &result);
+	//! For states that store a value without comparing it: -0.0 keeps its own key, which decodes as -0.0.
+	static void CreateSortKeyKeepZeroSign(const Vector &input, OrderModifiers modifiers, Vector &result);
+	static void CreateSortKeyKeepZeroSign(const Vector &input, idx_t count, OrderModifiers modifiers, Vector &result);
 	static bool IsNullSortKey(const_data_ptr_t data, OrderByNullType null_order);
 	static idx_t DecodeSortKey(string_t sort_key, Vector &result, idx_t result_idx, OrderModifiers modifiers);
 	static void DecodeSortKey(string_t sort_key, DataChunk &result, idx_t result_idx,
@@ -58,6 +61,8 @@ struct CreateSortKeyHelpers {
 	static void CreateSortKeyWithValidity(const Vector &input, Vector &result, const OrderModifiers &modifiers);
 	static void CreateSortKeyWithValidity(const Vector &input, Vector &result, const OrderModifiers &modifiers,
 	                                      idx_t count);
+	static void CreateSortKeyKeepZeroSignWithValidity(const Vector &input, Vector &result,
+	                                                  const OrderModifiers &modifiers);
 };
 
 //! We don't add this function to the catalog, for internal use only

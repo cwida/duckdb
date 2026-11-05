@@ -38,6 +38,17 @@ WHERE w != repeat(md5(k::VARCHAR), 25);
 ----
 0
 
+# a nested value keeps the sign of -0.0 through the exported state
+query I
+SELECT count(*) FROM (
+    SELECT k, first({'w': wide, 'z': '-0.0'::DOUBLE}) AS f, arg_max({'w': wide, 'z': '-0.0'::DOUBLE}, k) AS a
+    FROM (SELECT i % 62500 AS k, repeat(md5((i % 62500)::VARCHAR), 25) AS wide FROM range(125000) t(i)) s1
+    GROUP BY k
+) s2
+WHERE f.w != repeat(md5(k::VARCHAR), 25) OR f.z::VARCHAR != '-0.0' OR a.w != f.w OR a.z::VARCHAR != '-0.0';
+----
+0
+
 # min compares payloads per row and must reassemble them exactly
 query I
 SELECT count(*) FROM (

@@ -381,7 +381,8 @@ struct MinMaxStringValue {
 };
 
 // Use sort key to serialize/deserialize values
-struct MinMaxFallbackValue {
+template <bool KEEP_ZERO_SIGN>
+struct MinMaxSortKeyValue {
 	using TYPE = string_t;
 	using EXTRA_STATE = Vector;
 
@@ -403,11 +404,19 @@ struct MinMaxFallbackValue {
 	                        const bool nulls_last) {
 		auto order_by_null_type = nulls_last ? OrderByNullType::NULLS_LAST : OrderByNullType::NULLS_FIRST;
 		const OrderModifiers modifiers(OrderType::ASCENDING, order_by_null_type);
-		CreateSortKeyHelpers::CreateSortKeyWithValidity(input, extra_state, modifiers);
+		if (KEEP_ZERO_SIGN) {
+			CreateSortKeyHelpers::CreateSortKeyKeepZeroSignWithValidity(input, extra_state, modifiers);
+		} else {
+			CreateSortKeyHelpers::CreateSortKeyWithValidity(input, extra_state, modifiers);
+		}
 		input.Flatten();
 		extra_state.ToUnifiedFormat(format);
 	}
 };
+
+using MinMaxFallbackValue = MinMaxSortKeyValue<false>;
+//! The value side of arg_min and arg_max is never compared, so it keeps the sign of -0.0.
+using MinMaxFallbackArgValue = MinMaxSortKeyValue<true>;
 
 template <class T, bool NULLS_LAST>
 struct ValueOrNull {
