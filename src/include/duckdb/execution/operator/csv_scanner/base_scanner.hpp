@@ -211,6 +211,7 @@ protected:
 	const bool block_scan;
 	const uint8_t block_delimiter;
 	const string block_delimiter_bytes;
+	const bool block_multi_byte_delimiter;
 	const uint8_t block_quote;
 	const bool block_crlf;
 	const bool block_escape_is_quote;
@@ -292,42 +293,31 @@ protected:
 		return byte == '\n' ? 1 : 0;
 	}
 
-	//! The bytes of the whole delimiter when it starts at `at` and ends before `limit`, 0 when only part of it is there
+	//! The bytes of the whole multi byte delimiter when it starts at `at` and ends before `limit`, 0 when only part of
+	//! it is there. No loop here, a loop would be vectorized into the block scan and slow it down for every dialect
 	idx_t DelimiterBytes(const idx_t at, const idx_t limit) const {
 		const idx_t size = block_delimiter_bytes.size();
-		if (size == 1) {
-			return 1;
-		}
-		if (at + size > limit) {
+		if (at + size > limit || memcmp(buffer_handle_ptr + at + 1, block_delimiter_bytes.data() + 1, size - 1) != 0) {
 			return 0;
-		}
-		for (idx_t i = 1; i < size; i++) {
-			if (static_cast<uint8_t>(buffer_handle_ptr[at + i]) != static_cast<uint8_t>(block_delimiter_bytes[i])) {
-				return 0;
-			}
 		}
 		return size;
 	}
 
-	//! The state before the last byte of a delimiter, `before` is the state before its first byte
-	CSVState DelimiterPenultimateState(const CSVState before) const {
+	//! The state before the last byte of a multi byte delimiter
+	CSVState DelimiterPenultimateState() const {
 		switch (block_delimiter_bytes.size()) {
 		case 2:
 			return CSVState::DELIMITER_FIRST_BYTE;
 		case 3:
 			return CSVState::DELIMITER_SECOND_BYTE;
-		case 4:
-			return CSVState::DELIMITER_THIRD_BYTE;
 		default:
-			return before;
+			return CSVState::DELIMITER_THIRD_BYTE;
 		}
 	}
 
-	//! Clears the candidate bits of the bytes [from, to) of the block starting at `pos`
+	//! Clears the candidate bits of the bytes [from, to) of the block starting at `pos`, fewer than 64 of them
 	static void ClearCandidates(uint64_t &candidates, const idx_t pos, const idx_t from, const idx_t to) {
-		for (idx_t i = from; i < to; i++) {
-			candidates &= ~(uint64_t(1) << (i - pos));
-		}
+		candidates &= ~(((uint64_t(1) << (to - from)) - 1) << (from - pos));
 	}
 
 	//! The delimiter at `at`, `before` is the state before it
@@ -362,8 +352,8 @@ protected:
 
 	//! Scans unquoted fields and quoted values in their canonical form, and preserves the states when handing back
 	//! to Process. Returns true when the result is full. Repeated SetQuoted calls may be skipped because the setter
-	//! is idempotent.
-	template <class T>
+	//! is idempotent. MULTI_BYTE_DELIMITER is the dialect's, so one byte delimiters pay nothing for the other case
+	template <class T, bool MULTI_BYTE_DELIMITER>
 	bool ProcessBlocks(T &result, const idx_t to_pos) {
 		const auto buffer = buffer_handle_ptr;
 		// the first byte not consumed, and the first byte after the last structural or special byte
@@ -406,7 +396,9 @@ protected:
 					}
 					const auto next = static_cast<uint8_t>(buffer[at + 1]);
 					const bool escape_pair = block_escape_is_quote && next == block_quote;
-					const idx_t delimiter_bytes = next == block_delimiter ? DelimiterBytes(at + 1, limit) : 0;
+					const idx_t delimiter_bytes = next != block_delimiter ? 0
+					                              : MULTI_BYTE_DELIMITER  ? DelimiterBytes(at + 1, limit)
+					                                                      : 1;
 					const idx_t row_end_bytes = RowEndBytes(next, at + 1, limit);
 					if (!escape_pair && delimiter_bytes == 0 && row_end_bytes == 0) {
 						return HandOverQuoted(at, last);
@@ -430,8 +422,11 @@ protected:
 					}
 					quoted = false;
 					if (delimiter_bytes != 0) {
-						ClearCandidates(candidates, pos, at + 2, at + 1 + delimiter_bytes);
-						BlockDelimiter(result, at + delimiter_bytes, DelimiterPenultimateState(CSVState::UNQUOTED));
+						if (MULTI_BYTE_DELIMITER) {
+							ClearCandidates(candidates, pos, at + 2, at + 1 + delimiter_bytes);
+						}
+						BlockDelimiter(result, at + delimiter_bytes,
+						               MULTI_BYTE_DELIMITER ? DelimiterPenultimateState() : CSVState::UNQUOTED);
 						last = at + 1 + delimiter_bytes;
 						continue;
 					}
@@ -443,16 +438,23 @@ protected:
 				}
 				const auto before = StateAfterData(states.states[1], last, at);
 				if (byte == block_delimiter) {
-					const idx_t delimiter_bytes = DelimiterBytes(at, limit);
-					if (delimiter_bytes == 0) {
-						// part of a multi byte delimiter, the byte loop walks the delimiter byte states
-						return HandOver(at, last);
+					if (MULTI_BYTE_DELIMITER) {
+						const idx_t delimiter_bytes = DelimiterBytes(at, limit);
+						if (delimiter_bytes == 0) {
+							// part of a multi byte delimiter, the byte loop walks the delimiter byte states
+							return HandOver(at, last);
+						}
+						D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[1] == CSVState::DELIMITER);
+						D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[0] == DelimiterPenultimateState());
+						ClearCandidates(candidates, pos, at + 1, at + delimiter_bytes);
+						BlockDelimiter(result, at + delimiter_bytes - 1, DelimiterPenultimateState());
+						last = at + delimiter_bytes;
+						continue;
 					}
-					D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[1] == CSVState::DELIMITER);
-					D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[0] == DelimiterPenultimateState(before));
-					ClearCandidates(candidates, pos, at + 1, at + delimiter_bytes);
-					BlockDelimiter(result, at + delimiter_bytes - 1, DelimiterPenultimateState(before));
-					last = at + delimiter_bytes;
+					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::DELIMITER);
+					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
+					BlockDelimiter(result, at, before);
+					last = at + 1;
 					continue;
 				}
 				if (block_quote != '\0' && byte == block_quote) {
@@ -519,7 +521,9 @@ protected:
 		skipper.SetBuffer(*cur_buffer_handle);
 		while (iterator.pos.buffer_pos < to_pos) {
 			if (T::BLOCK_SCAN && block_scan && BlockScanPossible(result)) {
-				if (ProcessBlocks(result, to_pos)) {
+				const bool full = block_multi_byte_delimiter ? ProcessBlocks<T, true>(result, to_pos)
+				                                             : ProcessBlocks<T, false>(result, to_pos);
+				if (full) {
 					bytes_read = iterator.pos.buffer_pos - start_pos;
 					return;
 				}
