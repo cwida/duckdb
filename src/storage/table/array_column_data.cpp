@@ -181,10 +181,12 @@ void ArrayColumnData::Skip(ColumnScanState &state, idx_t count) {
 
 void ArrayColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnAppendState validity_append;
+	validity_append.transient = state.transient;
 	validity->InitializeAppend(validity_append);
 	state.child_appends.push_back(std::move(validity_append));
 
 	ColumnAppendState child_append;
+	child_append.transient = state.transient;
 	child_column->InitializeAppend(child_append);
 	state.child_appends.push_back(std::move(child_append));
 }
@@ -222,10 +224,6 @@ void ArrayColumnData::RevertAppend(row_t new_count) {
 	child_column->RevertAppend(new_count * UnsafeNumericCast<row_t>(array_size));
 
 	this->count = UnsafeNumericCast<idx_t>(new_count);
-}
-
-idx_t ArrayColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("Array Fetch");
 }
 
 void ArrayColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,

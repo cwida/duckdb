@@ -367,7 +367,7 @@ void ColumnData::FetchUpdateRow(TransactionData transaction, row_t row_id, Vecto
 }
 
 void ColumnData::UpdateInternal(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-                                Vector &update_vector, row_t *row_ids, idx_t update_count, Vector &base_vector,
+                                Vector &update_vector, row_t *row_ids, idx_t update_count, const Vector &base_vector,
                                 idx_t row_group_start) {
 	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
@@ -493,7 +493,8 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 	checked_segment = IsDirectNullCheckFilter(filter) && !state.child_states.empty() && state.child_states[0].current
 	                      ? state.child_states[0].current
 	                      : state.current;
-	auto prune_result = CheckSegmentStatistics(state.context.GetClientContext(), *checked_segment, expr_filter);
+	auto prune_result = CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()),
+	                                           *checked_segment, expr_filter);
 	if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
@@ -503,7 +504,7 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 		return prune_result;
 	}
 	// combine the update and original prune result
-	auto context = state.context.GetClientContext();
+	auto context = Context::TryGetClientContext(state.context.GetServices());
 	FilterPropagateResult update_result =
 	    context ? expr_filter.CheckStatistics(*context, *update_stats) : expr_filter.CheckStatistics(*update_stats);
 	if (prune_result == update_result) {
@@ -760,18 +761,6 @@ void ColumnData::RevertAppend(row_t new_count_p) {
 	this->count = new_count;
 }
 
-idx_t ColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	if (UnsafeNumericCast<idx_t>(row_id) > count) {
-		throw InternalException("ColumnData::Fetch - row_id out of range");
-	}
-	D_ASSERT(row_id >= 0);
-	// perform the fetch within the segment
-	state.offset_in_column = UnsafeNumericCast<idx_t>(row_id) / STANDARD_VECTOR_SIZE * STANDARD_VECTOR_SIZE;
-	state.current = data.GetSegment(state.offset_in_column);
-	state.internal_index = state.current->GetRowStart();
-	return ScanVector(state, result, STANDARD_VECTOR_SIZE, ScanVectorType::SCAN_FLAT_VECTOR);
-}
-
 void ColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
                            const idx_t *offsets, const SelectionVector &sel, idx_t fetch_count, Vector &result,
                            idx_t result_offset) {
@@ -898,20 +887,22 @@ void ColumnData::FetchBaseRows(const QueryContext &context, const idx_t *offsets
 	}
 }
 
-idx_t ColumnData::FetchUpdateData(ColumnScanState &state, row_t *row_ids, Vector &base_vector, idx_t row_group_start) {
-	if (row_ids[0] < UnsafeNumericCast<row_t>(row_group_start)) {
-		throw InternalException("ColumnData::FetchUpdateData out of range");
+void ColumnData::FetchBaseRows(const row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start) {
+	D_ASSERT(count > 0 && count <= STANDARD_VECTOR_SIZE);
+	vector<idx_t> offsets(count);
+	for (idx_t i = 0; i < count; i++) {
+		if (row_ids[i] < UnsafeNumericCast<row_t>(row_group_start)) {
+			throw InternalException("ColumnData::FetchBaseRows - row id out of range");
+		}
+		offsets[i] = UnsafeNumericCast<idx_t>(row_ids[i]) - row_group_start;
 	}
-	auto fetch_count = ColumnData::Fetch(state, row_ids[0] - UnsafeNumericCast<row_t>(row_group_start), base_vector);
-	base_vector.Flatten();
-	return fetch_count;
+	FetchBaseRows(QueryContext(), offsets.data(), *FlatVector::IncrementalSelectionVector(), count, result, 0);
 }
 
 void ColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                         Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
-	Vector base_vector(type);
-	ColumnScanState state(nullptr);
-	FetchUpdateData(state, row_ids, base_vector, row_group_start);
+	Vector base_vector(type, update_count);
+	FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
 	               row_group_start);
@@ -931,8 +922,10 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 	auto &config = DBConfig::GetConfig(db);
 	const auto initial_bytes = Settings::Get<InitialColumnSegmentSizeSetting>(config);
 
+	const bool first_transient_segment =
+	    !prev_segment || prev_segment->GetSegmentType() == ColumnSegmentType::PERSISTENT;
 	idx_t segment_size;
-	if (!prev_segment || prev_segment->GetSegmentType() == ColumnSegmentType::PERSISTENT) {
+	if (first_transient_segment) {
 		// We start with the `initial_bytes` setting, but we ensure that we have enough space for at least one row.
 		segment_size = MaxValue<idx_t>(GetTypeIdSize(type.InternalType()), initial_bytes);
 	} else {
@@ -961,7 +954,8 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 
 	auto function = config.GetCompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, type.InternalType());
 	unique_ptr<ColumnSegment> new_segment;
-	if (transient && segment_size < block_size && initial_bytes < segment_size) {
+	// first segments stay tiny until a column grows and creates the shared block, so small tables never allocate one
+	if (transient && segment_size < block_size && (!first_transient_segment || transient->block)) {
 		new_segment = transient->CreateTransientSegment(db, function, type, segment_size, block_manager);
 	} else {
 		new_segment = ColumnSegment::CreateTransientSegment(db, function, type, segment_size, block_manager);

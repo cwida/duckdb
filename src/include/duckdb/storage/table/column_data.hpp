@@ -175,8 +175,6 @@ public:
 	//! Revert a set of appends to the ColumnData
 	virtual void RevertAppend(row_t new_count);
 
-	//! Fetch the vector from the column data that belongs to this specific row
-	virtual idx_t Fetch(ColumnScanState &state, row_t row_id, Vector &result);
 	//! Fetch a batch of row offsets and append them to the vector
 	virtual void FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
 	                       const idx_t *offsets, const SelectionVector &sel, idx_t count, Vector &result,
@@ -187,6 +185,8 @@ public:
 	//! Fetches the base data of a batch of row offsets, without updates
 	void FetchBaseRows(const QueryContext &context, const idx_t *offsets, const SelectionVector &sel, idx_t count,
 	                   Vector &result, idx_t result_offset);
+	//! Fetches base values of row_ids into result, densely and in the same order, without updates
+	void FetchBaseRows(const row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start);
 	//! Reads the selected rows of a scan through FetchBaseRows (debug_force_fetch_row)
 	void FetchScannedRows(ColumnScanState &state, const SelectionVector &sel, idx_t count, Vector &result,
 	                      idx_t result_offset);
@@ -262,10 +262,8 @@ protected:
 	                  UpdateScanType update_type);
 	void FetchUpdateRow(TransactionData transaction, row_t row_id, Vector &result, idx_t result_idx);
 	void UpdateInternal(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-	                    Vector &update_vector, row_t *row_ids, idx_t update_count, Vector &base_vector,
+	                    Vector &update_vector, row_t *row_ids, idx_t update_count, const Vector &base_vector,
 	                    idx_t row_group_start);
-	idx_t FetchUpdateData(ColumnScanState &state, row_t *row_ids, Vector &base_vector, idx_t row_group_start);
-
 	idx_t GetVectorCount(idx_t vector_index) const;
 
 	static bool IsDirectNullCheckFilter(const TableFilter &filter);
