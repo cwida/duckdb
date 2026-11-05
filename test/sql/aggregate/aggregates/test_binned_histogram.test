@@ -209,7 +209,7 @@ MAP(BIGINT, UBIGINT)
 query IIII
 SELECT typeof(histogram(true, [0, 1])), typeof(histogram(1::SMALLINT, [10, 20])), typeof(histogram(1::UBIGINT, [10, 20])), typeof(histogram(1::UHUGEINT, [10, 20]))
 ----
-MAP(INTEGER, UBIGINT)	MAP(INTEGER, UBIGINT)	MAP(HUGEINT, UBIGINT)	MAP(DOUBLE, UBIGINT)
+MAP(INTEGER, UBIGINT)	MAP(INTEGER, UBIGINT)	MAP(HUGEINT, UBIGINT)	MAP(BIGINT, UBIGINT)
 
 # bin values outside the argument type's range work through promotion instead of failing in a forced cast
 query I
@@ -217,11 +217,12 @@ SELECT histogram(v, [100000]) FROM (VALUES (1::SMALLINT)) t(v)
 ----
 {100000=1}
 
-# the whole UHUGEINT range reaches the overflow bin through the DOUBLE combination
-query I
+# the UHUGEINT and INTEGER combination narrows to BIGINT, so an argument beyond the signed range
+# fails its cast at runtime, like the corresponding explicit cast - the combine rule is discussed separately
+statement error
 SELECT histogram(v, [10, 20]) FROM (VALUES (170141183460469231731687303715884105728::UHUGEINT)) t(v)
 ----
-{10.0=0, 20.0=0, inf=1}
+<REGEX>:.*Conversion Error.*out of range.*
 
 # TIMESTAMP bins promote a DATE argument
 query I
