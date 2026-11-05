@@ -302,7 +302,7 @@ protected:
 			return 0;
 		}
 		for (idx_t i = 1; i < size; i++) {
-			if (buffer_handle_ptr[at + i] != static_cast<uint8_t>(block_delimiter_bytes[i])) {
+			if (static_cast<uint8_t>(buffer_handle_ptr[at + i]) != static_cast<uint8_t>(block_delimiter_bytes[i])) {
 				return 0;
 			}
 		}

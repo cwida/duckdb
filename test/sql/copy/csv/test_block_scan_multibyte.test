@@ -9,8 +9,9 @@ require notwindows
 # an empty value, a delimiter after a stray first byte, a quoted value followed by the delimiter and by part of one, too
 # few and too many columns, a single space value, a quoted newline, a delimiter cut by a block edge and one ending a
 # block, and no newline after the last row. The CRLF file holds the same rows. The 3 and 4 byte files (<|>, ::::) hold
-# the delimiter in quotes, partial delimiters, empty values and width errors. Expected results are those of the
-# build before the change.
+# the delimiter in quotes, partial delimiters, empty values and width errors, the UTF-8 files (€, ¢) the same with
+# bytes above 0x7F and a stray part of a delimiter inside a value. Expected results are those of the build before
+# the change.
 
 # file, strict
 statement error
@@ -499,3 +500,187 @@ CREATE OR REPLACE TEMP TABLE t_rej_file_4 AS SELECT * FROM read_csv('{DATA_DIR}/
 6	102	117	4	CAST	6::::b::::x::::12zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
 7	160	175	4	CAST	7::::b::::x::::y::::extra
 7	160	179	5	TOO MANY COLUMNS	7::::b::::x::::y::::extra
+
+# file_utf8, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+Invalid Input Error: CSV Error on Line: 6
+
+# file_utf8, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	ann	x	7
+2	q€q	x	8
+4	NULL	x	10
+
+# file_utf8, ignore_errors, selecting a
+query I
+SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1
+2
+3
+4
+5
+
+# file_utf8, ignore_errors, selecting d
+query I
+SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+7
+8
+9
+10
+
+# file_utf8, ignore_errors, selecting a, c
+query II
+SELECT a, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	x
+2	x
+3	x
+4	x
+5	x
+
+# file_utf8, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+5
+
+# file_utf8, lenient, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, strict_mode=false, ignore_errors=true) ORDER BY ALL
+----
+1	ann	x	7
+2	q€q	x	8
+4	NULL	x	10
+
+# file_utf8, null_padding, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, null_padding=true, ignore_errors=true) ORDER BY ALL
+----
+1	ann	x	7
+2	q€q	x	8
+4	NULL	x	10
+6	b	x	NULL
+
+# file_utf8, buffer_size 128, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=128, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+
+# file_utf8, parallel=false, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true, parallel=false) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+
+# file_utf8, rejects
+query IIIIII
+CREATE OR REPLACE TEMP TABLE t_rej_file_utf8 AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_utf8.csv', delim='€', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_file_utf8', rejects_scan='scan_rej_file_utf8'); SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(replace(csv_line, chr(10), '<LF>'), chr(13), '<CR>') FROM rej_file_utf8 ORDER BY ALL
+----
+3	37	41	2	INVALID ENCODING	3€a???€x€9
+5	68	80	4	CAST	5€b€x€11zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+6	133	142	3	MISSING COLUMNS	6€b€x
+
+# file_cent, strict
+statement error
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
+----
+Invalid Input Error: CSV Error on Line: 6
+
+# file_cent, ignore_errors, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	ann	x	7
+2	q¢q	x	8
+4	NULL	x	10
+
+# file_cent, ignore_errors, selecting a
+query I
+SELECT a FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1
+2
+3
+4
+5
+
+# file_cent, ignore_errors, selecting d
+query I
+SELECT d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+7
+8
+9
+10
+
+# file_cent, ignore_errors, selecting a, c
+query II
+SELECT a, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true) ORDER BY ALL
+----
+1	x
+2	x
+3	x
+4	x
+5	x
+
+# file_cent, ignore_errors, selecting count(*)
+query I
+SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true)
+----
+5
+
+# file_cent, lenient, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, strict_mode=false, ignore_errors=true) ORDER BY ALL
+----
+1	ann	x	7
+2	q¢q	x	8
+4	NULL	x	10
+
+# file_cent, null_padding, selecting *
+query IIII
+SELECT a, replace(replace(b, chr(10), '<LF>'), chr(13), '<CR>') AS b, replace(replace(c, chr(10), '<LF>'), chr(13), '<CR>') AS c, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, null_padding=true, ignore_errors=true) ORDER BY ALL
+----
+1	ann	x	7
+2	q¢q	x	8
+4	NULL	x	10
+
+# file_cent, buffer_size 128, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, buffer_size=128, ignore_errors=true) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+
+# file_cent, parallel=false, selecting a, d
+query II
+SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, ignore_errors=true, parallel=false) ORDER BY ALL
+----
+1	7
+2	8
+3	9
+4	10
+
+# file_cent, rejects
+query IIIIII
+CREATE OR REPLACE TEMP TABLE t_rej_file_cent AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_cent.csv', delim='¢', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_file_cent', rejects_scan='scan_rej_file_cent'); SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(replace(csv_line, chr(10), '<LF>'), chr(13), '<CR>') FROM rej_file_cent ORDER BY ALL
+----
+3	30	33	2	INVALID ENCODING	3¢a??¢x¢9
+5	54	63	4	CAST	5¢b¢x¢11zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+6	116	125	4	CAST	6¢b¢x¢y¢extra
+6	116	127	5	TOO MANY COLUMNS	6¢b¢x¢y¢extra

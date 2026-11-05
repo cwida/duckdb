@@ -104,9 +104,6 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 			return false;
 		}
 	}
-	if (transition_array[delimiter_byte][unquoted] != CSVState::DELIMITER) {
-		return false;
-	}
 	if (new_line == NewLineIdentifier::SINGLE_N && transition_array['\n'][unquoted] != CSVState::RECORD_SEPARATOR) {
 		return false;
 	}
