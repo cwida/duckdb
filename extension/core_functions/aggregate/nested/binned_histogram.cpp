@@ -318,7 +318,15 @@ void HistogramBinFinalizeFunction(Vector &state_vector, AggregateFinalizeInputDa
 		if (state.counts->back() > 0 && supports_other_bucket) {
 			// add overflow bucket ("others")
 			// set bin boundary to NULL for overflow bucket
-			keys.SetValue(current_offset, OtherBucketValue(keys.GetType()));
+			auto other_value = OtherBucketValue(keys.GetType());
+			for (idx_t bin_idx = list_entry.offset; bin_idx < current_offset; bin_idx++) {
+				if (Value::NotDistinctFrom(keys.GetValue(bin_idx), other_value)) {
+					throw InvalidInputException("Histogram bin %s collides with the key of the \"other values\" bucket, "
+					                            "which has entries - use a different bin value",
+					                            other_value.ToSQLString());
+				}
+			}
+			keys.SetValue(current_offset, other_value);
 			count_entries[current_offset] = state.counts->back();
 			current_offset++;
 		}

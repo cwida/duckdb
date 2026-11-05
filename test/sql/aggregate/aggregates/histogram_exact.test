@@ -105,3 +105,20 @@ query I
 SELECT is_histogram_other_bin({'i': NULL::INT[][]})
 ----
 true
+
+# a bin equal to the key of the "other values" bucket must not produce duplicate map keys
+statement error
+SELECT histogram_exact(x, [1, 2147483647]) FROM (VALUES (1),(5),(2147483647)) t(x);
+----
+collides with the key of the "other values" bucket
+
+statement error
+SELECT histogram_exact(x, ['', 'b']) FROM (VALUES ('a'),('b')) t(x);
+----
+collides with the key of the "other values" bucket
+
+# no collision when the other bucket is empty
+query I
+SELECT histogram_exact(x, [1, 2147483647]) FROM (VALUES (1),(2147483647)) t(x);
+----
+{1=1, 2147483647=1}
