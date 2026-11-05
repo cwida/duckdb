@@ -4,6 +4,9 @@
 
 require parquet
 
+# estimates depend on sampled distinct counts
+require vector_size 2048
+
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
