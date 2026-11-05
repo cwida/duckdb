@@ -637,11 +637,44 @@ FlattenDependentJoins::AttachDelimToIndependentJoinLeft(unique_ptr<LogicalOperat
 	return result;
 }
 
+void FlattenDependentJoins::MaterializeCorrelatedAggregateRewrites(LogicalDependentJoin &op,
+                                                                   UnnestingState &outer_state) {
+	bool requires_materialization = false;
+	for (auto &col : op.correlated_columns) {
+		if (replacement_map.find(col.binding) != replacement_map.end()) {
+			requires_materialization = true;
+			break;
+		}
+	}
+	if (!requires_materialization) {
+		return;
+	}
+	// A correlation key only obtains its empty-group value through the deferred aggregate rewrite, but delim join
+	// keys must stay plain columns. Materialize the left output in a projection so the key references a column
+	// whose projection expression receives the rewrite instead.
+	auto old_left_bindings = op.children[0]->GetColumnBindings();
+	auto projection_index = binder.GenerateTableIndex();
+	op.children[0] = LogicalProjection::CreateIdentity(projection_index, std::move(op.children[0]));
+
+	BindingReplacementGraph replacements;
+	for (idx_t i = 0; i < old_left_bindings.size(); i++) {
+		replacements.Add(old_left_bindings[i], ColumnBinding(projection_index, ProjectionIndex(i)));
+	}
+	// The projection preserves the left layout, so positional projection maps remain valid. Only the join's own
+	// bindings move: the projection input keeps the original bindings so the deferred rewrite still finds them.
+	ColumnBindingRewrite::ApplyToOperatorBindings(op, replacements);
+	for (auto &binding : outer_state.bindings) {
+		binding = replacements.Resolve(binding);
+	}
+	outer_state.replacement_graph.Merge(replacements);
+}
+
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::FinalizeDependentJoin(unique_ptr<LogicalOperator> &plan,
                                                                                    UnnestingState outer_state,
                                                                                    const UnnestingState &right_state,
                                                                                    DependentJoinOutput output) {
 	auto &op = plan->Cast<LogicalDependentJoin>();
+	MaterializeCorrelatedAggregateRewrites(op, outer_state);
 	RewriteCorrelatedBindings(op, outer_state.bindings);
 
 	vector<unique_ptr<Expression>> duplicate_eliminated_columns;
