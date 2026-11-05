@@ -1,0 +1,42 @@
+# name: test/sql/function/table/query_function_null.test
+# description: query() and query_table() reject NULL arguments
+# group: [table]
+
+statement error
+SELECT * FROM query(NULL);
+----
+Binder Error: Cannot use NULL as function argument
+
+statement error
+SELECT * FROM query_table(NULL);
+----
+Binder Error: Cannot use NULL as function argument
+
+statement ok
+CREATE TABLE a(i INT);
+
+statement error
+SELECT * FROM query_table(['a', NULL]);
+----
+Binder Error: Cannot use NULL as function argument
+
+statement ok
+PREPARE p AS SELECT * FROM query($1);
+
+statement error
+EXECUTE p(NULL);
+----
+Binder Error: Cannot use NULL as function argument
+
+statement ok
+INSERT INTO a VALUES (3);
+
+query I
+SELECT * FROM query_table('a');
+----
+3
+
+query I
+SELECT * FROM query('SELECT 1');
+----
+1

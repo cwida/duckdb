@@ -32,7 +32,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#ifdef __MVS__
+#ifndef __EMSCRIPTEN__
 #include <sys/resource.h>
 #endif
 
@@ -103,8 +103,7 @@ FileSystem::~FileSystem() {
 }
 
 FileSystem &FileSystem::GetFileSystem(ClientContext &context) {
-	auto &client_data = ClientData::Get(context);
-	return *client_data.client_file_system;
+	return context.services->GetFileSystem();
 }
 
 bool PathMatched(const string &path, const string &sub_path) {
@@ -287,6 +286,25 @@ string FileSystem::GetWorkingDirectory() {
 }
 
 #endif
+
+optional_idx FileSystem::GetFileDescriptorLimit() {
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+	struct rlimit limit;
+	if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
+		return optional_idx();
+	}
+	if (limit.rlim_cur >= NumericLimits<idx_t>::Maximum()) {
+		return optional_idx();
+	}
+	return optional_idx(static_cast<idx_t>(limit.rlim_cur));
+#else
+	return optional_idx();
+#endif
+}
+
+idx_t FileSystem::GetFileDescriptorShare(idx_t file_descriptor_limit) {
+	return MaxValue<idx_t>(file_descriptor_limit / 8, 1);
+}
 
 string FileSystem::JoinPath(const string &a, const string &b) {
 	// A remote URL may carry a "?query" suffix (object version, requester-pays, an SSE-C key, ...).
@@ -823,16 +841,23 @@ int64_t FileHandle::Read(void *buffer, idx_t nr_bytes) {
 	return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 }
 
+static optional_ptr<QueryProfiler> GetTrackingProfiler(bool track_io, const QueryContext &context) {
+	if (!track_io || !context.Valid()) {
+		return nullptr;
+	}
+	return context.GetServices()->TryGetQueryProfiler();
+}
+
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	// A sequential read can return fewer bytes than requested (e.g. at EOF), so track the bytes
 	// actually read rather than the requested amount.
 	auto bytes_read = file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext())
-		    .TrackBytesRead(UnsafeNumericCast<idx_t>(bytes_read), elapsed_us);
+		profiler->TrackBytesRead(UnsafeNumericCast<idx_t>(bytes_read), elapsed_us);
 	}
 
 	return bytes_read;
@@ -847,13 +872,13 @@ int64_t FileHandle::Write(void *buffer, idx_t nr_bytes) {
 }
 
 int64_t FileHandle::Write(QueryContext context, void *buffer, idx_t nr_bytes) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	auto bytes_written = file_system.Write(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 	if (bytes_written > 0 && track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext())
-		    .TrackBytesWritten(UnsafeNumericCast<idx_t>(bytes_written), elapsed_us);
+		profiler->TrackBytesWritten(UnsafeNumericCast<idx_t>(bytes_written), elapsed_us);
 	}
 
 	return bytes_written;
@@ -864,22 +889,24 @@ void FileHandle::Read(void *buffer, idx_t nr_bytes, idx_t location) {
 }
 
 void FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes, idx_t location) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesRead(nr_bytes, elapsed_us);
+		profiler->TrackBytesRead(nr_bytes, elapsed_us);
 	}
 }
 
 void FileHandle::Write(QueryContext context, void *buffer, idx_t nr_bytes, idx_t location) {
-	const bool track = track_io && context.GetClientContext();
+	auto profiler = GetTrackingProfiler(track_io, context);
+	const bool track = profiler != nullptr;
 	const auto start = track ? TimePoint::Tick() : TimePoint();
 	file_system.Write(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
 	if (track) {
 		const auto elapsed_us = NumericCast<idx_t>(start.ElapsedMicros());
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesWritten(nr_bytes, elapsed_us);
+		profiler->TrackBytesWritten(nr_bytes, elapsed_us);
 	}
 }
 
@@ -978,7 +1005,7 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 
 	auto context = opener.TryGetClientContext();
 	if (context && Logger::Get(*context).ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
-		logger = context->logger;
+		logger = context->services->GetLoggerPtr();
 		return;
 	}
 

@@ -2,7 +2,7 @@
 # description: A failed WAL fsync fails the commit, and the WAL is not synced again
 # group: [wal]
 
-load __TEST_DIR__/wal_fsync_failure.db
+load {TEST_DIR}/wal_fsync_failure.db
 
 statement ok
 SET checkpoint_threshold='1TB'

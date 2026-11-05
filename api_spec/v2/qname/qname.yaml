@@ -32,7 +32,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   qname_parse:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Parses SQL text into a qualified name.
 
@@ -63,7 +63,7 @@ functions:
 
   qname_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a qualified name from its parts.
 
@@ -99,7 +99,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   qname_get_part_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Returns how many parts the qualified name has.
 
@@ -124,7 +124,7 @@ functions:
 
   qname_get_part:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Borrows one part of the qualified name.
 
@@ -153,7 +153,7 @@ functions:
 
   qname_render:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Renders the qualified name as SQL text.
 
@@ -194,7 +194,7 @@ functions:
 
   qname_equals:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Compares two qualified names.
 
@@ -223,7 +223,7 @@ functions:
 
   qname_hash:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Hashes a qualified name.
 
@@ -252,7 +252,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   qname_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the qualified name, releasing its resources.
 

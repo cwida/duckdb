@@ -21,7 +21,7 @@ handles:
 functions:
   function_docs_set_description:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Sets the description of the function overload.
 
@@ -45,7 +45,7 @@ functions:
 
   function_docs_add_example:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Adds an example of calling the function overload.
 
@@ -75,7 +75,7 @@ functions:
 
   function_docs_add_category:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Adds a category the function overload belongs to, e.g. "string" or "aggregate".
 

@@ -7,8 +7,9 @@ load {TEST_DIR}/test_reclaim_space.db
 statement ok
 PRAGMA force_checkpoint;
 
-# FIXME: overflow strings are not reclaimed yet when overwritten on updates
-mode skip instable
+# Force overflow blocks instead of compressing the repeated string into a single segment.
+statement ok
+SET force_compression = 'uncompressed';
 
 # create a big string
 statement ok
@@ -18,19 +19,25 @@ CREATE TABLE test (a VARCHAR);
 statement ok
 INSERT INTO test VALUES (repeat('a', 1000000));
 
-query I
-SELECT LENGTH(SUBSTRING(a, 0, 1000000)) FROM test
-----
-999999
-
 # checkpoint the string
 statement ok
 CHECKPOINT
 
 query I
-SELECT LENGTH(SUBSTRING(a, 0, 1000000)) FROM test
+SELECT a = repeat('a', 1000000) FROM test
 ----
-999999
+true
+
+query I
+SELECT bool_and(compression = 'Uncompressed' AND len(additional_block_ids) > 0)
+FROM pragma_storage_info('test') WHERE segment_type = 'VARCHAR';
+----
+true
+
+# Allocated blocks can alternate as checkpoint generations reuse free space.
+# The number of live blocks must remain constant, including the overflow blocks.
+query I nosort expected_blocks
+SELECT used_blocks FROM pragma_database_size() WHERE database_name = current_database();
 
 # now update by adding one character to the string on every iteration
 loop i 0 10
@@ -39,19 +46,29 @@ statement ok
 UPDATE test SET a=concat(a, 'a')
 
 query I
-SELECT LENGTH(SUBSTRING(a, 0, 1000000)) FROM test
+SELECT a = repeat('a', 1000001 + {i}) FROM test
 ----
-999999
+true
 
 statement ok
 CHECKPOINT
 
 query I nosort expected_blocks
-select total_blocks from pragma_database_size();
+SELECT used_blocks FROM pragma_database_size() WHERE database_name = current_database();
 
 query I
-SELECT LENGTH(SUBSTRING(a, 0, 1000000)) FROM test
+SELECT a = repeat('a', 1000001 + {i}) FROM test
 ----
-999999
+true
 
 endloop
+
+restart
+
+query I
+SELECT a = repeat('a', 1000010) FROM test
+----
+true
+
+query I nosort expected_blocks
+SELECT used_blocks FROM pragma_database_size() WHERE database_name = current_database();

@@ -299,6 +299,10 @@ public:
 	DUCKDB_API static optional_idx GetAvailableMemory();
 	//! Returns the space available on the disk. Returns DConstants::INVALID_INDEX if the information was not available.
 	DUCKDB_API static optional_idx GetAvailableDiskSpace(const string &path);
+	//! Returns the soft limit on open file descriptors, or an invalid index when it is unlimited or unknown.
+	DUCKDB_API static optional_idx GetFileDescriptorLimit();
+	//! Returns the share of the file descriptor limit that one consumer of descriptors may hold open.
+	DUCKDB_API static idx_t GetFileDescriptorShare(idx_t file_descriptor_limit);
 	//! Path separator for path
 	DUCKDB_API virtual string PathSeparator(const string &path);
 	//! Checks if path is is an absolute path

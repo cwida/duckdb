@@ -1,0 +1,26 @@
+# name: benchmark/micro/optimizer/union_all_subquery_planning.benchmark
+# description: Planning a UNION ALL of 1560 subqueries with CTEs and window functions over a one-row table
+# group: [optimizer]
+
+name Union All Subquery Planning
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE t AS SELECT 0::DOUBLE AS c0, 1::DOUBLE AS c1, 2::DOUBLE AS c2, 3::DOUBLE AS c3, 4::DOUBLE AS c4, 5::DOUBLE AS c5, 6::DOUBLE AS c6, 7::DOUBLE AS c7, 8::DOUBLE AS c8, 9::DOUBLE AS c9, 10::DOUBLE AS c10, 11::DOUBLE AS c11, 12::DOUBLE AS c12, 13::DOUBLE AS c13, 14::DOUBLE AS c14, 15::DOUBLE AS c15, 16::DOUBLE AS c16, 17::DOUBLE AS c17, 18::DOUBLE AS c18, 19::DOUBLE AS c19, 20::DOUBLE AS c20, 21::DOUBLE AS c21, 22::DOUBLE AS c22, 23::DOUBLE AS c23, 24::DOUBLE AS c24, 25::DOUBLE AS c25, 26::DOUBLE AS c26, 27::DOUBLE AS c27, 28::DOUBLE AS c28, 29::DOUBLE AS c29, 30::DOUBLE AS c30, 31::DOUBLE AS c31, 32::DOUBLE AS c32, 33::DOUBLE AS c33, 34::DOUBLE AS c34, 35::DOUBLE AS c35, 36::DOUBLE AS c36, 37::DOUBLE AS c37, 38::DOUBLE AS c38, 39::DOUBLE AS c39;
+SET VARIABLE union_sql = (
+	SELECT 'SELECT count(*) FROM (' || string_agg(format(
+		'SELECT {0} AS pair_idx, value FROM (WITH src AS (SELECT {1}, {2} FROM t), '
+		|| 'data AS (SELECT {1}, {2} FROM src WHERE {1} IS NOT NULL AND {2} IS NOT NULL), '
+		|| 'ranks AS (SELECT row_number() OVER (ORDER BY {1}) AS sort_order, row_number() OVER (ORDER BY {2}) AS r, count(*) OVER () AS n FROM data), '
+		|| 'lag_cte AS (SELECT abs(r - lag(r) OVER (ORDER BY sort_order)) AS d, n FROM ranks) '
+		|| 'SELECT 1.0 - 3.0 * sum(d) / (max(n)::DOUBLE * max(n) - 1) AS value FROM lag_cte WHERE d IS NOT NULL) sub_{0}',
+		branch, 'c' || a, 'c' || b), ' UNION ALL ' ORDER BY branch) || ')'
+	FROM (SELECT row_number() OVER (ORDER BY a, b) - 1 AS branch, a, b FROM range(40) r1(a), range(40) r2(b) WHERE a <> b)
+);
+
+run
+FROM query(getvariable('union_sql'));
+
+result I
+1560

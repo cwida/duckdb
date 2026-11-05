@@ -17,7 +17,6 @@
         "test/sql/storage/types/variant/tpcds_sf1.test_slow",
         "test/sql/storage/tpch/tpch_storage.test_slow",
         "test/sql/storage/all_types_storage_large.test_slow",
-        "test/sql/storage/compression/roaring/roaring_bool_various_distributions.test_slow",
         "test/sql/storage/compression/alp/alp_stress_test.test_slow",
         "test/sql/storage/compression/alprd/alprd_stress_test.test_slow",
         "test/sql/storage/compression/bitpacking/bitpacking_compression_ratio_hugeint.test_slow",

@@ -308,7 +308,7 @@ inline DUCKDB_V2_ERROR Query(duckdb_v2_connection_handle conn, const char *sql, 
 		*out_result = nullptr;
 	}
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	auto rc = duckdb_v2_parse_sql(conn, sql, &iter, err);
+	auto rc = duckdb_v2_parse_sql(conn, sql, true, &iter, err);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return rc;
 	}

@@ -77,6 +77,12 @@ handles:
       when a downstream operator needs to know the batch's ordering position, the values of a set of partitioning
       columns, or both; the handle reports which of those were actually requested and receives the answer.
 
+  table_function_stats_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a table function during the "stats" phase of query
+      optimization. The engine invokes the callback once per column the query reads, and the callback can use the
+      handle to narrow the statistics of that column.
+
   table_function_partitioning_info:
     description: |
       A borrowed opaque handle to the arguments supplied to a table function during the "partitioning" phase
@@ -255,6 +261,20 @@ callbacks:
         description: Borrowed error info handle to use to report errors that occur during the callback.
     return_type: void
 
+  table_function_stats_callback:
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Functions
 #-----------------------------------------------------------------------------------------------------------------------
@@ -264,7 +284,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Creates a new table function through a factory.
 
@@ -297,7 +317,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the name of the table function.
 
@@ -322,7 +342,7 @@ functions:
 
   table_function_get_docs:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Returns the documentation of the function so it can be filled in.
 
@@ -348,7 +368,7 @@ functions:
 
   table_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Returns the function's signature so it can be configured.
 
@@ -374,7 +394,7 @@ functions:
 
   table_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets arbitrary user data on the table function.
 
@@ -398,7 +418,7 @@ functions:
 
   table_function_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the bind callback of the table function.
 
@@ -421,7 +441,7 @@ functions:
 
   table_function_set_init_global_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the optional global init callback of the table function.
 
@@ -443,7 +463,7 @@ functions:
 
   table_function_set_init_local_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the optional local init callback of the table function.
 
@@ -464,7 +484,7 @@ functions:
 
   table_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the exec callback of the table function.
 
@@ -486,7 +506,7 @@ functions:
 
   table_function_set_progress_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the optional progress callback of the table function.
 
@@ -509,7 +529,7 @@ functions:
 
   table_function_set_projection_pushdown:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets whether the table function supports projection pushdown. Defaults to false.
 
@@ -533,7 +553,7 @@ functions:
 
   table_function_set_filter_pushdown_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional filter pushdown callback of the table function.
 
@@ -560,7 +580,7 @@ functions:
 
   table_function_set_partition_data_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Sets the optional "partition data" callback of the table function.
 
@@ -584,7 +604,7 @@ functions:
 
   table_function_set_partitioning_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Sets the optional "partitioning" callback of the table function.
 
@@ -609,12 +629,34 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  table_function_set_stats_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Sets the optional stats callback of the table function.
+
+      The stats callback is invoked during query optimization once for each declared column the query reads. Through
+      its `[[table_function_stats_info]]` it narrows the statistics of that column, which the engine then uses to
+      simplify the query. A function without a stats callback gives the engine no statistics for its columns.
+    parameters:
+      function:
+        type: table_function
+        description: The function to set the stats callback of.
+      callback:
+        type: table_function_stats_callback
+        description: The stats callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   #---------------------------------------------------------------------------------------------------------------------
   # Bind Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
   table_function_bind_add_result_column:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Declares one of the columns the function returns.
 
@@ -643,7 +685,7 @@ functions:
 
   table_function_bind_set_cardinality:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the estimated number of rows the scan will produce.
 
@@ -667,7 +709,7 @@ functions:
 
   table_function_bind_set_order_preservation:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Sets the order guarantee of the rows this call of the function produces. Defaults to
       `ORDER_PRESERVATION_INSERTION_ORDER`.
@@ -695,7 +737,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_init_global_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -714,7 +756,7 @@ functions:
 
   table_function_init_global_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -733,7 +775,7 @@ functions:
 
   table_function_init_global_set_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the function's "global state" from the global init callback.
 
@@ -757,7 +799,7 @@ functions:
 
   table_function_init_global_set_max_threads:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets how many threads may scan the function in parallel.
 
@@ -780,7 +822,7 @@ functions:
 
   table_function_init_global_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the scan produces.
 
@@ -805,7 +847,7 @@ functions:
 
   table_function_init_global_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns which declared column the scan's column at the given index stands for.
 
@@ -835,7 +877,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_init_local_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -854,7 +896,7 @@ functions:
 
   table_function_init_local_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -873,7 +915,7 @@ functions:
 
   table_function_init_local_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -895,7 +937,7 @@ functions:
 
   table_function_init_local_set_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Sets the function's worker-local "local state" from the local init callback.
 
@@ -920,7 +962,7 @@ functions:
 
   table_function_init_local_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the scan produces.
 
@@ -945,7 +987,7 @@ functions:
 
   table_function_init_local_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns which declared column the scan's column at the given index stands for.
 
@@ -975,7 +1017,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -994,7 +1036,7 @@ functions:
 
   table_function_exec_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1013,7 +1055,7 @@ functions:
 
   table_function_exec_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1035,7 +1077,7 @@ functions:
 
   table_function_exec_get_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the worker-local local state set by the function's local init callback.
     parameters:
       info:
@@ -1054,7 +1096,7 @@ functions:
 
   table_function_exec_get_output_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the output chunk the exec callback must write the next batch of rows into.
 
@@ -1082,7 +1124,7 @@ functions:
 
   table_function_exec_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the scan produces.
 
@@ -1107,7 +1149,7 @@ functions:
 
   table_function_exec_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns which declared column the scan's column at the given index stands for.
 
@@ -1137,7 +1179,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_progress_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -1156,7 +1198,7 @@ functions:
 
   table_function_progress_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1175,7 +1217,7 @@ functions:
 
   table_function_progress_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1198,7 +1240,7 @@ functions:
 
   table_function_progress_set_progress:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Reports how far the scan has advanced.
 
@@ -1223,7 +1265,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_filter_pushdown_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the user data set via `[[table_function_set_user_data]]`, or null if none was set.
     parameters:
@@ -1243,7 +1285,7 @@ functions:
 
   table_function_filter_pushdown_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the bind data set via `[[function_bind_set_bind_data]]`, or null if none was set.
 
@@ -1266,7 +1308,7 @@ functions:
 
   table_function_filter_pushdown_get_filter_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of filter predicates offered to the function.
 
@@ -1290,7 +1332,7 @@ functions:
 
   table_function_filter_pushdown_get_filter:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the filter predicate at the given index.
 
@@ -1318,7 +1360,7 @@ functions:
 
   table_function_filter_pushdown_accept:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Accepts the filter predicate at the given index: the function will apply it itself.
 
@@ -1340,7 +1382,7 @@ functions:
 
   table_function_filter_pushdown_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the predicates can refer to.
 
@@ -1364,7 +1406,7 @@ functions:
 
   table_function_filter_pushdown_get_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Resolves a column reference found in a predicate to the declared column it refers to.
 
@@ -1394,7 +1436,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_partition_data_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -1413,7 +1455,7 @@ functions:
 
   table_function_partition_data_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1432,7 +1474,7 @@ functions:
 
   table_function_partition_data_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1454,7 +1496,7 @@ functions:
 
   table_function_partition_data_get_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Retrieves the worker-local local state set by the function's local init callback, for the thread that
       produced the batch this call reports on. No other thread observes it, so it needs no synchronization.
@@ -1475,7 +1517,7 @@ functions:
 
   table_function_partition_data_requires_batch_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns whether a downstream operator needs this batch's ordering position.
 
@@ -1499,7 +1541,7 @@ functions:
 
   table_function_partition_data_requires_partition_columns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns whether a downstream operator needs this batch's values for a set of partitioning columns.
 
@@ -1522,7 +1564,7 @@ functions:
 
   table_function_partition_data_get_partition_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns the number of partitioning columns a downstream operator is requesting values for.
 
@@ -1546,7 +1588,7 @@ functions:
 
   table_function_partition_data_get_partition_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns which declared column the requested partitioning column at the given index stands for.
 
@@ -1572,7 +1614,7 @@ functions:
 
   table_function_partition_data_set_batch_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Reports the ordering position of the batch the exec callback just produced.
 
@@ -1601,7 +1643,7 @@ functions:
 
   table_function_partition_data_set_partition_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Reports the single value of the partitioning column at the given index, for the batch the exec callback
       just produced.
@@ -1635,7 +1677,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_partitioning_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the user data set via `[[table_function_set_user_data]]`.
     parameters:
       info:
@@ -1654,7 +1696,7 @@ functions:
 
   table_function_partitioning_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1673,7 +1715,7 @@ functions:
 
   table_function_partitioning_get_partition_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns the number of columns the optimizer is asking about: the candidate `GROUP BY` column set.
 
@@ -1696,7 +1738,7 @@ functions:
 
   table_function_partitioning_get_partition_column_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Returns which declared column the candidate `GROUP BY` column at the given index stands for.
 
@@ -1722,7 +1764,7 @@ functions:
 
   table_function_partitioning_set_partition_info:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-15" ]
+      - [ "unstable", "v2.0.0", "2026-09-15" ]
     description: |
       Reports whether every partition the scan produces carries exactly one distinct value for the candidate
       `GROUP BY` column set.
@@ -1745,11 +1787,98 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
+  # Stats Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  table_function_stats_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the user data set via `[[table_function_set_user_data]]`.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_stats_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_stats_get_column_index:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Returns which declared column the statistics describe.
+
+      The result indexes the columns declared with `[[table_function_bind_add_result_column]]`, in declaration order.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      column_index:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the index of the declared column.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_stats_get_result_stats:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Retrieves the statistics of the column, for the callback to narrow.
+
+      The statistics start out unknown, with every kind of value possible. They describe every value the scan
+      produces for the column. Borrowed; valid only for the duration of the callback.
+    parameters:
+      info:
+        type: table_function_stats_info
+        description: The stats info handle.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed, writable statistics of the column.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  #---------------------------------------------------------------------------------------------------------------------
   # Register
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_table_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Registers the table function, making it available for use in SQL queries.
 
@@ -1777,7 +1906,7 @@ functions:
 
   extension_register_table_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Registers the table function, making it available for use in SQL queries.
 
@@ -1807,7 +1936,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-01" ]
+      - [ "unstable", "v2.0.0", "2026-09-01" ]
     description: |
       Destroys the table function, releasing its resources.
 

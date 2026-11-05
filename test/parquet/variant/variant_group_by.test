@@ -1,0 +1,100 @@
+# name: test/parquet/variant/variant_group_by.test
+# description: GROUP BY, FIRST, LAST and ANY_VALUE over a shredded Parquet VARIANT
+# group: [variant]
+
+require parquet
+
+require json
+
+statement ok
+SET threads=1
+
+# 5 groups of 1000 rows, the first row of every group is a SQL NULL
+statement ok
+COPY (
+	SELECT
+		i // 1000 AS g,
+		CASE WHEN i % 1000 = 0 THEN NULL
+		     ELSE {'a': (i % 5)::INTEGER, 'b': 'b_' || (i % 5)}::VARIANT END AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_group_by.parquet'
+
+query I
+SELECT DISTINCT vector_type(v) FROM '{TEST_DIR}/variant_group_by.parquet'
+----
+SHREDDED_VECTOR
+
+# grouping on a variant column goes through the collated group machinery
+query II
+SELECT v.b, count(*) FROM '{TEST_DIR}/variant_group_by.parquet' GROUP BY 1 ORDER BY 1
+----
+b_0	995
+b_1	1000
+b_2	1000
+b_3	1000
+b_4	1000
+NULL	5
+
+# first/last/any_value differ in NULL handling, and the states are spread over multiple chunks
+query IIII
+SELECT g, first(v.a), last(v.a), any_value(v.a) FROM '{TEST_DIR}/variant_group_by.parquet' GROUP BY 1 ORDER BY 1
+----
+0	NULL	4	1
+1	NULL	4	1
+2	NULL	4	1
+3	NULL	4	1
+4	NULL	4	1
+
+query III
+SELECT first(v.a), last(v.a), any_value(v.a) FROM '{TEST_DIR}/variant_group_by.parquet'
+----
+NULL	4	1
+
+query IIII
+SELECT g, first(v.b), last(v.b), any_value(v.b) FROM '{TEST_DIR}/variant_group_by.parquet' GROUP BY 1 ORDER BY 1
+----
+0	NULL	b_4	b_1
+1	NULL	b_4	b_1
+2	NULL	b_4	b_1
+3	NULL	b_4	b_1
+4	NULL	b_4	b_1
+
+# the same queries over an unshredded variant
+statement ok
+CREATE MACRO plain() AS TABLE
+	SELECT
+		i // 1000 AS g,
+		CASE WHEN i % 1000 = 0 THEN NULL
+		     ELSE {'a': (i % 5)::INTEGER, 'b': 'b_' || (i % 5)}::VARIANT END AS v
+	FROM range(5000) t(i)
+
+query IIII
+SELECT g, first(v.a), last(v.a), any_value(v.a) FROM plain() GROUP BY 1 ORDER BY 1
+----
+0	NULL	4	1
+1	NULL	4	1
+2	NULL	4	1
+3	NULL	4	1
+4	NULL	4	1
+
+query III
+SELECT first(v.a), last(v.a), any_value(v.a) FROM plain()
+----
+NULL	4	1
+
+# a group whose values are all NULL keeps a NULL first/last/any_value
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1::INTEGER}::VARIANT),
+		(1, {'a': 2::INTEGER}::VARIANT),
+		(2, NULL::VARIANT),
+		(2, 'null'::JSON::VARIANT)
+	) t(g, v)
+) TO '{TEST_DIR}/variant_group_by_nulls.parquet' (SHREDDING {v: 'STRUCT(a INTEGER)'})
+
+query IIII
+SELECT g, first(v.a), last(v.a), any_value(v.a) FROM '{TEST_DIR}/variant_group_by_nulls.parquet' GROUP BY 1 ORDER BY 1
+----
+1	1	2	1
+2	NULL	NULL	NULL

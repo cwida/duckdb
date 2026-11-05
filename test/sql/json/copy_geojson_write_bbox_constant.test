@@ -1,0 +1,57 @@
+# name: test/sql/json/copy_geojson_write_bbox_constant.test
+# description: The write_bbox option of the internal GeoJSON writer must be a constant
+# group: [json]
+
+require json
+
+statement ok
+CREATE SEQUENCE s;
+
+statement error
+SELECT __internal_json_copy_to_geojson({'id': 1}, NULL, NULL, '', '', random() > 0);
+----
+must be a constant expression
+
+statement error
+SELECT __internal_json_copy_to_geojson({'id': 1}, NULL, NULL, '', '', nextval('s') > 0);
+----
+must be a constant expression
+
+statement error
+PREPARE p AS SELECT __internal_json_copy_to_geojson({'id': 1}, NULL, NULL, '', '', nextval('s') > 0);
+----
+must be a constant expression
+
+# the sequence is unchanged, and the database is still usable
+statement error
+SELECT currval('s');
+----
+currval: sequence is not yet defined in this session
+
+statement ok
+CREATE TABLE t AS SELECT {'id': i} AS ast, i % 2 = 0 AS bbox FROM range(3) r(i);
+
+statement error
+SELECT __internal_json_copy_to_geojson(ast, NULL, NULL, '', '', bbox) FROM t;
+----
+must be a constant expression
+
+# a NULL write_bbox means the option was not given
+query I
+SELECT __internal_json_copy_to_geojson({'id': 1}, NULL, NULL, '', '', NULL);
+----
+{"type":"Feature","geometry":null,"properties":{"id":1}}
+
+query I
+SELECT __internal_json_copy_to_geojson({'id': 1}, NULL, NULL, '', '', false);
+----
+{"type":"Feature","geometry":null,"properties":{"id":1}}
+
+# a prepared parameter is bound when it is executed
+statement ok
+PREPARE q AS SELECT __internal_json_copy_to_geojson({'id': 1}, NULL, NULL, '', '', ?::BOOLEAN);
+
+query I
+EXECUTE q(false);
+----
+{"type":"Feature","geometry":null,"properties":{"id":1}}

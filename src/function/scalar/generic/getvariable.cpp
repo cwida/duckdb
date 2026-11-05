@@ -57,6 +57,8 @@ ScalarFunction GetVariableFun::GetFunction() {
 	ScalarFunction getvar("getvariable", {}, LogicalType::ANY, nullptr, GetVariableBind, nullptr);
 	getvar.GetSignature().AddParameter("variable_name", LogicalType::VARCHAR);
 	getvar.SetBindExpressionCallback(BindGetVariableExpression);
+	// the value of the variable can change between queries
+	getvar.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return getvar;
 }
 

@@ -54,11 +54,36 @@ enum class VariantComparisonType : uint8_t {
 // complemented for negatives. This makes e.g. 1::TINYINT, 1::BIGINT, 1.00::DECIMAL and 1::BIGNUM all
 // encode identically, and orders them numerically (so -100.5 < 0 < 1.5 < 15 < ...).
 struct VariantNumberKey {
+	//! Enough digits to hold the magnitude of any 128-bit value without falling back to the heap
+	static constexpr idx_t INLINE_DIGITS = 39;
+
 	//! 0 = negative, 1 = zero, 2 = positive (so negatives sort before zero before positives)
 	data_t number_class;
 	int64_t adjusted_exponent;
-	//! significant decimal digits ('0'..'9'), leading digit non-zero, trailing zeros stripped
+	//! The number of significant decimal digits, leading digit non-zero and trailing zeros stripped
+	idx_t digit_count;
+	//! The significant decimal digits ('0'..'9'), used when they fit inline
+	char inline_digits[INLINE_DIGITS];
+	//! The significant decimal digits, used instead of inline_digits when they do not fit (only BIGNUM
+	//! can produce magnitudes that large)
 	string digits;
+
+	//! Set the significant digits from the given span
+	inline void SetDigits(const char *data, idx_t count) {
+		digit_count = count;
+		if (count <= INLINE_DIGITS) {
+			memcpy(inline_digits, data, count);
+		} else {
+			digits.assign(data, count);
+		}
+	}
+	//! The significant digits (nullptr for zero)
+	inline const char *GetDigits() const {
+		if (digit_count == 0) {
+			return nullptr;
+		}
+		return digit_count <= INLINE_DIGITS ? inline_digits : digits.data();
+	}
 
 	bool operator==(const VariantNumberKey &other) const {
 		if (number_class != other.number_class) {
@@ -67,10 +92,10 @@ struct VariantNumberKey {
 		if (adjusted_exponent != other.adjusted_exponent) {
 			return false;
 		}
-		if (digits != other.digits) {
+		if (digit_count != other.digit_count) {
 			return false;
 		}
-		return true;
+		return digit_count == 0 || memcmp(GetDigits(), other.GetDigits(), digit_count) == 0;
 	}
 };
 

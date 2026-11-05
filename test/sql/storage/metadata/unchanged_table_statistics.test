@@ -25,8 +25,12 @@ CHECKPOINT;
 statement ok
 ANALYZE stable;
 
+# compare the stats join-free: a join resets additive statistics (e.g. the total string length)
 statement ok
-CREATE TABLE saved_stats AS SELECT stats(i) AS int_stats, stats(s) AS string_stats FROM stable LIMIT 1;
+SET VARIABLE int_stats = (SELECT stats(i) FROM stable LIMIT 1);
+
+statement ok
+SET VARIABLE string_stats = (SELECT stats(s) FROM stable LIMIT 1);
 
 loop iteration 1 4
 
@@ -37,8 +41,8 @@ statement ok
 CHECKPOINT;
 
 query II
-SELECT stats(i) IS NOT DISTINCT FROM (SELECT int_stats FROM saved_stats),
-       stats(s) IS NOT DISTINCT FROM (SELECT string_stats FROM saved_stats)
+SELECT stats(i) IS NOT DISTINCT FROM getvariable('int_stats'),
+       stats(s) IS NOT DISTINCT FROM getvariable('string_stats')
 FROM stable LIMIT 1;
 ----
 true	true
@@ -88,7 +92,10 @@ SELECT count(*), sum(i), min(i), max(i) FROM stable;
 995	504465	10	1004
 
 statement ok
-CREATE OR REPLACE TABLE saved_stats AS SELECT stats(i) AS int_stats, stats(s) AS string_stats FROM stable LIMIT 1;
+SET VARIABLE int_stats = (SELECT stats(i) FROM stable LIMIT 1);
+
+statement ok
+SET VARIABLE string_stats = (SELECT stats(s) FROM stable LIMIT 1);
 
 statement ok
 INSERT INTO changed VALUES (4);
@@ -97,8 +104,8 @@ statement ok
 CHECKPOINT;
 
 query II
-SELECT stats(i) IS NOT DISTINCT FROM (SELECT int_stats FROM saved_stats),
-       stats(s) IS NOT DISTINCT FROM (SELECT string_stats FROM saved_stats)
+SELECT stats(i) IS NOT DISTINCT FROM getvariable('int_stats'),
+       stats(s) IS NOT DISTINCT FROM getvariable('string_stats')
 FROM stable LIMIT 1;
 ----
 true	true

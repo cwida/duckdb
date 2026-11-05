@@ -98,7 +98,7 @@ public:
 
 private:
 	void CommitEntryDrop(CatalogEntry &entry, data_ptr_t extra_data, CommitInfo &info);
-	void CommitDelete(DeleteInfo &info);
+	void CommitDelete(DeleteInfo &info, transaction_t old_id);
 
 private:
 	DuckTransaction &transaction;

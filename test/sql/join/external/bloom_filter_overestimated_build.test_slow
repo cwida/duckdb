@@ -1,0 +1,25 @@
+# name: test/sql/join/external/bloom_filter_overestimated_build.test_slow
+# description: A bloom filter sized from an overestimated build side must not exceed the memory limit
+# group: [external]
+
+load {TEST_DIR}/bloom_filter_overestimated_build.db
+
+statement ok
+SET threads=1
+
+statement ok
+CREATE TABLE p AS SELECT range % 2 AS k FROM range(20000000)
+
+statement ok
+CHECKPOINT
+
+statement ok
+SET memory_limit='25MB'
+
+# The build side is estimated at tens of millions of rows but produces exactly two. The filter is
+# allocated from the estimate before any build row arrives, so an unbounded allocation would fail the
+# query under this memory limit even though the join itself fits comfortably.
+query I
+SELECT count(*) FROM p WHERE k IN (SELECT range FROM range(100000000) WHERE range % 50000000 = 0)
+----
+10000000

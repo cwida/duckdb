@@ -1,0 +1,13 @@
+# name: test/sql/json/copy_geojson_column_option_constant.test
+# description: The column options of the internal GeoJSON writer must be constants
+# group: [json]
+
+require json
+
+statement ok
+CREATE TABLE t AS SELECT {'a': i, 'b': 'q' || i} AS ast, ('s' || i) AS av FROM range(5) r(i);
+
+statement error
+SELECT __internal_json_copy_to_geojson(ast, 'g', 'x', av, 'x', true) FROM t;
+----
+Binder Error: __internal_json_copy_to_geojson column options must be constants

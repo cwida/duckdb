@@ -32,11 +32,11 @@ BindResult TableFunctionBinder::BindColumnReference(unique_ptr<ParsedExpression>
 			return BindLambdaReference(lambda_ref->Cast<LambdaRefExpression>(), depth);
 		}
 
-		if (binder.macro_binding && binder.macro_binding->HasMatchingBinding(Identifier(col_ref.GetName()))) {
+		if (binder.macro_binding && binder.macro_binding->HasMatchingBinding(col_ref.GetColumnName())) {
 			throw ParameterNotResolvedException();
 		}
 	} else if (col_ref.ColumnNames()[0].StartsWith(DummyBinding::DUMMY_NAME) && binder.macro_binding &&
-	           binder.macro_binding->HasMatchingBinding(Identifier(col_ref.GetName()))) {
+	           binder.macro_binding->HasMatchingBinding(col_ref.GetColumnName())) {
 		throw ParameterNotResolvedException();
 	}
 

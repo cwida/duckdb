@@ -1,0 +1,67 @@
+# name: test/sql/peg_parser/fuzzer/new_parser_failure_0074.test
+# description: WITHIN GROUP ordering is kept when combined with FILTER and/or OVER
+# group: [fuzzer]
+
+query I
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0) OVER () FROM (VALUES (2), (1), (3)) t(col0) LIMIT 1
+----
+[1, 2, 3]
+
+query I
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0) FILTER (WHERE TRUE) OVER () FROM (VALUES (2), (1), (3)) t(col0) LIMIT 1
+----
+[1, 2, 3]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (2), (1), (3), (3)) v(col0);
+
+query I
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0) FILTER (WHERE TRUE) OVER () FROM t LIMIT 1;
+----
+[1, 2, 3, 3]
+
+query I
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0 DESC) OVER () FROM t LIMIT 1;
+----
+[3, 3, 2, 1]
+
+query I
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0) FILTER (WHERE col0 > 1) OVER () FROM t LIMIT 1;
+----
+[2, 3, 3]
+
+query I
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY col0) FILTER (WHERE col0 > 1) FROM t;
+----
+3.0
+
+query I
+SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY col0) FILTER (WHERE col0 < 3) FROM t;
+----
+1
+
+statement error
+SELECT array_agg(col0 ORDER BY col0 DESC) WITHIN GROUP (ORDER BY col0) OVER () FROM t;
+----
+Parser Error: Cannot use multiple ORDER BY statements with WITHIN GROUP
+
+statement error
+SELECT array_agg(DISTINCT col0) WITHIN GROUP (ORDER BY col0) OVER () FROM t;
+----
+Parser Error: DISTINCT is not allowed in combination with WITHIN GROUP
+
+statement error
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0, col0) OVER () FROM t;
+----
+Parser Error: Cannot use multiple ORDER BY clauses with WITHIN GROUP
+
+statement error
+SELECT array_agg(col0) WITHIN GROUP (ORDER BY col0) FILTER (WHERE TRUE) FROM t;
+----
+Parser Error: Unknown ordered aggregate
+
+# the ordered-set aggregate renaming only applies to plain aggregates, so the window form fails in the binder (as in 1.5.x)
+statement error
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY col0) OVER () FROM t;
+----
+Catalog Error: Aggregate Function with name percentile_cont does not exist

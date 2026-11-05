@@ -50,3 +50,43 @@ SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l RIGHT JOIN (DESCRIBE SEL
 3
 
 endloop
+
+# Semi joins where one side has no columns
+statement ok
+CREATE TABLE empty_t(c0 INTEGER);
+
+statement ok
+CREATE TABLE t1(c0 INTEGER);
+
+statement ok
+INSERT INTO t1 VALUES (1), (2), (NULL);
+
+foreach optimizer '' 'unused_columns'
+
+statement ok
+SET disabled_optimizers={optimizer};
+
+query I
+SELECT 0 FROM empty_t HAVING 0 IN (SELECT 0 FROM empty_t);
+----
+
+query I
+SELECT 0 FROM t1 HAVING 0 IN (SELECT 0 FROM t1);
+----
+0
+
+query I
+SELECT 0 FROM t1 HAVING 1 IN (SELECT 0 FROM t1);
+----
+
+query I
+SELECT count(*) FROM range(10000) r(i) WHERE 0 IN (SELECT 0 FROM range(10000));
+----
+10000
+
+query I
+SELECT count(*) FROM range(10000) r(i) WHERE 0 NOT IN (SELECT 1 FROM range(10000));
+----
+10000
+
+endloop

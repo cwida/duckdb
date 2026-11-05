@@ -47,11 +47,14 @@ NULL	{'i': NULL}
 2	{'i': 2}
 3	{'i': 3}
 
-# FIXME: this works as expected in Postgres
-statement error
+# A qualified star expands the enclosing table's columns.
+query II
 SELECT * FROM integers, LATERAL (SELECT integers.*) t2(k) ORDER BY i;
 ----
-* expression
+NULL	NULL
+1	1
+2	2
+3	3
 
 statement error
 SELECT * FROM integers, LATERAL (SELECT *) t2(k) ORDER BY i;

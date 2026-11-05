@@ -1,0 +1,30 @@
+# name: test/sql/join/external/external_join_repartition_probe_side.test
+# description: External hash join repartitioning under tight memory limits
+# group: [external]
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+foreach memory_limit 10000KB 10500KB 11000KB 11500KB 12000KB 13000KB
+
+statement ok
+SET memory_limit='{memory_limit}';
+
+statement maybe
+SELECT count(*) FROM range(300000) a(k) JOIN range(300000) b(k) USING (k);
+----
+Out of Memory Error
+
+endloop
+
+endloop
+
+statement ok
+RESET memory_limit;
+
+query I
+SELECT count(*) FROM range(300000) a(k) JOIN range(300000) b(k) USING (k);
+----
+300000

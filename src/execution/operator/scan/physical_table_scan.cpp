@@ -201,7 +201,7 @@ SourceResultType PhysicalTableScan::GetDataInternal(ExecutionContext &context, D
 					return SourceResultType::BLOCKED;
 				}
 			}
-			data.async_result.ExecuteTasksSynchronously();
+			data.async_result.ExecuteTasksSynchronously(context.client);
 			return SourceResultType::HAVE_MORE_OUTPUT;
 		}
 		return AsyncResult::GetSourceResultType(output_async_result, chunk.size());

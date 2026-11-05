@@ -1,0 +1,43 @@
+# name: test/sql/storage/temp_directory/offload_small_transient_segments_no_optimistic_write.test
+# description: Transaction-local data that is not written optimistically can be offloaded and checkpointed
+# group: [temp_directory]
+
+# the memory limit below is calibrated for the default 256KB block size
+require block_size 262144
+
+# too slow with tiny vectors
+require vector_size 2048
+
+load {TEST_DIR}/offload_small_transient_segments_no_optimistic_write.db
+
+statement ok
+SET memory_limit='32MB'
+
+statement ok
+SET threads=4
+
+statement ok
+SET enable_optimistic_write=false
+
+statement ok
+CREATE TABLE t AS
+SELECT i,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE i::INTEGER END AS j,
+       {'a': i, 'b': CASE WHEN i % 3 = 0 THEN NULL ELSE i * 2 END} AS s,
+       [i, CASE WHEN i % 5 = 0 THEN NULL ELSE i + 1 END] AS l
+FROM range(8000000) t(i);
+
+statement ok
+CHECKPOINT
+
+restart
+
+query IIIIIII
+SELECT COUNT(*), SUM(i), COUNT(j), SUM(j), COUNT(s.b), SUM(s.b), SUM(list_sum(l)) FROM t
+----
+8000000	31999996000000	6857142	27428564571429	5333333	42666661333334	57600002400000
+
+query I
+SELECT COUNT(*) FROM t WHERE (j IS NULL) != (i % 7 = 0) OR (s.b IS NULL) != (i % 3 = 0) OR (l[2] IS NULL) != (i % 5 = 0)
+----
+0

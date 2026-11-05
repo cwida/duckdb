@@ -1,0 +1,34 @@
+# name: test/sql/pragma/profiling/profiling_output_not_allowed.test
+# description: Errors while writing the profiling output are reported as regular query errors
+# group: [profiling]
+
+statement ok
+SET enable_profiling='json'
+
+statement ok
+SET profiling_output='{TEST_DIR}/profiling_outside.json'
+
+statement ok
+SET allowed_directories=['{TEST_DIR}/profiling_allowed']
+
+# writing the profiling output of this statement can already fail
+statement maybe
+SET enable_external_access=false
+----
+Permission Error
+
+statement error
+SELECT 42
+----
+Permission Error: Cannot access file
+
+statement ok
+SET profiling_output=''
+
+statement ok
+SET enable_profiling='no_output'
+
+query I
+SELECT 44
+----
+44

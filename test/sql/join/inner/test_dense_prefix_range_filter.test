@@ -128,12 +128,13 @@ EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
 ----
 analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
 
-# Forced external joins use min/max filters, unless load factor reduction keeps the join in memory.
+# Forced external joins publish the sink-built bloom filter, a prefix range filter when load factor
+# reduction keeps the join in memory, or min/max filters when the bloom filter is not worth publishing.
 skipif external=false
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;
 ----
-analyzed_plan	<REGEX>:(?s).*(?:IN.*PRF.*\(k\)|Dynamic.*Filters:.*optional:.*\(k.*>=.*).*
+analyzed_plan	<REGEX>:(?s).*(?:IN.*(?:BF|PRF).*\(k\)|Dynamic.*Filters:.*optional:.*\(k.*>=.*).*
 
 query I
 SELECT count(*) FROM probe p JOIN build b ON p.k=b.k;

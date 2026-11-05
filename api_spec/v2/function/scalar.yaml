@@ -35,6 +35,12 @@ handles:
       The "exec" callback receives this handle and can use it to e.g. access the input argument vectors, 
       retrieve the number of rows to process, and write results to the output vector.
 
+  scalar_function_stats_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a scalar function during the "stats" phase of query
+      optimization. The "stats" callback receives this handle and can use it to read the statistics of the arguments
+      of the call site and narrow the statistics of its result.
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Callbacks
 #-----------------------------------------------------------------------------------------------------------------------
@@ -102,6 +108,20 @@ callbacks:
         indirection: 1
         description: Borrowed error info handle to use to report errors that occur during the callback.
     return_type: void
+
+  scalar_function_stats_callback:
+    parameters:
+      info:
+        type: scalar_function_stats_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
 #-----------------------------------------------------------------------------------------------------------------------
 # Functions
 #-----------------------------------------------------------------------------------------------------------------------
@@ -111,7 +131,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Creates a new scalar function through a factory.
 
@@ -144,7 +164,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the name of the scalar function.
 
@@ -169,7 +189,7 @@ functions:
 
   scalar_function_get_docs:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Returns the documentation of the function so it can be filled in.
 
@@ -195,7 +215,7 @@ functions:
 
   scalar_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Returns the function's signature so it can be configured.
 
@@ -222,7 +242,7 @@ functions:
 
   scalar_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets arbitrary user data on the scalar function.
 
@@ -246,7 +266,7 @@ functions:
 
   scalar_function_set_property:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-31" ]
+      - [ "unstable", "v2.0.0", "2026-08-31" ]
     description: |
       Sets a property on the scalar function.
 
@@ -272,7 +292,7 @@ functions:
 
   scalar_function_set_resolve_types_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-05" ]
+      - [ "unstable", "v2.0.0", "2026-10-05" ]
     description: |
       Sets the optional resolve types callback of the scalar function.
 
@@ -296,7 +316,7 @@ functions:
 
   scalar_function_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the optional bind callback of the scalar function.
 
@@ -320,7 +340,7 @@ functions:
 
   scalar_function_set_init_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the optional init callback of the scalar function.
 
@@ -342,7 +362,7 @@ functions:
 
   scalar_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the exec callback of the scalar function.
 
@@ -361,12 +381,35 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  scalar_function_set_stats_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Sets the optional stats callback of the scalar function.
+
+      The stats callback is invoked during query optimization for each call site of the function, after it has been
+      bound. Through its `[[scalar_function_stats_info]]` it reads the statistics of the arguments and narrows the
+      statistics of the result, which the engine then uses to simplify the query. A function without a stats callback
+      gives the engine no statistics for its result.
+    parameters:
+      function:
+        type: scalar_function
+        description: The function to set the stats callback of.
+      callback:
+        type: scalar_function_stats_callback
+        description: The stats callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   #---------------------------------------------------------------------------------------------------------------------
   # Resolve Types Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_resolve_types_set_return_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-05" ]
+      - [ "unstable", "v2.0.0", "2026-10-05" ]
     description: |
       Sets the concrete return type of the call site being bound.
 
@@ -391,7 +434,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-07" ]
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -419,7 +462,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_init_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the user data set via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -438,7 +481,7 @@ functions:
 
   scalar_function_init_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -457,7 +500,7 @@ functions:
 
   scalar_function_init_set_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the function's worker-local "init data" from the init callback.
 
@@ -483,7 +526,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the user data set via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -502,7 +545,7 @@ functions:
 
   scalar_function_exec_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -521,7 +564,7 @@ functions:
 
   scalar_function_exec_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the worker-local init data set by the function's init callback.
     parameters:
       info:
@@ -540,7 +583,7 @@ functions:
 
   scalar_function_exec_get_row_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Returns how many rows this execution must produce. The exec callback
       must write exactly this many rows to the result vector. Note that this
@@ -563,7 +606,7 @@ functions:
 
   scalar_function_exec_get_arg_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Returns how many argument vectors this invocation carries, split into the four parts of the argument list.
 
@@ -602,7 +645,7 @@ functions:
 
   scalar_function_exec_get_arg:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Retrieves the argument vector at the given index.
 
@@ -629,7 +672,7 @@ functions:
 
   scalar_function_exec_get_result:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Retrieves the result vector the exec callback must write into.
 
@@ -651,11 +694,143 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
+  # Stats Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  scalar_function_stats_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the user data set via `[[scalar_function_set_user_data]]`.
+    parameters:
+      info:
+        type: scalar_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  scalar_function_stats_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: scalar_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  scalar_function_stats_get_arg_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Returns how many arguments the call site has, split into the four parts of the argument list.
+
+      The parts and their order are those the bind callback saw through `[[function_bind_get_arg_count]]`, and the
+      arguments are at the same indices. Valid indices for `[[scalar_function_stats_get_arg_stats]]` are [0, the sum of
+      the four counts). Every out-parameter may be NULL, in which case nothing is written to it.
+    parameters:
+      info:
+        type: scalar_function_stats_info
+        description: The stats info handle.
+      positional_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of positional-only and standard parameters.
+      positional_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `*args` received, 0 when the signature has none.
+      named_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of named-only parameters.
+      named_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `**kwargs` received, 0 when the signature has none.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  scalar_function_stats_get_arg_stats:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Retrieves the statistics of the argument at the given index.
+
+      The index is the one the bind callback used for the argument. The statistics are read-only. Fails if the index
+      is out of bounds. Borrowed; valid only for the duration of the callback.
+    parameters:
+      info:
+        type: scalar_function_stats_info
+        description: The stats info handle.
+      index:
+        type: idx
+        description: The index of the argument.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed, read-only statistics of the argument.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  scalar_function_stats_get_result_stats:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Retrieves the statistics of the call site's result, for the callback to narrow.
+
+      The statistics start out unknown, with every kind of value possible. Borrowed; valid only for the
+      duration of the callback.
+    parameters:
+      info:
+        type: scalar_function_stats_info
+        description: The stats info handle.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed, writable statistics of the call site's result.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  #---------------------------------------------------------------------------------------------------------------------
   # Register
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_scalar_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Registers the scalar function, making it available for use in SQL queries.
 
@@ -683,7 +858,7 @@ functions:
 
   extension_register_scalar_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Registers the scalar function, making it available for use in SQL queries.
 
@@ -713,7 +888,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Destroys the scalar function, releasing its resources.
 

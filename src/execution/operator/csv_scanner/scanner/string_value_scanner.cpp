@@ -673,7 +673,7 @@ void StringValueResult::AddValue(StringValueResult &result, const idx_t buffer_p
 		AddQuotedValue(result, buffer_pos - result.extra_delimiter_bytes);
 	} else if (result.escaped) {
 		AddPossiblyEscapedValue(result, buffer_pos, result.buffer_ptr + result.last_position.buffer_pos,
-		                        buffer_pos - result.last_position.buffer_pos, false);
+		                        result.HandleMultiDelimiter(buffer_pos), false);
 	} else {
 		result.AddValueToVector(result.buffer_ptr + result.last_position.buffer_pos,
 		                        result.HandleMultiDelimiter(buffer_pos));
@@ -1329,9 +1329,9 @@ void StringValueScanner::ProcessExtraRow() {
 			}
 			result.SetQuoted(result, iterator.pos.buffer_pos);
 			iterator.pos.buffer_pos++;
-			while (state_machine->transition_array
-			           .skip_quoted[static_cast<uint8_t>(buffer_handle_ptr[iterator.pos.buffer_pos])] &&
-			       iterator.pos.buffer_pos < to_pos - 1) {
+			while (iterator.pos.buffer_pos < to_pos - 1 &&
+			       state_machine->transition_array
+			           .skip_quoted[static_cast<uint8_t>(buffer_handle_ptr[iterator.pos.buffer_pos])]) {
 				iterator.pos.buffer_pos++;
 			}
 			break;
@@ -1529,19 +1529,29 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 	bool skip_value = false;
 	if (result.projecting_columns) {
-		if (!result.projected_columns[result.cur_col_id] && result.cur_col_id != result.number_of_columns) {
+		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;
 			skip_value = true;
 		}
 	}
 	if (!skip_value) {
 		string_t value;
+		const auto &delimiter = result.state_machine.dialect_options.state_machine_options.delimiter.GetValue();
+		const idx_t extra_delimiter_bytes = states.IsDelimiter() && !delimiter.empty() ? delimiter.size() - 1 : 0;
+		bool removed_extra_delimiter_bytes = false;
 		if (result.quoted && !result.comment) {
 			idx_t length = over_buffer_string.size() - 1 - result.quoted_position;
 			while (length > 0 && result.ignore_empty_values &&
 			       over_buffer_string.c_str()[result.quoted_position + length] == ' ') {
 				length--;
 			}
+			// remove the extra delimiter bytes before removing escapes, which can change the length of the value
+			if (extra_delimiter_bytes > length) {
+				throw InternalException(
+				    "Value size is lower than the number of extra delimiter bytes in the ProcessOverBufferValue()");
+			}
+			length -= extra_delimiter_bytes;
+			removed_extra_delimiter_bytes = true;
 			value = string_t(over_buffer_string.c_str() + result.quoted_position, UnsafeNumericCast<uint32_t>(length));
 			if (result.escaped) {
 				if (result.cur_col_id >= result.number_of_columns &&
@@ -1566,12 +1576,11 @@ void StringValueScanner::ProcessOverBufferValue() {
 						}
 						return;
 					}
-					value =
-					    RemoveEscape(str_ptr, over_buffer_string.size() - 2,
-					                 state_machine->dialect_options.state_machine_options.escape.GetValue(),
-					                 state_machine->dialect_options.state_machine_options.quote.GetValue(),
-					                 result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
-					                 result.parse_chunk.data[result.chunk_col_id]);
+					value = RemoveEscape(
+					    str_ptr, length, state_machine->dialect_options.state_machine_options.escape.GetValue(),
+					    state_machine->dialect_options.state_machine_options.quote.GetValue(),
+					    result.state_machine.dialect_options.state_machine_options.strict_mode.GetValue(),
+					    result.parse_chunk.data[result.chunk_col_id]);
 				}
 			}
 		} else {
@@ -1611,10 +1620,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 			result.EmptyLine(result, iterator.pos.buffer_pos);
 		} else if (!states.IsNotSet() && (!result.comment || !value.Empty())) {
 			idx_t value_size = value.GetSize();
-			if (states.IsDelimiter() &&
-			    !result.state_machine.dialect_options.state_machine_options.delimiter.GetValue().empty()) {
-				idx_t extra_delimiter_bytes =
-				    result.state_machine.dialect_options.state_machine_options.delimiter.GetValue().size() - 1;
+			if (!removed_extra_delimiter_bytes) {
 				if (extra_delimiter_bytes > value_size) {
 					throw InternalException(
 					    "Value size is lower than the number of extra delimiter bytes in the ProcessOverBufferValue()");
@@ -1758,12 +1764,16 @@ bool StringValueScanner::FirstValueEndsOnQuote(CSVIterator iterator) const {
 	CSVStates current_state;
 	current_state.Initialize(CSVState::STANDARD);
 	const idx_t to_pos = iterator.GetEndPos();
+	const auto quote = state_machine->dialect_options.state_machine_options.quote.GetValue();
+	const auto start_pos = iterator.pos.buffer_pos;
 	while (iterator.pos.buffer_pos < to_pos) {
 		state_machine->Transition(current_state, buffer_handle_ptr[iterator.pos.buffer_pos++]);
 		if (current_state.IsState(CSVState::DELIMITER) || current_state.IsState(CSVState::CARRIAGE_RETURN) ||
 		    current_state.IsState(CSVState::RECORD_SEPARATOR)) {
-			return buffer_handle_ptr[iterator.pos.buffer_pos - 2] ==
-			       state_machine->dialect_options.state_machine_options.quote.GetValue();
+			// a value that also starts with a quote is a regular quoted value
+			const auto value_end = iterator.pos.buffer_pos - 2;
+			return value_end > start_pos && buffer_handle_ptr[value_end] == quote &&
+			       buffer_handle_ptr[start_pos] != quote;
 		}
 	}
 	return false;

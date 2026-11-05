@@ -82,7 +82,7 @@ void PragmaDatabaseSizeFunction(ClientContext &context, TableFunctionInput &data
 
 	for (; data.index < data.databases.size() && row < STANDARD_VECTOR_SIZE; data.index++) {
 		auto &db = *data.databases[data.index];
-		if (db.IsSystem() || db.IsTemporary()) {
+		if (db.IsSystem() || db.IsTemporary() || db.GetVisibility() == AttachVisibility::HIDDEN) {
 			continue;
 		}
 		auto ds = db.GetCatalog().GetDatabaseSize(context);

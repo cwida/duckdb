@@ -85,6 +85,9 @@ static collation_element_t MakeElement(uint32_t primary, uint32_t secondary, uin
 //! Returns the position of a Han character in radical/stroke order, or false if it is not a Han character
 static bool GetHanIndex(const CollationRoot &root, uint32_t codepoint, uint32_t &result) {
 	// only the ranges of the block the code point is in have to be searched
+	if (codepoint >= 0x110000) {
+		return false;
+	}
 	uint32_t lower = root.han_block_lower[codepoint >> HAN_BLOCK_SHIFT];
 	uint32_t upper = root.han_block_upper[codepoint >> HAN_BLOCK_SHIFT];
 	while (lower < upper) {
@@ -124,6 +127,9 @@ static collation_element_t ImplicitElement(const CollationRoot &root, uint32_t c
 }
 
 static uint32_t LookupValue(const CollationTable &table, uint32_t codepoint) {
+	if (codepoint >= 0x110000) {
+		return 0;
+	}
 	auto block = table.trie_stage1[codepoint >> COLLATION_TRIE_SHIFT];
 	return table.trie_stage2[block + (codepoint & COLLATION_TRIE_MASK)];
 }

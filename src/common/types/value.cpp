@@ -625,15 +625,15 @@ bool Value::StringIsValid(const char *str, idx_t length) {
 	return utf_type != UnicodeType::INVALID;
 }
 
-Value Value::DECIMAL(int16_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int16_t value, uint32_t width, uint32_t scale) {
 	return Value::DECIMAL(int64_t(value), width, scale);
 }
 
-Value Value::DECIMAL(int32_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int32_t value, uint32_t width, uint32_t scale) {
 	return Value::DECIMAL(int64_t(value), width, scale);
 }
 
-Value Value::DECIMAL(int64_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 	auto decimal_type = LogicalType::DECIMAL(width, scale);
 	Value result(decimal_type);
 	switch (decimal_type.InternalType()) {
@@ -655,7 +655,7 @@ Value Value::DECIMAL(int64_t value, uint8_t width, uint8_t scale) {
 	return result;
 }
 
-Value Value::DECIMAL(hugeint_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT64 && width <= Decimal::MAX_WIDTH_INT128);
 	Value result(LogicalType::DECIMAL(width, scale));
 	result.value_.hugeint = value;
@@ -1220,7 +1220,7 @@ Value Value::CreateValue(Value value) {
 template <class T>
 T Value::GetValueInternal() const {
 	if (IsNull()) {
-		throw InternalException("Calling GetValueInternal on a value that is NULL");
+		InternalException::Throw("Calling GetValueInternal on a value that is NULL");
 	}
 	switch (type_.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -1285,7 +1285,7 @@ T Value::GetValueInternal() const {
 		case PhysicalType::UINT32:
 			return Cast::Operation<uint32_t, T>(value_.uinteger);
 		default:
-			throw InternalException("Invalid Internal Type for ENUMs");
+			InternalException::Throw("Invalid Internal Type for ENUMs");
 		}
 	}
 	default:
@@ -2511,6 +2511,10 @@ bool Value::IsValid() const {
 Value Value::Deserialize(Deserializer &deserializer) {
 	auto type = deserializer.ReadPropertyWithExplicitDefault<LogicalType>(100, "type", LogicalTypeId::INVALID);
 	if (type.InternalType() == PhysicalType::INVALID) {
+		if (type.id() != LogicalTypeId::INVALID) {
+			throw SerializationException("Failed to deserialize value: type %s is missing its type info",
+			                             EnumUtil::ToString(type.id()));
+		}
 		type = deserializer.Get<const LogicalType &>();
 	}
 	auto is_null = deserializer.ReadProperty<bool>(101, "is_null");

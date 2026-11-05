@@ -15,7 +15,10 @@ import csv
 import json
 import os
 import re
+import shlex
 import subprocess
+import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -438,8 +441,9 @@ SELECT 1
 """
     result = run(body, "--temp-dir-root", str(tmp_path / "b"), "--run-id", "R", "--emit-test-events")
     emitted = events(result)
-    assert [e["event"] for e in emitted] == ["begin", "end"], emitted
-    assert emitted[0]["temp_dir"] == emitted[1]["temp_dir"]
+    assert [e["event"] for e in emitted] == ["begin", "execution-begin", "execution-complete", "end"], emitted
+    assert emitted[0]["version"] == 2
+    assert all(e["temp_dir"] == emitted[0]["temp_dir"] for e in emitted)
     assert emitted[0]["temp_dir"].endswith("/R/_stdin_"), emitted[0]["temp_dir"]
 
 
@@ -448,6 +452,113 @@ def test_events_carry_the_driver_supplied_prefix(run, tmp_path):
     result = run(TRIVIAL, "--temp-dir-root", str(root), "--emit-test-events")
     for event in events(result):
         assert event["temp_dir"].startswith(str(root))
+
+
+@pytest.mark.parametrize("body", [TRIVIAL, TRIVIAL + "\nendloop\n"])
+def test_execution_complete_precedes_cleanup_hang(unittest_bin, duckdb_root, tmp_path, body):
+    capture = tmp_path / "stderr"
+    with capture.open("w") as stderr:
+        proc = subprocess.Popen(
+            [
+                str(unittest_bin),
+                "--test-dir",
+                str(duckdb_root),
+                "--stdin",
+                "--emit-test-events",
+                "--temp-dir-root",
+                str(tmp_path / "temp"),
+                "--on-cleanup",
+                "SELECT sum(sin(a.i + b.i)) FROM range(1000000000) a(i), range(1000000000) b(i)",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+            text=True,
+        )
+        try:
+            proc.communicate(body, timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+        else:
+            pytest.fail(f"cleanup did not hang:\n{capture.read_text()}")
+    emitted = events(subprocess.CompletedProcess([], proc.returncode, "", capture.read_text()))
+    assert [e["event"] for e in emitted] == ["begin", "execution-begin", "execution-complete"], emitted
+    assert emitted[2]["status"] == ("ok" if body == TRIVIAL else "error")
+
+
+@pytest.mark.parametrize(
+    "mode", ["body", "init_script", "init_query", "cleanup_script", "cleanup_query", "caught_error", "worker_error"]
+)
+def test_timeout_policy_with_real_lifecycle(unittest_bin, duckdb_root, tmp_path, mode):
+    body = TRIVIAL
+    flags = ["--test-dir", str(duckdb_root), "--temp-dir-root", str(tmp_path / "temp"), "--max-test-threads", "2"]
+    if mode == "body":
+        body += "\nsleep 60 second\n"
+    elif mode in ("cleanup_script", "init_script"):
+        script = tmp_path / "hook.test"
+        script.write_text("sleep 60 second\n")
+        flags += ["--cleanup-sqllogic" if mode == "cleanup_script" else "--init-sqllogic", str(script)]
+    elif mode in ("cleanup_query", "caught_error", "init_query"):
+        flags += [
+            "--on-init" if mode == "init_query" else "--on-cleanup",
+            "SELECT sum(sin(a.i + b.i)) FROM range(1000000000) a(i), range(1000000000) b(i)",
+        ]
+        if mode == "caught_error":
+            body += "\nendloop\n"
+    else:
+        body += """
+concurrentloop i 0 2
+
+onlyif i=0
+statement ok named_connection
+SELECT 1
+
+onlyif i=1
+sleep 60 second
+
+endloop
+"""
+    test = tmp_path / "probe.test"
+    test.write_text(body)
+    test_list = tmp_path / "tests"
+    test_list.write_text(str(test) + "\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(duckdb_root / "scripts/ci/run_tests.py"),
+            str(unittest_bin),
+            "--test-list",
+            str(test_list),
+            "--test-flags",
+            shlex.join(flags),
+            "--batch-size",
+            "1",
+            "--batch-timeout",
+            "2",
+            "--timeout-policy",
+            "warn",
+            "--max-retries",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key != "GITHUB_STEP_SUMMARY" and not key.startswith("DUCKDB_TEST_")
+        },
+    )
+    assert result.returncode == (0 if mode == "body" else 1), result.stdout + result.stderr
+    if mode == "body":
+        assert "0 passed, 0 skipped, 1 timed out" in result.stdout
+    else:
+        assert "0 passed, 1 failed" in result.stdout
+        assert "error: timeout (2s)" in result.stdout
+        assert "warn: timeout" not in result.stdout
+        if mode == "worker_error":
+            assert "Named connections not supported in parallel loop" in result.stdout
 
 
 # -----------------------------------------------------------------------------
@@ -517,6 +628,17 @@ SELECT '{ONE}', '{TWO}'
 # -----------------------------------------------------------------------------
 # Option surface: CLI, DUCKDB_TEST_<NAME> and --test-config must agree
 #
+
+
+def test_auto_run_id_is_compact_uuid(probe, tmp_path):
+    """Keep full UUID entropy without consuming path space on a timestamp or mnemonic."""
+    identifiers = [probe("--temp-dir-root", str(tmp_path / "root"))["run_id"] for _ in range(2)]
+    for identifier in identifiers:
+        random_id = uuid.UUID(identifier)
+        assert str(random_id) == identifier
+        assert random_id.version == 4
+        assert random_id.variant == uuid.RFC_4122
+    assert identifiers[0] != identifiers[1]
 
 
 def test_run_id_via_cli_env_and_config_agree(probe, tmp_path):

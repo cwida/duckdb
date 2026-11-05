@@ -932,7 +932,7 @@ TEST_CASE("V2: statement_type numeric round-trip for higher-numbered values", "[
 	} cases[] = {
 	    {"EXPLAIN SELECT 1", DUCKDB_V2_STATEMENT_TYPE_EXPLAIN},          // 14
 	    {"DROP TABLE t", DUCKDB_V2_STATEMENT_TYPE_DROP},                 // 15
-	    {"PRAGMA enable_progress_bar", DUCKDB_V2_STATEMENT_TYPE_PRAGMA}, // 17
+	    {"PRAGMA disable_profiling", DUCKDB_V2_STATEMENT_TYPE_PRAGMA},   // 17
 	    {"SET memory_limit='1GB'", DUCKDB_V2_STATEMENT_TYPE_SET},        // 20
 	    {"ATTACH ':memory:' AS other", DUCKDB_V2_STATEMENT_TYPE_ATTACH}, // 25
 	};
@@ -1091,7 +1091,7 @@ TEST_CASE("V2: a statement that expands into a group is refused while another st
 //! Executes through the Arrow entry point, destroying any result
 DUCKDB_V2_ERROR ExecuteArrow(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_arrow_result_handle result = nullptr;
@@ -1147,11 +1147,11 @@ public:
 TEST_CASE("V2: a cancel requested while a statement is submitted cancels it", "[capi_v2][query_result]") {
 	EnvFixture fx;
 	auto &con = *reinterpret_cast<duckdb::Connection *>(fx.conn);
-	con.context->registered_state->Insert("cancel_while_planning",
-	                                      duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
+	con.context->Services().GetRegisteredState().Insert("cancel_while_planning",
+	                                                    duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(fx.conn, "SELECT 42", &result) == DUCKDB_V2_ERROR_NONE);
-	con.context->registered_state->Remove("cancel_while_planning");
+	con.context->Services().GetRegisteredState().Remove("cancel_while_planning");
 
 	duckdb_v2_data_chunk_handle chunk = nullptr;
 	auto status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
@@ -1639,7 +1639,7 @@ TEST_CASE("V2: statement_bind on a statement that expands reports deferred metad
 	for (const char *sql :
 	     {"PIVOT sales ON year USING sum(amount)", "ALTER TABLE sales ADD COLUMN c DOUBLE DEFAULT random()"}) {
 		duckdb_v2_statement_iterator_handle iter = nullptr;
-		REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_sql_statement_handle stmt = nullptr;
 		REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_schema_handle out = nullptr;

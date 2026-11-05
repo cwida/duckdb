@@ -124,9 +124,6 @@ public:
 		return radix_bits;
 	}
 
-	void ResetAppendState(PartitionedTupleDataAppendState &state,
-	                      TupleDataPinProperties properties = TupleDataPinProperties::UNPIN_AFTER_DONE) const override;
-
 private:
 	void Initialize();
 
@@ -134,12 +131,10 @@ protected:
 	//===--------------------------------------------------------------------===//
 	// Radix Partitioning interface implementation
 	//===--------------------------------------------------------------------===//
-	void InitializeAppendStateInternal(PartitionedTupleDataAppendState &state,
-	                                   TupleDataPinProperties properties) const override;
 	void ComputePartitionIndices(PartitionedTupleDataAppendState &state, DataChunk &input,
 	                             const SelectionVector &append_sel, const idx_t append_count) override;
 	void ComputePartitionIndices(Vector &row_locations, idx_t count, Vector &partition_indices,
-	                             unique_ptr<Vector> &utility_vector) const override;
+	                             unique_ptr<Vector> &utility_vector, const SelectionVector &append_sel) const override;
 	idx_t MaxPartitionIndex() const override {
 		return RadixPartitioning::NumberOfPartitions(radix_bits) - 1;
 	}

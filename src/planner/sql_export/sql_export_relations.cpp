@@ -179,7 +179,8 @@ LogicalPlanSQLExportResult LogicalProjection::ToSQL(LogicalPlanSQLExportContext 
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
 	D_ASSERT(projection.expressions.size() == fields.GetValue().size());
-	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN;
+	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN &&
+	                !export_context.FindSource(*projection.children[0]);
 	auto child =
 	    export_context.ExportChild(*projection.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
 	if (child.HasError()) {
@@ -233,6 +234,9 @@ ExportOrderModifier(LogicalOperator &op, LogicalPlanSQLExportContext &context, c
 		if (expression.HasError()) {
 			return Result::Failure(expression);
 		}
+		if (SQLExportHelpers::IsConstantOrderKey(*order.expression, *expression.GetValue())) {
+			continue;
+		}
 		modifier->orders.emplace_back(
 		    order.type, order.null_order,
 		    SQLExportHelpers::OrderExpression(SemanticExpressionType(*order.expression, expression_context),
@@ -261,6 +265,10 @@ static LogicalPlanSQLExportResult ExportOrderedRelation(LogicalOperator &op, Log
 	auto modifier = ExportOrderModifier(op, context, path, orders, expression_context, 0);
 	if (modifier.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(modifier);
+	}
+	if (modifier.GetValue()->orders.empty()) {
+		LogicalPlanSQLExportHelpers::SetChildScope(*select, std::move(child.GetValue()), plain);
+		return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields.GetValue())});
 	}
 	select->modifiers.push_back(std::move(modifier.GetValue()));
 	if (!plain && LogicalPlanSQLExportHelpers::ComposeOrder(op, child.GetValue(), *select, expression_context, path)) {
@@ -422,6 +430,10 @@ LogicalPlanSQLExportResult LogicalAggregate::ToSQL(LogicalPlanSQLExportContext &
 		}
 		select->groups.grouping_sets.push_back(std::move(all_groups));
 	}
+	if (select->groups.grouping_sets.empty() && aggregate.expressions.empty()) {
+		// GROUP BY () keeps an aggregate without groups or aggregates producing a single row
+		select->groups.grouping_sets.emplace_back();
+	}
 	for (auto &grouping : aggregate.grouping_functions) {
 		vector<unique_ptr<ParsedExpression>> arguments;
 		for (auto index : grouping) {
@@ -469,7 +481,9 @@ LogicalPlanSQLExportResult LogicalDistinct::ToSQL(LogicalPlanSQLExportContext &c
 		if (order.HasError()) {
 			return LogicalPlanSQLExportResult::Failure(order);
 		}
-		select->modifiers.push_back(std::move(order.GetValue()));
+		if (!order.GetValue()->orders.empty()) {
+			select->modifiers.push_back(std::move(order.GetValue()));
+		}
 	}
 	select->from_table = LogicalPlanSQLExportHelpers::CreateSubquery(std::move(child.GetValue()));
 	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields.GetValue())});

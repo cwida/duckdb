@@ -1,0 +1,29 @@
+# name: test/optimizer/topn_window_elimination_filter_above_null.test
+# description: Top-N window elimination below a filter that rejects NULLs of the window payload
+# group: [optimizer]
+
+statement ok
+CREATE TABLE l(k INT);
+
+statement ok
+INSERT INTO l VALUES (1);
+
+statement ok
+CREATE TABLE r(id INT, k INT, v INT);
+
+statement ok
+INSERT INTO r VALUES (1, 1, NULL), (2, 1, -5), (3, 2, 5);
+
+query II
+SELECT * FROM l JOIN LATERAL (SELECT r.v FROM r WHERE r.k = l.k ORDER BY r.id LIMIT 1) r ON true WHERE r.v <= 0;
+----
+
+query II
+SELECT * FROM l JOIN LATERAL (SELECT r.v FROM r WHERE r.k = l.k ORDER BY r.id LIMIT 1) r ON true;
+----
+1	NULL
+
+query II
+SELECT * FROM l JOIN LATERAL (SELECT r.v FROM r WHERE r.k = l.k ORDER BY r.id DESC LIMIT 1) r ON true WHERE r.v <= 0;
+----
+1	-5

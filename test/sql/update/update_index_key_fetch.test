@@ -1,0 +1,205 @@
+# name: test/sql/update/update_index_key_fetch.test
+# description: Updating an indexed column keeps the old keys of all unique indexes, also for columns not updated
+# group: [update]
+
+statement ok
+CREATE TABLE t(id INTEGER PRIMARY KEY, name VARCHAR UNIQUE, payload VARCHAR, n BIGINT);
+
+statement ok
+INSERT INTO t SELECT i, 'name_' || i, repeat('x', i % 50) || i, i * 7 FROM range(5000) r(i);
+
+statement ok
+CHECKPOINT
+
+query I
+UPDATE t SET id = id + 100000 WHERE id % 2 = 0;
+----
+2500
+
+query IIII
+SELECT count(*), sum(id), count(DISTINCT name), sum(n) FROM t;
+----
+5000	262497500	5000	87482500
+
+query III
+SELECT id, name, payload = repeat('x', 42) || '42' FROM t WHERE name = 'name_42';
+----
+100042	name_42	true
+
+# the old keys of both unique indexes are tracked, so they can be reused in the same transaction
+statement ok
+BEGIN
+
+statement ok
+UPDATE t SET id = id + 1000000 WHERE id = 1;
+
+statement ok
+INSERT INTO t VALUES (1, 'other', 'p', 0);
+
+statement error
+INSERT INTO t VALUES (2, 'name_1', 'p', 0);
+----
+<REGEX>:Constraint Error:.*[Dd]uplicate key.*
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, name FROM t WHERE id IN (1, 1000001) ORDER BY id;
+----
+1	name_1
+
+query III
+UPDATE t SET id = id + 1 WHERE id = 3 RETURNING id, name, payload;
+----
+4	name_3	xxx3
+
+# a unique expression index reads a column that is not updated
+statement ok
+CREATE TABLE e(id INTEGER PRIMARY KEY, s VARCHAR);
+
+statement ok
+CREATE UNIQUE INDEX e_lower ON e(lower(s));
+
+statement ok
+INSERT INTO e SELECT i, 'Key_' || i FROM range(3000) r(i);
+
+# re-inserting the rows only succeeds if the old lower(s) keys are in the delete index
+statement ok
+UPDATE e SET id = id + 10000;
+
+statement error
+INSERT INTO e VALUES (1, 'KEY_5');
+----
+<REGEX>:Constraint Error:.*[Dd]uplicate key.*
+
+# once the updated row is deleted, its old expression key can be reused in the same transaction
+statement ok
+BEGIN
+
+statement ok
+UPDATE e SET id = id + 100000 WHERE id = 10005;
+
+statement ok
+DELETE FROM e WHERE id = 110005;
+
+statement ok
+INSERT INTO e VALUES (5, 'KEY_5');
+
+query II
+SELECT id, s FROM e WHERE lower(s) = 'key_5';
+----
+5	KEY_5
+
+statement ok
+ROLLBACK
+
+query II
+SELECT count(*), min(id) FROM e;
+----
+3000	10000
+
+# only a non-unique index: nothing needs to be fetched
+statement ok
+CREATE TABLE u(a INTEGER, s VARCHAR);
+
+statement ok
+CREATE INDEX u_a ON u(a);
+
+statement ok
+INSERT INTO u SELECT i, 's' || i FROM range(3000) r(i);
+
+statement ok
+UPDATE u SET a = a + 1;
+
+query III
+SELECT count(*), sum(a), max(s) FROM u WHERE a > 0;
+----
+3000	4501500	s999
+
+# the unique column is not adjacent to the updated indexed column
+statement ok
+CREATE TABLE g(a INTEGER, b VARCHAR, c INTEGER, d INTEGER UNIQUE);
+
+statement ok
+CREATE INDEX g_a ON g(a);
+
+statement ok
+INSERT INTO g SELECT i, 'b' || i, i, i FROM range(3000) r(i);
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE g SET a = a + 1 WHERE d = 5;
+
+statement ok
+DELETE FROM g WHERE d = 5;
+
+statement ok
+INSERT INTO g VALUES (0, 'x', 0, 5);
+
+statement ok
+COMMIT
+
+query IIII
+SELECT a, b, c, d FROM g WHERE d = 5;
+----
+0	x	0	5
+
+# transaction-local and committed rows are updated together
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO g SELECT i, 'b' || i, i, i FROM range(3000, 3100) r(i);
+
+query I
+UPDATE g SET a = a + 1;
+----
+3100
+
+statement error
+INSERT INTO g VALUES (0, 'x', 0, 3050);
+----
+<REGEX>:Constraint Error:.*[Dd]uplicate key.*
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO g SELECT i, 'b' || i, i, i FROM range(3000, 3100) r(i);
+
+statement ok
+UPDATE g SET a = a + 1;
+
+query IIII
+SELECT count(*), sum(a), count(DISTINCT d), max(d) FROM g;
+----
+3100	4806545	3100	3099
+
+statement ok
+ROLLBACK
+
+# UPDATE ... FROM with duplicate row-ids deduplicates them before fetching the old keys
+statement ok
+CREATE TABLE src AS SELECT i % 100 AS k FROM range(3000) r(i);
+
+statement ok
+CREATE TABLE h(k INTEGER PRIMARY KEY, v INTEGER, w INTEGER UNIQUE);
+
+statement ok
+INSERT INTO h SELECT i, i, i FROM range(100) r(i);
+
+query I
+UPDATE h SET k = h.k + 1000 FROM src WHERE h.k = src.k;
+----
+100
+
+query IIII
+SELECT count(*), min(k), max(k), sum(w) FROM h;
+----
+100	1000	1099	4950

@@ -24,6 +24,7 @@ public:
 	vector<unique_ptr<Expression>> select_list;
 
 public:
+	void InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const override;
 	unique_ptr<OperatorState> GetOperatorState(ExecutionContext &context) const override;
 	OperatorResultType Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
 	                           GlobalOperatorState &gstate, OperatorState &state) const override;

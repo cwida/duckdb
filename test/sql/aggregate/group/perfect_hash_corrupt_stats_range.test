@@ -1,0 +1,24 @@
+# name: test/sql/aggregate/group/perfect_hash_corrupt_stats_range.test
+# description: Reject clustered perfect hash group ids outside the range implied by corrupt statistics
+# group: [group]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/perfect_hash_corrupt_stats_range.db.gz {TEST_DIR}/perfect_hash_corrupt_stats_range.db
+
+load {TEST_DIR}/perfect_hash_corrupt_stats_range.db readonly
+
+statement ok
+USE perfect_hash_corrupt_stats_range;
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='compressed_materialization';
+
+# Statistics claim [300, 400], but a long run of 600 produces clustered group id 301.
+statement error
+SELECT g, count(*), sum(g) FROM t GROUP BY g;
+----
+Data Corruption Error: Perfect hash aggregate: aggregate group 301 exceeded total groups 128.

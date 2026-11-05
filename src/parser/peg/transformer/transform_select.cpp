@@ -318,9 +318,10 @@ PEGTransformerFactory::FinalizeSimpleSelectTrampoline(PEGTransformer &transforme
 }
 
 FunctionArgument PEGTransformerFactory::TransformNamedFunctionArgument(PEGTransformer &transformer,
-                                                                       MacroParameter named_parameter) {
-	named_parameter.expression->SetAlias(named_parameter.name);
-	return FunctionArgument(named_parameter.name, std::move(named_parameter.expression));
+                                                                       const Identifier &type_func_name,
+                                                                       unique_ptr<ParsedExpression> expression) {
+	expression->SetAlias(type_func_name);
+	return FunctionArgument(type_func_name, std::move(expression));
 }
 
 FunctionArgument PEGTransformerFactory::TransformPositionalFunctionArgument(PEGTransformer &transformer,
@@ -774,7 +775,10 @@ JoinType PEGTransformerFactory::TransformInnerJoin(PEGTransformer &transformer) 
 unique_ptr<TableRef> PEGTransformerFactory::TransformTableFunctionLateralOpt(
     PEGTransformer &transformer, const optional<bool> &lateral, const QualifiedName &qualified_table_function,
     vector<FunctionArgument> table_function_arguments, const optional<bool> &with_ordinality,
-    const optional<TableAlias> &table_alias) {
+    const optional<TableAlias> &table_alias, optional<unique_ptr<SampleOptions>> sample_clause) {
+	if (lateral.value_or(false) && sample_clause) {
+		throw ParserException("TABLESAMPLE cannot be applied to a LATERAL table function");
+	}
 	auto result = make_uniq<TableFunctionRef>();
 
 	result->with_ordinality =
@@ -783,6 +787,9 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTableFunctionLateralOpt(
 	if (table_alias) {
 		result->alias = table_alias->name;
 		result->column_name_alias = table_alias->column_name_alias;
+	}
+	if (sample_clause) {
+		result->sample = std::move(*sample_clause);
 	}
 	return std::move(result);
 }
@@ -929,6 +936,7 @@ vector<GroupingSet> PEGTransformerFactory::GroupByExpressionUnfolding(GroupByExp
 		for (auto &child_expr : group_by_expr.children) {
 			auto child_sets = GroupByExpressionUnfolding(child_expr, map, result);
 			result_sets.insert(result_sets.end(), child_sets.begin(), child_sets.end());
+			CheckGroupingSetMax(result_sets.size());
 		}
 	} else if (group_by_expr.type == GroupByExpressionInfoType::CUBE ||
 	           group_by_expr.type == GroupByExpressionInfoType::ROLLUP) {
@@ -1041,37 +1049,49 @@ void PEGTransformerFactory::InitializeWithClauseTrampoline(PEGTransformer &trans
                                                            GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	auto with_statement_list = ExtractParseResultsFromList(list_pr.Child<ListParseResult>(2));
-	process.ReserveChildSlots(with_statement_list.size());
-	for (idx_t i = with_statement_list.size(); i > 0; i--) {
-		auto child_idx = i - 1;
-		process.PushChild({with_statement_list[child_idx].get()}, child_idx);
-	}
+	auto entry_count = with_statement_list.size();
+	// the last slot holds the CTE map that is built up while the CTEs are transformed
+	process.ReserveChildSlots(entry_count + 1);
+	process.SetChildResult(entry_count, transformer.MakeResult<CommonTableExpressionMap>(CommonTableExpressionMap()));
+	// earlier CTEs are visible while transforming later ones (e.g. for PIVOT enum extraction)
+	transformer.stored_cte_map.push_back(process.GetResult<CommonTableExpressionMap>(entry_count));
+	process.manual_state = 0;
+	process.PushChild({with_statement_list[0].get()}, 0);
 }
 
 arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	bool is_recursive = list_pr.Child<OptionalParseResult>(1).HasResult();
-	CommonTableExpressionMap result;
-	for (idx_t entry_idx = 0; entry_idx < process.child_results.size(); entry_idx++) {
-		auto with_entry = process.TakeResult<pair<Identifier, unique_ptr<CommonTableExpressionInfo>>>(entry_idx);
-		if (is_recursive) {
-			auto &query_node = with_entry.second->query_node;
-			if (!query_node) {
-				throw ParserException("Recursive CTEs with DML statements are not supported");
-			}
-			ValidateRecursiveCTEQueryNode(*query_node);
-			query_node = ToRecursiveCTE(std::move(query_node), with_entry.first, with_entry.second->aliases,
-			                            with_entry.second->key_targets);
+	auto entry_count = process.child_results.size() - 1;
+	auto &result = process.GetResult<CommonTableExpressionMap>(entry_count);
+
+	auto entry_idx = process.manual_state;
+	auto with_entry = process.TakeResult<pair<Identifier, unique_ptr<CommonTableExpressionInfo>>>(entry_idx);
+	if (is_recursive) {
+		auto &query_node = with_entry.second->query_node;
+		if (!query_node) {
+			throw ParserException("Recursive CTEs with DML statements are not supported");
 		}
-		auto &cte_name = with_entry.first;
-		auto it = result.map.find(cte_name);
-		if (it != result.map.end()) {
-			throw ParserException("Duplicate CTE name %s", cte_name);
-		}
-		result.map.insert(with_entry.first, std::move(with_entry.second));
+		ValidateRecursiveCTEQueryNode(*query_node);
+		query_node = ToRecursiveCTE(std::move(query_node), with_entry.first, with_entry.second->aliases,
+		                            with_entry.second->key_targets);
 	}
-	return transformer.MakeResult<CommonTableExpressionMap>(std::move(result));
+	auto &cte_name = with_entry.first;
+	auto it = result.map.find(cte_name);
+	if (it != result.map.end()) {
+		throw ParserException("Duplicate CTE name %s", cte_name);
+	}
+	result.map.insert(with_entry.first, std::move(with_entry.second));
+
+	if (entry_idx + 1 < entry_count) {
+		process.manual_state = entry_idx + 1;
+		auto with_statement_list = ExtractParseResultsFromList(list_pr.Child<ListParseResult>(2));
+		process.PushChild({with_statement_list[entry_idx + 1].get()}, entry_idx + 1);
+		return nullptr;
+	}
+	transformer.stored_cte_map.pop_back();
+	return transformer.MakeResult<CommonTableExpressionMap>(process.TakeResult<CommonTableExpressionMap>(entry_count));
 }
 
 pair<Identifier, unique_ptr<CommonTableExpressionInfo>>
@@ -1353,9 +1373,13 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTableSubquery(PEGTransforme
                                                                    const optional<Identifier> &table_alias_colon,
                                                                    const optional<bool> &lateral,
                                                                    unique_ptr<TableRef> subquery_reference,
-                                                                   const optional<TableAlias> &table_alias) {
+                                                                   const optional<TableAlias> &table_alias,
+                                                                   optional<unique_ptr<SampleOptions>> sample_clause) {
 	if (table_alias_colon && table_alias) {
 		throw ParserException("Table reference %s cannot have two aliases", subquery_reference->ToString());
+	}
+	if (lateral.value_or(false) && sample_clause) {
+		throw ParserException("TABLESAMPLE cannot be applied to a LATERAL subquery");
 	}
 	if (table_alias_colon) {
 		subquery_reference->alias = *table_alias_colon;
@@ -1363,6 +1387,9 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTableSubquery(PEGTransforme
 	if (table_alias) {
 		subquery_reference->alias = table_alias->name;
 		subquery_reference->column_name_alias = table_alias->column_name_alias;
+	}
+	if (sample_clause) {
+		subquery_reference->sample = std::move(*sample_clause);
 	}
 	return subquery_reference;
 }
@@ -1400,7 +1427,8 @@ Identifier PEGTransformerFactory::TransformTableAliasColon(PEGTransformer &trans
 unique_ptr<TableRef> PEGTransformerFactory::TransformValuesRef(PEGTransformer &transformer,
                                                                const optional<Identifier> &table_alias_colon,
                                                                unique_ptr<SelectStatement> values_clause,
-                                                               const optional<TableAlias> &table_alias) {
+                                                               const optional<TableAlias> &table_alias,
+                                                               optional<unique_ptr<SampleOptions>> sample_clause) {
 	if (table_alias_colon && table_alias) {
 		throw ParserException("Table reference cannot have two aliases");
 	}
@@ -1411,6 +1439,9 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformValuesRef(PEGTransformer &t
 	if (table_alias) {
 		subquery_ref->alias = table_alias->name;
 		subquery_ref->column_name_alias = table_alias->column_name_alias;
+	}
+	if (sample_clause) {
+		subquery_ref->sample = std::move(*sample_clause);
 	}
 	return std::move(subquery_ref);
 }
@@ -1662,6 +1693,11 @@ unique_ptr<SampleOptions> PEGTransformerFactory::TransformSampleClause(PEGTransf
 	return sample_entry;
 }
 
+unique_ptr<SampleOptions> PEGTransformerFactory::TransformSelectSampleClause(PEGTransformer &transformer,
+                                                                             unique_ptr<SampleOptions> sample_entry) {
+	return sample_entry;
+}
+
 vector<unique_ptr<ParsedExpression>>
 PEGTransformerFactory::TransformWindowClause(PEGTransformer &transformer,
                                              vector<unique_ptr<ParsedExpression>> window_definition) {
@@ -1687,7 +1723,13 @@ optional_idx PEGTransformerFactory::TransformRepeatableSample(PEGTransformer &tr
 optional_idx PEGTransformerFactory::TransformSampleSeed(PEGTransformer &transformer,
                                                         unique_ptr<ParsedExpression> number_literal) {
 	auto &const_expr = number_literal->Cast<ConstantExpression>();
-	return optional_idx(const_expr.GetLiteral().ToValue().GetValue<idx_t>());
+	auto seed = const_expr.GetLiteral().ToValue().GetValue<idx_t>();
+	if (seed > static_cast<idx_t>(NumericLimits<int64_t>::Maximum())) {
+		// larger seeds are seen as "no seed" and give a different sample every time
+		throw ParserException("REPEATABLE seed %llu is out of range, the maximum is %lld", seed,
+		                      NumericLimits<int64_t>::Maximum());
+	}
+	return optional_idx(seed);
 }
 
 unique_ptr<SampleOptions> PEGTransformerFactory::TransformSampleCount(PEGTransformer &transformer,

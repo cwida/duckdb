@@ -1,12 +1,59 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/in_clause_rewriter.hpp"
+#include "duckdb/planner/expression/bound_between_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
+#include "duckdb/planner/operator/logical_empty_result.hpp"
 
 namespace duckdb {
 
 using Filter = FilterPushdown::Filter;
+
+static bool HasTransitiveJoinBounds(const vector<unique_ptr<Filter>> &filters) {
+	unordered_set<TableIndex> bound_tables;
+	for (auto &filter : filters) {
+		if (filter->bindings.size() != 1) {
+			continue;
+		}
+		auto &expr = *filter->filter;
+		bool has_bound = false;
+		if (BoundComparisonExpression::IsComparison(expr)) {
+			auto &comparison = expr.Cast<BoundFunctionExpression>();
+			has_bound = BoundComparisonExpression::Left(comparison).IsFoldable() ||
+			            BoundComparisonExpression::Right(comparison).IsFoldable();
+		} else if (expr.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
+			auto &between = expr.Cast<BoundFunctionExpression>();
+			has_bound = BoundBetweenExpression::LowerBound(between).IsFoldable() ||
+			            BoundBetweenExpression::UpperBound(between).IsFoldable();
+		}
+		if (has_bound) {
+			bound_tables.insert(*filter->bindings.begin());
+		}
+	}
+	if (bound_tables.empty()) {
+		return false;
+	}
+	for (auto &filter : filters) {
+		if (filter->bindings.size() < 2 || !BoundComparisonExpression::IsComparison(*filter->filter)) {
+			continue;
+		}
+		auto &comparison = filter->filter->Cast<BoundFunctionExpression>();
+		auto type = comparison.GetExpressionType();
+		if (type != ExpressionType::COMPARE_GREATERTHAN && type != ExpressionType::COMPARE_GREATERTHANOREQUALTO &&
+		    type != ExpressionType::COMPARE_LESSTHAN && type != ExpressionType::COMPARE_LESSTHANOREQUALTO) {
+			continue;
+		}
+		auto &right = BoundComparisonExpression::Right(comparison);
+		if (right.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF &&
+		    bound_tables.count(right.Cast<BoundColumnRefExpression>().Binding().table_index)) {
+			return true;
+		}
+	}
+	return false;
+}
 
 unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->children.size() > 1);
@@ -23,6 +70,13 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownCrossProduct(unique_ptr<Logi
 	}
 	unordered_set<TableIndex> left_bindings, right_bindings;
 	if (!filters.empty()) {
+		// Recombine useful join bounds before distributing filters to the inputs.
+		if (HasTransitiveJoinBounds(filters)) {
+			if (PushFilters() == FilterResult::UNSATISFIABLE) {
+				return make_uniq<LogicalEmptyResult>(std::move(op));
+			}
+			GenerateFilters();
+		}
 		// check to see into which side we should push the filters
 		// first get the LHS and RHS bindings
 		LogicalJoin::GetTableReferences(*op->children[0], left_bindings);

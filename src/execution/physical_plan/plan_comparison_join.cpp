@@ -247,7 +247,7 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		return join;
 	}
 
-	D_ASSERT(op.left_projection_map.empty());
+	// range joins apply both projection maps, the nested loop join only applies the left one of a MARK join
 	idx_t nested_loop_join_threshold = Settings::Get<NestedLoopJoinThresholdSetting>(context);
 	if (left.estimated_cardinality < nested_loop_join_threshold ||
 	    right.estimated_cardinality < nested_loop_join_threshold) {
@@ -273,6 +273,7 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 	}
 	if (PhysicalNestedLoopJoin::IsSupported(op.conditions, op.join_type)) {
 		// inequality join: use nested loop
+		D_ASSERT(op.left_projection_map.empty() || op.join_type == JoinType::MARK);
 		return Make<PhysicalNestedLoopJoin>(op, left, right, std::move(op.conditions), op.join_type,
 		                                    op.estimated_cardinality, std::move(op.filter_pushdown));
 	}
@@ -282,6 +283,7 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 			RewriteJoinCondition(cond.RightReference(), left.types.size());
 		}
 	}
+	D_ASSERT(op.left_projection_map.empty());
 	auto condition = JoinCondition::CreateExpression(std::move(op.conditions));
 	return Make<PhysicalBlockwiseNLJoin>(op, left, right, std::move(condition), op.join_type, op.estimated_cardinality);
 }

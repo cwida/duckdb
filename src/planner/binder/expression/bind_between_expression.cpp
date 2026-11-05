@@ -47,8 +47,8 @@ BindResult ExpressionBinder::BindExpression(BetweenExpression &expr, idx_t depth
 	PushCollation(context, lower, input_type);
 	PushCollation(context, upper, input_type);
 
-	if (!input->IsVolatile() && !input->HasParameter() && !input->HasSubquery()) {
-		// the expression does not have side effects and can be copied: create two comparisons
+	if (input->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+		// the input is a column reference and can be copied cheaply: create two comparisons
 		// the reason we do this is that individual comparisons are easier to handle in optimizers
 		// if both comparisons remain they will be folded together again into a single BETWEEN in the optimizer
 		auto left_compare = BoundComparisonExpression::Create(ExpressionType::COMPARE_GREATERTHANOREQUALTO,

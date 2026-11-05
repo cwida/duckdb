@@ -6,6 +6,8 @@ on:
         type: string
       duckdb_commit:
         type: string
+      is_release_build:
+        type: boolean
       runner_macos_arm64:
         type: string
       skip_tests:
@@ -127,8 +129,8 @@ jobs:
       - name: CLI check
         run: |
           ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
-          if [ "${{ github.ref_name }}" == "main" ]; then
-            # Fail on non-zero major version.
+          if [[ "${{ inputs.is_release_build }}" == "true" ]]; then
+            # Fail on a zero major version.
             ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v';
           fi
 
@@ -214,7 +216,7 @@ jobs:
             lipo "build/release_amd64/libs/$library_name" -verify_arch x86_64
           done
 
-          # The universal build emits arm64 metadata; relink x86_64 with its platform metadata.
+          # Relink each arch: universal extensions are double-sized, and lipo -thin drops the metadata footer.
           prebuilt_extensions=()
           loadable_targets=()
           for library in build/release_arm64/libs/lib*_extension.a; do
@@ -226,22 +228,30 @@ jobs:
           done
           prebuilt_extension_list="$(IFS=';'; echo "${prebuilt_extensions[*]}")"
 
-          extension_build_dir=build/release_amd64/core_extensions
-          cmake -S . -B "$extension_build_dir" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOSX_BUILD_ARCH=x86_64 \
-            -DBUILD_UNITTESTS=OFF \
-            -DBUILD_BENCHMARKS=OFF \
-            -DBUILD_SHELL=OFF \
-            -DDUCKDB_EXPLICIT_PLATFORM=osx_amd64 \
-            -DPREBUILT_BINARY="$PWD/build/release_amd64/libs/libduckdb_static.a" \
-            -DPREBUILT_EXTENSIONS="$prebuilt_extension_list" \
-            -DDUCKDB_EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"
-          cmake --build "$extension_build_dir" --target "${loadable_targets[@]}"
-          cmake --build "$extension_build_dir" --target duckdb_local_extension_repo
+          for target in arm64:arm64:osx_arm64 amd64:x86_64:osx_amd64; do
+            IFS=: read -r dir_arch lipo_arch platform <<< "$target"
+            extension_build_dir="build/release_${dir_arch}/core_extensions"
+            cmake -S . -B "$extension_build_dir" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DOSX_BUILD_ARCH="$lipo_arch" \
+              -DBUILD_UNITTESTS=OFF \
+              -DBUILD_BENCHMARKS=OFF \
+              -DBUILD_SHELL=OFF \
+              -DDUCKDB_EXPLICIT_PLATFORM="$platform" \
+              -DPREBUILT_BINARY="$PWD/build/release_${dir_arch}/libs/libduckdb_static.a" \
+              -DPREBUILT_EXTENSIONS="$prebuilt_extension_list" \
+              -DDUCKDB_EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"
+            cmake --build "$extension_build_dir" --target "${loadable_targets[@]}"
+            cmake --build "$extension_build_dir" --target duckdb_local_extension_repo
 
-          cp -a build/release/repository build/release_arm64/
-          cp -a "$extension_build_dir/repository" build/release_amd64/
+            for extension in "$extension_build_dir"/repository/*/*/*.duckdb_extension; do
+              if [[ "$(lipo -archs "$extension")" != "$lipo_arch" ]]; then
+                echo "Expected thin $lipo_arch extension: $extension ($(lipo -archs "$extension"))"
+                exit 1
+              fi
+            done
+            cp -a "$extension_build_dir/repository" "build/release_${dir_arch}/"
+          done
 
           make cli-release-artifact ARTIFACT_SUFFIX=osx-universal CLI_BINARY=build/release/duckdb
           make cli-release-artifact ARTIFACT_SUFFIX=osx-arm64 CLI_BINARY=build/release_arm64/duckdb
@@ -312,7 +322,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: release-core-extensions-osx-arm64
-          path: build/release/repository
+          path: build/release_arm64/core_extensions/repository
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7

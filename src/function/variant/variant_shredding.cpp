@@ -335,6 +335,13 @@ void VariantShredding::WriteTypedValues(UnifiedVariantVectorData &variant, Vecto
 
 VariantShreddingState::VariantShreddingState(const LogicalType &type, idx_t total_count)
     : type(type), shredded_sel(total_count), values_index_sel(total_count), result_sel(total_count) {
+	if (type.id() != LogicalTypeId::STRUCT) {
+		return;
+	}
+	for (auto &entry : StructType::GetChildTypes(type)) {
+		auto &name = entry.first.GetIdentifierName();
+		object_fields.emplace(name.c_str(), UnsafeNumericCast<uint32_t>(name.size()));
+	}
 }
 
 bool VariantShreddingState::ValueIsShredded(UnifiedVariantVectorData &variant, idx_t row, uint32_t values_index) {
@@ -343,10 +350,10 @@ bool VariantShreddingState::ValueIsShredded(UnifiedVariantVectorData &variant, i
 		return false;
 	}
 	if (type_id == VariantLogicalType::DECIMAL) {
-		auto physical_type = type.InternalType();
+		// the shredded column stores the unscaled value, so it only holds decimals of its scale that fit its width
 		auto decimal_data = VariantUtils::DecodeDecimalData(variant, row, values_index);
-		auto decimal_physical_type = decimal_data.GetPhysicalType();
-		return physical_type == decimal_physical_type;
+		return type.InternalType() == decimal_data.GetPhysicalType() &&
+		       decimal_data.scale == DecimalType::GetScale(type) && decimal_data.width <= DecimalType::GetWidth(type);
 	}
 	return true;
 }
@@ -358,14 +365,9 @@ void VariantShreddingState::SetShredded(uint32_t row, uint32_t values_index, uin
 	count++;
 }
 
-unordered_set<string> VariantShreddingState::ObjectFields() const {
+const string_set_t &VariantShreddingState::ObjectFields() const {
 	D_ASSERT(type.id() == LogicalTypeId::STRUCT);
-	unordered_set<string> res;
-	auto &child_types = StructType::GetChildTypes(type);
-	for (auto &entry : child_types) {
-		res.emplace(entry.first.GetIdentifierName());
-	}
-	return res;
+	return object_fields;
 }
 
 } // namespace duckdb

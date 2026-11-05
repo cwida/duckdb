@@ -1,0 +1,27 @@
+# name: test/sql/function/list/list_resize_non_list.test
+# description: list_resize with an argument that can be implicitly cast to a list, but is not a list
+# group: [list]
+
+foreach func list_resize array_resize
+
+statement error
+SELECT {func}(1::VARIANT, 1, 1)
+----
+can only operate on LISTs
+
+statement error
+SELECT {func}([3, 1, 2]::VARIANT, 1)
+----
+can only operate on LISTs
+
+statement error
+SELECT {func}({'a': [1]}::VARIANT, 2, 0)
+----
+can only operate on LISTs
+
+query III
+SELECT {func}([1, 2], 3, 0), {func}([1, 2]::INT[2], 1), {func}(NULL, 2)
+----
+[1, 2, 0]	[1]	NULL
+
+endloop

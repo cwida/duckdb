@@ -1,0 +1,30 @@
+# name: test/sql/optimizer/expression/test_empty_needle_dead_branch.test
+# description: Conversion errors in constant arguments of || and contains are deferred until execution
+# group: [expression]
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+query I
+SELECT CASE WHEN false THEN 'x' || ''::DOUBLE END;
+----
+NULL
+
+query I
+SELECT s || ''::DOUBLE FROM t;
+----
+
+query I
+SELECT CASE WHEN false THEN contains('x', ''::DOUBLE::VARCHAR) END;
+----
+NULL
+
+query I
+SELECT CASE WHEN false THEN prefix('x', ''::DOUBLE::VARCHAR) END;
+----
+NULL
+
+statement error
+SELECT 'x' || ''::DOUBLE;
+----
+Conversion Error

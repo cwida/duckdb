@@ -1172,7 +1172,7 @@ struct ArrowBatches {
 
 duckdb_v2_sql_statement_handle ParseOne(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle statement = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &statement, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);

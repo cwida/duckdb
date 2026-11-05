@@ -7,7 +7,7 @@
 # claim one and overwrite a block the header on disk still points at. Aborting before the header
 # write leaves that state on disk.
 
-load __TEST_DIR__/metadata_reuse_optimistic.db
+load {TEST_DIR}/metadata_reuse_optimistic.db
 
 statement ok
 PRAGMA disable_checkpoint_on_shutdown;

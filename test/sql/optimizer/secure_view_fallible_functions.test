@@ -1,0 +1,84 @@
+# name: test/sql/optimizer/secure_view_fallible_functions.test
+# description: Functions that throw on some inputs are not evaluated on the rows that a secure view hides
+# group: [optimizer]
+
+statement ok
+CREATE TABLE secrets(id INTEGER, pattern VARCHAR, d DATE, i INTERVAL);
+
+# the hidden row holds the values that make the functions below throw, the visible row does not
+statement ok
+INSERT INTO secrets VALUES
+	(1, 'a$', DATE '2000-01-01', INTERVAL 1 DAY),
+	(2, 'a%', NULL, NULL);
+
+statement ok
+CREATE TABLE allowed(id INTEGER);
+
+statement ok
+INSERT INTO allowed VALUES (2);
+
+statement ok
+CREATE SECURE VIEW visible_secrets AS
+	SELECT sec.id, sec.pattern, sec.d, sec.i FROM secrets sec JOIN allowed a ON (sec.id = a.id);
+
+# the join filter pushdown would prune the hidden row before the functions see it - disable it so that only the
+# barrier keeps them off the hidden row
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+# like_escape and friends throw on a pattern that ends in the escape character
+statement error
+SELECT id FROM secrets WHERE like_escape('abc', pattern, '$')
+----
+<REGEX>:.*Like pattern must not end with escape character.*
+
+query I
+SELECT id FROM visible_secrets WHERE like_escape('abc', pattern, '$')
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE 'abc' LIKE pattern ESCAPE '$'
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE NOT not_like_escape('abc', pattern, '$')
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE ilike_escape('ABC', pattern, '$')
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE NOT not_ilike_escape('ABC', pattern, '$')
+----
+2
+
+# timezone_hour and timezone_minute throw on every DATE and INTERVAL
+statement error
+SELECT id FROM secrets WHERE timezone_hour(d) IS NULL
+----
+<REGEX>:.*units "timezone_hour" not recognized.*
+
+query I
+SELECT id FROM visible_secrets WHERE timezone_hour(d) IS NULL
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE timezone_hour(i) IS NULL
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE timezone_minute(d) IS NULL
+----
+2
+
+query I
+SELECT id FROM visible_secrets WHERE timezone_minute(i) IS NULL
+----
+2

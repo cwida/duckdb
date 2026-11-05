@@ -42,6 +42,18 @@ INSERT INTO checkpoint_trigger VALUES(0);
 statement ok
 CHECKPOINT;
 
+# the blocks written by the checkpoint stay cached as ART_INDEX memory, restart so that all buffers start on disk
+restart
+
+statement ok
+SET threads=1;
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+SET debug_verify_blocks=true;
+
 query TT
 EXPLAIN ANALYZE SELECT k FROM art WHERE k=hash(42);
 ----
@@ -55,6 +67,11 @@ analyzed_plan	<REGEX>:.*Type: Index Scan.*
 statement ok
 CREATE TEMP TABLE warm_memory AS
 SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag='ART_INDEX';
+
+# a checkpoint that rewrites the loaded buffers grows the file
+statement ok
+CREATE TEMP TABLE warm_blocks AS
+SELECT total_blocks FROM pragma_database_size() WHERE database_name = current_database();
 
 query I
 SELECT memory_usage_bytes > 0 FROM warm_memory;
@@ -72,6 +89,12 @@ CHECKPOINT;
 query I
 SELECT memory_usage_bytes = (SELECT memory_usage_bytes FROM warm_memory)
 FROM duckdb_memory() WHERE tag='ART_INDEX';
+----
+1
+
+query I
+SELECT total_blocks = (SELECT total_blocks FROM warm_blocks)
+FROM pragma_database_size() WHERE database_name = current_database();
 ----
 1
 

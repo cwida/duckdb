@@ -1,0 +1,44 @@
+# name: test/sql/storage/checkpoint/checkpoint_rolled_back_use.test
+# description: CHECKPOINT when the default database is a rolled back ATTACH
+# group: [checkpoint]
+
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+BEGIN;
+
+statement ok
+ATTACH ':memory:' AS db;
+
+statement ok
+USE db;
+
+statement ok
+ROLLBACK;
+
+statement error
+CHECKPOINT;
+----
+does not exist
+
+statement error
+FORCE CHECKPOINT;
+----
+does not exist
+
+statement error
+SELECT * FROM checkpoint();
+----
+does not exist
+
+statement ok
+USE other;
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT 42;
+----
+42

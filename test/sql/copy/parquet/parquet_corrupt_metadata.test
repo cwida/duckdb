@@ -1,0 +1,40 @@
+# name: test/sql/copy/parquet/parquet_corrupt_metadata.test
+# description: Parquet files with corrupt metadata are rejected with an error instead of triggering an assertion
+# group: [parquet]
+
+require parquet
+
+# a column chunk without its column metadata
+statement error
+SELECT * FROM '{DATA_DIR}/parquet-testing/broken/missing_column_metadata.parquet';
+----
+column chunk is missing its metadata
+
+# a FIXED_LEN_BYTE_ARRAY column with a negative type_length
+statement error
+SELECT * FROM '{DATA_DIR}/parquet-testing/broken/negative_type_length.parquet';
+----
+Invalid negative type_length -1
+
+# schema elements that are not part of the schema tree
+statement error
+SELECT * FROM '{DATA_DIR}/parquet-testing/broken/unreachable_schema_elements.parquet';
+----
+schema has elements that are not part of the schema tree
+
+# BOOLEAN statistics stored as a byte other than 0 or 1 are read as true
+query T
+SELECT * FROM '{DATA_DIR}/parquet-testing/broken/boolean_stats_not_0_or_1.parquet';
+----
+true
+true
+
+query TT
+SELECT stats_min, stats_max FROM parquet_metadata('{DATA_DIR}/parquet-testing/broken/boolean_stats_not_0_or_1.parquet');
+----
+true	true
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/broken/boolean_stats_not_0_or_1.parquet' WHERE b = false;
+----
+0

@@ -1,0 +1,20 @@
+# name: test/sql/json/test_serialized_value_out_of_range.test
+# description: json_execute_serialized_sql rejects typed values that overflow their declared type
+# group: [json]
+
+require json
+
+# integer value overflowing its declared type
+statement error
+CALL json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["i"]}],"from_table":{"type":"TABLE_FUNCTION","alias":"t","sample":null,"query_location":14,"query_location_length":14,"function":{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":18446744073709551615,"query_location_length":0,"function_name":"range","schema":"","filter":null,"order_bys":{"type":"ORDER_MODIFIER","orders":[]},"distinct":false,"is_operator":false,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":20,"query_location_length":2,"literal":{"kind":"INTEGER","text":"50"}}}],"qualified_name":{"path":["range"]}},"column_name_alias":["i"],"with_ordinality":"WITHOUT_ORDINALITY"},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":{"sample_size":{"type":{"id":"INTEGER","type_info":null},"is_null":false,"value":9223372036854775807},"is_percentage":false,"method":"Reservoir","seed":-1,"repeatable":false,"sample_rate":-1.0},"qualify":null},"named_param_map":[]}]}');
+----
+<REGEX>:.*out of range for type 'int32_t'.*
+
+# constants that overflow their declared type under the legacy serialization format
+statement ok
+SET storage_compatibility_version='v1.0.0';
+
+statement error
+SELECT json_deserialize_sql(replace(replace(json_serialize_sql('SELECT 1'), '"id":"INTEGER"', '"id":"SMALLINT"'), '"value":1}', '"value":2147483647}'));
+----
+<REGEX>:Serialization Error.*out of range for type 'int16_t'.*

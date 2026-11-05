@@ -1,0 +1,30 @@
+# name: test/sql/alter/alter_table_nullability_requires_column.test
+# description: SET / DROP NOT NULL in ALTER TABLE require a column
+# group: [alter]
+
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement error
+ALTER TABLE t SET NOT NULL;
+----
+syntax error
+
+statement error
+ALTER TABLE t DROP NOT NULL;
+----
+syntax error
+
+statement ok
+ALTER TABLE t ALTER a SET NOT NULL;
+
+statement error
+INSERT INTO t VALUES (NULL);
+----
+NOT NULL constraint failed
+
+statement ok
+ALTER TABLE t ALTER COLUMN a DROP NOT NULL;
+
+statement ok
+INSERT INTO t VALUES (NULL);

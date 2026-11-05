@@ -6,6 +6,7 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/vector_operations/ternary_executor.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 
 namespace duckdb {
 
@@ -458,6 +459,7 @@ ScalarFunctionSet DateDiffFun::GetFunctions() {
 	date_diff.SetFallible();
 	date_diff.SetArgProperties(1, ArgProperties().NonIncreasing());
 	date_diff.SetArgProperties(2, ArgProperties().NonDecreasing());
+	date_diff.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	return date_diff;
 }
 

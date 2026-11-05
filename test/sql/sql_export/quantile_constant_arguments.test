@@ -1,0 +1,69 @@
+# name: test/sql/sql_export/quantile_constant_arguments.test
+# description: SQL export restores constant-required aggregate arguments shared with other aggregate inputs
+# group: [sql_export]
+
+# Protection: with the expression rewriter enabled, the fraction already exports as a constant.
+query TT
+EXPLAIN (SQL) SELECT quantile_disc(1, 0.5), max(0.5::DOUBLE);
+----
+sql	<REGEX>:(?s).*quantile_disc[(]CAST[(]1 AS INTEGER[)], CAST[(]0.5 AS DOUBLE[)][)].*
+
+statement ok
+SET disabled_optimizers='expression_rewriter';
+
+# The unfolded DECIMAL-to-DOUBLE cast feeding the fraction is deduplicated with max's input,
+# so the plan hands quantile_disc a shared projection column (duckdb/duckdb#27776).
+# The exported fraction must still be a constant expression.
+query TT
+EXPLAIN (SQL) SELECT quantile_disc(1, 0.5), max(0.5::DOUBLE);
+----
+sql	<REGEX>:(?s).*quantile_disc[(]CAST[(]1 AS INTEGER[)], CAST[(]0.5 AS DOUBLE[)][)].*
+
+query TT
+EXPLAIN (SQL) SELECT quantile_disc(1, 0.5), max(0.5::DOUBLE);
+----
+sql	<!REGEX>:(?s).*quantile_disc[(][^)]*[.]c[0-9].*
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query IRR
+SELECT quantile_disc(1, 0.5), quantile_cont(1, 0.5), max(0.5::DOUBLE);
+----
+1	1.0	0.5
+
+query IR
+SELECT approx_quantile(x, 0.5::FLOAT), max(0.5::FLOAT) FROM (VALUES (1),(2),(3)) t(x);
+----
+2	0.5
+
+query IR
+SELECT reservoir_quantile(x, 0.5), max(0.5::DOUBLE) FROM (VALUES (1),(2),(3)) t(x);
+----
+2	0.5
+
+# Unshared list fractions stay unfolded function calls in the plan without the rewriter.
+query TT
+SELECT quantile_disc(x, [0.25, 0.75]), quantile_cont(x, [0.25, 0.75]) FROM (VALUES (1),(2),(3),(4)) t(x);
+----
+[1, 3]	[1.75, 3.25]
+
+query IIR
+SELECT g, quantile_disc(x, 0.5), max(0.5::DOUBLE) FROM (VALUES (1,1),(2,1),(3,2)) t(x,g) GROUP BY g ORDER BY g;
+----
+1	1	0.5
+2	3	0.5
+
+statement ok
+RESET debug_verify_statement;
+
+# Protection: a shared non-constant argument still deduplicates into one projection column.
+query TT
+EXPLAIN (SQL) SELECT min(x+1), max(x+1) FROM (VALUES (1),(2),(4)) t(x);
+----
+sql	<REGEX>:(?s).*min[(]r[0-9]+[.]c0[)].*max[(]r[0-9]+[.]c0[)].*
+
+query TT
+EXPLAIN (SQL) SELECT min(x+1), max(x+1) FROM (VALUES (1),(2),(4)) t(x);
+----
+sql	<!REGEX>:(?s).*main[.]"[+]"[(].*main[.]"[+]"[(].*

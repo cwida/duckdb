@@ -608,7 +608,7 @@ struct NumericCast {
 	static DST Operation(SRC input) {
 		DST result;
 		if (!NumericTryCast::Operation(input, result)) {
-			throw InvalidInputException(CastExceptionText<SRC, DST>(input));
+			ThrowCastException<SRC>(input, GetTypeId<DST>(), TypeIsNumber<DST>());
 		}
 		return result;
 	}

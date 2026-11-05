@@ -12,7 +12,7 @@ statement ok
 INSERT INTO t VALUES (1), (2), (3);
 
 statement ok
-PREPARE stmt AS SELECT index_key({'table': 't'}, 'idx', CAST(random() * 0 AS INTEGER) + 42);
+PREPARE stmt AS SELECT index_key({'table': 't', 'index': 'idx'}, CAST(random() * 0 AS INTEGER) + 42);
 
 statement ok
 EXECUTE stmt;
@@ -42,7 +42,7 @@ CHECKPOINT aux;
 
 statement ok
 PREPARE detached_stmt AS
-SELECT index_key({'catalog': 'aux', 'table': 't'}, 'idx', CAST(random() * 0 AS INTEGER) + 42);
+SELECT index_key({'catalog': 'aux', 'table': 't', 'index': 'idx'}, CAST(random() * 0 AS INTEGER) + 42);
 
 statement ok
 DETACH aux;

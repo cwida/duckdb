@@ -31,3 +31,19 @@ SELECT * FROM summary((SELECT * FROM a))
 ----
 [1.0, 10.0]	1.0	10.0
 [42.0, 420.0]	42.0	420.0
+
+# the TABLE parameter requires a subquery
+statement error
+SELECT count(*) FROM summary(NULL);
+----
+requires a subquery as its TABLE parameter
+
+statement error
+SELECT * FROM summary('abc') LIMIT 3;
+----
+requires a subquery as its TABLE parameter
+
+statement error
+PREPARE p AS SELECT count(*) FROM summary($1);
+----
+requires a subquery as its TABLE parameter

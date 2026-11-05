@@ -71,7 +71,7 @@ select m['Tenacious D'] from (select MAP(LIST_VALUE('Jon Lajoie', 'Backstreet Bo
 statement error
 select m[0] from (select MAP(LIST_VALUE('Jon Lajoie', 'Backstreet Boys', 'Tenacious D' ),LIST_VALUE(10,9,10)) as m) as T
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 query I
 select map_extract(m,1) from (select MAP(LIST_VALUE(1, 2, 3, 4),LIST_VALUE(10, 9, 8, 7)) as m) as T

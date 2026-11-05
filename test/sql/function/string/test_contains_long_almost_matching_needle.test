@@ -1,0 +1,28 @@
+# name: test/sql/function/string/test_contains_long_almost_matching_needle.test
+# description: Substring search with a long needle that almost matches the haystack at every position
+# group: [string]
+
+query III
+SELECT contains(repeat('a', 2000000), repeat('a', 50000) || 'b'), strpos(repeat('a', 2000000) || 'b', repeat('a', 50000) || 'b'), instr(repeat('a', 2000000), repeat('a', 50000));
+----
+false	1950001	1
+
+query I
+SELECT length(replace(repeat('a', 1000000), repeat('a', 50000) || 'b', 'x'));
+----
+1000000
+
+query I
+SELECT replace(repeat('ab', 20) || 'c' || repeat('ab', 20) || 'c', repeat('ab', 20) || 'c', 'x');
+----
+xx
+
+query II
+SELECT strpos('aaaaaaaaabaaaaaaaaaab', 'aaaaaaaaaab'), contains('xyzxyzxyzxyzxyz', 'zxyzxyzxyzx');
+----
+11	true
+
+query I
+SELECT strpos(repeat('abc', 1000) || 'abd', repeat('abc', 100) || 'abd');
+----
+2701

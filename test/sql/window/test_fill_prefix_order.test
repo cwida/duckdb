@@ -1,0 +1,20 @@
+# name: test/sql/window/test_fill_prefix_order.test
+# description: fill with an argument ordering that is a prefix of the window ordering
+# group: [window]
+
+query II
+SELECT k, fill(v ORDER BY k) OVER (ORDER BY k, i) FROM (VALUES (0, 1, 1), (1, 2, NULL), (2, 3, 3)) t(k, i, v) ORDER BY k;
+----
+0	1
+1	2
+2	3
+
+query II
+SELECT k, fill(v ORDER BY k) OVER (PARTITION BY g ORDER BY k, i) FROM (VALUES (0, 1, 1, 0), (1, 2, NULL, 0), (2, 3, 5, 0), (0, 1, 10, 1), (1, 1, NULL, 1), (2, 1, 30, 1)) t(k, i, v, g) ORDER BY g, k;
+----
+0	1
+1	3
+2	5
+0	10
+1	20
+2	30

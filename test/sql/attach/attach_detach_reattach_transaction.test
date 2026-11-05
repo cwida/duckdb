@@ -1,0 +1,45 @@
+# name: test/sql/attach/attach_detach_reattach_transaction.test
+# description: Attaching a different database under a name detached in the same transaction
+# group: [attach]
+
+statement ok
+BEGIN;
+
+statement ok
+ATTACH ':memory:' AS a;
+
+statement ok
+DETACH a;
+
+statement ok
+ATTACH ':memory:' AS a;
+
+statement ok
+ROLLBACK;
+
+# after rollback the name can be used again
+statement ok
+ATTACH ':memory:' AS a;
+
+statement ok
+CREATE TABLE a.t AS SELECT 42 i;
+
+query I
+SELECT i FROM a.t;
+----
+42
+
+statement ok
+BEGIN;
+
+statement ok
+DETACH a;
+
+statement ok
+COMMIT;
+
+statement ok
+ATTACH ':memory:' AS a;
+
+statement ok
+DETACH a;

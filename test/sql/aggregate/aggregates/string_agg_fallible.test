@@ -1,0 +1,31 @@
+# name: test/sql/aggregate/aggregates/string_agg_fallible.test
+# description: string_agg throws on oversized results and must be registered as fallible
+# group: [aggregates]
+
+# string_agg throws InvalidInputException when the accumulated string exceeds the 4 GiB string
+# limit (covered by string_agg_fallible.test_slow).
+
+# the EXPLAIN (SQL) pivot default export fixtures live in fallible_pivot_default_export.test,
+# which is excluded from the aggregate state export verification config
+
+# the scalarized window form keeps working under dictionary vector verification
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT string_agg(v, '|') OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES ('a'), ('b')) t(v);
+----
+a
+b
+
+statement ok
+RESET debug_verify_vector;
+
+# valid aggregation is unaffected
+
+query II
+SELECT string_agg(v), string_agg(v, '|' ORDER BY v DESC) FROM (VALUES ('a'), ('b')) t(v);
+----
+a,b	b|a

@@ -116,7 +116,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (TARGET::TYPE != LogicalOperatorType::LOGICAL_INVALID && type != TARGET::TYPE) {
-			throw InternalException("Failed to cast logical operator to type - logical operator type mismatch");
+			InternalException::Throw("Failed to cast logical operator to type - logical operator type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -124,7 +124,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (TARGET::TYPE != LogicalOperatorType::LOGICAL_INVALID && type != TARGET::TYPE) {
-			throw InternalException("Failed to cast logical operator to type - logical operator type mismatch");
+			InternalException::Throw("Failed to cast logical operator to type - logical operator type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

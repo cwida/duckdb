@@ -72,7 +72,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   pragma_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Creates a new pragma function through a factory.
 
@@ -105,7 +105,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   pragma_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Sets the name of the pragma function, as the `PRAGMA` statement calls it.
 
@@ -129,7 +129,7 @@ functions:
 
   pragma_function_get_docs:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Returns the documentation of the function so it can be filled in.
 
@@ -155,7 +155,7 @@ functions:
 
   pragma_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Returns the function's signature so it can be configured.
 
@@ -181,7 +181,7 @@ functions:
 
   pragma_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Sets arbitrary user data on the pragma function.
 
@@ -204,7 +204,7 @@ functions:
 
   pragma_function_set_query_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Sets the query callback of the pragma function, making it a query pragma.
 
@@ -227,7 +227,7 @@ functions:
 
   pragma_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Sets the exec callback of the pragma function, making it an exec pragma.
 
@@ -252,7 +252,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   pragma_function_query_set_query:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Sets the SQL to run in place of the `PRAGMA` statement.
 
@@ -279,7 +279,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_pragma_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Registers the pragma function, making it available to the `PRAGMA` statement.
 
@@ -306,7 +306,7 @@ functions:
 
   extension_register_pragma_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Registers the pragma function, making it available to the `PRAGMA` statement.
 
@@ -335,7 +335,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   pragma_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Destroys the pragma function, releasing its resources.
 

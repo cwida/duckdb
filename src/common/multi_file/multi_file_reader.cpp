@@ -94,11 +94,17 @@ bool MultiFileBindData::MatchesPhysicalColumn(idx_t column_idx, const Identifier
 }
 
 bool MultiFileBindData::HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const {
-	if (physical_columns.size() != names.size() || physical_columns.size() != types.size()) {
+	if (physical_columns.size() > names.size() || names.size() != types.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < physical_columns.size(); i++) {
 		if (!MatchesPhysicalColumn(i, physical_columns[i].name, physical_columns[i].type)) {
+			return false;
+		}
+	}
+	// Appended generated columns have no physical statistics to misinterpret.
+	for (idx_t i = physical_columns.size(); i < names.size(); i++) {
+		if (!IsGeneratedColumn(i)) {
 			return false;
 		}
 	}
@@ -495,7 +501,7 @@ bool MultiFileReader::ParseCopyOption(const Identifier &key, const vector<Value>
 	string error_message;
 	auto value = values[0].DefaultTryCastAs(LogicalType::BOOLEAN, &error_message);
 	if (!value) {
-		throw InvalidInputException("Unable to cast \"%s\" to BOOLEAN for boolean option \"%s\"", values[0].ToString(),
+		throw InvalidInputException("Unable to cast \"%s\" to BOOLEAN for boolean option %s", values[0].ToString(),
 		                            key);
 	}
 	options.file_row_number = BooleanValue::Get(*value);
@@ -540,6 +546,11 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		options.SetColumnStatistics(key, val);
 	} else if (key == "maximum_sample_files") {
 		options.SetMaximumSampleFiles(key, val);
+	} else if (key == "maximum_files_for_stats") {
+		if (val.IsNull()) {
+			throw InvalidInputException("Cannot use NULL as argument for %s", key);
+		}
+		options.maximum_files_for_stats = val.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	} else if (key == "hive_types_autocast" || key == "hive_type_autocast") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -578,7 +589,8 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		if (options.schema.empty()) {
 			throw BinderException("'schema' cannot be empty");
 		}
-		options.auto_detect_hive_partitioning = false;
+		// A given schema is not detected from the paths; that is decided where the schema is bound, so
+		// auto_detect_hive_partitioning keeps meaning what it says - whether the CALLER left it to us
 	} else if (key == "file_row_number") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -620,8 +632,9 @@ bool MultiFileReader::Bind(MultiFileOptions &options, MultiFileList &files, vect
 		// the default MultiFileReader has no schema information of its own - the files have to be bound
 		return false;
 	}
-	if (options.union_by_name || options.hive_partitioning) {
-		throw BinderException("'schema' cannot be combined with union_by_name=true or hive_partitioning=true");
+	if (options.union_by_name) {
+		// both decide the schema of the scan, from the files and from the option respectively
+		throw BinderException("'schema' cannot be combined with union_by_name=true");
 	}
 	// the files are mapped onto the schema by field id when its columns are identified by INTEGER, by name otherwise
 	const bool by_field_id = options.schema[0].identifier.type().id() == LogicalTypeId::INTEGER;
@@ -730,9 +743,18 @@ void MultiFileReader::BindOptions(MultiFileOptions &options, MultiFileList &file
 					    "name also exists. Try setting a different name: filename='<filename column name>'",
 					    options.filename_column);
 				}
+				auto hive_type = options.GetHiveLogicalType(part.first);
+				// the path does not get to change a type the schema declares
+				if (!options.schema.empty() && idx < bind_data.schema.size() &&
+				    !bind_data.schema[idx].type.EqualsIncludingCollation(hive_type)) {
+					throw BinderException("'schema' declares column \"%s\" as %s, but its hive partition type is %s - "
+					                      "set the partition type with hive_types",
+					                      bind_data.schema[idx].name.GetIdentifierName(),
+					                      bind_data.schema[idx].type.ToString(), hive_type.ToString());
+				}
 				// hive partitioning column also exists in file - override
 				hive_partitioning_index = idx;
-				return_types[idx] = options.GetHiveLogicalType(part.first);
+				return_types[idx] = hive_type;
 			} else {
 				// hive partitioning column does not exist in file - add a new column containing the key
 				hive_partitioning_index = names.size();
@@ -1056,7 +1078,37 @@ MultiFileReaderBindData MultiFileReader::BindReader(ClientContext &context, vect
 	if (file_options.maximum_sample_files > 1) {
 		return BindSampledReader(context, return_types, names, files, result, options, file_options);
 	}
-	return BindFirstReader(context, return_types, names, files, result, options, file_options);
+	auto bind_data = BindFirstReader(context, return_types, names, files, result, options, file_options);
+	ReadFilesForStatistics(context, files, result, options, file_options);
+	return bind_data;
+}
+
+void MultiFileReader::ReadFilesForStatistics(ClientContext &context, MultiFileList &files, MultiFileBindData &result,
+                                             BaseFileReaderOptions &options, MultiFileOptions &file_options) {
+	auto max_files = file_options.maximum_files_for_stats;
+	if (max_files == 0 || !result.union_readers.empty()) {
+		return;
+	}
+	auto count = files.GetFileCount(max_files + 1);
+	if (count.type != FileExpansionType::ALL_FILES_EXPANDED || count.count < 2 || count.count > max_files) {
+		return;
+	}
+	// the first file is already open: only the others are read. A file that cannot be read gives no statistics rather
+	// than failing the bind: the scan reports it
+	auto all_files = files.GetAllFiles();
+	if (!result.initial_reader || result.initial_reader->GetFileName() != all_files[0].path) {
+		return;
+	}
+	vector<OpenFileInfo> other_files(all_files.begin() + 1, all_files.end());
+	auto readers = UnionByName::ReadUnionData(context, other_files, options, file_options, *this, *result.interface,
+	                                          true, TaskSchedulerType::ASYNC);
+	for (auto &reader : readers) {
+		if (!reader) {
+			return;
+		}
+	}
+	readers.insert(readers.begin(), result.initial_reader->GetUnionData(0));
+	std::move(readers.begin(), readers.end(), std::back_inserter(result.union_readers));
 }
 
 MultiFileReaderBindData MultiFileReader::BindFirstReader(ClientContext &context, vector<LogicalType> &return_types,
@@ -1330,7 +1382,8 @@ void MultiFileOptions::AutoDetectHiveTypesInternal(MultiFileList &files, ClientC
 		hive_types_schema.insert(make_pair(entry.first, std::move(entry.second)));
 	}
 }
-void MultiFileOptions::AutoDetectHivePartitioning(MultiFileList &files, ClientContext &context) {
+void MultiFileOptions::AutoDetectHivePartitioning(MultiFileList &files, ClientContext &context,
+                                                  bool detect_partitioning) {
 	if (files.GetExpandResult() == FileExpandResult::NO_FILES) {
 		return;
 	}
@@ -1344,7 +1397,7 @@ void MultiFileOptions::AutoDetectHivePartitioning(MultiFileList &files, ClientCo
 		hive_partitioning = true;
 		auto_detect_hive_partitioning = false;
 	}
-	if (auto_detect_hive_partitioning) {
+	if (detect_partitioning && auto_detect_hive_partitioning) {
 		hive_partitioning = AutoDetectHivePartitioningInternal(files, context);
 	}
 	if (hive_partitioning && hive_types_autocast) {
@@ -1373,7 +1426,7 @@ void MultiFileOptions::SetMaximumSampleFiles(const Identifier &key, const Value 
 		throw BinderException("Cannot use NULL as argument to key %s", key);
 	}
 	if (!TrySetMaximumSampleFiles(val)) {
-		throw BinderException("\"%s\" parameter must be positive, or -1 to remove the limit on the number of files "
+		throw BinderException("%s parameter must be positive, or -1 to remove the limit on the number of files "
 		                      "used to determine the schema.",
 		                      key);
 	}
@@ -1407,7 +1460,7 @@ void MultiFileOptions::SetColumnStatistics(const Identifier &key, const Value &v
 	auto cast = val.DefaultTryCastAs(target, &error);
 	if (!cast) {
 		throw InvalidInputException(
-		    "'%s' must be a MAP of column name to a MAP of statistic name ('min', 'max', 'count', 'null_count', "
+		    "%s must be a MAP of column name to a MAP of statistic name ('min', 'max', 'count', 'null_count', "
 		    "'distinct_count') to its value, but '%s' was provided",
 		    key, val.type().ToString());
 	}

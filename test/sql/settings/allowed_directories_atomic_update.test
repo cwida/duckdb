@@ -1,0 +1,47 @@
+# name: test/sql/settings/allowed_directories_atomic_update.test
+# description: allowed_directories / allowed_paths are replaced as a whole
+# group: [settings]
+
+statement ok
+SET allowed_directories=['{TEST_DIR}/dir_a'];
+
+query I
+SELECT len(current_setting('allowed_directories'));
+----
+1
+
+# the directories are replaced, not extended
+statement ok
+SET allowed_directories=['{TEST_DIR}/dir_b', '{TEST_DIR}/dir_c'];
+
+query I
+SELECT len(current_setting('allowed_directories'));
+----
+2
+
+statement ok
+SET allowed_paths=['{TEST_DIR}/a.csv', '{TEST_DIR}/b.csv'];
+
+query I
+SELECT len(current_setting('allowed_paths'));
+----
+2
+
+statement ok
+SET allowed_paths=['{TEST_DIR}/c.csv'];
+
+query I
+SELECT len(current_setting('allowed_paths'));
+----
+1
+
+statement ok
+RESET allowed_paths;
+
+statement ok
+RESET allowed_directories;
+
+query I
+SELECT len(current_setting('allowed_directories')) + len(current_setting('allowed_paths'));
+----
+0

@@ -1,0 +1,31 @@
+# name: test/sql/show_select/describe_case_alias.test
+# description: DESCRIBE reports aliases that differ from the base column only in case
+# group: [show_select]
+
+statement ok
+CREATE TABLE src ("Amount" INTEGER PRIMARY KEY, x INTEGER, y INTEGER);
+
+statement ok
+CREATE VIEW v AS SELECT Amount AS amount, x AS X, y FROM src;
+
+query II
+SELECT column_name, key FROM (DESCRIBE SELECT Amount AS amount, x AS X, y AS Y, x FROM src)
+----
+amount	PRI
+X	NULL
+Y	NULL
+x	NULL
+
+query I
+SELECT column_name FROM (DESCRIBE v)
+----
+amount
+X
+y
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * FROM src)
+----
+Amount
+x
+y

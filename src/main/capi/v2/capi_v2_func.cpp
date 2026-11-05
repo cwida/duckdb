@@ -46,7 +46,7 @@ const Value &CV2ConstantBindInfo::GetArg(idx_t index) const {
 	const auto &name = function.GetNamedArguments()[index - positional.size()];
 	auto entry = named.find(name);
 	if (entry == named.end()) {
-		throw InternalException("Named argument \"%s\" of a function call has no value", name);
+		throw InternalException("Named argument %s of a function call has no value", name);
 	}
 	return entry->second;
 }

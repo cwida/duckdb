@@ -63,7 +63,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   replacement_scan_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a new replacement scan through a factory.
 
@@ -94,7 +94,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   replacement_scan_set_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the callback of the replacement scan.
 
@@ -118,7 +118,7 @@ functions:
 
   replacement_scan_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets arbitrary user data on the replacement scan.
 
@@ -145,7 +145,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   replacement_scan_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Retrieves the user data set via `[[replacement_scan_set_user_data]]`.
     parameters:
       info:
@@ -164,7 +164,7 @@ functions:
 
   replacement_scan_get_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Retrieves the name the catalog could not resolve.
 
@@ -192,7 +192,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   replacement_scan_set_function_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Claims the reference by naming a table function to read instead.
 
@@ -220,7 +220,7 @@ functions:
 
   replacement_scan_add_argument:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Appends a positional argument to the claimed table function.
 
@@ -242,7 +242,7 @@ functions:
 
   replacement_scan_add_named_argument:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Appends a named argument to the claimed table function.
 
@@ -270,7 +270,7 @@ functions:
 
   replacement_scan_set_collection:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Claims the reference by naming a column data collection to read instead.
 
@@ -316,7 +316,7 @@ functions:
 
   replacement_scan_set_subquery:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Claims the reference by naming a query to read instead.
 
@@ -346,7 +346,7 @@ functions:
 
   replacement_scan_set_alias:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the alias the claimed replacement is bound under.
 
@@ -374,7 +374,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_replacement_scan:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the replacement scan, making it consulted for names the catalog cannot resolve.
 
@@ -402,7 +402,7 @@ functions:
 
   instance_register_replacement_scan:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the replacement scan, making it consulted for names the catalog cannot resolve.
 
@@ -430,7 +430,7 @@ functions:
 
   extension_register_replacement_scan:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the replacement scan, making it consulted for names the catalog cannot resolve.
 
@@ -461,7 +461,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   replacement_scan_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the replacement scan, releasing its resources.
 

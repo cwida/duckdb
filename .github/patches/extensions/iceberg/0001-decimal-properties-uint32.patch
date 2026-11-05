@@ -1,0 +1,54 @@
+diff --git a/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp b/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp
+index 36fc6cd..e30b8df 100644
+--- a/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp
++++ b/src/catalog/rest/catalog_entry/schema/iceberg_schema_entry.cpp
+@@ -344,12 +344,12 @@ static void VerifySchemaEvolution(const IcebergTableMetadata &table_metadata, co
+ 		if (target_type.id() != LogicalTypeId::DECIMAL) {
+ 			break;
+ 		}
+-		uint8_t width;
+-		uint8_t scale;
++		uint32_t width;
++		uint32_t scale;
+ 		original_type.GetDecimalProperties(width, scale);
+ 
+-		uint8_t other_width;
+-		uint8_t other_scale;
++		uint32_t other_width;
++		uint32_t other_scale;
+ 		target_type.GetDecimalProperties(other_width, other_scale);
+ 
+ 		if (scale != other_scale) {
+diff --git a/src/core/expression/iceberg_value.cpp b/src/core/expression/iceberg_value.cpp
+index 54586e0..535d266 100644
+--- a/src/core/expression/iceberg_value.cpp
++++ b/src/core/expression/iceberg_value.cpp
+@@ -82,7 +82,7 @@ static DeserializeResult DeserializeError(const string_t &blob, const LogicalTyp
+ }
+ 
+ template <class VALUE_TYPE>
+-static Value DeserializeDecimalTemplated(const string_t &blob, uint8_t width, uint8_t scale) {
++static Value DeserializeDecimalTemplated(const string_t &blob, uint32_t width, uint32_t scale) {
+ 	VALUE_TYPE ret = 0;
+ 	//! The blob has to be smaller or equal to the size of the type
+ 	D_ASSERT(blob.GetSize() <= sizeof(VALUE_TYPE));
+@@ -108,7 +108,7 @@ static Value DeserializeDecimalTemplated(const string_t &blob, uint8_t width, ui
+ 	return Value::DECIMAL(ret, width, scale);
+ }
+ 
+-static Value DeserializeHugeintDecimal(const string_t &blob, uint8_t width, uint8_t scale) {
++static Value DeserializeHugeintDecimal(const string_t &blob, uint32_t width, uint32_t scale) {
+ 	//! The blob has to be smaller or equal to the size of the type
+ 	D_ASSERT(blob.GetSize() <= sizeof(hugeint_t));
+ 
+@@ -131,8 +131,8 @@ static Value DeserializeHugeintDecimal(const string_t &blob, uint8_t width, uint
+ static DeserializeResult DeserializeDecimal(const string_t &blob, const LogicalType &type) {
+ 	D_ASSERT(type.id() == LogicalTypeId::DECIMAL);
+ 
+-	uint8_t width;
+-	uint8_t scale;
++	uint32_t width;
++	uint32_t scale;
+ 	if (!type.GetDecimalProperties(width, scale)) {
+ 		return DeserializeError(blob, type);
+ 	}

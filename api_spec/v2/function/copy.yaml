@@ -265,7 +265,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Creates a new copy function through a factory.
 
@@ -299,7 +299,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the name of the copy function.
 
@@ -324,7 +324,7 @@ functions:
 
   copy_function_set_file_extension:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Sets the file extension of the files the copy function writes, without the leading dot, e.g. `parquet`.
 
@@ -350,7 +350,7 @@ functions:
 
   copy_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets arbitrary user data on the copy function.
 
@@ -376,7 +376,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional bind callback of the `COPY ... TO` side.
 
@@ -398,7 +398,7 @@ functions:
 
   copy_to_set_batch_size_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional batch size callback of the `COPY ... TO` side.
 
@@ -423,7 +423,7 @@ functions:
 
   copy_to_set_init_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional init callback of the `COPY ... TO` side.
 
@@ -446,7 +446,7 @@ functions:
 
   copy_to_set_batch_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the batch callback of the `COPY ... TO` side.
 
@@ -470,7 +470,7 @@ functions:
 
   copy_to_set_flush_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the flush callback of the `COPY ... TO` side.
 
@@ -492,7 +492,7 @@ functions:
 
   copy_to_set_finalize_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional finalize callback of the `COPY ... TO` side.
 
@@ -516,7 +516,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_bind_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -535,7 +535,7 @@ functions:
 
   copy_to_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -559,7 +559,7 @@ functions:
 
   copy_to_bind_get_file_path:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the path the `COPY ... TO` statement writes to, as written in the statement.
 
@@ -583,7 +583,7 @@ functions:
 
   copy_to_bind_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns being written, i.e. the columns of the rows every batch carries.
 
@@ -605,7 +605,7 @@ functions:
 
   copy_to_bind_get_column_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the type of the column at the given index.
 
@@ -631,7 +631,7 @@ functions:
 
   copy_to_bind_get_column_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the column at the given index.
 
@@ -656,7 +656,7 @@ functions:
 
   copy_to_bind_get_option_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of options the `COPY` statement passed to the function.
 
@@ -680,7 +680,7 @@ functions:
 
   copy_to_bind_get_option_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the option at the given index.
 
@@ -706,7 +706,7 @@ functions:
 
   copy_to_bind_get_option_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the value of the option at the given index.
 
@@ -737,7 +737,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_batch_size_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -756,7 +756,7 @@ functions:
 
   copy_to_batch_size_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -775,7 +775,7 @@ functions:
 
   copy_to_batch_size_set_target:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the number of rows a batch should carry, as the target the engine cuts batches at. The batch size
       callback must set this to a value greater than 0; the statement fails otherwise. DuckDB defines the `BATCH_SIZE` on omission of calling the function.
@@ -797,7 +797,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_init_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -816,7 +816,7 @@ functions:
 
   copy_to_init_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -835,7 +835,7 @@ functions:
 
   copy_to_init_get_file_path:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the path of the file the init callback is preparing.
 
@@ -859,7 +859,7 @@ functions:
 
   copy_to_init_set_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "init data" from the init callback.
 
@@ -886,7 +886,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_batch_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -905,7 +905,7 @@ functions:
 
   copy_to_batch_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -924,7 +924,7 @@ functions:
 
   copy_to_batch_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file this batch belongs to.
     parameters:
       info:
@@ -943,7 +943,7 @@ functions:
 
   copy_to_batch_take_input:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Takes ownership of the rows of the batch to prepare.
 
@@ -969,7 +969,7 @@ functions:
 
   copy_to_batch_set_batch_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the prepared "batch data" from the batch callback.
 
@@ -995,7 +995,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_flush_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1014,7 +1014,7 @@ functions:
 
   copy_to_flush_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -1033,7 +1033,7 @@ functions:
 
   copy_to_flush_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file this batch belongs to.
     parameters:
       info:
@@ -1052,7 +1052,7 @@ functions:
 
   copy_to_flush_get_batch_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the batch data set by the function's batch callback for the batch being flushed.
     parameters:
       info:
@@ -1074,7 +1074,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_finalize_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1093,7 +1093,7 @@ functions:
 
   copy_to_finalize_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -1112,7 +1112,7 @@ functions:
 
   copy_to_finalize_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file being finalized.
     parameters:
       info:
@@ -1134,7 +1134,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the bind callback of the `COPY ... FROM` side.
 
@@ -1158,7 +1158,7 @@ functions:
 
   copy_from_set_init_global_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional global init callback of the `COPY ... FROM` side.
 
@@ -1180,7 +1180,7 @@ functions:
 
   copy_from_set_init_local_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional local init callback of the `COPY ... FROM` side.
 
@@ -1201,7 +1201,7 @@ functions:
 
   copy_from_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the exec callback of the `COPY ... FROM` side.
 
@@ -1223,7 +1223,7 @@ functions:
 
   copy_from_set_progress_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional progress callback of the `COPY ... FROM` side.
 
@@ -1248,7 +1248,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_bind_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1267,7 +1267,7 @@ functions:
 
   copy_from_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -1291,7 +1291,7 @@ functions:
 
   copy_from_bind_get_file_path:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the path the `COPY ... FROM` statement reads from, as written in the statement.
 
@@ -1314,7 +1314,7 @@ functions:
 
   copy_from_bind_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the target table expects, i.e. the columns every batch the exec callback
       produces must carry, in this order.
@@ -1337,7 +1337,7 @@ functions:
 
   copy_from_bind_get_column_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the type of the column at the given index.
 
@@ -1363,7 +1363,7 @@ functions:
 
   copy_from_bind_get_column_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the column at the given index.
 
@@ -1388,7 +1388,7 @@ functions:
 
   copy_from_bind_get_option_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of options the `COPY` statement passed to the function.
 
@@ -1411,7 +1411,7 @@ functions:
 
   copy_from_bind_get_option_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the option at the given index.
 
@@ -1437,7 +1437,7 @@ functions:
 
   copy_from_bind_get_option_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the value of the option at the given index.
 
@@ -1465,7 +1465,7 @@ functions:
 
   copy_from_bind_set_cardinality:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports the estimated number of rows the read will produce.
 
@@ -1492,7 +1492,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_init_global_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1511,7 +1511,7 @@ functions:
 
   copy_from_init_global_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1530,7 +1530,7 @@ functions:
 
   copy_from_init_global_set_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "global state" from the global init callback.
 
@@ -1553,7 +1553,7 @@ functions:
 
   copy_from_init_global_set_max_threads:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets how many threads may read the file in parallel.
 
@@ -1578,7 +1578,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_init_local_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1597,7 +1597,7 @@ functions:
 
   copy_from_init_local_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1616,7 +1616,7 @@ functions:
 
   copy_from_init_local_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1638,7 +1638,7 @@ functions:
 
   copy_from_init_local_set_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's worker-local "local state" from the local init callback.
 
@@ -1665,7 +1665,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1684,7 +1684,7 @@ functions:
 
   copy_from_exec_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1703,7 +1703,7 @@ functions:
 
   copy_from_exec_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1725,7 +1725,7 @@ functions:
 
   copy_from_exec_get_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the worker-local local state set by the function's local init callback.
     parameters:
       info:
@@ -1744,7 +1744,7 @@ functions:
 
   copy_from_exec_get_output_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the output chunk the exec callback must write the next batch of rows into.
 
@@ -1774,7 +1774,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_progress_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1793,7 +1793,7 @@ functions:
 
   copy_from_progress_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1812,7 +1812,7 @@ functions:
 
   copy_from_progress_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1835,7 +1835,7 @@ functions:
 
   copy_from_progress_set_progress:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports how far the read has advanced.
 
@@ -1859,7 +1859,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_copy_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Registers the copy function, making it available as a `COPY` format.
 
@@ -1887,7 +1887,7 @@ functions:
 
   extension_register_copy_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Registers the copy function, making it available as a `COPY` format.
 
@@ -1917,7 +1917,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys the copy function, releasing its resources.
 

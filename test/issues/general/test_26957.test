@@ -1,0 +1,69 @@
+# name: test/issues/general/test_26957.test
+# description: Statistics propagation skips functions over a parameter invalidated by filter pushdown
+# group: [general]
+
+statement ok
+CREATE TABLE table1 (id INTEGER, vec FLOAT[3]);
+
+statement ok
+PREPARE myquery AS SELECT id FROM table1 WHERE array_cosine_distance(vec, ?::FLOAT[3]) <= ?;
+
+query I
+EXECUTE myquery('[1.1, 2.1, 3.1]', 0.01);
+----
+
+statement ok
+INSERT INTO table1 VALUES (1, [1.1, 2.1, 3.1]), (2, [3, 2, 1]), (3, NULL);
+
+query I
+EXECUTE myquery('[1.1, 2.1, 3.1]', 0.01);
+----
+1
+
+query I
+EXECUTE myquery('[3, 2, 1]', 0.01);
+----
+2
+
+query I
+EXECUTE myquery(NULL, 0.01);
+----
+
+statement error
+EXECUTE myquery('[1, 2]', 0.01);
+----
+the size of the array must match the destination type
+
+statement error
+EXECUTE myquery('[1, NULL, 3]', 0.01);
+----
+right argument can not contain NULL values
+
+query I
+EXECUTE myquery('[1.1, 2.1, 3.1]', 0.01);
+----
+1
+
+statement ok
+PREPARE distance AS SELECT list(id ORDER BY id) FROM table1 WHERE array_distance($1::FLOAT[3], vec) < 1;
+
+query I
+EXECUTE distance([3, 2, 1]);
+----
+[2]
+
+statement ok
+PREPARE inner_product AS SELECT list(id ORDER BY id) FROM table1 WHERE array_inner_product(vec, ?::FLOAT[3]) > 2;
+
+query I
+EXECUTE inner_product([1, 0, 0]);
+----
+[2]
+
+statement ok
+PREPARE extract AS SELECT list(id ORDER BY id) FROM table1 WHERE list_extract(?::INTEGER[], 1) = id;
+
+query I
+EXECUTE extract([2, 3]);
+----
+[2]

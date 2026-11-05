@@ -13,6 +13,10 @@ namespace duckdb {
 
 struct GlobFunctionBindData : public TableFunctionData {
 	shared_ptr<MultiFileList> file_list;
+
+	bool SupportStatementCache() const override {
+		return false;
+	}
 };
 
 static unique_ptr<FunctionData> GlobFunctionBind(ClientContext &context, TableFunctionBindInput &input,

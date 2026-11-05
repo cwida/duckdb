@@ -34,6 +34,10 @@ void ExpressionBinder::InitializeStackCheck() {
 	}
 }
 
+void ExpressionBinder::ContinueStackDepth(const ExpressionBinder &parent) {
+	stack_depth = parent.stack_depth;
+}
+
 StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpression &expr, idx_t extra_stack) {
 	D_ASSERT(stack_depth != DConstants::INVALID_INDEX);
 	auto max_expression_depth = Settings::Get<MaxExpressionDepthSetting>(context);
@@ -48,6 +52,14 @@ StackChecker<ExpressionBinder> ExpressionBinder::StackCheck(const ParsedExpressi
 BindResult ExpressionBinder::BindExpression(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression) {
 	auto stack_checker = StackCheck(*expr);
 
+	if (binder.HasEnclosingScope()) {
+		// an expression an enclosing query groups by is a reference to that group, e.g. `(SELECT x::DATE)`
+		// inside a query that groups by `x::DATE`
+		auto owner = ResolveOuterGroupOwner(*expr);
+		if (owner.IsValid()) {
+			return BindGroupInEnclosingScope(expr, owner.GetIndex(), depth);
+		}
+	}
 	auto &expr_ref = *expr;
 	switch (expr_ref.GetExpressionClass()) {
 	case ExpressionClass::BETWEEN:
@@ -282,7 +294,7 @@ unique_ptr<Expression> ExpressionBinder::Bind(unique_ptr<ParsedExpression> &expr
 				result = BoundCastExpression::AddCastToType(context, std::move(result), exchanged_type);
 			}
 		}
-		if (result->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
+		if (ContainsType(result->GetReturnType(), LogicalTypeId::UNKNOWN)) {
 			throw ParameterNotResolvedException();
 		}
 	}

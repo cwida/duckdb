@@ -1,0 +1,22 @@
+# name: test/sql/copy/csv/sniff_csv_skip_overflow.test
+# description: sniff_csv reports a skip value beyond the UINTEGER range instead of raising an InternalException that invalidates the database
+# group: [csv]
+
+statement ok
+COPY (SELECT * FROM (VALUES ('Vendor','Test',NULL,NULL),('Start','06/02/2024',NULL,NULL),('A','B','C','D'),('1','2','3','4'),('5','6','7','8'))) TO '{TEST_DIR}/skip_overflow.csv' (FORMAT csv, DELIMITER E'\t', HEADER false);
+
+# a skip value beyond the UINTEGER range is reported as-is in the UBIGINT SkipRows column
+query I
+SELECT SkipRows FROM sniff_csv('{TEST_DIR}/skip_overflow.csv', skip=9223372036854775807);
+----
+9223372036854775807
+
+# the database is still usable afterwards
+query I
+SELECT 42;
+----
+42
+
+# an in-range skip still sniffs normally
+statement ok
+FROM sniff_csv('{TEST_DIR}/skip_overflow.csv', skip=2);

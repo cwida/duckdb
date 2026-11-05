@@ -1,0 +1,45 @@
+# name: test/sql/types/enum/enum_enum_cast_missing_value.test
+# description: Casting an ENUM value missing from the target ENUM is an error (NULL with TRY_CAST)
+# group: [enum]
+
+statement ok
+CREATE TYPE e1 AS ENUM ('a','b');
+
+statement ok
+CREATE TYPE e2 AS ENUM ('a','b','z');
+
+statement ok
+CREATE TYPE e3 AS ENUM ('a');
+
+statement ok
+CREATE TABLE t(c e1);
+
+statement ok
+INSERT INTO t VALUES ('a'),('b');
+
+query III
+SELECT c, CAST(c AS e2) = 'z'::e2, CAST(c AS e2) <> 'z'::e2 FROM t ORDER BY c;
+----
+a	false	true
+b	false	true
+
+query I
+SELECT c FROM t WHERE CAST(c AS e2) NOT IN ('a'::e2,'z'::e2);
+----
+b
+
+query I
+SELECT c FROM t WHERE c NOT IN ('a'::e1, 'z'::e2);
+----
+b
+
+statement error
+SELECT CAST(c AS e3) FROM t;
+----
+<REGEX>:Conversion Error.*
+
+query I
+SELECT TRY_CAST(c AS e3) FROM t ORDER BY c;
+----
+a
+NULL

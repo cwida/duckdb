@@ -1,8 +1,8 @@
 # name: test/sql/storage/compression/roaring/roaring_bool_various_distributions.test_slow
-# description: Test bitpacking with nulls
+# description: Roaring roundtrips Boolean distributions with NULLs
 # group: [roaring]
 
-mode skip instable
+load {TEST_DIR}/roaring_distributions.db readwrite v1.5.0
 
 foreach ratio 0.01 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.99
 
@@ -14,14 +14,18 @@ SET force_compression='uncompressed';
 statement ok
 CREATE OR REPLACE TABLE uncompressed_booleans(id BIGINT, b BOOL);
 
+# Full and partial containers span multiple row groups.
 statement ok
 SELECT setseed(0.4);
 WITH cte AS (
-   SELECT id, random() r FROM range(10_000_000) t(id)
+   SELECT id, random() r FROM range(300_000) t(id)
 )
 INSERT INTO uncompressed_booleans
 SELECT id, case when r < {null_ratio} then null else r <= {ratio} end
 FROM cte;
+
+statement ok
+CHECKPOINT;
 
 statement ok
 SET force_compression='roaring';
@@ -32,9 +36,26 @@ CREATE OR REPLACE TABLE roaring_booleans(id BIGINT, b BOOL);
 statement ok
 INSERT INTO roaring_booleans FROM uncompressed_booleans;
 
-# should be empty
+statement ok
+CHECKPOINT;
+
+# A constant value segment can still have a Roaring validity segment.
+query I
+SELECT count(*) > 0 AND bool_or(compression = 'Roaring')
+       AND bool_and(compression IN ('Roaring', 'Constant'))
+FROM pragma_storage_info('roaring_booleans') WHERE column_name = 'b';
+----
+true
+
+restart
+
+# Compare both directions after reading the compressed data.
 query II
 FROM uncompressed_booleans EXCEPT ALL FROM roaring_booleans;
+----
+
+query II
+FROM roaring_booleans EXCEPT ALL FROM uncompressed_booleans;
 ----
 
 endloop

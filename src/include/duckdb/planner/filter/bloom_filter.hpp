@@ -20,7 +20,7 @@ class BloomFilter;
 //! DEPRECATED - only preserved for backwards-compatible expression conversion
 class LegacyBFTableFilter final : public TableFilter {
 private:
-	optional_ptr<BloomFilter> filter;
+	shared_ptr<const BloomFilter> filter;
 
 	bool filters_null_values;
 	string key_column_name;
@@ -30,9 +30,9 @@ public:
 	static constexpr auto TYPE = TableFilterType::LEGACY_BLOOM_FILTER;
 
 public:
-	explicit LegacyBFTableFilter(optional_ptr<BloomFilter> filter_p, const bool filters_null_values_p,
+	explicit LegacyBFTableFilter(shared_ptr<const BloomFilter> filter_p, const bool filters_null_values_p,
 	                             const string &key_column_name_p, const LogicalType &key_type_p)
-	    : TableFilter(TYPE), filter(filter_p), filters_null_values(filters_null_values_p),
+	    : TableFilter(TYPE), filter(std::move(filter_p)), filters_null_values(filters_null_values_p),
 	      key_column_name(key_column_name_p), key_type(key_type_p) {
 	}
 

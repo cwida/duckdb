@@ -37,10 +37,12 @@ add_library_unity(
   capi_v2_option.cpp
   capi_v2_prepared_statement.cpp
   capi_v2_qname.cpp
+  capi_v2_query_metrics.cpp
   capi_v2_replacement_scan.cpp
   capi_v2_result.cpp
   capi_v2_schema.cpp
   capi_v2_statement.cpp
+  capi_v2_stats.cpp
   capi_v2_tokenizer.cpp
   capi_v2_utf8.cpp
   capi_v2_value.cpp

@@ -163,6 +163,10 @@ protected:
   inline int8_t getCompactType(const TType ttype);
 
 public:
+  // Tighten the container size limit after construction, e.g. once the caller has learned a smaller
+  // byte budget (such as a sub-message length) than was known when the protocol was created.
+  void setContainerSizeLimit(int32_t container_limit) { container_limit_ = container_limit; }
+
   uint32_t readMessageBegin(std::string& name, TMessageType& messageType, int32_t& seqid);
 
   uint32_t readStructBegin(std::string& name);

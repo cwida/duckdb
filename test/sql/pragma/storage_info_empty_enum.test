@@ -1,0 +1,70 @@
+# name: test/sql/pragma/storage_info_empty_enum.test
+# description: Statistics of ENUM columns without values have no min/max, also for ENUMs with zero or one values
+# group: [pragma]
+
+statement ok
+CREATE TYPE empty_enum AS ENUM();
+
+statement ok
+CREATE TABLE t(m empty_enum);
+
+statement ok
+INSERT INTO t VALUES (NULL);
+
+query I
+SELECT stats::VARCHAR FROM pragma_storage_info('t') ORDER BY ALL
+----
+{'has_no_null': false, 'has_null': true}
+{'has_no_null': false, 'has_null': true}
+
+query II
+SELECT m, m::VARIANT FROM t
+----
+NULL	NULL
+
+statement ok
+CREATE TYPE single_enum AS ENUM('a');
+
+statement ok
+CREATE TABLE t1(m single_enum);
+
+statement ok
+INSERT INTO t1 VALUES (NULL);
+
+query I
+SELECT stats::VARCHAR FROM pragma_storage_info('t1') ORDER BY ALL
+----
+{'has_no_null': false, 'has_null': true}
+{'has_no_null': false, 'has_null': true}
+
+query I
+SELECT count(*) FROM t1 WHERE m = 'a'
+----
+0
+
+statement ok
+INSERT INTO t1 VALUES ('a');
+
+query I
+SELECT count(*) FROM t1 WHERE m = 'a'
+----
+1
+
+statement ok
+CREATE TYPE two_enum AS ENUM('a', 'b');
+
+statement ok
+CREATE TABLE t2(m two_enum);
+
+statement ok
+INSERT INTO t2 VALUES ('b'), (NULL);
+
+query I
+SELECT stats::VARCHAR FROM pragma_storage_info('t2') WHERE segment_type <> 'VALIDITY'
+----
+{'has_no_null': true, 'has_null': true, 'max': b, 'min': b}
+
+query I
+SELECT count(*) FROM t2 WHERE m = 'b'
+----
+1

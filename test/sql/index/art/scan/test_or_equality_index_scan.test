@@ -1,0 +1,72 @@
+# name: test/sql/index/art/scan/test_or_equality_index_scan.test
+# description: Test that an OR of equalities on the indexed column uses an ART index scan.
+# group: [scan]
+
+statement ok
+CREATE TABLE tbl AS SELECT range::INTEGER AS i, range::VARCHAR AS s FROM range(10000) UNION ALL SELECT NULL, NULL;
+
+statement ok
+CREATE INDEX idx_i ON tbl(i);
+
+statement ok
+CREATE INDEX idx_s ON tbl(s);
+
+# Reversed comparisons, duplicates, missing values and NULL constants.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i = 9999 OR 5 = i OR i = 5 OR i = -1 OR i = NULL;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i = 9999 OR 5 = i OR i = 5 OR i = -1 OR i = NULL ORDER BY i;
+----
+5
+9999
+
+query II
+EXPLAIN ANALYZE SELECT s FROM tbl WHERE s = '5' OR s = '7';
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT s FROM tbl WHERE s = '5' OR s = '7' ORDER BY s;
+----
+5
+7
+
+# Not only equalities, or equalities on different columns: the index cannot be used.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i = 5 OR i > 9998;
+----
+analyzed_plan	<REGEX>:.*Sequential Scan.*
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i = 5 OR s = '7';
+----
+analyzed_plan	<REGEX>:.*Sequential Scan.*
+
+query I
+SELECT i FROM tbl WHERE i = 5 OR s = '7' ORDER BY i;
+----
+5
+7
+
+# Rows inserted in the current transaction are found as well.
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO tbl VALUES (-5, '-5'), (-7, '-7');
+
+query I
+SELECT i FROM tbl WHERE i = 5 OR i = -7 OR i = -5 ORDER BY i;
+----
+-7
+-5
+5
+
+statement ok
+ROLLBACK;

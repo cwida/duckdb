@@ -1,0 +1,84 @@
+# name: test/parquet/variant/variant_object_key_order.test
+# description: Parquet VARIANT objects order field IDs and offsets by UTF-8 field name
+# group: [variant]
+
+require parquet
+
+require json
+
+statement ok
+CREATE MACRO encode_variant(j) AS
+	variant_to_parquet_variant(j::JSON::VARIANT)::STRUCT(metadata BLOB, value BLOB);
+
+# The dictionary remains [c, b], but the object's field IDs must be [1, 0].
+query II
+SELECT hex(p.metadata), hex(p.value)
+FROM (SELECT encode_variant('{"c":1,"b":2}') AS p);
+----
+01020001026362	02020100000912180200000000000000180100000000000000
+
+# Unsigned UTF-8 ordering includes empty keys, prefixes and case-sensitive names.
+query I
+SELECT hex(p.value)
+FROM (SELECT encode_variant('{"é":null,"a":true,"aa":false,"Z":null,"":null}') AS p);
+----
+020504030102000001020304050000040800
+
+# Reordering differently shaped children must keep their nested offsets in sync.
+query II
+SELECT hex(p.value), variant_bytes_to_variant(p.metadata || p.value)::JSON
+FROM (
+	SELECT encode_variant('{"z":[{"c":true,"b":false}],"a":{"y":null,"x":[false,true]},"empty":{}}') AS p
+);
+----
+0203010200000F121F02020605000708030200010208040002000003010009020204030001020804	{"a":{"x":[false,true],"y":null},"empty":{},"z":[{"b":false,"c":true}]}
+
+query II
+SELECT hex(p.value), variant_bytes_to_variant(p.metadata || p.value)::JSON
+FROM (SELECT encode_variant('{}') AS p);
+----
+020000	{}
+
+# Uncompressed Parquet pages retain the binary payload, allowing an order check before decoding.
+statement ok
+COPY (
+	SELECT '{"a":"hello","c":true,"b":false}'::JSON::VARIANT AS v
+) TO '{TEST_DIR}/variant_order_partial.parquet' (
+	SHREDDING {v: 'STRUCT(a VARCHAR)'}, COMPRESSION UNCOMPRESSED
+);
+
+# Dictionary IDs can vary; offsets [0, 1, 2] must point to false, true (b, c).
+query I
+SELECT regexp_matches(hex(content), '0202[0-9A-F]{4}0001020804')
+FROM read_blob('{TEST_DIR}/variant_order_partial.parquet');
+----
+true
+
+query I
+SELECT v::JSON FROM '{TEST_DIR}/variant_order_partial.parquet';
+----
+{"a":"hello","b":false,"c":true}
+
+# Automatic shredding chooses VARCHAR for payload; the object uses its binary fallback.
+statement ok
+COPY (
+	SELECT j::JSON::VARIANT AS v FROM (VALUES
+		('{"fixed":"ok","payload":"text"}'),
+		('{"fixed":"ok","payload":"more"}'),
+		('{"fixed":"ok","payload":{"c":true,"b":false}}')
+	) t(j)
+) TO '{TEST_DIR}/variant_order_automatic.parquet' (COMPRESSION UNCOMPRESSED);
+
+# Check the fallback object's encoded value order as well as its decoded field associations.
+query I
+SELECT regexp_matches(hex(content), '0202[0-9A-F]{4}0001020804')
+FROM read_blob('{TEST_DIR}/variant_order_automatic.parquet');
+----
+true
+
+query I rowsort
+SELECT v::JSON FROM '{TEST_DIR}/variant_order_automatic.parquet';
+----
+{"fixed":"ok","payload":"more"}
+{"fixed":"ok","payload":"text"}
+{"fixed":"ok","payload":{"b":false,"c":true}}

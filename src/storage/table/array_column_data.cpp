@@ -27,16 +27,18 @@ void ArrayColumnData::SetDataType(ColumnDataType data_type) {
 	validity->SetDataType(data_type);
 }
 
-FilterPropagateResult ArrayColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                    optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+FilterPropagateResult ArrayColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                    optional_idx &checked_end) {
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
-void ArrayColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void ArrayColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                         idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 	auto array_size = ArrayType::GetSize(type);
-	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], rows * array_size);
+	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], start_row * array_size,
+	                                 end_row * array_size);
 }
 
 void ArrayColumnData::InitializeScan(ColumnScanState &state) {
@@ -181,10 +183,12 @@ void ArrayColumnData::Skip(ColumnScanState &state, idx_t count) {
 
 void ArrayColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnAppendState validity_append;
+	validity_append.transient = state.transient;
 	validity->InitializeAppend(validity_append);
 	state.child_appends.push_back(std::move(validity_append));
 
 	ColumnAppendState child_append;
+	child_append.transient = state.transient;
 	child_column->InitializeAppend(child_append);
 	state.child_appends.push_back(std::move(child_append));
 }
@@ -222,10 +226,6 @@ void ArrayColumnData::RevertAppend(row_t new_count) {
 	child_column->RevertAppend(new_count * UnsafeNumericCast<row_t>(array_size));
 
 	this->count = UnsafeNumericCast<idx_t>(new_count);
-}
-
-idx_t ArrayColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("Array Fetch");
 }
 
 void ArrayColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,

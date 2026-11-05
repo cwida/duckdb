@@ -1,4 +1,5 @@
 #include "duckdb/planner/logical_plan_verifier.hpp"
+#include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -722,6 +723,102 @@ static void RequireReplacementResult(Connection &connection, LogicalOperator &pl
 	}
 }
 
+// SQL cannot select a replacement boundary or set its C++ materialization policy.
+// Exercise the API here and use the resulting SQL to check evaluation and optimization.
+TEST_CASE("Source replacement materialization is selected per boundary",
+          "[sql_export][logical_plan_sql_export][source_materialization]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("CREATE SEQUENCE source_calls"));
+	connection.BeginTransaction();
+	auto plan =
+	    BindResolvedReplacementPlan(connection, "SELECT a.i,a.i,b.i FROM range(3) a(i),range(1) b(i) ORDER BY a.i");
+	auto cross = FindLogicalPlanExportOperator(*plan, LogicalOperatorType::LOGICAL_CROSS_PRODUCT);
+	REQUIRE(cross);
+	vector<LogicalPlanSQLExportReplacement> replacements;
+	replacements.push_back(
+	    {*cross->children[0],
+	     ReplacementRelation(connection, *cross->children[0], "SELECT nextval('source_calls') FROM range(3)"),
+	     CTEMaterialize::CTE_MATERIALIZE_ALWAYS});
+	replacements.push_back(
+	    {*cross->children[1], ReplacementRelation(connection, *cross->children[1], "SELECT 42::BIGINT")});
+	idx_t expected_materialized = 1;
+	SECTION("explicit single evaluation") {
+	}
+	SECTION("normal CTE rules preserve volatile evaluation") {
+		replacements[0].materialized = CTEMaterialize::CTE_MATERIALIZE_DEFAULT;
+		expected_materialized = 0;
+	}
+	auto exported = LogicalPlanSQLExporter::ExportWithSources(*connection.context, *plan, replacements);
+	REQUIRE(exported.IsSuccess());
+	auto &definitions = exported.GetValue().query->cte_map.map;
+	REQUIRE(definitions.size() == 2);
+	idx_t materialized = 0, default_policy = 0;
+	for (auto &entry : definitions) {
+		materialized += entry.second->materialized == CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
+		default_policy += entry.second->materialized == CTEMaterialize::CTE_MATERIALIZE_DEFAULT;
+	}
+	REQUIRE(materialized == expected_materialized);
+	REQUIRE(default_policy == 2 - expected_materialized);
+	RequireReplacementResult(connection, *plan, replacements,
+	                         "VALUES (1::BIGINT,1::BIGINT,42::BIGINT),(2,2,42),(3,3,42)");
+	auto calls = connection.Query("SELECT currval('source_calls')");
+	REQUIRE_NO_FAIL(*calls);
+	REQUIRE(calls->Collection().GetValue(0, 0) == Value::BIGINT(3));
+	connection.Rollback();
+}
+
+TEST_CASE("Source replacement policy preserves optimizer and user CTE choices",
+          "[sql_export][logical_plan_sql_export][source_materialization]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE source_values AS SELECT i FROM range(10) t(i)"));
+	connection.BeginTransaction();
+	string query = "SELECT i FROM range(10) t(i) WHERE i=3";
+	bool user_cte = false, empty = false, nested_cte = false;
+	SECTION("filter pushdown") {
+	}
+	SECTION("empty input pruning") {
+		query = "SELECT i FROM range(10) t(i) WHERE false";
+		empty = true;
+	}
+	SECTION("user materialized CTE") {
+		query = "WITH q AS MATERIALIZED (SELECT i FROM range(10) t(i)) SELECT i FROM q WHERE i=3";
+		user_cte = true;
+	}
+	SECTION("materialized CTE inside replacement") {
+		nested_cte = true;
+	}
+	auto plan = BindResolvedReplacementPlan(connection, query);
+	auto boundary = FindLogicalPlanExportOperator(*plan, LogicalOperatorType::LOGICAL_GET);
+	REQUIRE(boundary);
+	for (auto policy : {CTEMaterialize::CTE_MATERIALIZE_ALWAYS, CTEMaterialize::CTE_MATERIALIZE_DEFAULT,
+	                    CTEMaterialize::CTE_MATERIALIZE_NEVER}) {
+		vector<LogicalPlanSQLExportReplacement> replacements;
+		auto source_sql = nested_cte ? "WITH r AS MATERIALIZED (SELECT i FROM source_values) SELECT i FROM r"
+		                             : "SELECT i FROM source_values";
+		replacements.push_back({*boundary, ReplacementRelation(connection, *boundary, source_sql), policy});
+		auto exported = LogicalPlanSQLExporter::ExportWithSources(*connection.context, *plan, replacements);
+		REQUIRE(exported.IsSuccess());
+		auto optimized = OptimizeLogicalPlanExportQuery(connection, exported.GetValue().query->ToString());
+		if (!empty) {
+			bool expect_materialized = policy == CTEMaterialize::CTE_MATERIALIZE_ALWAYS || user_cte || nested_cte;
+			REQUIRE(bool(FindLogicalPlanExportOperator(*optimized, LogicalOperatorType::LOGICAL_MATERIALIZED_CTE)) ==
+			        expect_materialized);
+			if (!expect_materialized) {
+				auto get = FindLogicalPlanExportOperator(*optimized, LogicalOperatorType::LOGICAL_GET);
+				REQUIRE(get);
+				REQUIRE(get->Cast<LogicalGet>().table_filters.HasFilters());
+			}
+		} else if (policy != CTEMaterialize::CTE_MATERIALIZE_ALWAYS) {
+			REQUIRE(FindLogicalPlanExportOperator(*optimized, LogicalOperatorType::LOGICAL_EMPTY_RESULT));
+			REQUIRE_FALSE(FindLogicalPlanExportOperator(*optimized, LogicalOperatorType::LOGICAL_GET));
+		}
+		RequireReplacementResult(connection, *plan, replacements, query);
+	}
+	connection.Rollback();
+}
+
 // Only the API can select an existing operator as a replacement boundary. The
 // assertions below execute SQL to distinguish replacement from original input.
 TEST_CASE("Resolved replacements take precedence over CTE producer shortcuts",
@@ -972,6 +1069,47 @@ TEST_CASE("LIMIT reconstruction respects replacement boundaries",
 		vector<LogicalPlanSQLExportReplacement> replacements;
 		replacements.push_back({scalar, ReplacementRelation(connection, scalar, "SELECT 1::BIGINT")});
 		RequireReplacementResult(connection, *plan, replacements, "SELECT 0::BIGINT");
+	}
+	connection.Rollback();
+}
+
+// SQL cannot replace a bound dummy scan. This API check establishes that its replacement
+// supplies the row stream even when the parent only projects scalar expressions.
+TEST_CASE("Scalar projections preserve replacement dummy cardinality",
+          "[sql_export][logical_plan_sql_export][plan_views]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	connection.BeginTransaction();
+	auto plan = BindResolvedReplacementPlan(connection, "SELECT 42::INTEGER, NULL::VARCHAR");
+	auto dummy = FindLogicalPlanExportOperator(*plan, LogicalOperatorType::LOGICAL_DUMMY_SCAN);
+	REQUIRE(dummy);
+	RequireReplacementResult(connection, *plan, {}, "SELECT 42::INTEGER, NULL::VARCHAR");
+	for (auto count : {0, 1, 3}) {
+		auto rows = std::to_string(count);
+		vector<LogicalPlanSQLExportReplacement> replacements;
+		replacements.push_back(
+		    {*dummy, ReplacementRelation(connection, *dummy, "SELECT NULL::INTEGER FROM range(" + rows + ")")});
+		RequireReplacementResult(connection, *plan, replacements,
+		                         "SELECT 42::INTEGER, NULL::VARCHAR FROM range(" + rows + ")");
+	}
+	connection.Rollback();
+}
+
+// Replacing the singleton input of a bound VALUES node also requires the source API.
+TEST_CASE("VALUES preserves replacement dummy cardinality", "[sql_export][logical_plan_sql_export][plan_views]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	connection.BeginTransaction();
+	auto plan = BindResolvedReplacementPlan(connection, "VALUES (42::INTEGER), (42::INTEGER)");
+	auto dummy = FindLogicalPlanExportOperator(*plan, LogicalOperatorType::LOGICAL_DUMMY_SCAN);
+	REQUIRE(dummy);
+	RequireReplacementResult(connection, *plan, {}, "VALUES (42::INTEGER), (42::INTEGER)");
+	for (auto count : {0, 1, 3}) {
+		auto rows = std::to_string(count);
+		vector<LogicalPlanSQLExportReplacement> replacements;
+		replacements.push_back(
+		    {*dummy, ReplacementRelation(connection, *dummy, "SELECT NULL::INTEGER FROM range(" + rows + ")")});
+		RequireReplacementResult(connection, *plan, replacements, "SELECT 42::INTEGER FROM range(" + rows + " * 2)");
 	}
 	connection.Rollback();
 }

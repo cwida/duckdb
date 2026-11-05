@@ -375,3 +375,18 @@ query IIIIIII
 COPY nested_nan_rg TO '{TEST_DIR}/nested_nan_rg.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, SHREDDING {v: 'DOUBLE'}, RETURN_STATS);
 ----
 <REGEX>:.*nested_nan_rg.parquet	4096	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"l"'={null_count=0, num_values=4096}, '"l"."element"'={column_size_bytes=\d+, has_nan=true, max=4095.0, max_is_exact=true, min=1.0, min_is_exact=true, nan_count=5, null_count=0, num_values=4096}, '"s"'={null_count=0, num_values=4096}, '"s"."x"'={column_size_bytes=\d+, has_nan=true, max=4095.0, max_is_exact=true, min=1.0, min_is_exact=true, nan_count=1, null_count=0, num_values=4096}, '"v"'={null_count=0, num_values=4096}, '"v"."metadata"'={column_size_bytes=\d+, max=010000, max_is_exact=true, min=010000, min_is_exact=true, null_count=0, num_values=4096, variant_type='STRUCT\(metadata BLOB, "value" BLOB, typed_value DOUBLE\)'}, '"v"."typed_value"'={column_size_bytes=\d+, has_nan=true, max=4095.0, max_is_exact=true, min=0.0, min_is_exact=true, nan_count=2, null_count=0, num_values=4096}, '"v"."value"'={column_size_bytes=\d+, null_count=4096, num_values=4096}}	NULL	{row_group_count=2}
+
+# a NULL struct inside a list counts once in the null_count of its fields
+query IIIIIII
+COPY (SELECT [NULL, {'a': 1}] AS l) TO '{TEST_DIR}/list_struct_null.parquet' (RETURN_STATS);
+----
+<REGEX>:.*list_struct_null.parquet	1	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"l"'={null_count=0, num_values=1}, '"l"."element"'={null_count=1, num_values=2}, '"l"."element"."a"'={column_size_bytes=\d+, max=1, max_is_exact=true, min=1, min_is_exact=true, null_count=1, num_values=2}}	NULL	{row_group_count=1}
+
+# NULL lists, NULL struct elements and NULL fields, accumulated over row groups
+statement ok
+CREATE TABLE list_struct_nulls AS SELECT CASE WHEN i % 10 = 0 THEN NULL ELSE [NULL, {'a': i}, CASE WHEN i % 3 = 0 THEN NULL ELSE {'a': NULL} END] END ls FROM range(4096) t(i);
+
+query IIIIIII
+COPY list_struct_nulls TO '{TEST_DIR}/list_struct_nulls.parquet' (ROW_GROUP_SIZE 2048, RETURN_STATS);
+----
+<REGEX>:.*list_struct_nulls.parquet	4096	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:{'"ls"'={null_count=410, num_values=4096}, '"ls"."element"'={null_count=4915, num_values=11058}, '"ls"."element"."a"'={column_size_bytes=\d+, max=4095, max_is_exact=true, min=1, min_is_exact=true, null_count=7782, num_values=11468}}	NULL	{row_group_count=2}

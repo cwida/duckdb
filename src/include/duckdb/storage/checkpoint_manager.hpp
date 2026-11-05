@@ -9,7 +9,9 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/storage/metadata/metadata_writer.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 namespace duckdb {
@@ -48,8 +50,7 @@ class ActiveCheckpointWrapper {
 public:
 	//! Creates a connection if we have a context.
 	//! If there is no context, we are on shutdown and a checkpoint connection/transaction is not created.
-	ActiveCheckpointWrapper(optional_ptr<ClientContext> context, AttachedDatabase &db,
-	                        DuckTransactionManager &transaction_manager);
+	ActiveCheckpointWrapper(Context &services, AttachedDatabase &db, DuckTransactionManager &transaction_manager);
 
 	~ActiveCheckpointWrapper();
 
@@ -71,18 +72,25 @@ private:
 
 class CheckpointWriter {
 public:
-	explicit CheckpointWriter(AttachedDatabase &db) : db(db) {
-	}
-	virtual ~CheckpointWriter() {
-	}
+	CheckpointWriter(AttachedDatabase &db, QueryContext context);
+	virtual ~CheckpointWriter();
 
 	//! The database
 	AttachedDatabase &db;
+
+	//! The services of the query that triggered the checkpoint, or database-wide services if there is none
+	Context &GetServices() const {
+		return services;
+	}
 
 	virtual void CreateCheckpoint() = 0;
 	virtual MetadataManager &GetMetadataManager() = 0;
 	virtual MetadataWriter &GetMetadataWriter() = 0;
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
+
+private:
+	shared_ptr<Context> owned_services;
+	Context &services;
 
 protected:
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
@@ -158,15 +166,11 @@ public:
 	CheckpointOptions GetCheckpointOptions() const {
 		return options;
 	}
-	optional_ptr<ClientContext> GetClientContext() const {
-		return context;
-	}
 
 public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	optional_ptr<ClientContext> context;
 	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
 	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
 	optional_ptr<ClientContext> checkpoint_context;

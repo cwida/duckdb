@@ -1,0 +1,254 @@
+# name: test/sql/copy/parquet/bloom_filter_fallback_types.test
+# description: Typed hashing and membership preservation for folded fallback filters
+# group: [parquet]
+
+require parquet
+
+foreach version V1 V2
+
+foreach type TINYINT SMALLINT INTEGER BIGINT UTINYINT USMALLINT UINTEGER UBIGINT HUGEINT UHUGEINT FLOAT DOUBLE DECIMAL(4,1) DECIMAL(18,2)
+
+statement ok
+CREATE OR REPLACE TABLE numbers AS
+SELECT CASE WHEN i % 17 = 0 THEN NULL ELSE (i % 50) * 2 END::{type} AS n
+FROM range(4096) t(i)
+
+statement ok
+COPY numbers TO '{TEST_DIR}/numbers.parquet'
+(FORMAT PARQUET, PARQUET_VERSION '{version}', ROW_GROUP_SIZE 2048,
+ DICTIONARY_SIZE_LIMIT 0)
+
+query II
+SELECT count(bloom_filter_length), bool_and(bloom_filter_length < 512)
+FROM parquet_metadata('{TEST_DIR}/numbers.parquet')
+----
+2	true
+
+foreach value 0 24 98
+
+query I
+SELECT bool_or(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/numbers.parquet', 'n', {value}::{type})
+----
+false
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/numbers.parquet' WHERE n={value}::{type}) =
+       (SELECT count(*) FROM numbers WHERE n={value}::{type})
+----
+true
+
+endloop
+
+query I
+SELECT bool_or(bloom_filter_excludes) FROM (
+  SELECT * FROM parquet_bloom_probe('{TEST_DIR}/numbers.parquet', 'n', 1::{type})
+  UNION ALL SELECT * FROM parquet_bloom_probe('{TEST_DIR}/numbers.parquet', 'n', 25::{type})
+  UNION ALL SELECT * FROM parquet_bloom_probe('{TEST_DIR}/numbers.parquet', 'n', 97::{type})
+)
+----
+true
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM numbers EXCEPT ALL SELECT * FROM '{TEST_DIR}/numbers.parquet')
+  UNION ALL
+  (SELECT * FROM '{TEST_DIR}/numbers.parquet' EXCEPT ALL SELECT * FROM numbers)
+)
+----
+0
+
+endloop
+
+endloop
+
+# Floating-point equality includes both signs of zero and DuckDB's NaN equality.
+foreach type FLOAT DOUBLE
+
+statement ok
+COPY (
+ SELECT CASE i % 4 WHEN 0 THEN '-0.0'::{type} WHEN 1 THEN '0.0'::{type}
+                  WHEN 2 THEN 'nan'::{type} ELSE 'inf'::{type} END AS n
+ FROM range(4096) t(i)
+) TO '{TEST_DIR}/float.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/float.parquet' WHERE n='-0.0'::{type}
+----
+2048
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/float.parquet' WHERE n='nan'::{type}
+----
+1024
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/float.parquet' WHERE n='inf'::{type}
+----
+1024
+
+endloop
+
+# The dictionary merges NaN payloads, so a dictionary holding a NaN cannot seed a filter.
+foreach position 0 2000
+
+statement ok
+COPY (SELECT CASE WHEN i = {position} THEN 'nan'::DOUBLE ELSE (hash(i) >> 11)::DOUBLE END AS n FROM range(2048) t(i))
+TO '{TEST_DIR}/nan-{position}.parquet' (FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 100)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/nan-{position}.parquet' WHERE isnan(n)
+----
+1
+
+endloop
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/nan-0.parquet')
+----
+0
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/nan-2000.parquet')
+----
+1
+
+# Interval equality must use the normalized hash as well as the physical encoding.
+statement ok
+COPY (
+ SELECT CASE i % 4 WHEN 0 THEN INTERVAL '101 days' WHEN 1 THEN INTERVAL '3 months 11 days'
+                  WHEN 2 THEN INTERVAL '1 day' ELSE INTERVAL '24 hours' END AS n
+ FROM range(4096) t(i)
+) TO '{TEST_DIR}/interval.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/interval.parquet' WHERE n=INTERVAL '101 days'
+----
+2048
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/interval.parquet' WHERE n=INTERVAL '1 day'
+----
+2048
+
+query I
+SELECT bool_or(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/interval.parquet', 'n', INTERVAL '101 days')
+----
+false
+
+query I
+SELECT bool_or(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/interval.parquet', 'n', INTERVAL '42 days')
+----
+true
+
+statement ok
+CREATE TABLE typed AS SELECT i AS row_id,
+ md5((i % 10)::VARCHAR) AS s,
+ md5((i % 10)::VARCHAR)::BLOB AS b,
+ md5((i % 10)::VARCHAR)::UUID AS u,
+ DATE '2020-01-01' + (i % 10)::INTEGER AS d,
+ TIME '12:00:00' + (i % 10) * INTERVAL '1 second' AS t,
+ (TIME '12:00:00' + (i % 10) * INTERVAL '1 second')::TIME_NS AS tn,
+ (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second') AS ts,
+ (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second')::TIMESTAMP_S AS tss,
+ (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second')::TIMESTAMP_MS AS tsm,
+ (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second')::TIMESTAMP_NS AS tsn
+FROM range(4096) t(i)
+
+statement ok
+COPY typed TO '{TEST_DIR}/typed.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0)
+
+query II
+SELECT count(bloom_filter_length), count(*) FROM parquet_metadata('{TEST_DIR}/typed.parquet')
+----
+20	22
+
+foreach column s b u d t tn ts tss tsm tsn
+
+query I
+SELECT (SELECT count(*) FROM '{TEST_DIR}/typed.parquet'
+        WHERE {column}=(SELECT {column} FROM typed WHERE row_id=3))=410
+----
+true
+
+endloop
+
+query I
+SELECT count(*) FROM (
+ (SELECT * FROM typed EXCEPT ALL SELECT * FROM '{TEST_DIR}/typed.parquet')
+ UNION ALL
+ (SELECT * FROM '{TEST_DIR}/typed.parquet' EXCEPT ALL SELECT * FROM typed)
+)
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/typed.parquet' WHERE s=md5('3')
+----
+410
+
+query T
+SELECT list(bloom_filter_excludes ORDER BY column_name) FROM (
+  SELECT 's' AS column_name, * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 's', md5('42'))
+  UNION ALL SELECT 'b', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'b', md5('42')::BLOB)
+  UNION ALL SELECT 'u', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'u', md5('42')::UUID)
+  UNION ALL SELECT 'd', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'd', DATE '2021-01-01')
+  UNION ALL SELECT 't', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 't', TIME '13:00:00')
+  UNION ALL SELECT 'tn', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'tn', TIME '13:00:00'::TIME_NS)
+  UNION ALL SELECT 'ts', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'ts', TIMESTAMP '2021-01-01')
+  UNION ALL SELECT 'tss', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'tss', TIMESTAMP_S '2021-01-01')
+  UNION ALL SELECT 'tsm', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'tsm', TIMESTAMP_MS '2021-01-01')
+  UNION ALL SELECT 'tsn', * FROM parquet_bloom_probe('{TEST_DIR}/typed.parquet', 'tsn', TIMESTAMP_NS '2021-01-01')
+) GROUP BY column_name ORDER BY column_name
+----
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+[true, true]
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/typed.parquet' WHERE d=DATE '2020-01-04'
+----
+410
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/typed.parquet' WHERE tss=TIMESTAMP '2020-01-01 00:00:03'
+----
+410
+
+# Time zone values are hashed in the normalized representation written to Parquet.
+statement ok
+COPY (
+ SELECT CASE WHEN i % 2 = 0 THEN '12:00:00+02:00' ELSE '14:00:00+02:00' END::TIMETZ AS t,
+        CASE WHEN i % 2 = 0 THEN '2020-01-01 12:00:00+02' ELSE '2020-01-01 14:00:00+02' END::TIMESTAMPTZ AS ts,
+        CASE WHEN i % 2 = 0 THEN '2020-01-01 12:00:00+02' ELSE '2020-01-01 14:00:00+02' END::TIMESTAMPTZ_NS AS ns
+ FROM range(4096) t(i)
+) TO '{TEST_DIR}/zones.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/zones.parquet'
+WHERE t='10:00:00+00'::TIMETZ AND ts='2020-01-01 10:00:00+00'::TIMESTAMPTZ
+      AND ns='2020-01-01 10:00:00+00'::TIMESTAMPTZ_NS
+----
+2048
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM (
+  SELECT * FROM parquet_bloom_probe('{TEST_DIR}/zones.parquet', 't', '11:00:00+00'::TIMETZ)
+  UNION ALL SELECT * FROM parquet_bloom_probe('{TEST_DIR}/zones.parquet', 'ts', '2021-01-01 10:00:00+00'::TIMESTAMPTZ)
+  UNION ALL SELECT * FROM parquet_bloom_probe('{TEST_DIR}/zones.parquet', 'ns', '2021-01-01 10:00:00+00'::TIMESTAMPTZ_NS)
+)
+----
+true

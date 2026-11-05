@@ -104,6 +104,17 @@ select variant_extract_string(MAP {'a': 1, 'b': 2}::VARIANT, 'a');
 ----
 NULL
 
+# Serializing an extracted deeply nested VARIANT enforces the traversal limit.
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT variant_extract_string(v, '') FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth of 128.*
+
 # Primitive values
 
 query I

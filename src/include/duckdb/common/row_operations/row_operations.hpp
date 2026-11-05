@@ -51,7 +51,7 @@ struct RowOperations {
 	                         idx_t arg_idx, optional_ptr<const ClusteredAggr> clustered = nullptr);
 	//! filtered update - aligned addresses
 	static void UpdateFilteredStates(RowOperationsState &state, AggregateFilterData &filter_data, AggregateObject &aggr,
-	                                 Vector &addresses, DataChunk &payload, idx_t arg_idx);
+	                                 Vector &addresses, idx_t arg_idx);
 	//! clustered update loop shared by grouped and perfect aggregate hash tables
 	static void UpdateStatesClustered(RowOperationsState &state, vector<AggregateObject> &aggregates,
 	                                  AggregateFilterDataSet *filter_set, const unsafe_vector<idx_t> *filter,

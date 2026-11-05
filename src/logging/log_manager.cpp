@@ -29,31 +29,48 @@ static string ResolveDeprecatedLogSinkName(DatabaseInstance &db, const string &s
 	return sink_name;
 }
 
-unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_safe, bool mutable_settings) {
-	unique_lock<mutex> lck(lock);
-
-	auto registered_logging_context = RegisterLoggingContextInternal(context);
-
+unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, bool thread_safe, bool mutable_settings) {
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	if (mutable_settings) {
-		return make_uniq<MutableLogger>(config, registered_logging_context, *this);
-	}
-	if (!config.enabled) {
-		return make_uniq<NopLogger>(*this);
+		return make_uniq<MutableLogger>(*config, RegisterLoggingContextInternal(context), *this);
 	}
 	if (!thread_safe) {
 		// TODO: implement ThreadLocalLogger and return it here
 	}
-	return make_uniq<ThreadSafeLogger>(config, registered_logging_context, *this);
+	return CreateLoggerInternal(context, config);
 }
 
-RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &context) {
-	unique_lock<mutex> lck(lock);
+unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, const LogConfigSnapshot &snapshot) {
+	if (snapshot.config && snapshot.version == config_version.load()) {
+		return CreateLoggerInternal(context, snapshot.config);
+	}
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	return CreateLoggerInternal(context, config);
+}
 
+unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, LogConfigSnapshot &snapshot) {
+	if (!snapshot.config || snapshot.version != config_version.load()) {
+		annotated_unique_lock<annotated_mutex> lck(lock);
+		snapshot.config = config;
+		snapshot.version = config_version.load();
+	}
+	return CreateLoggerInternal(context, snapshot.config);
+}
+
+unique_ptr<Logger> LogManager::CreateLoggerInternal(const LoggingContext &context,
+                                                    const shared_ptr<const LogConfig> &logger_config) {
+	if (!logger_config->enabled) {
+		return make_uniq<NopLogger>(*this);
+	}
+	return make_uniq<ThreadSafeLogger>(logger_config, RegisterLoggingContextInternal(context), *this);
+}
+
+RegisteredLoggingContext LogManager::RegisterLoggingContext(const LoggingContext &context) {
 	return RegisterLoggingContextInternal(context);
 }
 
 bool LogManager::RegisterLogSink(const string &name, shared_ptr<LogSink> &sink) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	if (registered_log_sinks.find(name) != registered_log_sinks.end()) {
 		return false;
 	}
@@ -70,21 +87,22 @@ shared_ptr<Logger> LogManager::GlobalLoggerReference() {
 }
 
 void LogManager::Flush() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_sink->FlushAll();
 }
 
 shared_ptr<LogSink> LogManager::GetLogSink() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return log_sink;
 }
 
 bool LogManager::CanScan(LoggingTargetTable table) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return log_sink->CanScan(table);
 }
 
-LogManager::LogManager(DatabaseInstance &db, LogConfig config_p) : config(std::move(config_p)), db_instance(db) {
+LogManager::LogManager(DatabaseInstance &db, LogConfig config_p)
+    : config(make_shared_ptr<const LogConfig>(std::move(config_p))), db_instance(db) {
 	log_sink = make_uniq<InMemoryLogSink>(db);
 }
 
@@ -102,16 +120,12 @@ LogManager &LogManager::Get(ClientContext &context) {
 	return context.db->GetLogManager();
 }
 
-RegisteredLoggingContext LogManager::RegisterLoggingContextInternal(LoggingContext &context) {
-	RegisteredLoggingContext result = {next_registered_logging_context_index, context};
-
-	next_registered_logging_context_index += 1;
-
-	if (next_registered_logging_context_index == NumericLimits<idx_t>::Maximum()) {
+RegisteredLoggingContext LogManager::RegisterLoggingContextInternal(const LoggingContext &context) {
+	auto context_id = next_registered_logging_context_index++;
+	if (context_id >= NumericLimits<idx_t>::Maximum() - 1) {
 		throw InternalException("Ran out of available log context ids.");
 	}
-
-	return result;
+	return {context_id, context};
 }
 
 void LogManager::WriteLogEntry(timestamp_t timestamp, const char *log_type, LogLevel log_level, const char *log_message,
@@ -119,7 +133,7 @@ void LogManager::WriteLogEntry(timestamp_t timestamp, const char *log_type, LogL
 	if (log_level == LogLevel::LOG_WARNING && Settings::Get<WarningsAsErrorsSetting>(db_instance)) {
 		throw InvalidInputException(log_message);
 	} else {
-		unique_lock<mutex> lck(lock);
+		annotated_unique_lock<annotated_mutex> lck(lock);
 		log_sink->WriteLogEntry(timestamp, log_level, log_type, log_message, context);
 	}
 }
@@ -129,75 +143,94 @@ void LogManager::FlushCachedLogEntries(DataChunk &chunk, const RegisteredLogging
 }
 
 void LogManager::SetConfig(DatabaseInstance &db, const LogConfig &config_p) {
-	auto new_config = config_p;
-	new_config.storage = ResolveDeprecatedLogSinkName(db, config_p.storage);
+	auto sink_name = ResolveDeprecatedLogSinkName(db, config_p.storage);
 
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 
 	// We need extra handling for switching sink
-	SetLogSinkInternal(db, new_config.storage);
-
+	auto new_config = config_p;
+	SetLogSinkInternal(db, new_config, sink_name);
 	SetConfigInternal(std::move(new_config));
 }
 
+pair<LogConfig, shared_ptr<LogSink>> LogManager::GetConfigAndSink() {
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	return make_pair(*config, log_sink);
+}
+
+void LogManager::RestoreConfig(const LogConfig &config_p, shared_ptr<LogSink> sink) {
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	log_sink = std::move(sink);
+	SetConfigInternal(config_p);
+}
+
 void LogManager::SetEnableLogging(bool enable) {
-	unique_lock<mutex> lck(lock);
-	config.enabled = enable;
-	global_logger->UpdateConfig(config);
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	auto new_config = *config;
+	new_config.enabled = enable;
+	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetLogMode(LogMode mode) {
-	unique_lock<mutex> lck(lock);
-	config.mode = mode;
-	global_logger->UpdateConfig(config);
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	auto new_config = *config;
+	new_config.mode = mode;
+	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetLogLevel(LogLevel level) {
-	unique_lock<mutex> lck(lock);
-	config.level = level;
-	global_logger->UpdateConfig(config);
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	auto new_config = *config;
+	new_config.level = level;
+	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetEnabledLogTypes(optional_ptr<unordered_set<string>> enabled_log_types) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	auto new_config = *config;
 	if (enabled_log_types) {
-		config.enabled_log_types = *enabled_log_types;
+		new_config.enabled_log_types = *enabled_log_types;
 	} else {
-		config.enabled_log_types = {};
+		new_config.enabled_log_types = {};
 	}
-	global_logger->UpdateConfig(config);
+	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetDisabledLogTypes(optional_ptr<unordered_set<string>> disabled_log_types) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	auto new_config = *config;
 	if (disabled_log_types) {
-		config.disabled_log_types = *disabled_log_types;
+		new_config.disabled_log_types = *disabled_log_types;
 	} else {
-		config.disabled_log_types = {};
+		new_config.disabled_log_types = {};
 	}
-	global_logger->UpdateConfig(config);
+	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetLogSink(DatabaseInstance &db, const string &requested_sink_name) {
 	auto sink_name = ResolveDeprecatedLogSinkName(db, requested_sink_name);
 
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	// 'SET logging_sink' cannot supply the path that file sink requires, so reject the switch
 	// here (active sink preserved) and point users at enable_logging instead of installing a
 	// path-less sink that throws on every later flush.
 	auto sink_name_to_lower = StringUtil::Lower(sink_name);
-	if (sink_name_to_lower == LogConfig::FILE_STORAGE_NAME && config.storage != sink_name_to_lower) {
+	if (sink_name_to_lower == LogConfig::FILE_STORAGE_NAME && config->storage != sink_name_to_lower) {
 		throw InvalidConfigurationException(
 		    "Cannot select 'file' log sink via 'SET logging_sink' because it requires a path. "
 		    "Use CALL enable_logging(storage='file', storage_path='...') instead.");
 	}
-	SetLogSinkInternal(db, sink_name);
+	auto new_config = *config;
+	SetLogSinkInternal(db, new_config, sink_name);
+	SetConfigInternal(std::move(new_config));
 }
 
-void LogManager::SetLogSinkInternal(DatabaseInstance &db, const string &sink_name) {
+void LogManager::SetLogSinkInternal(DatabaseInstance &db, LogConfig &new_config, const string &sink_name) {
 	auto sink_name_to_lower = StringUtil::Lower(sink_name);
 
-	if (config.storage == sink_name_to_lower) {
+	// keep the lowercased name, so that it is recognized when set again
+	new_config.storage = sink_name_to_lower;
+	if (config->storage == sink_name_to_lower) {
 		return;
 	}
 
@@ -222,18 +255,17 @@ void LogManager::SetLogSinkInternal(DatabaseInstance &db, const string &sink_nam
 	} else {
 		throw InvalidInputException("Log sink '%s' is not yet registered", sink_name);
 	}
-	config.storage = sink_name_to_lower;
 }
 
 void LogManager::UpdateLogSinkConfig(DatabaseInstance &db, case_insensitive_map_t<Value> &config_value) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_sink->UpdateConfig(db, config_value);
 }
 
 void LogManager::SetEnableStructuredLoggers(vector<string> &enabled_logger_types) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 
-	LogConfig new_config = config;
+	LogConfig new_config = *config;
 	new_config.enabled_log_types.clear();
 
 	LogLevel min_log_level = LogLevel::LOG_FATAL;
@@ -253,21 +285,21 @@ void LogManager::SetEnableStructuredLoggers(vector<string> &enabled_logger_types
 	new_config.mode = LogMode::ENABLE_SELECTED;
 	new_config.enabled = true;
 
-	SetConfigInternal(new_config);
+	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::TruncateLogSink() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_sink->Truncate();
 }
 
 LogConfig LogManager::GetConfig() {
-	unique_lock<mutex> lck(lock);
-	return config;
+	annotated_unique_lock<annotated_mutex> lck(lock);
+	return *config;
 }
 
 optional_ptr<const LogType> LogManager::LookupLogType(const string &type) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return LookupLogTypeInternal(type);
 }
 
@@ -282,14 +314,14 @@ optional_ptr<const LogType> LogManager::LookupLogTypeInternal(const string &type
 	return nullptr;
 }
 
-void LogManager::SetConfigInternal(LogConfig config_p) {
-	// Apply the remainder of the config
-	config = std::move(config_p);
-	global_logger->UpdateConfig(config);
+void LogManager::SetConfigInternal(LogConfig new_config) {
+	config = make_shared_ptr<const LogConfig>(std::move(new_config));
+	config_version++;
+	global_logger->UpdateConfig(*config);
 }
 
 void LogManager::RegisterLogType(unique_ptr<LogType> type) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 
 	auto lookup = registered_log_types.find(type->name);
 	if (lookup != registered_log_types.end()) {
@@ -309,6 +341,7 @@ void LogManager::RegisterDefaultLogTypes() {
 	RegisterLogType(make_uniq<AdaptiveFilterLogType>());
 	RegisterLogType(make_uniq<ParquetPrefetchLogType>());
 	RegisterLogType(make_uniq<AsyncTaskScheduleLogType>());
+	RegisterLogType(make_uniq<ReadAheadBudgetLogType>());
 	RegisterLogType(make_uniq<ExternalResourceLogType>());
 	RegisterLogType(make_uniq<ProgressVerificationLogType>());
 }

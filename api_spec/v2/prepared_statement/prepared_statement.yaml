@@ -50,7 +50,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Prepares a parsed statement into a reusable handle. Non-consuming.
 
@@ -101,7 +101,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_execute:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Executes a prepared statement, streaming its result. Non-consuming.
 
@@ -168,7 +168,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_reuses_plan:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports whether the prepared statement reuses its compiled plan across executions.
 
@@ -203,7 +203,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys a prepared statement.
 

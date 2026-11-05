@@ -213,6 +213,9 @@ DescribeTarget PEGTransformerFactory::TransformDescribeBaseTableName(PEGTransfor
 
 DescribeTarget PEGTransformerFactory::TransformDescribeStringLiteral(PEGTransformer &transformer,
                                                                      const string &string_literal) {
+	if (string_literal.empty()) {
+		throw ParserException("Expected a table name, but got an empty string");
+	}
 	DescribeTarget result;
 	result.is_table_name = true;
 	result.table_name = Identifier(string_literal);

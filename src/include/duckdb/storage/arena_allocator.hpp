@@ -13,11 +13,45 @@
 #include "duckdb/common/types/string.hpp"
 #include "duckdb/common/arena_containers/arena_ptr.hpp"
 
+#if defined(__has_include)
+#if __has_include(<sanitizer/asan_interface.h>)
+#define DUCKDB_ARENA_ALLOCATOR_HAS_ASAN_INTERFACE
+#endif
+#elif !defined(__MINGW32__)
+#define DUCKDB_ARENA_ALLOCATOR_HAS_ASAN_INTERFACE
+#endif
+
+#ifdef DUCKDB_ARENA_ALLOCATOR_HAS_ASAN_INTERFACE
+#if defined(__SANITIZE_ADDRESS__)
+#define DUCKDB_ARENA_ALLOCATOR_ASAN
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define DUCKDB_ARENA_ALLOCATOR_ASAN
+#endif
+#endif
+#endif
+
+#ifdef DUCKDB_ARENA_ALLOCATOR_ASAN
+#include <sanitizer/asan_interface.h>
+#endif
+
 namespace duckdb {
 
 struct ArenaChunk {
 	ArenaChunk(Allocator &allocator, idx_t size);
 	~ArenaChunk();
+
+	void ResetPosition(idx_t position) {
+		D_ASSERT(position <= current_position);
+#ifdef DUCKDB_ARENA_ALLOCATOR_ASAN
+		// Discarded arena containers can leave their unused capacity poisoned.
+		const auto end = MinValue(current_position, maximum_size);
+		if (position < end) {
+			__asan_unpoison_memory_region(data.get() + position, end - position);
+		}
+#endif
+		current_position = position;
+	}
 
 	AllocatedData data;
 	idx_t current_position;
@@ -45,6 +79,8 @@ public:
 		head->current_position += len;
 		return result;
 	}
+	//! Resize in place when possible, otherwise copy into this arena. The source may belong to another live arena.
+	//! Equal sizes return the source unchanged.
 	DUCKDB_API data_ptr_t Reallocate(data_ptr_t pointer, idx_t old_size, idx_t size);
 
 	DUCKDB_API data_ptr_t AllocateAligned(idx_t size);
@@ -57,7 +93,7 @@ public:
 	//! Note that we can ONLY safely call this method if Allocate has been called previously with a size >= shrink_size
 	DUCKDB_API void ShrinkHead(idx_t shrink_size) const {
 		D_ASSERT(head && head->current_position >= shrink_size);
-		head->current_position -= shrink_size;
+		head->ResetPosition(head->current_position - shrink_size);
 	}
 
 	//! A position in the arena - everything allocated after it was taken can be released again with Rewind

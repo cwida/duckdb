@@ -6,6 +6,18 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "The metadata cache of the database does not survive the restart between statements.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_glob_cache_list.test"
+      ]
+    },
+    {
+      "reason": "The default of the column calls list_value of core_functions, which is not loaded while the WAL is replayed at the restart.",
+      "paths": [
+        "test/sql/alter/struct/add_col_struct_column_default.test"
+      ]
+    },
+    {
       "reason": "In-memory external resource type registry is instance-scoped and does not survive database restarts.",
       "paths": [
         "test/sql/table_function/external_resource_types.test",
@@ -14,6 +26,9 @@
         "test/sql/table_function/external_resource_logging.test",
         "test/sql/table_function/external_resource_discovery.test",
         "test/sql/table_function/external_resource_discovery_error.test",
+        "test/sql/table_function/external_resource_callback_recursion.test",
+        "test/sql/table_function/external_resources_type_pruning.test",
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/sql/attach/external_resource_discovery.test"
       ]
     },
@@ -31,18 +46,15 @@
         "test/sql/json/table/read_json.test",
         "test/sql/storage/external_file_cache/external_file_cache_validate.test",
         "test/sql/storage/external_file_cache/external_file_cache_parquet.test_slow",
-        "test/sql/storage/external_file_cache/external_file_cache_block_size.test"
-      ]
-    },
-    {
-      "reason": "Doesn't OOM when restarting",
-      "paths": [
-        "test/sql/storage/temp_directory/offloading_block_files.test_slow"
+        "test/sql/storage/external_file_cache/external_file_cache_block_size.test",
+        "test/sql/storage/external_file_cache/external_file_cache_metadata_memory.test"
       ]
     },
     {
       "reason": "Logging setting doesn't survive restarts",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/storage/compression/zstd/zstd_compression_ratio.test_slow",
         "test/sql/logging/logging_memory_after_truncate.test",
         "test/sql/logging/logging_deprecated_names.test",
@@ -50,11 +62,13 @@
         "test/sql/logging/physical_operator_logging.test_slow",
         "test/sql/cte/recursive_cte_logging.test",
         "test/sql/cte/recursive_cte_invariant_build_logging.test",
+        "test/sql/cte/recursive_cte_key_finalize_owned_state.test",
         "test/sql/cte/recursive_cte_parallel_output_publication.test",
         "test/logging/warnings_as_errors.test",
         "test/logging/offset_order_warning.test",
         "test/sql/types/decimal/decimal_values_warning.test",
         "test/sql/settings/deprecated_settings.test",
+        "test/sql/settings/pragma_assignment_deprecated.test",
         "test/sql/copy/copy_column_identifier_conversion.test",
         "test/sql/copy/parquet/multi_file/adaptive_filter_carryover.test",
         "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
@@ -66,9 +80,23 @@
         "test/sql/copy/parquet/parquet_prefetch_cost_model.test",
         "test/sql/copy/parquet/parquet_prefetch_cost_model_remote.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/page_index/page_index_read.test",
+        "test/sql/copy/parquet/page_index/page_index_prefetch.test",
+        "test/sql/copy/parquet/page_index/page_index_reference.test",
+        "test/sql/copy/parquet/page_index/page_index_robustness.test",
+        "test/sql/copy/parquet/page_index/page_index_cache.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
+        "test/parquet/utf8_validation_page_index.test",
         "test/sql/copy/parquet/read_ahead/readahead_depth_learning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
+        "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow",
         "test/sql/copy/parquet/read_ahead/readahead_io_budget.test_slow",
+        "test/sql/copy/parquet/read_ahead/readahead_budget_growth.test",
         "test/sql/parallelism/async_task_schedule_pool.test",
+        "test/sql/parallelism/async_task_synchronous_batch.test",
         "test/sql/storage/prefetch/async_native_scan_pool.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead.test",
         "test/sql/storage/prefetch/prefetch_run_size_cap.test",
@@ -85,13 +113,6 @@
       "reason": "Parquet metadata cache doesn't survive restarts",
       "paths": [
         "test/sql/copy/parquet/parquet_glob_cache.test"
-      ]
-    },
-    {
-      "reason": "On version < v2.0.0, calling currval() before nextval() after a WAL replay is expected to error",
-      "paths": [
-        "test/sql/catalog/sequence/sequence_currval_before_nextval_not_supported.test",
-        "test/sql/catalog/sequence/sequence_currval_before_nextval_wal_not_supported.test"
       ]
     },
     {
@@ -136,6 +157,12 @@
       ]
     },
     {
+      "reason": "Test checks which blocks stay loaded between statements",
+      "paths": [
+        "test/sql/storage/test_persistent_block_memory_tags.test"
+      ]
+    },
+    {
       "reason": "Test asserts on same-process/before-checkpoint plan state (e.g. exact count before a checkpoint); force_restart checkpoints and restarts after every statement, so that intermediate state never exists.",
       "paths": [
         "test/optimizer/partition_stats_exactness.test",
@@ -149,7 +176,16 @@
         "test/sql/attach/attach_to_external_resource.test",
         "test/sql/attach/external_resource_logging.test",
         "test/sql/attach/external_resource_option_collision.test",
-        "test/sql/attach/external_resource_attach_failure.test"
+        "test/sql/attach/external_resource_attach_failure.test",
+        "test/sql/attach/external_resource_null_handle.test",
+        "test/sql/attach/external_resource_show_subquery.test",
+        "test/sql/attach/external_resource_show_with_type.test"
+      ]
+    },
+    {
+      "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
     }
   ]

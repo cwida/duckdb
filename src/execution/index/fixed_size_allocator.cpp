@@ -5,6 +5,11 @@
 
 namespace duckdb {
 
+void FixedSizeAllocator::ThrowInvalidPointer(const IndexPointer ptr) const {
+	throw DataCorruptionException("Index pointer to buffer %llu, segment %llu does not point to an allocated segment",
+	                              ptr.GetBufferId(), ptr.GetOffset());
+}
+
 FixedSizeAllocator::FixedSizeAllocator(const idx_t segment_size, BlockManager &block_manager, MemoryTag memory_tag)
     : block_manager(block_manager), buffer_manager(block_manager.buffer_manager), memory_tag(memory_tag),
       segment_size(segment_size), total_segment_count(0) {
@@ -15,13 +20,18 @@ FixedSizeAllocator::FixedSizeAllocator(const idx_t segment_size, BlockManager &b
 
 	// calculate how many segments fit into one buffer (available_segments_per_buffer)
 
-	idx_t bits_per_value = sizeof(validity_t) * 8;
-	idx_t byte_count = 0;
+	const idx_t block_size = block_manager.GetBlockSize();
+	const idx_t bits_per_value = sizeof(validity_t) * 8;
 
-	bitmask_count = 0;
-	available_segments_per_buffer = 0;
+	// each full validity_t value is followed by bits_per_value segments: skip all of them at once
+	const idx_t full_value_bytes = sizeof(validity_t) + bits_per_value * segment_size;
+	const idx_t full_value_count = block_size / full_value_bytes;
+	idx_t byte_count = full_value_count * full_value_bytes;
 
-	while (byte_count < block_manager.GetBlockSize()) {
+	bitmask_count = full_value_count;
+	available_segments_per_buffer = full_value_count * bits_per_value;
+
+	while (byte_count < block_size) {
 		if (!bitmask_count || (bitmask_count * bits_per_value) % available_segments_per_buffer == 0) {
 			// we need to add another validity_t value to the bitmask, to allow storing another
 			// bits_per_value segments on a buffer
@@ -29,7 +39,7 @@ FixedSizeAllocator::FixedSizeAllocator(const idx_t segment_size, BlockManager &b
 			byte_count += sizeof(validity_t);
 		}
 
-		auto remaining_bytes = block_manager.GetBlockSize() - byte_count;
+		auto remaining_bytes = block_size - byte_count;
 		auto remaining_segments = MinValue(remaining_bytes / segment_size, bits_per_value);
 
 		if (remaining_segments == 0) {
@@ -88,7 +98,9 @@ void FixedSizeAllocator::Free(const IndexPointer ptr) {
 	auto offset = ptr.GetOffset();
 
 	auto buffer_it = buffers.find(buffer_id);
-	D_ASSERT(buffer_it != buffers.end());
+	if (offset >= available_segments_per_buffer || buffer_it == buffers.end()) {
+		ThrowInvalidPointer(ptr);
+	}
 	auto &buffer = buffer_it->second;
 
 	buffer->FreeSegment(offset, available_segments_per_buffer);
@@ -130,6 +142,13 @@ void FixedSizeAllocator::Reset() {
 	buffers_with_free_space.clear();
 	buffer_with_free_space.SetInvalid();
 	total_segment_count = 0;
+}
+
+void FixedSizeAllocator::DisownBuffers() {
+	for (auto &buffer : buffers) {
+		buffer.second->DisownBlock();
+	}
+	Reset();
 }
 
 idx_t FixedSizeAllocator::GetInMemorySize() const {
@@ -363,8 +382,9 @@ void FixedSizeAllocator::Init(const FixedSizeAllocatorInfo &info) {
 		// create the FixedSizeBuffer
 		if (info.transient_block_handles) {
 			D_ASSERT(info.transient_block_handles->size() == info.buffer_ids.size());
+			// The storage information keeps its handle, so that a bind that fails after this point can be retried.
 			buffers[buffer_id] = make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, allocation_size,
-			                                                      std::move((*info.transient_block_handles)[i]));
+			                                                      (*info.transient_block_handles)[i]);
 		} else {
 			buffers[buffer_id] =
 			    make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, allocation_size, buffer_block_pointer);

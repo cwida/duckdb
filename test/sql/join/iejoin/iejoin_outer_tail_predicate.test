@@ -1,0 +1,24 @@
+# name: test/sql/join/iejoin/iejoin_outer_tail_predicate.test
+# description: IEJoin outer join with more than two inequalities and an arbitrary predicate marks the right matches
+# group: [iejoin]
+
+statement ok
+CREATE TABLE l AS SELECT range id, 10 a, 0 b, 5 c FROM range(2000) UNION ALL SELECT -1, NULL, NULL, NULL;
+
+statement ok
+CREATE TABLE r AS SELECT range id, 1 a, 2 b, 0 c FROM range(2000) UNION ALL SELECT 5000, 1, 1, 9;
+
+query I
+SELECT count(*) FILTER (WHERE l.id IS NULL) FROM l FULL JOIN r ON l.a > r.a AND l.b < r.b AND l.c < r.c AND l.id + r.id > -10;
+----
+2000
+
+query I
+SELECT count(*) FILTER (WHERE r.id IS NULL) FROM l LEFT JOIN r ON l.a > r.a AND l.b < r.b AND l.c < r.c AND l.id + r.id > -10;
+----
+1
+
+query I
+SELECT count(*) FROM l FULL JOIN r ON l.a > r.a AND l.b < r.b AND l.c < r.c AND l.id + r.id > -10;
+----
+4001

@@ -136,6 +136,19 @@ idx_t TupleDataSegment::SizeInBytes() const {
 	return data_size;
 }
 
+idx_t TupleDataSegment::ChunkHeapSize(idx_t chunk_idx) const {
+	D_ASSERT(chunk_idx < chunks.size());
+	if (layout.AllConstant()) {
+		return 0;
+	}
+	const auto &chunk = *chunks[chunk_idx];
+	idx_t result = 0;
+	for (auto part_id = chunk.part_ids.Start(); part_id < chunk.part_ids.End(); part_id++) {
+		result += chunk_parts[part_id]->total_heap_size;
+	}
+	return result;
+}
+
 void TupleDataSegment::Unpin() {
 	lock_guard<mutex> guard(pinned_handles_lock);
 	pinned_row_handles.clear();

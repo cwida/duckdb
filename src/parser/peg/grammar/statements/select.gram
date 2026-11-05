@@ -26,7 +26,7 @@ FetchOnlyClause <- FetchClause
 TableStatement <- 'TABLE' BaseTableName
 OptionalParensSimpleSelect <- SimpleSelectParens / SimpleSelect
 SimpleSelectParens <- Parens(SimpleSelect)
-SimpleSelect <- SelectFrom WhereClause? GroupByClause? HavingClause? WindowClause? QualifyClause? SampleClause?
+SimpleSelect <- SelectFrom WhereClause? GroupByClause? HavingClause? WindowClause? QualifyClause? SelectSampleClause?
 
 SelectFrom <- SelectFromClause / FromSelectClause
 SelectFromClause <- SelectClause FromClause?
@@ -51,10 +51,10 @@ DistinctOnTargets <- 'ON' Parens(List(Expression))
 InnerTableRef <- ValuesRef / TableFunction / TableSubquery / BaseTableRef / ParensTableRef
 
 TableRef <- InnerTableRef JoinOrPivot*
-TableSubquery <- TableAliasColon? Lateral? SubqueryReference TableAlias?
+TableSubquery <- TableAliasColon? Lateral? SubqueryReference TableAlias? SampleClause?
 BaseTableRef <- TableAliasColon? BaseTableName TableAlias? AtClause? SampleClause?
 TableAliasColon <- ColIdOrString ':'
-ValuesRef <- TableAliasColon? ValuesClause TableAlias?
+ValuesRef <- TableAliasColon? ValuesClause TableAlias? SampleClause?
 ParensTableRef <- TableAliasColon? Parens(TableRef) TableAlias? SampleClause?
 
 JoinOrPivot <- JoinClause / TablePivotClause / TableUnpivotClause / TableMatchRecognizeClause
@@ -83,13 +83,13 @@ SchemaReservedTable <- SchemaQualification ReservedTableName
 CatalogReservedSchemaTable <- CatalogQualification ReservedSchemaQualification+ ReservedTableName
 
 TableFunction <- TableFunctionLateralOpt / TableFunctionAliasColon
-TableFunctionLateralOpt <- Lateral? QualifiedTableFunction TableFunctionArguments WithOrdinality? TableAlias?
+TableFunctionLateralOpt <- Lateral? QualifiedTableFunction TableFunctionArguments WithOrdinality? TableAlias? SampleClause?
 TableFunctionAliasColon <- TableAliasColon QualifiedTableFunction TableFunctionArguments WithOrdinality? SampleClause?
 WithOrdinality <- 'WITH' 'ORDINALITY'
 QualifiedTableFunction <- CatalogQualification? SchemaQualification* TableFunctionName
 TableFunctionArguments <- Parens(List(FunctionArgument)?)
 FunctionArgument <- NamedFunctionArgument / PositionalFunctionArgument
-NamedFunctionArgument <- NamedParameter
+NamedFunctionArgument <- TypeFuncName NamedParameterAssignment Expression
 PositionalFunctionArgument <- Expression
 NamedParameter <- TypeFuncName Type? NamedParameterAssignment Expression
 NamedParameterAssignment <- ':=' / '=>'
@@ -149,7 +149,8 @@ WhereClause <- 'WHERE' Expression
 GroupByClause <- 'GROUP' 'BY' GroupByExpressions
 HavingClause <- 'HAVING' Expression
 QualifyClause <- 'QUALIFY' Expression
-SampleClause <- (TableSample / UsingSample) SampleEntry
+SampleClause <- TableSample SampleEntry
+SelectSampleClause <- UsingSample SampleEntry
 UsingSample <- 'USING' 'SAMPLE'
 TableSample <- 'TABLESAMPLE'
 WindowClause <- 'WINDOW' List(WindowDefinition)
@@ -213,7 +214,7 @@ FetchValue <- Expression
 AliasedExpression <- ColIdExpression / ExpressionAsCollabel / ExpressionOptIdentifier
 ColIdExpression <- ColId ':' Expression
 ExpressionAsCollabel <- Expression 'AS' ColLabelOrString
-ExpressionOptIdentifier <- Expression Identifier?
+ExpressionOptIdentifier <- Expression BareColLabel?
 
 ValuesClause <- 'VALUES' List(ValuesExpressions)
 ValuesExpressions <- Parens(List(Expression))

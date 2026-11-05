@@ -143,3 +143,43 @@ TEST_CASE("Test ObjectCache Manual Eviction", "[api][object_cache]") {
 	}
 	REQUIRE(!cache.IsEmpty());
 }
+
+TEST_CASE("Test ObjectCache Eviction To Memory Limit", "[api][object_cache]") {
+	DuckDB db;
+	auto &cache = db.instance->GetObjectCache();
+	auto &buffer_pool = db.instance->GetBufferPool();
+	const auto initial_memory = buffer_pool.GetUsedMemory();
+	REQUIRE(cache.EvictToMemoryLimit(initial_memory));
+
+	cache.Put("non-evictable", make_shared_ptr<TestObject>(1));
+	cache.Put("zero-weight", make_shared_ptr<EvictableTestObject>(2, 0));
+	constexpr idx_t OBJECT_COUNT = 40;
+	constexpr idx_t OBJECT_SIZE = 1024;
+	for (idx_t i = 0; i < OBJECT_COUNT; i++) {
+		cache.Put(StringUtil::Format("entry%llu", i), make_shared_ptr<EvictableTestObject>(3, OBJECT_SIZE));
+	}
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + OBJECT_COUNT * OBJECT_SIZE);
+
+	// Cross multiple batches, then stop partway through a batch.
+	constexpr idx_t KEEP_COUNT = 7;
+	const auto limit = initial_memory + KEEP_COUNT * OBJECT_SIZE;
+	REQUIRE(cache.EvictToMemoryLimit(limit));
+	REQUIRE(buffer_pool.GetUsedMemory() == limit);
+	REQUIRE(cache.GetEntryCount() == KEEP_COUNT + 1);
+	REQUIRE(cache.GetObject("zero-weight") == nullptr);
+	REQUIRE(cache.GetObject("non-evictable") != nullptr);
+	for (idx_t i = 0; i < OBJECT_COUNT; i++) {
+		auto entry = cache.GetObject(StringUtil::Format("entry%llu", i));
+		REQUIRE(bool(entry) == (i >= OBJECT_COUNT - KEEP_COUNT));
+	}
+
+	REQUIRE(cache.EvictToMemoryLimit(initial_memory));
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory);
+	REQUIRE(!cache.IsEmpty());
+	{
+		TempBufferPoolReservation retained(MemoryTag::EXTENSION, buffer_pool, 64);
+		REQUIRE(!cache.EvictToMemoryLimit(initial_memory));
+		REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + 64);
+	}
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory);
+}

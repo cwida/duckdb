@@ -9,8 +9,10 @@
 #pragma once
 
 #include "duckdb/common/types/string_type.hpp"
+#include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 
@@ -40,6 +42,8 @@ template <class SRC, class TGT = SRC, class OP = PrimitiveCastOperator>
 class PrimitiveDictionary {
 private:
 	static constexpr idx_t LOAD_FACTOR = 2;
+	//! Clear sweeps every slot once the occupied slots exceed this fraction of the capacity
+	static constexpr idx_t CLEAR_SWEEP_FACTOR = 8;
 
 	static constexpr uint32_t INVALID_INDEX = static_cast<uint32_t>(-1);
 	struct primitive_dictionary_entry_t {
@@ -66,7 +70,7 @@ public:
 	                                              : capacity * sizeof(TGT))),
 	      target_stream(allocated_target.get(), allocated_target.GetSize()),
 	      dictionary(reinterpret_cast<primitive_dictionary_entry_t *>(allocated_dictionary.get())), full(false) {
-		Clear();
+		ClearAllSlots();
 	}
 
 public:
@@ -74,9 +78,19 @@ public:
 	template <bool ADD_TO_TARGET = false>
 	void Insert(SRC value) {
 		if (full) {
+			// nothing can be inserted anymore, so do not pay for the hash
 			return;
 		}
-		auto &entry = Lookup(value);
+		Insert<ADD_TO_TARGET>(value, Hash(value));
+	}
+
+	//! Insert value into dictionary (if not full), reusing the hash a Lookup computed for it
+	template <bool ADD_TO_TARGET = false>
+	void Insert(SRC value, hash_t hash) {
+		if (full) {
+			return;
+		}
+		auto &entry = Lookup(value, hash);
 		if (entry.IsEmpty()) {
 			if (size + 1 > maximum_size || (ADD_TO_TARGET && !AddToTarget(value))) {
 				full = true;
@@ -84,6 +98,7 @@ public:
 			}
 			entry.value = value;
 			entry.index = size++;
+			occupied.push_back(UnsafeNumericCast<uint32_t>(&entry - dictionary));
 		}
 	}
 
@@ -95,8 +110,8 @@ public:
 	}
 
 	//! Iterates over inserted values
-	template <typename U = SRC, typename std::enable_if<!std::is_same<U, string_t>::value, int>::type = 0>
-	void IterateValues(const std::function<void(const SRC &, const TGT &)> &fun) const {
+	template <class FUNC, typename U = SRC, typename std::enable_if<!std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateValues(FUNC &&fun) const {
 		const auto target_values = reinterpret_cast<const TGT *>(allocated_target.get());
 		for (idx_t i = 0; i < capacity; i++) {
 			auto &entry = dictionary[i];
@@ -108,14 +123,36 @@ public:
 	}
 
 	//! Specialized template to iterate over string_t values
-	template <typename U = SRC, typename std::enable_if<std::is_same<U, string_t>::value, int>::type = 0>
-	void IterateValues(const std::function<void(const SRC &, const TGT &)> &fun) const {
+	template <class FUNC, typename U = SRC, typename std::enable_if<std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateValues(FUNC &&fun) const {
 		for (idx_t i = 0; i < capacity; i++) {
 			auto &entry = dictionary[i];
 			if (entry.IsEmpty()) {
 				continue;
 			}
 			fun(entry.value, entry.value);
+		}
+	}
+
+	//! Iterates over the target values in insertion order
+	template <class FUNC, typename U = SRC, typename std::enable_if<!std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateTargetValues(FUNC &&fun) const {
+		const auto target_values = reinterpret_cast<const TGT *>(allocated_target.get());
+		for (idx_t i = 0; i < size; i++) {
+			fun(target_values[i]);
+		}
+	}
+
+	//! Specialized template to iterate over length-prefixed string_t target values
+	template <class FUNC, typename U = SRC, typename std::enable_if<std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateTargetValues(FUNC &&fun) const {
+		auto ptr = const_data_ptr_cast(allocated_target.get());
+		const auto end = ptr + target_stream.GetPosition();
+		while (ptr < end) {
+			const auto length = Load<uint32_t>(ptr);
+			ptr += sizeof(uint32_t);
+			fun(string_t(const_char_ptr_cast(ptr), length));
+			ptr += length;
 		}
 	}
 
@@ -148,18 +185,30 @@ public:
 	void Reset() {
 		allocated_dictionary.Reset();
 		allocated_target.Reset();
+		occupied = vector<uint32_t>();
 	}
 
+	//! Empty the dictionary, in time proportional to the entries it holds rather than to its capacity
 	void Clear() {
-		for (idx_t i = 0; i < capacity; i++) {
-			dictionary[i].index = INVALID_INDEX;
+		if (occupied.size() * CLEAR_SWEEP_FACTOR < capacity) {
+			for (auto offset : occupied) {
+				dictionary[offset].index = INVALID_INDEX;
+			}
+		} else {
+			ClearAllSlots();
 		}
+		occupied.clear();
 		size = 0;
 		full = false;
 	}
 	//! Look up a value in the dictionary using linear probing
 	primitive_dictionary_entry_t &Lookup(const SRC &value) const {
-		auto offset = Hash(value) & capacity_mask;
+		return Lookup(value, Hash(value));
+	}
+
+	//! Look up a value with its precomputed hash
+	primitive_dictionary_entry_t &Lookup(const SRC &value, hash_t hash) const {
+		auto offset = hash & capacity_mask;
 		while (!dictionary[offset].IsEmpty() && dictionary[offset].value != value) {
 			++offset &= capacity_mask;
 		}
@@ -167,6 +216,12 @@ public:
 	}
 
 private:
+	void ClearAllSlots() {
+		for (idx_t i = 0; i < capacity; i++) {
+			dictionary[i].index = INVALID_INDEX;
+		}
+	}
+
 	//! Write a value to the target data (if source is not string)
 	template <typename S = SRC, typename std::enable_if<!std::is_same<S, string_t>::value, int>::type = 0>
 	bool AddToTarget(const SRC &src_value) {
@@ -251,6 +306,8 @@ private:
 
 	//! Pointers to allocated regions for convenience
 	primitive_dictionary_entry_t *const dictionary;
+	//! Offsets of the filled slots, so Clear does not have to sweep the whole capacity
+	vector<uint32_t> occupied;
 
 	//! More values inserted than possible
 	bool full;

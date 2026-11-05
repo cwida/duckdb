@@ -28,7 +28,7 @@ def main():
         subprocess.run(
             [
                 args.cxx,
-                "-std=c++11",
+                "-std=c++17",
                 "-g",
                 "-O0",
                 "-I",

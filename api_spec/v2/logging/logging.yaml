@@ -33,7 +33,7 @@ enums:
 functions:
   context_log:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Writes a message to DuckDB's log.
 
@@ -72,7 +72,7 @@ functions:
     return_type: ERROR
   instance_log:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Writes a message to DuckDB's log.
 
@@ -111,7 +111,7 @@ functions:
     return_type: ERROR
   connection_log:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Writes a message to DuckDB's log.
 

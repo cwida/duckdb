@@ -10,7 +10,7 @@ module: identifier
 functions:
   identifier_render_quoted:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Renders a name as a SQL identifier, quoting and escaping only when required.
 
