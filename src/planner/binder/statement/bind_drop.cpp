@@ -64,10 +64,21 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		stmt.info->SetQualifiedName(BindTableName(stmt.info->GetQualifiedName()));
 		if (stmt.info->extra_drop_info &&
 		    stmt.info->extra_drop_info->info_type == ExtraDropInfoType::FUNCTION_SIGNATURE_INFO) {
-			// resolve the signature's type names so they compare against stored overload identity
+			// resolve the signature's type names so they compare against stored overload identity.
+			// A schema-qualified drop resolves them from the entry's schema first, so a same-named
+			// type in the session's current schema cannot make an overload unreachable
 			auto &extra = stmt.info->extra_drop_info->Cast<ExtraDropFunctionSignatureInfo>();
+			auto type_binder = this;
+			shared_ptr<Binder> scoped_binder;
+			auto target_catalog = Catalog::GetCatalogEntry(context, stmt.info->GetQualifiedName().Catalog());
+			if (target_catalog && !stmt.info->GetQualifiedName().Schema().empty()) {
+				scoped_binder = Binder::CreateBinder(context, this);
+				scoped_binder->EntryRetriever().SetSearchPath(
+				    scoped_binder->GetSearchPath(*target_catalog, stmt.info->GetQualifiedName().SchemaPath(), true));
+				type_binder = scoped_binder.get();
+			}
 			for (auto &type : extra.signature) {
-				BindLogicalType(type);
+				type_binder->BindLogicalType(type);
 			}
 		}
 		auto catalog = Catalog::GetCatalogEntry(context, stmt.info->GetQualifiedName().Catalog());
