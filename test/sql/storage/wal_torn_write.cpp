@@ -287,3 +287,61 @@ TEST_CASE("Test encrypted WAL version on an unencrypted database", "[storage][.]
 	                    Catch::Contains("marked as encrypted, but the database is not"));
 	DeleteDatabase(storage_database);
 }
+
+//! Renumber the first field (101) of the payload of the first framed WAL entry and fix up its checksum
+static void RenumberFirstEntryField(FileSystem &fs, const string &path) {
+	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_READ);
+	auto wal_size = handle->GetFileSize();
+	auto wal_contents = duckdb::unique_ptr<data_t[]>(new data_t[wal_size]);
+	handle->Read(QueryContext(), wal_contents.get(), wal_size, 0);
+
+	// find the first framed entry by trying every start offset: the first [size][checksum][payload] with a valid
+	// checksum that is followed by another valid entry
+	for (idx_t start = 0; start + 2 * sizeof(uint64_t) <= wal_size; start++) {
+		uint64_t entry_size;
+		uint64_t stored_checksum;
+		memcpy(&entry_size, wal_contents.get() + start, sizeof(uint64_t));
+		memcpy(&stored_checksum, wal_contents.get() + start + sizeof(uint64_t), sizeof(uint64_t));
+		auto payload_offset = start + 2 * sizeof(uint64_t);
+		if (entry_size < 4 || entry_size > wal_size - payload_offset) {
+			continue;
+		}
+		auto entry = duckdb::unique_ptr<data_t[]>(new data_t[entry_size]);
+		memcpy(entry.get(), wal_contents.get() + payload_offset, entry_size);
+		if (Checksum(entry.get(), entry_size) != stored_checksum) {
+			continue;
+		}
+		// the payload is a serialized object: the info property has field id 101 (little endian)
+		for (idx_t i = 0; i + 1 < entry_size; i++) {
+			if (entry[i] == 101 && entry[i + 1] == 0) {
+				entry[i] = 154;
+				uint64_t new_checksum = Checksum(entry.get(), entry_size);
+				handle->Write(QueryContext(), entry.get(), entry_size, payload_offset);
+				handle->Write(QueryContext(), &new_checksum, sizeof(uint64_t), start + sizeof(uint64_t));
+				return;
+			}
+		}
+	}
+	throw InternalException("Could not find a WAL entry with an info property");
+}
+
+TEST_CASE("Test WAL catalog entry without catalog information", "[storage][.]") {
+	auto config = GetTestConfig();
+	auto storage_database = TestCreatePath("wal_missing_info");
+	auto storage_wal = storage_database + ".wal";
+
+	LocalFileSystem lfs;
+	config->options.checkpoint_wal_size = idx_t(-1);
+	config->options.checkpoint_on_shutdown = false;
+	DeleteDatabase(storage_database);
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE VIEW v AS SELECT 42 AS i;"));
+	}
+	RenumberFirstEntryField(lfs, storage_wal);
+	// the entry has a valid checksum but its catalog information is gone: this must be an error, not a crash
+	REQUIRE_THROWS_WITH(DuckDB(storage_database, config.get()),
+	                    Catch::Contains("entry is missing its catalog information"));
+	DeleteDatabase(storage_database);
+}
