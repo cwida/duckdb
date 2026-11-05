@@ -900,7 +900,7 @@ void PipelineExecutor::InitializeChunk(DataChunk &chunk) {
 }
 
 void PipelineExecutor::StartOperator(PhysicalOperator &op) {
-	context.client.InterruptCheck();
+	context.client.BlockingInterruptCheck();
 	context.thread.profiler.StartOperator(&op);
 }
 

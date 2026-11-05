@@ -1,0 +1,77 @@
+# name: test/sql/settings/max_execution_time_expensive_chunks.test
+# description: max_execution_time stops a query whose few chunks each take long
+# group: [settings]
+
+# a restart would recreate the named connections without their bound
+require skip_reload
+
+# the bounded queries run on their own connections, so no later query runs under a small bound
+statement ok con1
+SET max_execution_time=50
+
+# the decorrelated plan joins on the outer list of 6000 elements, so each chunk hashes and compares millions of elements
+statement error con1
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS k) a JOIN (SELECT unnest(l) AS k) b ON a.k = b.k)
+FROM (SELECT list(range) AS l FROM range(6000))
+----
+Query exceeded maximum execution time
+
+# the window partitions and sorts on the outer list
+statement error con1
+SELECT (
+	SELECT list(x ORDER BY pos)
+	FROM (SELECT x, row_number() OVER (ORDER BY x) AS pos FROM (SELECT unnest(l) AS x ORDER BY x))
+)
+FROM (SELECT list(range) AS l FROM range(6000))
+----
+Query exceeded maximum execution time
+
+# the same join on a list key without a subquery does less work than the correlated forms, so it gets a smaller bound
+statement ok con2
+SET max_execution_time=10
+
+statement error con2
+WITH t AS (SELECT l, unnest(l) AS k FROM (SELECT list(range) AS l FROM range(6000)))
+SELECT count(*) FROM t a JOIN t b ON a.l = b.l AND a.k = b.k
+----
+Query exceeded maximum execution time
+
+# many cheap chunks
+statement error con1
+SELECT count(*) FROM range(20000) a, range(20000) b WHERE a.range + b.range = -1
+----
+Query exceeded maximum execution time
+
+# a deadline that does not pass leaves the result alone
+statement ok
+SET max_execution_time=600000
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS k) a JOIN (SELECT unnest(l) AS k) b ON a.k = b.k)
+FROM (SELECT list(range) AS l FROM range(1000))
+----
+1000
+
+query I
+SELECT len((
+	SELECT list(x ORDER BY pos)
+	FROM (SELECT x, row_number() OVER (ORDER BY x) AS pos FROM (SELECT unnest(l) AS x ORDER BY x))
+))
+FROM (SELECT list(range) AS l FROM range(1000))
+----
+1000
+
+statement ok
+SET max_execution_time=0
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS k) a JOIN (SELECT unnest(l) AS k) b ON a.k = b.k)
+FROM (SELECT list(range) AS l FROM range(1000))
+----
+1000
+
+query I
+WITH t AS (SELECT l, unnest(l) AS k FROM (SELECT list(range) AS l FROM range(1000)))
+SELECT count(*) FROM t a JOIN t b ON a.l = b.l AND a.k = b.k
+----
+1000

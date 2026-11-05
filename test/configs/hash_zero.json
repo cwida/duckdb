@@ -27,6 +27,7 @@
         "test/sql/join/left_outer/unique_left_join.test",
         "test/sql/limit/streaming_limit_pipeline_flush.test",
         "test/sql/settings/max_execution_time.test",
+        "test/sql/settings/max_execution_time_expensive_chunks.test",
         "test/sql/settings/operator_memory_limit.test",
         "test/sql/table_function/duckdb_eviction_queues.test",
         "test/sql/pragma/profiling/test_custom_profiling_total_memory_allocated.test",
