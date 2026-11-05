@@ -173,6 +173,9 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	if (!lhs_type.GetDecimalProperties(p1, s1) || !rhs_type.GetDecimalProperties(p2, s2)) {
 		throw InvalidInputException("decimal_division: both arguments must be DECIMAL");
 	}
+	// an integer argument is an implicit DECIMAL(p, 0): bind on its canonical DECIMAL type
+	auto lhs_decimal_type = lhs_type.id() == LogicalTypeId::DECIMAL ? lhs_type : LogicalType::DECIMAL(p1, s1);
+	auto rhs_decimal_type = rhs_type.id() == LogicalTypeId::DECIMAL ? rhs_type : LogicalType::DECIMAL(p2, s2);
 
 	uint32_t result_scale;
 	if (input.GetArgumentCount() == 3) {
@@ -222,8 +225,8 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 
 	bound_function.SetReturnType(LogicalType::DECIMAL(result_width, result_scale));
 
-	auto lhs_physical = lhs_type.InternalType();
-	auto rhs_physical = rhs_type.InternalType();
+	auto lhs_physical = lhs_decimal_type.InternalType();
+	auto rhs_physical = rhs_decimal_type.InternalType();
 	auto wider = MaxValue<PhysicalType>(lhs_physical, rhs_physical);
 
 	int32_t scale_exp = int32_t(s2) + int32_t(result_scale) - int32_t(s1);
@@ -251,8 +254,10 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	// during plan deserialization (bind is re-called with the stored argument types, and
 	// changing p changes the result-width formula).
 	// For cross-tier inputs, promote the narrower argument to the wider physical tier.
-	bound_function.GetArguments()[0] = (lhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s1) : lhs_type;
-	bound_function.GetArguments()[1] = (rhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s2) : rhs_type;
+	bound_function.GetArguments()[0] =
+	    (lhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s1) : lhs_decimal_type;
+	bound_function.GetArguments()[1] =
+	    (rhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s2) : rhs_decimal_type;
 
 	switch (wider) {
 	case PhysicalType::INT16:

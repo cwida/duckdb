@@ -195,3 +195,69 @@ statement error
 SELECT decimal_division(1.0::DECIMAL(4,1), 3.0::DECIMAL(4,1), 39);
 ----
 <REGEX>:.*scale must be between.*
+
+# Non-DECIMAL integer arguments are treated as implicit DECIMAL(p, 0) and must not raise an internal error
+# 127 / 4.00: p1=10 s1=0 (INTEGER), p2=3 s2=2; result_scale=max(6, 0+3+1)=6, result_width=10-0+2+6=18 -> DECIMAL(18,6)
+query I
+SELECT decimal_division(127, 4.00);
+----
+31.750000
+
+# Both arguments integer
+query I
+SELECT decimal_division(10, 4);
+----
+2.500000
+
+# Integer argument on either side, across the integer types
+foreach type TINYINT SMALLINT INTEGER BIGINT UTINYINT USMALLINT UINTEGER UBIGINT
+
+query I
+SELECT decimal_division(1::{type}, 4.00);
+----
+0.250000
+
+endloop
+
+# HUGEINT and UHUGEINT are treated as DECIMAL(38,0), so they only fit with a small enough result scale
+foreach type HUGEINT UHUGEINT
+
+query II
+SELECT decimal_division(10::{type}, 4::DECIMAL(1,0), 0), typeof(decimal_division(10::{type}, 4::DECIMAL(1,0), 0));
+----
+2	DECIMAL(38,0)
+
+statement error
+SELECT decimal_division(1::{type}, 4.00);
+----
+<REGEX>:Out of Range Error:.*Needed width 46.*
+
+statement error
+SELECT decimal_division(170141183460469231731687303715884105727::{type}, 2::DECIMAL(1,0), 0);
+----
+<REGEX>:Conversion Error:.*Could not cast value.*
+
+endloop
+
+# Mixed integer / decimal with an explicit scale
+query I
+SELECT decimal_division(127, 4.00, 2);
+----
+31.75
+
+# Arguments in different physical tiers resolve to the same result type when the plan is deserialized
+query II
+SELECT decimal_division(1.5::DECIMAL(18,1), 4.00), typeof(decimal_division(1.5::DECIMAL(18,1), 4.00));
+----
+0.375000	DECIMAL(25,6)
+
+query II
+SELECT decimal_division(1::BIGINT, 4.00), typeof(decimal_division(1::BIGINT, 4.00));
+----
+0.250000	DECIMAL(27,6)
+
+# Widening the left argument to the physical tier of the right argument
+query II
+SELECT decimal_division(1.5::DECIMAL(4,1), 4.00::DECIMAL(18,2)), typeof(decimal_division(1.5::DECIMAL(4,1), 4.00::DECIMAL(18,2)));
+----
+0.37500000000000000000	DECIMAL(25,20)
