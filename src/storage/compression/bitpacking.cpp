@@ -1212,11 +1212,35 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 			break;
 		}
 		default: {
-			// DELTA_FOR is decoded sequentially: skip to the selected row (decoding on the way), then read it
 			D_ASSERT(group.metadata.mode == BitpackingMode::DELTA_FOR);
-			BitpackingScanPartial<T>(segment, state, 1, result, result_offset + i);
-			i++;
-			pos++;
+			const idx_t offset_in_algorithm_group =
+			    group.offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+			run_end = MinValue<idx_t>(run_end, pos + BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE -
+			                                       offset_in_algorithm_group);
+			group.UnpackAlgorithmGroups(unsafe_array_ptr<T>(scan_state.decompression_buffer,
+			                                                BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
+			auto deltas = reinterpret_cast<const T_U *>(scan_state.decompression_buffer) + offset_in_algorithm_group;
+			const T_U frame = static_cast<T_U>(group.frame_of_reference);
+			T_U carry = static_cast<T_U>(group.delta_offset);
+			const idx_t first = i;
+			// prefix-sum the deltas up to each selected row, emitting the running value
+			idx_t cur = pos;
+			for (; i < sel_count && sel.get_index(i) < run_end; i++) {
+				const idx_t selected = sel.get_index(i);
+				for (; cur <= selected; cur++) {
+					carry += deltas[cur - pos] + frame;
+				}
+				result_data[i] = static_cast<T>(carry);
+			}
+			if (scan_state.is_bool) {
+				VerifyBooleanValues(result_data + first, i - first);
+			}
+			group.delta_offset = static_cast<T>(carry);
+			group.Advance(cur - pos);
+			pos = cur;
+			if (group.AtEnd() && group.index + 1 == scan_state.group_count) {
+				scan_state.Finish();
+			}
 			continue;
 		}
 		}
