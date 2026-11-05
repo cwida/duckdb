@@ -19,6 +19,7 @@ BaseScanner::BaseScanner(shared_ptr<CSVBufferManager> buffer_manager_p, shared_p
       block_delimiter(state_machine->state_machine_options.delimiter.GetValue().empty()
                           ? 0
                           : static_cast<uint8_t>(state_machine->state_machine_options.delimiter.GetValue()[0])),
+      block_delimiter_bytes(state_machine->state_machine_options.delimiter.GetValue()),
       block_quote(static_cast<uint8_t>(state_machine->state_machine_options.quote.GetValue())),
       block_crlf(state_machine->state_machine_options.new_line.GetValue() == NewLineIdentifier::CARRY_ON),
       block_escape_is_quote(block_quote != '\0' && state_machine->state_machine_options.escape.GetValue() ==

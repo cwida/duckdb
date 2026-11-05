@@ -210,6 +210,7 @@ protected:
 	//! Whether ProcessBlocks may drive this state machine, and the bytes it stops at
 	const bool block_scan;
 	const uint8_t block_delimiter;
+	const string block_delimiter_bytes;
 	const uint8_t block_quote;
 	const bool block_crlf;
 	const bool block_escape_is_quote;
@@ -291,6 +292,44 @@ protected:
 		return byte == '\n' ? 1 : 0;
 	}
 
+	//! The bytes of the whole delimiter when it starts at `at` and ends before `limit`, 0 when only part of it is there
+	idx_t DelimiterBytes(const idx_t at, const idx_t limit) const {
+		const idx_t size = block_delimiter_bytes.size();
+		if (size == 1) {
+			return 1;
+		}
+		if (at + size > limit) {
+			return 0;
+		}
+		for (idx_t i = 1; i < size; i++) {
+			if (buffer_handle_ptr[at + i] != static_cast<uint8_t>(block_delimiter_bytes[i])) {
+				return 0;
+			}
+		}
+		return size;
+	}
+
+	//! The state before the last byte of a delimiter, `before` is the state before its first byte
+	CSVState DelimiterPenultimateState(const CSVState before) const {
+		switch (block_delimiter_bytes.size()) {
+		case 2:
+			return CSVState::DELIMITER_FIRST_BYTE;
+		case 3:
+			return CSVState::DELIMITER_SECOND_BYTE;
+		case 4:
+			return CSVState::DELIMITER_THIRD_BYTE;
+		default:
+			return before;
+		}
+	}
+
+	//! Clears the candidate bits of the bytes [from, to) of the block starting at `pos`
+	static void ClearCandidates(uint64_t &candidates, const idx_t pos, const idx_t from, const idx_t to) {
+		for (idx_t i = from; i < to; i++) {
+			candidates &= ~(uint64_t(1) << (i - pos));
+		}
+	}
+
 	//! The delimiter at `at`, `before` is the state before it
 	template <class T>
 	void BlockDelimiter(T &result, const idx_t at, const CSVState before) {
@@ -367,8 +406,9 @@ protected:
 					}
 					const auto next = static_cast<uint8_t>(buffer[at + 1]);
 					const bool escape_pair = block_escape_is_quote && next == block_quote;
+					const idx_t delimiter_bytes = next == block_delimiter ? DelimiterBytes(at + 1, limit) : 0;
 					const idx_t row_end_bytes = RowEndBytes(next, at + 1, limit);
-					if (!escape_pair && next != block_delimiter && row_end_bytes == 0) {
+					if (!escape_pair && delimiter_bytes == 0 && row_end_bytes == 0) {
 						return HandOverQuoted(at, last);
 					}
 					SetQuotedStatesBefore(at, last);
@@ -389,9 +429,10 @@ protected:
 						continue;
 					}
 					quoted = false;
-					if (next == block_delimiter) {
-						BlockDelimiter(result, at + 1, CSVState::UNQUOTED);
-						last = at + 2;
+					if (delimiter_bytes != 0) {
+						ClearCandidates(candidates, pos, at + 2, at + 1 + delimiter_bytes);
+						BlockDelimiter(result, at + delimiter_bytes, DelimiterPenultimateState(CSVState::UNQUOTED));
+						last = at + 1 + delimiter_bytes;
 						continue;
 					}
 					if (BlockRowEnd(result, at + 1, CSVState::UNQUOTED, row_end_bytes == 2, candidates, pos)) {
@@ -402,10 +443,16 @@ protected:
 				}
 				const auto before = StateAfterData(states.states[1], last, at);
 				if (byte == block_delimiter) {
-					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::DELIMITER);
-					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
-					BlockDelimiter(result, at, before);
-					last = at + 1;
+					const idx_t delimiter_bytes = DelimiterBytes(at, limit);
+					if (delimiter_bytes == 0) {
+						// part of a multi byte delimiter, the byte loop walks the delimiter byte states
+						return HandOver(at, last);
+					}
+					D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[1] == CSVState::DELIMITER);
+					D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[0] == DelimiterPenultimateState(before));
+					ClearCandidates(candidates, pos, at + 1, at + delimiter_bytes);
+					BlockDelimiter(result, at + delimiter_bytes - 1, DelimiterPenultimateState(before));
+					last = at + delimiter_bytes;
 					continue;
 				}
 				if (block_quote != '\0' && byte == block_quote) {

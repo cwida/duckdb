@@ -16,18 +16,32 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 	const auto new_line = options.new_line.GetValue();
 	const auto quote = static_cast<uint8_t>(options.quote.GetValue());
 	const auto escape = static_cast<uint8_t>(options.escape.GetValue());
-	if (delimiter.size() != 1 || options.comment != '\0' || (escape != '\0' && escape != quote)) {
+	if (delimiter.empty() || delimiter.size() > 4 || options.comment != '\0' || (escape != '\0' && escape != quote)) {
 		return false;
 	}
 	if (new_line != NewLineIdentifier::SINGLE_N && new_line != NewLineIdentifier::CARRY_ON) {
 		return false;
 	}
 	const auto delimiter_byte = static_cast<uint8_t>(delimiter[0]);
+	// a multi byte delimiter walks through the delimiter byte states, the block scan checks the whole delimiter at once
+	const CSVState delimiter_byte_states[] = {CSVState::DELIMITER_FIRST_BYTE, CSVState::DELIMITER_SECOND_BYTE,
+	                                          CSVState::DELIMITER_THIRD_BYTE, CSVState::DELIMITER};
+	const auto first_byte_state = delimiter.size() == 1 ? CSVState::DELIMITER : CSVState::DELIMITER_FIRST_BYTE;
+	for (idx_t i = 1; i < delimiter.size(); i++) {
+		const auto from = static_cast<uint8_t>(delimiter_byte_states[i - 1]);
+		const auto to = i + 1 == delimiter.size() ? CSVState::DELIMITER : delimiter_byte_states[i];
+		if (transition_array[static_cast<uint8_t>(delimiter[i])][from] != to) {
+			return false;
+		}
+	}
+	if (transition_array[delimiter_byte][static_cast<uint8_t>(CSVState::UNQUOTED)] != first_byte_state) {
+		return false;
+	}
 	const CSVState from_states[] = {CSVState::STANDARD, CSVState::DELIMITER, CSVState::RECORD_SEPARATOR,
 	                                CSVState::EMPTY_SPACE, CSVState::NOT_SET};
 	for (const auto from : from_states) {
 		const auto from_idx = static_cast<uint8_t>(from);
-		if (transition_array[delimiter_byte][from_idx] != CSVState::DELIMITER) {
+		if (transition_array[delimiter_byte][from_idx] != first_byte_state) {
 			return false;
 		}
 		if (new_line == NewLineIdentifier::SINGLE_N && transition_array['\n'][from_idx] != CSVState::RECORD_SEPARATOR) {
