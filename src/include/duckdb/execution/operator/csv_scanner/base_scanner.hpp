@@ -15,6 +15,13 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_byte_skipper.hpp"
 
+// the block scan loop's speed depends on where its code starts within a 64 byte line, so the function is aligned
+#if defined(__GNUC__)
+#define DUCKDB_BLOCK_SCAN_ALIGNED __attribute__((aligned(64)))
+#else
+#define DUCKDB_BLOCK_SCAN_ALIGNED
+#endif
+
 namespace duckdb {
 
 class CSVFileScan;
@@ -391,7 +398,7 @@ protected:
 	//! to Process. Returns true when the result is full. Repeated SetQuoted calls may be skipped because the setter
 	//! is idempotent. MULTI_BYTE_DELIMITER and COMMENT are the dialect's, so dialects without them pay nothing for them
 	template <class T, bool MULTI_BYTE_DELIMITER, bool COMMENT>
-	bool ProcessBlocks(T &result, const idx_t to_pos) {
+	DUCKDB_BLOCK_SCAN_ALIGNED bool ProcessBlocks(T &result, const idx_t to_pos) {
 		const auto buffer = buffer_handle_ptr;
 		// the first byte not consumed, and the first byte after the last structural or special byte
 		idx_t pos = iterator.pos.buffer_pos;
