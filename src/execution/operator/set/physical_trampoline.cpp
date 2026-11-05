@@ -583,6 +583,10 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		initialized = true;
 	}
 	while (chunk.size() == 0) {
+		// A resumed source (executing_branch set) skips the emission drain. A suspended wave may
+		// already have staged emissions (TEE stages on arrival, completed workers combine into
+		// staged[0]), but staged rows are only published to emit_backlog by CloseExecution once
+		// the producing invocation completes, matching the pre-suspension publication boundary.
 		if (executing_branch == 0) {
 			if (emit_active) {
 				emit_table->Scan(emit_scan, chunk);
@@ -759,9 +763,10 @@ RecursiveEpochResult PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext
 	auto &plan = use_active_plan ? *branch.active_plan : *branch.plan;
 	const auto collect_metrics = gstate.metrics.Enabled();
 
+	// scan_sources_use_source_workers only matters for ScheduleRecursivePlan; the prologue sets
+	// it to the wave's routing decision before scheduling the event graph
 	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
-	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr,
-	                                               !progress.inline_execution};
+	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, false};
 
 	if (!progress.active) {
 		// Wave prologue: mutates shared sink and operator state and takes the sizing and routing
