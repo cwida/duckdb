@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 
 namespace duckdb {
@@ -36,12 +37,11 @@ public:
 	unique_ptr<ParsedExpression> QualifyColumnNameWithManyDots(ColumnRefExpression &col_ref, ErrorData &error);
 	//! Returns a qualified column reference from a column reference
 	unique_ptr<ParsedExpression> QualifyColumnName(ColumnRefExpression &col_ref, ErrorData &error);
-	//! Enables special-handling of lambda parameters by tracking them in the lambda_params vector
-	void QualifyColumnNamesInLambda(FunctionExpression &function, vector<identifier_set_t> &lambda_params);
+	//! Enables special-handling of lambda parameters by tracking them in lambda_params
+	void QualifyColumnNamesInLambda(FunctionExpression &function);
 	//! Recursively qualifies the column references in the (children) of the expression. Passes on the
 	//! within_function_expression state from outer expressions, or sets it
-	void QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params,
-	                        const bool within_function_expression = false);
+	void QualifyColumnNames(unique_ptr<ParsedExpression> &expr, const bool within_function_expression = false);
 
 	optional_ptr<CatalogEntry> QualifyFunction(FunctionExpression &function);
 
@@ -50,6 +50,8 @@ private:
 	optional_ptr<vector<DummyBinding>> lambda_bindings;
 	optional_ptr<ColumnAliasBinder> alias_binder;
 	optional_ptr<HavingBinder> having_binder;
+	//! The parameters of the lambdas that QualifyColumnNames is inside, innermost last; they are not bound yet
+	vector<LambdaParameterScope> lambda_params;
 
 private:
 	unique_ptr<ParsedExpression> QualifyColumnNameWithManyDotsInternal(ColumnRefExpression &col_ref, ErrorData &error,
@@ -58,6 +60,9 @@ private:
 	bool TableBindingExists(const BindingAlias &alias);
 	//! Whether any binding in the current bind context has the given table name (ignoring catalog/schema)
 	bool TableNameExists(const Identifier &table_name);
+	//! Whether the reference is a parameter of a lambda this walk is inside, or a field access on one. A table of
+	//! this scope wins, because that is the order in which the binder resolves a reference of two or more parts
+	bool IsLambdaParameterReference(const ColumnRefExpression &col_ref);
 
 	unique_ptr<ParsedExpression> QualifyColumnNameInternal(ColumnRefExpression &col_ref, ErrorData &error);
 };

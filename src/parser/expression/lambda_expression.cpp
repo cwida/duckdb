@@ -84,6 +84,20 @@ bool LambdaExpression::IsLambdaParameter(const vector<identifier_set_t> &lambda_
 	return false;
 }
 
+bool LambdaExpression::IsLambdaParameter(const vector<LambdaParameterScope> &lambda_params,
+                                         const ColumnRefExpression &col_ref) {
+	auto &name = col_ref.ColumnNames()[0];
+	for (const auto &level : lambda_params) {
+		if (col_ref.IsQualified() && level.syntax_type != LambdaSyntaxType::LAMBDA_KEYWORD) {
+			continue;
+		}
+		if (level.names.find(name) != level.names.end()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void LambdaExpression::FinalizeDeserialization(Deserializer &deserializer) {
 	if (syntax_type != LambdaSyntaxType::SINGLE_ARROW) {
 		return;

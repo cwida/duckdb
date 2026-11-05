@@ -179,18 +179,16 @@ ColumnResolution ExpressionBinder::ResolveColumn(ColumnRefExpression &colref, id
 //! they bind in a chain of their own, so a column inside one says nothing about this expression.
 //! Lambda parameters are skipped for the same reason: they are bound by the lambda rather than by any
 //! scope, so a parameter that happens to share a name with an outer column must not pull the
-//! expression out to that scope. The parameter names are read exactly as `ColumnQualifier` reads them,
-//! so the resolver sees the same names a real bind would.
-static void CollectResolvableColumns(ParsedExpression &expr, vector<identifier_set_t> &lambda_params,
+//! expression out to that scope. A field access on a parameter is skipped too, and where a table of
+//! this scope provides it instead, the owner is this scope either way.
+static void CollectResolvableColumns(ParsedExpression &expr, vector<LambdaParameterScope> &lambda_params,
                                      vector<reference<ColumnRefExpression>> &result) {
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::SUBQUERY:
 		return;
 	case ExpressionClass::COLUMN_REF: {
 		auto &col_ref = expr.Cast<ColumnRefExpression>();
-		// a lambda parameter is always a bare name, so a qualified reference is a column even when its
-		// last component happens to match one - `t.x` inside `lambda x: ...` names the table's column
-		if (!col_ref.IsQualified() && LambdaExpression::IsLambdaParameter(lambda_params, col_ref.GetColumnName())) {
+		if (LambdaExpression::IsLambdaParameter(lambda_params, col_ref)) {
 			return;
 		}
 		result.push_back(col_ref);
@@ -207,9 +205,9 @@ static void CollectResolvableColumns(ParsedExpression &expr, vector<identifier_s
 			CollectResolvableColumns(*lambda.RightMutable(), lambda_params, result);
 			return;
 		}
-		lambda_params.emplace_back();
+		lambda_params.emplace_back(lambda.GetLambdaSyntaxType());
 		for (auto &parameter : parameters) {
-			lambda_params.back().emplace(parameter.get().Cast<ColumnRefExpression>().GetName());
+			lambda_params.back().names.emplace(parameter.get().Cast<ColumnRefExpression>().GetName());
 		}
 		// only the body can reference anything outside the lambda
 		CollectResolvableColumns(*lambda.RightMutable(), lambda_params, result);
@@ -225,7 +223,7 @@ static void CollectResolvableColumns(ParsedExpression &expr, vector<identifier_s
 
 optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggregate, idx_t start) {
 	vector<reference<ColumnRefExpression>> columns;
-	vector<identifier_set_t> lambda_params;
+	vector<LambdaParameterScope> lambda_params;
 	for (auto &child : aggregate.GetArgumentsMutable()) {
 		CollectResolvableColumns(*child.GetExpressionMutable(), lambda_params, columns);
 	}
@@ -242,7 +240,7 @@ optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggrega
 
 optional_idx ExpressionBinder::ResolveExpressionOwner(ParsedExpression &expr, idx_t start) {
 	vector<reference<ColumnRefExpression>> columns;
-	vector<identifier_set_t> lambda_params;
+	vector<LambdaParameterScope> lambda_params;
 	CollectResolvableColumns(expr, lambda_params, columns);
 	return ResolveOwner(columns, start);
 }

@@ -139,6 +139,12 @@ unique_ptr<ParsedExpression> ColumnQualifier::CreateStructPack(ColumnRefExpressi
 
 unique_ptr<ParsedExpression> ColumnQualifier::QualifyColumnName(const ParsedExpression &expr,
                                                                 const Identifier &column_name, ErrorData &error) {
+	// try binding as a lambda parameter
+	auto lambda_ref = LambdaRefExpression::FindMatchingBinding(lambda_bindings, column_name);
+	if (lambda_ref) {
+		return lambda_ref;
+	}
+
 	auto using_binding = binder.bind_context.GetUsingBinding(column_name);
 	if (using_binding) {
 		// we are referencing a USING column
@@ -156,12 +162,6 @@ unique_ptr<ParsedExpression> ColumnQualifier::QualifyColumnName(const ParsedExpr
 			}
 			return std::move(coalesce);
 		}
-	}
-
-	// try binding as a lambda parameter
-	auto lambda_ref = LambdaRefExpression::FindMatchingBinding(lambda_bindings, column_name);
-	if (lambda_ref) {
-		return lambda_ref;
 	}
 
 	// find a table binding that contains this column name
@@ -192,15 +192,14 @@ unique_ptr<ParsedExpression> ColumnQualifier::QualifyColumnName(const ParsedExpr
 	return nullptr;
 }
 
-void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vector<identifier_set_t> &lambda_params,
-                                         const bool within_function_expression) {
+void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, const bool within_function_expression) {
 	bool next_within_function_expression = false;
 	switch (expr->GetExpressionType()) {
 	case ExpressionType::COLUMN_REF: {
 		auto &col_ref = expr->Cast<ColumnRefExpression>();
 
-		// don't qualify lambda parameters
-		if (LambdaExpression::IsLambdaParameter(lambda_params, col_ref.GetColumnName())) {
+		// don't qualify a lambda parameter, nor a field access on one: only binding the lambda resolves it
+		if (IsLambdaParameterReference(col_ref)) {
 			return;
 		}
 
@@ -241,7 +240,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 			QualifyFunction(function);
 		}
 		if (function.IsLambdaFunction()) {
-			return QualifyColumnNamesInLambda(function, lambda_params);
+			return QualifyColumnNamesInLambda(function);
 		}
 
 		next_within_function_expression = true;
@@ -253,7 +252,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 
 	// recurse on the child expressions
 	ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) {
-		QualifyColumnNames(child, lambda_params, next_within_function_expression);
+		QualifyColumnNames(child, next_within_function_expression);
 	});
 }
 
@@ -298,7 +297,10 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 		colref =
 		    make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema(), function.GetQualifiedName().Catalog());
 	}
-	auto new_colref = QualifyColumnName(*colref, error);
+	unique_ptr<ParsedExpression> new_colref;
+	if (!IsLambdaParameterReference(*colref)) {
+		new_colref = QualifyColumnName(*colref, error);
+	}
 	if (!new_colref) {
 		new_colref = std::move(colref);
 	}
@@ -310,12 +312,11 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	return func;
 }
 
-void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function,
-                                                 vector<identifier_set_t> &lambda_params) {
+void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function) {
 	for (auto &child : function.GetArgumentsMutable()) {
 		if (child.GetExpression().GetExpressionClass() != ExpressionClass::LAMBDA) {
 			// not a lambda expression
-			QualifyColumnNames(child.GetExpressionMutable(), lambda_params, true);
+			QualifyColumnNames(child.GetExpressionMutable(), true);
 			continue;
 		}
 
@@ -327,22 +328,22 @@ void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function,
 
 		if (!error_message.empty()) {
 			// possibly a JSON function, qualify both LHS and RHS
-			QualifyColumnNames(lambda_expr.LeftMutable(), lambda_params, true);
-			QualifyColumnNames(lambda_expr.RightMutable(), lambda_params, true);
+			QualifyColumnNames(lambda_expr.LeftMutable(), true);
+			QualifyColumnNames(lambda_expr.RightMutable(), true);
 			continue;
 		}
 
 		// push this level
-		lambda_params.emplace_back();
+		lambda_params.emplace_back(lambda_expr.GetLambdaSyntaxType());
 
 		// push the lambda parameter names
 		for (const auto &column_ref_expr : column_ref_expressions) {
 			const auto &column_ref = column_ref_expr.get().Cast<ColumnRefExpression>();
-			lambda_params.back().emplace(column_ref.GetName());
+			lambda_params.back().names.emplace(column_ref.GetName());
 		}
 
 		// only qualify in RHS
-		QualifyColumnNames(lambda_expr.RightMutable(), lambda_params, true);
+		QualifyColumnNames(lambda_expr.RightMutable(), true);
 
 		// pop this level
 		lambda_params.pop_back();
@@ -423,6 +424,13 @@ bool ColumnQualifier::TableNameExists(const Identifier &table_name) {
 		}
 	}
 	return false;
+}
+
+bool ColumnQualifier::IsLambdaParameterReference(const ColumnRefExpression &col_ref) {
+	if (!LambdaExpression::IsLambdaParameter(lambda_params, col_ref)) {
+		return false;
+	}
+	return !col_ref.IsQualified() || !TableNameExists(col_ref.ColumnNames()[0]);
 }
 
 bool ColumnQualifier::TableBindingExists(const BindingAlias &alias) {

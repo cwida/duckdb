@@ -15,7 +15,18 @@
 
 namespace duckdb {
 
+class ColumnRefExpression;
+
 enum class LambdaSyntaxType : uint8_t { SINGLE_ARROW_STORAGE = 0, SINGLE_ARROW = 1, LAMBDA_KEYWORD = 2 };
+
+//! The names one lambda binds, as seen by a walk over an expression that is not bound yet
+struct LambdaParameterScope {
+	explicit LambdaParameterScope(const LambdaSyntaxType syntax_type_p) : syntax_type(syntax_type_p) {
+	}
+
+	identifier_set_t names;
+	LambdaSyntaxType syntax_type;
+};
 
 //! DuckDB 1.3. introduced a new lambda syntax: lambda x, y: x + y.
 //! The new syntax resolves any ambiguity with the JSON arrow operator.
@@ -58,6 +69,11 @@ public:
 	static string InvalidParametersErrorMessage();
 	//! Returns true, if the column_name is a lambda parameter name
 	static bool IsLambdaParameter(const vector<identifier_set_t> &lambda_params, const Identifier &column_name);
+	//! Returns true, if the reference is a lambda parameter, or a field access on one. Only the lambda keyword
+	//! syntax reads a field access that way: whether a -> b is a lambda or the JSON operator is settled by
+	//! binding the enclosing function, so b's names are not known to be parameters here
+	static bool IsLambdaParameter(const vector<LambdaParameterScope> &lambda_params,
+	                              const ColumnRefExpression &col_ref);
 
 	string ToString() const override;
 	bool Equals(const ParsedExpression &other) const override;

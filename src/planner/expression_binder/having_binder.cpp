@@ -27,7 +27,13 @@ BindResult HavingBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_ptr, i
 	auto col_ref = expr_ptr->Cast<ColumnRefExpression>();
 	const auto &column_name = col_ref.GetColumnName();
 
-	if (!col_ref.IsQualified()) {
+	if (col_ref.IsQualified()) {
+		// a field access on a lambda parameter is neither a group nor an alias of this query
+		if (LambdaRefExpression::FindMatchingBinding(lambda_bindings, col_ref.ColumnNames()[0])) {
+			return ExpressionBinder::BindExpression(expr_ptr->Cast<ColumnRefExpression>(), depth, root_expression,
+			                                        expr_ptr);
+		}
+	} else {
 		// Try binding as a lambda parameter.
 		auto lambda_ref = LambdaRefExpression::FindMatchingBinding(lambda_bindings, col_ref.GetColumnName());
 		if (lambda_ref) {
@@ -87,8 +93,7 @@ unique_ptr<ColumnQualifier> HavingBinder::CreateColumnQualifier() {
 
 void ExpressionBinder::QualifyColumnNames(HavingBinder &having_binder, unique_ptr<ParsedExpression> &expr) {
 	ColumnQualifier qualifier(having_binder.binder, having_binder.lambda_bindings, nullptr, having_binder);
-	vector<identifier_set_t> lambda_params;
-	qualifier.QualifyColumnNames(expr, lambda_params);
+	qualifier.QualifyColumnNames(expr);
 }
 
 bool HavingBinder::ClaimsAlias(ColumnRefExpression &colref) {
