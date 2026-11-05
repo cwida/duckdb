@@ -182,8 +182,7 @@ void KeyValueSecretReader::Initialize(const char **secret_types, idx_t secret_ty
 	}
 
 	auto &secret_manager = db->GetSecretManager();
-	auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
-	                           : CatalogTransaction::GetSystemTransaction(*db);
+	auto transaction = context ? context->GetSystemCatalogTransaction() : CatalogTransaction::GetSystemTransaction(*db);
 
 	SecretMatch secret_match;
 	for (idx_t i = 0; i < secret_types_len; i++) {
@@ -220,8 +219,8 @@ KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<Fi
 			throw InvalidConfigurationException("Secret '%s' named by '%s' cannot be looked up without a database",
 			                                    secret_name, path);
 		}
-		auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
-		                           : CatalogTransaction::GetSystemTransaction(*db);
+		auto transaction =
+		    context ? context->GetSystemCatalogTransaction() : CatalogTransaction::GetSystemTransaction(*db);
 		secret_entry = db->GetSecretManager().GetSecretByName(transaction, secret_name);
 		if (!secret_entry) {
 			throw InvalidConfigurationException("Secret '%s' named by '%s' not found", secret_name, path);

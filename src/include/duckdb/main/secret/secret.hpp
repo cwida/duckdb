@@ -17,6 +17,7 @@
 
 namespace duckdb {
 class BaseSecret;
+class Context;
 struct SecretEntry;
 struct FileOpenerInfo;
 struct CreateSecretInfo;

@@ -19,6 +19,7 @@ namespace duckdb {
 struct ClientConfig;
 class BufferManager;
 class ClientContext;
+struct CatalogTransaction;
 class DatabaseInstance;
 class FileOpener;
 class FileSystem;
@@ -55,6 +56,10 @@ public:
 	DUCKDB_API static optional_ptr<QueryProfiler> TryGetQueryProfiler(optional_ptr<Context> services);
 	//! Whether or not these are the services of a client
 	DUCKDB_API bool IsClient() const;
+	//! Whether the query of the client was interrupted (always false for database-wide services)
+	DUCKDB_API bool IsInterrupted() const;
+	//! A catalog transaction on the system catalog: the client's own for client services, otherwise a system one
+	DUCKDB_API CatalogTransaction GetSystemCatalogTransaction();
 
 	//! The client config - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<ClientConfig> TryGetClientConfig() const;

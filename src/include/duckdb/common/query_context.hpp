@@ -35,9 +35,14 @@ public:
 	optional_ptr<Context> GetContext() const {
 		return context;
 	}
+	//! The client the QueryContext was created from (null if it was created from a Context)
+	optional_ptr<ClientContext> GetClientContext() const {
+		return client_context;
+	}
 
 private:
 	optional_ptr<Context> context;
+	optional_ptr<ClientContext> client_context;
 };
 
 } // namespace duckdb

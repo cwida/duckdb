@@ -1,5 +1,6 @@
 #include "duckdb/main/context.hpp"
 
+#include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/opener_file_system.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -275,6 +276,17 @@ optional_ptr<QueryProfiler> Context::TryGetQueryProfiler(optional_ptr<Context> c
 
 bool Context::IsClient() const {
 	return context != nullptr;
+}
+
+bool Context::IsInterrupted() const {
+	return context && context->IsInterrupted();
+}
+
+CatalogTransaction Context::GetSystemCatalogTransaction() {
+	if (context) {
+		return CatalogTransaction::GetSystemCatalogTransaction(*context);
+	}
+	return CatalogTransaction::GetSystemTransaction(db);
 }
 
 optional_ptr<ClientConfig> Context::TryGetClientConfig() const {
