@@ -472,3 +472,59 @@ SELECT cc(DATE '2024-01-01');
 
 statement ok con1
 DROP MACRO cc;
+
+# the signature resolves against the entry actually found, not the session's default catalog
+statement ok
+ATTACH ':memory:' AS cat_a;
+
+statement ok
+ATTACH ':memory:' AS cat_b;
+
+statement ok
+CREATE SCHEMA cat_a.s;
+
+statement ok
+CREATE SCHEMA cat_b.s;
+
+statement ok
+CREATE TYPE cat_a.s.mood AS ENUM ('a');
+
+statement ok
+CREATE TYPE cat_b.s.mood AS ENUM ('b');
+
+statement ok
+CREATE MACRO cat_b.s.m(x cat_a.s.mood) AS 1, (x cat_b.s.mood) AS 2;
+
+statement ok
+USE cat_a;
+
+statement ok
+SET search_path = 'cat_a.main,cat_b.s';
+
+statement ok
+DROP MACRO s.m(mood);
+
+query T
+SELECT cat_b.s.m('a'::cat_a.s.mood);
+----
+1
+
+# exactly the cat_a.s.mood member remains
+query I
+SELECT count(*) FROM duckdb_functions() WHERE database_name = 'cat_b' AND function_name = 'm';
+----
+1
+
+statement error
+DROP MACRO s.m(mood);
+----
+<REGEX>:.*has no overload with signature.*
+
+statement ok
+USE memory;
+
+statement ok
+DETACH cat_a;
+
+statement ok
+DETACH cat_b;
