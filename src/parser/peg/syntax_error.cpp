@@ -349,28 +349,45 @@ bool RepeatsPredecessor(const TokenIterator &tokens, idx_t statement_start, idx_
 	       StringUtil::CIEquals(tokens.GetToken(index - 1).text, tokens.GetToken(index).text);
 }
 
-//! A stray token whose removal makes the statement parse: the failing token, or the token right before it.
-optional_idx FindUnexpectedToken(const TokenIterator &tokens, idx_t statement_start, idx_t error_index,
-                                 const ExpectedTokens &expected, const CompiledGrammar &grammar,
-                                 const ParserOptions &options) {
-	auto &keyword_helper = grammar.GetKeywordHelper();
-	auto &error_token = tokens.GetToken(error_index);
-	// where any word fits, only a repeated token (",," or "WHERE WHERE") is a safe guess
-	if (IsDroppable(error_token, keyword_helper) &&
-	    (!expected.AcceptsIdentifiers() || RepeatsPredecessor(tokens, statement_start, error_index)) &&
-	    EditRepairs(tokens, statement_start, error_index, EditKind::DELETE, grammar, options)) {
+//! Whether the token at `index` repeats its predecessor ("WHERE WHERE", "AS AS", ",,") and dropping it repairs.
+bool IsRepeatedToken(const TokenIterator &tokens, idx_t statement_start, idx_t index, const CompiledGrammar &grammar,
+                     const ParserOptions &options) {
+	if (!IsDroppable(tokens.GetToken(index), grammar.GetKeywordHelper())) {
+		return false;
+	}
+	if (!RepeatsPredecessor(tokens, statement_start, index)) {
+		return false;
+	}
+	return EditRepairs(tokens, statement_start, index, EditKind::DELETE, grammar, options);
+}
+
+//! A repeated token whose removal makes the statement parse: the failing token, or the token right before it when
+//! the repeat was still consumed. Repeats are a safer guess than any insertion.
+optional_idx FindRepeatedToken(const TokenIterator &tokens, idx_t statement_start, idx_t error_index,
+                               const CompiledGrammar &grammar, const ParserOptions &options) {
+	if (IsRepeatedToken(tokens, statement_start, error_index, grammar, options)) {
 		return error_index;
 	}
-	// The stray token may be the one before: it was consumed and left nothing to fill what it opened
-	// ("AND GROUP BY", "WHERE WHERE x"). Not when the input simply ended after it ("... JOIN;").
-	if (error_token.type == TokenType::TERMINATOR || error_index == statement_start) {
+	if (error_index == statement_start) {
 		return optional_idx();
 	}
-	if (IsDroppable(tokens.GetToken(error_index - 1), keyword_helper) &&
-	    EditRepairs(tokens, statement_start, error_index - 1, EditKind::DELETE, grammar, options)) {
+	if (IsRepeatedToken(tokens, statement_start, error_index - 1, grammar, options)) {
 		return error_index - 1;
 	}
 	return optional_idx();
+}
+
+//! Whether the failing token is stray where only literal tokens fit, and its removal makes the statement parse.
+//! Where an identifier or expression fits, the failure usually means something is missing, not that a token is extra.
+bool IsStrayToken(const TokenIterator &tokens, idx_t statement_start, idx_t error_index, const ExpectedTokens &expected,
+                  const CompiledGrammar &grammar, const ParserOptions &options) {
+	if (expected.AcceptsIdentifiers()) {
+		return false;
+	}
+	if (!IsDroppable(tokens.GetToken(error_index), grammar.GetKeywordHelper())) {
+		return false;
+	}
+	return EditRepairs(tokens, statement_start, error_index, EditKind::DELETE, grammar, options);
 }
 
 string DescribeExpected(const ExpectedTokens &expected, const PEGKeywordHelper &keyword_helper) {
@@ -406,6 +423,63 @@ string DescribeExpected(const ExpectedTokens &expected, const PEGKeywordHelper &
 	return "Expected one of: " + StringUtil::Join(items, ", ");
 }
 
+//! A hint for the syntax error and the token it is about.
+struct SyntaxHint {
+	string text;
+	idx_t index;
+};
+
+SyntaxHint UnexpectedHint(const TokenIterator &tokens, idx_t index) {
+	return {"Unexpected \"" + tokens.GetToken(index).text + "\"", index};
+}
+
+//! The most specific hint for the failure at `error_index`, tried from the most to the least confident kind.
+SyntaxHint FindHint(const TokenIterator &tokens, idx_t statement_start, idx_t error_index,
+                    const CompiledGrammar &grammar, const ParserOptions &options) {
+	auto expected = ComputeExpectedTokens(tokens, statement_start, error_index, grammar, options);
+	auto &error_token = tokens.GetToken(error_index);
+	const bool at_end = IsEndOfInput(error_token);
+	if (!at_end && IsWordToken(error_token)) {
+		auto correction =
+		    KeywordCorrectionHint(tokens, statement_start, error_index, error_index, expected, grammar, options);
+		if (!correction.empty()) {
+			return {correction, error_index};
+		}
+	}
+
+	// a misspelled keyword or a missing comma often hides one token earlier, in a word taken as an alias
+	const bool previous_is_word = error_index > statement_start && IsWordToken(tokens.GetToken(error_index - 1)) &&
+	                              !grammar.GetKeywordHelper().IsKeyword(tokens.GetToken(error_index - 1).text);
+	ExpectedTokens previous_expected;
+	if (previous_is_word) {
+		previous_expected = ComputeExpectedTokens(tokens, statement_start, error_index - 1, grammar, options);
+		auto correction = KeywordCorrectionHint(tokens, statement_start, error_index - 1, error_index,
+		                                        previous_expected, grammar, options);
+		if (!correction.empty()) {
+			return {correction, error_index - 1};
+		}
+	}
+
+	if (!at_end) {
+		auto repeated = FindRepeatedToken(tokens, statement_start, error_index, grammar, options);
+		if (repeated.IsValid()) {
+			return UnexpectedHint(tokens, repeated.GetIndex());
+		}
+	}
+
+	MissingToken missing;
+	if (FindMissingToken(tokens, statement_start, error_index, expected, previous_expected, grammar, options, missing)
+	        .IsValid()) {
+		return {"Missing \"" + missing.text + "\"", missing.index};
+	}
+
+	if (!at_end && IsStrayToken(tokens, statement_start, error_index, expected, grammar, options)) {
+		return UnexpectedHint(tokens, error_index);
+	}
+
+	return {DescribeExpected(expected, grammar.GetKeywordHelper()), error_index};
+}
+
 } // namespace
 
 ParserException PEGSyntaxError::Create(const TokenIterator &tokens, idx_t statement_start, idx_t failure_index,
@@ -419,59 +493,15 @@ ParserException PEGSyntaxError::Create(const TokenIterator &tokens, idx_t statem
 	bool at_end = IsEndOfInput(error_token);
 	const bool compute_hints = tokens.Size() - statement_start <= MAX_HINT_TOKENS;
 
-	ExpectedTokens expected;
+	SyntaxHint hint {string(), error_index};
 	if (compute_hints) {
-		expected = ComputeExpectedTokens(tokens, statement_start, error_index, grammar, options);
+		hint = FindHint(tokens, statement_start, error_index, grammar, options);
 	}
-	// what fits one token earlier - computed on demand, a misspelled keyword or a missing comma often hides there
-	ExpectedTokens previous_expected;
-	bool have_previous_expected = false;
-	auto get_previous_expected = [&]() -> const ExpectedTokens & {
-		if (!have_previous_expected) {
-			previous_expected = ComputeExpectedTokens(tokens, statement_start, error_index - 1, grammar, options);
-			have_previous_expected = true;
-		}
-		return previous_expected;
-	};
-	const bool previous_is_word = error_index > statement_start && IsWordToken(tokens.GetToken(error_index - 1)) &&
-	                              !grammar.GetKeywordHelper().IsKeyword(tokens.GetToken(error_index - 1).text);
-
 	idx_t report_index = error_index;
-	string hint;
-	if (compute_hints && !at_end && IsWordToken(error_token)) {
-		hint = KeywordCorrectionHint(tokens, statement_start, error_index, error_index, expected, grammar, options);
-	}
-	if (compute_hints && hint.empty() && previous_is_word) {
-		// a misspelled keyword is often swallowed as an alias, so the failure surfaces one token late
-		hint = KeywordCorrectionHint(tokens, statement_start, error_index - 1, error_index, get_previous_expected(),
-		                             grammar, options);
-		if (!hint.empty()) {
-			report_index = error_index - 1;
-			at_end = false;
-		}
-	}
-	if (compute_hints && hint.empty()) {
-		MissingToken missing;
-		auto missing_index =
-		    FindMissingToken(tokens, statement_start, error_index, expected,
-		                     previous_is_word ? get_previous_expected() : ExpectedTokens(), grammar, options, missing);
-		if (missing_index.IsValid()) {
-			hint = "Missing \"" + missing.text + "\"";
-			if (missing.index != error_index) {
-				report_index = missing.index;
-				at_end = false;
-			}
-		}
-	}
-	if (compute_hints && hint.empty() && !at_end) {
-		auto unexpected = FindUnexpectedToken(tokens, statement_start, error_index, expected, grammar, options);
-		if (unexpected.IsValid()) {
-			report_index = unexpected.GetIndex();
-			hint = "Unexpected \"" + tokens.GetToken(report_index).text + "\"";
-		}
-	}
-	if (hint.empty()) {
-		hint = DescribeExpected(expected, grammar.GetKeywordHelper());
+	if (hint.index != error_index) {
+		// the hint is about an earlier token, so the error is reported there and not at the end of the input
+		report_index = hint.index;
+		at_end = false;
 	}
 
 	string message;
@@ -484,8 +514,8 @@ ParserException PEGSyntaxError::Create(const TokenIterator &tokens, idx_t statem
 	} else {
 		message = "syntax error at or near \"" + tokens.GetToken(report_index).text + "\"";
 	}
-	if (!hint.empty()) {
-		message += "\n" + hint;
+	if (!hint.text.empty()) {
+		message += "\n" + hint.text;
 	}
 	auto &location_token = tokens.GetToken(report_index);
 	return ParserException::SyntaxError(string(), message, QueryLocation(location_token.offset, location_token.length));

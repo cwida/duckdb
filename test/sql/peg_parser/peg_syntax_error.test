@@ -71,7 +71,7 @@ Parser Error: syntax error at end of input
 statement error
 SELECT x -> x + FROM tbl;
 ----
-Parser Error: syntax error at or near "+"
+Parser Error: syntax error at or near "FROM"
 
 statement error
 WITH cte AS (SELECT 1) SELECT * FROM cte WHERE (SELECT 1 FROM cte2;
@@ -81,7 +81,7 @@ Parser Error: syntax error at or near ";"
 statement error
 SELECT id, SUM(amount) OVER (PARTITION BY ) FROM sales;
 ----
-Parser Error: syntax error at or near "BY"
+Parser Error: syntax error at or near ")"
 
 # This error could be improved by saying there's an empty select list
 statement error

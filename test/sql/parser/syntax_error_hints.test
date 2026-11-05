@@ -167,12 +167,11 @@ SELECT * FROM t WHERE
 syntax error at end of input
 Expected an expression
 
-# dropping either operator repairs this; the one before the failure is reported
 statement error
 SELECT * FROM t WHERE a = 1 AND OR x = 2
 ----
-syntax error at or near "AND"
-Unexpected "AND"
+syntax error at or near "OR"
+Expected an expression
 
 statement error
 SELECT 1 +
@@ -238,9 +237,57 @@ syntax error at or near ")"
 Unexpected ")"
 
 statement error
-SELECT * FROM t WHERE x = 1 AND GROUP BY x
+SELECT * FROM t WHERE a = 1 AND AND x = 2
 ----
 Unexpected "AND"
+
+# a repeated keyword is removed before a comma is guessed
+statement error
+SELECT 1 AS AS b
+----
+syntax error at or near "AS"
+Unexpected "AS"
+
+# the token before the failure is valid, something after it is missing: it is not blamed
+statement error
+SELECT * FROM t WHERE x = 1 AND GROUP BY x
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT 999 FROM ORDER BY 1
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT x -> x + FROM t
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT id, SUM(a) OVER (PARTITION BY ) FROM t
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+SELECT a[1:-] FROM (SELECT [1, 2, 3] a)
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+PREPARE CREATE TABLE t2(i INTEGER)
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+DELETE FROM t AS WHERE a = 42
+----
+<!REGEX>:.*Unexpected.*
+
+statement error
+MERGE INTO t AS USING t2 ON true WHEN MATCHED THEN DELETE
+----
+<!REGEX>:.*Unexpected.*
 
 statement error
 SELECT * FROM t WHERE x = 1, GROUP BY x

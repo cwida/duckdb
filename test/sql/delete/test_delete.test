@@ -16,7 +16,7 @@ SELECT COUNT(*) FROM a;
 statement error
 DELETE FROM a AS WHERE i = 42;
 ----
-Parser Error: syntax error at or near "AS"
+Parser Error: syntax error at or near "WHERE"
 
 statement error
 DELETE FROM a AS;

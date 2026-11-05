@@ -47,7 +47,7 @@ Parser Error: syntax error at or near "SELECT"
 statement error
 PREPARE CREATE TABLE a(i INTEGER)
 ----
-Parser Error: syntax error at or near "PREPARE"
+Parser Error: syntax error at or near "CREATE"
 
 statement error
 SELECT * FROM a;

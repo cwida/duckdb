@@ -32,12 +32,12 @@ true	true	true	true	true
 statement error
 SELECT a[1:-] FROM (SELECT [1, 2, 3] a);
 ----
-Parser Error: syntax error at or near "-"
+Parser Error: syntax error at or near "]"
 
 statement error
 SELECT a[:-] FROM (SELECT [1, 2, 3] a);
 ----
-Parser Error: syntax error at or near "-"
+Parser Error: syntax error at or near "]"
 
 query IIII
 SELECT a[:-:2], a[2:-1], a[:-2], a[-2:] FROM (SELECT [1, 2, 3] a);
