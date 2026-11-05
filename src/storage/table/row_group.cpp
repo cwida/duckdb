@@ -1500,7 +1500,9 @@ shared_ptr<ColumnData> RowGroup::CheckpointColumn(const RowGroup &row_group, idx
 	// FIXME: we should get rid of the checkpoint state statistics - and instead use the stats in the ColumnData
 	// directly
 	auto stats = checkpoint_state->GetStatistics();
-	result_col->MergeStatistics(*stats);
+	if (result_col.get() != &column) {
+		result_col->MergeStatistics(*stats);
+	}
 
 	write_data.statistics.push_back(stats->Copy());
 	write_data.states.push_back(std::move(checkpoint_state));

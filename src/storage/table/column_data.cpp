@@ -1,4 +1,5 @@
 #include "duckdb/storage/table/column_data.hpp"
+#include "duckdb/storage/table/list_column_data.hpp"
 #include "duckdb/main/attached_database.hpp"
 
 #include "duckdb/common/exception/transaction_exception.hpp"
@@ -1079,7 +1080,9 @@ void PersistentColumnData::Serialize(Serializer &serializer) const {
 	}
 
 	// Serialize the extra data
-	serializer.WritePropertyWithDefault(99, "extra_data", extra_data);
+	if (!extra_data || extra_data->IsSupported(serializer)) {
+		serializer.WritePropertyWithDefault(99, "extra_data", extra_data);
+	}
 
 	// TODO: Dont special-case this
 	if (logical_type.id() == LogicalTypeId::VARIANT) {
@@ -1154,6 +1157,14 @@ static PersistentColumnData GetPersistentColumnDataType(Deserializer &deserializ
 		PersistentColumnData result(geometry_data.storage_type == GeometryStorageType::WKB
 		                                ? deserializer.Get<const LogicalType &>()
 		                                : Geometry::GetVectorizedType(geometry_data.storage_type));
+		result.extra_data = std::move(extra_data);
+		return result;
+	}
+	case ExtraPersistentColumnDataType::LIST: {
+		if (column_type.InternalType() != PhysicalType::LIST) {
+			throw DataCorruptionException("LIST column data found for a column of type %s", column_type);
+		}
+		PersistentColumnData result(column_type);
 		result.extra_data = std::move(extra_data);
 		return result;
 	}
@@ -1353,6 +1364,9 @@ void ExtraPersistentColumnData::Serialize(Serializer &serializer) const {
 		const auto &geometry_data = Cast<GeometryPersistentColumnData>();
 		serializer.WritePropertyWithDefault(101, "storage_type", geometry_data.storage_type, GeometryStorageType::WKB);
 	} break;
+	case ExtraPersistentColumnDataType::LIST:
+		Cast<ListPersistentColumnData>().SerializeFields(serializer);
+		break;
 	default:
 		throw InternalException("Unknown PersistentColumnData type");
 	}
@@ -1371,6 +1385,8 @@ unique_ptr<ExtraPersistentColumnData> ExtraPersistentColumnData::Deserialize(Des
 		    101, "storage_type", GeometryStorageType::WKB);
 		return make_uniq<GeometryPersistentColumnData>(storage_type);
 	}
+	case ExtraPersistentColumnDataType::LIST:
+		return ListPersistentColumnData::Deserialize(deserializer);
 	default:
 		throw InternalException("Unknown PersistentColumnData type");
 	}
