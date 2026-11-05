@@ -13,6 +13,7 @@
 
 namespace duckdb {
 
+class ClientContext;
 class Value;
 struct BoundOrderByNode;
 struct BoundStatement;
@@ -22,7 +23,7 @@ struct TableIndex;
 class Binder;
 
 Value ConvertVectorToValue(vector<Value> set);
-idx_t ParseBytesArg(const Identifier &name, const Value &arg);
+idx_t ParseBytesArg(ClientContext &context, const Identifier &name, const Value &arg);
 vector<bool> ParseColumnList(const vector<Value> &set, const vector<Identifier> &names, const Identifier &option_name);
 vector<bool> ParseColumnList(const Value &value, const vector<Identifier> &names, const Identifier &option_name);
 vector<idx_t> ParseColumnsOrdered(const vector<Value> &set, const vector<Identifier> &names,

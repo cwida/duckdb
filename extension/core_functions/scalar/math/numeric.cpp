@@ -751,7 +751,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
-	auto val = input.GetNonNullConstant(1).DefaultCastAs(LogicalType::INTEGER);
+	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
 	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetBoundFunction(), input.GetArgumentType(0),
 	                                                      IntegerValue::Get(val));
 }
@@ -760,7 +760,7 @@ void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 unique_ptr<FunctionData> BindDecimalRoundPrecision(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto val = input.GetNonNullConstant(1).DefaultCastAs(LogicalType::INTEGER);
+	auto val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::INTEGER);
 	return ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
 	    bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
 }

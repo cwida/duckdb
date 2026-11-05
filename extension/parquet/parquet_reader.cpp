@@ -1684,7 +1684,7 @@ static FilterPropagateResult CheckParquetFloatFilter(ClientContext &context, Col
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "CheckParquetFloatFilter");
 	auto &type = reader.Type();
 	auto nan_stats = NumericStats::CreateUnknown(type);
-	auto nan_value = Value("nan").DefaultCastAs(type);
+	auto nan_value = Value("nan").CastAs(context, type);
 	NumericStats::SetMin(nan_stats, nan_value);
 	NumericStats::SetMax(nan_stats, nan_value);
 	auto nan_prune = expr_filter.CheckStatistics(context, nan_stats);

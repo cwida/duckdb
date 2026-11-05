@@ -18,7 +18,7 @@ const LogicalType &PerfectHashJoinExecutor::GetKeyType() const {
 //===--------------------------------------------------------------------===//
 // Initialize
 //===--------------------------------------------------------------------===//
-bool ExtractNumericValue(const Value &val, hugeint_t &result) {
+bool ExtractNumericValue(ClientContext &context, const Value &val, hugeint_t &result) {
 	if (!val.type().IsIntegral()) {
 		switch (val.type().InternalType()) {
 		case PhysicalType::INT8:
@@ -61,7 +61,7 @@ bool ExtractNumericValue(const Value &val, hugeint_t &result) {
 			return false;
 		}
 	} else {
-		auto cast = val.DefaultTryCastAs(LogicalType::HUGEINT);
+		auto cast = val.TryCastAs(context, LogicalType::HUGEINT);
 		if (!cast) {
 			return false;
 		}
@@ -70,7 +70,8 @@ bool ExtractNumericValue(const Value &val, hugeint_t &result) {
 	return true;
 }
 
-bool PerfectHashJoinExecutor::CanDoPerfectHashJoin(const PhysicalHashJoin &op, const Value &min, const Value &max) {
+bool PerfectHashJoinExecutor::CanDoPerfectHashJoin(ClientContext &context, const PhysicalHashJoin &op, const Value &min,
+                                                   const Value &max) {
 	// TODO: Add support for residual predicates
 	if (op.predicate) {
 		return false;
@@ -104,8 +105,8 @@ bool PerfectHashJoinExecutor::CanDoPerfectHashJoin(const PhysicalHashJoin &op, c
 	perfect_join_statistics.build_min = min;
 	perfect_join_statistics.build_max = max;
 	hugeint_t min_value, max_value;
-	if (!ExtractNumericValue(perfect_join_statistics.build_min, min_value) ||
-	    !ExtractNumericValue(perfect_join_statistics.build_max, max_value)) {
+	if (!ExtractNumericValue(context, perfect_join_statistics.build_min, min_value) ||
+	    !ExtractNumericValue(context, perfect_join_statistics.build_max, max_value)) {
 		return false;
 	}
 	if (max_value < min_value) {

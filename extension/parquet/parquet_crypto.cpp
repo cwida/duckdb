@@ -154,7 +154,7 @@ ParquetEncryptionConfig::ParquetEncryptionConfig(ClientContext &context, const V
 			throw BinderException("Parquet encryption_config %s cannot be NULL", struct_key);
 		}
 		if (struct_key == "footer_key") {
-			const auto footer_key_name = StringValue::Get(children[i].DefaultCastAs(LogicalType::VARCHAR));
+			const auto footer_key_name = StringValue::Get(children[i].CastAs(context, LogicalType::VARCHAR));
 			if (!keys.HasKey(footer_key_name)) {
 				throw BinderException(
 				    "No key with name \"%s\" exists. Add it with PRAGMA add_parquet_key('<key_name>','<key>');",
@@ -164,7 +164,7 @@ ParquetEncryptionConfig::ParquetEncryptionConfig(ClientContext &context, const V
 			const auto &keys = ParquetKeys::Get(context);
 			footer_key = keys.GetKey(footer_key_name);
 		} else if (struct_key == "footer_key_value") {
-			footer_key = StringValue::Get(children[i].DefaultCastAs(LogicalType::BLOB));
+			footer_key = StringValue::Get(children[i].CastAs(context, LogicalType::BLOB));
 		} else if (struct_key == "column_keys") {
 			throw NotImplementedException("Parquet encryption_config column_keys not yet implemented");
 		} else {

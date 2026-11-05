@@ -184,13 +184,15 @@ struct CSVReaderOptions {
 
 	//! Set an option that is supported by both reading and writing functions, called by
 	//! the SetReadOption and SetWriteOption methods
-	bool SetBaseOption(const Identifier &loption, const Value &value, bool write_option = false);
+	bool SetBaseOption(ClientContext &context, const Identifier &loption, const Value &value,
+	                   bool write_option = false);
 
 	//! loption - lowercase string
 	//! set - argument(s) to the option
 	//! expected_names - names expected if the option is "columns"
-	void SetReadOption(const Identifier &loption, const Value &value, const vector<Identifier> &expected_names);
-	void SetWriteOption(const Identifier &loption, const Value &value);
+	void SetReadOption(ClientContext &context, const Identifier &loption, const Value &value,
+	                   const vector<Identifier> &expected_names);
+	void SetWriteOption(ClientContext &context, const Identifier &loption, const Value &value);
 	void SetDateFormat(LogicalTypeId type, const string &format, bool read_format);
 	void ToNamedParameters(named_parameter_map_t &out) const;
 	void FromNamedParameters(const named_argument_map_t &in, ClientContext &context, MultiFileOptions &file_options);

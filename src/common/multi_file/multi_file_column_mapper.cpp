@@ -970,17 +970,18 @@ static bool MappedCastIsInvertible(const MultiFileIndexMapping &mapping, const L
 	return true;
 }
 
-static bool TryCastConstant(Value &constant, const MultiFileIndexMapping &mapping, const LogicalType &target_type) {
+static bool TryCastConstant(ClientContext &context, Value &constant, const MultiFileIndexMapping &mapping,
+                            const LogicalType &target_type) {
 	// this filter replaces the global one, so both casts must preserve which rows match
 	if (!BoundCastExpression::CastIsInvertible(constant.type(), target_type) ||
 	    !MappedCastIsInvertible(mapping, target_type, constant.type())) {
 		return false;
 	}
-	auto cast = constant.DefaultTryCastAs(target_type);
+	auto cast = constant.TryCastAs(context, target_type);
 	if (!cast) {
 		return false;
 	}
-	auto roundtrip = cast->DefaultTryCastAs(constant.type());
+	auto roundtrip = cast->TryCastAs(context, constant.type());
 	if (!roundtrip || *roundtrip != constant) {
 		return false;
 	}
@@ -1031,7 +1032,8 @@ static RewrittenMappedExpression RewriteMappedValueExpression(const Expression &
 	}
 }
 
-static unique_ptr<Expression> RewriteDynamicFilterExpression(const shared_ptr<DynamicFilterData> &filter_data,
+static unique_ptr<Expression> RewriteDynamicFilterExpression(ClientContext &context,
+                                                             const shared_ptr<DynamicFilterData> &filter_data,
                                                              const MultiFileIndexMapping &mapping,
                                                              const LogicalType &target_type) {
 	if (!filter_data || !filter_data->initialized) {
@@ -1039,21 +1041,23 @@ static unique_ptr<Expression> RewriteDynamicFilterExpression(const shared_ptr<Dy
 	}
 	annotated_shared_lock<annotated_shared_mutex> lock(filter_data->lock);
 	auto new_constant = filter_data->constant;
-	if (!TryCastConstant(new_constant, mapping, target_type)) {
+	if (!TryCastConstant(context, new_constant, mapping, target_type)) {
 		return nullptr;
 	}
 	return BoundComparisonExpression::Create(filter_data->comparison_type, CreateReferenceExpression(target_type),
 	                                         make_uniq<BoundConstantExpression>(std::move(new_constant)));
 }
 
-static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, const MultiFileIndexMapping &mapping,
+static unique_ptr<Expression> TryCastFilterExpression(ClientContext &context, const Expression &expr,
+                                                      const MultiFileIndexMapping &mapping,
                                                       const LogicalType &target_type) {
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_FUNCTION: {
 		auto &func = expr.Cast<BoundFunctionExpression>();
 		if (ExpressionFilter::IsRootOptionalExpression(expr)) {
 			auto optional_child = ExpressionFilter::GetOptionalFilterChild(expr);
-			auto child_expr = optional_child ? TryCastFilterExpression(*optional_child, mapping, target_type) : nullptr;
+			auto child_expr =
+			    optional_child ? TryCastFilterExpression(context, *optional_child, mapping, target_type) : nullptr;
 			if (optional_child && !child_expr) {
 				return nullptr;
 			}
@@ -1072,7 +1076,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 				return nullptr;
 			}
 			auto &data = func.BindInfo()->Cast<DynamicFilterFunctionData>();
-			return RewriteDynamicFilterExpression(data.filter_data, mapping, target_type);
+			return RewriteDynamicFilterExpression(context, data.filter_data, mapping, target_type);
 		}
 		if (!BoundComparisonExpression::IsComparison(expr)) {
 			return nullptr;
@@ -1088,7 +1092,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 			return nullptr;
 		}
 		auto constant = right.Cast<BoundConstantExpression>().GetValue();
-		if (!TryCastConstant(constant, *lhs.mapping, *lhs.type)) {
+		if (!TryCastConstant(context, constant, *lhs.mapping, *lhs.type)) {
 			return nullptr;
 		}
 		return BoundComparisonExpression::Create(comparison.GetExpressionType(), std::move(lhs.expr),
@@ -1098,7 +1102,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 		auto &conjunction = expr.Cast<BoundConjunctionExpression>();
 		auto result = make_uniq<BoundConjunctionExpression>(conjunction.GetExpressionType());
 		for (auto &child : conjunction.GetChildren()) {
-			auto rewritten_child = TryCastFilterExpression(*child, mapping, target_type);
+			auto rewritten_child = TryCastFilterExpression(context, *child, mapping, target_type);
 			if (!rewritten_child) {
 				return nullptr;
 			}
@@ -1137,7 +1141,7 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 					return nullptr;
 				}
 				auto constant = op.GetChildren()[i]->Cast<BoundConstantExpression>().GetValue();
-				if (!TryCastConstant(constant, *lhs.mapping, *lhs.type)) {
+				if (!TryCastConstant(context, constant, *lhs.mapping, *lhs.type)) {
 					return nullptr;
 				}
 				result->GetChildrenMutable().push_back(make_uniq<BoundConstantExpression>(std::move(constant)));
@@ -1155,10 +1159,10 @@ static unique_ptr<Expression> TryCastFilterExpression(const Expression &expr, co
 	}
 }
 
-static unique_ptr<TableFilter> TryCastTableFilter(const TableFilter &global_filter, MultiFileIndexMapping &mapping,
-                                                  const LogicalType &target_type) {
+static unique_ptr<TableFilter> TryCastTableFilter(ClientContext &context, const TableFilter &global_filter,
+                                                  MultiFileIndexMapping &mapping, const LogicalType &target_type) {
 	auto filter_expression = GetFilterExpression(global_filter);
-	auto rewritten_expr = TryCastFilterExpression(*filter_expression, mapping, target_type);
+	auto rewritten_expr = TryCastFilterExpression(context, *filter_expression, mapping, target_type);
 	if (!rewritten_expr) {
 		return nullptr;
 	}
@@ -1216,7 +1220,7 @@ MultiFileColumnMapper::CreateFilters(map<MultiFileGlobalIndex, reference<TableFi
 			break;
 		case FilterConversionType::CAST_FILTER:
 			// types are different - try to convert
-			local_filter = TryCastTableFilter(global_filter, map_entry.mapping, local_type);
+			local_filter = TryCastTableFilter(context, global_filter, map_entry.mapping, local_type);
 			break;
 		default:
 			// we need to execute the filter globally

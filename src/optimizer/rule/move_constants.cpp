@@ -79,7 +79,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 		if (!Hugeint::TrySubtractInPlace(outer_value, inner_value)) {
 			return nullptr;
 		}
-		auto result_value = Value::HUGEINT(outer_value).DefaultTryCastAs(constant_type);
+		auto result_value = Value::HUGEINT(outer_value).TryCastAs(GetContext(), constant_type);
 		if (!result_value) {
 			if (comparison.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
 				return nullptr;
@@ -101,7 +101,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 			if (!Hugeint::TryAddInPlace(outer_value, inner_value)) {
 				return nullptr;
 			}
-			auto result_value = Value::HUGEINT(outer_value).DefaultTryCastAs(constant_type);
+			auto result_value = Value::HUGEINT(outer_value).TryCastAs(GetContext(), constant_type);
 			if (!result_value) {
 				// if the cast is not possible then an equality comparison is not possible
 				if (comparison.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
@@ -118,7 +118,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 			if (!Hugeint::TrySubtractInPlace(inner_value, outer_value)) {
 				return nullptr;
 			}
-			auto result_value = Value::HUGEINT(inner_value).DefaultTryCastAs(constant_type);
+			auto result_value = Value::HUGEINT(inner_value).TryCastAs(GetContext(), constant_type);
 			if (!result_value) {
 				// if the cast is not possible then an equality comparison is not possible
 				if (comparison.GetExpressionType() != ExpressionType::COMPARE_EQUAL) {
@@ -165,7 +165,7 @@ unique_ptr<Expression> MoveConstantsRule::Apply(LogicalOperator &op, vector<refe
 		// divide the RHS by the LHS
 		// we need to do a range check on the cast even though we do a division
 		// because e.g. -128 / -1 = 128, which is out of range
-		auto result_value = Value::HUGEINT(outer_value / inner_value).DefaultTryCastAs(constant_type);
+		auto result_value = Value::HUGEINT(outer_value / inner_value).TryCastAs(GetContext(), constant_type);
 		if (!result_value) {
 			// no representable value satisfies an equality, but ordered comparisons cannot be decided here
 			bool comparison_result;
@@ -302,7 +302,7 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		} else {
 			val = DoubleValue::Get(outer_constant.GetValue());
 		}
-		auto result_value = Value::DOUBLE(-val).DefaultTryCastAs(constant_type);
+		auto result_value = Value::DOUBLE(-val).TryCastAs(GetContext(), constant_type);
 		if (!result_value) {
 			return nullptr;
 		}
@@ -337,7 +337,7 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 		if (!Hugeint::TryNegate(IntegralValue::Get(outer_constant.GetValue()), negated_value)) {
 			return nullptr;
 		}
-		auto result_value = Value::HUGEINT(negated_value).DefaultTryCastAs(constant_type);
+		auto result_value = Value::HUGEINT(negated_value).TryCastAs(GetContext(), constant_type);
 		if (!result_value) {
 			bool comparison_result;
 			if (!TryOutOfRangeComparisonResult(comparison.GetExpressionType(), comparison_result)) {
