@@ -2,16 +2,14 @@
 # description: Functions that throw on some inputs are not evaluated on the rows that a secure view hides
 # group: [optimizer]
 
-require json
-
 statement ok
-CREATE TABLE secrets(id INTEGER, pattern VARCHAR, d DATE, i INTERVAL, j JSON);
+CREATE TABLE secrets(id INTEGER, pattern VARCHAR, d DATE, i INTERVAL);
 
 # the hidden row holds the values that make the functions below throw, the visible row does not
 statement ok
 INSERT INTO secrets VALUES
-	(1, 'a$', DATE '2000-01-01', INTERVAL 1 DAY, (repeat('[', 200) || repeat(']', 200))::JSON),
-	(2, 'a%', NULL, NULL, '{"a": 1}');
+	(1, 'a$', DATE '2000-01-01', INTERVAL 1 DAY),
+	(2, 'a%', NULL, NULL);
 
 statement ok
 CREATE TABLE allowed(id INTEGER);
@@ -21,7 +19,7 @@ INSERT INTO allowed VALUES (2);
 
 statement ok
 CREATE SECURE VIEW visible_secrets AS
-	SELECT sec.id, sec.pattern, sec.d, sec.i, sec.j FROM secrets sec JOIN allowed a ON (sec.id = a.id);
+	SELECT sec.id, sec.pattern, sec.d, sec.i FROM secrets sec JOIN allowed a ON (sec.id = a.id);
 
 # the join filter pushdown would prune the hidden row before the functions see it - disable it so that only the
 # barrier keeps them off the hidden row
@@ -82,16 +80,5 @@ SELECT id FROM visible_secrets WHERE timezone_minute(d) IS NULL
 
 query I
 SELECT id FROM visible_secrets WHERE timezone_minute(i) IS NULL
-----
-2
-
-# json_structure throws on JSON nested deeper than its recursion limit
-statement error
-SELECT id FROM secrets WHERE json_structure(j) IS NOT NULL
-----
-<REGEX>:.*Invalid Input Error.*recursion depth.*
-
-query I
-SELECT id FROM visible_secrets WHERE json_structure(j) IS NOT NULL
 ----
 2

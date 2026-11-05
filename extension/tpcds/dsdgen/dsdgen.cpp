@@ -184,9 +184,8 @@ static idx_t GetDSDGenTableProgressUnitsPerRow(int table_id) {
 	auto progress_units = output_rows * GetDSDGenTableColumnCount(table_id) * DSDGEN_PROGRESS_UNIT_SCALE;
 	auto child_table = GetDSDGenChildTable(table_id);
 	if (child_table != -1) {
-		progress_units +=
-		    output_rows * GetDSDGenReturnPercent(table_id) * GetDSDGenTableColumnCount(child_table) *
-		    DSDGEN_PROGRESS_UNIT_SCALE / 100;
+		progress_units += output_rows * GetDSDGenReturnPercent(table_id) * GetDSDGenTableColumnCount(child_table) *
+		                  DSDGEN_PROGRESS_UNIT_SCALE / 100;
 	}
 	return progress_units;
 }
@@ -200,10 +199,9 @@ static idx_t GetDSDGenTableChildCount(int table_id, idx_t row_count, idx_t threa
 		return 1;
 	}
 	auto output_row_count = row_count * GetDSDGenTableOutputMultiplier(table_id);
-	auto row_count_child_count =
-	    output_row_count < DSDGEN_PARALLEL_SPLIT_MIN_ROWS
-	        ? 1
-	        : (output_row_count + DSDGEN_TARGET_CHUNK_ROWS - 1) / DSDGEN_TARGET_CHUNK_ROWS;
+	auto row_count_child_count = output_row_count < DSDGEN_PARALLEL_SPLIT_MIN_ROWS
+	                                 ? 1
+	                                 : (output_row_count + DSDGEN_TARGET_CHUNK_ROWS - 1) / DSDGEN_TARGET_CHUNK_ROWS;
 	auto max_child_count =
 	    MinValue<idx_t>(thread_count * DSDGEN_WORK_ITEMS_PER_THREAD, DSDGEN_MAX_WORK_ITEMS_PER_TABLE);
 	max_child_count = MinValue<idx_t>(max_child_count, MaxValue<idx_t>(1, row_count / DSDGEN_MIN_PARALLEL_TASK_ROWS));
@@ -462,8 +460,8 @@ private:
 
 class TPCDSDSDGenGenerator : public DSDGenGenerator {
 public:
-	TPCDSDSDGenGenerator(ClientContext &context, double scale, const Identifier &catalog_name,
-	                     const Identifier &schema, string suffix)
+	TPCDSDSDGenGenerator(ClientContext &context, double scale, const Identifier &catalog_name, const Identifier &schema,
+	                     string suffix)
 	    : context(context), scale(scale), catalog_name(catalog_name), schema(schema), suffix(std::move(suffix)) {
 		if (Value::IsNan(scale)) {
 			throw InvalidInputException("DSDGen requires a valid scale factor");
@@ -544,8 +542,7 @@ public:
 		auto generated_progress = static_cast<double>(current_generated_work) / static_cast<double>(total_work);
 		auto flushed_progress = static_cast<double>(current_flushed_work) / static_cast<double>(total_work);
 		auto flush_weight = mode == DSDGenMode::PARALLEL ? 0.05 : 0.0;
-		auto current_progress =
-		    100.0 * (generated_progress * (1.0 - flush_weight) + flushed_progress * flush_weight);
+		auto current_progress = 100.0 * (generated_progress * (1.0 - flush_weight) + flushed_progress * flush_weight);
 		return MinValue<double>(current_progress, 99.9);
 	}
 
@@ -619,25 +616,25 @@ private:
 			vector<unique_ptr<TPCDSDataAppender>> new_appenders;
 			new_appenders.reserve(parallel_thread_count);
 			auto launched_offset = parallel_work_offset;
-			for (idx_t thread_idx = 0; thread_idx < parallel_thread_count &&
-			                           launched_offset < parallel_work_items.size();
+			for (idx_t thread_idx = 0;
+			     thread_idx < parallel_thread_count && launched_offset < parallel_work_items.size();
 			     thread_idx++, launched_offset++) {
 				auto &work_item = parallel_work_items[launched_offset];
 				new_appenders.push_back(make_uniq<TPCDSDataAppender>(
-				    context, *parameters, scale, TPCDSAppendMode::OPTIMISTIC,
-				    NumericLimits<int64_t>::Maximum(), &generated_work, work_item.table_id));
+				    context, *parameters, scale, TPCDSAppendMode::OPTIMISTIC, NumericLimits<int64_t>::Maximum(),
+				    &generated_work, work_item.table_id));
 			}
 			for (auto &appender : new_appenders) {
-				auto task = make_uniq<ParallelTPCDSAppendTask>(executor, *appender,
-				                                               parallel_work_items[parallel_work_offset]);
+				auto task =
+				    make_uniq<ParallelTPCDSAppendTask>(executor, *appender, parallel_work_items[parallel_work_offset]);
 				executor.ScheduleTask(std::move(task));
 				parallel_work_offset++;
 			}
 			executor.WorkOnTasks();
 			for (idx_t appender_idx = 0; appender_idx < new_appenders.size(); appender_idx++) {
 				auto work_item_idx = parallel_work_offset - new_appenders.size() + appender_idx;
-				finished_appenders.push_back(make_uniq<FinishedDSDGenAppender>(
-				    parallel_work_items[work_item_idx], std::move(new_appenders[appender_idx])));
+				finished_appenders.push_back(make_uniq<FinishedDSDGenAppender>(parallel_work_items[work_item_idx],
+				                                                               std::move(new_appenders[appender_idx])));
 			}
 			return false;
 		}
@@ -688,9 +685,8 @@ private:
 			total_row_count += row_count;
 			total_work += GetDSDGenTableProgressUnits(table_idx, row_count);
 		}
-		row_batch_size =
-		    MinValue<idx_t>(DSDGEN_MAX_ROW_BATCH_SIZE,
-		                    MaxValue<idx_t>(DSDGEN_MIN_ROW_BATCH_SIZE, total_row_count / 1000));
+		row_batch_size = MinValue<idx_t>(DSDGEN_MAX_ROW_BATCH_SIZE,
+		                                 MaxValue<idx_t>(DSDGEN_MIN_ROW_BATCH_SIZE, total_row_count / 1000));
 	}
 
 	bool HasParallelWork() const {

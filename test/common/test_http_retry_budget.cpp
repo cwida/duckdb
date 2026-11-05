@@ -199,6 +199,95 @@ TEST_CASE("HTTP retry budget stops when the host quota is exhausted", "[http]") 
 	REQUIRE(quota->Available() == HTTPRetryQuota::NO_RETRY_REFUND);
 }
 
+TEST_CASE("HTTP retry quota is not drained by requests that get through after being throttled", "[http]") {
+	HTTPUtil http_util;
+	HTTPParams params(http_util);
+	params.retry_wait_ms = 0;
+	auto quota = make_shared_ptr<HTTPRetryQuota>();
+	// start below the capacity, so that a refund beyond what was charged would show
+	REQUIRE(quota->TryAcquire(100));
+	const auto available = HTTPRetryQuota::INITIAL_CAPACITY - 100;
+
+	// as for a glob over many objects of a host that throttles each object twice (duckdb/duckdb#6153)
+	for (idx_t object = 0; object < 1000; object++) {
+		HTTPRetryBudget budget(params, HTTPRetryOutcomeOwner::COORDINATOR);
+		budget.BindQuota(quota);
+		idx_t attempts = 0;
+		budget.Run([&]() {
+			attempts++;
+			return attempts <= 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Finish();
+		});
+		REQUIRE(attempts == 3);
+		REQUIRE_FALSE(budget.QuotaExhausted());
+		budget.ReportSuccess();
+	}
+	REQUIRE(quota->Available() == available);
+
+	// a server error before the throttle is not refunded, as for an operation that retried server errors only
+	HTTPRetryBudget error_then_throttle(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	error_then_throttle.BindQuota(quota);
+	idx_t attempts = 0;
+	error_then_throttle.Run([&]() {
+		attempts++;
+		if (attempts == 1) {
+			return HTTPRetryDecision::Retry();
+		}
+		return attempts == 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Finish();
+	});
+	error_then_throttle.ReportSuccess();
+	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST);
+
+	// throttles before a server error are refunded with it
+	HTTPRetryBudget throttle_then_error(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	throttle_then_error.BindQuota(quota);
+	attempts = 0;
+	throttle_then_error.Run([&]() {
+		attempts++;
+		if (attempts <= 2) {
+			return HTTPRetryDecision::Throttled("0");
+		}
+		return attempts == 3 ? HTTPRetryDecision::Retry() : HTTPRetryDecision::Finish();
+	});
+	throttle_then_error.ReportSuccess();
+	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST);
+
+	// a request that keeps being throttled is not refunded, so the quota still stops a host that never lets one through
+	HTTPRetryBudget throttled(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	throttled.BindQuota(quota);
+	throttled.Run([&]() { return HTTPRetryDecision::Throttled("0"); });
+	throttled.ReportFailure();
+	REQUIRE(quota->Available() == available - HTTPRetryQuota::RETRY_COST -
+	                                  static_cast<int64_t>(throttled.RetriesUsed()) * HTTPRetryQuota::RETRY_COST);
+
+	// a failure after throttles refunds nothing, and a later clean run of the same budget refunds a single token
+	const auto before_failure = quota->Available();
+	HTTPRetryBudget failed(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	failed.BindQuota(quota);
+	attempts = 0;
+	failed.Run([&]() {
+		attempts++;
+		return attempts <= 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Failure();
+	});
+	REQUIRE(quota->Available() == before_failure - 2 * HTTPRetryQuota::RETRY_COST);
+	failed.Run([&]() { return HTTPRetryDecision::Success(); });
+	REQUIRE(quota->Available() == before_failure - 2 * HTTPRetryQuota::RETRY_COST + HTTPRetryQuota::NO_RETRY_REFUND);
+
+	// throttles charged to another host are refunded to that host
+	auto other_quota = make_shared_ptr<HTTPRetryQuota>();
+	HTTPRetryBudget redirected(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	redirected.BindQuota(other_quota);
+	attempts = 0;
+	redirected.Run([&]() {
+		attempts++;
+		if (attempts == 2) {
+			redirected.BindQuota(quota);
+		}
+		return attempts <= 2 ? HTTPRetryDecision::Throttled("0") : HTTPRetryDecision::Finish();
+	});
+	redirected.ReportSuccess();
+	REQUIRE(other_quota->Available() == HTTPRetryQuota::INITIAL_CAPACITY);
+}
+
 TEST_CASE("HTTP retry budget charges the host of the request being retried", "[http]") {
 	HTTPUtil http_util;
 	HTTPParams params(http_util);

@@ -60,7 +60,7 @@ protected:
 	void ComputePartitionIndices(PartitionedTupleDataAppendState &state, DataChunk &input,
 	                             const SelectionVector &append_sel, const idx_t append_count) override;
 	void ComputePartitionIndices(Vector &row_locations, idx_t count, Vector &partition_indices,
-	                             unique_ptr<Vector> &utility_vector) const override;
+	                             unique_ptr<Vector> &utility_vector, const SelectionVector &append_sel) const override;
 	idx_t MaxPartitionIndex() const override {
 		return OverflowPartition();
 	}

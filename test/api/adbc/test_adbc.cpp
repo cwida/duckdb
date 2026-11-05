@@ -6582,4 +6582,437 @@ TEST_CASE("ADBC - StatementExecuteSchema of a dynamic PIVOT", "[adbc]") {
 	REQUIRE(StringUtil::Contains(message, "known only once it is executed"));
 }
 
+//===--------------------------------------------------------------------===//
+// ADBC_STATEMENT_OPTION_PROGRESS / ADBC_STATEMENT_OPTION_MAX_PROGRESS
+//===--------------------------------------------------------------------===//
+
+static double StatementProgress(AdbcStatement &statement, const char *key, AdbcError &error) {
+	double value = -1;
+	REQUIRE(SUCCESS(AdbcStatementGetOptionDouble(&statement, key, &value, &error)));
+	return value;
+}
+
+//! Read up to `limit` batches from `stream`; returns how many it read before the stream ended.
+static idx_t ReadBatches(ArrowArrayStream &stream, idx_t limit) {
+	idx_t count = 0;
+	while (count < limit) {
+		ArrowArray array;
+		std::memset(&array, 0, sizeof(array));
+		REQUIRE(stream.get_next(&stream, &array) == 0);
+		if (!array.release) {
+			break;
+		}
+		array.release(&array);
+		count++;
+	}
+	return count;
+}
+
+TEST_CASE("ADBC - Statement progress while a stream is consumed", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	REQUIRE(!db.Query("CREATE TABLE progress_t AS SELECT i FROM range(2000000) t(i)")->HasError());
+
+	AdbcStatement statement;
+	ArrowArrayStream stream;
+	stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "SELECT i FROM progress_t", &db.adbc_error)));
+
+	// Not executed yet: nothing done, of a known maximum.
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, &stream, nullptr, &db.adbc_error)));
+	// A streaming scan executes as it is consumed: after some batches, part of the table has been read.
+	REQUIRE(ReadBatches(stream, 50) == 50);
+	auto partway = StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	// The query advances as the stream is consumed, so part of the table has been read and the rest has not.
+	REQUIRE(partway > 0);
+	REQUIRE(partway < 1.0);
+
+	// Exhausted: the query has ended.
+	ReadBatches(stream, NumericLimits<idx_t>::Maximum());
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+
+	stream.release(&stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress follows the query running on the connection", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	REQUIRE(!db.Query("CREATE TABLE progress_t AS SELECT i FROM range(2000000) t(i)")->HasError());
+
+	AdbcStatement first, second;
+	ArrowArrayStream first_stream, second_stream, rerun_stream;
+	first_stream.release = second_stream.release = rerun_stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &first, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &second, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&first, "SELECT i FROM progress_t", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&second, "SELECT 42", &db.adbc_error)));
+
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&first, &first_stream, nullptr, &db.adbc_error)));
+	REQUIRE(ReadBatches(first_stream, 10) == 10);
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) < 1.0);
+	REQUIRE(StatementProgress(second, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 0);
+
+	// Running the second statement materializes the first stream, so the first query runs to its end.
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&second, &second_stream, nullptr, &db.adbc_error)));
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+	ReadBatches(second_stream, NumericLimits<idx_t>::Maximum());
+	REQUIRE(StatementProgress(second, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+
+	// Run the first statement again while its materialized stream is still open. Releasing that old stream must not
+	// end the progress of the new execution.
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&first, &rerun_stream, nullptr, &db.adbc_error)));
+	REQUIRE(ReadBatches(rerun_stream, 10) == 10);
+	first_stream.release(&first_stream);
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) < 1.0);
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	ReadBatches(rerun_stream, NumericLimits<idx_t>::Maximum());
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+
+	// A statement DuckDB does not stream has finished by the time ExecuteQuery returns.
+	REQUIRE(SUCCESS(
+	    AdbcStatementSetSqlQuery(&second, "CREATE TABLE progress_copy AS SELECT * FROM progress_t", &db.adbc_error)));
+	second_stream.release(&second_stream);
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&second, &second_stream, nullptr, &db.adbc_error)));
+	REQUIRE(StatementProgress(second, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+
+	rerun_stream.release(&rerun_stream);
+	second_stream.release(&second_stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&first, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementRelease(&second, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress when a stream is released early", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	AdbcStatement statement;
+	ArrowArrayStream stream;
+	stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	// Read only part of the result before releasing it.
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "SELECT i FROM range(10000000) t(i)", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, &stream, nullptr, &db.adbc_error)));
+	REQUIRE(ReadBatches(stream, 10) == 10);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) < 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+
+	// Releasing early keeps the last observed progress and the same scale.
+	auto before_release = StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error);
+	stream.release(&stream);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == before_release);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress rises as a query runs", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	REQUIRE(!db.Query("CREATE TABLE progress_t AS SELECT i FROM range(2000000) t(i)")->HasError());
+	// A small result buffer keeps the engine from running far ahead of the reader, so the reading still has somewhere
+	// to move without needing a big table.
+	REQUIRE(!db.Query("SET max_streaming_buffer_size = '32KB'")->HasError());
+
+	AdbcStatement statement;
+	ArrowArrayStream stream;
+	stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "SELECT i FROM progress_t", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, &stream, nullptr, &db.adbc_error)));
+
+	// The query advances as the stream is consumed, so reading more of it has to move the reading: a progress option
+	// that answered with a constant would pass every other check in this file.
+	REQUIRE(ReadBatches(stream, 20) == 20);
+	auto early = StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error);
+	REQUIRE(early > 0);
+	// Read on until the reading moves. Batches already buffered are served without running the query further, so how
+	// much has to be read before it moves depends on the buffer, but read enough of the table and it must.
+	double later = early;
+	for (idx_t attempt = 0; attempt < 20 && later == early; attempt++) {
+		REQUIRE(ReadBatches(stream, 20) == 20);
+		later = StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error);
+	}
+	REQUIRE(later > early);
+	REQUIRE(later < 1.0);
+
+	stream.release(&stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress after a failed execution", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	AdbcStatement statement;
+	ArrowArrayStream stream;
+	stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	// Binds, then fails once the cast overflows part way through the scan.
+	REQUIRE(SUCCESS(
+	    AdbcStatementSetSqlQuery(&statement, "SELECT CAST(i AS TINYINT) FROM range(1000000) t(i)", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, &stream, nullptr, &db.adbc_error)));
+
+	int rc = 0;
+	while (rc == 0) {
+		ArrowArray array;
+		std::memset(&array, 0, sizeof(array));
+		rc = stream.get_next(&stream, &array);
+		if (rc == 0 && !array.release) {
+			break;
+		}
+		if (array.release) {
+			array.release(&array);
+		}
+	}
+	REQUIRE(rc != 0);
+
+	// A failed query did not reach the maximum, and must not be reported as a completed one.
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) < 1.0);
+
+	stream.release(&stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress after a cancelled execution", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	AdbcStatement statement;
+	ArrowArrayStream stream;
+	stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "SELECT i FROM range(100000000) t(i)", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, &stream, nullptr, &db.adbc_error)));
+	REQUIRE(ReadBatches(stream, 1) == 1);
+	REQUIRE(SUCCESS(AdbcStatementCancel(&statement, &db.adbc_error)));
+
+	int rc = 0;
+	while (rc == 0) {
+		ArrowArray array;
+		std::memset(&array, 0, sizeof(array));
+		rc = stream.get_next(&stream, &array);
+		if (rc == 0 && !array.release) {
+			break;
+		}
+		if (array.release) {
+			array.release(&array);
+		}
+	}
+	REQUIRE(rc != 0);
+
+	// A cancelled query is not a completed one either.
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) < 1.0);
+
+	stream.release(&stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress for an ingestion", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	auto &input_data = db.QueryArrow("SELECT i FROM range(100000) t(i)");
+
+	AdbcStatement statement;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection_ingest, &statement, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetOption(&statement, ADBC_INGEST_OPTION_TARGET_TABLE, "ingested", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementBindStream(&statement, &input_data, &db.adbc_error)));
+
+	// Ingestion is not one DuckDB query, so nothing about it reaches DuckDB's query progress. It must still report 0
+	// beforehand and completion afterwards, rather than claiming to be finished while it loads.
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 0);
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, nullptr, nullptr, &db.adbc_error)));
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress after transaction completion", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	REQUIRE(!db.Query("CREATE TABLE progress_t AS SELECT i FROM range(2000000) t(i)")->HasError());
+	REQUIRE(SUCCESS(AdbcConnectionSetOption(&db.adbc_connection, ADBC_CONNECTION_OPTION_AUTOCOMMIT,
+	                                        ADBC_OPTION_VALUE_DISABLED, &db.adbc_error)));
+	AdbcStatement statement;
+	ArrowArrayStream stream = {};
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "SELECT i FROM progress_t", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&statement, &stream, nullptr, &db.adbc_error)));
+	REQUIRE(ReadBatches(stream, 10) == 10);
+	auto before = StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error);
+	REQUIRE(before < 1.0);
+
+	SECTION("Commit completes the open stream") {
+		REQUIRE(SUCCESS(AdbcConnectionCommit(&db.adbc_connection, &db.adbc_error)));
+		REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+	}
+	SECTION("Rollback preserves the last observed progress") {
+		REQUIRE(SUCCESS(AdbcConnectionRollback(&db.adbc_connection, &db.adbc_error)));
+		REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == before);
+	}
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	stream.release(&stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress after releasing its connection", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	AdbcConnection connection = {};
+	AdbcStatement statement = {};
+	REQUIRE(SUCCESS(AdbcConnectionNew(&connection, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcConnectionInit(&connection, &db.adbc_database, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementNew(&connection, &statement, &db.adbc_error)));
+
+	SECTION("Never executed") {
+		REQUIRE(SUCCESS(AdbcConnectionRelease(&connection, &db.adbc_error)));
+		REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 0);
+	}
+	SECTION("Failed execution") {
+		REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "CREATE TABLE failed AS SELECT CAST('bad' AS INTEGER)",
+		                                         &db.adbc_error)));
+		REQUIRE(AdbcStatementExecuteQuery(&statement, nullptr, nullptr, &db.adbc_error) != ADBC_STATUS_OK);
+		InitializeADBCError(&db.adbc_error);
+		REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+		REQUIRE(SUCCESS(AdbcConnectionRelease(&connection, &db.adbc_error)));
+		REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) < 1.0);
+	}
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress is per connection", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	REQUIRE(!db.Query("CREATE TABLE progress_t AS SELECT i FROM range(2000000) t(i)")->HasError());
+
+	AdbcStatement first, second;
+	ArrowArrayStream first_stream, second_stream;
+	first_stream.release = second_stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &first, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection_ingest, &second, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&first, "SELECT i FROM progress_t", &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&second, "SELECT i FROM progress_t", &db.adbc_error)));
+
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&first, &first_stream, nullptr, &db.adbc_error)));
+	REQUIRE(ReadBatches(first_stream, 20) == 20);
+	auto first_progress = StatementProgress(first, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error);
+
+	// A query on another connection leaves this one's progress alone: executions are numbered per connection.
+	REQUIRE(SUCCESS(AdbcStatementExecuteQuery(&second, &second_stream, nullptr, &db.adbc_error)));
+	ReadBatches(second_stream, NumericLimits<idx_t>::Maximum());
+	REQUIRE(StatementProgress(second, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == first_progress);
+	REQUIRE(StatementProgress(first, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+
+	first_stream.release(&first_stream);
+	second_stream.release(&second_stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&first, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementRelease(&second, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress options reject other keys", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	AdbcStatement statement;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+
+	double value = -1;
+	REQUIRE(AdbcStatementGetOptionDouble(&statement, "not.a.real.option", &value, &db.adbc_error) ==
+	        ADBC_STATUS_NOT_FOUND);
+	InitializeADBCError(&db.adbc_error);
+	REQUIRE(AdbcStatementGetOptionDouble(&statement, ADBC_STATEMENT_OPTION_PROGRESS, nullptr, &db.adbc_error) ==
+	        ADBC_STATUS_INVALID_ARGUMENT);
+	InitializeADBCError(&db.adbc_error);
+
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
+TEST_CASE("ADBC - Statement progress read from another thread during execution", "[adbc]") {
+	if (!duckdb_lib) {
+		return;
+	}
+	ADBCTestDatabase db;
+	REQUIRE(!db.Query("CREATE TABLE progress_t AS SELECT i FROM range(2000000) t(i)")->HasError());
+
+	AdbcStatement statement;
+	ArrowArrayStream stream;
+	stream.release = nullptr;
+	REQUIRE(SUCCESS(AdbcStatementNew(&db.adbc_connection, &statement, &db.adbc_error)));
+	REQUIRE(SUCCESS(AdbcStatementSetSqlQuery(&statement, "SELECT max(hash(i)) FROM progress_t", &db.adbc_error)));
+
+	std::atomic<bool> done {false};
+	AdbcStatusCode execute_status = ADBC_STATUS_UNKNOWN;
+	std::thread executor([&]() {
+		AdbcError error;
+		std::memset(&error, 0, sizeof(error));
+		InitializeADBCError(&error);
+		execute_status = AdbcStatementExecuteQuery(&statement, &stream, nullptr, &error);
+		// Drain without REQUIRE: Catch assertions are not thread-safe.
+		while (execute_status == ADBC_STATUS_OK) {
+			ArrowArray array;
+			std::memset(&array, 0, sizeof(array));
+			if (stream.get_next(&stream, &array) != 0 || !array.release) {
+				break;
+			}
+			array.release(&array);
+		}
+		InitializeADBCError(&error);
+		done = true;
+	});
+
+	// AdbcStatementGetOptionDouble must be thread-safe. Whenever a reading lands, it has to be a sane one: within
+	// [0, 1] and never moving backwards, including across the end of the query.
+	double previous = 0;
+	do {
+		double progress = -1, max_progress = -1;
+		AdbcError error;
+		std::memset(&error, 0, sizeof(error));
+		InitializeADBCError(&error);
+		REQUIRE(SUCCESS(AdbcStatementGetOptionDouble(&statement, ADBC_STATEMENT_OPTION_PROGRESS, &progress, &error)));
+		REQUIRE(SUCCESS(
+		    AdbcStatementGetOptionDouble(&statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, &max_progress, &error)));
+		REQUIRE(progress >= 0);
+		REQUIRE(progress <= 1.0);
+		REQUIRE(max_progress == 1.0);
+		REQUIRE(progress >= previous);
+		previous = progress;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	} while (!done);
+	executor.join();
+	REQUIRE(execute_status == ADBC_STATUS_OK);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_PROGRESS, db.adbc_error) == 1.0);
+	REQUIRE(StatementProgress(statement, ADBC_STATEMENT_OPTION_MAX_PROGRESS, db.adbc_error) == 1.0);
+
+	stream.release(&stream);
+	REQUIRE(SUCCESS(AdbcStatementRelease(&statement, &db.adbc_error)));
+}
+
 } // namespace duckdb

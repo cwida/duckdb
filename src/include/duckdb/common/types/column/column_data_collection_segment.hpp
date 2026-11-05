@@ -20,7 +20,7 @@ struct VectorChildIndex {
 
 	idx_t index;
 
-	bool IsValid() {
+	bool IsValid() const {
 		return index != DConstants::INVALID_INDEX;
 	}
 };
@@ -31,9 +31,41 @@ struct VectorDataIndex {
 
 	idx_t index;
 
-	bool IsValid() {
+	bool IsValid() const {
 		return index != DConstants::INVALID_INDEX;
 	}
+};
+
+//! The representation class of a vector data entry
+enum class ColumnDataRepresentation : uint8_t {
+	//! Row values stored in block data (the default)
+	FLAT,
+	//! A single value plus a row count
+	CONSTANT,
+	//! Per-row dictionary codes in block data referencing a per-segment dictionary
+	DICTIONARY
+};
+
+//! The value of a CONSTANT entry
+struct ColumnDataConstantValue {
+	//! The value bytes (fixed-size values and string_t entries are stored inline)
+	uint8_t data[16] = {};
+	//! Whether the constant is non-NULL
+	bool is_valid = false;
+	//! Entry holding the bytes of a non-inlined string (buffer-managed collections only)
+	VectorDataIndex heap_index;
+};
+
+//! A dictionary materialized once per segment, shared by all DICTIONARY entries with the same id
+struct SegmentDictionaryData {
+	//! The id of the source dictionary
+	string id;
+	//! The type of the dictionary values
+	LogicalType type;
+	//! The entry holding the materialized dictionary values
+	VectorDataIndex data_index;
+	//! The blocks holding the dictionary values and string bytes
+	unordered_set<uint32_t> block_ids;
 };
 
 struct SwizzleMetaData {
@@ -55,10 +87,18 @@ struct SwizzleMetaData {
 
 struct VectorMetaData {
 	//! Where the vector data lives
-	uint32_t block_id;
-	uint32_t offset;
+	uint32_t block_id = 0;
+	uint32_t offset = 0;
 	//! The number of entries present in this vector
 	uint16_t count;
+	//! Whether block space has been allocated for this entry
+	bool is_allocated = false;
+	//! The representation class of this entry
+	ColumnDataRepresentation representation = ColumnDataRepresentation::FLAT;
+	//! The constant value (only used for CONSTANT entries)
+	ColumnDataConstantValue constant;
+	//! The dictionary slot in the segment (only used for DICTIONARY entries)
+	idx_t dictionary_slot = DConstants::INVALID_INDEX;
 	//! Meta data about string pointers
 	vector<SwizzleMetaData> swizzle_data;
 
@@ -78,6 +118,8 @@ struct VectorMetaData {
 struct ChunkMetaData {
 	//! The set of vectors of the chunk
 	vector<VectorDataIndex> vector_data;
+	//! Allocated bytes per column, including its child vectors and buffer-managed string heaps
+	vector<idx_t> allocation_sizes;
 	//! The block ids referenced by the chunk
 	unordered_set<uint32_t> block_ids;
 	//! The number of entries in the chunk
@@ -95,6 +137,10 @@ public:
 	shared_ptr<ColumnDataAllocator> allocator;
 	idx_t total_allocated;
 	idx_t last_chunk_total_allocated;
+	//! Metadata-resident bytes of entries appended as CONSTANT, counted in SizeInBytes and AllocationSize so
+	//! that collections holding only compact entries report the bytes that actually store their values.
+	//! Charges stay after a materialization, like superseded block regions: sizes never shrink while appending
+	idx_t constant_metadata_size;
 
 	//! The types of the chunks
 	vector<LogicalType> types;
@@ -106,6 +152,10 @@ public:
 	vector<VectorMetaData> vector_data;
 	//! The set of child indices
 	vector<VectorDataIndex> child_indices;
+	//! Per-segment dictionaries for DICTIONARY entries, deduplicated by dictionary id
+	vector<SegmentDictionaryData> dictionaries;
+	//! Map from dictionary id to a slot in "dictionaries"
+	unordered_map<string, idx_t> dictionary_map;
 	//! The string heap for the column data collection (only used for IN_MEMORY_ALLOCATOR)
 	shared_ptr<StringHeap> heap;
 
@@ -116,13 +166,22 @@ public:
 	//! Allocate space for a vector of a specific type in the segment
 	VectorDataIndex AllocateVector(const LogicalType &type, ChunkMetaData &chunk_data,
 	                               ChunkManagementState *chunk_state = nullptr,
-	                               VectorDataIndex prev_index = VectorDataIndex());
+	                               VectorDataIndex prev_index = VectorDataIndex(), bool defer_allocation = false);
 	//! Allocate space for a vector during append
 	VectorDataIndex AllocateVector(const LogicalType &type, ChunkMetaData &chunk_data,
 	                               ColumnDataAppendState &append_state, VectorDataIndex prev_index = VectorDataIndex());
 	//! Allocate space for string data during append (BUFFER_MANAGER_ALLOCATOR only)
 	VectorDataIndex AllocateStringHeap(idx_t size, ChunkMetaData &chunk_meta, ColumnDataAppendState &append_state,
 	                                   VectorDataIndex prev_index = VectorDataIndex());
+	//! Allocate block storage for an entry whose allocation was deferred or whose storage is replaced
+	void AllocateVectorStorage(VectorDataIndex index, idx_t allocation_size, ChunkMetaData &chunk_meta,
+	                           ChunkManagementState *chunk_state);
+	//! Fix string pointers of a single entry that point into relocated heap blocks
+	void UnswizzleEntryPointers(ChunkManagementState &state, VectorMetaData &vdata, Vector &result);
+	//! Read the materialized dictionary values of the given slot as a zero-copy vector
+	Vector ReadSegmentDictionary(ChunkManagementState &state, idx_t slot);
+	//! Load the value of a CONSTANT entry, resolving heap-resident string bytes
+	string_t GetConstantString(ChunkManagementState &state, const VectorMetaData &vdata);
 
 	void InitializeChunkState(idx_t chunk_index, ChunkManagementState &state);
 	void ReadChunk(idx_t chunk_index, ChunkManagementState &state, DataChunk &chunk,
@@ -147,6 +206,8 @@ public:
 	idx_t AllocationSize() const;
 	//! Get the allocation size of the chunk
 	idx_t GetChunkAllocationSize(idx_t chunk_index) const;
+	//! Get the allocation size of selected columns of the chunk
+	idx_t GetChunkAllocationSize(idx_t chunk_index, const vector<column_t> &column_ids) const;
 
 	void FetchChunk(idx_t chunk_idx, DataChunk &result);
 	void FetchChunk(idx_t chunk_idx, DataChunk &result, const vector<column_t> &column_ids);
@@ -159,8 +220,9 @@ public:
 
 private:
 	idx_t ReadVectorInternal(ChunkManagementState &state, VectorDataIndex vector_index, Vector &result);
+	idx_t ReadCompactVector(ChunkManagementState &state, VectorDataIndex vector_index, Vector &result);
 	VectorDataIndex AllocateVectorInternal(const LogicalType &type, ChunkMetaData &chunk_meta,
-	                                       ChunkManagementState *chunk_state);
+	                                       ChunkManagementState *chunk_state, bool defer_allocation);
 };
 
 } // namespace duckdb

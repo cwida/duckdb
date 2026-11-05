@@ -1,4 +1,6 @@
 #include "duckdb/common/sorting/sorted_run_merger.hpp"
+
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/main/client_context.hpp"
 
 #include "duckdb/common/mutex.hpp"
@@ -14,6 +16,10 @@
 #include "vergesort.h"
 #include "pdqsort.h"
 
+#include <algorithm>
+#include <new>
+#include <type_traits>
+
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -28,18 +34,73 @@ static idx_t SortedRunsTotalCount(const vector<unique_ptr<SortedRun>> &sorted_ru
 	return total_count;
 }
 
+static idx_t RowPartitionCount(const SortedRunMerger &merger) {
+	if (merger.total_count == 0) {
+		return 0;
+	}
+	return merger.total_count / merger.partition_size + (merger.total_count % merger.partition_size != 0);
+}
+
 struct SortedRunPartitionBoundary {
 	idx_t begin;
 	idx_t end;
 };
 
+struct SortedRunBoundaryReader {
+	idx_t partition_idx;
+	idx_t lower_partition_idx;
+};
+
+template <class SORT_KEY>
+static idx_t MergePartitionPrefix(const unsafe_array_ptr<const SORT_KEY> &keys,
+                                  const unsafe_vector<SortedRunPartitionBoundary> &boundaries) {
+	const auto &reference = keys[0];
+	if (reference.IsInlined()) {
+		return 0;
+	}
+	static constexpr idx_t MAXIMUM_PREFIX = 512;
+	auto prefix = MinValue<idx_t>(reference.GetHeapSize(), MAXIMUM_PREFIX);
+	idx_t offset = 0;
+	for (const auto &boundary : boundaries) {
+		const auto count = boundary.end - boundary.begin;
+		if (count == 0) {
+			continue;
+		}
+		for (const auto endpoint_idx : {offset, offset + count - 1}) {
+			prefix = reference.GetHeapPrefixLength(keys[endpoint_idx], prefix);
+			if (prefix == 0) {
+				return 0;
+			}
+		}
+		offset += count;
+	}
+	return prefix;
+}
+
+template <class SORT_KEY>
+struct MergePrefixLess {
+	explicit MergePrefixLess(idx_t prefix_p) : prefix(prefix_p) {
+	}
+
+	bool operator()(const SORT_KEY &lhs, const SORT_KEY &rhs) const {
+		const auto lhs_size = lhs.GetHeapSize();
+		const auto rhs_size = rhs.GetHeapSize();
+		D_ASSERT(lhs_size > SORT_KEY::INLINE_LENGTH && rhs_size > SORT_KEY::INLINE_LENGTH);
+		D_ASSERT(prefix <= MinValue(lhs_size, rhs_size));
+		const auto comp = memcmp(lhs.GetData() + prefix, rhs.GetData() + prefix, MinValue(lhs_size, rhs_size) - prefix);
+		return comp < 0 || (comp == 0 && lhs_size < rhs_size);
+	}
+
+	const idx_t prefix;
+};
+
 struct SortedRunMergePartition {
 public:
 	SortedRunMergePartition(const SortedRunMerger &merger, const idx_t partition_idx)
-	    : begin_computed(partition_idx == 0), scanned(false) {
+	    : begin_computed(partition_idx == 0), gathered(false) {
 		// Initialize each partition with sensible defaults
 		run_boundaries.resize(merger.sorted_runs.size());
-		const auto maximum_end = (partition_idx + 1) * merger.partition_size;
+		const auto maximum_end = merger.PartitionRowCount(partition_idx + 1);
 		for (idx_t run_idx = 0; run_idx < merger.sorted_runs.size(); run_idx++) {
 			const auto end = MinValue(merger.sorted_runs[run_idx]->Count(), maximum_end);
 			run_boundaries[run_idx] = {0, end};
@@ -67,7 +128,7 @@ private:
 	atomic<bool> begin_computed;
 
 public:
-	atomic<bool> scanned;
+	atomic<bool> gathered;
 };
 
 enum class SortedRunMergerTask : uint8_t {
@@ -166,17 +227,69 @@ private:
 class SortedRunMergerGlobalState : public GlobalSourceState {
 public:
 	explicit SortedRunMergerGlobalState(ClientContext &context_p, const SortedRunMerger &merger_p)
-	    : context(context_p), num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()), merger(merger_p),
-	      num_runs(merger.sorted_runs.size()),
-	      num_partitions((merger.total_count + (merger.partition_size - 1)) / merger.partition_size),
-	      iterator_state_type(GetBlockIteratorStateType(merger.external)),
+	    : context(context_p), merger(merger_p), num_runs(merger.sorted_runs.size()),
+	      num_partitions(merger.PartitionCount()), iterator_state_type(GetBlockIteratorStateType(merger.external)),
 	      sort_key_type(merger.sort.key_layout->GetSortKeyType()), next_partition_idx(0), total_scanned(0),
-	      progress_scanned(0), destroy_partition_idx(0) {
+	      progress_scanned(0), destroy_key_partition_idx(0), gathered_partition_idx(0) {
+		if (merger.external) {
+			boundary_readers.reserve(TaskScheduler::GetScheduler(context).NumberOfThreads());
+		}
 		// Initialize partitions
 		partitions.resize(num_partitions);
 		for (idx_t partition_idx = 0; partition_idx < num_partitions; partition_idx++) {
 			partitions[partition_idx] = make_uniq<SortedRunMergePartition>(merger, partition_idx);
 		}
+	}
+
+public:
+	class BoundaryGuard {
+	public:
+		BoundaryGuard(SortedRunMergerGlobalState &gstate_p, const idx_t partition_idx_p)
+		    : gstate(gstate_p), partition_idx(partition_idx_p) {
+			if (!gstate.merger.external) {
+				return;
+			}
+			lock_guard<mutex> guard(gstate.destroy_lock);
+			gstate.boundary_readers.push_back({partition_idx, gstate.gathered_partition_idx});
+		}
+
+		BoundaryGuard(const BoundaryGuard &) = delete;
+		BoundaryGuard &operator=(const BoundaryGuard &) = delete;
+
+		~BoundaryGuard() {
+			if (!gstate.merger.external) {
+				return;
+			}
+			lock_guard<mutex> guard(gstate.destroy_lock);
+			auto &readers = gstate.boundary_readers;
+			for (idx_t i = 0; i < readers.size(); i++) {
+				if (readers[i].partition_idx == partition_idx) {
+					readers[i] = readers.back();
+					readers.pop_back();
+					return;
+				}
+			}
+			D_ASSERT(false);
+		}
+
+	private:
+		SortedRunMergerGlobalState &gstate;
+		const idx_t partition_idx;
+	};
+
+	void SetBoundaryLowerBound(const idx_t partition_idx, const idx_t lower_partition_idx) {
+		if (!merger.external) {
+			return;
+		}
+		lock_guard<mutex> guard(destroy_lock);
+		for (auto &reader : boundary_readers) {
+			if (reader.partition_idx == partition_idx) {
+				D_ASSERT(reader.lower_partition_idx <= lower_partition_idx);
+				reader.lower_partition_idx = lower_partition_idx;
+				return;
+			}
+		}
+		D_ASSERT(false);
 	}
 
 public:
@@ -193,71 +306,63 @@ public:
 	}
 
 	idx_t MaxThreads() override {
-		return MaxValue<idx_t>(num_partitions, 1);
+		return MaxValue<idx_t>(RowPartitionCount(merger), 1);
 	}
 
-	void DestroyScannedData() {
-		if (!merger.external) {
-			return; // Only need to destroy when doing an external sort
-		}
+	void DestroyPinnedData(const idx_t partition_idx) {
+		D_ASSERT(merger.external);
+		partitions[partition_idx]->gathered = true;
 
-		// Have to do this under lock, but other threads don't have to wait
-		unique_lock<mutex> guard(destroy_lock, std::try_to_lock);
-		if (!guard.owns_lock()) {
-			return;
+		lock_guard<mutex> guard(destroy_lock);
+		auto end_partition_idx = gathered_partition_idx;
+		while (end_partition_idx < num_partitions && partitions[end_partition_idx]->gathered) {
+			end_partition_idx++;
 		}
-
-		// Check how many partitions we can destroy
-		idx_t end_partition_idx;
-		for (end_partition_idx = destroy_partition_idx; end_partition_idx < num_partitions; end_partition_idx++) {
-			const auto &partition = *partitions[end_partition_idx];
-			if (!partition.scanned) {
-				break;
+		if (end_partition_idx != gathered_partition_idx) {
+			// Boundary searches only need keys. Gathered payload stays pinned until its output is consumed.
+			if (merger.sorted_runs[0]->payload_data) {
+				for (idx_t run_idx = 0; run_idx < num_runs; run_idx++) {
+					idx_t begin_idx = 0;
+					if (gathered_partition_idx != 0) {
+						auto &begin_partition = *partitions[gathered_partition_idx - 1];
+						const annotated_lock_guard<annotated_mutex> partition_guard(begin_partition.lock);
+						begin_idx = begin_partition.GetRunBoundaries()[run_idx].end;
+					}
+					auto &end_partition = *partitions[end_partition_idx - 1];
+					const annotated_lock_guard<annotated_mutex> partition_guard(end_partition.lock);
+					const auto end_idx = end_partition.GetRunBoundaries()[run_idx].end;
+					merger.sorted_runs[run_idx]->DestroyPayloadData(begin_idx, end_idx);
+				}
 			}
+			gathered_partition_idx = end_partition_idx;
 		}
+		DestroyPinnedKeyData();
+	}
 
-		// Destroying must lag "num_threads" partitions behind to avoid destroying actively used data
-		if (end_partition_idx < num_threads) {
+private:
+	void DestroyPinnedKeyData() {
+		auto end_partition_idx = gathered_partition_idx;
+		for (const auto &reader : boundary_readers) {
+			end_partition_idx = MinValue(end_partition_idx, reader.lower_partition_idx);
+		}
+		D_ASSERT(destroy_key_partition_idx <= end_partition_idx);
+		if (destroy_key_partition_idx == end_partition_idx) {
 			return;
 		}
-		end_partition_idx -= num_threads;
-		if (end_partition_idx <= destroy_partition_idx) {
-			return;
-		}
-
-		// Estimate the number of tuples eligible for destruction
-		const auto total_tuples_to_destroy = (end_partition_idx - destroy_partition_idx) * merger.partition_size;
-
-		// Compute max tuples per block
-		const auto &run = *merger.sorted_runs[0];
-		const auto tuples_per_block =
-		    run.payload_data ? run.payload_data->TuplesPerBlock() : run.key_data->TuplesPerBlock();
-
-		// Batch destruction across input runs, capped by the number of output partitions
-		const auto batching_divisor = MinValue(num_runs, num_partitions);
-		if (total_tuples_to_destroy / batching_divisor < tuples_per_block) {
-			return;
-		}
-
+		// Retire only the prefix no active boundary search can revisit; gathered references stay pinned.
 		for (idx_t run_idx = 0; run_idx < num_runs; run_idx++) {
 			idx_t begin_idx = 0;
-			if (destroy_partition_idx != 0) {
-				auto &begin_partition = *partitions[destroy_partition_idx];
+			if (destroy_key_partition_idx != 0) {
+				auto &begin_partition = *partitions[destroy_key_partition_idx - 1];
 				const annotated_lock_guard<annotated_mutex> partition_guard(begin_partition.lock);
 				begin_idx = begin_partition.GetRunBoundaries()[run_idx].end;
 			}
-
-			idx_t end_idx = merger.sorted_runs[run_idx]->Count();
-			if (end_partition_idx != num_partitions) {
-				auto &end_partition = *partitions[end_partition_idx];
-				const annotated_lock_guard<annotated_mutex> partition_guard(end_partition.lock);
-				end_idx = end_partition.GetRunBoundaries()[run_idx].end;
-			}
-
-			merger.sorted_runs[run_idx]->DestroyData(begin_idx, end_idx);
+			auto &end_partition = *partitions[end_partition_idx - 1];
+			const annotated_lock_guard<annotated_mutex> partition_guard(end_partition.lock);
+			const auto end_idx = end_partition.GetRunBoundaries()[run_idx].end;
+			merger.sorted_runs[run_idx]->DestroyKeyData(begin_idx, end_idx);
 		}
-
-		destroy_partition_idx = end_partition_idx;
+		destroy_key_partition_idx = end_partition_idx;
 	}
 
 private:
@@ -267,7 +372,6 @@ private:
 
 public:
 	ClientContext &context;
-	const idx_t num_threads;
 
 	const SortedRunMerger &merger;
 	const idx_t num_runs;
@@ -283,7 +387,9 @@ public:
 	atomic<idx_t> progress_scanned;
 
 	mutex destroy_lock;
-	idx_t destroy_partition_idx;
+	idx_t destroy_key_partition_idx;
+	idx_t gathered_partition_idx;
+	unsafe_vector<SortedRunBoundaryReader> boundary_readers;
 
 	mutex materialized_partition_lock;
 	vector<unique_ptr<SortedRun>> materialized_partitions;
@@ -342,13 +448,17 @@ SourceResultType SortedRunMergerLocalState::ExecuteTask(SortedRunMergerGlobalSta
 	D_ASSERT(task != SortedRunMergerTask::FINISHED);
 	switch (task) {
 	case SortedRunMergerTask::COMPUTE_BOUNDARIES:
-		ComputePartitionBoundaries(gstate, partition_idx);
-		task = SortedRunMergerTask::ACQUIRE_BOUNDARIES;
+	case SortedRunMergerTask::ACQUIRE_BOUNDARIES: {
+		const SortedRunMergerGlobalState::BoundaryGuard boundary_guard(gstate, partition_idx.GetIndex());
+		if (task == SortedRunMergerTask::COMPUTE_BOUNDARIES) {
+			ComputePartitionBoundaries(gstate, partition_idx);
+			task = SortedRunMergerTask::ACQUIRE_BOUNDARIES;
+		} else {
+			AcquirePartitionBoundaries(gstate);
+			task = SortedRunMergerTask::MERGE_PARTITION;
+		}
 		break;
-	case SortedRunMergerTask::ACQUIRE_BOUNDARIES:
-		AcquirePartitionBoundaries(gstate);
-		task = SortedRunMergerTask::MERGE_PARTITION;
-		break;
+	}
 	case SortedRunMergerTask::MERGE_PARTITION:
 		MergePartition(gstate);
 		task = SortedRunMergerTask::SCAN_PARTITION;
@@ -364,8 +474,6 @@ SourceResultType SortedRunMergerLocalState::ExecuteTask(SortedRunMergerGlobalSta
 		if (!chunk || chunk->size() == 0) {
 			gstate.progress_scanned.fetch_add(merged_partition_count - progress_scanned, std::memory_order_relaxed);
 			progress_scanned = 0;
-			gstate.DestroyScannedData();
-			gstate.partitions[partition_idx.GetIndex()]->scanned = true;
 			//	fetch_add returns the _previous_ value!
 			const auto scan_count_before_adding = gstate.total_scanned.fetch_add(merged_partition_count);
 			const auto scan_count_after_adding = scan_count_before_adding + merged_partition_count;
@@ -396,6 +504,7 @@ void SortedRunMergerLocalState::ComputePartitionBoundaries(SortedRunMergerGlobal
 		run_boundaries = current_partition.GetRunBoundaries();
 	}
 
+	auto lower_partition_idx = begin_computed ? p_idx.GetIndex() : 0;
 	if (!begin_computed) {
 		// We can use information from previous partitions to speed up computing this partition
 		for (idx_t prev = p_idx.GetIndex(); prev > 1; prev--) {
@@ -408,9 +517,13 @@ void SortedRunMergerLocalState::ComputePartitionBoundaries(SortedRunMergerGlobal
 			for (idx_t run_idx = 0; run_idx < gstate.num_runs; run_idx++) {
 				run_boundaries[run_idx].begin = prev_partition_run_boundaries[run_idx].begin;
 			}
+			lower_partition_idx = prev - 1;
 			break;
 		}
 	}
+
+	// Publish the copied lower bound before accessing keys, including fallback searches.
+	gstate.SetBoundaryLowerBound(partition_idx.GetIndex(), lower_partition_idx);
 
 	// Compute the end partition boundaries (lock-free)
 	switch (iterator_state_type) {
@@ -498,7 +611,7 @@ void SortedRunMergerLocalState::TemplatedComputePartitionBoundaries(SortedRunMer
 	}
 
 	// Initialize "total_remaining", i.e., how much we still need to update the boundaries until we're done
-	idx_t total_remaining = (p_idx.GetIndex() + 1) * gstate.merger.partition_size;
+	idx_t total_remaining = gstate.merger.PartitionRowCount(p_idx.GetIndex() + 1);
 
 	// Initialize iterators, and track of which runs are actively being used in the computation, i.e., not yet fixed
 	unsafe_vector<BLOCK_ITERATOR> run_iterators;
@@ -633,10 +746,10 @@ void SortedRunMergerLocalState::TemplatedMergePartition(SortedRunMergerGlobalSta
 	for (idx_t run_idx = 0; run_idx < gstate.num_runs; run_idx++) {
 		auto &state = states[run_idx];
 		state.SetKeepPinned(true);
-		state.SetPinPayload(true);
 
 		// Keep track of how many runs are actively being merged
 		const auto &run_boundary = run_boundaries[run_idx];
+		state.SetPinPayload(true, run_boundary.begin, run_boundary.end);
 		if (run_boundary.begin == run_boundary.end) {
 			continue;
 		}
@@ -645,6 +758,10 @@ void SortedRunMergerLocalState::TemplatedMergePartition(SortedRunMergerGlobalSta
 		for (auto it = BLOCK_ITERATOR(state, run_boundary.begin); it != BLOCK_ITERATOR(state, run_boundary.end); ++it) {
 			merged_partition_keys[merged_partition_count++] = *it;
 		}
+	}
+
+	if constexpr (std::is_same<STATE, ExternalBlockIteratorState>::value) {
+		gstate.DestroyPinnedData(partition_idx.GetIndex());
 	}
 
 	if (active_runs == 1 || gstate.merger.is_index_sort) {
@@ -659,6 +776,22 @@ void SortedRunMergerLocalState::TemplatedMergePartition(SortedRunMergerGlobalSta
 	// counted against the memory limit instead of coming from operator new inside std::inplace_merge
 	SortMergeBuffer merge_buffer(BufferAllocator::Get(gstate.context), merged_partition_count, sizeof(SORT_KEY));
 	const BufferedMergePolicy<SORT_KEY> merge(merge_buffer);
+	if constexpr (!SORT_KEY::CONSTANT_SIZE) {
+		if (!gstate.merger.sort.is_index_sort) {
+			const auto prefix = MergePartitionPrefix(
+			    unsafe_array_ptr<const SORT_KEY>(merged_partition_keys, merged_partition_count), run_boundaries);
+			if (prefix != 0) {
+				// Sorted endpoints establish this prefix for every key in each gathered fragment.
+				const MergePrefixLess<SORT_KEY> compare(prefix);
+				const auto prefix_fallback = [&](SORT_KEY *begin, SORT_KEY *end) {
+					duckdb_pdqsort::pdqsort_branchless(begin, end, compare);
+				};
+				duckdb_vergesort::vergesort(merged_partition_keys, merged_partition_keys + merged_partition_count,
+				                            compare, prefix_fallback, merge);
+				return;
+			}
+		}
+	}
 	duckdb_vergesort::vergesort(merged_partition_keys, merged_partition_keys + merged_partition_count,
 	                            std::less<SORT_KEY>(), fallback, merge);
 }
@@ -782,13 +915,256 @@ unique_ptr<SortedRun> SortedRunMergerLocalState::TemplatedMaterializePartition(S
 }
 
 //===--------------------------------------------------------------------===//
+// Skewed Partition Splitting
+//===--------------------------------------------------------------------===//
+static constexpr idx_t MAX_BYTE_SAMPLES = 512;
+
+template <class SORT_KEY>
+struct MergeByteSample {
+	SORT_KEY key;
+	idx_t rows;
+	double bytes_per_row;
+	idx_t ordinal;
+
+	bool operator<(const MergeByteSample &other) const {
+		if (key < other.key) {
+			return true;
+		}
+		if (other.key < key) {
+			return false;
+		}
+		return ordinal < other.ordinal;
+	}
+};
+
+template <class SORT_KEY>
+static idx_t CollectMergeByteSamples(const SortedRunMerger &merger, const TupleDataLayout &payload_layout,
+                                     unsafe_array_ptr<MergeByteSample<SORT_KEY>> samples) {
+	static constexpr idx_t NEIGHBORS = 32;
+	auto &context = merger.sort.client_context;
+	const auto row_width = payload_layout.GetRowWidth();
+	const auto heap_size_offset = payload_layout.GetHeapSizeOffset();
+
+	idx_t sample_count = 0;
+	const auto run_count = merger.sorted_runs.size();
+
+	// Each sample represents an interval of rows; stagger its position between runs.
+	for (idx_t run_idx = 0; run_idx < run_count; run_idx++) {
+		auto &run = *merger.sorted_runs[run_idx];
+		const auto count = run.Count();
+		const auto intervals = MinValue<idx_t>(count, MAX_BYTE_SAMPLES / run_count);
+		const auto interval_size = count / intervals;
+		const auto remainder = count % intervals;
+
+		ExternalBlockIteratorState key_state(*run.key_data, nullptr);
+		idx_t begin = 0;
+		for (idx_t interval_idx = 0; interval_idx < intervals; interval_idx++) {
+			context.InterruptCheck();
+			const auto width = interval_size + (interval_idx < remainder);
+			const auto end = begin + width;
+			const auto phase = (width / run_count) * run_idx + ((width % run_count) * run_idx) / run_count;
+			const auto row_idx = begin + phase;
+			auto key = key_state.GetValueAtIndex<SORT_KEY>(row_idx);
+
+			double payload_bytes;
+			if (merger.external) {
+				// Estimate spilled payload bytes from chunk metadata without pinning payload blocks.
+				const auto chunk_idx = row_idx / STANDARD_VECTOR_SIZE;
+				const auto chunk_count =
+				    MinValue<idx_t>(STANDARD_VECTOR_SIZE, count - chunk_idx * STANDARD_VECTOR_SIZE);
+				payload_bytes = static_cast<double>(run.payload_data->GetChunkDataSize(chunk_idx)) /
+				                static_cast<double>(chunk_count);
+			} else {
+				const auto neighbors = MinValue<idx_t>(NEIGHBORS, width);
+				auto neighbor_begin = row_idx - MinValue<idx_t>(row_idx - begin, neighbors / 2);
+				neighbor_begin = MinValue(neighbor_begin, end - neighbors);
+
+				payload_bytes = 0;
+				for (idx_t i = 0; i < neighbors; i++) {
+					const auto &neighbor = key_state.GetValueAtIndex<SORT_KEY>(neighbor_begin + i);
+					payload_bytes += static_cast<double>(Load<idx_t>(neighbor.GetPayload() + heap_size_offset));
+				}
+				payload_bytes = static_cast<double>(row_width) + payload_bytes / static_cast<double>(neighbors);
+			}
+
+			key.SetPayload(nullptr);
+			new (&samples[sample_count])
+			    MergeByteSample<SORT_KEY> {key, width, sizeof(SORT_KEY) + payload_bytes, sample_count};
+			sample_count++;
+			begin = end;
+		}
+		D_ASSERT(begin == count);
+	}
+
+	return sample_count;
+}
+
+struct MergePartitionByteEstimate {
+	idx_t largest_partition;
+	double largest_bytes;
+	double total_bytes;
+};
+
+template <class SORT_KEY>
+static MergePartitionByteEstimate
+EstimateLargestMergePartition(unsafe_array_ptr<const MergeByteSample<SORT_KEY>> samples, idx_t partition_size,
+                              idx_t total_count) {
+	// Use the weighted samples in key order to estimate bytes in each existing row partition.
+	idx_t rank = 0;
+	double partition_bytes = 0;
+	MergePartitionByteEstimate estimate {0, 0, 0};
+
+	for (idx_t i = 0; i < samples.size(); i++) {
+		const auto &sample = samples[i];
+		auto remaining = sample.rows;
+		estimate.total_bytes += sample.bytes_per_row * sample.rows;
+		while (remaining != 0) {
+			const auto take = MinValue(remaining, partition_size - rank % partition_size);
+			partition_bytes += sample.bytes_per_row * take;
+			rank += take;
+			remaining -= take;
+			if (rank % partition_size == 0 || rank == total_count) {
+				if (partition_bytes > estimate.largest_bytes) {
+					estimate.largest_bytes = partition_bytes;
+					estimate.largest_partition = (rank - 1) / partition_size;
+				}
+				partition_bytes = 0;
+			}
+		}
+	}
+	D_ASSERT(rank == total_count);
+
+	return estimate;
+}
+
+template <class SORT_KEY>
+static optional_idx FindMergePartitionByteMidpoint(unsafe_array_ptr<const MergeByteSample<SORT_KEY>> samples,
+                                                   idx_t partition_begin, idx_t partition_end, double partition_bytes) {
+	if (partition_end - partition_begin <= STANDARD_VECTOR_SIZE) {
+		return optional_idx();
+	}
+	const auto first_interior = partition_begin + STANDARD_VECTOR_SIZE;
+	const auto last_interior = ((partition_end - 1) / STANDARD_VECTOR_SIZE) * STANDARD_VECTOR_SIZE;
+
+	// Add one interior vector-aligned boundary near the heavy partition's byte midpoint.
+	auto median_bytes = partition_bytes / 2;
+	idx_t rank = 0;
+	for (idx_t i = 0; i < samples.size(); i++) {
+		const auto &sample = samples[i];
+		const auto begin = MaxValue(rank, partition_begin);
+		const auto end = MinValue(rank + sample.rows, partition_end);
+		rank += sample.rows;
+		if (begin >= end) {
+			continue;
+		}
+
+		const auto bytes = sample.bytes_per_row * (end - begin);
+		if (median_bytes > bytes) {
+			median_bytes -= bytes;
+			continue;
+		}
+
+		const auto offset = median_bytes / sample.bytes_per_row;
+		const auto rows = offset >= static_cast<double>(end - begin) ? end - begin : static_cast<idx_t>(offset);
+		const auto aligned = ((begin + rows) / STANDARD_VECTOR_SIZE) * STANDARD_VECTOR_SIZE;
+		return MinValue(MaxValue(aligned, first_interior), last_interior);
+	}
+	return optional_idx();
+}
+
+template <SortKeyType SORT_KEY_TYPE>
+optional_idx SortedRunMerger::TemplatedFindSkewedPartitionSplit() const {
+	using SORT_KEY = SortKey<SORT_KEY_TYPE>;
+	using SAMPLE = MergeByteSample<SORT_KEY>;
+	static_assert(std::is_trivially_destructible<SAMPLE>::value, "Merge byte samples must not own resources");
+	D_ASSERT(SORT_KEY::CONSTANT_SIZE && SORT_KEY::HAS_PAYLOAD);
+
+	auto sample_buffer = BufferAllocator::Get(sort.client_context).Allocate(MAX_BYTE_SAMPLES * sizeof(SAMPLE));
+	unsafe_array_ptr<SAMPLE> samples(reinterpret_cast<SAMPLE *>(sample_buffer.get()), MAX_BYTE_SAMPLES);
+	const auto sample_count = CollectMergeByteSamples(*this, *sort.payload_layout, samples);
+	std::sort(samples.data(), samples.data() + sample_count);
+	const unsafe_array_ptr<const SAMPLE> sorted_samples(samples.data(), sample_count);
+
+	const auto estimate = EstimateLargestMergePartition(sorted_samples, partition_size, total_count);
+	const auto partition_count = RowPartitionCount(*this);
+
+	// Only split when one partition is estimated to hold more than twice the average bytes.
+	if (estimate.largest_bytes <= 2 * (estimate.total_bytes / static_cast<double>(partition_count))) {
+		return optional_idx();
+	}
+
+	const auto partition_begin = estimate.largest_partition * partition_size;
+	const auto partition_end =
+	    estimate.largest_partition == partition_count - 1 ? total_count : partition_begin + partition_size;
+	return FindMergePartitionByteMidpoint(sorted_samples, partition_begin, partition_end, estimate.largest_bytes);
+}
+
+optional_idx SortedRunMerger::FindSkewedPartitionSplit() const {
+	const auto &merger = *this;
+	const auto key_type = merger.sort.key_layout->GetSortKeyType();
+	if (merger.total_count == 0 || merger.is_index_sort || merger.sort.is_index_sort || merger.sorted_runs.size() < 2 ||
+	    merger.sorted_runs.size() > MAX_BYTE_SAMPLES || RowPartitionCount(merger) < 3 ||
+	    merger.partition_size < idx_t(2) * STANDARD_VECTOR_SIZE || merger.partition_size % STANDARD_VECTOR_SIZE != 0 ||
+	    !SortKeyUtils::IsConstantSize(key_type) || !SortKeyUtils::HasPayload(key_type) ||
+	    merger.sort.payload_layout->AllConstant()) {
+		return optional_idx();
+	}
+	for (const auto &run : merger.sorted_runs) {
+		if (!run->finalized || run->Count() == 0 || !run->payload_data) {
+			return optional_idx();
+		}
+	}
+	try {
+		switch (key_type) {
+#define DUCKDB_SORT_KEY_CASE(SORT_KEY_TYPE)                                                                            \
+	case SortKeyType::SORT_KEY_TYPE:                                                                                   \
+		return TemplatedFindSkewedPartitionSplit<SortKeyType::SORT_KEY_TYPE>();
+			DUCKDB_FOR_EACH_PAYLOAD_SORT_KEY_TYPE(DUCKDB_SORT_KEY_CASE)
+#undef DUCKDB_SORT_KEY_CASE
+		default:
+			return optional_idx();
+		}
+	} catch (const OutOfMemoryException &) {
+		return optional_idx();
+	} catch (const std::bad_alloc &) {
+		return optional_idx();
+	}
+}
+
+//===--------------------------------------------------------------------===//
 // Sorted Run Merger
 //===--------------------------------------------------------------------===//
 SortedRunMerger::SortedRunMerger(const Sort &sort_p, vector<unique_ptr<SortedRun>> &&sorted_runs_p,
                                  idx_t partition_size_p, bool external_p, bool is_index_sort_p)
     : scheduler(TaskScheduler::GetScheduler(*sort_p.client_context.db)), sort(sort_p),
       sorted_runs(std::move(sorted_runs_p)), total_count(SortedRunsTotalCount(sorted_runs)),
-      partition_size(partition_size_p), external(external_p), is_index_sort(is_index_sort_p) {
+      partition_size(partition_size_p), external(external_p), is_index_sort(is_index_sort_p),
+      extra_partition_end(FindSkewedPartitionSplit()) {
+}
+
+idx_t SortedRunMerger::PartitionCount() const {
+	return RowPartitionCount(*this) + extra_partition_end.IsValid();
+}
+
+idx_t SortedRunMerger::PartitionRowCount(idx_t partition_count) const {
+	D_ASSERT(partition_count <= PartitionCount());
+	if (partition_count == 0) {
+		return 0;
+	}
+	if (partition_count == PartitionCount()) {
+		return total_count;
+	}
+	if (extra_partition_end.IsValid()) {
+		const auto extra_end = extra_partition_end.GetIndex();
+		const auto split_partition = extra_end / partition_size;
+		if (partition_count == split_partition + 1) {
+			return extra_end;
+		}
+		if (partition_count > split_partition + 1) {
+			partition_count--;
+		}
+	}
+	return partition_count * partition_size;
 }
 
 SortedRunMerger::~SortedRunMerger() {

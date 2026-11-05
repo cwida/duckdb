@@ -81,6 +81,11 @@ StandardBufferManager::StandardBufferManager(DatabaseInstance &db, string tmp)
 	temp_block_manager =
 	    make_uniq<InMemoryBlockManager>(*this, DEFAULT_BLOCK_ALLOC_SIZE, DEFAULT_BLOCK_HEADER_STORAGE_SIZE);
 	temporary_directory.path = std::move(tmp);
+	// 'max_temp_directory_size' set before the database was created is only stored in the config
+	auto &config = DBConfig::GetConfig(db);
+	if (config.options.maximum_swap_space != DConstants::INVALID_INDEX) {
+		temporary_directory.maximum_swap_space = config.options.maximum_swap_space;
+	}
 	for (idx_t i = 0; i < MEMORY_TAG_COUNT; i++) {
 		evicted_data_per_tag[i] = 0;
 	}
@@ -374,6 +379,9 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 
 	idx_t required_memory;
 	auto &block_memory = handle->GetMemory();
+	if (block_memory.TryIncrementPinnedReaders()) {
+		return BufferHandle(handle, block_memory.GetBuffer());
+	}
 	{
 		// lock the block
 		auto lock = block_memory.GetLock();
@@ -459,14 +467,16 @@ void StandardBufferManager::VerifyZeroReaders(BlockLock &lock, shared_ptr<BlockH
 void StandardBufferManager::Unpin(shared_ptr<BlockHandle> &handle) {
 	bool purge = false;
 	auto &block_memory = handle->GetMemory();
+	if (block_memory.TryDecrementPinnedReaders()) {
+		return;
+	}
 	{
 		auto lock = block_memory.GetLock();
-		if (!block_memory.GetBuffer(lock) || block_memory.GetBufferType() == FileBufferType::TINY_BUFFER) {
-			return;
-		}
 		D_ASSERT(block_memory.GetReaders() > 0);
 		auto new_readers = block_memory.DecrementReaders(lock);
-		if (new_readers == 0) {
+		// Tiny buffers are never evicted, and a block converted to a persistent block has no buffer left
+		if (new_readers == 0 && block_memory.GetBuffer(lock) &&
+		    block_memory.GetBufferType() != FileBufferType::TINY_BUFFER) {
 			VerifyZeroReaders(lock, handle);
 			if (block_memory.MustAddToEvictionQueue()) {
 				purge = buffer_pool.AddToEvictionQueue(lock, handle);
@@ -544,8 +554,9 @@ void StandardBufferManager::WriteTemporaryBuffer(QueryContext context, MemoryTag
 	if (buffer.AllocSize() == GetBlockAllocSize()) {
 		idx_t eviction_size = temporary_directory.handle->GetTempFile().WriteTemporaryBuffer(context, block_id, buffer);
 		evicted_data_per_tag[uint8_t(tag)] += eviction_size;
-		if (context.GetClientContext()) {
-			QueryProfiler::Get(*context.GetClientContext()).TrackBytesSpilled(eviction_size);
+		auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+		if (profiler) {
+			profiler->TrackBytesSpilled(eviction_size);
 		}
 		return;
 	}
@@ -593,8 +604,9 @@ void StandardBufferManager::WriteTemporaryBuffer(QueryContext context, MemoryTag
 		throw;
 	}
 	evicted_data_per_tag[uint8_t(tag)] += buffer.AllocSize();
-	if (context.GetClientContext()) {
-		QueryProfiler::Get(*context.GetClientContext()).TrackBytesSpilled(buffer.AllocSize() + header_size);
+	auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+	if (profiler) {
+		profiler->TrackBytesSpilled(buffer.AllocSize() + header_size);
 	}
 }
 
@@ -905,6 +917,10 @@ void HugeAllocation::Reset() {
 BufferAllocator &BufferAllocator::Get(ClientContext &context) {
 	auto &manager = StandardBufferManager::GetBufferManager(context);
 	return manager.GetBufferAllocator();
+}
+
+BufferAllocator &BufferAllocator::Get(Context &services) {
+	return Get(services.GetDatabase());
 }
 
 BufferAllocator &BufferAllocator::Get(DatabaseInstance &db) {

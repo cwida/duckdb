@@ -1,0 +1,44 @@
+# name: test/sql/collate/collated_cast_rendering_storage.test
+# description: A collated cast target reconstructed from storage renders in the constructor form, so it parses in cast position
+# group: [collate]
+
+require noforcestorage
+
+statement ok
+ATTACH '{TEST_DIR}/collated_cast_storage.db' AS olddb (STORAGE_VERSION 'v1.5.0');
+
+statement ok
+CREATE MACRO olddb.m(x) AS CAST(x AS VARCHAR('nocase')) = 'A';
+
+statement ok
+DETACH olddb;
+
+statement ok
+ATTACH '{TEST_DIR}/collated_cast_storage.db' AS olddb;
+
+query I
+SELECT olddb.m('a')
+----
+true
+
+query I
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'm' AND database_name = 'olddb'
+----
+(CAST(x AS VARCHAR('nocase')) = 'A')
+
+statement ok
+USE olddb;
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/collated_cast_storage_export';
+
+statement ok
+DROP MACRO m;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/collated_cast_storage_export';
+
+query I
+SELECT m('a')
+----
+true

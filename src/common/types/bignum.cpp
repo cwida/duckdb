@@ -8,6 +8,11 @@
 
 namespace duckdb {
 
+void Bignum::ThrowInvalidBlobSize(idx_t size) {
+	throw DataCorruptionException("Invalid BIGNUM blob: size %llu is smaller than the minimum of %llu bytes",
+	                              static_cast<uint64_t>(size), static_cast<uint64_t>(BIGNUM_HEADER_SIZE + 1));
+}
+
 void Bignum::Verify(const bignum_t &input) {
 #ifdef DEBUG
 	// Size must be >= 4

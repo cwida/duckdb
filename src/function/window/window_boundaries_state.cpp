@@ -683,8 +683,8 @@ void WindowBoundariesState::FrameBegin(idx_t row_idx, const idx_t count, WindowI
 
 	//	Reset previous range hints
 	idx_t prev_partition = partition_begin_data[0];
-	prev.start = valid_begin_data[0];
-	prev.end = valid_end_data[0];
+	prev.start = required.count(VALID_BEGIN) ? valid_begin_data[0] : 0;
+	prev.end = required.count(VALID_END) ? valid_end_data[0] : 0;
 
 	if (has_preceding_range || has_following_range) {
 		if (range_lo.get() != range.get()) {
@@ -850,8 +850,8 @@ void WindowBoundariesState::FrameEnd(idx_t row_idx, const idx_t count, WindowInp
 
 	//	Reset previous range hints
 	idx_t prev_partition = partition_begin_data[0];
-	prev.start = valid_begin_data[0];
-	prev.end = valid_end_data[0];
+	prev.start = required.count(VALID_BEGIN) ? valid_begin_data[0] : 0;
+	prev.end = required.count(VALID_END) ? valid_end_data[0] : 0;
 
 	if (has_preceding_range || has_following_range) {
 		if (range_lo.get() != range.get()) {

@@ -181,7 +181,8 @@ idx_t TypeParamCount(const LogicalType &type) {
 Value TypeParamValue(const LogicalType &type, idx_t index, duckdb_v2_identifier_t &out_name) {
 	switch (type.id()) {
 	case LogicalTypeId::DECIMAL:
-		return index == 0 ? Value::UTINYINT(DecimalType::GetWidth(type)) : Value::UTINYINT(DecimalType::GetScale(type));
+		return index == 0 ? Value::UTINYINT(NumericCast<uint8_t>(DecimalType::GetWidth(type)))
+		                  : Value::UTINYINT(NumericCast<uint8_t>(DecimalType::GetScale(type)));
 	case LogicalTypeId::LIST:
 		return Value::TYPE(ListType::GetChildType(type));
 	case LogicalTypeId::ARRAY:

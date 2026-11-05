@@ -1,0 +1,52 @@
+# name: test/sql/topn/top_n_pruning_read_ahead.test
+# description: Top-N prunes the row groups read-ahead queued before its boundary was set
+# group: [topn]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# Alternative verify disables the offset pruning in the optimizer rule
+require no_alternative_verify
+
+statement ok
+ATTACH '{TEST_DIR}/top_n_read_ahead.duckdb' AS db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE db
+
+statement ok
+CREATE TABLE t(i BIGINT)
+
+statement ok
+INSERT INTO t SELECT 0 i UNION ALL SELECT i FROM repeat(3, 2047) t1(i)
+
+statement ok
+INSERT INTO t SELECT 0 i UNION ALL SELECT i FROM repeat(3, 2047) t1(i)
+
+statement ok
+INSERT INTO t SELECT 1 i UNION ALL SELECT i FROM repeat(5, 2047) t1(i)
+
+statement ok
+INSERT INTO t SELECT i FROM repeat(4, 2047) t1(i) UNION ALL SELECT 6 i
+
+statement ok
+INSERT INTO t SELECT 7 i UNION ALL SELECT i FROM repeat(8, 2047) t1(i)
+
+statement ok
+INSERT INTO t SELECT i FROM repeat(NULL, 2000000) t1(i)
+
+statement ok
+CHECKPOINT
+
+statement ok
+SET threads TO 1
+
+# with one thread read-ahead prepares several row groups before the first one is decoded, so the all-NULL row groups
+# are already in flight when the Top-N boundary is set, they must still be dropped before they are decoded
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+query II
+EXPLAIN ANALYZE SELECT * FROM t ORDER BY i LIMIT 8193
+----
+analyzed_plan	<REGEX>:.*TABLE_SCAN.*10,240 rows.*

@@ -172,7 +172,7 @@ SELECT LIST_VALUE(a, b, c) FROM nested_list_table;
 statement error
 SELECT LIST_VALUE([1, 1], ['a', 'a'], [ROW(2, 2), ROW(3, 3)]);
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 # list with array
 query I

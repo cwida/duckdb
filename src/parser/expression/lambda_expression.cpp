@@ -1,9 +1,13 @@
 #include "duckdb/parser/expression/lambda_expression.hpp"
 
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
 
@@ -78,6 +82,25 @@ bool LambdaExpression::IsLambdaParameter(const vector<identifier_set_t> &lambda_
 		}
 	}
 	return false;
+}
+
+void LambdaExpression::FinalizeDeserialization(Deserializer &deserializer) {
+	if (syntax_type != LambdaSyntaxType::SINGLE_ARROW) {
+		return;
+	}
+	// arrow lambdas stored before v2.0.0 keep binding, like those stored before v1.3.0
+	auto catalog = deserializer.TryGet<Catalog>();
+	if (!catalog) {
+		return;
+	}
+	auto &attached = catalog->GetAttached();
+	if (!attached.HasStorageManager()) {
+		return;
+	}
+	auto &storage_manager = attached.GetStorageManager();
+	if (storage_manager.HasStorageVersion() && storage_manager.GetStorageVersion() < StorageVersion::V2_0_0) {
+		syntax_type = LambdaSyntaxType::SINGLE_ARROW_STORAGE;
+	}
 }
 
 string LambdaExpression::ToString() const {

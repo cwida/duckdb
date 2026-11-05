@@ -215,6 +215,7 @@ unique_ptr<ParsedExpression> LambdaExpression::Deserialize(Deserializer &deseria
 	deserializer.ReadPropertyWithDefault<unique_ptr<ParsedExpression>>(200, "lhs", result->lhs);
 	deserializer.ReadPropertyWithDefault<unique_ptr<ParsedExpression>>(201, "expr", result->expr);
 	deserializer.ReadPropertyWithExplicitDefault<LambdaSyntaxType>(202, "syntax_type", result->syntax_type, LambdaSyntaxType::SINGLE_ARROW_STORAGE);
+	result->FinalizeDeserialization(deserializer);
 	return std::move(result);
 }
 

@@ -168,6 +168,7 @@ ScalarFunction ListHasAnyFun::GetFunction() {
 	fun.GetSignature()
 	    .AddParameter("list1", LogicalType::LIST(LogicalType::TEMPLATE("T")))
 	    .AddParameter("list2", LogicalType::LIST(LogicalType::TEMPLATE("T")));
+	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	return fun;
 }
 
@@ -176,6 +177,7 @@ ScalarFunction ListHasAllFun::GetFunction() {
 	fun.GetSignature()
 	    .AddParameter("list1", LogicalType::LIST(LogicalType::TEMPLATE("T")))
 	    .AddParameter("list2", LogicalType::LIST(LogicalType::TEMPLATE("T")));
+	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	return fun;
 }
 

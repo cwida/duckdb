@@ -1,0 +1,21 @@
+# name: test/sql/catalog/function/default_macro_shadowing_logging.test
+# description: ILIKE inside the duckdb_logs_parsed body stays pinned under a "~~*" shadow
+# group: [function]
+
+# in-memory log contents cannot survive the reload harness
+require skip_reload
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory');
+
+statement ok
+SELECT 42;
+
+statement ok
+CREATE MACRO "~~*"(a, b) AS false;
+
+# the WHERE filter and the CASE that produces the parsed message both use ILIKE
+query I
+SELECT count(message) > 0 FROM duckdb_logs_parsed('QueryLog');
+----
+true

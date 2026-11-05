@@ -15,6 +15,8 @@
 #include "duckdb/optimizer/rule/move_constants.hpp"
 #include "duckdb/optimizer/rule/not_comparison_simplification.hpp"
 #include "duckdb/optimizer/rule/not_conjunction_simplification.hpp"
+#include "duckdb/optimizer/rule/not_constant_or_null_simplification.hpp"
+#include "duckdb/optimizer/rule/or_range_merge.hpp"
 #include "duckdb/optimizer/rule/enum_comparison.hpp"
 #include "duckdb/optimizer/rule/regex_optimizations.hpp"
 #include "duckdb/optimizer/rule/struct_extract_struct_pack_folding.hpp"

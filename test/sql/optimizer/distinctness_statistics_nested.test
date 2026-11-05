@@ -1,0 +1,86 @@
+# name: test/sql/optimizer/distinctness_statistics_nested.test
+# description: Preserve distinctness semantics for UNION, TUPLE and MARK comparisons
+# group: [optimizer]
+
+statement ok
+CREATE TABLE union_probe AS SELECT union_value(i:=NULL::INTEGER) a;
+
+statement ok
+CREATE TABLE union_build AS SELECT union_value(i:=NULL::INTEGER) b;
+
+query II
+SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b FROM union_probe, union_build;
+----
+true	false
+
+query I
+SELECT count(*) FROM union_probe JOIN union_build ON a IS NOT DISTINCT FROM b;
+----
+1
+
+statement ok
+INSERT INTO union_probe VALUES (union_value(i:=1));
+
+query II rowsort
+SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b FROM union_probe, union_build;
+----
+false	true
+true	false
+
+statement ok
+CREATE TEMP TABLE tuple_probe AS SELECT row(1,2) a;
+
+statement ok
+CREATE TEMP TABLE tuple_build AS SELECT row(1,NULL::INTEGER) b;
+
+# Scalar tuple comparisons use nested ordering; MARK comparisons use row equality.
+query II
+SELECT a IS NOT DISTINCT FROM b, a IS DISTINCT FROM b FROM tuple_probe, tuple_build;
+----
+false	true
+
+query I
+SELECT __mark_join_marker FROM tuple_probe JOIN BY (TYPE MARK) tuple_build ON a IS DISTINCT FROM b;
+----
+true
+
+query I
+SELECT __mark_join_marker FROM tuple_probe JOIN BY (TYPE MARK) tuple_build ON b IS NOT DISTINCT FROM a;
+----
+false
+
+statement ok
+CREATE TEMP TABLE nested_tuple_probe AS SELECT row(row(1,2), union_value(i:=1)) a;
+
+statement ok
+CREATE TEMP TABLE nested_tuple_build AS SELECT row(row(1,NULL::INTEGER), union_value(i:=NULL::INTEGER)) b;
+
+query I
+SELECT __mark_join_marker FROM nested_tuple_probe JOIN BY (TYPE MARK) nested_tuple_build ON a IS DISTINCT FROM b;
+----
+true
+
+# MARK grouping comparisons remain NULL-safe during statistics propagation.
+statement ok
+CREATE TABLE group_probe(g INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO group_probe VALUES (1,2), (2,NULL), (3,NULL);
+
+statement ok
+CREATE TABLE group_build(g INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO group_build VALUES (1,NULL), (2,3);
+
+query II
+SELECT p.g, __mark_join_marker FROM group_probe p JOIN BY (TYPE MARK) group_build b
+ON p.g IS NOT DISTINCT FROM b.g AND p.v=b.v ORDER BY p.g;
+----
+1	NULL
+2	NULL
+3	false
+
+statement ok
+EXPLAIN (SQL) SELECT __mark_join_marker FROM group_probe p JOIN BY (TYPE MARK) group_build b
+ON p.g IS NOT DISTINCT FROM b.g AND p.v=b.v;

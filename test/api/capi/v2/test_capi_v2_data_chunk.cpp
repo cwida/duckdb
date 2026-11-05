@@ -1386,6 +1386,21 @@ TEST_CASE("V2: data_chunk_clear empties a chunk for reuse", "[capi_v2][data_chun
 	REQUIRE(duckdb_v2_data_chunk_get_size(chunk, &size, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(size == 1);
 
+	{
+		duckdb::Vector input(duckdb::Value::INTEGER(7), duckdb::count_t(1));
+		input.Flatten();
+		duckdb::SelectionVector sel(1);
+		sel.set_index(0, 0);
+		duckdb::Vector dictionary(input, sel, 1);
+		auto source = reinterpret_cast<duckdb_v2_vector_handle>(&dictionary);
+		REQUIRE(duckdb_v2_vector_reference(vec, source, nullptr) == DUCKDB_V2_ERROR_NONE);
+	}
+	REQUIRE(duckdb_v2_data_chunk_clear(chunk, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_vector_get_vector_type(vec, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(type == DUCKDB_V2_VECTOR_TYPE_FLAT);
+	REQUIRE(duckdb_v2_vector_get_data_mutable(vec, &data, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(data != nullptr);
+
 	REQUIRE(duckdb_v2_data_chunk_clear(nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_data_chunk_destroy(&chunk);
 }

@@ -70,7 +70,9 @@ public:
 public:
 	//! Add a buffer handle to the eviction queue. Returns true, if the queue is
 	//! ready to be purged, and false otherwise.
-	bool AddToEvictionQueue(BufferEvictionNode &&node);
+	bool AddToEvictionQueue(BlockLock &lock, BlockMemory &memory, BufferEvictionNode &&node);
+	//! Publish an entry while holding its block lock, updating the live-entry flag on success.
+	bool Enqueue(BlockLock &lock, BlockMemory &memory, BufferEvictionNode &&node);
 	//! Tries to dequeue an element from the eviction queue, but only after acquiring the purge queue lock.
 	bool TryDequeueWithLock(BufferEvictionNode &node);
 	//! Garbage collect dead nodes in the eviction queue.
@@ -102,6 +104,8 @@ public:
 private:
 	//! Bulk purge dead nodes from the eviction queue. Then, re-enqueue those that are still alive.
 	void PurgeIteration(const idx_t purge_size);
+	//! Forget a dequeued entry that could not be published again.
+	void DiscardNode(BufferEvictionNode &node);
 
 public:
 	//! The type of the buffers in this queue and helper function (both for verification only)
@@ -141,9 +145,32 @@ private:
 	duckdb_moodycamel::ProducerToken purge_producer_token;
 };
 
-bool EvictionQueue::AddToEvictionQueue(BufferEvictionNode &&node) {
-	q.enqueue(std::move(node));
+bool EvictionQueue::Enqueue(BlockLock &lock, BlockMemory &memory, BufferEvictionNode &&node) {
+	memory.SetHasLiveQueueEntry(lock, false);
+	const auto success = q.enqueue(std::move(node));
+	memory.SetHasLiveQueueEntry(lock, success);
+	return success;
+}
+
+bool EvictionQueue::AddToEvictionQueue(BlockLock &lock, BlockMemory &memory, BufferEvictionNode &&node) {
+	if (!Enqueue(lock, memory, std::move(node))) {
+		return false;
+	}
 	return ++evict_queue_insertions % INSERT_INTERVAL == 0;
+}
+
+void EvictionQueue::DiscardNode(BufferEvictionNode &node) {
+	auto memory = node.memory_p.lock();
+	if (!memory) {
+		DecrementDeadNodes();
+		return;
+	}
+	auto lock = memory->GetLock();
+	if (node.handle_sequence_number != memory->GetEvictionSequenceNumber()) {
+		DecrementDeadNodes();
+	} else {
+		memory->SetHasLiveQueueEntry(lock, false);
+	}
 }
 
 bool EvictionQueue::TryDequeueWithLock(BufferEvictionNode &node) {
@@ -246,10 +273,25 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 	// Re-enqueue alive nodes via producer token — goes into a dedicated sub-queue
 	// that the consumer token has already passed
 	if (alive_count > 0) {
-		if (!purge_producer_token.valid()) {
-			throw OutOfMemoryException("Failed to allocate eviction queue producer");
+#ifdef DUCKDB_NO_THREADS
+		// The fallback queue can throw after publishing a prefix of a bulk insertion.
+		for (idx_t i = 0; i < alive_count; i++) {
+			try {
+				q.enqueue(purge_nodes[i]);
+			} catch (...) {
+				for (idx_t j = i; j < alive_count; j++) {
+					DiscardNode(purge_nodes[j]);
+				}
+				throw;
+			}
 		}
-		q.enqueue_bulk(purge_producer_token, purge_nodes.begin(), alive_count);
+#else
+		if (!purge_producer_token.valid() || !q.enqueue_bulk(purge_producer_token, purge_nodes.begin(), alive_count)) {
+			for (idx_t i = 0; i < alive_count; i++) {
+				DiscardNode(purge_nodes[i]);
+			}
+		}
+#endif
 	}
 }
 
@@ -277,9 +319,14 @@ bool BufferPool::AddToEvictionQueue(BlockLock &lock, shared_ptr<BlockHandle> &ha
 	// The block lock is held throughout: Unpin holds it; ConvertToPersistent acquires the
 	// (uncontended) lock of the freshly created block before calling.
 	memory.VerifyMutex(lock);
+	D_ASSERT(memory.GetReaders() == 0);
+	// Repeated hash-table appends can reuse an entry while leaving the block evictable.
+	if (!track_eviction_timestamps && memory.GetBufferType() == FileBufferType::MANAGED_BUFFER &&
+	    memory.GetMemoryTag() == MemoryTag::HASH_TABLE && memory.HasLiveQueueEntry(lock)) {
+		return false;
+	}
 	auto &queue = GetEvictionQueueForBlockMemory(memory);
 
-	D_ASSERT(memory.GetReaders() == 0);
 	if (memory.HasLiveQueueEntry(lock)) {
 		// Count the previous live entry before bumping the sequence number. PurgeIteration
 		// reads sequence numbers without the block lock; bumping first could let it see the
@@ -293,11 +340,9 @@ bool BufferPool::AddToEvictionQueue(BlockLock &lock, shared_ptr<BlockHandle> &ha
 		                           .time_since_epoch()
 		                           .count());
 	}
-	memory.SetHasLiveQueueEntry(lock, true);
-
 	// Get the eviction queue for the block and add it
 	BufferEvictionNode node(handle->GetMemoryWeak(), ts);
-	return queue.AddToEvictionQueue(std::move(node));
+	return queue.AddToEvictionQueue(lock, memory, std::move(node));
 }
 
 EvictionQueue &BufferPool::GetEvictionQueueForBlockMemory(const BlockMemory &memory) {
@@ -458,7 +503,11 @@ void EvictionQueue::IterateUnloadableBlocks(FN fn) {
 	for (;;) {
 		// get a block to unpin from the queue
 		BufferEvictionNode node;
-		if (!q.try_dequeue(node)) {
+		// Purge parks older live entries in its own producer. Tokenless dequeue can
+		// keep selecting newer producers while that queue is non-empty.
+		const bool from_purged =
+		    purge_producer_token.valid() && q.try_dequeue_from_producer(purge_producer_token, node);
+		if (!from_purged && !q.try_dequeue(node)) {
 			// we could not dequeue any eviction node, so we try one more time,
 			// but more aggressively
 			if (!TryDequeueWithLock(node)) {
@@ -493,8 +542,7 @@ void EvictionQueue::IterateUnloadableBlocks(FN fn) {
 			break;
 		case CanUnloadResult::NO_TEMP_DIRECTORY:
 			// Unpinned temporary block that cannot be offloaded yet: re-enqueue until temp directory is set.
-			handle->SetHasLiveQueueEntry(lock, true);
-			q.enqueue(std::move(node));
+			Enqueue(lock, *handle, std::move(node));
 			return;
 		case CanUnloadResult::PINNED:
 		case CanUnloadResult::ALREADY_UNLOADED:
@@ -509,8 +557,7 @@ void EvictionQueue::IterateUnloadableBlocks(FN fn) {
 		} catch (...) {
 			// The unload failed (e.g. the temporary directory is full) and the block is still loaded.
 			// Give it its queue entry back, or it stays un-evictable until the next unpin.
-			handle->SetHasLiveQueueEntry(lock, true);
-			q.enqueue(std::move(node));
+			Enqueue(lock, *handle, std::move(node));
 			throw;
 		}
 		if (!continue_iteration) {

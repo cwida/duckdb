@@ -6,12 +6,14 @@ require quack
 
 require httpfs
 
-# Spin up an in-process quack server we can connect to.
+# Let the OS choose a port so concurrent test processes cannot share the listener.
 statement ok
-CALL quack_serve(token='test_token');
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:localhost:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
 
 statement ok
-ATTACH 'quack:localhost' AS qk (TOKEN 'test_token');
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
 
 # CONNECT to the quack-attached database.
 statement ok
@@ -173,7 +175,7 @@ mode unskip
 # ============================================================================
 
 statement ok
-CONNECT 'quack:localhost' (TOKEN 'test_token');
+CONNECT {server_uri} (TOKEN 'test_token');
 
 # Query routes through the ephemeral binding to the quack backend.
 query I
@@ -192,7 +194,7 @@ SELECT count(*) FROM pragma_database_list WHERE name LIKE '__connect%';
 
 # Wrong option value is surfaced from the backend at attach time (and rolled back).
 statement error
-CONNECT 'quack:localhost' (TOKEN 'wrong_token');
+CONNECT {server_uri} (TOKEN 'wrong_token');
 ----
 <REGEX>:.*(token|auth|Authentication|Unauthorized).*
 

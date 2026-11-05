@@ -187,9 +187,12 @@ struct ApproxQuantileOperation {
 			return;
 		}
 		D_ASSERT(source.h);
+		auto &allocator = aggr_input_data.allocator;
 		if (!target.h) {
-			auto &allocator = aggr_input_data.allocator;
 			target.h = allocator.Make<duckdb_tdigest::TDigest>(allocator, 100);
+		} else if (&target.h->getAllocator() != &allocator) {
+			// Copied states can share a sink arena across partitions being combined in parallel.
+			target.h = allocator.Make<duckdb_tdigest::TDigest>(allocator, *target.h);
 		}
 		if (!TryAddOperator::Operation(target.pos, source.pos, target.pos)) {
 			throw OutOfRangeException("Overflow in aggregate state combine");
@@ -670,9 +673,12 @@ AggregateFunctionSet ApproxQuantileFun::GetFunctions() {
 
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::DATE));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIME));
+	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIME_NS));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIME_TZ));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP));
+	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP_NS));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP_TZ));
+	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP_TZ_NS));
 
 	// List variants
 	approx_quantile.AddFunction(GetApproxQuantileDecimalList());

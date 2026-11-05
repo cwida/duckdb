@@ -48,6 +48,11 @@ unique_ptr<FunctionData> ICUDateFunc::Bind(BindScalarFunctionInput &input) {
 	return make_uniq<BindData>(input.GetClientContext());
 }
 
+unique_ptr<ICUDateFunc::CastData> ICUDateFunc::BindCastData(BindCastInput &input) {
+	input.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	return make_uniq<CastData>(make_uniq<BindData>(*input.context));
+}
+
 const ICUDateFunc::CalendarCacheState::CacheEntry &ICUDateFunc::CalendarCacheState::GetEntry(const string_t &tz_id) {
 	if (last && last->first.size() == tz_id.GetSize() &&
 	    memcmp(last->first.data(), tz_id.GetData(), tz_id.GetSize()) == 0) {
@@ -130,8 +135,7 @@ timestamp_tz_t ICUDateFunc::GetTimeUnsafe(Calendar *calendar, uint64_t micros) {
 	}
 	// The time is a whole number of milliseconds, so converting it back to microseconds can overflow.
 	int64_t result;
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(millis, Interval::MICROS_PER_MSEC, result) ||
-	    !TryAddOperator::Operation<int64_t, int64_t, int64_t>(result, int64_t(micros), result)) {
+	if (!Timestamp::TryCombineUnits(millis, int64_t(micros), Interval::MICROS_PER_MSEC, result)) {
 		throw OutOfRangeException("Unable to get calendar time: timestamp out of range");
 	}
 	return timestamp_tz_t(result);
@@ -145,19 +149,10 @@ bool ICUDateFunc::TryGetTime(Calendar *calendar, uint64_t micros, timestamp_tz_t
 	}
 
 	// The time is a whole number of milliseconds, so converting it back to microseconds can overflow.
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(millis, Interval::MICROS_PER_MSEC, millis)) {
+	if (!Timestamp::TryCombineUnits(millis, int64_t(micros), Interval::MICROS_PER_MSEC, result.value)) {
 		return false;
 	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(millis, int64_t(micros), millis)) {
-		return false;
-	}
-
-	// Now make sure the value is in range
-	result.value = millis;
-	date_t out_date = Timestamp::GetDate(timestamp_t(millis));
-	int64_t days_micros;
-	return TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::MICROS_PER_DAY,
-	                                                                 days_micros);
+	return result.IsFinite();
 }
 
 timestamp_tz_t ICUDateFunc::GetTime(Calendar *calendar, uint64_t micros) {

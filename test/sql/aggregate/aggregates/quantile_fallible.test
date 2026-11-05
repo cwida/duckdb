@@ -1,0 +1,68 @@
+# name: test/sql/aggregate/aggregates/quantile_fallible.test
+# description: Quantile overloads with throwing runtime paths must be registered as fallible
+# group: [aggregates]
+
+# dates outside of the timestamp range raise as a regular error in plain aggregation
+
+statement error
+SELECT quantile_cont(d, 0.5) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
+----
+can't be cast to the destination type INT64
+
+statement error
+SELECT median(d) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
+----
+can't be cast to the destination type INT64
+
+statement error
+SELECT quantile_cont(d, [0.25, 0.75]) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
+----
+can't be cast to the destination type INT64
+
+# the discrete quantile does not interpolate and keeps working on extreme dates
+
+query I
+SELECT quantile_disc(d, 0.5) FROM (VALUES (DATE '5881580-07-10'), (DATE '5881580-07-09')) t(d);
+----
+5881580-07-09
+
+# the continuous INTERVAL implementation (reached through median) interpolates in microseconds,
+# which throws for extreme intervals
+
+statement error
+SELECT median(i) FROM (VALUES (INTERVAL '2147483647 months'), (INTERVAL '2147483647 months')) t(i);
+----
+Could not convert Month to Microseconds
+
+# the raising high-scale DECIMAL quantile parameter fixtures live in
+# quantile_fallible_decimal_param.test, which is excluded from the explain_sql verification config
+
+query I
+SELECT quantile_disc(v, 0.5::DECIMAL(2,1)) FROM (VALUES (1), (2)) t(v);
+----
+1
+
+# the EXPLAIN (SQL) pivot default export fixtures live in fallible_pivot_default_export.test,
+# which is excluded from the aggregate state export verification config
+
+# the scalarized window form keeps working under dictionary vector verification
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT median(d) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES (DATE '2000-01-01'), (DATE '2000-01-03')) t(d);
+----
+2000-01-01 00:00:00
+2000-01-03 00:00:00
+
+statement ok
+RESET debug_verify_vector;
+
+# interpolation within the timestamp range is unaffected
+
+query I
+SELECT median(d) FROM (VALUES (DATE '2000-01-01'), (DATE '2000-01-02')) t(d);
+----
+2000-01-01 12:00:00

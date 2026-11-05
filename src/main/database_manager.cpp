@@ -164,7 +164,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 
 	if (requires_tracking_attaches) {
 		// Start timing the ATTACH-delay step.
-		auto timer = context.client_data->profiler->StartTimer<MetricStorageWaitingToAttachLatency>();
+		auto timer = QueryProfiler::Get(*context.services).StartTimer<MetricStorageWaitingToAttachLatency>();
 		// Start trying to attach.
 		while (InsertDatabasePath(info, options) == InsertDatabasePathResult::ALREADY_EXISTS) {
 			// database with this name and path already exists
@@ -387,12 +387,13 @@ void DatabaseManager::RenameDatabase(ClientContext &context, const Identifier &o
 	}
 }
 
-shared_ptr<AttachedDatabase> DatabaseManager::DetachInternal(const Identifier &name) {
+shared_ptr<AttachedDatabase> DatabaseManager::DetachInternal(const Identifier &name,
+                                                             optional_ptr<AttachedDatabase> database) {
 	shared_ptr<AttachedDatabase> attached_db;
 	{
 		lock_guard<mutex> guard(databases_lock);
 		auto entry = databases.find(name);
-		if (entry == databases.end()) {
+		if (entry == databases.end() || (database && entry->second.get() != database.get())) {
 			return nullptr;
 		}
 		attached_db = std::move(entry->second);

@@ -1,0 +1,85 @@
+# name: test/sql/types/variant/variant_extract_missing_key_shredded.test
+# description: Extracting a key that is not part of the shredded VARIANT type returns NULL
+# group: [variant]
+
+require json
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+# no row has the key, so it does not end up in the shredded type
+statement ok
+CREATE TABLE absent (id INTEGER, v VARIANT);
+
+statement ok
+INSERT INTO absent SELECT i, {'a': i, 'b': 'x' || i}::VARIANT FROM range(2000) t(i);
+
+statement ok
+CHECKPOINT;
+
+query III
+SELECT count(*), count(*) FILTER (WHERE v.zzz IS NOT NULL), count(*) FILTER (WHERE v['zzz'] IS NOT NULL) FROM absent;
+----
+2000	0	0
+
+# a path continuing past the missing key is NULL as well
+query II
+SELECT count(*) FILTER (WHERE v.zzz.deep IS NOT NULL), count(*) FILTER (WHERE v.zzz[1] IS NOT NULL) FROM absent;
+----
+0	0
+
+# keys that are part of the shredded type still resolve
+query III
+SELECT count(*) FILTER (WHERE v.a IS NOT NULL), sum(v.a::BIGINT), min(v.b::VARCHAR) FROM absent;
+----
+2000	1999000	x0
+
+statement ok
+SET disabled_optimizers = 'unused_columns';
+
+query III
+SELECT count(*) FILTER (WHERE v.zzz IS NOT NULL), count(*) FILTER (WHERE v.zzz.deep IS NOT NULL), sum(v.a::BIGINT) FROM absent;
+----
+0	0	1999000
+
+statement ok
+RESET disabled_optimizers;
+
+# a row group written before the key existed does not have it in its shredded type,
+# a row group written afterwards does - both must return the same values
+statement ok
+CREATE TABLE mixed (id INTEGER, v VARIANT);
+
+statement ok
+INSERT INTO mixed SELECT i, {'a': i}::VARIANT FROM range(130000) t(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+INSERT INTO mixed SELECT i, {'a': i, 'zzz': 'v' || i}::VARIANT FROM range(2000) t(i);
+
+statement ok
+CHECKPOINT;
+
+query IIII
+SELECT count(*), count(*) FILTER (WHERE v.zzz IS NOT NULL), sum(length(CAST(v.zzz AS VARCHAR))), sum(v.a::BIGINT) FROM mixed;
+----
+132000	2000	8890	8451934000
+
+statement ok
+SET disabled_optimizers = 'unused_columns';
+
+query IIII
+SELECT count(*), count(*) FILTER (WHERE v.zzz IS NOT NULL), count(*) FILTER (WHERE v.zzz.deep IS NOT NULL), sum(v.a::BIGINT) FROM mixed;
+----
+132000	2000	0	8451934000
+
+statement ok
+RESET disabled_optimizers;
+
+# a missing key is NULL, not an error, also when casted
+query II
+SELECT count(*) FILTER (WHERE CAST(v.zzz AS VARCHAR) IS NOT NULL), count(*) FILTER (WHERE v.zzz::JSON IS NOT NULL) FROM mixed;
+----
+2000	2000

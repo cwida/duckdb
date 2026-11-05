@@ -35,6 +35,7 @@ class Task;
 struct PipelineEventStack;
 struct ProducerToken;
 struct ScheduleEventData;
+struct PipelineSchedule;
 
 class Executor {
 	friend class Pipeline;
@@ -154,7 +155,8 @@ private:
 	bool ResultStoreCanPark();
 	void InitializeInternal(PhysicalOperator &physical_plan);
 
-	void ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines);
+	void ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+	                    unique_ptr<PipelineSchedule> resolved_schedule = nullptr);
 	void ScheduleEventsInternal(ScheduleEventData &event_data);
 
 	static void VerifyScheduledEvents(const vector<shared_ptr<Event>> &events);

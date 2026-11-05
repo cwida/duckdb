@@ -151,13 +151,13 @@ static Value NumberToValue(const string &val) {
 	if (try_cast_as_decimal && decimal_position.IsValid() &&
 	    str_val.GetSize() - num_underscores < Decimal::MAX_WIDTH_DECIMAL + decimal_offset) {
 		// figure out the width/scale based on the decimal position
-		auto width = NumericCast<uint8_t>(str_val.GetSize() - 1 - num_underscores);
+		auto width = NumericCast<uint32_t>(str_val.GetSize() - 1 - num_underscores);
 		// a well-formed decimal has a single '.', so its position never sits past the width; a second (e.g. trailing)
 		// dot pushes decimal_position beyond width and would underflow the scale computation below
 		if (decimal_position.GetIndex() > NumericCast<idx_t>(width) + num_integer_underscores) {
 			throw ParserException("Could not convert string \"%s\" to a decimal value", val);
 		}
-		auto scale = NumericCast<uint8_t>(width - decimal_position.GetIndex() + num_integer_underscores);
+		auto scale = NumericCast<uint32_t>(width - decimal_position.GetIndex() + num_integer_underscores);
 		if (val[0] == '-') {
 			width--;
 		}
