@@ -229,6 +229,7 @@ public:
 	}
 
 	optional_idx cardinality;
+	optional_idx max_cardinality;
 	//! The bind data of the wrapped function for this file. It is used to combine the schemas of several files, and
 	//! kept afterwards so that the bind that reads the file can reuse what this one read from it
 	shared_ptr<FunctionData> bind_data;
@@ -237,6 +238,9 @@ public:
 
 	optional_idx TryGetCardinalityEstimate() const override {
 		return cardinality;
+	}
+	optional_idx TryGetMaxCardinality() const override {
+		return max_cardinality;
 	}
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name) override;
 	unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context, column_t virtual_column_id) override;
@@ -298,6 +302,8 @@ public:
 	vector<LogicalType> types;
 	//! The cardinality estimate of the wrapped function for this file (if it has one)
 	optional_idx cardinality;
+	//! The upper bound on the rows of this file the wrapped function reported (if it did)
+	optional_idx max_cardinality;
 	//! The virtual columns that are read, as a map of the index they are projected in to their virtual column id
 	unordered_map<column_t, column_t> virtual_columns;
 	//! The key-value metadata the wrapped function reported for this file

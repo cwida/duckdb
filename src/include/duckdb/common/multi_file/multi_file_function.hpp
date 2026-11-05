@@ -1204,7 +1204,16 @@ public:
 			return nullptr;
 		}
 		auto get_statistics = [&](BaseUnionData &reader) {
-			auto stats = reader.GetStatistics(context, col_name);
+			unique_ptr<BaseStatistics> stats;
+			try {
+				stats = reader.GetStatistics(context, col_name);
+			} catch (std::exception &ex) {
+				// statistics that cannot be decoded just mean there are none - the data itself may still read fine
+				if (ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+					throw;
+				}
+				return unique_ptr<BaseStatistics>();
+			}
 			if (stats && (stats->GetType() != bind_data.types[primary_index] ||
 			              (!bind_data.file_options.bound_schema.empty() &&
 			               !bind_data.MatchesPhysicalColumn(primary_index, col_name, stats->GetType())))) {
@@ -1322,19 +1331,30 @@ public:
 		if (!data.union_readers.empty() && (data.file_options.union_by_name || data.union_readers.size() > 1) &&
 		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
 			// check if we can get a cardinality estimate from the (already opened) union readers
-			bool has_exact_cardinality = true;
+			bool has_cardinality = true;
+			bool has_maximum = true;
 			idx_t cardinality = 0;
+			idx_t maximum = 0;
 			for (auto &union_data : data.union_readers) {
 				auto file_cardinality = union_data->TryGetCardinalityEstimate();
 				if (!file_cardinality.IsValid()) {
-					has_exact_cardinality = false;
+					has_cardinality = false;
 					break;
 				}
 				cardinality += file_cardinality.GetIndex();
+				auto file_maximum = union_data->TryGetMaxCardinality();
+				if (!file_maximum.IsValid() || file_maximum.GetIndex() > NumericLimits<idx_t>::Maximum() - maximum) {
+					has_maximum = false;
+				} else {
+					maximum += file_maximum.GetIndex();
+				}
 			}
-			if (has_exact_cardinality) {
-				// counted from the files, so also the maximum, as a table scan reports its count
-				return make_uniq<NodeStatistics>(cardinality, cardinality);
+			if (has_cardinality) {
+				// the sum of the files' own counts is only an estimate - the maximum has to come from the data
+				if (has_maximum) {
+					return make_uniq<NodeStatistics>(cardinality, maximum);
+				}
+				return make_uniq<NodeStatistics>(cardinality);
 			}
 		}
 		// get the file count - for >500 files we allow an estimate
