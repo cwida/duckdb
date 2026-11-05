@@ -954,6 +954,10 @@ void Linenoise::AcceptSearch() {
 		auto match = search_matches[search_index];
 		auto history_entry = History::GetEntry(match.history_index);
 		auto history_len = strlen(history_entry);
+		if (history_len >= buflen) {
+			CancelSearch();
+			return;
+		}
 		memcpy(buf, history_entry, history_len);
 		buf[history_len] = '\0';
 		pos = match.match_end;
