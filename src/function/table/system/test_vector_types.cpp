@@ -11,10 +11,6 @@
 
 namespace duckdb {
 
-static bool TestVectorTypesIsRepeatable(optional_ptr<const FunctionData>) {
-	return true;
-}
-
 // FLAT, CONSTANT, DICTIONARY, SEQUENCE
 struct TestVectorBindData : public TableFunctionData {
 	vector<LogicalType> types;
@@ -355,7 +351,7 @@ void TestVectorTypesFun::RegisterFunction(BuiltinFunctions &set) {
 	    .WithTypedKwargs("options", [](TypedKwargs &options) { options.Add("all_flat", LogicalType::BOOLEAN); });
 	test_vector_types.table_scan_progress = TestVectorTypesProgress;
 
-	test_vector_types.is_repeatable = TestVectorTypesIsRepeatable;
+	test_vector_types.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(std::move(test_vector_types));
 }
 

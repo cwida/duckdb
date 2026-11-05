@@ -29,10 +29,6 @@
 
 namespace duckdb {
 
-static bool CalendarNamesAreRepeatable(optional_ptr<const FunctionData>) {
-	return true;
-}
-
 //! The collation settings of the tagged collations that are registered by the extension
 static collation::CollationSettings SettingsFromTag(const string &tag) {
 	collation::CollationSettings settings;
@@ -472,7 +468,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                          SetICUCalendar);
 
 	TableFunction cal_names("icu_calendar_names", {}, ICUCalendarFunction, ICUCalendarBind, ICUCalendarInit);
-	cal_names.is_repeatable = CalendarNamesAreRepeatable;
+	cal_names.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	loader.RegisterFunction(cal_names);
 }
 

@@ -7,10 +7,6 @@
 
 namespace duckdb {
 
-static bool VersionIsRepeatable(optional_ptr<const FunctionData>) {
-	return true;
-}
-
 struct PragmaVersionData : public GlobalTableFunctionState {
 	PragmaVersionData() : finished(false) {
 	}
@@ -50,7 +46,7 @@ void PragmaVersion::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction pragma_version("pragma_version", {}, PragmaVersionFunction);
 	pragma_version.bind = PragmaVersionBind;
 	pragma_version.init_global = PragmaVersionInit;
-	pragma_version.is_repeatable = VersionIsRepeatable;
+	pragma_version.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(pragma_version);
 }
 
@@ -131,7 +127,7 @@ void PragmaPlatform::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction pragma_platform("pragma_platform", {}, PragmaPlatformFunction);
 	pragma_platform.bind = PragmaPlatformBind;
 	pragma_platform.init_global = PragmaPlatformInit;
-	pragma_platform.is_repeatable = VersionIsRepeatable;
+	pragma_platform.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(pragma_platform);
 }
 

@@ -25,15 +25,6 @@ struct PragmaTableFunctionData : public TableFunctionData {
 	bool is_table_info;
 };
 
-static bool PragmaTableInfoIsRepeatable(optional_ptr<const FunctionData> bind_data) {
-	if (!bind_data) {
-		return false;
-	}
-	auto &entry = bind_data->Cast<PragmaTableFunctionData>().entry;
-	// Ordinary table definitions are fixed by the catalog snapshot. Views are rebound during execution.
-	return entry.type == CatalogType::TABLE_ENTRY && entry.Cast<TableCatalogEntry>().IsDuckTable();
-}
-
 struct PragmaTableOperatorData : public GlobalTableFunctionState {
 	PragmaTableOperatorData() : offset(0) {
 	}
@@ -187,6 +178,10 @@ static unique_ptr<FunctionData> PragmaTableInfoBind(ClientContext &context, Tabl
 	qname = Binder::BindTableName(retriever, qname);
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, qname);
 	Binder::RegisterEntryRead(input.binder, context, entry);
+	if (entry.type == CatalogType::TABLE_ENTRY && entry.Cast<TableCatalogEntry>().IsDuckTable()) {
+		// ordinary table definitions are fixed by the catalog snapshot - views are rebound during execution
+		input.table_function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	}
 	return make_uniq<PragmaTableFunctionData>(entry, IS_PRAGMA_TABLE_INFO);
 }
 
@@ -304,11 +299,9 @@ void PragmaTableInfo::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction table_info("pragma_table_info",
 	                         FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
 	                         PragmaTableInfoFunction, PragmaTableInfoBind<true>, PragmaTableInfoInit);
-	table_info.is_repeatable = PragmaTableInfoIsRepeatable;
 	set.AddFunction(table_info);
 	TableFunction show("pragma_show", FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
 	                   PragmaTableInfoFunction, PragmaTableInfoBind<false>, PragmaTableInfoInit);
-	show.is_repeatable = PragmaTableInfoIsRepeatable;
 	set.AddFunction(show);
 }
 

@@ -78,14 +78,12 @@ void CountingReaderFunction(ClientContext &, TableFunctionInput &data, DataChunk
 	state.emitted_rows += count;
 }
 
-void RegisterWrappedReader(DuckDB &db, const string &name, table_function_t function, bool with_false_callback) {
+void RegisterWrappedReader(DuckDB &db, const string &name, table_function_t function, bool declare_volatile) {
 	TableFunction single_file(Identifier(name + "_single_file"),
 	                          FunctionSignature().AddPositionalOnly("file", LogicalType::ANY), function,
 	                          WrappedReaderBind, WrappedReaderInit);
-	if (with_false_callback) {
-		single_file.is_repeatable = [](optional_ptr<const FunctionData>) {
-			return false;
-		};
+	if (declare_volatile) {
+		single_file.stability = FunctionStability::VOLATILE;
 	}
 	TableFunctionMultiFileSettings settings;
 	auto wrapped =
@@ -108,10 +106,10 @@ string CreateReaderInputFile(const string &name) {
 
 } // namespace
 
-// SQL cannot register a multi-file-wrapped reader whose wrapped function carries a controlled repeatability
-// callback and an observable execution counter. Keep the wrapper admission contract here, with the builtin
+// SQL cannot register a multi-file-wrapped reader whose wrapped function carries a controlled stability
+// declaration and an observable execution counter. Keep the wrapper admission contract here, with the builtin
 // reader coverage in SQL: the wrapper must not declare a wrapped reader repeatable on its behalf, neither when
-// the reader leaves the callback unset nor when its own callback explicitly returns false.
+// the reader leaves its stability undeclared nor when it explicitly declares itself volatile.
 TEST_CASE("Multi-file wrapping does not make a stateful reader repeatable", "[optimizer][common_subplan]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -139,7 +137,7 @@ TEST_CASE("Multi-file wrapping does not make a stateful reader repeatable", "[op
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(CHECK_COLUMN(result, 0, {4}));
 		// a reader the wrapper declared repeatable would be retained across the iterations and execute once -
-		// without an affirmative callback of its own it must be re-executed every iteration
+		// without an affirmative stability declaration of its own it must be re-executed every iteration
 		REQUIRE(wrapped_reader_executions.load() >= 2);
 	}
 }

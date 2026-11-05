@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/enums/operator_result_type.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb/execution/physical_operator_states.hpp"
@@ -378,14 +379,6 @@ typedef bool (*table_function_supports_pushdown_type_t)(const FunctionData &bind
 
 typedef bool (*table_function_supports_pushdown_extract_t)(const FunctionData &bind_data, const LogicalIndex &col_idx);
 
-//! Whether repeated executions with the same bound data and input rows are equivalent within one query: returning
-//! true guarantees both that every execution produces equivalent rows and that changing how often the scan executes
-//! has no observable side effects (e.g. no counters, logs, or tables written per execution).
-//! Used by optimizers that may share or repeat a scan. Separately bound scans additionally need equivalent
-//! identities before their results may be shared - repeatability alone does not establish that two calls are the
-//! same scan. Do not opt in when execution reads mutable external state or writes any state per execution.
-typedef bool (*table_function_is_repeatable_t)(optional_ptr<const FunctionData> bind_data);
-
 typedef double (*table_function_progress_t)(ClientContext &context, const FunctionData *bind_data,
                                             const GlobalTableFunctionState *global_state);
 typedef void (*table_function_dependency_t)(LogicalDependencyList &dependencies, const FunctionData *bind_data);
@@ -537,8 +530,15 @@ public:
 	table_function_supports_pushdown_type_t supports_pushdown_type;
 	//! (Optional) If this scanner supports projection pushdown of struct extracts
 	table_function_supports_pushdown_extract_t supports_pushdown_extract;
-	//! Optional repeatability capability. An absent callback is treated conservatively as unknown.
-	table_function_is_repeatable_t is_repeatable;
+	//! (Optional) the declared stability of the scan's executions. CONSISTENT_WITHIN_QUERY guarantees that repeated
+	//! executions with the same bound data and input rows return equivalent rows within one query, and that changing
+	//! how often the scan executes has no observable side effects (e.g. no counters, logs, or tables written per
+	//! execution). Used by optimizers that may share or repeat a scan. Separately bound scans additionally need
+	//! equivalent identities before their results may be shared - stability alone does not establish that two calls
+	//! are the same scan. Declare VOLATILE when execution reads mutable external state or writes any state per
+	//! execution. Unset means unknown and is treated conservatively. A stability that depends on the bound call is
+	//! set during binding through TableFunctionBindInput::table_function instead.
+	optional<FunctionStability> stability;
 	//! Get partition info of the table
 	table_function_get_partition_info_t get_partition_info;
 	//! (Optional) get a list of all the partition stats of the table

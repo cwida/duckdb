@@ -54,9 +54,7 @@ void NonSerializableFunction(ClientContext &, TableFunctionInput &data, DataChun
 
 void RegisterNonSerializableTableFunction(DuckDB &db) {
 	TableFunction table_function("nonserial_tf", {}, NonSerializableFunction, NonSerializableBind, NonSerializableInit);
-	table_function.is_repeatable = [](optional_ptr<const FunctionData>) {
-		return true;
-	};
+	table_function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
@@ -89,15 +87,11 @@ void RegisterRepeatabilityTableFunctions(DuckDB &db) {
 	loader.RegisterFunction(unknown);
 	TableFunction non_repeatable("repeatability_false", {LogicalType::INTEGER}, NonSerializableFunction,
 	                             RepeatabilityBind, NonRepeatableInit);
-	non_repeatable.is_repeatable = [](optional_ptr<const FunctionData>) {
-		return false;
-	};
+	non_repeatable.stability = FunctionStability::VOLATILE;
 	loader.RegisterFunction(non_repeatable);
 	TableFunction repeatable("repeatability_true", {LogicalType::INTEGER}, NonSerializableFunction, RepeatabilityBind,
 	                         NonSerializableInit);
-	repeatable.is_repeatable = [](optional_ptr<const FunctionData>) {
-		return true;
-	};
+	repeatable.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	loader.RegisterFunction(repeatable);
 }
 
@@ -129,9 +123,7 @@ void RegisterZeroArgumentTableFunction(DuckDB &db) {
 	ExtensionLoader loader {load_info};
 	TableFunction zero_argument("repeatability_zero_arg", {}, NonSerializableFunction, ZeroArgumentBind,
 	                            ZeroArgumentInit);
-	zero_argument.is_repeatable = [](optional_ptr<const FunctionData>) {
-		return true;
-	};
+	zero_argument.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	loader.RegisterFunction(zero_argument);
 }
 
@@ -171,7 +163,7 @@ TEST_CASE("Common subplan skips table functions without serialization callbacks"
 	REQUIRE(!StringUtil::Contains(explain, "__common_subplan_"));
 }
 
-// SQL cannot register the repeatability callback or make an opaque scan return a different value
+// SQL cannot register the stability declaration or make an opaque scan return a different value
 // deterministically on each initialization. Keep that API contract here, with builtin scan coverage in SQL.
 TEST_CASE("Common subplans require affirmative table function repeatability", "[optimizer][common_subplan]") {
 	DuckDB db(nullptr);
