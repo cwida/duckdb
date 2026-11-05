@@ -28,21 +28,21 @@ struct UnstartedInstance {
 	}
 };
 
-DUCKDB_V2_ERROR TypeFromText(duckdb_v2_factory_handle factory, const char *text,
+DUCKDB_V2_ERROR TypeFromText(duckdb_v2_factory_handle factory, std::string_view text,
                              duckdb_v2_logical_type_handle *out_type) {
-	auto text_str = Convert(text);
-	return duckdb_v2_factory_create_type_from_text(factory, &text_str, out_type, nullptr);
+	return duckdb_v2_factory_create_type_from_text(factory, text.data(), text.size(), out_type, nullptr);
 }
 
 DUCKDB_V2_ERROR TypeFromName(duckdb_v2_factory_handle factory, const std::vector<const char *> &parts,
                              duckdb_v2_logical_type_handle *out_type) {
-	std::vector<duckdb_v2_identifier_t> part_views;
+	StrArray part_views;
 	for (auto *part : parts) {
-		part_views.push_back(Convert(part));
+		part_views.push_back(std::string_view(part));
 	}
 	duckdb_v2_qname_handle qname = nullptr;
-	REQUIRE(duckdb_v2_qname_create(part_views.data(), part_views.size(), &qname, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto rc = duckdb_v2_factory_create_type_from_name(factory, qname, nullptr, nullptr, 0, out_type, nullptr);
+	REQUIRE(duckdb_v2_qname_create(part_views.ptrs(), part_views.lengths(), part_views.size(), &qname, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	auto rc = duckdb_v2_factory_create_type_from_name(factory, qname, nullptr, nullptr, nullptr, 0, out_type, nullptr);
 	duckdb_v2_qname_destroy(&qname);
 	return rc;
 }

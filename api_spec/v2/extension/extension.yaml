@@ -31,7 +31,11 @@ callbacks:
         type: char
         indirection: 1
         const: true
-        description: The API version the extension was built against, e.g. "v2.0.0".
+        kind: IN
+        description: The API version the extension was built against, e.g. "v2.0.0", `version_length` bytes long. Need not be null-terminated.
+      version_length:
+        type: idx
+        description: The length of `version` in bytes.
 structs:
   extension_input:
     description: |

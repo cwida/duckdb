@@ -23,6 +23,8 @@
 
 #include "duckdb_v2.h"
 
+#include <string.h>
+
 //===--------------------------------------------------------------------===//
 // Util Macros
 //===--------------------------------------------------------------------===//
@@ -104,7 +106,8 @@ typedef struct {
 // called before it succeeds, so a failure returns without touching the error slot: the library has already recorded
 // why get_api refused, and reports that.
 #define DUCKDB_EXTENSION_API_INIT(input, minimum_api_version)                                                          \
-	duckdb_ext_api_v2 *res = (duckdb_ext_api_v2 *)(input)->get_api((input)->extension, minimum_api_version);            \
+	duckdb_ext_api_v2 *res = (duckdb_ext_api_v2 *)(input)->get_api((input)->extension, minimum_api_version,             \
+	                                                               strlen(minimum_api_version));                       \
 	if (!res) {                                                                                                        \
 		return;                                                                                                        \
 	};                                                                                                                 \

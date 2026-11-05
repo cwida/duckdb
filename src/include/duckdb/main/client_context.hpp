@@ -437,8 +437,9 @@ private:
 	//! Whether this query or, for an internal connection, the base client's query has a deadline
 	bool HasQueryDeadline() const;
 	bool QueryDeadlinePassed() const;
-	//! Ends the statement that finished: releases its executor and plan and notifies registered state
-	void EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
+	//! Ends the statement that finished: releases its executor and plan and notifies every registered state, also
+	//! when one of them fails. Returns the first failure
+	ErrorData EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
 	void NotifyStatementBeginInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);
