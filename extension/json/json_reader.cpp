@@ -107,7 +107,7 @@ bool JSONFileHandle::GetPositionAndSize(idx_t &position, idx_t &size, idx_t requ
 	read_position += size;
 
 	requested_reads++;
-	if (size == 0) {
+	if (Remaining() == 0) {
 		last_read_requested = true;
 	}
 
@@ -1145,18 +1145,16 @@ void JSONReader::FinalizeBuffer(JSONReaderScanState &scan_state) {
 	}
 
 	// we read something
-	// skip over the array start if required
-	if (!scan_state.is_last) {
-		if (scan_state.buffer_index.GetIndex() == 0) {
-			// the file starts at the buffer offset, which leaves room for the end of a previous buffer when the file
-			// is read in parallel
-			idx_t bom_size = 0;
-			StringUtil::SkipBOM(scan_state.buffer_ptr + scan_state.buffer_offset,
-			                    scan_state.buffer_size - scan_state.buffer_offset, bom_size);
-			scan_state.buffer_offset += bom_size;
-			if (GetFormat() == JSONFormat::ARRAY) {
-				SkipOverArrayStart(scan_state);
-			}
+	// skip over the BOM and the array start if required
+	if (scan_state.buffer_index.GetIndex() == 0 && scan_state.buffer_size >= scan_state.buffer_offset) {
+		// the file starts at the buffer offset, which leaves room for the end of a previous buffer when the file
+		// is read in parallel
+		idx_t bom_size = 0;
+		StringUtil::SkipBOM(scan_state.buffer_ptr + scan_state.buffer_offset,
+		                    scan_state.buffer_size - scan_state.buffer_offset, bom_size);
+		scan_state.buffer_offset += bom_size;
+		if (GetFormat() == JSONFormat::ARRAY) {
+			SkipOverArrayStart(scan_state);
 		}
 	}
 	// then finalize the buffer
@@ -1280,19 +1278,19 @@ bool JSONReader::PrepareBufferForRead(JSONReaderScanState &scan_state) {
 
 bool JSONReader::PrepareBufferSeek(JSONReaderScanState &scan_state) {
 	scan_state.request_size = scan_state.buffer_capacity / 2 - scan_state.prev_buffer_remainder - YYJSON_PADDING_SIZE;
-	if (!IsOpen()) {
+	if (!HasFileHandle()) {
 		return false;
 	}
 	auto &file_handle = GetFileHandle();
-
-	if (file_handle.LastReadRequested()) {
+	// the last read may close the handle concurrently, so check this before IsOpen()
+	if (file_handle.LastReadRequested() || !IsOpen()) {
 		return false;
 	}
 	if (!file_handle.GetPositionAndSize(scan_state.read_position, scan_state.read_size, scan_state.request_size)) {
 		return false; // We weren't able to read
 	}
 	scan_state.buffer_index = GetBufferIndex();
-	scan_state.is_last = scan_state.read_size == 0;
+	scan_state.is_last = file_handle.LastReadRequested();
 	scan_state.needs_to_read = true;
 	scan_state.buffer_size = 0;
 	return true;
