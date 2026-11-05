@@ -94,14 +94,3 @@ physical_plan	<!REGEX>:.*LIMIT.*
 query I
 SELECT i FROM read_parquet('{TEST_DIR}/empty_source_row_bounds.parquet') LIMIT 1
 ----
-
-# union_by_name opens the file at bind: the footer's one row must not be taken as the maximum
-query I
-SELECT count(*) FROM (SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', union_by_name=true) LIMIT 2)
-----
-2
-
-query I
-SELECT count(*) FROM (SELECT i FROM read_parquet(['{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', '{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet'], union_by_name=true) LIMIT 6)
-----
-6

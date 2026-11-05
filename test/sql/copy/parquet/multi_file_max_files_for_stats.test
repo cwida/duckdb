@@ -58,19 +58,3 @@ query II
 EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/sample_stats_0.parquet', '{TEST_DIR}/sample_stats_1.parquet']) LIMIT 100
 ----
 physical_plan	<REGEX>:(?s).*Limit.*
-
-# the footer of this file advertises one row, but its row group has five: the footer total is not a bound
-query I
-SELECT count(*) FROM (SELECT i FROM read_parquet('{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', maximum_files_for_stats=1) LIMIT 2)
-----
-2
-
-query I
-SELECT count(*) FROM (SELECT i FROM read_parquet(['{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', '{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet'], maximum_files_for_stats=2) LIMIT 6)
-----
-6
-
-query I
-SELECT count(*) FROM (SELECT i FROM read_parquet(['{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet', '{DATA_DIR}/parquet-testing/footer_row_count_mismatch.parquet'], maximum_files_for_stats=2) LIMIT 20)
-----
-10

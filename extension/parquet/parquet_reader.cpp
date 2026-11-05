@@ -49,7 +49,6 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
-#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/to_string.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
@@ -1538,26 +1537,6 @@ optional_idx ParquetUnionData::TryGetCardinalityEstimate() const {
 		return NumericCast<idx_t>(metadata->metadata->file_metadata.num_rows);
 	}
 	return optional_idx();
-}
-
-optional_idx ParquetUnionData::TryGetMaxCardinality() const {
-	const duckdb_parquet::FileMetaData *file_metadata = nullptr;
-	if (reader) {
-		file_metadata = reader->Cast<ParquetReader>().GetFileMetadata();
-	} else if (metadata) {
-		file_metadata = &metadata->metadata->file_metadata;
-	}
-	if (!file_metadata) {
-		return optional_idx();
-	}
-	// the footer's total is not validated against the row groups - the row groups are what gets scanned
-	idx_t maximum = 0;
-	for (auto &group : file_metadata->row_groups) {
-		if (group.num_rows < 0 || !TryAddOperator::Operation(maximum, static_cast<idx_t>(group.num_rows), maximum)) {
-			return optional_idx();
-		}
-	}
-	return maximum;
 }
 
 unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &context, const Identifier &name) {

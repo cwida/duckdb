@@ -151,14 +151,10 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 	}
 
 	cardinality = optional_idx();
-	max_cardinality = optional_idx();
 	if (function.cardinality) {
 		auto node_stats = function.cardinality(context, bind_data.get());
 		if (node_stats && node_stats->has_estimated_cardinality) {
 			cardinality = node_stats->estimated_cardinality;
-		}
-		if (node_stats && node_stats->has_max_cardinality) {
-			max_cardinality = node_stats->max_cardinality;
 		}
 	}
 }
@@ -188,7 +184,6 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 	result->names = IdentifiersToStrings(names);
 	result->types = types;
 	result->cardinality = cardinality;
-	result->max_cardinality = max_cardinality;
 	result->bind_data = bind_data;
 	result->statistics = function.statistics;
 	if (file_idx == 0) {

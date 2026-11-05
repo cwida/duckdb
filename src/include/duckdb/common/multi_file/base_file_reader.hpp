@@ -172,10 +172,6 @@ public:
 	virtual optional_idx TryGetCardinalityEstimate() const {
 		return optional_idx();
 	}
-	//! An upper bound on the number of rows of this file, if one is known
-	virtual optional_idx TryGetMaxCardinality() const {
-		return optional_idx();
-	}
 	virtual unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name);
 	DUCKDB_API virtual unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context,
 	                                                                         column_t virtual_column_id);
