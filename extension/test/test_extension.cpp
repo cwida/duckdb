@@ -326,6 +326,119 @@ static void DiscoverBundles(ClientContext &context, const vector<string> &extens
 	}
 }
 
+static bool PathWithinRoot(const string &path, string root) {
+	if (path == root) {
+		return true;
+	}
+	if (!StringUtil::EndsWith(root, "/")) {
+		root += "/";
+	}
+#ifdef DUCKDB_WINDOWS
+	return StringUtil::CIStartsWith(path, root);
+#else
+	return StringUtil::StartsWith(path, root);
+#endif
+}
+
+static TestDescription ResolveSQLTest(ClientContext &context, const string &test_id, const vector<string> &test_roots) {
+	auto test_name = NormalizePath(test_id.substr(4));
+	if (test_name.empty() || FileSystem::IsRemoteFile(test_name) || !IsSQLLogicTest(test_name)) {
+		throw InvalidInputException("Invalid DuckDB SQL test id '%s'", test_id);
+	}
+
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto canonical_path = NormalizePath(fs.CanonicalizePath(test_name));
+	if (!fs.FileExists(canonical_path)) {
+		throw InvalidInputException("Unknown DuckDB test id '%s'", test_id);
+	}
+
+	for (auto &root : test_roots) {
+		if (!fs.DirectoryExists(root)) {
+			continue;
+		}
+		auto canonical_root = NormalizePath(fs.CanonicalizePath(root));
+		if (!PathWithinRoot(canonical_path, canonical_root)) {
+			continue;
+		}
+		auto is_sqlite_root = IsSQLiteTestRoot(canonical_root);
+		if (is_sqlite_root && IsExcludedSQLiteLogicTest(test_name)) {
+			break;
+		}
+		if (TestConfiguration::Get().ShouldSkipTest(test_name)) {
+			break;
+		}
+
+		TestDescription test;
+		test.test_id = test_id;
+		test.name = test_name;
+		test.kind = "sql";
+		test.tags = is_sqlite_root ? "[sqlitelogic][.]" : SQLTestTags(test_name);
+		test.is_slow = test.tags.find("[.]") != string::npos;
+		test.auto_switch_test_dir =
+		    StringUtil::EndsWith(canonical_root, "/test/sql") && test_name.find("/test/sql") != string::npos;
+		test.source = test.auto_switch_test_dir ? canonical_path : test_name;
+		return test;
+	}
+	throw InvalidInputException("Unknown DuckDB test id '%s'", test_id);
+}
+
+static bool IsBundleRegistered(TestRegistryState &registry, const string &bundle_name) {
+	for (auto &entry : GetRegisteredBundles(registry)) {
+		if (entry.name == bundle_name) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void LoadBundle(ClientContext &context, TestRegistryState &registry, const vector<string> &extension_roots,
+                       const string &bundle_name) {
+	if (IsBundleRegistered(registry, bundle_name)) {
+		return;
+	}
+	if (bundle_name.empty() || bundle_name.find('/') != string::npos || bundle_name.find('\\') != string::npos) {
+		throw InvalidInputException("Invalid DuckDB C++ test bundle name '%s'", bundle_name);
+	}
+
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto bundle_file = bundle_name + ".duckdb_extension";
+	vector<string> bundle_paths;
+	for (auto &root : extension_roots) {
+		auto path = fs.JoinPath(root, bundle_file);
+		if (fs.FileExists(path)) {
+			bundle_paths.push_back(path);
+		}
+	}
+	std::sort(bundle_paths.begin(), bundle_paths.end());
+	bundle_paths.erase(std::unique(bundle_paths.begin(), bundle_paths.end()), bundle_paths.end());
+	for (auto &path : bundle_paths) {
+		ExtensionHelper::LoadExternalExtension(context, ExtensionLoadOptions(path));
+	}
+	if (!IsBundleRegistered(registry, bundle_name)) {
+		throw InvalidInputException("Unknown DuckDB C++ test bundle '%s'", bundle_name);
+	}
+}
+
+static TestDescription ResolveCPPTest(ClientContext &context, TestRegistryState &registry, const string &test_id,
+                                      const vector<string> &extension_roots) {
+	auto bundle_separator = test_id.find(':', 4);
+	if (bundle_separator == string::npos || bundle_separator == 4 || bundle_separator + 1 == test_id.size()) {
+		throw InvalidInputException("Invalid DuckDB C++ test id '%s'", test_id);
+	}
+
+	auto bundle_name = test_id.substr(4, bundle_separator - 4);
+	auto test_name = test_id.substr(bundle_separator + 1);
+	LoadBundle(context, registry, extension_roots, bundle_name);
+
+	TestDescription test;
+	test.test_id = test_id;
+	test.name = std::move(test_name);
+	test.kind = "cpp";
+	test.bundle = std::move(bundle_name);
+	test.is_slow = false;
+	return test;
+}
+
 struct EnumerateContext {
 	vector<TestDescription> &tests;
 	const string &bundle_name;
@@ -542,19 +655,17 @@ static unique_ptr<FunctionData> TestRunBind(ClientContext &context, TableFunctio
 	auto extension_roots = ReadStringList(input.inputs[2], "extension_roots");
 	auto test_flags = ReadStringList(input.inputs[3], "test_flags");
 	auto &registry = GetTestRegistry(context);
-	auto available = DiscoverTests(context, registry, test_roots, extension_roots, test_flags);
-	unordered_map<string, TestDescription> tests_by_id;
-	for (auto &test : available) {
-		tests_by_id.emplace(test.test_id, std::move(test));
-	}
+	ConfigureTestFlags(test_flags);
 
 	auto result = make_uniq<TestRunData>();
 	for (auto &test_id : test_ids) {
-		auto entry = tests_by_id.find(test_id);
-		if (entry == tests_by_id.end()) {
-			throw InvalidInputException("Unknown DuckDB test id '%s'", test_id);
+		if (StringUtil::StartsWith(test_id, "sql:")) {
+			result->tests.push_back(ResolveSQLTest(context, test_id, test_roots));
+		} else if (StringUtil::StartsWith(test_id, "cpp:")) {
+			result->tests.push_back(ResolveCPPTest(context, registry, test_id, extension_roots));
+		} else {
+			throw InvalidInputException("Invalid DuckDB test id '%s'", test_id);
 		}
-		result->tests.push_back(entry->second);
 	}
 	result->test_flags = std::move(test_flags);
 	names = {"test_id", "status", "duration_ms", "assertion_count", "failures", "message"};
