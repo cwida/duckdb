@@ -1030,6 +1030,13 @@ static LogicalType CombineNumericTypes(const LogicalType &left, const LogicalTyp
 	// e.g. INTEGER and UINTEGER
 	// in this case we need to upcast to make sure the types fit
 
+	// No signed type is large enough to hold a UHUGEINT, so casting to double is required
+	// UHUGEINT is on the left when combined with HUGEINT because the enum is lower
+	if (left.id() == LogicalTypeId::UHUGEINT || right.id() == LogicalTypeId::UHUGEINT ||
+	    right.id() == LogicalTypeId::HUGEINT) {
+		return LogicalType::DOUBLE;
+	}
+	// the result only needs to hold the unsigned side - the signed side always fits in it
 	if (left.id() == LogicalTypeId::BIGINT || right.id() == LogicalTypeId::UBIGINT) {
 		return LogicalType::HUGEINT;
 	}
@@ -1041,12 +1048,6 @@ static LogicalType CombineNumericTypes(const LogicalType &left, const LogicalTyp
 	}
 	if (left.id() == LogicalTypeId::TINYINT || right.id() == LogicalTypeId::UTINYINT) {
 		return LogicalType::SMALLINT;
-	}
-
-	// No type is larger than (u)hugeint, so casting to double is required
-	// UHUGEINT is on the left because the enum is lower
-	if (left.id() == LogicalTypeId::UHUGEINT || right.id() == LogicalTypeId::HUGEINT) {
-		return LogicalType::DOUBLE;
 	}
 	throw InternalException("Cannot combine these numeric types (%s & %s)", left.ToString(), right.ToString());
 }
