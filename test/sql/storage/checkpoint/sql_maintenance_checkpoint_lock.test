@@ -1,5 +1,5 @@
 # name: test/sql/storage/checkpoint/sql_maintenance_checkpoint_lock.test
-# description: SQL VACUUM and ANALYZE exclude checkpoints without making their transactions read-write.
+# description: SQL VACUUM and ANALYZE hold checkpoint exclusion only while executing.
 # group: [checkpoint]
 
 require noforcestorage
@@ -45,7 +45,46 @@ statement ok maintenance
 statement ok maintenance
 {operation} other.t;
 
-# Reuse the transaction's existing checkpoint lock.
+# Repeated maintenance must not retain checkpoint exclusion in the transaction.
+statement ok maintenance
+{operation} t;
+
+statement ok maintenance
+CHECKPOINT;
+
+statement ok
+CHECKPOINT;
+
+# An idle maintenance transaction must not prevent automatic checkpoints on another connection.
+statement ok
+SET checkpoint_threshold='1B';
+
+statement ok
+INSERT INTO t VALUES (32);
+
+query I
+SELECT wal_size = '0 bytes' FROM pragma_database_size() WHERE database_name = current_database();
+----
+true
+
+query I maintenance
+SELECT count(*) FROM t;
+----
+32
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok maintenance
+COMMIT;
+
+# A lock already held for a write must remain transaction-scoped.
+statement ok maintenance
+BEGIN;
+
+statement ok maintenance
+UPDATE t SET k=k WHERE k=0;
+
 statement ok maintenance
 {operation} t;
 
@@ -55,7 +94,7 @@ CHECKPOINT;
 Cannot CHECKPOINT
 
 statement ok maintenance
-COMMIT;
+ROLLBACK;
 
 statement ok
 CHECKPOINT;
@@ -63,7 +102,7 @@ CHECKPOINT;
 query I
 SELECT count(*) FROM t;
 ----
-32
+33
 
 statement ok
 DETACH other;

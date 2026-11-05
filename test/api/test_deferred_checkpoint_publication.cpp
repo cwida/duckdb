@@ -6,6 +6,7 @@
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 
 #include <chrono>
@@ -18,7 +19,7 @@ using namespace duckdb;
 // Small data payloads fit in one partial block, whose first write occurs after preparation but before publication.
 // A filesystem gate pauses that write to test concurrent inserts/deletes, rollback, and old-reader visibility.
 // The full-checkpoint case checks that vacuum exclusion protects remapped indexes until table publication.
-// Each scenario either completes the write or injects an I/O failure, then verifies the data after reopening.
+// Checkpoint failure cases inject write errors; maintenance cases also gate reads to test error/cancellation cleanup.
 // The gate controls the publication window without relying on sleep-based scheduling.
 namespace {
 
@@ -27,34 +28,30 @@ public:
 	explicit GatedCheckpointFileSystem(string database_name_p) : database_name(std::move(database_name_p)) {
 	}
 
+	using LocalFileSystem::Read;
 	using LocalFileSystem::Write;
 
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
-		bool fail_write = false;
-		if (StringUtil::EndsWith(handle.GetPath(), database_name)) {
-			unique_lock<mutex> guard(lock);
-			if (armed) {
-				armed = false;
-				parked = true;
-				cv.notify_all();
-				if (!cv.wait_for(guard, std::chrono::seconds(60), [&]() { return released; })) {
-					throw IOException("Timed out waiting to release checkpoint write");
-				}
-				fail_write = fail_checkpoint;
-			}
-		}
-		if (fail_write) {
+		if (WaitForRelease(handle, false)) {
 			throw IOException("Injected deferred checkpoint write failure");
 		}
 		LocalFileSystem::Write(handle, buffer, nr_bytes, location);
 	}
 
-	void Arm(bool fail) {
+	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
+		if (WaitForRelease(handle, true)) {
+			throw IOException("Injected SQL maintenance read failure");
+		}
+		LocalFileSystem::Read(handle, buffer, nr_bytes, location);
+	}
+
+	void Arm(bool fail, bool read = false) {
 		lock_guard<mutex> guard(lock);
 		armed = true;
 		parked = false;
 		released = false;
 		fail_checkpoint = fail;
+		gate_reads = read;
 	}
 
 	bool WaitUntilParked() {
@@ -72,6 +69,24 @@ public:
 	}
 
 private:
+	bool WaitForRelease(FileHandle &handle, bool reading) {
+		if (!StringUtil::EndsWith(handle.GetPath(), database_name)) {
+			return false;
+		}
+		unique_lock<mutex> guard(lock);
+		if (!armed || gate_reads != reading) {
+			return false;
+		}
+		armed = false;
+		parked = true;
+		cv.notify_all();
+		if (!cv.wait_for(guard, std::chrono::seconds(60), [&]() { return released; })) {
+			throw IOException("Timed out waiting to release gated file I/O");
+		}
+		return fail_checkpoint;
+	}
+
+private:
 	string database_name;
 	mutex lock;
 	std::condition_variable cv;
@@ -79,11 +94,12 @@ private:
 	bool parked = false;
 	bool released = false;
 	bool fail_checkpoint = false;
+	bool gate_reads = false;
 };
 
 struct GatedCheckpointDatabase {
 	explicit GatedCheckpointDatabase(const string &name, bool small_row_groups_p = false)
-	    : path(TestCreatePath(name)), small_row_groups(small_row_groups_p) {
+	    : database_name(name), path(TestCreatePath(name)), small_row_groups(small_row_groups_p) {
 		DeleteDatabase(path);
 		auto fs = make_uniq<GatedCheckpointFileSystem>(name);
 		gate = *fs;
@@ -120,20 +136,27 @@ struct GatedCheckpointDatabase {
 		}
 	}
 
-	void Reopen() {
+	void Reopen(bool gate_io = false) {
 		FinishCheckpoint();
 		checkpoint_result.reset();
 		gate = nullptr;
 		db.reset();
+		DBConfig config;
+		if (gate_io) {
+			auto fs = make_uniq<GatedCheckpointFileSystem>(database_name);
+			gate = *fs;
+			config.file_system = make_uniq<VirtualFileSystem>(std::move(fs));
+		}
 		if (small_row_groups) {
-			db = make_uniq<DuckDB>(nullptr);
+			db = make_uniq<DuckDB>(nullptr, &config);
 			Connection con(*db);
 			REQUIRE_NO_FAIL(con.Query("ATTACH '" + path + "' AS data (ROW_GROUP_SIZE 2048, STORAGE_VERSION 'latest')"));
 		} else {
-			db = make_uniq<DuckDB>(path);
+			db = make_uniq<DuckDB>(path, &config);
 		}
 	}
 
+	string database_name;
 	string path;
 	bool small_row_groups;
 	unique_ptr<DuckDB> db;
@@ -362,4 +385,60 @@ TEST_CASE("SQL index maintenance waits for checkpoint publication", "[api][stora
 	Connection con(*database.db);
 	RequireScalar(con, "SELECT count(*) FROM a", 32);
 	RequireScalar(con, "SELECT count(*) FROM a WHERE k=17", 1);
+}
+
+TEST_CASE("SQL maintenance scans allow checkpoints before failure or cancellation", "[api][storage][checkpoint]") {
+	const string operation = GENERATE("VACUUM", "ANALYZE");
+	const bool fail_read = GENERATE(false, true);
+	CAPTURE(operation, fail_read);
+	GatedCheckpointDatabase database("sql_maintenance_cleanup.db");
+	{
+		Connection con(*database.db);
+		REQUIRE_NO_FAIL(con.Query("SET checkpoint_threshold='1TB'"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(k INTEGER PRIMARY KEY, v BIGINT)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO a SELECT range, range*10 FROM range(10000)"));
+		REQUIRE_NO_FAIL(con.Query("CREATE SEQUENCE checkpoint_marker"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+	database.Reopen(true);
+	Connection maintenance(*database.db);
+	Connection observer(*database.db);
+	REQUIRE_NO_FAIL(maintenance.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(maintenance.Query("SET read_ahead_depth=0"));
+	REQUIRE_NO_FAIL(maintenance.Query("SET debug_physical_table_scan_execution_strategy='SYNCHRONOUS'"));
+	REQUIRE_NO_FAIL(maintenance.Query("BEGIN TRANSACTION READ ONLY"));
+	auto prepared = maintenance.Prepare(operation + " a");
+	REQUIRE(!prepared->HasError());
+	std::future<unique_ptr<QueryResult>> checkpoint_result;
+	std::future<unique_ptr<QueryResult>> pending_result;
+	CheckpointReleaseGuard release_guard {database};
+	database.gate->Arm(fail_read, true);
+	pending_result = std::async(std::launch::async, [&]() { return prepared->Execute(); });
+	REQUIRE(database.gate->WaitUntilParked());
+
+	// A real checkpoint can finish while maintenance is still scanning, before it needs exclusion.
+	REQUIRE_NO_FAIL(observer.Query("SELECT nextval('checkpoint_marker')"));
+	checkpoint_result = std::async(std::launch::async, [&]() { return observer.Query("CHECKPOINT"); });
+	REQUIRE(checkpoint_result.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+	auto checkpoint = checkpoint_result.get();
+	REQUIRE_NO_FAIL(*checkpoint);
+	if (!fail_read) {
+		maintenance.Interrupt();
+	}
+	database.gate->Release();
+	REQUIRE(pending_result.wait_for(std::chrono::seconds(60)) == std::future_status::ready);
+	auto result = pending_result.get();
+	REQUIRE(result->HasError());
+	if (fail_read) {
+		REQUIRE(StringUtil::Contains(result->GetError(), "Injected SQL maintenance read failure"));
+	}
+
+	// Failed scans never reach Finalize; retaining their prepared plan must not retain a lock.
+	REQUIRE_NO_FAIL(observer.Query("CHECKPOINT"));
+	maintenance.context->ClearInterrupt();
+	REQUIRE_NO_FAIL(maintenance.Query("ROLLBACK"));
+	auto retry = prepared->Execute();
+	REQUIRE_NO_FAIL(*retry);
+	REQUIRE_NO_FAIL(observer.Query("CHECKPOINT"));
+	RequireScalar(observer, "SELECT count(*) FROM a", 10000);
 }

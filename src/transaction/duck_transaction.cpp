@@ -354,10 +354,11 @@ void DuckTransaction::Cleanup(VisibilityBound lowest_visibility_bound) {
 	undo_buffer.Cleanup(lowest_visibility_bound);
 }
 
-void DuckTransaction::RequireCheckpointLock() {
-	if (!checkpoint_lock) {
-		checkpoint_lock = GetTransactionManager().SharedCheckpointLock();
+unique_ptr<StorageLockKey> DuckTransaction::GetCheckpointLockForStatement() {
+	if (checkpoint_lock) {
+		return nullptr;
 	}
+	return GetTransactionManager().SharedCheckpointLock();
 }
 
 void DuckTransaction::SetModifications(DatabaseModificationType type) {
@@ -372,7 +373,7 @@ void DuckTransaction::SetModifications(DatabaseModificationType type) {
 
 		if (require_write_lock) {
 			// obtain a shared checkpoint lock to prevent concurrent checkpoints while this transaction is running
-			RequireCheckpointLock();
+			checkpoint_lock = GetTransactionManager().SharedCheckpointLock();
 		}
 	}
 	if (!vacuum_lock) {
