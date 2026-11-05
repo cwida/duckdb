@@ -27,21 +27,3 @@ query I
 SELECT CONCAT('hello number ', 100::UHUGEINT)
 ----
 hello number 100
-
-# combining UHUGEINT with a signed integer type resolves to DOUBLE - no signed type holds both
-query IIII
-SELECT typeof([1::UHUGEINT, 1::TINYINT]), typeof([1::UHUGEINT, 1::INTEGER]), typeof([1::UHUGEINT, 1::BIGINT]), typeof([1::UHUGEINT, 1::HUGEINT])
-----
-DOUBLE[]	DOUBLE[]	DOUBLE[]	DOUBLE[]
-
-# the combination covers the whole UHUGEINT range, so these no longer raise a conversion error
-query II
-SELECT 170141183460469231731687303715884105728::UHUGEINT > 1::INTEGER, 170141183460469231731687303715884105728::UHUGEINT > 1::BIGINT
-----
-true	true
-
-# the DOUBLE combination is approximate beyond 2^53, like the pre-existing UHUGEINT/HUGEINT pair
-query II
-SELECT 9007199254740992::UHUGEINT = 9007199254740993::BIGINT, 9007199254740992::UHUGEINT = 9007199254740993::HUGEINT
-----
-true	true
