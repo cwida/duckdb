@@ -68,10 +68,6 @@ public:
 	//! Whether a registered cast can change this default conversion, including nested casts.
 	//! Data-dependent VARIANT conversions are treated conservatively.
 	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;
-	//! Whether binding this conversion yields a cast that can execute for non-NULL values.
-	//! False when the bound cast, or an element or member conversion it retains, is NULL-only.
-	DUCKDB_API bool CastIsExecutable(const LogicalType &source, const LogicalType &target,
-	                                 optional_ptr<ClientContext> context = nullptr);
 
 	//! Register a combine rule for LogicalType::TryGetMaxLogicalType, consulted before previously registered rules
 	//! and the built-in rules
@@ -99,7 +95,6 @@ private:
 
 private:
 	void RegisterCastFunction(const LogicalType &source, const LogicalType &target, MapCastNode node);
-	//! Whether a cast has been registered for this conversion, including relaxed matches on nested ANY types
 	bool HasRegisteredCast(const LogicalType &source, const LogicalType &target) const;
 };
 

@@ -132,35 +132,6 @@ bool StructToUnionCast::Cast(Vector &source, Vector &result, idx_t count, CastPa
 
 // Bind cast
 
-namespace {
-
-//! The struct representation of a union - the first child casts the tag, the rest cast the members
-struct StructToUnionBoundCastData : public StructBoundCastData {
-	StructToUnionBoundCastData(vector<BoundCastInfo> child_casts, LogicalType target_p)
-	    : StructBoundCastData(std::move(child_casts), std::move(target_p)) {
-	}
-
-public:
-	unique_ptr<BoundCastData> Copy() const override {
-		vector<BoundCastInfo> copy_info;
-		for (auto &info : child_cast_info) {
-			copy_info.push_back(info.Copy());
-		}
-		return make_uniq<StructToUnionBoundCastData>(std::move(copy_info), target);
-	}
-	bool ContainsNullCast() const override {
-		// a union value carries one member - the cast only fails for every value if every member cast does
-		for (idx_t i = 1; i < child_cast_info.size(); i++) {
-			if (!child_cast_info[i].ContainsNullCast()) {
-				return false;
-			}
-		}
-		return child_cast_info.size() > 1;
-	}
-};
-
-} // namespace
-
 unique_ptr<BoundCastData> StructToUnionCast::BindData(BindCastInput &input, const LogicalType &source,
                                                       const LogicalType &target) {
 	vector<BoundCastInfo> child_cast_info;
@@ -177,7 +148,7 @@ unique_ptr<BoundCastData> StructToUnionCast::BindData(BindCastInput &input, cons
 		auto child_cast = input.GetCastFunction(source_child, target_child);
 		child_cast_info.push_back(std::move(child_cast));
 	}
-	return make_uniq<StructToUnionBoundCastData>(std::move(child_cast_info), target);
+	return make_uniq<StructBoundCastData>(std::move(child_cast_info), target);
 }
 
 BoundCastInfo StructToUnionCast::Bind(BindCastInput &input, const LogicalType &source, const LogicalType &target) {

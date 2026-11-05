@@ -56,18 +56,6 @@ SELECT array_value(1, 2, 3)::INT[4]
 ----
 Conversion Error: Cannot cast array of size 3 to array of size 4
 
-# NULL values pass through mismatched array sizes, like every other cast
-query I
-SELECT CAST(a AS INT[3]) FROM (VALUES (NULL::INT[2])) t(a)
-----
-NULL
-
-# a non-NULL value next to the NULL still fails
-statement error
-SELECT CAST(a AS INT[3]) FROM (VALUES (NULL::INT[2]), ([1, 2]::INT[2])) t(a)
-----
-Conversion Error: Cannot cast array of size 2 to array of size 3
-
 # Should be able to cast from list to array
 query I
 SELECT [1,2,3]::INT[3]

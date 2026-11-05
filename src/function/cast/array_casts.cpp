@@ -4,7 +4,6 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/cast/bound_cast_data.hpp"
@@ -50,16 +49,13 @@ static bool ArrayToArrayCast(Vector &source, Vector &result, idx_t count, CastPa
 	auto source_array_size = ArrayType::GetSize(source.GetType());
 	auto target_array_size = ArrayType::GetSize(result.GetType());
 	if (source_array_size != target_array_size) {
-		// Cant cast between arrays of different sizes - every non-NULL value fails
-		bool all_null = true;
-		if (VectorOperations::HasNotNull(source)) {
-			auto msg = StringUtil::Format("Cannot cast array of size %u to array of size %u", source_array_size,
-			                              target_array_size);
-			HandleCastError::AssignError(msg, parameters);
-			all_null = false;
-		}
+		// Cant cast between arrays of different sizes
+		auto msg = StringUtil::Format("Cannot cast array of size %u to array of size %u", source_array_size,
+		                              target_array_size);
+		HandleCastError::AssignError(msg, parameters);
+		// every row fails, so just return null
 		ConstantVector::SetNull(result, count_t(count));
-		return all_null;
+		return false;
 	}
 
 	auto &cast_data = parameters.cast_data->Cast<ArrayBoundCastData>();
@@ -216,16 +212,9 @@ BoundCastInfo DefaultCasts::ArrayCastSwitch(BindCastInput &input, const LogicalT
 		                                   ArrayType::GetChildType(source));
 		return BoundCastInfo(ArrayToVarcharCast, std::move(cast_data), ArrayBoundCastData::InitArrayLocalState);
 	}
-	case LogicalTypeId::ARRAY: {
-		BoundCastInfo cast(ArrayToArrayCast, ArrayBoundCastData::BindArrayToArrayCast(input, source, target),
-		                   ArrayBoundCastData::InitArrayLocalState);
-		if (!ArrayType::IsAnySize(source) && !ArrayType::IsAnySize(target) &&
-		    ArrayType::GetSize(source) != ArrayType::GetSize(target)) {
-			// a static size mismatch fails for every non-NULL value, but must stay bindable for TRY_CAST
-			cast.SetNullOnly();
-		}
-		return cast;
-	}
+	case LogicalTypeId::ARRAY:
+		return BoundCastInfo(ArrayToArrayCast, ArrayBoundCastData::BindArrayToArrayCast(input, source, target),
+		                     ArrayBoundCastData::InitArrayLocalState);
 	case LogicalTypeId::LIST:
 		return BoundCastInfo(ArrayToListCast, BindArrayToListCast(input, source, target),
 		                     ArrayBoundCastData::InitArrayLocalState);

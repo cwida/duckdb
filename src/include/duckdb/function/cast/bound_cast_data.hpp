@@ -25,9 +25,6 @@ public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ListBoundCastData>(child_cast_info.Copy());
 	}
-	bool ContainsNullCast() const override {
-		return child_cast_info.ContainsNullCast();
-	}
 };
 
 struct ArrayBoundCastData : public BoundCastData {
@@ -43,9 +40,6 @@ struct ArrayBoundCastData : public BoundCastData {
 public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<ArrayBoundCastData>(child_cast_info.Copy());
-	}
-	bool ContainsNullCast() const override {
-		return child_cast_info.ContainsNullCast();
 	}
 };
 
@@ -107,14 +101,6 @@ public:
 		return make_uniq<StructBoundCastData>(std::move(copy_info), target, source_indexes, target_indexes,
 		                                      target_null_indexes);
 	}
-	bool ContainsNullCast() const override {
-		for (auto &info : child_cast_info) {
-			if (info.ContainsNullCast()) {
-				return true;
-			}
-		}
-		return false;
-	}
 };
 
 struct StructCastLocalState : public FunctionLocalState {
@@ -136,9 +122,6 @@ struct MapBoundCastData : public BoundCastData {
 public:
 	unique_ptr<BoundCastData> Copy() const override {
 		return make_uniq<MapBoundCastData>(key_cast.Copy(), value_cast.Copy());
-	}
-	bool ContainsNullCast() const override {
-		return key_cast.ContainsNullCast() || value_cast.ContainsNullCast();
 	}
 };
 
@@ -167,14 +150,6 @@ public:
 			copy_value_casts.push_back(value_cast.Copy());
 		}
 		return make_uniq<StructToMapBoundCastData>(key_cast.Copy(), std::move(copy_value_casts));
-	}
-	bool ContainsNullCast() const override {
-		for (auto &value_cast : value_casts) {
-			if (value_cast.ContainsNullCast()) {
-				return true;
-			}
-		}
-		return key_cast.ContainsNullCast();
 	}
 };
 

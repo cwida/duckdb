@@ -11,13 +11,6 @@ SELECT CAST(array_value(1,2) as INTEGER[3]);
 ----
 Conversion Error: Cannot cast array of size 2 to array of size 3
 
-# mixed NULL and non-NULL rows all become NULL under TRY_CAST
-query I
-SELECT TRY_CAST(a AS INTEGER[3]) FROM (VALUES (NULL::INTEGER[2]), ([1, 2]::INTEGER[2])) t(a)
-----
-NULL
-NULL
-
 # Nested array try cast
 query I
 SELECT TRY_CAST(x as INT[2][2]) FROM (VALUES ([[1,2],[3,4]]), ([[5,6],[7,8]])) AS t(x)

@@ -303,11 +303,12 @@ SELECT histogram(union_value(a := [1])::UNION(a INTEGER[], b DATE), b) FROM (VAL
 ----
 <REGEX>:.*Conversion Error.*Unimplemented type for cast.*
 
-# an inactive union member with mismatched array sizes does not block bins using other members
-query I
+# the union-to-union bins cast converts inactive members as all-NULL vectors - a member with
+# mismatched array sizes still raises its runtime error for them
+statement error
 SELECT list_aggregate(map_values(histogram(union_value(b := 1)::UNION(a INTEGER[3], b INTEGER), b)), 'sum') FROM (VALUES ([union_value(b := 1)::UNION(a INTEGER[2], b INTEGER)])) t(b)
 ----
-1
+<REGEX>:.*Cannot cast array of size 2 to array of size 3.*
 
 # the struct representation of a union does not unify with the union argument
 statement error

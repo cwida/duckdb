@@ -241,16 +241,6 @@ bool CastFunctionSet::CanOverrideDefaultCast(const LogicalType &source, const Lo
 	return probe.registered_cast_found;
 }
 
-bool CastFunctionSet::CastIsExecutable(const LogicalType &source, const LogicalType &target,
-                                       optional_ptr<ClientContext> context) {
-	if (source == target || source.id() == LogicalTypeId::SQLNULL || source.id() == LogicalTypeId::UNKNOWN) {
-		return true;
-	}
-	// bind the conversion and check the casts it retains for NULL-only legs
-	GetCastFunctionInput input(context);
-	return !GetCastFunction(source, target, input).ContainsNullCast();
-}
-
 int64_t CastFunctionSet::ImplicitCastCost(optional_ptr<ClientContext> context, const LogicalType &source,
                                           const LogicalType &target) {
 	if (registration_probe && registration_probe->HasRegisteredCast(source, target)) {
