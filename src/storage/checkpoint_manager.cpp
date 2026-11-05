@@ -102,9 +102,10 @@ optional_ptr<ClientContext> ActiveCheckpointWrapper::GetCheckpointContext() cons
 	return checkpoint_context;
 }
 
-CheckpointWriter::CheckpointWriter(AttachedDatabase &db_p, QueryContext query_context)
+CheckpointWriter::CheckpointWriter(AttachedDatabase &db_p, QueryContext query_context,
+                                   optional_ptr<ClientContext> client_context_p)
     : db(db_p), owned_context(query_context.Valid() ? nullptr : db_p.GetDatabase().Services()),
-      context(query_context.Valid() ? *query_context.GetContext() : *owned_context) {
+      context(query_context.Valid() ? *query_context.GetContext() : *owned_context), client_context(client_context_p) {
 }
 
 CheckpointWriter::~CheckpointWriter() {
@@ -113,8 +114,9 @@ CheckpointWriter::~CheckpointWriter() {
 void ReorderTableEntries(catalog_entry_vector_t &tables);
 
 SingleFileCheckpointWriter::SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db,
-                                                       BlockManager &block_manager, CheckpointOptions options_p)
-    : CheckpointWriter(db, context),
+                                                       BlockManager &block_manager, CheckpointOptions options_p,
+                                                       optional_ptr<ClientContext> client_context)
+    : CheckpointWriter(db, context, client_context),
       partial_block_manager(GetContext(), block_manager, PartialBlockType::FULL_CHECKPOINT),
       index_partial_block_manager(GetContext(), block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
 }
@@ -752,9 +754,8 @@ void SingleFileCheckpointWriter::WriteTable(TableCatalogEntry &table, Serializer
 	serializer.WriteProperty(100, "table", &table);
 
 	// Explicit checkpoints bind indexes before serialization, so that buffered index operations are replayed
-	// and not lost on a restart. During a commit-time checkpoint the caller has no active transaction.
-	auto client_context = GetContext().TryGetClientContext();
-	if (client_context && client_context->transaction.HasActiveTransaction() && checkpoint_context) {
+	// and not lost on a restart. Only explicit checkpoints have a client context.
+	if (TryGetClientContext() && checkpoint_context) {
 		D_ASSERT(checkpoint_context->transaction.HasActiveTransaction());
 		// Bind indexes with checkpoint transaction, which is already running and read-only, so any transaction the
 		// binder still starts skips start_transaction_lock.

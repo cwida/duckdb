@@ -72,7 +72,8 @@ private:
 
 class CheckpointWriter {
 public:
-	CheckpointWriter(AttachedDatabase &db, QueryContext context);
+	//! The client context is only set for explicit checkpoints, which bind buffered index operations before writing
+	CheckpointWriter(AttachedDatabase &db, QueryContext context, optional_ptr<ClientContext> client_context = nullptr);
 	virtual ~CheckpointWriter();
 
 	//! The database
@@ -81,6 +82,10 @@ public:
 	//! The services of the query that triggered the checkpoint, or database-wide services if there is none
 	Context &GetContext() const {
 		return context;
+	}
+	//! The client that triggered an explicit checkpoint (null for checkpoints on commit and on shutdown)
+	optional_ptr<ClientContext> TryGetClientContext() const {
+		return client_context;
 	}
 
 	virtual void CreateCheckpoint() = 0;
@@ -91,6 +96,7 @@ public:
 private:
 	shared_ptr<Context> owned_context;
 	Context &context;
+	optional_ptr<ClientContext> client_context;
 
 protected:
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
@@ -152,7 +158,7 @@ class SingleFileCheckpointWriter final : public CheckpointWriter {
 
 public:
 	SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
-	                           CheckpointOptions options);
+	                           CheckpointOptions options, optional_ptr<ClientContext> client_context = nullptr);
 
 	void CreateCheckpoint() override;
 
