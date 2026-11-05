@@ -132,6 +132,11 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::SliceInternal(const LogicalType &type
 	return new_buffer;
 }
 
+buffer_ptr<VectorBuffer> DictionaryBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                     count_t count) const {
+	return ConstantReference(entry->data, sel_vector.get_index(index), count);
+}
+
 Value DictionaryBuffer::GetValue(const LogicalType &type, idx_t index) const {
 	if (index >= Size()) {
 		throw InternalException("DictionaryBuffer::GetValue out of range for selection vector");
