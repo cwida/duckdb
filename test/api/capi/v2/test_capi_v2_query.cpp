@@ -116,9 +116,10 @@ TEST_CASE("V2: a max_execution_time timeout surfaces as an error, not CANCELLED"
 	// assertions to the suite total.
 	std::string msg;
 	if (err) {
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		msg = Convert(text);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		msg = std::string(text, text_length);
 	}
 	INFO("timeout error detail: " << (!msg.empty() ? msg : "(none)"));
 	CHECK(status != DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED);

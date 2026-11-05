@@ -1,0 +1,29 @@
+# name: test/sql/catalog/nested_schema_ctas_temp.test
+# description: A persistent table does not suppress a temporary CTAS of the same name
+# group: [catalog]
+
+statement ok
+CREATE TABLE tshadow AS SELECT 1 AS n;
+
+statement ok
+CREATE TEMP TABLE tshadow AS SELECT 2 AS n;
+
+# the temporary table shadows the persistent one and carries the CTAS rows
+query I
+SELECT n FROM tshadow;
+----
+2
+
+query I
+SELECT n FROM temp.main.tshadow;
+----
+2
+
+statement ok
+DROP TABLE temp.main.tshadow;
+
+# the persistent table kept its own rows
+query I
+SELECT n FROM tshadow;
+----
+1

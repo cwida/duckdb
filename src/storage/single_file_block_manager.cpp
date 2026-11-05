@@ -836,7 +836,10 @@ void SingleFileBlockManager::Initialize(const DatabaseHeader &header, const opti
 	free_list_id = header.free_list;
 	meta_block = header.meta_block;
 	iteration_count = header.iteration;
-	max_block = NumericCast<block_id_t>(header.block_count);
+	if (header.block_count > static_cast<uint64_t>(NumericLimits<block_id_t>::Maximum())) {
+		throw DataCorruptionException("Corrupt database file: invalid block count %llu", header.block_count);
+	}
+	max_block = UnsafeNumericCast<block_id_t>(header.block_count);
 	if (options.storage_version != StorageVersion::INVALID) {
 		// storage version specified explicitly - use requested storage version
 		auto requested_compat_version = options.storage_version;

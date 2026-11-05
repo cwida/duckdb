@@ -620,6 +620,13 @@
         ]
     },
     {
+        "name": "default_grammar_extensions",
+        "description": "The grammar extensions sessions parse with when active_grammar_extensions is not set.",
+        "type": "VARCHAR[]",
+        "scope": "global",
+        "custom_implementation": true
+    },
+    {
         "name": "default_null_order",
         "description": "The NULL ordering used when none is specified (NULLS_FIRST or NULLS_LAST).",
         "type": "ENUM<DefaultOrderByNullType>",
@@ -1436,6 +1443,13 @@
             "set"
         ],
         "is_deprecated": true
+    },
+    {
+        "name": "scalar_aggregate_merge_threshold",
+        "description": "The number of rows a table needs for sibling scalar aggregates over it to be computed in one pass. 0 computes them in one pass only over table functions such as read_parquet.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0"
     },
     {
         "name": "scalar_subquery_error_on_multiple_rows",

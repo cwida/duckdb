@@ -46,6 +46,16 @@ public:
 	virtual void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) {
 		QueryEnd(context);
 	}
+	//! A statement of the active query starts, after QueryBegin and before it is planned. A statement that expands
+	//! into several runs them as one query, with a StatementBegin and StatementEnd for each
+	virtual void StatementBegin(ClientContext &context) {
+	}
+	//! A statement of the active query released its executor and plan, before the next one starts
+	virtual void StatementEnd(ClientContext &context) {
+	}
+	virtual void StatementEnd(ClientContext &context, optional_ptr<ErrorData> error) {
+		StatementEnd(context);
+	}
 	virtual void TransactionBegin(MetaTransaction &transaction, ClientContext &context) {
 	}
 	virtual void TransactionCommit(MetaTransaction &transaction, ClientContext &context) {
@@ -156,7 +166,7 @@ private:
 			return snapshot;
 		}
 		lock_guard<mutex> l(lock);
-		snapshot = state_snapshot;
+		snapshot = state_snapshot.atomic_load();
 		if (!snapshot && !registered_state.empty()) {
 			snapshot = make_shared_ptr<vector<shared_ptr<ClientContextState>>>(StatesInternal());
 			state_snapshot.atomic_store(snapshot);

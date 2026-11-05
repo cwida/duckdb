@@ -385,6 +385,7 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
     {"glue_replace_columns", "glue", CatalogType::TABLE_FUNCTION_ENTRY},
     {"glue_set_partition_location", "glue", CatalogType::TABLE_FUNCTION_ENTRY},
     {"glue_set_table_location", "glue", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"gpu_execution", "sirius", CatalogType::TABLE_FUNCTION_ENTRY},
     {"grade_up", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"greatest", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"greatest_common_divisor", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
@@ -807,6 +808,7 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
     {"signbit", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"sin", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"sinh", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
+    {"sirius_status", "sirius", CatalogType::TABLE_FUNCTION_ENTRY},
     {"skewness", "core_functions", CatalogType::AGGREGATE_FUNCTION_ENTRY},
     {"sleep_ms", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"sql_auto_complete", "autocomplete", CatalogType::TABLE_FUNCTION_ENTRY},
@@ -1397,6 +1399,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"glue_get_partitions_segments", "glue"},
     {"glue_metadata_cache_scope", "glue"},
     {"glue_network_calls_via_duckdb", "glue"},
+    {"gpu_execution", "sirius"},
     {"hf_max_per_page", "httpfs"},
     {"hive_partition_listing_threshold", "glue"},
     {"hnsw_ef_search", "vss"},
@@ -1437,6 +1440,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"mysql_session_time_zone", "mysql_scanner"},
     {"mysql_time_as_time", "mysql_scanner"},
     {"mysql_tinyint1_as_boolean", "mysql_scanner"},
+    {"parquet_can_have_nan", "parquet"},
     {"parquet_metadata_cache", "parquet"},
     {"parquet_prefetch_column_gap", "parquet"},
     {"parquet_use_page_index", "parquet"},
@@ -1505,6 +1509,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"s3_url_compatibility_mode", "httpfs"},
     {"s3_url_scheme_aliases", "httpfs"},
     {"s3_url_style", "httpfs"},
+    {"s3_use_global_endpoint", "httpfs"},
     {"s3_use_ssl", "httpfs"},
     {"s3_version_id_pinning", "httpfs"},
     {"sqlite_all_varchar", "sqlite_scanner"},
@@ -1533,6 +1538,11 @@ static constexpr ExtensionEntry EXTENSION_SECRET_TYPES[] = {
     {"rds", "postgres_scanner"}, {"s3", "httpfs"},
     {"uc", "unity_catalog"},     {"unity_catalog", "unity_catalog"},
 }; // END_OF_EXTENSION_SECRET_TYPES
+
+// Resource types registered by extensions: CREATE/REGISTER EXTERNAL RESOURCE '<type>' autoloads the extension
+static constexpr ExtensionEntry EXTENSION_EXTERNAL_RESOURCE_TYPES[] = {
+    {"aws:cloudformation:quack-on-ec2", "aws"},
+}; // END_OF_EXTENSION_EXTERNAL_RESOURCE_TYPES
 
 // Note: these are currently hardcoded in scripts/generate_extensions_function.py
 // TODO: automate by passing though to script via duckdb

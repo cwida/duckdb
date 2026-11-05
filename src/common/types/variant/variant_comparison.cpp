@@ -12,31 +12,56 @@ constexpr int64_t NANOS_PER_MILLI = 1000000;
 constexpr int64_t NANOS_PER_SEC = 1000000000;
 constexpr int64_t NANOS_PER_DAY = 86400LL * NANOS_PER_SEC;
 
+//! Writes the decimal digits of value into the back of buffer (which must hold 20 characters) and
+//! returns the offset of the first digit - so no length has to be computed up front.
+idx_t UInt64Digits(uint64_t value, char *buffer) {
+	idx_t pos = 20;
+	while (value >= 10) {
+		buffer[--pos] = static_cast<char>('0' + value % 10);
+		value /= 10;
+	}
+	buffer[--pos] = static_cast<char>('0' + value);
+	return pos;
+}
+
 //! Build a number key from a sign, the decimal digits of the magnitude (no leading zeros, as e.g.
-//! produced by Uhugeint::ToString) and a base-10 scale (value = magnitude / 10^scale)
-VariantNumberKey BuildNumberKey(bool negative, const string &magnitude_digits, int64_t scale) {
+//! produced by UInt64Digits) and a base-10 scale (value = magnitude / 10^scale)
+VariantNumberKey BuildNumberKey(bool negative, const char *digits, idx_t count, int64_t scale) {
 	VariantNumberKey key;
-	// find the first non-zero digit (magnitude strings have no leading zeros, but be defensive)
+	// find the first non-zero digit (magnitude digits have no leading zeros, but be defensive)
 	idx_t first = 0;
-	while (first < magnitude_digits.size() && magnitude_digits[first] == '0') {
+	while (first < count && digits[first] == '0') {
 		first++;
 	}
-	if (first == magnitude_digits.size()) {
+	if (first == count) {
 		// the value is zero
 		key.number_class = 1;
 		key.adjusted_exponent = 0;
+		key.digit_count = 0;
 		return key;
 	}
 	key.number_class = negative ? 0 : 2;
 	// position of the leading digit: (#digits after leading zeros - 1) - scale
-	key.adjusted_exponent = static_cast<int64_t>(magnitude_digits.size() - first) - 1 - scale;
+	key.adjusted_exponent = NumericCast<int64_t>(count - first) - 1 - scale;
 	// strip trailing zeros (keep at least the leading digit)
-	idx_t last = magnitude_digits.size();
-	while (last > first + 1 && magnitude_digits[last - 1] == '0') {
+	idx_t last = count;
+	while (last > first + 1 && digits[last - 1] == '0') {
 		last--;
 	}
-	key.digits = magnitude_digits.substr(first, last - first);
+	key.SetDigits(digits + first, last - first);
 	return key;
+}
+
+//! Build a number key from a 128-bit magnitude, using 64-bit arithmetic whenever the value fits
+VariantNumberKey BuildNumberKey(bool negative, uhugeint_t magnitude, int64_t scale) {
+	if (magnitude.upper == 0) {
+		char buffer[20];
+		auto offset = UInt64Digits(magnitude.lower, buffer);
+		return BuildNumberKey(negative, buffer + offset, 20 - offset, scale);
+	}
+	// magnitudes above 64 bits are rare, and are guaranteed to fit inline (39 digits)
+	auto magnitude_digits = Uhugeint::ToString(magnitude);
+	return BuildNumberKey(negative, magnitude_digits.data(), magnitude_digits.size(), scale);
 }
 
 //! Decompose a 128-bit signed value (hugeint) into (sign, magnitude)
@@ -55,17 +80,8 @@ uhugeint_t HugeintMagnitude(const hugeint_t value, bool &negative) {
 	return uhugeint_t(hi, lo);
 }
 
-//! Decimal-digit string of a 128-bit magnitude. Uses a cheap 64-bit conversion when the value fits in
-//! 64 bits, avoiding the slower 128-bit Uhugeint::ToString.
-string MagnitudeToString(uhugeint_t magnitude) {
-	if (magnitude.upper == 0) {
-		return to_string(magnitude.lower);
-	}
-	return Uhugeint::ToString(magnitude);
-}
-
-//! Build a number key from a native (<= 64-bit) integer value, computing the magnitude in 64-bit
-//! arithmetic instead of widening every value to uhugeint_t.
+//! Build a number key from a native (<= 64-bit) integer value, computing the magnitude and its
+//! decimal digits in 64-bit arithmetic instead of widening every value to uhugeint_t.
 template <class T>
 VariantNumberKey IntegerNumberKey(T value) {
 	bool negative = false;
@@ -76,7 +92,9 @@ VariantNumberKey IntegerNumberKey(T value) {
 			magnitude = static_cast<uint64_t>(0) - magnitude; // unsigned negate -> |value| (also handles the minimum)
 		}
 	}
-	return BuildNumberKey(negative, to_string(magnitude), 0);
+	char buffer[20];
+	auto offset = UInt64Digits(magnitude, buffer);
+	return BuildNumberKey(negative, buffer + offset, 20 - offset, 0);
 }
 } // namespace
 
@@ -176,14 +194,14 @@ VariantNumberKey VariantGetNumberKey(VariantLogicalType type_id, const VariantNo
 		}
 		bool negative;
 		const auto magnitude = HugeintMagnitude(unscaled, negative);
-		return BuildNumberKey(negative, MagnitudeToString(magnitude), decimal_data.scale);
+		return BuildNumberKey(negative, magnitude, decimal_data.scale);
 	}
 	case VariantLogicalType::BIGNUM: {
 		const auto bignum_blob = node.GetString();
 		const auto decimal_string = Bignum::BignumToVarchar(bignum_t(bignum_blob));
 		const bool negative = !decimal_string.empty() && decimal_string[0] == '-';
 		const idx_t offset = negative ? 1 : 0;
-		return BuildNumberKey(negative, decimal_string.substr(offset), 0);
+		return BuildNumberKey(negative, decimal_string.data() + offset, decimal_string.size() - offset, 0);
 	}
 	// integer types - use the native width for the magnitude, only widening to 128-bit when necessary
 	case VariantLogicalType::INT8:
@@ -205,10 +223,10 @@ VariantNumberKey VariantGetNumberKey(VariantLogicalType type_id, const VariantNo
 	case VariantLogicalType::INT128: {
 		bool negative;
 		const auto magnitude = HugeintMagnitude(Load<hugeint_t>(node.GetDataPointer()), negative);
-		return BuildNumberKey(negative, MagnitudeToString(magnitude), 0);
+		return BuildNumberKey(negative, magnitude, 0);
 	}
 	case VariantLogicalType::UINT128:
-		return BuildNumberKey(false, MagnitudeToString(Load<uhugeint_t>(node.GetDataPointer())), 0);
+		return BuildNumberKey(false, Load<uhugeint_t>(node.GetDataPointer()), 0);
 	default:
 		throw InternalException("VariantGetNumberKey called on non-number type %s", EnumUtil::ToString(type_id));
 	}

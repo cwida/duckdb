@@ -719,6 +719,8 @@ bool GroupedAggregateHashTable::UpdateAggregatesClustered(DataChunk &payload, co
 
 void GroupedAggregateHashTable::UpdateAggregates(DataChunk &payload, const unsafe_vector<idx_t> &filter, idx_t count,
                                                  bool ht_offsets_valid) {
+	// evaluate every aggregate filter once for this chunk
+	filter_set.ApplyFilters(payload, filter);
 	if (UpdateAggregatesClustered(payload, filter, count, ht_offsets_valid)) {
 		Verify();
 		return;
@@ -739,7 +741,7 @@ void GroupedAggregateHashTable::UpdateAggregates(DataChunk &payload, const unsaf
 
 		if (aggr.aggr_type != AggregateType::DISTINCT && aggr.filter) {
 			RowOperations::UpdateFilteredStates(state.row_state, filter_set.GetFilterData(i), aggr, state.addresses,
-			                                    payload, payload_idx);
+			                                    payload_idx);
 		} else {
 			RowOperations::UpdateStates(state.row_state, aggr, state.addresses, payload, payload_idx);
 		}

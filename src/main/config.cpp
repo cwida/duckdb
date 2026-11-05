@@ -145,6 +145,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(DebugWindowModeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultBlockSizeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultCollationSetting),
+    DUCKDB_GLOBAL(DefaultGrammarExtensionsSetting),
     DUCKDB_SETTING_CALLBACK(DefaultNullOrderSetting),
     DUCKDB_SETTING_CALLBACK(DefaultOrderSetting),
     DUCKDB_GLOBAL(DefaultSecretStorageSetting),
@@ -245,6 +246,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
     DUCKDB_SETTING(RedactHttpLogsSetting),
     DUCKDB_SETTING_CALLBACK(RegexMatchOperatorSemanticsSetting),
+    DUCKDB_SETTING(ScalarAggregateMergeThresholdSetting),
     DUCKDB_SETTING(ScalarSubqueryErrorOnMultipleRowsSetting),
     DUCKDB_SETTING(SchedulerProcessPartialSetting),
     DUCKDB_LOCAL(SchemaSetting),
@@ -703,10 +705,11 @@ void DBConfig::CheckLock(const Identifier &name) {
 		// we are always allowed to change these settings
 		return;
 	}
-	if (!options.allowed_configs.empty()) {
+	auto allowed_configs = GetAllowedConfigs();
+	if (!allowed_configs.empty()) {
 		auto option = GetOptionByName(name);
 		auto canonical_name = option ? Identifier(option->name) : name;
-		if (options.allowed_configs.find(canonical_name) != options.allowed_configs.end()) {
+		if (allowed_configs.find(canonical_name) != allowed_configs.end()) {
 			// settings that are allowed through allowed_configs
 			return;
 		}
@@ -1018,6 +1021,16 @@ bool DBConfig::IsOptimizerDisabled(OptimizerType type) const {
 	}
 	lock_guard<mutex> guard(disabled_optimizers_lock);
 	return options.disabled_optimizers.find(type) != options.disabled_optimizers.end();
+}
+
+LogicalType DBConfig::GetForceVariantShredding() const {
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
+	return options.force_variant_shredding;
+}
+
+identifier_set_t DBConfig::GetAllowedConfigs() const {
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
+	return options.allowed_configs;
 }
 
 set<OptimizerType> DBConfig::GetDisabledOptimizers() const {
