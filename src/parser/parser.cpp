@@ -3,6 +3,7 @@
 #include "duckdb/parser/peg/keyword_helper/duckdb_keyword_helper.hpp"
 
 #include "duckdb/main/extension_callback_manager.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/group_by_node.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parser_extension.hpp"
@@ -41,14 +42,10 @@ Parser Parser::GetBuiltinParser() {
 }
 
 CompiledGrammar &Parser::GetGrammar() {
-	if (!compiled_grammar) {
-		if (options.compiled_grammar) {
-			compiled_grammar = options.compiled_grammar;
-		} else {
-			throw InternalException("ParserOptions requires a compiled grammar");
-		}
+	if (!options.compiled_grammar) {
+		throw InternalException("ParserOptions requires a compiled grammar");
 	}
-	return *compiled_grammar;
+	return *options.compiled_grammar;
 }
 
 static bool ReplaceUnicodeSpaces(const string &query, string &new_query, vector<UnicodeSpace> &unicode_spaces) {
@@ -268,6 +265,7 @@ void Parser::ParseQuery(const string &query_p) {
 			auto result = ext.parser_override(ext.parser_info.get(), query, options);
 			if (result.type == ParserExtensionResultType::PARSE_SUCCESSFUL) {
 				statements = std::move(result.statements);
+				RunPostParseHooks();
 				return;
 			}
 			if (options.parser_override_setting == AllowParserOverride::STRICT_OVERRIDE) {
@@ -315,6 +313,36 @@ void Parser::ParseQuery(const string &query_p) {
 			}
 		}
 	}
+	RunPostParseHooks();
+}
+
+void Parser::RunPostParseHooks() {
+	if (!context) {
+		return;
+	}
+	for (auto &statement : statements) {
+		PostParseExtension::CallPostParseFunctions(*context, *statement);
+	}
+}
+
+Parser Parser::ParseNested(const string &query) {
+	Parser parser(options);
+	parser.context = context;
+	parser.ParseQuery(query);
+	return parser;
+}
+
+Parser Parser::ParseFragment(const string &query, StatementType wrapper_type) {
+	// parse without the context, so that no hook sees a statement before the check below
+	Parser parser(options);
+	parser.ParseQuery(query);
+	if (parser.statements.size() != 1 || parser.statements[0]->type != wrapper_type) {
+		throw ParserException("Expected a single %s statement", StatementTypeToString(wrapper_type));
+	}
+	if (context) {
+		PostParseExtension::CallPostParseFunctions(*context, *parser.statements[0], true);
+	}
+	return parser;
 }
 
 unique_ptr<SQLStatement> Parser::TryParseExtensionStatement(TokenIterator &token_iterator, const string &query) {
@@ -704,8 +732,7 @@ vector<ParserKeyword> Parser::KeywordList() {
 }
 
 unique_ptr<QueryNode> Parser::ParseSelectNode(const string &query) {
-	Parser parser(options);
-	parser.ParseQuery(query);
+	auto parser = ParseNested(query);
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw InternalException("Expected a single select statement");
 	}
@@ -716,8 +743,7 @@ vector<unique_ptr<ParsedExpression>> Parser::ParseExpressionList(const string &s
 	// construct a mock query prefixed with SELECT
 	string mock_query = "SELECT " + select_list;
 	// parse the query
-	Parser parser(options);
-	parser.ParseQuery(mock_query);
+	auto parser = ParseFragment(mock_query, StatementType::SELECT_STATEMENT);
 	// check the statements
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw ParserException("Expected a single SELECT statement");
@@ -760,8 +786,7 @@ GroupByNode Parser::ParseGroupByList(const string &group_by) {
 	// construct a mock SELECT query with our group_by expressions
 	string mock_query = StringUtil::Format("SELECT 42 GROUP BY %s", group_by);
 	// parse the query
-	Parser parser(options);
-	parser.ParseQuery(mock_query);
+	auto parser = ParseFragment(mock_query, StatementType::SELECT_STATEMENT);
 	// check the result
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw ParserException("Expected a single SELECT statement");
@@ -776,8 +801,7 @@ vector<OrderByNode> Parser::ParseOrderList(const string &select_list) {
 	// construct a mock query
 	string mock_query = "SELECT * FROM tbl ORDER BY " + select_list;
 	// parse the query
-	Parser parser(options);
-	parser.ParseQuery(mock_query);
+	auto parser = ParseFragment(mock_query, StatementType::SELECT_STATEMENT);
 	// check the statements
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw ParserException("Expected a single SELECT statement");
@@ -798,8 +822,7 @@ void Parser::ParseUpdateList(const string &update_list, vector<Identifier> &upda
 	// construct a mock query
 	string mock_query = "UPDATE tbl SET " + update_list;
 	// parse the query
-	Parser parser(options);
-	parser.ParseQuery(mock_query);
+	auto parser = ParseFragment(mock_query, StatementType::UPDATE_STATEMENT);
 	// check the statements
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::UPDATE_STATEMENT) {
 		throw ParserException("Expected a single UPDATE statement");
@@ -813,8 +836,7 @@ vector<vector<unique_ptr<ParsedExpression>>> Parser::ParseValuesList(const strin
 	// construct a mock query
 	string mock_query = "VALUES " + value_list;
 	// parse the query
-	Parser parser(options);
-	parser.ParseQuery(mock_query);
+	auto parser = ParseFragment(mock_query, StatementType::SELECT_STATEMENT);
 	// check the statements
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw ParserException("Expected a single SELECT statement");
@@ -833,8 +855,7 @@ vector<vector<unique_ptr<ParsedExpression>>> Parser::ParseValuesList(const strin
 
 ColumnList Parser::ParseColumnList(const string &column_list) {
 	string mock_query = "CREATE TABLE tbl (" + column_list + ")";
-	Parser parser(options);
-	parser.ParseQuery(mock_query);
+	auto parser = ParseFragment(mock_query, StatementType::CREATE_STATEMENT);
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::CREATE_STATEMENT) {
 		throw ParserException("Expected a single CREATE statement");
 	}

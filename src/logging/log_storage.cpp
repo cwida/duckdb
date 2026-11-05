@@ -485,7 +485,7 @@ unique_ptr<TableRef> FileLogStorage::BindReplaceInternal(ClientContext &context,
 	string sub_query_string =
 	    StringUtil::Format("%s FROM read_csv_auto(%s, columns={%s})", select_clause, SQLString(path), csv_columns);
 
-	Parser parser(context);
+	auto parser = Parser::WithoutPostParseHooks(context);
 	parser.ParseQuery(sub_query_string);
 	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
 

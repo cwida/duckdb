@@ -25,7 +25,7 @@ static LogicalType TransformStringToUnboundType(const string &str, ClientContext
 	ColumnList column_list;
 	try {
 		column_list = Parser(context).ParseColumnList("dummy " + str);
-	} catch (const std::runtime_error &e) {
+	} catch (const ParserException &e) {
 		const vector<string> suggested_types {"BIGINT",
 		                                      "INT8",
 		                                      "LONG",

@@ -15,6 +15,7 @@
 #include "duckdb/parser/simplified_token.hpp"
 #include "duckdb/parser/parser_options.hpp"
 #include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/parser/parser_extension.hpp"
 
 namespace duckdb {
@@ -37,12 +38,18 @@ struct UnicodeSpace {
 //! plan and executed.
 class Parser {
 public:
-	//! Snapshot the connection's parser settings, extensions and cached grammar.
+	//! Snapshot the connection's parser settings, extensions and cached grammar, and keep the connection: ParseQuery
+	//! passes each statement it parses to the post-parse hooks.
 	explicit Parser(ClientContext &context);
-	//! Preserve identifier spelling when reparsing generated SQL.
+	//! Like Parser(ClientContext &), with the given identifier case mode.
 	explicit Parser(ClientContext &context, IdentifierCaseMode identifier_case_mode);
 	//! Explicit standalone configuration, without a client context.
 	explicit Parser(const ParserOptions &options);
+	//! The connection's parser settings, extensions and grammar, without the connection: the post-parse hooks do not
+	//! see what it parses. Use it for SQL the engine writes and binds for its own work, such as the subqueries
+	//! duckdb_logs() and the file log storage read with, and for client SQL that is parsed but never bound or run, such
+	//! as json_serialize_sql's argument (see "Not called for" at post_parse_function_t).
+	static Parser WithoutPostParseHooks(ClientContext &context);
 	Parser(Parser &&other) noexcept;
 	//! Built-in semantics and shared built-in grammar, independent of any connection.
 	static Parser GetBuiltinParser();
@@ -56,6 +63,8 @@ public:
 	//! whether or not the parsing was successful. If the parsing was
 	//! successful, the parsed statements will be stored in the statements
 	//! variable.
+	//! When this parser carries a ClientContext, each parsed statement is given to the post-parse hooks before
+	//! ParseQuery returns (see post_parse_function_t in parser_extension.hpp).
 	void ParseQuery(const string &query);
 
 	//! Parse a single TopLevelStatement from the already-tokenized `query`. On success advances
@@ -120,8 +129,24 @@ private:
 	//! nullptr if no extension claims the segment.
 	unique_ptr<SQLStatement> TryParseExtensionStatement(TokenIterator &token_iterator, const string &query);
 	CompiledGrammar &GetGrammar();
+	//! If this parser has a client context, give each parsed statement to the post-parse hooks on that context.
+	//! Called before ParseQuery returns, on the parser_override and the PEG path. A parser without a context
+	//! (Parser(const ParserOptions &), GetBuiltinParser, WithoutPostParseHooks) passes nothing.
+	void RunPostParseHooks();
+	//! Parses a statement for one of this parser's helpers with a new parser that has this parser's options and
+	//! context, so a parser built for a client passes the context on.
+	Parser ParseNested(const string &query);
+	//! Parses a statement one of this parser's helpers built around a fragment of SQL (see PostParseExtensionInput)
+	//! with this parser's options. Throws a ParserException unless it is exactly one statement of wrapper_type, before
+	//! any hook sees it; then a parser built for a client gives it to the post-parse hooks, marked as a fragment.
+	Parser ParseFragment(const string &query, StatementType wrapper_type);
 
 	ParserOptions options;
-	shared_ptr<CompiledGrammar> compiled_grammar;
+	//! The connection this parser parses for, or null for a context-free parse. Set by Parser(ClientContext &);
+	//! ParseNested and ParseFragment use it for the helpers' parses.
+	//! Layout: upstream DuckDB's Parser holds a shared_ptr<CompiledGrammar> here, and prebuilt extensions allocate
+	//! Parser objects with upstream's size (88 bytes). This member is smaller, so sizeof(Parser) is 80 and those
+	//! extensions keep working; GetGrammar() reads options.compiled_grammar instead. Don't add members.
+	optional_ptr<ClientContext> context;
 };
 } // namespace duckdb

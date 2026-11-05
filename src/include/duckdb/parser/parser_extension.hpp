@@ -11,6 +11,7 @@
 #include "duckdb/parser/parser_options.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/enums/statement_type.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/sql_statement.hpp"
@@ -170,6 +171,102 @@ public:
 	shared_ptr<ParserExtensionInfo> parser_info;
 
 	static void Register(DBConfig &config, ParserExtension extension);
+};
+
+//===--------------------------------------------------------------------===//
+// PostParseExtension
+//===--------------------------------------------------------------------===//
+//! What a post_parse_function is given along with the statement
+struct PostParseExtensionInput {
+	//! The connection the statement was parsed for
+	ClientContext &context;
+	//! The PostParseExtension's parser_info
+	optional_ptr<ParserExtensionInfo> info;
+	//! The statement wraps a fragment of SQL rather than being a statement the client wrote. To parse an expression
+	//! list, an ORDER BY or GROUP BY list, an UPDATE SET list, a VALUES list or a column list (type strings are
+	//! parsed as one), the parser wraps the fragment in a statement it builds itself: SELECT <list>, SELECT * FROM tbl
+	//! ORDER BY <list>, SELECT 42 GROUP BY <list>, UPDATE tbl SET <list>, VALUES <list>, or CREATE TABLE tbl
+	//! (<columns>). It is always exactly one statement of the wrapper's type: a fragment that parses into anything
+	//! else is rejected with a ParserException before any hook sees it. Only the statement type and the text the parser
+	//! puts around the fragment (such as FROM tbl, UPDATE tbl and CREATE TABLE tbl) are the parser's; everything else
+	//! in the statement is the client's SQL, including the tables and table functions a subquery in it names. A hook
+	//! that checks statement types or table names should skip only the parser's parts, and check the rest as it would
+	//! a statement the client wrote. Find the parser's parts by their position in the wrapper (the outer FROM clause,
+	//! the UPDATE target, the created table), not by the name tbl: the client's SQL can name a table tbl too.
+	//! These reach the hook for the relational API's expression strings, COPY's ORDER_BY option, and type strings such
+	//! as read_csv(columns = {...}), including type strings in SQL the engine builds for the client's statement (the
+	//! column types the file log storage reads its files with).
+	bool is_fragment;
+};
+
+//! Called on every statement parsed from SQL text that runs for a client, after it is parsed (by the parser or a
+//! parser_override extension) and before it is bound, and on the deserialized statement json_execute_serialized_sql
+//! runs. That is:
+//!  - each statement of a client's query, prepare or extract-statements input (C++, C API v1 and v2), before
+//!    statement preprocessing. That includes SQL text engine or extension code runs on a Connection;
+//!  - each statement a PRAGMA expands to, during preprocessing, all of them before the first is bound; for IMPORT
+//!    DATABASE, the SQL in the directory's files;
+//!  - the SQL text given to Connection::RelationFromQuery, and the statement of an appender at every flush: a query
+//!    appender's query, or the INSERT a table appender (or Connection::Append) builds from the table;
+//!  - SQL parsed while the client's statement is bound, so the hook runs inside that binding: the argument of
+//!    query(), the SQL query_table() builds from its table names, and the subquery a C API v2 replacement scan
+//!    supplies;
+//!  - the argument of json_serialize_plan, each time the function is evaluated (all of its statements before the
+//!    first is bound). That is while the client's statement executes, once for each row of a column argument and on
+//!    the worker threads that evaluate it; a constant argument may also be evaluated while the statement is planned
+//!    (constant folding);
+//!  - the statement json_execute_serialized_sql runs. The table function binds and runs the deserialized statement
+//!    on a connection of its own, and first gives it to the hooks with the client's context, while the client's
+//!    statement is bound; it has no query text (SQLStatement::query is empty), so a hook must check the syntax tree.
+//!    The PRAGMA renders the statement as SQL, which reaches the hook like any statement a PRAGMA expands to;
+//!  - fragments of the client's SQL, wrapped in a statement the parser builds (see PostParseExtensionInput).
+//! The statement is passed as parsed, before preprocessing unpacks it: a PIVOT without an IN list, for example, is
+//! one MULTI_STATEMENT, and its CREATE TYPE and SELECT are its children (MultiStatement::statements).
+//! The hook may throw to reject the statement, which fails the client's request (json_serialize_plan returns the
+//! error as its error result). Reject with an exception other than ParserException, such as PermissionException: a
+//! caller may catch ParserException to report input that does not parse in its own words (a type string that does not
+//! parse is reported as an invalid type), which would replace the hook's message. A rejected statement of a client's
+//! input fails where a parse error of that statement would, and no later statement of the same input runs.
+//! The hook can run during the execution of the client's statement, and on several threads at once for the same
+//! context (json_serialize_plan above): it must be safe to call concurrently.
+//! The hook must not run statements on `context`: on most of these paths it runs with the context's lock held, and
+//! that lock is not reentrant. Use a separate Connection.
+//! Not called for:
+//!  - definitions read from storage instead of parsed from the client's SQL: the views, macros, column defaults and
+//!    CHECK constraints of a DuckDB database file a client attaches or opens. They are bound as part of the client's
+//!    statement without passing this hook, so a consumer that relies on it must control which databases a client
+//!    can attach (the ATTACH statement, with its path, does pass the hook). A catalog that stores definitions as SQL
+//!    text decides by how it parses them: with a Parser(ClientContext &), as CreateViewInfo::FromCreateView does,
+//!    each definition reaches the hook when it is loaded, as a statement that is not a fragment (a view as a CREATE
+//!    VIEW statement, so a hook that rejects CREATE statements fails reads of the view); parsed without a context,
+//!    none does. A consumer should rely on neither;
+//!  - SQL the engine parses for itself: built-in macro and view definitions, the SQL SHOW and DESCRIBE generate, and
+//!    the subqueries duckdb_logs() reads the logs with (type strings in them still reach the hook as fragments);
+//!  - the statement query verification (a debug setting) parses again, which the hook has already seen;
+//!  - json_serialize_sql, which only parses;
+//!  - a statement C++ code passes in already parsed, such as to Connection::Query(unique_ptr<SQLStatement>).
+//! Parse SQL that a client's request runs with Parser(ClientContext &), which passes each statement to the hooks,
+//! and the engine's own SQL listed above without a context (Parser::WithoutPostParseHooks or
+//! Parser::GetBuiltinParser). Call PostParseExtension::CallPostParseFunctions only on statements a client's SQL was
+//! parsed into without such a Parser, as ParseIterator does, and on statements a client's request runs that were not
+//! parsed from SQL text, as json_execute_serialized_sql does.
+typedef void (*post_parse_function_t)(PostParseExtensionInput &input, const SQLStatement &statement);
+
+//! Registers a post_parse_function. Not a member of ParserExtension: extensions built against an older header pass
+//! ParserExtension to ParserExtension::Register by value, so its layout must not change.
+class PostParseExtension {
+public:
+	//! Inspects a statement after parsing; throw to reject it (see post_parse_function_t)
+	post_parse_function_t post_parse_function = nullptr;
+
+	//! Passed to post_parse_function
+	shared_ptr<ParserExtensionInfo> parser_info;
+
+	static void Register(DBConfig &config, PostParseExtension extension);
+	//! Calls the post_parse_function of every registered PostParseExtension, in registration order, on a statement
+	//! parsed from SQL text that runs for a client (see post_parse_function_t). is_fragment says the statement wraps
+	//! a fragment (see PostParseExtensionInput). An exception a hook throws propagates.
+	static void CallPostParseFunctions(ClientContext &context, const SQLStatement &statement, bool is_fragment = false);
 };
 
 } // namespace duckdb

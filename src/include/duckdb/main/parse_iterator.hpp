@@ -73,6 +73,9 @@ private:
 	void ApplyInvalidationPolicy(const ErrorData &error);
 	//! Tokenize the full input once (grammar-free); no-op if already tokenized.
 	void EnsureTokenized();
+	//! Run the post_parse_function of every PostParseExtension on a parsed statement and buffer it as
+	//! current_statement. If a hook throws, the statement is dropped and the iterator is exhausted.
+	void BufferStatement(unique_ptr<SQLStatement> statement);
 
 private:
 	//! The bound context, used for parser options / metrics / override extensions.

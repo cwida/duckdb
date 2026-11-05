@@ -19,6 +19,8 @@ struct ExtensionCallbackRegistry {
 	vector<shared_ptr<DialectExtension>> dialect_extensions;
 	//! Extensions made to the parser
 	vector<ParserExtension> parser_extensions;
+	//! Hooks that inspect statements after parsing
+	vector<PostParseExtension> post_parse_extensions;
 	//! Extensions made to the grammar of the main (PEG) parser
 	case_insensitive_map_t<shared_ptr<GrammarExtension>> grammar_extensions;
 	//! Extensions made to the planner
@@ -77,6 +79,13 @@ void ExtensionCallbackManager::Register(ParserExtension extension) {
 	auto new_registry = CopyRegistry();
 	new_registry->parser_extensions.push_back(std::move(extension));
 	PublishRegistry(std::move(new_registry));
+}
+
+void ExtensionCallbackManager::Register(PostParseExtension extension) {
+	lock_guard<mutex> guard(registry_lock);
+	auto new_registry = make_shared_ptr<ExtensionCallbackRegistry>(*callback_registry);
+	new_registry->post_parse_extensions.push_back(std::move(extension));
+	callback_registry.atomic_store(new_registry);
 }
 
 void ExtensionCallbackManager::Register(shared_ptr<GrammarExtension> extension) {
@@ -186,6 +195,12 @@ ExtensionCallbackIteratorHelper<ParserExtension> ExtensionCallbackManager::Parse
 	return ExtensionCallbackIteratorHelper<ParserExtension>(parser_extensions);
 }
 
+ExtensionCallbackIteratorHelper<PostParseExtension> ExtensionCallbackManager::PostParseExtensions() const {
+	auto registry = callback_registry.atomic_load();
+	auto &post_parse_extensions = registry->post_parse_extensions;
+	return ExtensionCallbackIteratorHelper<PostParseExtension>(post_parse_extensions, std::move(registry));
+}
+
 ExtensionCallbackIteratorHelper<shared_ptr<DialectExtension>> ExtensionCallbackManager::DialectExtensions() const {
 	auto registry = callback_registry.load();
 	auto &dialect_extensions = registry->dialect_extensions;
@@ -254,6 +269,20 @@ void ParserExtension::Register(DBConfig &config, ParserExtension extension) {
 	config.GetCallbackManager().Register(std::move(extension));
 }
 
+void PostParseExtension::Register(DBConfig &config, PostParseExtension extension) {
+	config.GetCallbackManager().Register(std::move(extension));
+}
+
+void PostParseExtension::CallPostParseFunctions(ClientContext &context, const SQLStatement &statement,
+                                                bool is_fragment) {
+	for (auto &extension : DBConfig::GetConfig(context).GetCallbackManager().PostParseExtensions()) {
+		if (extension.post_parse_function) {
+			PostParseExtensionInput input {context, extension.parser_info.get(), is_fragment};
+			extension.post_parse_function(input, statement);
+		}
+	}
+}
+
 void GrammarExtension::Register(DatabaseInstance &db, shared_ptr<GrammarExtension> extension) {
 	DBConfig::GetConfig(db).GetCallbackManager().Register(std::move(extension));
 }
@@ -295,6 +324,7 @@ template class ExtensionCallbackIteratorHelper<shared_ptr<ExtensionCallback>>;
 template class ExtensionCallbackIteratorHelper<shared_ptr<OperatorExtension>>;
 template class ExtensionCallbackIteratorHelper<OptimizerExtension>;
 template class ExtensionCallbackIteratorHelper<ParserExtension>;
+template class ExtensionCallbackIteratorHelper<PostParseExtension>;
 template class ExtensionCallbackIteratorHelper<shared_ptr<GrammarExtension>>;
 template class ExtensionCallbackIteratorHelper<shared_ptr<DialectExtension>>;
 template class ExtensionCallbackIteratorHelper<PlannerExtension>;

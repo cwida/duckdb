@@ -4,6 +4,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/parser_extension.hpp"
 #include "json_deserializer.hpp"
 #include "json_functions.hpp"
 #include "json_serializer.hpp"
@@ -93,7 +94,7 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 		yyjson_mut_doc_set_root(doc, result_obj);
 
 		try {
-			Parser parser(state.GetContext());
+			auto parser = Parser::WithoutPostParseHooks(state.GetContext());
 			parser.ParseQuery(input.GetString());
 
 			auto statements_arr = yyjson_mut_arr(doc);
@@ -314,6 +315,9 @@ struct ExecuteSqlTableFunction {
 		if (stmts.size() != 1) {
 			throw BinderException("json_execute_serialized_sql expects exactly one statement");
 		}
+		// The statement is bound and run on a connection of its own, which has no SQL text to parse: give it to the
+		// post-parse hooks with the client's context, as if the client had written it.
+		PostParseExtension::CallPostParseFunctions(context, *stmts[0]);
 		result->plan = result->con->RelationFromQuery(std::move(stmts[0]));
 
 		for (auto &col : result->plan->Columns()) {

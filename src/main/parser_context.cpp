@@ -11,10 +11,15 @@
 namespace duckdb {
 
 Parser::Parser(ClientContext &context) : Parser(context.GetParserOptions()) {
+	this->context = &context;
 }
 
 Parser::Parser(ClientContext &context, IdentifierCaseMode identifier_case_mode) : Parser(context) {
 	options.identifier_case_mode = identifier_case_mode;
+}
+
+Parser Parser::WithoutPostParseHooks(ClientContext &context) {
+	return Parser(context.GetParserOptions());
 }
 
 shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
