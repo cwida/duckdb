@@ -185,11 +185,7 @@ bool Hugeint::TryMultiply(hugeint_t lhs, hugeint_t rhs, hugeint_t &result) {
 		return false;
 	}
 	uint64_t upper = uint64_t(result_i128 >> 64);
-	if (upper & 0x8000000000000000) {
-		return false;
-	}
-	result.upper = int64_t(upper);
-	result.lower = uint64_t(result_i128 & 0xffffffffffffffff);
+	uint64_t lower = uint64_t(result_i128 & 0xffffffffffffffff);
 #else
 	// Multiply code adapted from:
 	// https://github.com/calccrypto/uint128_t/blob/master/uint128_t.cpp
@@ -213,8 +209,8 @@ bool Hugeint::TryMultiply(hugeint_t lhs, hugeint_t rhs, hugeint_t &result) {
 		return false;
 	}
 	// if the high bits of any of these are set, there is always an overflow
-	if ((products[0][3] & 0xffffffff80000000) || (products[1][2] & 0xffffffff80000000) ||
-	    (products[2][1] & 0xffffffff80000000) || (products[3][0] & 0xffffffff80000000)) {
+	if ((products[0][3] & 0xffffffff00000000) || (products[1][2] & 0xffffffff00000000) ||
+	    (products[2][1] & 0xffffffff00000000) || (products[3][0] & 0xffffffff00000000)) {
 		return false;
 	}
 
@@ -244,7 +240,7 @@ bool Hugeint::TryMultiply(hugeint_t lhs, hugeint_t rhs, hugeint_t &result) {
 	first32 += second32 >> 32;
 
 	// check if the combination of the different products resulted in an overflow
-	if (first32 & 0xffffff80000000) {
+	if (first32 & 0xffffffff00000000) {
 		return false;
 	}
 
@@ -255,11 +251,17 @@ bool Hugeint::TryMultiply(hugeint_t lhs, hugeint_t rhs, hugeint_t &result) {
 	first32 &= 0xffffffff;
 
 	// combine components
-	result.lower = (third32 << 32) | fourth32;
-	result.upper = (first32 << 32) | second32;
+	uint64_t lower = (third32 << 32) | fourth32;
+	uint64_t upper = (first32 << 32) | second32;
 #endif
-	if (lhs_negative ^ rhs_negative) {
-		NegateInPlace<false>(result);
+	// The magnitude 2**127 fits only with a negative sign, as the minimum.
+	bool negative = lhs_negative != rhs_negative;
+	if (upper > 0x8000000000000000 || (upper == 0x8000000000000000 && (!negative || lower != 0))) {
+		return false;
+	}
+	result = hugeint_t(int64_t(upper), lower);
+	if (negative) {
+		result = HugeintNegate(result);
 	}
 	return true;
 }
