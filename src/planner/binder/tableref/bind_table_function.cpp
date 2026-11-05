@@ -149,7 +149,11 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		}
 
 		TableFunctionBinder binder(*this, context, table_function.name.GetIdentifierName());
+		// a NULL argument keeps the NULL type, so that it can still match any overload
+		auto prev_can_contain_nulls = CanContainNulls();
+		SetCanContainNulls(true);
 		auto expr = binder.Bind(child);
+		SetCanContainNulls(prev_can_contain_nulls);
 		if (expr->HasParameter()) {
 			throw ParameterNotResolvedException();
 		}

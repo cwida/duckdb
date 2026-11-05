@@ -1,0 +1,55 @@
+# name: test/sql/json/json_blob_roundtrip.test
+# description: BLOB values survive a COPY TO/FROM (FORMAT json) round trip
+# group: [json]
+
+require json
+
+statement ok
+CREATE TABLE blobs(id INTEGER, b BLOB, l BLOB[], s STRUCT(x BLOB));
+
+statement ok
+INSERT INTO blobs VALUES
+    (1, '\xFF\xFE'::BLOB, ['\x00'::BLOB, 'ab'::BLOB], {'x': '\x80'::BLOB}),
+    (2, 'plain'::BLOB, [], {'x': ''::BLOB}),
+    (3, '\x5C'::BLOB, ['\x5C\x78\x34\x31'::BLOB], {'x': '\x22'::BLOB});
+
+statement ok
+COPY blobs TO '{TEST_DIR}/blob_roundtrip.json' (FORMAT json, ARRAY true);
+
+statement ok
+CREATE TABLE read_back AS SELECT * FROM blobs LIMIT 0;
+
+statement ok
+COPY read_back FROM '{TEST_DIR}/blob_roundtrip.json' (FORMAT json);
+
+query I
+SELECT count(*) FROM blobs a JOIN read_back b ON a.id = b.id
+    WHERE a.b = b.b AND a.l = b.l AND a.s = b.s
+----
+3
+
+# a second round trip must not grow the values either
+statement ok
+COPY read_back TO '{TEST_DIR}/blob_roundtrip2.json' (FORMAT json, ARRAY true);
+
+statement ok
+DELETE FROM read_back;
+
+statement ok
+COPY read_back FROM '{TEST_DIR}/blob_roundtrip2.json' (FORMAT json);
+
+query I
+SELECT count(*) FROM blobs a JOIN read_back b ON a.id = b.id
+    WHERE a.b IS DISTINCT FROM b.b OR a.l IS DISTINCT FROM b.l OR a.s IS DISTINCT FROM b.s
+----
+0
+
+# explicit read of BLOB columns through read_json
+statement ok
+CREATE TABLE via_reader AS SELECT * FROM read_json('{TEST_DIR}/blob_roundtrip.json', columns = {id: 'INTEGER', b: 'BLOB', l: 'BLOB[]', s: 'STRUCT(x BLOB)'}, format = 'array');
+
+query I
+SELECT count(*) FROM blobs a JOIN via_reader b ON a.id = b.id
+    WHERE a.b = b.b AND a.l = b.l AND a.s = b.s
+----
+3

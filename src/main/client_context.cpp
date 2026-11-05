@@ -843,7 +843,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			active_query->handle = handle.get();
 			active_query->SetOpenResult(*handle);
 		}
-		result = SubmitStatementInternal(lock, active_query->TakeNextStatement(), parameters);
+		auto statement = active_query->TakeNextStatement();
+		NotifyStatementBeginInternal(lock);
+		result = SubmitStatementInternal(lock, std::move(statement), parameters);
 		if (!result && ClientConfig::GetConfig(*this).get_result_collector) {
 			result = RunToResultStatementInternal(lock, *handle);
 		}
@@ -1360,17 +1362,18 @@ unique_ptr<TableDescription> ClientContext::TableInfo(const Identifier &database
                                                       const Identifier &table_name) {
 	unique_ptr<TableDescription> result;
 	RunFunctionInTransaction([&]() {
-		// Obtain the table from the catalog.
-		auto table = Catalog::GetEntry<TableCatalogEntry>(*this, QualifiedName(database_name, schema_name, table_name),
-		                                                  OnEntryNotFound::RETURN_NULL);
-		if (!table) {
+		// A non-table entry must yield nullptr without throwing, as a throw here aborts the caller's transaction.
+		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, QualifiedName(database_name, schema_name, table_name));
+		auto entry = Catalog::GetEntry(*this, lookup_info, OnEntryNotFound::RETURN_NULL);
+		if (!entry || entry->type != CatalogType::TABLE_ENTRY) {
 			return;
 		}
+		auto &table = entry->Cast<TableCatalogEntry>();
 		// Describe the table at its resolved location, not the input identifiers.
-		auto &catalog = table->ParentCatalog();
-		result = make_uniq<TableDescription>(QualifiedName(catalog.GetName(), table->ParentSchema().name, table->name));
+		auto &catalog = table.ParentCatalog();
+		result = make_uniq<TableDescription>(QualifiedName(catalog.GetName(), table.ParentSchema().name, table.name));
 		result->readonly = catalog.GetAttached().IsReadOnly();
-		for (auto &column : table->GetColumns().Logical()) {
+		for (auto &column : table.GetColumns().Logical()) {
 			result->columns.emplace_back(column.Copy());
 		}
 	});

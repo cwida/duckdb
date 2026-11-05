@@ -53,10 +53,12 @@ ExtensionCallbackManager::~ExtensionCallbackManager() {
 }
 
 void ExtensionCallbackManager::AddExtensionSchema(const Identifier &schema) {
+	lock_guard<mutex> guard(registry_lock);
 	extension_schemas.push_back(schema.GetIdentifierName());
 }
 
 vector<string> ExtensionCallbackManager::GetExtensionSchemas() const {
+	lock_guard<mutex> guard(registry_lock);
 	return extension_schemas;
 }
 

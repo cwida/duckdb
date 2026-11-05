@@ -25,6 +25,7 @@
     {
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/optimizer/pushdown/lateral_projection_evaluation.test",
         "test/optimizer/pushdown/cte_domain_join_filter.test"
       ]

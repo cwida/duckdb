@@ -94,6 +94,7 @@ bool ColumnData::HasUpdates() const {
 }
 
 bool ColumnData::HasChanges(idx_t start_row, idx_t end_row) const {
+	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
 		return false;
 	}
@@ -845,8 +846,10 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 	auto &config = DBConfig::GetConfig(db);
 	const auto initial_bytes = Settings::Get<InitialColumnSegmentSizeSetting>(config);
 
+	const bool first_transient_segment =
+	    !prev_segment || prev_segment->GetSegmentType() == ColumnSegmentType::PERSISTENT;
 	idx_t segment_size;
-	if (!prev_segment || prev_segment->GetSegmentType() == ColumnSegmentType::PERSISTENT) {
+	if (first_transient_segment) {
 		// We start with the `initial_bytes` setting, but we ensure that we have enough space for at least one row.
 		segment_size = MaxValue<idx_t>(GetTypeIdSize(type.InternalType()), initial_bytes);
 	} else {
@@ -875,7 +878,8 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 
 	auto function = config.GetCompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, type.InternalType());
 	unique_ptr<ColumnSegment> new_segment;
-	if (transient && segment_size < block_size && initial_bytes < segment_size) {
+	// first segments stay tiny until a column grows and creates the shared block, so small tables never allocate one
+	if (transient && segment_size < block_size && (!first_transient_segment || transient->block)) {
 		new_segment = transient->CreateTransientSegment(db, function, type, segment_size, block_manager);
 	} else {
 		new_segment = ColumnSegment::CreateTransientSegment(db, function, type, segment_size, block_manager);

@@ -157,12 +157,16 @@ void DuckTransaction::PushSequenceUsage(SequenceCatalogEntry &sequence, const Se
 		sequence_info->entry = &sequence;
 		sequence_info->usage_count = data.usage_count;
 		sequence_info->counter = data.counter;
+		sequence_info->has_last_value = data.last_value.has_value();
+		sequence_info->last_value = data.last_value.value_or(0);
 		sequence_usage.emplace(sequence, *sequence_info);
 	} else {
 		auto &sequence_info = entry->second.get();
 		D_ASSERT(RefersToSameObject(*sequence_info.entry, sequence));
 		sequence_info.usage_count = data.usage_count;
 		sequence_info.counter = data.counter;
+		sequence_info.has_last_value = data.last_value.has_value();
+		sequence_info.last_value = data.last_value.value_or(0);
 	}
 }
 

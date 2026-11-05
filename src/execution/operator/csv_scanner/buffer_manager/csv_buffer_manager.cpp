@@ -54,6 +54,7 @@ idx_t CSVBufferManager::GetBufferSize() const {
 }
 
 idx_t CSVBufferManager::BufferCount() const {
+	lock_guard<mutex> parallel_lock(main_mutex);
 	return cached_buffers.size();
 }
 

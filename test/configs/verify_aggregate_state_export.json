@@ -4,6 +4,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "The plan of the query is rewritten, so it no longer shows whether the metadata cache answers it.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_glob_cache_list.test"
+      ]
+    },
+    {
       "reason": "Explain/profiling output is different due to verification",
       "paths": [
         "test/optimizer/aggregate_reuse.test",

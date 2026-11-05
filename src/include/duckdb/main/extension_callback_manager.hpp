@@ -68,7 +68,7 @@ public:
 	optional_ptr<DialectExtension> GetDialectExtension(const string &name) const;
 
 private:
-	mutex registry_lock;
+	mutable mutex registry_lock;
 	shared_ptr<ExtensionCallbackRegistry> callback_registry;
 	vector<string> extension_schemas;
 };

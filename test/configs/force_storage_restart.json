@@ -6,6 +6,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "The metadata cache of the database does not survive the restart between statements.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_glob_cache_list.test"
+      ]
+    },
+    {
       "reason": "The default of the column calls list_value of core_functions, which is not loaded while the WAL is replayed at the restart.",
       "paths": [
         "test/sql/alter/struct/add_col_struct_column_default.test"
@@ -21,6 +27,8 @@
         "test/sql/table_function/external_resource_discovery.test",
         "test/sql/table_function/external_resource_discovery_error.test",
         "test/sql/table_function/external_resource_callback_recursion.test",
+        "test/sql/table_function/external_resources_type_pruning.test",
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/sql/attach/external_resource_discovery.test"
       ]
     },
@@ -40,12 +48,6 @@
         "test/sql/storage/external_file_cache/external_file_cache_parquet.test_slow",
         "test/sql/storage/external_file_cache/external_file_cache_block_size.test",
         "test/sql/storage/external_file_cache/external_file_cache_metadata_memory.test"
-      ]
-    },
-    {
-      "reason": "Doesn't OOM when restarting",
-      "paths": [
-        "test/sql/storage/temp_directory/offloading_block_files.test_slow"
       ]
     },
     {
