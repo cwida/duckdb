@@ -223,11 +223,11 @@ TEST_CASE("Stable C++API: Bind", "[cpp_api][statement_bind]") {
 	auto sig2 = conn.Bind(stmt);
 	REQUIRE(sig2.output.GetFieldCount() == 2);
 
-	// Dynamic PIVOT is rejected with INVALID_INPUT.
+	// A dynamic PIVOT expands into several statements, so its columns are known only once it executes.
 	conn.Execute("CREATE TABLE sales(product VARCHAR, quarter VARCHAR, amount INTEGER)").Drain();
 	auto piter = conn.ParseSQL("PIVOT sales ON quarter USING sum(amount)");
 	auto pstmt = piter.Next();
-	REQUIRE_THROWS_MATCHES(conn.Bind(pstmt), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+	REQUIRE_THROWS_MATCHES(conn.Bind(pstmt), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED));
 }
 TEST_CASE("Stable C++API: QueryResult GetSchema", "[cpp_api][query_result]") {
 	using namespace duckdb::cxx;

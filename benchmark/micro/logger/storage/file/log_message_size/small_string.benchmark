@@ -11,7 +11,7 @@ CALL enable_logging(level='info', storage_path='${BENCHMARK_DIR}/logging_enabled
 SELECT write_log('hi', level := 'info', scope := 'connection' );
 
 run
-SELECT write_log('hi', level := 'info', scope := 'connection' ) from range(0,2000000);
+SELECT write_log('hi', level := 'info', scope := 'connection' ) from range(0,800000);
 
 cleanup
 CALL truncate_duckdb_logs()

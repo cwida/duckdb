@@ -571,7 +571,7 @@ void DependencyManager::VerifyExistence(CatalogTransaction transaction, Dependen
 	if (!subject.flags.IsOwnership() && subject.oid.IsValid() && lookup_result.result &&
 	    lookup_result.result->oid != subject.oid.GetIndex()) {
 		throw DependencyException(
-		    "Could not commit creation of dependency, subject \"%s\" was dropped and re-created by another transaction",
+		    "Could not commit creation of dependency, subject %s was dropped and re-created by another transaction",
 		    object.EntryInfo().name);
 	}
 }
@@ -679,9 +679,9 @@ void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries, ClientCo
 	ReorderEntries(entries, transaction, false);
 }
 
-void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries) {
-	// Read all committed entries. A checkpoint writes internal entries too
-	CatalogTransaction transaction(catalog.GetDatabase(), MAX_COMMIT_ID, VisibilityBound::Before(MAX_COMMIT_ID));
+void DependencyManager::ReorderEntries(catalog_entry_vector_t &entries, VisibilityBound bound) {
+	// Read the entries committed below the checkpoint's bound. A checkpoint writes internal entries too
+	CatalogTransaction transaction(catalog.GetDatabase(), MAX_TRANSACTION_ID, bound);
 	ReorderEntries(entries, transaction, true);
 }
 

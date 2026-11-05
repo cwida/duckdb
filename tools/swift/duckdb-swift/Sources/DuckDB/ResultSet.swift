@@ -182,7 +182,7 @@ extension ResultSet: CustomDebugStringConvertible {
 
 // MARK: - Utilities
 
-fileprivate final class ResultStorage: Sendable {
+fileprivate final class ResultStorage: @unchecked Sendable {
   
   let columnCount: DBInt
   

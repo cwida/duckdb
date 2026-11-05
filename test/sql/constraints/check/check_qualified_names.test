@@ -1,0 +1,126 @@
+# name: test/sql/constraints/check/check_qualified_names.test
+# description: Qualified column names and struct fields in CHECK constraints and ALTER ... USING
+# group: [check]
+
+# the first name is the column, the following names are struct fields
+statement ok
+CREATE TABLE c(x STRUCT(y INT), y STRUCT(x INT), CHECK (x.y < 10));
+
+statement ok
+INSERT INTO c VALUES ({'y': 1}, {'x': 100});
+
+statement error
+INSERT INTO c VALUES ({'y': 50}, {'x': 1});
+----
+CHECK constraint failed
+
+statement ok
+CREATE TABLE s1(s STRUCT(a INT), CHECK (s.a > 0));
+
+statement ok
+INSERT INTO s1 VALUES ({'a': 1});
+
+statement error
+INSERT INTO s1 VALUES ({'a': -1});
+----
+CHECK constraint failed
+
+statement ok
+CREATE TABLE s2(s STRUCT(a STRUCT(x INT)), CHECK (s2.s.a.x > 0));
+
+statement ok
+INSERT INTO s2 VALUES ({'a': {'x': 1}});
+
+statement error
+INSERT INTO s2 VALUES ({'a': {'x': -1}});
+----
+CHECK constraint failed
+
+statement ok
+CREATE TABLE t(x STRUCT(y INT), y STRUCT(x INT), z INT);
+
+statement ok
+INSERT INTO t VALUES ({'y': 1}, {'x': 100}, 0);
+
+statement ok
+ALTER TABLE t ALTER z TYPE INT USING x.y;
+
+query I
+SELECT z FROM t
+----
+1
+
+# renaming a column renames the column, not a struct field with the same name
+statement ok
+CREATE TABLE rc(a STRUCT(a INT), b STRUCT(a INT), CHECK (b.a > 0));
+
+statement ok
+ALTER TABLE rc RENAME COLUMN a TO c;
+
+statement ok
+INSERT INTO rc VALUES ({'a': -1}, {'a': 1});
+
+statement error
+INSERT INTO rc VALUES ({'a': 1}, {'a': -1});
+----
+CHECK constraint failed
+
+statement ok
+CREATE TABLE rq(x INT, CHECK (rq.x > 0));
+
+statement ok
+ALTER TABLE rq RENAME COLUMN x TO y;
+
+statement error
+INSERT INTO rq VALUES (-1);
+----
+CHECK constraint failed
+
+# renaming a table renames the table qualifiers in its CHECK constraints
+statement ok
+ATTACH '{TEST_DIR}/check_rename.db' AS d
+
+statement ok
+CREATE TABLE d.u(x INT, CHECK (u.x > 0));
+
+statement ok
+ALTER TABLE d.u RENAME TO u2;
+
+statement ok
+INSERT INTO d.u2 VALUES (1);
+
+statement error
+INSERT INTO d.u2 VALUES (-1);
+----
+CHECK constraint failed
+
+statement ok
+ALTER TABLE d.u2 ADD COLUMN y INT
+
+statement ok
+CREATE TABLE d.r(x STRUCT(r INT), CHECK (r.x IS NOT NULL));
+
+statement ok
+ALTER TABLE d.r RENAME TO r2;
+
+statement ok
+INSERT INTO d.r2 VALUES ({'r': NULL});
+
+statement error
+INSERT INTO d.r2 VALUES (NULL);
+----
+CHECK constraint failed
+
+statement ok
+DETACH d
+
+statement ok
+ATTACH '{TEST_DIR}/check_rename.db' AS d
+
+statement ok
+INSERT INTO d.u2 VALUES (2, 3);
+
+statement error
+INSERT INTO d.u2 VALUES (-2, 3);
+----
+CHECK constraint failed

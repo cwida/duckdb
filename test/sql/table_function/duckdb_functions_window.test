@@ -14,6 +14,7 @@ first_value	[expr]	[ANY]	window
 lag	[col, offset, default]	[T, BIGINT, ANY]	window
 last_value	[expr]	[ANY]	window
 lead	[col, offset, default]	[T, BIGINT, ANY]	window
+match_recognize	[columns]	[ANY]	window
 nth_value	[expr, n]	[ANY, BIGINT]	window
 ntile	[num_buckets]	[BIGINT]	window
 percent_rank	[]	[]	window

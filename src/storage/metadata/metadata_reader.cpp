@@ -1,5 +1,7 @@
 #include "duckdb/storage/metadata/metadata_reader.hpp"
 
+#include "duckdb/common/numeric_utils.hpp"
+
 namespace duckdb {
 
 MetadataReader::MetadataReader(MetadataManager &manager, MetaBlockPointer pointer,

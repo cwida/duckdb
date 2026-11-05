@@ -14,12 +14,15 @@
 #include "duckdb/common/deque.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/enums/query_result_state.hpp"
+#include "duckdb/common/enums/metric_type.hpp"
 #include "duckdb/common/enums/prepared_statement_mode.hpp"
 #include "duckdb/common/enums/connection_type.hpp"
+#include "duckdb/common/enums/result_lifetime.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/winapi.hpp"
+#include "duckdb/logging/logging.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/client_properties.hpp"
@@ -41,11 +44,12 @@ class CatalogSearchPath;
 class ColumnDataCollection;
 class DatabaseInstance;
 class FileOpener;
+class Context;
 class LogicalOperator;
 class PreparedStatement;
 class PreparedStatementData;
 class StatementIterator;
-class StatementPreprocessor;
+struct PreprocessedStatement;
 class Relation;
 class BufferedFileWriter;
 class QueryProfiler;
@@ -77,6 +81,9 @@ struct StatementSignature {
 	vector<LogicalType> types;
 	vector<StatementParameter> parameters;
 	StatementProperties properties;
+	//! The statement expands into several; its result is known only once execution binds the statement that
+	//! produces it
+	bool metadata_deferred = false;
 };
 
 //! Interrupt state for the client context
@@ -89,6 +96,7 @@ class ClientContext : public enable_shared_from_this<ClientContext> {
 	friend class BufferedData;        // ExecuteTaskInternal, PollInternal
 	friend class SimpleBufferedData;  // ExecuteTaskInternal, PollInternal
 	friend class BatchedBufferedData; // ExecuteTaskInternal, PollInternal
+	friend class ResultStreamBase;    // drives a statement that expands before its result buffer exists
 	friend class ConnectionManager;
 	friend class Connection;
 	friend class PhysicalTransaction;
@@ -97,6 +105,15 @@ public:
 	//! The error of a statement submitted while a result that no call ended holds the connection
 	static constexpr const char *OPEN_RESULT_ERROR =
 	    "connection has an open result; drain or destroy it before starting a new query";
+	//! The error of a query that ran past max_execution_time
+	static constexpr const char *QUERY_DEADLINE_ERROR = "Query exceeded maximum execution time";
+	//! The error of a statement that expands into several, given parameters
+	static constexpr const char *EXPANDING_PARAMETERS_ERROR =
+	    "parameters are not supported for a statement that expands into several";
+	//! The error of a prepared statement with parameters, while CONNECT-ed
+	static constexpr const char *CONNECTED_PARAMETERS_ERROR =
+	    "Parameterized prepared statements cannot be executed while CONNECT-ed; DISCONNECT first, or run the SQL as a "
+	    "fresh statement to route through the CONNECT binding";
 
 public:
 	DUCKDB_API explicit ClientContext(shared_ptr<DatabaseInstance> db);
@@ -108,12 +125,13 @@ public:
 	atomic<ClientInterruptState> interrupt_state {ClientInterruptState::NOT_INTERRUPTED};
 	//! The deadline for the current query (milliseconds since epoch)
 	optional_idx query_deadline;
-	//! Set of optional states (e.g. Caches) that can be held by the ClientContext
-	unique_ptr<RegisteredStateManager> registered_state;
-	//! The logger to be used by this ClientContext
-	shared_ptr<Logger> logger;
-	//! The client configuration
-	ClientConfig config;
+	//! For an internal connection created on behalf of another client: the outermost client, whose interrupts and
+	//! query deadline also apply. An internal connection runs within a query of its base client.
+	shared_ptr<ClientContext> base_context;
+	//! The number of internal connections between this client and its base client (0 for a base client)
+	idx_t internal_depth = 0;
+	//! The services of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
+	shared_ptr<Context> services;
 	//! The set of client-specific data
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
@@ -151,6 +169,8 @@ public:
 
 	//! Check for interrupt or timeout, throws InterruptException if triggered
 	DUCKDB_API void InterruptCheck() const;
+	//! InterruptCheck that reads the clock on every call, for waits that block between checks
+	DUCKDB_API void BlockingInterruptCheck() const;
 
 	//! Enable query profiling
 	DUCKDB_API void EnableProfiling();
@@ -218,36 +238,34 @@ public:
 	//! Blocking. Runs a relation to completion and returns its handle
 	DUCKDB_API unique_ptr<QueryResult> Execute(const shared_ptr<Relation> &relation);
 
-	//! Prepare a query
+	//! Prepare a query. A statement that expands into several is kept as written and expanded at each execution, so
+	//! its metadata is known only from the result
 	DUCKDB_API unique_ptr<PreparedStatement> Prepare(const string &query);
-	//! Directly prepare a SQL statement
+	//! Directly prepare a SQL statement, as Prepare(query) does
 	DUCKDB_API unique_ptr<PreparedStatement> Prepare(unique_ptr<SQLStatement> statement);
 	//! Deallocate the prepared statement with the given name - does nothing if it does not exist
 	DUCKDB_API void RemovePreparedStatement(const string &name);
 	//! Bind a statement and return its signature, without building a PreparedStatement, optimizing, or
 	//! executing. Read-only: binding touches no in-flight query state, so a live result survives. Throws on error.
+	//! A statement that expands into several reports metadata_deferred with a placeholder column
 	DUCKDB_API StatementSignature BindStatement(unique_ptr<SQLStatement> statement);
 	//! Throws the error a new statement gets while a result that no call ended holds the connection
 	DUCKDB_API void VerifyNoOpenResult();
 
 	//! Gets current percentage of the query's progress, returns 0 in case the progress bar is disabled.
 	DUCKDB_API QueryProgress GetQueryProgress();
+	//! Snapshot the query-level metrics of the running query, keyed by metric name (e.g. "io.total_bytes_read").
+	//! Safe to call from another thread while the query runs, and regardless of whether profiling is enabled.
+	DUCKDB_API profiler_metrics_t GetLiveQueryMetrics();
 
 	//! Register function in the temporary schema
 	DUCKDB_API void RegisterFunction(CreateFunctionInfo &info);
 
-	//! Iterate a query's statements as a StatementIterator (iterator-style API). The caller drives
-	//! Peek() + GetStatement() to walk through ready-to-execute statements one by one
-	DUCKDB_API StatementIterator IterateStatements(const string &query);
-
-	//! Preprocess a peel of parse-facing statements into engine-facing ones (PRAGMA reparse,
-	//! MULTI_STATEMENT unpack, transaction wrapping), replacing `buffer` in place. Acquires the
-	//! context lock internally when `lock` is null (callers that do not already hold it, e.g. the
-	//! shell). Drives StatementIterator's preprocessing. Pass a `preprocessor` to carry state, such as
-	//! an explicit BEGIN, across multiple calls for the same query.
-	DUCKDB_API void PreprocessStatements(vector<unique_ptr<SQLStatement>> &buffer,
-	                                     optional_ptr<ClientContextLock> lock = nullptr,
-	                                     optional_ptr<StatementPreprocessor> preprocessor = nullptr);
+	//! Iterate the user statements of a script as parsed. The submission of each one expands it, so a statement that
+	//! the engine rewrites into several is still one statement here. With apply_invalidation_policy a parse error
+	//! invalidates the active transaction according to the transaction invalidation policy, as fits statements that are
+	//! parsed to be run; without it the transaction stays usable, as fits statements that are only inspected.
+	DUCKDB_API StatementIterator IterateStatements(const string &query, bool apply_invalidation_policy = true);
 
 	//! Extract the logical plan of a query
 	DUCKDB_API unique_ptr<LogicalOperator> ExtractPlan(const string &query);
@@ -283,9 +301,20 @@ public:
 
 	//! Return the current logger
 	Logger &GetLogger() const;
+	const LogConfigSnapshot &GetLogConfig() const {
+		return log_config;
+	}
+
+	//! Returns the services (client configuration, logging, metrics, file system) owned by this context
+	Context &Services() const {
+		return *services;
+	}
 
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
+	//! Whether the statement that runs now is the last of the active query. A statement that expands into several
+	//! runs them as one query in one transaction; for any other query this is always true
+	DUCKDB_API bool ActiveQueryIsLastStatement() const;
 
 	connection_t GetConnectionId() const;
 
@@ -305,6 +334,9 @@ public:
 
 	//! Process an error for display to the user
 	DUCKDB_API void ProcessError(ErrorData &error, const string &query) const;
+	//! Invalidates the active transaction (or for fatal errors the database) when the current invalidation policy says
+	//! this error type should
+	DUCKDB_API void ApplyInvalidationPolicy(const ErrorData &error);
 
 	DUCKDB_API LogicalType ParseLogicalType(const string &type);
 
@@ -332,10 +364,18 @@ private:
 	//! when the query failed: the error is on the handle
 	unique_ptr<QueryResult> CompleteDelegatedInternal(ClientContextLock &lock, QueryResult &result);
 
-	//! Parse statements from a query
-	vector<unique_ptr<SQLStatement>> ParseStatementsInternal(ClientContextLock &lock, const string &query);
+	//! The user statements of a query, as parsed: a submission expands each one. profile is false for calls that
+	//! do not run the query
+	vector<unique_ptr<SQLStatement>> ParseStatementsInternal(ClientContextLock &lock, const string &query,
+	                                                         bool profile = true);
+	//! Expands a user statement for a caller that binds it without running it; a statement that expands into
+	//! several is refused with the given message
+	unique_ptr<SQLStatement> ExpandSingleStatementInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
+	                                                       const char *refusal);
+	//! A verification that runs a statement of its own, like a prepared or an explained copy, is skipped when
+	//! allow_nested_statements is false
 	void StatementVerification(ClientContextLock &lock, unique_ptr<SQLStatement> &statement,
-	                           QueryParameters query_parameters);
+	                           QueryParameters query_parameters, bool allow_nested_statements = true);
 
 	//! Whether a result that no call ended holds the connection, so that a new statement is refused
 	bool OpenResultHoldsConnection(ClientContextLock &lock);
@@ -351,10 +391,12 @@ private:
 	//! Ends the active query as abandoned: nothing it did is committed
 	void AbortInternal(ClientContextLock &lock);
 	unique_ptr<QueryResult> SubmitStatement(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
-	                                        const QueryParameters &parameters, Retention retention);
+	                                        const QueryParameters &parameters, bool verify, Retention retention);
+	//! Starts a bound statement of the active query. Returns its handle; for a statement of a query that expands
+	//! into several, null, unless a result collector built its own result object
 	unique_ptr<QueryResult> SubmitPreparedStatementInternal(ClientContextLock &lock,
 	                                                        shared_ptr<PreparedStatementData> statement_data_p,
-	                                                        const QueryParameters &parameters, Retention retention);
+	                                                        const QueryParameters &parameters);
 	void CheckIfPreparedStatementIsExecutable(PreparedStatementData &statement);
 
 	//! Internally prepare a SQL statement. Caller must hold the context_lock.
@@ -362,17 +404,56 @@ private:
 	                                                          unique_ptr<SQLStatement> statement,
 	                                                          const QueryParameters &parameters);
 	unique_ptr<QueryResult> SubmitStatementInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
-	                                                const QueryParameters &parameters, Retention retention);
+	                                                const QueryParameters &parameters);
+	//! Expands a user statement into the statements it runs as, without the statements of its transaction handling
+	PreprocessedStatement PreprocessStatementInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement);
+	//! Runs the statements of a query that expands up to the one producing its result, inside the submission, so
+	//! that a result collector building its own result object serves that statement. Returns that object, if any
+	unique_ptr<QueryResult> RunToResultStatementInternal(ClientContextLock &lock, QueryResult &handle);
 	unique_ptr<QueryResult> RunStatementInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
 	                                             const QueryParameters &parameters, bool verify = true);
 	unique_ptr<PreparedStatement> PrepareInternal(ClientContextLock &lock, unique_ptr<SQLStatement> statement);
 	void LogQueryInternal(ClientContextLock &lock, const string &query);
+	//! Run the statements of a query string one after the other
+	unique_ptr<QueryResult> QueryInternal(ClientContextLock &lock, const string &query,
+	                                      QueryParameters query_parameters);
 
 	unique_ptr<ClientContextLock> LockContext();
 
-	void BeginQueryInternal(ClientContextLock &lock, const SQLStatement &statement);
+	//! Begins the query of a user statement, whose first statement runs next
+	void BeginQueryInternal(ClientContextLock &lock, PreprocessedStatement statements,
+	                        const QueryParameters &parameters, Retention retention);
+	//! Begins one statement of the active query: its query number, its text and its query log line
+	void BeginStatementInternal(ClientContextLock &lock, const string &query);
+	//! Refreshes the logger for the statement that begins
+	void RefreshLoggerInternal();
+	//! Replaces the logger with one created from the up-to-date log config
+	void ResetLoggerInternal(const LoggingContext &logging_context);
+	//! Ends the statement of a query that expands into several once it finished, and starts the next one
+	QueryResultState StartNextStatementInternal(ClientContextLock &lock);
+	//! Ends the statement that finished and starts the next one. Returns the result object a collector built for it,
+	//! which only a statement started inside the submission may have
+	unique_ptr<QueryResult> AdvanceStatementInternal(ClientContextLock &lock);
+	//! Whether this query or, for an internal connection, the base client's query has a deadline
+	bool HasQueryDeadline() const;
+	bool QueryDeadlinePassed() const;
+	//! Ends the statement that finished: releases its executor and plan and notifies registered state
+	void EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
+	void NotifyStatementBeginInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);
+	//! End the query in the profiler; a failure to emit the profile becomes the error unless there is one already
+	void EndQueryProfiling(ErrorData &error);
+	//! The result of the finished query. For a statement that expands into several and returns no rows, that is an
+	//! empty result in the query's format, the way a statement that returns nothing reports
+	unique_ptr<QueryResult> TakeFinishedResultInternal(ClientContextLock &lock);
+	//! A finished result without rows in `format`, the chunk format when null
+	unique_ptr<QueryResult> EmptyResultInternal(StatementType statement_type, StatementProperties properties,
+	                                            vector<LogicalType> types, vector<Identifier> names,
+	                                            shared_ptr<ResultFormat> format);
+	//! Records the consumer's retention decision for a result statement that has not started. The first decision
+	//! stands; returns it
+	ResultLifetime DecideResultLifetimeInternal(ClientContextLock &lock, ResultLifetime decision);
 
 	//! Wait until a task is available to execute
 	void WaitForTask(ClientContextLock &lock, BaseQueryResult &result);
@@ -395,6 +476,8 @@ private:
 	                                                                  const QueryParameters &parameters);
 
 	bool ErrorInvalidatesTransaction(ExceptionType type);
+	//! Whether an error ends the active query by invalidating the transaction it runs in
+	bool ErrorInvalidatesQueryTransaction(ExceptionType type);
 
 private:
 	//! Lock on using the ClientContext in parallel
@@ -405,6 +488,9 @@ private:
 	QueryProgress query_progress;
 	//! The connection corresponding to this client context
 	connection_t connection_id;
+	//! The log config used to create loggers for this ClientContext and its ThreadContexts. Only refreshed (with the
+	//! logger) at query begin and end, when no tasks that could read it from other threads are running
+	LogConfigSnapshot log_config;
 	//! Type of connection (USER or INTERNAL)
 	ConnectionType connection_type = ConnectionType::USER;
 	//! Routing target for SQL execution while CONNECT-ed (CONNECT/DISCONNECT). When is_connected is

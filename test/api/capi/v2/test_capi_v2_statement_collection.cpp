@@ -52,7 +52,7 @@ duckdb_v2_column_data_collection_handle CollMake(duckdb_v2_factory_handle factor
 
 duckdb_v2_sql_statement_handle CollParse(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &stmt, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);

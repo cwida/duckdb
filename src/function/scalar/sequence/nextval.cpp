@@ -157,6 +157,16 @@ void NextValModifiedDatabases(ClientContext &context, FunctionModifiedDatabasesI
 	input.properties.RegisterDBModify(seq.sequence.ParentCatalog(), context, DatabaseModificationType::SEQUENCE);
 }
 
+//! currval reads the sequence but holds a reference to its catalog entry, so a prepared statement must be rebound
+//! when the catalog changes (e.g. the sequence is dropped) without marking the database as modified
+void CurrValReadDatabases(ClientContext &context, FunctionModifiedDatabasesInput &input) {
+	if (!input.bind_data) {
+		return;
+	}
+	auto &seq = input.bind_data->Cast<NextvalBindData>();
+	input.properties.RegisterDBRead(seq.sequence.ParentCatalog(), context);
+}
+
 } // namespace
 
 ScalarFunction NextvalFun::GetFunction() {
@@ -181,6 +191,7 @@ ScalarFunction CurrvalFun::GetFunction() {
 	curr_val.SetBindCallback(NextValBind);
 	curr_val.SetSerializeCallback(Serialize);
 	curr_val.SetDeserializeCallback(Deserialize);
+	curr_val.SetModifiedDatabasesCallback(CurrValReadDatabases);
 	curr_val.SetInitStateCallback(NextValLocalFunction);
 	curr_val.SetVolatile();
 	curr_val.SetFallible();

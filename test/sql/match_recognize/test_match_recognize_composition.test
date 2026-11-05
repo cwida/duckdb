@@ -1,0 +1,491 @@
+# name: test/sql/match_recognize/test_match_recognize_composition.test
+# description: MATCH_RECOGNIZE as an ordinary table reference - stacked, grouped, joined and unioned
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table ev(g integer, i integer, v integer);
+
+statement ok
+insert into ev values (1,1,1),(1,2,2),(1,3,1),(2,4,3),(2,5,4),(2,6,3);
+
+# the output of one is the input of the next
+query II
+SELECT i, n FROM (
+    SELECT i, v FROM ev MATCH_RECOGNIZE(ORDER BY i ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS v > 1)
+) x MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ALL ROWS PER MATCH PATTERN (B+) DEFINE B AS v > 2
+) ORDER BY i
+----
+4	1
+5	2
+6	3
+
+# a grouped result is a table reference like any other
+query II
+SELECT g, n FROM (
+    SELECT g, sum(v) AS v FROM ev GROUP BY g
+) t MATCH_RECOGNIZE(
+    ORDER BY g MEASURES count(*) AS n, g AS g PATTERN (A+) DEFINE A AS v > 5
+) ORDER BY g
+----
+2	1
+
+# and so is the match's own output
+query II
+SELECT count(*) AS c, sum(n) AS s FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > 0
+)
+----
+2	6
+
+# a window function above the match sees the matches, not the rows they were built from
+query III
+SELECT g, n, sum(n) OVER () AS tot FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > 0
+) ORDER BY g
+----
+1	3	6
+2	3	6
+
+# a match joined back to the rows it came from
+query III
+WITH m AS (
+    SELECT g, n FROM ev MATCH_RECOGNIZE(
+        PARTITION BY g ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > 0
+    )
+)
+SELECT m.g, m.n, count(ev.i) AS rows FROM m JOIN ev USING (g) GROUP BY m.g, m.n ORDER BY m.g
+----
+1	3	3
+2	3	3
+
+# two of them in one statement, each with its own pattern variables
+query II
+SELECT 'a' AS src, n FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > 2
+)
+UNION ALL
+SELECT 'b', n FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (B+) DEFINE B AS v < 2
+)
+ORDER BY src, n
+----
+a	3
+b	1
+b	1
+
+# CLASSIFIER() reads as the symbol being defined because the row being tested is the one the
+# condition decides on; stepped back a row, it reads what that row was mapped to in the attempt
+query I
+SELECT count(*) FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A B) DEFINE A AS true, B AS PREV(CLASSIFIER()) = 'A'
+)
+----
+3
+
+# stepped forward it reads a row the attempt has not mapped yet, which is NULL (5.9)
+query I
+SELECT count(*) FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A B) DEFINE A AS true, B AS NEXT(CLASSIFIER()) = 'A'
+)
+----
+0
+
+# the last row mapped so far is the one being tested, so this reads the variable being defined
+query I
+SELECT count(*) FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A B) DEFINE A AS true, B AS LAST(CLASSIFIER()) = 'A'
+)
+----
+0
+
+# on its own it still resolves
+query I
+SELECT count(*) FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A B) DEFINE A AS true, B AS CLASSIFIER() = 'B'
+)
+----
+3
+
+# A match is a table reference, so everything that consumes one should be able to consume this.
+
+statement ok
+create view mv as SELECT p, n FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) AS n, g AS p PATTERN (A+) DEFINE A AS v > 0
+);
+
+query II
+SELECT p, n FROM mv ORDER BY p
+----
+1	3
+2	3
+
+statement ok
+create table mt as SELECT g AS p, n FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > 0
+);
+
+query II
+SELECT p, n FROM mt ORDER BY p
+----
+1	3
+2	3
+
+statement ok
+create table mi(p integer, n bigint);
+
+statement ok
+INSERT INTO mi SELECT g, n FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > 0
+);
+
+query II
+SELECT p, n FROM mi ORDER BY p
+----
+1	3
+2	3
+
+# a parameter reaches both a condition and a measure
+statement ok
+PREPARE pq AS SELECT count(*) FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS v > ?
+);
+
+query I
+EXECUTE pq(2)
+----
+1
+
+statement ok
+PREPARE pm AS SELECT sum(n) FROM ev MATCH_RECOGNIZE(
+    PARTITION BY g ORDER BY i MEASURES count(*) + ? AS n PATTERN (A+) DEFINE A AS v > 0
+);
+
+query I
+EXECUTE pm(10)
+----
+26
+
+# an input that is not a table at all
+query I
+SELECT n FROM (VALUES (1,1),(2,2)) t(i,v) MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS 1 = 1
+)
+----
+2
+
+statement ok
+create table nothing(i integer, v integer);
+
+query I
+SELECT count(*) FROM nothing MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (A+) DEFINE A AS 1 = 1
+)
+----
+0
+
+# Partitions are matched independently and handed out to whichever thread is free, so the answer
+# must not depend on how many there are. A thousand partitions is enough for more than one to be in
+# flight at once.
+
+statement ok
+create table parallel_input as
+    SELECT (i // 7)::INTEGER AS p, i::INTEGER AS i, (hash(i) % 5)::INTEGER AS v FROM range(0, 7000) t(i);
+
+statement ok
+pragma threads=1;
+
+query III
+SELECT count(*), sum(len), max(len) FROM parallel_input MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B+) DEFINE A AS v = 0, B AS B.v > PREV(B.v)
+)
+----
+912	2082	5
+
+statement ok
+pragma threads=4;
+
+query III
+SELECT count(*), sum(len), max(len) FROM parallel_input MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B+) DEFINE A AS v = 0, B AS B.v > PREV(B.v)
+)
+----
+912	2082	5
+
+statement ok
+pragma threads=1;
+
+# the matcher's state is not part of the result, so a second clause over the first sees only x
+query II
+SELECT column_name, column_type FROM (DESCRIBE FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x ALL ROWS PER MATCH PATTERN (A+)
+ DEFINE A AS true))
+----
+x	INTEGER
+
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x ALL ROWS PER MATCH PATTERN (A+)
+ DEFINE A AS true) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (B)
+ DEFINE B AS true)
+----
+1
+1
+
+# An aggregate reached through a macro is still an aggregate over the rows of the match.
+statement ok
+CREATE MACRO my_sum(v) AS sum(v);
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES my_sum(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+30
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES my_sum(B.x) AS s PATTERN (A B) DEFINE B AS x > 15
+)
+----
+20
+
+statement ok
+CREATE MACRO add_one(v) AS v + 1;
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES add_one(FIRST(x)) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+11
+
+statement ok
+CREATE MACRO agg_pair(a, b) AS sum(a) + sum(b);
+
+# a macro body with two aggregates is two aggregates over the rows of the match
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES agg_pair(x, x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+60
+
+# A macro is expanded the way any other binder expands one, so what the clause reads is what the
+# macro stands for rather than what its spelling suggests it must have been.
+
+statement ok
+CREATE MACRO m_two(v) AS sum(v) + count(v);
+
+statement ok
+CREATE MACRO m_sum(v) AS sum(v);
+
+statement ok
+CREATE MACRO m_nested(v) AS m_sum(v);
+
+statement ok
+CREATE MACRO m_first(v) AS FIRST(v);
+
+statement ok
+CREATE MACRO m_scalar(v) AS v + 1;
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_two(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+32
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES sum(x) + count(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+32
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_nested(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+30
+
+# a navigation reached through a macro navigates the match, like the one it stands for
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_first(x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+10
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS m_first(x) = 10
+)
+----
+2
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_scalar(FIRST(x)) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+11
+
+# the overload the arguments select is the one that is expanded
+statement ok
+CREATE MACRO m_over(a) AS sum(a), (a, b) AS sum(a) + sum(b);
+
+query II
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_over(x) AS s1, m_over(x, x) AS s2 PATTERN (A+)
+ DEFINE A AS true)
+----
+30	60
+
+# a macro spelled as an aggregate keeps what only an aggregate can carry
+query I
+FROM (VALUES (10), (20), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_sum(DISTINCT x) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+30
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_sum(x) FILTER (WHERE CLASSIFIER() = 'A') AS s PATTERN (A B)
+ DEFINE A AS true)
+----
+10
+
+# a pattern variable named through a macro still scopes the aggregate to that variable's rows
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES m_sum(B.x) AS s PATTERN (A B) DEFINE B AS x > 15
+)
+----
+20
+
+# A reference to the query around the clause is that query's to resolve, in whichever clause it
+# appears, and it reaches the matcher as the value the surrounding row gives it.
+query II
+SELECT * FROM (VALUES (1), (2)) u(k), LATERAL (
+    FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS x <= u.k
+    )
+) q ORDER BY ALL
+----
+1	1
+2	2
+
+query II
+SELECT * FROM (VALUES (1), (2)) u(k), LATERAL (
+    FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) + u.k AS n PATTERN (A+)
+     DEFINE A AS true)
+) q ORDER BY ALL
+----
+1	3
+2	4
+
+query III
+SELECT * FROM (VALUES (1), (-1)) u(k), LATERAL (
+    FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x * u.k MEASURES FIRST(x) AS f, count(*) AS n PATTERN (A+)
+     DEFINE A AS true)
+) q ORDER BY ALL
+----
+-1	3	3
+1	1	3
+
+query III
+SELECT * FROM (VALUES (1)) u(k), LATERAL (
+    FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+        PARTITION BY u.k ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+     DEFINE A AS true)
+) q ORDER BY ALL
+----
+1	1	2
+
+# one that reaches the matcher through a navigation, and one through a neighbour
+query II
+SELECT * FROM (VALUES (0), (5)) u(k), LATERAL (
+    FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+        DEFINE A AS PREV(x) IS NULL OR PREV(x) + u.k < x
+    )
+) q ORDER BY ALL
+----
+0	3
+5	1
+
+query II
+SELECT * FROM (VALUES (1), (2)) u(k), LATERAL (
+    FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS FIRST(x) <= u.k
+    )
+) q ORDER BY ALL
+----
+1	3
+2	3
+
+# A view over the clause is the bound plan written out and read back, which is what the matcher's
+# configuration has to survive.
+statement ok
+CREATE VIEW mr_view AS
+    FROM (VALUES (10), (20), (30)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES sum(x) AS s, CLASSIFIER() AS c
+        ALL ROWS PER MATCH PATTERN (A B+)
+        DEFINE B AS x > FIRST(A.x) AND MATCH_NUMBER() > 0
+    );
+
+query III
+SELECT * FROM mr_view ORDER BY x
+----
+10	10	A
+20	30	B
+30	60	B
+
+query III
+SELECT * FROM mr_view ORDER BY x
+----
+10	10	A
+20	30	B
+30	60	B
+
+# a pattern with every construct in it, through the same round trip
+statement ok
+CREATE VIEW pattern_view AS
+    FROM range(6) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) AS n, CLASSIFIER() AS c ALL ROWS PER MATCH
+        PATTERN (^ A{1,2}? (B | C)* {- D -}? $)
+        DEFINE A AS true, B AS x > 0, C AS x < 0, D AS false
+    );
+
+query III
+SELECT * FROM pattern_view ORDER BY x
+----
+0	1	A
+1	2	B
+2	3	B
+3	4	B
+4	5	B
+5	6	B
+
+query III
+SELECT * FROM pattern_view ORDER BY x
+----
+0	1	A
+1	2	B
+2	3	B
+3	4	B
+4	5	B
+5	6	B

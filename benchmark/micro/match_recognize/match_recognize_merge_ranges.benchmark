@@ -1,0 +1,27 @@
+# name: benchmark/micro/match_recognize/match_recognize_merge_ranges.benchmark
+# description: Ranges merged while each starts inside the greatest end seen so far
+# group: [match_recognize]
+
+# Every row reads the next row's start against a running aggregate of the match, so a step and an
+# aggregate are settled together on every candidate row, and a match ends at every gap.
+
+name MatchRecognize Merge Ranges
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE spans AS
+    SELECT s, s + 1 + (h % 4)::INTEGER AS e
+    FROM (SELECT i * 2 + (h % 3)::INTEGER AS s, h FROM (SELECT i, (i::BIGINT * 2654435761 % 1000003) AS h FROM range(0, 1000000) t(i)));
+
+run
+SELECT count(*), sum(n), max(e - s) FROM spans MATCH_RECOGNIZE(
+    ORDER BY s, e
+    MEASURES first(s) AS s, max(e) AS e, count(*) AS n
+    ONE ROW PER MATCH
+    PATTERN (J* L)
+    DEFINE J AS NEXT(s) <= max(e)
+);
+
+result III
+285650	1000000	12

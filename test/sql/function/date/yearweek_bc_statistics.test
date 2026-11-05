@@ -1,0 +1,34 @@
+# name: test/sql/function/date/yearweek_bc_statistics.test
+# description: Statistics of yearweek over dates before the common era
+# group: [date]
+
+statement ok
+CREATE TABLE wt AS SELECT DATE '0100-01-01 (BC)' + INTERVAL (i) DAY d FROM range(3000) r(i);
+
+query I
+SELECT count(*) FROM wt WHERE yearweek(d) = -9910;
+----
+7
+
+query I
+SELECT count(*) FROM wt WHERE yearweek(d::TIMESTAMP) = -9910;
+----
+7
+
+query II
+SELECT min(yearweek(d)), max(yearweek(d)) FROM wt;
+----
+-9952	-9101
+
+statement ok
+CREATE TABLE mixed AS SELECT DATE '0002-01-01 (BC)' + INTERVAL (i) DAY d FROM range(1500) r(i);
+
+query I
+SELECT count(*) FROM mixed WHERE yearweek(d) = -10;
+----
+7
+
+query I
+SELECT count(*) FROM mixed WHERE yearweek(d) BETWEEN 101 AND 153;
+----
+364

@@ -9,6 +9,7 @@
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/planner/constraints/bound_not_null_constraint.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -146,6 +147,12 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 	auto &schema = table.schema;
 	info->column_ids = storage_ids;
 
+	// Read local storage before ALTER moves it; CREATE UNIQUE INDEX also needs it for the delete index.
+	auto &local_storage = LocalStorage::Get(context, storage.db);
+	auto local_table_storage = local_storage.GetStorage(storage);
+
+	auto check_mode = ConstraintCheckMode::DEFAULT;
+	idx_t index_oid = DConstants::INVALID_INDEX;
 	if (!alter_table_info) {
 		// Ensure that the index does not yet exist in the catalog.
 		auto entry =
@@ -162,25 +169,30 @@ SinkFinalizeType PhysicalCreateIndex::Finalize(Pipeline &pipeline, Event &event,
 		D_ASSERT(index_entry);
 		auto &index = index_entry->Cast<DuckIndexEntry>();
 		index.initial_index_size = bound_index->GetInMemorySize();
-		storage.AddIndex(std::move(bound_index), index.oid);
-		return SinkFinalizeType::READY;
-	}
-
-	// PRIMARY KEY columns cannot be NULL.
-	if (info->constraint_type == IndexConstraintType::PRIMARY) {
-		auto &local_storage = LocalStorage::Get(context, storage.db);
-		for (const auto &column_id : storage_ids) {
-			BoundNotNullConstraint not_null {PhysicalIndex(column_id)};
-			local_storage.VerifyNewConstraint(storage, not_null);
+		index_oid = index.oid;
+	} else {
+		// PRIMARY KEY columns cannot be NULL.
+		if (info->constraint_type == IndexConstraintType::PRIMARY) {
+			for (const auto &column_id : storage_ids) {
+				BoundNotNullConstraint not_null {PhysicalIndex(column_id)};
+				local_storage.VerifyNewConstraint(storage, not_null);
+			}
 		}
+		auto &constraint_info = alter_table_info->Cast<AddConstraintInfo>();
+		check_mode = constraint_info.constraint->Cast<UniqueConstraint>().check_mode;
+		index_oid = DatabaseManager::Get(context).NextOid();
+		constraint_info.constraint->SetBackingIndexOid(index_oid);
+
+		auto &catalog = Catalog::GetCatalog(context, info->GetQualifiedName().Catalog());
+		catalog.Alter(context, *alter_table_info);
 	}
 
-	auto &constraint_info = alter_table_info->Cast<AddConstraintInfo>();
-	auto index_oid = DatabaseManager::Get(context).NextOid();
-	constraint_info.constraint->SetBackingIndexOid(index_oid);
-	auto &catalog = Catalog::GetCatalog(context, info->GetQualifiedName().Catalog());
-	catalog.Alter(context, *alter_table_info);
-	storage.AddIndex(std::move(bound_index), index_oid);
+	// Add the index to the storage.
+	auto index_entry = storage.GetDataTableInfo()->GetIndexes().AddIndex(std::move(bound_index), index_oid, check_mode);
+	if (local_table_storage) {
+		// Existing transaction-local rows are verified when committing, so we only add a delete index.
+		index_entry->InitializeLocalDeleteIndex(local_table_storage->delete_indexes);
+	}
 
 	return SinkFinalizeType::READY;
 }

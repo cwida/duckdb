@@ -1,0 +1,23 @@
+# name: benchmark/micro/match_recognize/match_recognize_funnel_three_step.benchmark
+# description: A three step funnel over a per visitor event stream
+# group: [match_recognize]
+
+name MatchRecognize Funnel Three Step
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE hits AS
+    SELECT (i // 10)::INTEGER AS visitor, i::INTEGER AS seq,
+           (['browse', 'select', 'checkout', 'idle'])[(i % 4) + 1] AS action
+    FROM range(0, 10000000) t(i);
+
+run
+SELECT count(*) FROM hits MATCH_RECOGNIZE(
+    PARTITION BY visitor ORDER BY seq
+    MEASURES count(*) AS steps
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (BROWSE SELECT_IT CHECKOUT)
+    DEFINE BROWSE AS BROWSE.action = 'browse', SELECT_IT AS SELECT_IT.action = 'select',
+           CHECKOUT AS CHECKOUT.action = 'checkout'
+);

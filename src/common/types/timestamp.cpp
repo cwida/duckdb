@@ -93,7 +93,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hh, mm, ss)) {
 			const int64_t delta =
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
-			if (use_offset && !TrySubtractOperator::Operation(result.value, delta, result.value)) {
+			if (use_offset &&
+			    (!TrySubtractOperator::Operation(result.value, delta, result.value) || !result.IsFinite())) {
 				return TimestampCastResult::ERROR_RANGE;
 			}
 			has_offset = true;
@@ -374,11 +375,23 @@ dtime_ns_t Timestamp::GetTimeNs(timestamp_ns_t input) {
 	return dtime_ns_t(nanos);
 }
 
-bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) {
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::MICROS_PER_DAY, result.value)) {
+bool Timestamp::TryCombineUnits(int64_t whole, int64_t part, int64_t unit, int64_t &result) {
+	int64_t whole_units;
+	if (TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(whole, unit, whole_units)) {
+		return TryAddOperator::Operation<int64_t, int64_t, int64_t>(whole_units, part, result);
+	}
+	if (whole >= 0) {
 		return false;
 	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time.value, result.value)) {
+	// start from the next whole unit, which still fits when the sum does
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(whole + 1, unit, whole_units)) {
+		return false;
+	}
+	return TryAddOperator::Operation<int64_t, int64_t, int64_t>(whole_units, part - unit, result);
+}
+
+bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) {
+	if (!TryCombineUnits(date.days, time.value, Interval::MICROS_PER_DAY, result.value)) {
 		return false;
 	}
 	return result.IsFinite();
@@ -406,12 +419,7 @@ timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {
 
 void Timestamp::Convert(timestamp_t timestamp, date_t &out_date, dtime_t &out_time) {
 	out_date = GetDate(timestamp);
-	int64_t days_micros;
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::MICROS_PER_DAY,
-	                                                               days_micros)) {
-		throw ConversionException("Date out of range in timestamp conversion");
-	}
-	out_time = dtime_t(timestamp.value - days_micros);
+	out_time = GetTime(timestamp);
 	D_ASSERT(timestamp == Timestamp::FromDatetime(out_date, out_time));
 }
 

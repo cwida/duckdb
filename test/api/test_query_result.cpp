@@ -925,13 +925,13 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	Connection con(db);
 	// The debug build's state checks that every query end follows its own begin, which a begin hook that throws
 	// breaks whichever hook runs first
-	con.context->registered_state->Remove("debug_client_context_state");
-	con.context->registered_state->Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
+	con.context->Services().GetRegisteredState().Remove("debug_client_context_state");
+	con.context->Services().GetRegisteredState().Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
 
 	auto failed = con.Query("SELECT 42");
 	REQUIRE(failed->HasError());
 	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
-	con.context->registered_state->Remove("failing_query_begin");
+	con.context->Services().GetRegisteredState().Remove("failing_query_begin");
 
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));
@@ -974,28 +974,18 @@ TEST_CASE("Cancelling the transaction abandons an open result", "[api][query_res
 	REQUIRE(CHECK_COLUMN(count, 0, {0}));
 }
 
-TEST_CASE("An unfinished statement closed inside a wrapped group rolls the whole group back", "[api][query_result]") {
+TEST_CASE("An unfinished statement that expands into several rolls back as a whole when closed",
+          "[api][query_result]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT range i FROM range(1000000)"));
 
-	// A volatile default expands into BEGIN, ADD COLUMN, UPDATE, SET DEFAULT and COMMIT, in a transaction
-	// the preprocessor opened itself
-	auto statements = con.ExtractStatements("ALTER TABLE t ADD COLUMN c DOUBLE DEFAULT random()");
-	REQUIRE(statements.size() == 5);
-	REQUIRE(statements[2]->type == StatementType::UPDATE_STATEMENT);
-	for (idx_t i = 0; i < 2; i++) {
-		auto handle = con.Submit(std::move(statements[i]));
-		handle->Complete();
-		REQUIRE_NO_FAIL(*handle);
-	}
-	REQUIRE(con.context->transaction.GetAutoRollback());
-
-	auto update = con.Submit(std::move(statements[2]));
-	REQUIRE(!update->HasError());
-	StepUnfinished(*update);
-	update->Close();
+	// A volatile default expands into ADD COLUMN, UPDATE and SET DEFAULT, which run in the query's own transaction
+	auto handle = con.Submit("ALTER TABLE t ADD COLUMN c DOUBLE DEFAULT random()");
+	REQUIRE(!handle->HasError());
+	StepUnfinished(*handle);
+	handle->Close();
 
 	// The column the group added went with it
 	REQUIRE(!con.context->transaction.HasActiveTransaction());

@@ -68,30 +68,30 @@ SELECT '14-42-04'::TIME::VARCHAR
 ----
 <REGEX>:.*Conversion Error.*time field value out of range.*
 
-# strict parsing rejects a single-digit minute at the end of the string, instead of looking
-# past the end of the buffer for a seconds separator. strict parsing is reached via the VARIANT cast.
-statement error
-SELECT '1:2'::VARIANT::TIME
-----
-<REGEX>:.*Conversion Error.*Can't convert VARIANT.*'1:2'.*
+# strict parsing rejects a single-digit minute at the end of the value, instead of looking past the end of the
+# value for a seconds separator. strict parsing is reached via CSV type detection, where the value is followed
+# by ':45' in the next column.
+foreach value 1:2 123:4 12:3
 
-statement error
-SELECT '123:4'::VARIANT::TIME
-----
-<REGEX>:.*Conversion Error.*Can't convert VARIANT.*'123:4'.*
+statement ok
+COPY (SELECT '{value}' AS t, ':45' AS s) TO '{TEST_DIR}/strict_time.csv' (DELIMITER '|', HEADER false);
 
-statement error
-SELECT '12:3'::VARIANT::TIME
+query I
+SELECT typeof(column0) FROM read_csv('{TEST_DIR}/strict_time.csv', header = false, delim = '|', auto_type_candidates = ['TIME', 'VARCHAR']);
 ----
-<REGEX>:.*Conversion Error.*Can't convert VARIANT.*'12:3'.*
+VARCHAR
+
+endloop
 
 # well-formed strict times still parse
-query I
-SELECT '11:22'::VARIANT::TIME
-----
-11:22:00
+foreach value 11:22 11:22:33
+
+statement ok
+COPY (SELECT '{value}' AS t, ':45' AS s) TO '{TEST_DIR}/strict_time.csv' (DELIMITER '|', HEADER false);
 
 query I
-SELECT '11:22:33'::VARIANT::TIME
+SELECT typeof(column0) FROM read_csv('{TEST_DIR}/strict_time.csv', header = false, delim = '|', auto_type_candidates = ['TIME', 'VARCHAR']);
 ----
-11:22:33
+TIME
+
+endloop

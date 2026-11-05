@@ -1,0 +1,29 @@
+# name: test/sql/parser/columns_unpacked_empty.test
+# description: *COLUMNS that expands to zero columns in COALESCE / IN
+# group: [parser]
+
+statement ok
+CREATE TABLE one(a INT);
+
+statement ok
+INSERT INTO one VALUES (1);
+
+statement error
+SELECT coalesce(*COLUMNS(* EXCLUDE (a))) FROM one;
+----
+<REGEX>:Binder Error.*zero columns.*
+
+statement error
+SELECT 1 IN (*COLUMNS(* EXCLUDE (a))) FROM one;
+----
+<REGEX>:Binder Error.*zero columns.*
+
+query I
+SELECT coalesce(*COLUMNS(*)) FROM one;
+----
+1
+
+query I
+SELECT 1 IN (*COLUMNS(*)) FROM one;
+----
+true

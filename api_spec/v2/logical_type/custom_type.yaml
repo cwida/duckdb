@@ -33,7 +33,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_type_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a new custom type through a factory.
 
@@ -64,7 +64,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_type_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the name of the custom type.
 
@@ -89,7 +89,7 @@ functions:
 
   custom_type_set_base_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the base type of the custom type.
 
@@ -115,7 +115,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_custom_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the custom type, making it available for use in SQL queries.
 
@@ -141,7 +141,7 @@ functions:
 
   extension_register_custom_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the custom type, making it available for use in SQL queries.
 
@@ -169,7 +169,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_type_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the custom type, releasing its resources.
 

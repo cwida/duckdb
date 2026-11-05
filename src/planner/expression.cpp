@@ -71,11 +71,26 @@ bool Expression::CanThrow() const {
 	return can_throw;
 }
 
+bool Expression::RequiresRebind() const {
+	bool requires_rebind = false;
+	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) {
+		if (child.RequiresRebind()) {
+			requires_rebind = true;
+		}
+	});
+	return requires_rebind;
+}
+
 bool Expression::PropagatesNullValues() const {
 	if (type == ExpressionType::OPERATOR_IS_NULL || type == ExpressionType::OPERATOR_IS_NOT_NULL ||
 	    type == ExpressionType::COMPARE_NOT_DISTINCT_FROM || type == ExpressionType::COMPARE_DISTINCT_FROM ||
 	    type == ExpressionType::CONJUNCTION_OR || type == ExpressionType::CONJUNCTION_AND ||
-	    type == ExpressionType::OPERATOR_COALESCE || type == ExpressionType::CASE_EXPR) {
+	    type == ExpressionType::OPERATOR_COALESCE || type == ExpressionType::CASE_EXPR ||
+	    type == ExpressionType::OPERATOR_HAS_ERROR) {
+		return false;
+	}
+	// x IN (NULL, x) is TRUE and x NOT IN (NULL, x) is FALSE: a NULL element does not decide the result
+	if (type == ExpressionType::COMPARE_IN || type == ExpressionType::COMPARE_NOT_IN) {
 		return false;
 	}
 	bool propagate_null_values = true;

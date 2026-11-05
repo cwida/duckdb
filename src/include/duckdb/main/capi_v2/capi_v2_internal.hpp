@@ -714,6 +714,14 @@ inline auto Convert(CV2Schema *schema) -> duckdb_v2_schema_handle {
 auto NullArgumentError(duckdb_v2_error_info_handle *err, const char *function, const char *argument) noexcept
     -> DUCKDB_V2_ERROR;
 
+//! Raised for metadata asked for before execution bound the statement that produces it. Reported as
+//! ERROR_INPUT_METADATA_DEFERRED
+class MetadataDeferredException : public InvalidInputException {
+public:
+	explicit MetadataDeferredException(const string &msg) : InvalidInputException(msg) {
+	}
+};
+
 // Classify the exception currently being handled into a V2 error code and detail strings. Must be called from inside
 // a catch block. Never throws: if rendering the detail itself fails, it degrades to a bare code with empty detail
 // (RESOURCE_OUT_OF_MEMORY on allocation failure). Defined in capi_v2.cpp.
@@ -834,9 +842,6 @@ DUCKDB_V2_ERROR WithErrorHandler(duckdb_v2_error_info_handle *err, T callback) n
 //----------------------------------------------------------------------------------------------------------------------
 
 struct ConnectionBusySlotV2 : public ClientContextState {
-	//! The result of a statement that expands into a group, until it finishes. Between two statements of a group
-	//! the engine has no statement open, but the group's transaction is still running
-	std::atomic<void *> owner {nullptr};
 	// The number of `connection_interrupt` calls. A result records it when its statement starts, and an INTERRUPT
 	// error is a consumer cancellation (-> CANCELLED status) only if it moved since: a DuckDB-initiated interrupt,
 	// e.g. a `max_execution_time` timeout, shares the INTERRUPT exception type (-> error). The DuckDB's internal
@@ -846,18 +851,7 @@ struct ConnectionBusySlotV2 : public ClientContextState {
 
 inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {
 	constexpr auto BUSY_SLOT_STATE_KEY = "v2_connection_busy_slot";
-	return context.registered_state->GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
-}
-
-//! The engine's refusal, raised for a group that holds the connection between two of its statements
-inline void ThrowConnectionInUse() {
-	throw ResourceInUseException(ClientContext::OPEN_RESULT_ERROR);
-}
-
-inline void ThrowIfGroupRunning(ConnectionBusySlotV2 &slot) {
-	if (slot.owner.load() != nullptr) {
-		ThrowConnectionInUse();
-	}
+	return context.Services().GetRegisteredState().GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
 }
 
 //----------------------------------------------------------------------------------------------------------------------

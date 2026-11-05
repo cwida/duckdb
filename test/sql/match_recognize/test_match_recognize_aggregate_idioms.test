@@ -1,0 +1,160 @@
+# name: test/sql/match_recognize/test_match_recognize_aggregate_idioms.test
+# description: MATCH_RECOGNIZE - shapes that read an aggregate or a union in a condition
+# group: [match_recognize]
+
+# The shapes below are the ones people write once a condition can read an aggregate of the rows
+# mapped so far, or a union of variables: a run that ends when a total is exceeded, ranges merged
+# while each starts inside the greatest end seen, a peak read against its own first row, a figure
+# whose later leg is measured against the greatest value an earlier leg reached. Every answer here
+# was checked against two other engines before it was written down.
+
+statement ok
+pragma threads=1;
+
+# ---------------------------------------------------------------- a later leg reads an earlier one
+
+# a rise that has to clear the highest point of an earlier rise, and a fall that has to break below
+# the lowest point of an earlier fall - with both earlier legs recurring later in the pattern, so
+# their rows are not one run of the match
+query IT
+SELECT rn, cls FROM (VALUES (1,10),(2,12),(3,11),(4,14),(5,13),(6,15),(7,9)) t(rn, v) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS cls ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (S UP+ DOWN+ UP2+ DOWN+ UP+ DOWN2+)
+    DEFINE UP AS v > PREV(v), DOWN AS v < PREV(v), UP2 AS v > max(UP.v), DOWN2 AS v < min(DOWN.v)
+) ORDER BY rn
+----
+1	S
+2	UP
+3	DOWN
+4	UP2
+5	DOWN
+6	UP
+7	DOWN2
+
+# ---------------------------------------------------------------- runs that end at a total
+
+# rows are taken while their total stays under a limit; the one that would exceed it ends the run
+query II
+SELECT r, n FROM (VALUES (1,10),(2,12),(3,15),(4,30),(5,31),(6,60)) t(rn, v) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES first(rn) AS r, count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW
+    PATTERN (Y+) DEFINE Y AS max(Y.v) - min(Y.v) < FIRST(Y.v)
+) ORDER BY r
+----
+1	3
+2	2
+3	1
+4	2
+5	2
+6	1
+
+# a row that does not fit is matched to an excluded variable and skipped over, so the ones that do
+# fit are packed together: the total is over the variable the pattern keeps coming back to
+query IT
+SELECT rn, cls FROM (VALUES (1,6),(2,5),(3,3),(4,4),(5,1)) t(rn, v) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS cls ALL ROWS PER MATCH
+    PATTERN ((X | {- REST -})+) DEFINE X AS sum(X.v) <= 10
+) ORDER BY rn
+----
+1	X
+3	X
+5	X
+
+# names packed into lines: an aggregate over an expression of the variable's own rows, added to a
+# reference to the row that started the line
+query II
+SELECT r, n FROM (VALUES (1,'alpha'),(2,'be'),(3,'ce'),(4,'delta'),(5,'e')) t(rn, w) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES min(rn) AS r, count(*) AS n ONE ROW PER MATCH
+    PATTERN (I L*) DEFINE L AS length(I.w) + sum(length(L.w) + 2) <= 12
+) ORDER BY r
+----
+1	2
+3	3
+
+# a supply that runs out: each delivery starts within what the deliveries before it covered, which
+# reads an aggregate of the whole match less the row being tested, beside the row that started it
+query ITI
+SELECT rn, cls, e FROM (VALUES (1,3),(3,2),(5,4),(12,1),(13,5)) t(rn, days) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS cls, A.rn + sum(days) - days AS e ALL ROWS PER MATCH
+    PATTERN (A B*) DEFINE B AS rn <= A.rn + sum(days) - days
+) ORDER BY rn
+----
+1	A	1
+3	B	4
+5	B	6
+12	A	12
+13	B	13
+
+# ---------------------------------------------------------------- merging ranges
+
+# A range joins the group while it starts no later than the greatest end so far. The aggregate
+# includes the row being tested, so written this way the test only fails for a range that ends
+# before it starts - which is why the second form, reading the next row's start, is the one that
+# merges: it decides on the row before the gap.
+query III
+SELECT s, e, n FROM (VALUES (1,3),(2,5),(6,7),(7,9),(12,13)) t(s0, e0) MATCH_RECOGNIZE(
+    ORDER BY s0 MEASURES first(s0) AS s, max(e0) AS e, count(*) AS n ONE ROW PER MATCH
+    PATTERN (S J*) DEFINE J AS s0 <= max(e0)
+)
+----
+1	13	5
+
+query III
+SELECT s, e, n FROM (VALUES (1,3),(2,5),(6,7),(7,9),(12,13)) t(s0, e0) MATCH_RECOGNIZE(
+    ORDER BY s0 MEASURES first(s0) AS s, max(e0) AS e, count(*) AS n ONE ROW PER MATCH
+    PATTERN (J* L) DEFINE J AS NEXT(s0) <= max(e0)
+) ORDER BY s
+----
+1	5	2
+6	9	2
+12	13	1
+
+# ---------------------------------------------------------------- a step and an aggregate together
+
+# a peak: each day's growth against the first day, spread over the days so far, stays above a rate;
+# the measure steps past the match's last row with NEXT over FINAL LAST
+query IIR
+SELECT r, n, nxt FROM (VALUES (1,100),(2,110),(3,121),(4,130),(5,131),(6,100)) t(rn, c) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES first(rn) AS r, FINAL count(*) AS n, NEXT(FINAL LAST(c)) AS nxt
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (P+) DEFINE P AS (NEXT(c) * 1.0 / FIRST(c) - 1) / RUNNING count(*) >= 0.04
+)
+----
+1	4	131
+
+# ---------------------------------------------------------------- unions
+
+# resuming at the last row of a union built over two alternations
+query II
+SELECT r, n FROM (VALUES (1,5),(2,4),(3,4),(4,6),(5,6),(6,3),(7,7)) t(rn, v) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES min(rn) AS r, count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP TO LAST UPS
+    PATTERN (S (DN | SAME)+ (UP | SAME)+) SUBSET UPS = (UP, SAME)
+    DEFINE DN AS v < PREV(v), UP AS v > PREV(v), SAME AS v = PREV(v)
+) ORDER BY r
+----
+1	5
+5	3
+
+# whichever of two alternatives took the first row, the second row is measured against it
+query II
+SELECT r, n FROM (VALUES (1,10,'a'),(2,20,'b'),(3,25,'c'),(4,60,'c'),(5,30,'c')) t(rn, v, k) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES min(rn) AS r, count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW
+    PATTERN ((A | B) (C | D)) SUBSET U = (A, B)
+    DEFINE A AS k = 'a', B AS k = 'b', C AS k = 'c' AND v <= U.v + 10, D AS k = 'c' AND v <= U.v + 40
+)
+----
+2	2
+
+# the union skipped to includes rows the output leaves out, and the exclusions sit inside repeated
+# groups: a fall and a rise back to no higher than the start, then the row that breaks above it
+query IT
+SELECT rn, cls FROM (VALUES (1,10),(2,9),(3,9),(4,8),(5,9),(6,9),(7,11),(8,7)) t(rn, v) MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS cls ALL ROWS PER MATCH AFTER MATCH SKIP TO LAST PAT
+    PATTERN (S ((DN+ {- FLAT -}*)+ (UP+ {- FLAT -}*)+)+ BRK) SUBSET PAT = (DN, UP, BRK)
+    DEFINE UP AS v > PREV(v) AND v <= S.v, DN AS v < PREV(v), BRK AS v > S.v, FLAT AS v = PREV(v)
+) ORDER BY rn
+----
+1	S
+2	DN
+4	DN
+5	UP
+7	BRK

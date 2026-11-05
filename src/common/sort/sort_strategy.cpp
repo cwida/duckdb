@@ -2,6 +2,7 @@
 #include "duckdb/common/sorting/full_sort.hpp"
 #include "duckdb/common/sorting/hashed_sort.hpp"
 #include "duckdb/common/sorting/natural_sort.hpp"
+#include "duckdb/common/sorting/partitioned_sort.hpp"
 
 namespace duckdb {
 
@@ -15,7 +16,7 @@ SortStrategy::SortStrategy(const Types &input_types) : payload_types(input_types
 	}
 }
 
-void SortStrategy::Synchronize(const GlobalSinkState &source, GlobalSinkState &target) const {
+void SortStrategy::Synchronize(ClientContext &client, const GlobalSinkState &source, GlobalSinkState &target) const {
 }
 
 void SortStrategy::SortColumnData(ExecutionContext &context, hash_t hash_bin,
@@ -33,8 +34,11 @@ unique_ptr<SortStrategy> SortStrategy::Factory(ClientContext &client,
                                                const vector<unique_ptr<Expression>> &partition_bys,
                                                const vector<BoundOrderByNode> &order_bys, const Types &payload_types,
                                                const vector<unique_ptr<BaseStatistics>> &partitions_stats,
-                                               idx_t estimated_cardinality, bool require_payload) {
-	if (!partition_bys.empty()) {
+                                               const OperatorPartitionInfo &partition_info, idx_t estimated_cardinality,
+                                               bool require_payload) {
+	if (partition_info.RequiresPartitionColumns()) {
+		return make_uniq<PartitionedSort>(client, order_bys, payload_types, partition_info, require_payload);
+	} else if (!partition_bys.empty()) {
 		return make_uniq<HashedSort>(client, partition_bys, order_bys, payload_types, partitions_stats,
 		                             estimated_cardinality, require_payload);
 	} else if (!order_bys.empty()) {
@@ -42,6 +46,17 @@ unique_ptr<SortStrategy> SortStrategy::Factory(ClientContext &client,
 	} else {
 		return make_uniq<NaturalSort>(payload_types);
 	}
+}
+
+//===--------------------------------------------------------------------===//
+// NextBatch
+//===--------------------------------------------------------------------===//
+SinkNextBatchType SortStrategy::NextBatch(ExecutionContext &context, OperatorSinkNextBatchInput &batch) const {
+	return SinkNextBatchType::READY;
+}
+
+unique_ptr<TupleDataCollection> SortStrategy::TryTakeSinglePartition(idx_t, GlobalSourceState &) const {
+	return nullptr;
 }
 
 void SortStrategy::RegisterHyperLogLog(LocalSinkState &, ParallelHyperLogLogLocalState &) const {

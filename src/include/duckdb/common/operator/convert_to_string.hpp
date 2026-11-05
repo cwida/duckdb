@@ -64,5 +64,7 @@ template <>
 DUCKDB_API string ConvertToString::Operation(timestamp_tz_ns_t input);
 template <>
 DUCKDB_API string ConvertToString::Operation(string_t input);
+template <>
+DUCKDB_API string ConvertToString::Operation(bignum_t input);
 
 } // namespace duckdb

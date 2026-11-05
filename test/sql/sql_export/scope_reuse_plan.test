@@ -242,6 +242,10 @@ EXPLAIN (SQL) SELECT i FROM scope_input USING SAMPLE 100% ORDER BY i;
 sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
 
 # Ordinary column grouping needs no key-staging scope; the window still has its own scope.
+# Keep the OVER () windows as windows rather than rewriting them into a cross join.
+statement ok
+SET disabled_optimizers='window_self_join';
+
 query TT
 EXPLAIN (SQL) SELECT sum(n) OVER() FROM (SELECT i,count(*) n FROM scope_input GROUP BY i) q;
 ----
@@ -256,6 +260,9 @@ query TT
 EXPLAIN (SQL) SELECT sum(n) OVER() FROM (SELECT row_number() OVER(ORDER BY i) n FROM scope_input) q;
 ----
 sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+statement ok
+RESET disabled_optimizers;
 
 query TT
 EXPLAIN (SQL) SELECT unnest(v) FROM (SELECT unnest([[i],[i+1]]) v FROM scope_input) q;

@@ -48,7 +48,7 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		// dropping a schema is never read-only because there are no temporary schemas. The catalog is the leading
 		// component of the resolved path ([catalog, parent schemas..., schema])
 		auto &catalog = Catalog::GetCatalog(context, stmt.info->GetQualifiedName().Path().front());
-		properties.RegisterDBModify(catalog, context, DatabaseModificationType::DROP_CATALOG_ENTRY);
+		properties.RegisterDBModify(catalog, context, stmt.info->GetModifications());
 		break;
 	}
 	case CatalogType::VIEW_ENTRY:
@@ -99,7 +99,7 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		}
 		// keep the entry's full (possibly nested) schema path so execution navigates the same schema
 		stmt.info->SetQualifiedName(entry->ParentSchema().GetQualifiedName(stmt.info->GetQualifiedName().Name()));
-		properties.RegisterDBModify(entry->ParentCatalog(), context, DatabaseModificationType::DROP_CATALOG_ENTRY);
+		properties.RegisterDBModify(entry->ParentCatalog(), context, stmt.info->GetModifications());
 		break;
 	}
 	case CatalogType::SECRET_ENTRY: {

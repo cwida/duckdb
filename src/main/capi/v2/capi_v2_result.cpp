@@ -8,7 +8,6 @@
 #include "duckdb/common/types/column/column_data_collection.hpp"
 
 #include "duckdb/common/enums/query_result_state.hpp"
-#include "duckdb/parser/statement/transaction_statement.hpp"
 
 namespace duckdb::capiv2 {
 namespace {
@@ -50,76 +49,66 @@ void ReadChangedRows(const ArrowArrayWrapper &unit, idx_t &rows_changed) {
 // ResultWrapperV2 state machine
 // ---------------------------------------------------------------------------
 
-void ResultWrapperV2::BeginPending(unique_ptr<QueryResult> next_handle, bool is_principal, StatementType written_type) {
+void ResultWrapperV2::BeginPending(unique_ptr<QueryResult> next_handle, StatementType written_type) {
 	next_handle->ThrowIfError();
-	principal_active = is_principal;
-	stream_when_ready = StreamsByDefault(written_type, next_handle->GetStatementProperties());
+	stream_when_ready = StreamsByDefault(written_type, *next_handle);
 	if (!stream_when_ready) {
 		// Settled before the caller steps it, so every step stays one bounded unit of work
 		next_handle->Materialize();
 	}
-	if (is_principal) {
-		types = next_handle->GetTypes();
-		names = next_handle->GetNames();
-		statement_type = next_handle->GetStatementType();
-		properties = next_handle->GetStatementProperties();
-		if (format && format->Is<ArrowFormat>()) {
-			D_ASSERT(!arrow_schema.arrow_schema.release);
-			CopyArrowSchema(next_handle->FormatState<ArrowFormat>().Schema(), arrow_schema.arrow_schema);
-		}
-		metadata_available = true;
-	}
+	statement_type = next_handle->GetStatementType();
 	handle = std::move(next_handle);
 	state = State::PENDING;
+	CaptureMetadata();
 }
 
-void ResultWrapperV2::StartNextFragment() {
-	D_ASSERT(fragment_index < fragments.size());
-	if (fragment_index > 0 && context->IsInterrupted()) {
-		// PendingQuery's InitialCleanup clears a pending interrupt flag;
-		// without this check an interrupt landing exactly at a fragment
-		// boundary would be silently swallowed and the group would keep
-		// running. (At fragment 0 the clearing is desired: a stale
-		// interrupt must not poison a new query.)
+void ResultWrapperV2::CaptureMetadata() {
+	if (metadata_available) {
+		return;
+	}
+	const bool arrow = format && format->Is<ArrowFormat>();
+	if (stream) {
+		// A failed result reports empty metadata, which is not the result's
+		if (stream->HasError() || !stream->MetadataAvailable()) {
+			return;
+		}
+		types = stream->GetTypes();
+		names = stream->GetNames();
+		properties = stream->GetStatementProperties();
+		if (arrow) {
+			auto &arrow_stream = static_cast<QueryResultStream<ArrowFormat> &>(*stream);
+			CopyArrowSchema(arrow_stream.FormatState().Schema(), arrow_schema.arrow_schema);
+		}
+	} else if (handle) {
+		if (handle->HasError() || !handle->MetadataAvailable()) {
+			return;
+		}
+		types = handle->GetTypes();
+		names = handle->GetNames();
+		properties = handle->GetStatementProperties();
+		if (arrow) {
+			CopyArrowSchema(handle->FormatState<ArrowFormat>().Schema(), arrow_schema.arrow_schema);
+		}
+	} else {
+		return;
+	}
+	metadata_available = true;
+}
+
+void ResultWrapperV2::RequireMetadata() {
+	CaptureMetadata();
+	if (metadata_available) {
+		return;
+	}
+	// A result that ended before its metadata was known never gets it
+	if (state == State::ERRORED) {
+		error.Throw();
+	}
+	if (state == State::CANCELLED) {
 		throw InterruptException();
 	}
-	idx_t this_index = fragment_index;
-	auto stmt = std::move(fragments[fragment_index++]);
-	auto written_type = stmt->type;
-	bool is_last = fragment_index == fragments.size();
-	// Parameters bind only to the first fragment (statement_execute rejects them on
-	// a statement that expands, so that fragment is the user's statement). Later
-	// fragments take the no-values path.
-	auto next_handle = (this_index == 0 && !param_values.empty())
-	                       ? context->Submit(std::move(stmt), param_values, QueryParameters(format))
-	                       : context->Submit(std::move(stmt), QueryParameters(format));
-	// Principal selection is a property of the fragment group; compute it here, then
-	// hand the handle to the shared BeginPending seam. A HasError() handle is left
-	// for BeginPending to raise (return_type is meaningless on it).
-	bool has_result = !next_handle->HasError() &&
-	                  next_handle->GetStatementProperties().return_type == StatementReturnType::QUERY_RESULT;
-	if (principal_seen && has_result) {
-		// ClientContext::Query would chain these as separate results with
-		// separate schemas; a single stream cannot. No known expansion
-		// produces two row-producing fragments.
-		throw NotImplementedException(
-		    "statement expands to multiple row-producing statements, which cannot be streamed as a single result");
-	}
-	// Result selection mirrors ClientContext::Query: the caller sees the
-	// first row-producing fragment, or the last fragment when none
-	// produces rows.
-	bool is_principal = has_result || (is_last && !principal_seen);
-	if (has_result) {
-		principal_seen = true;
-	}
-	BeginPending(std::move(next_handle), is_principal, written_type);
-}
-
-void ResultWrapperV2::RequireMetadata() const {
-	if (!metadata_available) {
-		throw InvalidInputException("result metadata is not yet available: the statement expands to a group of "
-		                            "statements and the result-producing one has not been prepared; step the result");
-	}
+	throw MetadataDeferredException("result metadata is not yet available: the statement expands into several, and "
+	                                "the one that produces the result has not been bound; step the result");
 }
 
 DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::HandleExecutionError(ErrorData error_data) {
@@ -131,13 +120,6 @@ DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::HandleExecutionError(ErrorData err
 	                      busy_slot->cancel_requests.load() != cancel_requests_at_start;
 	stream.reset();
 	handle.reset();
-	fragments.clear();
-	try {
-		AbandonIncompleteGroup();
-	} catch (...) {
-		// Best effort; never mask the original error.
-	}
-	ReleaseBusySlot();
 	if (user_cancelled) {
 		// In the step channel, cancellation is a status, not an error,
 		// regardless of which phase the interrupt landed in. The status
@@ -168,6 +150,7 @@ DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::Step(unique_ptr<typename FORMAT::T
 		QueryResultState exec;
 		try {
 			exec = handle->ExecuteTask();
+			CaptureMetadata();
 		} catch (std::exception &ex) {
 			return HandleExecutionError(ErrorData(ex));
 		}
@@ -192,6 +175,7 @@ DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::Step(unique_ptr<typename FORMAT::T
 				} else {
 					stream = make_uniq<QueryResultStream<FORMAT>>(std::move(handle));
 				}
+				CaptureMetadata();
 			} catch (std::exception &ex) {
 				return HandleExecutionError(ErrorData(ex));
 			}
@@ -207,6 +191,7 @@ DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::Step(unique_ptr<typename FORMAT::T
 			QueryResultState exec;
 			try {
 				exec = stream->ExecuteTask();
+				CaptureMetadata();
 			} catch (std::exception &ex) {
 				// The stream records an interrupt as an error rather than
 				// throwing; this is a guard for anything that escapes.
@@ -241,29 +226,16 @@ DUCKDB_V2_RESULT_STEP_STATUS ResultWrapperV2::Step(unique_ptr<typename FORMAT::T
 			// and returning null.
 			return HandleExecutionError(stream ? stream->GetErrorObject() : handle->GetErrorObject());
 		}
+		try {
+			CaptureMetadata();
+		} catch (std::exception &ex) {
+			return HandleExecutionError(ErrorData(ex));
+		}
 		if (!unit) {
 			stream.reset();
 			handle.reset();
-			if (fragment_index < fragments.size()) {
-				// More fragments in the group: start the next one and keep
-				// reporting WAITING. FINISHED only after the whole group
-				// (including a trailing injected COMMIT) has executed.
-				try {
-					StartNextFragment();
-				} catch (std::exception &ex) {
-					return HandleExecutionError(ErrorData(ex));
-				}
-				return DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
-			}
 			state = State::FINISHED;
-			ReleaseBusySlot();
 			return DUCKDB_V2_RESULT_STEP_STATUS_FINISHED;
-		}
-		if (!principal_active) {
-			// Output of a non-principal fragment (e.g. the internal UPDATE of
-			// an expanded ALTER): discard it, exactly as ClientContext::Query
-			// drops these results from its chain.
-			return DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
 		}
 		out_unit = std::move(unit);
 		return DUCKDB_V2_RESULT_STEP_STATUS_CHUNK;
@@ -285,7 +257,9 @@ void ResultWrapperV2::Wait() {
 		// safe: the engine may already have processed an execution error and
 		// ended the query internally (waiting then dereferences the closed
 		// query), and a ready or finished query has no task to wake on.
-		switch (handle->Poll()) {
+		auto polled = handle->Poll();
+		CaptureMetadata();
+		switch (polled) {
 		case QueryResultState::BLOCKED:
 		case QueryResultState::NO_TASKS_AVAILABLE:
 			// No progress possible right now; this is the one case where
@@ -360,14 +334,14 @@ void ResultWrapperV2::AdvanceToMetadata() {
 		if (status == DUCKDB_V2_RESULT_STEP_STATUS_CHUNK) {
 			throw InternalException("a row was produced before result metadata was available");
 		}
-		break; // FINISHED / CANCELLED: no row-producing fragment.
+		break; // FINISHED / CANCELLED
 	}
 }
 
 template <class FORMAT>
 idx_t ResultWrapperV2::Drain() {
-	// CHANGED_ROWS results stream a single-row BIGINT Count unit. The principal fragment's metadata may only become
-	// available mid-drain (expanding statements), so check per unit: surfaced units always belong to the principal.
+	// CHANGED_ROWS results stream a single-row BIGINT Count unit. The metadata of a statement that expands into several
+	// may only become available mid-drain, so check per unit.
 	idx_t rows_changed = 0;
 	while (auto unit = FetchBlocking<FORMAT>()) {
 		if (metadata_available && properties.return_type == StatementReturnType::CHANGED_ROWS) {
@@ -409,15 +383,10 @@ auto ExecutePreparedStatementV2(const shared_ptr<ClientContext> &context, Prepar
 	auto wrapper = make_uniq<ResultWrapperV2>();
 	wrapper->busy_slot = GetBusySlot(*context);
 	wrapper->cancel_requests_at_start = wrapper->busy_slot->cancel_requests.load();
-	ThrowIfGroupRunning(*wrapper->busy_slot);
 	wrapper->context = context;
 	wrapper->format = std::move(format);
-	// A prepared statement is always one engine statement: preprocessing, expansion and
-	// the wrapping transaction all happened at prepare time, so this bypasses the fragment
-	// machinery and is always principal. fragment_count is 1 for metadata symmetry only.
-	wrapper->fragment_count = 1;
 	// The engine refuses the submission while another statement on the connection is running
-	wrapper->BeginPending(prepared.Submit(values, QueryParameters(wrapper->format)), true, prepared.GetStatementType());
+	wrapper->BeginPending(prepared.Submit(values, QueryParameters(wrapper->format)), prepared.GetStatementType());
 	// The engine runs a prepared statement through an internal EXECUTE, whose statement type
 	// would otherwise be what the result reports. Report the type of the statement that was
 	// prepared instead, so a prepared result is indistinguishable from a stateless one.
@@ -433,60 +402,23 @@ auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLState
 	// The busy slot lives in the context's registered-state map, so the connection handle stays a bare Connection *
 	wrapper->busy_slot = GetBusySlot(*context);
 	wrapper->cancel_requests_at_start = wrapper->busy_slot->cancel_requests.load();
-	ThrowIfGroupRunning(*wrapper->busy_slot);
-	// Refused before preprocessing, which decides from the active transaction whether to wrap a group in its own
-	context->VerifyNoOpenResult();
 
 	// Borrowed, not consumed: execute a copy so the caller keeps the original.
 	auto stmt = statement.Copy();
 	// Fold parameter values in as constants, keyed by name when parameter_names
 	// supplies one and positionally ("1".."N") otherwise.
-	BuildParameterMap(parameter_names, parameter_values, parameter_count, function_name, wrapper->param_values);
-	// Statement-level preprocessing (pragma reparsing, expansion
-	// unpacking, transaction wrapping): one user statement can expand
-	// into a group of engine statements that the wrapper executes in
-	// order. parse_sql deliberately leaves this to statement_execute so
-	// parsing stays binder-free and a group is never split across the
-	// API boundary.
-	wrapper->fragments.push_back(std::move(stmt));
-	context->PreprocessStatements(wrapper->fragments);
-	if (wrapper->fragments.empty()) {
-		throw InvalidInputException("statement preprocessing yielded no executable statements");
-	}
-	wrapper->fragment_count = wrapper->fragments.size();
-	// Reject parameters on a statement that expands into a group: the values would
-	// bind to the first fragment, an injected BEGIN, not the user's statement. (A
-	// statement can carry a parameter and still expand, e.g. a volatile DEFAULT.)
-	if (!wrapper->param_values.empty() && wrapper->fragments.size() > 1) {
-		throw InvalidInputException(
-		    "parameters are not supported for a statement that expands into multiple engine statements");
-	}
-	// Detect whether preprocessing wrapped this group in its own
-	// transaction (autocommit input expanded to BEGIN ... COMMIT).
-	// Preprocessing only injects the wrap for a multi-fragment group, as a
-	// leading BEGIN paired with a trailing COMMIT; a lone user-issued BEGIN
-	// is a single fragment the user owns and the bridge must not roll back.
-	if (wrapper->fragments.size() > 1 && wrapper->fragments.front()->type == StatementType::TRANSACTION_STATEMENT &&
-	    wrapper->fragments.back()->type == StatementType::TRANSACTION_STATEMENT) {
-		auto &front_stmt = wrapper->fragments.front()->Cast<TransactionStatement>();
-		auto &back_stmt = wrapper->fragments.back()->Cast<TransactionStatement>();
-		wrapper->owns_wrapping_transaction = front_stmt.info->type == TransactionType::BEGIN_TRANSACTION &&
-		                                     back_stmt.info->type == TransactionType::COMMIT;
-	}
+	identifier_map_t<BoundParameterData> values;
+	BuildParameterMap(parameter_names, parameter_values, parameter_count, function_name, values);
 	wrapper->context = context;
 	wrapper->format = std::move(format);
-	if (wrapper->fragments.size() > 1) {
-		// On any failure below, the wrapper's destructor releases the claim
-		void *expected = nullptr;
-		if (!wrapper->busy_slot->owner.compare_exchange_strong(expected, wrapper.get())) {
-			ThrowConnectionInUse();
-		}
-	}
-	// Prepare the first fragment. Lazy streaming execution: nothing
-	// executes until the result is stepped; for non-expanding statements
-	// (the common case) this also captures the metadata immediately. The engine refuses the
-	// submission while another statement on the connection is running.
-	wrapper->StartNextFragment();
+	// Lazy streaming execution: nothing executes until the result is stepped. The engine expands the statement,
+	// running what it expands into as one query, and refuses the submission while another statement on the
+	// connection is running.
+	auto handle = values.empty() ? context->Submit(std::move(stmt), QueryParameters(wrapper->format))
+	                             : context->Submit(std::move(stmt), values, QueryParameters(wrapper->format));
+	// The result's type, so that a PRAGMA the engine reparses into a SELECT streams as that SELECT
+	const auto result_type = handle->GetStatementType();
+	wrapper->BeginPending(std::move(handle), result_type);
 	return wrapper;
 }
 
@@ -661,11 +593,7 @@ DUCKDB_V2_ERROR duckdb_v2_result_get_statement_type(duckdb_v2_result_handle resu
 	DUCKDB_CHECK_ARG(result);
 	DUCKDB_CHECK_ARG(out_type);
 
-	return WithErrorHandler(err, [&]() {
-		auto *r = Convert(result);
-		r->RequireMetadata();
-		*out_type = Convert(r->statement_type);
-	});
+	return WithErrorHandler(err, [&]() { *out_type = Convert(Convert(result)->statement_type); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_result_get_schema(duckdb_v2_result_handle result, duckdb_v2_schema_handle *out_schema,

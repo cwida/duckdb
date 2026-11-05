@@ -8,6 +8,8 @@
 #include "parquet_reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/limits.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
@@ -73,17 +75,25 @@ void DeltaByteArrayDecoder::InitializePage() {
 	idx_t total_size = 0;
 	idx_t max_len = 0;
 	for (idx_t i = 0; i < prefix_count; i++) {
-		idx_t len = prefix_data[i] + suffix_data[i];
+		// the lengths are read from the file - add them as idx_t so the sum cannot wrap around
+		idx_t len = idx_t(prefix_data[i]) + idx_t(suffix_data[i]);
+		if (len >= NumericLimits<uint32_t>::Maximum()) {
+			throw InvalidInputException("DELTA_BYTE_ARRAY - value length is out of range - corrupt file?");
+		}
 		if (is_fixed_len && len != fixed_len) {
 			throw std::runtime_error(
 			    "DELTA_BYTE_ARRAY on FIXED_LEN_BYTE_ARRAY: decoded length does not match type length");
 		}
-		total_size += len;
+		if (!TryAddOperator::Operation<idx_t, idx_t, idx_t>(total_size, len, total_size)) {
+			throw InvalidInputException("DELTA_BYTE_ARRAY - total length is too large - corrupt file?");
+		}
 		max_len = MaxValue(max_len, len);
 	}
 
 	if (!is_fixed_len) {
-		total_size += prefix_count * sizeof(uint32_t);
+		if (!TryAddOperator::Operation<idx_t, idx_t, idx_t>(total_size, prefix_count * sizeof(uint32_t), total_size)) {
+			throw InvalidInputException("DELTA_BYTE_ARRAY - total length is too large - corrupt file?");
+		}
 	}
 
 	plain_data->resize(allocator, total_size);
@@ -92,9 +102,9 @@ void DeltaByteArrayDecoder::InitializePage() {
 
 	auto output = plain_data->ptr;
 	for (idx_t i = 0; i < prefix_count; i++) {
-		auto prefix_len = prefix_data[i];
-		auto suffix_len = suffix_data[i];
-		auto value_len = prefix_len + suffix_len;
+		idx_t prefix_len = prefix_data[i];
+		idx_t suffix_len = suffix_data[i];
+		idx_t value_len = prefix_len + suffix_len;
 
 		if (prefix_len > prev_len) {
 			throw std::runtime_error("DELTA_BYTE_ARRAY - prefix is out of range - corrupt file?");

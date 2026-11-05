@@ -1,0 +1,103 @@
+# name: test/sql/constraints/deferred/test_deferred_large.test_slow
+# description: Deferred constraints with large inserts and bulk appends
+# group: [deferred]
+
+statement ok
+CREATE TABLE t(i INTEGER PRIMARY KEY DEFERRED, j INTEGER);
+
+# a duplicate across chunks
+statement error
+INSERT INTO t SELECT range, range FROM range(5000) UNION ALL SELECT 4999, 0;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM t;
+----
+0
+
+statement ok
+INSERT INTO t SELECT range, range FROM range(5000);
+
+# shifting all keys conflicts with keys in other chunks until the statement is done
+statement ok
+UPDATE t SET i = i + 1;
+
+query III
+SELECT count(*), min(i), max(i) FROM t;
+----
+5000	1	5000
+
+# a duplicate in a large insert with multiple threads enabled
+statement ok
+SET threads = 4;
+
+statement ok
+CREATE TABLE parallel(i BIGINT PRIMARY KEY DEFERRED);
+
+statement error
+INSERT INTO parallel SELECT range % 1000000 FROM range(1000001);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM parallel;
+----
+0
+
+statement ok
+INSERT INTO parallel SELECT range FROM range(1000000);
+
+statement error
+INSERT INTO parallel SELECT range FROM range(999999, 1000500);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM parallel;
+----
+1000000
+
+# the bulk append path merges full row groups without a per-chunk append
+statement ok
+CREATE TABLE bulk(i BIGINT UNIQUE DEFERRED);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO bulk SELECT range FROM range(300000);
+
+statement ok
+INSERT INTO bulk SELECT range FROM range(299999, 300001);
+
+statement error
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM bulk;
+----
+0
+
+statement ok
+INSERT INTO bulk SELECT range FROM range(300000);
+
+# resolving bulk-inserted duplicates before the commit
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO bulk SELECT range FROM range(300000);
+
+statement ok
+DELETE FROM bulk WHERE rowid < 300000;
+
+statement ok
+COMMIT;
+
+query III
+SELECT count(*), min(i), max(i) FROM bulk;
+----
+300000	0	299999

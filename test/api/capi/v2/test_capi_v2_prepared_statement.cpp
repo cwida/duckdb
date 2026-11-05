@@ -17,7 +17,7 @@ namespace {
 // unity-build clash with the same-shaped helper in other test files.
 duckdb_v2_sql_statement_handle PsParseOne(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(stmt != nullptr);
@@ -198,6 +198,36 @@ TEST_CASE("V2: require_cacheable rejects a re-bound plan", "[capi_v2][prepared_s
 
 	// The same statement prepares fine without the flag; the caller then knows what it got.
 	REQUIRE_FALSE(PsReusesPlan(fx.conn, "SELECT x FROM t WHERE x = $1"));
+}
+
+TEST_CASE("V2: a prepared statement that expands runs at each execution", "[capi_v2][prepared_statement]") {
+	EnvFixture fx;
+	ExecSQL(fx.conn, "CREATE TABLE sales (city VARCHAR, year INT, amount INT)");
+	ExecSQL(fx.conn, "INSERT INTO sales VALUES ('ams', 2023, 10), ('rtm', 2024, 40)");
+
+	// Kept as written and expanded at each execution, so it is re-bound every time
+	auto rc = DUCKDB_V2_ERROR_NONE;
+	REQUIRE(PsPrepare(fx.conn, "PIVOT sales ON year USING sum(amount)", true, &rc) == nullptr);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE_FALSE(PsReusesPlan(fx.conn, "PIVOT sales ON year USING sum(amount)"));
+
+	auto prepared = PsPrepare(fx.conn, "PIVOT sales ON year USING sum(amount)");
+	REQUIRE(prepared != nullptr);
+	for (idx_t columns : {3, 4}) {
+		duckdb_v2_result_handle r = nullptr;
+		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		DUCKDB_V2_STATEMENT_TYPE st = DUCKDB_V2_STATEMENT_TYPE_INVALID;
+		REQUIRE(duckdb_v2_result_get_statement_type(r, &st, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(st == DUCKDB_V2_STATEMENT_TYPE_MULTI);
+		RequireSchemaDeferred(r);
+		REQUIRE(DrainRowCount(r) == 2);
+		REQUIRE(ColumnCount(r) == columns);
+		duckdb_v2_result_destroy(&r);
+		// A new year becomes a new column at the next execution
+		ExecSQL(fx.conn, "INSERT INTO sales VALUES ('ams', 2025, 5)");
+	}
+	duckdb_v2_prepared_statement_destroy(&prepared);
 }
 
 // ===========================================================================

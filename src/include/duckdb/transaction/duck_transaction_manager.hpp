@@ -13,6 +13,8 @@
 #include "duckdb/common/enums/checkpoint_type.hpp"
 #include "duckdb/common/queue.hpp"
 
+#include <condition_variable>
+
 namespace duckdb {
 class DuckTransactionManager;
 class DuckTransaction;
@@ -54,6 +56,9 @@ public:
 	transaction_t GetLastCommit() const {
 		return last_commit;
 	}
+	//! Wait until every published commit is durable. Called under the commit lock, so no new commit can
+	//! enter its sync window and the wait is bounded by the syncs in flight
+	void WaitForDurability();
 	optional_idx GetActiveCheckpoint() const {
 		auto id = active_checkpoint.load();
 		return id == 0 ? optional_idx() : optional_idx(id);
@@ -126,6 +131,17 @@ private:
 	bool HasOtherTransactions(DuckTransaction &transaction);
 	void CleanupTransactions();
 
+	//! Whether a commit that needed a WAL sync is still in its commit path, possibly inside SyncUpTo
+	bool HasUnsyncedCommits();
+	struct DurableSnapshot {
+		//! Every commit before this bound is durable
+		VisibilityBound visibility_bound = VisibilityBound::IncludingUncommitted();
+		//! The catalog version that snapshot observes
+		idx_t catalog_version = DConstants::INVALID_INDEX;
+	};
+	//! The most recent snapshot that contains only durable commits; unbounded when none is pending
+	DurableSnapshot GetDurableSnapshot();
+
 private:
 	//! The current start timestamp used by transactions
 	transaction_t current_start_timestamp;
@@ -152,6 +168,13 @@ private:
 	StorageLock vacuum_lock;
 	//! Lock necessary to start transactions only - used by FORCE CHECKPOINT to prevent new transactions from starting
 	mutex start_transaction_lock;
+
+	//! Every commit before this bound is durable; it only ever advances. A transaction stays in
+	//! active_transactions until its commit is durable, so new snapshots are bounded below commits
+	//! that are not yet durable
+	VisibilityBound durable_bound;
+	//! Signalled (under transaction_lock) when no active transaction awaits its WAL sync
+	std::condition_variable durability_cv;
 
 	atomic<idx_t> last_uncommitted_catalog_version = {TRANSACTION_ID_START};
 	idx_t last_committed_version = 0;

@@ -1,11 +1,11 @@
 # name: test/sql/peg_parser/peg_syntax_error.test
-# description: Test analyze and vacuum statements in peg parser
+# description: Test syntax error messages of the peg parser
 # group: [peg_parser]
 
 statement error
 SELECT (1 + (2 * 3)
 ----
-Parser Error: syntax error at or near ")"
+Parser Error: syntax error at end of input
 
 statement error
 SELECT (1 + (2 * 3);
@@ -25,7 +25,7 @@ Parser Error: syntax error at or near ";"
 statement error
 SELECT * FROM users JOIN orders
 ----
-Parser Error: syntax error at or near "orders"
+Parser Error: syntax error at end of input
 
 statement error
 SELECT * FROM users JOIN orders;
@@ -40,7 +40,7 @@ Parser Error: syntax error at or near "WHERE"
 statement error
 SELECT (10).
 ----
-Parser Error: syntax error at or near "."
+Parser Error: syntax error at end of input
 
 statement error
 SELECT (10).;
@@ -66,7 +66,7 @@ Parser Error: syntax error at or near ".."
 statement error
 SELECT * FROM tbl WHERE x = (SELECT 1 FROM (SELECT 2)
 ----
-Parser Error: syntax error at or near ")"
+Parser Error: syntax error at end of input
 
 statement error
 SELECT x -> x + FROM tbl;
@@ -102,17 +102,17 @@ Parser Error: syntax error at or near "}"
 statement error
 SELECT CASE WHEN x > 10 THEN 'large' WHEN x < 5
 ----
-Parser Error: syntax error at or near "5"
+Parser Error: syntax error at end of input
 
 statement error
 SELECT '2023-01-01'::
 ----
-Parser Error: syntax error at or near "::"
+Parser Error: syntax error at end of input
 
 statement error
 SELECT 1 INTERSECT
 ----
-Parser Error: syntax error at or near "INTERSECT"
+Parser Error: syntax error at end of input
 
 statement ok 
 create table tbl (a bigint, b bigint, c bigint); 

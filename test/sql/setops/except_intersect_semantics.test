@@ -1,0 +1,412 @@
+# name: test/sql/setops/except_intersect_semantics.test
+# description: EXCEPT and INTERSECT keep duplicates, NULLs and collations, also with filters around and inside them
+# group: [setops]
+
+statement ok
+CREATE TABLE l AS SELECT * FROM (VALUES (1), (1), (1), (2), (2), (3), (NULL), (NULL)) t(i);
+
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES (1), (2), (2), (2), (4), (NULL)) t(i);
+
+query I
+SELECT * FROM l EXCEPT SELECT * FROM r ORDER BY ALL
+----
+3
+
+query I
+SELECT * FROM l EXCEPT ALL SELECT * FROM r ORDER BY ALL
+----
+1
+1
+3
+NULL
+
+query I
+SELECT * FROM l INTERSECT SELECT * FROM r ORDER BY ALL
+----
+1
+2
+NULL
+
+query I
+SELECT * FROM l INTERSECT ALL SELECT * FROM r ORDER BY ALL
+----
+1
+2
+2
+NULL
+
+# filters above the operation
+query I
+SELECT * FROM (SELECT * FROM l EXCEPT ALL SELECT * FROM r) WHERE i <= 2 ORDER BY ALL
+----
+1
+1
+
+query I
+SELECT * FROM (SELECT * FROM l INTERSECT ALL SELECT * FROM r) WHERE i = 2
+----
+2
+2
+
+query I
+SELECT * FROM (SELECT * FROM l INTERSECT SELECT * FROM r) WHERE i IN (2, 3)
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT * FROM l EXCEPT ALL SELECT * FROM r) WHERE i IS NULL
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT * FROM l EXCEPT SELECT * FROM r) WHERE i IS NULL
+----
+0
+
+query I
+SELECT * FROM (SELECT * FROM l EXCEPT ALL SELECT * FROM r) WHERE i = 1 OR i IS NULL ORDER BY ALL
+----
+1
+1
+NULL
+
+query I
+SELECT * FROM (SELECT * FROM l INTERSECT ALL SELECT * FROM r) WHERE i IS NOT DISTINCT FROM NULL
+----
+NULL
+
+# filters in the inputs
+query I
+SELECT * FROM l WHERE i = 2 INTERSECT ALL SELECT * FROM r
+----
+2
+2
+
+query I
+SELECT * FROM l WHERE i < 3 EXCEPT ALL SELECT * FROM r ORDER BY ALL
+----
+1
+1
+
+query I
+SELECT * FROM l EXCEPT ALL SELECT * FROM r WHERE i = 1 ORDER BY ALL
+----
+1
+1
+2
+2
+3
+NULL
+NULL
+
+query I
+SELECT * FROM l INTERSECT ALL SELECT * FROM r WHERE i IS NULL OR i = 1 ORDER BY ALL
+----
+1
+NULL
+
+# empty inputs
+query I
+SELECT * FROM l EXCEPT SELECT * FROM r WHERE false ORDER BY ALL
+----
+1
+2
+3
+NULL
+
+query I
+SELECT count(*) FROM (SELECT * FROM l EXCEPT ALL SELECT * FROM r WHERE false)
+----
+8
+
+query I
+SELECT count(*) FROM (SELECT * FROM l INTERSECT ALL SELECT * FROM r WHERE false)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM l WHERE false EXCEPT ALL SELECT * FROM r)
+----
+0
+
+# NULLs are equal, also when the statistics of the inputs do not overlap
+statement ok
+CREATE TABLE ln AS SELECT * FROM (VALUES (1), (NULL)) t(i);
+
+statement ok
+CREATE TABLE rn AS SELECT * FROM (VALUES (20), (NULL)) t(i);
+
+query I
+SELECT * FROM ln EXCEPT SELECT * FROM rn
+----
+1
+
+query I
+SELECT * FROM ln INTERSECT ALL SELECT * FROM rn
+----
+NULL
+
+query II
+SELECT * FROM (VALUES (1, NULL), (1, 2), (NULL, NULL)) t(a, b) INTERSECT SELECT * FROM (VALUES (1, NULL), (NULL, NULL), (2, 2)) ORDER BY ALL
+----
+1	NULL
+NULL	NULL
+
+query II
+SELECT * FROM (VALUES (1, NULL), (1, NULL), (NULL, NULL)) t(a, b) EXCEPT ALL SELECT * FROM (VALUES (1, NULL), (NULL, 2)) ORDER BY ALL
+----
+1	NULL
+NULL	NULL
+
+# nested types
+query I
+SELECT * FROM (VALUES ([1, NULL]), ([1, NULL]), ([2]), (NULL)) t(l) EXCEPT ALL SELECT * FROM (VALUES ([1, NULL]), (NULL)) ORDER BY ALL
+----
+[1, NULL]
+[2]
+
+query I
+SELECT * FROM (VALUES ({'a': NULL, 'b': 1}), ({'a': 1, 'b': 1})) t(s) INTERSECT SELECT {'a': NULL, 'b': 1}
+----
+{'a': NULL, 'b': 1}
+
+query I
+SELECT * FROM (VALUES (MAP {1: NULL}), (MAP {1: 2})) t(m) EXCEPT SELECT MAP {1: NULL}
+----
+{1=2}
+
+# -0.0 equals 0.0 and NaN equals NaN
+query I
+SELECT count(*) FROM (SELECT * FROM (VALUES (-0.0::DOUBLE), ('nan'::DOUBLE)) t(x) EXCEPT SELECT * FROM (VALUES (0.0::DOUBLE), ('nan'::DOUBLE)))
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM (VALUES (-0.0::DOUBLE), (-0.0::DOUBLE)) t(x) INTERSECT ALL SELECT 0.0::DOUBLE)
+----
+1
+
+# collations, of one or both inputs, and of nested values with the default collation
+statement ok
+CREATE TABLE cl (s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO cl VALUES ('ABC'), ('abc'), ('Abc'), (NULL);
+
+statement ok
+CREATE TABLE cr (s VARCHAR);
+
+statement ok
+INSERT INTO cr VALUES ('aBC'), (NULL);
+
+query I
+SELECT count(*) FROM (SELECT s FROM cl EXCEPT SELECT s FROM cr)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM cl EXCEPT ALL SELECT s FROM cr)
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT s FROM cr INTERSECT ALL SELECT s FROM cl)
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT s FROM cl EXCEPT ALL SELECT s FROM cr) WHERE s = 'abc'
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT s FROM cl EXCEPT ALL SELECT s FROM cr) WHERE hex(s) = hex('aBC')
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM cr INTERSECT ALL SELECT s FROM cl WHERE hex(s) = hex('Abc'))
+----
+1
+
+statement ok
+SET default_collation = 'nocase';
+
+query I
+SELECT * FROM (VALUES ({'s': 'ABC', 'i': 1}), ({'s': 'XYZ', 'i': 1})) t(v) EXCEPT SELECT {'s': 'abc', 'i': 1}
+----
+{'s': XYZ, 'i': 1}
+
+query I
+SELECT count(*) FROM (SELECT * FROM (VALUES (['ABC', NULL]), (['xyz'])) t(v) INTERSECT ALL SELECT ['abc', NULL])
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT * FROM (VALUES (['ABC', NULL])) t(v) EXCEPT SELECT ['abc', NULL]) WHERE hex(v[1]) = hex('ABC')
+----
+0
+
+statement ok
+RESET default_collation;
+
+# correlated subqueries
+query II
+SELECT i, (SELECT count(*) FROM (SELECT i EXCEPT SELECT 1)) FROM range(3) t(i) ORDER BY i
+----
+0	1
+1	0
+2	1
+
+query II
+SELECT i, (SELECT count(*) FROM (SELECT j % 2 FROM range(4) u(j) WHERE j <= i INTERSECT ALL SELECT j % 2 FROM range(4) u(j) WHERE j >= i)) FROM range(3) t(i) ORDER BY i
+----
+0	1
+1	2
+2	2
+
+query II
+SELECT i, (SELECT count(*) FROM (SELECT j % 2 FROM range(4) u(j) WHERE j <= i EXCEPT ALL SELECT j % 2 FROM range(4) u(j) WHERE j >= i)) FROM range(3) t(i) ORDER BY i
+----
+0	0
+1	0
+2	1
+
+# nesting, ordering and limits
+query I
+(SELECT * FROM l EXCEPT ALL SELECT * FROM r) INTERSECT SELECT * FROM l WHERE i > 1 ORDER BY ALL
+----
+3
+
+query I
+SELECT * FROM l INTERSECT ALL SELECT * FROM r ORDER BY i DESC NULLS LAST LIMIT 2
+----
+2
+2
+
+query I
+WITH e AS (SELECT * FROM l EXCEPT ALL SELECT * FROM r) SELECT count(*) FROM e a JOIN e b USING (i)
+----
+5
+
+# more rows than a vector, with duplicates
+query II
+SELECT count(*), sum(i) FROM (SELECT range % 1000 AS i FROM range(10000) EXCEPT ALL SELECT range % 500 FROM range(3000))
+----
+7000	4246500
+
+query II
+SELECT count(*), sum(i) FROM (SELECT range % 1000 AS i FROM range(10000) INTERSECT ALL SELECT range % 500 FROM range(3000))
+----
+3000	748500
+
+query II
+SELECT count(*), sum(i) FROM (SELECT range % 1000 AS i FROM range(10000) EXCEPT SELECT range % 500 FROM range(3000))
+----
+500	374750
+
+# a prepared filter
+statement ok
+PREPARE q AS SELECT count(*) FROM (SELECT * FROM l EXCEPT ALL SELECT * FROM r) WHERE i = $1;
+
+query I
+EXECUTE q(1)
+----
+2
+
+query I
+EXECUTE q(2)
+----
+0
+
+# a filter on a compared column reaches the other input, also through the row numbers of ALL
+statement ok
+CREATE TABLE ints_a AS SELECT range AS i FROM range(100);
+
+statement ok
+CREATE TABLE ints_b AS SELECT range AS i FROM range(50);
+
+query II
+EXPLAIN SELECT i FROM ints_a WHERE i = 7 INTERSECT ALL SELECT i FROM ints_b;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+EXPLAIN SELECT i FROM ints_a INTERSECT ALL SELECT i FROM ints_b WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+EXPLAIN SELECT i FROM ints_a INTERSECT SELECT i FROM ints_b WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+EXPLAIN SELECT i FROM ints_a WHERE i = 7 EXCEPT ALL SELECT i FROM ints_b;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT i FROM ints_a EXCEPT ALL SELECT i FROM ints_b) WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+# a filter on the right input of EXCEPT does not reach the left input
+query I
+SELECT count(*) FROM (SELECT i FROM ints_a EXCEPT ALL SELECT i FROM ints_b WHERE i = 7);
+----
+99
+
+# a filter below a window stays there unless it is on a column that every window expression partitions by
+query II
+SELECT count(*), sum(rn) FROM (SELECT i, p, row_number() OVER (PARTITION BY p ORDER BY i) AS rn FROM (SELECT i, i % 2 AS p FROM ints_a) WHERE i < 10) a JOIN ints_b USING (i);
+----
+10	30
+
+query II
+SELECT count(*), sum(rn) FROM (SELECT i, p, row_number() OVER (PARTITION BY p ORDER BY i) AS rn FROM (SELECT i, i % 2 AS p FROM ints_a) WHERE p = 0) a JOIN ints_b USING (i);
+----
+25	325
+
+# a volatile filter is not copied into both inputs
+statement ok
+CREATE TABLE seq_input (a INTEGER);
+
+statement ok
+INSERT INTO seq_input VALUES (1), (2), (3), (4);
+
+statement ok
+CREATE SEQUENCE s1;
+
+query I
+SELECT count(*) FROM (SELECT a FROM seq_input INTERSECT ALL SELECT a FROM seq_input) q WHERE nextval('s1') <= 2;
+----
+2
+
+query I
+SELECT currval('s1');
+----
+4
+
+statement ok
+CREATE SEQUENCE s2;
+
+query I
+SELECT count(*) FROM (SELECT a FROM seq_input EXCEPT ALL SELECT 4) q WHERE nextval('s2') <= 10;
+----
+3
+
+# the filter is not copied into the right input, where it would run a fifth time
+query I
+SELECT currval('s2') <= 4;
+----
+true
+
+statement ok
+CREATE TABLE sampled AS SELECT range AS a FROM range(10000);
+
+query I
+SELECT count(*) BETWEEN 4500 AND 5500 FROM (SELECT a FROM sampled WHERE random() < 0.5 INTERSECT ALL SELECT a FROM sampled);
+----
+true

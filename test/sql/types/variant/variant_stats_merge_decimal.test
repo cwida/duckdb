@@ -1,0 +1,60 @@
+# name: test/sql/types/variant/variant_stats_merge_decimal.test
+# description: Statistics of VARIANTs shredded as DECIMALs of different width or scale are not merged
+# group: [variant]
+
+query I
+SELECT v::VARCHAR FROM (SELECT i::DECIMAL(4,1)::VARIANT v FROM range(2) r(i) UNION ALL SELECT i::DECIMAL(9,3)::VARIANT FROM range(2) r(i)) ORDER BY 1
+----
+0.0
+0.000
+1.0
+1.000
+
+query I
+SELECT (CASE WHEN i % 2 = 0 THEN i::DECIMAL(4,1)::VARIANT ELSE i::DECIMAL(4,2)::VARIANT END)::VARCHAR FROM range(2) r(i) ORDER BY 1
+----
+0.0
+1.00
+
+load {TEST_DIR}/variant_stats_merge_decimal.db
+
+statement ok
+SET variant_minimum_shredding_size = 0
+
+statement ok
+CREATE TABLE t (id BIGINT, v VARIANT)
+
+statement ok
+INSERT INTO t SELECT i, (i % 10)::DECIMAL(4,1)::VARIANT FROM range(122880) r(i)
+
+statement ok
+INSERT INTO t SELECT i, ((i % 10) / 1000)::DECIMAL(9,3)::VARIANT FROM range(122880, 200000) r(i)
+
+statement ok
+CREATE TABLE t2 (v VARIANT)
+
+statement ok
+INSERT INTO t2 SELECT (i % 10)::DECIMAL(4,1)::VARIANT FROM range(122880) r(i)
+
+statement ok
+INSERT INTO t2 SELECT (i % 10)::DECIMAL(4,2)::VARIANT FROM range(122880, 200000) r(i)
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT count(*), count(DISTINCT v::VARCHAR) FROM t
+----
+200000	20
+
+query I
+SELECT count(*) FROM t2 WHERE v::DECIMAL(4,2) = 9.00
+----
+20000
+
+restart
+
+query II
+SELECT count(*), count(DISTINCT v::VARCHAR) FROM t
+----
+200000	20

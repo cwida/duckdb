@@ -73,6 +73,7 @@ class TestRunnerConfig:
     max_failures: int | None
     fail_require_skip: bool
     coverage_profile_dir: Path | None
+    timeout_policy: str = "fail"
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ class BatchRunState:
         self.stop_launching = False
         self.failed_attempts = {}
         self.failed_test_names = set()
+        self.timed_out_test_names = []
 
     def record_retry(self):
         self.retry_count += 1
@@ -1035,7 +1037,11 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
             snippet_lines=[],
             expected_result_lines=[],
             actual_result_lines=[],
-            detail_lines=[],
+            detail_lines=[
+                event.get("data") or "test reported an error before timing out"
+                for event in parse_test_events(stdout) + parse_test_events(stderr)
+                if event.get("event") == "error" or event.get("status") == "error"
+            ],
             timeout_seconds=float(re.search(r"after ([0-9]+(?:\.[0-9]+)?) seconds", message).group(1)),
             reproduce_batch=reproduce_batch,
         )
@@ -1079,6 +1085,8 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
     snippet_lines = []
     if stderr_info.query_failure_lines:
         detail_lines.extend(stderr_info.query_failure_lines)
+    elif message is not None and message.startswith("error: Invalid Filter:"):
+        detail_lines.append(message)
     elif stdout_info.fatal_error_lines:
         detail_lines.extend(stdout_info.fatal_error_lines)
 
@@ -1151,7 +1159,10 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
 def render_failure_lines(failure: FailureInfo):
     if failure.kind == "timeout":
         test_name = failure.test_name or "test batch"
-        return [f"error: timeout ({format_duration_seconds(failure.timeout_seconds)}s) for {test_name}."]
+        return [
+            f"error: timeout ({format_duration_seconds(failure.timeout_seconds)}s) for {test_name}.",
+            *failure.detail_lines,
+        ]
 
     if failure.kind == "wrong_result":
         test_name = failure.test_name or "test batch"
@@ -1251,9 +1262,13 @@ def format_test_runner_for_display(unittest_bin: str):
     return format_unittest_bin_for_display(os.fspath(Path(unittest_bin).with_name(runner_name)))
 
 
+def escape_catch_test_name(test_name: str):
+    # Catch treats commas as separators even inside quoted names.
+    return test_name.replace("\\", "\\\\").replace('"', '\\"').replace(",", "\\,")
+
+
 def quote_catch_test_name(test_name: str):
-    escaped_name = test_name.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped_name}"'
+    return f'"{escape_catch_test_name(test_name)}"'
 
 
 def format_failed_tests_reproducer(
@@ -1602,6 +1617,7 @@ def run_batch(config: TestRunnerConfig, batch):
     stderr = ""
     message = None
     allow_retry = True
+    timed_out = False
     peak_rss_bytes = 0
     child_env = os.environ.copy()
     # Omit printing "FAILURES SUMMARY" block at the end of each unittest process.
@@ -1613,7 +1629,12 @@ def run_batch(config: TestRunnerConfig, batch):
     # On Windows the child process cannot reopen a NamedTemporaryFile while it
     # is still open here, so keep it after close and unlink it ourselves.
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as batch_file:
-        batch_file.write("\n".join(batch))
+        # SQL-only batches are loaded as literal paths by TryReadExactSQLLogicTestFilter.
+        # Quote other batches so every entry goes through Catch, including SQL paths.
+        if all(name.endswith((".test", ".test_slow", ".test_coverage")) for name in batch):
+            batch_file.write("\n".join(batch))
+        else:
+            batch_file.write("\n".join(quote_catch_test_name(name) for name in batch))
         batch_file.write("\n")
         batch_file.flush()
         batch_file_path = Path(batch_file.name)
@@ -1641,6 +1662,14 @@ def run_batch(config: TestRunnerConfig, batch):
         deadline = time.monotonic() + config.batch_timeout_seconds
 
         while proc.poll() is None:
+            if stop_requested():
+                proc.kill()
+                proc.wait()
+                stdout, stderr = read_captures()
+                failed = True
+                allow_retry = False
+                message = "interrupted"
+                break
             rss_bytes = get_process_rss_bytes(proc.pid)
             if rss_bytes is not None:
                 peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
@@ -1649,6 +1678,7 @@ def run_batch(config: TestRunnerConfig, batch):
                 proc.wait()
                 stdout, stderr = read_captures()
                 failed = True
+                timed_out = proc.returncode == (1 if os.name == "nt" else -signal.SIGKILL)
                 message = f"batch timed out after {config.batch_timeout_seconds} seconds"
                 break
             if proc.poll() is None:
@@ -1661,11 +1691,17 @@ def run_batch(config: TestRunnerConfig, batch):
             if rss_bytes is not None:
                 peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
             failed = proc.returncode != 0
+            invalid_filters = [line for line in strip_ansi(stdout).splitlines() if line.startswith("Invalid Filter:")]
+            if not failed and invalid_filters:
+                failed = True
+                allow_retry = False
+                message = "error: " + invalid_filters[0]
             if not failed and config.fail_require_skip:
-                require_skip_lines = find_require_skip_lines(stdout)
+                require_skip_lines = find_require_skip_lines(stdout) + find_require_skip_lines(stderr)
                 if require_skip_lines:
                     failed = True
                     message = "error: detected require-based skipped tests: " + require_skip_lines[0]
+
                     allow_retry = False
     except OSError as exc:
         failed = True
@@ -1686,6 +1722,7 @@ def run_batch(config: TestRunnerConfig, batch):
         "returncode": proc.returncode if "proc" in locals() else None,
         "peak_rss_bytes": peak_rss_bytes,
         "allow_retry": allow_retry,
+        "timed_out": timed_out,
     }
 
 
@@ -1713,6 +1750,38 @@ def submit_batches(executor, config: TestRunnerConfig, batches, future_to_batch,
     return next_batch_idx
 
 
+def can_warn_timeout(config: TestRunnerConfig, batch, result):
+    if config.timeout_policy != "warn" or len(batch) != 1 or not result.get("timed_out") or stop_requested():
+        return False
+    stdout, stderr = result["stdout"], result["stderr"]
+    events = parse_test_events(stdout) + parse_test_events(stderr)
+    # Old binaries do not report the body/cleanup boundary. Missing or incomplete events fail closed.
+    if len(events) != 2 or stdout.count(TEST_EVENT_MARKER) + stderr.count(TEST_EVENT_MARKER) != 2:
+        return False
+    begin = events[0]
+    if begin.get("event") != "begin" or begin.get("version") != 2 or begin.get("name") != batch[0]:
+        return False
+    if events[1].get("event") != "execution-begin" or events[1].get("name") != batch[0]:
+        return False
+    stdout_lines = strip_test_event_lines(strip_ansi(stdout).splitlines())
+    stderr_lines = strip_test_event_lines(strip_ansi(stderr).splitlines())
+    out = parse_stdout_failure_info(stdout_lines)
+    err = parse_stderr_failure_info(stderr_lines, batch)
+    return not any(
+        (
+            out.preferred_assertion,
+            out.fallback_failure_block,
+            out.fatal_error_lines,
+            out.failed_reason_line,
+            err.wrong_result_line,
+            err.query_failure_lines,
+            err.failing_summary_block,
+            err.first_error_line,
+            extract_interesting_failure_block(stdout_lines + stderr_lines),
+        )
+    )
+
+
 def handle_failed_batch(ctx: RunContext, batch_info, result):
     failure = parse_failure_info(
         result["message"],
@@ -1724,6 +1793,25 @@ def handle_failed_batch(ctx: RunContext, batch_info, result):
     lines = render_failure_lines_with_diagnostics(failure, result["stdout"], result["stderr"])
     reproduce_batch = failure.reproduce_batch
     failed_test_names = extract_failed_test_names(failure, result["stdout"], result["stderr"], batch_info["batch"])
+    if batch_info["batch_idx"] not in ctx.state.failed_attempts and can_warn_timeout(
+        ctx.config, batch_info["batch"], result
+    ):
+        test_name = batch_info["batch"][0]
+        ctx.state.timed_out_test_names.append(test_name)
+        ctx.progress.print_message(
+            f"warn: timeout ({format_duration_seconds(failure.timeout_seconds)}s) for {test_name}; not retried."
+        )
+        ctx.progress.print_message(
+            "reproduce: "
+            + shlex.join(
+                [
+                    format_unittest_bin_for_display(ctx.config.unittest_bin),
+                    *shlex.split(ctx.config.test_flags),
+                    test_name,
+                ]
+            )
+        )
+        return False
     ctx.state.add_failed_attempt(batch_info["batch_idx"], lines, reproduce_batch, failed_test_names)
     retry_target = format_failed_test_retry_target(failure.test_name, batch_info)
     if result.get("allow_retry", True) and ctx.state.can_retry(batch_info, ctx.config):
@@ -1835,6 +1923,12 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--batch-timeout", type=float)
     parser.add_argument(
+        "--timeout-policy",
+        choices=("fail", "warn"),
+        default="fail",
+        help="warn about test-body timeouts without retrying or failing; requires --batch-size 1",
+    )
+    parser.add_argument(
         "--fail-require-skip",
         action="store_true",
         help="fail a batch if unittest output reports skipped tests for `require ...` reasons",
@@ -1868,6 +1962,8 @@ class ConfigRunResult:
     elapsed_seconds: float
     partially_skipped_tests: int = 0
     failed_test_names: tuple[str, ...] = ()
+    timed_out_test_names: tuple[str, ...] = ()
+    not_run_tests: int = 0
 
 
 def build_test_flags(base_flags: str, test_config: str | None):
@@ -1963,6 +2059,7 @@ def run_single_config(
             max_failures=max_failures,
             fail_require_skip=args.fail_require_skip,
             coverage_profile_dir=args.coverage_profile_dir,
+            timeout_policy=args.timeout_policy,
         )
 
         tests = load_tests(config.test_list)
@@ -2070,6 +2167,10 @@ def print_config_run_summary(run_result: ConfigRunResult):
     partial_skip_suffix = ""
     if run_result.partially_skipped_tests:
         partial_skip_suffix = f" ({run_result.partially_skipped_tests} partially)"
+    if run_result.timed_out_test_names:
+        partial_skip_suffix += f", {len(run_result.timed_out_test_names)} timed out"
+    if run_result.not_run_tests:
+        partial_skip_suffix += f", {run_result.not_run_tests} not run"
     if run_result.failed_tests > 0:
         print(
             "❌ ran tests: "
@@ -2113,6 +2214,12 @@ def main(argv: list[str] | None = None):
 def main_impl(argv: list[str] | None = None):
     args = parse_args(argv)
     args.coverage_profile_dir = None
+    if args.timeout_policy == "warn" and args.batch_size != 1:
+        print("error: --timeout-policy warn requires --batch-size 1")
+        return 1
+    if args.timeout_policy == "warn" and (args.stabilize_tests or args.changed_tests is not None):
+        print("error: --timeout-policy warn cannot be combined with test stabilization")
+        return 1
     if args.changed_tests is not None and args.test_list is None:
         print("error: --changed-tests requires --test-list", file=sys.stderr)
         return 1
@@ -2230,6 +2337,8 @@ def main_impl(argv: list[str] | None = None):
         for invocation, run_result in zip(config_invocations, config_results):
             if run_result is None:
                 continue
+            if run_result.timed_out_test_names:
+                print_timeout_summary(invocation, run_result)
             if run_result.returncode != 0:
                 failed_configs.append(invocation.label)
                 if run_result.failed_test_names:
@@ -2264,6 +2373,25 @@ def main_impl(argv: list[str] | None = None):
     return 0
 
 
+def print_timeout_summary(invocation: ConfigInvocation, result: ConfigRunResult):
+    lines = [
+        f"### Timed-out tests: {invocation.label}",
+        "",
+        f"{len(result.timed_out_test_names)} timed out; {result.passed_tests} passed, "
+        f"{result.failed_tests} failed, {result.skipped_tests} skipped, {result.not_run_tests} not run.",
+        "",
+        f"Revision: {os.environ.get('GITHUB_SHA', 'local')}",
+        "",
+        *[f"- `{name}`" for name in result.timed_out_test_names],
+        "",
+    ]
+    print("\n".join(lines))
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf8") as summary:
+            summary.write("\n".join(lines) + "\n")
+
+
 def invoke(argv: list[str], cwd: Path | None = None) -> InvocationResult:
     stdout_buffer = StringIO()
     stderr_buffer = StringIO()
@@ -2291,6 +2419,7 @@ def run_tests(
     state = BatchRunState()
     progress = DotProgressBar(len(batches), output)
     total_skipped_tests = 0
+    completed_tests = 0
     partially_skipped_test_names = set()
     skipped_reason_counts = {}
     partial_skip_reason_test_names = {}
@@ -2383,6 +2512,7 @@ def run_tests(
                         skipped_reason_counts[reason] = skipped_reason_counts.get(reason, 0) + count
                     for reason, test_names in partial_reason_names.items():
                         partial_skip_reason_test_names.setdefault(reason, set()).update(test_names)
+                completed_tests += len(batch_info["batch"])
                 progress.advance(next_batch_idx - len(future_to_batch))
 
             if not state.stop_launching and not stop_requested():
@@ -2397,6 +2527,8 @@ def run_tests(
     exit_code = 0
     if state.failed_count:
         exit_code = 1
+    elif state.timed_out_test_names:
+        print(f"finished in {elapsed:.0f}s with {len(state.timed_out_test_names)} timeout warnings", file=output)
     elif total_skipped_tests or total_partially_skipped_tests:
         skip_parts = []
         if total_skipped_tests:
@@ -2418,7 +2550,7 @@ def run_tests(
         for reason in sorted(partial_skip_reason_test_names):
             print(f"{reason}: {len(partial_skip_reason_test_names[reason])}", file=output)
     failed_tests = state.failed_count
-    passed_tests = max(0, total_tests - failed_tests - total_skipped_tests)
+    passed_tests = max(0, completed_tests - failed_tests - total_skipped_tests - len(state.timed_out_test_names))
     failed_test_names = []
     for batch in batches:
         for test_name in batch:
@@ -2433,6 +2565,8 @@ def run_tests(
         elapsed_seconds=elapsed,
         partially_skipped_tests=total_partially_skipped_tests,
         failed_test_names=tuple(failed_test_names),
+        timed_out_test_names=tuple(state.timed_out_test_names),
+        not_run_tests=max(0, total_tests - completed_tests),
     )
 
 

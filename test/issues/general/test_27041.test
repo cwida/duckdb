@@ -1,0 +1,53 @@
+# name: test/issues/general/test_27041.test
+# description: Issue 27041: table macro parameters passed to named table function parameters with := and =>
+# group: [general]
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'x'), (2, 'y'), (3, 'z')) t(a, b)) TO '{TEST_DIR}/test_27041.csv' (HEADER true, DELIMITER '|');
+
+foreach op := => =
+
+statement ok
+CREATE OR REPLACE MACRO read_27041(h, s, d) AS TABLE
+SELECT count(*) AS n FROM read_csv('{TEST_DIR}/test_27041.csv', header {op} h, skip {op} s, delim {op} d, auto_detect {op} false, columns {op} {'a': 'VARCHAR', 'b': 'VARCHAR'});
+
+query I
+SELECT n FROM read_27041(true, 0, '|');
+----
+3
+
+query I
+SELECT n FROM read_27041(false, 0, '|');
+----
+4
+
+query I
+SELECT n FROM read_27041(true, 2, '|');
+----
+1
+
+statement error
+SELECT n FROM read_27041(true, 0, '|||||');
+----
+The delimiter option cannot exceed a size of 4 bytes
+
+endloop
+
+# a macro parameter with the same name as the named parameter
+foreach op := =>
+
+statement ok
+CREATE OR REPLACE MACRO read_27041(header, skip := 0) AS TABLE
+SELECT count(*) AS n FROM read_csv('{TEST_DIR}/test_27041.csv', header {op} header, skip {op} skip, delim {op} '|', auto_detect {op} false, columns {op} {'a': 'VARCHAR', 'b': 'VARCHAR'});
+
+query I
+SELECT n FROM read_27041(true);
+----
+3
+
+query I
+SELECT n FROM read_27041(false, skip := 1);
+----
+3
+
+endloop

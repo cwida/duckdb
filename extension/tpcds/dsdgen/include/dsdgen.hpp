@@ -30,6 +30,8 @@ struct DSDGenWrapper {
 	static uint32_t QueriesCount();
 	//! Gets the specified TPC-DS Query number as a string
 	static std::string GetQuery(int query);
+	//! Gets the specified TPC-DS Query number with the substitution parameters for the given scale factor
+	static std::string GetQuery(int query, double sf);
 	//! Returns the CSV answer of a TPC-DS query
 	static std::string GetAnswer(double sf, int query);
 };

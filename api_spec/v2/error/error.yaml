@@ -4,7 +4,7 @@ module: error
 functions:
   error_info_get_code:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Retrieves the error code associated with an error info handle.
 
@@ -26,7 +26,7 @@ functions:
 
   error_info_get_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Retrieves the error text associated with an error info handle.
 
@@ -49,7 +49,7 @@ functions:
 
   error_info_get_raw_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Retrieves the error text body without the leading category prefix.
 
@@ -76,7 +76,7 @@ functions:
 
   error_info_set_code:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets the error code for an error info handle.
 
@@ -96,7 +96,7 @@ functions:
 
   error_info_set_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets the error text for an error info handle.
 
@@ -120,7 +120,7 @@ functions:
 
   error_info_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys an error info handle and frees its resources.
 

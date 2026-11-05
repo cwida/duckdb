@@ -8,6 +8,12 @@
       "paths": [
         "test/sql/storage/constraints/foreignkey/foreign_key_persistent_memory_limit.test"
       ]
+    },
+    {
+      "reason": "Forced prefetching reads all blocks of the column at once, which exceeds the memory limit the test relies on.",
+      "paths": [
+        "test/sql/storage/overflow_strings/blob_row_fetch.test"
+      ]
     }
   ]
 }

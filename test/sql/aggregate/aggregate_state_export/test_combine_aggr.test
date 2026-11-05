@@ -247,12 +247,14 @@ select finalize(finalize(combine_aggr(state))) from states;
 
 # skewness states are struct-based and can be combined
 statement ok
-CREATE TABLE skew_states AS (SELECT g, (skewness(d) export_state) state FROM dummy GROUP BY g);
+CREATE TABLE skew_states AS (SELECT g, (skewness(d) export_state) state, (skewness(d * d) export_state) state_sq FROM dummy GROUP BY g);
 
-query I nosort skew_res
-select skewness(d) from dummy;
+query II
+select skewness(d), skewness(d * d) from dummy;
 ----
+0.0	0.653941
 
-query I nosort skew_res
-select finalize(combine_aggr(state)) from skew_states;
+query II
+select finalize(combine_aggr(state)), finalize(combine_aggr(state_sq)) from skew_states;
 ----
+0.0	0.653941

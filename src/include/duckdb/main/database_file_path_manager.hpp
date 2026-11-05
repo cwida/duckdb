@@ -41,6 +41,8 @@ public:
 	void EraseDatabasePath(const string &path);
 	//! Called when a database is detached, but before it is fully finished being used
 	void DetachDatabase(DatabaseManager &manager, const string &path);
+	//! Whether the (canonicalized) path is in use by an attached database
+	bool IsDatabasePath(const string &path) const;
 
 private:
 	//! The lock to add entries to the db_paths map

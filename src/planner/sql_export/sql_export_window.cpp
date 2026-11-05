@@ -82,6 +82,19 @@ static optional_ptr<const Expression> RangeOffset(const BoundWindowExpression &e
 	return &offset;
 }
 
+static bool IsOrderDependentBoundary(WindowBoundary boundary) {
+	switch (boundary) {
+	case WindowBoundary::EXPR_PRECEDING_RANGE:
+	case WindowBoundary::EXPR_FOLLOWING_RANGE:
+	case WindowBoundary::CURRENT_ROW_GROUPS:
+	case WindowBoundary::EXPR_PRECEDING_GROUPS:
+	case WindowBoundary::EXPR_FOLLOWING_GROUPS:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static WindowSQLFrame ReconstructWindowFrame(const BoundWindowExpression &expression) {
 	WindowSQLFrame frame;
 	if (expression.OrderBy().size() == 1) {
@@ -124,8 +137,18 @@ BoundExpressionSQLExportState::ExportWindowFunction(const BoundWindowExpression 
 	auto identity = BoundExpressionSQLExportState::DefinitionFunctionIdentity(
 	    *definition, function.GetLogicalArguments(), function.GetLogicalReturnType());
 	if (!identity.IsValid()) {
-		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::InternalExpressionInvariant(
-		    path, expression, "Bound window function identity is incomplete")});
+		identity.arguments.clear();
+		for (auto &child : expression.GetChildren()) {
+			identity.arguments.push_back(child->GetReturnType());
+		}
+		identity.return_type = expression.GetReturnType();
+		if (!identity.IsValid()) {
+			return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::InternalExpressionInvariant(
+			    path, expression, "Bound window function identity is incomplete")});
+		}
+		//	Without a complete logical signature the function cannot be rebound from SQL
+		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFunction(
+		    path, std::move(identity), "The window function does not have a complete logical signature")});
 	}
 	if (expression.GetChildren().size() != function.GetLogicalArguments().size()) {
 		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFunction(
@@ -178,10 +201,17 @@ BoundExpressionSQLExportState::ExportWindowFunction(const BoundWindowExpression 
 	for (idx_t i = 0; i < expression.Partitions().size(); i++) {
 		window->PartitionsMutable().push_back(std::move(children[ordinal++]));
 	}
+	// RANGE offsets and GROUPS frames are defined in terms of the ORDER BY
+	const bool frame_needs_order =
+	    IsOrderDependentBoundary(expression.WindowStart()) || IsOrderDependentBoundary(expression.WindowEnd());
 	for (auto &order : expression.OrderBy()) {
+		auto &child = children[ordinal++];
+		if (!frame_needs_order && SQLExportHelpers::IsConstantOrderKey(*order.expression, *child)) {
+			continue;
+		}
 		window->OrderByMutable().emplace_back(
 		    order.type, order.null_order,
-		    SQLExportHelpers::OrderExpression(order.expression->GetReturnType(), std::move(children[ordinal++])));
+		    SQLExportHelpers::OrderExpression(order.expression->GetReturnType(), std::move(child)));
 	}
 	auto &named_arguments = function.GetNamedArguments();
 	auto positional_count = function.GetPositionalArgumentCount();
@@ -204,9 +234,13 @@ BoundExpressionSQLExportState::ExportWindowFunction(const BoundWindowExpression 
 		window->EndExprMutable() = std::move(children[ordinal++]);
 	}
 	for (auto &order : expression.ArgOrders()) {
+		auto &child = children[ordinal++];
+		if (SQLExportHelpers::IsConstantOrderKey(*order.expression, *child)) {
+			continue;
+		}
 		window->ArgOrdersMutable().emplace_back(
 		    order.type, order.null_order,
-		    SQLExportHelpers::OrderExpression(order.expression->GetReturnType(), std::move(children[ordinal++])));
+		    SQLExportHelpers::OrderExpression(order.expression->GetReturnType(), std::move(child)));
 	}
 	window->IgnoreNullsMutable() = expression.IgnoreNulls();
 	window->HasIgnoreNullsMutable() = expression.IgnoreNulls();

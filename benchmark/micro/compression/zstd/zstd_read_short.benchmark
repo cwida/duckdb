@@ -1,0 +1,24 @@
+# name: benchmark/micro/compression/zstd/zstd_read_short.benchmark
+# description: Scan short ZSTD strings
+# group: [zstd]
+
+name ZSTD Scan Short Strings
+group zstd
+storage persistent v1.2.0
+cache zstd_read_short.db
+
+load
+CREATE TABLE zstd_strings(s VARCHAR USING COMPRESSION ZSTD);
+INSERT INTO zstd_strings SELECT 'string-' || lpad(i::VARCHAR, 9, '0') FROM range(2_000_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('zstd_strings') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+ZSTD
+
+run
+SELECT SUM(strlen(s)) FROM zstd_strings;
+
+result I
+32000000

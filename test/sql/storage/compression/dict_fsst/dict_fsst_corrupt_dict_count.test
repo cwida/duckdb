@@ -1,0 +1,22 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_corrupt_dict_count.test
+# description: A dict_count close to UINT32_MAX must not overflow the string lengths buffer size
+# group: [dict_fsst]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dict_fsst_corrupt_dict_count.db.gz {TEST_DIR}/dict_fsst_corrupt_dict_count.db
+
+load {TEST_DIR}/dict_fsst_corrupt_dict_count.db readonly
+
+statement ok
+USE dict_fsst_corrupt_dict_count;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='DICT_FSST' LIMIT 1;
+----
+DICT_FSST
+
+statement error
+SELECT count(*) FROM t WHERE s = 'string_1';
+----
+Data Corruption Error: Corrupted DICT_FSST segment: zero-width lengths allow at most two dictionary entries

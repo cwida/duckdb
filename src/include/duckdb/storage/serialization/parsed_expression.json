@@ -346,12 +346,16 @@
         "accessor_mut": "GetLambdaSyntaxTypeMutable()",
         "accessor": "GetLambdaSyntaxType()"
       }
+    ],
+    "finalize_deserialization": [
+      "result->FinalizeDeserialization(deserializer);"
     ]
   },
   {
     "class": "OperatorExpression",
     "base": "ParsedExpression",
     "enum": "OPERATOR",
+    "custom_implementation": true,
     "members": [
       {
         "id": 200,
@@ -376,6 +380,13 @@
         "type": "duckdb::Identifier"
       }
     ]
+  },
+  {
+    "class": "PatternExpression",
+    "base": "ParsedExpression",
+    "enum": "PATTERN",
+    "custom_implementation": true,
+    "custom_switch_code": "result = PatternExpression::Deserialize(deserializer);\nbreak;"
   },
   {
     "class": "PositionalReferenceExpression",

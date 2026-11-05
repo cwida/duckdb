@@ -1,0 +1,27 @@
+# name: benchmark/micro/match_recognize/match_recognize_crime_repeats.benchmark
+# description: A repeating sub-sequence of crime reports over the whole table
+# group: [match_recognize]
+
+# The data is the Chicago crime reports used by the row pattern recognition benchmark in Zhu,
+# Huang and Chaudhuri, "High-Performance Row Pattern Recognition Using Joins", PVLDB 16(5), 2023,
+# cut at that paper's June 2020 boundary and projected to the columns its queries read.
+
+require httpfs
+
+name MatchRecognize Crime Repeats
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE crimes AS SELECT * FROM read_parquet('http://blobs.duckdb.org/data/crimes.parquet');
+
+run
+SELECT count(*) FROM crimes MATCH_RECOGNIZE(
+    ORDER BY datetime
+    MEASURES count(*) AS n
+    ONE ROW PER MATCH
+    AFTER MATCH SKIP TO NEXT ROW
+    PATTERN (A (B+ C)+ D)
+    DEFINE A AS A.primary_type = 'THEFT', B AS B.primary_type = 'BATTERY',
+           C AS C.primary_type = 'NARCOTICS', D AS D.primary_type = 'ASSAULT'
+);

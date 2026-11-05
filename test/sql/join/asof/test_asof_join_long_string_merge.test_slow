@@ -1,0 +1,38 @@
+# name: test/sql/join/asof/test_asof_join_long_string_merge.test_slow
+# description: Materialize merged runs with variable-length string keys
+# group: [asof]
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+SET temp_directory='{TEST_DIR}/asof_long_string_merge';
+
+statement ok
+SET asof_loop_join_threshold=0;
+
+statement ok
+CREATE TABLE build AS
+SELECT i, repeat('a',64)||lpad((2*i)::VARCHAR,8,'0')||repeat('b',i%8) AS s
+FROM range(600000) r(i);
+
+statement ok
+CREATE TABLE probe AS
+SELECT i, repeat('a',64)||lpad((2*i+1)::VARCHAR,8,'0')||repeat('b',i%8) AS s
+FROM range(600000) r(i);
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query III
+SELECT count(*), sum(b.i), bool_and(p.i=b.i)
+FROM probe p ASOF JOIN build b ON p.s >= b.s;
+----
+600000	179999700000	true
+
+endloop

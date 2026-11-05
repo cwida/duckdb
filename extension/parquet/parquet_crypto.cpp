@@ -41,15 +41,18 @@ ParquetKeys &ParquetKeys::Get(ClientContext &context) {
 }
 
 void ParquetKeys::AddKey(const string &key_name, const string &key) {
+	lock_guard<mutex> guard(lock);
 	keys[key_name] = key;
 }
 
 bool ParquetKeys::HasKey(const string &key_name) const {
+	lock_guard<mutex> guard(lock);
 	return keys.find(key_name) != keys.end();
 }
 
-const string &ParquetKeys::GetKey(const string &key_name) const {
-	D_ASSERT(HasKey(key_name));
+string ParquetKeys::GetKey(const string &key_name) const {
+	lock_guard<mutex> guard(lock);
+	D_ASSERT(keys.find(key_name) != keys.end());
 	return keys.at(key_name);
 }
 
@@ -147,6 +150,9 @@ ParquetEncryptionConfig::ParquetEncryptionConfig(ClientContext &context, const V
 	const auto &keys = ParquetKeys::Get(context);
 	for (idx_t i = 0; i < StructType::GetChildCount(arg.type()); i++) {
 		auto &struct_key = child_types[i].first;
+		if ((struct_key == "footer_key" || struct_key == "footer_key_value") && children[i].IsNull()) {
+			throw BinderException("Parquet encryption_config %s cannot be NULL", struct_key);
+		}
 		if (struct_key == "footer_key") {
 			const auto footer_key_name = StringValue::Get(children[i].DefaultCastAs(LogicalType::VARCHAR));
 			if (!keys.HasKey(footer_key_name)) {
@@ -162,7 +168,7 @@ ParquetEncryptionConfig::ParquetEncryptionConfig(ClientContext &context, const V
 		} else if (struct_key == "column_keys") {
 			throw NotImplementedException("Parquet encryption_config column_keys not yet implemented");
 		} else {
-			throw BinderException("Unknown key in encryption_config \"%s\"", struct_key);
+			throw BinderException("Unknown key in encryption_config %s", struct_key);
 		}
 	}
 }
@@ -327,6 +333,9 @@ private:
 		data_t length_buf[ParquetCrypto::LENGTH_BYTES];
 		trans.read(length_buf, ParquetCrypto::LENGTH_BYTES);
 		total_bytes = Load<uint32_t>(length_buf);
+		if (total_bytes < ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES) {
+			throw InvalidInputException("Encoded ciphertext length %d is smaller than the nonce and tag", total_bytes);
+		}
 		transport_remaining = total_bytes;
 		// Read nonce and initialize AES
 		transport_remaining -= trans.read(nonce.data(), nonce.total_size());

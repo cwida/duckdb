@@ -105,6 +105,13 @@
         "id": 202,
         "name": "columns",
         "type": "vector<Identifier>"
+      },
+      {
+        "id": 203,
+        "name": "check_mode",
+        "type": "ConstraintCheckMode",
+        "default": "ConstraintCheckMode::DEFAULT",
+        "version": "v2.0.0"
       }
     ]
   }

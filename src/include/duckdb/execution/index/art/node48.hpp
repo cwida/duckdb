@@ -40,11 +40,11 @@ private:
 
 public:
 	//! Get a new Node48 handle and initialize the Node48.
-	static NodeHandle New(ART &art, NodePtr &node) {
-		node = NodePtr::GetAllocator(art, NODE_48).New();
-		node.SetMetadata(static_cast<uint8_t>(NODE_48));
+	static NodeHandle New(ART &art, NodePtr &node_ptr) {
+		node_ptr = NodePtr::GetAllocator(art, NODE_48).New();
+		node_ptr.SetMetadata(static_cast<uint8_t>(NODE_48));
 
-		NodeHandle handle(art, node);
+		NodeHandle handle(art, node_ptr);
 		auto &n = handle.Get<Node48>();
 
 		// Reset the node (count and child_index).
@@ -61,15 +61,15 @@ public:
 	}
 
 	//! Insert a child at byte.
-	static void InsertChild(ART &art, NodePtr &node, const uint8_t byte, const NodePtr child);
+	static void InsertChild(ART &art, NodePtr &node_ptr, const uint8_t byte, const NodePtr child_ptr);
 	//! Delete the child at byte.
-	static void DeleteChild(ART &art, NodePtr &node, const uint8_t byte);
+	static void DeleteChild(ART &art, NodePtr &node_ptr, const uint8_t byte);
 	//! Replace the child at byte.
-	void ReplaceChild(const uint8_t byte, const NodePtr child) {
+	void ReplaceChild(const uint8_t byte, const NodePtr child_ptr) {
 		D_ASSERT(count >= SHRINK_THRESHOLD);
 		auto status = children[child_index[byte]].GetGateStatus();
-		children[child_index[byte]] = child;
-		if (status == GateStatus::GATE_SET && child.HasMetadata()) {
+		children[child_index[byte]] = child_ptr;
+		if (status == GateStatus::GATE_SET && child_ptr.HasMetadata()) {
 			children[child_index[byte]].SetGateStatus(status);
 		}
 	}
@@ -155,8 +155,8 @@ public:
 	}
 
 private:
-	static void GrowNode16(ART &art, NodePtr &node48, NodePtr &node16);
+	static void GrowNode16(ART &art, NodePtr &node48_ptr, NodePtr &node16_ptr);
 	//! We shrink at <= Node256::SHRINK_THRESHOLD.
-	static void ShrinkNode256(ART &art, NodePtr &node48, NodePtr &node256);
+	static void ShrinkNode256(ART &art, NodePtr &node48_ptr, NodePtr &node256_ptr);
 };
 } // namespace duckdb

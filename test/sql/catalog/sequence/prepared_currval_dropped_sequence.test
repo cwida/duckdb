@@ -1,0 +1,41 @@
+# name: test/sql/catalog/sequence/prepared_currval_dropped_sequence.test
+# description: a prepared currval() is rebound when its sequence is dropped
+# group: [sequence]
+
+statement ok
+CREATE SEQUENCE seq START 1;
+
+query I
+SELECT nextval('seq');
+----
+1
+
+# concat keeps the name from being constant-folded away, so the bound sequence entry is cached in the statement
+statement ok
+PREPARE stmt AS SELECT currval(concat('se', 'q'));
+
+query I
+EXECUTE stmt;
+----
+1
+
+statement ok
+DROP SEQUENCE seq;
+
+statement error
+EXECUTE stmt;
+----
+<REGEX>:Catalog Error.*seq.*
+
+statement ok
+CREATE SEQUENCE seq START 10;
+
+query I
+SELECT nextval('seq');
+----
+10
+
+query I
+EXECUTE stmt;
+----
+10

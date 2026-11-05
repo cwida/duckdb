@@ -10,20 +10,58 @@ import version
 
 class TestVersion(unittest.TestCase):
     def test_development_version(self):
-        with patch("version.release_version", return_value="2.0"), patch("version.commit_count", return_value=42):
-            self.assertEqual(version.resolve_version(), "v2.0.0-dev42")
+        with (
+            patch("version.release_version", return_value="2.0"),
+            patch("version.next_patch_version", return_value=1),
+            patch("version.commit_count", return_value=42),
+        ):
+            self.assertEqual(version.resolve_version(), "v2.0.1-dev42")
 
     def test_alpha_version(self):
-        with patch("version.release_version", return_value="2.0"):
-            self.assertEqual(version.resolve_version(alpha_run_number="123"), "v2.0.0-alpha123")
+        with patch("version.release_version", return_value="2.0"), patch("version.next_patch_version", return_value=1):
+            self.assertEqual(version.resolve_version(alpha_run_number="123"), "v2.0.1-alpha123")
+
+    def test_next_patch_version_without_release_tags(self):
+        with patch("subprocess.check_output", return_value=""):
+            self.assertEqual(version.next_patch_version("2.0"), 0)
+
+    def test_next_patch_version_uses_highest_stable_tag(self):
+        tags = "\n".join(
+            [
+                "v2.0.1",
+                "v2.0.3-rc1",
+                "v2.1.4",
+                "v2.0.invalid",
+                "v2.0.3",
+                "v2.0.2-alpha1",
+            ]
+        )
+        with patch("subprocess.check_output", return_value=tags) as check_output:
+            self.assertEqual(version.next_patch_version("2.0"), 4)
+            check_output.assert_called_once_with(["git", "tag", "--merged", "HEAD", "--list", "v2.0.*"], text=True)
+
+    def test_next_patch_version_propagates_git_errors(self):
+        for error in [OSError("git unavailable"), subprocess.CalledProcessError(1, "git")]:
+            with self.subTest(error=error):
+                with patch("subprocess.check_output", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        version.next_patch_version("2.0")
 
     def test_explicit_versions(self):
         for explicit_version in ["v2.0.0", "v2.0.0-dev42", "v2.0.0-alpha42", "v2.0.0-rc1"]:
-            self.assertEqual(version.resolve_version(explicit_version), explicit_version)
+            with patch("version.next_patch_version") as next_patch_version:
+                self.assertEqual(version.resolve_version(explicit_version), explicit_version)
+                next_patch_version.assert_not_called()
 
     def test_invalid_explicit_version(self):
         with self.assertRaisesRegex(ValueError, "Invalid DuckDB version"):
             version.resolve_version("2.0.0")
+
+    def test_release_build(self):
+        self.assertTrue(version.is_release_build("v2.0.0"))
+        self.assertTrue(version.is_release_build("v2.0.0-alpha42"))
+        self.assertFalse(version.is_release_build("v2.0.0-rc1"))
+        self.assertFalse(version.is_release_build("v2.0.0-dev42"))
 
     def test_invalid_release_version(self):
         with tempfile.TemporaryDirectory() as temp_dir:

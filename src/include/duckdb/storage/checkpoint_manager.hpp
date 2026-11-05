@@ -9,7 +9,10 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/storage/metadata/metadata_writer.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 namespace duckdb {
 
@@ -47,15 +50,13 @@ class ActiveCheckpointWrapper {
 public:
 	//! Creates a connection if we have a context.
 	//! If there is no context, we are on shutdown and a checkpoint connection/transaction is not created.
-	ActiveCheckpointWrapper(optional_ptr<ClientContext> context, AttachedDatabase &db,
-	                        DuckTransactionManager &transaction_manager);
+	ActiveCheckpointWrapper(Context &services, AttachedDatabase &db, DuckTransactionManager &transaction_manager);
 
 	~ActiveCheckpointWrapper();
 
-	//! Begin the transaction within the newly created connection.
-	void GetCheckpointTransaction(CheckpointOptions &options);
+	//! Registers the checkpoint (id, bound, active checkpoint), through a checkpoint transaction if there is a context
+	void Begin(CheckpointOptions &options);
 	void Commit();
-	bool HasCheckpointContext() const;
 	//! The context of the checkpoint connection, null when there is none (shutdown path)
 	optional_ptr<ClientContext> GetCheckpointContext() const;
 
@@ -65,22 +66,31 @@ private:
 	unique_ptr<Connection> checkpoint_connection;
 	optional_ptr<ClientContext> checkpoint_context;
 	optional_ptr<DuckTransaction> checkpoint_transaction;
+	//! Whether Begin registered an active checkpoint that Commit has not reset yet
+	bool active = false;
 };
 
 class CheckpointWriter {
 public:
-	explicit CheckpointWriter(AttachedDatabase &db) : db(db) {
-	}
-	virtual ~CheckpointWriter() {
-	}
+	CheckpointWriter(AttachedDatabase &db, QueryContext context);
+	virtual ~CheckpointWriter();
 
 	//! The database
 	AttachedDatabase &db;
+
+	//! The services of the query that triggered the checkpoint, or database-wide services if there is none
+	Context &GetServices() const {
+		return services;
+	}
 
 	virtual void CreateCheckpoint() = 0;
 	virtual MetadataManager &GetMetadataManager() = 0;
 	virtual MetadataWriter &GetMetadataWriter() = 0;
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
+
+private:
+	shared_ptr<Context> owned_services;
+	Context &services;
 
 protected:
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
@@ -136,6 +146,7 @@ public:
 };
 
 class SingleFileCheckpointWriter final : public CheckpointWriter {
+	friend class SingleFileTableIndexWriter;
 	friend class SingleFileRowGroupWriter;
 	friend class SingleFileTableDataWriter;
 
@@ -150,18 +161,16 @@ public:
 	unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) override;
 
 	BlockManager &GetBlockManager();
+	//! Make a partial block scope for an index that persists immediately.
+	PartialBlockManager CreatePerIndexPartialBlockManager();
 	CheckpointOptions GetCheckpointOptions() const {
 		return options;
-	}
-	optional_ptr<ClientContext> GetClientContext() const {
-		return context;
 	}
 
 public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	optional_ptr<ClientContext> context;
 	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
 	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
 	optional_ptr<ClientContext> checkpoint_context;
@@ -172,6 +181,8 @@ private:
 	//! Because this is single-file storage, we can share partial blocks across
 	//! an entire checkpoint.
 	PartialBlockManager partial_block_manager;
+	//! Need to have a separate partial block manager for indexes due to different block shapes.
+	PartialBlockManager index_partial_block_manager;
 	//! Checkpoint type
 	CheckpointOptions options;
 	//! Block usage count for verification purposes

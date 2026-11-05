@@ -141,6 +141,8 @@ public:
 
 	//! The filtered rows in inputs.
 	ValidityArray filter_mask;
+	//! Storage of the filter mask (one byte per row), from the buffer allocator so that it counts against the limit
+	AllocatedData filter_mask_data;
 
 	//! Lock for single threading
 	mutable mutex lock;

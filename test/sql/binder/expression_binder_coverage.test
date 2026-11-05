@@ -61,7 +61,7 @@ SELECT count(*) FROM binder_values GROUP BY ALL HAVING missing > 1;
 Referenced column "missing" not found
 
 statement error
-SELECT (SELECT first((j + 0) -> '$.x')) FROM (VALUES (1)) t(j);
+SELECT (SELECT first((j + 0) -> struct_pack(x := 1))) FROM (VALUES (1)) t(j);
 ----
 json_extract
 

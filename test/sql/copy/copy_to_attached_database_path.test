@@ -1,0 +1,52 @@
+# name: test/sql/copy/copy_to_attached_database_path.test
+# description: COPY TO must not overwrite the file of an attached database
+# group: [copy]
+
+statement ok
+ATTACH '{TEST_DIR}/copy_over_attached.db' AS ca;
+
+statement ok
+CREATE TABLE ca.t AS SELECT range i FROM range(1000);
+
+statement error
+COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_attached.db' (FORMAT csv, USE_TMP_FILE false);
+----
+<REGEX>:.*belongs to an attached database.*
+
+statement error
+COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_attached.db';
+----
+<REGEX>:.*belongs to an attached database.*
+
+foreach wal_suffix .wal .wal.checkpoint .wal.recovery
+
+statement error
+COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_attached.db{wal_suffix}' (FORMAT csv);
+----
+<REGEX>:.*belongs to an attached database.*
+
+endloop
+
+query I
+SELECT sum(i) FROM ca.t;
+----
+499500
+
+statement ok
+COPY (SELECT 1 a) TO '{TEST_DIR}/copy_not_attached.csv' (FORMAT csv);
+
+# the main database file is protected as well
+load {TEST_DIR}/copy_over_main.db
+
+statement ok
+CREATE TABLE m AS SELECT 42 i;
+
+statement error
+COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_main.db' (FORMAT csv);
+----
+<REGEX>:.*belongs to an attached database.*
+
+query I
+SELECT i FROM m;
+----
+42

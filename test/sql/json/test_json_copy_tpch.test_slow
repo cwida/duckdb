@@ -72,7 +72,7 @@ import database '{TEST_DIR}/export_json_test'
 loop i 1 9
 
 query I
-PRAGMA tpch({i})
+PRAGMA tpch({i}, sf=0.1)
 ----
 <FILE>:extension/tpch/dbgen/answers/sf0.1/q0{i}.csv
 
@@ -81,7 +81,7 @@ endloop
 loop i 10 23
 
 query I
-PRAGMA tpch({i})
+PRAGMA tpch({i}, sf=0.1)
 ----
 <FILE>:extension/tpch/dbgen/answers/sf0.1/q{i}.csv
 
@@ -212,7 +212,7 @@ CREATE VIEW region AS SELECT * FROM read_ndjson(
 loop i 1 9
 
 query I
-PRAGMA tpch({i})
+PRAGMA tpch({i}, sf=0.1)
 ----
 <FILE>:extension/tpch/dbgen/answers/sf0.1/q0{i}.csv
 
@@ -221,7 +221,7 @@ endloop
 loop i 10 23
 
 query I
-PRAGMA tpch({i})
+PRAGMA tpch({i}, sf=0.1)
 ----
 <FILE>:extension/tpch/dbgen/answers/sf0.1/q{i}.csv
 

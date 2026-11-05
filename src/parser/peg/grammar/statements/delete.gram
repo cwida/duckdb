@@ -1,5 +1,9 @@
 DeleteStatement <- WithClause? 'DELETE' 'FROM' TargetOptAlias DeleteUsingClause? WhereClause? ReturningClause?
-TruncateStatement <- 'TRUNCATE' 'TABLE'? BaseTableName
+TruncateStatement <- 'TRUNCATE' 'TABLE'? BaseTableName TruncateOptions?
+# DropBehavior first, so CASCADE/RESTRICT are not consumed as an alias
+TruncateOptions <- TruncateDropBehavior / TruncateAliasOptions
+TruncateAliasOptions <- TargetAlias TruncateDropBehavior?
+TruncateDropBehavior <- DropBehavior
 TargetOptAlias <- BaseTableName TargetAlias?
 TargetAlias <- 'AS'? ColId
 DeleteUsingClause <- 'USING' List(TableRef)

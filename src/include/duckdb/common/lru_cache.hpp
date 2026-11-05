@@ -106,18 +106,26 @@ public:
 		current_total_weight = 0;
 	}
 
-	// Evict entries based on their access, until we've freed at least the target number of bytes or there's no entries
-	// in the cache. Return number of bytes freed.
-	idx_t EvictToReduceAtLeast(idx_t target_weight) {
-		idx_t freed = 0;
-		while (!lru_list.empty() && freed < target_weight) {
-			const auto &stale_key = lru_list.back();
-			auto stale_it = entry_map.find(stale_key);
-			D_ASSERT(stale_it != entry_map.end());
-			freed += stale_it->second.payload_weight;
-			DeleteImpl(stale_it);
+	//! Evict the least recently used entry. Return false if the cache is empty.
+	bool EvictLeastRecentlyUsed() {
+		if (lru_list.empty()) {
+			return false;
 		}
-		return freed;
+		auto stale_it = entry_map.find(lru_list.back());
+		D_ASSERT(stale_it != entry_map.end());
+		DeleteImpl(stale_it);
+		return true;
+	}
+
+	//! Evict entries until at least target_weight is removed or the cache is empty. Return the removed weight.
+	idx_t EvictToReduceAtLeast(idx_t target_weight) {
+		const auto initial_weight = current_total_weight;
+		while (initial_weight - current_total_weight < target_weight) {
+			if (!EvictLeastRecentlyUsed()) {
+				break;
+			}
+		}
+		return initial_weight - current_total_weight;
 	}
 
 	idx_t Capacity() const {
@@ -172,14 +180,9 @@ private:
 		}
 
 		// Evict LRU entries until we have enough space
-		while (!lru_list.empty() && (current_total_weight + required_weight > max_total_weight)) {
-			const auto &stale_key = lru_list.back();
-			auto stale_it = entry_map.find(stale_key);
-			if (stale_it != entry_map.end()) {
-				DeleteImpl(stale_it);
-			} else {
-				// Should not happen, but be defensive
-				lru_list.pop_back();
+		while (current_total_weight + required_weight > max_total_weight) {
+			if (!EvictLeastRecentlyUsed()) {
+				break;
 			}
 		}
 	}

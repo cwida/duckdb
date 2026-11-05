@@ -50,7 +50,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Prepares a parsed statement into a reusable handle. Non-consuming.
 
@@ -63,6 +63,11 @@ functions:
       `[[prepared_statement_reuses_plan]]` which one you got. Setting `require_cacheable` instead fails with
       `ERROR_INPUT_INVALID` when the plan would not be reused, so a caller who wants the handle only for the speedup
       finds out here rather than after silently taking the slow path.
+
+      A statement that DuckDB expands into several, such as a dynamic PIVOT, is kept as written and expanded again at
+      each execution, in the transaction state of that execution. It runs nothing here, its plan is never reused, and
+      its result's metadata is deferred as for `[[statement_execute]]`. Parameters on such a statement are refused
+      with `ERROR_INPUT_INVALID`.
 
       Refuses with `ERROR_RESOURCE_IN_USE` while a statement on the connection is still running. Drain, destroy, or
       interrupt that result first, or prepare on another connection. `*out_prepared` is set to NULL on failure.
@@ -96,7 +101,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_execute:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Executes a prepared statement, streaming its result. Non-consuming.
 
@@ -163,7 +168,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_reuses_plan:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports whether the prepared statement reuses its compiled plan across executions.
 
@@ -198,7 +203,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys a prepared statement.
 

@@ -102,6 +102,10 @@ public:
 	OpenFileInfo GetFirstFile() const;
 	//! Syntactic sugar for GetExpandResult() == FileExpandResult::NO_FILES
 	bool IsEmpty() const;
+	//! The average row count of the files that are available without further I/O (FileIsAvailable), each estimated
+	//! from the "file_size" its extended info carries at bytes_per_row, and at least one row. Invalid when there is no
+	//! such file, or when one of them has no file_size
+	optional_idx EstimateRowsPerFile(idx_t bytes_per_row) const;
 
 	//! Virtual functions for subclasses
 public:

@@ -8,9 +8,11 @@
 
 #pragma once
 
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/optional.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/execution/index/fixed_size_allocator.hpp"
@@ -121,11 +123,11 @@ public:
 
 public:
 	//! Get a new pointer to a node and initialize it.
-	static void New(ART &art, NodePtr &node, const NType type);
+	static void New(ART &art, NodePtr &node_ptr, const NType type);
 	//! Free the node.
-	static void FreeNode(ART &art, NodePtr &node);
+	static void FreeNode(ART &art, NodePtr &node_ptr);
 	//! Free the node and its children.
-	static void FreeTree(ART &art, NodePtr &node);
+	static void FreeTree(ART &art, NodePtr &subtree_root_ptr);
 
 	//! Get a reference to the allocator.
 	static FixedSizeAllocator &GetAllocator(const ART &art, const NType type);
@@ -134,27 +136,29 @@ public:
 
 	//! Get a reference to a node.
 	template <class NODE>
-	static inline NODE &Ref(const ART &art, const NodePtr node, const NType type) {
-		D_ASSERT(node.GetType() != NType::PREFIX);
-		return *(GetAllocator(art, type).Get<NODE>(node, !std::is_const<NODE>::value));
+	static inline NODE &Ref(const ART &art, const NodePtr node_ptr, const NType type) {
+		D_ASSERT(node_ptr.GetType() != NType::PREFIX);
+		return *(GetAllocator(art, type).Get<NODE>(node_ptr, !std::is_const<NODE>::value));
 	}
 
 	//! Replace the child at byte.
-	void ReplaceChild(const ART &art, const uint8_t byte, const NodePtr child = NodePtr()) const;
+	void ReplaceChild(const ART &art, const uint8_t byte, const NodePtr child_ptr = NodePtr()) const;
 	//! Insert the child at byte.
-	static void InsertChild(ART &art, NodePtr &node, const uint8_t byte, const NodePtr child = NodePtr());
+	static void InsertChild(ART &art, NodePtr &node_ptr, const uint8_t byte, const NodePtr child_ptr = NodePtr());
 	//! Delete the child at byte.
-	static void DeleteChild(ART &art, NodePtr &node, NodePtr &prefix, const uint8_t byte, const GateStatus status,
-	                        const ARTKey &row_id);
+	static void DeleteChild(ART &art, NodePtr &node_ptr, NodePtr &parent_ptr, const uint8_t byte,
+	                        const GateStatus status, const ARTKey &row_id);
 
 	//! Get the child node at byte, if it exists.
 	OptionalNodePtr GetChildNode(const ART &art, const uint8_t byte) const;
+	//! Get the child at byte, if it exists. The caller must retain handle while using the reference.
+	static unsafe_optional_ptr<NodePtr> GetChildMutable(NodeHandle &handle, const uint8_t byte);
 	//! Get the first child node >= byte, if it exists, and update byte.
 	OptionalNodePtr GetNextChildNode(const ART &art, uint8_t &byte) const;
 	//! Get the immutable child at byte.
 	const unsafe_optional_ptr<NodePtr> GetChild(ART &art, const uint8_t byte) const;
 	//! Get the child at byte.
-	unsafe_optional_ptr<NodePtr> GetChildMutable(ART &art, const uint8_t byte, const bool unsafe = false) const;
+	unsafe_optional_ptr<NodePtr> GetChildMutableUnsafe(ART &art, const uint8_t byte, const bool unsafe = false) const;
 	//! Get the first immutable child greater than or equal to the byte.
 	const unsafe_optional_ptr<NodePtr> GetNextChild(ART &art, uint8_t &byte) const;
 	//! Returns true, if the byte exists, else false.
@@ -171,7 +175,7 @@ public:
 	static NType GetInternalNodeType(const idx_t count);
 
 	//! Transform the node storage to deprecated storage.
-	static void TransformToDeprecated(ART &art, NodePtr &node, TransformToDeprecatedState &state);
+	static void TransformToDeprecated(ART &art, NodePtr &node_ptr, TransformToDeprecatedState &state);
 
 	//! Returns the string representation of the node at indentation level.
 	//!
@@ -244,22 +248,22 @@ struct NodeChildren {
 class OptionalNodePtr {
 public:
 	OptionalNodePtr() = default;
-	OptionalNodePtr(const NodePtr node) : node(node) { // NOLINT: allow implicit conversion from NodePtr
+	OptionalNodePtr(const NodePtr node_ptr) : node_ptr(node_ptr) { // NOLINT: allow implicit conversion from NodePtr
 	}
 
 	//! Returns true if the OptionalNodePtr holds a valid NodePtr.
 	explicit operator bool() const {
-		return node.HasMetadata();
+		return node_ptr.HasMetadata();
 	}
 
 	//! Returns the copied NodePtr. Must only be called if it is valid.
 	NodePtr Get() const {
-		D_ASSERT(node.HasMetadata());
-		return node;
+		D_ASSERT(node_ptr.HasMetadata());
+		return node_ptr;
 	}
 
 private:
-	NodePtr node;
+	NodePtr node_ptr;
 };
 
 } // namespace duckdb

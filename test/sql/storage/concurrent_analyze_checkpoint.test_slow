@@ -2,7 +2,7 @@
 # description: Concurrent ANALYZE/INSERT and CHECKPOINT must not race on the table statistics
 # group: [storage]
 
-load __TEST_DIR__/concurrent_analyze_checkpoint.db
+load {TEST_DIR}/concurrent_analyze_checkpoint.db
 
 statement ok
 SET threads=4

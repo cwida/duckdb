@@ -24,9 +24,9 @@ SELECT * FROM glob(NULL::VARCHAR[2]);
 
 # a non-null ARRAY of file paths is accepted like a LIST
 statement ok
-COPY (SELECT 42 AS i) TO '__TEST_DIR__/multi_file_array.csv';
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/multi_file_array.csv';
 
 query I
-SELECT * FROM read_csv(['__TEST_DIR__/multi_file_array.csv']::VARCHAR[1]);
+SELECT * FROM read_csv(['{TEST_DIR}/multi_file_array.csv']::VARCHAR[1]);
 ----
 42

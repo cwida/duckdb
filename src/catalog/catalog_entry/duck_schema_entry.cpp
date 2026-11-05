@@ -347,8 +347,13 @@ void DuckSchemaEntry::Scan(CatalogTransaction transaction, CatalogType type,
 }
 
 void DuckSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
+	Scan(type, VisibilityBound::AllCommitted(), callback);
+}
+
+void DuckSchemaEntry::Scan(CatalogType type, VisibilityBound bound,
+                           const std::function<void(CatalogEntry &)> &callback) {
 	auto &set = GetCatalogSet(type);
-	set.Scan(callback);
+	set.Scan(bound, callback);
 }
 
 void DuckSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
@@ -361,8 +366,7 @@ void DuckSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 	auto transaction = GetCatalogTransaction(context);
 	auto existing_entry = set.GetEntry(transaction, info.GetQualifiedName().Name());
 	if (!existing_entry) {
-		throw InternalException("Failed to drop entry \"%s\" - entry could not be found",
-		                        info.GetQualifiedName().Name());
+		throw InternalException("Failed to drop entry %s - entry could not be found", info.GetQualifiedName().Name());
 	}
 	if (existing_entry->type != info.type) {
 		throw CatalogException("Existing object %s is of type %s, trying to drop type %s",

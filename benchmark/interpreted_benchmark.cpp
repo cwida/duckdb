@@ -693,7 +693,8 @@ void InterpretedBenchmark::Run(BenchmarkState *state_p) {
 		unique_ptr<ColumnDataCollection> collection;
 		ColumnDataAppendState append_state;
 		if (!discard_stream_result) {
-			collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(), stream.GetTypes());
+			collection = make_uniq<ColumnDataCollection>(*context, stream.GetTypes(),
+			                                             ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR);
 			collection->InitializeAppend(append_state);
 		}
 		while (auto chunk = stream.Fetch()) {
@@ -715,7 +716,9 @@ void InterpretedBenchmark::Run(BenchmarkState *state_p) {
 		return;
 	}
 	QueryParameters parameters;
-	if (result_mode == BenchmarkResultMode::ARROW) {
+	if (result_mode == BenchmarkResultMode::RETAINED) {
+		parameters.format = ChunkFormat::BufferManaged();
+	} else if (result_mode == BenchmarkResultMode::ARROW) {
 		parameters.format = make_shared_ptr<ArrowFormat>(arrow_batch_size);
 	}
 	auto temp_result = context->Query(run_query, parameters);

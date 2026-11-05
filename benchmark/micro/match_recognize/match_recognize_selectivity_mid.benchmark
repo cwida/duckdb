@@ -1,0 +1,21 @@
+# name: benchmark/micro/match_recognize/match_recognize_selectivity_mid.benchmark
+# description: A quarter of the rows can start a match, over a pattern that is otherwise unchanged
+# group: [match_recognize]
+
+name MatchRecognize Selectivity Mid
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE ticks AS
+    SELECT i::INTEGER AS i, (hash(i) % 100)::INTEGER AS v
+    FROM range(0, 10000000) t(i);
+
+run
+SELECT count(*) FROM ticks MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B{2})
+    DEFINE A AS A.v < 25, B AS B.v < 50
+);

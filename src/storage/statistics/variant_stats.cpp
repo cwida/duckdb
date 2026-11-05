@@ -696,8 +696,8 @@ bool VariantStats::MergeShredding(const BaseStatistics &stats, const BaseStatist
 		return true;
 	} else {
 		D_ASSERT(!stats_typed_value_type.IsNested());
-		if (stats_typed_value_type.id() != other_typed_value_type.id()) {
-			//! other is not the same type, can't merge
+		if (stats_typed_value_type != other_typed_value_type) {
+			//! other is not the same type (e.g. a DECIMAL of a different width or scale), can't merge
 			return false;
 		}
 		auto new_typed_stats = stats_typed_value.Copy();

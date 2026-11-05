@@ -118,7 +118,7 @@ BoundStatement Binder::BindDescribeQuery(ShowRef &ref) {
 			// we can! emit the information from the base table directly
 			PragmaTableInfo::GetColumnInfo(*result.table, *result.column, output);
 			// Override the base column name with the alias if one is specified.
-			if (alias != result.column->Name()) {
+			if (alias.GetIdentifierName() != result.column->Name().GetIdentifierName()) {
 				output.data[0].SetValue(row_index, Value(alias));
 			}
 		} else {
@@ -275,6 +275,9 @@ static void WarnShowDescribesQuery(ClientContext &context) {
 BoundStatement Binder::BindShow(ShowRef &ref) {
 	BoundStatement result;
 	if (ref.GetTableName().empty()) {
+		if (!ref.query) {
+			throw BinderException("SHOW requires a setting name, a table name or a query");
+		}
 		// "SHOW (SELECT ...)": describe the columns of the query. Deprecated in favor of DESCRIBE, and not affected
 		// by show_behavior (a parenthesized query is neither a setting nor a named table).
 		WarnShowDescribesQuery(context);

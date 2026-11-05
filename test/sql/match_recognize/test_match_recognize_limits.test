@@ -1,0 +1,132 @@
+# name: test/sql/match_recognize/test_match_recognize_limits.test
+# description: MATCH_RECOGNIZE - what the matcher accounts for, and what it refuses to spend
+# group: [match_recognize]
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+pragma threads=1
+
+# the record the matcher keeps counts against the memory limit
+statement ok
+SET memory_limit='20MB';
+
+statement error
+FROM range(700) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (((A?){700}){700})
+ DEFINE A AS true)
+----
+<REGEX>:Out of Memory Error:.*
+
+statement ok
+RESET memory_limit;
+
+# matching is interruptible
+statement ok
+SET max_execution_time=50;
+
+statement error
+FROM range(15000) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+ B) DEFINE B AS MATCH_NUMBER() < 0
+)
+----
+<REGEX>:INTERRUPT Error:.*
+
+statement error
+FROM range(15000) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+ B) DEFINE B AS FIRST(x) < 0
+)
+----
+<REGEX>:INTERRUPT Error:.*
+
+statement ok
+SET max_execution_time=0;
+
+# The memberships of the rows in overlapping matches are held in blocks that count against the memory
+# limit, so a pattern that produces far more of them than there are rows fails rather than growing
+# outside it.
+statement ok
+SET memory_limit='20MB';
+
+statement error
+SELECT count(*) FROM range(1500) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    AFTER MATCH SKIP TO NEXT ROW PATTERN (A+)
+ DEFINE A AS true);
+----
+Out of Memory Error
+
+statement ok
+RESET memory_limit;
+
+query I
+SELECT count(*) FROM range(1500) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    AFTER MATCH SKIP TO NEXT ROW PATTERN (A+)
+ DEFINE A AS true);
+----
+1500
+
+# A DEFINE condition that reads the match tells two ways of reaching the same row apart, so nothing can
+# be memoised and overlapping alternatives multiply. The search is refused rather than run to the end.
+statement error
+SELECT count(*) FROM (VALUES(1),(2),(3),(4),(5),(6),(7),(8),(9),(10)) t(price)
+MATCH_RECOGNIZE (
+  ORDER BY price
+  MEASURES 1 AS m
+  PATTERN ((UP | DOWN | FLAT | GAP | HALT | JUMP | DRIFT | SPIKE | NOISE)* DIP)
+  DEFINE DIP AS DIP.price < avg(UP.price) - avg(DOWN.price)
+);
+----
+<REGEX>:Invalid Input Error:.*after exploring 1000000 states.*
+
+# the limit is what the setting says
+statement ok
+SET match_recognize_max_states=8192;
+
+statement error
+SELECT count(*) FROM (VALUES(1),(2),(3),(4),(5),(6),(7),(8),(9),(10)) t(price)
+MATCH_RECOGNIZE (
+  ORDER BY price
+  MEASURES 1 AS m
+  PATTERN ((UP | DOWN | FLAT | GAP | HALT | JUMP | DRIFT | SPIKE | NOISE)* DIP)
+  DEFINE DIP AS DIP.price < avg(UP.price) - avg(DOWN.price)
+);
+----
+<REGEX>:Invalid Input Error:.*after exploring 8192 states.*
+
+# a match is never refused below what matching the pattern without backtracking takes, so a pattern whose
+# conditions do not read the match runs however long its rows make it
+statement ok
+SET match_recognize_max_states=1;
+
+query I
+SELECT count(*) FROM range(2000) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+ B) DEFINE B AS MATCH_NUMBER() < 0);
+----
+0
+
+# 0 is no limit, and what is left to stop the search is the query being cancelled
+statement ok
+SET match_recognize_max_states=0;
+
+statement ok
+SET max_execution_time=1000;
+
+statement error
+SELECT count(*) FROM (VALUES(1),(2),(3),(4),(5),(6),(7),(8),(9),(10)) t(price)
+MATCH_RECOGNIZE (
+  ORDER BY price
+  MEASURES 1 AS m
+  PATTERN ((UP | DOWN | FLAT | GAP | HALT | JUMP | DRIFT | SPIKE | NOISE)* DIP)
+  DEFINE DIP AS DIP.price < avg(UP.price) - avg(DOWN.price)
+);
+----
+<REGEX>:INTERRUPT Error:.*
+
+statement ok
+SET max_execution_time=0;
+
+statement ok
+RESET match_recognize_max_states;

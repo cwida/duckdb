@@ -293,12 +293,11 @@ inline void RequireColumn(duckdb_v2_result_handle r, idx_t index, const char *na
 	duckdb_v2_schema_destroy(&schema);
 }
 
-// Asserts a result's schema is not yet available.
-// The statement expanded to a group whose row-producing fragment is not yet prepared,
-// so result_get_schema reports INVALID_INPUT.
+// Asserts a result's schema is not yet available: the statement expands into a group whose
+// row-producing statement is not bound yet.
 inline void RequireSchemaDeferred(duckdb_v2_result_handle r) {
 	duckdb_v2_schema_handle schema = nullptr;
-	REQUIRE(duckdb_v2_result_get_schema(r, &schema, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_result_get_schema(r, &schema, nullptr) == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED);
 	REQUIRE(schema == nullptr);
 }
 
@@ -309,7 +308,7 @@ inline DUCKDB_V2_ERROR Query(duckdb_v2_connection_handle conn, const char *sql, 
 		*out_result = nullptr;
 	}
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	auto rc = duckdb_v2_parse_sql(conn, sql, &iter, err);
+	auto rc = duckdb_v2_parse_sql(conn, sql, true, &iter, err);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return rc;
 	}

@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
@@ -118,8 +119,8 @@ string TableCatalogEntry::ColumnsToSQL(const ColumnList &columns, const vector<u
 
 	// find all columns that have NOT NULL specified, but are NOT primary key columns
 	logical_index_set_t not_null_columns;
-	logical_index_set_t unique_columns;
-	logical_index_set_t pk_columns;
+	logical_index_map_t<vector<ConstraintCheckMode>> unique_columns;
+	logical_index_map_t<vector<ConstraintCheckMode>> pk_columns;
 	identifier_set_t multi_key_pks;
 	vector<string> extra_constraints;
 	for (auto &constraint : constraints) {
@@ -131,9 +132,9 @@ string TableCatalogEntry::ColumnsToSQL(const ColumnList &columns, const vector<u
 			if (pk.HasIndex()) {
 				// no columns specified: single column constraint
 				if (pk.IsPrimaryKey()) {
-					pk_columns.insert(pk.GetIndex());
+					pk_columns[pk.GetIndex()].push_back(pk.check_mode);
 				} else {
-					unique_columns.insert(pk.GetIndex());
+					unique_columns[pk.GetIndex()].push_back(pk.check_mode);
 				}
 			} else {
 				// multi-column constraint, this constraint needs to go at the end after all columns
@@ -171,11 +172,21 @@ string TableCatalogEntry::ColumnsToSQL(const ColumnList &columns, const vector<u
 		}
 		if (is_single_key_pk) {
 			// single column pk: insert constraint here
-			ss << " PRIMARY KEY";
+			for (auto check_mode : pk_columns.at(column.Logical())) {
+				ss << " PRIMARY KEY";
+				if (check_mode != ConstraintCheckMode::DEFAULT) {
+					ss << " " << EnumUtil::ToString(check_mode);
+				}
+			}
 		}
 		if (is_unique) {
 			// single column unique: insert constraint here
-			ss << " UNIQUE";
+			for (auto check_mode : unique_columns.at(column.Logical())) {
+				ss << " UNIQUE";
+				if (check_mode != ConstraintCheckMode::DEFAULT) {
+					ss << " " << EnumUtil::ToString(check_mode);
+				}
+			}
 		}
 	}
 	// print any extra constraints that still need to be printed
@@ -400,7 +411,9 @@ optional_ptr<CatalogEntry> TableCatalogEntry::GetTrigger(CatalogTransaction tran
 }
 
 bool TableCatalogEntry::DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade) {
-	throw NotImplementedException("Triggers are not supported for this table type");
+	// Default: no triggers, so there is nothing to drop. Returning false instead of throwing lets DROP TRIGGER IF
+	// EXISTS be a no-op.
+	return false;
 }
 
 vector<const_reference<TriggerCatalogEntry>> TableCatalogEntry::GetTriggersForEvent(CatalogTransaction transaction,

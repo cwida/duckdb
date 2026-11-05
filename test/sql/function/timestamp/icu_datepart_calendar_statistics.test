@@ -1,0 +1,45 @@
+# name: test/sql/function/timestamp/icu_datepart_calendar_statistics.test
+# description: Statistics of century, millennium and yearweek over TIMESTAMPTZ in non-Gregorian calendars and BC dates
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+statement ok
+CREATE TABLE wt AS SELECT (DATE '0100-01-01 (BC)' + INTERVAL (i) DAY)::TIMESTAMPTZ x FROM range(3000) r(i);
+
+query I
+SELECT count(*) FROM wt WHERE yearweek(x) = -9910;
+----
+7
+
+statement ok
+SET Calendar='buddhist';
+
+statement ok
+CREATE TABLE b2 AS SELECT TIMESTAMPTZ '1900-01-01 00:00:00+00' + i * INTERVAL 1 DAY x FROM range(100000) r(i);
+
+query I
+SELECT count(*) FROM b2 WHERE century(x) < -25;
+----
+78816
+
+query IIII
+SELECT min(century(x)), max(century(x)), min(millennium(x)), max(millennium(x)) FROM b2;
+----
+-28	-25	-3	-3
+
+statement ok
+SET Calendar='japanese';
+
+query II
+SELECT count(*) FILTER (century(x) = 1), count(*) FILTER (century(x) >= 2) FROM b2;
+----
+79988	20012
+
+query I
+SELECT count(*) FROM b2 WHERE century(x) >= 2;
+----
+20012

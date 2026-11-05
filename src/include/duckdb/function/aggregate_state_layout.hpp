@@ -250,6 +250,10 @@ struct AggregateStateField {
 	ListSegmentFunctions list_functions;
 	//! For LIST: whether the linked list cannot contain NULL elements - importing a NULL element is an error
 	bool reject_null_elements = false;
+	//! For LIST: whether an empty linked list is exported as a non-NULL empty list instead of NULL. Set for the
+	//! sorted aggregate buffer so that an empty group exports a valid (non-NULL) state and finalize runs the wrapped
+	//! aggregate's empty-group finalize (e.g. count -> 0) instead of short-circuiting to NULL on a NULL state.
+	bool list_empty_as_empty = false;
 
 	//! The alignment of this field when placed as a struct member, mirroring the C++ struct layout rules.
 	//! For OPTIONAL_VALUE the alignment is that of the wrapped value - the trailing is_set bool does not affect it.

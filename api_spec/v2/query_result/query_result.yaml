@@ -33,16 +33,17 @@ module: query_result
 # getter descriptions below means: valid before the first step, during
 # consumption, and after the stream ends.
 #
-# Statement expansion: statement_execute preprocesses the statement, and a
-# single statement can expand into a group (e.g. PIVOT, or ALTER ... ADD
-# COLUMN with a non-constant DEFAULT, which is wrapped in a transaction). The
-# group executes as one result, driven by the same steps. Result selection
-# follows the same rule DuckDB applies internally: the caller sees the first
-# row-producing statement of the group, or the last statement when none
-# produces rows, and the output of the others is discarded. For an expanding
-# statement the metadata getters fail with ERROR_INPUT_INVALID until stepping
-# has prepared the result-producing statement; for every other statement the
-# metadata is available from statement_execute on, as described above.
+# Statement expansion: DuckDB can expand a single statement into a group
+# (e.g. PIVOT, or ALTER ... ADD COLUMN with a non-constant DEFAULT). The group
+# executes as one query in one transaction, driven by the same steps. The
+# caller sees the rows of the first row-producing statement of the group, and
+# the output of the others is discarded; a group with no row-producing
+# statement reports NOTHING with a BOOLEAN success column once it ends. For an
+# expanding statement the metadata getters other than result_get_statement_type
+# fail with ERROR_INPUT_METADATA_DEFERRED until stepping has bound the
+# row-producing statement, or the group ended without one; for every other
+# statement the metadata is available from statement_execute on, as described
+# above.
 #
 # The result handle is single-consumer: step, fetch, and wait from one thread
 # at a time. Cross-thread control of an in-flight query goes through the
@@ -95,7 +96,7 @@ enums:
 functions:
   statement_execute:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Executes a parsed statement on the connection, streaming its result. Non-consuming.
 
@@ -127,13 +128,13 @@ functions:
       are mutually exclusive: passing values for a statement that preprocesses
       into a group is rejected with ERROR_INPUT_INVALID.
 
-      Preprocessing can expand one statement into a group — a dynamic PIVOT, or
+      DuckDB can expand one statement into a group: a dynamic PIVOT, or
       statement-expanding DDL such as ALTER ... ADD COLUMN with a non-constant
       DEFAULT. The group executes as one result through the same steps, and the
-      stream surfaces the first row-producing statement of the group, or the
-      last statement when none produces rows. An expansion with more than one
-      row-producing statement cannot be streamed as a single result and reports
-      ERROR_QUERY_NOT_IMPLEMENTED; no known expansion produces one.
+      stream surfaces the rows of the first row-producing statement of the
+      group. A row-producing statement followed by another cannot be served as
+      a single result and reports ERROR_QUERY_NOT_IMPLEMENTED; no known
+      expansion produces one.
 
       One running statement per connection: this refuses with
       ERROR_RESOURCE_IN_USE while a statement on the connection is still
@@ -181,7 +182,7 @@ functions:
     return_type: ERROR
   result_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a result handle.
 
@@ -203,7 +204,7 @@ functions:
     return_type: ERROR
   result_step:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Runs one bounded unit of query execution and returns without blocking.
 
@@ -250,7 +251,7 @@ functions:
     return_type: ERROR
   result_fetch_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Blocks until the next chunk is available and returns it.
 
@@ -284,7 +285,7 @@ functions:
     return_type: ERROR
   result_wait:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Blocks until result_step can make progress.
 
@@ -307,7 +308,7 @@ functions:
     return_type: ERROR
   result_render_box:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Renders the result as a box table, consuming it.
 
@@ -379,7 +380,7 @@ functions:
     return_type: ERROR
   result_drain:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Runs the result to completion and reports the changed-row count.
 
@@ -413,7 +414,7 @@ functions:
     return_type: ERROR
   result_get_result_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the shape of the result: query, changed rows, or nothing.
 
@@ -422,9 +423,9 @@ functions:
       RETURNING, NOTHING for DDL and other statements with no row output.
 
       Prepare-time metadata: available from statement_execute on, except for a
-      statement that preprocessing expands into a group, where it fails with
-      ERROR_INPUT_INVALID until stepping has prepared the row-producing
-      fragment.
+      statement that expands into a group, where it fails with
+      ERROR_INPUT_METADATA_DEFERRED until stepping has bound the row-producing
+      statement, or the group ended without one.
     role: getter
     belongs_to: result
     parameters:
@@ -444,14 +445,13 @@ functions:
     return_type: ERROR
   result_get_statement_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the SQL statement type that produced the result.
 
-      Prepare-time metadata: available from statement_execute on, except for a
-      statement that preprocessing expands into a group, where it fails with
-      ERROR_INPUT_INVALID until stepping has prepared the row-producing
-      fragment.
+      Prepare-time metadata: available from statement_execute on. A statement
+      that expands into a group reports its type as written: MULTI, or PRAGMA
+      for a pragma such as IMPORT DATABASE.
     role: getter
     belongs_to: result
     parameters:
@@ -471,14 +471,15 @@ functions:
     return_type: ERROR
   result_get_schema:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the result's output schema as a single schema handle.
 
       Builds an owned schema of the result's column names and types into
       *out_schema; destroy it via schema_destroy. Prepare-time metadata,
       available before the first step, or for an expanding statement once
-      stepping has prepared the row-producing fragment. Never empty: a
+      stepping has bound the row-producing statement (before that it fails with
+      ERROR_INPUT_METADATA_DEFERRED). Never empty: a
       non-SELECT reports a single status column, either a BIGINT changed-rows
       count or a BOOLEAN success.
 

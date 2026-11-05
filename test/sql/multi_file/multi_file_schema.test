@@ -65,12 +65,41 @@ SELECT id, parse_filename(filename) FROM read_csv('{TEMP_DIR}/schema_*.csv', sch
 1	schema_1.csv
 2	schema_2.csv
 
+# hive partitioning adds the partition column after the schema's columns
+statement ok
+COPY (SELECT range AS a, 'v' || range AS b, range % 2 AS k FROM range(4)) TO '{TEMP_DIR}/schema_hive_csv' (FORMAT csv, PARTITION_BY (k))
+
+query IIII
+SELECT id, label, k, typeof(k) FROM read_csv('{TEMP_DIR}/schema_hive_csv/*/*.csv', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL}
+}, hive_partitioning=true) ORDER BY id
+----
+0	v0	0	BIGINT
+1	v1	1	BIGINT
+2	v2	0	BIGINT
+3	v3	1	BIGINT
+
+statement ok
+COPY (SELECT range AS a, 'v' || range AS b, range % 2 AS k FROM range(4)) TO '{TEMP_DIR}/schema_hive_json' (FORMAT json, PARTITION_BY (k))
+
+query IIII
+SELECT id, label, k, typeof(k) FROM read_json('{TEMP_DIR}/schema_hive_json/*/*.json', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL}
+}, hive_types={'k': 'INTEGER'}) ORDER BY id
+----
+0	v0	0	INTEGER
+1	v1	1	INTEGER
+2	v2	0	INTEGER
+3	v3	1	INTEGER
+
 statement error
 SELECT * FROM read_csv('{TEMP_DIR}/schema_*.csv', union_by_name=true, schema=map {
 	'a': {name: 'id', type: 'BIGINT', default_value: NULL}
 })
 ----
-Binder Error: 'schema' cannot be combined with union_by_name=true or hive_partitioning=true
+Binder Error: 'schema' cannot be combined with union_by_name=true
 
 statement error
 SELECT * FROM read_csv('{TEMP_DIR}/schema_*.csv', schema=42)

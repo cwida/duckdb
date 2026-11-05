@@ -1,0 +1,23 @@
+# name: test/sql/function/blob/from_base64_padding.test
+# description: from_base64 rejects data after the padding
+# group: [blob]
+
+statement error
+SELECT from_base64('AP=8');
+----
+<REGEX>:Conversion Error.*after the padding.*
+
+statement error
+SELECT from_base64('A=8=');
+----
+<REGEX>:Conversion Error.*
+
+query I
+SELECT from_base64('AP==');
+----
+\x00
+
+query I
+SELECT from_base64('APA=');
+----
+\x00\xF0

@@ -14,13 +14,13 @@
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/storage/checkpoint_manager.hpp"
 #include "duckdb/storage/in_memory_block_manager.hpp"
-#include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/single_file_block_manager.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/storage/table/column_data.hpp"
 #include "duckdb/storage/table/in_memory_checkpoint.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
@@ -50,9 +50,8 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 
 	switch (target_encryption_version) {
 	case EncryptionTypes::V0_1:
-		// storage version not explicitly set
+		// without an explicit storage version, new files get the default on creation and existing files keep theirs
 		if (storage_version == StorageVersion::INVALID && storage_version_user_provided.empty()) {
-			storage_version = StorageVersion::V1_5_0;
 			break;
 		}
 		// storage version set, but v1.4.0 =< storage < v1.5.0
@@ -75,12 +74,7 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 		break;
 
 	case EncryptionTypes::V0_0:
-		// we set this to V0 to V1.5.0 if no explicit storage version provided
-		if (storage_version == StorageVersion::INVALID && storage_version_user_provided.empty()) {
-			storage_version = StorageVersion::V1_5_0;
-			break;
-		}
-		// if storage version is provided, we do nothing
+		// without an explicit storage version, new files get the default on creation and existing files keep theirs
 		break;
 	default:
 		throw InvalidConfigurationException("Encryption version is not set");
@@ -142,7 +136,11 @@ void StorageOptions::Initialize(unordered_map<string, Value> &options) {
 				    entry.second.ToString());
 			}
 		} else if (entry.first == "mmap_reserve_size") {
-			mmap_reserve_size = DBConfig::ParseMemoryLimitOrMaximum(entry.second.ToString());
+			const auto reserve_size = DBConfig::ParseMemoryLimitOrMaximum(entry.second.ToString());
+			if (reserve_size > NumericCast<idx_t>(NumericLimits<int64_t>::Maximum())) {
+				throw BinderException("MMAP_RESERVE_SIZE \"%s\" is out of range", entry.second.ToString());
+			}
+			mmap_reserve_size = reserve_size;
 		} else {
 			throw BinderException("Unrecognized option for attach \"%s\"", entry.first);
 		}
@@ -180,10 +178,6 @@ StorageManager &StorageManager::Get(Catalog &catalog) {
 
 DatabaseInstance &StorageManager::GetDatabase() {
 	return db.GetDatabase();
-}
-
-ObjectCache &ObjectCache::GetObjectCache(ClientContext &context) {
-	return context.db->GetObjectCache();
 }
 
 idx_t StorageManager::GetWALSize() {
@@ -253,21 +247,23 @@ bool StorageManager::HasWAL() const {
 bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointOptions &options,
                                         ActiveCheckpointWrapper &active_checkpoint) {
 	unique_lock<mutex> guard;
-	// Lock ordering: WAL lock -> transaction lock (in GetCheckpointTransaction)
-	if (!options.wal_lock) {
-		// not holding the WAL lock yet - grab it
-		guard = GetWALLock();
+	// Lock ordering: commit lock -> transaction lock (in ActiveCheckpointWrapper::Begin)
+	if (!options.commit_lock) {
+		// not holding the commit lock yet - grab it
+		guard = GetCommitLock();
 	}
-	if (active_checkpoint.HasCheckpointContext()) {
-		// While holding the WAL lock, if we have a context then start a checkpoint transaction.
-		// The start time of this transaction defines the visibility for checkpointing, any new commits are written
-		// to the next WAL.
-		active_checkpoint.GetCheckpointTransaction(options);
-	} else {
-		auto &transaction_manager = db.GetTransactionManager().Cast<DuckTransactionManager>();
-		options.checkpoint_id = transaction_manager.NextCheckpointId();
-		options.visibility_bound = VisibilityBound::Through(transaction_manager.GetLastCommit());
+	// drain under the commit lock before the checkpoint transaction starts: its snapshot would
+	// otherwise be bounded below commits whose WAL this checkpoint deletes
+	auto &transaction_manager = DuckTransactionManager::Get(db);
+	transaction_manager.WaitForDurability();
+	if (options.type == CheckpointType::FULL_CHECKPOINT &&
+	    transaction_manager.GetLastCommit() >= transaction_manager.LowestVisibilityBound()) {
+		// an active bounded snapshot still needs state a full checkpoint would vacuum away
+		options.type = CheckpointType::CONCURRENT_CHECKPOINT;
 	}
+
+	// While holding the commit lock: any new commits are written to the next WAL
+	active_checkpoint.Begin(options);
 
 	D_ASSERT(options.checkpoint_id.IsValid());
 	DUCKDB_LOG(db.GetDatabase(), TransactionLogType, db, "Start Checkpoint", options.checkpoint_id.GetIndex());
@@ -275,10 +271,6 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 		return false;
 	}
 	// start the checkpoint process around the WAL
-	if (GetWALSize() == 0) {
-		// no WAL - we don't need to do anything here
-		return false;
-	}
 	// verify the main WAL is the active WAL currently
 	if (wal->GetPath() != wal_path) {
 		throw InternalException("Current WAL path \"%s\" does not match base WAL path \"%s\" in WALStartCheckpoint",
@@ -323,6 +315,8 @@ void StorageManager::WALFinishCheckpoint(unique_lock<mutex> &) {
 	}
 
 	// we have had writes to the checkpoint WAL - we need to override our WAL with the checkpoint WAL
+	// commits to the checkpoint WAL may still be syncing: drain before destroying the WAL object
+	DuckTransactionManager::Get(db).WaitForDurability();
 	// first close the WAL writer
 	auto checkpoint_wal_path = wal->GetPath();
 	wal.reset();
@@ -337,8 +331,8 @@ void StorageManager::WALFinishCheckpoint(unique_lock<mutex> &) {
 	DUCKDB_LOG(db.GetDatabase(), TransactionLogType, db, "Finish Checkpoint");
 }
 
-unique_lock<mutex> StorageManager::GetWALLock() {
-	return unique_lock<mutex>(wal_lock);
+unique_lock<mutex> StorageManager::GetCommitLock() {
+	return unique_lock<mutex>(commit_lock);
 }
 
 string StorageManager::GetWALPath(const string &suffix) {
@@ -499,6 +493,11 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		if (options.storage_version == StorageVersion::INVALID) {
 			// when creating a new database we default to the serialization version specified in the config
 			options.storage_version = config.options.storage_compatibility.storage_version;
+			if (storage_options.encryption &&
+			    StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, options.storage_version)) {
+				// the default encryption format needs at least v1.5.0
+				options.storage_version = StorageVersion::V1_5_0;
+			}
 		}
 
 		// Initialize the block manager before creating a new database.
@@ -561,9 +560,8 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		unique_ptr<MetricsTimer> timer = nullptr;
 
 		// Start timing the storage load step.
-		auto client_context = context.GetClientContext();
-		if (client_context) {
-			auto profiler = client_context->client_data->profiler;
+		auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachLoadStorageLatency>());
 		}
 
@@ -577,8 +575,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		}
 
 		// Start timing the WAL replay step.
-		if (client_context) {
-			auto profiler = client_context->client_data->profiler;
+		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachReplayWALLatency>());
 		}
 
@@ -622,7 +619,7 @@ public:
 	//! Revert the commit
 	void RevertCommit() override;
 	// Make the commit persistent
-	void FlushCommit() override;
+	idx_t FlushCommit(bool sync_now) override;
 
 	void AddRowGroupData(DataTable &table, idx_t start_index, idx_t count,
 	                     unique_ptr<PersistentCollectionData> row_group_data) override;
@@ -684,9 +681,9 @@ void SingleFileStorageCommitState::RevertCommit() {
 	state = WALCommitState::TRUNCATED;
 }
 
-void SingleFileStorageCommitState::FlushCommit() {
+idx_t SingleFileStorageCommitState::FlushCommit(bool sync_now) {
 	if (state != WALCommitState::IN_PROGRESS) {
-		return;
+		return 0;
 	}
 
 	// Move the blocks in this COMMIT into the WAL and mark them as "in use".
@@ -702,8 +699,15 @@ void SingleFileStorageCommitState::FlushCommit() {
 		throw FatalException("Simulated crash before WAL_FLUSH write");
 	}
 
-	wal.Flush();
+	idx_t wal_sync_offset = 0;
+	if (sync_now) {
+		wal.Flush();
+	} else {
+		// only the marker is written here: the sync happens once the locks are released
+		wal_sync_offset = wal.FlushMarker();
+	}
 	state = WALCommitState::FLUSHED;
+	return wal_sync_offset;
 }
 
 void SingleFileStorageCommitState::AddRowGroupData(DataTable &table, idx_t start_index, idx_t count,
@@ -786,10 +790,10 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		try {
 			// Start timing the checkpoint.
-			auto client_context = context.GetClientContext();
+			auto profiler = Context::TryGetQueryProfiler(context.GetServices());
 			MetricsTimer timer;
-			if (client_context) {
-				timer = client_context->client_data->profiler->StartTimer<MetricStorageCheckpointLatency>();
+			if (profiler) {
+				timer = profiler->StartTimer<MetricStorageCheckpointLatency>();
 			}
 
 			// Write the checkpoint.
@@ -820,14 +824,14 @@ void SingleFileStorageManager::Destroy() {
 	if (!load_complete) {
 		return;
 	}
-	vector<reference<SchemaCatalogEntry>> schemas;
+	vector<reference<DuckSchemaEntry>> schemas;
 	// we scan the set of committed schemas
 	auto &catalog = Catalog::GetCatalog(db).Cast<DuckCatalog>();
-	catalog.ScanSchemas([&](SchemaCatalogEntry &entry) { schemas.push_back(entry); });
+	catalog.ScanSchemas(VisibilityBound::AllCommitted(), [&](DuckSchemaEntry &entry) { schemas.push_back(entry); });
 
 	vector<reference<DuckTableEntry>> tables;
 	for (auto &schema : schemas) {
-		schema.get().Scan(CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		schema.get().Scan(CatalogType::TABLE_ENTRY, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
 			if (entry.internal) {
 				return;
 			}

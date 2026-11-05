@@ -1,0 +1,85 @@
+# name: test/sql/parser/not_comparison_precedence.test
+# description: NOT after a comparison operator binds up to the IS level, like Postgres
+# group: [parser]
+
+# a < NOT b IS NULL is a < (NOT (b IS NULL))
+query I
+SELECT false < NOT true IS NULL
+----
+true
+
+query I
+SELECT NOT NULL IS NULL
+----
+false
+
+# a < NOT b = c is a < (NOT (b = c))
+query I
+SELECT 1 < NOT 2 = 2
+----
+false
+
+query I
+SELECT (1 < NOT 2) = 2
+----
+false
+
+query I
+SELECT true = NOT false
+----
+true
+
+query I
+SELECT true = NOT NOT true
+----
+true
+
+query I
+SELECT true = NOT 3 IN (1, 2)
+----
+true
+
+query I
+SELECT false = NOT 1 BETWEEN 0 AND 2
+----
+true
+
+query I
+SELECT true <> NOT 'a' LIKE 'b'
+----
+false
+
+query I
+SELECT true = NOT false IS DISTINCT FROM NULL
+----
+false
+
+# NOT does not swallow AND / OR
+query I
+SELECT 1 < NOT 2 = 2 AND true
+----
+false
+
+query I
+SELECT 1 < NOT 2 = 2 OR false
+----
+false
+
+query I
+SELECT NOT 1 < 2 IS NULL
+----
+true
+
+query I
+SELECT false < NOT true IS NULL = true
+----
+true
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1, NULL), (2, 2)) v(a, b);
+
+query II
+SELECT a, a < NOT b IS NULL FROM t ORDER BY a
+----
+1	false
+2	false

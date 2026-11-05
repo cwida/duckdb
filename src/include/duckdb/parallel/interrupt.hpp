@@ -103,10 +103,11 @@ public:
 		if (blocked_tasks.empty()) {
 			return false;
 		}
-		for (auto &entry : blocked_tasks) {
+		// take the tasks first, so that a callback that throws leaves none behind to be called a second time
+		auto tasks = TakeBlockedTasks();
+		for (auto &entry : tasks) {
 			entry.Callback();
 		}
-		blocked_tasks.clear();
 		return true;
 	}
 

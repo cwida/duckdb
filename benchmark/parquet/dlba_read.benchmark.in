@@ -6,7 +6,7 @@ name Parquet DLBA Read Benchmark
 group parquet
 
 load
-set variable total_rows = 100000000;
+set variable total_rows = 27500000;
 set variable null_rows_factor = 0.1;
 set variable unique_values = ${UNIQUE_COUNT};
 copy (select * from (select '${PREFIX}' || r1.range::varchar v from range(0,getvariable('unique_values')) r1, range(0,((getvariable('total_rows') * (1-getvariable('null_rows_factor'))) // getvariable('unique_values'))::INTEGER) r2 union all select null from range((getvariable('total_rows') * getvariable('null_rows_factor'))::INTEGER) ) order by random()) to '${BENCHMARK_DIR}/dlba_read.parquet' (parquet_version v2, dictionary_size_limit 0);

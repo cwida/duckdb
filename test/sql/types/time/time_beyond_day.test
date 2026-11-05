@@ -17,3 +17,24 @@ query IIII
 SELECT make_time(23, 59, 60), make_time(12, 30, 60), '24:00:00'::TIME_NS, '23:59:59.999999999'::TIME_NS
 ----
 24:00:00	12:31:00	24:00:00	23:59:59.999999999
+
+# the seconds are split into whole seconds and microseconds without rounding up
+statement error
+SELECT make_time(23, 59, 60.999999)
+----
+Time out of range: 23:59:60.999999
+
+statement error
+SELECT make_time(23, 59, 60.000005)
+----
+Time out of range: 23:59:60.000005
+
+query III
+SELECT make_time(1, 2, 59.9999999), make_time(1, 2, 3.5), make_time(23, 59, 59.9999996)
+----
+01:03:00	01:02:03.5	24:00:00
+
+query II
+SELECT make_time(12, 30, 60.4), make_time(12, 30, 60.6)
+----
+12:31:00.4	12:31:00.6

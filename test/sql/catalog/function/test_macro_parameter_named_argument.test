@@ -1,0 +1,20 @@
+# name: test/sql/catalog/function/test_macro_parameter_named_argument.test
+# description: A macro parameter passed as a named argument is the macro parameter, whatever the argument is named
+# group: [function]
+
+statement ok
+CREATE MACRO pivot_first(x) AS TABLE PIVOT (SELECT 1 k) ON k IN (1) USING first(struct_pack(a := x));
+
+query I
+FROM pivot_first(5)
+----
+{'a': 5}
+
+# the argument has the name of a lambda parameter, the value is the macro parameter
+statement ok
+CREATE MACRO pack_parameter(y) AS list_transform([1, 2], lambda x: struct_pack(x := y));
+
+query I
+SELECT pack_parameter(10)
+----
+[{'x': 10}, {'x': 10}]

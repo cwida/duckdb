@@ -24,6 +24,7 @@ namespace duckdb {
 
 class JoinOrderOptimizer;
 class FilterInfo;
+class RelationStatsExtractor;
 
 struct JoinOrderExtraction {
 	vector<unique_ptr<FilterInfo>> filters;
@@ -53,6 +54,11 @@ public:
 	                          vector<reference<LogicalOperator>> &filter_operators,
 	                          optional_ptr<LogicalOperator> parent = nullptr);
 
+	//! Collect an inner-join region without optimizing or rewriting its leaves.
+	bool ExtractJoinRelationsForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op,
+	                                       vector<reference<LogicalOperator>> &filter_operators,
+	                                       optional_ptr<LogicalOperator> parent = nullptr);
+
 	//! for each join filter in the logical plan op, extract the relations that are referred to on
 	//! both sides of the join filter, along with the tables & indexes.
 	JoinOrderExtraction ExtractEdges(LogicalOperator &op, vector<reference<LogicalOperator>> &filter_operators,
@@ -60,14 +66,14 @@ public:
 
 	//! Extract the set of relations referred to inside an expression
 	bool ExtractBindings(const Expression &expression, unordered_set<RelationIndex> &bindings);
+	//! Like ExtractBindings, but returns whether the filter can be moved off its operator
+	bool ExtractFilterBindings(const Expression &expression, unordered_set<RelationIndex> &bindings);
 	bool TryNormalizeBinding(ColumnBinding binding, ColumnBinding &normalized) const;
 	bool HasCompleteStats() const;
 	bool AddRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, const RelationStats &stats);
 	//! Add an unnest relation which can come from a logical unnest or a logical get which has an unnest function
 	bool AddRelationWithChildren(JoinOrderOptimizer &optimizer, LogicalOperator &op, LogicalOperator &input_op,
-	                             optional_ptr<LogicalOperator> parent, RelationStats &child_stats,
-	                             optional_ptr<LogicalOperator> limit_op,
-	                             vector<reference<LogicalOperator>> &datasource_filters);
+	                             optional_ptr<LogicalOperator> parent, RelationStats &child_stats);
 	vector<unique_ptr<SingleJoinRelation>> GetRelations();
 
 	const vector<RelationStats> GetRelationStats();
@@ -77,6 +83,16 @@ public:
 	void PrintRelationStats();
 
 private:
+	struct PendingRelation {
+		LogicalOperator &op;
+		optional_ptr<LogicalOperator> parent;
+		bool optimize_as_leaf;
+	};
+
+	bool ExtractJoinRelation(JoinOrderOptimizer &optimizer, PendingRelation relation,
+	                         vector<reference<LogicalOperator>> &filter_operators,
+	                         vector<PendingRelation> &pending_relations);
+	bool RegisterRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, RelationStats stats);
 	optional_ptr<JoinRelationSet> GetJoinRelations(column_binding_set_t &column_bindings,
 	                                               JoinRelationSetManager &set_manager);
 	void GetColumnBindingsFromExpression(const Expression &expression, column_binding_set_t &column_bindings);

@@ -10,7 +10,7 @@ group parquet
 require parquet
 
 run
-COPY lineitem TO '${BENCHMARK_DIR}/lineitem.parquet';
+COPY (FROM lineitem LIMIT 1000000) TO '${BENCHMARK_DIR}/lineitem.parquet';
 
 result I sf=1
-6001215
+1000000

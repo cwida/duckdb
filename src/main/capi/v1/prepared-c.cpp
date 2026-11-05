@@ -447,8 +447,8 @@ duckdb_state duckdb_execute_prepared_streaming(duckdb_prepared_statement prepare
 	try {
 		auto result = wrapper->statement->Submit(wrapper->values);
 		// Without an out_result the stream is dropped unread, which rolls back what the statement wrote
-		if (result->HasError() || !duckdb::StreamsByDefault(wrapper->statement->GetStatementType(),
-		                                                    result->GetStatementProperties(), out_result != nullptr)) {
+		if (result->HasError() ||
+		    !duckdb::StreamsByDefault(wrapper->statement->GetStatementType(), *result, out_result != nullptr)) {
 			result->Complete();
 			return DuckDBTranslateResult(std::move(result), out_result);
 		}

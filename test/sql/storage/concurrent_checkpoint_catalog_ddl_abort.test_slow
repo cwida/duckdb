@@ -1,0 +1,202 @@
+# name: test/sql/storage/concurrent_checkpoint_catalog_ddl_abort.test_slow
+# description: DDL that keeps table storage and sequence use commit while a checkpoint runs that then fails, and recover
+# group: [storage]
+
+# db is an attached database, so a failing checkpoint on it is scoped to db (the instance keeps running)
+
+foreach abort_mode before_header before_wal_finish before_header_non_fatal
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_catalog_ddl_abort_{abort_mode}.db' AS db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE TABLE db.t (i INTEGER, j INTEGER)
+
+statement ok
+INSERT INTO db.t SELECT range, range FROM range(1000)
+
+statement ok
+CREATE SEQUENCE db.seq
+
+statement ok
+CREATE SEQUENCE db.seq2
+
+statement ok
+CREATE TABLE db.ids (id BIGINT, k INTEGER)
+
+statement ok
+CREATE VIEW db.v_old AS SELECT 1 AS one
+
+statement ok
+CHECKPOINT db
+
+# the checkpoint sleeps for three seconds before it scans the catalog, and then fails
+statement ok
+SET debug_checkpoint_sleep_ms=3000
+
+statement ok
+SET debug_checkpoint_abort='{abort_mode}'
+
+concurrentloop threadid 0 3
+
+# thread 2 is a reader that needs the state from before the insert below, so that this is a concurrent checkpoint
+onlyif threadid=2
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=2
+query I
+SELECT COUNT(*) FROM db.t
+----
+1000
+
+sleep 300 millisecond
+
+onlyif threadid=0
+statement ok
+INSERT INTO db.t VALUES (-1, -1)
+
+onlyif threadid=0
+statement error
+CHECKPOINT db
+----
+<REGEX>:.*Checkpoint aborted.*
+
+sleep 700 millisecond
+
+# during the sleep before the catalog scan: after the checkpoint's bound, in the WAL that outlives it
+onlyif threadid=1
+statement ok
+CREATE SCHEMA db.s2
+
+onlyif threadid=1
+statement ok
+CREATE VIEW db.v_new AS SELECT 42 AS x
+
+onlyif threadid=1
+statement ok
+CREATE MACRO db.m(x) AS x + 1
+
+onlyif threadid=1
+statement ok
+CREATE TYPE db.mood AS ENUM ('a', 'b')
+
+onlyif threadid=1
+statement ok
+ALTER TABLE db.t RENAME TO t2
+
+onlyif threadid=1
+statement ok
+COMMENT ON TABLE db.t2 IS 'renamed'
+
+onlyif threadid=1
+statement ok
+DROP VIEW db.v_old
+
+onlyif threadid=1
+statement ok
+INSERT INTO db.ids SELECT nextval('db.seq'), range FROM range(5)
+
+onlyif threadid=1
+query I
+SELECT setval('db.seq2', 10, false)
+----
+10
+
+sleep 5000 millisecond
+
+# a failed checkpoint invalidates the database, unless it fails non-fatally
+onlyif threadid=2
+statement maybe
+COMMIT
+----
+<REGEX>:.*invalidated.*
+
+endloop
+
+statement ok
+SET debug_checkpoint_abort='none'
+
+statement ok
+SET debug_checkpoint_sleep_ms=0
+
+# recover from the failed checkpoint, twice
+restart
+
+loop k 0 2
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_catalog_ddl_abort_{abort_mode}.db' AS db
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM db.t2
+----
+1001	499499	499499
+
+query T
+SELECT comment FROM duckdb_tables() WHERE database_name = 'db' AND table_name = 't2'
+----
+renamed
+
+query I
+SELECT COUNT(*) FROM duckdb_tables() WHERE database_name = 'db' AND table_name = 't'
+----
+0
+
+query I
+SELECT x FROM db.v_new
+----
+42
+
+query I
+SELECT COUNT(*) FROM duckdb_views() WHERE database_name = 'db' AND view_name = 'v_old'
+----
+0
+
+query I
+SELECT db.m(1)
+----
+2
+
+query I
+SELECT COUNT(*) FROM duckdb_types() WHERE database_name = 'db' AND type_name = 'mood'
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_schemas() WHERE database_name = 'db' AND schema_name = 's2'
+----
+1
+
+query III
+SELECT COUNT(*), COUNT(DISTINCT id), MAX(id) FROM db.ids
+----
+5	5	5
+
+query I
+SELECT nextval('db.seq') - {k}
+----
+6
+
+query I
+SELECT nextval('db.seq2') - {k}
+----
+10
+
+statement ok
+DETACH db
+
+restart
+
+endloop
+
+endloop

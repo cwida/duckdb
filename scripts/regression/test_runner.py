@@ -109,6 +109,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Compare benchmarks from base and PR benchmark runners.")
     parser.add_argument("--old", required=True, help="Path to the base benchmark runner.")
     parser.add_argument("--new", required=True, help="Path to the PR benchmark runner.")
+    parser.add_argument("--old-tpcds-answers", help="Base revision's TPC-DS answers directory.")
     parser.add_argument("--benchmarks", required=True, help="Path to the benchmark list.")
     parser.add_argument("--threads", type=int, help="Number of threads used by each benchmark runner.")
     parser.add_argument("--memory-limit", help="Memory limit used by each benchmark runner.")
@@ -909,12 +910,17 @@ def main() -> int:
         print(f"Failed to find benchmark list {args.benchmarks}")
         return 1
 
+    old_tpcds_answers = Path(args.old_tpcds_answers).resolve() if args.old_tpcds_answers else None
+    if old_tpcds_answers is not None and not old_tpcds_answers.is_dir():
+        print(f"Failed to find base TPC-DS answers directory {old_tpcds_answers}")
+        return 1
+
     isolated_directories = tempfile.TemporaryDirectory(prefix="duckdb-regression-benchmarks-")
     isolation_root = Path(isolated_directories.name)
     source_root = Path.cwd()
     old_root_directory = isolation_root / "base"
     new_root_directory = isolation_root / "pr"
-    create_isolated_benchmark_root(source_root, old_root_directory)
+    create_isolated_benchmark_root(source_root, old_root_directory, old_tpcds_answers)
     create_isolated_benchmark_root(source_root, new_root_directory)
     if args.verbose:
         print("benchmark cache: isolated Base and PR directories")

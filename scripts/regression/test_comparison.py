@@ -96,6 +96,33 @@ class TestBenchmarkRunner(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(run.call_args.kwargs["env"][EXTENSION_DIRECTORY_ENV], str(extension_directory.resolve()))
 
+    def test_base_answers_override_preserves_pr_sources_and_answers(self):
+        with tempfile.TemporaryDirectory() as temp_directory:
+            source_root = Path(temp_directory) / "duckdb"
+            dsdgen_directory = source_root / "extension/tpcds/dsdgen"
+            pr_answers = dsdgen_directory / "answers/sf10"
+            pr_answers.mkdir(parents=True)
+            (pr_answers / "38.csv").write_text("487", encoding="utf-8")
+            queries = dsdgen_directory / "queries"
+            queries.mkdir()
+            (queries / "38.sql").write_text("SELECT count(*) FROM t;", encoding="utf-8")
+            base_answers = Path(temp_directory) / "base-answers"
+            (base_answers / "sf10").mkdir(parents=True)
+            (base_answers / "sf10/38.csv").write_text("488", encoding="utf-8")
+
+            base_root = Path(temp_directory) / "base"
+            pr_root = Path(temp_directory) / "pr"
+            create_isolated_benchmark_root(source_root, base_root, base_answers)
+            create_isolated_benchmark_root(source_root, pr_root)
+
+            answer_path = "extension/tpcds/dsdgen/answers/sf10/38.csv"
+            self.assertEqual((base_root / answer_path).read_text(encoding="utf-8"), "488")
+            self.assertEqual((pr_root / answer_path).read_text(encoding="utf-8"), "487")
+            self.assertEqual((source_root / answer_path).read_text(encoding="utf-8"), "487")
+            query_path = "extension/tpcds/dsdgen/queries/38.sql"
+            self.assertEqual((base_root / query_path).resolve(), (source_root / query_path).resolve())
+            self.assertEqual((pr_root / query_path).resolve(), (source_root / query_path).resolve())
+
     def test_surfaces_incorrect_result_diagnostic(self):
         completed_process = subprocess.CompletedProcess(
             args=[],
@@ -344,6 +371,25 @@ print(f"{sys.argv[1]}\\t1\\tINCORRECT", file=sys.stderr)
 print("INCORRECT RESULT: Data Corruption Error: attempted to read past the end of the segment", file=sys.stderr)
 """
 
+    tpcds_answers_runner_source = """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+label = os.path.basename(sys.argv[0])
+root = Path(sys.argv[sys.argv.index("--root-dir") + 1])
+expected = (root / "extension/tpcds/dsdgen/answers/sf10/38.csv").read_text().splitlines()[1]
+actual = "488" if label == "old" else "487"
+print("name\\trun\\ttiming", file=sys.stderr)
+if expected != actual:
+    print(f"{sys.argv[1]}\\t1\\tINCORRECT", file=sys.stderr)
+    print(f"INCORRECT RESULT: expected {expected}, got {actual}", file=sys.stderr)
+else:
+    runs = int(sys.argv[sys.argv.index("--timed-runs") + 1])
+    for run in range(1, runs + 1):
+        print(f"{sys.argv[1]}\\t{run}\\t1.0", file=sys.stderr)
+"""
+
     benchmark_data_runner_source = """#!/usr/bin/env python3
 import os
 import sys
@@ -427,6 +473,7 @@ for run in range(1, runs + 1):
         expected_memory_limit=None,
         expected_benchmark_argument=None,
         step_summary=False,
+        old_tpcds_answer=None,
     ):
         with tempfile.TemporaryDirectory() as temp_directory:
             temp_path = Path(temp_directory)
@@ -476,6 +523,11 @@ for run in range(1, runs + 1):
             ]
             if extra_args:
                 command.extend(extra_args)
+            if old_tpcds_answer is not None:
+                answers = temp_path / "base-answers"
+                (answers / "sf10").mkdir(parents=True)
+                (answers / "sf10/38.csv").write_text(f"count_star()\n{old_tpcds_answer}\n", encoding="utf-8")
+                command.extend(["--old-tpcds-answers", str(answers)])
             process = subprocess.run(
                 command,
                 cwd=self.repository_root,
@@ -488,6 +540,38 @@ for run in range(1, runs + 1):
             order = order_log.read_text(encoding="utf-8").splitlines() if order_log.exists() else []
             summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
             return process, order, summary
+
+    def test_tpcds_generator_change_uses_each_revisions_answers(self):
+        for base_answer, returncode in [(None, 1), ("488", 0), ("486", 1)]:
+            with self.subTest(base_answer=base_answer):
+                process, _, _ = self.run_regression_test(
+                    self.tpcds_answers_runner_source,
+                    extra_args=["--samples", "5"],
+                    old_tpcds_answer=base_answer,
+                )
+                self.assertEqual(process.returncode, returncode, process.stdout + process.stderr)
+                if returncode:
+                    self.assertIn("INCORRECT RESULT:", process.stdout)
+
+    def test_tpcds_answer_override_still_rejects_incorrect_pr_results(self):
+        process, _, _ = self.run_regression_test(
+            self.tpcds_answers_runner_source.replace('else "487"', 'else "486"'),
+            extra_args=["--samples", "5"],
+            old_tpcds_answer="488",
+        )
+        self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+        self.assertIn("INCORRECT RESULT: expected 487, got 486", process.stdout)
+
+    def test_missing_base_tpcds_answers_are_rejected(self):
+        process, _, _ = self.run_regression_test(
+            self.stable_runner_source,
+            extra_args=[
+                "--old-tpcds-answers",
+                str(self.repository_root / "missing-tpcds-answers"),
+            ],
+        )
+        self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+        self.assertIn("Failed to find base TPC-DS answers directory", process.stdout)
 
     @staticmethod
     def expected_order(total_runs):

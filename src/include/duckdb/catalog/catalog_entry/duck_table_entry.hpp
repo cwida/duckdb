@@ -80,8 +80,8 @@ public:
 	optional_ptr<CatalogEntry> GetTrigger(CatalogTransaction transaction, const Identifier &name) const override;
 	void ScanTriggers(CatalogTransaction transaction,
 	                  const std::function<void(CatalogEntry &)> &callback) const override;
-	//! Scan all triggers without a transaction (used by checkpoint writer)
-	void ScanTriggersNonTransactional(const std::function<void(CatalogEntry &)> &callback);
+	//! Scan the triggers visible at the bound (used by checkpoint writer)
+	void ScanTriggers(VisibilityBound bound, const std::function<void(CatalogEntry &)> &callback);
 	//! Drop a trigger by name
 	bool DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade) override;
 

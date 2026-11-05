@@ -151,3 +151,142 @@ explain select * from (select a, b, c, sum(a) OVER (PARTITION BY b, c), sum(b) O
 ----
 logical_opt	<REGEX>:.*WINDOW.*c = 20.*
 
+#
+# Push down auxillary monotonic filters
+#
+statement ok
+CREATE TABLE lineitem (l_extendedprice DOUBLE, l_commitdate DATE, l_shipdate DATE, l_linenumber INTEGER);
+
+statement ok
+CREATE VIEW avg_price AS (
+	SELECT 
+		*, 
+		AVG(l_extendedprice) OVER (
+			PARTITION BY YEAR(l_commitdate) 
+			ORDER BY l_shipdate
+		) AS yearly_avg
+	FROM lineitem
+);
+
+# Non-strictly monotonic functions always require non-strict inequalities 
+query II
+explain
+FROM avg_price
+WHERE l_commitdate < '1997-02-15'::DATE;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* <= 1997.*
+
+query II
+explain
+FROM avg_price
+WHERE l_commitdate <= '1997-02-15'::DATE;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* <= 1997.*
+
+query II
+explain
+FROM avg_price
+WHERE l_commitdate > '1997-02-15'::DATE;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* >= 1997.*
+
+query II
+explain
+FROM avg_price
+WHERE l_commitdate >= '1997-02-15'::DATE;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* >= 1997.*
+
+# Strictly monotonic functions can be used directly, even for (in)equalities
+statement ok
+CREATE OR REPLACE VIEW avg_price AS (
+	SELECT 
+		*, 
+		AVG(l_extendedprice) OVER (
+			PARTITION BY MAKE_DATE(l_linenumber) 
+			ORDER BY l_shipdate
+		) AS yearly_avg
+	FROM lineitem
+);
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber = 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* = '1970-01-21'::DATE.*
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber <> 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* != '1970-01-21'::DATE.*
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber IS NOT DISTINCT FROM 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* IS NOT DISTINCT FROM make_date.20.*
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber IS DISTINCT FROM 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* IS DISTINCT FROM make_date.20.*
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber < 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* < '1970-01-21'::DATE.*
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber <= 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* <= '1970-01-21'::DATE.*
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber > 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* > '1970-01-21'::DATE.*
+
+
+query II
+explain
+FROM avg_price
+WHERE l_linenumber >= 20;
+----
+logical_opt	<REGEX>:.*SEQ_SCAN.*Filters:.* >= '1970-01-21'::DATE.*
+
+# Don't use non-comparisons.
+statement ok 
+create or replace table test as 
+	from values 
+		(1, 'Hello'), 
+		(2, 'hello'), 
+		(3, 'H'), 
+		(4, 'i'), 
+		(5, 'I') 
+	t(id, var);
+
+statement ok 
+create view avg_id as (
+	select 
+		*, 
+		avg(id) over (partition by lower(var) order by id) as col2 
+	from test 
+);
+
+query II
+explain
+from avg_id where var like '%hel%';
+----
+logical_opt	<!REGEX>:.*SEQ_SCAN.*Filters:.*

@@ -94,7 +94,7 @@ public:
 	void AddOwnership(CatalogTransaction transaction, CatalogEntry &owner, CatalogEntry &entry);
 
 	//! Get the order of entries needed by EXPORT, the objects with no dependencies are exported first
-	void ReorderEntries(catalog_entry_vector_t &entries);
+	void ReorderEntries(catalog_entry_vector_t &entries, VisibilityBound bound);
 	void ReorderEntries(catalog_entry_vector_t &entries, ClientContext &context);
 
 private:

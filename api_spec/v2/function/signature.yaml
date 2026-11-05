@@ -47,7 +47,7 @@ handles:
 functions:
   function_signature_add_parameter:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Adds a parameter to a signature.
 
@@ -90,7 +90,7 @@ functions:
 
   function_signature_set_return_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the return type of a signature.
 

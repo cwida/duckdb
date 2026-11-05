@@ -9,6 +9,9 @@ require parquet
 set seed 0.8675309
 
 statement ok
+SET asof_loop_join_threshold=0;
+
+statement ok
 SET VARIABLE datadate='2026-04-01'::DATE;
 
 statement ok
@@ -33,7 +36,7 @@ CREATE TABLE quote AS
 		getvariable('datadate') + INTERVAL 9 HOURS + INTERVAL (floor(random() * (7 * 60 * 60 + 30 * 60) * 1000)::INTEGER) MILLISECONDS AS time
 	FROM range(100_000) t(i)
 
-query III nosort expected
+query IIIII nosort expected
 SELECT tid, t.sym::VARCHAR AS sym, t.time, qid, q.time
 FROM (
     SELECT sym, time, tid
@@ -66,7 +69,7 @@ DROP TABLE quote
 statement ok
 CREATE VIEW quote AS FROM '{TEST_DIR}/quote/**/*.parquet'
 
-query III nosort expected
+query IIIII nosort expected
 SELECT tid, t.sym, t.time, qid, q.time
 FROM (
     SELECT sym, time, tid
@@ -79,3 +82,16 @@ ASOF LEFT JOIN (
     FROM quote
 ) q USING (sym, time)
 ORDER BY tid;
+
+# Check payload_types is propagated.
+statement ok
+COPY (SELECT * FROM (VALUES (1,10), (1,20), (2,30)) v(k,t))
+TO '{TEST_DIR}/minimal' (FORMAT PARQUET, PARTITION_BY('k'), OVERWRITE_OR_IGNORE);
+
+statement ok
+CREATE VIEW v AS FROM '{TEST_DIR}/minimal/**/*.parquet';
+
+statement ok
+SELECT l.k, l.t, r.t
+FROM v l ASOF LEFT JOIN v r ON l.k=r.k AND l.t >= r.t * 2
+ORDER BY l.k, l.t;

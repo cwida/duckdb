@@ -122,7 +122,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Creates a new log sink through a factory.
 
@@ -153,7 +153,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the name the logging configuration refers to the log sink by.
 
@@ -177,7 +177,7 @@ functions:
 
   log_sink_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets arbitrary user data on the log sink.
 
@@ -200,7 +200,7 @@ functions:
 
   log_sink_set_write_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the write callback of the log sink, invoked for every entry the logging configuration directs to the sink.
 
@@ -221,7 +221,7 @@ functions:
 
   log_sink_set_flush_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the optional flush callback of the log sink, invoked when DuckDB flushes its log, so entries the sink holds
       on to can be written out. When DuckDB flushes is up to DuckDB; entries still held when the instance is destroyed
@@ -247,7 +247,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_write_info_get_connection_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the connection that wrote the entry, as `duckdb_logs` reports it. An entry written for the
       database as a whole has none: `present` then receives false and `id` is left untouched.
@@ -273,7 +273,7 @@ functions:
 
   log_sink_write_info_get_transaction_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the transaction the entry was written in, as `duckdb_logs` reports it. An entry written
       outside a transaction has none: `present` then receives false and `id` is left untouched.
@@ -299,7 +299,7 @@ functions:
 
   log_sink_write_info_get_query_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the query the entry was written for, as `duckdb_logs` reports it. An entry written outside
       a query has none: `present` then receives false and `id` is left untouched.
@@ -325,7 +325,7 @@ functions:
 
   log_sink_write_info_get_thread_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the id of the thread that wrote the entry, as `duckdb_logs` reports it. Only an entry written in the
       thread scope has one: otherwise `present` receives false and `id` is left untouched. The id identifies the
@@ -355,7 +355,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   instance_register_log_sink:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the log sink on the instance, making it available to the logging configuration under its name.
 
@@ -382,7 +382,7 @@ functions:
 
   extension_register_log_sink:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the log sink on the loading extension's instance, making it available to the logging configuration
       under its name.
@@ -408,7 +408,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   log_sink_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Destroys the log sink, releasing its resources.
 

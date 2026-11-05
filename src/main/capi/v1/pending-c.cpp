@@ -26,8 +26,7 @@ duckdb_state duckdb_pending_prepared_internal(duckdb_prepared_statement prepared
 	try {
 		result->statement = wrapper->statement->Submit(wrapper->values);
 		result->allow_streaming =
-		    allow_streaming && duckdb::StreamsByDefault(wrapper->statement->GetStatementType(),
-		                                                result->statement->GetStatementProperties());
+		    allow_streaming && duckdb::StreamsByDefault(wrapper->statement->GetStatementType(), *result->statement);
 		if (!result->allow_streaming) {
 			// Settled before the caller drives it, so each execute_task call stays one unit of work
 			result->statement->Materialize();

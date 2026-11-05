@@ -1,0 +1,343 @@
+# name: test/sql/match_recognize/test_match_recognize_shapes.test
+# description: MATCH_RECOGNIZE over a longer series - V shapes, W shapes and monotonic runs
+# group: [match_recognize]
+
+# A twenty point series with several falls and recoveries in it, which is enough to exercise the
+# shapes people actually look for: a single dip and recovery, two of them back to back, and plain
+# rising runs. The conditions only ever compare a reading to the one before it, so the matches depend
+# on the shape of the series rather than on the particular values.
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table signal_log(device varchar, day integer, level integer);
+
+statement ok
+insert into signal_log values
+    ('sensor-a', 1,40),('sensor-a', 2,55),('sensor-a', 3,61),('sensor-a', 4,67),('sensor-a', 5,79),
+    ('sensor-a', 6,40),('sensor-a', 7,49),('sensor-a', 8,64),('sensor-a', 9,76),('sensor-a',10,79),
+    ('sensor-a',11,61),('sensor-a',12,49),('sensor-a',13,79),('sensor-a',14,79),('sensor-a',15,46),
+    ('sensor-a',16,40),('sensor-a',17,46),('sensor-a',18,76),('sensor-a',19,73),('sensor-a',20,70);
+
+# A V shape: one row per match, reporting where the fall started, bottomed out and recovered
+query IIII
+SELECT device, start_day, bottom_day, end_day FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES ONSET.day AS start_day, LAST(DIP.day) AS bottom_day, LAST(CLIMB.day) AS end_day
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY start_day
+----
+sensor-a	5	6	10
+sensor-a	11	12	13
+sensor-a	14	16	18
+
+# The same V shape row by row, with the variable each row matched
+query IIII
+SELECT day, match_num, var_name, level FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES MATCH_NUMBER() AS match_num, CLASSIFIER() AS var_name
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+5	1	ONSET	79
+6	1	DIP	40
+7	1	CLIMB	49
+8	1	CLIMB	64
+9	1	CLIMB	76
+10	1	CLIMB	79
+11	2	ONSET	61
+12	2	DIP	49
+13	2	CLIMB	79
+14	3	ONSET	79
+15	3	DIP	46
+16	3	DIP	40
+17	3	CLIMB	46
+18	3	CLIMB	76
+
+# An aggregate restricted to one variable, accumulating as ALL ROWS PER MATCH walks the match
+query IIII
+SELECT day, match_num, var_name, climbs FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES MATCH_NUMBER() AS match_num, CLASSIFIER() AS var_name, count(CLIMB.day) AS climbs
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+5	1	ONSET	0
+6	1	DIP	0
+7	1	CLIMB	1
+8	1	CLIMB	2
+9	1	CLIMB	3
+10	1	CLIMB	4
+11	2	ONSET	0
+12	2	DIP	0
+13	2	CLIMB	1
+14	3	ONSET	0
+15	3	DIP	0
+16	3	DIP	0
+17	3	CLIMB	1
+18	3	CLIMB	2
+
+# A W shape - fall, recover, fall, recover
+query III
+SELECT day, match_num, var_name FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES MATCH_NUMBER() AS match_num, CLASSIFIER() AS var_name
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+ DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+5	1	ONSET
+6	1	DIP
+7	1	CLIMB
+8	1	CLIMB
+9	1	CLIMB
+10	1	CLIMB
+11	1	DIP
+12	1	DIP
+13	1	CLIMB
+
+# Plain runs of rising measurements
+query III
+SELECT day, match_num, level FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES MATCH_NUMBER() AS match_num
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (RISE+)
+    DEFINE RISE AS RISE.level > PREV(RISE.level)
+) ORDER BY day
+----
+2	1	55
+3	1	61
+4	1	67
+5	1	79
+7	2	49
+8	2	64
+9	2	76
+10	2	79
+13	3	79
+17	4	46
+18	4	76
+
+# AFTER MATCH SKIP TO LAST <var> lets consecutive matches share the row the skip lands on, so the
+# second match starts on the day the first one ended
+query III
+SELECT start_day, bottom_day, end_day FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES ONSET.day AS start_day, LAST(DIP.day) AS bottom_day, LAST(CLIMB.day) AS end_day
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST CLIMB
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY start_day
+----
+5	6	10
+10	12	13
+14	16	18
+
+# FINAL makes a measure span the whole match even under ALL ROWS PER MATCH, where the default is to
+# report it as it accumulates
+query IIII
+SELECT day, match_num, running_climbs, final_climbs FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES MATCH_NUMBER() AS match_num, RUNNING count(CLIMB.day) AS running_climbs,
+             FINAL count(CLIMB.day) AS final_climbs
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+5	1	0	4
+6	1	0	4
+7	1	1	4
+8	1	2	4
+9	1	3	4
+10	1	4	4
+11	2	0	1
+12	2	0	1
+13	2	1	1
+14	3	0	2
+15	3	0	2
+16	3	0	2
+17	3	1	2
+18	3	2	2
+
+# SUBSET names a union of pattern variables, so a measure can span the rows of all of them at once.
+# FALLING covers the peak and the whole way down, which is the part of the V the CLIMB rows are not in.
+query IIII
+SELECT device, mean_level, first_day, last_day FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES avg(FALLING.level) AS mean_level, FIRST(FALLING.day) AS first_day, LAST(FALLING.day) AS last_day
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    SUBSET FALLING = (ONSET, DIP)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY first_day
+----
+sensor-a	59.5	5	6
+sensor-a	55.0	11	12
+sensor-a	55.0	14	16
+
+# a union that covers every variable in the pattern is the whole match
+query II
+SELECT n, whole FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES count(*) AS n, count(ALL_OF_IT.level) AS whole
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    SUBSET ALL_OF_IT = (ONSET, DIP, CLIMB)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY n DESC
+----
+6	6
+5	5
+3	3
+
+# several unions may be declared at once, and one may name a single variable
+query III
+SELECT bottom, top, n FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES min(LOW.level) AS bottom, max(HIGH.level) AS top, count(LOW.level) AS n
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    SUBSET LOW = (DIP), HIGH = (ONSET, CLIMB)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY n, bottom
+----
+40	79	1
+49	79	1
+40	79	2
+
+# ALL ROWS PER MATCH sees the union grow as the match is assembled
+query IIII
+SELECT day, c, running, final FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES CLASSIFIER() AS c, count(FALLING.level) AS running, FINAL count(FALLING.level) AS final
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ONSET DIP+ CLIMB+)
+    SUBSET FALLING = (ONSET, DIP)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) WHERE day BETWEEN 14 AND 18 ORDER BY day
+----
+14	ONSET	1	3
+15	DIP	2	3
+16	DIP	3	3
+17	CLIMB	3	3
+18	CLIMB	3	3
+
+# {- -} leaves rows out of the ALL ROWS PER MATCH output while still matching them. ONSET is the row
+# each rise starts from: it anchors the match but is not itself part of the rise. The FINAL count
+# still sees it, so an excluded row is in the match - just not in the output.
+query IIII
+SELECT day, var_name, match_num, n FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES CLASSIFIER() AS var_name, MATCH_NUMBER() AS match_num, FINAL count(*) AS n
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ({- ONSET -} CLIMB+)
+    DEFINE CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+2	CLIMB	1	5
+3	CLIMB	1	5
+4	CLIMB	1	5
+5	CLIMB	1	5
+7	CLIMB	2	5
+8	CLIMB	2	5
+9	CLIMB	2	5
+10	CLIMB	2	5
+13	CLIMB	3	2
+17	CLIMB	4	3
+18	CLIMB	4	3
+
+# an exclusion may cover several variables, and the whole match may be excluded except one tail
+query II
+SELECT day, var_name FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES CLASSIFIER() AS var_name
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ({- ONSET DIP+ -} CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+7	CLIMB
+8	CLIMB
+9	CLIMB
+10	CLIMB
+13	CLIMB
+17	CLIMB
+18	CLIMB
+
+# a SUBSET may span an excluded variable: the rows are in the match, so the measure still sees them
+query III
+SELECT day, var_name, seen FROM signal_log MATCH_RECOGNIZE(
+    PARTITION BY device ORDER BY day
+    MEASURES CLASSIFIER() AS var_name, FINAL count(BOTH_OF_THEM.level) AS seen
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ({- ONSET -} CLIMB+)
+    SUBSET BOTH_OF_THEM = (ONSET, CLIMB)
+    DEFINE CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY day
+----
+2	CLIMB	5
+3	CLIMB	5
+4	CLIMB	5
+5	CLIMB	5
+7	CLIMB	5
+8	CLIMB	5
+9	CLIMB	5
+10	CLIMB	5
+13	CLIMB	2
+17	CLIMB	3
+18	CLIMB	3
+
+# The row pattern output table reports the partitioning columns, then the ordering columns, then the
+# measures, then whatever of the input is left (ISO/IEC 19075-5 4.17.1). The order is what lines the
+# columns up when a query is toggled between ONE ROW PER MATCH and ALL ROWS PER MATCH, and it is only
+# visible through SELECT *. Trino and Oracle both report this order.
+
+statement ok
+CREATE TABLE out_order(price INTEGER, extra INTEGER, sym VARCHAR, day INTEGER)
+
+statement ok
+INSERT INTO out_order VALUES (10, 99, 'X', 1), (20, 98, 'X', 2)
+
+query IIIII
+SELECT * FROM out_order MATCH_RECOGNIZE(
+    PARTITION BY sym ORDER BY day MEASURES MATCH_NUMBER() AS mno
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS price > 0
+)
+----
+X	1	1	10	99
+X	2	1	20	98
+
+query II
+SELECT * FROM out_order MATCH_RECOGNIZE(
+    PARTITION BY sym ORDER BY day MEASURES MATCH_NUMBER() AS mno
+    ONE ROW PER MATCH PATTERN (A+) DEFINE A AS price > 0
+)
+----
+X	1
+
+# with nothing to partition or order by, the measures simply come first
+query IIIII
+SELECT * FROM out_order MATCH_RECOGNIZE(
+    MEASURES MATCH_NUMBER() AS mno ALL ROWS PER MATCH PATTERN (A) DEFINE A AS price = 10
+)
+----
+1	10	99	X	1
+
+# a column named by both PARTITION BY and ORDER BY is still reported once
+query IIIII
+SELECT * FROM out_order MATCH_RECOGNIZE(
+    PARTITION BY sym ORDER BY sym MEASURES MATCH_NUMBER() AS mno
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS price > 0
+)
+----
+X	1	10	99	1
+X	1	20	98	2

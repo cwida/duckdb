@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <list>
+#include <mutex>
 #include <random>
 #include <thread>
 
@@ -26,6 +28,73 @@ namespace duckdb {
 static void query_break(int line) {
 	(void)line;
 }
+
+//! Thrown when the query watchdog interrupted a query in a parallel worker, carrying the failing statement's
+//! location so the worker's failure bookkeeping can report it structurally.
+class QueryTimeoutException : public std::runtime_error {
+public:
+	QueryTimeoutException(string message, string file_p, int line_p)
+	    : std::runtime_error(std::move(message)), file(std::move(file_p)), line(line_p) {
+	}
+
+	string file;
+	int line;
+};
+
+//! Interrupts the connection if the query does not finish within the configured timeout. This also bounds
+//! queries that deadlock idle: the executor's wait loop checks the interrupt flag, but not the query deadline,
+//! so SET max_execution_time cannot abort a fully parked schedule.
+class QueryWatchdog {
+public:
+	QueryWatchdog(Connection &connection_p, double timeout_seconds) : connection(connection_p), done(false) {
+		if (timeout_seconds <= 0) {
+			return;
+		}
+		watchdog = std::thread([this, timeout_seconds]() {
+			std::unique_lock<std::mutex> guard(lock);
+			if (cv.wait_for(guard, std::chrono::duration<double>(timeout_seconds), [this]() { return done; })) {
+				return;
+			}
+			// Keep interrupting until the query ends: an interrupt delivered before query startup is erased by
+			// the query's own initial cleanup, so a single shot could be lost.
+			fired = true;
+			do {
+				connection.Interrupt();
+			} while (!cv.wait_for(guard, std::chrono::milliseconds(100), [this]() { return done; }));
+		});
+	}
+	//! Stops the watchdog and reports whether it interrupted the query.
+	bool Finish() {
+		if (!watchdog.joinable()) {
+			return false;
+		}
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			done = true;
+		}
+		cv.notify_all();
+		watchdog.join();
+		if (fired && connection.context->IsInterrupted()) {
+			// The interrupt may have raced with a successful query completion. Clear the flag so it cannot
+			// spuriously abort the next statement. The IsInterrupted check keeps an INTERRUPTS_SUPPRESSED
+			// state intact, and if the query was aborted the engine already cleared the flag.
+			connection.context->ClearInterrupt();
+		}
+		return fired;
+	}
+
+	~QueryWatchdog() {
+		Finish();
+	}
+
+private:
+	Connection &connection;
+	std::mutex lock;
+	std::condition_variable cv;
+	bool done;
+	bool fired = false;
+	std::thread watchdog;
+};
 
 static Connection &GetConnection(SQLLogicTestRunner &runner, DuckDB &db,
                                  unordered_map<string, duckdb::unique_ptr<Connection>> &named_connection_map,
@@ -82,7 +151,7 @@ static Connection &GetConnection(SQLLogicTestRunner &runner,
 	}
 }
 
-Command::Command(SQLLogicTestRunner &runner) : runner(runner) {
+Command::Command(SQLLogicTestRunner &runner) : runner(runner), query_timeout(runner.query_timeout) {
 }
 
 Command::~Command() {
@@ -152,8 +221,8 @@ bool CanRestart(Connection &conn) {
 		auto &temp = conn.client_data->temporary_objects;
 		auto &temp_catalog = temp->GetCatalog().Cast<DuckCatalog>();
 		vector<reference<DuckSchemaEntry>> schemas;
-		temp_catalog.ScanSchemas(
-		    [&](SchemaCatalogEntry &schema) { schemas.push_back(schema.Cast<DuckSchemaEntry>()); });
+		temp_catalog.ScanSchemas(VisibilityBound::AllCommitted(),
+		                         [&](DuckSchemaEntry &schema) { schemas.push_back(schema); });
 		if (schemas.size() != 1) {
 			return false;
 		}
@@ -164,7 +233,7 @@ bool CanRestart(Connection &conn) {
 		                                   CatalogType::MACRO_ENTRY,     CatalogType::TABLE_MACRO_ENTRY};
 		bool found_temp_object = false;
 		for (auto &catalog_type : catalog_types) {
-			temp_schema.Scan(catalog_type, [&](CatalogEntry &entry) {
+			temp_schema.Scan(catalog_type, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
 				if (entry.internal) {
 					return;
 				}
@@ -186,7 +255,7 @@ void Command::RestartDatabase(ExecuteContext &context, reference<Connection> &co
 	}
 	bool query_fail = false;
 	try {
-		connection.get().ExtractStatements(sql_query);
+		connection.get().ExtractStatements(sql_query, false);
 	} catch (...) {
 		query_fail = true;
 	}
@@ -201,20 +270,24 @@ void Command::RestartDatabase(ExecuteContext &context, reference<Connection> &co
 
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 //! Drain a submitted query through the non-blocking consumer API, so the alternative-verify job
-//! exercises the stream end to end
+//! exercises the stream end to end. A statement that expands into several has no metadata before its result
+//! statement is bound, so the metadata is read only once a row or the end of the stream arrived
 static unique_ptr<QueryResult> DrainStream(unique_ptr<QueryResult> handle) {
-	auto statement_type = handle->GetStatementType();
-	auto properties = handle->GetStatementProperties();
-	auto names = handle->GetNames();
 	auto client_properties = handle->client_properties;
 	QueryResultStream<> stream(std::move(handle));
-	auto collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(), stream.GetTypes());
+	unique_ptr<ColumnDataCollection> collection;
 	ColumnDataAppendState append_state;
-	collection->InitializeAppend(append_state);
+	auto start_collection = [&]() {
+		collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(), stream.GetTypes());
+		collection->InitializeAppend(append_state);
+	};
 	while (true) {
 		unique_ptr<DataChunk> chunk;
 		auto state = stream.TryFetch(chunk);
 		if (state == QueryResultState::READY) {
+			if (!collection) {
+				start_collection();
+			}
 			collection->Append(append_state, *chunk);
 			continue;
 		}
@@ -228,7 +301,11 @@ static unique_ptr<QueryResult> DrainStream(unique_ptr<QueryResult> handle) {
 	if (stream.HasError()) {
 		return make_uniq<QueryResult>(stream.GetErrorObject());
 	}
-	return make_uniq<QueryResult>(statement_type, properties, names, std::move(collection), client_properties);
+	if (!collection) {
+		start_collection();
+	}
+	return make_uniq<QueryResult>(stream.GetStatementType(), stream.GetStatementProperties(), stream.GetNames(),
+	                              std::move(collection), client_properties);
 }
 #endif
 
@@ -243,6 +320,8 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 	QueryParameters parameters;
 	parameters.format = ChunkFormat::BufferManaged();
 
+	QueryWatchdog watchdog(connection.get(), query_timeout);
+	duckdb::unique_ptr<QueryResult> result;
 	try {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 		auto ccontext = connection.get().context;
@@ -251,28 +330,46 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 		// reports it with its location and type, and runs text that only parses after a LOAD
 		idx_t statement_count = 0;
 		try {
-			statement_count = connection.get().ExtractStatements(context.sql_query).size();
+			statement_count = connection.get().ExtractStatements(context.sql_query, false).size();
 		} catch (std::exception &) {
 		}
 		if (statement_count != 1) {
-			return ccontext->Query(context.sql_query, parameters);
+			result = ccontext->Query(context.sql_query, parameters);
+		} else {
+			auto handle = ccontext->Submit(context.sql_query, parameters);
+			if (handle->HasError()) {
+				result = std::move(handle);
+			} else if (handle->MetadataAvailable() &&
+			           handle->GetStatementProperties().return_type != StatementReturnType::QUERY_RESULT) {
+				handle->Complete();
+				result = std::move(handle);
+			} else {
+				result = DrainStream(std::move(handle));
+			}
 		}
-		auto handle = ccontext->Submit(context.sql_query, parameters);
-		if (handle->HasError()) {
-			return handle;
-		}
-		auto &properties = handle->GetStatementProperties();
-		if (properties.return_type != StatementReturnType::QUERY_RESULT) {
-			handle->Complete();
-			return handle;
-		}
-		return DrainStream(std::move(handle));
 #else
-		return connection.get().context->Query(context.sql_query, parameters);
+		result = connection.get().context->Query(context.sql_query, parameters);
 #endif
 	} catch (std::exception &ex) {
-		return make_uniq<QueryResult>(ErrorData(ex));
+		result = make_uniq<QueryResult>(ErrorData(ex));
 	}
+	if (watchdog.Finish() && result && result->HasError() &&
+	    result->GetErrorObject().Type() == ExceptionType::INTERRUPT) {
+		// A timeout must fail the test instead of surfacing as a SQL error: a statement expecting an error
+		// would otherwise silently accept a hang bounded by the watchdog. Keying on the interrupt type keeps
+		// a genuine error that races a fired watchdog reported as that error: the query terminated on its
+		// own, so no hang is hidden, only the timeout diagnosis.
+		auto message = StringUtil::Format("query_timeout of %.3f seconds exceeded", query_timeout);
+		if (context.is_parallel) {
+			// A Catch assertion would be swallowed into "Unknown error message" by the worker's catch-all.
+			// The dedicated exception carries the failing statement's location for the failure bookkeeping.
+			runner.finished_processing_file = true;
+			throw QueryTimeoutException(message, file_name, NumericCast<int>(query_line));
+		}
+		runner.test_failure_locator = StringUtil::Format("%s:%llu", file_name, query_line);
+		TEST_FAIL_LINE(file_name, query_line, message);
+	}
+	return result;
 }
 
 bool CheckLoopCondition(ExecuteContext &context, const vector<Condition> &conditions) {
@@ -452,7 +549,7 @@ struct ParallelExecuteContext {
 	atomic<bool> success;
 	string error_message;
 	string error_file;
-	int error_line;
+	int error_line = 0;
 };
 
 static void ParallelExecuteLoop(ParallelExecuteContext *execute_context) {
@@ -475,6 +572,11 @@ static void ParallelExecuteLoop(ParallelExecuteContext *execute_context) {
 			execute_context->error_file = context.error_file;
 			execute_context->error_line = context.error_line;
 		}
+	} catch (QueryTimeoutException &ex) {
+		execute_context->error_file = ex.file;
+		execute_context->error_line = ex.line;
+		execute_context->error_message = StringUtil::Format("Failure at %s:%d: %s", ex.file, ex.line, ex.what());
+		execute_context->success = false;
 	} catch (std::exception &ex) {
 		execute_context->error_message = StringUtil::Format("Failure at %s:%d: %s", execute_context->error_file,
 		                                                    execute_context->error_line, ex.what());
@@ -483,6 +585,13 @@ static void ParallelExecuteLoop(ParallelExecuteContext *execute_context) {
 		execute_context->error_message = StringUtil::Format("Failure at %s:%d: Unknown error message",
 		                                                    execute_context->error_file, execute_context->error_line);
 		execute_context->success = false;
+	}
+	if (!execute_context->success) {
+		auto message = execute_context->error_message;
+		if (message.empty()) {
+			message = StringUtil::Format("Failure at %s:%d", execute_context->error_file, execute_context->error_line);
+		}
+		SQLLogicTestRunner::EmitError(execute_context->runner.file_name, message);
 	}
 }
 
@@ -830,7 +939,7 @@ void RestartCommand::ExecuteInternal(ExecuteContext &context) const {
 	// We save the main connection configurations to pass it to the new connection
 	runner.config->options = runner.con->context->db->config.options;
 	runner.config->user_settings = runner.con->context->db->config.user_settings;
-	auto client_config = runner.con->context->config;
+	auto client_config = ClientConfig::GetConfig(*runner.con->context);
 	auto catalog_search_paths = runner.con->context->client_data->catalog_search_path->GetSetPaths();
 	string low_query_writer_path;
 	if (runner.con->context->client_data->log_query_writer) {
@@ -839,7 +948,7 @@ void RestartCommand::ExecuteInternal(ExecuteContext &context) const {
 
 	runner.LoadDatabase(runner.dbpath, load_extensions);
 
-	runner.con->context->config = client_config;
+	ClientConfig::GetConfig(*runner.con->context) = client_config;
 
 	runner.con->BeginTransaction();
 	runner.con->context->client_data->catalog_search_path->Set(catalog_search_paths, CatalogSetPathType::SET_SCHEMAS);

@@ -1,0 +1,42 @@
+# name: test/sql/collate/collate_json_ordered_aggregate.test
+# description: COLLATE on a JSON column is rejected with a binder error
+# group: [collate]
+
+require json
+
+statement ok
+CREATE TABLE tbl(id INT, val JSON);
+
+statement ok
+INSERT INTO tbl VALUES (1, '"b"'), (2, '"A"'), (3, '"c"');
+
+statement error
+SELECT list(id ORDER BY val COLLATE nocase) FROM tbl;
+----
+Binder Error: collations are only supported for type varchar
+
+statement error
+SELECT string_agg(id::VARCHAR, ',' ORDER BY val COLLATE nocase) FROM tbl;
+----
+Binder Error: collations are only supported for type varchar
+
+statement error
+SELECT id, row_number() OVER (ORDER BY val COLLATE nocase) FROM tbl;
+----
+Binder Error: collations are only supported for type varchar
+
+statement error
+SELECT id FROM tbl ORDER BY val COLLATE nocase;
+----
+Binder Error: collations are only supported for type varchar
+
+# casting to VARCHAR first works
+query I
+SELECT list(id ORDER BY val::VARCHAR COLLATE nocase) FROM tbl;
+----
+[2, 1, 3]
+
+statement error
+SELECT list(1 ORDER BY v COLLATE nocase) FROM (SELECT 'x'::VARIANT v);
+----
+Binder Error: collations are only supported for type varchar

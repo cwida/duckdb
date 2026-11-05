@@ -191,7 +191,7 @@ MetadataResult ExitProcess(ShellState &state, const vector<string> &args) {
 	}
 	int rc = 0;
 	if (args.size() > 1 && (rc = (int)ShellState::StringToInt(args[1])) != 0) {
-		// exit immediately if a custom error code is provided
+		// Stop all input processing and return through main's cleanup.
 		ShellState::Exit(rc);
 	}
 	return MetadataResult::EXIT;
@@ -495,21 +495,21 @@ MetadataResult QuitProcess(ShellState &, const vector<string> &args) {
 }
 
 MetadataResult SetOutput(ShellState &state, const vector<string> &args) {
-	if (!state.SetOutputFile(args, '\0')) {
+	if (!state.SetOutputFile(args, OutputCommand::OUTPUT)) {
 		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
 
 MetadataResult SetOutputOnce(ShellState &state, const vector<string> &args) {
-	if (!state.SetOutputFile(args, 'o')) {
+	if (!state.SetOutputFile(args, OutputCommand::ONCE)) {
 		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
 
 MetadataResult SetOutputExcel(ShellState &state, const vector<string> &args) {
-	if (!state.SetOutputFile(args, 'e')) {
+	if (!state.SetOutputFile(args, OutputCommand::EXCEL)) {
 		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;

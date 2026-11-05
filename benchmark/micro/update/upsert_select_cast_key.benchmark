@@ -1,0 +1,19 @@
+# name: benchmark/micro/update/upsert_select_cast_key.benchmark
+# description: INSERT ... SELECT ... ON CONFLICT DO UPDATE with a source key of another type than the key column
+# group: [update]
+
+load
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+INSERT INTO t SELECT i, 0 FROM range(1000000) r(i);
+
+run
+INSERT INTO t SELECT i::BIGINT, 1 FROM range(500000, 1500000) r(i) ON CONFLICT DO UPDATE SET v = excluded.v;
+
+cleanup
+CREATE OR REPLACE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+INSERT INTO t SELECT i, 0 FROM range(1000000) r(i);
+
+result_query II
+SELECT count(*), sum(v) FROM t
+----
+1500000	1000000

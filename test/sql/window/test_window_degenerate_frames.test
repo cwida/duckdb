@@ -1,0 +1,113 @@
+# name: test/sql/window/test_window_degenerate_frames.test
+# description: Windows whose frame is at most the current row are evaluated as scalar functions
+# group: [window]
+
+statement ok
+CREATE TABLE t(i INTEGER, peer INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO t VALUES (0, 0, NULL), (1, 0, 10), (2, 0, NULL), (3, 1, 20), (4, 1, NULL), (5, 1, 30), (6, 2, 40);
+
+# The frame is the current row
+query IIIIIIIIIII
+SELECT i,
+	first_value(v) OVER w,
+	last_value(v ORDER BY i) OVER w,
+	nth_value(v, 1 ORDER BY i DESC) OVER w,
+	first_value(v IGNORE NULLS) OVER w,
+	sum(v) OVER w,
+	count(v) OVER w,
+	count(*) OVER w,
+	sum(v) FILTER (WHERE i > 2) OVER w,
+	list(v ORDER BY i) OVER w,
+	sum(v) OVER (ORDER BY peer ROWS BETWEEN 0 PRECEDING AND 0 FOLLOWING EXCLUDE TIES)
+FROM t
+WINDOW w AS (ORDER BY peer ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+ORDER BY i;
+----
+0	NULL	NULL	NULL	NULL	NULL	0	1	NULL	[NULL]	NULL
+1	10	10	10	10	10	1	1	NULL	[10]	10
+2	NULL	NULL	NULL	NULL	NULL	0	1	NULL	[NULL]	NULL
+3	20	20	20	20	20	1	1	20	[20]	20
+4	NULL	NULL	NULL	NULL	NULL	0	1	NULL	[NULL]	NULL
+5	30	30	30	30	30	1	1	30	[30]	30
+6	40	40	40	40	40	1	1	40	[40]	40
+
+# Excluding the ties of a peer group frame leaves the current row
+query III
+SELECT i, first_value(v ORDER BY i) OVER w, sum(v) OVER w
+FROM t
+WINDOW w AS (ORDER BY peer GROUPS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES)
+ORDER BY i;
+----
+0	NULL	NULL
+1	10	10
+2	NULL	NULL
+3	20	20
+4	NULL	NULL
+5	30	30
+6	40	40
+
+# Excluding the current row or its group leaves an empty frame
+query IIIIIII
+SELECT i,
+	first_value(v ORDER BY i) OVER wg,
+	sum(v) OVER wg,
+	count(*) OVER wg,
+	last_value(v) OVER wc,
+	sum(v) OVER wc,
+	count(v) OVER wc
+FROM t
+WINDOW wg AS (ORDER BY peer ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP),
+	wc AS (ORDER BY peer ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE CURRENT ROW)
+ORDER BY i;
+----
+0	NULL	NULL	0	NULL	NULL	0
+1	NULL	NULL	0	NULL	NULL	0
+2	NULL	NULL	0	NULL	NULL	0
+3	NULL	NULL	0	NULL	NULL	0
+4	NULL	NULL	0	NULL	NULL	0
+5	NULL	NULL	0	NULL	NULL	0
+6	NULL	NULL	0	NULL	NULL	0
+
+# Degenerate frames next to regular windows and over many rows
+query IIII
+SELECT count(*), sum(x), sum(y), sum(z)
+FROM (
+	SELECT i AS x,
+		sum(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS y,
+		sum(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS z
+	FROM range(5000) r(i)
+);
+----
+5000	12497500	12497500	24990001
+
+# The window input can be empty
+query II
+SELECT count(*) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW), first_value(42) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM range(3);
+----
+1	42
+1	42
+1	42
+
+# Deferred PKs are not UCC
+statement ok
+CREATE TABLE d(id INTEGER PRIMARY KEY DEFERRED);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO d VALUES (1),(1);
+
+query II
+SELECT id, count(*) OVER (
+    ORDER BY id RANGE BETWEEN CURRENT ROW AND CURRENT ROW
+) FROM d;
+----
+1	2
+1	2
+
+statement ok
+ROLLBACK;

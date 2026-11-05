@@ -1172,7 +1172,7 @@ struct ArrowBatches {
 
 duckdb_v2_sql_statement_handle ParseOne(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle statement = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &statement, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);
@@ -1568,10 +1568,11 @@ TEST_CASE("V2 arrow result: an expanding statement reports its schema once stepp
 	ArrowResult r;
 	REQUIRE(QueryArrow(fx.conn, "PIVOT sales ON year USING sum(amount)", 0, &r) == DUCKDB_V2_ERROR_NONE);
 	ArrowSchema deferred {};
-	REQUIRE(duckdb_v2_arrow_result_get_schema(r, &deferred, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_arrow_result_get_schema(r, &deferred, nullptr) == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED);
 	REQUIRE(deferred.release == nullptr);
 	auto result_type = DUCKDB_V2_RESULT_TYPE_NOTHING;
-	REQUIRE(duckdb_v2_arrow_result_get_result_type(r, &result_type, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_arrow_result_get_result_type(r, &result_type, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED);
 
 	ArrowBatches batches;
 	FetchAll(r, batches);
@@ -1591,6 +1592,27 @@ TEST_CASE("V2 arrow result: an expanding statement reports its schema once stepp
 	ArrowBatches streamed;
 	StreamAll(stream.stream, streamed);
 	REQUIRE(streamed.RowCount() == 2);
+}
+
+TEST_CASE("V2 arrow result: an expanding statement without rows reports the Success schema once drained",
+          "[capi_v2][arrow]") {
+	EnvFixture fx;
+	ExecSQL(fx.conn, "CREATE TABLE t AS SELECT range AS i FROM range(10)");
+
+	ArrowResult r;
+	REQUIRE(QueryArrow(fx.conn, "ALTER TABLE t ADD COLUMN c DOUBLE DEFAULT random()", 0, &r) == DUCKDB_V2_ERROR_NONE);
+	ArrowSchema deferred {};
+	REQUIRE(duckdb_v2_arrow_result_get_schema(r, &deferred, nullptr) == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED);
+
+	ArrowBatches batches;
+	FetchAll(r, batches);
+	REQUIRE(batches.RowCount() == 0);
+	OwnedSchema schema;
+	REQUIRE(duckdb_v2_arrow_result_get_schema(r, &schema.schema, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(ChildNames(schema.schema) == std::vector<std::string> {"Success"});
+	auto result_type = DUCKDB_V2_RESULT_TYPE_QUERY_RESULT;
+	REQUIRE(duckdb_v2_arrow_result_get_result_type(r, &result_type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(result_type == DUCKDB_V2_RESULT_TYPE_NOTHING);
 }
 
 TEST_CASE("V2 arrow result: an execution error is sticky", "[capi_v2][arrow]") {

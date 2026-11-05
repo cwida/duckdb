@@ -1,7 +1,11 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/bit_utils.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/to_string.hpp"
+#include "duckdb/common/vector.hpp"
+#include <algorithm>
 
 namespace duckdb {
 void PrintBits(const char value) {
@@ -37,12 +41,22 @@ void BignumIntermediate::Print() const {
 }
 
 BignumIntermediate::BignumIntermediate(const bignum_t &value) {
+	if (value.data.GetSize() < Bignum::BIGNUM_HEADER_SIZE + 1) {
+		throw DataCorruptionException("Invalid BIGNUM blob: size %llu is smaller than the minimum of %llu bytes",
+		                              static_cast<uint64_t>(value.data.GetSize()),
+		                              static_cast<uint64_t>(Bignum::BIGNUM_HEADER_SIZE + 1));
+	}
 	is_negative = (value.data.GetData()[0] & 0x80) == 0;
 	data = reinterpret_cast<data_ptr_t>(value.data.GetDataWriteable() + Bignum::BIGNUM_HEADER_SIZE);
 	size = static_cast<uint32_t>(value.data.GetSize()) - Bignum::BIGNUM_HEADER_SIZE;
 }
 
 BignumIntermediate::BignumIntermediate(uint8_t *value, idx_t ptr_size) {
+	if (ptr_size < Bignum::BIGNUM_HEADER_SIZE + 1) {
+		throw DataCorruptionException("Invalid BIGNUM blob: size %llu is smaller than the minimum of %llu bytes",
+		                              static_cast<uint64_t>(ptr_size),
+		                              static_cast<uint64_t>(Bignum::BIGNUM_HEADER_SIZE + 1));
+	}
 	is_negative = (value[0] & 0x80) == 0;
 	data = value + Bignum::BIGNUM_HEADER_SIZE;
 	size = static_cast<uint32_t>(ptr_size) - Bignum::BIGNUM_HEADER_SIZE;
@@ -96,6 +110,7 @@ bool BignumIntermediate::IsMSBSet() const {
 	}
 	return (data[0] & 0x80) != 0;
 }
+
 void BignumIntermediate::Initialize(ArenaAllocator &allocator) {
 	is_negative = false;
 	size = 1;
@@ -180,16 +195,23 @@ bool BignumIntermediate::OverOrUnderflow() const {
 	return OverOrUnderflow(data, size, is_negative);
 }
 
-bignum_t BignumIntermediate::ToBignum(ArenaAllocator &allocator) {
-	// This must be trimmed before transforming
-	Trim();
+bignum_t BignumIntermediate::ToBignum(ArenaAllocator &allocator) const {
+	// The result is trimmed like Trim() would, but the intermediate is only read: aggregate states are exported
+	// while other threads may read them and while later updates still rely on the current representation
+	auto trimmed_start = GetStartDataPos(data, size, is_negative);
+	uint32_t trimmed_size = size - trimmed_start;
+	if (trimmed_size == 0) {
+		// Always keep at least one byte
+		trimmed_start = 0;
+		trimmed_size = 1;
+	}
 	bignum_t result;
-	uint32_t bignum_size = Bignum::BIGNUM_HEADER_SIZE + size;
+	uint32_t bignum_size = Bignum::BIGNUM_HEADER_SIZE + trimmed_size;
 	auto ptr = reinterpret_cast<char *>(allocator.Allocate(bignum_size));
 	// Set Header
-	Bignum::SetHeader(ptr, size, is_negative);
+	Bignum::SetHeader(ptr, trimmed_size, is_negative);
 	// Copy data
-	memcpy(ptr + Bignum::BIGNUM_HEADER_SIZE, data, size);
+	memcpy(ptr + Bignum::BIGNUM_HEADER_SIZE, data + trimmed_start, trimmed_size);
 	result.data = string_t(ptr, bignum_size);
 	return result;
 }
@@ -258,7 +280,7 @@ string_t BignumIntermediate::Negate(StringHeap &heap) const {
 			ptr[i + Bignum::BIGNUM_HEADER_SIZE] = static_cast<char>(~data[i]);
 		}
 	}
-
+	target.Finalize();
 	return target;
 }
 
@@ -366,6 +388,282 @@ void BignumIntermediate::AddInPlace(ArenaAllocator &allocator, const BignumInter
 		// here.
 		throw OutOfRangeException(ProduceOverUnderFlowError(is_result_negative, GetStartDataPos(), size));
 	}
+}
+
+//===--------------------------------------------------------------------===//
+// Multiplication / Division
+//===--------------------------------------------------------------------===//
+namespace {
+
+//! Little-endian base 2^32 digits of an absolute value without leading zero digits; zero is the empty vector
+using bignum_magnitude_t = unsafe_vector<digit_t>;
+
+//! Digit operations between two interrupt checks, roughly a millisecond of work
+constexpr idx_t INTERRUPT_CHECK_INTERVAL = idx_t(1) << 20;
+
+void AccountWork(BignumArithmeticState &state, idx_t work) {
+	if (!state.context) {
+		return;
+	}
+	state.work_since_interrupt_check += work;
+	if (state.work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
+		state.work_since_interrupt_check = 0;
+		state.context->InterruptCheck();
+	}
+}
+
+void TrimMagnitude(bignum_magnitude_t &digits) {
+	while (!digits.empty() && digits.back() == 0) {
+		digits.pop_back();
+	}
+}
+
+void GetMagnitude(const BignumIntermediate &value, bignum_magnitude_t &digits) {
+	digits.clear();
+	const idx_t start = value.GetStartDataPos();
+	digits.reserve((value.size - start + Bignum::DIGIT_BYTES - 1) / Bignum::DIGIT_BYTES);
+	digit_t current = 0;
+	uint8_t shift = 0;
+	// walk the big-endian magnitude bytes from the least significant byte upwards
+	for (idx_t i = value.size; i > start; i--) {
+		current |= static_cast<digit_t>(value.GetAbsoluteByte(static_cast<int64_t>(i - 1))) << shift;
+		shift += 8;
+		if (shift == Bignum::DIGIT_BITS) {
+			digits.push_back(current);
+			current = 0;
+			shift = 0;
+		}
+	}
+	if (shift != 0) {
+		digits.push_back(current);
+	}
+	TrimMagnitude(digits);
+}
+
+//! The number of significant bits of a magnitude, 0 for zero
+idx_t MagnitudeBitCount(const bignum_magnitude_t &digits) {
+	if (digits.empty()) {
+		return 0;
+	}
+	return digits.size() * Bignum::DIGIT_BITS - CountZeros<digit_t>::Leading(digits.back());
+}
+
+idx_t BitsToBytes(idx_t bits) {
+	return (bits + 7) / 8;
+}
+
+//! Writes a (sign, magnitude) pair as a BIGNUM blob into the heap, checking for overflow
+string_t WriteMagnitude(StringHeap &heap, const bignum_magnitude_t &digits, bool is_negative) {
+	if (digits.empty()) {
+		// zero is always encoded as a single positive zero byte
+		const auto zero = Bignum::InitializeBignumZero();
+		return heap.AddBlob(zero.data(), zero.size());
+	}
+	const idx_t byte_count = BitsToBytes(MagnitudeBitCount(digits));
+	if (byte_count > Bignum::MAX_DATA_SIZE) {
+		throw OutOfRangeException(ProduceOverUnderFlowError(is_negative, 0, byte_count));
+	}
+	auto target = heap.EmptyString(byte_count + Bignum::BIGNUM_HEADER_SIZE);
+	auto target_data = target.GetDataWriteable();
+	Bignum::SetHeader(target_data, byte_count, is_negative);
+	auto result = target_data + Bignum::BIGNUM_HEADER_SIZE;
+	for (idx_t i = 0; i < byte_count; i++) {
+		// byte i is the i-th most significant byte of the result
+		const idx_t byte_from_lsb = byte_count - 1 - i;
+		D_ASSERT(byte_from_lsb / Bignum::DIGIT_BYTES < digits.size());
+		const auto byte = static_cast<uint8_t>(digits[byte_from_lsb / Bignum::DIGIT_BYTES] >>
+		                                       (8 * (byte_from_lsb % Bignum::DIGIT_BYTES)));
+		result[i] = static_cast<char>(is_negative ? static_cast<uint8_t>(~byte) : byte);
+	}
+	target.Finalize();
+	return target;
+}
+
+//! Schoolbook multiplication: result = lhs * rhs
+void MultiplyMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &lhs, const bignum_magnitude_t &rhs,
+                        bignum_magnitude_t &result) {
+	result.assign(lhs.size() + rhs.size(), 0);
+	for (idx_t i = 0; i < lhs.size(); i++) {
+		AccountWork(state, rhs.size());
+		twodigit_t carry = 0;
+		const twodigit_t lhs_digit = lhs[i];
+		for (idx_t j = 0; j < rhs.size(); j++) {
+			// (2^32 - 1)^2 + 2 * (2^32 - 1) = 2^64 - 1, so this cannot overflow
+			const twodigit_t product = lhs_digit * rhs[j] + result[i + j] + carry;
+			result[i + j] = static_cast<digit_t>(product);
+			carry = product >> Bignum::DIGIT_BITS;
+		}
+		result[i + rhs.size()] = static_cast<digit_t>(carry);
+	}
+	TrimMagnitude(result);
+}
+
+//! Long division following Knuth's Algorithm D (TAOCP 4.3.1); the remainder is only produced on request
+void DivModMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &dividend,
+                      const bignum_magnitude_t &divisor, bignum_magnitude_t &quotient, bignum_magnitude_t &remainder,
+                      bool want_remainder) {
+	D_ASSERT(!divisor.empty());
+	const idx_t m = dividend.size();
+	const idx_t n = divisor.size();
+	if (m < n) {
+		quotient.clear();
+		if (want_remainder) {
+			remainder = dividend;
+		}
+		return;
+	}
+	constexpr twodigit_t BASE = static_cast<twodigit_t>(1) << Bignum::DIGIT_BITS;
+	constexpr twodigit_t DIGIT_MASK = BASE - 1;
+	if (n == 1) {
+		// single digit divisor: simple short division
+		AccountWork(state, m);
+		const twodigit_t d = divisor[0];
+		twodigit_t rem = 0;
+		quotient.assign(m, 0);
+		for (idx_t i = m; i > 0; i--) {
+			const twodigit_t current = (rem << Bignum::DIGIT_BITS) | dividend[i - 1];
+			quotient[i - 1] = static_cast<digit_t>(current / d);
+			rem = current % d;
+		}
+		TrimMagnitude(quotient);
+		remainder.clear();
+		if (want_remainder && rem != 0) {
+			remainder.push_back(static_cast<digit_t>(rem));
+		}
+		return;
+	}
+
+	// D1: normalize so that the most significant divisor digit has its top bit set
+	const auto shift = static_cast<uint8_t>(CountZeros<digit_t>::Leading(divisor[n - 1]));
+	auto &vn = state.normalized_divisor;
+	auto &un = state.normalized_dividend;
+	vn.assign(n, 0);
+	un.assign(m + 1, 0);
+	if (shift > 0) {
+		for (idx_t i = n - 1; i > 0; i--) {
+			vn[i] = (divisor[i] << shift) | (divisor[i - 1] >> (Bignum::DIGIT_BITS - shift));
+		}
+		vn[0] = divisor[0] << shift;
+		un[m] = dividend[m - 1] >> (Bignum::DIGIT_BITS - shift);
+		for (idx_t i = m - 1; i > 0; i--) {
+			un[i] = (dividend[i] << shift) | (dividend[i - 1] >> (Bignum::DIGIT_BITS - shift));
+		}
+		un[0] = dividend[0] << shift;
+	} else {
+		std::copy(divisor.begin(), divisor.end(), vn.begin());
+		std::copy(dividend.begin(), dividend.end(), un.begin());
+	}
+
+	quotient.assign(m - n + 1, 0);
+	for (idx_t j = m - n + 1; j > 0; j--) {
+		AccountWork(state, n);
+		const idx_t pos = j - 1;
+		// D3: estimate the quotient digit
+		const twodigit_t numerator = (static_cast<twodigit_t>(un[pos + n]) << Bignum::DIGIT_BITS) | un[pos + n - 1];
+		twodigit_t qhat = numerator / vn[n - 1];
+		twodigit_t rhat = numerator % vn[n - 1];
+		while (qhat >= BASE || qhat * vn[n - 2] > ((rhat << Bignum::DIGIT_BITS) | un[pos + n - 2])) {
+			qhat--;
+			rhat += vn[n - 1];
+			if (rhat >= BASE) {
+				break;
+			}
+		}
+		// D4: multiply and subtract
+		// the borrow is at most BASE: the high half of a product is at most BASE - 2 and we borrow at most 2 units
+		twodigit_t borrow = 0;
+		for (idx_t i = 0; i < n; i++) {
+			const twodigit_t product = qhat * vn[i];
+			const twodigit_t subtrahend = (product & DIGIT_MASK) + borrow;
+			const twodigit_t current = un[i + pos];
+			if (current >= subtrahend) {
+				un[i + pos] = static_cast<digit_t>(current - subtrahend);
+				borrow = product >> Bignum::DIGIT_BITS;
+			} else {
+				// the subtrahend is below 2 * BASE, so we need to borrow one or two units from the next digit
+				const twodigit_t deficit = subtrahend - current;
+				const twodigit_t units = (deficit + BASE - 1) / BASE;
+				un[i + pos] = static_cast<digit_t>(current + units * BASE - subtrahend);
+				borrow = (product >> Bignum::DIGIT_BITS) + units;
+			}
+		}
+		const twodigit_t top = un[pos + n];
+		const bool went_negative = top < borrow;
+		un[pos + n] = static_cast<digit_t>(went_negative ? top + BASE - borrow : top - borrow);
+		quotient[pos] = static_cast<digit_t>(qhat);
+		if (went_negative) {
+			// D6: the estimate was one too large, add the divisor back
+			quotient[pos]--;
+			twodigit_t carry = 0;
+			for (idx_t i = 0; i < n; i++) {
+				const twodigit_t sum = static_cast<twodigit_t>(un[i + pos]) + vn[i] + carry;
+				un[i + pos] = static_cast<digit_t>(sum);
+				carry = sum >> Bignum::DIGIT_BITS;
+			}
+			un[pos + n] = static_cast<digit_t>(un[pos + n] + carry);
+		}
+	}
+	TrimMagnitude(quotient);
+	if (!want_remainder) {
+		remainder.clear();
+		return;
+	}
+
+	// D8: denormalize the remainder
+	remainder.assign(n, 0);
+	if (shift > 0) {
+		for (idx_t i = 0; i < n; i++) {
+			remainder[i] = (un[i] >> shift) | (un[i + 1] << (Bignum::DIGIT_BITS - shift));
+		}
+	} else {
+		std::copy(un.begin(), un.begin() + static_cast<int64_t>(n), remainder.begin());
+	}
+	TrimMagnitude(remainder);
+}
+
+} // namespace
+
+string_t BignumIntermediate::Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
+                                      const BignumIntermediate &rhs) {
+	const bool is_result_negative = lhs.is_negative != rhs.is_negative;
+	auto &lhs_digits = state.lhs_digits;
+	auto &rhs_digits = state.rhs_digits;
+	auto &product = state.result_digits;
+	GetMagnitude(lhs, lhs_digits);
+	GetMagnitude(rhs, rhs_digits);
+	if (lhs_digits.empty() || rhs_digits.empty()) {
+		product.clear();
+		return WriteMagnitude(heap, product, false);
+	}
+	// the product has a + b - 1 or a + b bits: bail out early when even the lower bound overflows
+	const idx_t min_result_bytes = BitsToBytes(MagnitudeBitCount(lhs_digits) + MagnitudeBitCount(rhs_digits) - 1);
+	if (min_result_bytes > Bignum::MAX_DATA_SIZE) {
+		throw OutOfRangeException(ProduceOverUnderFlowError(is_result_negative, 0, min_result_bytes));
+	}
+	MultiplyMagnitudes(state, lhs_digits, rhs_digits, product);
+	return WriteMagnitude(heap, product, is_result_negative);
+}
+
+bool BignumIntermediate::TryDivMod(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
+                                   const BignumIntermediate &rhs, bool want_remainder, string_t &result) {
+	auto &lhs_digits = state.lhs_digits;
+	auto &rhs_digits = state.rhs_digits;
+	auto &quotient = state.result_digits;
+	auto &remainder = state.remainder_digits;
+	GetMagnitude(lhs, lhs_digits);
+	GetMagnitude(rhs, rhs_digits);
+	if (rhs_digits.empty()) {
+		return false;
+	}
+	DivModMagnitudes(state, lhs_digits, rhs_digits, quotient, remainder, want_remainder);
+	if (want_remainder) {
+		// the remainder takes the sign of the dividend
+		result = WriteMagnitude(heap, remainder, lhs.is_negative);
+	} else {
+		// truncating division: the quotient is negative when the signs differ
+		result = WriteMagnitude(heap, quotient, lhs.is_negative != rhs.is_negative);
+	}
+	return true;
 }
 
 } // namespace duckdb

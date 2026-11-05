@@ -1,0 +1,193 @@
+# name: test/sql/collate/collate_distinct_aggregate.test
+# description: Test collations in the arguments of DISTINCT aggregates
+# group: [collate]
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+CREATE TABLE tbl(g INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO tbl VALUES (1, 'a'), (1, 'A'), (1, 'Z'), (2, 'b'), (2, 'B');
+
+# the collation decides which argument values are duplicates of each other
+query I
+SELECT count(DISTINCT s COLLATE NOCASE) FROM tbl
+----
+3
+
+query I
+SELECT count(DISTINCT s) FROM tbl
+----
+5
+
+# DISTINCT LIST removes equivalent spellings, while raw LIST keeps both.
+query III
+SELECT len(list(DISTINCT s COLLATE NOCASE)), len(list(DISTINCT s)),
+       len(list(DISTINCT s COLLATE NOCASE))
+FROM tbl;
+----
+3	5	3
+
+# ROW collations must distinguish both the binder's aggregate map and shared deduplication branches.
+query II
+SELECT count(DISTINCT row(s)), len(list(DISTINCT row(s COLLATE NOCASE)))
+FROM tbl;
+----
+5	3
+
+query III
+SELECT len(list(DISTINCT row(s COLLATE NOCASE))), len(list(DISTINCT row(s))),
+       len(list(DISTINCT row(s COLLATE NOCASE)))
+FROM tbl;
+----
+3	5	3
+
+# Check the reverse binding order and a STRUCT containing a LIST.
+query II
+SELECT len(list(DISTINCT row(s))), len(list(DISTINCT row(s COLLATE NOCASE)))
+FROM tbl;
+----
+5	3
+
+query II
+SELECT len(list(DISTINCT {'values': [s COLLATE NOCASE]})),
+       len(list(DISTINCT {'values': [s]}))
+FROM tbl;
+----
+3	5
+
+# VARIANT comparison keys also change the physical type, while LIST keeps VARIANT representatives.
+query IIT
+SELECT count(DISTINCT v), len(list(DISTINCT v)), typeof(list(DISTINCT v))
+FROM (VALUES (1::INTEGER::VARIANT), (1::BIGINT::VARIANT)) t(v);
+----
+1	1	VARIANT[]
+
+# FILTER preserves the group even when no row qualifies, and excludes NULL filters.
+query III
+SELECT g, len(list(DISTINCT s COLLATE NOCASE) FILTER (WHERE keep)),
+       len(list(DISTINCT s) FILTER (WHERE keep))
+FROM (VALUES (1, 'a', true), (1, 'A', true), (1, 'z', false),
+             (2, 'b', false), (2, 'B', NULL)) t(g, s, keep)
+GROUP BY g ORDER BY g;
+----
+1	1	2
+2	NULL	NULL
+
+# A NULL row is distinct from a non-NULL row containing NULL.
+query III
+SELECT count(DISTINCT v), len(list(DISTINCT v)), len(list(DISTINCT row(v)))
+FROM (VALUES (row('a' COLLATE NOCASE)), (row('A' COLLATE NOCASE)),
+             (row(NULL)), (NULL)) t(v);
+----
+2	3	3
+
+# All three paths receive no rows.
+query III
+SELECT count(DISTINCT s COLLATE NOCASE), len(list(DISTINCT s COLLATE NOCASE)),
+       len(list(DISTINCT row(s COLLATE NOCASE)))
+FROM tbl WHERE false;
+----
+0	NULL	NULL
+
+# The shared input evaluates a volatile argument once per row, before key/value expressions are copied.
+statement ok
+CREATE SEQUENCE collation_sequence;
+
+query I
+SELECT len(list(DISTINCT nextval('collation_sequence')::VARCHAR COLLATE NOCASE))
+FROM range(3);
+----
+3
+
+query I
+SELECT currval('collation_sequence');
+----
+3
+
+# Prepared plans retain both nested collation policies across executions.
+statement ok
+PREPARE distinct_rows AS
+SELECT len(list(DISTINCT row(s COLLATE NOCASE))), len(list(DISTINCT row(s)))
+FROM (VALUES ($1::VARCHAR), ($2::VARCHAR)) t(s);
+
+query II
+EXECUTE distinct_rows('a', 'A');
+----
+1	2
+
+query II
+EXECUTE distinct_rows('a', 'b');
+----
+2	2
+
+# ... including per group
+query II
+SELECT g, count(DISTINCT s COLLATE NOCASE) FROM tbl GROUP BY g ORDER BY g
+----
+1	2
+2	1
+
+# a collation only defines equality: the aggregate still sees the original values, not the collation keys
+query I
+SELECT list_sort(list(DISTINCT s COLLATE NOCASE)) FROM (VALUES ('x'), ('Z')) t(s)
+----
+[x, Z]
+
+query I
+SELECT string_agg(DISTINCT s COLLATE NOCASE, ',' ORDER BY s COLLATE NOCASE) FROM (VALUES ('x'), ('Z')) t(s)
+----
+x,Z
+
+# aggregates that disagree on the collation of their argument do not share a deduplication
+query II
+SELECT count(DISTINCT s COLLATE NOCASE), count(DISTINCT s) FROM (VALUES ('a'), ('A'), ('Z')) t(s)
+----
+2	3
+
+# FILTER is applied before the deduplication
+query I
+SELECT count(DISTINCT s COLLATE NOCASE) FILTER (WHERE g = 1) FROM tbl
+----
+2
+
+# NULL values are not affected by the collation
+query I
+SELECT count(DISTINCT s COLLATE NOCASE) FROM (VALUES ('a'), ('A'), (NULL)) t(s)
+----
+1
+
+query I
+SELECT list_sort(list(DISTINCT s COLLATE NOCASE)) FROM (VALUES ('x'), (NULL), ('Z')) t(s)
+----
+[x, Z, NULL]
+
+# the default collation applies to arguments without an explicit COLLATE
+statement ok
+SET default_collation='nocase'
+
+query III
+SELECT count(DISTINCT s), len(list(DISTINCT s)), len(list(DISTINCT lower(s)))
+FROM tbl;
+----
+3	3	3
+
+query I
+SELECT count(DISTINCT s) FROM tbl
+----
+3
+
+query I
+SELECT list_sort(list(DISTINCT s)) FROM (VALUES ('x'), ('Z')) t(s)
+----
+[x, Z]
+
+statement ok
+SET default_collation='binary'
+
+query I
+SELECT count(DISTINCT s) FROM tbl
+----
+5

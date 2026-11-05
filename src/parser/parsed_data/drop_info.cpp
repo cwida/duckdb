@@ -14,6 +14,14 @@ DropInfo::DropInfo(const DropInfo &info)
       qualified_name(info.qualified_name) {
 }
 
+DatabaseModificationType DropInfo::GetModifications() const {
+	if (type == CatalogType::TABLE_ENTRY || type == CatalogType::INDEX_ENTRY || cascade) {
+		return DatabaseModificationType::DROP_CATALOG_ENTRY;
+	}
+	// a schema is only dropped without CASCADE when it is empty
+	return DatabaseModificationType();
+}
+
 unique_ptr<DropInfo> DropInfo::Copy() const {
 	return make_uniq<DropInfo>(*this);
 }

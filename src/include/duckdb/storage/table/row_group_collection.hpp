@@ -37,6 +37,7 @@ struct ColumnSegmentInfo;
 class MetadataManager;
 struct VacuumState;
 struct CollectionCheckpointState;
+
 struct PersistentCollectionData;
 class CheckpointTask;
 class TableIOManager;
@@ -66,6 +67,24 @@ struct ColumnSegmentInfoScanState {
 	shared_ptr<RowGroupSegmentTree> row_groups;
 	optional_ptr<SegmentNode<RowGroup>> current_row_group;
 	ColumnSegmentInfoScanOptions options;
+};
+
+//! The row groups that existed when the checkpoint started
+struct CollectionCheckpointSnapshot {
+	shared_ptr<RowGroupSegmentTree> row_groups;
+	idx_t segment_count = 0;
+	//! The row group count recorded by the first append that saw this checkpoint, if any
+	optional_idx row_group_count;
+};
+
+//! The rewritten row groups, installed by InstallCheckpoint
+struct CollectionCheckpointResult {
+	//! Null if the table was unchanged
+	shared_ptr<RowGroupSegmentTree> row_groups;
+	idx_t total_rows = 0;
+	idx_t next_row_id = 0;
+	//! The live row groups past this count were appended while the checkpoint ran
+	idx_t checkpointed_row_group_count = 0;
 };
 
 class RowGroupCollection {
@@ -130,6 +149,8 @@ public:
 	void FinalizeAppend(TransactionData transaction, TableAppendState &state);
 	void CommitAppend(transaction_t commit_id, idx_t row_start, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
+	//! Reverts an append that failed before it was finalized
+	void RevertFailedAppend(TableAppendState &state);
 	void CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count);
 
 	void MergeStorage(RowGroupCollection &data, optional_ptr<DataTable> table,
@@ -139,14 +160,19 @@ public:
 	void RemoveFromIndexes(const QueryContext &context, TableIndexList &indexes, Vector &row_identifiers, idx_t count,
 	                       IndexRemovalType removal_type, optional_idx active_checkpoint = optional_idx());
 
-	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids, idx_t count);
+	//! Delete the given rows - optionally collects the ids of the rows that were deleted (excluding duplicates)
+	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids, idx_t count,
+	             optional_ptr<DeletedRowIds> deleted_ids = nullptr);
 	void Update(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids,
 	            const vector<PhysicalIndex> &column_ids, DataChunk &updates);
 	void UpdateColumn(TransactionData transaction, DuckTableEntry &table_entry, Vector &row_ids,
 	                  const vector<column_t> &column_path, DataChunk &updates);
 
-	//! Returns whether global_stats contains newly checkpointed statistics.
-	bool Checkpoint(TableDataWriter &writer, TableStatistics &global_stats);
+	CollectionCheckpointSnapshot SnapshotForCheckpoint(TableDataWriter &writer) const;
+	CollectionCheckpointResult Checkpoint(TableDataWriter &writer, TableStatistics &global_stats,
+	                                      const CollectionCheckpointSnapshot &snapshot);
+	//! Takes over the row groups appended meanwhile. Runs under the table's append lock
+	void InstallCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats);
 
 	//! Decides how vacuum handles this table's indexes.
 	VacuumIndexStrategy
@@ -190,7 +216,6 @@ public:
 	void VerifyNewConstraint(const QueryContext &context, DuckTransaction &transaction, DataTable &parent,
 	                         const BoundConstraint &constraint);
 
-	void SetStats(TableStatistics &new_stats);
 	void CopyStats(TableStatistics &stats);
 	unique_ptr<BaseStatistics> CopyStats(const StorageIndex &column_id);
 	unique_ptr<BlockingSample> GetSample();
@@ -222,6 +247,11 @@ public:
 
 	//! Get a ptr to the raw segment tree. This can be useful for some extensions to have directly exposed.
 	shared_ptr<RowGroupSegmentTree> GetRowGroups() const;
+
+	//! The metadata blocks of the table data of this collection, as read from disk or written by the last checkpoint
+	const vector<MetaBlockPointer> &GetMetadataPointers() const {
+		return metadata_pointers;
+	}
 
 private:
 	optional_ptr<SegmentNode<RowGroup>> NextUpdateRowGroup(RowGroupSegmentTree &row_groups, row_t *ids, idx_t &pos,

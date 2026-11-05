@@ -2,6 +2,20 @@
 # description: Run query 11 from the TPC-H benchmark (SF10)
 # group: [sf10]
 
-template benchmark/tpch/sf10/tpch_sf10.benchmark.in
-QUERY_NUMBER=11
-QUERY_NUMBER_PADDED=11
+# Q11 is the only TPC-H query whose substitution parameter depends on the scale factor (FRACTION = 0.0001 / SF),
+# so it runs the SF 10 query text instead of the shared template. The result has ties on the ORDER BY key, so the
+# answer is verified in a deterministic order.
+
+argument sf 10
+
+include benchmark/tpch/tpch_load.benchmark.in
+
+name Q11
+group tpch
+subgroup sf${sf}
+
+run benchmark/tpch/sf10/q11.sql
+
+result_query extension/tpch/dbgen/answers/sf10/q11.csv
+SELECT ps_partkey, value FROM __answer ORDER BY value DESC, ps_partkey
+----

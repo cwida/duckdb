@@ -2,7 +2,7 @@
 # description: Storing lists of empty tuples
 # group: [struct]
 
-load __TEST_DIR__/empty_tuple_storage.db
+load {TEST_DIR}/empty_tuple_storage.db
 
 statement ok
 CREATE TABLE t AS SELECT [row()] l, CASE WHEN range % 2 = 0 THEN [row(), row()] END l2 FROM range(3000)

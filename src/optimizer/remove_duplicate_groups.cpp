@@ -246,9 +246,9 @@ void RemoveDuplicateGroups::VisitAggregate(LogicalAggregate &aggr) {
 		return;
 	}
 
-	// This optimizer should run before statistics propagation, so this should be empty
-	// If it runs after, then group_stats should be updated too
-	D_ASSERT(aggr.group_stats.empty());
+	// Earlier statistics (e.g. from the filter simplification) no longer match the groups - the statistics
+	// propagation that runs after this optimizer computes them again
+	aggr.group_stats.clear();
 
 	const idx_t num_original_groups = aggr.groups.size();
 	const idx_t num_aggregate_outputs = aggr.expressions.size();

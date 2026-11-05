@@ -95,6 +95,8 @@ ScalarFunction ArrayValueFun::GetFunction() {
 	fun.SetResolveTypesCallback(ArrayValueResolveTypes);
 	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// casting the arguments to the common child type can fail, e.g. for arrays of different sizes
+	fun.SetFallible();
 	return fun;
 }
 

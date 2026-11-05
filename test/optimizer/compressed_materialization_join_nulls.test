@@ -1,0 +1,62 @@
+# name: test/optimizer/compressed_materialization_join_nulls.test
+# description: Compressing the keys of a join keeps the NULL statistics of each side
+# group: [optimizer]
+
+statement ok
+CREATE TABLE no_nulls AS SELECT * FROM (VALUES (4), (5), (6)) t(i);
+
+statement ok
+CREATE TABLE with_nulls AS SELECT * FROM (VALUES (4), (5), (NULL)) t(i);
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+EXPLAIN SELECT i IS NULL FROM (SELECT * FROM no_nulls ANTI JOIN with_nulls ON no_nulls.i IS NOT DISTINCT FROM with_nulls.i) t(i);
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+query II
+SELECT i, i IS NULL FROM (SELECT * FROM no_nulls ANTI JOIN with_nulls ON no_nulls.i IS NOT DISTINCT FROM with_nulls.i) t(i);
+----
+6	false
+
+query II rowsort
+SELECT i, i IS NULL FROM (SELECT * FROM with_nulls SEMI JOIN (SELECT * FROM no_nulls UNION ALL SELECT NULL) r ON with_nulls.i IS NOT DISTINCT FROM r.i) t(i);
+----
+4	false
+5	false
+NULL	true
+
+# also when the join is large enough to be compressed in release builds, for either side
+statement ok
+CREATE TABLE big_no_nulls AS SELECT range AS i FROM range(1100000);
+
+statement ok
+CREATE TABLE big_with_nulls AS SELECT CASE WHEN range = 0 THEN NULL ELSE range + 100 END AS i FROM range(1100000);
+
+query II
+EXPLAIN SELECT i IS NULL FROM (SELECT * FROM big_no_nulls ANTI JOIN big_with_nulls ON big_no_nulls.i IS NOT DISTINCT FROM big_with_nulls.i) t(i);
+----
+logical_opt	<!REGEX>:.*IS NULL.*
+
+query II
+EXPLAIN SELECT i IS NULL FROM (SELECT * FROM big_with_nulls ANTI JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i) t(i);
+----
+logical_opt	<REGEX>:.*IS NULL.*
+
+query II
+SELECT count(*), count(*) FILTER (i IS NULL) FROM (SELECT * FROM big_with_nulls ANTI JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i) t(i);
+----
+101	1
+
+# the join keys are compressed, and a right side without NULLs keeps that too
+query II
+EXPLAIN SELECT big_no_nulls.i IS NULL, big_with_nulls.i IS NULL FROM big_with_nulls JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i;
+----
+logical_opt	<REGEX>:.*Expressions: false, false.*Join Type: INNER.*AS INTEGER.*AS INTEGER.*
+
+query II
+SELECT count(*) FILTER (big_no_nulls.i IS NULL), count(*) FILTER (big_with_nulls.i IS NULL) FROM big_with_nulls JOIN big_no_nulls ON big_with_nulls.i IS NOT DISTINCT FROM big_no_nulls.i;
+----
+0	0

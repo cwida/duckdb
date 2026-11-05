@@ -15,12 +15,10 @@ static bool EnumEnumCast(Vector &source, Vector &result, idx_t count, CastParame
 	UnaryExecutor::Execute<SRC_TYPE, RES_TYPE>(source, result, count, [&](SRC_TYPE value) -> optional<RES_TYPE> {
 		auto key = EnumType::GetPos(res_enum_type, dictionary_data[value]);
 		if (key == -1) {
-			if (!parameters.error_message) {
-				HandleCastError::AssignError(
-				    CastExceptionText<string_t>(dictionary_data[value], source.GetType(), res_enum_type),
-				    vector_cast_data.parameters);
-				vector_cast_data.all_converted = false;
-			}
+			HandleCastError::AssignError(
+			    CastExceptionText<string_t>(dictionary_data[value], source.GetType(), res_enum_type),
+			    vector_cast_data.parameters);
+			vector_cast_data.all_converted = false;
 			return nullopt;
 		} else {
 			return UnsafeNumericCast<RES_TYPE>(key);

@@ -1,0 +1,22 @@
+# name: benchmark/micro/match_recognize/match_recognize_sessionize.benchmark
+# description: Split a per visitor event stream into sessions on a gap between timestamps
+# group: [match_recognize]
+
+name MatchRecognize Sessionize
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE hits AS
+    SELECT (i // 1000)::INTEGER AS visitor, i::INTEGER AS seq,
+           (i * 10 + (i // 50) * 1000)::BIGINT AS ts
+    FROM range(0, 10000000) t(i);
+
+run
+SELECT count(*), max(len) FROM hits MATCH_RECOGNIZE(
+    PARTITION BY visitor ORDER BY seq
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B*)
+    DEFINE B AS B.ts - PREV(B.ts) <= 100
+);

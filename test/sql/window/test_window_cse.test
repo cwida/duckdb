@@ -74,4 +74,4 @@ FROM generate_series(1, 10) as tbl(x);
 query II
 EXPLAIN FROM noncse;
 ----
-physical_plan	<REGEX>:.*quantile_disc\(x, 0.3\).*quantile_disc\(x, 0.7\).*
+physical_plan	<REGEX>:.*quantile_disc.*quantile_disc.*

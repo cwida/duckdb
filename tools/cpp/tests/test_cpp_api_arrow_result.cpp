@@ -292,10 +292,11 @@ TEST_CASE("Stable C++API: ArrowResult of an expanding statement defers its schem
 	// and a failed GetSchema leaves `out` released.
 	OwnedSchema early;
 	early.schema.release = SentinelSchemaRelease;
-	REQUIRE_THROWS_MATCHES(result.GetSchema(early.schema), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+	REQUIRE_THROWS_MATCHES(result.GetSchema(early.schema), Exception,
+	                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED));
 	REQUIRE(early.schema.release == nullptr);
-	REQUIRE_THROWS_MATCHES(result.GetResultType(), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
-	REQUIRE_THROWS_MATCHES(result.GetStatementType(), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+	REQUIRE_THROWS_MATCHES(result.GetResultType(), Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED));
+	REQUIRE(result.GetStatementType() == StatementType::MULTI);
 
 	ArrowBatches batches;
 	FetchAll(result, batches);

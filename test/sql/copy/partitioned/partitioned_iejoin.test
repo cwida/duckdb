@@ -1,0 +1,76 @@
+# name: test/sql/copy/partitioned/partitioned_iejoin.test
+# description: Issue #27559: partitioned COPY of an IE join result hangs forever
+# group: [partitioned]
+
+require parquet
+
+statement ok
+PRAGMA threads=4;
+
+statement ok
+SET memory_limit='500MB';
+
+# Flush early so that the partitioned sink waits for every producer while the join is still running
+statement ok
+SET partitioned_write_flush_threshold=4096;
+
+statement ok
+CREATE TABLE d AS
+SELECT (DATE '1998-01-01' + INTERVAL (i) DAY)::DATE AS d_date, i AS d_sk
+FROM range(1827) t(i);
+
+statement ok
+CREATE TABLE r AS
+SELECT (DATE '1998-01-08' + INTERVAL ((i * 7919) % 1996) DAY)::DATE AS r_date, i AS r_id
+FROM range(2000) t(i);
+
+query I
+SELECT count(*) FROM d JOIN r ON d.d_date >= r.r_date AND d.d_date + INTERVAL 90 DAY >= r.r_date;
+----
+1658949
+
+# inner join: only the INNER stage of the source produces rows
+statement ok
+COPY (
+	SELECT *, hash(d_sk, r_id) % 2 AS part
+	FROM d JOIN r ON d.d_date >= r.r_date AND d.d_date + INTERVAL 90 DAY >= r.r_date
+) TO '{TEST_DIR}/partitioned_iejoin' (FORMAT PARQUET, PARTITION_BY (part));
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/partitioned_iejoin/**/*.parquet');
+----
+1658949
+
+# full outer join: the OUTER stage can only start once every INNER task has finished
+query I
+SELECT count(*) FROM d FULL OUTER JOIN r ON d.d_date >= r.r_date AND d.d_date + INTERVAL 90 DAY >= r.r_date;
+----
+1659134
+
+statement ok
+COPY (
+	SELECT *, hash(d_sk, r_id) % 2 AS part
+	FROM d FULL OUTER JOIN r ON d.d_date >= r.r_date AND d.d_date + INTERVAL 90 DAY >= r.r_date
+) TO '{TEST_DIR}/partitioned_iejoin_outer' (FORMAT PARQUET, PARTITION_BY (part));
+
+query III
+SELECT count(*), count(d_sk), count(r_id) FROM read_parquet('{TEST_DIR}/partitioned_iejoin_outer/**/*.parquet');
+----
+1659134	1658956	1659127
+
+# anti join: all rows come from the ANTI stage after the INNER stage
+query I
+SELECT count(*) FROM d ANTI JOIN r ON d.d_date >= r.r_date AND d.d_date + INTERVAL 90 DAY >= r.r_date;
+----
+7
+
+statement ok
+COPY (
+	SELECT *, d_sk % 2 AS part
+	FROM d ANTI JOIN r ON d.d_date >= r.r_date AND d.d_date + INTERVAL 90 DAY >= r.r_date
+) TO '{TEST_DIR}/partitioned_iejoin_anti' (FORMAT PARQUET, PARTITION_BY (part));
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/partitioned_iejoin_anti/**/*.parquet');
+----
+7

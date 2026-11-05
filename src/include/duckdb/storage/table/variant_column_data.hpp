@@ -34,7 +34,8 @@ public:
 		return sub_columns.size() == 2;
 	}
 
-	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) override;
+	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                        idx_t end_row) override;
 	void InitializeScan(ColumnScanState &state) override;
 	void InitializeScanWithOffset(ColumnScanState &state, idx_t row_idx) override;
 
@@ -48,7 +49,6 @@ public:
 	void Append(ColumnAppendState &state, const Vector &vector, idx_t count) override;
 	void FinalizeAppend(ColumnDataFinalizeAppendState &finalize_state, ColumnAppendState &state) override;
 	void RevertAppend(row_t new_count) override;
-	idx_t Fetch(ColumnScanState &state, row_t row_id, Vector &result) override;
 	void FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
 	               const idx_t *offsets, const SelectionVector &sel, idx_t count, Vector &result,
 	               idx_t result_offset) override;

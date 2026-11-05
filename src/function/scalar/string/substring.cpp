@@ -115,6 +115,16 @@ string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_
 
 	AssertInSupportedRange(input_size, offset, length);
 
+	if (offset > 0) {
+		// the result only depends on the first offset-1+max(length,0) code points; if those bytes are
+		// ASCII, code points and bytes coincide and we can slice directly
+		const auto needed =
+		    MinValue<int64_t>(UnsafeNumericCast<int64_t>(input_size), offset - 1 + MaxValue<int64_t>(length, 0));
+		if (IsAscii(input_data, UnsafeNumericCast<idx_t>(needed))) {
+			return SubstringASCII(result, input, offset, length);
+		}
+	}
+
 	if (length == 0) {
 		return SubstringEmptyString(result);
 	}
@@ -200,18 +210,17 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 		return SubstringEmptyString(result);
 	}
 
-	// now check if all the characters between 0 and end are ascii characters
-	// note that we scan one further to check for a potential combining diacritics (e.g. i + diacritic is ï)
-	bool is_ascii = true;
-	idx_t ascii_end = MinValue<idx_t>(UnsafeNumericCast<idx_t>(end + 1), input_size);
-	for (idx_t i = 0; i < ascii_end; i++) {
-		if (input_data[i] & 0x80) {
-			// found a non-ascii character: eek
-			is_ascii = false;
-			break;
-		}
+	// now check if the characters that determine the window are ascii characters
+	idx_t ascii_start = 0;
+	idx_t ascii_end = input_size;
+	if (offset < 0) {
+		// counted from the end, check from one before the window (a prepended character, e.g. U+0600) to the end
+		ascii_start = UnsafeNumericCast<idx_t>(MaxValue<int64_t>(start - 1, 0));
+	} else {
+		// counted from the start, check up to one after the window (a combining diacritic, e.g. i + diacritic is ï)
+		ascii_end = MinValue<idx_t>(UnsafeNumericCast<idx_t>(end + 1), input_size);
 	}
-	if (is_ascii) {
+	if (IsAscii(input_data + ascii_start, ascii_end - ascii_start)) {
 		// all characters are ascii, we can just slice the substring
 		return SubstringSlice(result, input_data, start, end - start);
 	}

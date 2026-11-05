@@ -1,0 +1,103 @@
+# name: test/sql/constraints/deferred/test_deferred_unique_pk.test
+# description: Deferred unique and primary key constraints validate at commit
+# group: [deferred]
+
+statement ok
+CREATE TABLE t(i INTEGER PRIMARY KEY DEFERRED, j INTEGER UNIQUE DEFERRED);
+
+statement error
+INSERT INTO t VALUES (NULL, 1);
+----
+NOT NULL constraint failed
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO t VALUES (1, 10), (1, 20);
+
+query I
+SELECT count(*) FROM t WHERE i = 1;
+----
+2
+
+statement error
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM t;
+----
+0
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO t VALUES (3, 20);
+
+statement error
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM t;
+----
+2
+
+statement error
+INSERT INTO t VALUES (3, 30), (3, 40);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM t;
+----
+2
+
+statement ok con1
+BEGIN TRANSACTION;
+
+statement ok con2
+BEGIN TRANSACTION;
+
+statement ok con1
+INSERT INTO t VALUES (4, 40);
+
+statement ok con2
+INSERT INTO t VALUES (4, 50);
+
+statement ok con1
+COMMIT;
+
+statement error con2
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM t WHERE i = 4;
+----
+1
+
+statement ok
+CREATE TABLE immediate(i INTEGER UNIQUE IMMEDIATE);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO immediate VALUES (1);
+
+statement error
+INSERT INTO immediate VALUES (1);
+----
+<REGEX>:Constraint Error.*(D|d)uplicate key.*
+
+statement ok
+ROLLBACK;

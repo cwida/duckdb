@@ -118,11 +118,7 @@ BoundExpressionSQLExportState::PreserveCollation(const LogicalType &type, BoundE
 			result.GetValue() = make_uniq<CollateExpression>(std::move(collation), std::move(result.GetValue()));
 		}
 	} else if (BoundExpressionSQLExportState::HasNestedCollation(type)) {
-		auto issue = BoundExpressionSQLExportState::UnsupportedFeature(
-		    path, "nested_result_collation", "Nested result collations require a typed SQL representation");
-		issue.facts.emplace_back("logical_type", Value(type.ToString()));
-		issue.facts.emplace_back("varchar_collations", Value(SQLExportHelpers::TypeCollationSignature(type)));
-		return BoundExpressionSQLExportResult::Failure({std::move(issue)});
+		return CastToConstructedType(type, std::move(result.GetValue()), path);
 	}
 	return result;
 }
@@ -205,6 +201,7 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportInternal(con
 	case ExpressionClass::POSITIONAL_REFERENCE:
 	case ExpressionClass::BETWEEN:
 	case ExpressionClass::LAMBDA_REF:
+	case ExpressionClass::PATTERN:
 	case ExpressionClass::TYPE:
 		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::InternalExpressionInvariant(
 		    path, expression, "Expression export requires a final bound class")});
@@ -439,12 +436,24 @@ BoundExpressionSQLExportState::ExportComparison(const BoundFunctionExpression &e
 	D_ASSERT(!expression.BindInfo());
 	D_ASSERT(ChildrenAreConsistentWithArguments(expression.GetChildren(), expression.Function().GetArguments()));
 	D_ASSERT(expression.GetReturnType() == expression.Function().GetReturnType());
-	D_ASSERT(expression.GetChildren()[0]->GetReturnType() == expression.GetChildren()[1]->GetReturnType());
+	auto &left_type = expression.GetChildren()[0]->GetReturnType();
+	auto &right_type = expression.GetChildren()[1]->GetReturnType();
+	// the regex range filter compares VARCHAR values with BLOB bounds, as the bounds need not be valid UTF-8
+	const bool varchar_blob = (left_type.id() == LogicalTypeId::VARCHAR && right_type.id() == LogicalTypeId::BLOB) ||
+	                          (left_type.id() == LogicalTypeId::BLOB && right_type.id() == LogicalTypeId::VARCHAR);
+	D_ASSERT(left_type == right_type || varchar_blob);
 	vector<unique_ptr<ParsedExpression>> children;
 	vector<LogicalPlanVerificationIssue> issues;
 	ExportChildren(expression.GetChildren(), path, children, issues);
 	if (!issues.empty()) {
 		return BoundExpressionSQLExportResult::Failure(std::move(issues));
+	}
+	if (varchar_blob) {
+		// encode reinterprets the VARCHAR bytes as a BLOB, so the bytes are compared as before
+		auto &varchar_child = left_type.id() == LogicalTypeId::VARCHAR ? children[0] : children[1];
+		vector<unique_ptr<ParsedExpression>> arguments;
+		arguments.push_back(std::move(varchar_child));
+		varchar_child = SQLExportHelpers::SystemFunction("encode", std::move(arguments));
 	}
 	return BoundExpressionSQLExportResult::Success(make_uniq<ComparisonExpression>(
 	    expression.GetExpressionType(), std::move(children[0]), std::move(children[1])));
@@ -564,6 +573,15 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportOperator(con
 		}
 		expected_type = expression.GetReturnType();
 		break;
+	case ExpressionType::OPERATOR_HAS_ERROR:
+		D_ASSERT(expression.GetChildren().size() == 1 && expression.GetChildren()[0] &&
+		         expression.GetReturnType() == LogicalType::BOOLEAN);
+		if (expression.GetChildren()[0]->IsVolatile()) {
+			return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFeature(
+			    path, "has_error_volatile_child", "HAS_ERROR cannot be rebound around a volatile expression")});
+		}
+		expected_type = expression.GetChildren()[0]->GetReturnType();
+		break;
 	case ExpressionType::OPERATOR_UNPACK:
 	case ExpressionType::OPERATOR_NULLIF:
 	case ExpressionType::GROUPING_FUNCTION:
@@ -583,6 +601,13 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportOperator(con
 	ExportChildren(expression.GetChildren(), path, children, issues, expected_type);
 	if (!issues.empty()) {
 		return BoundExpressionSQLExportResult::Failure(std::move(issues));
+	}
+	if (expression.GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
+		// an unqualified has_error(...) resolves through the catalog, where a user function of the same
+		// name can shadow the built-in, so the export spells out the system entry
+		QualifiedName has_error_name(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("has_error"));
+		return BoundExpressionSQLExportResult::Success(
+		    make_uniq<FunctionExpression>(has_error_name, std::move(children)));
 	}
 	return BoundExpressionSQLExportResult::Success(
 	    make_uniq<OperatorExpression>(expression.GetExpressionType(), std::move(children)));

@@ -23,10 +23,21 @@ SELECT sum(b) FROM t;
 
 restart
 
+# Constant values with a pushed rowid filter exercise the validity Select callback.
+statement ok
+SET debug_force_fetch_row=false;
+
+statement error
+SELECT sum(b) FROM t WHERE rowid%2=1;
+----
+<REGEX>:.*Data Corruption Error: Corrupted validity segment: (array count|requested range) extends past the end of the segment.*
+
+restart
+
 statement ok
 SET debug_force_fetch_row=true;
 
 statement error
 SELECT sum(b) FROM t;
 ----
-Data Corruption Error: Corrupted validity segment: requested range extends past the end of the segment
+<REGEX>:.*Data Corruption Error: Corrupted validity segment: (array count|requested range) extends past the end of the segment.*

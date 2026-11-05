@@ -1,0 +1,28 @@
+# name: benchmark/micro/compression/dict_fsst/repeated_url_scan.benchmark
+# description: Scan repeated product URLs stored in an FSST-compressed dictionary
+# group: [dict_fsst]
+
+name Scan Repeated DICT_FSST URLs
+group dict_fsst
+storage persistent
+cache dict_fsst_repeated_urls_128m.db
+
+load
+CREATE TABLE page_views(url VARCHAR USING COMPRESSION DICT_FSST);
+INSERT INTO page_views
+SELECT 'https://shop.example/products/' || lpad((i % 4096)::VARCHAR, 4, '0') || '/details?locale=en'
+FROM range(128_000_000) t(i);
+CHECKPOINT;
+
+assert TII
+SELECT DISTINCT compression, persistent, segment_info LIKE 'DICT_FSST:%'
+FROM pragma_storage_info('page_views', include_segment_info=true)
+WHERE column_name='url' AND segment_type='VARCHAR';
+----
+DICT_FSST	true	true
+
+run
+SELECT sum(strlen(url)) FROM page_views;
+
+result I
+6656000000

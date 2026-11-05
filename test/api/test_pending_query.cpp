@@ -441,30 +441,19 @@ TEST_CASE("Test Submit Prepared Statements API", "[api][.]") {
 	}
 }
 
-TEST_CASE("Auto-rollback of a failed implicitly-wrapped multi-statement via the submit API", "[api]") {
-	// The preprocessor implicitly wraps some statements in a BEGIN/COMMIT, and a failure inside one
-	// must auto-rollback so the connection stays usable without a manual ROLLBACK. This has to hold
-	// on the submit API path too (used by client drivers), which previously skipped auto-rollback.
-	// The CTAS here is load-bearing: a bare PIVOT ends in a SELECT and is not wrapped.
+TEST_CASE("Auto-rollback of a failed statement that expands into several via the submit API", "[api]") {
+	// A statement that expands into several runs in one transaction, and a failure inside it must roll that back so
+	// the connection stays usable without a manual ROLLBACK, on the submit API path too (used by client drivers).
 	DuckDB db;
 	Connection con(db);
 	const char *pivot = "CREATE TEMP TABLE t AS PIVOT (SELECT 'x' AS k, 1 AS v) ON k USING first(does_not_exist)";
 
-	// Parse + expand, then drive each statement through the submit API (no auto-rollback net).
-	auto statements = con.ExtractStatements(string(pivot));
-	REQUIRE(statements.size() > 1);
-	bool saw_error = false;
-	for (auto &stmt : statements) {
-		auto handle = con.Submit(std::move(stmt));
-		if (!handle->HasError()) {
-			handle->Complete();
-		}
-		if (handle->HasError()) {
-			saw_error = true;
-			break;
-		}
+	auto handle = con.Submit(string(pivot));
+	if (!handle->HasError()) {
+		handle->Complete();
 	}
-	REQUIRE(saw_error);
+	REQUIRE(handle->HasError());
+	handle.reset();
 
 	// The connection must be usable again WITHOUT a manual ROLLBACK.
 	auto result = con.Query("SELECT 42");

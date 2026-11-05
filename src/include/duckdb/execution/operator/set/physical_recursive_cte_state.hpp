@@ -9,12 +9,13 @@
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
 #include "duckdb/parallel/pipeline_schedule.hpp"
 
+#include <chrono>
+
 namespace duckdb {
 
+class Event;
+class InterruptState;
 class Logger;
-class RecursiveCTELocalState;
-struct RecursiveCTEDistinctPartition;
-struct RecursiveCTEKeyDeltaState;
 
 struct RecursiveExecutorPool {
 	mutex lock;
@@ -25,8 +26,47 @@ enum class RecursiveCTESourcePhase : uint8_t {
 	INITIAL,
 	SCANNING_UNION,
 	RECURSING_KEY,
+	//! A recursive epoch is in progress; its per-iteration setup already ran and must not rerun
+	EXECUTING_RECURSION,
 	DRAINING_FINAL_KEY_STATE,
 	FINISHED
+};
+
+//! Progress of an inline stage within a suspended recursive epoch
+enum class RecursiveCTEStageStep : uint8_t { START, PIPELINE_RUNNING, EVENT_WAIT, FINISH_FINALIZE, FINISH_EVENT_WAIT };
+
+//! Progress of one recursive epoch across BLOCKED suspensions of the operator's source.
+//! ExecuteRecursivePipelines runs its prologue exactly once per epoch, the drive advances this
+//! state and suspends by returning BLOCKED up the stack, and the epilogue resets it.
+struct RecursiveCTEEpochProgress {
+	RecursiveCTEEpochProgress();
+	~RecursiveCTEEpochProgress();
+
+	//! Whether an epoch is in progress (the prologue has run)
+	bool active = false;
+	//! Whether this epoch runs the cached inline dependency plan or the event schedule
+	bool inline_execution = false;
+	//! Position in the inline ready-stage list and progress within the current stage
+	idx_t ready_idx = 0;
+	RecursiveCTEStageStep step = RecursiveCTEStageStep::START;
+	//! Operator-finalize resume point of a suspended inline finish stage
+	idx_t finish_operator_idx = 0;
+	//! Stage event of a suspended inline wait and the wake event that re-enters the source
+	shared_ptr<Event> stage_event;
+	shared_ptr<Event> wake_event;
+	//! Live events of an event-schedule epoch
+	vector<shared_ptr<Event>> events;
+	//! Prologue decisions and metric snapshots consumed by the epilogue
+	idx_t max_worker_count = 1;
+	idx_t scheduler_input_rows = 0;
+	idx_t frontier_rows = 0;
+	idx_t frontier_chunks = 0;
+	idx_t frontier_storage_bytes = 0;
+	idx_t frontier_allocation_bytes = 0;
+	idx_t epoch_task_start = 0;
+	std::chrono::steady_clock::time_point epoch_start;
+
+	void Reset();
 };
 
 enum class RecursiveCTEPipelineMetricType : uint8_t { RECURSIVE, INVARIANT_BUILD, INVARIANT_CTE_MATERIALIZATION };
@@ -79,9 +119,25 @@ struct RecursiveCTEScheduleStage {
 	idx_t dependency_count;
 };
 
+struct RecursiveCTESchedulePipeline {
+	RecursiveCTESchedulePipeline(Pipeline &pipeline_p, bool is_invariant_p)
+	    : pipeline(pipeline_p), is_invariant(is_invariant_p) {
+	}
+
+	reference<Pipeline> pipeline;
+	//! Whether the pipeline's meta-pipeline is invariant; invariant producers keep the configured thread count
+	bool is_invariant;
+};
+
 struct RecursiveCTEPipelineSchedulePlan {
 	vector<RecursiveCTEScheduleStage> stages;
+	//! Every pipeline of the meta-pipelines this plan schedules, in traversal order, for the per-iteration resets
+	//! and executor registration; a pipeline shared by two meta-pipelines appears once per meta-pipeline
+	vector<RecursiveCTESchedulePipeline> pipelines;
 	vector<reference<Pipeline>> initialize_on_schedule_pipelines;
+	//! Deduplicated intermediate operators of this plan's execute stages. Their global operator
+	//! state is invalidated exactly once per iteration, before any stage prepares or executes.
+	vector<reference<PhysicalOperator>> invalidate_operators;
 	idx_t execute_pipeline_count = 0;
 	idx_t cte_scan_pipeline_count = 0;
 	bool has_source_tasks = false;
@@ -281,43 +337,35 @@ private:
 	MonotonicProgress progress;
 };
 
+//! The part of the recursion every mode shares: the operator, the scheduler and the metrics of one invocation.
+//! RecursiveCTEUnionState and RecursiveCTEKeyedState own the state of their mode and implement the sink and source
+//! sides of the operator on top of it.
 class RecursiveCTEState : public GlobalSinkState {
 public:
-	explicit RecursiveCTEState(ClientContext &context, const PhysicalRecursiveCTE &op);
+	RecursiveCTEState(ClientContext &context, const PhysicalRecursiveCTE &op);
 	~RecursiveCTEState() override;
 
-	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, RecursiveCTEGlobalSourceState &source);
-	const ColumnDataCollection &CurrentInputTable() const;
+	//! Sink side of the operator in this mode; the local state is private to the mode's source file
+	virtual unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const = 0;
+	virtual SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) = 0;
+	virtual SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) = 0;
+	//! Source side: hands out result rows and drives the recursive iterations. May return BLOCKED
+	//! while a recursive epoch waits for blocked inner work; the interrupt state re-enters it.
+	virtual SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, RecursiveCTEGlobalSourceState &source,
+	                                 const InterruptState &interrupt_state) = 0;
+	//! Frontier the recursive member scans in the current iteration
+	virtual const ColumnDataCollection &CurrentInputTable() const = 0;
+	//! Rows and chunks of the recurring state the member can scan in the current iteration
+	virtual idx_t RecurringStateRows() const = 0;
+	virtual idx_t RecurringStateChunks() const = 0;
 	idx_t CurrentInputCount() const {
 		return CurrentInputTable().Count();
 	}
-	void InitializeSharedOutputAppend();
-	void CommitUsingKeyUpdates();
-	void PromoteDistinctState(ClientContext &context, idx_t partition_count);
+
 	void RecordSinkMetrics(idx_t wait_ns, idx_t work_ns, idx_t rows);
-	const RecursiveCTEPartialKeyIndex &GetPartialKeyIndex(const vector<idx_t> &key_indices) const;
-	void AppendOutput(DataChunk &chunk);
-	void CombineOutput(ColumnDataCollection &output);
-	void RegisterLocalPreaggregation(unique_ptr<GroupedAggregateHashTable> local_ht, idx_t candidate_rows,
-	                                 idx_t classification_work_ns, idx_t preaggregation_work_ns);
-	void SinkSerialDistinct(DataChunk &chunk, RecursiveCTELocalState &local_state);
-	void SinkDistinct(DataChunk &chunk, RecursiveCTELocalState &local_state, bool emit_rows = true,
-	                  bool record_sink_metrics = true);
-	void FinalizeStateRows(RowOperationsState &row_state, Vector &addresses, DataChunk &keys, DataChunk &aggregates,
-	                       DataChunk &result);
-	void FinalizeAggregateRows(RowOperationsState &row_state, Vector &addresses, DataChunk &aggregates, idx_t count);
-	void AssembleStateRows(DataChunk &keys, DataChunk &aggregates, DataChunk &result) const;
 
 	const PhysicalRecursiveCTE &GetOperator() const {
 		return op;
-	}
-	GroupedAggregateHashTable &GetHashTable() {
-		D_ASSERT(ht);
-		return *ht;
-	}
-	const GroupedAggregateHashTable &GetHashTable() const {
-		D_ASSERT(ht);
-		return *ht;
 	}
 	RecursiveCTEMetrics &GetMetrics() {
 		return metrics;
@@ -335,113 +383,34 @@ public:
 	const RecursiveCTESchedulerState &GetScheduler() const {
 		return scheduler;
 	}
+	RecursiveCTEEpochProgress &GetEpochProgress() {
+		return epoch_progress;
+	}
 	bool AllowsExecutorReuse() const {
 		return allow_executor_reuse;
 	}
-	bool UsesLocalUnionAllOutput() const {
-		return use_local_union_all_output;
-	}
-	void SetUseLocalUnionAllOutput(bool value) {
-		use_local_union_all_output = value;
-	}
-	bool HasDistinctPartitions() const {
-		return !distinct_partitions.empty();
-	}
 	bool HasMaterializedInvariantPipelines() const {
 		return invariant_meta_pipelines_materialized;
-	}
-	bool CanPreaggregateUsingKey() const {
-		return can_preaggregate_using_key;
 	}
 	void MarkInvariantPipelinesMaterialized() {
 		invariant_meta_pipelines_materialized = true;
 	}
 
-private:
-	template <bool COLLECT_METRICS>
-	void CommitUsingKeyUpdatesInternal();
-	template <bool COLLECT_METRICS>
-	void CommitPreaggregatedUsingKeyUpdatesInternal();
-	template <bool COLLECT_METRICS>
-	void CommitMixedUsingKeyUpdatesInternal(unique_ptr<GroupedAggregateHashTable> epoch_ht,
-	                                        idx_t preaggregated_candidate_count);
-	template <bool COLLECT_METRICS>
-	void ApplyPreaggregatedUsingKeyUpdates(GroupedAggregateHashTable &epoch_ht, idx_t &delta_work_ns);
-	template <bool COLLECT_METRICS>
-	idx_t PreaggregateUsingKeyUpdates(GroupedAggregateHashTable &epoch_ht);
-	unique_ptr<GroupedAggregateHashTable> CreateUsingKeyHashTable() const;
-	void ExtractUsingKeyKeys(DataChunk &input);
-	bool ShouldPreaggregateUsingKeyUpdates(idx_t candidate_count);
-	void SnapshotUsingKeyDelta(const Vector &group_addresses, const SelectionVector &new_groups, idx_t new_group_count,
-	                           idx_t row_count, bool allow_candidate_reuse = true);
-	void SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk &keys);
-	void SnapshotExistingUsingKeyDeltaAddresses(Vector &addresses, idx_t count, bool defer_append = false);
-	void AppendPreviousUsingKeyDeltaRows(Vector &addresses, idx_t count);
-	void ValidateDeferredUsingKeyCandidateReuse(DataChunk &candidates);
-	bool TryReuseChangedGroupCandidates(idx_t candidate_count);
-	idx_t FinalizeUsingKeyDelta(bool update_partial_indexes, bool collect_metrics);
-	unique_ptr<GroupedAggregateHashTable> ht;
-	vector<unique_ptr<RecursiveCTEPartialKeyIndex>> partial_key_indexes;
-	vector<unique_ptr<RecursiveCTEDistinctPartition>> distinct_partitions;
+protected:
+	//! Logs the invocation; the mode destructors call it while their state is still alive
+	void LogMetrics(const vector<unique_ptr<RecursiveCTEPartialKeyIndex>> &partial_key_indexes);
+
 	const PhysicalRecursiveCTE &op;
-	ExpressionExecutor executor;
-	DataChunk payload_rows;
-	Vector new_group_addresses;
-	SelectionVector new_groups;
+	ClientContext &context;
 	const bool allow_executor_reuse;
 	RecursiveCTEMetrics metrics;
 	RecursiveCTESchedulerState scheduler;
-
-	mutex intermediate_table_lock;
-	mutex ht_finalize_lock;
-	ColumnDataCollection intermediate_table;
-	ColumnDataAppendState intermediate_append_state;
-	ColumnDataAppendState working_append_state;
-	ColumnDataScanState scan_state;
-	vector<unique_ptr<GroupedAggregateHashTable>> local_preaggregates;
-	idx_t local_preaggregate_candidate_count = 0;
+	RecursiveCTEEpochProgress epoch_progress;
 	RecursiveCTESourcePhase source_phase = RecursiveCTESourcePhase::INITIAL;
-	bool output_is_working = false;
-	//! Cached chunk for distinct key extraction in the using_key Sink path
-	DataChunk distinct_rows;
-	//! Cached chunks for source-side hash table scans
-	DataChunk update_rows;
-	DataChunk source_aggregate_rows;
-	DataChunk source_distinct_rows;
-	AggregateHTScanState ht_scan_state;
-
-	bool use_local_union_all_output = true;
 	//! Whether invariant recursive meta-pipelines have already been materialized for this state
 	bool invariant_meta_pipelines_materialized = false;
 	//! Optional epoch distributions and capacity metrics, allocated only when structured logging is active
 	unique_ptr<RecursiveCTEEpochMetrics> epoch_metrics;
-
-	//! State used only by USING KEY recursive CTEs. Keep this after the regular-recursion hot state.
-	unique_ptr<RecursiveCTEKeyDeltaState> key_delta;
-	ClientContext &context;
-	vector<AggregateObject> payload_aggregate_objects;
-	unique_ptr<ExpressionExecutor> key_executor;
-	Vector preaggregation_hashes;
-	vector<unique_ptr<ExpressionExecutor>> payload_comparison_executors;
-	DataChunk raw_distinct_rows;
-	bool has_payload_comparison_executors = false;
-	bool can_preaggregate_using_key = false;
-	bool can_reuse_new_group_candidates = false;
-	bool can_reuse_changed_group_candidates = false;
-
-	SourceResultType GetUsingKeyData(ExecutionContext &context, DataChunk &chunk,
-	                                 RecursiveCTEGlobalSourceState &source);
-	template <bool COLLECT_METRICS>
-	SourceResultType GetUsingKeyDataInternal(ExecutionContext &context, DataChunk &chunk,
-	                                         RecursiveCTEGlobalSourceState &source);
-	SourceResultType GetUnionData(ExecutionContext &context, DataChunk &chunk, RecursiveCTEGlobalSourceState &source);
-	void InitializeIntermediateAppend();
-	ColumnDataCollection &CurrentOutputTable();
-	ColumnDataCollection &CurrentInputTable();
-	ColumnDataAppendState &CurrentOutputAppendState();
-	void AdvanceIterationBuffers();
-	void ResetCurrentOutputTableForReuse();
-	void RebindRecursiveScans();
 };
 
 } // namespace duckdb

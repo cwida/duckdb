@@ -335,12 +335,12 @@ unique_ptr<GlobalSinkState> PhysicalBatchInsert::GetGlobalSinkState(ClientContex
 		// CREATE TABLE AS
 		D_ASSERT(!insert_table);
 		auto &catalog = schema->catalog;
-		auto created_table = catalog.CreateTable(catalog.GetCatalogTransaction(context), *schema.get_mutable(), *info);
+		auto created_table = catalog.CreateTable(catalog.GetCatalogTransaction(context), *schema, *info);
 		table = &created_table->Cast<DuckTableEntry>();
 	} else {
 		D_ASSERT(insert_table);
 		D_ASSERT(insert_table->IsDuckTable());
-		table = insert_table.get_mutable();
+		table = insert_table;
 	}
 	// heuristic - we start off by allocating 4MB of cache space per column
 	static constexpr const idx_t MINIMUM_MEMORY_PER_COLUMN = 4ULL * 1024ULL * 1024ULL;
@@ -387,7 +387,8 @@ SinkNextBatchType PhysicalBatchInsert::NextBatch(ExecutionContext &context, Oper
 			throw InternalException("NextBatch called with the same batch index?");
 		}
 		// batch index has changed: move the old collection to the global state and create a new collection
-		auto tdata = TransactionData::Unversioned();
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		TransactionData tdata(DuckTransaction::Get(context.client, gstate.table.catalog));
 		auto &optimistic_collection =
 		    gstate.table.GetStorage().GetOptimisticCollection(context.client, lstate.collection_index);
 		auto &collection = *optimistic_collection.collection;
@@ -497,7 +498,7 @@ SinkCombineResultType PhysicalBatchInsert::Combine(ExecutionContext &context, Op
 	memory_manager.UpdateMinBatchIndex(lstate.partition_info.min_batch_index.GetIndex());
 
 	if (lstate.collection_index.IsValid()) {
-		auto tdata = TransactionData::Unversioned();
+		TransactionData tdata(DuckTransaction::Get(context.client, gstate.table.catalog));
 		auto &optimistic_collection =
 		    gstate.table.GetStorage().GetOptimisticCollection(context.client, lstate.collection_index);
 		auto &collection = *optimistic_collection.collection;

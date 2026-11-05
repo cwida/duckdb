@@ -93,6 +93,8 @@ string ExpressionTypeToString(ExpressionType type) {
 		return "COALESCE";
 	case ExpressionType::OPERATOR_TRY:
 		return "TRY";
+	case ExpressionType::OPERATOR_HAS_ERROR:
+		return "HAS_ERROR";
 	case ExpressionType::ARRAY_EXTRACT:
 		return "ARRAY_EXTRACT";
 	case ExpressionType::ARRAY_SLICE:
@@ -123,6 +125,14 @@ string ExpressionTypeToString(ExpressionType type) {
 		return "COMPARE_NOT_BETWEEN";
 	case ExpressionType::VALUE_DEFAULT:
 		return "VALUE_DEFAULT";
+	case ExpressionType::ALTERNATION:
+		return "ALTERNATION";
+	case ExpressionType::CONCATENATION:
+		return "CONCATENATION";
+	case ExpressionType::QUANTIFIER:
+		return "QUANTIFIER";
+	case ExpressionType::ANCHOR:
+		return "ANCHOR";
 	case ExpressionType::BOUND_REF:
 		return "BOUND_REF";
 	case ExpressionType::BOUND_COLUMN_REF:
@@ -224,6 +234,8 @@ string ExpressionClassToString(ExpressionClass type) {
 		return "BOUND_OPERATOR";
 	case ExpressionClass::BOUND_PARAMETER:
 		return "BOUND_PARAMETER";
+	case ExpressionClass::PATTERN:
+		return "PATTERN";
 	case ExpressionClass::BOUND_REF:
 		return "BOUND_REF";
 	case ExpressionClass::BOUND_SUBQUERY:

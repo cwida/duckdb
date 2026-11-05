@@ -88,7 +88,7 @@ WITH RECURSIVE
                 "fork.1"."light_x" AS "light_x",
                 "fork.1"."light_y" AS "light_y",
                 "fork.1"."light_z" AS "light_z",
-                CAST((384) AS INTEGER) AS "image_width"
+                CAST((224) AS INTEGER) AS "image_width"
          FROM   "fork.1"
        ),
        "assignment.5"("#️⃣", "⚙️", "shadows", "max_rec_depth", "epsilon", "light_x", "light_y", "light_z", "image_width", "image_height") AS (
@@ -101,7 +101,7 @@ WITH RECURSIVE
                 "assignment.4"."light_y" AS "light_y",
                 "assignment.4"."light_z" AS "light_z",
                 "assignment.4"."image_width" AS "image_width",
-                CAST((240) AS INTEGER) AS "image_height"
+                CAST((140) AS INTEGER) AS "image_height"
          FROM   "assignment.4"
        ),
        "assignment.6"("#️⃣", "⚙️", "shadows", "max_rec_depth", "epsilon", "light_x", "light_y", "light_z", "image_width", "image_height", "image_aspect_ratio") AS (

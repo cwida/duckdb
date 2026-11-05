@@ -11,6 +11,8 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/enums/index_removal_type.hpp"
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/shared_ptr_ipp.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/storage/table/index_entry.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/storage/index.hpp"
@@ -28,20 +30,10 @@ class IndexWriteHandle;
 class IndexBinder;
 struct IndexStorageInfo;
 struct DataTableInfo;
+struct IndexCheckpointResult;
 template <class T>
 class TableIndexIterationHelper;
-
-struct IndexSerializationInfo {
-	case_insensitive_map_t<Value> options;
-};
-
-// IndexStorageInfo is move-only. Keep every serialized info in owned_infos and expose stable ordered references.
-struct IndexSerializationResult {
-	//! The ordered list of references to serialize - preserves iteration order of index_entries
-	vector<reference<const IndexStorageInfo>> ordered_infos;
-	//! Storage for index infos to keep the references in ordered_infos alive.
-	vector<IndexStorageInfo> owned_infos;
-};
+class TableIndexWriter;
 
 class TableIndexList {
 public:
@@ -49,8 +41,8 @@ public:
 
 	//! Iterates over shared ownership of stable index entries while holding the entry-list lock.
 	TableIndexIterationHelper<shared_ptr<IndexEntry>> IndexEntries() const;
-	//! Adds an index entry to the list of index entries.
-	void AddIndex(unique_ptr<Index> index, idx_t index_oid);
+	//! Adds an index entry to the list of index entries, and returns it.
+	shared_ptr<IndexEntry> AddIndex(unique_ptr<Index> index, idx_t index_oid, ConstraintCheckMode check_mode);
 	//! Initializes the transaction-local delete and append indexes.
 	void InitializeLocalIndexes(TableIndexList &delete_indexes, TableIndexList &append_indexes) const;
 	//! Appends a chunk to all index entries.
@@ -69,10 +61,9 @@ public:
 	                       optional_idx active_checkpoint = optional_idx());
 	//! Removes an index entry from the list of index entries and release any storage the index owns.
 	void RemoveIndex(idx_t index_oid);
-	//! Returns shared ownership of the stable logical index entry matching the name.
-	shared_ptr<IndexEntry> FindEntry(const Identifier &name) const;
 	//! Returns the entry matching the index OID.
 	shared_ptr<IndexEntry> FindEntry(const IndexEntry &index) const;
+	shared_ptr<IndexEntry> FindEntry(idx_t index_oid) const;
 	//! Binds unbound indexes possibly present after loading an extension.
 	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {});
 	//! Returns true, if there are no index entries.
@@ -93,7 +84,7 @@ public:
 	bool HasBufferedReplays() const;
 	//! Returns true, if there are unique indexes.
 	bool HasUniqueIndexes() const;
-	//! Verifies all unique ART indexes, optionally recording conflicts.
+	//! Verifies all unique ART indexes that are not deferred, optionally recording conflicts.
 	void VerifyUniqueIndexes(optional_ptr<const TableIndexList> delete_indexes, DataChunk &chunk,
 	                         optional_ptr<ConflictManager> manager) const;
 	//! Vacuums all bound indexes.
@@ -131,16 +122,16 @@ public:
 	//! Verify a foreign key constraint.
 	void VerifyForeignKey(optional_ptr<const TableIndexList> delete_indexes, const vector<PhysicalIndex> &fk_keys,
 	                      DataChunk &chunk, ConflictManager &conflict_manager);
+	//! Persist index buffers and install replacements before returning their metadata.
+	vector<shared_ptr<const IndexStorageInfo>> Checkpoint(TableIndexWriter &writer);
 	//! Returns the physical table columns referenced by any index.
 	unordered_set<column_t> GetIndexedColumns() const;
 	//! Returns the column sets of unique indexes matching the conflict target.
 	vector<unordered_set<column_t>> GetConflictTargetColumns(const ConflictInfo &conflict_info) const;
 	//! Get the combined column ids of the unique indexes.
 	unordered_set<column_t> GetUniqueIndexColumns() const;
-	//! Serialize all indexes of the table.
-	IndexSerializationResult SerializeToDisk(QueryContext context, const IndexSerializationInfo &info);
 	//! Serializes the index matching the OID for the write-ahead log, if it exists.
-	unique_ptr<IndexStorageInfo> SerializeToWAL(idx_t index_oid, const case_insensitive_map_t<Value> &options);
+	unique_ptr<IndexStorageInfo> SerializeToWAL(idx_t index_oid, const StorageVersion version);
 
 public:
 	//! Initialize an index_chunk from a table.

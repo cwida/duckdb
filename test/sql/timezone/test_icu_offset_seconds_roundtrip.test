@@ -1,0 +1,35 @@
+# name: test/sql/timezone/test_icu_offset_seconds_roundtrip.test
+# description: TIMESTAMPTZ to VARCHAR keeps the seconds of the UTC offset
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone='Asia/Kathmandu';
+
+query I
+SELECT (TIMESTAMPTZ '1900-01-01 00:00:00+00')::VARCHAR;
+----
+1900-01-01 05:41:16+05:41:16
+
+query I
+SELECT (TIMESTAMPTZ '1900-01-01 00:00:00+00')::VARCHAR::TIMESTAMPTZ = TIMESTAMPTZ '1900-01-01 00:00:00+00';
+----
+true
+
+# offsets without seconds are unchanged
+statement ok
+SET TimeZone='Europe/Amsterdam';
+
+query I
+SELECT (TIMESTAMPTZ '2020-06-01 00:00:00+00')::VARCHAR;
+----
+2020-06-01 02:00:00+02
+
+statement ok
+SET TimeZone='America/New_York';
+
+query I
+SELECT (TIMESTAMPTZ '2020-01-01 00:00:00+00')::VARCHAR;
+----
+2019-12-31 19:00:00-05

@@ -214,7 +214,7 @@ DuckDBReader::DuckDBReader(ClientContext &context_p, OpenFileInfo file_p, const 
 	vector<reference<TableCatalogEntry>> tables;
 	vector<reference<TableCatalogEntry>> candidate_tables;
 	catalog.ScanSchemas(context, [&](SchemaCatalogEntry &schema) {
-		schema.Scan(CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
 			if (entry.type != CatalogType::TABLE_ENTRY) {
 				return;
 			}

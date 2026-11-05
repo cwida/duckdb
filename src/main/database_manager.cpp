@@ -164,7 +164,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 
 	if (requires_tracking_attaches) {
 		// Start timing the ATTACH-delay step.
-		auto timer = context.client_data->profiler->StartTimer<MetricStorageWaitingToAttachLatency>();
+		auto timer = QueryProfiler::Get(*context.services).StartTimer<MetricStorageWaitingToAttachLatency>();
 		// Start trying to attach.
 		while (InsertDatabasePath(info, options) == InsertDatabasePathResult::ALREADY_EXISTS) {
 			// database with this name and path already exists
@@ -285,6 +285,7 @@ void DatabaseManager::DetachDatabase(ClientContext &context, const Identifier &n
 	}
 
 	auto deleter = attached_db->ExtractDeleter();
+	MetaTransaction::Get(context).DetachDatabase(*attached_db);
 	attached_db->OnDetach(context);
 
 	// DetachInternal removes the AttachedDatabase from the list of databases that can be referenced.
@@ -386,12 +387,13 @@ void DatabaseManager::RenameDatabase(ClientContext &context, const Identifier &o
 	}
 }
 
-shared_ptr<AttachedDatabase> DatabaseManager::DetachInternal(const Identifier &name) {
+shared_ptr<AttachedDatabase> DatabaseManager::DetachInternal(const Identifier &name,
+                                                             optional_ptr<AttachedDatabase> database) {
 	shared_ptr<AttachedDatabase> attached_db;
 	{
 		lock_guard<mutex> guard(databases_lock);
 		auto entry = databases.find(name);
-		if (entry == databases.end()) {
+		if (entry == databases.end() || (database && entry->second.get() != database.get())) {
 			return nullptr;
 		}
 		attached_db = std::move(entry->second);
@@ -424,6 +426,25 @@ idx_t DatabaseManager::ApproxDatabaseCount() {
 
 InsertDatabasePathResult DatabaseManager::InsertDatabasePath(const AttachInfo &info, AttachOptions &options) {
 	return path_manager->InsertDatabasePath(*this, info.path, info.name, info.on_conflict, options);
+}
+
+bool DatabaseManager::IsAttachedDatabaseFile(ClientContext &context, const string &path) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	// attached database paths are canonicalized when the database is attached
+	auto canonical_path = fs.CanonicalizePath(path);
+	if (path_manager->IsDatabasePath(canonical_path)) {
+		return true;
+	}
+	// the WAL files of the database
+	for (auto &wal_suffix : {".wal", ".wal.checkpoint", ".wal.recovery"}) {
+		if (StringUtil::EndsWith(canonical_path, wal_suffix)) {
+			auto database_path = canonical_path.substr(0, canonical_path.size() - strlen(wal_suffix));
+			if (path_manager->IsDatabasePath(database_path)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 vector<string> DatabaseManager::GetAttachedDatabasePaths() {

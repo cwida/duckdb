@@ -23,6 +23,7 @@ add_library_unity(
   index.cpp
   local_storage.cpp
   magic_bytes.cpp
+  object_cache.cpp
   storage_manager.cpp
   standard_buffer_manager.cpp
   temporary_file_manager.cpp

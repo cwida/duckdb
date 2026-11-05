@@ -1,0 +1,158 @@
+# name: test/sql/match_recognize/test_match_recognize_permute.test
+# description: MATCH_RECOGNIZE PATTERN PERMUTE
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+# PERMUTE(A, B) stands for every order its parts can be matched in, tried in the order the list is
+# written: PERMUTE(A, B) is (A B | B A), so A B is preferred where both fit.
+
+statement ok
+create table perm(i integer, c varchar);
+
+statement ok
+insert into perm values (1,'b'),(2,'a'),(3,'c'),(4,'a'),(5,'b');
+
+query II
+SELECT count(*), max(len) FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A, B)) DEFINE A AS c='a', B AS c='b'
+)
+----
+2	2
+
+# which is exactly the alternation it stands for
+query II
+SELECT count(*), max(len) FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A B) | (B A)) DEFINE A AS c='a', B AS c='b'
+)
+----
+2	2
+
+# three parts reach every arrangement, so b a c matches as B A C
+query II
+SELECT i, cl FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, CLASSIFIER() AS cl ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A, B, C)) DEFINE A AS c='a', B AS c='b', C AS c='c'
+) ORDER BY i
+----
+1	B
+2	A
+3	C
+
+# where more than one arrangement fits, the one listed first wins
+query II
+SELECT i, cl FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, CLASSIFIER() AS cl ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A, B)) DEFINE A AS true, B AS true
+) ORDER BY i
+----
+1	A
+2	B
+3	A
+4	B
+
+query II
+SELECT i, cl FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, CLASSIFIER() AS cl ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(B, A)) DEFINE A AS true, B AS true
+) ORDER BY i
+----
+1	B
+2	A
+3	B
+4	A
+
+# a part may be a pattern rather than a bare variable, and the whole may be quantified
+query II
+SELECT count(*), max(len) FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A B, C)) DEFINE A AS c='a', B AS c='b', C AS c='c'
+)
+----
+1	3
+
+query II
+SELECT count(*), max(len) FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A, B)+) DEFINE A AS c='a', B AS c='b'
+)
+----
+2	2
+
+# PERMUTE is not a reserved word, so it remains available as a pattern variable
+query I
+SELECT count(*) FROM perm MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n PATTERN (PERMUTE) DEFINE PERMUTE AS c='a'
+)
+----
+2
+
+# PERMUTE stands for the alternation of every order of its parts, taken in the order the list is
+# written. That is not how it happens to be built here, it is what it means, so the two spellings
+# have to answer the same question - including which arrangement wins where more than one fits.
+#
+# Over the four rows below, A holds on 2,3,4 and B on 1,2,4, and of the six arrangements only the
+# third and fourth can start at row 1. The third is the one the list order asks for, and it is the
+# only one where the reluctant C?? has to give up what it prefers: matching nothing would put A on
+# row 2 and the trailing B on row 3, which is not a B, so taking the C shifts the rest along and it
+# fits. Oracle answers the fourth for the PERMUTE and the third for the same six written out, which
+# are different rows from the same engine for what is meant to be the same pattern.
+
+statement ok
+create table perm3(i integer, v integer);
+
+statement ok
+insert into perm3 values (1,0),(2,1),(3,2),(4,1);
+
+query IT
+SELECT i, cls FROM perm3 MATCH_RECOGNIZE(
+    ORDER BY i MEASURES CLASSIFIER() AS cls
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A, B C??, B))
+    DEFINE A AS A.v > 0, B AS B.v < 2, C AS 1 = 1
+) ORDER BY i
+----
+1	B
+2	C
+3	A
+4	B
+
+query IT
+SELECT i, cls FROM perm3 MATCH_RECOGNIZE(
+    ORDER BY i MEASURES CLASSIFIER() AS cls
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (  (A) (B C??) (B)
+             | (A) (B) (B C??)
+             | (B C??) (A) (B)
+             | (B C??) (B) (A)
+             | (B) (A) (B C??)
+             | (B) (B C??) (A) )
+    DEFINE A AS A.v > 0, B AS B.v < 2, C AS 1 = 1
+) ORDER BY i
+----
+1	B
+2	C
+3	A
+4	B
+
+# the same pattern with a greedy quantifier, where nothing has to be given up. Oracle agrees here,
+# which is what says the reluctance is the part it does not carry through an arrangement.
+query IT
+SELECT i, cls FROM perm3 MATCH_RECOGNIZE(
+    ORDER BY i MEASURES CLASSIFIER() AS cls
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (PERMUTE(A, B C?, B))
+    DEFINE A AS A.v > 0, B AS B.v < 2, C AS 1 = 1
+) ORDER BY i
+----
+1	B
+2	C
+3	A
+4	B

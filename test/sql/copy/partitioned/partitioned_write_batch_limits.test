@@ -1,0 +1,127 @@
+# name: test/sql/copy/partitioned/partitioned_write_batch_limits.test
+# description: Row and byte limits of partitioned writes are honored by the planned batches of both input backends
+# group: [partitioned]
+
+require parquet
+
+statement ok
+PRAGMA threads=1;
+
+# a flush threshold equal to the partition size: the planned batches are prepared one by one, so every batch is a row group
+statement ok
+SET partitioned_write_flush_threshold = 10000;
+
+# an integer key with statistics: the direct input estimates batch bytes from the tuple row width and the heap bytes
+statement ok
+CREATE TABLE byte_input AS SELECT 1::INTEGER p, i::BIGINT v, 'x'::VARCHAR s FROM range(10000) t(i);
+
+statement ok
+COPY byte_input TO '{TEST_DIR}/batch_limit_bytes' (FORMAT PARQUET, PARTITION_BY (p), COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 16384);
+
+query IIII
+SELECT count(*) > 1, max(row_group_num_rows) <= 1024, max(row_group_bytes) < 16384 * 2, sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/batch_limit_bytes/**/*.parquet') WHERE column_id = 0;
+----
+true	true	true	10000
+
+# a string key: the sorted input; the byte estimate of a chunk includes the unwritten key, the exact row sizes do not,
+# and the row limit must hold either way (a batch is closed once it reaches the limit, so it may exceed it by less
+# than one input vector, as a plain Parquet write does)
+statement ok
+CREATE TABLE row_input AS SELECT repeat('x', 200) p, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+COPY row_input TO '{TEST_DIR}/batch_limit_rows' (FORMAT PARQUET, PARTITION_BY (p), COMPRESSION uncompressed, ROW_GROUP_SIZE 1000, ROW_GROUP_SIZE_BYTES 200000);
+
+query III
+SELECT count(*) > 1, max(row_group_num_rows) < 1000 + 2048, sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/batch_limit_rows/**/*.parquet') WHERE column_id = 0;
+----
+true	true	10000
+
+# the sorted backend, explicitly: ORDER_BY keeps the sort (no single-key shortcut), the input arrives in descending
+# order, both limits bound the batches, every file is ordered and the rows round-trip
+statement ok
+CREATE TABLE ordered_rows AS SELECT repeat('x', 200) p, i::BIGINT v FROM range(10000) t(i) ORDER BY v DESC;
+
+statement ok
+COPY ordered_rows TO '{TEST_DIR}/batch_limit_ordered_rows' (FORMAT PARQUET, PARTITION_BY (p), ORDER_BY (v), COMPRESSION uncompressed, ROW_GROUP_SIZE 1000, ROW_GROUP_SIZE_BYTES 200000);
+
+query III
+SELECT count(*) > 1, max(row_group_num_rows) < 1000 + 2048, sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/batch_limit_ordered_rows/**/*.parquet') WHERE column_id = 0;
+----
+true	true	10000
+
+query I
+WITH per_file AS (
+	SELECT filename, v, lag(v) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev_v
+	FROM read_parquet('{TEST_DIR}/batch_limit_ordered_rows/**/*.parquet', filename = true, file_row_number = true)
+)
+SELECT count(*) FROM per_file WHERE prev_v IS NOT NULL AND prev_v > v;
+----
+0
+
+query I
+SELECT count(*) FROM (FROM ordered_rows EXCEPT ALL SELECT p, v FROM parquet_scan('{TEST_DIR}/batch_limit_ordered_rows/p=*/*.parquet', HIVE_PARTITIONING=1));
+----
+0
+
+statement ok
+CREATE TABLE ordered_bytes AS SELECT 1::INTEGER p, i::BIGINT v, 'x'::VARCHAR s FROM range(10000) t(i) ORDER BY v DESC;
+
+statement ok
+COPY ordered_bytes TO '{TEST_DIR}/batch_limit_ordered_bytes' (FORMAT PARQUET, PARTITION_BY (p), ORDER_BY (v), COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 16384);
+
+query IIII
+SELECT count(*) > 1, max(row_group_num_rows) <= 1024, max(row_group_bytes) < 16384 * 2, sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/batch_limit_ordered_bytes/**/*.parquet') WHERE column_id = 0;
+----
+true	true	true	10000
+
+query I
+WITH per_file AS (
+	SELECT filename, v, lag(v) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev_v
+	FROM read_parquet('{TEST_DIR}/batch_limit_ordered_bytes/**/*.parquet', filename = true, file_row_number = true)
+)
+SELECT count(*) FROM per_file WHERE prev_v IS NOT NULL AND prev_v > v;
+----
+0
+
+query I
+SELECT count(*) FROM (FROM ordered_bytes EXCEPT ALL SELECT p, v, s FROM parquet_scan('{TEST_DIR}/batch_limit_ordered_bytes/p=*/*.parquet', HIVE_PARTITIONING=1));
+----
+0
+
+# the same two shapes with several threads
+statement ok
+PRAGMA threads=4;
+
+statement ok
+COPY byte_input TO '{TEST_DIR}/batch_limit_bytes4' (FORMAT PARQUET, PARTITION_BY (p), COMPRESSION uncompressed, ROW_GROUP_SIZE_BYTES 16384);
+
+query IIII
+SELECT count(*) > 1, max(row_group_num_rows) <= 1024, max(row_group_bytes) < 16384 * 2, sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/batch_limit_bytes4/**/*.parquet') WHERE column_id = 0;
+----
+true	true	true	10000
+
+statement ok
+COPY row_input TO '{TEST_DIR}/batch_limit_rows4' (FORMAT PARQUET, PARTITION_BY (p), COMPRESSION uncompressed, ROW_GROUP_SIZE 1000, ROW_GROUP_SIZE_BYTES 200000);
+
+query III
+SELECT count(*) > 1, max(row_group_num_rows) < 1000 + 2048, sum(row_group_num_rows)
+FROM parquet_metadata('{TEST_DIR}/batch_limit_rows4/**/*.parquet') WHERE column_id = 0;
+----
+true	true	10000
+
+# the rows themselves are intact
+query I
+SELECT count(*) FROM (FROM byte_input EXCEPT ALL SELECT p, v, s FROM parquet_scan('{TEST_DIR}/batch_limit_bytes4/p=*/*.parquet', HIVE_PARTITIONING=1));
+----
+0
+
+query I
+SELECT count(*) FROM (FROM row_input EXCEPT ALL SELECT p, v FROM parquet_scan('{TEST_DIR}/batch_limit_rows4/p=*/*.parquet', HIVE_PARTITIONING=1));
+----
+0

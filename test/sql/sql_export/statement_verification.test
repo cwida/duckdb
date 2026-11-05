@@ -308,22 +308,25 @@ endloop
 statement ok
 RESET debug_verify_statement;
 
-# Non-strict verification falls back to the native plan when export is rejected; strict does not.
+# Non-strict verification falls back to the native plan when export is rejected. Strict mode reports the rejection.
+statement ok
+CREATE TYPE fallback_empty_enum AS ENUM ();
+
 statement ok
 SET debug_verify_statement='explain_sql';
 
-query I
-SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER)) l(a) JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a IS DISTINCT FROM 2;
+query T
+SELECT NULL::fallback_empty_enum;
 ----
-true
+NULL
 
 statement ok
 SET debug_verify_statement='explain_sql_strict';
 
 statement error
-SELECT __mark_join_marker FROM (VALUES (NULL::INTEGER)) l(a) JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a IS DISTINCT FROM 2;
+SELECT NULL::fallback_empty_enum;
 ----
-<REGEX>:.*MARK DISTINCT FROM comparisons cannot preserve NULL semantics.*
+<REGEX>:.*The nested value type has no SQL constructor.*
 
 statement ok
 RESET debug_verify_statement;

@@ -1,4 +1,5 @@
 #include "capi_tester.hpp"
+#include "result_wait_helpers.hpp"
 #include <atomic>
 #include <random>
 #include <thread>
@@ -917,4 +918,127 @@ TEST_CASE("Test concurrent prepared statement execution race condition MRE", "[c
 
 	duckdb_disconnect(&conn);
 	duckdb_close(&db);
+}
+
+static constexpr const char *SALES_PIVOT = "PIVOT sales ON year USING sum(amount) ORDER BY city";
+
+static void CreateSales(CAPITester &tester) {
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE sales(city VARCHAR, year INTEGER, amount INTEGER)"));
+	REQUIRE_NO_FAIL(tester.Query(
+	    "INSERT INTO sales VALUES ('ams', 2023, 10), ('ams', 2024, 20), ('rtm', 2023, 30), ('rtm', 2024, 40)"));
+}
+
+static void RequirePivotRows(CAPIResult &result) {
+	REQUIRE(!result.HasError());
+	REQUIRE(!result.IsStreaming());
+	REQUIRE(duckdb_result_statement_type(result.InternalResult()) == DUCKDB_STATEMENT_TYPE_MULTI);
+	REQUIRE(result.ColumnCount() == 3);
+	REQUIRE(result.ColumnName(1) == "2023");
+	REQUIRE(result.row_count() == 2);
+	REQUIRE(result.Fetch<string>(0, 0) == "ams");
+	REQUIRE(result.Fetch<int64_t>(1, 0) == 10);
+	REQUIRE(result.Fetch<int64_t>(2, 1) == 40);
+}
+
+static void RequirePendingPivotRows(CAPIPending &pending) {
+	Deadline deadline;
+	duckdb_pending_state state;
+	while (!duckdb_pending_execution_is_finished(state = pending.ExecuteTask())) {
+		REQUIRE(!deadline.Passed());
+	}
+	REQUIRE(state == DUCKDB_PENDING_RESULT_READY);
+	RequirePivotRows(*pending.Execute());
+}
+
+TEST_CASE("Preparing a dynamic PIVOT in the C API", "[capi][expanding_statements]") {
+	CAPITester tester;
+	CAPIPrepared prepared;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	CreateSales(tester);
+
+	REQUIRE(prepared.Prepare(tester, SALES_PIVOT));
+	REQUIRE(duckdb_prepared_statement_type(prepared.prepared) == DUCKDB_STATEMENT_TYPE_MULTI);
+	REQUIRE(duckdb_prepared_statement_column_count(prepared.prepared) == 1);
+	REQUIRE(duckdb_prepared_statement_column_type(prepared.prepared, 0) == DUCKDB_TYPE_INVALID);
+	REQUIRE(duckdb_nparams(prepared.prepared) == 0);
+
+	SECTION("executed") {
+		RequirePivotRows(*tester.QueryPrepared(prepared.prepared));
+	}
+	SECTION("executed for streaming") {
+		duckdb_result result;
+		auto success = duckdb_execute_prepared_streaming(prepared.prepared, &result) == DuckDBSuccess;
+		CAPIResult streamed(result, success);
+		RequirePivotRows(streamed);
+	}
+	SECTION("pending") {
+		CAPIPending pending;
+		REQUIRE(pending.Pending(prepared));
+		RequirePendingPivotRows(pending);
+	}
+	SECTION("pending for streaming") {
+		CAPIPending pending;
+		REQUIRE(pending.PendingStreaming(prepared));
+		RequirePendingPivotRows(pending);
+	}
+	SECTION("given a value") {
+		REQUIRE(duckdb_bind_int32(prepared.prepared, 1, 42) == DuckDBError);
+	}
+}
+
+TEST_CASE("Preparing an ALTER that expands in the C API", "[capi][expanding_statements]") {
+	CAPITester tester;
+	CAPIPrepared prepared;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE t AS SELECT range AS i FROM range(10)"));
+
+	REQUIRE(prepared.Prepare(tester, "ALTER TABLE t ADD COLUMN c DOUBLE DEFAULT random()"));
+	REQUIRE(duckdb_prepared_statement_type(prepared.prepared) == DUCKDB_STATEMENT_TYPE_MULTI);
+	REQUIRE(duckdb_prepared_statement_column_type(prepared.prepared, 0) == DUCKDB_TYPE_INVALID);
+	// Preparing ran nothing
+	REQUIRE(tester.Query("SELECT c FROM t")->HasError());
+
+	auto result = tester.QueryPrepared(prepared.prepared);
+	REQUIRE(!result->HasError());
+	REQUIRE(duckdb_result_statement_type(result->InternalResult()) == DUCKDB_STATEMENT_TYPE_MULTI);
+	REQUIRE(duckdb_result_return_type(result->InternalResult()) == DUCKDB_RESULT_TYPE_NOTHING);
+	auto filled = tester.Query("SELECT count(*) FROM t WHERE c IS NOT NULL");
+	REQUIRE(filled->Fetch<int64_t>(0, 0) == 10);
+}
+
+TEST_CASE("Preparing a statement that expands with a parameter fails in the C API", "[capi][expanding_statements]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	CreateSales(tester);
+
+	duckdb_prepared_statement prepared = nullptr;
+	REQUIRE(duckdb_prepare(tester.connection, "PIVOT sales ON year USING sum(amount + $1)", &prepared) == DuckDBError);
+	REQUIRE(string(duckdb_prepare_error(prepared)).find("parameters are not supported") != string::npos);
+	duckdb_destroy_prepare(&prepared);
+	REQUIRE(tester.Query("SELECT count(*) FROM duckdb_types() WHERE type_name LIKE '__pivot_enum%'")
+	            ->Fetch<int64_t>(0, 0) == 0);
+}
+
+TEST_CASE("Preparing an extracted dynamic PIVOT in the C API", "[capi][expanding_statements]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	CreateSales(tester);
+
+	duckdb_extracted_statements extracted = nullptr;
+	auto count = duckdb_extract_statements(tester.connection, SALES_PIVOT, &extracted);
+	duckdb_prepared_statement prepared = nullptr;
+	auto state =
+	    count == 1 ? duckdb_prepare_extracted_statement(tester.connection, extracted, 0, &prepared) : DuckDBError;
+	auto statement_type = duckdb_prepared_statement_type(prepared);
+	duckdb::unique_ptr<CAPIResult> result;
+	if (state == DuckDBSuccess) {
+		result = tester.QueryPrepared(prepared);
+	}
+	duckdb_destroy_prepare(&prepared);
+	duckdb_destroy_extracted(&extracted);
+
+	REQUIRE(count == 1);
+	REQUIRE(state == DuckDBSuccess);
+	REQUIRE(statement_type == DUCKDB_STATEMENT_TYPE_MULTI);
+	RequirePivotRows(*result);
 }

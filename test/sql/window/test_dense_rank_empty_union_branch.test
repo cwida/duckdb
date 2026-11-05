@@ -1,0 +1,41 @@
+# name: test/sql/window/test_dense_rank_empty_union_branch.test
+# description: Peer window functions over a UNION ALL with an empty branch
+# group: [window]
+
+query I
+SELECT dense_rank() OVER () FROM (SELECT * FROM range(0) UNION ALL SELECT * FROM range(5));
+----
+1
+1
+1
+1
+1
+
+# the empty branch can also come from a filter that removes every row
+query I
+SELECT dense_rank() OVER () FROM (SELECT * FROM range(1) WHERE range > 0 UNION ALL SELECT * FROM range(3));
+----
+1
+1
+1
+
+query IR
+SELECT rank() OVER (ORDER BY i), percent_rank() OVER (ORDER BY i)
+FROM (SELECT * FROM range(0) t(i) UNION ALL SELECT * FROM range(3) t(i));
+----
+1	0.0
+2	0.5
+3	1.0
+
+statement ok
+CREATE TABLE a(i INT);
+
+statement ok
+CREATE TABLE b AS SELECT * FROM range(3) t(i);
+
+query I
+SELECT dense_rank() OVER () FROM (SELECT * FROM a UNION ALL SELECT * FROM b);
+----
+1
+1
+1

@@ -48,9 +48,8 @@ DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_connection_handle 
 	DUCKDB_CHECK_ARG(statement);
 	return WithErrorHandler(err, [&]() {
 		auto *connection = Convert(conn);
-		// The engine refuses a prepare while another statement on the connection is running
-		ThrowIfGroupRunning(*GetBusySlot(*connection->context));
-		// Borrowed, not consumed: prepare a copy so the caller keeps the original.
+		// Borrowed, not consumed: prepare a copy so the caller keeps the original. The engine refuses a prepare while
+		// another statement on the connection is running.
 		auto prepared = connection->context->Prepare(Convert(statement)->Copy());
 		if (prepared->HasError()) {
 			// Prepare reports failure on the returned object rather than throwing; re-throw
@@ -61,8 +60,8 @@ DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_connection_handle 
 		if (require_cacheable && !PreparedReusesPlanV2(prepared->GetStatementProperties())) {
 			throw duckdb::InvalidInputException(
 			    "prepared_statement_create(require_cacheable): this plan is re-bound on every execution (an unresolved "
-			    "parameter type, or a table scan), so executing it is no faster than statement_execute; prepare "
-			    "without require_cacheable to accept that");
+			    "parameter type, a table scan, or a statement that expands into several), so executing it is no faster "
+			    "than statement_execute; prepare without require_cacheable to accept that");
 		}
 		auto wrapper = duckdb::make_uniq<PreparedStatementWrapperV2>();
 		wrapper->context = connection->context;

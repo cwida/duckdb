@@ -37,8 +37,10 @@ public:
 
 	//! Revert the commit
 	virtual void RevertCommit() = 0;
-	// Make the commit persistent
-	virtual void FlushCommit() = 0;
+	//! Write the commit's WAL flush marker. With sync_now the WAL is synced up to it before returning;
+	//! otherwise the marker is only pushed to the OS and the WAL offset to sync up to is returned (0 if
+	//! nothing was written, or it was synced here)
+	virtual idx_t FlushCommit(bool sync_now) = 0;
 
 	virtual void AddRowGroupData(DataTable &table, idx_t start_index, idx_t count,
 	                             unique_ptr<PersistentCollectionData> row_group_data) = 0;
@@ -88,9 +90,9 @@ public:
 	bool WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointOptions &options,
 	                        ActiveCheckpointWrapper &active_checkpoint);
 	//! Finishes a checkpoint
-	void WALFinishCheckpoint(unique_lock<mutex> &wal_lock);
-	// Get the WAL lock
-	unique_lock<mutex> GetWALLock();
+	void WALFinishCheckpoint(unique_lock<mutex> &commit_lock);
+	//! Acquires commit_lock
+	unique_lock<mutex> GetCommitLock();
 
 	//! Returns the database file path
 	string GetDBPath() const {
@@ -172,8 +174,8 @@ protected:
 	string wal_path;
 	//! The WriteAheadLog of the storage manager
 	unique_ptr<WriteAheadLog> wal;
-	//! Mutex used to control writes to the WAL
-	mutex wal_lock;
+	//! Held by every commit with changes from its append to its commit or revert, and by a checkpoint at start and end
+	mutex commit_lock;
 	//! Whether or not the database is opened in read-only mode
 	bool read_only;
 	//! When loading a database, we do not yet set the wal-field. Therefore, GetWriteAheadLog must

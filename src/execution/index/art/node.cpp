@@ -23,58 +23,58 @@ namespace duckdb {
 // New and free
 //===--------------------------------------------------------------------===//
 
-void NodePtr::New(ART &art, NodePtr &node, NType type) {
+void NodePtr::New(ART &art, NodePtr &node_ptr, NType type) {
 	switch (type) {
 	case NType::NODE_7_LEAF:
-		Node7Leaf::New(art, node);
+		Node7Leaf::New(art, node_ptr);
 		break;
 	case NType::NODE_15_LEAF:
-		Node15Leaf::New(art, node);
+		Node15Leaf::New(art, node_ptr);
 		break;
 	case NType::NODE_256_LEAF:
-		Node256Leaf::New(art, node);
+		Node256Leaf::New(art, node_ptr);
 		break;
 	case NType::NODE_4:
-		Node4::New(art, node);
+		Node4::New(art, node_ptr);
 		break;
 	case NType::NODE_16:
-		Node16::New(art, node);
+		Node16::New(art, node_ptr);
 		break;
 	case NType::NODE_48:
-		Node48::New(art, node);
+		Node48::New(art, node_ptr);
 		break;
 	case NType::NODE_256:
-		Node256::New(art, node);
+		Node256::New(art, node_ptr);
 		break;
 	default:
 		throw InternalException("Invalid node type for New: %d.", type);
 	}
 }
 
-void NodePtr::FreeNode(ART &art, NodePtr &node) {
-	D_ASSERT(node.HasMetadata());
-	GetAllocator(art, node.GetType()).Free(node);
-	node.Clear();
+void NodePtr::FreeNode(ART &art, NodePtr &node_ptr) {
+	D_ASSERT(node_ptr.HasMetadata());
+	GetAllocator(art, node_ptr.GetType()).Free(node_ptr);
+	node_ptr.Clear();
 }
 
-void NodePtr::FreeTree(ART &art, NodePtr &tree) {
-	if (!tree.HasMetadata()) {
+void NodePtr::FreeTree(ART &art, NodePtr &subtree_root_ptr) {
+	if (!subtree_root_ptr.HasMetadata()) {
 		return;
 	}
 	// All nodes should be pushed onto the stack.
-	auto child_handler = [](NodePtr &child) -> OptionalNodePtr {
-		D_ASSERT(child.HasMetadata());
-		return child;
+	auto child_handler = [](NodePtr &child_ptr) -> OptionalNodePtr {
+		D_ASSERT(child_ptr.HasMetadata());
+		return child_ptr;
 	};
 	// We freed the subtree pointed to by the current node. Free the node.
-	auto post_handler = [&](NodePtr current) {
-		D_ASSERT(current.HasMetadata());
-		auto type = current.GetType();
+	auto post_handler = [&](NodePtr current_ptr) {
+		D_ASSERT(current_ptr.HasMetadata());
+		auto type = current_ptr.GetType();
 		switch (type) {
 		case NType::LEAF_INLINED:
 			break;
 		case NType::LEAF:
-			Leaf::DeprecatedFree(art, current);
+			Leaf::DeprecatedFree(art, current_ptr);
 			break;
 		case NType::NODE_7_LEAF:
 		case NType::NODE_15_LEAF:
@@ -84,14 +84,14 @@ void NodePtr::FreeTree(ART &art, NodePtr &tree) {
 		case NType::NODE_16:
 		case NType::NODE_48:
 		case NType::NODE_256:
-			FreeNode(art, current);
+			FreeNode(art, current_ptr);
 			break;
 		default:
 			throw InternalException("invalid node type for FreeTree: %d", type);
 		}
 	};
-	ARTScanPostorder(art, tree, child_handler, post_handler);
-	tree.Clear();
+	ARTScanPostorder(art, subtree_root_ptr, child_handler, post_handler);
+	subtree_root_ptr.Clear();
 }
 
 //===--------------------------------------------------------------------===//
@@ -131,43 +131,43 @@ uint8_t NodePtr::GetAllocatorIdx(const NType type) {
 // Inserts
 //===--------------------------------------------------------------------===//
 
-void NodePtr::ReplaceChild(const ART &art, const uint8_t byte, const NodePtr child) const {
+void NodePtr::ReplaceChild(const ART &art, const uint8_t byte, const NodePtr child_ptr) const {
 	D_ASSERT(HasMetadata());
 
 	auto type = GetType();
 	switch (type) {
 	case NType::NODE_4:
-		return Node4::ReplaceChild(Ref<Node4>(art, *this, type), byte, child);
+		return Node4::ReplaceChild(Ref<Node4>(art, *this, type), byte, child_ptr);
 	case NType::NODE_16:
-		return Node16::ReplaceChild(Ref<Node16>(art, *this, type), byte, child);
+		return Node16::ReplaceChild(Ref<Node16>(art, *this, type), byte, child_ptr);
 	case NType::NODE_48:
-		return Ref<Node48>(art, *this, type).ReplaceChild(byte, child);
+		return Ref<Node48>(art, *this, type).ReplaceChild(byte, child_ptr);
 	case NType::NODE_256:
-		return Ref<Node256>(art, *this, type).ReplaceChild(byte, child);
+		return Ref<Node256>(art, *this, type).ReplaceChild(byte, child_ptr);
 	default:
 		throw InternalException("Invalid node type for ReplaceChild: %d.", type);
 	}
 }
 
-void NodePtr::InsertChild(ART &art, NodePtr &node, const uint8_t byte, const NodePtr child) {
-	D_ASSERT(node.HasMetadata());
+void NodePtr::InsertChild(ART &art, NodePtr &node_ptr, const uint8_t byte, const NodePtr child_ptr) {
+	D_ASSERT(node_ptr.HasMetadata());
 
-	auto type = node.GetType();
+	auto type = node_ptr.GetType();
 	switch (type) {
 	case NType::NODE_4:
-		return Node4::InsertChild(art, node, byte, child);
+		return Node4::InsertChild(art, node_ptr, byte, child_ptr);
 	case NType::NODE_16:
-		return Node16::InsertChild(art, node, byte, child);
+		return Node16::InsertChild(art, node_ptr, byte, child_ptr);
 	case NType::NODE_48:
-		return Node48::InsertChild(art, node, byte, child);
+		return Node48::InsertChild(art, node_ptr, byte, child_ptr);
 	case NType::NODE_256:
-		return Node256::InsertChild(art, node, byte, child);
+		return Node256::InsertChild(art, node_ptr, byte, child_ptr);
 	case NType::NODE_7_LEAF:
-		return Node7Leaf::InsertByte(art, node, byte);
+		return Node7Leaf::InsertByte(art, node_ptr, byte);
 	case NType::NODE_15_LEAF:
-		return Node15Leaf::InsertByte(art, node, byte);
+		return Node15Leaf::InsertByte(art, node_ptr, byte);
 	case NType::NODE_256_LEAF:
-		return Node256Leaf::InsertByte(art, node, byte);
+		return Node256Leaf::InsertByte(art, node_ptr, byte);
 	default:
 		throw InternalException("Invalid node type for InsertChild: %d.", type);
 	}
@@ -177,26 +177,26 @@ void NodePtr::InsertChild(ART &art, NodePtr &node, const uint8_t byte, const Nod
 // Delete
 //===--------------------------------------------------------------------===//
 
-void NodePtr::DeleteChild(ART &art, NodePtr &node, NodePtr &prefix, const uint8_t byte, const GateStatus status,
+void NodePtr::DeleteChild(ART &art, NodePtr &node_ptr, NodePtr &parent_ptr, const uint8_t byte, const GateStatus status,
                           const ARTKey &row_id) {
-	D_ASSERT(node.HasMetadata());
+	D_ASSERT(node_ptr.HasMetadata());
 
-	auto type = node.GetType();
+	auto type = node_ptr.GetType();
 	switch (type) {
 	case NType::NODE_4:
-		return Node4::DeleteChild(art, node, prefix, byte, status);
+		return Node4::DeleteChild(art, node_ptr, parent_ptr, byte, status);
 	case NType::NODE_16:
-		return Node16::DeleteChild(art, node, byte);
+		return Node16::DeleteChild(art, node_ptr, byte);
 	case NType::NODE_48:
-		return Node48::DeleteChild(art, node, byte);
+		return Node48::DeleteChild(art, node_ptr, byte);
 	case NType::NODE_256:
-		return Node256::DeleteChild(art, node, byte);
+		return Node256::DeleteChild(art, node_ptr, byte);
 	case NType::NODE_7_LEAF:
-		return Node7Leaf::DeleteByte(art, node, prefix, byte, row_id);
+		return Node7Leaf::DeleteByte(art, node_ptr, parent_ptr, byte, row_id);
 	case NType::NODE_15_LEAF:
-		return Node15Leaf::DeleteByte(art, node, byte);
+		return Node15Leaf::DeleteByte(art, node_ptr, byte);
 	case NType::NODE_256_LEAF:
-		return Node256Leaf::DeleteByte(art, node, byte);
+		return Node256Leaf::DeleteByte(art, node_ptr, byte);
 	default:
 		throw InternalException("Invalid node type for DeleteChild: %d.", type);
 	}
@@ -207,19 +207,19 @@ void NodePtr::DeleteChild(ART &art, NodePtr &node, NodePtr &prefix, const uint8_
 //===--------------------------------------------------------------------===//
 
 template <class NODE>
-static unsafe_optional_ptr<NodePtr> GetChildInternal(ART &art, NODE &node, const uint8_t byte, const bool unsafe) {
-	D_ASSERT(node.HasMetadata());
+static unsafe_optional_ptr<NodePtr> GetChildInternal(ART &art, NODE &node_ptr, const uint8_t byte, const bool unsafe) {
+	D_ASSERT(node_ptr.HasMetadata());
 
-	auto type = node.GetType();
+	auto type = node_ptr.GetType();
 	switch (type) {
 	case NType::NODE_4:
-		return Node4::GetChild(NodePtr::Ref<Node4>(art, node, type), byte, unsafe);
+		return Node4::GetChild(NodePtr::Ref<Node4>(art, node_ptr, type), byte, unsafe);
 	case NType::NODE_16:
-		return Node16::GetChild(NodePtr::Ref<Node16>(art, node, type), byte, unsafe);
+		return Node16::GetChild(NodePtr::Ref<Node16>(art, node_ptr, type), byte, unsafe);
 	case NType::NODE_48:
-		return Node48::GetChild(NodePtr::Ref<Node48>(art, node, type), byte, unsafe);
+		return Node48::GetChild(NodePtr::Ref<Node48>(art, node_ptr, type), byte, unsafe);
 	case NType::NODE_256: {
-		return Node256::GetChild(NodePtr::Ref<Node256>(art, node, type), byte, unsafe);
+		return Node256::GetChild(NodePtr::Ref<Node256>(art, node_ptr, type), byte, unsafe);
 	}
 	default:
 		throw InternalException("Invalid node type for GetChildInternal: %d.", type);
@@ -230,7 +230,7 @@ const unsafe_optional_ptr<NodePtr> NodePtr::GetChild(ART &art, const uint8_t byt
 	return GetChildInternal(art, *this, byte, false);
 }
 
-unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutable(ART &art, const uint8_t byte, const bool unsafe) const {
+unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutableUnsafe(ART &art, const uint8_t byte, const bool unsafe) const {
 	return GetChildInternal(art, *this, byte, unsafe);
 }
 
@@ -252,6 +252,27 @@ OptionalNodePtr NodePtr::GetChildNode(const ART &art, const uint8_t byte) const 
 	}
 }
 
+unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutable(NodeHandle &handle, const uint8_t byte) {
+	unsafe_optional_ptr<NodePtr> child;
+	switch (handle.GetType()) {
+	case NType::NODE_4:
+		child = Node4::GetChild(handle.Get<Node4>(), byte);
+		break;
+	case NType::NODE_16:
+		child = Node16::GetChild(handle.Get<Node16>(), byte);
+		break;
+	case NType::NODE_48:
+		child = Node48::GetChild(handle.Get<Node48>(), byte);
+		break;
+	case NType::NODE_256:
+		child = Node256::GetChild(handle.Get<Node256>(), byte);
+		break;
+	default:
+		throw InternalException("Invalid node type for GetChildMutable: %d.", handle.GetType());
+	}
+	return child;
+}
+
 OptionalNodePtr NodePtr::GetNextChildNode(const ART &art, uint8_t &byte) const {
 	D_ASSERT(HasMetadata());
 	auto type = GetType();
@@ -271,19 +292,19 @@ OptionalNodePtr NodePtr::GetNextChildNode(const ART &art, uint8_t &byte) const {
 }
 
 template <class NODE>
-unsafe_optional_ptr<NodePtr> GetNextChildInternal(ART &art, NODE &node, uint8_t &byte) {
-	D_ASSERT(node.HasMetadata());
+unsafe_optional_ptr<NodePtr> GetNextChildInternal(ART &art, NODE &node_ptr, uint8_t &byte) {
+	D_ASSERT(node_ptr.HasMetadata());
 
-	auto type = node.GetType();
+	auto type = node_ptr.GetType();
 	switch (type) {
 	case NType::NODE_4:
-		return Node4::GetNextChild(NodePtr::Ref<Node4>(art, node, type), byte);
+		return Node4::GetNextChild(NodePtr::Ref<Node4>(art, node_ptr, type), byte);
 	case NType::NODE_16:
-		return Node16::GetNextChild(NodePtr::Ref<Node16>(art, node, type), byte);
+		return Node16::GetNextChild(NodePtr::Ref<Node16>(art, node_ptr, type), byte);
 	case NType::NODE_48:
-		return Node48::GetNextChild(NodePtr::Ref<Node48>(art, node, type), byte);
+		return Node48::GetNextChild(NodePtr::Ref<Node48>(art, node_ptr, type), byte);
 	case NType::NODE_256:
-		return Node256::GetNextChild(NodePtr::Ref<Node256>(art, node, type), byte);
+		return Node256::GetNextChild(NodePtr::Ref<Node256>(art, node_ptr, type), byte);
 	default:
 		throw InternalException("Invalid node type for GetNextChildInternal: %d.", type);
 	}
@@ -402,18 +423,18 @@ bool NodePtr::IsAnyLeaf() const {
 // TransformToDeprecated
 //===--------------------------------------------------------------------===//
 
-void NodePtr::TransformToDeprecated(ART &art, NodePtr &node, TransformToDeprecatedState &state) {
-	auto child_handler = [&](NodePtr &child) -> OptionalNodePtr {
-		D_ASSERT(child.HasMetadata());
-		if (child.GetGateStatus() == GateStatus::GATE_SET) {
-			Leaf::TransformToDeprecated(art, child);
+void NodePtr::TransformToDeprecated(ART &art, NodePtr &node_ptr, TransformToDeprecatedState &state) {
+	auto child_handler = [&](NodePtr &child_ptr) -> OptionalNodePtr {
+		D_ASSERT(child_ptr.HasMetadata());
+		if (child_ptr.GetGateStatus() == GateStatus::GATE_SET) {
+			Leaf::TransformToDeprecated(art, child_ptr);
 			return OptionalNodePtr();
 		}
-		auto type = child.GetType();
+		auto type = child_ptr.GetType();
 		switch (type) {
 		case NType::PREFIX:
 			// An empty node stops the traversal.
-			return PrefixHandle::TransformToDeprecated(art, child, state);
+			return PrefixHandle::TransformToDeprecated(art, child_ptr, state);
 		case NType::LEAF_INLINED:
 		case NType::LEAF:
 			return OptionalNodePtr();
@@ -424,24 +445,24 @@ void NodePtr::TransformToDeprecated(ART &art, NodePtr &node, TransformToDeprecat
 		case NType::NODE_7_LEAF:
 		case NType::NODE_15_LEAF:
 		case NType::NODE_256_LEAF:
-			return child;
+			return child_ptr;
 		default:
 			throw InternalException("invalid node type for TransformToDeprecated: %d", type);
 		}
 	};
 
-	auto on_pop = [&](NodePtr current) -> ARTScanNodeResult {
-		auto type = current.GetType();
+	auto on_pop = [&](NodePtr current_ptr) -> ARTScanNodeResult {
+		auto type = current_ptr.GetType();
 		if (type == NType::NODE_4 || type == NType::NODE_16 || type == NType::NODE_48 || type == NType::NODE_256) {
 			auto &alloc = NodePtr::GetAllocator(art, type);
-			if (!alloc.LoadedFromStorage(current)) {
+			if (!alloc.LoadedFromStorage(current_ptr)) {
 				return ARTScanNodeResult::SKIP;
 			}
 		}
 		return ARTScanNodeResult::SCAN_CHILDREN;
 	};
 
-	ARTScanPreorder(art, node, child_handler, on_pop);
+	ARTScanPreorder(art, node_ptr, child_handler, on_pop);
 }
 
 //===--------------------------------------------------------------------===//
@@ -468,14 +489,14 @@ void NodePtr::Verify(ART &art) const {
 
 	if (!IsNestedLeaf()) {
 		uint8_t byte = 0;
-		auto child = GetNextChild(art, byte);
-		while (child) {
-			child->Verify(art);
+		auto child_ptr = GetNextChild(art, byte);
+		while (child_ptr) {
+			child_ptr->Verify(art);
 			if (byte == NumericLimits<uint8_t>::Maximum()) {
 				break;
 			}
 			byte++;
-			child = GetNextChild(art, byte);
+			child_ptr = GetNextChild(art, byte);
 		}
 	}
 }
@@ -483,14 +504,14 @@ void NodePtr::Verify(ART &art) const {
 void NodePtr::VerifyAllocations(ART &art, unordered_map<uint8_t, idx_t> &node_counts) const {
 	D_ASSERT(HasMetadata());
 
-	auto child_handler = [&](const NodePtr &child) -> OptionalNodePtr {
-		D_ASSERT(child.HasMetadata());
-		auto type = child.GetType();
+	auto child_handler = [&](const NodePtr &child_ptr) -> OptionalNodePtr {
+		D_ASSERT(child_ptr.HasMetadata());
+		auto type = child_ptr.GetType();
 		switch (type) {
 		case NType::LEAF_INLINED:
 			return OptionalNodePtr();
 		case NType::LEAF: {
-			Leaf::DeprecatedVerifyAllocations(art, child, node_counts);
+			Leaf::DeprecatedVerifyAllocations(art, child_ptr, node_counts);
 			return OptionalNodePtr();
 		}
 		case NType::NODE_7_LEAF:
@@ -504,7 +525,7 @@ void NodePtr::VerifyAllocations(ART &art, unordered_map<uint8_t, idx_t> &node_co
 		case NType::NODE_48:
 		case NType::NODE_256:
 			node_counts[GetAllocatorIdx(type)]++;
-			return child;
+			return child_ptr;
 		default:
 			throw InternalException("invalid node type for VerifyAllocations: %d", type);
 		}
@@ -565,14 +586,14 @@ string NodePtr::ToStringChildren(ART &art, const ToStringOptions &options) const
 		// Collect all children first to know which is last
 		vector<pair<uint8_t, const NodePtr *>> children;
 		uint8_t byte = 0;
-		auto child = GetNextChild(art, byte);
-		while (child) {
-			children.emplace_back(byte, child.get());
+		auto child_ptr = GetNextChild(art, byte);
+		while (child_ptr) {
+			children.emplace_back(byte, child_ptr.get());
 			if (byte == NumericLimits<uint8_t>::Maximum()) {
 				break;
 			}
 			byte++;
-			child = GetNextChild(art, byte);
+			child_ptr = GetNextChild(art, byte);
 		}
 
 		uint8_t expected_byte = 0;

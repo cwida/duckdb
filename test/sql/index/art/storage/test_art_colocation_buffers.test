@@ -1,0 +1,43 @@
+# name: test/sql/index/art/storage/test_art_colocation_buffers.test
+# description: Test that small ART indexes share physical blocks.
+# group: [storage]
+
+require noforcestorage
+
+load {TEST_DIR}/art_colocation_buffers.db
+
+statement ok
+SET threads=1;
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+SET debug_verify_blocks=true;
+
+statement ok
+CREATE TABLE simple_table(v BIGINT);
+
+statement ok
+INSERT INTO simple_table VALUES(0);
+
+loop i 0 20
+
+statement ok
+CREATE UNIQUE INDEX art_{i} ON simple_table(v);
+
+endloop
+
+statement ok
+CHECKPOINT;
+
+# The indexes should fit in a single block,
+# but we are more lenient here to make the test less brittle w.r.t future changes.
+query I
+SELECT (used_blocks
+        - (SELECT count(DISTINCT block_id) FROM pragma_metadata_info())
+        - (SELECT count(DISTINCT block_id)
+           FROM pragma_storage_info('simple_table') WHERE block_id >= 0)) BETWEEN 1 AND 10
+FROM pragma_database_size();
+----
+1

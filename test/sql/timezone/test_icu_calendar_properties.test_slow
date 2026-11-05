@@ -37,7 +37,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 gregorian	0	0	0	0	0	1315
@@ -57,7 +57,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 buddhist	0	0	0	0	0	1315
@@ -77,7 +77,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 roc	0	0	0	0	0	1315
@@ -97,7 +97,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 iso8601	0	0	0	0	0	1315
@@ -117,7 +117,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 coptic	0	0	0	0	0	1424
@@ -137,7 +137,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 ethiopic	0	0	0	0	0	1424
@@ -157,7 +157,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 ethiopic-amete-alem	0	0	0	0	0	1424
@@ -177,7 +177,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 persian	0	0	0	0	0	1315
@@ -197,7 +197,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 indian	0	0	0	0	0	1315
@@ -217,7 +217,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 islamic	0	0	0	0	0	1356
@@ -237,7 +237,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 islamic-civil	0	0	0	0	0	1356
@@ -257,7 +257,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 islamic-rgsa	0	0	0	0	0	1356
@@ -277,7 +277,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 islamic-tbla	0	0	0	0	0	1356
@@ -297,7 +297,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 islamic-umalqura	0	0	0	0	0	1356
@@ -317,7 +317,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 hebrew	0	0	0	0	0	1355
@@ -337,7 +337,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 japanese	0	0	0	0	0	1318
@@ -357,7 +357,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 chinese	0	0	0	0	0	1314
@@ -377,7 +377,7 @@ FROM (SELECT ts, day, month, doy, trunc, last, era, year,
              max(last) OVER (PARTITION BY era, year, month) AS month_last,
              lag(day) OVER (ORDER BY ts) AS prev_day,
              lag(doy) OVER (ORDER BY ts) AS prev_doy
-      FROM (SELECT ts, era(ts) era, year(ts) year, month(ts) month, day(ts) day, dayofyear(ts) doy,
+      FROM (SELECT ts, era(ts) AS era, year(ts) AS year, month(ts) AS month, day(ts) AS day, dayofyear(ts) AS doy,
                    date_trunc('day', ts) trunc, last_day(ts) last FROM days));
 ----
 dangi	0	0	0	0	0	1314

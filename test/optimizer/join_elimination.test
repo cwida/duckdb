@@ -115,11 +115,11 @@ physical_plan	<REGEX>:.*JOIN.*
 
 # this should eliminate inner join but keep outer one
 query II
-explain SELECT c.* 
-  FROM c 
+explain SELECT c.*
+  FROM c
   LEFT JOIN (
-      SELECT DISTINCT b.* 
-      FROM b 
+      SELECT DISTINCT b.*
+      FROM b
       LEFT JOIN a ON a.ida = b.idb
   ) AS ab ON c.idc = ab.idb;
 ----
@@ -127,11 +127,11 @@ physical_plan	<REGEX>:.*JOIN.*
 
 # this should eliminate all join
 query II
-explain SELECT c.* 
-  FROM c 
+explain SELECT c.*
+  FROM c
   LEFT JOIN (
-      SELECT DISTINCT b.* 
-      FROM b 
+      SELECT DISTINCT b.*
+      FROM b
       LEFT JOIN a ON a.ida = b.idb
   ) AS ab ON c.idc = ab.idb and c.valuec = ab.valueb;
 ----
@@ -198,29 +198,29 @@ statement ok
 select b.*, tan(a.ida) from b left join a on a.ida=b.idb;
 
 statement ok
-SELECT c.* 
-  FROM c 
+SELECT c.*
+  FROM c
   LEFT JOIN (
-      SELECT DISTINCT b.* 
-      FROM b 
+      SELECT DISTINCT b.*
+      FROM b
       LEFT JOIN a ON a.ida = b.idb
   ) AS ab ON c.idc = ab.idb;
 
 statement ok
-SELECT c.* 
-  FROM c 
+SELECT c.*
+  FROM c
   LEFT JOIN (
-      SELECT DISTINCT b.* 
-      FROM b 
+      SELECT DISTINCT b.*
+      FROM b
       LEFT JOIN a ON a.ida = b.idb
   ) AS ab ON c.idc = ab.idb and c.valuec = ab.valueb;
 
 statement ok
 select b.*, tan(a.ida) from b left join a on a.ida=b.idb;
 
-# union intersect unnest, pivot, delim scan, inline cte, materialized 
+# union intersect unnest, pivot, delim scan, inline cte, materialized
 query II
-explain 
+explain
   select b.* from b left join (select distinct a.ida from a ) as a on a.ida=b.idb union all select b.*  from b left join (select distinct a.ida from a ) as a on a.ida=b.idb;
 ----
 physical_plan	<!REGEX>:.*JOIN.*
@@ -290,5 +290,76 @@ select count(*) from probe_keys left join (select distinct k from (select k, unn
 
 query II
 explain select count(*) from probe_keys left join (select distinct k from (select k, unnest([1,2,3]) e from dup_keys) u) t on t.k=probe_keys.idb;
+----
+physical_plan	<!REGEX>:.*JOIN.*
+
+# limit/top_n/sample pick rows based on input cardinality, so a distinct group established above them
+# does not hold below them: the join duplicates p row 6, which changes which rows the slice keeps
+# (issue #27155)
+
+statement ok
+create table p(id bigint, g varchar);
+
+statement ok
+insert into p values (1,'x'),(2,'y'),(3,'x'),(4,'y'),(5,'x'),(6,'y'),(7,'z');
+
+statement ok
+create table k(a bigint, b bigint);
+
+statement ok
+insert into k values (1,2),(1,3),(2,3),(3,4),(4,1),(5,1),(6,7),(6,4);
+
+# the joined slice is (6,y),(6,y), so the distinct is y;
+# if the join were eliminated the slice would be (6,y),(1,x), giving the wrong distinct {x,y}
+query I
+select distinct pg from (select p.id as pid, p.g as pg from p left join k on p.id = k.a order by p.g desc, p.id limit 2 offset 3) order by pg;
+----
+y
+
+query II
+explain select distinct pg from (select p.id as pid, p.g as pg from p left join k on p.id = k.a order by p.g desc, p.id limit 2 offset 3) order by pg;
+----
+physical_plan	<REGEX>:.*JOIN.*
+
+# a plain limit (no order by) covers the LOGICAL_LIMIT case; rows kept are unspecified, plan only
+query II
+explain select distinct pg from (select p.g as pg from p left join k on p.id = k.a limit 5);
+----
+physical_plan	<REGEX>:.*JOIN.*
+
+# a sample also picks rows by cardinality, so the join must survive it;
+# assert Join Type: LEFT rather than JOIN: sampling itself adds a SEMI join
+query II
+explain select distinct pg from (select p.g as pg from p left join k on p.id = k.a) using sample 5 rows;
+----
+physical_plan	<REGEX>:.*Join Type: LEFT.*
+
+# a window function computes values that depend on row multiplicity, so the join's duplicated rows
+# shift the row_number values and change which rows a rn-filter keeps
+query I
+select distinct pg from (select p.g as pg, row_number() over (order by p.id) as rn from p left join k on p.id = k.a) t where rn <= 2;
+----
+x
+
+query II
+explain select distinct pg from (select p.g as pg, row_number() over (order by p.id) as rn from p left join k on p.id = k.a) t where rn <= 2;
+----
+physical_plan	<REGEX>:.*Join Type: LEFT.*
+
+# group by instead of distinct: the join survives and the result is unchanged
+query I
+select pg from (select p.id as pid, p.g as pg from p left join k on p.id = k.a order by p.g desc, p.id limit 2 offset 3) group by pg order by pg;
+----
+y
+
+# still eliminated: a distinct directly above the join absorbs the duplicated rows before any limit
+query II
+explain select distinct pg from (select p.g as pg from p left join k on p.id = k.a) order by pg limit 2;
+----
+physical_plan	<!REGEX>:.*JOIN.*
+
+# still eliminated: a distinct join key makes the join non-multiplying, no matter what sits above it
+query II
+explain select distinct pg from (select p.g as pg from p left join (select distinct a from k) s on p.id = s.a order by pg desc limit 3) order by pg;
 ----
 physical_plan	<!REGEX>:.*JOIN.*

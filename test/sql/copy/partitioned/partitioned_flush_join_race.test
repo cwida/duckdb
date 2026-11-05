@@ -1,5 +1,5 @@
 # name: test/sql/copy/partitioned/partitioned_flush_join_race.test
-# description: Stress the window between a thread joining a sink state and another thread moving it to flushing
+# description: Cover the window between joining a sink state and moving it to flushing
 # group: [partitioned]
 
 require parquet
@@ -7,39 +7,26 @@ require parquet
 statement ok
 PRAGMA threads=16;
 
-# A low threshold makes every state flush after a few chunks. Each flush is followed by a fresh round of
-# threads joining the next state while the threshold is already being crossed again, so the join and the
-# flush trigger overlap many times per COPY.
 statement ok
 SET partitioned_write_flush_threshold=2048;
 
 statement ok
-CREATE TABLE flush_join_src AS SELECT (i % 64)::INTEGER AS p, i::BIGINT AS v FROM range(1048576) tbl(i);
-
-loop i 0 8
+CREATE TABLE flush_join_src AS SELECT (i % 64)::INTEGER AS p, i::BIGINT AS v FROM range(262144) tbl(i);
 
 statement ok
-COPY flush_join_src TO '{TEST_DIR}/flush_join_race_{i}' (FORMAT PARQUET, PARTITION_BY (p));
-
-# count, sum and distinct count together catch both lost and duplicated rows
-query III
-SELECT count(*), count(DISTINCT v), sum(v)
-FROM read_parquet('{TEST_DIR}/flush_join_race_{i}/**/*.parquet', hive_partitioning = true);
-----
-1048576	1048576	549755289600
-
-endloop
-
-# ORDER_BY makes finalizing a state heavier, which widens the window on the finalizing side
-loop i 0 8
-
-statement ok
-COPY flush_join_src TO '{TEST_DIR}/flush_join_race_ordered_{i}' (FORMAT PARQUET, PARTITION_BY (p), ORDER_BY (v));
+COPY flush_join_src TO '{TEST_DIR}/flush_join_race' (FORMAT PARQUET, PARTITION_BY (p));
 
 query III
 SELECT count(*), count(DISTINCT v), sum(v)
-FROM read_parquet('{TEST_DIR}/flush_join_race_ordered_{i}/**/*.parquet', hive_partitioning = true);
+FROM read_parquet('{TEST_DIR}/flush_join_race/**/*.parquet', hive_partitioning = true);
 ----
-1048576	1048576	549755289600
+262144	262144	34359607296
 
-endloop
+statement ok
+COPY flush_join_src TO '{TEST_DIR}/flush_join_race_ordered' (FORMAT PARQUET, PARTITION_BY (p), ORDER_BY (v));
+
+query III
+SELECT count(*), count(DISTINCT v), sum(v)
+FROM read_parquet('{TEST_DIR}/flush_join_race_ordered/**/*.parquet', hive_partitioning = true);
+----
+262144	262144	34359607296

@@ -201,6 +201,28 @@
     ]
   },
   {
+    "class": "MatchRecognizeRef",
+    "base": "TableRef",
+    "enum": "MATCH_RECOGNIZE",
+    "members": [
+      {
+        "id": 200,
+        "name": "input",
+        "type": "TableRef*"
+      },
+      {
+        "id": 201,
+        "name": "config",
+        "type": "MatchRecognizeConfig*"
+      },
+      {
+        "id": 202,
+        "name": "column_name_alias",
+        "type": "vector<Identifier>"
+      }
+    ]
+  },
+  {
     "class": "TableFunctionRef",
     "base": "TableRef",
     "enum": "TABLE_FUNCTION",

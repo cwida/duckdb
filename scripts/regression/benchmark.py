@@ -70,7 +70,7 @@ def symlink_directory_entries(source_directory: Path, target_directory: Path, sk
         target_path.symlink_to(source_path, target_is_directory=source_path.is_dir())
 
 
-def create_isolated_benchmark_root(source_root: Path, target_root: Path):
+def create_isolated_benchmark_root(source_root: Path, target_root: Path, tpcds_answers: Optional[Path] = None):
     """Give a runner a root directory of its own, with existing benchmark data symlinked into it."""
     target_root.mkdir()
     symlink_directory_entries(source_root, target_root, BENCHMARK_DATA_DIRECTORY)
@@ -79,6 +79,18 @@ def create_isolated_benchmark_root(source_root: Path, target_root: Path):
     source_data_directory = source_root / BENCHMARK_DATA_DIRECTORY
     if source_data_directory.is_dir():
         symlink_directory_entries(source_data_directory, target_data_directory)
+    if tpcds_answers is not None:
+        source_directory = source_root
+        target_directory = target_root
+        for name in ("extension", "tpcds", "dsdgen"):
+            source_directory = source_directory / name
+            target_directory = target_directory / name
+            target_directory.unlink()
+            target_directory.mkdir()
+            symlink_directory_entries(source_directory, target_directory)
+        answers_directory = target_directory / "answers"
+        answers_directory.unlink()
+        answers_directory.symlink_to(tpcds_answers, target_is_directory=True)
 
 
 class BenchmarkRunner:

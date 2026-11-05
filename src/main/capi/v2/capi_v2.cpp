@@ -255,6 +255,11 @@ auto RenderCaughtError(DUCKDB_V2_ERROR &code, string &text, optional<string> &ra
 		// The bare throw re-raises the exception currently being handled so the catch clauses can dispatch on its type.
 		try {
 			throw;
+		} catch (const MetadataDeferredException &ex) {
+			ErrorData error_data(ex);
+			code = DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED;
+			text = error_data.Message();
+			raw_message = error_data.RawMessage();
 		} catch (const duckdb::Exception &ex) {
 			ErrorData error_data(ex);
 			code = GetErrorCodeFromExceptionType(error_data.Type());

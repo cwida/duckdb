@@ -1,0 +1,42 @@
+# name: test/sql/join/runtime_filter_equivalent_keys_plan.test
+# description: Equivalent probe keys activate while independent builds keep their schedule
+# group: [join]
+
+statement ok
+SET threads=4;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE a AS SELECT i AS id,(i%100)::DOUBLE AS inferred_key FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT id,inferred_key AS k FROM a;
+
+statement ok
+CREATE TABLE c AS SELECT 42::DOUBLE k;
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(rn) FROM (
+    SELECT b.k,row_number() OVER (PARTITION BY b.k ORDER BY a.id) rn
+    FROM a JOIN b ON a.id=b.id AND a.inferred_key=b.k
+) p JOIN c ON p.k=c.k;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*inferred_key = 42.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.inferred_key=b.k JOIN c ON b.k=c.k;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*inferred_key = 42.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(rn) FROM (
+    SELECT b.k,row_number() OVER (PARTITION BY b.k ORDER BY a.id) rn
+    FROM a JOIN b ON a.id=b.id AND a.inferred_key IS NOT DISTINCT FROM b.k
+) p JOIN c ON p.k=c.k;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*inferred_key = 42.*
+
+statement ok
+RESET disabled_optimizers;

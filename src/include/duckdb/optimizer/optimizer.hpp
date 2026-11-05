@@ -19,6 +19,7 @@ namespace duckdb {
 class Binder;
 class FilterStatisticsOptimizer;
 class SQLStatement;
+struct MetricsTimer;
 
 class Optimizer {
 public:
@@ -47,6 +48,7 @@ private:
 
 	void RunBuiltInOptimizers();
 	void RunOptimizer(OptimizerType type, const std::function<void()> &callback);
+	MetricsTimer StartProfiler(OptimizerType type);
 	void Verify(LogicalOperator &op);
 
 public:

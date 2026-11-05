@@ -1,0 +1,50 @@
+# name: test/sql/storage/concurrent_wal/concurrent_updates_cleanup_order.test_slow
+# description: Commits that share a WAL sync leave the active set in wake-up order; cleanup must still see them in commit order
+# group: [concurrent_wal]
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+# widen the publish-to-durable window so many commits share each sync
+statement ok
+SET debug_wal_fsync_sleep_ms=2
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_updates_cleanup_order.db' AS db
+
+statement ok
+CREATE TABLE db.counters(id INTEGER, v INTEGER)
+
+statement ok
+INSERT INTO db.counters SELECT i, 0 FROM range(8) t(i)
+
+# every thread updates only its own row, so nothing conflicts and every commit carries an update
+concurrentloop threadid 0 8
+
+loop x 0 200
+
+statement ok
+UPDATE db.counters SET v = v + 1 WHERE id = {threadid}
+
+endloop
+
+endloop
+
+query I
+SELECT SUM(v) FROM db.counters
+----
+1600
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_updates_cleanup_order.db' AS db
+
+query I
+SELECT SUM(v) FROM db.counters
+----
+1600

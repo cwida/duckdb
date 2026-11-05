@@ -3,6 +3,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/os_util.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/planner/logical_operator.hpp"
@@ -25,14 +26,9 @@ namespace duckdb {
 
 static void GetEnvFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, [&](string_t input) {
-		string env_name = input.GetString();
-		auto env_value = getenv(env_name.c_str());
-		if (!env_value) {
-			return heap.AddString(string());
-		}
-		return heap.AddString(env_value);
-	});
+	auto &os_util = OSUtil::Get(*state.GetContext().db);
+	UnaryExecutor::Execute<string_t, string_t>(
+	    args.data[0], result, [&](string_t input) { return heap.AddString(os_util.GetEnv(input.GetString())); });
 }
 
 static unique_ptr<FunctionData> GetEnvBind(BindScalarFunctionInput &input) {
@@ -137,7 +133,7 @@ void ShellExtension::Load(ExtensionLoader &loader) {
 	planner_ext.post_bind_function = duckdb::ShellPostBind;
 	PlannerExtension::Register(config, planner_ext);
 
-	// opt-in grammar: the CLI enables it via SET active_grammar_extensions=['shell'] when it opens a database
+	// opt-in grammar: the CLI enables it via CALL add_grammar_extension('shell') when it opens a database
 	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<ShellGrammarExtension>());
 
 	// highlight the CLI profiler "query_tree" output

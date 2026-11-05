@@ -30,10 +30,11 @@ bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, M
 		if (IsVirtualColumn(info.column_ids[i])) {
 			continue;
 		}
-		filter_info.column_map.insert({info.column_names[info.column_ids[i]].GetIdentifierName(), i});
+		filter_info.column_map.insert({info.column_names[info.column_ids[i]], i});
 	}
 	filter_info.hive_enabled = options.hive_partitioning;
 	filter_info.filename_enabled = options.filename;
+	filter_info.filename_column = Identifier(options.filename_column);
 
 	auto start_files = expanded_files.size();
 	HivePartitioning::ApplyFiltersToFileList(context, expanded_files, filters, filter_info, info);
@@ -235,6 +236,28 @@ OpenFileInfo MultiFileList::GetFirstFile() const {
 
 bool MultiFileList::IsEmpty() const {
 	return GetExpandResult() == FileExpandResult::NO_FILES;
+}
+
+optional_idx MultiFileList::EstimateRowsPerFile(idx_t bytes_per_row) const {
+	D_ASSERT(bytes_per_row > 0);
+	MultiFileListScanData scan_data;
+	scan_data.scan_type = MultiFileListScanType::FETCH_IF_AVAILABLE;
+	InitializeScan(scan_data);
+	OpenFileInfo file;
+	idx_t file_count = 0;
+	idx_t row_count = 0;
+	while (Scan(scan_data, file)) {
+		idx_t file_size;
+		if (!file.extended_info || !file.extended_info->TryGetOption("file_size", file_size)) {
+			return optional_idx();
+		}
+		row_count += MaxValue<idx_t>(file_size / bytes_per_row, 1);
+		file_count++;
+	}
+	if (file_count == 0) {
+		return optional_idx();
+	}
+	return row_count / file_count;
 }
 
 unique_ptr<MultiFileList> MultiFileList::Copy() const {

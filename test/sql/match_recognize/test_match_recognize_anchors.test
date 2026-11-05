@@ -1,0 +1,75 @@
+# name: test/sql/match_recognize/test_match_recognize_anchors.test
+# description: MATCH_RECOGNIZE PATTERN anchors - ^ and $
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+# ^ and $ hold at the ends of the partition and take no row of their own, so they say where a match
+# may begin and end rather than what it matches.
+
+statement ok
+create table anch(p integer, i integer, c varchar);
+
+statement ok
+insert into anch values (1,1,'a'),(1,2,'a'),(1,3,'a'),(2,4,'a'),(2,5,'a');
+
+query II
+SELECT count(*), max(len) FROM anch MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (^ A+) DEFINE A AS c='a'
+)
+----
+1	5
+
+query II
+SELECT count(*), max(len) FROM anch MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+ $) DEFINE A AS c='a'
+)
+----
+1	5
+
+# a fixed length that cannot reach both ends at once has nowhere to sit
+query II
+SELECT count(*), max(len) FROM anch MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (^ A{2} $) DEFINE A AS c='a'
+)
+----
+0	NULL
+
+# the ends are the partition's, not the input's
+query II
+SELECT p, len FROM anch MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (^ A+ $) DEFINE A AS c='a'
+) ORDER BY p
+----
+1	3
+2	2
+
+query II
+SELECT p, len FROM anch MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (^ A{2}) DEFINE A AS c='a'
+) ORDER BY p
+----
+1	2
+2	2
+
+# a match begins at a row, and there is no row past the last one to begin at, so an anchor alone at
+# the end has nowhere to happen
+query II
+SELECT count(*), max(len) FROM anch MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ($)
+)
+----
+0	NULL

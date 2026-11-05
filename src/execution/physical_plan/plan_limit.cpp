@@ -1,6 +1,7 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/execution/operator/aggregate/physical_limited_distinct.hpp"
+#include "duckdb/execution/operator/aggregate/physical_perfecthash_aggregate.hpp"
 #include "duckdb/execution/operator/helper/physical_limit.hpp"
 #include "duckdb/execution/operator/helper/physical_streaming_limit.hpp"
 #include "duckdb/execution/operator/helper/physical_limit_percent.hpp"
@@ -101,14 +102,54 @@ static PhysicalOperator &CreateLimitedDistinct(PhysicalPlanGenerator &generator,
 	return limited;
 }
 
-static PhysicalOperator *TryCreateLimitedDistinct(PhysicalPlanGenerator &generator, PhysicalOperator &plan,
-                                                  idx_t limit) {
+static bool CanUseLimitedDistinct(const PhysicalPerfectHashAggregate &perfect_aggregate, idx_t limit) {
+	if (perfect_aggregate.groups.empty() || !perfect_aggregate.aggregates.empty()) {
+		return false;
+	}
+	// the group bounds cap the number of groups: when the limit cannot be reached a scan that stops early gains
+	// nothing over the perfect hash table
+	idx_t total_bits = 0;
+	for (const auto &bits : perfect_aggregate.required_bits) {
+		total_bits += bits;
+	}
+	if (total_bits < sizeof(idx_t) * 8 && (idx_t(1) << total_bits) <= limit) {
+		return false;
+	}
+	return true;
+}
+
+static PhysicalOperator &CreateLimitedDistinct(PhysicalPlanGenerator &generator,
+                                               PhysicalPerfectHashAggregate &perfect_aggregate, idx_t limit) {
+	D_ASSERT(perfect_aggregate.children.size() == 1);
+	auto &limited = generator.Make<PhysicalLimitedDistinct>(
+	    perfect_aggregate.types, std::move(perfect_aggregate.groups), std::move(perfect_aggregate.aggregates), limit,
+	    perfect_aggregate.estimated_cardinality);
+	limited.children.push_back(perfect_aggregate.children[0]);
+	return limited;
+}
+
+static PhysicalOperator *TryRewriteAggregate(PhysicalPlanGenerator &generator, PhysicalOperator &plan, idx_t limit) {
 	if (plan.type == PhysicalOperatorType::HASH_GROUP_BY) {
 		auto &hash_aggregate = plan.Cast<PhysicalHashAggregate>();
 		if (!CanUseLimitedDistinct(hash_aggregate)) {
 			return nullptr;
 		}
 		return &CreateLimitedDistinct(generator, hash_aggregate, limit);
+	}
+	if (plan.type == PhysicalOperatorType::PERFECT_HASH_GROUP_BY) {
+		auto &perfect_aggregate = plan.Cast<PhysicalPerfectHashAggregate>();
+		if (!CanUseLimitedDistinct(perfect_aggregate, limit)) {
+			return nullptr;
+		}
+		return &CreateLimitedDistinct(generator, perfect_aggregate, limit);
+	}
+	return nullptr;
+}
+
+static PhysicalOperator *TryCreateLimitedDistinct(PhysicalPlanGenerator &generator, PhysicalOperator &plan,
+                                                  idx_t limit) {
+	if (auto *rewritten = TryRewriteAggregate(generator, plan, limit)) {
+		return rewritten;
 	}
 	if (plan.type != PhysicalOperatorType::PROJECTION) {
 		return nullptr;
@@ -118,20 +159,14 @@ static PhysicalOperator *TryCreateLimitedDistinct(PhysicalPlanGenerator &generat
 	if (projection.children.size() != 1) {
 		return nullptr;
 	}
-	auto &child = projection.children[0].get();
-	if (child.type != PhysicalOperatorType::HASH_GROUP_BY) {
+	auto *limited = TryRewriteAggregate(generator, projection.children[0].get(), limit);
+	if (!limited) {
 		return nullptr;
 	}
 
-	auto &hash_aggregate = child.Cast<PhysicalHashAggregate>();
-	if (!CanUseLimitedDistinct(hash_aggregate)) {
-		return nullptr;
-	}
-
-	auto &limited = CreateLimitedDistinct(generator, hash_aggregate, limit);
 	auto &new_projection = generator.Make<PhysicalProjection>(projection.types, std::move(projection.select_list),
 	                                                          projection.estimated_cardinality);
-	new_projection.children.push_back(limited);
+	new_projection.children.push_back(*limited);
 	return &new_projection;
 }
 

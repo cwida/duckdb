@@ -121,6 +121,12 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
 		return roundtrip && *roundtrip == constant_value;
 	}
+	if (target_type.id() == LogicalTypeId::DECIMAL && cast_expression.GetReturnType().id() == LogicalTypeId::DECIMAL) {
+		// a narrowing decimal cast of the constant is fine if the constant round-trips exactly
+		string error_message;
+		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
+		return roundtrip && *roundtrip == constant_value;
+	}
 	if (target_type.id() != LogicalTypeId::DATE || cast_expression.GetReturnType().id() != LogicalTypeId::TIMESTAMP) {
 		return false;
 	}

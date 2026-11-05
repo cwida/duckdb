@@ -5,6 +5,10 @@
 #include "shell_state.hpp"
 #include <sys/stat.h>
 
+#if defined(_WIN32) || defined(WIN32)
+#define strdup _strdup
+#endif
+
 namespace duckdb {
 #define LINENOISE_DEFAULT_HISTORY_MAX_LEN 1000
 static idx_t history_max_len = LINENOISE_DEFAULT_HISTORY_MAX_LEN;

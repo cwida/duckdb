@@ -1,0 +1,30 @@
+# name: benchmark/micro/compression/zstd/zstd_read_overflow.benchmark
+# description: Scan ZSTD vectors spanning multiple overflow blocks
+# group: [zstd]
+
+name ZSTD Scan Overflow Blocks
+group zstd
+storage persistent v1.2.0
+cache zstd_read_overflow.db
+
+# Distinct hashes keep each vector's compressed data larger than a block.
+load
+CREATE TABLE zstd_strings(s VARCHAR USING COMPRESSION ZSTD);
+INSERT INTO zstd_strings SELECT array_to_string([md5((i * 32 + j)::VARCHAR) FOR j IN range(32)], '') FROM range(65_536) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('zstd_strings') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+ZSTD
+
+assert I
+SELECT SUM(len(additional_block_ids)) > 2 * SUM(ceil(count / 2048.0)) FROM pragma_storage_info('zstd_strings') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+true
+
+run
+SELECT SUM(strlen(s)) FROM zstd_strings;
+
+result I
+67108864
