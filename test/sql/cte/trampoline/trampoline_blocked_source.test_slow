@@ -4,7 +4,7 @@
 
 # With threads == external_threads there are zero internal worker threads. An
 # async-yielding source (dbgen schedules its continuation as an executor task and returns
-# BLOCKED after every generation step; its ~1.6 s per-invocation text-pool setup is
+# BLOCKED after every generation step; its per-invocation setup cost is largely
 # scale-independent, which makes this a slow test - dsdgen is cheaper but does not
 # block in this shape) can then only make progress on the coordinating thread. The
 # trampoline source suspends its wave and returns BLOCKED up the stack, so the regular
@@ -17,6 +17,7 @@
 # which the parked client loop observes. max_execution_time additionally bounds
 # regressions where tasks still execute without making progress, but cannot fire while
 # the query is fully parked. The runner's process timeout remains the last resort.
+# Sanitizer configs may need the query_timeout bound revisited if dbgen setup inflates.
 
 require tpch
 

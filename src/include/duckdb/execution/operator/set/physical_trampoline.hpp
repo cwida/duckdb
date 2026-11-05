@@ -87,11 +87,12 @@ struct TrampolineBranchPipelines {
 //! the estimate route), and contaminated or incomparable probes fall back to the
 //! estimate. Large waves always parallelize through the frontier-sized workers. The
 //! recursive CTE sizes on frontier work alone and reads no independent-source estimate.
-//! Route measurement spans the wave prologue to its epilogue, so time a suspended wave
-//! spends parked (BLOCKED, waiting to be re-entered) counts toward it. The synchronous
-//! driver's wall time equally included its in-operator waits on the same blocked work, so
-//! the thresholds compare the same interval as before the suspension port. Excluding
-//! parked time, to estimate runnable work only, is a possible refinement.
+//! The route clock starts at the end of the wave prologue (after the sink resets) and
+//! stops in the epilogue, so time a suspended wave spends parked (BLOCKED, waiting to be
+//! re-entered) counts toward it. The synchronous driver measured the same interval and
+//! equally included its in-operator waits on the same blocked work, so the thresholds
+//! compare against the pre-port interval. Excluding parked time, to estimate runnable
+//! work only, is a possible refinement.
 //!
 //! Admission (BRANCH DISTINCT). Round-wide full-row admission against all rows
 //! ever routed to the branch, yielding one admitted wave per round. Admission
