@@ -1,0 +1,66 @@
+# name: test/sql/attach/external_resource_type_autoload.test
+# description: An unknown resource type autoloads the extension known to provide it, or names it in the error
+# group: [attach]
+
+# With autoloading on, the aws extension would be loaded (and the statement then talk to AWS); this test checks
+# the lookup and the error without it.
+require no_extension_autoloading "EXPECTED: the test checks the error given without autoloading"
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+SET autoinstall_known_extensions = false;
+
+# A type no extension is known to provide.
+statement error
+REGISTER EXTERNAL RESOURCE 'nobody:provides:this' AS r FROM MAP {'id': 'x'};
+----
+<REGEX>:.*unknown resource type "nobody:provides:this".*
+
+statement error
+CREATE EXTERNAL RESOURCE 'nobody:provides:this' AS r;
+----
+<REGEX>:.*unknown resource type "nobody:provides:this".*
+
+# A type an extension is known to provide (extension_entries.hpp): the error says which one.
+statement error
+REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS r FROM MAP {'id': 'x'};
+----
+<REGEX>:.*provided by the aws extension.*INSTALL aws; LOAD aws;.*
+
+# Nothing was registered along the way.
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+0
+
+# With autoloading on, the type triggers the autoload of aws. An extension directory of its own and a repository that
+# does not exist make the install fail, so the statement fails with the autoload error rather than "unknown type".
+statement ok
+SET extension_directory = '{TEST_DIR}/extensions';
+
+statement ok
+SET autoinstall_extension_repository = '{TEST_DIR}/no_such_repository';
+
+statement ok
+SET autoload_known_extensions = true;
+
+statement ok
+SET autoinstall_known_extensions = true;
+
+statement error
+REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS r FROM MAP {'id': 'x'};
+----
+<REGEX>:.*Extension Autoloading Error.*automatically install the required extension 'aws.*
+
+# A type no extension provides does not try to autoload anything.
+statement error
+REGISTER EXTERNAL RESOURCE 'nobody:provides:this' AS r FROM MAP {'id': 'x'};
+----
+<REGEX>:.*unknown resource type "nobody:provides:this".*
+
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+0

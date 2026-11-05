@@ -30,6 +30,9 @@ struct MultiFileOptions {
 	//! The maximum number of files that are opened to determine the schema - the schemas of the sampled files are
 	//! combined into one. NumericLimits<idx_t>::Maximum() samples every file
 	idx_t maximum_sample_files = 1;
+	//! A scan of at most this many files (0: none) opens all of them at bind for their exact row count and merged
+	//! column statistics, without changing the schema. Not serialized
+	idx_t maximum_files_for_stats = 0;
 	//! Whether the schemas of the sampled files are combined into a union of their columns - files are then allowed
 	//! to be missing columns of the combined schema, the way they are with union_by_name. This is how the schemas of
 	//! sampled files are combined unless the reader combines them itself

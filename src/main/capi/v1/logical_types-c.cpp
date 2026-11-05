@@ -198,7 +198,7 @@ uint8_t duckdb_decimal_width(duckdb_logical_type type) {
 		return 0;
 	}
 	auto &logical_type = *(reinterpret_cast<duckdb::LogicalType *>(type));
-	return duckdb::DecimalType::GetWidth(logical_type);
+	return duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetWidth(logical_type));
 }
 
 uint8_t duckdb_decimal_scale(duckdb_logical_type type) {
@@ -206,7 +206,7 @@ uint8_t duckdb_decimal_scale(duckdb_logical_type type) {
 		return 0;
 	}
 	auto &logical_type = *(reinterpret_cast<duckdb::LogicalType *>(type));
-	return duckdb::DecimalType::GetScale(logical_type);
+	return duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetScale(logical_type));
 }
 
 duckdb_type duckdb_decimal_internal_type(duckdb_logical_type type) {

@@ -1,0 +1,172 @@
+# name: test/sql/optimizer/scalar_aggregate_merge.test
+# description: Sibling scalar aggregates over the same table keep their answers when they are computed in one pass
+# group: [optimizer]
+
+# the tables here are small: merge sibling aggregates over every table that has a row
+statement ok
+SET scalar_aggregate_merge_threshold = 1
+
+# sales: quantities 1-100, a DECIMAL with NULLs, a key, a value and a name; sales2 is a copy, empty_sales has no rows
+statement ok
+CREATE TABLE sales AS SELECT
+    (i % 100 + 1)::INTEGER AS q,
+    CASE WHEN i % 17 = 0 THEN NULL ELSE ((i % 1000) / 10)::DECIMAL(7,2) END AS disc,
+    (((i * 7) % 5000) / 100)::DECIMAL(7,2) AS paid,
+    (i % 50)::INTEGER AS k,
+    i AS v,
+    'n' || (i % 7) AS name
+FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE sales2 AS FROM sales;
+
+statement ok
+CREATE TABLE empty_sales AS FROM sales LIMIT 0;
+
+statement ok
+CREATE TABLE reason AS SELECT i AS r_sk FROM range(5) r(i);
+
+# two dimensions of sales: dim1 on k, dim2 on q
+statement ok
+CREATE TABLE dim1 AS SELECT i::INTEGER AS dk, CASE WHEN i % 3 = 0 THEN 'a' WHEN i % 3 = 1 THEN 'b' ELSE 'c' END AS dname FROM range(50) r(i);
+
+statement ok
+CREATE TABLE dim2 AS SELECT (i + 1)::INTEGER AS qk, (i % 10)::INTEGER AS h FROM range(100) r(i);
+
+# two_keys: the keys 1 and 2, one row each
+statement ok
+CREATE TABLE two_keys(k INTEGER);
+
+statement ok
+INSERT INTO two_keys VALUES (1), (2);
+
+# ---- merged shapes: the answers are the ones every branch computes on its own -----------------------------------
+
+# TPC-DS q9: scalar subqueries in the SELECT list, three per range
+query II
+SELECT CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 1 AND 20) > 900 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 1 AND 20)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 1 AND 20) END AS b1,
+       CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 21 AND 40) > 1100 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 21 AND 40)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 21 AND 40) END AS b2
+FROM reason WHERE r_sk = 1
+----
+45.9240170031881	25.015
+
+# each aggregate kind, each under its own condition
+query IIIIII
+SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT count(disc) FROM sales WHERE q < 20) AS b,
+       (SELECT sum(paid) FROM sales WHERE q > 90) AS c, (SELECT avg(disc) FROM sales WHERE q BETWEEN 30 AND 40) AS d,
+       (SELECT min(paid) FROM sales WHERE k = 3) AS e, (SELECT max(paid) FROM sales WHERE k = 3) AS f
+----
+450	894	12557.50	48.36100386100386	0.21	49.71
+
+# derived tables in a FROM list, with DISTINCT aggregates (TPC-DS q28)
+query IIIIIIIII
+SELECT * FROM
+    (SELECT avg(paid) AS a1, count(paid) AS c1, count(DISTINCT paid) AS d1 FROM sales WHERE q BETWEEN 1 AND 5) b1,
+    (SELECT avg(paid) AS a2, count(paid) AS c2, count(DISTINCT paid) AS d2 FROM sales WHERE q BETWEEN 6 AND 10) b2,
+    (SELECT avg(paid) AS a3, count(paid) AS c3, count(DISTINCT paid) AS d3 FROM sales WHERE q BETWEEN 11 AND 15 AND (k = 1 OR v > 4000)) b3
+----
+24.64	250	250	24.99	250	250	27.34	50	50
+
+# DISTINCT of every kind, one with a FILTER of its own
+query IIIIII
+SELECT (SELECT count(DISTINCT k) FROM sales WHERE q < 10) AS a, (SELECT sum(DISTINCT k) FROM sales WHERE q < 20) AS b,
+       (SELECT avg(DISTINCT paid) FROM sales WHERE q > 90) AS c, (SELECT min(DISTINCT disc) FROM sales WHERE q > 90) AS d,
+       (SELECT count(DISTINCT k) FILTER (WHERE v % 2 = 0) FROM sales WHERE q < 10) AS e, (SELECT count(DISTINCT name) FROM sales) AS f
+----
+9	171	25.115	9.00	5	7
+
+# a branch that matches nothing, one without a WHERE, and an empty table (below the threshold: left alone)
+query IIIIII
+SELECT (SELECT count(*) FROM sales WHERE q > 1000) AS a, (SELECT avg(paid) FROM sales WHERE q > 1000) AS b,
+       (SELECT count(*) FROM sales) AS c, (SELECT sum(paid) FROM sales WHERE q = 7) AS d,
+       (SELECT count(*) FROM empty_sales WHERE q < 5) AS e, (SELECT sum(paid) FROM empty_sales WHERE q > 5) AS f
+----
+0	NULL	5000	1246.00	0	NULL
+
+# a FILTER of its own, a conjunct every branch has, and two tables (each merged with its own siblings)
+query IIIIII
+SELECT (SELECT count(*) FILTER (WHERE k = 1) FROM sales WHERE q < 50) AS a, (SELECT count(*) FROM sales WHERE q >= 50) AS b,
+       (SELECT count(*) FROM sales WHERE k = 2 AND q < 50) AS c, (SELECT sum(paid) FROM sales WHERE k = 2 AND q >= 50) AS d,
+       (SELECT count(*) FROM sales2 WHERE q < 10) AS e, (SELECT count(*) FROM sales2 WHERE q > 90) AS f
+----
+50	2550	50	1257.00	450	500
+
+# TPC-DS q88: count(*)s over the same join that differ in their filter on one table (dim2)
+query III
+SELECT * FROM
+    (SELECT count(*) AS c1 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h BETWEEN 0 AND 2) s1,
+    (SELECT count(*) AS c2 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h BETWEEN 3 AND 5) s2,
+    (SELECT count(*) AS c3 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND (dim2.h = 9 OR dim2.qk < 4)) s3
+----
+500	500	250
+
+# TPC-DS q90: two of them, divided
+query I
+SELECT CAST(am AS DECIMAL(15, 4)) / CAST(pm AS DECIMAL(15, 4)) AS ratio FROM
+    (SELECT count(*) AS am FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'b' AND dim2.h BETWEEN 1 AND 2) a,
+    (SELECT count(*) AS pm FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'b' AND dim2.h BETWEEN 7 AND 8) p
+----
+1.0
+
+# scalar subqueries over a join, the join condition written either way round
+query III
+SELECT (SELECT sum(paid) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT avg(disc) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'b') AS b,
+       (SELECT max(q) FROM sales, dim1 WHERE dim1.dk = sales.k AND dim1.dname = 'c') AS c
+----
+42481.00	50.0009375	98
+
+# the merged columns are read by a filter above the cross product, next to a table that is no branch
+query III
+SELECT r_sk, a, b FROM reason, (SELECT count(*) AS a FROM sales WHERE q < 10) x, (SELECT count(*) AS b FROM sales WHERE q > 90) y
+WHERE r_sk < (SELECT count(*) FROM sales WHERE q = 1) - (SELECT count(*) FROM sales WHERE q = 2) + 2
+ORDER BY r_sk
+----
+0	450	500
+1	450	500
+
+# prepared statements: the parameters keep their values through the rewrite
+statement ok
+PREPARE p AS SELECT (SELECT count(*) FROM sales WHERE q < $1) AS a, (SELECT sum(paid) FROM sales WHERE q > $2) AS b
+
+query II
+EXECUTE p(10, 90)
+----
+450	12557.50
+
+query II
+EXECUTE p(20, 95)
+----
+950	6322.50
+
+# ---- shapes that are left alone keep their answers --------------------------------------------------------------
+
+# a volatile condition, and an argument that may fail on another branch's rows (its own rows are none)
+query III
+SELECT (SELECT count(*) FROM sales WHERE q > 50) AS a, (SELECT count(CAST(name AS INTEGER)) FROM sales WHERE name = 'n3x') AS b,
+       (SELECT count(*) FROM sales WHERE random() < 2) AS c
+----
+2500	0	5000
+
+# a HAVING, a LIMIT and a virtual column
+query IIII
+SELECT (SELECT count(*) FROM sales WHERE q < 10 HAVING count(*) > 5), (SELECT count(*) FROM sales WHERE q > 10),
+       (SELECT count(*) FROM (FROM sales WHERE q > 20 LIMIT 100)), (SELECT count(*) FROM sales WHERE rowid < 10)
+----
+450	4500	100	10
+
+# a cast that fails to fold stays in the plan; the other branch's rows must not reach it through the CASE, neither in
+# the argument nor in the FILTER
+query II
+SELECT (SELECT sum(CASE WHEN k = 1 THEN 1 ELSE CAST('bad' AS INTEGER) END) FROM two_keys WHERE k = 1) AS a,
+       (SELECT count(*) FROM two_keys WHERE k = 2) AS b
+----
+1	1
+
+query II
+SELECT (SELECT count(*) FILTER (WHERE CASE WHEN k = 1 THEN true ELSE CAST('bad' AS INTEGER) = 1 END) FROM two_keys WHERE k = 1) AS a,
+       (SELECT count(*) FROM two_keys WHERE k = 2) AS b
+----
+1	1

@@ -36,6 +36,8 @@ public:
 	Value GetValue(const LogicalType &type, idx_t index) const override;
 
 protected:
+	buffer_ptr<VectorBuffer> ConstantReferenceInternal(const LogicalType &type, idx_t index,
+	                                                   count_t count) const override;
 	buffer_ptr<VectorBuffer> FlattenSliceInternal(const LogicalType &type, const SelectionVector &sel,
 	                                              idx_t count) const override;
 	void VerifyInternal(const LogicalType &type, const SelectionVector &sel, idx_t count) const override;

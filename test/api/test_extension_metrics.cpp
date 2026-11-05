@@ -25,7 +25,7 @@ static void SetUpParallelScan(Connection &con, const string &profile_name) {
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(" + to_string(ROW_COUNT) + ")"));
 	REQUIRE_NO_FAIL(con.Query("SET threads = 8"));
 	con.EnableProfiling();
-	con.context->config.profiler_save_location = TestCreatePath(profile_name);
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath(profile_name);
 }
 
 // The value of the metric `key` in the profile of the last query, or NULL when it is not there.
@@ -177,7 +177,7 @@ TEST_CASE("A metric can be set while the query binds", "[api]") {
 	REQUIRE(!metrics_manager.IsRegisteredMetric("optimizer.window_join_pushdown"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(10)"));
 	con.EnableProfiling();
-	con.context->config.profiler_save_location = TestCreatePath("test_set_metric_output.txt");
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath("test_set_metric_output.txt");
 
 	REQUIRE_NO_FAIL(con.Query("SELECT max(set_metric_while_binding(i)) FROM numbers"));
 	REQUIRE(tracked_while_binding);

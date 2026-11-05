@@ -1,0 +1,31 @@
+# name: test/sql/json/test_execute_serialized_reexecute.test
+# description: json_execute_serialized_sql re-executes its statement on every scan initialization
+# group: [json]
+
+require json
+
+# Skipped with the optimizer disabled: the CTE is then not inlined, the function executes once into the
+# materialized CTE, and every iteration sees the same value.
+
+statement ok
+SET debug_verify_progress_ignore='UNSUPPORTED_SOURCE:JSON_EXECUTE_SERIALIZED_SQL';
+
+# Each recursive iteration re-initializes the scan and re-executes the statement, so every iteration sees
+# a fresh random value. A cached or rewound result would repeat one value, and an exhausted one yields
+# NULL. The random source avoids catalog objects, which the function's internal connection cannot see.
+query I
+WITH RECURSIVE
+c AS NOT MATERIALIZED (
+    SELECT * FROM json_execute_serialized_sql(
+        json_serialize_sql('SELECT random() AS v'))
+),
+w(d, v) AS (
+    SELECT 0, NULL::DOUBLE
+    UNION ALL
+    SELECT d + 1, (SELECT v FROM c)
+    FROM w
+    WHERE d < 3
+)
+SELECT count(DISTINCT v) FROM w;
+----
+3
