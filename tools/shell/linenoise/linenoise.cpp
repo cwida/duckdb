@@ -296,7 +296,10 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 			}
 			/* Update buffer and return */
 			int nwritten = snprintf(buf, buflen, "%s", accepted_completion.completion.c_str());
-			pos = accepted_completion.cursor_pos;
+			if (nwritten > (int)buflen - 1) {
+				nwritten = (int)buflen - 1;
+			}
+			pos = MinValue<idx_t>(accepted_completion.cursor_pos, nwritten);
 			len = nwritten;
 		}
 	}
