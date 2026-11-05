@@ -1660,12 +1660,19 @@ BaseColumnPrunerMode BaseColumnPruner::GetMode() const {
 	return mode;
 }
 
-static void ClearLeafType(ColumnIndex &path) {
+static void SetLeafType(ColumnIndex &path, const LogicalType &type) {
 	reference<ColumnIndex> leaf(path);
 	while (leaf.get().HasChildren()) {
 		leaf = leaf.get().GetChildIndex(0);
 	}
-	leaf.get().SetType(LogicalType());
+	leaf.get().SetType(type);
+}
+
+static void RebuildPaths(ReferencedColumn &column) {
+	column.unique_paths.clear();
+	for (auto &struct_extract : column.struct_extracts) {
+		column.AddPath(struct_extract.extract_path);
+	}
 }
 
 void BaseColumnPruner::KeepCastsAbove(const vector<ColumnBinding> &bindings) {
@@ -1686,16 +1693,37 @@ void BaseColumnPruner::KeepCastsAbove(const vector<ColumnBinding> &bindings) {
 				continue;
 			}
 			// the path was registered with the type of the cast, it now stands for the plain extract
-			ClearLeafType(struct_extract.extract_path);
+			SetLeafType(struct_extract.extract_path, LogicalType());
 			paths_changed = true;
 		}
-		if (!paths_changed) {
+		if (paths_changed) {
+			RebuildPaths(column);
+		}
+	}
+}
+
+//! A cast the operator pushes itself runs on every row the scan reads, so the same cast kept above it may as well
+static void PushSharedCasts(ReferencedColumn &column) {
+	auto &pushed = column.struct_extracts.back();
+	if (!pushed.components.back().cast) {
+		return;
+	}
+	bool paths_changed = false;
+	for (auto &struct_extract : column.struct_extracts) {
+		if (struct_extract.push_cast || !struct_extract.components.back().cast) {
 			continue;
 		}
-		column.unique_paths.clear();
-		for (auto &struct_extract : column.struct_extracts) {
-			column.AddPath(struct_extract.extract_path);
+		auto path = struct_extract.extract_path;
+		SetLeafType(path, (*struct_extract.components.back().cast)->GetReturnType());
+		if (path != pushed.extract_path) {
+			continue;
 		}
+		struct_extract.extract_path = std::move(path);
+		struct_extract.push_cast = true;
+		paths_changed = true;
+	}
+	if (paths_changed) {
+		RebuildPaths(column);
 	}
 }
 
@@ -1979,6 +2007,7 @@ void BaseColumnPruner::AddBinding(BoundColumnRefExpression &col, ColumnIndex chi
 	referenced_column.AddPath(child_column);
 	referenced_column.struct_extracts.emplace_back(parent, referenced_column.bindings.size() - 1,
 	                                               std::move(child_column));
+	PushSharedCasts(referenced_column);
 }
 
 void BaseColumnPruner::AddBinding(BoundColumnRefExpression &col) {

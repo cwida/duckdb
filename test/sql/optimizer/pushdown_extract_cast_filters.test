@@ -103,7 +103,7 @@ SELECT s.n::INTEGER, s.n::BIGINT, extra FROM cast_siblings WHERE id IN (1, 3) OR
 1	1	wanted
 3	3	wanted
 
-# a reference above the filter and one in the filter cast the same field, the projection below keeps both forms
+# a reference above the filter and one in the filter cast the same field, which the scan reads once
 statement ok
 CREATE TABLE cast_once AS SELECT {'n': '42'} AS s;
 
@@ -222,3 +222,42 @@ SELECT cast_probe.i FROM (SELECT * FROM cast_build WHERE i IN (0, 2)) b JOIN cas
 ----
 0
 2
+
+# a cast the join condition evaluates on every row runs in the scan, the same cast above the join shares its column
+statement ok
+CREATE TABLE cast_keys AS SELECT i FROM range(5) r(i);
+
+statement ok
+COPY (SELECT {'n': i}::VARIANT AS v FROM range(5) r(i)) TO '{TEST_DIR}/pushdown_extract_cast_shared.parquet';
+
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown,compressed_materialization'
+
+query II
+EXPLAIN SELECT p.v.n::BIGINT AS n FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_shared.parquet') AS p JOIN cast_keys AS k ON p.v.n::BIGINT = k.i
+----
+physical_plan	<!REGEX>:.*(CAST|v\.n.*v\.n).*
+
+query I
+SELECT p.v.n::BIGINT AS n FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_shared.parquet') AS p JOIN cast_keys AS k ON p.v.n::BIGINT = k.i ORDER BY n
+----
+0
+1
+2
+3
+4
+
+# a cast to another type stays above the join
+query II
+EXPLAIN SELECT p.v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_shared.parquet') AS p JOIN cast_keys AS k ON p.v.n::BIGINT = k.i
+----
+physical_plan	<REGEX>:.*CAST\(v AS INTEGER\).*READ_PARQUET.*v\.n.*v\.n.*
+
+# a filter shares its cast the same way
+query II
+EXPLAIN SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet') WHERE v.n::INTEGER > 10 AND id IN (1, 3)
+----
+physical_plan	<!REGEX>:.*(CAST|v\.n.*v\.n).*
+
+statement ok
+SET disabled_optimizers = ''
