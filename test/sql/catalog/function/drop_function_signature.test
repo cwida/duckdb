@@ -475,6 +475,9 @@ DROP MACRO cc;
 
 # the signature resolves against the entry actually found, not the session's default catalog
 statement ok
+ATTACH ':memory:' AS cat_neutral;
+
+statement ok
 ATTACH ':memory:' AS cat_a;
 
 statement ok
@@ -521,13 +524,16 @@ DROP MACRO s.m(mood);
 <REGEX>:.*has no overload with signature.*
 
 statement ok
-USE memory;
+USE cat_neutral;
 
 statement ok
 DETACH cat_a;
 
 statement ok
 DETACH cat_b;
+
+statement ok
+SET schema = 'main';
 
 # IF EXISTS on a missing entry does not resolve the signature types
 statement ok
