@@ -257,6 +257,10 @@ const JoinPredicateModel &QueryGraphManager::GetPredicateModel() const {
 	return predicate_model;
 }
 
+const vector<unique_ptr<JoinOrderOperator>> &QueryGraphManager::GetJoinOperators() const {
+	return join_operators;
+}
+
 void QueryGraphManager::GetColumnBinding(const Expression &root_expr, ColumnBinding &binding) {
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
 	    root_expr, [&](const BoundColumnRefExpression &colref) {
