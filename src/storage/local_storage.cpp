@@ -87,12 +87,13 @@ LocalTableStorage::LocalTableStorage(ClientContext &context, DataTable &new_dt, 
 LocalTableStorage::~LocalTableStorage() {
 }
 
-void LocalTableStorage::InitializeScan(CollectionScanState &state, optional_ptr<TableFilterSet> table_filters) {
+void LocalTableStorage::InitializeScan(const QueryContext &scan_context, CollectionScanState &state,
+                                       optional_ptr<TableFilterSet> table_filters) {
 	auto &collection = *row_groups->collection;
 	if (collection.GetTotalRows() == 0) {
 		throw InternalException("No rows in LocalTableStorage row group for scan");
 	}
-	collection.InitializeScan(context, state, state.GetColumnIds(), table_filters.get());
+	collection.InitializeScan(scan_context, state, state.GetColumnIds(), table_filters.get());
 }
 
 idx_t LocalTableStorage::EstimatedSize() const {
@@ -391,13 +392,13 @@ LocalStorage &LocalStorage::Get(ClientContext &context, Catalog &catalog) {
 	return LocalStorage::Get(context, catalog.GetAttached());
 }
 
-void LocalStorage::InitializeScan(DataTable &table, CollectionScanState &state,
+void LocalStorage::InitializeScan(const QueryContext &context, DataTable &table, CollectionScanState &state,
                                   optional_ptr<TableFilterSet> table_filters) {
 	auto storage = table_manager.GetStorage(table);
 	if (storage == nullptr || storage->GetCollection().GetTotalRows() == 0) {
 		return;
 	}
-	storage->InitializeScan(state, table_filters);
+	storage->InitializeScan(context, state, table_filters);
 }
 
 void LocalStorage::Scan(CollectionScanState &state, const vector<StorageIndex> &, DataChunk &result) {
