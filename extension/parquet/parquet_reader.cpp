@@ -305,8 +305,8 @@ static void ParseParquetFooter(const_data_ptr_t buffer, const string &file_path,
 }
 
 static shared_ptr<ParquetFileMetadataCache>
-LoadMetadata(ClientContext &context, Allocator &allocator, BufferManager &buffer_manager,
-             CachingFileHandle &file_handle, const shared_ptr<const ParquetEncryptionConfig> &encryption_config,
+LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &file_handle,
+             const shared_ptr<const ParquetEncryptionConfig> &encryption_config,
              shared_ptr<EncryptionUtil> &encryption_util, optional_idx footer_size) {
 	auto file_proto = CreateThriftFileProtocol(context, file_handle, false);
 	auto &transport = reinterpret_cast<ThriftFileTransport &>(*file_proto->getTransport());
@@ -335,7 +335,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, BufferManager &buffer
 		}
 
 		ResizeableBuffer buf;
-		buf.Resize(buffer_manager, 8);
+		buf.Resize(allocator, 8);
 		buf.Zero();
 
 		transport.Prefetch(file_size - prefetch_size, prefetch_size);
@@ -1475,13 +1475,13 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 	// or if the cached version already expired
 	if (!metadata_p) {
 		if (!MetadataCacheEnabled(context_p)) {
-			metadata = LoadMetadata(context_p, allocator, buffer_manager, *file_handle,
-			                        parquet_options.encryption_config, encryption_util, footer_size);
+			metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
+			                        encryption_util, footer_size);
 		} else {
 			metadata = ObjectCache::GetObjectCache(context_p).GetWithTypePrefix<ParquetFileMetadataCache>(file.path);
 			if (!metadata || !metadata->IsValid(*file_handle)) {
-				metadata = LoadMetadata(context_p, allocator, buffer_manager, *file_handle,
-				                        parquet_options.encryption_config, encryption_util, footer_size);
+				metadata = LoadMetadata(context_p, allocator, *file_handle, parquet_options.encryption_config,
+				                        encryption_util, footer_size);
 				ObjectCache::GetObjectCache(context_p).PutWithTypePrefix<ParquetFileMetadataCache>(file.path, metadata);
 			}
 		}
@@ -2548,8 +2548,8 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 		}
 	}
 
-	state.define_buf.Resize(buffer_manager, STANDARD_VECTOR_SIZE);
-	state.repeat_buf.Resize(buffer_manager, STANDARD_VECTOR_SIZE);
+	state.define_buf.Resize(allocator, STANDARD_VECTOR_SIZE);
+	state.repeat_buf.Resize(allocator, STANDARD_VECTOR_SIZE);
 }
 
 shared_ptr<ParquetReader> ParquetReader::CreateMetadataReader(ClientContext &context, ParquetOptions parquet_options,

@@ -157,7 +157,7 @@ public:
 	}
 
 	void Pin(BufferManager &buffer_manager) {
-		if (block_handle) {
+		if (block_handle && !handle.IsValid()) {
 			handle = buffer_manager.Pin(block_handle);
 			ptr = handle.GetDataMutable();
 		}

@@ -663,7 +663,7 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 
 	// only the values are compressed, and an encrypted page body is a single module, so the body is read at once
 	ResizeableBuffer page_buffer;
-	page_buffer.Resize(GetBufferManager(), page_body_size + 1);
+	page_buffer.Resize(GetAllocator(), page_body_size + 1);
 	ReadData(page_buffer.GetCurrentLoc(), page_body_size, page_hdr.type);
 	memcpy(block->GetCurrentLoc(), page_buffer.GetCurrentLoc(), uncompressed_bytes);
 
@@ -737,7 +737,7 @@ void ColumnReader::PreparePage(PageHeader &page_hdr) {
 	}
 
 	ResizeableBuffer compressed_buffer;
-	compressed_buffer.Resize(GetBufferManager(), compressed_page_size + 1);
+	compressed_buffer.Resize(GetAllocator(), compressed_page_size + 1);
 	ReadData(compressed_buffer.GetCurrentLoc(), compressed_page_size, page_hdr.type);
 
 	DecompressInternal(chunk->meta_data.codec, compressed_buffer.GetCurrentLoc(), compressed_page_size,
@@ -1172,11 +1172,9 @@ void ColumnReader::DirectSelect(ColumnReaderInput &input, Vector &result, const 
 	BeginRead(define_out, repeat_out);
 	auto read_now = ReadPageHeaders(to_read);
 
-	// pin after BeginRead in case of skips
-	BlockPinGuard pin_guard(*this);
-
 	// we can only push the filter into the decoder if we are reading the ENTIRE vector in one go
 	if (!page_is_filtered_out && read_now == to_read && encoding == ColumnEncoding::PLAIN) {
+		BlockPinGuard pin_guard(*this);
 		const auto all_valid = PrepareRead(read_now, define_out, repeat_out, 0);
 		const auto define_ptr = all_valid ? nullptr : static_cast<uint8_t *>(define_out);
 		PlainSelect(block, define_ptr, read_now, result, sel, approved_tuple_count);
@@ -1213,11 +1211,9 @@ void ColumnReader::DirectFilter(ColumnReaderInput &input, Vector &result, const 
 	BeginRead(define_out, repeat_out);
 	auto read_now = ReadPageHeaders(to_read, &filter, &filter_state);
 
-	// pin after BeginRead in case of skips
-	BlockPinGuard pin_guard(*this);
-
 	// we can only push the filter into the decoder if we are reading the ENTIRE vector in one go
 	if (encoding == ColumnEncoding::DICTIONARY && read_now == to_read && dictionary_decoder.HasFilter()) {
+		BlockPinGuard pin_guard(*this);
 		if (page_is_filtered_out) {
 			// the page has been filtered out entirely - skip
 			approved_tuple_count = 0;
