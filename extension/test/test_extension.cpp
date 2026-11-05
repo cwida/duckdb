@@ -167,12 +167,8 @@ static string NormalizePath(const string &path) {
 	return StringUtil::Replace(path, "\\", "/");
 }
 
-static string TestPathForDisplay(const string &path) {
+static string TestPathForDisplay(const string &path, const string &working_directory) {
 	auto normalized_path = NormalizePath(path);
-	auto working_directory = NormalizePath(FileSystem::GetWorkingDirectory());
-	if (!StringUtil::EndsWith(working_directory, "/")) {
-		working_directory += "/";
-	}
 	if (StringUtil::StartsWith(normalized_path, working_directory)) {
 		return normalized_path.substr(working_directory.size());
 	}
@@ -466,6 +462,10 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
 	DiscoverBundles(context, extension_roots);
 	vector<TestDescription> result;
 	auto &fs = FileSystem::GetFileSystem(context);
+	auto working_directory = NormalizePath(FileSystem::GetWorkingDirectory());
+	if (!StringUtil::EndsWith(working_directory, "/")) {
+		working_directory += "/";
+	}
 	for (auto &root : test_roots) {
 		if (!fs.DirectoryExists(root)) {
 			continue;
@@ -476,7 +476,7 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
 			if (!IsSQLLogicTest(path)) {
 				return;
 			}
-			auto normalized_path = TestPathForDisplay(path);
+			auto normalized_path = TestPathForDisplay(path, working_directory);
 			if (is_sqlite_root && IsExcludedSQLiteLogicTest(normalized_path)) {
 				return;
 			}
