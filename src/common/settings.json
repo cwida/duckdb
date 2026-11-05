@@ -620,6 +620,13 @@
         ]
     },
     {
+        "name": "default_grammar_extensions",
+        "description": "The grammar extensions sessions parse with when active_grammar_extensions is not set.",
+        "type": "VARCHAR[]",
+        "scope": "global",
+        "custom_implementation": true
+    },
+    {
         "name": "default_null_order",
         "description": "The NULL ordering used when none is specified (NULLS_FIRST or NULLS_LAST).",
         "type": "ENUM<DefaultOrderByNullType>",
