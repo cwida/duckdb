@@ -45,11 +45,23 @@ timestamp_t AddOperator::Operation(date_t left, interval_t right);
 template <>
 timestamp_t AddOperator::Operation(interval_t left, date_t right);
 template <>
-timestamp_t AddOperator::Operation(timestamp_t left, interval_t right);
+timestamp_t AddOperator::Operation(timestamp_sec_t left, interval_t right);
 template <>
-timestamp_t AddOperator::Operation(timestamp_t left, double right);
+timestamp_t AddOperator::Operation(timestamp_sec_t left, double right);
 template <>
-timestamp_t AddOperator::Operation(interval_t left, timestamp_t right);
+timestamp_t AddOperator::Operation(interval_t left, timestamp_sec_t right);
+template <>
+timestamp_t AddOperator::Operation(timestamp_ms_t left, interval_t right);
+template <>
+timestamp_t AddOperator::Operation(timestamp_ms_t left, double right);
+template <>
+timestamp_t AddOperator::Operation(interval_t left, timestamp_ms_t right);
+template <>
+timestamp_t AddOperator::Operation(timestamp_us_t left, interval_t right);
+template <>
+timestamp_t AddOperator::Operation(timestamp_us_t left, double right);
+template <>
+timestamp_t AddOperator::Operation(interval_t left, timestamp_us_t right);
 template <>
 timestamp_ns_t AddOperator::Operation(timestamp_ns_t left, interval_t right);
 template <>
