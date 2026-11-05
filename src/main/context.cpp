@@ -29,7 +29,7 @@ public:
 	}
 
 	optional_ptr<FileOpener> GetOpener() const override {
-		return context.Services().TryGetFileOpener();
+		return context.GetContext().TryGetFileOpener();
 	}
 
 private:
@@ -259,18 +259,18 @@ optional_ptr<ClientContext> Context::TryGetClientContext() const {
 	return context;
 }
 
-optional_ptr<ClientContext> Context::TryGetClientContext(optional_ptr<Context> services) {
-	if (!services) {
+optional_ptr<ClientContext> Context::TryGetClientContext(optional_ptr<Context> context) {
+	if (!context) {
 		return nullptr;
 	}
-	return services->TryGetClientContext();
+	return context->TryGetClientContext();
 }
 
-optional_ptr<QueryProfiler> Context::TryGetQueryProfiler(optional_ptr<Context> services) {
-	if (!services) {
+optional_ptr<QueryProfiler> Context::TryGetQueryProfiler(optional_ptr<Context> context) {
+	if (!context) {
 		return nullptr;
 	}
-	return services->TryGetQueryProfiler();
+	return context->TryGetQueryProfiler();
 }
 
 bool Context::IsClient() const {

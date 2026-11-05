@@ -7,7 +7,7 @@ index ba5fd09..6dedd4a 100644
  
  shared_ptr<HTTPState> HTTPState::TryGetState(ClientContext &context) {
 -	return context.registered_state->GetOrCreate<HTTPState>("http_state");
-+	return context.Services().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
++	return context.GetContext().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
  }
  
  shared_ptr<HTTPState> HTTPState::TryGetState(optional_ptr<FileOpener> opener) {
@@ -21,7 +21,7 @@ index b15a929..14091ce 100644
  	} else if (client_context) {
 -		return client_context->registered_state->GetOrCreate<HTTPMetadataCache>("http_cache",
 -		                                                                        HTTPMetadataCacheMode::QUERY_LOCAL);
-+		return client_context->Services().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
++		return client_context->GetContext().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
 +		    "http_cache", HTTPMetadataCacheMode::QUERY_LOCAL);
  	}
  	return nullptr;
@@ -31,7 +31,7 @@ index b15a929..14091ce 100644
  	auto context = opener.TryGetClientContext();
  	if (context) {
 -		logger = context->logger;
-+		logger = context->Services().GetLoggerPtr();
++		logger = context->GetContext().GetLoggerPtr();
  		return;
  	}
  	auto database = opener.TryGetDatabase();
@@ -42,7 +42,7 @@ index b15a929..14091ce 100644
 -		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, client_context, *database);
 +		optional_ptr<Context> services;
 +		if (client_context) {
-+			services = &client_context->Services();
++			services = &client_context->GetContext();
 +		}
 +		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, services, *database);
  		snapshot_params.override_response_cache_policy =

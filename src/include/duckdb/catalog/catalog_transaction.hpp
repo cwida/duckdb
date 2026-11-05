@@ -38,7 +38,7 @@ struct CatalogTransaction {
 
 	static CatalogTransaction GetSystemCatalogTransaction(ClientContext &context);
 	//! The system transaction of the client of the services, or of the database if they do not belong to a client
-	static CatalogTransaction GetSystemCatalogTransaction(Context &services);
+	static CatalogTransaction GetSystemCatalogTransaction(Context &context);
 	static CatalogTransaction GetSystemTransaction(DatabaseInstance &db);
 };
 

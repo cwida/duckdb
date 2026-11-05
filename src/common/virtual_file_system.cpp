@@ -246,9 +246,9 @@ unique_ptr<FileHandle> VirtualFileSystem::OpenFileExtended(const OpenFileInfo &f
 	try {
 		// Evaluate and apply compression option then.
 		QueryContext context;
-		auto services = FileOpener::TryGetContext(opener);
-		if (services && !flags.MultiClientAccess()) {
-			context = QueryContext(*services);
+		auto opener_context = FileOpener::TryGetContext(opener);
+		if (opener_context && !flags.MultiClientAccess()) {
+			context = QueryContext(*opener_context);
 		}
 		if (file_handle->GetType() == FileType::FILE_TYPE_FIFO) {
 			file_handle = PipeFileSystem::OpenPipe(context, std::move(file_handle));

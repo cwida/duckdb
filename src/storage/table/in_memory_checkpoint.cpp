@@ -22,14 +22,14 @@ namespace duckdb {
 InMemoryCheckpointer::InMemoryCheckpointer(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
                                            StorageManager &storage_manager, CheckpointOptions options_p)
     : CheckpointWriter(db, context),
-      partial_block_manager(GetServices(), block_manager, PartialBlockType::IN_MEMORY_CHECKPOINT),
+      partial_block_manager(GetContext(), block_manager, PartialBlockType::IN_MEMORY_CHECKPOINT),
       storage_manager(storage_manager), options(options_p) {
 }
 
 void InMemoryCheckpointer::CreateCheckpoint() {
 	auto &transaction_manager = DuckTransactionManager::Get(db);
 	// appends that run alongside the checkpoint start new row groups, index changes go to the checkpoint deltas
-	ActiveCheckpointWrapper active_checkpoint(GetServices(), db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(GetContext(), db, transaction_manager);
 	{
 		unique_lock<mutex> commit_lock;
 		if (!options.commit_lock) {
@@ -118,7 +118,7 @@ optional_ptr<MetadataManager> InMemoryRowGroupWriter::GetMetadataManager() {
 }
 
 InMemoryTableDataWriter::InMemoryTableDataWriter(InMemoryCheckpointer &checkpoint_manager, TableCatalogEntry &table)
-    : TableDataWriter(table, checkpoint_manager.GetServices()), checkpoint_manager(checkpoint_manager) {
+    : TableDataWriter(table, checkpoint_manager.GetContext()), checkpoint_manager(checkpoint_manager) {
 }
 
 void InMemoryTableDataWriter::WriteUnchangedTable(MetaBlockPointer pointer,

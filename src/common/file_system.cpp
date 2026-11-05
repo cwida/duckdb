@@ -104,7 +104,7 @@ FileSystem::~FileSystem() {
 }
 
 FileSystem &FileSystem::GetFileSystem(ClientContext &context) {
-	return context.services->GetFileSystem();
+	return context.GetContext().GetFileSystem();
 }
 
 bool PathMatched(const string &path, const string &sub_path) {
@@ -846,7 +846,7 @@ static optional_ptr<QueryProfiler> GetTrackingProfiler(bool track_io, const Quer
 	if (!track_io || !context.Valid()) {
 		return nullptr;
 	}
-	return context.GetServices()->TryGetQueryProfiler();
+	return context.GetContext()->TryGetQueryProfiler();
 }
 
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
@@ -1004,9 +1004,9 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 		return;
 	}
 
-	auto &services = opener.TryGetContext();
-	if (services.IsClient() && services.GetLogger().ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
-		logger = services.GetLoggerPtr();
+	auto &context = opener.TryGetContext();
+	if (context.IsClient() && context.GetLogger().ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
+		logger = context.GetLoggerPtr();
 		return;
 	}
 

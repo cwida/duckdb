@@ -261,7 +261,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		lock_guard<mutex> elock(executor_lock);
 		physical_plan = &plan;
 
-		this->profiler = context.services->GetQueryProfilerPtr();
+		this->profiler = context.GetContext().GetQueryProfilerPtr();
 		this->producer = scheduler.CreateProducer();
 
 		auto verify_progress = Settings::Get<DebugVerifyProgressSetting>(context);

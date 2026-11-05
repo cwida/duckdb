@@ -162,7 +162,7 @@ KeyValueSecretReader::KeyValueSecretReader(DatabaseInstance &db_p, const char *s
 
 KeyValueSecretReader::KeyValueSecretReader(ClientContext &context_p, const char **secret_types, idx_t secret_types_len,
                                            string path_p) {
-	services = &context_p.Services();
+	context = &context_p.GetContext();
 	path = std::move(path_p);
 	Initialize(secret_types, secret_types_len);
 }
@@ -182,8 +182,8 @@ void KeyValueSecretReader::Initialize(const char **secret_types, idx_t secret_ty
 	}
 
 	auto &secret_manager = db->GetSecretManager();
-	auto transaction = services ? CatalogTransaction::GetSystemCatalogTransaction(*services)
-	                            : CatalogTransaction::GetSystemTransaction(*db);
+	auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+	                           : CatalogTransaction::GetSystemTransaction(*db);
 
 	SecretMatch secret_match;
 	for (idx_t i = 0; i < secret_types_len; i++) {
@@ -202,13 +202,13 @@ void KeyValueSecretReader::Initialize(const char **secret_types, idx_t secret_ty
 
 KeyValueSecretReader::KeyValueSecretReader(const KeyValueSecret &secret_p, FileOpener &opener_p) : secret(secret_p) {
 	db = opener_p.TryGetDatabase();
-	services = &opener_p.TryGetContext();
+	context = &opener_p.TryGetContext();
 }
 
 KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<FileOpenerInfo> info,
                                            const char **secret_types, idx_t secret_types_len) {
 	db = opener_p.TryGetDatabase();
-	services = &opener_p.TryGetContext();
+	context = &opener_p.TryGetContext();
 
 	if (info) {
 		path = info->file.path;
@@ -220,8 +220,8 @@ KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<Fi
 			throw InvalidConfigurationException("Secret '%s' named by '%s' cannot be looked up without a database",
 			                                    secret_name, path);
 		}
-		auto transaction = services ? CatalogTransaction::GetSystemCatalogTransaction(*services)
-		                            : CatalogTransaction::GetSystemTransaction(*db);
+		auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+		                           : CatalogTransaction::GetSystemTransaction(*db);
 		secret_entry = db->GetSecretManager().GetSecretByName(transaction, secret_name);
 		if (!secret_entry) {
 			throw InvalidConfigurationException("Secret '%s' named by '%s' not found", secret_name, path);
@@ -261,8 +261,8 @@ SettingLookupResult KeyValueSecretReader::TryGetSecretKeyOrSetting(const Identif
 	if (secret && secret->TryGetValue(secret_key, result)) {
 		return SettingLookupResult(SettingScope::SECRET);
 	}
-	if (services) {
-		auto res = services->TryGetCurrentSetting(setting_name, result);
+	if (context) {
+		auto res = context->TryGetCurrentSetting(setting_name, result);
 		if (res) {
 			return res;
 		}

@@ -6,21 +6,21 @@ index 6dedd4a..6d58ec2 100644
  }
  
  shared_ptr<HTTPState> HTTPState::TryGetState(ClientContext &context) {
--	return context.Services().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
-+	return TryGetState(context.Services());
+-	return context.GetContext().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
++	return TryGetState(context.GetContext());
 +}
 +
-+shared_ptr<HTTPState> HTTPState::TryGetState(Context &services) {
-+	return services.GetRegisteredState().GetOrCreate<HTTPState>("http_state");
++shared_ptr<HTTPState> HTTPState::TryGetState(Context &context) {
++	return context.GetRegisteredState().GetOrCreate<HTTPState>("http_state");
  }
  
  shared_ptr<HTTPState> HTTPState::TryGetState(optional_ptr<FileOpener> opener) {
 -	auto client_context = FileOpener::TryGetClientContext(opener);
 -	if (client_context) {
 -		return TryGetState(*client_context);
-+	auto services = FileOpener::TryGetContext(opener);
-+	if (services && services->IsClient()) {
-+		return TryGetState(*services);
++	auto context = FileOpener::TryGetContext(opener);
++	if (context && context->IsClient()) {
++		return TryGetState(*context);
  	}
  	return nullptr;
  }
@@ -33,12 +33,12 @@ index afbbb04..8003a8e 100644
  		                                 info);
  		FileOpener::TryGetCurrentSetting(opener, "s3_version_id_pinning", result->s3_version_id_pinning, info);
 -		auto context = FileOpener::TryGetClientContext(opener);
-+		auto services = FileOpener::TryGetContext(opener);
++		auto context = FileOpener::TryGetContext(opener);
  		Value external_cache_enabled;
 -		if (context &&
 -		    context->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
-+		if (services && services->IsClient() &&
-+		    services->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
++		if (context && context->IsClient() &&
++		    context->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
  		    external_cache_enabled.GetValue<bool>()) {
  			result->override_response_cache_policy = true;
  		}
@@ -47,7 +47,7 @@ index afbbb04..8003a8e 100644
  static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpener> opener, HTTPFileSystem &httpfs) {
  	auto db = FileOpener::TryGetDatabase(opener);
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto services = FileOpener::TryGetContext(opener);
++	auto context = FileOpener::TryGetContext(opener);
  	if (!db) {
  		return nullptr;
  	}
@@ -56,10 +56,10 @@ index afbbb04..8003a8e 100644
  	if (use_shared_cache) {
  		return httpfs.GetGlobalCache();
 -	} else if (client_context) {
--		return client_context->Services().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
+-		return client_context->GetContext().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
 -		    "http_cache", HTTPMetadataCacheMode::QUERY_LOCAL);
-+	} else if (services && services->IsClient()) {
-+		return services->GetRegisteredState().GetOrCreate<HTTPMetadataCache>("http_cache",
++	} else if (context && context->IsClient()) {
++		return context->GetRegisteredState().GetOrCreate<HTTPMetadataCache>("http_cache",
 +		                                                                     HTTPMetadataCacheMode::QUERY_LOCAL);
  	}
  	return nullptr;
@@ -70,10 +70,10 @@ index afbbb04..8003a8e 100644
  void HTTPFileHandle::InitializeLogger(FileOpener &opener) {
 -	auto context = opener.TryGetClientContext();
 -	if (context) {
--		logger = context->Services().GetLoggerPtr();
-+	auto &services = opener.TryGetContext();
-+	if (services.IsClient()) {
-+		logger = services.GetLoggerPtr();
+-		logger = context->GetContext().GetLoggerPtr();
++	auto &context = opener.TryGetContext();
++	if (context.IsClient()) {
++		logger = context.GetLoggerPtr();
  		return;
  	}
  	auto database = opener.TryGetDatabase();
@@ -82,12 +82,12 @@ index afbbb04..8003a8e 100644
  
  void HTTPFileHandle::InitializeRequestState(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto services = FileOpener::TryGetContext(opener);
++	auto context = FileOpener::TryGetContext(opener);
  	auto database = FileOpener::TryGetDatabase(opener);
 -	if (client_context) {
 -		buffer_allocator = BufferAllocator::Get(*client_context);
-+	if (services) {
-+		buffer_allocator = BufferAllocator::Get(*services);
++	if (context) {
++		buffer_allocator = BufferAllocator::Get(*context);
  	} else {
  		buffer_allocator = database ? BufferAllocator::Get(*database) : Allocator::DefaultAllocator();
  	}
@@ -96,13 +96,13 @@ index afbbb04..8003a8e 100644
  	if (database) {
 -		optional_ptr<Context> services;
 -		if (client_context) {
--			services = &client_context->Services();
-+		optional_ptr<Context> client_services;
-+		if (services && services->IsClient()) {
-+			client_services = services;
+-			services = &client_context->GetContext();
++		optional_ptr<Context> cache_context;
++		if (context && context->IsClient()) {
++			cache_context = context;
  		}
 -		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, services, *database);
-+		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, client_services, *database);
++		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, cache_context, *database);
  		snapshot_params.override_response_cache_policy =
  		    snapshot_params.override_response_cache_policy || validation == CacheValidationMode::NO_VALIDATION;
  	}
@@ -114,7 +114,7 @@ index 7f9d284..bf0db6b 100644
  
  	//! Helper functions to get the HTTP state
  	static shared_ptr<HTTPState> TryGetState(ClientContext &context);
-+	static shared_ptr<HTTPState> TryGetState(Context &services);
++	static shared_ptr<HTTPState> TryGetState(Context &context);
  	static shared_ptr<HTTPState> TryGetState(optional_ptr<FileOpener> opener);
  
  	//! Called by the ClientContext when the current query ends
@@ -142,7 +142,7 @@ index b68347c..f06ba61 100644
  		return false;
  	}
 -	ClientContextFileOpener opener(*context);
-+	ClientContextFileOpener opener(context->Services());
++	ClientContextFileOpener opener(context->GetContext());
  	auto refreshed_auth_params = current_snapshot.auth_params;
  	auto refreshed_http_params = current_snapshot.Params();
  	if (!TryRefreshS3AuthMaterial(context, opener, current_snapshot.refresh_path, refreshed_auth_params,
@@ -177,7 +177,7 @@ index 14669be..73c39f9 100644
  
  	S3TestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
 -	ClientContextFileOpener opener(*con.context);
-+	ClientContextFileOpener opener(con.context->Services());
++	ClientContextFileOpener opener(con.context->GetContext());
  	FileOpenerInfo info = {S3TestHelper::S3_PATH};
  	auto auth_params = S3AuthResolver::Resolve(opener, info);
  	REQUIRE(auth_params.GetURLParams().endpoint_mode == initial_mode);
@@ -190,7 +190,7 @@ index f99a686..235d621 100644
  static S3AuthParams ReadSecretAuthParams(Connection &con, KeyValueSecret &secret,
                                           const string &path = "s3://bucket/key") {
 -	ClientContextFileOpener opener(*con.context);
-+	ClientContextFileOpener opener(con.context->Services());
++	ClientContextFileOpener opener(con.context->GetContext());
  	S3KeyValueReader secret_reader {KeyValueSecretReader(secret, opener)};
  	S3AuthResolveOptions options;
  	options.enable_deprecated_url_parameters = true;
@@ -199,7 +199,7 @@ index f99a686..235d621 100644
  			HTTPTestHelper::Configure(db, con, retries, client, true);
  			HTTPTestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
 -			ClientContextFileOpener opener(*con.context);
-+			ClientContextFileOpener opener(con.context->Services());
++			ClientContextFileOpener opener(con.context->GetContext());
  			auto session =
  			    S3RequestExecutor::CreateSession(opener, "s3://bucket/key", ResolveTestAuth(TestAuthConfig()));
  			::AESStateSSLFactory encryption_util;
@@ -212,7 +212,7 @@ index bc72169..3900773 100644
  
  	S3TestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
 -	ClientContextFileOpener opener(*con.context);
-+	ClientContextFileOpener opener(con.context->Services());
++	ClientContextFileOpener opener(con.context->GetContext());
  	FileOpenerInfo info = {S3TestHelper::S3_PATH};
  	auto auth_params = S3AuthResolver::Resolve(opener, info);
  	auto session = S3RequestExecutor::CreateSession(opener, S3TestHelper::S3_PATH, auth_params);
@@ -225,7 +225,7 @@ index 1125ed9..11d19b3 100644
  		REQUIRE(secret_entry);
  		auto &secret = secret_entry->secret->Cast<KeyValueSecret>();
 -		ClientContextFileOpener opener(*con.context);
-+		ClientContextFileOpener opener(con.context->Services());
++		ClientContextFileOpener opener(con.context->GetContext());
  		S3KeyValueReader reader {KeyValueSecretReader(secret, opener)};
  		auto auth_params = S3AuthResolver::Resolve(reader, "s3://persistent/object.bin");
  		REQUIRE(auth_params.GetRequestOptions().sse_customer_key);
@@ -238,7 +238,7 @@ index 6648997..1fe816d 100644
  
  static bool Enabled(Connection &con) {
 -	ClientContextFileOpener opener(*con.context);
-+	ClientContextFileOpener opener(con.context->Services());
++	ClientContextFileOpener opener(con.context->GetContext());
  	return S3Settings::URLParametersEnabled(&opener);
  }
  
@@ -247,7 +247,7 @@ index 6648997..1fe816d 100644
  public:
  	ChangePolicyDuringRequest(ClientContext &context, Connection &other, string statement)
 -	    : ClientContextFileOpener(context), other(other), statement(std::move(statement)) {
-+	    : ClientContextFileOpener(context.Services()), other(other), statement(std::move(statement)) {
++	    : ClientContextFileOpener(context.GetContext()), other(other), statement(std::move(statement)) {
  	}
  
  	SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result, FileOpenerInfo &info) override {

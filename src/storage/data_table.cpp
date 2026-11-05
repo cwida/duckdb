@@ -525,7 +525,7 @@ void DataTable::Fetch(DuckTransaction &transaction, DataChunk &result, const vec
 	D_ASSERT(result.size() == committed_count);
 
 	// Fetch local rows into a separate chunk.
-	auto &allocator = Allocator::Get(local_storage.GetServices().GetDatabase());
+	auto &allocator = Allocator::Get(local_storage.GetContext().GetDatabase());
 	DataChunk local_chunk;
 	local_chunk.Initialize(allocator, result.GetTypes());
 	Vector local_row_ids(row_identifiers, local_sel, local_count);
@@ -806,7 +806,7 @@ void DataTable::VerifyNewConstraint(LocalStorage &local_storage, DataTable &pare
 		throw NotImplementedException("FIXME: ALTER COLUMN with such constraint is not supported yet");
 	}
 
-	parent.row_groups->VerifyNewConstraint(local_storage.GetServices(), local_storage.GetTransaction(), parent,
+	parent.row_groups->VerifyNewConstraint(local_storage.GetContext(), local_storage.GetTransaction(), parent,
 	                                       constraint);
 	local_storage.VerifyNewConstraint(parent, constraint);
 }
@@ -1603,7 +1603,7 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 	}
 	if (writer.GetRebuildIndexes()) {
 		MetricsTimer timer;
-		auto profiler = writer.GetServices().TryGetQueryProfiler();
+		auto profiler = writer.GetContext().TryGetQueryProfiler();
 		if (profiler) {
 			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
 		}

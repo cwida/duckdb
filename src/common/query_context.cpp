@@ -4,13 +4,13 @@
 
 namespace duckdb {
 
-QueryContext::QueryContext(optional_ptr<ClientContext> context) {
-	if (context) {
-		services = &context->Services();
+QueryContext::QueryContext(optional_ptr<ClientContext> client_context) {
+	if (client_context) {
+		context = &client_context->GetContext();
 	}
 }
 
-QueryContext::QueryContext(ClientContext &context) : services(&context.Services()) {
+QueryContext::QueryContext(ClientContext &client_context) : context(&client_context.GetContext()) {
 }
 
 } // namespace duckdb

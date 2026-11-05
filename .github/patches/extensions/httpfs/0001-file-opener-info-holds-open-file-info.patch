@@ -73,7 +73,7 @@ index 855e498..a1064e5 100644
  		    con, "CREATE SECRET browser_headers (TYPE HTTP, EXTRA_HTTP_HEADERS MAP {'X-Secret': 'secret'})");
  		HTTPTestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
 -		ClientContextFileOpener opener(*con.context);
-+		ClientContextFileOpener opener(con.context->Services());
++		ClientContextFileOpener opener(con.context->GetContext());
  		FileOpenerInfo info;
 -		info.file_path = server.HTTPPath();
 +		info.file.path = server.HTTPPath();

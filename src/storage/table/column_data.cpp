@@ -487,7 +487,7 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, const Sca
 	        : *state.current;
 	// segment rows are relative to the row group
 	checked_end = checked_segment.GetRowStart() + checked_segment.GetNode().count;
-	return CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()), checked_segment,
+	return CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetContext()), checked_segment,
 	                              expr_filter);
 }
 
@@ -501,7 +501,7 @@ FilterPropagateResult ColumnData::CheckZonemapAt(ColumnScanState &state, const S
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "ColumnData::CheckZonemapAt");
 	auto segment = data.GetSegment(row);
 	checked_end = segment->GetRowStart() + segment->GetNode().count;
-	return CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()), *segment, expr_filter);
+	return CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetContext()), *segment, expr_filter);
 }
 
 FilterPropagateResult ColumnData::CheckSegmentStatistics(optional_ptr<ClientContext> context,

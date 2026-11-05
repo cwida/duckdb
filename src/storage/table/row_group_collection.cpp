@@ -1346,7 +1346,7 @@ public:
 
 	void ExecuteTask() override {
 		MetricsTimer timer;
-		auto profiler = checkpoint_state.writer.GetServices().TryGetQueryProfiler();
+		auto profiler = checkpoint_state.writer.GetContext().TryGetQueryProfiler();
 		if (profiler) {
 			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
 		}

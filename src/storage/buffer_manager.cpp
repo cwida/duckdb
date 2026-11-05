@@ -23,11 +23,11 @@ const BufferManager &BufferManager::GetBufferManager(const DatabaseInstance &db)
 }
 
 BufferManager &BufferManager::GetBufferManager(ClientContext &context) {
-	return context.Services().GetBufferManager();
+	return context.GetContext().GetBufferManager();
 }
 
 const BufferManager &BufferManager::GetBufferManager(const ClientContext &context) {
-	return context.Services().GetBufferManager();
+	return context.GetContext().GetBufferManager();
 }
 
 BufferManager &BufferManager::GetBufferManager(AttachedDatabase &db) {

@@ -85,15 +85,15 @@ private:
 	AsyncWriteQueue &queue;
 };
 
-AsyncWriteQueue::AsyncWriteQueue(Context &services_p, AsyncWriteTarget &target_p)
-    : services(services_p), target(target_p) {
-	auto &scheduler = services.GetTaskScheduler();
+AsyncWriteQueue::AsyncWriteQueue(Context &context_p, AsyncWriteTarget &target_p)
+    : context(context_p), target(target_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = scheduler.NumberOfAsyncThreads();
 	max_active_tasks = MaxValue<idx_t>(async_threads, 1);
 	if (async_threads == 0) {
 		return;
 	}
-	executor = make_uniq<TaskExecutor>(services, TaskSchedulerType::ASYNC);
+	executor = make_uniq<TaskExecutor>(context, TaskSchedulerType::ASYNC);
 }
 
 AsyncWriteQueue::~AsyncWriteQueue() {
@@ -504,14 +504,14 @@ idx_t ManagedAsyncWriteQueue::PendingWrite::Size() const {
 	return size;
 }
 
-ManagedAsyncWriteQueue::ManagedAsyncWriteQueue(Context &services_p, AsyncWriteTarget &target_p)
-    : services(services_p), target(target_p), memory_governor(services_p) {
-	auto &scheduler = services.GetTaskScheduler();
+ManagedAsyncWriteQueue::ManagedAsyncWriteQueue(Context &context_p, AsyncWriteTarget &target_p)
+    : context(context_p), target(target_p), memory_governor(context_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = scheduler.NumberOfAsyncThreads();
 	max_active_drain_tasks = MaxValue<idx_t>(async_threads, 1);
 
 	AsyncWriteTarget &async_target = *this;
-	write_queue = make_uniq<AsyncWriteQueue>(services, async_target);
+	write_queue = make_uniq<AsyncWriteQueue>(context, async_target);
 }
 
 ManagedAsyncWriteQueue::~ManagedAsyncWriteQueue() {
@@ -958,8 +958,8 @@ idx_t ManagedAsyncWriteStreamQueue::PendingWrite::Size() const {
 
 class ManagedAsyncWriteStreamQueue::CoalescedWritePayload : public AsyncWritePayload {
 public:
-	CoalescedWritePayload(Context &services_p, deque<PendingWrite> writes_p, idx_t size_p)
-	    : services(services_p), writes(std::move(writes_p)), size(size_p) {
+	CoalescedWritePayload(Context &context_p, deque<PendingWrite> writes_p, idx_t size_p)
+	    : context(context_p), writes(std::move(writes_p)), size(size_p) {
 	}
 
 	data_ptr_t Ptr() override {
@@ -967,7 +967,7 @@ public:
 			return writes.front().payload->Ptr();
 		}
 		if (!coalesced.get()) {
-			coalesced = BufferAllocator::Get(services).Allocate(size);
+			coalesced = BufferAllocator::Get(context).Allocate(size);
 			idx_t offset = 0;
 			for (auto &write : writes) {
 				auto current_size = write.Size();
@@ -986,7 +986,7 @@ public:
 	}
 
 private:
-	Context &services;
+	Context &context;
 	deque<PendingWrite> writes;
 	AllocatedData coalesced;
 	idx_t size;
@@ -1020,8 +1020,8 @@ private:
 	idx_t size;
 };
 
-ManagedAsyncWriteStreamQueue::ManagedAsyncWriteStreamQueue(Context &services_p, ManagedAsyncWriteStreamTarget &target_p)
-    : services(services_p), target(target_p) {
+ManagedAsyncWriteStreamQueue::ManagedAsyncWriteStreamQueue(Context &context_p, ManagedAsyncWriteStreamTarget &target_p)
+    : context(context_p), target(target_p) {
 	auto local_file = target.IsLocalFile();
 	coalesce_threshold =
 	    local_file ? AsyncWriteConfig::LOCAL_COALESCE_THRESHOLD : AsyncWriteConfig::REMOTE_COALESCE_THRESHOLD;
@@ -1029,7 +1029,7 @@ ManagedAsyncWriteStreamQueue::ManagedAsyncWriteStreamQueue(Context &services_p, 
 	drain_task_byte_budget = MaxValue(AsyncWriteConfig::DRAIN_TASK_BYTE_BUDGET, coalesce_threshold);
 	limit_coalesced_write_size = local_file;
 
-	auto &scheduler = services.GetTaskScheduler();
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = scheduler.NumberOfAsyncThreads();
 
 	write_mode = target.GetWriteMode();
@@ -1040,7 +1040,7 @@ ManagedAsyncWriteStreamQueue::ManagedAsyncWriteStreamQueue(Context &services_p, 
 	}
 
 	AsyncWriteTarget &async_target = *this;
-	write_queue = make_uniq<ManagedAsyncWriteQueue>(services, async_target);
+	write_queue = make_uniq<ManagedAsyncWriteQueue>(context, async_target);
 }
 
 ManagedAsyncWriteStreamQueue::~ManagedAsyncWriteStreamQueue() {
@@ -1358,7 +1358,7 @@ unique_ptr<AsyncWritePayload> ManagedAsyncWriteStreamQueue::CreatePayload(deque<
 	if (writes.size() == 1) {
 		return std::move(writes.front().payload);
 	}
-	return make_uniq<CoalescedWritePayload>(services, std::move(writes), size);
+	return make_uniq<CoalescedWritePayload>(context, std::move(writes), size);
 }
 
 unique_ptr<AsyncWritePayload> ManagedAsyncWriteStreamQueue::CreateMaterializedPayload(idx_t end, idx_t size) {
@@ -1379,7 +1379,7 @@ unique_ptr<AsyncWritePayload> ManagedAsyncWriteStreamQueue::CreateMaterializedPa
 		return std::move(result);
 	}
 
-	auto data = BufferAllocator::Get(services).Allocate(size);
+	auto data = BufferAllocator::Get(context).Allocate(size);
 	idx_t data_offset = 0;
 	for (idx_t write_idx = 0; write_idx < end; write_idx++) {
 		auto &write = pending_writes[write_idx];

@@ -576,9 +576,9 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 		http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(*db);
 	}
 
-	auto services = FileOpener::TryGetContext(opener);
-	if (services && services->IsClient()) {
-		logger = services->GetLoggerPtr();
+	auto context = FileOpener::TryGetContext(opener);
+	if (context && context->IsClient()) {
+		logger = context->GetLoggerPtr();
 	}
 }
 
@@ -589,7 +589,7 @@ unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(DatabaseInstance &db, cons
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(ClientContext &context, const string &url) {
-	ClientContextFileOpener opener(context.Services());
+	ClientContextFileOpener opener(context.GetContext());
 	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }

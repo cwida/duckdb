@@ -7,14 +7,14 @@ index 38f009f..bab4a55 100644
  		azure_context_caching = value.GetValue<bool>();
  	}
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto services = FileOpener::TryGetContext(opener);
++	auto context = FileOpener::TryGetContext(opener);
  
  	shared_ptr<AzureContextState> result;
 -	if (azure_context_caching && client_context) {
-+	if (azure_context_caching && services && services->IsClient()) {
++	if (azure_context_caching && context && context->IsClient()) {
  		string key_path = GetContextKeyPath(opener, path, parsed_url);
--		auto &registered_state = client_context->Services().GetRegisteredState();
-+		auto &registered_state = services->GetRegisteredState();
+-		auto &registered_state = client_context->GetContext().GetRegisteredState();
++		auto &registered_state = context->GetRegisteredState();
  
  		// Ok, now use account in key, or otherwise skip the cache
  		if (!key_path.empty()) {
@@ -26,21 +26,21 @@ index d4a7eff..e01360c 100644
  }
  
  shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(ClientContext &context) {
--	return context.Services().GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
-+	return TryGetState(context.Services());
+-	return context.GetContext().GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
++	return TryGetState(context.GetContext());
 +}
 +
-+shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(Context &services) {
-+	return services.GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
++shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(Context &context) {
++	return context.GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
  }
  
  shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(optional_ptr<FileOpener> opener) {
 -	auto client_context = FileOpener::TryGetClientContext(opener);
 -	if (client_context) {
 -		return TryGetState(*client_context);
-+	auto services = FileOpener::TryGetContext(opener);
-+	if (services && services->IsClient()) {
-+		return TryGetState(*services);
++	auto context = FileOpener::TryGetContext(opener);
++	if (context && context->IsClient()) {
++		return TryGetState(*context);
  	}
  	return nullptr;
  }
@@ -53,9 +53,9 @@ index a137518..d16066a 100644
  	}
  	if (http_logging_enabled) {
 -		auto client_context = FileOpener::TryGetClientContext(opener);
--		if (client_context && client_context->Services().GetLoggerPtr()) {
-+		auto services = FileOpener::TryGetContext(opener);
-+		if (services && services->IsClient() && services->GetLoggerPtr()) {
+-		if (client_context && client_context->GetContext().GetLoggerPtr()) {
++		auto context = FileOpener::TryGetContext(opener);
++		if (context && context->IsClient() && context->GetLoggerPtr()) {
  			// Read redaction config options
  			std::unordered_set<std::string> redact_query_params;
  			std::unordered_set<std::string> redact_headers;
@@ -63,8 +63,8 @@ index a137518..d16066a 100644
  			}
  
  			options.PerRetryPolicies.emplace_back(new HttpLoggingPolicy(
--			    client_context->Services().GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
-+			    services->GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
+-			    client_context->GetContext().GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
++			    context->GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
  		}
  	}
  	return options;
@@ -76,7 +76,7 @@ index 9959628..d911223 100644
  	void Reset();
  	//! Helper functions to get the HTTP state
  	static shared_ptr<AzureHTTPState> TryGetState(ClientContext &context);
-+	static shared_ptr<AzureHTTPState> TryGetState(Context &services);
++	static shared_ptr<AzureHTTPState> TryGetState(Context &context);
  	static shared_ptr<AzureHTTPState> TryGetState(optional_ptr<FileOpener> opener);
  
  	bool IsEmpty() {

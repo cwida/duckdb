@@ -31,7 +31,7 @@ class Value;
 
 //! Context owns the services that operations need to do their work: reading settings, logging, recording
 //! metrics and accessing the file system.
-//! A ClientContext owns one (see ClientContext::Services) that holds all of its connection-specific services.
+//! A ClientContext owns one (see ClientContext::GetContext) that holds all of its connection-specific services.
 //! A DatabaseInstance can create one (see DatabaseInstance::Services) that only provides database-wide services.
 class Context {
 public:

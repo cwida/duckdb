@@ -27,12 +27,12 @@ CatalogTransaction CatalogTransaction::GetSystemCatalogTransaction(ClientContext
 	return CatalogTransaction(Catalog::GetSystemCatalog(context), context);
 }
 
-CatalogTransaction CatalogTransaction::GetSystemCatalogTransaction(Context &services) {
-	auto client_context = services.TryGetClientContext();
+CatalogTransaction CatalogTransaction::GetSystemCatalogTransaction(Context &context) {
+	auto client_context = context.TryGetClientContext();
 	if (client_context) {
 		return GetSystemCatalogTransaction(*client_context);
 	}
-	return GetSystemTransaction(services.GetDatabase());
+	return GetSystemTransaction(context.GetDatabase());
 }
 
 CatalogTransaction CatalogTransaction::GetSystemTransaction(DatabaseInstance &db) {

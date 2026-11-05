@@ -83,9 +83,9 @@ public:
 	}
 	virtual void WriteProfilingInformation(std::ostream &ss) {
 	}
-	virtual void OnTaskStart(Context &services) {
+	virtual void OnTaskStart(Context &context) {
 	}
-	virtual void OnTaskStop(Context &services) {
+	virtual void OnTaskStop(Context &context) {
 	}
 
 public:
@@ -104,7 +104,7 @@ public:
 class RegisteredStateManager {
 public:
 	template <class T, typename... ARGS>
-	shared_ptr<T> GetOrCreate(const string &key, ARGS &&... args) {
+	shared_ptr<T> GetOrCreate(const string &key, ARGS &&...args) {
 		lock_guard<mutex> l(lock);
 		auto lookup = registered_state.find(key);
 		if (lookup != registered_state.end()) {
