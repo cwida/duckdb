@@ -20,6 +20,7 @@ insert into skipped_tests values
 	-- borked files
 	('data/csv/test/invalid_utf.csv'),
 	('data/csv/test/invalid_utf_big.csv'),
+	('data/csv/test/invalid_utf_cut.csv'),
 	('data/csv/test/invalid_utf_complex.csv'),
 	('data/csv/test/invalid_utf_header.csv'),
 	('data/csv/test/invalid_utf_list.csv'),

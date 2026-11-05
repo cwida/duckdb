@@ -42,6 +42,17 @@ SELECT e'\xFF' = chr(255);
 ----
 Parser Error: Invalid UTF-8 in escape string literal at byte offset 0: byte mismatch
 
+# a sequence cut short is reported at the byte that cuts it
+statement error
+SELECT e'A\xC3B';
+----
+Parser Error: Invalid UTF-8 in escape string literal at byte offset 2: byte mismatch
+
+statement error
+SELECT e'A\xE2\x82B';
+----
+Parser Error: Invalid UTF-8 in escape string literal at byte offset 3: byte mismatch
+
 query I
 SELECT e'\x41' = 'A';
 ----

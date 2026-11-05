@@ -18,3 +18,21 @@ SELECT * EXCLUDE (scan_id) FROM reject_errors ORDER BY ALL;
 0	3012	54209	54221	3	col3	INVALID ENCODING	valid,valid,invalid_??_part	Invalid unicode (byte sequence mismatch) detected. This file is not utf-8 encoded.
 0	3023	54417	54423	2	col2	INVALID ENCODING	valid,invalid_??_part,valid	Invalid unicode (byte sequence mismatch) detected. This file is not utf-8 encoded.
 0	3034	54625	54637	3	col3	INVALID ENCODING	valid,valid,invalid_??_part	Invalid unicode (byte sequence mismatch) detected. This file is not utf-8 encoded.
+
+# a byte that cuts a multi byte sequence short stays in the original line
+statement ok
+from read_csv('{DATA_DIR}/csv/test/invalid_utf_cut.csv', columns = {'a': 'VARCHAR', 'b': 'VARCHAR'},
+ auto_detect=false, header = 1, delim = ',', store_rejects=true)
+
+query II
+SELECT line, csv_line FROM reject_errors WHERE scan_id = (SELECT max(scan_id) FROM reject_errors) ORDER BY line;
+----
+3	valid,cut_?x_part
+4	valid,cut4_???😀_part
+5	valid,end_?
+
+statement error
+from read_csv('{DATA_DIR}/csv/test/invalid_utf_cut.csv', columns = {'a': 'VARCHAR', 'b': 'VARCHAR'},
+ auto_detect=false, header = 1, delim = ',')
+----
+Original Line: valid,cut_?x_part

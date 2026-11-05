@@ -302,3 +302,31 @@ SELECT s FROM read_parquet('{TEST_DIR}/dlba_split_{case_id}.parquet', binary_as_
 is not valid UTF8
 
 endloop
+
+# a byte that cuts a multi byte sequence short is kept by both repairing modes
+statement ok
+COPY (SELECT * FROM (VALUES
+    (1, unhex('41C342')),
+    (2, unhex('F09F98F09F9880')),
+    (3, unhex('E282C3A9')),
+    (4, unhex('41E282')),
+    (5, NULL::BLOB)
+) t(i, s)) TO '{TEST_DIR}/cut_sequences.parquet';
+
+query II
+SELECT i, s FROM read_parquet('{TEST_DIR}/cut_sequences.parquet', binary_as_string=true, utf8_validation='replace') ORDER BY i;
+----
+1	A?B
+2	???😀
+3	??é
+4	A??
+5	NULL
+
+query II
+SELECT i, s FROM read_parquet('{TEST_DIR}/cut_sequences.parquet', binary_as_string=true, utf8_validation='ignore') ORDER BY i;
+----
+1	AB
+2	😀
+3	é
+4	A
+5	NULL

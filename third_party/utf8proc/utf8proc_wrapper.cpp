@@ -43,13 +43,15 @@ static inline UnicodeType UTF8ExtraByteLoop(const int first_pos_seq, int utf8cha
 		return UnicodeType::INVALID;
 	}
 	for (size_t j = 0; j < nextra_bytes; j++) {
-		int c = (int)s[++i];
+		int c = (int)s[i + 1];
 		/* now validate the extra bytes */
 		if ((c & 0xC0) != 0x80) {
 			/* extra byte is not in the format 10xxxxxx */
-			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::BYTE_MISMATCH);
+			// i stays on the last byte of the cut sequence, so a caller resumes at the byte that cut it.
+			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i + 1, UnicodeInvalidReason::BYTE_MISMATCH);
 			return UnicodeType::INVALID;
 		}
+		i++;
 		utf8char = (utf8char << 6) | (c & 0x3F);
 	}
 	if ((utf8char & mask) == 0) {
@@ -186,33 +188,25 @@ std::string Utf8Proc::RemoveInvalid(const char *s, size_t len) {
 
 		int first_pos_seq = i;
 		UnicodeType type = UnicodeType::ASCII;
-		UnicodeInvalidReason invalid_reason = UnicodeInvalidReason::BYTE_MISMATCH;
-		size_t invalid_pos = first_pos_seq;
 
 		if ((c & 0xE0) == 0xC0) {
 			/* 2 byte sequence */
 			int utf8char = c & 0x1F;
-			type = UTF8ExtraByteLoop<1, 0x000780>(first_pos_seq, utf8char, i, s, len, &invalid_reason, &invalid_pos);
+			type = UTF8ExtraByteLoop<1, 0x000780>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
 		} else if ((c & 0xF0) == 0xE0) {
 			/* 3 byte sequence */
 			int utf8char = c & 0x0F;
-			type = UTF8ExtraByteLoop<2, 0x00F800>(first_pos_seq, utf8char, i, s, len, &invalid_reason, &invalid_pos);
+			type = UTF8ExtraByteLoop<2, 0x00F800>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
 		} else if ((c & 0xF8) == 0xF0) {
 			/* 4 byte sequence */
 			int utf8char = c & 0x07;
-			type = UTF8ExtraByteLoop<3, 0x1F0000>(first_pos_seq, utf8char, i, s, len, &invalid_reason, &invalid_pos);
+			type = UTF8ExtraByteLoop<3, 0x1F0000>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
 		} else {
 			// invalid, do not write to output
 			continue;
 		}
 
 		if (type == UnicodeType::INVALID) {
-			// A bad continuation byte (not a truncated tail, not a bad codepoint after a fully well-formed sequence) 
-			// means the byte at invalid_pos was never actually consumed as part of this sequence 
-			// rewind so it gets reprocessed on its own next iteration
-			if (invalid_reason == UnicodeInvalidReason::BYTE_MISMATCH && i > first_pos_seq) {
-				i = invalid_pos - 1;
-			}
 			continue;
 		}
 

@@ -55,3 +55,75 @@ SELECT hex(b) FROM invalid_blob;
 ----
 4141414141414141414141414141414141414141C0
 
+# replace marks each byte that belongs to no valid character with one '?' and keeps every other byte;
+# a byte that cuts a sequence short is not part of that sequence and is decoded on its own
+statement ok
+CREATE TABLE bad_utf8(id INTEGER, b BLOB);
+
+statement ok
+INSERT INTO bad_utf8 VALUES
+	(1, unhex('41C342')),
+	(2, unhex('F09F98F09F9880')),
+	(3, unhex('C342')),
+	(4, unhex('C3C3A9')),
+	(5, unhex('41C3')),
+	(6, unhex('E242')),
+	(7, unhex('E28242')),
+	(8, unhex('E282C3A9')),
+	(9, unhex('41E282')),
+	(10, unhex('F09F9842')),
+	(11, unhex('F0F09F9880')),
+	(12, unhex('F09FE282AC')),
+	(13, unhex('41F09F98')),
+	(14, unhex('418042')),
+	(15, unhex('41FF42')),
+	(16, unhex('C08041')),
+	(17, unhex('E0808041')),
+	(18, unhex('EDA08041')),
+	(19, unhex('F490808041')),
+	(20, unhex('41E2FF42C08043')),
+	(21, unhex(repeat('41', 20) || 'E282' || repeat('42', 20))),
+	(22, NULL),
+	(23, ''::BLOB),
+	(24, unhex('41C3A942')),
+	(25, unhex('3FC342'));
+
+query III
+SELECT id, decode(b, 'replace'), decode(b, 'ignore') FROM bad_utf8 ORDER BY id;
+----
+1	A?B	AB
+2	???😀	😀
+3	?B	B
+4	?é	é
+5	A?	A
+6	?B	B
+7	??B	B
+8	??é	é
+9	A??	A
+10	???B	B
+11	?😀	😀
+12	??€	€
+13	A???	A
+14	A?B	AB
+15	A?B	AB
+16	??A	A
+17	???A	A
+18	???A	A
+19	????A	A
+20	A??B??C	ABC
+21	AAAAAAAAAAAAAAAAAAAA??BBBBBBBBBBBBBBBBBBBB	AAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBB
+22	NULL	NULL
+23	(empty)	(empty)
+24	AéB	AéB
+25	??B	?B
+
+# replace keeps the byte length, and on input without a '?' of its own ignore is replace without the marks
+query IIII
+SELECT
+	count(*),
+	bool_and(octet_length(encode(decode(b, 'replace'))) = octet_length(b)),
+	count(*) FILTER (WHERE NOT contains(decode(b, 'ignore'), '?')),
+	bool_and(replace(decode(b, 'replace'), '?', '') = decode(b, 'ignore')) FILTER (WHERE NOT contains(decode(b, 'ignore'), '?'))
+FROM bad_utf8 WHERE b IS NOT NULL;
+----
+24	true	23	true
