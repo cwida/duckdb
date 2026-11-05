@@ -467,7 +467,17 @@ bool DuckSchemaEntry::DropMacroFunctionMember(CatalogTransaction transaction, Dr
 	function->internal = existing.internal;
 	// the replacement is a fresh entry on purpose: the changed oid is what makes the existing
 	// commit-time checks abort schedules that raced this mutation, like any macro replacement
-	AddEntry(transaction, std::move(function), OnCreateConflict::REPLACE_ON_CONFLICT);
+	try {
+		AddEntry(transaction, std::move(function), OnCreateConflict::REPLACE_ON_CONFLICT);
+	} catch (const DependencyException &ex) {
+		// dependencies are tracked per entry: any dependent blocks the member drop, and CASCADE is
+		// rejected for member drops, so the generic hint would send the user in a circle
+		ErrorData error(ex);
+		throw DependencyException("%s\nDependencies block dropping a single overload of %s, and CASCADE cannot "
+		                          "scope to one overload: drop the dependent entries first, or drop the whole "
+		                          "function",
+		                          error.RawMessage(), info.GetQualifiedName().Name());
+	}
 	return true;
 }
 
