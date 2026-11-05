@@ -16,7 +16,12 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 	const auto new_line = options.new_line.GetValue();
 	const auto quote = static_cast<uint8_t>(options.quote.GetValue());
 	const auto escape = static_cast<uint8_t>(options.escape.GetValue());
-	if (delimiter.empty() || delimiter.size() > 4 || options.comment != '\0' || (escape != '\0' && escape != quote)) {
+	const auto comment = static_cast<uint8_t>(options.comment.GetValue());
+	if (delimiter.empty() || delimiter.size() > 4 || (escape != '\0' && escape != quote)) {
+		return false;
+	}
+	if (comment != '\0' &&
+	    (comment == static_cast<uint8_t>(delimiter[0]) || comment == quote || comment == '\n' || comment == '\r')) {
 		return false;
 	}
 	if (new_line != NewLineIdentifier::SINGLE_N && new_line != NewLineIdentifier::CARRY_ON &&
@@ -54,9 +59,13 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 		if (new_line == NewLineIdentifier::SINGLE_R && transition_array['\r'][from_idx] != CSVState::RECORD_SEPARATOR) {
 			return false;
 		}
+		if (comment != '\0' && transition_array[comment][from_idx] != CSVState::COMMENT) {
+			return false;
+		}
 		const bool after_separator = from != CSVState::STANDARD && from != CSVState::EMPTY_SPACE;
 		for (uint32_t byte = 0; byte < StateMachine::NUM_TRANSITIONS; byte++) {
-			if (byte == delimiter_byte || byte == '\n' || byte == '\r' || (quote != '\0' && byte == quote)) {
+			if (byte == delimiter_byte || byte == '\n' || byte == '\r' || (quote != '\0' && byte == quote) ||
+			    (comment != '\0' && byte == comment)) {
 				continue;
 			}
 			const auto expected = byte == ' ' && after_separator ? CSVState::EMPTY_SPACE : CSVState::STANDARD;
@@ -68,6 +77,21 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 	if (new_line == NewLineIdentifier::CARRY_ON &&
 	    transition_array['\n'][static_cast<uint8_t>(CSVState::CARRIAGE_RETURN)] != CSVState::RECORD_SEPARATOR) {
 		return false;
+	}
+	if (comment != '\0') {
+		const auto in_comment = static_cast<uint8_t>(CSVState::COMMENT);
+		if (transition_array['\n'][in_comment] != CSVState::RECORD_SEPARATOR) {
+			return false;
+		}
+		if (transition_array['\r'][in_comment] !=
+		    (new_line == NewLineIdentifier::CARRY_ON ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR)) {
+			return false;
+		}
+		for (uint32_t byte = 0; byte < StateMachine::NUM_TRANSITIONS; byte++) {
+			if (byte != '\n' && byte != '\r' && transition_array[byte][in_comment] != CSVState::COMMENT) {
+				return false;
+			}
+		}
 	}
 	if (quote == '\0') {
 		return true;

@@ -216,6 +216,7 @@ protected:
 	const bool block_crlf;
 	const bool block_cr;
 	const bool block_escape_is_quote;
+	const uint8_t block_comment;
 
 	//! Whether the state machine can hand the current byte to ProcessBlocks
 	template <class T>
@@ -277,6 +278,17 @@ protected:
 		D_ASSERT(ReplayStates(last, at).states[1] == (at == last ? states.states[1] : CSVState::QUOTED));
 		states.states[1] = at == last ? states.states[1] : CSVState::QUOTED;
 		states.states[0] = previous;
+	}
+
+	//! Leaves the block scan inside a comment at `at`, `before` is the state before the comment byte at `last - 1`
+	bool HandOverComment(const idx_t at, const idx_t last, const CSVState before) {
+		const auto previous = at == last ? before : CSVState::COMMENT;
+		D_ASSERT(ReplayStates(last, at).states[0] == previous);
+		D_ASSERT(ReplayStates(last, at).states[1] == CSVState::COMMENT);
+		states.states[0] = previous;
+		states.states[1] = CSVState::COMMENT;
+		iterator.pos.buffer_pos = at;
+		return false;
 	}
 
 	//! Leaves the block scan inside a quoted value at `at`
@@ -354,6 +366,27 @@ protected:
 		return false;
 	}
 
+	//! The row end at `at` closes a comment, as the byte loop's record separator case does. Returns true when the
+	//! result is full
+	template <class T>
+	bool BlockCommentEnd(T &result, const idx_t at, const bool crlf, uint64_t &candidates, const idx_t pos) {
+		states.states[0] = CSVState::COMMENT;
+		states.states[1] = crlf ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR;
+		iterator.pos.buffer_pos = at;
+		const bool full = T::UnsetComment(result, at);
+		lines_read++;
+		if (full) {
+			iterator.pos.buffer_pos = at + 1;
+			return true;
+		}
+		if (crlf) {
+			states.states[0] = CSVState::CARRIAGE_RETURN;
+			states.states[1] = CSVState::RECORD_SEPARATOR;
+			candidates &= ~(uint64_t(1) << (at + 1 - pos));
+		}
+		return false;
+	}
+
 	//! Scans unquoted fields and quoted values in their canonical form, and preserves the states when handing back
 	//! to Process. Returns true when the result is full. Repeated SetQuoted calls may be skipped because the setter
 	//! is idempotent. MULTI_BYTE_DELIMITER is the dialect's, so one byte delimiters pay nothing for the other case
@@ -364,6 +397,9 @@ protected:
 		idx_t pos = iterator.pos.buffer_pos;
 		idx_t last = pos;
 		bool quoted = false;
+		// inside a comment only a row end matters, `comment_before` is the state before the comment byte
+		bool comment = false;
+		CSVState comment_before = CSVState::NOT_SET;
 		uint64_t candidates;
 		idx_t block_end;
 		while (pos < to_pos && skipper.BlockCandidates(pos, candidates, block_end)) {
@@ -375,6 +411,24 @@ protected:
 				}
 				candidates &= candidates - 1;
 				const auto byte = static_cast<uint8_t>(buffer[at]);
+				if (comment) {
+					const idx_t row_end_bytes = RowEndBytes(byte, at, limit);
+					if (row_end_bytes == 0) {
+						if (byte == '\n' || byte == '\r') {
+							return HandOverComment(at, last, comment_before);
+						}
+						continue;
+					}
+					D_ASSERT(ReplayStates(last, at + 1).states[0] == CSVState::COMMENT);
+					D_ASSERT(ReplayStates(last, at + 1).states[1] ==
+					         (row_end_bytes == 2 ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR));
+					if (BlockCommentEnd(result, at, row_end_bytes == 2, candidates, pos)) {
+						return true;
+					}
+					comment = false;
+					last = at + row_end_bytes;
+					continue;
+				}
 				if (quoted) {
 					if (byte == '\n' || byte == '\r') {
 						// QUOTED and QUOTED_NEW_LINE alternate on newline bytes inside the quotes
@@ -461,6 +515,18 @@ protected:
 					last = at + 1;
 					continue;
 				}
+				if (block_comment != '\0' && byte == block_comment) {
+					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::COMMENT);
+					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
+					states.states[0] = before;
+					states.states[1] = CSVState::COMMENT;
+					iterator.pos.buffer_pos = at;
+					T::SetComment(result, at);
+					comment = true;
+					comment_before = before;
+					last = at + 1;
+					continue;
+				}
 				if (block_quote != '\0' && byte == block_quote) {
 					if (before == CSVState::STANDARD) {
 						// a quote inside an unquoted value is data
@@ -497,6 +563,9 @@ protected:
 				last = at + row_end_bytes;
 			}
 			pos = limit;
+		}
+		if (comment) {
+			return HandOverComment(pos, last, comment_before);
 		}
 		return quoted ? HandOverQuoted(pos, last) : HandOver(pos, last);
 	}
