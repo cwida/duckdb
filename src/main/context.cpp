@@ -36,10 +36,10 @@ private:
 	ClientContext &context;
 };
 
-//! ClientBufferManager wraps the buffer manager to forward the services of a client.
-class ClientBufferManager : public BufferManager {
+//! ContextBufferManager wraps the buffer manager to forward the services of a client.
+class ContextBufferManager : public BufferManager {
 public:
-	explicit ClientBufferManager(Context &context_p, BufferManager &buffer_manager_p)
+	explicit ContextBufferManager(Context &context_p, BufferManager &buffer_manager_p)
 	    : context(context_p), buffer_manager(buffer_manager_p) {
 	}
 
@@ -245,7 +245,7 @@ void Context::InitializeClient(ClientContext &context_p) {
 	client_file_system = make_uniq<ClientFileSystem>(context_p);
 	profiler = make_shared_ptr<QueryProfiler>(context_p);
 	registered_state = make_uniq<RegisteredStateManager>();
-	client_buffer_manager = make_uniq<ClientBufferManager>(*this, db.GetBufferManager());
+	client_buffer_manager = make_uniq<ContextBufferManager>(*this, db.GetBufferManager());
 }
 
 DatabaseInstance &Context::GetDatabase() const {
