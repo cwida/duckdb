@@ -84,7 +84,7 @@ public:
 	DUCKDB_API FileSystem &GetFileSystem() const;
 	//! The file opener of the client - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<FileOpener> TryGetFileOpener() const;
-	//! The buffer manager: client-specific for the services of a ClientContext, otherwise the database one
+	//! The buffer manager wrapper: forwards to the database buffer manager, tracking the allocations of the services
 	DUCKDB_API BufferManager &GetBufferManager() const;
 	//! The database-wide task scheduler
 	DUCKDB_API TaskScheduler &GetTaskScheduler() const;
@@ -107,8 +107,8 @@ private:
 	unique_ptr<RegisteredStateManager> registered_state;
 	unique_ptr<FileOpener> file_opener;
 	unique_ptr<FileSystem> client_file_system;
-	//! The buffer manager wrapper of the client
-	unique_ptr<BufferManager> client_buffer_manager;
+	//! The buffer manager wrapper of the services
+	unique_ptr<BufferManager> buffer_manager;
 };
 
 } // namespace duckdb

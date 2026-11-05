@@ -125,11 +125,11 @@ public:
 	}
 	idx_t GetOperatorMemoryLimit() const override {
 		idx_t global_budget = buffer_manager.GetOperatorMemoryLimit();
-		const auto &config = context.GetClientConfig();
-		if (!config.operator_memory_limit.IsValid()) {
+		auto config = context.TryGetClientConfig();
+		if (!config || !config->operator_memory_limit.IsValid()) {
 			return global_budget;
 		}
-		return MinValue(global_budget, config.operator_memory_limit.GetIndex());
+		return MinValue(global_budget, config->operator_memory_limit.GetIndex());
 	}
 
 	shared_ptr<BlockHandle> RegisterTransientMemory(const idx_t size, BlockManager &block_manager) override {
@@ -222,8 +222,9 @@ public:
 
 private:
 	void TrackMemoryAllocation(idx_t size) const {
-		if (size > 0) {
-			context.GetQueryProfiler().TrackTotalMemoryAllocated(size);
+		auto profiler = context.TryGetQueryProfiler();
+		if (size > 0 && profiler) {
+			profiler->TrackTotalMemoryAllocated(size);
 		}
 	}
 
@@ -231,7 +232,8 @@ private:
 	BufferManager &buffer_manager;
 };
 
-Context::Context(DatabaseInstance &db_p) : db(db_p) {
+Context::Context(DatabaseInstance &db_p)
+    : db(db_p), buffer_manager(make_uniq<ContextBufferManager>(*this, db_p.GetBufferManager())) {
 }
 
 Context::~Context() {
@@ -245,7 +247,6 @@ void Context::InitializeClient(ClientContext &context_p) {
 	client_file_system = make_uniq<ClientFileSystem>(context_p);
 	profiler = make_shared_ptr<QueryProfiler>(context_p);
 	registered_state = make_uniq<RegisteredStateManager>();
-	client_buffer_manager = make_uniq<ContextBufferManager>(*this, db.GetBufferManager());
 }
 
 DatabaseInstance &Context::GetDatabase() const {
@@ -325,10 +326,7 @@ optional_ptr<FileOpener> Context::TryGetFileOpener() const {
 }
 
 BufferManager &Context::GetBufferManager() const {
-	if (client_buffer_manager) {
-		return *client_buffer_manager;
-	}
-	return BufferManager::GetBufferManager(db);
+	return *buffer_manager;
 }
 
 TaskScheduler &Context::GetTaskScheduler() const {
