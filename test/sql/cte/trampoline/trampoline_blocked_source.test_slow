@@ -9,13 +9,18 @@
 # block in this shape) can then only make progress on the coordinating thread. The
 # trampoline source suspends its wave and returns BLOCKED up the stack, so the regular
 # executor flow services the continuation and re-enters the operator where it stopped;
-# a wave driver that waits inside the operator instead deadlocks both queries below.
-# The recursive query pins the same suspension at threads == external_threads == 2;
-# recursive_inline_blocked_source.test keeps the single-thread gate.
-# max_execution_time bounds partial regressions, a full reintroduction of the deadlock is
-# only caught by the runner timeout.
+# a wave driver that waits inside the operator without servicing executor tasks deadlocks
+# both queries below. The recursive query pins the same suspension at
+# threads == external_threads == 2; recursive_inline_blocked_source.test keeps the
+# single-thread gate.
+# query_timeout is the primary bound on a regression: its watchdog calls Interrupt(),
+# which the parked client loop observes. max_execution_time additionally bounds
+# regressions where tasks still execute without making progress, but cannot fire while
+# the query is fully parked. The runner's process timeout remains the last resort.
 
 require tpch
+
+set query_timeout 120
 
 statement ok
 SET threads=2;
