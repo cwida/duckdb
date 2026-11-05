@@ -41,8 +41,6 @@ void DeltaByteArrayDecoder::ReadDbpData(BACKING &backing, ResizeableBuffer &buff
 	buffer.Inc(decoder->BytesConsumed());
 }
 
-template void DeltaByteArrayDecoder::ReadDbpData<Allocator>(Allocator &, ResizeableBuffer &, ResizeableBuffer &,
-                                                            idx_t &);
 template void DeltaByteArrayDecoder::ReadDbpData<BufferManager>(BufferManager &, ResizeableBuffer &,
                                                                 ResizeableBuffer &, idx_t &);
 

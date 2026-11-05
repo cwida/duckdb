@@ -139,11 +139,7 @@ public:
 
 	void Resize(Allocator &allocator, const idx_t new_size) {
 		if (block_handle) {
-			// a shared buffer can switch backing modes when the page encoding changes
-			handle.Destroy();
-			block_handle.reset();
-			ptr = nullptr;
-			alloc_len = 0;
+			ReleaseAll();
 		}
 		if (PrepareResize(new_size)) {
 			allocated_data.Reset(); // Have to reset before allocating new buffer (otherwise we use ~2x the memory)
@@ -154,10 +150,7 @@ public:
 
 	void Resize(BufferManager &buffer_manager, const idx_t new_size) {
 		if (allocated_data.get()) {
-			// a shared buffer can switch backing modes when the page encoding changes
-			allocated_data.Reset();
-			ptr = nullptr;
-			alloc_len = 0;
+			ReleaseAll();
 		}
 		// Unpinned reuse is overwritten anyway; allocate fresh instead of reloading a spilled block.
 		if (PrepareResize(new_size) || (new_size > 0 && block_handle && !handle.IsValid())) {
@@ -204,6 +197,15 @@ public:
 	}
 
 private:
+	//! A shared buffer can switch backing modes when the page encoding changes.
+	void ReleaseAll() {
+		handle.Destroy();
+		block_handle.reset();
+		allocated_data.Reset();
+		ptr = nullptr;
+		alloc_len = 0;
+	}
+
 	//! Sets the new length and reports whether a larger allocation is needed.
 	bool PrepareResize(const idx_t new_size) {
 		len = new_size;
