@@ -447,43 +447,39 @@ ATTACH ':memory:' AS probe_other;
 statement ok
 CREATE MACRO probe_other.helper() AS 1;
 
+# triggers need storage v2.0.0, so the whole scenario lives in an attached in-memory catalog,
+# with only the unused argument crossing into another catalog
 statement ok
-CREATE MACRO probe_ignore(x) AS 42;
+ATTACH ':memory:' AS probe_mem;
 
 statement ok
-CREATE MACRO probe_callee() AS probe_ignore(probe_other.helper());
+CREATE MACRO probe_mem.main.probe_ignore(x) AS 42;
 
 statement ok
-CREATE TABLE probe_t(i INT);
+CREATE MACRO probe_mem.main.probe_callee() AS probe_mem.main.probe_ignore(probe_other.helper());
 
 statement ok
-CREATE TABLE probe_log(i INT);
+CREATE TABLE probe_mem.probe_t(i INT);
 
 statement ok
-CREATE TRIGGER probe_tr AFTER INSERT ON probe_t FOR EACH STATEMENT INSERT INTO probe_log VALUES (probe_callee());
+CREATE TABLE probe_mem.probe_log(i INT);
 
 statement ok
-INSERT INTO probe_t VALUES (1);
+CREATE TRIGGER probe_tr AFTER INSERT ON probe_mem.probe_t FOR EACH STATEMENT INSERT INTO probe_mem.probe_log VALUES (probe_mem.main.probe_callee());
+
+statement ok
+INSERT INTO probe_mem.probe_t VALUES (1);
 
 query I
-SELECT i FROM probe_log;
+SELECT i FROM probe_mem.probe_log;
 ----
 42
 
 statement ok
-DROP TRIGGER probe_tr ON probe_t;
+DROP TRIGGER probe_tr ON probe_mem.probe_t;
 
 statement ok
-DROP TABLE probe_t;
-
-statement ok
-DROP TABLE probe_log;
-
-statement ok
-DROP MACRO probe_callee;
-
-statement ok
-DROP MACRO probe_ignore;
+DETACH probe_mem;
 
 statement ok
 DETACH probe_other;
