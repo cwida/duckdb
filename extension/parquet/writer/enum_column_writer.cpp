@@ -32,22 +32,40 @@ public:
 		return false;
 	}
 };
+
+class EnumColumnWriterState : public PrimitiveColumnWriterState {
+public:
+	EnumColumnWriterState(ParquetWriter &writer, duckdb_parquet::RowGroup &row_group, idx_t col_idx, idx_t enum_count)
+	    : PrimitiveColumnWriterState(writer, row_group, col_idx), seen_enum(enum_count, false) {
+	}
+
+	//! Tracks which enum values have been written in this row group
+	vector<bool> seen_enum;
+};
 } // namespace
 
 class EnumWriterPageState : public ColumnWriterPageState {
 public:
-	explicit EnumWriterPageState(uint32_t bit_width) : encoder(bit_width), written_value(false) {
+	EnumWriterPageState(uint32_t bit_width, vector<bool> &seen_enum)
+	    : encoder(bit_width), written_value(false), seen_enum(seen_enum) {
 	}
 
 	RleBpEncoder encoder;
 	bool written_value;
+	vector<bool> &seen_enum;
 };
 
 EnumColumnWriter::EnumColumnWriter(ParquetWriter &writer, ParquetColumnSchema &&column_schema,
                                    vector<Identifier> schema_path_p)
     : PrimitiveColumnWriter(writer, std::move(column_schema), std::move(schema_path_p)) {
 	bit_width = RleBpDecoder::ComputeBitWidthFromValueCount(EnumType::GetSize(Type()));
-	seen_enum.resize(EnumType::GetSize(Type()), false);
+}
+
+unique_ptr<ColumnWriterState> EnumColumnWriter::InitializeWriteState(duckdb_parquet::RowGroup &row_group) {
+	auto result =
+	    make_uniq<EnumColumnWriterState>(writer, row_group, row_group.columns.size(), EnumType::GetSize(Type()));
+	RegisterToRowGroup(row_group);
+	return std::move(result);
 }
 
 unique_ptr<ColumnWriterStatistics> EnumColumnWriter::InitializeStatsState() {
@@ -68,7 +86,7 @@ void EnumColumnWriter::WriteEnumInternal(WriteStream &temp_writer, Vector &input
 				page_state.written_value = true;
 			}
 			page_state.encoder.WriteValue(temp_writer, ptr[r]);
-			seen_enum[ptr[r]] = true;
+			page_state.seen_enum[ptr[r]] = true;
 		}
 	}
 }
@@ -92,9 +110,10 @@ void EnumColumnWriter::WriteVector(WriteStream &temp_writer, ColumnWriterStatist
 	}
 }
 
-unique_ptr<ColumnWriterPageState> EnumColumnWriter::InitializePageState(PrimitiveColumnWriterState &state,
+unique_ptr<ColumnWriterPageState> EnumColumnWriter::InitializePageState(PrimitiveColumnWriterState &state_p,
                                                                         idx_t page_idx) {
-	return make_uniq<EnumWriterPageState>(bit_width);
+	auto &state = state_p.Cast<EnumColumnWriterState>();
+	return make_uniq<EnumWriterPageState>(bit_width, state.seen_enum);
 }
 
 void EnumColumnWriter::FlushPageState(WriteStream &temp_writer, ColumnWriterPageState *state_p) {
@@ -117,10 +136,16 @@ bool EnumColumnWriter::HasDictionary(PrimitiveColumnWriterState &state) {
 }
 
 idx_t EnumColumnWriter::DictionarySize(PrimitiveColumnWriterState &state_p) {
-	return EnumType::GetSize(Type());
+	auto &state = state_p.Cast<EnumColumnWriterState>();
+	idx_t distinct_count = 0;
+	for (auto seen : state.seen_enum) {
+		distinct_count += seen;
+	}
+	return distinct_count;
 }
 
-void EnumColumnWriter::FlushDictionary(PrimitiveColumnWriterState &state, ColumnWriterStatistics *stats_p) {
+void EnumColumnWriter::FlushDictionary(PrimitiveColumnWriterState &state_p, ColumnWriterStatistics *stats_p) {
+	auto &state = state_p.Cast<EnumColumnWriterState>();
 	auto &stats = stats_p->Cast<StringStatisticsState>();
 	auto &enum_values = EnumType::GetValuesInsertOrder(Type());
 	auto enum_count = EnumType::GetSize(Type());
@@ -129,7 +154,7 @@ void EnumColumnWriter::FlushDictionary(PrimitiveColumnWriterState &state, Column
 	auto temp_writer = make_uniq<MemoryStream>(BufferAllocator::Get(writer.GetContext()));
 	for (idx_t r = 0; r < enum_count; r++) {
 		D_ASSERT(!FlatVector::IsNull(enum_values, r));
-		if (seen_enum[r]) {
+		if (state.seen_enum[r]) {
 			stats.Update(string_values[r]);
 			temp_writer->Write<uint32_t>(string_values[r].GetSize());
 			temp_writer->WriteData(const_data_ptr_cast(string_values[r].GetData()), string_values[r].GetSize());
