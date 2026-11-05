@@ -28,8 +28,9 @@ void DeltaLengthByteArrayDecoder::InitializePage() {
 	// read the binary packed lengths
 	auto &block = *reader.block;
 	auto &buffer_manager = reader.reader.buffer_manager;
-	ResizeableBuffer::PinGuard pin_guard(length_buffer, buffer_manager);
+	// Resize (inside ReadDbpData) must run unpinned so an evicted buffer is reallocated instead of reloaded
 	DeltaByteArrayDecoder::ReadDbpData(buffer_manager, block, length_buffer, byte_array_count);
+	ResizeableBuffer::PinGuard pin_guard(length_buffer, buffer_manager);
 
 	// Verify that the sum of DBP string lengths match up with the available string data
 	idx_t total_string_length = 0;

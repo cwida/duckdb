@@ -32,15 +32,14 @@ void DeltaBinaryPackedDecoder::Rebase() {
 void DeltaBinaryPackedDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset) {
 	idx_t valid_count = reader.GetValidCount(defines, read_count, result_offset);
 
-	auto &buffer_manager = reader.reader.buffer_manager;
-	ResizeableBuffer::PinGuard pin_guard(decoded_data_buffer, buffer_manager);
+	auto &allocator = reader.GetAllocator();
 	switch (reader.Schema().parquet_type) {
 	case duckdb_parquet::Type::INT32:
-		decoded_data_buffer.Resize(buffer_manager, sizeof(int32_t) * (valid_count));
+		decoded_data_buffer.Resize(allocator, sizeof(int32_t) * (valid_count));
 		dbp_decoder->GetBatch<int32_t>(decoded_data_buffer.GetCurrentLoc(), valid_count);
 		break;
 	case duckdb_parquet::Type::INT64:
-		decoded_data_buffer.Resize(buffer_manager, sizeof(int64_t) * (valid_count));
+		decoded_data_buffer.Resize(allocator, sizeof(int64_t) * (valid_count));
 		dbp_decoder->GetBatch<int64_t>(decoded_data_buffer.GetCurrentLoc(), valid_count);
 		break;
 

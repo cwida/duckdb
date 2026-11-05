@@ -1187,7 +1187,7 @@ bool ParquetStatisticsUtils::HasBloomFilterConstants(const TableFilter &filter,
 
 bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filter,
                                                  const duckdb_parquet::ColumnMetaData &column_meta_data,
-                                                 TProtocol &file_proto, BufferManager &buffer_manager,
+                                                 TProtocol &file_proto, Allocator &allocator,
                                                  const ParquetColumnSchema &schema,
                                                  ParquetBloomFilterHashStrategy hash_strategy) {
 	if (!HasFilterConstants(duckdb_filter, hash_strategy) || !column_meta_data.__isset.bloom_filter_offset ||
@@ -1247,7 +1247,7 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 		}
 	}
 
-	auto new_buffer = make_uniq<ResizeableBuffer>(buffer_manager, bloom_filter_data_size);
+	auto new_buffer = make_uniq<ResizeableBuffer>(allocator, bloom_filter_data_size);
 	transport.read(new_buffer->GetCurrentLoc(), UnsafeNumericCast<uint32_t>(bloom_filter_data_size));
 	ParquetBloomFilter bloom_filter(std::move(new_buffer));
 	return ApplyBloomFilter(duckdb_filter, bloom_filter, schema, hash_strategy);

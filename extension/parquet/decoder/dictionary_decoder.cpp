@@ -131,7 +131,7 @@ idx_t DictionaryDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result
 		}
 	} else if (valid_count > 0) {
 		// for the valid entries - decode the offsets
-		offset_buffer.Resize(reader.reader.buffer_manager, sizeof(uint32_t) * valid_count);
+		offset_buffer.Resize(reader.GetAllocator(), sizeof(uint32_t) * valid_count);
 		dict_decoder->GetBatch<uint32_t>(offset_buffer.GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
 		ConvertDictToSelVec(reinterpret_cast<uint32_t *>(offset_buffer.GetCurrentLoc()), valid_sel, valid_count);
 	}

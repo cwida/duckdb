@@ -25,8 +25,9 @@ class Vector;
 DeltaByteArrayDecoder::DeltaByteArrayDecoder(ColumnReader &reader) : reader(reader) {
 }
 
-void DeltaByteArrayDecoder::ReadDbpData(BufferManager &buffer_manager, ResizeableBuffer &buffer,
-                                        ResizeableBuffer &result_buffer, idx_t &value_count) {
+template <class BACKING>
+void DeltaByteArrayDecoder::ReadDbpData(BACKING &backing, ResizeableBuffer &buffer, ResizeableBuffer &result_buffer,
+                                        idx_t &value_count) {
 	auto decoder = make_uniq<DbpDecoder>(buffer.GetCurrentLoc(), buffer.GetRemaining());
 	value_count = decoder->TotalValues();
 	// value_count is read from the file, so the buffer size can overflow on a corrupt input
@@ -34,24 +35,28 @@ void DeltaByteArrayDecoder::ReadDbpData(BufferManager &buffer_manager, Resizeabl
 	if (!TryMultiplyOperator::Operation<idx_t, idx_t, idx_t>(value_count, sizeof(uint32_t), result_size)) {
 		throw InvalidInputException("DELTA_BYTE_ARRAY value count is too large - corrupt file?");
 	}
-	result_buffer.Resize(buffer_manager, result_size);
+	result_buffer.Resize(backing, result_size);
 	decoder->GetBatch<uint32_t>(result_buffer.GetCurrentLoc(), value_count);
 	decoder->Finalize();
 	buffer.Inc(decoder->BytesConsumed());
 }
 
+template void DeltaByteArrayDecoder::ReadDbpData<Allocator>(Allocator &, ResizeableBuffer &, ResizeableBuffer &,
+                                                            idx_t &);
+template void DeltaByteArrayDecoder::ReadDbpData<BufferManager>(BufferManager &, ResizeableBuffer &,
+                                                                ResizeableBuffer &, idx_t &);
+
 void DeltaByteArrayDecoder::InitializePage() {
 	auto &block = *reader.block;
 	auto &buffer_manager = reader.reader.buffer_manager;
+	auto &allocator = reader.GetAllocator();
 	idx_t prefix_count, suffix_count;
 
 	auto &prefix_buffer = reader.encoding_buffers[0];
-	ResizeableBuffer::PinGuard prefix_pin_guard(prefix_buffer, buffer_manager);
-	ReadDbpData(buffer_manager, block, prefix_buffer, prefix_count);
+	ReadDbpData(allocator, block, prefix_buffer, prefix_count);
 
 	auto &suffix_buffer = reader.encoding_buffers[1];
-	ResizeableBuffer::PinGuard suffix_pin_guard(suffix_buffer, buffer_manager);
-	ReadDbpData(buffer_manager, block, suffix_buffer, suffix_count);
+	ReadDbpData(allocator, block, suffix_buffer, suffix_count);
 
 	if (prefix_count != suffix_count) {
 		throw std::runtime_error("DELTA_BYTE_ARRAY - prefix and suffix counts are different - corrupt file?");

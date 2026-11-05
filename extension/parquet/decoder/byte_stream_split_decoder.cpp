@@ -48,19 +48,18 @@ void ByteStreamSplitDecoder::Rebase() {
 
 void ByteStreamSplitDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset) {
 	idx_t valid_count = reader.GetValidCount(defines, read_count, result_offset);
-	auto &buffer_manager = reader.reader.buffer_manager;
+	auto &allocator = reader.GetAllocator();
 	auto value_width = GetValueWidth(reader.Schema());
 
 	if (reader.Schema().parquet_type == duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY) {
 		// string readers can reference the decoded values, so the buffer must be able to outlive this call
-		auto plain_data = make_shared_ptr<ResizeableBuffer>(buffer_manager, value_width * valid_count);
+		auto plain_data = make_shared_ptr<ResizeableBuffer>(allocator, value_width * valid_count);
 		bss_decoder->GetBatch(plain_data->GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
 		reader.Plain(plain_data, defines, read_count, result_offset, result);
 		return;
 	}
 
-	ResizeableBuffer::PinGuard pin_guard(decoded_data_buffer, buffer_manager);
-	decoded_data_buffer.Resize(buffer_manager, value_width * valid_count);
+	decoded_data_buffer.Resize(allocator, value_width * valid_count);
 	bss_decoder->GetBatch(decoded_data_buffer.GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
 	reader.Plain(decoded_data_buffer, defines, read_count, result_offset, result);
 }

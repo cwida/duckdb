@@ -2000,7 +2000,7 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 					}
 					if (ParquetStatisticsUtils::BloomFilterExcludes(
 					        *bloom_filter, group.columns[bloom_reader->ColumnIndex()].meta_data,
-					        *state.thrift_file_proto, buffer_manager, bloom_reader->Schema(), *hash_strategy)) {
+					        *state.thrift_file_proto, allocator, bloom_reader->Schema(), *hash_strategy)) {
 						prune_result = FilterPropagateResult::FILTER_ALWAYS_FALSE;
 					}
 				}
