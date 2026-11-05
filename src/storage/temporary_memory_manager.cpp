@@ -1,6 +1,6 @@
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
@@ -25,11 +25,11 @@ void TemporaryMemoryState::SetRemainingSize(idx_t new_remaining_size) {
 	temporary_memory_manager.SetRemainingSize(*this, new_remaining_size);
 }
 
-void TemporaryMemoryState::SetRemainingSizeAndUpdateReservation(ClientContext &context, idx_t new_remaining_size) {
+void TemporaryMemoryState::SetRemainingSizeAndUpdateReservation(Context &services, idx_t new_remaining_size) {
 	D_ASSERT(new_remaining_size != 0); // Use SetZero instead
 	const annotated_lock_guard<annotated_mutex> guard(temporary_memory_manager.lock);
 	temporary_memory_manager.SetRemainingSize(*this, new_remaining_size);
-	temporary_memory_manager.UpdateState(context, *this);
+	temporary_memory_manager.UpdateState(services, *this);
 }
 
 void TemporaryMemoryState::SetZero() {
@@ -50,9 +50,9 @@ idx_t TemporaryMemoryState::GetMinimumReservation() const {
 	return minimum_reservation;
 }
 
-void TemporaryMemoryState::UpdateReservation(ClientContext &context) {
+void TemporaryMemoryState::UpdateReservation(Context &services) {
 	const annotated_lock_guard<annotated_mutex> guard(temporary_memory_manager.lock);
-	temporary_memory_manager.UpdateState(context, *this);
+	temporary_memory_manager.UpdateState(services, *this);
 }
 
 idx_t TemporaryMemoryState::GetReservation() const {
@@ -86,25 +86,25 @@ void TemporaryMemoryManager::Unregister(TemporaryMemoryState &temporary_memory_s
 	Verify();
 }
 
-void TemporaryMemoryManager::UpdateConfiguration(ClientContext &context) {
-	auto &buffer_manager = BufferManager::GetBufferManager(context);
-	auto &task_scheduler = TaskScheduler::GetScheduler(context);
+void TemporaryMemoryManager::UpdateConfiguration(Context &services) {
+	auto &buffer_manager = services.GetBufferManager();
+	auto &task_scheduler = services.GetTaskScheduler();
 
 	memory_limit =
 	    LossyNumericCast<idx_t>(MAXIMUM_MEMORY_LIMIT_RATIO * static_cast<double>(buffer_manager.GetMaxMemory()));
 	has_temporary_directory = buffer_manager.HasTemporaryDirectory();
 	num_threads = task_scheduler.NumberOfThreads();
-	num_connections = ConnectionManager::Get(context).GetConnectionCount();
+	num_connections = ConnectionManager::Get(services.GetDatabase()).GetConnectionCount();
 	query_max_memory = buffer_manager.GetOperatorMemoryLimit();
 }
 
-TemporaryMemoryManager &TemporaryMemoryManager::Get(ClientContext &context) {
-	return BufferManager::GetBufferManager(context).GetTemporaryMemoryManager();
+TemporaryMemoryManager &TemporaryMemoryManager::Get(Context &services) {
+	return services.GetBufferManager().GetTemporaryMemoryManager();
 }
 
-unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext &context) {
+unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(Context &services) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
-	UpdateConfiguration(context);
+	UpdateConfiguration(services);
 
 	auto result = unique_ptr<TemporaryMemoryState>(new TemporaryMemoryState(*this, DefaultMinimumReservation()));
 	SetRemainingSize(*result, result->GetMinimumReservation());
@@ -115,8 +115,8 @@ unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext 
 	return result;
 }
 
-void TemporaryMemoryManager::UpdateState(ClientContext &context, TemporaryMemoryState &temporary_memory_state) {
-	UpdateConfiguration(context);
+void TemporaryMemoryManager::UpdateState(Context &services, TemporaryMemoryState &temporary_memory_state) {
+	UpdateConfiguration(services);
 
 	// The lower bound for the reservation of this state is either the minimum reservation or the remaining size
 	const auto lower_bound =
@@ -125,7 +125,7 @@ void TemporaryMemoryManager::UpdateState(ClientContext &context, TemporaryMemory
 	if (temporary_memory_state.GetRemainingSize() == 0) {
 		// Sometimes set to 0 to denote end of state (before actually deleting the state)
 		SetReservation(temporary_memory_state, 0);
-	} else if (Settings::Get<DebugForceExternalSetting>(context)) {
+	} else if (Settings::Get<DebugForceExternalSetting>(services)) {
 		// We're forcing external processing. Give it the minimum
 		SetReservation(temporary_memory_state, lower_bound);
 	} else if (!has_temporary_directory) {

@@ -18,24 +18,6 @@
 
 namespace duckdb {
 
-class ClientFileSystem : public OpenerFileSystem {
-public:
-	explicit ClientFileSystem(ClientContext &context_p) : context(context_p) {
-	}
-
-	FileSystem &GetFileSystem() const override {
-		auto &config = DBConfig::GetConfig(context);
-		return *config.file_system;
-	}
-
-	optional_ptr<FileOpener> GetOpener() const override {
-		return ClientData::Get(context).file_opener.get();
-	}
-
-private:
-	ClientContext &context;
-};
-
 //! ClientBufferManager wraps the buffer manager to optionally forward the client context.
 class ClientBufferManager : public BufferManager {
 public:
@@ -235,12 +217,9 @@ ClientData::ClientData(ClientContext &context) : catalog_search_path(make_uniq<C
 	auto &db = DatabaseInstance::GetDatabase(context);
 
 	default_database = DatabaseManager::Get(db).GetDefaultDatabase();
-	profiler = make_shared_ptr<QueryProfiler>(context);
 	temporary_objects = make_shared_ptr<AttachedDatabase>(db, AttachedDatabaseType::TEMP_DATABASE);
 	temporary_objects->oid = DatabaseManager::Get(db).NextOid();
 	random_engine = make_uniq<RandomEngine>();
-	file_opener = make_uniq<ClientContextFileOpener>(context);
-	client_file_system = make_uniq<ClientFileSystem>(context);
 	client_buffer_manager = make_uniq<ClientBufferManager>(context, db.GetBufferManager());
 
 	temporary_objects->Initialize();

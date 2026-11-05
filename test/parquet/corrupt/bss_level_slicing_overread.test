@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/bss_level_slicing_overread.test
+# description: Reject definition levels that consume BSS page padding
+# group: [corrupt]
+
+require parquet
+
+# The definition-level section extends one byte beyond the page payload.
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/bss_level_slicing_overread.parquet');
+----
+Out of buffer
