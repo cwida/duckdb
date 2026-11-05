@@ -240,6 +240,7 @@ bool VectorStringToStruct::StringToNestedTypeCastLoop(const string_t *source_dat
 			vector_cast_data.all_converted = false;
 		}
 	}
+	StructBoundCastData::SetNullRowsInUnionChildren(result, count);
 	return vector_cast_data.all_converted;
 }
 

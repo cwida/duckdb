@@ -1,0 +1,338 @@
+# name: test/sql/types/union/struct_with_union_field_null_cast.test
+# description: A NULL struct row cast to a STRUCT with a UNION field has a NULL union field
+# group: [union]
+
+load {TEST_DIR}/struct_with_union_field_null_cast.db
+
+query IIIIII
+SELECT c IS NULL, c.x IS NULL, c.x::VARCHAR, union_tag(c.x), union_extract(c.x, 'i'), c::VARCHAR
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR)) c FROM (VALUES ({'x': 1}), (NULL)) v(a))
+----
+false	false	1	i	1	{'x': 1}
+true	true	NULL	NULL	NULL	NULL
+
+query I
+SELECT [{'x': 1}, NULL]::STRUCT(x UNION(i INTEGER, s VARCHAR))[]
+----
+[{'x': 1}, NULL]
+
+query II
+SELECT e IS NULL, e.x IS NULL
+FROM (SELECT unnest([{'x': 1}, NULL]::STRUCT(x UNION(i INTEGER, s VARCHAR))[]) e)
+----
+false	false
+true	true
+
+# the NULL row is NULL whichever member the field would select
+query IIII
+SELECT c.x IS NULL, union_tag(c.x), union_extract(c.x, 'i'), union_extract(c.x, 's')
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR, d DOUBLE)) c FROM (VALUES ({'x': 1}), (NULL)) v(a))
+----
+false	i	1	NULL
+true	NULL	NULL	NULL
+
+query II
+SELECT c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR, d DOUBLE)) c FROM (VALUES ({'x': 'q'}), (NULL)) v(a))
+----
+false	s
+true	NULL
+
+query II
+SELECT c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR, d DOUBLE)) c FROM (VALUES ({'x': 1.5::DOUBLE}), (NULL)) v(a))
+----
+false	d
+true	NULL
+
+query II
+SELECT c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR, d DOUBLE)) c
+      FROM (VALUES ({'x': 1::UNION(i INTEGER, s VARCHAR)}), (NULL)) v(a))
+----
+false	i
+true	NULL
+
+# a member that is NULL inside a valid struct row keeps its tag, as a top level UNION does
+query III
+SELECT c IS NULL, c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR)) c FROM (VALUES ({'x': NULL::INTEGER})) v(a))
+----
+false	false	i
+
+query II
+SELECT CAST(NULL::VARCHAR AS UNION(i INTEGER, s VARCHAR)) IS NULL, union_tag(CAST(NULL::VARCHAR AS UNION(i INTEGER, s VARCHAR)))
+----
+false	s
+
+# nested in a STRUCT, beside an INTEGER field, with reordered and missing target fields
+query III
+SELECT c.n IS NULL, c.n.x IS NULL, union_tag(c.n.x)
+FROM (SELECT a::STRUCT(n STRUCT(x UNION(i INTEGER, s VARCHAR))) c FROM (VALUES ({'n': {'x': 1}}), (NULL)) v(a))
+----
+false	false	i
+true	true	NULL
+
+query IIII
+SELECT c IS NULL, c.x IS NULL, c.y IS NULL, c.y
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR), y INTEGER) c FROM (VALUES ({'x': 1, 'y': 2}), (NULL)) v(a))
+----
+false	false	false	2
+true	true	true	NULL
+
+query IIII
+SELECT c IS NULL, c.x IS NULL, c.y IS NULL, c.z IS NULL
+FROM (SELECT a::STRUCT(z UNION(i INTEGER, s VARCHAR), y UNION(i INTEGER, s VARCHAR), x UNION(i INTEGER, s VARCHAR)) c
+      FROM (VALUES ({'x': 1, 'y': 'q'}), (NULL)) v(a))
+----
+false	false	false	true
+true	true	true	true
+
+# a struct member of a UNION
+query III
+SELECT u IS NULL, union_extract(u, 'a') IS NULL, union_extract(u, 'a').x IS NULL
+FROM (SELECT b::UNION(a STRUCT(x UNION(i INTEGER, s VARCHAR))) u
+      FROM (VALUES (union_value(a := {'x': 1})::UNION(a STRUCT(x INTEGER))), (NULL)) v(b))
+----
+false	false	false
+true	true	true
+
+# STRUCT, ARRAY and LIST members
+query II
+SELECT c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(a STRUCT(k INTEGER), b INTEGER[2], l INTEGER[])) c
+      FROM (VALUES ({'x': {'k': 1}}), (NULL)) v(a))
+----
+false	a
+true	NULL
+
+query II
+SELECT c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(a STRUCT(k INTEGER), b INTEGER[2], l INTEGER[])) c
+      FROM (VALUES ({'x': [1, 2]::INTEGER[2]}), (NULL)) v(a))
+----
+false	b
+true	NULL
+
+query II
+SELECT c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(a STRUCT(k INTEGER), l INTEGER[])) c
+      FROM (VALUES ({'x': [1, 2, 3]}), (NULL)) v(a))
+----
+false	l
+true	NULL
+
+# a UNION member is itself valid in a NULL row, so the member is repaired too
+query III
+SELECT c.x IS NULL, union_tag(c.x), union_extract(c.x, 'u') IS NULL
+FROM (SELECT v::STRUCT(x UNION(u UNION(i INTEGER, s VARCHAR), z DOUBLE)) c
+      FROM (SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE {'x': i::INTEGER} END v FROM range(4) t(i)))
+----
+true	NULL	true
+false	u	false
+true	NULL	true
+false	u	false
+
+# a field cast that cannot succeed, under TRY_CAST
+query II
+SELECT c IS NULL, c.x IS NULL
+FROM (SELECT try_cast(a AS STRUCT(x UNION(d DATE))) c FROM (VALUES ({'x': 'zz'}), (NULL)) v(a))
+----
+false	true
+true	true
+
+# from VARCHAR, including a row TRY_CAST cannot parse
+query III
+SELECT c IS NULL, c.x IS NULL, union_tag(c.x)
+FROM (SELECT v::STRUCT(x UNION(i INTEGER, s VARCHAR)) c FROM (VALUES ('{x: 1}'), (NULL)) t(v))
+----
+false	false	s
+true	true	NULL
+
+query III
+SELECT c IS NULL, c.x IS NULL, union_tag(c.x)
+FROM (SELECT try_cast(v AS STRUCT(x UNION(i INTEGER, s VARCHAR))) c FROM (VALUES ('{x: 1}'), ('garbage')) t(v))
+----
+false	false	s
+true	true	NULL
+
+# a struct cast from VARCHAR, cast again while the first result is also projected
+query IIII
+SELECT s.x IS NULL, c.x IS NULL, union_tag(s.x), union_tag(c.x)
+FROM (SELECT s, s::STRUCT(x UNION(i INTEGER, s VARCHAR), y BIGINT) c
+      FROM (SELECT v::STRUCT(x UNION(i INTEGER, s VARCHAR), y INTEGER) s FROM (VALUES ('{x: 1, y: 2}'), (NULL)) t(v)))
+----
+false	false	s	s
+true	true	NULL	NULL
+
+# LIST and MAP fields of a NULL struct row
+query III
+SELECT c IS NULL, c.l IS NULL, c.m IS NULL
+FROM (SELECT a::STRUCT(l UNION(i INTEGER, s VARCHAR)[], m MAP(VARCHAR, UNION(i INTEGER, s VARCHAR))) c
+      FROM (VALUES ({'l': [1], 'm': MAP {'k': 1}}), (NULL)) v(a))
+----
+false	false	false
+true	true	true
+
+# all rows NULL, no NULL rows
+query II
+SELECT c IS NULL, c.x IS NULL
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR)) c FROM (VALUES (NULL::STRUCT(x INTEGER)), (NULL)) v(a))
+----
+true	true
+true	true
+
+query III
+SELECT c IS NULL, c.x IS NULL, union_tag(c.x)
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR)) c FROM (VALUES ({'x': 1}), ({'x': 2})) v(a))
+----
+false	false	i
+false	false	i
+
+# constant inputs: a NULL struct reaching the struct cast through a cast to UNION, and a VARCHAR that cannot be parsed
+query IIII
+SELECT u IS NULL, union_tag(u), union_extract(u, 'a') IS NULL, union_extract(u, 'a').x IS NULL
+FROM (SELECT NULL::STRUCT(x INTEGER)::UNION(a STRUCT(x UNION(i INTEGER, s VARCHAR))) u FROM range(2))
+----
+false	a	true	true
+false	a	true	true
+
+query I
+SELECT try_cast('garbage' AS STRUCT(x UNION(i INTEGER, s VARCHAR))) IS NULL
+----
+true
+
+# unnamed structs
+query III
+SELECT c IS NULL, c[1] IS NULL, union_tag(c[1])
+FROM (SELECT a::TUPLE(UNION(i INTEGER, s VARCHAR)) c FROM (VALUES (row(1)::TUPLE(INTEGER)), (NULL)) v(a))
+----
+false	false	i
+true	true	NULL
+
+query III
+SELECT c IS NULL, c[1] IS NULL, union_tag(c[1])
+FROM (SELECT try_cast(v AS TUPLE(UNION(i INTEGER, s VARCHAR))) c FROM (VALUES ('(1)'), (NULL)) t(v))
+----
+false	false	s
+true	true	NULL
+
+# the input next to its cast
+query IIII
+SELECT a, a.x IS NULL, c, c.x IS NULL
+FROM (SELECT a, a::STRUCT(x UNION(i INTEGER, s VARCHAR)) c FROM (VALUES ({'x': 1}), (NULL)) v(a))
+----
+{'x': 1}	false	{'x': 1}	false
+NULL	true	NULL	true
+
+# several vectors with a NULL row every third row, stored and read back
+statement ok
+CREATE TABLE src AS
+SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE {'x': i::INTEGER, 'y': i::VARCHAR} END a FROM range(5000) t(i)
+
+statement ok
+CHECKPOINT
+
+statement ok
+CREATE TABLE dst AS SELECT i, a::STRUCT(x UNION(i INTEGER, s VARCHAR), y UNION(i INTEGER, s VARCHAR)) c FROM src
+
+query IIIII
+SELECT count(*), count(c), count(c.x), count(c.y), count(*) FILTER (WHERE union_tag(c.x) = 'i' AND union_tag(c.y) = 's')
+FROM dst
+----
+5000	3333	3333	3333	3333
+
+query I
+SELECT count(*) FROM dst WHERE (c IS NULL) <> (i % 3 = 0) OR (c.x IS NULL) <> (c IS NULL) OR (c.y IS NULL) <> (c IS NULL)
+----
+0
+
+query III
+SELECT count(*), count(c), count(c.x)
+FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR), y UNION(i INTEGER, s VARCHAR)) c FROM src WHERE i % 2 = 0)
+----
+2500	1666	1666
+
+statement ok
+SET debug_verification_mode = 'VERIFY_VECTORS'
+
+query I
+SELECT [{'x': 1}, NULL]::STRUCT(x UNION(i INTEGER, s VARCHAR))[]
+----
+[{'x': 1}, NULL]
+
+query I
+SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR)) FROM (VALUES ({'x': 1}), (NULL)) v(a)
+----
+{'x': 1}
+NULL
+
+query I
+SELECT a::STRUCT(n STRUCT(x UNION(i INTEGER, s VARCHAR))) FROM (VALUES ({'n': {'x': 1}}), (NULL)) v(a)
+----
+{'n': {'x': 1}}
+NULL
+
+query I
+SELECT b::UNION(a STRUCT(x UNION(i INTEGER, s VARCHAR)))
+FROM (VALUES (union_value(a := {'x': 1})::UNION(a STRUCT(x INTEGER))), (NULL)) v(b)
+----
+{'x': 1}
+NULL
+
+query I
+SELECT count(c.x) FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR), y UNION(i INTEGER, s VARCHAR)) c FROM src)
+----
+3333
+
+query I
+SELECT v::STRUCT(x UNION(i INTEGER, s VARCHAR)) FROM (VALUES ('{x: 1}'), (NULL)) t(v)
+----
+{'x': 1}
+NULL
+
+query I
+SELECT a::STRUCT(x UNION(a STRUCT(k INTEGER), b INTEGER[2], l INTEGER[])) FROM (VALUES ({'x': [1, 2]::INTEGER[2]}), (NULL)) v(a)
+----
+{'x': [1, 2]}
+NULL
+
+query I
+SELECT count(c.x) FROM (SELECT a::STRUCT(x UNION(i INTEGER, s VARCHAR), y UNION(i INTEGER, s VARCHAR)) c FROM src WHERE i % 2 = 0)
+----
+1666
+
+query I
+SELECT union_extract(u, 'a') IS NULL FROM (SELECT NULL::STRUCT(x INTEGER)::UNION(a STRUCT(x UNION(i INTEGER, s VARCHAR))) u FROM range(2))
+----
+true
+true
+
+query I
+SELECT try_cast('garbage' AS STRUCT(x UNION(i INTEGER, s VARCHAR)))
+----
+NULL
+
+query I
+SELECT a::TUPLE(UNION(i INTEGER, s VARCHAR)) IS NULL FROM (VALUES (row(1)::TUPLE(INTEGER)), (NULL)) v(a)
+----
+false
+true
+
+query I
+SELECT try_cast(v AS TUPLE(UNION(i INTEGER, s VARCHAR))) IS NULL FROM (VALUES ('(1)'), (NULL)) t(v)
+----
+false
+true
+
+query I
+SELECT v::STRUCT(x UNION(u UNION(i INTEGER, s VARCHAR), z DOUBLE))
+FROM (SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE {'x': i::INTEGER} END v FROM range(4) t(i))
+----
+NULL
+{'x': 1}
+NULL
+{'x': 3}
+
+statement ok
+RESET debug_verification_mode

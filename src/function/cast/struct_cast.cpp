@@ -115,6 +115,57 @@ unique_ptr<FunctionLocalState> StructBoundCastData::InitStructCastLocalState(Cas
 	return std::move(result);
 }
 
+static bool IsValidInNullRow(const ValidityMask &struct_validity, const Vector &vector, idx_t count) {
+	auto vector_validity = vector.Validity();
+	for (idx_t r = 0; r < count; r++) {
+		if (!struct_validity.RowIsValid(r) && vector_validity.IsValid(r)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// The union members can reference the cast's input, so only the parts valid in a NULL row are copied and written.
+static void SetNullRowsInUnion(const ValidityMask &struct_validity, Vector &union_vector, idx_t count) {
+	Vector owned_union(union_vector.GetType(), count);
+	FlatVector::SetSize(owned_union, count);
+	auto &owned_validity = FlatVector::ValidityMutable(owned_union);
+	auto union_validity = union_vector.Validity();
+	for (idx_t r = 0; r < count; r++) {
+		if (!struct_validity.RowIsValid(r) || !union_validity.IsValid(r)) {
+			owned_validity.SetInvalid(r);
+		}
+	}
+	auto &entries = StructVector::GetEntries(union_vector);
+	auto &owned_entries = StructVector::GetEntries(owned_union);
+	for (idx_t i = 0; i < entries.size(); i++) {
+		if (!IsValidInNullRow(struct_validity, entries[i], count)) {
+			owned_entries[i].Reference(entries[i]);
+			continue;
+		}
+		VectorOperations::Copy(entries[i], owned_entries[i], count, 0, 0);
+		for (idx_t r = 0; r < count; r++) {
+			if (!struct_validity.RowIsValid(r)) {
+				FlatVector::SetNull(owned_entries[i], r, true);
+			}
+		}
+	}
+	union_vector.Reference(owned_union);
+}
+
+// A cast to a UNION keeps the tag of a NULL input, but every child of a NULL struct row must be NULL.
+void StructBoundCastData::SetNullRowsInUnionChildren(Vector &result, idx_t count) {
+	auto &validity = FlatVector::Validity(result);
+	if (validity.CannotHaveNull()) {
+		return;
+	}
+	for (auto &child : StructVector::GetEntries(result)) {
+		if (child.GetType().id() == LogicalTypeId::UNION && IsValidInNullRow(validity, child, count)) {
+			SetNullRowsInUnion(validity, child, count);
+		}
+	}
+}
+
 bool StructBoundCastData::StructToStructCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	auto &cast_data = parameters.cast_data->Cast<StructBoundCastData>();
 	auto &l_state = parameters.local_state->Cast<StructCastLocalState>();
@@ -148,6 +199,7 @@ bool StructBoundCastData::StructToStructCast(Vector &source, Vector &result, idx
 	}
 	FlatVector::CopyValidity(result, source, count);
 	FlatVector::SetSize(result, count);
+	SetNullRowsInUnionChildren(result, count);
 	result.Verify();
 	return all_converted;
 }

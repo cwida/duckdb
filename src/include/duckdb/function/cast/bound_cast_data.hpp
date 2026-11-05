@@ -91,6 +91,8 @@ struct StructBoundCastData : public BoundCastData {
 	static unique_ptr<FunctionLocalState> InitStructCastLocalState(CastLocalStateParameters &parameters);
 	//! The shared (positional/by-name) value cast - used by both the STRUCT and TUPLE cast switches
 	static bool StructToStructCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
+	//! Sets the UNION children of the NULL rows of a flat struct vector to NULL
+	static void SetNullRowsInUnionChildren(Vector &result, idx_t count);
 
 public:
 	unique_ptr<BoundCastData> Copy() const override {
