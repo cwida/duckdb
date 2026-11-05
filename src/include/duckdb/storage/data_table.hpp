@@ -43,6 +43,7 @@ class WriteAheadLog;
 class TableDataWriter;
 class ConflictManager;
 class TableScanState;
+struct CatalogTransaction;
 struct TableDeleteState;
 struct ConstraintState;
 struct TableUpdateState;
@@ -72,7 +73,7 @@ public:
 	//! Constructs a DataTable as a delta on an existing data table with a newly added column
 	DataTable(ClientContext &context, DataTable &parent, ColumnDefinition &new_column, Expression &default_value);
 	//! Constructs a DataTable as a delta on an existing data table but with one column removed
-	DataTable(ClientContext &context, DataTable &parent, idx_t removed_column);
+	DataTable(CatalogTransaction transaction, ClientContext &context, DataTable &parent, idx_t removed_column);
 	//! Constructs a DataTable as a delta on an existing data table but with one column changed type
 	DataTable(ClientContext &context, DataTable &parent, idx_t changed_idx, const LogicalType &target_type,
 	          const vector<StorageIndex> &bound_columns, Expression &cast_expr,

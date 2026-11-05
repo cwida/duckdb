@@ -86,11 +86,13 @@ public:
 	bool DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade) override;
 
 private:
+	unique_ptr<CatalogEntry> AlterEntry(CatalogTransaction transaction, ClientContext &context, AlterInfo &info);
 	unique_ptr<CatalogEntry> RenameColumn(ClientContext &context, RenameColumnInfo &info);
 	unique_ptr<CatalogEntry> RenameField(ClientContext &context, RenameFieldInfo &info);
 	unique_ptr<CatalogEntry> AddColumn(ClientContext &context, AddColumnInfo &info);
 	unique_ptr<CatalogEntry> AddField(ClientContext &context, AddFieldInfo &info);
-	unique_ptr<CatalogEntry> RemoveColumn(ClientContext &context, RemoveColumnInfo &info);
+	unique_ptr<CatalogEntry> RemoveColumn(CatalogTransaction transaction, ClientContext &context,
+	                                      RemoveColumnInfo &info);
 	unique_ptr<CatalogEntry> RemoveField(ClientContext &context, RemoveFieldInfo &info);
 	unique_ptr<CatalogEntry> SetDefault(ClientContext &context, SetDefaultInfo &info);
 	unique_ptr<CatalogEntry> ChangeColumnType(ClientContext &context, ChangeColumnTypeInfo &info,

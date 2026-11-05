@@ -5,8 +5,10 @@
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/transaction/commit_state.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_index_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/helper.hpp"
@@ -115,7 +117,7 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, ColumnDefinition
 	parent.version = DataTableVersion::ALTERED;
 }
 
-DataTable::DataTable(ClientContext &context, DataTable &parent, idx_t removed_column)
+DataTable::DataTable(CatalogTransaction transaction, ClientContext &context, DataTable &parent, idx_t removed_column)
     : db(parent.db), info(parent.info), version(DataTableVersion::MAIN_TABLE) {
 	// prevent any new tuples from being added to the parent
 	auto &local_storage = LocalStorage::Get(context, db);
@@ -128,12 +130,28 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, idx_t removed_co
 	// Bind all indexes.
 	info->BindIndexes(context);
 
+	vector<pair<Identifier, IndexInfo>> indexes;
+	indexes.reserve(info->indexes.Count());
+	for (const auto &entry : info->indexes.IndexEntries()) {
+		indexes.emplace_back(entry->GetName(), entry->GetStorageInfo());
+	}
+	auto &catalog = db.GetCatalog();
+	auto &schema = *catalog.GetSchema(transaction, info->GetSchemaPath(), OnEntryNotFound::THROW_EXCEPTION);
+
 	// first check if there are any indexes that exist that point to the removed column
-	for (const auto column_id : info->indexes.GetIndexedColumns()) {
-		if (column_id == removed_column) {
-			throw CatalogException("Cannot drop this column: an index depends on it!");
-		} else if (column_id > removed_column) {
-			throw CatalogException("Cannot drop this column: an index depends on a column after it!");
+	for (const auto &index : indexes) {
+		auto lookup = schema.LookupEntryDetailed(transaction,
+		                                         EntryLookupInfo(CatalogType::INDEX_ENTRY, QualifiedName(index.first)));
+		if (lookup.reason == CatalogSet::EntryLookup::FailureReason::DELETED && lookup.deleted_entry &&
+		    &lookup.deleted_entry->Cast<DuckIndexEntry>().GetDataTableInfo() == info.get()) {
+			continue;
+		}
+		for (const auto column_id : index.second.column_set) {
+			if (column_id == removed_column) {
+				throw CatalogException("Cannot drop this column: an index depends on it!");
+			} else if (column_id > removed_column) {
+				throw CatalogException("Cannot drop this column: an index depends on a column after it!");
+			}
 		}
 	}
 

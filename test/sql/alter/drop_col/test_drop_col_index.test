@@ -22,3 +22,78 @@ statement error
 ALTER TABLE test DROP COLUMN i
 ----
 Catalog Error: Cannot drop this column: an index depends on a column
+
+# an index dropped in the current transaction no longer blocks dropping its column
+statement ok
+CREATE TABLE transactional_drop_index(i INTEGER, j INTEGER)
+
+statement ok
+CREATE INDEX transactional_drop_index_idx ON transactional_drop_index(j)
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+DROP INDEX transactional_drop_index_idx
+
+statement ok
+ALTER TABLE transactional_drop_index DROP COLUMN j
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_columns() WHERE table_name = 'transactional_drop_index';
+----
+1
+
+# a dropped catalog index must not hide an unrelated constraint index with the same name
+statement ok
+CREATE TABLE constraint_index_collision(i INTEGER, j INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE unrelated_index_table(k INTEGER)
+
+statement ok
+CREATE INDEX PRIMARY_constraint_index_collision_0 ON unrelated_index_table(k)
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+DROP INDEX PRIMARY_constraint_index_collision_0
+
+statement error
+ALTER TABLE constraint_index_collision DROP COLUMN i
+----
+Catalog Error: Cannot drop this column: an index depends on a column after it
+
+statement ok
+ROLLBACK
+
+# inserting after dropping an index and its column must not use the dropped physical index
+statement ok
+CREATE TABLE transactional_drop_index_insert(i INTEGER, j INTEGER, k INTEGER)
+
+statement ok
+CREATE INDEX transactional_drop_index_insert_idx ON transactional_drop_index_insert(k)
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+DROP INDEX transactional_drop_index_insert_idx
+
+statement ok
+ALTER TABLE transactional_drop_index_insert DROP COLUMN k
+
+statement ok
+INSERT INTO transactional_drop_index_insert VALUES (1, 2)
+
+statement ok
+COMMIT
+
+query II
+SELECT * FROM transactional_drop_index_insert
+----
+1	2

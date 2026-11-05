@@ -313,7 +313,7 @@ static idx_t ColumnNameIndex(const ColumnRefExpression &colref, const Identifier
 
 unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(CatalogTransaction transaction, AlterInfo &info) {
 	if (transaction.HasContext()) {
-		return AlterEntry(transaction.GetContext(), info);
+		return AlterEntry(transaction, transaction.GetContext(), info);
 	}
 	if (info.type != AlterType::ALTER_TABLE) {
 		return CatalogEntry::AlterEntry(transaction, info);
@@ -334,6 +334,11 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(CatalogTransaction transacti
 }
 
 unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, AlterInfo &info) {
+	return AlterEntry(catalog.GetCatalogTransaction(context), context, info);
+}
+
+unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(CatalogTransaction transaction, ClientContext &context,
+                                                    AlterInfo &info) {
 	D_ASSERT(!internal);
 
 	// Column comments have a special alter type
@@ -384,7 +389,7 @@ unique_ptr<CatalogEntry> DuckTableEntry::AlterEntry(ClientContext &context, Alte
 	}
 	case AlterTableType::REMOVE_COLUMN: {
 		auto &remove_info = table_info.Cast<RemoveColumnInfo>();
-		return RemoveColumn(context, remove_info);
+		return RemoveColumn(transaction, context, remove_info);
 	}
 	case AlterTableType::REMOVE_FIELD: {
 		auto &remove_info = table_info.Cast<RemoveFieldInfo>();
@@ -876,7 +881,8 @@ void DuckTableEntry::UpdateConstraintsOnColumnDrop(const LogicalIndex &removed_i
 	}
 }
 
-unique_ptr<CatalogEntry> DuckTableEntry::RemoveColumn(ClientContext &context, RemoveColumnInfo &info) {
+unique_ptr<CatalogEntry> DuckTableEntry::RemoveColumn(CatalogTransaction transaction, ClientContext &context,
+                                                      RemoveColumnInfo &info) {
 	auto removed_index = GetColumnIndex(info.removed_column, info.if_column_exists);
 	if (!removed_index.IsValid()) {
 		if (!info.if_column_exists) {
@@ -923,8 +929,8 @@ unique_ptr<CatalogEntry> DuckTableEntry::RemoveColumn(ClientContext &context, Re
 	if (columns.GetColumn(LogicalIndex(removed_index)).Generated()) {
 		return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, storage, triggers);
 	}
-	auto new_storage =
-	    make_shared_ptr<DataTable>(context, *storage, columns.LogicalToPhysical(LogicalIndex(removed_index)).index);
+	auto new_storage = make_shared_ptr<DataTable>(transaction, context, *storage,
+	                                              columns.LogicalToPhysical(LogicalIndex(removed_index)).index);
 	return make_uniq<DuckTableEntry>(catalog, schema, *bound_create_info, new_storage, triggers);
 }
 

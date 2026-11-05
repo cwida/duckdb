@@ -57,6 +57,7 @@ public:
 		enum class FailureReason { SUCCESS, DELETED, NOT_PRESENT, INVISIBLE };
 		optional_ptr<CatalogEntry> result;
 		FailureReason reason;
+		optional_ptr<CatalogEntry> deleted_entry;
 	};
 
 public:

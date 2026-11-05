@@ -631,7 +631,8 @@ CatalogSet::EntryLookup CatalogSet::GetEntryDetailed(CatalogTransaction transact
 			if (!visible) {
 				return EntryLookup {nullptr, EntryLookup::FailureReason::INVISIBLE};
 			} else {
-				return EntryLookup {nullptr, EntryLookup::FailureReason::DELETED};
+				auto deleted_entry = current.HasChild() ? &current.Child() : nullptr;
+				return EntryLookup {nullptr, EntryLookup::FailureReason::DELETED, deleted_entry};
 			}
 		}
 		D_ASSERT(current.name == name);
