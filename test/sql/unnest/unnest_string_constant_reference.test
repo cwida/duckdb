@@ -1,0 +1,89 @@
+# name: test/sql/unnest/unnest_string_constant_reference.test
+# description: Strings of an input row that UNNEST or a LATERAL function repeats over many output chunks (duckdblabs/bot-issue-tracker#638)
+# group: [unnest]
+
+# the scan gives dictionary and FSST vectors only from segments of the default block size
+require block_size 262144
+
+# a long string, a non-ASCII one, an inlined one, an empty one and NULL, each repeated over three output chunks
+statement ok
+CREATE TABLE strs AS SELECT * FROM (VALUES (1, repeat('ab', 50000)), (2, repeat('é', 30000)), (3, 'short'), (4, ''), (5, NULL)) t(id, s);
+
+# stored in a table, so the strings outlive the chunks of the query
+statement ok
+CREATE TABLE unnested AS SELECT id, s, unnest(range(5000)) AS i, {'s': s, 'i': id} AS st FROM strs;
+
+query IIIIII
+SELECT u.id, count(*), count(u.s), count(DISTINCT u.s), bool_and(u.s IS NOT DISTINCT FROM t.s), bool_and(u.st.s IS NOT DISTINCT FROM t.s)
+FROM unnested u JOIN strs t ON u.id = t.id GROUP BY u.id ORDER BY u.id;
+----
+1	5000	5000	1	true	true
+2	5000	5000	1	true	true
+3	5000	5000	1	true	true
+4	5000	5000	1	true	true
+5	5000	0	0	true	true
+
+# a struct that holds the strings in the input row
+statement ok
+CREATE TABLE structs AS SELECT id, {'s': s, 'i': id} AS st FROM strs;
+
+query IIIII
+SELECT u.id, count(*), count(u.st.s), count(DISTINCT u.st), bool_and(u.st.s IS NOT DISTINCT FROM t.s)
+FROM (SELECT id, st, unnest(range(5000)) FROM structs) u JOIN strs t ON u.id = t.id GROUP BY u.id ORDER BY u.id;
+----
+1	5000	5000	1	true
+2	5000	5000	1	true
+3	5000	5000	1	true
+4	5000	5000	1	true
+5	5000	0	1	true
+
+# a LATERAL table function repeats its input row in the same way
+query IIII
+SELECT id, count(*), count(DISTINCT s), sum(length(s))
+FROM (SELECT id, s, u FROM strs, LATERAL unnest(range(5000 + id * 0)) t(u) ORDER BY u, id)
+GROUP BY id ORDER BY id;
+----
+1	5000	1	500000000
+2	5000	1	150000000
+3	5000	1	25000
+4	5000	1	0
+5	5000	0	NULL
+
+# strings that a scan gives in dictionary and FSST vectors
+statement ok
+ATTACH '{TEST_DIR}/unnest_string_constant_reference.db' AS db (STORAGE_VERSION 'v1.1.0');
+
+foreach compression dictionary fsst
+
+statement ok
+SET force_compression = '{compression}';
+
+statement ok
+CREATE TABLE db.{compression}_strs AS SELECT (i % 3)::VARCHAR || repeat('x', 100) || i::VARCHAR AS s FROM range(4096) t(i);
+
+statement ok
+CHECKPOINT db;
+
+endloop
+
+statement ok
+SET enable_fsst_vectors = true;
+
+foreach compression dictionary fsst
+
+query IIII
+SELECT count(*), count(DISTINCT s), min(length(s)), sum(length(s)) FROM (SELECT s, unnest(range(2100)) FROM db.{compression}_strs);
+----
+8601600	4096	102	900837000
+
+endloop
+
+query I
+SELECT bool_or(vector_type(s) = 'DICTIONARY_VECTOR') FROM db.dictionary_strs;
+----
+true
+
+query I
+SELECT bool_or(vector_type(s) = 'FSST_VECTOR') FROM db.fsst_strs;
+----
+true

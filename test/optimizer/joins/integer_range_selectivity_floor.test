@@ -1,0 +1,174 @@
+# name: test/optimizer/joins/integer_range_selectivity_floor.test
+# description: Integer scan ranges interpolate broad predicates with a default-selectivity floor
+# group: [joins]
+
+statement ok
+CREATE TABLE input AS SELECT i AS k, i::DOUBLE AS d, i::DECIMAL(10,0) AS dec, i::HUGEINT AS h, DATE '2000-01-01' + i::INTEGER AS day FROM range(1000) r(i);
+
+# Retain scan predicates so EXPLAIN observes their estimates.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+SET explain_output='optimized_only';
+
+# A broad partial range raises the estimate above the default.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k < 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"800".*
+
+# Narrow ranges keep the 0.2 floor.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k < 10;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Intersect bounds before applying the floor.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k >= 200 AND k < 700;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"500".*
+
+# Apply the floor to the intersection, not to marginal estimates.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k >= 200 AND k < 210;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Reversed comparisons have the same estimate.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE 800 > k;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"800".*
+
+# Inclusive upper endpoint.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k <= 799;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"800".*
+
+# Exclusive lower endpoint.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k > 199;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"800".*
+
+# The range floor does not override equality estimates.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k = 500 AND k < 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"1".*
+
+# Floating-point ranges keep the existing fallback.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE d < 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Decimals do not become integers through their physical type.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE dec < 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# 128-bit integer ranges remain unsupported.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE h < 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Dates do not become integers through their physical type.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE day < DATE '2000-01-01' + 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Do not accumulate interval bounds through OR.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k < 100 OR k > 900;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Proven-empty predicates are not raised to the floor.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k < 0;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"0".*
+
+query IIII
+SELECT count(*) FILTER (WHERE k < 800), count(*) FILTER (WHERE k < 10),
+       count(*) FILTER (WHERE k >= 200 AND k < 700), count(*) FILTER (WHERE k < 0) FROM input;
+----
+800	10	500	0
+
+statement ok
+CREATE TABLE skew AS SELECT CASE WHEN i=999 THEN 999 ELSE 0 END AS k FROM range(1000) r(i);
+
+# Skew does not permit the modeled range to fall below 0.2.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM skew WHERE k < 10;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# A broad range can still underestimate skew; the floor is not a guarantee.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM skew WHERE k < 800;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"800".*
+
+query II
+SELECT count(*) FILTER (WHERE k < 10), count(*) FILTER (WHERE k < 800) FROM skew;
+----
+999	999
+
+statement ok
+CREATE TABLE nullable AS SELECT CASE WHEN i<500 THEN NULL ELSE 42 END AS k FROM range(1000) r(i);
+
+# A fully covered non-null domain does not add a NULL-frequency model.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM nullable WHERE k >= 42;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"1000".*
+
+query I
+SELECT count(*) FROM nullable WHERE k >= 42;
+----
+500
+
+statement ok
+CREATE TABLE signed_span AS SELECT CASE WHEN i<500 THEN '-9223372036854775808'::BIGINT ELSE '9223372036854775807'::BIGINT END AS k FROM range(1000) r(i);
+
+# The inclusive full signed-64 span contains 2^64 values.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM signed_span WHERE k < 0;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"500".*
+
+statement ok
+CREATE TABLE unsigned_span AS SELECT CASE WHEN i<500 THEN 0::UBIGINT ELSE '18446744073709551615'::UBIGINT END AS k FROM range(1000) r(i);
+
+# The inclusive full unsigned-64 span also contains 2^64 values.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM unsigned_span WHERE k <= '9223372036854775807'::UBIGINT;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"500".*
+
+statement ok
+CREATE TABLE high_unsigned AS SELECT '18446744073709550616'::UBIGINT + i::UBIGINT AS k FROM range(1000) r(i);
+
+# Subtract widened endpoints before converting a small high interval to double.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM high_unsigned WHERE k < '18446744073709551416'::UBIGINT;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"800".*
+
+query III
+SELECT (SELECT count(*) FROM signed_span WHERE k < 0),
+       (SELECT count(*) FROM unsigned_span WHERE k <= '9223372036854775807'::UBIGINT),
+       (SELECT count(*) FROM high_unsigned WHERE k < '18446744073709551416'::UBIGINT);
+----
+500	500	800
+
+statement ok
+RESET disabled_optimizers;

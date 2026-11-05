@@ -1,0 +1,40 @@
+# name: test/optimizer/joins/unsupported_conjunct_selectivity.test
+# description: Supported conjuncts do not erase an unsupported predicate's selectivity
+# group: [joins]
+
+statement ok
+CREATE TABLE input AS SELECT i AS k, i::VARCHAR AS s FROM range(1000) r(i);
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+SET explain_output='optimized_only';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE contains(s, '1');
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Adding a weak supported conjunct cannot raise the fallback estimate.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE contains(s, '1') AND k != 0;
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Broad integer interpolation still respects the other conjunct's fallback.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k < 800 AND contains(s, '1');
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"200".*
+
+# Stronger supported evidence is not raised to the fallback.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k = 1 AND contains(s, '1');
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"1".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM input WHERE k < 0 AND contains(s, '1');
+----
+logical_opt	<REGEX>:.*"name":\s*"SEQ_SCAN".*"Estimated Cardinality":\s*"0".*

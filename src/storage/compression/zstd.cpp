@@ -302,7 +302,7 @@ public:
 			buffer_collection.SetCurrentBuffer(buffer.slot);
 			auto &buffer_handle = buffer_collection.BufferHandleMutable();
 			if (!buffer_handle.IsValid()) {
-				buffer_handle = buffer_manager.Allocate(partial_block_manager.GetClientContext(),
+				buffer_handle = buffer_manager.Allocate(partial_block_manager.GetQueryContext(),
 				                                        MemoryTag::OVERFLOW_STRINGS, &block_manager);
 			}
 			return;
@@ -474,7 +474,7 @@ public:
 
 		// Write the current page to disk
 		auto &block_manager = partial_block_manager.GetBlockManager();
-		block_manager.Write(partial_block_manager.GetClientContext(), buffer.GetFileBuffer(), block_id);
+		block_manager.Write(partial_block_manager.GetQueryContext(), buffer.GetFileBuffer(), block_id);
 	}
 
 	void FlushVector() {
@@ -545,7 +545,7 @@ public:
 
 		auto &buffer_manager = BufferManager::GetBufferManager(checkpoint_data.GetDatabase());
 		buffer_collection.segment_handle =
-		    buffer_manager.Pin(partial_block_manager.GetClientContext(), buffer_collection.segment->GetBlockHandle());
+		    buffer_manager.Pin(partial_block_manager.GetQueryContext(), buffer_collection.segment->GetBlockHandle());
 	}
 
 	void FlushSegment() {

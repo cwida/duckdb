@@ -68,7 +68,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	for (auto &state : registered_state->States()) {
+	for (auto &state : services->GetRegisteredState().States()) {
 		state->QueryBegin(*this);
 	}
 	RefreshLoggerInternal();
@@ -82,7 +82,7 @@ void ClientContext::BeginStatementInternal(ClientContextLock &lock, const string
 
 void ClientContext::RefreshLoggerInternal() {
 	// Flush the old logger.
-	logger->Flush();
+	services->GetLogger().Flush();
 
 	// Refresh the logger to ensure we are in sync with the global log settings.
 	LoggingContext logging_context(LogContextScope::CONNECTION);
@@ -94,7 +94,7 @@ void ClientContext::RefreshLoggerInternal() {
 }
 
 void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
-	logger = db->GetLogManager().CreateLogger(logging_context, log_config);
+	services->SetLogger(db->GetLogManager().CreateLogger(logging_context, log_config));
 }
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
@@ -137,13 +137,13 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	EndQueryProfiling(error);
 
 	// Refresh the logger
-	logger->Flush();
+	services->GetLogger().Flush();
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
 	ResetLoggerInternal(context);
 
 	// Notify any registered state of query end
-	for (auto const &s : registered_state->States()) {
+	for (auto const &s : services->GetRegisteredState().States()) {
 		if (error.HasError()) {
 			s->QueryEnd(*this, &error);
 		} else {
@@ -156,7 +156,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 void ClientContext::EndQueryProfiling(ErrorData &error) {
 	// this also runs while a connection with an open result is destroyed, so it must not throw
 	try {
-		client_data->profiler->EndQuery();
+		QueryProfiler::Get(*services).EndQuery();
 	} catch (std::exception &ex) {
 		if (!error.HasError()) {
 			error = ErrorData(ex);
@@ -248,6 +248,7 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 	active_query->executor = make_uniq<Executor>(*this);
 	auto &executor = *active_query->executor;
 
+	auto &config = ClientConfig::GetConfig(*this);
 	if (config.enable_progress_bar) {
 		progress_bar_display_create_func_t display_create_func = nullptr;
 		if (config.print_progress_bar) {
@@ -476,7 +477,7 @@ void ClientContext::AbandonActiveQuery(ClientContextLock &lock) {
 		AbortInternal(lock);
 	}
 	interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
-	client_data->profiler->ResetQueryStart();
+	QueryProfiler::Get(*services).ResetQueryStart();
 }
 
 unique_ptr<QueryResult> ClientContext::CompleteInternal(ClientContextLock &lock, unique_ptr<QueryResult> result) {
@@ -520,7 +521,7 @@ unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLoc
 	}
 	EndStatementInternal(lock, nullptr);
 	transaction.ResetActiveQuery();
-	client_data->profiler->EndQuery();
+	QueryProfiler::Get(*services).EndQuery();
 	auto statement = active_query->TakeNextStatement();
 	BeginStatementInternal(lock, statement->query);
 	RefreshLoggerInternal();
@@ -572,11 +573,11 @@ void ClientContext::EndStatementInternal(ClientContextLock &lock, optional_ptr<E
 	active_query->progress_bar.reset();
 	// The plan outlives the executor
 	active_query->prepared.reset();
-	registered_state->ForEachState([&](ClientContextState &state) { state.StatementEnd(*this, error); });
+	services->GetRegisteredState().ForEachState([&](ClientContextState &state) { state.StatementEnd(*this, error); });
 }
 
 void ClientContext::NotifyStatementBeginInternal(ClientContextLock &lock) {
-	registered_state->ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
+	services->GetRegisteredState().ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
 }
 
 unique_ptr<QueryResult> ClientContext::TakeFinishedResultInternal(ClientContextLock &lock) {
