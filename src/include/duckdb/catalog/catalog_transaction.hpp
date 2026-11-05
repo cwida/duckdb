@@ -15,6 +15,7 @@
 namespace duckdb {
 class Catalog;
 class ClientContext;
+class Context;
 class DatabaseInstance;
 class Transaction;
 
@@ -36,6 +37,8 @@ struct CatalogTransaction {
 	ClientContext &GetContext();
 
 	static CatalogTransaction GetSystemCatalogTransaction(ClientContext &context);
+	//! The system transaction of the client of the services, or of the database if they do not belong to a client
+	static CatalogTransaction GetSystemCatalogTransaction(Context &services);
 	static CatalogTransaction GetSystemTransaction(DatabaseInstance &db);
 };
 

@@ -1,56 +1,123 @@
 diff --git a/src/http/http_state.cpp b/src/http/http_state.cpp
-index 6dedd4a..8157e35 100644
+index 6dedd4a..6d58ec2 100644
 --- a/src/http/http_state.cpp
 +++ b/src/http/http_state.cpp
-@@ -198,7 +198,7 @@ shared_ptr<HTTPState> HTTPState::TryGetState(ClientContext &context) {
+@@ -194,13 +194,17 @@ bool HTTPState::IsEmpty() const {
+ }
+ 
+ shared_ptr<HTTPState> HTTPState::TryGetState(ClientContext &context) {
+-	return context.Services().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
++	return TryGetState(context.Services());
++}
++
++shared_ptr<HTTPState> HTTPState::TryGetState(Context &services) {
++	return services.GetRegisteredState().GetOrCreate<HTTPState>("http_state");
  }
  
  shared_ptr<HTTPState> HTTPState::TryGetState(optional_ptr<FileOpener> opener) {
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
- 	if (client_context) {
- 		return TryGetState(*client_context);
+-	if (client_context) {
+-		return TryGetState(*client_context);
++	auto services = FileOpener::TryGetContext(opener);
++	if (services && services->IsClient()) {
++		return TryGetState(*services);
  	}
+ 	return nullptr;
+ }
 diff --git a/src/http/httpfs.cpp b/src/http/httpfs.cpp
-index afbbb04..aa9bfcb 100644
+index afbbb04..8003a8e 100644
 --- a/src/http/httpfs.cpp
 +++ b/src/http/httpfs.cpp
-@@ -109,7 +109,7 @@ private:
+@@ -109,10 +109,10 @@ private:
  		FileOpener::TryGetCurrentSetting(opener, "unsafe_disable_etag_checks", result->unsafe_disable_etag_checks,
  		                                 info);
  		FileOpener::TryGetCurrentSetting(opener, "s3_version_id_pinning", result->s3_version_id_pinning, info);
 -		auto context = FileOpener::TryGetClientContext(opener);
-+		auto context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
++		auto services = FileOpener::TryGetContext(opener);
  		Value external_cache_enabled;
- 		if (context &&
- 		    context->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
+-		if (context &&
+-		    context->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
++		if (services && services->IsClient() &&
++		    services->TryGetCurrentUserSetting(EnableExternalFileCacheSetting::SettingIndex, external_cache_enabled) &&
+ 		    external_cache_enabled.GetValue<bool>()) {
+ 			result->override_response_cache_policy = true;
+ 		}
 @@ -648,7 +648,7 @@ void HTTPFileSystem::EraseGlobalCacheEntry(const string &path) {
  // Get either the local, global, or no cache depending on settings
  static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpener> opener, HTTPFileSystem &httpfs) {
  	auto db = FileOpener::TryGetDatabase(opener);
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
++	auto services = FileOpener::TryGetContext(opener);
  	if (!db) {
  		return nullptr;
  	}
-@@ -1096,7 +1096,7 @@ void HTTPFileHandle::LoadFileInfo() {
+@@ -662,9 +662,9 @@ static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpen
+ 
+ 	if (use_shared_cache) {
+ 		return httpfs.GetGlobalCache();
+-	} else if (client_context) {
+-		return client_context->Services().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
+-		    "http_cache", HTTPMetadataCacheMode::QUERY_LOCAL);
++	} else if (services && services->IsClient()) {
++		return services->GetRegisteredState().GetOrCreate<HTTPMetadataCache>("http_cache",
++		                                                                     HTTPMetadataCacheMode::QUERY_LOCAL);
+ 	}
+ 	return nullptr;
+ }
+@@ -1096,9 +1096,9 @@ void HTTPFileHandle::LoadFileInfo() {
  }
  
  void HTTPFileHandle::InitializeLogger(FileOpener &opener) {
 -	auto context = opener.TryGetClientContext();
-+	auto context = opener.TryGetContext().TryGetClientContext();
- 	if (context) {
- 		logger = context->Services().GetLoggerPtr();
+-	if (context) {
+-		logger = context->Services().GetLoggerPtr();
++	auto &services = opener.TryGetContext();
++	if (services.IsClient()) {
++		logger = services.GetLoggerPtr();
  		return;
-@@ -1135,7 +1135,7 @@ HTTPMetadataCacheEntry HTTPFileHandle::GetCacheEntry() const {
+ 	}
+ 	auto database = opener.TryGetDatabase();
+@@ -1135,21 +1135,21 @@ HTTPMetadataCacheEntry HTTPFileHandle::GetCacheEntry() const {
  }
  
  void HTTPFileHandle::InitializeRequestState(const OpenFileInfo &file, optional_ptr<FileOpener> opener) {
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
++	auto services = FileOpener::TryGetContext(opener);
  	auto database = FileOpener::TryGetDatabase(opener);
- 	if (client_context) {
- 		buffer_allocator = BufferAllocator::Get(*client_context);
+-	if (client_context) {
+-		buffer_allocator = BufferAllocator::Get(*client_context);
++	if (services) {
++		buffer_allocator = BufferAllocator::Get(*services);
+ 	} else {
+ 		buffer_allocator = database ? BufferAllocator::Get(*database) : Allocator::DefaultAllocator();
+ 	}
+ 	auto captured = request_session->Capture();
+ 	auto snapshot_params = captured.snapshot->Params();
+ 	if (database) {
+-		optional_ptr<Context> services;
+-		if (client_context) {
+-			services = &client_context->Services();
++		optional_ptr<Context> client_services;
++		if (services && services->IsClient()) {
++			client_services = services;
+ 		}
+-		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, services, *database);
++		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, client_services, *database);
+ 		snapshot_params.override_response_cache_policy =
+ 		    snapshot_params.override_response_cache_policy || validation == CacheValidationMode::NO_VALIDATION;
+ 	}
+diff --git a/src/include/http/http_state.hpp b/src/include/http/http_state.hpp
+index 7f9d284..bf0db6b 100644
+--- a/src/include/http/http_state.hpp
++++ b/src/include/http/http_state.hpp
+@@ -254,6 +254,7 @@ public:
+ 
+ 	//! Helper functions to get the HTTP state
+ 	static shared_ptr<HTTPState> TryGetState(ClientContext &context);
++	static shared_ptr<HTTPState> TryGetState(Context &services);
+ 	static shared_ptr<HTTPState> TryGetState(optional_ptr<FileOpener> opener);
+ 
+ 	//! Called by the ClientContext when the current query ends
 diff --git a/src/s3/s3_list.cpp b/src/s3/s3_list.cpp
 index 0a30ec8..0c167be 100644
 --- a/src/s3/s3_list.cpp

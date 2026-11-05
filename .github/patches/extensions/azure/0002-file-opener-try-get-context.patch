@@ -1,39 +1,82 @@
 diff --git a/src/azure_filesystem.cpp b/src/azure_filesystem.cpp
-index 38f009f..1c7fa99 100644
+index 38f009f..bab4a55 100644
 --- a/src/azure_filesystem.cpp
 +++ b/src/azure_filesystem.cpp
-@@ -253,7 +253,7 @@ shared_ptr<AzureContextState> AzureStorageFileSystem::GetOrCreateStorageContext(
+@@ -253,12 +253,12 @@ shared_ptr<AzureContextState> AzureStorageFileSystem::GetOrCreateStorageContext(
  	if (FileOpener::TryGetCurrentSetting(opener, "azure_context_caching", value)) {
  		azure_context_caching = value.GetValue<bool>();
  	}
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
++	auto services = FileOpener::TryGetContext(opener);
  
  	shared_ptr<AzureContextState> result;
- 	if (azure_context_caching && client_context) {
+-	if (azure_context_caching && client_context) {
++	if (azure_context_caching && services && services->IsClient()) {
+ 		string key_path = GetContextKeyPath(opener, path, parsed_url);
+-		auto &registered_state = client_context->Services().GetRegisteredState();
++		auto &registered_state = services->GetRegisteredState();
+ 
+ 		// Ok, now use account in key, or otherwise skip the cache
+ 		if (!key_path.empty()) {
 diff --git a/src/azure_http_state.cpp b/src/azure_http_state.cpp
-index d4a7eff..61f9abd 100644
+index d4a7eff..e01360c 100644
 --- a/src/azure_http_state.cpp
 +++ b/src/azure_http_state.cpp
-@@ -18,7 +18,7 @@ shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(ClientContext &context) {
+@@ -14,13 +14,17 @@ void AzureHTTPState::Reset() {
+ }
+ 
+ shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(ClientContext &context) {
+-	return context.Services().GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
++	return TryGetState(context.Services());
++}
++
++shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(Context &services) {
++	return services.GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
  }
  
  shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(optional_ptr<FileOpener> opener) {
 -	auto client_context = FileOpener::TryGetClientContext(opener);
-+	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
- 	if (client_context) {
- 		return TryGetState(*client_context);
+-	if (client_context) {
+-		return TryGetState(*client_context);
++	auto services = FileOpener::TryGetContext(opener);
++	if (services && services->IsClient()) {
++		return TryGetState(*services);
  	}
+ 	return nullptr;
+ }
 diff --git a/src/azure_storage_account_client.cpp b/src/azure_storage_account_client.cpp
-index a137518..01c5fd7 100644
+index a137518..d16066a 100644
 --- a/src/azure_storage_account_client.cpp
 +++ b/src/azure_storage_account_client.cpp
-@@ -142,7 +142,7 @@ static T ToClientOptions(const Azure::Core::Http::Policies::TransportOptions &tr
+@@ -142,8 +142,8 @@ static T ToClientOptions(const Azure::Core::Http::Policies::TransportOptions &tr
  		http_logging_enabled = enable_http_logging_value.GetValue<bool>();
  	}
  	if (http_logging_enabled) {
 -		auto client_context = FileOpener::TryGetClientContext(opener);
-+		auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
- 		if (client_context && client_context->Services().GetLoggerPtr()) {
+-		if (client_context && client_context->Services().GetLoggerPtr()) {
++		auto services = FileOpener::TryGetContext(opener);
++		if (services && services->IsClient() && services->GetLoggerPtr()) {
  			// Read redaction config options
  			std::unordered_set<std::string> redact_query_params;
+ 			std::unordered_set<std::string> redact_headers;
+@@ -175,7 +175,7 @@ static T ToClientOptions(const Azure::Core::Http::Policies::TransportOptions &tr
+ 			}
+ 
+ 			options.PerRetryPolicies.emplace_back(new HttpLoggingPolicy(
+-			    client_context->Services().GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
++			    services->GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
+ 		}
+ 	}
+ 	return options;
+diff --git a/src/include/azure_http_state.hpp b/src/include/azure_http_state.hpp
+index 9959628..d911223 100644
+--- a/src/include/azure_http_state.hpp
++++ b/src/include/azure_http_state.hpp
+@@ -17,6 +17,7 @@ public:
+ 	void Reset();
+ 	//! Helper functions to get the HTTP state
+ 	static shared_ptr<AzureHTTPState> TryGetState(ClientContext &context);
++	static shared_ptr<AzureHTTPState> TryGetState(Context &services);
+ 	static shared_ptr<AzureHTTPState> TryGetState(optional_ptr<FileOpener> opener);
+ 
+ 	bool IsEmpty() {
