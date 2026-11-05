@@ -277,7 +277,7 @@ void DataTable::InitializeScan(ClientContext &context, DuckTransaction &transact
 	auto &local_storage = LocalStorage::Get(transaction);
 	state.Initialize(column_ids, context, table_filters);
 	row_groups->InitializeScan(context, state.table_state, column_ids, table_filters);
-	local_storage.InitializeScan(*this, state.local_state, table_filters);
+	local_storage.InitializeScan(context, *this, state.local_state, table_filters);
 }
 
 void DataTable::InitializeScanWithOffset(DuckTransaction &transaction, TableScanState &state,

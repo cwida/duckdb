@@ -11,6 +11,7 @@
 #include "duckdb/storage/table/table_index_list.hpp"
 #include "duckdb/storage/optimistic_data_writer.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/query_context.hpp"
 #include "duckdb/common/reference_map.hpp"
 
 namespace duckdb {
@@ -81,7 +82,9 @@ public:
 	bool is_dropped = false;
 
 public:
-	void InitializeScan(CollectionScanState &state, optional_ptr<TableFilterSet> table_filters = nullptr);
+	//! Initialize a scan; the context of the scanning query is used for pushed down casts and zonemap checks
+	void InitializeScan(const QueryContext &context, CollectionScanState &state,
+	                    optional_ptr<TableFilterSet> table_filters = nullptr);
 	//! Write a new row group to disk (if possible)
 	void WriteNewRowGroup(idx_t flushed_row_group_idx);
 	void FlushBlocks();
@@ -155,7 +158,8 @@ public:
 	static LocalStorage &Get(ClientContext &context, Catalog &catalog);
 
 	//! Initialize a scan of the local storage
-	void InitializeScan(DataTable &table, CollectionScanState &state, optional_ptr<TableFilterSet> table_filters);
+	void InitializeScan(const QueryContext &context, DataTable &table, CollectionScanState &state,
+	                    optional_ptr<TableFilterSet> table_filters);
 	//! Scan
 	void Scan(CollectionScanState &state, const vector<StorageIndex> &column_ids, DataChunk &result);
 
