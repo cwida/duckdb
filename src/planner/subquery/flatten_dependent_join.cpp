@@ -369,6 +369,13 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 			if (!child_flatten.RequiresDomain(*cte_ref.children[0])) {
 				detached_cte = std::move(plan->children[1]);
 				plan->children[1] = std::move(detached_cte->children[1]);
+				// the definition is outside this join's domain, but may contain dependent joins of its own
+				auto old_definition_bindings = detached_cte->children[0]->GetColumnBindings();
+				auto definition_state = DecorrelateIndependentSubtree(detached_cte->children[0]);
+				ColumnBindingRewrite::ApplyToChild(detached_cte, 0, std::move(old_definition_bindings),
+				                                   definition_state.replacement_graph);
+				// the domain probe above cached access entries for definition operators this replaced
+				child_flatten.InvalidateAccessCache();
 				if (requires_full_rhs_decorrelation) {
 					auto result = DecorrelateSubtree(plan, propagate_null_values, std::move(outer_state.bindings));
 					result.replacement_graph.Merge(outer_state.replacement_graph);
