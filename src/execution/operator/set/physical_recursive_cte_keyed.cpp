@@ -1400,8 +1400,8 @@ SourceResultType PhysicalRecursiveCTEStateScan::GetDataFromState(DataChunk &chun
 				// The shared scan state owns the row addresses, so copy them out while still under the lock.
 				auto &row_locations = gstate.scan_state.scan_states.chunk_state.row_locations;
 				lstate.scan_addresses.SetVectorType(VectorType::FLAT_VECTOR);
-				memcpy(FlatVector::GetDataMutable<data_ptr_t>(lstate.scan_addresses),
-				       FlatVector::GetData<data_ptr_t>(row_locations),
+				memcpy(data_ptr_cast(FlatVector::GetDataMutable<data_ptr_t>(lstate.scan_addresses)),
+				       const_data_ptr_cast(FlatVector::GetData<data_ptr_t>(row_locations)),
 				       lstate.distinct_rows.size() * sizeof(data_ptr_t));
 			}
 		}
