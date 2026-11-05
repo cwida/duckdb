@@ -332,7 +332,8 @@ static void WriteSecretFileToDisk(FileSystem &fs, const string &path, const Base
 	secret.Serialize(serializer);
 	serializer.End();
 
-	file_writer.Flush();
+	// the destructor would ignore a failed close
+	file_writer.Close();
 }
 
 struct SecretNameEscape {
@@ -419,9 +420,17 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 	// If temporary file already exists remove
 	fs.TryRemoveFile(temp_path);
 
-	WriteSecretFileToDisk(fs, temp_path, secret);
-
-	fs.MoveFile(temp_path, file_path);
+	try {
+		WriteSecretFileToDisk(fs, temp_path, secret);
+		fs.MoveFile(temp_path, file_path);
+	} catch (...) {
+		// a failed removal must not replace the original error
+		try {
+			fs.TryRemoveFile(temp_path);
+		} catch (...) { // NOLINT
+		}
+		throw;
+	}
 	files->Set(secret_name, file_path);
 }
 

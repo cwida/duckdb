@@ -66,6 +66,8 @@ string TestGetCurrentDirectory();
 string TestDirectoryPath();
 string TestCreatePath(string suffix);
 #ifndef _WIN32
+//! Runs open_file, which opens path, and returns the descriptor behind its handle, or -1 if it is not found
+int TestOpenDescriptor(const string &path, const std::function<void()> &open_file);
 //! Runs open_file, which opens path, and closes the new descriptor behind its handle so that closing the handle fails
 bool TestOpenWithFailingClose(const string &path, const std::function<void()> &open_file);
 #endif

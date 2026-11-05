@@ -26,6 +26,7 @@ set(TEST_API_OBJECTS
     test_compression_select.cpp
     test_connection_callbacks.cpp
     test_connection_secrets.cpp
+    test_persistent_secret_failed_close.cpp
     test_copy_output_lifecycle.cpp
     test_custom_allocator.cpp
     test_database_instance_partial_init.cpp
