@@ -1,6 +1,7 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -85,8 +86,8 @@ struct ColumnMapResult {
 	unique_ptr<MultiFileIndexMapping> mapping;
 	//! A pushed down extract of a field the file lacks is NULL in every row
 	bool extract_null = false;
-	//! A pushed down extract reads the whole column and extracts above it, as the file lacks a field with a default
-	bool extract_whole = false;
+	//! The default of a field the file lacks on the path of a pushed down extract, taken where the struct is not NULL
+	unique_ptr<Expression> extract_default;
 };
 
 struct ColumnMapper {
@@ -266,10 +267,10 @@ static LogicalType GetExtractedType(const LogicalType &column_type, const Column
 	return type.get();
 }
 
-//! Applies the extracts of a pushed down column index to an expression that produces the whole column
-static unique_ptr<Expression> ApplyPushdownExtract(ClientContext &context, unique_ptr<Expression> expr,
-                                                   const ColumnIndex &global_index) {
-	reference<const ColumnIndex> current(global_index);
+//! Applies the extracts below a pushed down column index to an expression that produces the column it stands for
+static unique_ptr<Expression> ApplyExtractPath(ClientContext &context, unique_ptr<Expression> expr,
+                                               const ColumnIndex &index) {
+	reference<const ColumnIndex> current(index);
 	while (current.get().IsPushdownExtract()) {
 		auto &child = current.get().GetChildIndexes()[0];
 		if (child.HasPrimaryIndex()) {
@@ -283,13 +284,25 @@ static unique_ptr<Expression> ApplyPushdownExtract(ClientContext &context, uniqu
 		}
 		current = child;
 	}
+	return expr;
+}
+
+static unique_ptr<Expression> CastToScanType(ClientContext &context, unique_ptr<Expression> expr,
+                                             const ColumnIndex &global_index) {
 	if (global_index.HasType() && expr->GetReturnType() != global_index.GetScanType()) {
 		expr = BoundCastExpression::AddCastToType(context, std::move(expr), global_index.GetScanType());
 	}
 	return expr;
 }
 
-//! Folds the extract of a missing column's default to the constant the filters on the column are evaluated against
+//! Applies the extracts of a pushed down column index to an expression that produces the whole column
+static unique_ptr<Expression> ApplyPushdownExtract(ClientContext &context, unique_ptr<Expression> expr,
+                                                   const ColumnIndex &global_index) {
+	expr = ApplyExtractPath(context, std::move(expr), global_index);
+	return CastToScanType(context, std::move(expr), global_index);
+}
+
+//! Folds the extract of a default to a constant, which the filters on a missing column are evaluated against
 static unique_ptr<Expression> FoldDefaultExtract(ClientContext &context, unique_ptr<Expression> expr, bool has_filter) {
 	if (!expr->IsFoldable()) {
 		return expr;
@@ -309,6 +322,24 @@ static unique_ptr<Expression> FoldDefaultExtract(ClientContext &context, unique_
 static bool IsNullConstant(const Expression &expr) {
 	return expr.GetExpressionType() == ExpressionType::VALUE_CONSTANT &&
 	       expr.Cast<BoundConstantExpression>().GetValue().IsNull();
+}
+
+//! Any child read from the file carries the validity of its struct, a scalar one is the cheapest to read
+static ColumnIndex SelectValidityChild(const MultiFileColumnDefinition &local_column) {
+	auto &children = local_column.children;
+	for (idx_t i = 0; i < children.size(); i++) {
+		if (!children[i].type.IsNested()) {
+			return ColumnIndex(i);
+		}
+	}
+	for (idx_t i = 0; i < children.size(); i++) {
+		if (children[i].type.id() == LogicalTypeId::STRUCT) {
+			vector<ColumnIndex> nested_child;
+			nested_child.push_back(SelectValidityChild(children[i]));
+			return ColumnIndex(i, std::move(nested_child));
+		}
+	}
+	return ColumnIndex(0);
 }
 
 static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDefinition &global_column,
@@ -544,23 +575,27 @@ static ColumnMapResult MapColumnStruct(ClientContext &context, const MultiFileCo
 		auto &child_index = global_index.GetChildIndexes()[0];
 		auto &child_column = global_column.children[child_index.GetPrimaryIndex()];
 		auto child_mapping = MapColumn(context, child_column, child_index, local_column.children, *nested_mapper);
-		if (!child_mapping.column_index && !child_mapping.extract_null && !child_mapping.extract_whole) {
-			// the file lacks the field, which is NULL in every row when its default is NULL and takes the default
-			// only where the parent is not NULL otherwise, so that case reads the whole column
-			child_mapping.extract_null = IsNullConstant(*child_mapping.default_value);
-			child_mapping.extract_whole = !child_mapping.extract_null;
+		if (!child_mapping.column_index && !child_mapping.extract_null) {
+			// the file lacks the field, so the extract takes its default where this struct is not NULL
+			auto default_extract = ApplyExtractPath(context, std::move(child_mapping.default_value), child_index);
+			default_extract = FoldDefaultExtract(context, std::move(default_extract), false);
+			if (IsNullConstant(*default_extract)) {
+				child_mapping.extract_null = true;
+			} else {
+				// one child of the struct is read for its validity, the other fields are left alone
+				vector<ColumnIndex> validity_child;
+				validity_child.push_back(SelectValidityChild(local_column));
+				child_mapping.column_index = make_uniq<ColumnIndex>(local_id.GetIndex(), std::move(validity_child));
+				child_mapping.column_index->SetType(local_column.type);
+				child_mapping.local_column = local_column;
+				child_mapping.mapping = std::move(mapping);
+				child_mapping.extract_default = std::move(default_extract);
+				return child_mapping;
+			}
 		}
 		if (child_mapping.extract_null) {
 			ColumnMapResult result;
 			result.extract_null = true;
-			return result;
-		}
-		if (child_mapping.extract_whole) {
-			ColumnIndex whole_index(global_index.GetPrimaryIndex());
-			auto whole_mapping = make_uniq<MultiFileIndexMapping>(mapping->index);
-			auto result = MapColumnStruct(context, global_column, whole_index, local_column, local_id, mapper,
-			                              std::move(whole_mapping), is_root);
-			result.extract_whole = true;
 			return result;
 		}
 
@@ -763,6 +798,15 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
 	return BindBuiltinScalarFunction(context, RemapStructFun::Name, std::move(children));
 }
 
+static unique_ptr<Expression> DefaultWhereStructValid(ClientContext &context, MultiFileLocalIndex local_idx,
+                                                      const LogicalType &struct_type,
+                                                      unique_ptr<Expression> default_value) {
+	auto is_valid = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
+	is_valid->GetChildrenMutable().push_back(make_uniq<BoundReferenceExpression>(struct_type, local_idx.GetIndex()));
+	auto null_value = make_uniq<BoundConstantExpression>(Value(default_value->GetReturnType()));
+	return make_uniq<BoundCaseExpression>(std::move(is_valid), std::move(default_value), std::move(null_value));
+}
+
 ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const ColumnMapper &mapper) {
 	auto &reader = *reader_data.reader;
 	auto &local_columns = reader.GetColumns();
@@ -915,21 +959,24 @@ ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const Col
 			reader_data.expressions.push_back(std::move(default_value));
 			continue;
 		}
-		auto trivial_map = IsTriviallyMappable(global_column, local_columns, mapper);
 		auto local_index = std::move(column_map.column_index);
 		auto local_id = local_index->GetPrimaryIndex();
 		auto &local_type = local_columns[local_id].type;
-		auto global_column_type =
-		    global_id.HasType() && !column_map.extract_whole ? global_id.GetScanType() : global_column.type;
+		auto global_column_type = global_id.HasType() ? global_id.GetScanType() : global_column.type;
 		auto local_column_type = local_index->HasType() ? local_index->GetScanType() : local_type;
-		auto expr =
-		    ConstructMapExpression(context, local_idx, column_map, global_column_type, local_column_type, trivial_map);
-		auto filter_conversion = trivial_map ? FilterConversionType::COPY_DIRECTLY : FilterConversionType::CAST_FILTER;
-		if (column_map.extract_whole) {
-			// the whole column is read, so the extract runs above it and its filters run on the result
-			expr = ApplyPushdownExtract(context, std::move(expr), global_id);
-			global_column_type = expr->GetReturnType();
+		unique_ptr<Expression> expr;
+		FilterConversionType filter_conversion;
+		if (column_map.extract_default) {
+			// the struct read selects the default of the field the file lacks, so the filters run on the result
+			expr =
+			    DefaultWhereStructValid(context, local_idx, local_column_type, std::move(column_map.extract_default));
+			expr = CastToScanType(context, std::move(expr), global_id);
 			filter_conversion = FilterConversionType::CANNOT_CONVERT;
+		} else {
+			auto trivial_map = IsTriviallyMappable(global_column, local_columns, mapper);
+			expr = ConstructMapExpression(context, local_idx, column_map, global_column_type, local_column_type,
+			                              trivial_map);
+			filter_conversion = trivial_map ? FilterConversionType::COPY_DIRECTLY : FilterConversionType::CAST_FILTER;
 		}
 		reader_data.expressions.push_back(std::move(expr));
 
