@@ -21,3 +21,13 @@ query I
 SELECT s FROM c WHERE ({'b': s}).b COLLATE nocase = 'A' COLLATE nocase;
 ----
 a
+
+query I
+SELECT ({b: s}).b COLLATE nocase = 'A' FROM c;
+----
+true
+
+query I
+SELECT ({b: s})['b'] COLLATE nocase = 'A' FROM c;
+----
+true
