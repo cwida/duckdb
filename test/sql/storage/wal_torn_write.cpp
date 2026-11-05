@@ -266,3 +266,24 @@ TEST_CASE("Test WAL entry size that overflows the bound check", "[storage][.]") 
 	DeleteDatabase(storage_database);
 	DeleteDatabase(source_database);
 }
+
+TEST_CASE("Test encrypted WAL version on an unencrypted database", "[storage][.]") {
+	auto config = GetTestConfig();
+	auto storage_database = TestCreatePath("wal_version_encrypted");
+	auto storage_wal = storage_database + ".wal";
+
+	LocalFileSystem lfs;
+	config->options.checkpoint_wal_size = idx_t(-1);
+	config->options.checkpoint_on_shutdown = false;
+	DeleteDatabase(storage_database);
+	{
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE A (a INTEGER);"));
+	}
+	// the version of the WAL is stored in the (unchecksummed) first entry at byte 5: change 2 into 3
+	FlipWALByte(lfs, storage_wal, 5);
+	REQUIRE_THROWS_WITH(DuckDB(storage_database, config.get()),
+	                    Catch::Contains("marked as encrypted, but the database is not"));
+	DeleteDatabase(storage_database);
+}

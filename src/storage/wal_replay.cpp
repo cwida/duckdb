@@ -148,6 +148,9 @@ public:
 		}
 
 		if (state_p.wal_version == 3) {
+			if (!state_p.db.GetStorageManager().IsEncrypted()) {
+				throw IOException("Failed to read WAL: the WAL is marked as encrypted, but the database is not");
+			}
 			auto &database = state_p.db.GetDatabase();
 			//! Version 3 means that the WAL is encrypted
 			//! For encryption, the length field remains plaintext
