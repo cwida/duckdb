@@ -8,7 +8,6 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 
@@ -393,16 +392,8 @@ unique_ptr<FunctionData> HistogramBinBindFunction(BindAggregateFunctionInput &in
 		}
 	}
 
-	auto function_impl = GetHistogramBinFunction<HIST>(arguments[0]->GetReturnType());
-	auto &bin_type = arguments[1]->GetReturnType();
-	auto &bin_list_type = function_impl.GetSignature().GetParameter(1).GetType();
-	auto &context = input.GetClientContext();
-	// the forced bins cast binds missing conversions to a NULL-only fallback - reject those at bind time
-	if (!CastFunctionSet::Get(context).CastIsExecutable(bin_type, bin_list_type, context)) {
-		throw BinderException("%s bins of type %s cannot be cast to %s - bin boundaries must match the input type",
-		                      function.GetName(), bin_type.ToString(), bin_list_type.ToString());
-	}
-	function.ReplaceImplementation(function_impl);
+	// the template signature resolved both parameters to the deduced bin type
+	function.ReplaceImplementation(GetHistogramBinFunction<HIST>(function.GetArguments()[0]));
 	return nullptr;
 }
 
@@ -412,8 +403,8 @@ AggregateFunction HistogramFun::BinnedHistogramFunction() {
 	AggregateFunction function("histogram", {}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr, nullptr,
 	                           nullptr, HistogramBinBindFunction<HistogramRange>, nullptr);
 	function.GetSignature()
-	    .AddParameter("arg", LogicalType::ANY)
-	    .AddParameter("bins", LogicalType::LIST(LogicalType::ANY));
+	    .AddParameter("arg", LogicalType::TEMPLATE("T"))
+	    .AddParameter("bins", LogicalType::LIST(LogicalType::TEMPLATE("T")));
 	return function;
 }
 
@@ -421,8 +412,8 @@ AggregateFunction HistogramExactFun::GetFunction() {
 	AggregateFunction function("histogram_exact", {}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr, nullptr,
 	                           nullptr, HistogramBinBindFunction<HistogramExact>, nullptr);
 	function.GetSignature()
-	    .AddParameter("arg", LogicalType::ANY)
-	    .AddParameter("bins", LogicalType::LIST(LogicalType::ANY));
+	    .AddParameter("arg", LogicalType::TEMPLATE("T"))
+	    .AddParameter("bins", LogicalType::LIST(LogicalType::TEMPLATE("T")));
 	return function;
 }
 
