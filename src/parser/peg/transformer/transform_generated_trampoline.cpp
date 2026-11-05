@@ -2253,14 +2253,21 @@ static const TransformChildPlan FRAME_CHILDREN_156[] = {{PEGRuleId::TableRef,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
 static const TransformFramePlan FRAME_PLAN_169 = {FRAME_CHILDREN_156, 1, 1, true, 0, {}};
-static const TransformChildPlan FRAME_CHILDREN_157[] = {{PEGRuleId::ShowRule,
+static const TransformChildPlan FRAME_CHILDREN_157[] = {{PEGRuleId::ShowExternalResourcesType,
+                                                         TransformChildKind::OPTIONAL,
+                                                         4,
+                                                         1,
+                                                         false,
+                                                         {0, TRANSFORM_PATH_END, 0},
+                                                         {0, TRANSFORM_PATH_END, 0}},
+                                                        {PEGRuleId::ShowRule,
                                                          TransformChildKind::REQUIRED,
                                                          0,
                                                          0,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
-static const TransformFramePlan FRAME_PLAN_170 = {FRAME_CHILDREN_157, 1, 1, false, 0, {}};
+static const TransformFramePlan FRAME_PLAN_170 = {FRAME_CHILDREN_157, 2, 2, false, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_158[] = {{PEGRuleId::SelectStatementInternal,
                                                          TransformChildKind::REQUIRED,
                                                          1,
@@ -7349,6 +7356,8 @@ static const TransformFrameOps GENERATED_FRAME_OPS[] = {
      &PEGTransformerFactory::FinalizeDescribeStatementTrampoline, &FRAME_PLAN_1},
     {"ShowExternalResources", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeShowExternalResourcesTrampoline, &FRAME_PLAN_170},
+    {"ShowExternalResourcesType", &PEGTransformerFactory::InitializePlannedTrampoline,
+     &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_13},
     {"ShowDeprecatedSelect", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeShowDeprecatedSelectTrampoline, &FRAME_PLAN_171},
     {"DescribeSelect", &PEGTransformerFactory::InitializePlannedTrampoline,
@@ -12334,7 +12343,11 @@ PEGTransformerFactory::FinalizeShowExternalResourcesTrampoline(PEGTransformer &t
 	bool has_result {};
 	auto &has_result_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
 	has_result = has_result_opt.HasResult();
-	auto result = TransformShowExternalResources(transformer, show_rule, has_result);
+	optional<Identifier> show_external_resources_type {};
+	if (process.child_results[1]) {
+		show_external_resources_type = process.TakeResult<Identifier>(1);
+	}
+	auto result = TransformShowExternalResources(transformer, show_rule, has_result, show_external_resources_type);
 	return transformer.MakeResult<unique_ptr<QueryNode>>(std::move(result));
 }
 

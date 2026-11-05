@@ -432,6 +432,7 @@ enum class PEGRuleId : uint32_t {
 	DeleteUsingClause,
 	DescribeStatement,
 	ShowExternalResources,
+	ShowExternalResourcesType,
 	ShowDeprecatedSelect,
 	DescribeSelect,
 	ShowAllTables,
