@@ -134,8 +134,8 @@ void WriteLogFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 			WriteLogValues<const DatabaseInstance>(*info.context->db, info.level, input_data, idata.sel, args.size(),
 			                                       info.type);
 		} else if (info.scope == "file_opener") {
-			WriteLogValues<const FileOpener>(*info.context->client_data->file_opener, info.level, input_data, idata.sel,
-			                                 args.size(), info.type);
+			WriteLogValues<const FileOpener>(*info.context->services->TryGetFileOpener(), info.level, input_data,
+			                                 idata.sel, args.size(), info.type);
 		} else {
 			throw InvalidInputException(
 			    "write_log: 'scope' argument unknown: '%s'. Valid values are [connection, database, file_opener]",

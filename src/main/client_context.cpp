@@ -139,11 +139,11 @@ struct DebugClientContextState : public ClientContextState {
 #endif
 
 ClientContext::ClientContext(shared_ptr<DatabaseInstance> database)
-    : db(std::move(database)), interrupt_state(ClientInterruptState::NOT_INTERRUPTED), transaction(*this),
-      connection_id(DConstants::INVALID_INDEX) {
-	registered_state = make_uniq<RegisteredStateManager>();
+    : db(std::move(database)), interrupt_state(ClientInterruptState::NOT_INTERRUPTED),
+      services(make_shared_ptr<Context>(*db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
+	services->InitializeClient(*this);
 #ifdef DEBUG
-	registered_state->GetOrCreate<DebugClientContextState>("debug_client_context_state");
+	services->GetRegisteredState().GetOrCreate<DebugClientContextState>("debug_client_context_state");
 #endif
 	ResetLoggerInternal(LoggingContext(LogContextScope::CONNECTION));
 	client_data = make_uniq<ClientData>(*this);
@@ -286,7 +286,7 @@ void ClientContext::VerifyNoOpenResult() {
 }
 
 Logger &ClientContext::GetLogger() const {
-	return *logger;
+	return services->GetLogger();
 }
 
 connection_t ClientContext::GetConnectionId() const {
@@ -364,7 +364,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
                                                                          const QueryParameters &parameters) {
 	// check if any client context state could request a rebind
 	bool can_request_rebind = false;
-	for (auto &state : registered_state->States()) {
+	for (auto &state : services->GetRegisteredState().States()) {
 		if (state->CanRequestRebind()) {
 			can_request_rebind = true;
 		}
@@ -378,7 +378,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
 			// check if any registered client context state wants to try a rebind
-			for (auto &state : registered_state->States()) {
+			for (auto &state : services->GetRegisteredState().States()) {
 				auto info = state->OnPlanningError(*this, *statement, error);
 				if (info == RebindQueryInfo::ATTEMPT_TO_REBIND) {
 					rebind = true;
@@ -390,7 +390,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		}
 		if (result) {
 			D_ASSERT(!rebind);
-			for (auto &state : registered_state->States()) {
+			for (auto &state : services->GetRegisteredState().States()) {
 				auto info = state->OnFinalizePrepare(*this, *result, PreparedStatementMode::PREPARE_AND_EXECUTE);
 				if (info == RebindQueryInfo::ATTEMPT_TO_REBIND) {
 					rebind = true;
@@ -1519,8 +1519,8 @@ SettingLookupResult ClientContext::TryGetCurrentSetting(const Identifier &key, V
 	auto setting_index = db_config.TryGetSettingIndex(key, option);
 	if (setting_index.IsValid()) {
 		// generic setting - try to fetch it
-		auto lookup_result =
-		    config.user_settings.TryGetSetting(db_config.user_settings, setting_index.GetIndex(), result);
+		auto lookup_result = ClientConfig::GetConfig(*this).user_settings.TryGetSetting(
+		    db_config.user_settings, setting_index.GetIndex(), result);
 		if (lookup_result) {
 			return lookup_result;
 		}
@@ -1536,7 +1536,7 @@ SettingLookupResult ClientContext::TryGetCurrentSetting(const Identifier &key, V
 
 SettingLookupResult ClientContext::TryGetCurrentUserSetting(idx_t setting_index, Value &result) const {
 	auto &db_config = DBConfig::GetConfig(*this);
-	return config.user_settings.TryGetSetting(db_config.user_settings, setting_index, result);
+	return ClientConfig::GetConfig(*this).user_settings.TryGetSetting(db_config.user_settings, setting_index, result);
 }
 
 ParserOptions ClientContext::GetParserOptions() {

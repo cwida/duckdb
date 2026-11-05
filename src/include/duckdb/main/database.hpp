@@ -40,6 +40,7 @@ struct DatabaseCacheEntry;
 class LogManager;
 class OSUtil;
 class MetricsManager;
+class Context;
 class ExternalFileCache;
 class ResultSetManager;
 struct ParserCache;
@@ -89,6 +90,9 @@ public:
 	DUCKDB_API bool ExtensionIsLoaded(const string &name);
 
 	DUCKDB_API SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result) const;
+
+	//! Creates database-wide services (settings, logging, metrics, file system)
+	DUCKDB_API shared_ptr<Context> Services();
 
 	DUCKDB_API shared_ptr<EncryptionUtil> GetEncryptionUtil(bool read_only = false);
 	shared_ptr<EncryptionUtil> GetMbedTLSUtil(bool force_mbedtls) const;

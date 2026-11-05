@@ -1,0 +1,13 @@
+diff --git a/src/catalog/rest/transaction/iceberg_transaction.cpp b/src/catalog/rest/transaction/iceberg_transaction.cpp
+index 334ba2f..06d9e05 100644
+--- a/src/catalog/rest/transaction/iceberg_transaction.cpp
++++ b/src/catalog/rest/transaction/iceberg_transaction.cpp
+@@ -520,7 +520,7 @@ void IcebergTransaction::Commit() {
+ 
+ 	// Copy user settings from the original context so that e.g. s3_access_key_id are available
+ 	if (!this->context.expired()) {
+-		temp_con_context->config = this->context.lock()->config;
++		ClientConfig::GetConfig(*temp_con_context) = ClientConfig::GetConfig(*this->context.lock());
+ 	}
+ 
+ 	try {
