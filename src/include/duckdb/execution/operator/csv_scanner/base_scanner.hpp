@@ -766,3 +766,5 @@ protected:
 };
 
 } // namespace duckdb
+
+#undef DUCKDB_BLOCK_SCAN_ALIGNED
