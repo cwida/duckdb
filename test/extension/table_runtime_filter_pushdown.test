@@ -1,0 +1,177 @@
+# name: test/extension/table_runtime_filter_pushdown.test
+# description: Table functions can decline Bloom and prefix-range join filters
+# group: [extension]
+
+require notmingw
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET disabled_optimizers = 'build_side_probe_side,compressed_materialization';
+
+# Disable IN-list filters to exercise the min/max fallback.
+statement ok
+SET dynamic_or_filter_threshold = 0;
+
+statement ok
+CREATE TABLE dense_build AS SELECT (1000 + i * 2)::BIGINT AS k FROM range(500) t(i);
+
+# The default accepts a prefix-range filter for a dense build side.
+query I
+SELECT count(*) FROM test_scan_with_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+500
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_with_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITH_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*PRF\(k\)[^"]*".*
+
+# Opting out preserves min/max bounds instead of the prefix-range filter.
+query I
+SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+500
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*k >= 1000[^"]*k <= 1998[^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<!REGEX>:.*(PRF|BF)\(.*
+
+# A sparse, wide build side uses a Bloom filter when the scan accepts it.
+statement ok
+CREATE TABLE sparse_build AS SELECT (i * 20000000000)::BIGINT AS k FROM range(100) t(i);
+
+query I
+SELECT count(*) FROM test_scan_with_runtime_filters(100000::UBIGINT, 20000000) p JOIN sparse_build b ON p.k = b.k;
+----
+100
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_with_runtime_filters(100000::UBIGINT, 20000000) p JOIN sparse_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITH_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*BF\(k\)[^"]*".*
+
+query I
+SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 20000000) p JOIN sparse_build b ON p.k = b.k;
+----
+100
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 20000000) p JOIN sparse_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*k >= 0[^"]*k <= 1980000000000[^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 20000000) p JOIN sparse_build b ON p.k = b.k;
+----
+analyzed_plan	<!REGEX>:.*(PRF|BF)\(.*
+
+# An external join also respects the scan's opt-out.
+statement ok
+SET debug_force_external = true;
+
+query I
+SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+500
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*k >= 1000[^"]*k <= 1998[^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<!REGEX>:.*(PRF|BF)\(.*
+
+statement ok
+SET debug_force_external = false;
+
+# Each UNION ALL scan keeps its own choice: native PRF and remote min/max.
+statement ok
+CREATE TABLE native_probe AS SELECT i::BIGINT AS k FROM range(100000) t(i);
+
+statement ok
+CREATE VIEW mixed_probe AS
+SELECT k FROM native_probe UNION ALL SELECT k FROM test_scan_without_runtime_filters(100000::UBIGINT, 1);
+
+query I
+SELECT count(*) FROM mixed_probe p JOIN dense_build b ON p.k = b.k;
+----
+1000
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM mixed_probe p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*native_probe"[^}]*"Dynamic Filters": "[^"]*PRF\(k\)[^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM mixed_probe p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*k >= 1000[^"]*k <= 1998[^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM mixed_probe p JOIN dense_build b ON p.k = b.k;
+----
+analyzed_plan	<!REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*(PRF|BF)\(.*
+
+# Filters from multiple CTE consumers also respect the underlying scan's opt-out.
+# Bounded consumers keep the shared scan streaming until both filters are available.
+statement ok
+CREATE VIEW shared_probe AS
+WITH p AS MATERIALIZED (SELECT k FROM test_scan_without_runtime_filters(100000::UBIGINT, 1))
+(SELECT p.k FROM p JOIN dense_build b ON p.k = b.k LIMIT 1000)
+UNION ALL
+(SELECT p.k FROM p JOIN dense_build b ON p.k = b.k LIMIT 1000);
+
+query I
+SELECT count(*) FROM shared_probe;
+----
+1000
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM shared_probe;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*k >= 1000[^"]*k <= 1998[^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM shared_probe;
+----
+analyzed_plan	<!REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*(PRF|BF)\(.*
+
+# Opting out still permits IN-list filters for a small build side.
+statement ok
+SET dynamic_or_filter_threshold = 1000;
+
+statement ok
+CREATE TABLE small_build AS SELECT k::BIGINT AS k FROM (VALUES (1000), (1002), (1004)) t(k);
+
+query I
+SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN small_build b ON p.k = b.k;
+----
+3
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN small_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*"Function": "TEST_SCAN_WITHOUT_RUNTIME_FILTERS"[^}]*"Dynamic Filters": "[^"]*k IN \([^"]*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM test_scan_without_runtime_filters(100000::UBIGINT, 1) p JOIN small_build b ON p.k = b.k;
+----
+analyzed_plan	<!REGEX>:.*(PRF|BF)\(.*

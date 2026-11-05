@@ -918,6 +918,7 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 	}
 	result.projection_pushdown = single_file_function.projection_pushdown;
 	result.filter_pushdown = single_file_function.filter_pushdown;
+	result.runtime_filter_pushdown = single_file_function.runtime_filter_pushdown;
 	result.filter_prune = single_file_function.filter_prune;
 	result.supports_pushdown_type = single_file_function.supports_pushdown_type;
 	result.late_materialization = single_file_function.late_materialization;
