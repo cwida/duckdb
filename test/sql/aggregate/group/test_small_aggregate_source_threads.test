@@ -1,0 +1,64 @@
+# name: test/sql/aggregate/group/test_small_aggregate_source_threads.test
+# description: Hash aggregates whose source parallelism is limited by the amount of data to combine
+# group: [group]
+
+statement ok
+SET threads=8
+
+# long group strings prevent the perfect hash aggregate
+statement ok
+CREATE TABLE t AS SELECT i AS id, (i % 37)::VARCHAR AS c, repeat('x', 40) || (i % 5)::VARCHAR AS g FROM range(1000000) r(i)
+
+# small input: a single source thread scans all partitions
+query I
+SELECT DISTINCT c FROM t WHERE id BETWEEN 5000 AND 5009 ORDER BY c
+----
+10
+11
+12
+13
+14
+5
+6
+7
+8
+9
+
+query II
+SELECT right(g, 1), count(*) FROM t WHERE id < 100 GROUP BY g ORDER BY g
+----
+0	20
+1	20
+2	20
+3	20
+4	20
+
+# few groups but large aggregate states held in the arena allocators
+query III
+SELECT right(g, 1), len(list(id)), list_sum(list(id)) FROM t GROUP BY g ORDER BY g
+----
+0	200000	99999500000
+1	200000	99999700000
+2	200000	99999900000
+3	200000	100000100000
+4	200000	100000300000
+
+query II
+SELECT right(g, 1), len(string_agg(c, ',')) FROM t GROUP BY g ORDER BY g
+----
+0	545945
+1	545945
+2	545945
+3	545945
+4	545944
+
+# many groups: the source still runs with multiple threads
+query III
+SELECT count(*), sum(id), count(DISTINCT c) FROM (SELECT id, any_value(c) AS c FROM t GROUP BY id)
+----
+1000000	499999500000	37
+
+query II
+SELECT count(*), sum(cnt) FROM (SELECT c, g, count(*) AS cnt FROM t GROUP BY ALL)
+----
+185	1000000
