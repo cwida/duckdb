@@ -243,7 +243,7 @@ void Context::InitializeClient(ClientContext &context_p) {
 	D_ASSERT(!context);
 	context = &context_p;
 	config = make_uniq<ClientConfig>();
-	file_opener = make_uniq<ClientContextFileOpener>(context_p);
+	file_opener = make_uniq<ClientContextFileOpener>(*this);
 	client_file_system = make_uniq<ClientFileSystem>(context_p);
 	profiler = make_shared_ptr<QueryProfiler>(context_p);
 	registered_state = make_uniq<RegisteredStateManager>();

@@ -70,7 +70,8 @@ index 855e498..4b8b2b9 100644
 +++ b/test/unittest/http/browser_adapter_test.cpp
 @@ -81,7 +81,7 @@ TEST_CASE("HTTPFS owns browser parameters and preserves its provider", "[httpfs]
  		HTTPTestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
- 		ClientContextFileOpener opener(*con.context);
+-		ClientContextFileOpener opener(*con.context);
++		ClientContextFileOpener opener(con.context->Services());
  		FileOpenerInfo info;
 -		info.file_path = server.HTTPPath();
 +		info.file.path = server.HTTPPath();

@@ -4,6 +4,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/http/http_util.hpp"
 
@@ -14,7 +15,7 @@ SettingLookupResult ClientContextFileOpener::TryGetCurrentSetting(const Identifi
 }
 
 Logger &ClientContextFileOpener::GetLogger() const {
-	return Logger::Get(context);
+	return context.GetLogger();
 }
 
 // LCOV_EXCL_START
@@ -23,8 +24,12 @@ SettingLookupResult ClientContextFileOpener::TryGetCurrentSetting(const Identifi
 	return context.TryGetCurrentSetting(key, result);
 }
 
+optional_ptr<ClientContext> ClientContextFileOpener::TryGetClientContext() {
+	return context.TryGetClientContext();
+}
+
 optional_ptr<DatabaseInstance> ClientContextFileOpener::TryGetDatabase() {
-	return context.db.get();
+	return &context.GetDatabase();
 }
 
 HTTPUtil &ClientContextFileOpener::GetHTTPUtil() {

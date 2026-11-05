@@ -588,7 +588,7 @@ unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(DatabaseInstance &db, cons
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(ClientContext &context, const string &url) {
-	ClientContextFileOpener opener(context);
+	ClientContextFileOpener opener(context.Services());
 	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
