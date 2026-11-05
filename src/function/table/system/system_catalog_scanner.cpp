@@ -79,9 +79,14 @@ unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Ident
 	return std::move(result);
 }
 
-// pushdown_expression: accept an expression only if the single column it references is an identity column.
+// pushdown_expression: accept an expression only if the single column it references is an identity column and it
+// cannot throw. The scan evaluates the expression on the names of all catalogs, schemas and entries, including ones
+// the function never returns, so one that fails on such a name raises an error that a filter on the rows would not.
 static bool PushdownExpression(ClientContext &context, const LogicalGet &get, Expression &expr) {
 	if (!get.bind_data) {
+		return false;
+	}
+	if (expr.CanThrow()) {
 		return false;
 	}
 	auto &data = get.bind_data->Cast<SystemCatalogScannerData>();
