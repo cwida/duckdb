@@ -241,6 +241,24 @@ SELECT * FROM t WHERE a = 1 AND AND x = 2
 ----
 Unexpected "AND"
 
+# a doubled function name is removed before a comma is guessed
+statement error
+SELECT COUNT COUNT(*) FROM t
+----
+syntax error at or near "COUNT"
+Unexpected "COUNT"
+
+statement error
+SELECT a, upper upper(x) FROM t
+----
+Unexpected "upper"
+
+# a missing comma before a parenthesis is still reported
+statement error
+SELECT 1 (2)
+----
+Missing ","
+
 # a repeated keyword is removed before a comma is guessed
 statement error
 SELECT 1 AS AS b

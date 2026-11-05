@@ -349,13 +349,24 @@ bool RepeatsPredecessor(const TokenIterator &tokens, idx_t statement_start, idx_
 	       StringUtil::CIEquals(tokens.GetToken(index - 1).text, tokens.GetToken(index).text);
 }
 
+//! A plain word followed by "(", as in "COUNT COUNT(*)": a doubled function name rather than a column and an alias.
+bool IsRepeatedFunctionName(const TokenIterator &tokens, idx_t index) {
+	if (!IsWordToken(tokens.GetToken(index))) {
+		return false;
+	}
+	if (index + 1 >= tokens.Size()) {
+		return false;
+	}
+	return tokens.GetToken(index + 1).text == "(";
+}
+
 //! Whether the token at `index` repeats its predecessor ("WHERE WHERE", "AS AS", ",,") and dropping it repairs.
 bool IsRepeatedToken(const TokenIterator &tokens, idx_t statement_start, idx_t index, const CompiledGrammar &grammar,
                      const ParserOptions &options) {
-	if (!IsDroppable(tokens.GetToken(index), grammar.GetKeywordHelper())) {
+	if (!RepeatsPredecessor(tokens, statement_start, index)) {
 		return false;
 	}
-	if (!RepeatsPredecessor(tokens, statement_start, index)) {
+	if (!IsDroppable(tokens.GetToken(index), grammar.GetKeywordHelper()) && !IsRepeatedFunctionName(tokens, index)) {
 		return false;
 	}
 	return EditRepairs(tokens, statement_start, index, EditKind::DELETE, grammar, options);
