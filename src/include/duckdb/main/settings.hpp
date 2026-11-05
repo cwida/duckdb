@@ -13,6 +13,8 @@
 
 namespace duckdb {
 
+class Context;
+
 struct Settings {
 	template <class OP, class SOURCE>
 	static typename std::enable_if<std::is_enum<typename OP::RETURN_TYPE>::value, typename OP::RETURN_TYPE>::type
@@ -88,6 +90,7 @@ private:
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result);
+	static bool TryGetSettingInternal(const Context &services, idx_t setting_index, Value &result);
 
 	static void SetSettingInternal(DatabaseInstance &db, idx_t setting_index, SetScope scope, Value target_value);
 	static void SetSettingInternal(DBConfig &config, idx_t setting_index, SetScope scope, Value target_value);

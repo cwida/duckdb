@@ -2,6 +2,7 @@
 
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -44,7 +45,8 @@ static int64_t ImpalaTimestampToNanoseconds(const Int96 &impala_timestamp) {
 	if (days_since_epoch < 0) {
 		//	Don't saturate the minimum value by going past it
 		if (!TryMultiplyOperator::Operation(days_since_epoch + 1, NANOSECONDS_PER_DAY, day_nanoseconds) ||
-		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds - NANOSECONDS_PER_DAY, result)) {
+		    !TrySubtractOperator::Operation(nanoseconds, NANOSECONDS_PER_DAY, nanoseconds) ||
+		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds, result)) {
 			// out of range for TIMESTAMP_NS - saturate to -infinity
 			return timestamp_ns_t::ninfinity().value;
 		}

@@ -218,7 +218,7 @@ struct KahanSumOperation : public BaseSumOperation<KahanSumSetOperation, KahanAd
 		if (!state.is_set) {
 			finalize_data.ReturnNull();
 		} else {
-			target = state.value;
+			target = KahanFinalize(state.value, state.err);
 		}
 	}
 };

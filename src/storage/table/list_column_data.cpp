@@ -201,11 +201,13 @@ void ListColumnData::InitializeAppend(ColumnAppendState &state) {
 
 	// initialize the validity append
 	ColumnAppendState validity_append_state;
+	validity_append_state.transient = state.transient;
 	validity->InitializeAppend(validity_append_state);
 	state.child_appends.push_back(std::move(validity_append_state));
 
 	// initialize the child column append
 	ColumnAppendState child_append_state;
+	child_append_state.transient = state.transient;
 	child_column->InitializeAppend(child_append_state);
 	state.child_appends.push_back(std::move(child_append_state));
 }
@@ -287,10 +289,6 @@ void ListColumnData::RevertAppend(row_t new_count) {
 	auto column_count = GetMaxEntry();
 	auto list_offset = column_count > 0 ? FetchListOffset(column_count - 1) : 0;
 	child_column->RevertAppend(UnsafeNumericCast<row_t>(list_offset));
-}
-
-idx_t ListColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("List Fetch");
 }
 
 void ListColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,

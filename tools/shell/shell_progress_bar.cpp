@@ -129,13 +129,11 @@ protected:
 		// not the progress bar's separate connection
 		if (component.literal == "bytes_read") {
 			auto &context = *state.conn->context;
-			auto &client_data = duckdb::ClientData::Get(context);
-			auto profiler = client_data.profiler;
+			auto profiler = context.services->GetQueryProfilerPtr();
 			return duckdb::StringUtil::BytesToHumanReadableString(profiler->GetBytesRead(), 1000);
 		} else if (component.literal == "bytes_written") {
 			auto &context = *state.conn->context;
-			auto &client_data = duckdb::ClientData::Get(context);
-			auto profiler = client_data.profiler;
+			auto profiler = context.services->GetQueryProfilerPtr();
 			return duckdb::StringUtil::BytesToHumanReadableString(profiler->GetBytesWritten(), 1000);
 		}
 		return Prompt::HandleSetting(state, component);

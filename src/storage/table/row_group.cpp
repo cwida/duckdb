@@ -259,7 +259,7 @@ void RowGroup::InitializeEmpty(const vector<LogicalType> &types, ColumnDataType 
 void ColumnScanState::PushDownCast(const LogicalType &original_type, const LogicalType &cast_type) {
 	D_ASSERT(context.Valid());
 	D_ASSERT(!expression_state);
-	auto &client_context = *context.GetClientContext();
+	auto &client_context = *Context::TryGetClientContext(context.GetServices());
 
 	auto input = make_uniq<BoundReferenceExpression>(original_type, 0ULL);
 	auto cast_expression = BoundCastExpression::AddCastToType(client_context, std::move(input), cast_type);
@@ -384,7 +384,7 @@ void CollectionScanState::Initialize(const QueryContext &context_p, const vector
 
 bool RowGroup::InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset) {
 	auto &filters = state.GetFilterInfo();
-	if (!CheckZonemap(state.context.GetClientContext(), filters, node.GetRowStart())) {
+	if (!CheckZonemap(Context::TryGetClientContext(state.context.GetServices()), filters, node.GetRowStart())) {
 		return false;
 	}
 	if (!RefersToSameObject(node.GetNode(), *this)) {
@@ -893,7 +893,7 @@ vector<unique_ptr<AsyncTask>> RowGroup::CollectScanIOTasks(CollectionScanState &
 idx_t RowGroup::PrefetchRowCount(CollectionScanState &state) {
 	const idx_t start_row = state.vector_index * STANDARD_VECTOR_SIZE;
 	idx_t end_row = state.max_row_group_row;
-	auto context = state.context.GetClientContext();
+	auto context = Context::TryGetClientContext(state.context.GetServices());
 	for (auto &entry : state.GetFilterInfo().GetFilterList()) {
 		if (entry.IsAlwaysTrue() || entry.table_column_index.IsPushdownExtract()) {
 			continue;
