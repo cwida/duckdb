@@ -1,7 +1,10 @@
 #include "duckdb/execution/operator/set/physical_recursive_cte_keyed_state.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte_delta.hpp"
 
+#include "duckdb/common/types/string_heap.hpp"
+#include "duckdb/common/types/vector_buffer.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -115,7 +118,11 @@ RecursiveCTEFinalizedValues::RecursiveCTEFinalizedValues(ClientContext &context,
 	region_width = offset;
 	// The scratch tables size their trailing region through RegionWidthFor, so the layouts must agree.
 	D_ASSERT(region_width == RegionWidthFor(op));
-	string_arena = make_uniq<ArenaAllocator>(Allocator::Get(context));
+	// The buffer allocator keeps the finalized strings inside the memory accounting, like the states they mirror.
+	auto heap_holder = make_uniq<StringHeapHolder>(BufferAllocator::Get(context));
+	string_heap = heap_holder->heap;
+	string_arena = make_buffer<AuxiliaryDataSet>();
+	string_arena->data.push_back(std::move(heap_holder));
 	idx_t child_offset = 0;
 	for (auto &payload_aggregate : op.payload_aggregates) {
 		auto &children = payload_aggregate->Cast<BoundAggregateExpression>().GetChildren();
@@ -146,11 +153,8 @@ void RecursiveCTEFinalizedValues::BindLayout(const TupleDataLayout &layout) {
 
 string_t RecursiveCTEFinalizedValues::CopyStringToArena(string_t value) {
 	D_ASSERT(!value.IsInlined());
-	const auto length = value.GetSize();
-	auto target = string_arena->Allocate(length);
-	memcpy(target, value.GetData(), length);
-	string_live_bytes += length;
-	return string_t(const_char_ptr_cast(target), UnsafeNumericCast<uint32_t>(length));
+	string_live_bytes += value.GetSize();
+	return string_heap->AddBlob(value);
 }
 
 template <idx_t WIDTH>
@@ -287,17 +291,23 @@ void RecursiveCTEFinalizedValues::Gather(const Vector &addresses, const Selectio
 		const auto slot_width = GetTypeIdSize(value_types[agg_idx]);
 		const auto target_data = FlatVector::GetDataMutable(target);
 		if (value_types[agg_idx] == PhysicalType::VARCHAR) {
+			bool references_arena = false;
 			for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 				const auto region = address_data[sel.get_index(row_idx)] + region_offset;
 				if (region[agg_idx] == 0) {
 					target_validity.SetInvalid(row_idx);
 					continue;
 				}
-				// Copy into the vector heap so emitted chunks never reference the arena.
-				reinterpret_cast<string_t *>(target_data)[row_idx] =
-				    StringVector::AddStringOrBlob(target, Load<string_t>(region + slot_offset));
+				const auto value = Load<string_t>(region + slot_offset);
+				reinterpret_cast<string_t *>(target_data)[row_idx] = value;
+				references_arena = references_arena || !value.IsInlined();
 			}
 			FlatVector::SetSize(target, count);
+			// The emitted strings point into the shared heap, so the vector takes a reference that outlives
+			// any compaction swap.
+			if (references_arena) {
+				StringVector::AddAuxiliaryData(target, make_uniq<AuxiliaryDataSetHolder>(string_arena));
+			}
 			continue;
 		}
 		switch (slot_width) {
@@ -333,7 +343,8 @@ void RecursiveCTEFinalizedValues::MaybeCompact(GroupedAggregateHashTable &target
 	if (!enabled || string_garbage_bytes <= string_live_bytes || string_garbage_bytes < 262144) {
 		return;
 	}
-	auto fresh_arena = make_uniq<ArenaAllocator>(string_arena->GetUnderlyingAllocator());
+	auto fresh_holder = make_uniq<StringHeapHolder>(string_heap->GetAllocator().GetUnderlyingAllocator());
+	auto &fresh_heap = fresh_holder->heap;
 	idx_t live_bytes = 0;
 	AggregateHTScanState scan_state;
 	// The scan reads the group columns without the trailing hash column.
@@ -362,16 +373,15 @@ void RecursiveCTEFinalizedValues::MaybeCompact(GroupedAggregateHashTable &target
 				if (value.IsInlined()) {
 					continue;
 				}
-				const auto length = value.GetSize();
-				auto moved = fresh_arena->Allocate(length);
-				memcpy(moved, value.GetData(), length);
-				Store<string_t>(string_t(const_char_ptr_cast(moved), UnsafeNumericCast<uint32_t>(length)),
-				                region + slot_offset);
-				live_bytes += length;
+				// Every live slot migrates, including the byte-equal refreshes that kept their old pointer.
+				Store<string_t>(fresh_heap.AddBlob(value), region + slot_offset);
+				live_bytes += value.GetSize();
 			}
 		}
 	}
-	string_arena = std::move(fresh_arena);
+	string_heap = fresh_holder->heap;
+	string_arena = make_buffer<AuxiliaryDataSet>();
+	string_arena->data.push_back(std::move(fresh_holder));
 	string_live_bytes = live_bytes;
 	string_garbage_bytes = 0;
 }

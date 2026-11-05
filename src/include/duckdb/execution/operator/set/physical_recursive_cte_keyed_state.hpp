@@ -14,6 +14,8 @@ namespace duckdb {
 
 class RecursiveCTEKeyedLocalState;
 struct RecursiveCTEKeyDeltaState;
+struct AuxiliaryDataSet;
+class StringHeap;
 
 //! Turns candidate rows into the normalized key columns and the aggregate inputs of the keyed state. Classification,
 //! pre-aggregation and commits each own one, so every path applies the same key normalization.
@@ -40,8 +42,10 @@ private:
 
 //! The finalized aggregate values of every group, stored in the trailing region of the hash table rows and
 //! refreshed by the commit for every touched or new group. Reads gather these values instead of invoking
-//! aggregate callbacks, so frozen-state reads stay plain loads. String values live in an owned arena whose
-//! garbage is compacted at commit, when no readers exist.
+//! aggregate callbacks, so frozen-state reads stay plain loads. String values live in a shared-ownership heap
+//! that emitted vectors reference, so gathers emit the stored strings without copying. Compaction at commit
+//! swaps in a fresh heap and migrates every live slot; the old heap stays alive until the last referencing
+//! vector releases it.
 class RecursiveCTEFinalizedValues {
 public:
 	RecursiveCTEFinalizedValues(ClientContext &context, const PhysicalRecursiveCTE &op);
@@ -83,8 +87,10 @@ private:
 	vector<idx_t> identity_source_columns;
 	//! Per aggregate, the column of its first input in the evaluated payload chunk
 	vector<idx_t> candidate_source_columns;
-	//! Storage for non-inlined finalized strings
-	unique_ptr<ArenaAllocator> string_arena;
+	//! Shared-ownership storage for non-inlined finalized strings; emitted vectors hold references to it
+	buffer_ptr<AuxiliaryDataSet> string_arena;
+	//! The heap inside string_arena's holder; only the single-threaded commit writes to it
+	optional_ptr<StringHeap> string_heap;
 	idx_t string_live_bytes = 0;
 	idx_t string_garbage_bytes = 0;
 };

@@ -116,3 +116,42 @@ WITH RECURSIVE t(k, v) USING KEY (k, sum(v)) AS (
 SELECT count(*), count(DISTINCT v) FROM t;
 ----
 7	1
+
+# Byte-equal refreshes across arena compaction: half the keys toggle between two long strings each
+# iteration until replaced bytes outweigh the live ones and the arena compacts, the other half refresh
+# with identical bytes and keep their stored string. Compaction migrates both halves, so the recurring
+# scan, the direct key probes and the final drain must read intact values afterwards.
+
+query IIII
+WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
+	SELECT i, repeat(CASE WHEN i < 600 THEN 'a' ELSE 'e' END, 400), 0 FROM range(1200) r(i)
+	UNION
+	SELECT n.k,
+	       CASE WHEN n.k < 600 THEN repeat(CASE WHEN n.iter % 2 = 0 THEN 'b' ELSE 'a' END, 400)
+	            ELSE repeat('e', 400) END,
+	       n.iter + 1
+	FROM t n JOIN recurring.t r USING (k)
+	WHERE n.iter < 6
+)
+SELECT count(*), count(DISTINCT v), min(length(v)), max(length(v)) FROM t;
+----
+1200	2	400	400
+
+# The finalized strings allocate through the buffer allocator, so they stay inside the memory limit's
+# accounting while the recursion runs.
+
+statement ok
+SET memory_limit='96MB';
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
+	SELECT i, repeat('m', 200) || i::VARCHAR, 0 FROM range(20000) r(i)
+	UNION
+	SELECT k, repeat(chr((97 + ((k + iter) % 5))::INTEGER), 200) || k::VARCHAR, iter + 1 FROM t WHERE iter < 4
+)
+SELECT count(*), bool_and(v = repeat(chr((97 + ((k + 3) % 5))::INTEGER), 200) || k::VARCHAR)::INTEGER FROM t;
+----
+20000	1
+
+statement ok
+RESET memory_limit;

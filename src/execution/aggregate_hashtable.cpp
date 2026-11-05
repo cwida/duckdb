@@ -1229,6 +1229,9 @@ void GroupedAggregateHashTable::Combine(TupleDataCollection &other_data, optiona
 	D_ASSERT(other_data.GetLayout().GetAggrWidth() == layout_ptr->GetAggrWidth());
 	D_ASSERT(other_data.GetLayout().GetDataWidth() == layout_ptr->GetDataWidth());
 	D_ASSERT(other_data.GetLayout().GetRowWidth() == layout_ptr->GetRowWidth());
+	// New groups copy whole source rows, so a trailing region arrives as the source left it: owners must only
+	// scatter region values into the table that survives the combine, never into the sources consumed here.
+	D_ASSERT(other_data.GetLayout().GetTrailingRegionWidth() == layout_ptr->GetTrailingRegionWidth());
 
 	if (other_data.Count() == 0) {
 		return;
