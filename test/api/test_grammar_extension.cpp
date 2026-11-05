@@ -2127,10 +2127,9 @@ TEST_CASE("Deep leading list chains retain heap-owned state through exceptions",
 }
 
 static vector<MatcherToken> TokenizeFirstSetTestInput(const CompiledGrammar &grammar, const string &sql) {
-	vector<MatcherToken> tokens;
-	ParserTokenizerBehavior behavior(sql, tokens);
+	ParserTokenizerBehavior behavior(sql);
 	grammar.GetTokenizer().TokenizeInput(behavior);
-	return tokens;
+	return std::move(behavior.tokens);
 }
 
 TEST_CASE("Tokenizer assigns FIRST set token classes", "[api][grammar_extension]") {

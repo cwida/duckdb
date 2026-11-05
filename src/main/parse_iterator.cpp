@@ -156,8 +156,7 @@ void ParseIterator::EnsureTokenized() {
 	if (!token_iterator) {
 		// Tokenize the full input once. Subsequent Peek/HasMore calls walk through the iterator;
 		// we never re-tokenize. Tokenization is grammar-free.
-		vector<MatcherToken> tokens;
-		ParserTokenizerBehavior behavior(sql, tokens);
+		ParserTokenizerBehavior behavior(sql);
 		auto compiled_grammar = CompiledGrammar::Get(context);
 		auto &tokenizer = compiled_grammar->GetTokenizer();
 		tokenizer.TokenizeInput(behavior);
