@@ -37,6 +37,8 @@ public:
 	bool error_unknown_key = false;
 	//! How object keys are matched to names
 	JSONKeyMatch key_match = JSONKeyMatch::EXACT;
+	//! The key that a name is read from instead of the name itself (can be NULL)
+	optional_ptr<const case_insensitive_map_t<string>> key_mapping = nullptr;
 
 	//! Whether to delay the error when transforming (e.g., when non-strict casting or reading from file)
 	bool delay_error = false;

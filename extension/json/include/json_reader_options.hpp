@@ -9,6 +9,7 @@
 #pragma once
 
 #include "json_common.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/enums/file_compression_type.hpp"
 #include "json_enums.hpp"
@@ -124,6 +125,8 @@ struct JSONReaderOptions {
 	//! Whether object keys that differ only in ASCII case are the same key, when detecting the schema and when
 	//! matching keys to the columns
 	bool case_insensitive_keys = false;
+	//! The JSON key that a column or struct field with the given name is read from, instead of its name
+	case_insensitive_map_t<string> key_mapping;
 	//! Whether GeoJSON geometry fragments are inferred as the GEOMETRY type, and Features are unnested into
 	//! geometry + property columns. Unset means "decide from the file name" (.geojson / .geojsonl)
 	optional<bool> geojson;

@@ -150,7 +150,8 @@ void JSONScan::AddReadJSONParameters(TableFunction &table_function) {
 		    .Add("records", LogicalType::ANY)
 		    .Add("array", LogicalType::BOOLEAN)
 		    .Add("maximum_sample_files", LogicalType::BIGINT)
-		    .Add("case_insensitive_keys", LogicalType::BOOLEAN);
+		    .Add("case_insensitive_keys", LogicalType::BOOLEAN)
+		    .Add("key_mapping", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	});
 }
 
@@ -359,6 +360,19 @@ bool JSONScan::ParseOption(ClientContext &context, const Identifier &key, const 
 		options.case_insensitive_keys = BooleanValue::Get(value);
 		return true;
 	}
+	if (key == "key_mapping") {
+		for (auto &entry : MapValue::GetChildren(value)) {
+			auto &name_and_key = StructValue::GetChildren(entry);
+			auto &name = StringValue::Get(name_and_key[0]);
+			if (name_and_key[1].IsNull()) {
+				throw BinderException("read_json \"key_mapping\" cannot map \"%s\" to NULL.", name);
+			}
+			if (!options.key_mapping.emplace(name, StringValue::Get(name_and_key[1])).second) {
+				throw BinderException("read_json \"key_mapping\" maps \"%s\" more than once.", name);
+			}
+		}
+		return true;
+	}
 	return false;
 }
 
@@ -376,6 +390,11 @@ void JSONScan::BindSchema(ClientContext &context, JSONScanData &json_data, Multi
 	// Specifying column names overrides auto-detect
 	if (!return_types.empty()) {
 		options.auto_detect = false;
+	}
+	// the mapping is from the names of the columns and their struct fields, which auto-detection takes from the keys
+	if (!options.key_mapping.empty() && return_types.empty()) {
+		throw BinderException("read_json \"key_mapping\" requires columns to be specified through the \"columns\" "
+		                      "parameter.");
 	}
 
 	if (!options.auto_detect) {
@@ -425,6 +444,7 @@ void JSONScan::FinalizeBind(JSONScanData &json_data, vector<Identifier> &names) 
 	transform_options.error_missing_key = false;
 	transform_options.error_unknown_key = options.auto_detect && !options.ignore_errors;
 	transform_options.key_match = options.case_insensitive_keys ? JSONKeyMatch::CASE_INSENSITIVE : JSONKeyMatch::EXACT;
+	transform_options.key_mapping = options.key_mapping.empty() ? nullptr : &options.key_mapping;
 	transform_options.date_format_map = json_data.date_format_map.get();
 	transform_options.delay_error = true;
 	// the readers of this scan parse numbers as text when a column is a DECIMAL (JSONReader::read_flag)

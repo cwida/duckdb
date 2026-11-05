@@ -1,0 +1,76 @@
+# name: test/sql/json/table/read_json_key_mapping.test
+# description: read_json key_mapping reads columns and struct fields from the keys they are mapped to
+# group: [table]
+
+require json
+
+# the second line has the column and field names as keys, which mapped columns and fields are not read from
+statement ok
+COPY (SELECT * FROM (VALUES
+	('{"duplicated":"a","DUPLICATED":"b","nested":{"duplicated":"c","items":[{"duplicated":"d"},{"duplicated":"e"}]}}'),
+	('{"duplicated_lower":"v","duplicated_upper":"w","nested":{"duplicated_lower":"x","items":[{"duplicated_lower":"y"}]}}')
+) t(line)) TO '{TEST_DIR}/key_mapping.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+# keys that differ only in case are read into two columns, and a mapped name is mapped at every depth
+query III
+SELECT * FROM read_json('{TEST_DIR}/key_mapping.json', columns := {duplicated_lower: 'VARCHAR', duplicated_upper: 'VARCHAR', nested: 'STRUCT(duplicated_lower VARCHAR, items STRUCT(duplicated_lower VARCHAR)[])'}, format := 'newline_delimited', key_mapping := MAP {'duplicated_lower': 'duplicated', 'duplicated_upper': 'DUPLICATED'});
+----
+a	b	{'duplicated_lower': c, 'items': [{'duplicated_lower': d}, {'duplicated_lower': e}]}
+NULL	NULL	{'duplicated_lower': NULL, 'items': [{'duplicated_lower': NULL}]}
+
+# the names are matched to the column and field names ignoring case
+query II
+SELECT * FROM read_json('{TEST_DIR}/key_mapping.json', columns := {DUPLICATED_LOWER: 'VARCHAR', duplicated_upper: 'VARCHAR'}, format := 'newline_delimited', key_mapping := MAP {'duplicated_lower': 'duplicated', 'DUPLICATED_UPPER': 'DUPLICATED'});
+----
+a	b
+NULL	NULL
+
+# with case_insensitive_keys the mapped keys are matched ignoring case
+statement ok
+COPY (SELECT * FROM (VALUES ('{"duplicated":"a","nested":{"DUPLICATED":"b","items":[{"duplicated":"c"}]}}')) t(line)) TO '{TEST_DIR}/key_mapping_case_insensitive.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query II
+SELECT * FROM read_json('{TEST_DIR}/key_mapping_case_insensitive.json', columns := {duplicated_lower: 'VARCHAR', nested: 'STRUCT(duplicated_lower VARCHAR, items STRUCT(duplicated_lower VARCHAR)[])'}, format := 'newline_delimited', key_mapping := MAP {'duplicated_lower': 'Duplicated'}, case_insensitive_keys := true);
+----
+a	{'duplicated_lower': b, 'items': [{'duplicated_lower': c}]}
+
+# columns mapped to the same key, or to the key of another column, read the same value
+statement ok
+COPY (SELECT * FROM (VALUES ('{"a":1,"b":2}'), ('{"a":3}')) t(line)) TO '{TEST_DIR}/key_mapping_shared.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query III
+SELECT * FROM read_json('{TEST_DIR}/key_mapping_shared.json', columns := {a: 'INTEGER', b: 'INTEGER', c: 'INTEGER'}, format := 'newline_delimited', key_mapping := MAP {'a': 'b', 'c': 'b'});
+----
+2	2	2
+NULL	NULL	NULL
+
+# multiple files are read with the same mapping
+statement ok
+COPY (SELECT * FROM (VALUES ('{"duplicated":"a"}')) t(line)) TO '{TEST_DIR}/key_mapping_file1.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"duplicated":"b"}')) t(line)) TO '{TEST_DIR}/key_mapping_file2.json' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\t');
+
+query I
+SELECT duplicated_lower FROM read_json(['{TEST_DIR}/key_mapping_file1.json', '{TEST_DIR}/key_mapping_file2.json'], columns := {duplicated_lower: 'VARCHAR'}, format := 'newline_delimited', key_mapping := MAP {'duplicated_lower': 'duplicated'}) ORDER BY duplicated_lower;
+----
+a
+b
+
+# the mapping is from column and field names, so the columns must be given
+statement error
+SELECT * FROM read_json('{TEST_DIR}/key_mapping.json', key_mapping := MAP {'duplicated_lower': 'duplicated'});
+----
+"key_mapping" requires columns
+
+# a name must be mapped to a key
+statement error
+SELECT * FROM read_json('{TEST_DIR}/key_mapping.json', columns := {duplicated_lower: 'VARCHAR'}, key_mapping := MAP {'duplicated_lower': NULL});
+----
+cannot map "duplicated_lower" to NULL
+
+# names that differ only in case are the same name, which can not be mapped to two keys
+statement error
+SELECT * FROM read_json('{TEST_DIR}/key_mapping.json', columns := {duplicated_lower: 'VARCHAR'}, key_mapping := MAP {'duplicated_lower': 'duplicated', 'DUPLICATED_LOWER': 'DUPLICATED'});
+----
+maps "DUPLICATED_LOWER" more than once
