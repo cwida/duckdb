@@ -190,20 +190,34 @@ void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const 
 				const auto value_idx = sel.get_index(row_idx);
 				const auto region = address_data[value_idx] + region_offset;
 				const auto source_idx = source_format.sel->get_index(value_idx);
-				// Account for the string bytes this slot stops referencing.
-				if (region[agg_idx] != 0) {
+				const auto slot_valid = region[agg_idx] != 0;
+				if (!source_format.validity.RowIsValid(source_idx)) {
+					if (slot_valid) {
+						// Account for the string bytes this slot stops referencing.
+						const auto previous = Load<string_t>(region + slot_offset);
+						if (!previous.IsInlined()) {
+							const auto previous_size = previous.GetSize();
+							string_garbage_bytes += previous_size;
+							string_live_bytes -= MinValue<idx_t>(string_live_bytes, previous_size);
+						}
+					}
+					region[agg_idx] = 0;
+					continue;
+				}
+				auto value = reinterpret_cast<const string_t *>(source_data)[source_idx];
+				if (slot_valid) {
 					const auto previous = Load<string_t>(region + slot_offset);
+					// A byte-equal refresh keeps the stored string, so unchanged values near a fixpoint cause
+					// no arena growth and no garbage; compaction still migrates these slots like any other.
+					if (previous == value) {
+						continue;
+					}
 					if (!previous.IsInlined()) {
 						const auto previous_size = previous.GetSize();
 						string_garbage_bytes += previous_size;
 						string_live_bytes -= MinValue<idx_t>(string_live_bytes, previous_size);
 					}
 				}
-				if (!source_format.validity.RowIsValid(source_idx)) {
-					region[agg_idx] = 0;
-					continue;
-				}
-				auto value = reinterpret_cast<const string_t *>(source_data)[source_idx];
 				if (!value.IsInlined()) {
 					value = CopyStringToArena(value);
 				}
