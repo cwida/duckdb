@@ -38,6 +38,57 @@ private:
 	DataChunk raw_keys;
 };
 
+//! The finalized aggregate values of every group, stored in the trailing region of the hash table rows and
+//! refreshed by the commit for every touched or new group. Reads gather these values instead of invoking
+//! aggregate callbacks, so frozen-state reads stay plain loads. String values live in an owned arena whose
+//! garbage is compacted at commit, when no readers exist.
+class RecursiveCTEFinalizedValues {
+public:
+	RecursiveCTEFinalizedValues(ClientContext &context, const PhysicalRecursiveCTE &op);
+
+	//! The trailing region bytes the operator's hash tables must reserve for this plan
+	static idx_t RegionWidthFor(const PhysicalRecursiveCTE &op);
+
+	bool Enabled() const {
+		return enabled;
+	}
+	idx_t RegionWidth() const {
+		return region_width;
+	}
+	//! Records the trailing region offset of the persistent hash table's layout
+	void BindLayout(const TupleDataLayout &layout);
+	//! Writes finalized values (aggregate order) at addresses[sel[i]] from values row sel[i]
+	void Scatter(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values);
+	//! Writes candidate rows standing in for finalized values of new groups, mapping each aggregate to its
+	//! first input column; valid under the single-value-identity proof of the candidate-reuse paths
+	void ScatterCandidates(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &payload);
+	//! Reads finalized values (aggregate order) from addresses[sel[i]] into values row i
+	void Gather(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values);
+	//! Reclaims replaced string bytes once they outweigh the live ones; the caller guarantees no readers
+	void MaybeCompact(GroupedAggregateHashTable &target);
+
+private:
+	void ScatterColumns(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values,
+	                    const vector<idx_t> &source_columns);
+	string_t CopyStringToArena(string_t value);
+
+private:
+	bool enabled = false;
+	idx_t region_width = 0;
+	idx_t region_offset = 0;
+	//! Offset of each aggregate's value slot relative to the region start; validity bytes precede the slots
+	vector<idx_t> value_offsets;
+	vector<PhysicalType> value_types;
+	//! The identity mapping, for scattering finalized chunks in aggregate order
+	vector<idx_t> identity_source_columns;
+	//! Per aggregate, the column of its first input in the evaluated payload chunk
+	vector<idx_t> candidate_source_columns;
+	//! Storage for non-inlined finalized strings
+	unique_ptr<ArenaAllocator> string_arena;
+	idx_t string_live_bytes = 0;
+	idx_t string_garbage_bytes = 0;
+};
+
 //! USING KEY recursion. Every key owns one aggregate state in a shared hash table. Within an iteration the state is
 //! read by recurring scans and direct probes, member rows are collected as update candidates, and the commit at the
 //! end of the iteration applies them and assembles the next frontier from the keys whose finalized payload changed.
@@ -73,10 +124,20 @@ public:
 	void CombineOutput(ColumnDataCollection &output);
 	void RegisterLocalPreaggregation(unique_ptr<GroupedAggregateHashTable> local_ht, idx_t candidate_rows,
 	                                 idx_t classification_work_ns, idx_t preaggregation_work_ns);
+	//! Result rows from frozen state addresses: gathered from the finalized values when they are materialized,
+	//! finalized from the aggregate states under the lock otherwise
 	void FinalizeStateRows(RowOperationsState &row_state, Vector &addresses, DataChunk &keys, DataChunk &aggregates,
 	                       DataChunk &result);
+	bool UsesFinalizedValues() const {
+		return finalized.Enabled();
+	}
+	//! Gathers the finalized values at the addresses and assembles result rows; no aggregate callbacks run
+	void ReadStateRows(const Vector &addresses, DataChunk &keys, DataChunk &aggregates, DataChunk &result);
 
 private:
+	//! Finalizes the aggregate states themselves; the commit uses this to produce the values it materializes
+	void FinalizeStateRowsFromStates(RowOperationsState &row_state, Vector &addresses, DataChunk &keys,
+	                                 DataChunk &aggregates, DataChunk &result);
 	void FinalizeAggregateRows(RowOperationsState &row_state, Vector &addresses, DataChunk &aggregates, idx_t count);
 	void AssembleStateRows(DataChunk &keys, DataChunk &aggregates, DataChunk &result) const;
 	template <bool COLLECT_METRICS>
@@ -109,6 +170,7 @@ private:
 private:
 	unique_ptr<GroupedAggregateHashTable> ht;
 	vector<unique_ptr<RecursiveCTEPartialKeyIndex>> partial_key_indexes;
+	RecursiveCTEFinalizedValues finalized;
 	RecursiveCTEKeyedCandidateExtractor extractor;
 	DataChunk payload_rows;
 	Vector new_group_addresses;

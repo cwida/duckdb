@@ -21,7 +21,9 @@ private:
 };
 
 struct RecursiveCTEKeyDeltaState {
-	RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op);
+	//! With materialized finalized values the previous rows carry only group addresses, because the old payload
+	//! values stay readable from the rows themselves until the commit overwrites them
+	RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op, bool address_only_previous);
 
 	void Reset();
 	void PrepareCollections();
@@ -68,10 +70,15 @@ struct RecursiveCTEKeyDeltaState {
 		return Vector(LogicalType::POINTER, reinterpret_cast<data_ptr_t>(new_group_addresses.data() + offset), count);
 	}
 
+	const bool address_only_previous;
 	ColumnDataCollection previous_rows;
 	ColumnDataCollection new_keys;
+	//! Finalized rows buffered by the changed-candidate validation until it either succeeds and publishes them
+	//! or fails and the regular delta finalization takes over
+	ColumnDataCollection pending_finalized;
 	ColumnDataAppendState previous_append_state;
 	ColumnDataAppendState new_key_append_state;
+	ColumnDataAppendState pending_finalized_append_state;
 	DataChunk selected_keys;
 	DataChunk aggregate_rows;
 	DataChunk updated_aggregate_rows;
