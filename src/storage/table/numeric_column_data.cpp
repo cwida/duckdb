@@ -9,6 +9,7 @@
 #include "duckdb/common/vector/shredded_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/filter/dynamic_filter.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -112,8 +113,9 @@ idx_t NumericColumnData::GetMaxEntry() {
 	return GetInner()->GetMaxEntry();
 }
 
-void NumericColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	Pinned(scan_state).InitializePrefetch(prefetch_state, scan_state, rows);
+void NumericColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                           idx_t end_row) {
+	Pinned(scan_state).InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
 }
 
 void NumericColumnData::Pin(ColumnScanState &state) {
@@ -201,30 +203,12 @@ static bool TryCanonicalStats(const BaseStatistics &typed_stats, BaseStatistics 
 	return true;
 }
 
-FilterPropagateResult NumericColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                      optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	checked_segment = nullptr;
-	if (state.segment_checked) {
-		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
-	}
-	if (!state.current) {
-		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
-	}
-	auto &column = Pinned(state);
-	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "NumericColumnData::CheckZonemap");
-	bool is_dynamic = ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME);
-	state.segment_checked = !is_dynamic;
-	auto context = state.context.GetClientContext();
-	if (IsDirectNullCheckFilter(filter) && !state.child_states.empty() && state.child_states[0].current) {
-		// NULL checks are judged on the validity segment, whose statistics do not depend on the representation
-		checked_segment = state.child_states[0].current;
-		auto validity_stats = column.GetSegmentStatistics(*checked_segment);
-		return context ? expr_filter.CheckStatistics(*context, *validity_stats)
-		               : expr_filter.CheckStatistics(*validity_stats);
-	}
-	checked_segment = state.current;
+FilterPropagateResult NumericColumnData::CheckCanonicalStatistics(ColumnData &column,
+                                                                  optional_ptr<ClientContext> context,
+                                                                  SegmentNode<ColumnSegment> &segment,
+                                                                  ExpressionFilter &expr_filter) {
 	// the segment holds statistics of the representation - the filter compares canonical NUMERIC values
-	auto segment_stats = column.GetSegmentStatistics(*checked_segment);
+	auto segment_stats = column.GetSegmentStatistics(segment);
 	auto canonical = BaseStatistics::CreateUnknown(LogicalType::NUMERIC);
 	if (!TryCanonicalStats(*segment_stats, canonical)) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
@@ -248,6 +232,48 @@ FilterPropagateResult NumericColumnData::CheckZonemap(ColumnScanState &state, Ta
 		return prune_result;
 	}
 	return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+}
+
+FilterPropagateResult NumericColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                      optional_idx &checked_end) {
+	if (filter.IsAlwaysTrue() || state.segment_checked || !state.current) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	auto &column = Pinned(state);
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "NumericColumnData::CheckZonemap");
+	bool is_dynamic = ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME);
+	state.segment_checked = !is_dynamic;
+	auto context = Context::TryGetClientContext(state.context.GetServices());
+	if (IsDirectNullCheckFilter(filter.filter) && !state.child_states.empty() && state.child_states[0].current) {
+		// NULL checks are judged on the validity segment, whose statistics do not depend on the representation
+		auto &checked_segment = *state.child_states[0].current;
+		checked_end = checked_segment.GetRowStart() + checked_segment.GetNode().count;
+		auto validity_stats = column.GetSegmentStatistics(checked_segment);
+		return context ? expr_filter.CheckStatistics(*context, *validity_stats)
+		               : expr_filter.CheckStatistics(*validity_stats);
+	}
+	auto &checked_segment = *state.current;
+	// segment rows are relative to the row group
+	checked_end = checked_segment.GetRowStart() + checked_segment.GetNode().count;
+	return CheckCanonicalStatistics(column, context, checked_segment, expr_filter);
+}
+
+FilterPropagateResult NumericColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                        optional_idx &checked_end) {
+	if (filter.IsAlwaysTrue() || IsDirectNullCheckFilter(filter.filter)) {
+		// the filter needs no check in this row group, or the scan judges the null check on the validity child
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	auto &column = Pinned(state);
+	auto &segments = column.GetSegmentTree();
+	if (!segments.GetRootSegment()) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	auto segment = segments.GetSegment(row);
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "NumericColumnData::CheckZonemapAt");
+	checked_end = segment->GetRowStart() + segment->GetNode().count;
+	return CheckCanonicalStatistics(column, Context::TryGetClientContext(state.context.GetServices()), *segment,
+	                                expr_filter);
 }
 
 //----------------------------------------------------------------------------------------------------------------------

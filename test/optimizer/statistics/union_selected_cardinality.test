@@ -1,0 +1,45 @@
+# name: test/optimizer/statistics/union_selected_cardinality.test
+# description: UNION group refinement retains the selected join cardinalities
+# group: [statistics]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE union_a AS SELECT i::INTEGER x, (i%10)::INTEGER k FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE union_b AS SELECT i::INTEGER y, (i%10)::INTEGER k FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE union_c AS SELECT * FROM union_b;
+
+statement ok
+ANALYZE union_a;
+
+statement ok
+ANALYZE union_b;
+
+statement ok
+ANALYZE union_c;
+
+# Standalone LEFT estimates are conservative fallbacks, unlike the selected join estimates.
+query II
+EXPLAIN SELECT x,y FROM (
+    SELECT a.x,b.y FROM union_a a LEFT JOIN union_b b USING(k)
+    UNION ALL
+    SELECT a.x,c.y FROM union_a a LEFT JOIN union_c c USING(k)
+) u GROUP BY x,y;
+----
+physical_plan	<REGEX>:(?s).*HASH_GROUP_BY[^~]*~1[0-9]{2},[0-9]{3} rows.*
+
+query I
+SELECT count(*) FROM (
+    SELECT x,y FROM (
+        SELECT a.x,b.y FROM union_a a LEFT JOIN union_b b USING(k)
+        UNION ALL
+        SELECT a.x,c.y FROM union_a a LEFT JOIN union_c c USING(k)
+    ) u GROUP BY x,y
+) groups;
+----
+100000

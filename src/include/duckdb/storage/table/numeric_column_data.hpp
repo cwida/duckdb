@@ -34,7 +34,8 @@ public:
 public:
 	idx_t GetMaxEntry() override;
 
-	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) override;
+	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                        idx_t end_row) override;
 	void InitializeScan(ColumnScanState &state) override;
 	void InitializeScanWithOffset(ColumnScanState &state, idx_t row_idx) override;
 	idx_t Scan(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
@@ -42,8 +43,10 @@ public:
 	idx_t ScanCount(ColumnScanState &state, Vector &result, idx_t count, idx_t result_offset = 0) override;
 	void Skip(ColumnScanState &state, idx_t count = STANDARD_VECTOR_SIZE) override;
 
-	FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter,
-	                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) override;
+	FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                   optional_idx &checked_end) override;
+	FilterPropagateResult CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+	                                     optional_idx &checked_end) override;
 
 	void InitializeAppend(ColumnAppendState &state) override;
 	void Append(ColumnAppendState &state, const Vector &vector, idx_t count) override;
@@ -95,6 +98,10 @@ private:
 	void AppendTyped(ColumnAppendState &state, const Vector &typed, idx_t count);
 	//! Append canonical values that have no common representation
 	void AppendCanonical(ColumnAppendState &state, const Vector &canonical, idx_t count);
+	//! Checks the filter against the canonical statistics of a segment of the representation and of the updates
+	static FilterPropagateResult CheckCanonicalStatistics(ColumnData &column, optional_ptr<ClientContext> context,
+	                                                      SegmentNode<ColumnSegment> &segment,
+	                                                      ExpressionFilter &expr_filter);
 
 private:
 	mutable mutex inner_lock;

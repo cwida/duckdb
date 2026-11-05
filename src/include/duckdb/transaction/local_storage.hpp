@@ -40,7 +40,7 @@ struct TransactionData;
 class LocalTableStorage : public enable_shared_from_this<LocalTableStorage> {
 public:
 	// Create a new LocalTableStorage
-	explicit LocalTableStorage(ClientContext &context, DataTable &table);
+	explicit LocalTableStorage(Context &services, DataTable &table);
 	//! Create a LocalTableStorage from an ALTER TYPE.
 	LocalTableStorage(ClientContext &context, DataTable &new_data_table, LocalTableStorage &parent,
 	                  const idx_t alter_column_index, const LogicalType &target_type,
@@ -52,7 +52,7 @@ public:
 	                  ExpressionExecutor &default_executor);
 	~LocalTableStorage();
 
-	QueryContext context;
+	Context &services;
 
 	reference<DataTable> table_ref;
 	//! The DuckTableEntry visible to this transaction that references table_ref.
@@ -127,7 +127,7 @@ public:
 	reference_map_t<const DataTable, shared_ptr<LocalTableStorage>> MoveEntries();
 	vector<shared_ptr<LocalTableStorage>> GetEntries() const;
 	optional_ptr<LocalTableStorage> GetStorage(const DataTable &table) const;
-	LocalTableStorage &GetOrCreateStorage(ClientContext &context, DataTable &table);
+	LocalTableStorage &GetOrCreateStorage(Context &services, DataTable &table);
 	idx_t EstimatedSize() const;
 	bool IsEmpty() const;
 	void InsertEntry(DataTable &table, shared_ptr<LocalTableStorage> entry);
@@ -148,7 +148,7 @@ public:
 	};
 
 public:
-	explicit LocalStorage(ClientContext &context, DuckTransaction &transaction);
+	explicit LocalStorage(Context &services, DuckTransaction &transaction);
 
 	static LocalStorage &Get(DuckTransaction &transaction);
 	static LocalStorage &Get(ClientContext &context, AttachedDatabase &db);
@@ -204,24 +204,24 @@ public:
 	idx_t AddedRows(DataTable &table);
 	vector<PartitionStatistics> GetPartitionStats(DataTable &table, TransactionData transaction) const;
 
-	void AddColumn(DataTable &old_dt, DataTable &new_dt, ColumnDefinition &new_column,
+	void AddColumn(ClientContext &context, DataTable &old_dt, DataTable &new_dt, ColumnDefinition &new_column,
 	               ExpressionExecutor &default_executor);
 	void DropColumn(DataTable &old_dt, DataTable &new_dt, const idx_t drop_column_index);
-	void ChangeType(DataTable &old_dt, DataTable &new_dt, idx_t changed_idx, const LogicalType &target_type,
-	                const vector<StorageIndex> &bound_columns, Expression &cast_expr);
+	void ChangeType(ClientContext &context, DataTable &old_dt, DataTable &new_dt, idx_t changed_idx,
+	                const LogicalType &target_type, const vector<StorageIndex> &bound_columns, Expression &cast_expr);
 
 	void MoveStorage(DataTable &old_dt, DataTable &new_dt);
 	void FetchChunk(DataTable &table, const Vector &row_ids, idx_t count, const vector<StorageIndex> &col_ids,
 	                DataChunk &chunk, ColumnFetchState &fetch_state);
 	//! Returns true, if the local storage contains the row id.
 	bool CanFetch(DataTable &table, const row_t row_id);
-	TableIndexList &GetIndexes(ClientContext &context, DataTable &table);
+	TableIndexList &GetIndexes(DataTable &table);
 	optional_ptr<LocalTableStorage> GetStorage(const DataTable &table);
 
 	void VerifyNewConstraint(DataTable &parent, const BoundConstraint &constraint);
 
-	ClientContext &GetClientContext() const {
-		return context;
+	Context &GetServices() const {
+		return services;
 	}
 	DuckTransaction &GetTransaction() const {
 		return transaction;
@@ -233,7 +233,7 @@ public:
 	}
 
 private:
-	ClientContext &context;
+	Context &services;
 	DuckTransaction &transaction;
 	LocalTableManager table_manager;
 	bool synced_flushed_blocks = false;
