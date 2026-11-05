@@ -1,5 +1,5 @@
 # name: test/sql/copy/parquet/parquet_pin_unpin_eviction.test_slow
-# description: Proves ColumnReader::block is genuinely evicted and re-pinned under memory pressure, not just correct by coincidence
+# description: Checks parquet scans stay correct under a memory limit tight enough that ColumnReader::block gets evicted and re-pinned
 # group: [parquet]
 
 require parquet
@@ -12,12 +12,16 @@ CREATE TABLE source AS
 SELECT
     i AS id,
     (i % 20)::VARCHAR AS low_card,       -- forces DICTIONARY encoding (20 distinct values)
-    md5(i::VARCHAR) || md5((i+1)::VARCHAR) AS high_card,  -- 64-byte unique strings: not inlined, forces PLAIN
+    md5(i::VARCHAR) || md5((i+1)::VARCHAR) AS high_card,  -- 64-byte unique strings: PLAIN in V1, DELTA_LENGTH_BYTE_ARRAY in V2
     i::DOUBLE / 3 AS val
 FROM range(800000) t(i);
 
 statement ok
 COPY source TO '{TEST_DIR}/pin_unpin_eviction.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V2');
+
+# V1 file so the PLAIN string read path is exercised too; V2 strings go through DELTA_LENGTH_BYTE_ARRAY
+statement ok
+COPY source TO '{TEST_DIR}/pin_unpin_eviction_v1.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V1');
 
 # ground truth, computed at the default (unconstrained) memory budget
 statement ok
@@ -75,6 +79,17 @@ FROM (
     SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
            min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
     FROM '{TEST_DIR}/pin_unpin_eviction.parquet'
+) AS a, expected AS e;
+----
+true
+
+query I
+SELECT a.cnt = e.cnt AND a.id_sum = e.id_sum AND a.str_len_sum = e.str_len_sum
+   AND a.str_min = e.str_min AND a.str_max = e.str_max AND abs(a.val_sum - e.val_sum) < 0.01
+FROM (
+    SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
+           min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
+    FROM '{TEST_DIR}/pin_unpin_eviction_v1.parquet'
 ) AS a, expected AS e;
 ----
 true

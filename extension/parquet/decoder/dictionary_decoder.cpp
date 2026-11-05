@@ -83,9 +83,7 @@ void DictionaryDecoder::InitializePage() {
 }
 
 void DictionaryDecoder::Rebase() {
-	if (dict_decoder) {
-		dict_decoder->Rebase(reader.block->GetPtr() + block_offset);
-	}
+	ColumnReader::RebaseDecoder(dict_decoder, *reader.block, block_offset);
 }
 
 void DictionaryDecoder::ConvertDictToSelVec(uint32_t *offsets, const SelectionVector &rows, idx_t count) {

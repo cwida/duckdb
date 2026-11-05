@@ -36,16 +36,14 @@ static idx_t GetValueWidth(const ParquetColumnSchema &schema) {
 
 void ByteStreamSplitDecoder::InitializePage() {
 	auto &block = reader.block;
-	region_offset = block->GetOffset();
+	block_offset = block->GetOffset();
 	idx_t bss_len;
 	auto loc = block->ConsumeRemaining(bss_len);
 	bss_decoder = make_uniq<BssDecoder>(loc, NumericCast<uint32_t>(bss_len), GetValueWidth(reader.Schema()));
 }
 
 void ByteStreamSplitDecoder::Rebase() {
-	if (bss_decoder) {
-		bss_decoder->Rebase(reader.block->GetPtr() + region_offset);
-	}
+	ColumnReader::RebaseDecoder(bss_decoder, *reader.block, block_offset);
 }
 
 void ByteStreamSplitDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset) {
@@ -62,7 +60,6 @@ void ByteStreamSplitDecoder::Read(uint8_t *defines, idx_t read_count, Vector &re
 	}
 
 	ResizeableBuffer::PinGuard pin_guard(decoded_data_buffer, buffer_manager);
-	decoded_data_buffer.Reset();
 	decoded_data_buffer.Resize(buffer_manager, value_width * valid_count);
 	bss_decoder->GetBatch(decoded_data_buffer.GetCurrentLoc(), NumericCast<uint32_t>(valid_count));
 	reader.Plain(decoded_data_buffer, defines, read_count, result_offset, result);

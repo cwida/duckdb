@@ -388,9 +388,18 @@ protected:
 
 private:
 	void AllocateBlock(idx_t payload_size);
-	//! Pins block and rebases decoders.
 	void PinBlock();
 	void RebaseDecoders();
+
+public:
+	template <class DECODER>
+	static void RebaseDecoder(unique_ptr<DECODER> &decoder, ResizeableBuffer &block, idx_t offset) {
+		if (decoder) {
+			decoder->Rebase(block.GetPtrAt(offset));
+		}
+	}
+
+private:
 
 	class BlockPinGuard {
 	public:

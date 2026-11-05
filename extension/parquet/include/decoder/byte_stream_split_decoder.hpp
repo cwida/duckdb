@@ -34,9 +34,7 @@ private:
 	ColumnReader &reader;
 	ResizeableBuffer &decoded_data_buffer;
 	unique_ptr<BssDecoder> bss_decoder;
-	//! Fixed offset (from block's allocation base) where bss_decoder's region begins, captured once at
-	//! InitializePage().
-	idx_t region_offset = 0;
+	idx_t block_offset = 0;
 };
 
 } // namespace duckdb

@@ -24,11 +24,6 @@ public:
 	ByteBuffer(const data_ptr_t ptr, const idx_t len) : ptr(ptr), len(len) {};
 
 public:
-	data_ptr_t operator[](const idx_t index) const {
-		Available(index + 1);
-		return ptr + offset + index;
-	}
-
 	data_ptr_t GetCurrentLoc() const {
 		return ptr + offset;
 	}
@@ -49,7 +44,6 @@ public:
 		return len - offset;
 	}
 
-	// Consumes the remaining space and returns the current location
 	data_ptr_t ConsumeRemaining(idx_t &length_out) {
 		length_out = GetRemaining();
 		auto loc = GetCurrentLoc();
@@ -148,13 +142,7 @@ public:
 	}
 
 	void Resize(Allocator &allocator, const idx_t new_size) {
-		len = new_size;
-		offset = 0;
-		if (new_size == 0) {
-			return;
-		}
-		if (new_size > alloc_len) {
-			alloc_len = NextPowerOfTwo(new_size);
+		if (PrepareResize(new_size)) {
 			allocated_data.Reset(); // Have to reset before allocating new buffer (otherwise we use ~2x the memory)
 			allocated_data = allocator.Allocate(alloc_len);
 			ptr = allocated_data.get();
@@ -162,27 +150,15 @@ public:
 	}
 
 	void Resize(BufferManager &buffer_manager, const idx_t new_size) {
-		len = new_size;
-		offset = 0;
-		if (new_size == 0) {
-			return;
-		}
-		if (new_size > alloc_len) {
-			alloc_len = NextPowerOfTwo(new_size);
+		if (PrepareResize(new_size)) {
 			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);
 			block_handle = handle.GetBlockHandle();
 			ptr = handle.GetDataMutable();
-		}
-	}
-
-	void Reset() {
-		if (block_handle) {
+		} else if (new_size > 0 && block_handle && !handle.IsValid()) {
+			// A PinGuard elsewhere may have unpinned the reused allocation; re-pin or ptr stays null.
+			handle = buffer_manager.Pin(block_handle);
 			ptr = handle.GetDataMutable();
-		} else {
-			ptr = allocated_data.get();
 		}
-		len = alloc_len;
-		offset = 0;
 	}
 
 	void Pin(BufferManager &buffer_manager) {
@@ -220,6 +196,17 @@ public:
 	}
 
 private:
+	//! Sets the new length and reports whether a larger allocation is needed.
+	bool PrepareResize(const idx_t new_size) {
+		len = new_size;
+		offset = 0;
+		if (new_size <= alloc_len || new_size == 0) {
+			return false;
+		}
+		alloc_len = NextPowerOfTwo(new_size);
+		return true;
+	}
+
 	AllocatedData allocated_data;
 	shared_ptr<BlockHandle> block_handle;
 	BufferHandle handle;

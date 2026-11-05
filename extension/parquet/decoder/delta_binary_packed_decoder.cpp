@@ -26,9 +26,7 @@ void DeltaBinaryPackedDecoder::InitializePage() {
 }
 
 void DeltaBinaryPackedDecoder::Rebase() {
-	if (dbp_decoder) {
-		dbp_decoder->Rebase(reader.block->GetPtr() + block_offset);
-	}
+	ColumnReader::RebaseDecoder(dbp_decoder, *reader.block, block_offset);
 }
 
 void DeltaBinaryPackedDecoder::Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset) {
@@ -36,7 +34,6 @@ void DeltaBinaryPackedDecoder::Read(uint8_t *defines, idx_t read_count, Vector &
 
 	auto &buffer_manager = reader.reader.buffer_manager;
 	ResizeableBuffer::PinGuard pin_guard(decoded_data_buffer, buffer_manager);
-	decoded_data_buffer.Reset();
 	switch (reader.Schema().parquet_type) {
 	case duckdb_parquet::Type::INT32:
 		decoded_data_buffer.Resize(buffer_manager, sizeof(int32_t) * (valid_count));

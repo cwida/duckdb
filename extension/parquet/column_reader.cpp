@@ -1018,12 +1018,8 @@ void ColumnReader::PinBlock() {
 
 void ColumnReader::RebaseDecoders() {
 	// Block's offset has moved on so we need to use the decoders own stored offset to calculate current location.
-	if (repeated_decoder) {
-		repeated_decoder->Rebase(block->GetPtr() + repeated_decoder_offset);
-	}
-	if (defined_decoder) {
-		defined_decoder->Rebase(block->GetPtr() + defined_decoder_offset);
-	}
+	RebaseDecoder(repeated_decoder, *block, repeated_decoder_offset);
+	RebaseDecoder(defined_decoder, *block, defined_decoder_offset);
 	switch (encoding) {
 	case ColumnEncoding::DICTIONARY:
 		dictionary_decoder.Rebase();

@@ -29,7 +29,6 @@ void DeltaByteArrayDecoder::ReadDbpData(BufferManager &buffer_manager, Resizeabl
                                         ResizeableBuffer &result_buffer, idx_t &value_count) {
 	auto decoder = make_uniq<DbpDecoder>(buffer.GetCurrentLoc(), buffer.GetRemaining());
 	value_count = decoder->TotalValues();
-	result_buffer.Reset();
 	// value_count is read from the file, so the buffer size can overflow on a corrupt input
 	idx_t result_size;
 	if (!TryMultiplyOperator::Operation<idx_t, idx_t, idx_t>(value_count, sizeof(uint32_t), result_size)) {
