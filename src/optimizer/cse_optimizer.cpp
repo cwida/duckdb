@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/cse_optimizer.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
 
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -32,14 +33,16 @@ struct CSEReplacementState {
 	vector<unique_ptr<Expression>> expressions;
 	//! Cached expressions that are kept around so the expression_map always contains valid expressions
 	vector<unique_ptr<Expression>> cached_expressions;
-	//! Short circuit argument tracking
-	bool short_circuited = false;
+	//! True while visiting a child the executor may skip: after the first CASE condition, or a later operand
+	bool inside_lazy_child = false;
 	//! True while visiting the child of a TRY or HAS_ERROR, whose errors must stay inside the capture
 	bool inside_try = false;
 	//! Whether the root of each aggregate filter stays intact (ungrouped aggregates evaluate their filters directly)
 	bool keep_aggregate_filters = false;
 	//! True when visiting the root of a kept filter; its sub-expressions are still extracted
 	bool at_kept_filter_root = false;
+	//! True when visiting an expression the executor evaluates through Select
+	bool at_select_position = false;
 	//! The kept filters counted so far; identical filters are evaluated once, so they are counted once
 	expression_set_t counted_filters;
 };
@@ -54,6 +57,26 @@ static bool IsKeptFilterRoot(const CSEReplacementState &state, const Expression 
 	}
 	// the planner moves volatile filters into the projection, one per aggregate: their sub-expressions are shared
 	return !child.IsVolatile();
+}
+
+//! Whether the executor evaluates child through Select: an operand of a conjunction at a Select position, or a filter
+//! kept with its aggregate (CASE conditions are marked by the CASE walk)
+static bool IsSelectPosition(const CSEReplacementState &state, const Expression &parent, const Expression &child,
+                             bool parent_at_select_position) {
+	switch (parent.GetExpressionClass()) {
+	case ExpressionClass::BOUND_CONJUNCTION:
+		return parent_at_select_position;
+	case ExpressionClass::BOUND_AGGREGATE:
+		return IsKeptFilterRoot(state, parent, child);
+	default:
+		return false;
+	}
+}
+
+//! Whether the executor can skip an operand after the first for rows the earlier ones decide (conjunctions: in Select)
+static bool EvaluatesLaterChildrenLazily(const Expression &expr) {
+	return expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION ||
+	       expr.GetExpressionType() == ExpressionType::OPERATOR_COALESCE;
 }
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
@@ -71,6 +94,8 @@ void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
 void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplacementState &state) {
 	const bool kept_filter_root = state.at_kept_filter_root;
 	state.at_kept_filter_root = false;
+	const bool select_position = state.at_select_position;
+	state.at_select_position = false;
 	// we only consider expressions with children for CSE elimination
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF:
@@ -90,9 +115,11 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		// we can't move aggregates to a projection, so we only consider the children of the aggregate
 		auto node = state.expression_count.find(expr);
 		if (node == state.expression_count.end()) {
-			// first time we encounter this expression, insert this node with [count = 1]
-			// but only if it is not an interior argument of a short circuit sensitive expression.
-			if (!state.short_circuited) {
+			// hoisting an expression first seen in a lazy child would evaluate it for rows that never reach that child;
+			// a hoisted conjunction runs through Execute, which evaluates the operands Select would skip
+			const bool short_circuits =
+			    select_position && expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION;
+			if (!state.inside_lazy_child && !short_circuits) {
 				state.expression_count[expr] = CSENode();
 			}
 		} else {
@@ -101,20 +128,31 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		}
 	}
 
-	// If we have a function that uses short circuiting, then we can only extract CSEs from the leftmost
-	// side of the argument tree (child_no == 0)
-	switch (expr.GetExpressionClass()) {
-	case ExpressionClass::BOUND_CONJUNCTION:
-	case ExpressionClass::BOUND_CASE: {
-		// Save the short circuit reference
-		const auto save_short_circuit = state.short_circuited;
-		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
-			CountExpressions(child, state);
-			state.short_circuited = true;
-		});
-		state.short_circuited = save_short_circuit;
-		break;
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CASE) {
+		// every condition runs through Select, and every child after the first condition is lazy
+		const auto save_inside_lazy_child = state.inside_lazy_child;
+		auto &case_expr = expr.Cast<BoundCaseExpression>();
+		for (auto &case_check : case_expr.CaseChecksMutable()) {
+			state.at_select_position = true;
+			CountExpressions(*case_check.when_expr, state);
+			state.inside_lazy_child = true;
+			CountExpressions(*case_check.then_expr, state);
+		}
+		CountExpressions(*case_expr.ElseMutable(), state);
+		state.inside_lazy_child = save_inside_lazy_child;
+		return;
 	}
+	if (EvaluatesLaterChildrenLazily(expr)) {
+		const auto save_inside_lazy_child = state.inside_lazy_child;
+		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
+			state.at_select_position = IsSelectPosition(state, expr, child, select_position);
+			CountExpressions(child, state);
+			state.inside_lazy_child = true;
+		});
+		state.inside_lazy_child = save_inside_lazy_child;
+		return;
+	}
+	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_OPERATOR: {
 		const auto save_inside_try = state.inside_try;
 		const auto expression_type = expr.GetExpressionType();
@@ -129,6 +167,7 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		// recursively count the children
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
 			state.at_kept_filter_root = IsKeptFilterRoot(state, expr, child);
+			state.at_select_position = IsSelectPosition(state, expr, child, select_position);
 			CountExpressions(child, state);
 		});
 		break;
