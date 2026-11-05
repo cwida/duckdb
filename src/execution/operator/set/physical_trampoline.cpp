@@ -176,8 +176,9 @@ struct TrampolineBranchSourceRoute {
 class TrampolineState : public GlobalSinkState {
 public:
 	TrampolineState(ClientContext &context, const PhysicalTrampoline &op)
-	    : op(op), context(context), metrics(context, op, op.metrics_invocations.fetch_add(1) + 1),
-	      scheduler(op.shared_executor_pool, Settings::Get<EnableCachingOperatorsSetting>(context)) {
+	    : op(op), context(context), allow_executor_reuse(Settings::Get<EnableCachingOperatorsSetting>(context)),
+	      metrics(context, op, op.metrics_invocations.fetch_add(1) + 1),
+	      scheduler(op.shared_executor_pool, allow_executor_reuse) {
 		if (metrics.Enabled()) {
 			epoch_metrics = make_uniq<RecursiveCTEEpochMetrics>();
 		}
@@ -198,6 +199,10 @@ public:
 
 	const PhysicalTrampoline &op;
 	ClientContext &context;
+	//! Captured once per invocation, like RecursiveCTEState does: the setting is mutable from
+	//! other connections, and the plan choice derived from it must not change across the
+	//! BLOCKED suspensions of a wave
+	const bool allow_executor_reuse;
 	RecursiveCTEMetrics metrics;
 	unique_ptr<RecursiveCTEEpochMetrics> epoch_metrics;
 	RecursiveCTESchedulerState scheduler;
@@ -744,10 +749,10 @@ RecursiveEpochResult PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext
 	auto &progress = gstate.wave_progress;
 
 	auto &branch = branch_pipelines[branch_idx - 1];
-	const auto allow_reuse = Settings::Get<EnableCachingOperatorsSetting>(context.client);
 	// once the invariant builds of this branch are materialized, later waves skip them;
-	// the materialized flag only changes in the epilogue, so the plan choice is stable
-	// across BLOCKED suspensions of this wave
+	// the reuse policy is invocation-constant and the materialized flag only changes in the
+	// epilogue, so the plan choice is stable across BLOCKED suspensions of this wave
+	const auto allow_reuse = gstate.allow_executor_reuse;
 	const auto can_cache_invariant = allow_reuse && !branch.invariant_meta_pipelines.empty();
 	const bool materialized = gstate.invariant_materialized[branch_idx - 1];
 	const auto use_active_plan = can_cache_invariant && materialized && branch.active_plan;
