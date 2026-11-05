@@ -1,0 +1,122 @@
+# name: test/sql/function/table/multi_table_arguments.test
+# description: Table functions taking more than one TABLE argument
+# group: [table]
+
+require notmingw
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+# two inputs with distinct schemas are both reachable
+query II
+SELECT arg0_i, arg1_s
+FROM multi_table_cross_product((SELECT i FROM range(2) t(i)), (SELECT s FROM (VALUES ('a'), ('b')) t(s)))
+ORDER BY arg0_i, arg1_s
+----
+0	a
+0	b
+1	a
+1	b
+
+# three inputs with identical schemas stay distinguishable by argument position
+query III
+SELECT arg0_i, arg1_i, arg2_i
+FROM multi_table_cross_product3((SELECT 10 AS i), (SELECT 20 AS i), (SELECT 30 AS i))
+----
+10	20	30
+
+# a scalar argument between two TABLE arguments keeps the positional indexes
+query II
+SELECT arg0_i, arg2_i
+FROM multi_table_mixed((SELECT 1 AS i), 'label', (SELECT 2 AS i))
+----
+1	2
+
+# an empty input propagates through the operator the function built
+query I
+SELECT count(*) FROM multi_table_cross_product((SELECT i FROM range(0) t(i)), (SELECT 42 AS i))
+----
+0
+
+# more than one vector per input
+query I
+SELECT count(*) FROM multi_table_cross_product((SELECT i FROM range(5000) t(i)), (SELECT i FROM range(3) t(i)))
+----
+15000
+
+# nested types survive the handover
+query II
+SELECT arg0_items, arg1_nested.x
+FROM multi_table_cross_product((SELECT [1, NULL]::INTEGER[] AS items), (SELECT {'x': 42} AS nested))
+----
+[1, NULL]	42
+
+# both sides correlated against the same outer column
+query III
+SELECT outer_rows.i, echoed.arg0_v, echoed.arg1_v
+FROM range(2) outer_rows(i), LATERAL multi_table_cross_product(
+    (SELECT outer_rows.i AS v), (SELECT outer_rows.i AS v)) echoed
+ORDER BY outer_rows.i
+----
+0	0	0
+1	1	1
+
+# each side correlated against a different outer column
+query III
+SELECT outer_rows.i, echoed.arg0_v, echoed.arg1_v
+FROM (VALUES (0, 100), (1, 101)) outer_rows(i, j), LATERAL multi_table_cross_product(
+    (SELECT outer_rows.i AS v), (SELECT outer_rows.j AS v)) echoed
+ORDER BY outer_rows.i
+----
+0	0	100
+1	1	101
+
+# only one side correlated
+query III
+SELECT outer_rows.i, echoed.arg0_v, echoed.arg1_v
+FROM range(2) outer_rows(i), LATERAL multi_table_cross_product(
+    (SELECT outer_rows.i AS v), (SELECT 42 AS v)) echoed
+ORDER BY outer_rows.i
+----
+0	0	42
+1	1	42
+
+# a correlated input that produces no rows
+query I
+SELECT count(*)
+FROM range(2) outer_rows(i), LATERAL multi_table_cross_product(
+    (SELECT outer_rows.i AS v WHERE false), (SELECT outer_rows.i + 10 AS v)) echoed
+----
+0
+
+# the plan is serializable
+statement ok
+SET debug_verify_serializer=true
+
+statement ok
+SELECT arg0_i, arg1_i FROM multi_table_cross_product((SELECT 1 AS i), (SELECT 2 AS i))
+
+statement ok
+RESET debug_verify_serializer
+
+# every TABLE argument needs a subquery
+statement error
+SELECT * FROM multi_table_cross_product((SELECT 1 AS a), 2)
+----
+<REGEX>:.*No function matches.*
+
+# an in-out function cannot consume more than one TABLE argument
+statement error
+SELECT * FROM multi_table_in_out((SELECT 1 AS a), (SELECT 2 AS b))
+----
+<REGEX>:Binder Error:.*bind_operator.*
+
+# a bind_operator that leaves a plan behind is rejected
+statement error
+SELECT * FROM multi_table_partial((SELECT 1 AS a), (SELECT 2 AS b))
+----
+<REGEX>:Binder Error:.*did not consume TABLE argument 1.*

@@ -64,6 +64,7 @@ class ExternalDependency;
 class FunctionSignature;
 class TableFunction;
 class BoundTableFunction;
+struct TableFunctionInputRelation;
 class TableStorageInfo;
 class BoundConstraint;
 class AtClause;
@@ -487,6 +488,11 @@ private:
 	idx_t depth;
 
 private:
+	struct BoundTableFunctionArgument {
+		idx_t function_argument_index;
+		BoundStatement statement;
+	};
+
 	//! Determine the depth of the binder
 	idx_t GetBinderDepth() const;
 	//! Increase the depth of the binder
@@ -644,14 +650,16 @@ private:
 	                                 vector<unique_ptr<ParsedExpression>> &expressions,
 	                                 vector<unique_ptr<Expression>> &positional_arguments,
 	                                 vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
-	                                 BoundStatement &subquery, bool &table_in_out, ErrorData &error);
+	                                 BoundStatement &subquery, vector<BoundTableFunctionArgument> &table_arguments,
+	                                 bool &table_in_out, ErrorData &error);
 	void BindTableInTableOutFunction(vector<unique_ptr<ParsedExpression>> &expressions, BoundStatement &subquery);
 	BoundStatement BindTableFunction(TableFunction &function, vector<Value> parameters);
 	BoundStatement BindTableFunctionInternal(BoundTableFunction &table_function, const TableFunctionRef &ref,
 	                                         vector<Value> parameters, named_argument_map_t named_parameters,
 	                                         vector<LogicalType> input_table_types,
 	                                         vector<Identifier> input_table_names,
-	                                         optional_ptr<unique_ptr<LogicalOperator>> input_plan);
+	                                         optional_ptr<unique_ptr<LogicalOperator>> input_plan,
+	                                         optional_ptr<vector<TableFunctionInputRelation>> input_relations);
 
 	unique_ptr<LogicalOperator> CreatePlan(BoundJoinRef &ref);
 
