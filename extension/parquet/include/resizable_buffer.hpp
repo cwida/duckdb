@@ -28,10 +28,6 @@ public:
 		return ptr + offset;
 	}
 
-	data_ptr_t GetPtr() const {
-		return ptr;
-	}
-
 	idx_t GetOffset() const {
 		return offset;
 	}
@@ -155,8 +151,10 @@ public:
 			block_handle = handle.GetBlockHandle();
 			ptr = handle.GetDataMutable();
 		} else if (new_size > 0 && block_handle && !handle.IsValid()) {
-			// A PinGuard elsewhere may have unpinned the reused allocation; re-pin or ptr stays null.
-			handle = buffer_manager.Pin(block_handle);
+			// Reusing after an unpin: every caller overwrites the contents, so allocate fresh
+			// rather than re-pin, which could reload a spilled block only to discard it.
+			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);
+			block_handle = handle.GetBlockHandle();
 			ptr = handle.GetDataMutable();
 		}
 	}

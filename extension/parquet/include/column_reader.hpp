@@ -388,18 +388,16 @@ protected:
 
 private:
 	void AllocateBlock(idx_t payload_size);
+	//! Also rebases decoders, since pinning can move block.
 	void PinBlock();
 	void RebaseDecoders();
-
-public:
+	//! Callers are the decoder friend classes, which share this one rebase step.
 	template <class DECODER>
 	static void RebaseDecoder(unique_ptr<DECODER> &decoder, ResizeableBuffer &block, idx_t offset) {
 		if (decoder) {
 			decoder->Rebase(block.GetPtrAt(offset));
 		}
 	}
-
-private:
 
 	class BlockPinGuard {
 	public:

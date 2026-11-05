@@ -19,7 +19,6 @@ FROM range(800000) t(i);
 statement ok
 COPY source TO '{TEST_DIR}/pin_unpin_eviction.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V2');
 
-# V1 file so the PLAIN string read path is exercised too; V2 strings go through DELTA_LENGTH_BYTE_ARRAY
 statement ok
 COPY source TO '{TEST_DIR}/pin_unpin_eviction_v1.parquet' (FORMAT PARQUET, PARQUET_VERSION 'V1');
 
@@ -72,16 +71,7 @@ SET threads = 1;
 
 # 50MB: ~2x the ~25MB floor this scan needs with working eviction, padded for cross-machine noise.
 # duckdb_memory() can't prove eviction after the fact -- the scan state is torn down by the time the query returns
-query I
-SELECT a.cnt = e.cnt AND a.id_sum = e.id_sum AND a.str_len_sum = e.str_len_sum
-   AND a.str_min = e.str_min AND a.str_max = e.str_max AND abs(a.val_sum - e.val_sum) < 0.01
-FROM (
-    SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
-           min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
-    FROM '{TEST_DIR}/pin_unpin_eviction.parquet'
-) AS a, expected AS e;
-----
-true
+foreach file pin_unpin_eviction pin_unpin_eviction_v1
 
 query I
 SELECT a.cnt = e.cnt AND a.id_sum = e.id_sum AND a.str_len_sum = e.str_len_sum
@@ -89,10 +79,12 @@ SELECT a.cnt = e.cnt AND a.id_sum = e.id_sum AND a.str_len_sum = e.str_len_sum
 FROM (
     SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
            min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
-    FROM '{TEST_DIR}/pin_unpin_eviction_v1.parquet'
+    FROM '{TEST_DIR}/${file}.parquet'
 ) AS a, expected AS e;
 ----
 true
+
+endloop
 
 statement ok
 SET memory_limit = '-1';
