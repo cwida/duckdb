@@ -1,4 +1,5 @@
 #include "duckdb/storage/table/column_data.hpp"
+#include "duckdb/storage/table/list_column_data.hpp"
 #include "duckdb/main/attached_database.hpp"
 
 #include "duckdb/common/exception/transaction_exception.hpp"
@@ -1079,7 +1080,9 @@ void PersistentColumnData::Serialize(Serializer &serializer) const {
 	}
 
 	// Serialize the extra data
-	serializer.WritePropertyWithDefault(99, "extra_data", extra_data);
+	if (!extra_data || extra_data->IsSupported(serializer)) {
+		serializer.WritePropertyWithDefault(99, "extra_data", extra_data);
+	}
 
 	// TODO: Dont special-case this
 	if (logical_type.id() == LogicalTypeId::VARIANT) {
@@ -1102,11 +1105,6 @@ void PersistentColumnData::Serialize(Serializer &serializer) const {
 		serializer.WritePropertyWithDefault(100, "data_pointers", pointers);
 		serializer.WriteProperty(101, "validity", child_columns[0]);
 		serializer.WriteProperty(102, "child_column", child_columns[1]);
-		if (logical_type.InternalType() == PhysicalType::LIST && serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
-			serializer.WritePropertyWithDefault(103, "min_list_length", list_length_data.MinLength());
-			serializer.WritePropertyWithDefault(104, "max_list_length", list_length_data.MaxLength());
-			serializer.WritePropertyWithDefault(105, "total_list_length", list_length_data.TotalLength());
-		}
 	} break;
 	case PhysicalType::STRUCT: {
 		serializer.WritePropertyWithDefault(100, "data_pointers", pointers);
@@ -1162,6 +1160,14 @@ static PersistentColumnData GetPersistentColumnDataType(Deserializer &deserializ
 		result.extra_data = std::move(extra_data);
 		return result;
 	}
+	case ExtraPersistentColumnDataType::LIST: {
+		if (column_type.InternalType() != PhysicalType::LIST) {
+			throw DataCorruptionException("LIST column data found for a column of type %s", column_type);
+		}
+		PersistentColumnData result(column_type);
+		result.extra_data = std::move(extra_data);
+		return result;
+	}
 	default:
 		throw InternalException("");
 	}
@@ -1204,7 +1210,6 @@ PersistentColumnData PersistentColumnData::Deserialize(Deserializer &deserialize
 			deserializer.ReadPropertyWithDefault(100, "data_pointers", result.pointers);
 			result.DeserializeField(deserializer, 101, "validity", LogicalTypeId::VALIDITY);
 			result.DeserializeField(deserializer, 102, "child_column", ListType::GetChildType(type));
-			result.DeserializeListLengthData(deserializer);
 		} break;
 		case PhysicalType::STRUCT: {
 			deserializer.ReadPropertyWithDefault(100, "data_pointers", result.pointers);
@@ -1240,7 +1245,6 @@ PersistentColumnData PersistentColumnData::Deserialize(Deserializer &deserialize
 		deserializer.ReadPropertyWithDefault(100, "data_pointers", result.pointers);
 		result.DeserializeField(deserializer, 101, "validity", LogicalTypeId::VALIDITY);
 		result.DeserializeField(deserializer, 102, "child_column", ListType::GetChildType(type));
-		result.DeserializeListLengthData(deserializer);
 	} break;
 	case PhysicalType::STRUCT: {
 		deserializer.ReadPropertyWithDefault(100, "data_pointers", result.pointers);
@@ -1258,18 +1262,6 @@ PersistentColumnData PersistentColumnData::Deserialize(Deserializer &deserialize
 	} break;
 	}
 	return result;
-}
-
-void PersistentColumnData::DeserializeListLengthData(Deserializer &deserializer) {
-	auto min_length = deserializer.ReadPropertyWithDefault<optional_idx>(103, "min_list_length");
-	auto max_length = deserializer.ReadPropertyWithDefault<optional_idx>(104, "max_list_length");
-	auto total_length = deserializer.ReadPropertyWithDefault<optional_idx>(105, "total_list_length");
-	list_length_data.has_min_list_length = min_length.IsValid();
-	list_length_data.min_list_length = min_length.IsValid() ? min_length.GetIndex() : 0;
-	list_length_data.has_max_list_length = max_length.IsValid();
-	list_length_data.max_list_length = max_length.IsValid() ? max_length.GetIndex() : 0;
-	list_length_data.has_total_list_length = total_length.IsValid();
-	list_length_data.total_list_length = total_length.IsValid() ? total_length.GetIndex() : 0;
 }
 
 bool PersistentColumnData::HasUpdates() const {
@@ -1372,6 +1364,9 @@ void ExtraPersistentColumnData::Serialize(Serializer &serializer) const {
 		const auto &geometry_data = Cast<GeometryPersistentColumnData>();
 		serializer.WritePropertyWithDefault(101, "storage_type", geometry_data.storage_type, GeometryStorageType::WKB);
 	} break;
+	case ExtraPersistentColumnDataType::LIST:
+		Cast<ListPersistentColumnData>().SerializeFields(serializer);
+		break;
 	default:
 		throw InternalException("Unknown PersistentColumnData type");
 	}
@@ -1390,6 +1385,8 @@ unique_ptr<ExtraPersistentColumnData> ExtraPersistentColumnData::Deserialize(Des
 		    101, "storage_type", GeometryStorageType::WKB);
 		return make_uniq<GeometryPersistentColumnData>(storage_type);
 	}
+	case ExtraPersistentColumnDataType::LIST:
+		return ListPersistentColumnData::Deserialize(deserializer);
 	default:
 		throw InternalException("Unknown PersistentColumnData type");
 	}

@@ -3,6 +3,8 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/table/list_column_data.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/storage_info.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -468,7 +470,7 @@ public:
 
 	PersistentColumnData ToPersistentData() override {
 		auto data = ColumnCheckpointState::ToPersistentData();
-		data.list_length_data = length_data;
+		data.extra_data = make_uniq<ListPersistentColumnData>(length_data);
 		data.child_columns.push_back(validity_state->ToPersistentData());
 		data.child_columns.push_back(child_state->ToPersistentData());
 		return data;
@@ -517,11 +519,36 @@ optional_ptr<const BaseStatistics> ListColumnData::GetColumnStatistics() const {
 	return GetStatisticsRef();
 }
 
+bool ListPersistentColumnData::IsSupported(const Serializer &serializer) const {
+	return serializer.ShouldSerialize(StorageVersion::V2_1_0);
+}
+
+void ListPersistentColumnData::SerializeFields(Serializer &serializer) const {
+	serializer.WritePropertyWithDefault(101, "min_list_length", length_data.MinLength());
+	serializer.WritePropertyWithDefault(102, "max_list_length", length_data.MaxLength());
+	serializer.WritePropertyWithDefault(103, "total_list_length", length_data.TotalLength());
+}
+
+unique_ptr<ExtraPersistentColumnData> ListPersistentColumnData::Deserialize(Deserializer &deserializer) {
+	auto min_length = deserializer.ReadPropertyWithDefault<optional_idx>(101, "min_list_length");
+	auto max_length = deserializer.ReadPropertyWithDefault<optional_idx>(102, "max_list_length");
+	auto total_length = deserializer.ReadPropertyWithDefault<optional_idx>(103, "total_list_length");
+	auto result = make_uniq<ListPersistentColumnData>();
+	auto &data = result->length_data;
+	data.has_min_list_length = min_length.IsValid();
+	data.min_list_length = min_length.IsValid() ? min_length.GetIndex() : 0;
+	data.has_max_list_length = max_length.IsValid();
+	data.max_list_length = max_length.IsValid() ? max_length.GetIndex() : 0;
+	data.has_total_list_length = total_length.IsValid();
+	data.total_list_length = total_length.IsValid() ? total_length.GetIndex() : 0;
+	return std::move(result);
+}
+
 PersistentColumnData ListColumnData::Serialize() {
 	auto persistent_data = ColumnData::Serialize();
 	auto column_stats = GetColumnStatistics();
 	if (column_stats) {
-		persistent_data.list_length_data = ListStats::GetLengthData(*column_stats);
+		persistent_data.extra_data = make_uniq<ListPersistentColumnData>(ListStats::GetLengthData(*column_stats));
 	}
 	persistent_data.child_columns.push_back(validity->Serialize());
 	persistent_data.child_columns.push_back(child_column->Serialize());
@@ -530,7 +557,11 @@ PersistentColumnData ListColumnData::Serialize() {
 
 void ListColumnData::InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) {
 	ColumnData::InitializeColumn(column_data, target_stats);
-	ListStats::SetLengthData(target_stats, column_data.list_length_data);
+	if (column_data.extra_data && column_data.extra_data->GetType() == ExtraPersistentColumnDataType::LIST) {
+		ListStats::SetLengthData(target_stats, column_data.extra_data->Cast<ListPersistentColumnData>().length_data);
+	} else {
+		ListStats::SetLengthBounds(target_stats, optional_idx(), optional_idx());
+	}
 	validity->InitializeColumn(column_data.child_columns[0], target_stats);
 	auto &child_stats = ListStats::GetChildStats(target_stats);
 	child_column->InitializeColumn(column_data.child_columns[1], child_stats);
