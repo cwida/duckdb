@@ -98,6 +98,11 @@ public:
 	static inline bool AddRowWithoutValue(T &result, const idx_t buffer_pos) {
 		return false;
 	}
+	//! Whether a value of this result may skip its UTF-8 check, so the block scan tracks ASCII blocks
+	template <class T>
+	static inline bool TracksAscii(const T &result) {
+		return false;
+	}
 
 	//! Set by the block scan while it adds a value whose bytes all lie in blocks without high bits, so the value
 	//! needs no UTF-8 validation
@@ -361,15 +366,17 @@ protected:
 		idx_t pos = iterator.pos.buffer_pos;
 		idx_t last = pos;
 		bool quoted = false;
-		// whether every block that holds a byte of the current value is ASCII, a value that began before the block
-		// scan is validated as every other value of the byte loop
-		bool value_ascii = IsSeparatorState(states.states[1]);
+		// whether every block that holds a byte of the current value is ASCII, tracked only when a value can skip
+		// its UTF-8 check, a value that began before the block scan is validated as every other value of the byte loop
+		const bool track_ascii = T::TracksAscii(result);
+		bool value_ascii = track_ascii && IsSeparatorState(states.states[1]);
 		bool block_ascii = false;
 		uint64_t candidates;
 		idx_t block_end;
 		while (pos < to_pos && skipper.BlockCandidates(pos, candidates, block_end)) {
 			const idx_t limit = MinValue<idx_t>(block_end, to_pos);
-			block_ascii = !SwarBlock::HasHighBits(const_data_ptr_cast(buffer + block_end - SwarBlock::SIZE));
+			block_ascii =
+			    track_ascii && !SwarBlock::HasHighBits(const_data_ptr_cast(buffer + block_end - SwarBlock::SIZE));
 			value_ascii = value_ascii && block_ascii;
 			while (candidates) {
 				const idx_t at = pos + CountZeros<uint64_t>::Trailing(candidates);

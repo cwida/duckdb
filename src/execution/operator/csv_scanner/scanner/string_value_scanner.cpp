@@ -108,6 +108,9 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 		}
 	}
 
+	for (idx_t i = 0; i < logical_types.size(); i++) {
+		validates_utf8 = validates_utf8 || parse_types[i].validate_utf8;
+	}
 	// Initialize Parse Chunk
 	parse_chunk.Initialize(buffer_allocator, logical_types, result_size);
 	// one slot more, the cast error search of Flush can stop one past the last row
