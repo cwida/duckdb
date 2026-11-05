@@ -631,16 +631,33 @@ ErrorData ART::InsertKeys(ArenaAllocator &arena, unsafe_vector<ARTKey> &keys, un
 	auto was_empty = !root_ptr.HasMetadata();
 
 	// Insert the entries into the index.
-	for (idx_t i = 0; i < row_count; i++) {
-		if (keys[i].Empty()) {
-			continue;
+	idx_t insert_idx = 0;
+	try {
+		for (; insert_idx < row_count; insert_idx++) {
+			if (keys[insert_idx].Empty()) {
+				continue;
+			}
+			conflict_type = ARTOperator::Insert(arena, *this, root_ptr, keys[insert_idx], 0, row_id_keys[insert_idx],
+			                                    GateStatus::GATE_NOT_SET, delete_info, append_mode);
+			if (conflict_type != ARTConflictType::NO_CONFLICT) {
+				conflict_idx = insert_idx;
+				break;
+			}
 		}
-		conflict_type = ARTOperator::Insert(arena, *this, root_ptr, keys[i], 0, row_id_keys[i],
-		                                    GateStatus::GATE_NOT_SET, delete_info, append_mode);
-		if (conflict_type != ARTConflictType::NO_CONFLICT) {
-			conflict_idx = i;
-			break;
+	} catch (std::exception &ex) {
+		// Remove the entries inserted before the failure, including a possibly partial insert of the failing key.
+		try {
+			for (idx_t i = 0; i <= insert_idx && i < row_count; i++) {
+				if (keys[i].Empty()) {
+					continue;
+				}
+				ARTOperator::Delete(*this, root_ptr, keys[i], row_id_keys[i]);
+			}
+		} catch (std::exception &revert_ex) {
+			throw FatalException("Failed to remove partially inserted keys from index %s after \"%s\": %s", name,
+			                     ErrorData(ex).RawMessage(), ErrorData(revert_ex).RawMessage());
 		}
+		throw;
 	}
 
 	// Remove any previously inserted entries.

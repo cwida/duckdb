@@ -422,41 +422,60 @@ private:
 		return ARTConflictType::CONSTRAINT;
 	}
 
-	static void InsertIntoNode(ART &art, NodePtr &node_ptr, const ARTKey &key, const ARTKey &row_id, const idx_t depth,
-	                           const GateStatus status) {
+	//! Allocate the child that holds a new key, and return the byte at which it is inserted.
+	static uint8_t NewInsertChild(ART &art, NodePtr &child_ptr, const ARTKey &key, const ARTKey &row_id,
+	                              const idx_t depth, const GateStatus status) {
 		if (status == GateStatus::GATE_SET) {
 			// Inside gates, we compress prefixes that only have an inlined
 			// row ID as their child.
-			NodePtr row_id_node_ptr;
-			Leaf::New(row_id_node_ptr, row_id.GetRowId());
-			NodePtr::InsertChild(art, node_ptr, row_id[depth], row_id_node_ptr);
-			return;
+			Leaf::New(child_ptr, row_id.GetRowId());
+			return row_id[depth];
 		}
-
-		NodePtr leaf_ptr;
 		if (depth + 1 < key.len) {
 			// Outside of gates, we create a prefix for the inlined leaf.
 			auto count = key.len - depth - 1;
 			auto chain = PrefixHandle::New(art, key, depth + 1, count);
 			Leaf::New(chain.tail.Child(art), row_id.GetRowId());
-			leaf_ptr = chain.root_ptr;
+			child_ptr = chain.root_ptr;
 		} else {
-			Leaf::New(leaf_ptr, row_id.GetRowId());
+			Leaf::New(child_ptr, row_id.GetRowId());
 		}
+		return key[depth];
+	}
 
-		NodePtr::InsertChild(art, node_ptr, key[depth], leaf_ptr);
+	static void InsertIntoNode(ART &art, NodePtr &node_ptr, const ARTKey &key, const ARTKey &row_id, const idx_t depth,
+	                           const GateStatus status) {
+		NodePtr child_ptr;
+		auto byte = NewInsertChild(art, child_ptr, key, row_id, depth, status);
+		try {
+			NodePtr::InsertChild(art, node_ptr, byte, child_ptr);
+		} catch (...) {
+			NodePtr::FreeTree(art, child_ptr);
+			throw;
+		}
 	}
 
 	static void InsertIntoPrefix(ART &art, NodePtr &node_ptr, const ARTKey &key, const ARTKey &row_id, const idx_t pos,
 	                             const uint8_t byte, const idx_t depth, const GateStatus status) {
 		const auto cast_pos = UnsafeNumericCast<uint8_t>(pos);
 
+		// Allocate all new nodes before modifying the prefix.
+		NodePtr new_child_ptr;
+		auto new_byte = NewInsertChild(art, new_child_ptr, key, row_id, depth, status);
 		NodePtr branching_node4_ptr;
-		Node4::New(art, branching_node4_ptr);
-		auto child_ptr = PrefixHandle::Split(art, node_ptr, branching_node4_ptr, cast_pos);
-
-		Node4::InsertChild(art, branching_node4_ptr, byte, child_ptr);
-		InsertIntoNode(art, branching_node4_ptr, key, row_id, depth, status);
+		NodePtr split_child_ptr;
+		try {
+			Node4::New(art, branching_node4_ptr);
+			split_child_ptr = PrefixHandle::Split(art, node_ptr, branching_node4_ptr, cast_pos);
+		} catch (...) {
+			if (branching_node4_ptr.HasMetadata()) {
+				NodePtr::FreeNode(art, branching_node4_ptr);
+			}
+			NodePtr::FreeTree(art, new_child_ptr);
+			throw;
+		}
+		Node4::InsertChild(art, branching_node4_ptr, byte, split_child_ptr);
+		Node4::InsertChild(art, branching_node4_ptr, new_byte, new_child_ptr);
 	}
 };
 
