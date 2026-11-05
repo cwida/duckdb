@@ -659,6 +659,42 @@ TEST_CASE("COPY output lifecycle removes owned files after failure", "[api][copy
 	fs.RemoveFile(successful_path);
 }
 
+TEST_CASE("COPY output lifecycle keeps the replacement of an existing file", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+
+	auto replaced_path = TestCreatePath("copy_lifecycle_replaced.test");
+	auto temporary_path = TestCreatePath("tmp_copy_lifecycle_replaced.test");
+	fs.TryRemoveFile(replaced_path);
+	fs.TryRemoveFile(temporary_path);
+	{
+		auto handle = fs.OpenFile(replaced_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Close();
+	}
+	{
+		CopyOutputLifecycle lifecycle(*connection.context);
+		lifecycle.RegisterFile(temporary_path);
+		auto handle = fs.OpenFile(temporary_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Close();
+		lifecycle.MoveFile(temporary_path, replaced_path);
+	}
+	REQUIRE(fs.FileExists(replaced_path));
+	REQUIRE(!fs.FileExists(temporary_path));
+	fs.RemoveFile(replaced_path);
+
+	// a renamed file that replaced nothing is removed
+	{
+		CopyOutputLifecycle lifecycle(*connection.context);
+		lifecycle.RegisterFile(temporary_path);
+		auto handle = fs.OpenFile(temporary_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Close();
+		lifecycle.MoveFile(temporary_path, replaced_path);
+	}
+	REQUIRE(!fs.FileExists(replaced_path));
+	REQUIRE(!fs.FileExists(temporary_path));
+}
+
 TEST_CASE("COPY output lifecycle removes only empty query-created directories", "[api][copy]") {
 	DuckDB db(nullptr);
 	Connection connection(db);

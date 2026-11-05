@@ -15,7 +15,7 @@ SET allowed_paths = ['{TEST_DIR}/fsync_allowed.csv', '{TEST_DIR}/tmp_fsync_allow
 statement ok
 SET enable_external_access = false
 
-# the directory cannot be synced after the rename, so the renamed output is removed again
+# the directory is checked before the rename, so the output is not published and its temporary file is removed
 statement error
 COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
 ----
@@ -35,20 +35,40 @@ SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
 ----
 42
 
+# the file the output would have replaced survives the failure
+statement error
+COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+----
+Cannot access directory
+
+query II
+SELECT i, (SELECT count(*) FROM glob('{TEST_DIR}/tmp_fsync_allowed.csv')) FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+42	0
+
+# without FSYNC the file is replaced
+statement ok
+COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true)
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+43
+
 # fsync_mode none turns the syncs off, so the directory is not accessed either
 statement ok
 SET fsync_mode = 'none'
 
 statement ok
-COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE false, FSYNC)
+COPY (SELECT 44 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE false, FSYNC)
 
 statement ok
-COPY (SELECT 44 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+COPY (SELECT 45 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
 
 query I
 SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
 ----
-44
+45
 
 statement ok
 RESET fsync_mode

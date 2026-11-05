@@ -92,17 +92,6 @@ void CopyOutputLifecycle::RegisterCreatedDirectory(string path) {
 	created_directories.push_back(std::move(path));
 }
 
-void CopyOutputLifecycle::MoveFile(const string &path, const string &new_path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	fs.MoveFile(path, new_path);
-	annotated_lock_guard<annotated_mutex> guard(lock);
-	for (auto &file : files) {
-		if (file.path == path) {
-			file.path = new_path;
-		}
-	}
-}
-
 static string ParentDirectory(FileSystem &fs, const string &path) {
 	auto separator = fs.PathSeparator(path);
 	auto end = path.find_last_not_of(separator);
@@ -116,30 +105,67 @@ static string ParentDirectory(FileSystem &fs, const string &path) {
 	return pos == 0 ? separator : path.substr(0, pos);
 }
 
+unique_ptr<FileHandle> CopyOutputLifecycle::OpenDirectory(const string &directory) const {
+	auto &client_fs = FileSystem::GetFileSystem(context).Cast<OpenerFileSystem>();
+	// the client file system checks an opened path as a file, so check the directory as one before opening it
+	client_fs.VerifyCanAccessDirectory(directory);
+	return client_fs.GetFileSystem().OpenFile(directory, FileFlags::FILE_FLAGS_READ, client_fs.GetOpener());
+}
+
+bool CopyOutputLifecycle::IsSynced(const string &path) {
+	annotated_lock_guard<annotated_mutex> guard(lock);
+	for (auto &file : files) {
+		if (file.path == path) {
+			return file.synced;
+		}
+	}
+	return false;
+}
+
+void CopyOutputLifecycle::MoveFile(const string &path, const string &new_path) {
+	auto &fs = FileSystem::GetFileSystem(context);
+#ifndef _WIN32
+	if (IsSynced(path)) {
+		// a directory that cannot be opened for its sync fails before the rename publishes the file
+		OpenDirectory(ParentDirectory(fs, new_path));
+	}
+#endif
+	// the replacement of an existing file is kept on failure, as the replaced file is gone
+	auto replaced = GetOwnership(new_path) == CopyOutputOwnership::PRESERVE;
+	fs.MoveFile(path, new_path);
+	annotated_lock_guard<annotated_mutex> guard(lock);
+	for (auto &file : files) {
+		if (file.path == path) {
+			file.path = new_path;
+			if (replaced) {
+				file.ownership = CopyOutputOwnership::PRESERVE;
+			}
+		}
+	}
+}
+
 void CopyOutputLifecycle::SyncDirectories() {
 #ifndef _WIN32
 	if (!fsync) {
 		return;
 	}
-	auto &client_fs = FileSystem::GetFileSystem(context).Cast<OpenerFileSystem>();
+	auto &fs = FileSystem::GetFileSystem(context);
 	set<string> directories;
 	{
 		annotated_lock_guard<annotated_mutex> guard(lock);
 		for (auto &file : files) {
 			if (file.synced) {
-				directories.insert(ParentDirectory(client_fs, file.path));
+				directories.insert(ParentDirectory(fs, file.path));
 			}
 		}
 		for (auto &directory : created_directories) {
 			if (!FileSystem::IsRemoteFile(directory)) {
-				directories.insert(ParentDirectory(client_fs, directory));
+				directories.insert(ParentDirectory(fs, directory));
 			}
 		}
 	}
-	// the client file system checks an opened path as a file, so check the directory as one before opening it
 	for (auto &directory : directories) {
-		client_fs.VerifyCanAccessDirectory(directory);
-		client_fs.GetFileSystem().OpenFile(directory, FileFlags::FILE_FLAGS_READ, client_fs.GetOpener())->Sync();
+		OpenDirectory(directory)->Sync();
 	}
 #endif
 }

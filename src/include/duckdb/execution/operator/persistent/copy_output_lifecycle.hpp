@@ -10,11 +10,13 @@
 
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 
 class ClientContext;
+class FileHandle;
 
 enum class CopyOutputOwnership : uint8_t {
 	//! Preserve the path because this query cannot prove that it created it.
@@ -32,7 +34,7 @@ public:
 	//! Registers an output file, returning whether its writer syncs it to stable storage before closing it
 	bool RegisterFile(string path) DUCKDB_EXCLUDES(lock);
 	void RegisterCreatedDirectory(string path) DUCKDB_EXCLUDES(lock);
-	//! Renames a registered file, moving its cleanup to the new path
+	//! Renames a registered file and moves its cleanup to the new path, unless the rename replaced an existing file
 	void MoveFile(const string &path, const string &new_path) DUCKDB_EXCLUDES(lock);
 	//! With FSYNC, syncs the directories holding the synced files and the created directories
 	void SyncDirectories() DUCKDB_EXCLUDES(lock);
@@ -48,6 +50,9 @@ private:
 
 private:
 	CopyOutputOwnership GetOwnership(const string &path) const DUCKDB_EXCLUDES(lock);
+	//! Opens a directory for a sync, checking that it can be accessed
+	unique_ptr<FileHandle> OpenDirectory(const string &directory) const;
+	bool IsSynced(const string &path) DUCKDB_EXCLUDES(lock);
 	void Cleanup() DUCKDB_EXCLUDES(lock);
 
 private:
