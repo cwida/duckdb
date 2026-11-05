@@ -1751,6 +1751,7 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - ShowExternalResourcesType
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier

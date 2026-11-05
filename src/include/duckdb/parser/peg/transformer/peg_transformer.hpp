@@ -2005,6 +2005,10 @@ public:
 	                                                      GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowExternalResourcesTrampoline(PEGTransformer &transformer,
 	                                                                               GeneratedTransformProcess &process);
+	static void InitializeShowExternalResourcesTypeTrampoline(PEGTransformer &transformer,
+	                                                          GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeShowExternalResourcesTypeTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static void InitializeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
 	                                                     GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
@@ -4817,7 +4821,8 @@ public:
 	static unique_ptr<SelectStatement> TransformDescribeStatement(PEGTransformer &transformer,
 	                                                              unique_ptr<QueryNode> child);
 	static unique_ptr<QueryNode> TransformShowExternalResources(PEGTransformer &transformer, const ShowType &show_rule,
-	                                                            const bool &has_result);
+	                                                            const bool &has_result,
+	                                                            optional<Identifier> show_external_resources_type);
 	static unique_ptr<QueryNode> TransformShowDeprecatedSelect(PEGTransformer &transformer, const ShowType &show_rule,
 	                                                           unique_ptr<SelectStatement> select_statement_internal);
 	static unique_ptr<QueryNode> TransformDescribeSelect(PEGTransformer &transformer,

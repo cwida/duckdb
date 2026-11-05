@@ -1150,6 +1150,9 @@ static const TransformFrameOps DESCRIBE_STATEMENT_OPS = {"DescribeStatement",
 static const TransformFrameOps SHOW_EXTERNAL_RESOURCES_OPS = {
     "ShowExternalResources", &PEGTransformerFactory::InitializeShowExternalResourcesTrampoline,
     &PEGTransformerFactory::FinalizeShowExternalResourcesTrampoline};
+static const TransformFrameOps SHOW_EXTERNAL_RESOURCES_TYPE_OPS = {
+    "ShowExternalResourcesType", &PEGTransformerFactory::InitializeShowExternalResourcesTypeTrampoline,
+    &PEGTransformerFactory::FinalizeShowExternalResourcesTypeTrampoline};
 static const TransformFrameOps SHOW_DEPRECATED_SELECT_OPS = {
     "ShowDeprecatedSelect", &PEGTransformerFactory::InitializeShowDeprecatedSelectTrampoline,
     &PEGTransformerFactory::FinalizeShowDeprecatedSelectTrampoline};
@@ -3507,6 +3510,7 @@ const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::
 	    {"DeleteUsingClause", &DELETE_USING_CLAUSE_OPS},
 	    {"DescribeStatement", &DESCRIBE_STATEMENT_OPS},
 	    {"ShowExternalResources", &SHOW_EXTERNAL_RESOURCES_OPS},
+	    {"ShowExternalResourcesType", &SHOW_EXTERNAL_RESOURCES_TYPE_OPS},
 	    {"ShowDeprecatedSelect", &SHOW_DEPRECATED_SELECT_OPS},
 	    {"DescribeSelect", &DESCRIBE_SELECT_OPS},
 	    {"ShowAllTables", &SHOW_ALL_TABLES_OPS},
@@ -12073,7 +12077,13 @@ PEGTransformerFactory::FinalizeDescribeStatementTrampoline(PEGTransformer &trans
 void PEGTransformerFactory::InitializeShowExternalResourcesTrampoline(PEGTransformer &transformer,
                                                                       GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	process.ReserveChildSlots(1);
+	process.ReserveChildSlots(2);
+	auto &show_external_resources_type_opt = list_pr.GetChild(4).Cast<OptionalParseResult>();
+	if (show_external_resources_type_opt.HasResult()) {
+		process.PushChild(
+		    {transformer.GetRule(PEGRuleId::ShowExternalResourcesType), show_external_resources_type_opt.GetResult()},
+		    1);
+	}
 	process.PushChild({transformer.GetRule(PEGRuleId::ShowRule), list_pr.GetChild(0)}, 0);
 }
 
@@ -12085,8 +12095,26 @@ PEGTransformerFactory::FinalizeShowExternalResourcesTrampoline(PEGTransformer &t
 	bool has_result {};
 	auto &has_result_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
 	has_result = has_result_opt.HasResult();
-	auto result = TransformShowExternalResources(transformer, show_rule, has_result);
+	optional<Identifier> show_external_resources_type {};
+	if (process.child_results[1]) {
+		show_external_resources_type = process.TakeResult<Identifier>(1);
+	}
+	auto result = TransformShowExternalResources(transformer, show_rule, has_result, show_external_resources_type);
 	return transformer.MakeResult<unique_ptr<QueryNode>>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeShowExternalResourcesTypeTrampoline(PEGTransformer &transformer,
+                                                                          GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	process.PushChild({transformer.GetRule(PEGRuleId::ColIdOrString), list_pr.GetChild(2)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeShowExternalResourcesTypeTrampoline(PEGTransformer &transformer,
+                                                                   GeneratedTransformProcess &process) {
+	auto result = process.TakeResult<Identifier>(0);
+	return transformer.MakeResult<Identifier>(result);
 }
 
 void PEGTransformerFactory::InitializeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
