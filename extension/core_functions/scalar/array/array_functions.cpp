@@ -115,26 +115,36 @@ static void ArrayFixedCombine(DataChunk &args, ExpressionState &state, Vector &r
 	auto res_data = FlatVector::GetDataMutable<TYPE>(res_child);
 	auto lhs_arrays = args.data[0].Values<VectorArrayType<TYPE>>();
 	auto rhs_arrays = args.data[1].Values<VectorArrayType<TYPE>>();
-	vector<TYPE> lhs_buffer(N);
-	vector<TYPE> rhs_buffer(N);
 
-	for (idx_t i = 0; i < count; i++) {
-		const auto lhs = lhs_arrays[i];
-		const auto rhs = rhs_arrays[i];
-		if (!lhs.IsValid() || !rhs.IsValid()) {
-			FlatVector::SetNull(result, i, true);
-			continue;
+	const auto lhs_all_data = lhs_arrays.TryGetAllData();
+	const auto rhs_all_data = rhs_arrays.TryGetAllData();
+	if (lhs_all_data && rhs_all_data) {
+		// nothing is NULL - read all arrays in place without checking each row
+		for (idx_t i = 0; i < count; i++) {
+			OP::Operation(lhs_all_data + lhs_arrays.GetChildOffset(i), rhs_all_data + rhs_arrays.GetChildOffset(i),
+			              res_data + i * N, N);
 		}
+	} else {
+		vector<TYPE> lhs_buffer(N);
+		vector<TYPE> rhs_buffer(N);
+		for (idx_t i = 0; i < count; i++) {
+			const auto lhs = lhs_arrays[i];
+			const auto rhs = rhs_arrays[i];
+			if (!lhs.IsValid() || !rhs.IsValid()) {
+				FlatVector::SetNull(result, i, true);
+				continue;
+			}
 
-		auto lhs_data = lhs.TryGetData();
-		if (!lhs_data) {
-			lhs_data = CopyArrayElements(lhs, lhs_buffer, "left", func_name);
+			auto lhs_data = lhs.TryGetData();
+			if (!lhs_data) {
+				lhs_data = CopyArrayElements(lhs, lhs_buffer, "left", func_name);
+			}
+			auto rhs_data = rhs.TryGetData();
+			if (!rhs_data) {
+				rhs_data = CopyArrayElements(rhs, rhs_buffer, "right", func_name);
+			}
+			OP::Operation(lhs_data, rhs_data, res_data + i * N, N);
 		}
-		auto rhs_data = rhs.TryGetData();
-		if (!rhs_data) {
-			rhs_data = CopyArrayElements(rhs, rhs_buffer, "right", func_name);
-		}
-		OP::Operation(lhs_data, rhs_data, res_data + i * N, N);
 	}
 
 	if (count == 1) {
@@ -161,26 +171,36 @@ static void ArrayGenericFold(DataChunk &args, ExpressionState &state, Vector &re
 	D_ASSERT(array_size == ArrayType::GetSize(args.data[1].GetType()));
 	auto lhs_arrays = args.data[0].Values<VectorArrayType<TYPE>>();
 	auto rhs_arrays = args.data[1].Values<VectorArrayType<TYPE>>();
-	vector<TYPE> lhs_buffer(array_size);
-	vector<TYPE> rhs_buffer(array_size);
 
-	for (idx_t i = 0; i < count; i++) {
-		const auto lhs = lhs_arrays[i];
-		const auto rhs = rhs_arrays[i];
-		if (!lhs.IsValid() || !rhs.IsValid()) {
-			FlatVector::SetNull(result, i, true);
-			continue;
+	const auto lhs_all_data = lhs_arrays.TryGetAllData();
+	const auto rhs_all_data = rhs_arrays.TryGetAllData();
+	if (lhs_all_data && rhs_all_data) {
+		// nothing is NULL - read all arrays in place without checking each row
+		for (idx_t i = 0; i < count; i++) {
+			res_data[i] = OP::Operation(lhs_all_data + lhs_arrays.GetChildOffset(i),
+			                            rhs_all_data + rhs_arrays.GetChildOffset(i), array_size);
 		}
+	} else {
+		vector<TYPE> lhs_buffer(array_size);
+		vector<TYPE> rhs_buffer(array_size);
+		for (idx_t i = 0; i < count; i++) {
+			const auto lhs = lhs_arrays[i];
+			const auto rhs = rhs_arrays[i];
+			if (!lhs.IsValid() || !rhs.IsValid()) {
+				FlatVector::SetNull(result, i, true);
+				continue;
+			}
 
-		auto lhs_data = lhs.TryGetData();
-		if (!lhs_data) {
-			lhs_data = CopyArrayElements(lhs, lhs_buffer, "left", func_name);
+			auto lhs_data = lhs.TryGetData();
+			if (!lhs_data) {
+				lhs_data = CopyArrayElements(lhs, lhs_buffer, "left", func_name);
+			}
+			auto rhs_data = rhs.TryGetData();
+			if (!rhs_data) {
+				rhs_data = CopyArrayElements(rhs, rhs_buffer, "right", func_name);
+			}
+			res_data[i] = OP::Operation(lhs_data, rhs_data, array_size);
 		}
-		auto rhs_data = rhs.TryGetData();
-		if (!rhs_data) {
-			rhs_data = CopyArrayElements(rhs, rhs_buffer, "right", func_name);
-		}
-		res_data[i] = OP::Operation(lhs_data, rhs_data, array_size);
 	}
 
 	if (count == 1) {

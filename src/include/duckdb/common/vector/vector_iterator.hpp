@@ -192,6 +192,10 @@ public:
 		}
 		return contiguous_data + offset;
 	}
+	//! Returns all values if they are contiguous and none of them can be NULL, or nullptr otherwise
+	const T *TryGetContiguousData() const {
+		return format.validity.CanHaveNull() ? nullptr : contiguous_data;
+	}
 
 private:
 	UnifiedVectorFormat format;
@@ -565,7 +569,7 @@ public:
 			return parent.format.sel->get_index(index);
 		}
 		idx_t GetOffset() const {
-			return GetSelIndex() * parent.array_size;
+			return parent.GetChildOffset(index);
 		}
 
 	private:
@@ -622,6 +626,14 @@ public:
 	}
 	bool CanHaveNull() const {
 		return format.validity.CanHaveNull();
+	}
+	//! Returns the elements of all arrays if they are contiguous and no array or element can be NULL, or nullptr
+	//! otherwise. The elements of array i then start at GetChildOffset(i).
+	const T *TryGetAllData() const {
+		return CanHaveNull() ? nullptr : child_iter.TryGetContiguousData();
+	}
+	idx_t GetChildOffset(idx_t i) const {
+		return format.sel->get_index(i) * array_size;
 	}
 
 private:

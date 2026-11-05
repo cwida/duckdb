@@ -56,6 +56,7 @@ TEST_CASE("Array vector iterator", "[vector_iterator]") {
 		REQUIRE(values[2].GetChildValue(2).GetValue() == 6);
 
 		REQUIRE(values[3].TryGetData()[1] == 8);
+		REQUIRE(!values.TryGetAllData());
 	}
 	SECTION("Dictionary arrays") {
 		SelectionVector sel(3);
@@ -82,6 +83,25 @@ TEST_CASE("Array vector iterator", "[vector_iterator]") {
 		REQUIRE(values.size() == 2);
 		REQUIRE(ReadArray(values[1]) == vector<int32_t> {5, 6, 7});
 		REQUIRE(values[1].TryGetData()[2] == 7);
+
+		auto data = values.TryGetAllData();
+		REQUIRE(data);
+		REQUIRE(values.GetChildOffset(1) == 0);
+		REQUIRE(data[2] == 7);
+	}
+	SECTION("Arrays without NULLs") {
+		Vector valid_arrays(type, 2);
+		valid_arrays.SetValue(0, IntArray({Value::INTEGER(1), Value::INTEGER(2), Value::INTEGER(3)}));
+		valid_arrays.SetValue(1, IntArray({Value::INTEGER(4), Value::INTEGER(5), Value::INTEGER(6)}));
+		FlatVector::SetSize(valid_arrays, count_t(2));
+
+		auto values = valid_arrays.Values<VectorArrayType<int32_t>>();
+		auto data = values.TryGetAllData();
+		REQUIRE(data);
+		REQUIRE(values.GetChildOffset(0) == 0);
+		REQUIRE(values.GetChildOffset(1) == 3);
+		REQUIRE(data[values.GetChildOffset(1) + 2] == 6);
+		REQUIRE(data == values[0].TryGetData());
 	}
 }
 
