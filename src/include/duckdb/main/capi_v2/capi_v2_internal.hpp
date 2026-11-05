@@ -851,7 +851,7 @@ struct ConnectionBusySlotV2 : public ClientContextState {
 
 inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {
 	constexpr auto BUSY_SLOT_STATE_KEY = "v2_connection_busy_slot";
-	return context.registered_state->GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
+	return context.Services().GetRegisteredState().GetOrCreate<ConnectionBusySlotV2>(BUSY_SLOT_STATE_KEY);
 }
 
 //----------------------------------------------------------------------------------------------------------------------

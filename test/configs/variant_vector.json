@@ -21,6 +21,12 @@
 				"test/parquet/test_parquet_schema_incompatible_nested_types.test",
 				"test/parquet/parquet_schema_renamed_struct_filter.test"
 			]
+		},
+		{
+			"reason": "Checks the vector types of its input rows, which the VARIANT round trip of this config flattens",
+			"paths": [
+				"test/sql/unnest/unnest_constant_reference_types.test"
+			]
 		}
 	]
 }

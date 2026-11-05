@@ -25,6 +25,7 @@
 #include "duckdb/common/multi_file/multi_file_data.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/open_file_info.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/pair.hpp"
@@ -1164,7 +1165,12 @@ void ParquetPageIndexProcessor::ReadRow(vector<reference<Vector>> &output, idx_t
 		first_row_index = Value::BIGINT(location.first_row_index);
 		const auto next_row =
 		    page_idx + 1 < locations.size() ? locations[page_idx + 1].first_row_index : row_group.num_rows;
-		num_rows = Value::BIGINT(next_row - location.first_row_index);
+		int64_t page_row_count;
+		if (!TrySubtractOperator::Operation(next_row, location.first_row_index, page_row_count)) {
+			throw DataCorruptionException("Failed to read file \"%s\": metadata is corrupt. Page row count overflows",
+			                              reader.file.path);
+		}
+		num_rows = Value::BIGINT(page_row_count);
 	}
 	// page_offset
 	output[5].get().Append(offset);

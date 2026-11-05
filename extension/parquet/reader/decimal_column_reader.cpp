@@ -13,6 +13,10 @@ namespace duckdb {
 class ParquetReader;
 struct hugeint_t;
 
+[[noreturn]] void ParquetDecimalUtils::ThrowInvalidDecimalEncoding() {
+	throw DataCorruptionException("Invalid decimal encoding in Parquet file");
+}
+
 template <bool FIXED>
 static unique_ptr<ColumnReader> CreateDecimalReaderInternal(const ParquetReader &reader,
                                                             const ParquetColumnSchema &schema) {

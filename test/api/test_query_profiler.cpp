@@ -17,7 +17,7 @@ TEST_CASE("Test query profiler", "[api]") {
 
 	con.EnableProfiling();
 	// don't pollute the console with profiler info - write it to a file in the test directory instead.
-	con.context->config.profiler_save_location = TestCreatePath("test_query_profiler_output.txt");
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath("test_query_profiler_output.txt");
 
 	string query = "SELECT * FROM (SELECT 42) tbl1, (SELECT 33) tbl2";
 	REQUIRE_NO_FAIL(con.Query(query));
@@ -40,7 +40,7 @@ TEST_CASE("Test query profiler, no query in the profiling output.", "[api]") {
 
 	con.EnableProfiling();
 	// don't pollute the console with profiler info - write it to a file in the test directory instead.
-	con.context->config.profiler_save_location = TestCreatePath("test_query_profiler_output.txt");
+	ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath("test_query_profiler_output.txt");
 
 	// Disable `QUERY_SQL` in profiling output by only tracking other metrics.
 	REQUIRE_NO_FAIL(
@@ -63,7 +63,7 @@ TEST_CASE("Disabling profiling resets the active query profiler", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.EnableProfiling();
-	con.context->config.profiler_print_format = "no_output";
+	ClientConfig::GetConfig(*con.context).profiler_print_format = "no_output";
 
 	REQUIRE_NO_FAIL(con.Query("CALL disable_profiling()"));
 	auto &profiler = QueryProfiler::Get(*con.context);
@@ -80,8 +80,9 @@ TEST_CASE("Test parser timing is reported per statement", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.EnableProfiling();
-	con.context->config.profiler_save_location = TestCreatePath("test_query_profiler_parser_output.txt");
-	con.context->config.tracked_metrics = {"parser.total_time", "query.sql"};
+	ClientConfig::GetConfig(*con.context).profiler_save_location =
+	    TestCreatePath("test_query_profiler_parser_output.txt");
+	ClientConfig::GetConfig(*con.context).tracked_metrics = {"parser.total_time", "query.sql"};
 
 	REQUIRE_NO_FAIL(con.Query("SELECT 7;"));
 	auto single_statement_output = con.GetProfilingInformation(ProfilerPrintFormat::JSON());
@@ -107,8 +108,9 @@ TEST_CASE("Extracting statements does not start the query profiler", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.EnableProfiling();
-	con.context->config.profiler_save_location = TestCreatePath("test_query_profiler_extract_output.txt");
-	con.context->config.tracked_metrics = {"parser.total_time", "query.sql"};
+	ClientConfig::GetConfig(*con.context).profiler_save_location =
+	    TestCreatePath("test_query_profiler_extract_output.txt");
+	ClientConfig::GetConfig(*con.context).tracked_metrics = {"parser.total_time", "query.sql"};
 
 	auto statements = con.ExtractStatements("SELECT 44;");
 	REQUIRE(statements.size() == 1);
@@ -124,7 +126,7 @@ TEST_CASE("Calls that run no statement do not leave the query profiler running",
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.EnableProfiling();
-	con.context->config.profiler_print_format = "no_output";
+	ClientConfig::GetConfig(*con.context).profiler_print_format = "no_output";
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t AS SELECT 1 AS i"));
 
 	auto check_next_query = [&]() {
@@ -178,7 +180,7 @@ TEST_CASE("Test latency when interrupting query", "[api]") {
 	//
 	// con.EnableProfiling();
 	//
-	// con.context->config.profiler_save_location = TestCreatePath("test_query_profiler_output.txt");
+	// ClientConfig::GetConfig(*con.context).profiler_save_location = TestCreatePath("test_query_profiler_output.txt");
 	//
 	// // Test interupting a query and running a new one afterward.
 	// // The latency should reflect the new one.

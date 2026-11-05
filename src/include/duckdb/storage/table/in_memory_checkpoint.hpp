@@ -25,9 +25,6 @@ public:
 	MetadataWriter &GetMetadataWriter() override;
 	MetadataManager &GetMetadataManager() override;
 	unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) override;
-	optional_ptr<ClientContext> GetClientContext() const {
-		return context;
-	}
 	CheckpointOptions GetCheckpointOptions() const {
 		return options;
 	}
@@ -39,7 +36,6 @@ public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	optional_ptr<ClientContext> context;
 	PartialBlockManager partial_block_manager;
 	StorageManager &storage_manager;
 	CheckpointOptions options;

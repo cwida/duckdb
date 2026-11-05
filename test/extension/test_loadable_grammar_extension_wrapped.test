@@ -1,0 +1,107 @@
+# name: test/extension/test_loadable_grammar_extension_wrapped.test
+# description: Grammar extension transforms receive choice- and optional-wrapped parse results.
+# group: [extension]
+
+require skip_reload
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_grammar_extension_demo.duckdb_extension';
+
+statement ok
+SET active_grammar_extensions = ['wrapped_transform_nodes'];
+
+# the first clause reaches the transform as a choice node
+query I
+WRAPPED LIMIT 3;
+----
+0
+1
+2
+
+query I
+WRAPPED OFFSET 7;
+----
+7
+8
+9
+
+# the second clause reaches the transform as a present optional node
+query I
+WRAPPED LIMIT 2 OFFSET 4;
+----
+4
+5
+
+statement error
+WRAPPED OFFSET 7 OFFSET 1;
+----
+<REGEX>:Parser Error:.*single OFFSET.*
+
+# a present clause unwraps across three wrapper levels: optional, group list and choice nodes
+query I
+WRAPPED_NESTED LIMIT 2;
+----
+0
+1
+
+query I
+WRAPPED_NESTED OFFSET 8;
+----
+8
+9
+
+# the empty optional alternative carries no clause
+query I
+SELECT count(*) FROM (WRAPPED_NESTED);
+----
+10
+
+# a group wrapper node handed to the transform stack through PushChild
+query I
+WRAPPED_CHILD LIMIT 2;
+----
+0
+1
+
+query I
+WRAPPED_CHILD OFFSET 8;
+----
+8
+9
+
+# the misusing transform still works while unwrapping reaches a rule
+query I
+WRAPPED_BAD LIMIT 2;
+----
+0
+1
+
+# an empty optional handed to Transform reaches no rule
+statement error
+WRAPPED_BAD;
+----
+<REGEX>:Not implemented Error.*empty OPTIONAL parse node.*
+
+# a choice that selected an unnamed sequence reaches no rule
+statement error
+WRAPPED_BAD LIMIT 1 OFFSET 2;
+----
+<REGEX>:Not implemented Error.*LIST parse node.*
+
+# the pipe syntax extension from the same demo stays usable alongside
+statement ok
+SET active_grammar_extensions = ['pipe_query_syntax', 'wrapped_transform_nodes'];
+
+query I
+WRAPPED LIMIT 2;
+----
+0
+1
+
+query I
+FROM (WRAPPED LIMIT 4)
+  |> WHERE range > 1
+  |> SELECT range * 10;
+----
+20
+30
