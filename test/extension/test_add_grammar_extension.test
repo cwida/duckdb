@@ -127,3 +127,78 @@ statement error
 FROM produce |> WHERE item != 'bananas';
 ----
 Parser Error
+
+# interaction with the database-wide default: the functions read and modify the
+# effective selection (the session selection when set, otherwise the default)
+
+statement ok
+SET GLOBAL default_grammar_extensions = ['pipe_query_syntax'];
+
+query TI
+FROM produce |> WHERE item != 'bananas';
+----
+apples	10
+
+# a no-op add on a default-driven session keeps the session selection unset
+statement ok
+CALL add_grammar_extension('pipe_query_syntax');
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[]
+
+# and the grammar stays usable, so the no-op installed no empty opt-out either
+query TI
+FROM produce |> WHERE item != 'bananas';
+----
+apples	10
+
+# so the session still follows later changes to the default
+statement ok
+SET GLOBAL default_grammar_extensions = [];
+
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error
+
+# removing a default-provided grammar installs an opted-out session selection
+statement ok
+SET GLOBAL default_grammar_extensions = ['pipe_query_syntax'];
+
+query TI
+FROM produce |> WHERE item != 'bananas';
+----
+apples	10
+
+statement ok
+CALL remove_grammar_extension('pipe_query_syntax');
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[]
+
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error
+
+# the opted-out selection is pinned, the unchanged default does not re-apply
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error
+
+# RESET returns the session to the default
+statement ok
+RESET active_grammar_extensions;
+
+query TI
+FROM produce |> WHERE item != 'bananas';
+----
+apples	10
+
+statement ok
+SET GLOBAL default_grammar_extensions = [];
