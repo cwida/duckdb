@@ -1,5 +1,6 @@
 #include "json_schema_inference.hpp"
 
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "json_geojson.hpp"
 #include "json_scan.hpp"
@@ -110,6 +111,18 @@ bool JSONStructureNode::ContainsVarchar() const {
 	}
 
 	return false;
+}
+
+optional_ptr<const JSONStructureNode> JSONStructureNode::GetField(const string &field_key) const {
+	if (descriptions.size() != 1 || descriptions[0].type != LogicalTypeId::STRUCT) {
+		return nullptr;
+	}
+	const auto &desc = descriptions[0];
+	const auto it = desc.key_map.find({field_key.c_str(), field_key.size()});
+	if (it == desc.key_map.end()) {
+		return nullptr;
+	}
+	return &desc.children[it->second];
 }
 
 void JSONStructureNode::InitializeCandidateTypes(const idx_t max_depth, const bool convert_strings_to_integers,
@@ -226,6 +239,8 @@ void JSONStructureNode::RefineCandidateTypesObject(yyjson_val *vals[], const idx
 	}
 
 	const auto found_keys = reinterpret_cast<bool *>(allocator.AllocateAligned(sizeof(bool) * child_count));
+	// A struct reads the first of duplicate keys and a map reads them all, so the sample refines on every one
+	vector<vector<yyjson_val *>> duplicate_vals(child_count);
 
 	const auto &key_map = desc.key_map;
 	size_t idx, max;
@@ -243,8 +258,12 @@ void JSONStructureNode::RefineCandidateTypesObject(yyjson_val *vals[], const idx
 				auto it = key_map.find({key_ptr, key_len});
 				D_ASSERT(it != key_map.end());
 				const auto child_idx = it->second;
+				if (found_keys[child_idx]) {
+					duplicate_vals[child_idx].push_back(child_val);
+					continue;
+				}
 				child_vals[child_idx][i] = child_val;
-				found_key_count += !found_keys[child_idx];
+				found_key_count++;
 				found_keys[child_idx] = true;
 			}
 
@@ -264,8 +283,17 @@ void JSONStructureNode::RefineCandidateTypesObject(yyjson_val *vals[], const idx
 	}
 
 	for (idx_t child_idx = 0; child_idx < child_count; child_idx++) {
-		desc.children[child_idx].RefineCandidateTypes(child_vals[child_idx], val_count, string_vector, allocator,
-		                                              date_format_map, user_specified_timestamp_format);
+		const auto &duplicates = duplicate_vals[child_idx];
+		auto refine_vals = child_vals[child_idx];
+		if (!duplicates.empty()) {
+			// One call, so that a type that takes over from a ruled out one is tried on all of these values
+			refine_vals = reinterpret_cast<yyjson_val **>(
+			    allocator.AllocateAligned((val_count + duplicates.size()) * sizeof(yyjson_val *)));
+			memcpy(refine_vals, child_vals[child_idx], val_count * sizeof(yyjson_val *));
+			memcpy(refine_vals + val_count, duplicates.data(), duplicates.size() * sizeof(yyjson_val *));
+		}
+		desc.children[child_idx].RefineCandidateTypes(refine_vals, val_count + duplicates.size(), string_vector,
+		                                              allocator, date_format_map, user_specified_timestamp_format);
 	}
 }
 
@@ -444,10 +472,26 @@ bool JSONStructureNode::EliminateCandidateFormats(const idx_t vec_count, Vector 
 	D_ASSERT(descriptions.size() == 1 && descriptions[0].type == LogicalTypeId::VARCHAR);
 
 	const auto type = result_vector.GetType().id();
-	auto i = date_format_map.NumberOfFormats(type);
-	for (; i != 0; i--) {
+	auto &format_candidates = descriptions[0].format_candidates;
+	auto entry = format_candidates.find(type);
+	if (entry == format_candidates.end()) {
+		JSONFormatCandidates all;
+		for (idx_t format_idx = 0; format_idx < date_format_map.NumberOfFormats(type); format_idx++) {
+			all.formats.push_back(format_idx);
+		}
+		all.cast = date_format_map.CastIsCandidate(type);
+		entry = format_candidates.emplace(type, std::move(all)).first;
+	}
+
+	JSONFormatCandidates remaining;
+	if (entry->second.cast) {
+		Vector cast_result(type, vec_count);
+		string error_message;
+		remaining.cast = VectorOperations::DefaultTryCast(string_vector, cast_result, vec_count, &error_message, true);
+	}
+	for (const auto format_idx : entry->second.formats) {
 		StrpTimeFormat format;
-		if (!date_format_map.GetFormatAtIndex(type, i - 1, format)) {
+		if (!date_format_map.GetFormatAtIndex(type, format_idx, format)) {
 			continue;
 		}
 
@@ -464,11 +508,15 @@ bool JSONStructureNode::EliminateCandidateFormats(const idx_t vec_count, Vector 
 		}
 
 		if (success) {
-			return true;
+			remaining.formats.push_back(format_idx);
 		}
 	}
 
-	return false;
+	if (remaining.Empty()) {
+		return false;
+	}
+	entry->second = std::move(remaining);
+	return true;
 }
 
 JSONStructureDescription::JSONStructureDescription(const LogicalTypeId type_p, const bool case_insensitive_keys)
@@ -481,6 +529,7 @@ static void SwapJSONStructureDescription(JSONStructureDescription &a, JSONStruct
 	std::swap(a.key_map, b.key_map);
 	std::swap(a.children, b.children);
 	std::swap(a.candidate_types, b.candidate_types);
+	std::swap(a.format_candidates, b.format_candidates);
 	std::swap(a.has_large_ubigint, b.has_large_ubigint);
 	std::swap(a.timestamp_offset_state, b.timestamp_offset_state);
 }
@@ -636,6 +685,28 @@ static void MergeNodeObject(JSONStructureNode &merged, const JSONStructureDescri
 	}
 }
 
+//! Keeps the formats of type that parse the values of both descriptions, false if there are none
+static bool IntersectFormatCandidates(JSONStructureDescription &merged_desc, const JSONStructureDescription &child_desc,
+                                      const LogicalTypeId type) {
+	const auto child_entry = child_desc.format_candidates.find(type);
+	if (child_entry == child_desc.format_candidates.end()) {
+		return true;
+	}
+	auto merged_entry = merged_desc.format_candidates.find(type);
+	if (merged_entry == merged_desc.format_candidates.end()) {
+		merged_desc.format_candidates.emplace(type, child_entry->second);
+		return true;
+	}
+	auto &merged_candidates = merged_entry->second;
+	const auto &child_candidates = child_entry->second;
+	vector<idx_t> both;
+	std::set_intersection(merged_candidates.formats.begin(), merged_candidates.formats.end(),
+	                      child_candidates.formats.begin(), child_candidates.formats.end(), std::back_inserter(both));
+	merged_candidates.formats = std::move(both);
+	merged_candidates.cast = merged_candidates.cast && child_candidates.cast;
+	return !merged_candidates.Empty();
+}
+
 static void MergeNodeVal(JSONStructureNode &merged, const JSONStructureDescription &child_desc,
                          const bool node_initialized) {
 	D_ASSERT(child_desc.type != LogicalTypeId::LIST && child_desc.type != LogicalTypeId::STRUCT);
@@ -656,10 +727,14 @@ static void MergeNodeVal(JSONStructureNode &merged, const JSONStructureDescripti
 	}
 	if (!merged.initialized) {
 		merged_desc.candidate_types = child_desc.candidate_types;
+		merged_desc.format_candidates = child_desc.format_candidates;
 	} else if (merged_desc.candidate_types.empty() != child_desc.candidate_types.empty() // both empty or neither empty
 	           || (!merged_desc.candidate_types.empty() &&
 	               merged_desc.candidate_types.back() != child_desc.candidate_types.back())) { // non-empty: check type
 		merged_desc.candidate_types.clear(); // Not the same, default to VARCHAR
+	} else if (!merged_desc.candidate_types.empty() &&
+	           !IntersectFormatCandidates(merged_desc, child_desc, merged_desc.candidate_types.back())) {
+		merged_desc.candidate_types.clear(); // No format parses the values of both, default to VARCHAR
 	}
 
 	merged.initialized = true;
@@ -788,15 +863,20 @@ static bool IsStructureInconsistent(const JSONStructureDescription &desc, const 
 	return avg_occurrence < field_appearance_threshold;
 }
 
+//! All values of the object node as one node, the way a MAP reads them
+static JSONStructureNode MergeChildren(const JSONStructureNode &node) {
+	auto merged = JSONStructureNode::EmptyLike(node);
+	for (const auto &child : node.descriptions[0].children) {
+		JSONStructure::MergeNodes(merged, child);
+	}
+	return merged;
+}
+
 static LogicalType GetMergedType(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,
                                  const double field_appearance_threshold, const idx_t map_inference_threshold,
                                  const idx_t depth, const LogicalType &null_type) {
 	D_ASSERT(node.descriptions.size() == 1);
-	auto &desc = node.descriptions[0];
-	auto merged = JSONStructureNode::EmptyLike(node);
-	for (const auto &child : desc.children) {
-		JSONStructure::MergeNodes(merged, child);
-	}
+	const auto merged = MergeChildren(node);
 	return JSONStructure::StructureToType(context, merged, max_depth, field_appearance_threshold,
 	                                      map_inference_threshold, depth + 1, null_type);
 }
@@ -879,6 +959,56 @@ static LogicalType StructureToTypeString(const JSONStructureNode &node) {
 		return LogicalTypeId::VARCHAR;
 	}
 	return desc.candidate_types.back();
+}
+
+JSONColumnFormats JSONStructure::StructureToFormats(const JSONStructureNode &node, const LogicalType &type) {
+	JSONColumnFormats result;
+	if (node.descriptions.size() != 1) {
+		return result;
+	}
+	const auto &desc = node.descriptions[0];
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP: {
+		if (desc.type != LogicalTypeId::VARCHAR || desc.candidate_types.empty() ||
+		    desc.candidate_types.back() != type.id()) {
+			break;
+		}
+		// The last format that read every sampled value is preferred, the order the formats are tried in, and the
+		// plain cast only when no format did, as the CSV sniffer falls back to it
+		const auto entry = desc.format_candidates.find(type.id());
+		if (entry != desc.format_candidates.end()) {
+			if (!entry->second.formats.empty()) {
+				result.format_index = entry->second.formats.back();
+			} else {
+				result.cast = entry->second.cast;
+			}
+		}
+		break;
+	}
+	case LogicalTypeId::STRUCT:
+		if (desc.type != LogicalTypeId::STRUCT) {
+			break;
+		}
+		for (const auto &child_type : StructType::GetChildTypes(type)) {
+			const auto field = node.GetField(child_type.first.GetIdentifierName());
+			result.children.push_back(field ? StructureToFormats(*field, child_type.second) : JSONColumnFormats());
+		}
+		break;
+	case LogicalTypeId::MAP:
+		if (desc.type == LogicalTypeId::STRUCT) {
+			result.children.push_back(StructureToFormats(MergeChildren(node), MapType::ValueType(type)));
+		}
+		break;
+	case LogicalTypeId::LIST:
+		if (desc.type == LogicalTypeId::LIST) {
+			result.children.push_back(StructureToFormats(desc.children[0], ListType::GetChildType(type)));
+		}
+		break;
+	default:
+		break;
+	}
+	return result;
 }
 
 LogicalType JSONStructure::StructureToType(ClientContext &context, const JSONStructureNode &node, const idx_t max_depth,

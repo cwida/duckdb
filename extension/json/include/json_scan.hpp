@@ -51,6 +51,8 @@ public:
 
 	//! The date format map
 	unique_ptr<DateFormatMap> date_format_map;
+	//! The format detected for each column, one child per column in bind order
+	JSONColumnFormats column_formats;
 	//! Options when transforming the JSON to columnar data
 	JSONTransformOptions transform_options;
 
@@ -180,10 +182,10 @@ public:
 	static unique_ptr<JSONStructureNode> DetectStructure(ClientContext &context, JSONScanData &json_data,
 	                                                     const vector<OpenFileInfo> &files,
 	                                                     vector<shared_ptr<JSONReader>> &sampled_readers);
-	//! Derive the columns that are read from a detected JSON structure
+	//! Derive the columns that are read from a detected JSON structure, and the formats they are read with
 	static void StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
 	                               vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
-	                               vector<Identifier> &names);
+	                               vector<Identifier> &names, JSONColumnFormats &column_formats);
 
 	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
 	                      const BoundTableFunction &function);
