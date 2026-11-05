@@ -493,7 +493,8 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 	checked_segment = IsDirectNullCheckFilter(filter) && !state.child_states.empty() && state.child_states[0].current
 	                      ? state.child_states[0].current
 	                      : state.current;
-	auto prune_result = CheckSegmentStatistics(state.context.GetClientContext(), *checked_segment, expr_filter);
+	auto prune_result = CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()),
+	                                           *checked_segment, expr_filter);
 	if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
@@ -503,7 +504,7 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 		return prune_result;
 	}
 	// combine the update and original prune result
-	auto context = state.context.GetClientContext();
+	auto context = Context::TryGetClientContext(state.context.GetServices());
 	FilterPropagateResult update_result =
 	    context ? expr_filter.CheckStatistics(*context, *update_stats) : expr_filter.CheckStatistics(*update_stats);
 	if (prune_result == update_result) {
@@ -921,8 +922,10 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 	auto &config = DBConfig::GetConfig(db);
 	const auto initial_bytes = Settings::Get<InitialColumnSegmentSizeSetting>(config);
 
+	const bool first_transient_segment =
+	    !prev_segment || prev_segment->GetSegmentType() == ColumnSegmentType::PERSISTENT;
 	idx_t segment_size;
-	if (!prev_segment || prev_segment->GetSegmentType() == ColumnSegmentType::PERSISTENT) {
+	if (first_transient_segment) {
 		// We start with the `initial_bytes` setting, but we ensure that we have enough space for at least one row.
 		segment_size = MaxValue<idx_t>(GetTypeIdSize(type.InternalType()), initial_bytes);
 	} else {
@@ -951,7 +954,8 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 
 	auto function = config.GetCompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, type.InternalType());
 	unique_ptr<ColumnSegment> new_segment;
-	if (transient && segment_size < block_size && initial_bytes < segment_size) {
+	// first segments stay tiny until a column grows and creates the shared block, so small tables never allocate one
+	if (transient && segment_size < block_size && (!first_transient_segment || transient->block)) {
 		new_segment = transient->CreateTransientSegment(db, function, type, segment_size, block_manager);
 	} else {
 		new_segment = ColumnSegment::CreateTransientSegment(db, function, type, segment_size, block_manager);

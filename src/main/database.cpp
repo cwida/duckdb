@@ -176,9 +176,8 @@ FileSystem &FileSystem::Get(AttachedDatabase &db) {
 }
 
 FileSystem &FileSystem::Get(QueryContext context, AttachedDatabase &db) {
-	auto client_context = context.GetClientContext();
-	if (client_context) {
-		return FileSystem::GetFileSystem(*client_context);
+	if (context.Valid()) {
+		return context.GetServices()->GetFileSystem();
 	}
 	return FileSystem::Get(db);
 }
@@ -188,7 +187,7 @@ DBConfig &DBConfig::GetConfig(DatabaseInstance &db) {
 }
 
 ClientConfig &ClientConfig::GetConfig(ClientContext &context) {
-	return context.config;
+	return context.services->GetClientConfig();
 }
 
 DBConfig &DBConfig::Get(AttachedDatabase &db) {
@@ -200,7 +199,7 @@ const DBConfig &DBConfig::GetConfig(const DatabaseInstance &db) {
 }
 
 const ClientConfig &ClientConfig::GetConfig(const ClientContext &context) {
-	return context.config;
+	return context.services->GetClientConfig();
 }
 
 TransactionManager &TransactionManager::Get(AttachedDatabase &db) {

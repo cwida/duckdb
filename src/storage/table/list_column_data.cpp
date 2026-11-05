@@ -201,11 +201,13 @@ void ListColumnData::InitializeAppend(ColumnAppendState &state) {
 
 	// initialize the validity append
 	ColumnAppendState validity_append_state;
+	validity_append_state.transient = state.transient;
 	validity->InitializeAppend(validity_append_state);
 	state.child_appends.push_back(std::move(validity_append_state));
 
 	// initialize the child column append
 	ColumnAppendState child_append_state;
+	child_append_state.transient = state.transient;
 	child_column->InitializeAppend(child_append_state);
 	state.child_appends.push_back(std::move(child_append_state));
 }

@@ -181,10 +181,12 @@ void ArrayColumnData::Skip(ColumnScanState &state, idx_t count) {
 
 void ArrayColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnAppendState validity_append;
+	validity_append.transient = state.transient;
 	validity->InitializeAppend(validity_append);
 	state.child_appends.push_back(std::move(validity_append));
 
 	ColumnAppendState child_append;
+	child_append.transient = state.transient;
 	child_column->InitializeAppend(child_append);
 	state.child_appends.push_back(std::move(child_append));
 }
