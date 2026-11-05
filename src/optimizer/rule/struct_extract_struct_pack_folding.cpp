@@ -36,7 +36,7 @@ unique_ptr<Expression> StructExtractStructPackFoldingRule::Apply(LogicalOperator
 	}
 	// struct_extract(struct_pack(e0, .., en), ki) is equivalent to ei
 	auto result = std::move(packed_children[extract_data.index]);
-	return BoundCastExpression::AddCastToType(GetContext(), std::move(result), extract.Function().GetReturnType());
+	return BoundCastExpression::AddCastToType(GetContext(), std::move(result), extract.GetReturnType());
 }
 
 } // namespace duckdb
