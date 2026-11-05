@@ -73,6 +73,7 @@
         "test/sql/aggregate/aggregates/arg_min_max_n.test",
         "test/sql/aggregate/aggregates/arg_min_max_n_tpch.test",
         "test/sql/aggregate/aggregates/arg_min_max_nulls_last.test",
+        "test/sql/aggregate/aggregates/test_first_negative_zero_n.test",
         "test/sql/aggregate/aggregates/minmax_n_fallible.test",
         "test/sql/aggregate/aggregates/bitstring_agg_empty.test",
         "test/sql/aggregate/aggregates/bitstring_agg_memory_limit.test",

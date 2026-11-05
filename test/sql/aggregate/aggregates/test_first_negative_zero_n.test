@@ -1,0 +1,39 @@
+# name: test/sql/aggregate/aggregates/test_first_negative_zero_n.test
+# description: arg_min and arg_max with n, and mode over nested types, keep the sign of -0.0
+# group: [aggregates]
+
+# kept apart from test_first_negative_zero.test because these aggregates cannot export their state
+
+statement ok
+SET threads=1;
+
+# the variants with n keep the value side too, and a top one or top two per group agree
+query III
+SELECT arg_min([v], k, 2)::VARCHAR, max_by([v], k, 1)::VARCHAR, arg_min_nulls_last([v], k, 1)::VARCHAR
+FROM (VALUES (1, '-0.0'::DOUBLE), (2, 0.0)) t(k, v);
+----
+[[-0.0], [0.0]]	[[0.0]]	[[-0.0]]
+
+statement ok
+CREATE TABLE ranked AS SELECT * FROM (VALUES (1, 1, ['-0.0'::DOUBLE]), (1, 2, [0.0]), (2, 1, ['-0.0'::DOUBLE])) t(g, k, l);
+
+query II
+SELECT g, l::VARCHAR FROM (SELECT g, l, row_number() OVER (PARTITION BY g ORDER BY k) rn FROM ranked) WHERE rn = 1
+ORDER BY g;
+----
+1	[-0.0]
+2	[-0.0]
+
+query II
+SELECT g, l::VARCHAR FROM (SELECT g, l, row_number() OVER (PARTITION BY g ORDER BY k) rn FROM ranked) WHERE rn <= 2
+ORDER BY g, l::VARCHAR;
+----
+1	[-0.0]
+1	[0.0]
+2	[-0.0]
+
+# mode over a nested type is planned as a GROUP BY and arg_max, and returns the zero the group kept as its key
+query II
+SELECT mode([v])::VARCHAR, mode({'a': v})::VARCHAR FROM (VALUES ('-0.0'::DOUBLE), (0.0), (0.0), (1.0)) t(v);
+----
+[-0.0]	{'a': -0.0}
