@@ -308,6 +308,69 @@ class RunTestsScriptTest(unittest.TestCase):
             ["duckdb", "--thread-stack-size", "131072", "-unsigned", "-batch", "-jsonlines"],
         )
 
+    def test_exact_test_list_selector_escapes_catch_separator(self):
+        self.assertEqual(run_tests.test_list_selector_expression("Compiled, test"), '"Compiled\\, test"')
+        self.assertEqual(run_tests.test_list_selector_expression("[arrow]"), "[arrow]")
+
+    def test_custom_protocol_command_wraps_duckdb_shell(self):
+        config = run_tests.TestRunnerConfig(
+            test_list=Path("unused"),
+            unittest_bin="duckdb",
+            test_config=None,
+            test_flags="--force-storage --thread-stack-size 131072",
+            patterns=[],
+            test_command="valgrind {binary} {flags} -f {test_list}",
+            workers=1,
+            retry=0,
+            max_retries=4,
+            batch_size=1,
+            batch_timeout_seconds=10,
+            rss_memory_threshold_mib=None,
+            runtime_threshold_seconds=None,
+            max_failures=None,
+            fail_require_skip=False,
+            coverage_profile_dir=None,
+        )
+
+        command = run_tests.build_test_command(config, "/tmp/protocol.sql", protocol=True)
+
+        self.assertEqual(
+            shlex.split(command),
+            [
+                "valgrind",
+                "duckdb",
+                "--thread-stack-size",
+                "131072",
+                "-unsigned",
+                "-batch",
+                "-jsonlines",
+                "-f",
+                "/tmp/protocol.sql",
+            ],
+        )
+
+    def test_protocol_scan_rejects_unmatched_exact_test_list_entry(self):
+        test_list = create_temp_file("test/sql/a.test\ntest/sql/stale.test\n")
+        result = mock.Mock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "test_id": "sql:test/sql/a.test",
+                    "name": "test/sql/a.test",
+                    "is_slow": False,
+                }
+            ),
+            stderr="",
+        )
+        try:
+            with (
+                mock.patch("scripts.ci.run_tests.run_test_protocol_query", return_value=result),
+                self.assertRaisesRegex(run_tests.TestRunnerError, "test/sql/stale.test"),
+            ):
+                run_tests.generate_test_list(StringIO(), "unused-binary", "", [], [test_list])
+        finally:
+            test_list.unlink(missing_ok=True)
+
     def test_list_tests_prints_protocol_results(self):
         with mock.patch("scripts.ci.run_tests.generate_test_list") as generate:
             generate.side_effect = lambda output, *_args, **_kwargs: output.write("sql:test/sql/a.test\t\n")

@@ -187,20 +187,184 @@ static void ListFilesRecursive(FileSystem &fs, const string &path,
 	});
 }
 
-static bool MatchesSelector(const TestDescription &test, const vector<string> &selectors) {
-	if (selectors.empty()) {
-		return true;
+enum class SelectorPatternType : uint8_t { NAME, TAG };
+
+struct SelectorPattern {
+	SelectorPatternType type;
+	string value;
+	bool excluded;
+};
+
+using SelectorFilter = vector<SelectorPattern>;
+
+static string UnescapeSelectorPattern(const string &input) {
+	string result;
+	bool escaped = false;
+	for (auto character : input) {
+		if (escaped) {
+			result += character;
+			escaped = false;
+		} else if (character == '\\') {
+			escaped = true;
+		} else {
+			result += character;
+		}
 	}
-	for (auto &selector : selectors) {
-		if (selector.empty()) {
+	if (escaped) {
+		result += '\\';
+	}
+	return result;
+}
+
+static void AddTagPattern(SelectorFilter &filter, string tag, bool excluded) {
+	tag = UnescapeSelectorPattern(tag);
+	StringUtil::Trim(tag);
+	if (tag.size() > 1 && tag[0] == '.') {
+		filter.push_back({SelectorPatternType::TAG, ".", excluded});
+		tag.erase(0, 1);
+	}
+	if (!tag.empty()) {
+		filter.push_back({SelectorPatternType::TAG, StringUtil::Lower(tag), excluded});
+	}
+}
+
+static SelectorFilter ParseSelectorAlternative(const string &input) {
+	SelectorFilter result;
+	idx_t position = 0;
+	while (position < input.size()) {
+		while (position < input.size() && input[position] == ' ') {
+			position++;
+		}
+		bool excluded = false;
+		if (position < input.size() && input[position] == '~') {
+			excluded = true;
+			position++;
+		} else if (input.compare(position, 8, "exclude:") == 0) {
+			excluded = true;
+			position += 8;
+		}
+		if (position >= input.size()) {
+			break;
+		}
+		if (input[position] == '[') {
+			auto end = input.find(']', position + 1);
+			if (end == string::npos) {
+				throw InvalidInputException("Invalid test selector '%s'", input);
+			}
+			AddTagPattern(result, input.substr(position + 1, end - position - 1), excluded);
+			position = end + 1;
 			continue;
 		}
-		if (Glob(test.test_id.c_str(), test.test_id.size(), selector.c_str(), selector.size()) ||
-		    Glob(test.name.c_str(), test.name.size(), selector.c_str(), selector.size())) {
-			return true;
+
+		string name;
+		if (input[position] == '"') {
+			position++;
+			bool escaped = false;
+			for (; position < input.size(); position++) {
+				auto character = input[position];
+				if (!escaped && character == '"') {
+					position++;
+					break;
+				}
+				name += character;
+				escaped = !escaped && character == '\\';
+				if (character != '\\') {
+					escaped = false;
+				}
+			}
+		} else {
+			auto end = input.find('[', position);
+			name = input.substr(position, end == string::npos ? string::npos : end - position);
+			position = end == string::npos ? input.size() : end;
+		}
+		name = UnescapeSelectorPattern(name);
+		StringUtil::Trim(name);
+		if (!name.empty()) {
+			result.push_back({SelectorPatternType::NAME, StringUtil::Lower(name), excluded});
 		}
 	}
+	return result;
+}
+
+static vector<SelectorFilter> ParseSelectors(const vector<string> &selectors) {
+	vector<SelectorFilter> result;
+	for (auto &selector : selectors) {
+		idx_t start = 0;
+		bool escaped = false;
+		bool quoted = false;
+		idx_t tag_depth = 0;
+		for (idx_t position = 0; position <= selector.size(); position++) {
+			auto at_end = position == selector.size();
+			auto character = at_end ? '\0' : selector[position];
+			if (!at_end && escaped) {
+				escaped = false;
+				continue;
+			}
+			if (!at_end && character == '\\') {
+				escaped = true;
+				continue;
+			}
+			if (!at_end && character == '"' && tag_depth == 0) {
+				quoted = !quoted;
+			} else if (!at_end && character == '[' && !quoted) {
+				tag_depth++;
+			} else if (!at_end && character == ']' && !quoted && tag_depth > 0) {
+				tag_depth--;
+			}
+			if (!at_end && (character != ',' || quoted || tag_depth > 0)) {
+				continue;
+			}
+			auto filter = ParseSelectorAlternative(selector.substr(start, position - start));
+			if (!filter.empty()) {
+				result.push_back(std::move(filter));
+			}
+			start = position + 1;
+		}
+		if (quoted || tag_depth > 0) {
+			throw InvalidInputException("Invalid test selector '%s'", selector);
+		}
+	}
+	return result;
+}
+
+static bool HasTag(const string &tags, const string &expected_tag) {
+	idx_t position = 0;
+	while ((position = tags.find('[', position)) != string::npos) {
+		auto end = tags.find(']', position + 1);
+		if (end == string::npos) {
+			break;
+		}
+		auto tag = StringUtil::Lower(tags.substr(position + 1, end - position - 1));
+		if (tag == expected_tag || (tag.size() > 1 && tag[0] == '.' && expected_tag == tag.substr(1)) ||
+		    (tag.size() > 1 && tag[0] == '.' && expected_tag == ".")) {
+			return true;
+		}
+		position = end + 1;
+	}
 	return false;
+}
+
+static bool MatchesSelectorPattern(const TestDescription &test, const SelectorPattern &pattern) {
+	bool matches;
+	if (pattern.type == SelectorPatternType::TAG) {
+		matches = HasTag(test.tags, pattern.value);
+	} else {
+		auto lower_id = StringUtil::Lower(test.test_id);
+		auto lower_name = StringUtil::Lower(test.name);
+		matches = Glob(lower_id.c_str(), lower_id.size(), pattern.value.c_str(), pattern.value.size(), false) ||
+		          Glob(lower_name.c_str(), lower_name.size(), pattern.value.c_str(), pattern.value.size(), false);
+	}
+	return pattern.excluded ? !matches : matches;
+}
+
+static bool MatchesSelector(const TestDescription &test, const vector<SelectorFilter> &filters) {
+	if (filters.empty()) {
+		return true;
+	}
+	return std::any_of(filters.begin(), filters.end(), [&](const SelectorFilter &filter) {
+		return std::all_of(filter.begin(), filter.end(),
+		                   [&](const SelectorPattern &pattern) { return MatchesSelectorPattern(test, pattern); });
+	});
 }
 
 static bool IsSQLLogicTest(const string &path) {
@@ -521,10 +685,11 @@ static unique_ptr<FunctionData> TestScanBind(ClientContext &context, TableFuncti
 	auto include_slow = BooleanValue::Get(input.inputs[3]);
 	auto test_flags = ReadStringList(input.inputs[4], "test_flags");
 	auto &registry = GetTestRegistry(context);
+	auto parsed_selectors = ParseSelectors(selectors);
 
 	auto result = make_uniq<TestScanData>();
 	for (auto &test : DiscoverTests(context, registry, test_roots, extension_roots, test_flags)) {
-		if ((!test.is_slow || include_slow) && MatchesSelector(test, selectors)) {
+		if ((!test.is_slow || include_slow || !parsed_selectors.empty()) && MatchesSelector(test, parsed_selectors)) {
 			result->tests.push_back(std::move(test));
 		}
 	}

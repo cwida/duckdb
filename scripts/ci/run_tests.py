@@ -329,6 +329,11 @@ def resolve_test_protocol_paths(duckdb_bin: str):
     )
 
 
+def test_protocol_available(duckdb_bin: str):
+    test_extension, _, _ = resolve_test_protocol_paths(duckdb_bin)
+    return test_extension.is_file()
+
+
 def core_functions_load_statement(duckdb_bin: str):
     core_functions = (
         Path(duckdb_bin).resolve().parent / "extension" / "core_functions" / "core_functions.duckdb_extension"
@@ -417,7 +422,28 @@ def read_test_selectors(test_list_files: list[Path] | None):
     return selectors
 
 
-def build_test_command(config: TestRunnerConfig, test_list: str):
+def is_exact_test_selector(selector: str):
+    if selector.startswith(("sql:", "cpp:")) or selector.endswith((".test", ".test_slow", ".test_coverage")):
+        return True
+    return not selector.startswith(("~", "exclude:")) and "*" not in selector and "[" not in selector
+
+
+def test_list_selector_expression(selector: str):
+    if not is_exact_test_selector(selector):
+        return selector
+    escaped = selector.replace("\\", "\\\\").replace('"', '\\"').replace(",", "\\,")
+    return f'"{escaped}"'
+
+
+def build_test_command(config: TestRunnerConfig, test_list: str, protocol: bool = False):
+    if protocol:
+        _, thread_stack_size = split_process_test_flags(config.test_flags)
+        flags = shlex.join(test_protocol_command(config.unittest_bin, thread_stack_size)[1:])
+        return config.test_command.format(
+            binary=shlex.quote(config.unittest_bin),
+            flags=flags,
+            test_list=test_list,
+        )
     test_flags = shlex.split(config.test_flags)
     if "--emit-test-events" not in test_flags:
         test_flags.append("--emit-test-events")
@@ -502,7 +528,7 @@ def generate_test_list(
     test_config: str | None = None,
     test_command: str | None = None,
 ):
-    if test_command is not None:
+    if test_command is not None and not test_protocol_available(unittest_bin):
         list_file_args = []
         if test_list_files:
             list_file_args = [arg for test_list_file in test_list_files for arg in ("-f", str(test_list_file))]
@@ -523,14 +549,15 @@ def generate_test_list(
         return
 
     _, test_roots, bundle_roots = resolve_test_protocol_paths(unittest_bin)
-    selectors = [*read_test_selectors(test_list_files), *patterns]
+    test_list_selectors = read_test_selectors(test_list_files)
+    selectors = [*(test_list_selector_expression(selector) for selector in test_list_selectors), *patterns]
     include_slow = any(
         selector == "*" or selector.endswith((".test_slow", ".test_coverage")) or "[.]" in selector
         for selector in selectors
     )
     configuration_flags, thread_stack_size = split_process_test_flags(test_flags)
     query = (
-        "SELECT test_id, is_slow FROM test_scan("
+        "SELECT test_id, name, is_slow FROM test_scan("
         f"{sql_string_list(selectors)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
         f"{'true' if include_slow else 'false'}, {sql_string_list(configuration_flags)});"
     )
@@ -550,6 +577,7 @@ def generate_test_list(
             flush=True,
         )
         raise TestRunnerError(f"failed to scan tests using {unittest_bin} (exit: {proc.returncode})")
+    selected_tests = []
     for line in proc.stdout.splitlines():
         try:
             row = json.loads(line)
@@ -557,8 +585,21 @@ def generate_test_list(
             continue
         if not isinstance(row, dict) or not isinstance(row.get("test_id"), str):
             continue
+        selected_tests.append(row)
         group = "[.]" if row.get("is_slow") else ""
         test_file.write(f"{row['test_id']}\t{group}\n")
+    selected_names = {
+        row.get("name") if isinstance(row.get("name"), str) else test_id_to_list_name(row["test_id"])
+        for row in selected_tests
+    }
+    selected_ids = {row["test_id"] for row in selected_tests}
+    unmatched_entries = [
+        selector
+        for selector in test_list_selectors
+        if is_exact_test_selector(selector) and selector not in selected_names and selector not in selected_ids
+    ]
+    if unmatched_entries:
+        raise TestRunnerError(f"test list entry did not match any test: {unmatched_entries[0]}")
     test_file.flush()
 
 
@@ -1923,7 +1964,7 @@ def run_custom_batch(config: TestRunnerConfig, batch):
 
 
 def run_batch(config: TestRunnerConfig, batch):
-    if config.test_command is not None:
+    if config.test_command is not None and not test_protocol_available(config.unittest_bin):
         return run_custom_batch(config, batch)
 
     failed = False
@@ -1948,6 +1989,15 @@ def run_batch(config: TestRunnerConfig, batch):
         f"{sql_string_list(configuration_flags)});"
     )
     sql = build_test_protocol_sql(config.unittest_bin, query)
+    protocol_file_path = None
+    if config.test_command is not None:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as protocol_file:
+            protocol_file.write(sql)
+            protocol_file.flush()
+            protocol_file_path = Path(protocol_file.name)
+        command = shlex.split(build_test_command(config, shlex.quote(str(protocol_file_path)), protocol=True))
+    else:
+        command = test_protocol_command(config.unittest_bin, thread_stack_size)
     # Capture the child's stdout/stderr to temp files rather than pipes, avoid deadlock
     # between a process.wait() and a full unread pipe.
     stdout_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
@@ -1962,8 +2012,8 @@ def run_batch(config: TestRunnerConfig, batch):
 
     try:
         proc = subprocess.Popen(
-            test_protocol_command(config.unittest_bin, thread_stack_size),
-            stdin=subprocess.PIPE,
+            command,
+            stdin=subprocess.PIPE if protocol_file_path is None else None,
             stdout=stdout_capture,
             stderr=stderr_capture,
             env=child_env,
@@ -1971,8 +2021,9 @@ def run_batch(config: TestRunnerConfig, batch):
             encoding="utf8",
             errors="backslashreplace",
         )
-        proc.stdin.write(sql)
-        proc.stdin.close()
+        if proc.stdin is not None:
+            proc.stdin.write(sql)
+            proc.stdin.close()
         deadline = time.monotonic() + config.batch_timeout_seconds
 
         while proc.poll() is None:
@@ -2094,6 +2145,8 @@ def run_batch(config: TestRunnerConfig, batch):
         stderr = str(exc)
         message = "failed to launch batch command"
     finally:
+        if protocol_file_path is not None:
+            protocol_file_path.unlink(missing_ok=True)
         stdout_capture.close()
         stderr_capture.close()
         Path(stdout_capture.name).unlink(missing_ok=True)

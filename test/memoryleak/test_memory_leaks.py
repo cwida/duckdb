@@ -2,6 +2,7 @@ import subprocess
 import time
 import argparse
 import os
+import signal
 
 parser = argparse.ArgumentParser(description='Runs the memory leak tests')
 
@@ -9,7 +10,7 @@ parser.add_argument(
     '--unittest',
     dest='unittest',
     action='store',
-    help='Path to unittest executable',
+    help='Path to the unittest runner',
     default='build/release/test/unittest',
 )
 parser.add_argument('--test', dest='test', action='store', help='The name of the tests to run (* is all)', default='*')
@@ -17,6 +18,7 @@ parser.add_argument(
     '--timeout',
     dest='timeout',
     action='store',
+    type=int,
     help='The maximum time to run the test and measure memory usage (in seconds)',
     default=60,
 )
@@ -24,6 +26,7 @@ parser.add_argument(
     '--threshold-percentage',
     dest='threshold_percentage',
     action='store',
+    type=float,
     help='The percentage threshold before we consider an increase a regression',
     default=0.01,
 )
@@ -31,6 +34,7 @@ parser.add_argument(
     '--threshold-absolute',
     dest='threshold_absolute',
     action='store',
+    type=float,
     help='The absolute threshold before we consider an increase a regression',
     default=1000,
 )
@@ -40,15 +44,18 @@ args = parser.parse_args()
 
 unittest_program = args.unittest
 test_filter = args.test
-test_time = int(args.timeout)
+test_time = args.timeout
 verbose = args.verbose
 measurements_per_second = 1.0
 
 # get a list of all unittests
-proc = subprocess.Popen([unittest_program, '-l', '[memoryleak]'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-stdout = proc.stdout.read().decode('utf8')
-stderr = proc.stderr.read().decode('utf8')
-if proc.returncode is not None and proc.returncode != 0:
+proc = subprocess.Popen(
+    [unittest_program, '--list-tests', '[memoryleak]'], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+)
+stdout_bytes, stderr_bytes = proc.communicate()
+stdout = stdout_bytes.decode('utf8')
+stderr = stderr_bytes.decode('utf8')
+if proc.returncode != 0:
     print("Failed to run program " + unittest_program)
     print(proc.returncode)
     print(stdout)
@@ -81,41 +88,65 @@ def sizeof_fmt(num, suffix="B"):
 
 
 def run_test(test_case):
-    # launch the unittest program
+    # Measure and stop the compatibility runner and its DuckDB child together.
     proc = subprocess.Popen(
-        [unittest_program, test_case, '--memory-leak-tests'], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        [unittest_program, '--test-flags=--memory-leak-tests', test_case],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     pid = proc.pid
 
-    # capture the memory output for the duration of the program running
     leak = True
     rss = []
-    for i in range(int(test_time * measurements_per_second)):
-        time.sleep(1.0 / measurements_per_second)
-        if proc.poll() is not None:
-            print("------------------------------------------------")
-            print("                    FAILURE                     ")
-            print("------------------------------------------------")
-            print("                    stdout:                     ")
-            print("------------------------------------------------")
-            print(proc.stdout.read().decode('utf8'))
-            print("------------------------------------------------")
-            print("                    stderr:                     ")
-            print("------------------------------------------------")
-            print(proc.stderr.read().decode('utf8'))
-            exit(1)
-        ps_proc = subprocess.Popen(f'ps -o rss= -p {pid}'.split(' '), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        res = ps_proc.stdout.read().decode('utf8').strip()
-        memory_usage_in_bytes = int(res) * 1024
-        if verbose:
-            print(f"{i / measurements_per_second}: {sizeof_fmt(memory_usage_in_bytes)}")
+    try:
+        for i in range(int(test_time * measurements_per_second)):
+            time.sleep(1.0 / measurements_per_second)
+            if proc.poll() is not None:
+                print("------------------------------------------------")
+                print("                    FAILURE                     ")
+                print("------------------------------------------------")
+                print("                    stdout:                     ")
+                print("------------------------------------------------")
+                print(proc.stdout.read().decode('utf8'))
+                print("------------------------------------------------")
+                print("                    stderr:                     ")
+                print("------------------------------------------------")
+                print(proc.stderr.read().decode('utf8'))
+                exit(1)
+            ps_proc = subprocess.run(
+                ['ps', '-e', '-o', 'pid=', '-o', 'ppid=', '-o', 'rss='],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            processes = {}
+            for line in ps_proc.stdout.splitlines():
+                process_pid, parent_pid, rss_kib = (int(value) for value in line.split())
+                processes[process_pid] = (parent_pid, rss_kib)
+            process_ids = {pid}
+            changed = True
+            while changed:
+                changed = False
+                for process_pid, (parent_pid, _) in processes.items():
+                    if process_pid not in process_ids and parent_pid in process_ids:
+                        process_ids.add(process_pid)
+                        changed = True
+            memory_usage_in_bytes = sum(
+                processes[process_id][1] for process_id in process_ids if process_id in processes
+            )
+            memory_usage_in_bytes *= 1024
+            if verbose:
+                print(f"{i / measurements_per_second}: {sizeof_fmt(memory_usage_in_bytes)}")
 
-        rss.append(memory_usage_in_bytes)
-        if not has_memory_leak(rss):
-            leak = False
-            break
-
-    proc.terminate()
+            rss.append(memory_usage_in_bytes)
+            if not has_memory_leak(rss):
+                leak = False
+                break
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait()
     if leak:
         print("------------------------------------------------")
         print("                     ERROR                      ")
@@ -152,9 +183,6 @@ def has_memory_leak(rss):
     return sum_differences > (max_memory * args.threshold_percentage + args.threshold_absolute)
 
 
-try:
-    for index, test in enumerate(test_cases):
-        print(f"[{index}/{len(test_cases)}] {test}")
-        run_test(test)
-finally:
-    os.system('killall -9 unittest')
+for index, test in enumerate(test_cases):
+    print(f"[{index}/{len(test_cases)}] {test}")
+    run_test(test)
