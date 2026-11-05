@@ -192,6 +192,8 @@ void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 	fn.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 		options.Add("discover", LogicalType::BOOLEAN).Add("type", LogicalType::VARCHAR);
 	});
+	// reads the live external resource registry, and discovery reaches out to external systems
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -279,6 +281,8 @@ void RegisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("attached_db_type", LogicalType::VARCHAR)
 		    .Add("deleter_function", LogicalType::VARCHAR);
 	});
+	// writes the external resource registry per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -330,9 +334,12 @@ static void DeregisterExternalResourceFunction(ClientContext &context, TableFunc
 }
 
 void DeregisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction(
+	TableFunction deregister_fun(
 	    "deregister_external_resource", FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR),
-	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit));
+	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit);
+	// writes the external resource registry per execution
+	deregister_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(deregister_fun));
 }
 
 } // namespace duckdb

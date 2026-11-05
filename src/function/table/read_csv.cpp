@@ -204,9 +204,6 @@ TableFunction ReadCSVTableFunction::GetFunction() {
 	read_csv.serialize = CSVReaderSerialize;
 	read_csv.deserialize = CSVReaderDeserialize;
 	read_csv.projection_expression_pushdown = PushdownProjectionExpressionMultiFile;
-	// the file list is fixed at bind, file content is assumed stable within one query, and reject recording
-	// reflects the executions of the optimized scan
-	read_csv.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	return read_csv;
 }
 

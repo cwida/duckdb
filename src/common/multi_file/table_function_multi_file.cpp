@@ -922,7 +922,7 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 	result.supports_pushdown_type = single_file_function.supports_pushdown_type;
 	result.late_materialization = single_file_function.late_materialization;
 	// the declared stability of the wrapped function describes its executions independently of the file list, so it
-	// carries over to the multi-file scan - an unset or explicitly volatile declaration stays as it is
+	// carries over to the multi-file scan - an explicitly volatile declaration is never upgraded
 	result.stability = single_file_function.stability;
 	if (single_file_function.get_partition_stats) {
 		// the row groups of the scan are those of its files

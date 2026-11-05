@@ -108,13 +108,13 @@ string CreateReaderInputFile(const string &name) {
 
 // SQL cannot register a multi-file-wrapped reader whose wrapped function carries a controlled stability
 // declaration and an observable execution counter. Keep the wrapper admission contract here, with the builtin
-// reader coverage in SQL: the wrapper must not declare a wrapped reader repeatable on its behalf, neither when
-// the reader leaves its stability undeclared nor when it explicitly declares itself volatile.
-TEST_CASE("Multi-file wrapping does not make a stateful reader repeatable", "[optimizer][common_subplan]") {
+// reader coverage in SQL: the wrapper carries the wrapped reader's declared stability through, so an undeclared
+// reader falls under the stable-within-query default while an explicitly volatile reader stays excluded.
+TEST_CASE("Multi-file wrapping carries the wrapped reader's declared stability", "[optimizer][common_subplan]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	RegisterWrappedReader(db, "wrapped_reader_unknown", WrappedReaderFunction, false);
-	RegisterWrappedReader(db, "wrapped_reader_false", WrappedReaderFunction, true);
+	RegisterWrappedReader(db, "wrapped_reader_volatile", WrappedReaderFunction, true);
 
 	auto path = CreateReaderInputFile("multi_file_repeatability_input");
 
@@ -122,13 +122,13 @@ TEST_CASE("Multi-file wrapping does not make a stateful reader repeatable", "[op
 	REQUIRE_NO_FAIL(con.Query("SET enable_caching_operators=true"));
 	REQUIRE_NO_FAIL(con.Query("SET disabled_optimizers='join_order,build_side_probe_side'"));
 
-	for (const auto &name : {"wrapped_reader_unknown", "wrapped_reader_false"}) {
+	auto run_query = [&](const string &name) {
 		const string query = "WITH RECURSIVE r(i) AS ("
 		                     "    VALUES (0)"
 		                     "    UNION ALL"
 		                     "    SELECT r.i + 1 FROM r"
 		                     "    JOIN (SELECT k FROM " +
-		                     string(name) + "('" + path +
+		                     name + "('" + path +
 		                     "')) build ON build.k = r.i + 1"
 		                     "    WHERE r.i < 3"
 		                     ") SELECT count(*) FROM r";
@@ -136,15 +136,21 @@ TEST_CASE("Multi-file wrapping does not make a stateful reader repeatable", "[op
 		auto result = con.Query(query);
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(CHECK_COLUMN(result, 0, {4}));
-		// a reader the wrapper declared repeatable would be retained across the iterations and execute once -
-		// without an affirmative stability declaration of its own it must be re-executed every iteration
-		REQUIRE(wrapped_reader_executions.load() >= 2);
-	}
+	};
+
+	// contract decision from the PR review: an undeclared table function is stable within the query, so the
+	// wrapped reader's hash build is retained across the iterations and the reader executes once
+	run_query("wrapped_reader_unknown");
+	REQUIRE(wrapped_reader_executions.load() == 1);
+
+	// an explicitly volatile reader must be re-executed every iteration
+	run_query("wrapped_reader_volatile");
+	REQUIRE(wrapped_reader_executions.load() >= 2);
 }
 
 // SQL cannot register a reader whose returned rows encode its execution count. Unlike the counter test above,
-// which pins the no-observable-side-effects contract, this reader makes a wrongly retained or shared scan
-// visible directly in the query result - the shape of the original wrong-results report.
+// which pins the no-observable-side-effects contract, this reader makes a retained or shared scan visible
+// directly in the query result - the shape of the original wrong-results report.
 TEST_CASE("Multi-file wrapping keeps execution-count-valued reader results correct", "[optimizer][common_subplan]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -156,30 +162,32 @@ TEST_CASE("Multi-file wrapping keeps execution-count-valued reader results corre
 	// pin the reader to the retained build side, like the repeatability logging fixture does
 	REQUIRE_NO_FAIL(con.Query("SET disabled_optimizers='join_order,build_side_probe_side'"));
 
-	for (const auto &name : {"counting_reader_unknown", "counting_reader_volatile"}) {
-		// execution 1 returns the rows 1..3, so the recursion only continues past i = 1 when a stale first
-		// execution is wrongly retained - correct re-execution returns 4..6 next and stops the recursion
+	// execution 1 returns the rows 1..3, so the recursion only continues past i = 1 when the first execution
+	// is retained - re-execution returns 4..6 next and stops the recursion
+	auto run_query = [&](const string &name, bool caching, const string &expected) {
 		const string query = "WITH RECURSIVE r(i) AS ("
 		                     "    VALUES (0)"
 		                     "    UNION ALL"
 		                     "    SELECT r.i + 1 FROM r"
 		                     "    JOIN (SELECT k FROM " +
-		                     string(name) + "('" + path +
+		                     name + "('" + path +
 		                     "')) build ON build.k = r.i + 1"
 		                     "    WHERE r.i < 5"
 		                     ") SELECT list(i ORDER BY i)::VARCHAR FROM r";
-
-		REQUIRE_NO_FAIL(con.Query("SET enable_caching_operators=false"));
-		counting_reader_executions = 0;
-		auto expected = con.Query(query);
-		REQUIRE_NO_FAIL(*expected);
-		REQUIRE(CHECK_COLUMN(expected, 0, {"[0, 1]"}));
-
-		REQUIRE_NO_FAIL(con.Query("SET enable_caching_operators=true"));
+		REQUIRE_NO_FAIL(con.Query("SET enable_caching_operators=" + string(caching ? "true" : "false")));
 		counting_reader_executions = 0;
 		auto result = con.Query(query);
 		REQUIRE_NO_FAIL(*result);
-		// the caching-enabled result must match the caching-disabled baseline of the same query
-		REQUIRE(CHECK_COLUMN(result, 0, {expected->Collection().GetValue(0, 0)}));
-	}
+		REQUIRE(CHECK_COLUMN(result, 0, {expected}));
+	};
+
+	// an explicitly volatile reader is re-executed every iteration, with and without caching operators
+	run_query("counting_reader_volatile", false, "[0, 1]");
+	run_query("counting_reader_volatile", true, "[0, 1]");
+
+	// contract decision from the PR review: an undeclared reader is stable within the query, so its build is
+	// retained and the recursion keeps joining against the rows of the first execution. This reader violates
+	// the default contract on purpose - a reader with execution-count-valued rows must declare VOLATILE
+	run_query("counting_reader_unknown", false, "[0, 1]");
+	run_query("counting_reader_unknown", true, "[0, 1, 2, 3]");
 }

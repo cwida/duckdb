@@ -885,6 +885,9 @@ public:
 			function.get_bind_info = CV2TableGetBindInfo;
 		}
 
+		// a function registered through the C API makes no stability promise unless one was declared
+		function.stability = stability;
+
 		info.name = name;
 		function.function_info = make_shared_ptr<CV2TableFunctionInfo>(std::move(info));
 
@@ -898,6 +901,7 @@ public:
 	CV2FunctionDocs docs;
 	CV2TableFunctionInfo info;
 	Identifier name;
+	FunctionStability stability = FunctionStability::VOLATILE;
 };
 
 static auto Convert(duckdb_v2_table_function_handle func) -> CV2TableFunction * {

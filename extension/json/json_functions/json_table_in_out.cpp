@@ -493,7 +493,6 @@ TableFunction GetJSONTableInOutFunction(const LogicalType &input_type, const boo
 	TableFunction function(std::move(signature), nullptr, JSONTableInOutBind, JSONTableInOutInitGlobal,
 	                       JSONTableInOutInitLocal);
 	function.in_out_function = JSONTableInOutFunction<TYPE>;
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	function.table_scan_progress = JSONTableInOutProgress;
 	function.get_virtual_columns = GetJSONTableInOutVirtualColumns;
 	function.projection_pushdown = true;

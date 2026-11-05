@@ -9,7 +9,6 @@
 #pragma once
 
 #include "duckdb/common/enums/operator_result_type.hpp"
-#include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb/execution/physical_operator_states.hpp"
@@ -530,15 +529,15 @@ public:
 	table_function_supports_pushdown_type_t supports_pushdown_type;
 	//! (Optional) If this scanner supports projection pushdown of struct extracts
 	table_function_supports_pushdown_extract_t supports_pushdown_extract;
-	//! (Optional) the declared stability of the scan's executions. CONSISTENT_WITHIN_QUERY guarantees that repeated
+	//! The declared stability of the scan's executions. The default CONSISTENT_WITHIN_QUERY guarantees that repeated
 	//! executions with the same bound data and input rows return equivalent rows within one query, and that changing
 	//! how often the scan executes has no observable side effects (e.g. no counters, logs, or tables written per
 	//! execution). Used by optimizers that may share or repeat a scan. Separately bound scans additionally need
 	//! equivalent identities before their results may be shared - stability alone does not establish that two calls
-	//! are the same scan. Declare VOLATILE when execution reads mutable external state or writes any state per
-	//! execution. Unset means unknown and is treated conservatively. A stability that depends on the bound call is
-	//! set during binding through TableFunctionBindInput::table_function instead.
-	optional<FunctionStability> stability;
+	//! are the same scan. Declare VOLATILE when execution reads live execution state or mutable external state, or
+	//! writes any state per execution. A stability that depends on the bound call is set during binding through
+	//! TableFunctionBindInput::table_function instead.
+	FunctionStability stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	//! Get partition info of the table
 	table_function_get_partition_info_t get_partition_info;
 	//! (Optional) get a list of all the partition stats of the table

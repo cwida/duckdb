@@ -65,12 +65,8 @@ static LogicalOperatorRepeatability ClassifyOperatorType(LogicalOperator &op) {
 		if (get.GetTable()) {
 			return LogicalOperatorRepeatability::REPEATABLE;
 		}
-		if (!get.function.stability.has_value()) {
-			// the function declares no stability - stay unclassified
-			return LogicalOperatorRepeatability::UNKNOWN;
-		}
-		return *get.function.stability == FunctionStability::VOLATILE ? LogicalOperatorRepeatability::NON_REPEATABLE
-		                                                              : LogicalOperatorRepeatability::REPEATABLE;
+		return get.function.stability == FunctionStability::VOLATILE ? LogicalOperatorRepeatability::NON_REPEATABLE
+		                                                             : LogicalOperatorRepeatability::REPEATABLE;
 	}
 	case LogicalOperatorType::LOGICAL_SAMPLE: {
 		auto &sample = op.Cast<LogicalSample>();

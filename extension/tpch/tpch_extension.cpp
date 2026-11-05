@@ -304,6 +304,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		    .Add("step", LogicalType::UINTEGER);
 	});
 	dbgen_func.call_return_type = StatementReturnType::NOTHING;
+	// creates and fills tables per execution
+	dbgen_func.stability = FunctionStability::VOLATILE;
 	dbgen_func.table_scan_progress = DbgenProgress;
 	loader.RegisterFunction(dbgen_func);
 
@@ -318,7 +320,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunctionSet tpch_queries_set("tpch_queries");
 	for (auto &arguments : vector<vector<LogicalType>> {{}, {LogicalType::DOUBLE}}) {
 		TableFunction tpch_query_func(arguments, TPCHQueryFunction, TPCHQueryBind, TPCHInit);
-		tpch_query_func.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 		tpch_query_func.GetSignature().WithTypedKwargs(
 		    "options", [](TypedKwargs &options) { options.Add("sf", LogicalType::DOUBLE); });
 		tpch_queries_set.AddFunction(tpch_query_func);
@@ -327,7 +328,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// create the TPCH_ANSWERS that returns the query result
 	TableFunction tpch_query_answer_func("tpch_answers", {}, TPCHQueryAnswerFunction, TPCHQueryAnswerBind, TPCHInit);
-	tpch_query_answer_func.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	loader.RegisterFunction(tpch_query_answer_func);
 }
 

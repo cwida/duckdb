@@ -53,8 +53,8 @@ void NonSerializableFunction(ClientContext &, TableFunctionInput &data, DataChun
 }
 
 void RegisterNonSerializableTableFunction(DuckDB &db) {
+	// stable under the default declaration - sharing is blocked by the missing serialization callbacks alone
 	TableFunction table_function("nonserial_tf", {}, NonSerializableFunction, NonSerializableBind, NonSerializableInit);
-	table_function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
@@ -121,9 +121,9 @@ void RegisterZeroArgumentTableFunction(DuckDB &db) {
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
 	ExtensionLoader loader {load_info};
+	// stable under the default declaration - sharing is blocked by the zero-positional-argument identity guard
 	TableFunction zero_argument("repeatability_zero_arg", {}, NonSerializableFunction, ZeroArgumentBind,
 	                            ZeroArgumentInit);
-	zero_argument.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	loader.RegisterFunction(zero_argument);
 }
 
@@ -165,34 +165,45 @@ TEST_CASE("Common subplan skips table functions without serialization callbacks"
 
 // SQL cannot register the stability declaration or make an opaque scan return a different value
 // deterministically on each initialization. Keep that API contract here, with builtin scan coverage in SQL.
-TEST_CASE("Common subplans require affirmative table function repeatability", "[optimizer][common_subplan]") {
+TEST_CASE("Common subplans follow the declared table function stability", "[optimizer][common_subplan]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	RegisterRepeatabilityTableFunctions(db);
 	REQUIRE_NO_FAIL(con.Query("SET explain_output='optimized_only'"));
 
-	for (const auto &name : {"repeatability_unknown", "repeatability_false"}) {
-		const string query =
-		    "SELECT count(*) FROM (SELECT i FROM " + string(name) + "(7) INTERSECT ALL SELECT i FROM " + name + "(7))";
-		non_repeatable_scan_count = 0;
-		auto result = con.Query(query);
-		REQUIRE_NO_FAIL(*result);
-		REQUIRE(CHECK_COLUMN(result, 0, {0}));
-		REQUIRE(non_repeatable_scan_count.load() == 2);
-		REQUIRE(!StringUtil::Contains(GetExplainPlan(con, query), "__common_subplan_"));
-	}
+	// an explicitly volatile scan is never shared
+	const string volatile_query = "SELECT count(*) FROM (SELECT i FROM repeatability_false(7) "
+	                              "INTERSECT ALL SELECT i FROM repeatability_false(7))";
+	non_repeatable_scan_count = 0;
+	auto result = con.Query(volatile_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	REQUIRE(non_repeatable_scan_count.load() == 2);
+	REQUIRE(!StringUtil::Contains(GetExplainPlan(con, volatile_query), "__common_subplan_"));
+
+	// contract decision from the PR review: an undeclared scan is stable within the query and shares like an
+	// explicitly declared one. This scan violates the default contract on purpose - a scan whose rows change
+	// per initialization must declare VOLATILE
+	const string unknown_query = "SELECT count(*) FROM (SELECT i FROM repeatability_unknown(7) "
+	                             "INTERSECT ALL SELECT i FROM repeatability_unknown(7))";
+	non_repeatable_scan_count = 0;
+	result = con.Query(unknown_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(non_repeatable_scan_count.load() == 1);
+	REQUIRE(StringUtil::Contains(GetExplainPlan(con, unknown_query), "__common_subplan_"));
 
 	// Positional parameters identify this stable scan without serializing its bind data.
 	const string repeatable_query = "SELECT count(*) FROM (SELECT i FROM repeatability_true(7) "
 	                                "INTERSECT ALL SELECT i FROM repeatability_true(7))";
-	auto result = con.Query(repeatable_query);
+	result = con.Query(repeatable_query);
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(StringUtil::Contains(GetExplainPlan(con, repeatable_query), "__common_subplan_"));
 }
 
-// SQL cannot register a statement-cache-supporting, affirmatively repeatable scan whose separate binds
-// capture different fixed rows. Keep the zero-positional-argument identity guard contract here.
+// SQL cannot register a statement-cache-supporting, default-stable scan whose separate binds capture
+// different fixed rows. Keep the zero-positional-argument identity guard contract here.
 TEST_CASE("Common subplans require positional parameters to identify repeatable scans", "[optimizer][common_subplan]") {
 	DuckDB db(nullptr);
 	Connection con(db);

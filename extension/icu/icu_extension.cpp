@@ -468,7 +468,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                          SetICUCalendar);
 
 	TableFunction cal_names("icu_calendar_names", {}, ICUCalendarFunction, ICUCalendarBind, ICUCalendarInit);
-	cal_names.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	loader.RegisterFunction(cal_names);
 }
 

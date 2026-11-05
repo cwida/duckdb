@@ -45,7 +45,6 @@ void SummaryTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction summary_function("summary", FunctionSignature().AddPositionalOnly("input", LogicalType::TABLE),
 	                               nullptr, SummaryFunctionBind);
 	summary_function.in_out_function = SummaryFunction;
-	summary_function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(summary_function);
 }
 

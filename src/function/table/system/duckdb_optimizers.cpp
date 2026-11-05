@@ -53,7 +53,6 @@ void DuckDBOptimizersFunction(ClientContext &context, TableFunctionInput &data_p
 void DuckDBOptimizersFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction duckdb_optimizers("duckdb_optimizers", {}, DuckDBOptimizersFunction, DuckDBOptimizersBind,
 	                                DuckDBOptimizersInit);
-	duckdb_optimizers.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(duckdb_optimizers);
 }
 

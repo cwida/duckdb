@@ -349,9 +349,6 @@ TableFunction JSONFunctions::GetJSONTableFunction(Identifier name, shared_ptr<JS
 	settings.reports_bytes_scanned = true;
 	auto result = TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
 	                                                            std::move(settings));
-	// the file list is fixed at bind, file content is assumed stable within one query, and reading JSON files has
-	// no per-execution side effects
-	result.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	return result;
 }
 

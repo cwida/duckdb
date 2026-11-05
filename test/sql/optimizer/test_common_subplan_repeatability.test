@@ -123,20 +123,20 @@ SELECT * FROM unnest([nextval('repeatability_seq')]);
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
 
-# The guard alone excludes an unannotated parameterized scan: its serialized call parameters match,
-# it supports the statement cache, and nothing but the missing repeatability promise blocks sharing.
+# Contract decision from the PR review: an undeclared parameterized scan is stable within the query, so
+# the guard admits it and the identical calls share.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT * FROM pragma_storage_info('repeatable_input') INTERSECT ALL SELECT * FROM pragma_storage_info('repeatable_input');
 ----
-logical_opt	<!REGEX>:.*__common_subplan_.*
+logical_opt	<REGEX>:.*__common_subplan_.*
 
 query I
 SELECT (SELECT count(*) FROM pragma_storage_info('repeatable_input')) = (SELECT count(*) FROM pragma_storage_info('repeatable_input'));
 ----
 true
 
-# Live execution statistics do not promise repeatability.
+# Live execution statistics are declared volatile and never share.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT * FROM duckdb_memory() INTERSECT ALL SELECT * FROM duckdb_memory();

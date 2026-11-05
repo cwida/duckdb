@@ -286,9 +286,6 @@ TableFunction ParquetScanFunction::GetMultiFileFunction(Identifier name) {
 	// the multi-file parquet reader is the single-file parquet reader wrapped into a multi-file function
 	auto result = TableFunctionMultiFileWrapper::CreateFunction(GetSingleFileFunction(), std::move(name),
 	                                                            GetMultiFileSettings(), ParquetMultiFileBind);
-	// the file list is fixed at bind, file content is assumed stable within one query, and reading parquet files
-	// has no per-execution side effects
-	result.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	result.GetSignature().ExtendTypedKwargs(
 	    [](TypedKwargs &options) { options.Add("bound_schema", LogicalType::ANY); });
 	// the callbacks below describe the scan rather than one of its files, so they are set on the wrapper

@@ -94,7 +94,6 @@ void UnnestTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	                              UnnestBind, UnnestInit, UnnestLocalInit);
 	unnest_function.in_out_function = UnnestFunction;
 	unnest_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
-	unnest_function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(unnest_function);
 }
 

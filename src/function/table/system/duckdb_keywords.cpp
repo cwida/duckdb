@@ -58,7 +58,6 @@ void DuckDBKeywordsFunction(ClientContext &context, TableFunctionInput &data_p, 
 void DuckDBKeywordsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction duckdb_keywords("duckdb_keywords", {}, DuckDBKeywordsFunction, DuckDBKeywordsBind,
 	                              DuckDBKeywordsInit);
-	duckdb_keywords.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(duckdb_keywords);
 }
 

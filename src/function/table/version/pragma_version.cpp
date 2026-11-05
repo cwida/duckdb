@@ -46,7 +46,6 @@ void PragmaVersion::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction pragma_version("pragma_version", {}, PragmaVersionFunction);
 	pragma_version.bind = PragmaVersionBind;
 	pragma_version.init_global = PragmaVersionInit;
-	pragma_version.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(pragma_version);
 }
 
@@ -127,7 +126,6 @@ void PragmaPlatform::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction pragma_platform("pragma_platform", {}, PragmaPlatformFunction);
 	pragma_platform.bind = PragmaPlatformBind;
 	pragma_platform.init_global = PragmaPlatformInit;
-	pragma_platform.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	set.AddFunction(pragma_platform);
 }
 
