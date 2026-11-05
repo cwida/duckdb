@@ -324,8 +324,18 @@ static void ValidateCopyToOptionCombinations(const CopyToParsedOptions &options,
 	    !function.copy_to_get_written_statistics) {
 		throw NotImplementedException("RETURN_STATS is not supported for the \"%s\" copy format", format);
 	}
-	if (options.Fsync() && !function.supports_fsync) {
-		throw NotImplementedException("FSYNC is not supported for the \"%s\" copy format", format);
+}
+
+static void ValidateCopyToFsync(ClientContext &context, const CopyInfo &info, const CopyFunction &function) {
+	auto entry = info.options.find("fsync");
+	if (entry == info.options.end()) {
+		return;
+	}
+	if (!entry->second.empty() && entry->second[0].IsNull()) {
+		throw BinderException("NULL is not supported as a valid option for COPY option %s", entry->first);
+	}
+	if (!function.supports_fsync && GetBooleanArg(context, entry->second)) {
+		throw NotImplementedException("FSYNC is not supported for the \"%s\" copy format", info.format);
 	}
 }
 
@@ -392,6 +402,8 @@ private:
 };
 
 BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &function, CopyToType copy_to_type) {
+	// checked before a copy function plans itself, which skips the checks of the other options
+	ValidateCopyToFsync(context, *stmt.info, function);
 	if (function.plan) {
 		// plan rewrite COPY TO
 		auto result = function.plan(*this, stmt);

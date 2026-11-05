@@ -12,6 +12,8 @@
 #include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/thread_context.hpp"
+#include "duckdb/parser/statement/copy_statement.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "test_helpers.hpp"
 
 #include <chrono>
@@ -276,12 +278,22 @@ CopyFunction CreateLifecycleCopyFunction(const string &name, const shared_ptr<Li
 	return function;
 }
 
-void RegisterLifecycleCopyFunction(DuckDB &db, const string &name, const shared_ptr<LifecycleCopyInfo> &info,
-                                   bool batch_mode = false) {
+BoundStatement LifecycleCopyPlan(Binder &binder, CopyStatement &stmt) {
+	// plans a CSV copy, whose writer supports FSYNC
+	stmt.info->format = "csv";
+	return binder.Bind(stmt);
+}
+
+void RegisterLifecycleCopyFunction(DuckDB &db, CopyFunction function) {
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "copy_output_lifecycle_test", ""};
 	ExtensionLoader loader {load_info};
-	loader.RegisterFunction(CreateLifecycleCopyFunction(name, info, batch_mode));
+	loader.RegisterFunction(std::move(function));
+}
+
+void RegisterLifecycleCopyFunction(DuckDB &db, const string &name, const shared_ptr<LifecycleCopyInfo> &info,
+                                   bool batch_mode = false) {
+	RegisterLifecycleCopyFunction(db, CreateLifecycleCopyFunction(name, info, batch_mode));
 }
 
 void RemoveDirectoryIfPresent(FileSystem &fs, const string &path) {
@@ -881,6 +893,30 @@ TEST_CASE("COPY rejects FSYNC for a copy function that cannot sync its files", "
 	REQUIRE_FAIL(result);
 	REQUIRE(StringUtil::Contains(result->GetError(), "FSYNC is not supported"));
 	REQUIRE(info->initialized_paths.empty());
+}
+
+TEST_CASE("COPY rejects FSYNC for a copy function that plans itself without supporting it", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto function = CreateLifecycleCopyFunction("copy_lifecycle_plan", make_shared_ptr<LifecycleCopyInfo>());
+	function.plan = LifecycleCopyPlan;
+	RegisterLifecycleCopyFunction(db, std::move(function));
+	auto output = TestCreatePath("copy_lifecycle_plan.csv");
+	fs.TryRemoveFile(output);
+
+	auto result = connection.Query(
+	    StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FORMAT copy_lifecycle_plan, FSYNC)", output));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "FSYNC is not supported"));
+	REQUIRE(!fs.FileExists(output));
+
+	// the plan is used without FSYNC
+	REQUIRE_NO_FAIL(
+	    connection.Query(StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FORMAT copy_lifecycle_plan)", output)));
+	result = connection.Query(StringUtil::Format("SELECT i FROM '%s'", output));
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	fs.RemoveFile(output);
 }
 
 #ifndef _WIN32

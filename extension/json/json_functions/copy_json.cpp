@@ -393,6 +393,8 @@ CopyFunction JSONFunctions::GetGeoJSONCopyFunction() {
 	function.extension = "geojson";
 
 	function.plan = CopyToGeoJSONPlan;
+	// the CSV writer the plan uses syncs the file
+	function.supports_fsync = true;
 
 	SetJSONCopyFromFunction(function, "read_json");
 
@@ -404,6 +406,8 @@ CopyFunction JSONFunctions::GetJSONCopyFunction() {
 	function.extension = "json";
 
 	function.plan = CopyToJSONPlan;
+	// the CSV writer the plan uses syncs the file
+	function.supports_fsync = true;
 	SetJSONCopyFromFunction(function, "read_json");
 
 	return function;
