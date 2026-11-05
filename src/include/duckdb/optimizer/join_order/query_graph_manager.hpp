@@ -59,6 +59,7 @@ public:
 	//! Get a reference to the QueryGraphEdges structure that stores edges between nodes and hypernodes.
 	const QueryGraphEdges &GetQueryGraphEdges() const;
 	const JoinPredicateModel &GetPredicateModel() const;
+	const vector<unique_ptr<JoinOrderOperator>> &GetJoinOperators() const;
 
 private:
 	void GetColumnBinding(const Expression &expression, ColumnBinding &binding);
