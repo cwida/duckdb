@@ -19,7 +19,8 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 	if (delimiter.empty() || delimiter.size() > 4 || options.comment != '\0' || (escape != '\0' && escape != quote)) {
 		return false;
 	}
-	if (new_line != NewLineIdentifier::SINGLE_N && new_line != NewLineIdentifier::CARRY_ON) {
+	if (new_line != NewLineIdentifier::SINGLE_N && new_line != NewLineIdentifier::CARRY_ON &&
+	    new_line != NewLineIdentifier::SINGLE_R) {
 		return false;
 	}
 	const auto delimiter_byte = static_cast<uint8_t>(delimiter[0]);
@@ -48,6 +49,9 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 			return false;
 		}
 		if (new_line == NewLineIdentifier::CARRY_ON && transition_array['\r'][from_idx] != CSVState::CARRIAGE_RETURN) {
+			return false;
+		}
+		if (new_line == NewLineIdentifier::SINGLE_R && transition_array['\r'][from_idx] != CSVState::RECORD_SEPARATOR) {
 			return false;
 		}
 		const bool after_separator = from != CSVState::STANDARD && from != CSVState::EMPTY_SPACE;
@@ -108,6 +112,9 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 		return false;
 	}
 	if (new_line == NewLineIdentifier::CARRY_ON && transition_array['\r'][unquoted] != CSVState::CARRIAGE_RETURN) {
+		return false;
+	}
+	if (new_line == NewLineIdentifier::SINGLE_R && transition_array['\r'][unquoted] != CSVState::RECORD_SEPARATOR) {
 		return false;
 	}
 	return escape != quote || transition_array[quote][unquoted] == CSVState::QUOTED;

@@ -214,6 +214,7 @@ protected:
 	const bool block_multi_byte_delimiter;
 	const uint8_t block_quote;
 	const bool block_crlf;
+	const bool block_cr;
 	const bool block_escape_is_quote;
 
 	//! Whether the state machine can hand the current byte to ProcessBlocks
@@ -289,6 +290,9 @@ protected:
 	idx_t RowEndBytes(const uint8_t byte, const idx_t at, const idx_t limit) const {
 		if (block_crlf) {
 			return byte == '\r' && at + 1 < limit && buffer_handle_ptr[at + 1] == '\n' ? 2 : 0;
+		}
+		if (block_cr) {
+			return byte == '\r' ? 1 : 0;
 		}
 		return byte == '\n' ? 1 : 0;
 	}
