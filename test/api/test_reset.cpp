@@ -183,6 +183,7 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "allow_unsigned_extensions",    // cant change this while db is running
 	    "allowed_configs",
 	    "allowed_directories",
+	    "default_grammar_extensions", // non-empty values require a registered grammar extension
 	    "allowed_paths",
 	    "current_dialect",
 	    "custom_user_agent",

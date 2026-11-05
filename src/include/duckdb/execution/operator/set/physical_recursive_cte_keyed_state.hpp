@@ -49,8 +49,8 @@ public:
 	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override;
 	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) override;
 	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) override;
-	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk,
-	                         RecursiveCTEGlobalSourceState &source) override;
+	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, RecursiveCTEGlobalSourceState &source,
+	                         const InterruptState &interrupt_state) override;
 	const ColumnDataCollection &CurrentInputTable() const override;
 	idx_t RecurringStateRows() const override;
 	idx_t RecurringStateChunks() const override;
@@ -81,7 +81,8 @@ private:
 	void AssembleStateRows(DataChunk &keys, DataChunk &aggregates, DataChunk &result) const;
 	template <bool COLLECT_METRICS>
 	SourceResultType GetUsingKeyDataInternal(ExecutionContext &context, DataChunk &chunk,
-	                                         RecursiveCTEGlobalSourceState &source);
+	                                         RecursiveCTEGlobalSourceState &source,
+	                                         const InterruptState &interrupt_state);
 	template <bool COLLECT_METRICS>
 	void CommitUsingKeyUpdatesInternal();
 	template <bool COLLECT_METRICS>
