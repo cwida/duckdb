@@ -2534,20 +2534,19 @@ const StringUtil::EnumStringLiteral *GetExternalResourceOperationValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ExternalResourceOperation::CREATE), "CREATE" },
 		{ static_cast<uint32_t>(ExternalResourceOperation::REGISTER), "REGISTER" },
-		{ static_cast<uint32_t>(ExternalResourceOperation::DESTROY), "DESTROY" },
-		{ static_cast<uint32_t>(ExternalResourceOperation::SHOW), "SHOW" }
+		{ static_cast<uint32_t>(ExternalResourceOperation::DESTROY), "DESTROY" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ExternalResourceOperation>(ExternalResourceOperation value) {
-	return StringUtil::EnumToString(GetExternalResourceOperationValues(), 4, "ExternalResourceOperation", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExternalResourceOperationValues(), 3, "ExternalResourceOperation", static_cast<uint32_t>(value));
 }
 
 template<>
 ExternalResourceOperation EnumUtil::FromString<ExternalResourceOperation>(const char *value) {
-	return static_cast<ExternalResourceOperation>(StringUtil::StringToEnum(GetExternalResourceOperationValues(), 4, "ExternalResourceOperation", value));
+	return static_cast<ExternalResourceOperation>(StringUtil::StringToEnum(GetExternalResourceOperationValues(), 3, "ExternalResourceOperation", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExtraDropInfoTypeValues() {

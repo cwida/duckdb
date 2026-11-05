@@ -99,10 +99,12 @@ terminal_rule_overrides_t ParsedGrammar::BuildTerminalRuleOverrides(const PEGKey
 	                        make_uniq<ReservedIdentifierMatcher>(SuggestionState::SUGGEST_VARIABLE, keyword_helper));
 	AddTerminalRuleOverride(overrides, "SequenceName",
 	                        make_uniq<IdentifierMatcher>(SuggestionState::SUGGEST_VARIABLE, keyword_helper));
-	AddTerminalRuleOverride(overrides, "FunctionName",
-	                        make_uniq<IdentifierMatcher>(SuggestionState::SUGGEST_SCALAR_FUNCTION_NAME, keyword_helper));
-	AddTerminalRuleOverride(overrides, "ReservedFunctionName",
-	                        make_uniq<ReservedIdentifierMatcher>(SuggestionState::SUGGEST_SCALAR_FUNCTION_NAME, keyword_helper));
+	AddTerminalRuleOverride(
+	    overrides, "FunctionName",
+	    make_uniq<IdentifierMatcher>(SuggestionState::SUGGEST_SCALAR_FUNCTION_NAME, keyword_helper));
+	AddTerminalRuleOverride(
+	    overrides, "ReservedFunctionName",
+	    make_uniq<ReservedIdentifierMatcher>(SuggestionState::SUGGEST_SCALAR_FUNCTION_NAME, keyword_helper));
 	AddTerminalRuleOverride(overrides, "ReservedKeyword",
 	                        make_uniq<ReservedIdentifierMatcher>(SuggestionState::SUGGEST_VARIABLE, keyword_helper));
 	AddTerminalRuleOverride(overrides, "TableFunctionName",
