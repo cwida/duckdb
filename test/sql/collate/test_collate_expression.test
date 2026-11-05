@@ -54,3 +54,18 @@ hEllO
 WöRlD
 wozld
 
+
+
+# COLLATE inside subscript ToString roundtrip
+query T
+SELECT ('abc' COLLATE nocase)[1];
+----
+a
+
+statement ok
+CREATE VIEW v_collate_subscript AS SELECT ('abc' COLLATE nocase)[1] AS x;
+
+query T
+SELECT x FROM v_collate_subscript;
+----
+a

@@ -105,9 +105,26 @@ public:
 			return "(" + children[0]->ToString() + " IS NULL)";
 		case ExpressionType::OPERATOR_IS_NOT_NULL:
 			return "(" + children[0]->ToString() + " IS NOT NULL)";
-		case ExpressionType::ARRAY_EXTRACT:
-			return children[0]->ToString() + "[" + children[1]->ToString() + "]";
+		case ExpressionType::ARRAY_EXTRACT: {
+			auto base = children[0]->ToString();
+			if (children[0]->GetExpressionClass() == ExpressionClass::COLLATE ||
+			    (children[0]->GetExpressionClass() == ExpressionClass::OPERATOR &&
+			     children[0]->GetExpressionType() != ExpressionType::ARRAY_EXTRACT &&
+			     children[0]->GetExpressionType() != ExpressionType::STRUCT_EXTRACT) ||
+			    (children[0]->GetExpressionClass() == ExpressionClass::CONSTANT && !base.empty() && base[0] == '-')) {
+				base = "(" + base + ")";
+			}
+			return base + "[" + children[1]->ToString() + "]";
+		}
 		case ExpressionType::ARRAY_SLICE: {
+			auto base = children[0]->ToString();
+			if (children[0]->GetExpressionClass() == ExpressionClass::COLLATE ||
+			    (children[0]->GetExpressionClass() == ExpressionClass::OPERATOR &&
+			     children[0]->GetExpressionType() != ExpressionType::ARRAY_EXTRACT &&
+			     children[0]->GetExpressionType() != ExpressionType::STRUCT_EXTRACT) ||
+			    (children[0]->GetExpressionClass() == ExpressionClass::CONSTANT && !base.empty() && base[0] == '-')) {
+				base = "(" + base + ")";
+			}
 			string begin = children[1]->ToString();
 			if (IsEmptySliceBound(begin)) {
 				begin = "";
@@ -121,9 +138,9 @@ public:
 				}
 			}
 			if (children.size() == 4) {
-				return children[0]->ToString() + "[" + begin + ":" + end + ":" + children[3]->ToString() + "]";
+				return base + "[" + begin + ":" + end + ":" + children[3]->ToString() + "]";
 			}
-			return children[0]->ToString() + "[" + begin + ":" + end + "]";
+			return base + "[" + begin + ":" + end + "]";
 		}
 		case ExpressionType::STRUCT_EXTRACT: {
 			if (children[1]->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
