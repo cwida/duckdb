@@ -799,7 +799,6 @@ void Linenoise::EditSwapCharacter() {
 	if (pos == 0 || len < 2) {
 		return;
 	}
-	char temp_buffer[128];
 	if (pos + 1 > len) {
 		pos = PrevChar();
 	}
@@ -807,9 +806,9 @@ void Linenoise::EditSwapCharacter() {
 	int next_pos = NextChar();
 	int prev_char_size = pos - prev_pos;
 	int cur_char_size = next_pos - pos;
-	memcpy(temp_buffer, buf + prev_pos, prev_char_size);
+	std::string temp_buffer(buf + prev_pos, prev_char_size);
 	memmove(buf + prev_pos, buf + pos, cur_char_size);
-	memcpy(buf + prev_pos + cur_char_size, temp_buffer, prev_char_size);
+	memcpy(buf + prev_pos + cur_char_size, temp_buffer.c_str(), prev_char_size);
 	pos = next_pos;
 	RefreshLine();
 }
