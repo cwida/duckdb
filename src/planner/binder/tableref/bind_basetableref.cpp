@@ -46,14 +46,14 @@ static bool TryLoadExtensionForReplacementScan(ClientContext &context, const str
 }
 
 BoundStatement Binder::BindWithReplacementScan(ClientContext &context, BaseTableRef &ref) {
-	if (!context.config.use_replacement_scans) {
+	if (!ClientConfig::GetConfig(context).use_replacement_scans) {
 		return BoundStatement();
 	}
 	ReplacementScanInput input(ref.GetQualifiedName());
 	unique_ptr<TableRef> replacement_function;
 
 	// Connection-scoped replacement scans are consulted first
-	for (const auto &scan : context.config.replacement_scans) {
+	for (const auto &scan : ClientConfig::GetConfig(context).replacement_scans) {
 		if (auto result = scan->function(context, input, scan->data.get())) {
 			replacement_function = std::move(result);
 			break;
@@ -226,8 +226,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 			}
 		}
 		auto &config = DBConfig::GetConfig(context);
-		if (context.config.use_replacement_scans && Settings::Get<EnableExternalAccessSetting>(config) &&
-		    ExtensionHelper::IsFullPath(full_path)) {
+		if (ClientConfig::GetConfig(context).use_replacement_scans &&
+		    Settings::Get<EnableExternalAccessSetting>(config) && ExtensionHelper::IsFullPath(full_path)) {
 			auto &fs = FileSystem::GetFileSystem(context);
 			if (!fs.IsDisabledForPath(full_path) && fs.FileExists(full_path)) {
 				throw BinderException(

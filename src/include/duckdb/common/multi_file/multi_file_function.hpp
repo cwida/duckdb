@@ -1198,26 +1198,47 @@ public:
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
-		if (multiple_files && (!bind_data.file_options.union_by_name ||
-		                       bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount())) {
+		// multiple files: only if every file was opened at bind (union_by_name, maximum_sample_files or
+		// maximum_files_for_stats)
+		if (multiple_files && bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount()) {
 			return nullptr;
 		}
-		auto result = bind_data.initial_reader ? bind_data.initial_reader->GetStatistics(context, col_name)
-		                                       : file->GetStatistics(context, col_name);
-		if (result && (result->GetType() != bind_data.types[primary_index] ||
-		               (!bind_data.file_options.bound_schema.empty() &&
-		                !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())))) {
-			// Positional child statistics require the physical root to match the scan's output layout.
-			return nullptr;
-		}
-		if (result && multiple_files) {
-			for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
-				auto &union_reader = *bind_data.union_readers[i];
-				auto stats = union_reader.GetStatistics(context, col_name);
-				if (!stats || result->GetType() != stats->GetType()) {
+		auto get_statistics = [&](BaseUnionData &reader) {
+			auto stats = reader.GetStatistics(context, col_name);
+			if (stats && (stats->GetType() != bind_data.types[primary_index] ||
+			              (!bind_data.file_options.bound_schema.empty() &&
+			               !bind_data.MatchesPhysicalColumn(primary_index, col_name, stats->GetType())))) {
+				// Positional child statistics require the physical root to match the scan's output layout.
+				return unique_ptr<BaseStatistics>();
+			}
+			return stats;
+		};
+		unique_ptr<BaseStatistics> result;
+		if (multiple_files) {
+			for (auto &union_reader : bind_data.union_readers) {
+				auto rows = union_reader->TryGetCardinalityEstimate();
+				if (rows.IsValid() && rows.GetIndex() == 0) {
+					// an empty file has no statistics, and no values the merged bounds must cover
+					continue;
+				}
+				auto stats = get_statistics(*union_reader);
+				if (!stats) {
 					return nullptr;
 				}
-				result->Merge(*stats);
+				if (!result) {
+					result = std::move(stats);
+				} else {
+					result->Merge(*stats);
+				}
+			}
+		} else {
+			result = bind_data.initial_reader ? bind_data.initial_reader->GetStatistics(context, col_name)
+			                                  : file->GetStatistics(context, col_name);
+			if (result && (result->GetType() != bind_data.types[primary_index] ||
+			               (!bind_data.file_options.bound_schema.empty() &&
+			                !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())))) {
+				// Positional child statistics require the physical root to match the scan's output layout.
+				return nullptr;
 			}
 		}
 		if (!result || !column_index.IsPushdownExtract()) {
@@ -1298,9 +1319,9 @@ public:
 		if (file_list_cardinality_estimate) {
 			return file_list_cardinality_estimate;
 		}
-		if (data.file_options.union_by_name && !data.union_readers.empty() &&
+		if (!data.union_readers.empty() && (data.file_options.union_by_name || data.union_readers.size() > 1) &&
 		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
-			// for UNION BY NAME - check if we can get a cardinality estimate from the (already opened) union readers
+			// check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
 			idx_t cardinality = 0;
 			for (auto &union_data : data.union_readers) {
@@ -1312,7 +1333,8 @@ public:
 				cardinality += file_cardinality.GetIndex();
 			}
 			if (has_exact_cardinality) {
-				return make_uniq<NodeStatistics>(cardinality);
+				// counted from the files, so also the maximum, as a table scan reports its count
+				return make_uniq<NodeStatistics>(cardinality, cardinality);
 			}
 		}
 		// get the file count - for >500 files we allow an estimate

@@ -416,7 +416,7 @@ static void VerifyOnConflictCondition(ExecutionContext &context, DataChunk &comb
 		throw InternalException("VerifyAppendConstraints was expected to throw but didn't");
 	}
 
-	auto &indexes = local_storage.GetIndexes(context.client, data_table);
+	auto &indexes = local_storage.GetIndexes(data_table);
 	auto storage = local_storage.GetStorage(data_table);
 	indexes.VerifyUniqueIndexes(storage ? &storage->delete_indexes : nullptr, tuples, nullptr);
 	throw InternalException("VerifyUniqueIndexes was expected to throw but didn't");
@@ -439,7 +439,7 @@ static idx_t HandleInsertConflicts(DuckTableEntry &table, ExecutionContext &cont
 		auto &constraint_state = lstate.GetConstraintState(data_table, table);
 		data_table.VerifyAppendConstraints(constraint_state, context.client, tuples, storage, &conflict_manager);
 	} else {
-		auto &indexes = local_storage.GetIndexes(context.client, data_table);
+		auto &indexes = local_storage.GetIndexes(data_table);
 		indexes.VerifyUniqueIndexes(storage ? &storage->delete_indexes : nullptr, tuples, &conflict_manager);
 	}
 
@@ -530,7 +530,7 @@ idx_t PhysicalInsert::OnConflictHandling(DuckTableEntry &table, ExecutionContext
 		// We care about every index that applies to the table if no ON CONFLICT (...) target is given
 		matching_index_columns = global_indexes.GetConflictTargetColumns(conflict_info);
 
-		const auto &local_indexes = local_storage.GetIndexes(context.client, data_table);
+		const auto &local_indexes = local_storage.GetIndexes(data_table);
 		auto local_index_columns = local_indexes.GetConflictTargetColumns(conflict_info);
 		for (auto &column_set : local_index_columns) {
 			matching_index_columns.push_back(std::move(column_set));
