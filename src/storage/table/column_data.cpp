@@ -49,14 +49,12 @@ bool ColumnData::IsDirectNullCheckFilter(const TableFilter &filter) {
 	return op.GetChildren()[0]->GetExpressionClass() == ExpressionClass::BOUND_REF;
 }
 
-FilterPropagateResult ColumnData::CheckValidityZonemap(ColumnScanState &state, TableFilter &filter,
-                                                       optional_ptr<SegmentNode<ColumnSegment>> &checked_segment,
-                                                       ColumnData &validity_column) {
-	if (!IsDirectNullCheckFilter(filter) || state.child_states.empty()) {
-		checked_segment = nullptr;
+FilterPropagateResult ColumnData::CheckValidityZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                       optional_idx &checked_end, ColumnData &validity_column) {
+	if (!IsDirectNullCheckFilter(filter.filter) || state.child_states.empty()) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
-	return validity_column.CheckZonemap(state.child_states[0], filter, checked_segment);
+	return validity_column.CheckZonemap(state.child_states[0], filter, checked_end);
 }
 
 ColumnData::ColumnData(BlockManager &block_manager, DataTableInfo &info, idx_t column_index, LogicalType type_p,
@@ -173,29 +171,19 @@ ScanVectorType ColumnData::GetVectorScanType(ColumnScanState &state, idx_t scan_
 	return ScanVectorType::SCAN_ENTIRE_VECTOR;
 }
 
-void ColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t remaining) {
-	auto current_segment = scan_state.current;
-	if (!current_segment) {
+void ColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                    idx_t end_row) {
+	if (!scan_state.current || start_row >= MinValue<idx_t>(end_row, count)) {
+		// columns without segments have no blocks to prefetch, and the estimated rows of a child can lie past its end
 		return;
 	}
-	if (!scan_state.initialized) {
-		// need to prefetch for the current segment if we have not yet initialized the scan for this segment
-		current_segment->GetNode().InitializePrefetch(prefetch_state, scan_state);
-	}
-	idx_t row_index = scan_state.offset_in_column;
-	while (remaining > 0) {
-		auto &current = current_segment->GetNode();
-		idx_t scan_count = MinValue<idx_t>(remaining, current_segment->GetRowStart() + current.count - row_index);
-		remaining -= scan_count;
-		row_index += scan_count;
-		if (remaining > 0) {
-			auto next = data.GetNextSegment(*current_segment);
-			if (!next) {
-				break;
-			}
-			next->GetNode().InitializePrefetch(prefetch_state, scan_state);
-			current_segment = next;
+	for (auto segment = data.GetSegment(start_row); segment && segment->GetRowStart() < end_row;
+	     segment = data.GetNextSegment(*segment)) {
+		if (scan_state.initialized && segment == scan_state.current) {
+			// the scan has initialized this segment and pinned its block
+			continue;
 		}
+		segment->GetNode().InitializePrefetch(prefetch_state, scan_state);
 	}
 }
 
@@ -477,9 +465,12 @@ void ColumnData::FinalizeAppendLocked(ColumnDataFinalizeAppendState &finalize_st
 	FinalizeAppend(finalize_state, state);
 }
 
-FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                               optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	checked_segment = nullptr;
+FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                               optional_idx &checked_end) {
+	if (filter.IsAlwaysTrue()) {
+		// the filter does not need to be checked in this row group
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
 	if (state.segment_checked) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
@@ -487,71 +478,57 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	// for dynamic filters we never consider the segment being "checked" as it can always change
-	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ColumnData::CheckZonemap");
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "ColumnData::CheckZonemap");
 	bool is_dynamic = ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME);
 	state.segment_checked = !is_dynamic;
-	checked_segment = IsDirectNullCheckFilter(filter) && !state.child_states.empty() && state.child_states[0].current
-	                      ? state.child_states[0].current
-	                      : state.current;
-	auto prune_result = CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()),
-	                                           *checked_segment, expr_filter);
+	auto &checked_segment =
+	    IsDirectNullCheckFilter(filter.filter) && !state.child_states.empty() && state.child_states[0].current
+	        ? *state.child_states[0].current
+	        : *state.current;
+	// segment rows are relative to the row group
+	checked_end = checked_segment.GetRowStart() + checked_segment.GetNode().count;
+	return CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()), checked_segment,
+	                              expr_filter);
+}
+
+FilterPropagateResult ColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                 optional_idx &checked_end) {
+	if (filter.IsAlwaysTrue() || !data.GetRootSegment() || IsDirectNullCheckFilter(filter.filter)) {
+		// the filter needs no check in this row group, the column has no segments, or the scan judges the null check
+		// on the validity child
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "ColumnData::CheckZonemapAt");
+	auto segment = data.GetSegment(row);
+	checked_end = segment->GetRowStart() + segment->GetNode().count;
+	return CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()), *segment, expr_filter);
+}
+
+FilterPropagateResult ColumnData::CheckSegmentStatistics(optional_ptr<ClientContext> context,
+                                                         SegmentNode<ColumnSegment> &segment,
+                                                         ExpressionFilter &expr_filter) {
+	FilterPropagateResult prune_result;
+	{
+		lock_guard<mutex> l(stats_lock);
+		auto &segment_stats = segment.GetNode().GetStatsMutable();
+		prune_result =
+		    context ? expr_filter.CheckStatistics(*context, segment_stats) : expr_filter.CheckStatistics(segment_stats);
+	}
 	if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	auto update_stats = GetUpdateStatistics();
 	if (!update_stats) {
-		// no updates - return original result
+		// without updates the result of the segment holds
 		return prune_result;
 	}
 	// combine the update and original prune result
-	auto context = Context::TryGetClientContext(state.context.GetServices());
 	FilterPropagateResult update_result =
 	    context ? expr_filter.CheckStatistics(*context, *update_stats) : expr_filter.CheckStatistics(*update_stats);
 	if (prune_result == update_result) {
 		return prune_result;
 	}
 	return FilterPropagateResult::NO_PRUNING_POSSIBLE;
-}
-
-FilterPropagateResult ColumnData::CheckSegmentStatistics(optional_ptr<ClientContext> context,
-                                                         SegmentNode<ColumnSegment> &segment,
-                                                         ExpressionFilter &expr_filter) {
-	lock_guard<mutex> l(stats_lock);
-	auto &segment_stats = segment.GetNode().GetStatsMutable();
-	return context ? expr_filter.CheckStatistics(*context, segment_stats) : expr_filter.CheckStatistics(segment_stats);
-}
-
-idx_t ColumnData::ZonemapScanEnd(optional_ptr<ClientContext> context, idx_t start_row, idx_t end_row,
-                                 TableFilter &filter) {
-	if (!data.GetRootSegment() || IsDirectNullCheckFilter(filter)) {
-		// columns without segments of their own have no zonemaps, null checks are judged on the validity child
-		return end_row;
-	}
-	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ColumnData::ZonemapScanEnd");
-	auto update_stats = GetUpdateStatistics();
-	if (update_stats) {
-		auto update_result =
-		    context ? expr_filter.CheckStatistics(*context, *update_stats) : expr_filter.CheckStatistics(*update_stats);
-		if (update_result != FilterPropagateResult::FILTER_ALWAYS_FALSE) {
-			// updated rows can pass the filter anywhere in the column
-			return end_row;
-		}
-	}
-	// a vector is only skipped when it lies entirely inside a rejected segment
-	idx_t scan_end = start_row;
-	for (auto segment = data.GetSegment(start_row); segment; segment = data.GetNextSegment(*segment)) {
-		const idx_t segment_start = segment->GetRowStart();
-		if (segment_start >= end_row) {
-			break;
-		}
-		const idx_t segment_end = MinValue<idx_t>(segment_start + segment->GetNode().count, end_row);
-		const auto prune_result = CheckSegmentStatistics(context, *segment, expr_filter);
-		const bool straddles_vector = segment_end < end_row && segment_end % STANDARD_VECTOR_SIZE != 0;
-		if (prune_result != FilterPropagateResult::FILTER_ALWAYS_FALSE || straddles_vector) {
-			scan_end = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(segment_end);
-		}
-	}
-	return MinValue<idx_t>(scan_end, end_row);
 }
 
 FilterPropagateResult ColumnData::CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,

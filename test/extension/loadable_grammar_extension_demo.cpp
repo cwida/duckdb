@@ -12,6 +12,7 @@
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/result_modifier.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
@@ -338,10 +339,43 @@ public:
 	}
 };
 
+static arena_ptr<TransformResultValue> FinalizeDemoBlockStatement(PEGTransformer &transformer,
+                                                                  ParseResult &parse_result) {
+	auto select_node = make_uniq<SelectNode>();
+	select_node->select_list.push_back(ConstantExpression::String("demo block executed"));
+	select_node->from_table = make_uniq<EmptyTableRef>();
+	auto statement = make_uniq<SelectStatement>();
+	statement->node = std::move(select_node);
+	return transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(statement));
+}
+
+static arena_ptr<TransformProcess> StartDemoBlockStatementTransform(PEGTransformer &transformer,
+                                                                    ParseResult &parse_result) {
+	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, FinalizeDemoBlockStatement);
+}
+
+class BlockSQLGrammarChange final : public GrammarExtension {
+public:
+	BlockSQLGrammarChange()
+	    : GrammarExtension("block_statement_syntax",
+	                       "Add a BEGIN_DEMO_BLOCK ... END_DEMO_BLOCK statement containing embedded semicolons") {
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(
+		    GrammarChange::AddRule("DemoBlockStatement <- 'BEGIN_DEMO_BLOCK' (Statement ';')* 'END_DEMO_BLOCK'",
+		                           StartDemoBlockStatementTransform));
+		changes.push_back(GrammarChange::PrependChoice("Statement", "DemoBlockStatement"));
+		return changes;
+	}
+};
+
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(loadable_grammar_extension_demo, loader) {
 	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<PipeSQLGrammarChange>());
 	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<WrappedTransformNodesChange>());
+	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<BlockSQLGrammarChange>());
 }
 }
