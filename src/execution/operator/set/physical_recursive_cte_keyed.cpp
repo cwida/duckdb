@@ -113,6 +113,8 @@ RecursiveCTEFinalizedValues::RecursiveCTEFinalizedValues(ClientContext &context,
 		offset += FinalizedValueSlotWidth(aggregate_type);
 	}
 	region_width = offset;
+	// The scratch tables size their trailing region through RegionWidthFor, so the layouts must agree.
+	D_ASSERT(region_width == RegionWidthFor(op));
 	string_arena = make_uniq<ArenaAllocator>(Allocator::Get(context));
 	idx_t child_offset = 0;
 	for (auto &payload_aggregate : op.payload_aggregates) {

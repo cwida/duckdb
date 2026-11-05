@@ -81,9 +81,8 @@ bool RecursiveCTEGroupAddressSet::Contains(data_ptr_t address) const {
 }
 
 RecursiveCTEKeyDeltaState::RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op,
-                                                     bool address_only_previous_p)
-    : address_only_previous(address_only_previous_p),
-      previous_rows(context, GetPreviousStateTypes(op, address_only_previous_p)), new_keys(context, op.hash_key_types),
+                                                     bool address_only_previous)
+    : previous_rows(context, GetPreviousStateTypes(op, address_only_previous)), new_keys(context, op.hash_key_types),
       pending_finalized(context, op.aggregate_types), matched_addresses(LogicalType::POINTER),
       finalize_addresses(LogicalType::POINTER), found_groups(STANDARD_VECTOR_SIZE),
       missing_groups(STANDARD_VECTOR_SIZE), changed_groups(STANDARD_VECTOR_SIZE),
@@ -93,9 +92,9 @@ RecursiveCTEKeyDeltaState::RecursiveCTEKeyDeltaState(ClientContext &context, con
 	aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	updated_aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	result_rows.Initialize(Allocator::Get(context), op.GetTypes());
-	previous_state_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous_p));
+	previous_state_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous));
 	changed_rows.Initialize(Allocator::Get(context), op.GetTypes());
-	previous_scan_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous_p));
+	previous_scan_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous));
 	key_scan_rows.Initialize(Allocator::Get(context), op.hash_key_types);
 	vector<LogicalType> comparison_types;
 	comparison_types.reserve(op.payload_types.size() * 2);
@@ -197,7 +196,7 @@ void RecursiveCTEKeyedState::AppendPreviousUsingKeyDeltaRows(Vector &addresses, 
 	delta.PrepareCollections();
 	delta.previous_state_rows.Reset();
 	delta.previous_state_rows.data[0].Reference(addresses);
-	if (!delta.address_only_previous) {
+	if (!finalized.Enabled()) {
 		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
 			delta.previous_state_rows.data[1 + payload_idx].Reference(delta.aggregate_rows.data[payload_idx]);
 		}
@@ -213,7 +212,7 @@ void RecursiveCTEKeyedState::SnapshotExistingUsingKeyDeltaAddresses(Vector &addr
 		return;
 	}
 	CopySelectedAddresses(addresses, *FlatVector::IncrementalSelectionVector(), count, delta.finalize_addresses);
-	if (delta.address_only_previous) {
+	if (finalized.Enabled()) {
 		// The rows still hold the finalized values of the previous commit, so the old values stay readable
 		// from the rows until the commit's own scatter and need neither a finalize nor a copy here.
 		if (defer_append) {
@@ -420,7 +419,7 @@ bool RecursiveCTEKeyedState::TryReuseChangedGroupCandidates(idx_t candidate_coun
 	intermediate_table.InitializeScan(candidate_scan_state);
 	// With materialized values the new finalized rows are buffered until the reuse proof succeeds, so a failed
 	// validation leaves every row's old value in place for the regular delta finalization.
-	const auto buffer_finalized = delta.address_only_previous;
+	const auto buffer_finalized = finalized.Enabled();
 	if (buffer_finalized) {
 		delta.pending_finalized.ResetForReuse();
 		delta.pending_finalized.InitializeAppend(delta.pending_finalized_append_state);
@@ -499,7 +498,7 @@ idx_t RecursiveCTEKeyedState::FinalizeUsingKeyDelta(bool update_partial_indexes,
 		                      delta.finalize_addresses);
 		// With materialized values the rows still hold the previous commit's finalized values: read the old
 		// values before this chunk's scatter overwrites them.
-		const auto read_old_from_rows = delta.address_only_previous;
+		const auto read_old_from_rows = finalized.Enabled();
 		if (read_old_from_rows) {
 			delta.updated_aggregate_rows.Reset();
 			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
