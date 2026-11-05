@@ -3,11 +3,11 @@
 # group: [cte]
 
 # Companion to recursive_inline_blocked_source.test, which keeps the fast deadlock gate in every
-# CI run. This file covers the remaining suspension shapes, each paying for dbgen invocations:
-# the keyed source machine, prepared re-execution of suspended epochs, and a wide-frontier
-# multi-threaded epoch that parks through the event schedule's wake event. The inline
-# multi-threaded stage wait (EVENT_WAIT on a single pipeline event) shares the same wake-event
-# protocol but has resisted targeted SQL construction; it remains covered only indirectly.
+# CI run. This file covers the remaining suspension shapes: the keyed source machine, prepared
+# re-execution of suspended epochs, a wide-frontier multi-threaded epoch that parks through the
+# event schedule's wake event, and the inline multi-threaded stage wait (EVENT_WAIT on a single
+# pipeline event), reached by an invariant build stage wide enough for multiple threads while the
+# tiny frontier keeps the epoch itself inline.
 # query_timeout is the primary bound on a regression: its watchdog calls Interrupt(), which the
 # parked client loop observes.
 
@@ -68,3 +68,18 @@ WITH RECURSIVE t(lvl, x) AS (
 SELECT count(*) FROM t;
 ----
 150000
+
+# an invariant build over a large table gets multiple threads while the one-row frontier keeps
+# the epoch inline, so the build stage parks through the inline stage wait's wake event
+statement ok
+CREATE TABLE big AS SELECT i AS k, i % 10 AS v FROM range(2000000) r(i);
+
+query II
+WITH RECURSIVE t(i, s) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT t.i + 1, s + big.v + 1 FROM t JOIN big ON big.k = t.i * 1000 + 1 WHERE t.i < 6
+)
+SELECT count(*), sum(s) FROM t;
+----
+6	30
