@@ -8,6 +8,8 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 
 namespace duckdb {
 
@@ -557,6 +559,122 @@ bool ParquetScanFunction::ProjectionExpressionPushdown(ClientContext &context,
 
 const ParquetOptions &ParquetScanFunction::GetFileOptions(const FunctionData &file_bind_data) {
 	return file_bind_data.Cast<ReadSingleParquetFileData>().options;
+}
+
+//! The opened file the scan schema was taken from, when there is one
+static const ReadSingleParquetFileData *ParquetSchemaBind(const MultiFileBindData &bind_data) {
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	if (data.options.schema_bind_data) {
+		return &data.options.schema_bind_data->Cast<ReadSingleParquetFileData>();
+	}
+	if (bind_data.union_readers.size() == 1) {
+		auto &union_data = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+		if (union_data.bind_data) {
+			return &union_data.bind_data->Cast<ReadSingleParquetFileData>();
+		}
+	}
+	return nullptr;
+}
+
+static void ParquetScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+                                 const BoundTableFunction &) {
+	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
+	auto &multi_data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	// The expanded files are the scan. Writing the original glob would list it again on every plan copy.
+	vector<Value> files;
+	for (auto &file : bind_data.file_list->GetAllFiles()) {
+		files.push_back(file.ToValue());
+	}
+	serializer.WriteProperty(100, "files", files);
+	serializer.WriteProperty(101, "file_options", bind_data.file_options);
+	serializer.WriteProperty(102, "reader_bind", bind_data.reader_bind);
+	// MultiFileReaderBindData does not write the schema or the mapping mode
+	serializer.WritePropertyWithDefault(103, "reader_schema", bind_data.reader_bind.schema);
+	serializer.WritePropertyWithDefault(104, "column_mapping", bind_data.reader_bind.mapping,
+	                                    MultiFileColumnMappingMode::BY_NAME);
+	serializer.WriteProperty(105, "types", bind_data.types);
+	serializer.WriteProperty(106, "names", bind_data.names);
+	serializer.WriteProperty(107, "columns", bind_data.columns);
+	serializer.WritePropertyWithDefault(108, "table_columns", bind_data.table_columns);
+	serializer.WritePropertyWithDefault(109, "cardinality", multi_data.cardinality);
+	serializer.WritePropertyWithDefault(110, "named_parameters", multi_data.options.named_parameters);
+	serializer.WritePropertyWithDefault(111, "expected_names", multi_data.options.expected_names);
+	serializer.WritePropertyWithDefault(112, "expected_types", multi_data.options.expected_types);
+	serializer.WritePropertyWithDefault(113, "multi_file_scan", multi_data.options.multi_file_scan, false);
+
+	auto schema_bind = ParquetSchemaBind(bind_data);
+	serializer.WritePropertyWithDefault(120, "has_schema_bind", schema_bind != nullptr, false);
+	if (!schema_bind) {
+		return;
+	}
+	serializer.WriteProperty(121, "schema_file", schema_bind->file.ToValue());
+	serializer.WriteProperty(122, "schema_options",
+	                         ParquetOptionsSerialization(schema_bind->options, bind_data.file_options));
+	serializer.WritePropertyWithDefault(123, "schema_variant_legacy_encoding",
+	                                    schema_bind->options.variant_legacy_encoding, false);
+	serializer.WritePropertyWithDefault(124, "schema_projection_expressions", schema_bind->projection_expressions);
+	serializer.WritePropertyWithDefault(125, "schema_cardinality", schema_bind->cardinality);
+}
+
+static unique_ptr<FunctionData> ParquetScanDeserialize(Deserializer &deserializer, BoundTableFunction &function) {
+	auto files = deserializer.ReadProperty<vector<Value>>(100, "files");
+	vector<OpenFileInfo> paths;
+	paths.reserve(files.size());
+	for (auto &file : files) {
+		paths.push_back(OpenFileInfo::FromValue(file, function.GetName()));
+	}
+
+	auto result = make_uniq<MultiFileBindData>();
+	// Already-expanded files. A glob here would list the prefix again.
+	result->file_list = make_shared_ptr<SimpleMultiFileList>(std::move(paths));
+	result->file_options = deserializer.ReadProperty<MultiFileOptions>(101, "file_options");
+	result->reader_bind = deserializer.ReadProperty<MultiFileReaderBindData>(102, "reader_bind");
+	result->reader_bind.schema =
+	    deserializer.ReadPropertyWithDefault<vector<MultiFileColumnDefinition>>(103, "reader_schema");
+	result->reader_bind.mapping = deserializer.ReadPropertyWithExplicitDefault<MultiFileColumnMappingMode>(
+	    104, "column_mapping", MultiFileColumnMappingMode::BY_NAME);
+	result->types = deserializer.ReadProperty<vector<LogicalType>>(105, "types");
+	result->names = deserializer.ReadProperty<vector<Identifier>>(106, "names");
+	result->columns = deserializer.ReadProperty<vector<MultiFileColumnDefinition>>(107, "columns");
+	result->table_columns = deserializer.ReadPropertyWithDefault<vector<string>>(108, "table_columns");
+	result->multi_file_reader = MultiFileReader::Create(function);
+	result->interface = make_uniq<TableFunctionMultiFileWrapper>(ParquetScanFunction::GetSingleFileFunction(),
+	                                                             ParquetScanFunction::GetMultiFileSettings());
+
+	auto multi_data = make_uniq<TableFunctionMultiFileData>();
+	multi_data->cardinality = deserializer.ReadPropertyWithDefault<optional_idx>(109, "cardinality");
+	multi_data->options.named_parameters =
+	    deserializer.ReadPropertyWithDefault<named_argument_map_t>(110, "named_parameters");
+	multi_data->options.expected_names =
+	    deserializer.ReadPropertyWithDefault<vector<Identifier>>(111, "expected_names");
+	multi_data->options.expected_types =
+	    deserializer.ReadPropertyWithDefault<vector<LogicalType>>(112, "expected_types");
+	multi_data->options.multi_file_scan = deserializer.ReadPropertyWithDefault<bool>(113, "multi_file_scan");
+	if (deserializer.ReadPropertyWithDefault<bool>(120, "has_schema_bind")) {
+		auto schema_file = deserializer.ReadProperty<Value>(121, "schema_file");
+		auto schema_options = deserializer.ReadProperty<ParquetOptionsSerialization>(122, "schema_options");
+		auto variant_legacy_encoding =
+		    deserializer.ReadPropertyWithDefault<bool>(123, "schema_variant_legacy_encoding");
+		auto projection_expressions =
+		    deserializer.ReadPropertyWithDefault<unordered_map<idx_t, ParquetReaderProjectionExpression>>(
+		        124, "schema_projection_expressions");
+		auto schema_cardinality = deserializer.ReadPropertyWithDefault<optional_idx>(125, "schema_cardinality");
+
+		auto schema_bind = make_shared_ptr<ReadSingleParquetFileData>();
+		schema_bind->file = OpenFileInfo::FromValue(schema_file, function.GetName());
+		schema_bind->options = std::move(schema_options.parquet_options);
+		schema_bind->options.variant_legacy_encoding = variant_legacy_encoding;
+		schema_bind->projection_expressions = std::move(projection_expressions);
+		schema_bind->cardinality = schema_cardinality;
+		multi_data->options.schema_bind_data = std::move(schema_bind);
+	}
+	result->bind_data = std::move(multi_data);
+	return std::move(result);
+}
+
+void ParquetScanFunction::SetSerializationCallbacks(TableFunction &function) {
+	function.serialize = ParquetScanSerialize;
+	function.deserialize = ParquetScanDeserialize;
 }
 
 TableFunction ParquetScanFunction::GetSingleFileFunction() {

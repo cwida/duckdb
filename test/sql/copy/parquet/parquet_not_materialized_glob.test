@@ -1,0 +1,91 @@
+# name: test/sql/copy/parquet/parquet_not_materialized_glob.test
+# description: A NOT MATERIALIZED CTE over a parquet glob expands that glob once per query
+# group: [parquet]
+
+require parquet
+
+require noforcestorage
+
+statement ok
+COPY (SELECT i AS a, i % 4 AS p FROM range(200) t(i))
+TO '{TEST_DIR}/not_materialized_glob' (FORMAT parquet, PARTITION_BY (p));
+
+statement ok
+CALL enable_logging('FileSystem');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+EXPLAIN
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+)
+SELECT
+    (SELECT count(*) + 0 FROM t) AS c0,
+    (SELECT count(*) + 1 FROM t) AS c1,
+    (SELECT count(*) + 2 FROM t) AS c2,
+    (SELECT count(*) + 3 FROM t) AS c3,
+    (SELECT count(*) + 4 FROM t) AS c4;
+
+# planning opens the first file once; inlining must not bind the glob again
+query II
+SELECT parse_filename(path), count(*)
+FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'OPEN'
+GROUP BY 1
+ORDER BY 1
+----
+data_0.parquet	1
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query IIIII
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+)
+SELECT
+    (SELECT count(*) + 0 FROM t) AS c0,
+    (SELECT count(*) + 1 FROM t) AS c1,
+    (SELECT count(*) + 2 FROM t) AS c2,
+    (SELECT count(*) + 3 FROM t) AS c3,
+    (SELECT count(*) + 4 FROM t) AS c4;
+----
+200	201	202	203	204
+
+# the restored plan has to scan, including after the optimizer has pushed filters and projections
+statement ok
+SET debug_verify_serializer=true
+
+query II
+SELECT p, count(*)
+FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+GROUP BY p
+ORDER BY p
+----
+0	50
+1	50
+2	50
+3	50
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet') WHERE p = 999
+----
+0
+
+query IIIII
+WITH t AS NOT MATERIALIZED (
+    SELECT * FROM read_parquet('{TEST_DIR}/not_materialized_glob/**/*.parquet')
+)
+SELECT
+    (SELECT count(*) + 0 FROM t) AS c0,
+    (SELECT count(*) + 1 FROM t) AS c1,
+    (SELECT count(*) + 2 FROM t) AS c2,
+    (SELECT count(*) + 3 FROM t) AS c3,
+    (SELECT count(*) + 4 FROM t) AS c4;
+----
+200	201	202	203	204
+
+statement ok
+SET debug_verify_serializer=false

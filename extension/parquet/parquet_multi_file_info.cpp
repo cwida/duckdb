@@ -295,6 +295,7 @@ TableFunction ParquetScanFunction::GetMultiFileFunction(Identifier name) {
 	result.pushdown_expression = ParquetScanPushdownExpression;
 	result.get_partition_stats = ParquetMultiFileGetPartitionStats;
 	result.projection_expression_pushdown = ParquetScanFunction::ProjectionExpressionPushdown;
+	ParquetScanFunction::SetSerializationCallbacks(result);
 	return result;
 }
 

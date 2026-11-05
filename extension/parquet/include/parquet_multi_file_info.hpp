@@ -121,6 +121,8 @@ public:
 	static void AddNamedParameters(TableFunction &table_function);
 	//! The multi-file parquet reader, built by wrapping the single-file reader above
 	static TableFunction GetMultiFileFunction(Identifier name);
+	//! Persist the expanded file list, so a plan copy does not bind the original glob again
+	static void SetSerializationCallbacks(TableFunction &function);
 	//! Push strlen/octet_length on a column into the multi-file parquet reader of a single file
 	static bool ProjectionExpressionPushdown(ClientContext &context,
 	                                         const TableFunctionProjectionExpressionInput &input);
