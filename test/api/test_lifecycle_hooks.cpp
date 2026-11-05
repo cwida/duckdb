@@ -35,9 +35,9 @@ struct TestClientContextState : ClientContextState {
 };
 
 shared_ptr<TestClientContextState> WithLifecycleState(const Connection &conn) {
-	auto &register_state = conn.context->registered_state;
+	auto &register_state = conn.context->Services().GetRegisteredState();
 	auto state = make_shared_ptr<TestClientContextState>();
-	register_state->Insert("test_state", state);
+	register_state.Insert("test_state", state);
 	return state;
 }
 
@@ -215,16 +215,16 @@ TEST_CASE("Task notifications observe registration separately at start and stop"
 	TaskHookCounts second_counts;
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto &registry = *con.context->registered_state;
+	auto &registry = con.context->Services().GetRegisteredState();
 	registry.Remove("debug_client_context_state");
 	{
-		TaskNotifier empty(*con.context);
+		TaskNotifier empty(&con.context->Services());
 		TaskNotifier no_context(nullptr);
 	}
 	auto first = registry.GetOrCreate<TaskHookState>("hook", first_counts);
 	weak_ptr<TaskHookState> first_weak = first;
 	{
-		TaskNotifier task(*con.context);
+		TaskNotifier task(&con.context->Services());
 		REQUIRE(first_counts.starts == 1);
 		registry.Remove("hook");
 		first.reset();
@@ -239,7 +239,7 @@ TEST_CASE("Task notifications observe registration separately at start and stop"
 	REQUIRE(registry.GetOrCreate<TaskHookState>("hook", first_counts) == second);
 	registry.Insert("hook", make_shared_ptr<TaskHookState>(first_counts));
 	registry.Remove("missing");
-	{ TaskNotifier task(*con.context); }
+	{ TaskNotifier task(&con.context->Services()); }
 	REQUIRE(first_counts.starts == 1);
 	REQUIRE(second_counts.starts == 1);
 	REQUIRE(second_counts.stops == 2);
@@ -252,7 +252,7 @@ TEST_CASE("Task hook callbacks can change registration without invalidating disp
 	TaskHookCounts last_counts;
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto &registry = *con.context->registered_state;
+	auto &registry = con.context->Services().GetRegisteredState();
 	auto first = make_shared_ptr<TaskHookState>(first_counts);
 	auto second = make_shared_ptr<TaskHookState>(second_counts);
 	weak_ptr<TaskHookState> first_weak = first;
@@ -273,7 +273,7 @@ TEST_CASE("Task hook callbacks can change registration without invalidating disp
 	registry.Insert("hook", std::move(first));
 	registry.Insert("sibling", make_shared_ptr<TaskHookState>(sibling_counts));
 	{
-		TaskNotifier task(*con.context);
+		TaskNotifier task(&con.context->Services());
 		REQUIRE(start_alive);
 		REQUIRE(first_weak.expired());
 		REQUIRE(sibling_counts.starts == 1);
@@ -288,7 +288,7 @@ TEST_CASE("Task hook callbacks can change registration without invalidating disp
 	REQUIRE(second_counts.stops == 1);
 	REQUIRE(second_counts.destroyed == 1);
 	REQUIRE(last_counts.stops == 0);
-	{ TaskNotifier task(*con.context); }
+	{ TaskNotifier task(&con.context->Services()); }
 	REQUIRE(last_counts.starts == 1);
 	REQUIRE(last_counts.stops == 1);
 }
@@ -297,10 +297,10 @@ TEST_CASE("Task hook dispatch remains usable after exceptions", "[api][task_noti
 	TaskHookCounts counts;
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto state = con.context->registered_state->GetOrCreate<TaskHookState>("hook", counts);
+	auto state = con.context->Services().GetRegisteredState().GetOrCreate<TaskHookState>("hook", counts);
 	REQUIRE_THROWS_AS(
 	    [&] {
-		    TaskNotifier task(*con.context);
+		    TaskNotifier task(&con.context->Services());
 		    throw std::runtime_error("task failed");
 	    }(),
 	    std::runtime_error);
@@ -309,11 +309,11 @@ TEST_CASE("Task hook dispatch remains usable after exceptions", "[api][task_noti
 	state->on_start = [] {
 		throw std::runtime_error("start failed");
 	};
-	REQUIRE_THROWS_AS(TaskNotifier(*con.context), std::runtime_error);
+	REQUIRE_THROWS_AS(TaskNotifier(&con.context->Services()), std::runtime_error);
 	REQUIRE(counts.starts == 2);
 	REQUIRE(counts.stops == 1);
 	state->on_start = nullptr;
-	{ TaskNotifier task(*con.context); }
+	{ TaskNotifier task(&con.context->Services()); }
 	REQUIRE(counts.starts == 3);
 	REQUIRE(counts.stops == 2);
 }
@@ -323,7 +323,7 @@ TEST_CASE("Concurrent task notifications retain states during registry mutation"
 	TaskHookCounts transient_counts;
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto &registry = *con.context->registered_state;
+	auto &registry = con.context->Services().GetRegisteredState();
 	registry.GetOrCreate<TaskHookState>("stable", stable_counts);
 	constexpr idx_t thread_count = 8;
 	constexpr idx_t task_count = 2000;
@@ -337,7 +337,7 @@ TEST_CASE("Concurrent task notifications retain states during registry mutation"
 				std::this_thread::yield();
 			}
 			for (idx_t i = 0; i < task_count; i++) {
-				TaskNotifier task(*con.context);
+				TaskNotifier task(&con.context->Services());
 			}
 		});
 	}
@@ -369,7 +369,8 @@ TEST_CASE("Dropping a connection whose rollback fails does not terminate", "[api
 	DuckDB db(nullptr);
 	{
 		Connection conn(db);
-		conn.context->registered_state->Insert("throwing_rollback", make_shared_ptr<ThrowingRollbackState>());
+		conn.context->Services().GetRegisteredState().Insert("throwing_rollback",
+		                                                     make_shared_ptr<ThrowingRollbackState>());
 		REQUIRE_NO_FAIL(conn.Query("BEGIN"));
 		REQUIRE_NO_FAIL(conn.Query("CREATE TABLE t(i INT)"));
 		// an explicit rollback reports the failure

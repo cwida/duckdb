@@ -1,6 +1,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/smaller_binary.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/function/scalar/comparison_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/expression/between_expression.hpp"
@@ -59,6 +60,9 @@ void BetweenFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
 #if !DUCKDB_SMALLER_BINARY(between_select)
 struct BothInclusiveBetweenOperator {
+	static constexpr bool LOWER_INCLUSIVE = true;
+	static constexpr bool UPPER_INCLUSIVE = true;
+
 	template <class T>
 	static inline bool Operation(T input, T lower, T upper) {
 		return GreaterThanEquals::Operation<T>(input, lower) && LessThanEquals::Operation<T>(input, upper);
@@ -66,6 +70,9 @@ struct BothInclusiveBetweenOperator {
 };
 
 struct LowerInclusiveBetweenOperator {
+	static constexpr bool LOWER_INCLUSIVE = true;
+	static constexpr bool UPPER_INCLUSIVE = false;
+
 	template <class T>
 	static inline bool Operation(T input, T lower, T upper) {
 		return GreaterThanEquals::Operation<T>(input, lower) && LessThan::Operation<T>(input, upper);
@@ -73,6 +80,9 @@ struct LowerInclusiveBetweenOperator {
 };
 
 struct UpperInclusiveBetweenOperator {
+	static constexpr bool LOWER_INCLUSIVE = false;
+	static constexpr bool UPPER_INCLUSIVE = true;
+
 	template <class T>
 	static inline bool Operation(T input, T lower, T upper) {
 		return GreaterThan::Operation<T>(input, lower) && LessThanEquals::Operation<T>(input, upper);
@@ -80,11 +90,38 @@ struct UpperInclusiveBetweenOperator {
 };
 
 struct ExclusiveBetweenOperator {
+	static constexpr bool LOWER_INCLUSIVE = false;
+	static constexpr bool UPPER_INCLUSIVE = false;
+
 	template <class T>
 	static inline bool Operation(T input, T lower, T upper) {
 		return GreaterThan::Operation<T>(input, lower) && LessThan::Operation<T>(input, upper);
 	}
 };
+
+template <class OP>
+static idx_t BetweenSelectGeneric(const Vector &input, const Vector &lower, const Vector &upper,
+                                  optional_ptr<const SelectionVector> sel, idx_t count,
+                                  optional_ptr<SelectionVector> true_sel, optional_ptr<SelectionVector> false_sel) {
+	// fallback for types without a templated select path (e.g. nested types):
+	// evaluate the boolean result like the execute path and turn it into a selection
+	Vector intermediate1(LogicalType::BOOLEAN);
+	Vector intermediate2(LogicalType::BOOLEAN);
+	Vector result(LogicalType::BOOLEAN);
+	if (OP::LOWER_INCLUSIVE) {
+		VectorOperations::GreaterThanEquals(input, lower, intermediate1);
+	} else {
+		VectorOperations::GreaterThan(input, lower, intermediate1);
+	}
+	if (OP::UPPER_INCLUSIVE) {
+		VectorOperations::LessThanEquals(input, upper, intermediate2);
+	} else {
+		VectorOperations::LessThan(input, upper, intermediate2);
+	}
+	VectorOperations::And(intermediate1, intermediate2, result);
+	return UnaryExecutor::Select<bool>(
+	    result, sel.get(), count, [](bool value) { return value; }, true_sel.get(), false_sel.get());
+}
 
 template <class OP>
 static idx_t BetweenLoopTypeSwitch(const Vector &input, const Vector &lower, const Vector &upper,
@@ -134,7 +171,7 @@ static idx_t BetweenLoopTypeSwitch(const Vector &input, const Vector &lower, con
 		return TernaryExecutor::Select<interval_t, interval_t, interval_t, OP>(input, lower, upper, sel, count,
 		                                                                       true_sel, false_sel);
 	default:
-		throw InvalidTypeException(input.GetType(), "Invalid type for BETWEEN");
+		return BetweenSelectGeneric<OP>(input, lower, upper, sel, count, true_sel, false_sel);
 	}
 }
 

@@ -50,14 +50,15 @@ void ListColumnData::SetDataType(ColumnDataType data_type) {
 	validity->SetDataType(data_type);
 }
 
-FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                   optional_idx &checked_end) {
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
-void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                        idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 
 	// we can't know how many rows we need to prefetch for the child of this list without looking at the actual data
 	// we make an estimation by looking at how many rows the child column has versus this column
@@ -66,7 +67,15 @@ void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnSca
 	if (child_column->count > this->count && this->count > 0) {
 		rows_per_list = child_column->count / this->count;
 	}
-	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], rows * rows_per_list);
+	// the child rows of the range are estimated from the child row the list scan is at, which last_offset holds
+	D_ASSERT(start_row >= scan_state.offset_in_column);
+	const idx_t child_start = scan_state.last_offset + (start_row - scan_state.offset_in_column) * rows_per_list;
+	if (child_start >= child_column->GetMaxEntry()) {
+		// no child rows remain
+		return;
+	}
+	const idx_t child_end = scan_state.last_offset + (end_row - scan_state.offset_in_column) * rows_per_list;
+	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], child_start, child_end);
 }
 
 void ListColumnData::InitializeScan(ColumnScanState &state) {
@@ -110,6 +119,9 @@ void ListColumnData::InitializeScanWithOffset(ColumnScanState &state, idx_t row_
 	auto child_offset = FetchListOffset(row_idx - 1);
 	if (child_offset < child_column->GetMaxEntry()) {
 		child_column->InitializeScanWithOffset(state.child_states[1], child_offset);
+	} else {
+		// no child rows remain, start the child scan over so that it does not keep the position of an earlier scan
+		child_column->InitializeScan(state.child_states[1]);
 	}
 	state.last_offset = child_offset;
 }
@@ -201,11 +213,13 @@ void ListColumnData::InitializeAppend(ColumnAppendState &state) {
 
 	// initialize the validity append
 	ColumnAppendState validity_append_state;
+	validity_append_state.transient = state.transient;
 	validity->InitializeAppend(validity_append_state);
 	state.child_appends.push_back(std::move(validity_append_state));
 
 	// initialize the child column append
 	ColumnAppendState child_append_state;
+	child_append_state.transient = state.transient;
 	child_column->InitializeAppend(child_append_state);
 	state.child_appends.push_back(std::move(child_append_state));
 }
@@ -296,10 +310,6 @@ void ListColumnData::RevertAppend(row_t new_count) {
 	auto column_count = GetMaxEntry();
 	auto list_offset = column_count > 0 ? FetchListOffset(column_count - 1) : 0;
 	child_column->RevertAppend(UnsafeNumericCast<row_t>(list_offset));
-}
-
-idx_t ListColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("List Fetch");
 }
 
 void ListColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,

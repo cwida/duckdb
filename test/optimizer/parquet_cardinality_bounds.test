@@ -72,11 +72,11 @@ SELECT count(*) FROM (SELECT i FROM read_parquet(['{TEST_DIR}/source_row_bounds.
 ----
 6
 
-# Union-by-name scans do not expose this single-file bound.
+# Union-by-name scans open the footer of the file, so they expose the exact row count too.
 query II
 EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/source_row_bounds.parquet', union_by_name=true) LIMIT 6
 ----
-physical_plan	<REGEX>:.*LIMIT.*
+physical_plan	<!REGEX>:.*LIMIT.*
 
 query I
 SELECT sum(i) FROM read_parquet('{TEST_DIR}/source_row_bounds.parquet', union_by_name=true)

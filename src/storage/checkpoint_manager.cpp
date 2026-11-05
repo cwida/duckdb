@@ -41,13 +41,14 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
+#include "duckdb/main/database.hpp"
 
 namespace duckdb {
 
-ActiveCheckpointWrapper::ActiveCheckpointWrapper(optional_ptr<ClientContext> context, AttachedDatabase &db_p,
+ActiveCheckpointWrapper::ActiveCheckpointWrapper(Context &services, AttachedDatabase &db_p,
                                                  DuckTransactionManager &transaction_manager_p)
     : db(db_p), transaction_manager(transaction_manager_p) {
-	if (!context) {
+	if (!services.IsClient()) {
 		return;
 	}
 	checkpoint_connection = make_uniq<Connection>(Connection::CreateInternal(db.GetDatabase()));
@@ -101,13 +102,21 @@ optional_ptr<ClientContext> ActiveCheckpointWrapper::GetCheckpointContext() cons
 	return checkpoint_context;
 }
 
+CheckpointWriter::CheckpointWriter(AttachedDatabase &db_p, QueryContext context)
+    : db(db_p), owned_services(context.Valid() ? nullptr : db_p.GetDatabase().Services()),
+      services(context.Valid() ? *context.GetServices() : *owned_services) {
+}
+
+CheckpointWriter::~CheckpointWriter() {
+}
+
 void ReorderTableEntries(catalog_entry_vector_t &tables);
 
 SingleFileCheckpointWriter::SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db,
                                                        BlockManager &block_manager, CheckpointOptions options_p)
-    : CheckpointWriter(db), context(context.GetClientContext()),
-      partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT),
-      index_partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
+    : CheckpointWriter(db, context),
+      partial_block_manager(GetServices(), block_manager, PartialBlockType::FULL_CHECKPOINT),
+      index_partial_block_manager(GetServices(), block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
 }
 
 BlockManager &SingleFileCheckpointWriter::GetBlockManager() {
@@ -116,7 +125,7 @@ BlockManager &SingleFileCheckpointWriter::GetBlockManager() {
 }
 
 PartialBlockManager SingleFileCheckpointWriter::CreatePerIndexPartialBlockManager() {
-	return PartialBlockManager(QueryContext(context), GetBlockManager(), PartialBlockType::FULL_CHECKPOINT);
+	return PartialBlockManager(GetServices(), GetBlockManager(), PartialBlockType::FULL_CHECKPOINT);
 }
 
 MetadataWriter &SingleFileCheckpointWriter::GetMetadataWriter() {
@@ -242,7 +251,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 		return;
 	}
 	// A context-free checkpoint cannot persist buffered operations on an unbound index. Keep the WAL instead.
-	if (!context && HasBufferedIndexReplays(db)) {
+	if (!GetServices().IsClient() && HasBufferedIndexReplays(db)) {
 		return;
 	}
 	// assert that the checkpoint manager hasn't been used before
@@ -271,7 +280,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 
 	// If there is a context (non shutdown path): this will create a new connection for the checkpoint, then in
 	// WALStartCheckpoint we will create a transaction for the checkpoint.
-	ActiveCheckpointWrapper active_checkpoint(context, db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(GetServices(), db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
 	checkpoint_context = active_checkpoint.GetCheckpointContext();
 
@@ -337,7 +346,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	header.meta_block = meta_block.block_pointer;
 	header.block_alloc_size = block_manager.GetBlockAllocSize();
 	header.vector_size = STANDARD_VECTOR_SIZE;
-	block_manager.WriteHeader(context, header);
+	block_manager.WriteHeader(QueryContext(GetServices()), header);
 
 	auto debug_verify_blocks = Settings::Get<DebugVerifyBlocksSetting>(db.GetDatabase());
 	if (debug_verify_blocks) {
@@ -353,7 +362,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 			}
 			auto &table = entry.Cast<DuckTableEntry>();
 			auto &storage = table.GetStorage();
-			auto segment_info = storage.GetColumnSegmentInfo(context);
+			auto segment_info = storage.GetColumnSegmentInfo(QueryContext(GetServices()));
 			for (auto &segment : segment_info) {
 				verify_block_usage_count[segment.block_id]++;
 				if (StringUtil::Contains(segment.segment_info, "Overflow String Block Ids: ")) {
@@ -744,7 +753,8 @@ void SingleFileCheckpointWriter::WriteTable(TableCatalogEntry &table, Serializer
 
 	// Explicit checkpoints bind indexes before serialization, so that buffered index operations are replayed
 	// and not lost on a restart. During a commit-time checkpoint the caller has no active transaction.
-	if (context && context->transaction.HasActiveTransaction() && checkpoint_context) {
+	auto client_context = GetServices().TryGetClientContext();
+	if (client_context && client_context->transaction.HasActiveTransaction() && checkpoint_context) {
 		D_ASSERT(checkpoint_context->transaction.HasActiveTransaction());
 		// Bind indexes with checkpoint transaction, which is already running and read-only, so any transaction the
 		// binder still starts skips start_transaction_lock.

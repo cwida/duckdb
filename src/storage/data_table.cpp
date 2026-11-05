@@ -109,7 +109,7 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, ColumnDefinition
 	this->row_groups = parent.row_groups->AddColumn(context, new_column, default_executor);
 
 	// also add this column to client local storage
-	local_storage.AddColumn(parent, *this, new_column, default_executor);
+	local_storage.AddColumn(context, parent, *this, new_column, default_executor);
 
 	// this table replaces the previous table, hence the parent is no longer the root DataTable
 	parent.version = DataTableVersion::ALTERED;
@@ -227,7 +227,7 @@ DataTable::DataTable(ClientContext &context, DataTable &parent, idx_t changed_id
 		                                          rewrite_visibility);
 
 		// scan the original table, and fill the new column with the transformed value
-		local_storage.ChangeType(parent, *this, changed_idx, target_type, bound_columns, cast_expr);
+		local_storage.ChangeType(context, parent, *this, changed_idx, target_type, bound_columns, cast_expr);
 
 		// re-verify any column constraint that the rewrite could have violated (e.g. NOT NULL)
 		if (constraint_to_verify) {
@@ -525,7 +525,7 @@ void DataTable::Fetch(DuckTransaction &transaction, DataChunk &result, const vec
 	D_ASSERT(result.size() == committed_count);
 
 	// Fetch local rows into a separate chunk.
-	auto &allocator = Allocator::Get(local_storage.GetClientContext());
+	auto &allocator = Allocator::Get(local_storage.GetServices().GetDatabase());
 	DataChunk local_chunk;
 	local_chunk.Initialize(allocator, result.GetTypes());
 	Vector local_row_ids(row_identifiers, local_sel, local_count);
@@ -714,7 +714,7 @@ void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> stora
 
 	// Local constraint verification.
 	if (local_verification) {
-		auto &local_indexes = local_storage.GetIndexes(context, data_table);
+		auto &local_indexes = local_storage.GetIndexes(data_table);
 		local_indexes.VerifyForeignKey(sibling_delete_indexes, dst_keys_ptr, dst_chunk, local_conflict_manager);
 		local_error = IsForeignKeyConstraintError(local_conflict_manager, is_append, count);
 	}
@@ -740,7 +740,7 @@ void DataTable::VerifyForeignKeyConstraint(optional_ptr<LocalTableStorage> stora
 		throw ConstraintException(message);
 	}
 
-	auto &transact_index = local_storage.GetIndexes(context, data_table);
+	auto &transact_index = local_storage.GetIndexes(data_table);
 	transaction_index_entry = transact_index.FindForeignKeyIndex(dst_keys_ptr, fk_type);
 
 	if (local_error && global_error && is_append) {
@@ -806,7 +806,7 @@ void DataTable::VerifyNewConstraint(LocalStorage &local_storage, DataTable &pare
 		throw NotImplementedException("FIXME: ALTER COLUMN with such constraint is not supported yet");
 	}
 
-	parent.row_groups->VerifyNewConstraint(local_storage.GetClientContext(), local_storage.GetTransaction(), parent,
+	parent.row_groups->VerifyNewConstraint(local_storage.GetServices(), local_storage.GetTransaction(), parent,
 	                                       constraint);
 	local_storage.VerifyNewConstraint(parent, constraint);
 }
@@ -1603,9 +1603,9 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 	}
 	if (writer.GetRebuildIndexes()) {
 		MetricsTimer timer;
-		auto context = writer.TryGetClientContext();
-		if (context) {
-			timer = QueryProfiler::Get(*context).StartTimer<MetricStorageTotalVacuumTime>();
+		auto profiler = writer.GetServices().TryGetQueryProfiler();
+		if (profiler) {
+			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
 		}
 		RebuildIndexes();
 		timer.EndTimer();

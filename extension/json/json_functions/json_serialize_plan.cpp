@@ -147,8 +147,8 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 
 				ColumnBindingResolver resolver;
 				LogicalPlanVerifier::Verify(context, *plan);
-				resolver.VisitOperator(*plan);
 				plan->ResolveOperatorTypes();
+				resolver.VisitOperator(*plan);
 
 				string operator_name;
 				if (!OperatorSupportsSerialization(*plan, operator_name)) {

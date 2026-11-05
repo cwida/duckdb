@@ -577,7 +577,7 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 
 	auto client_context = FileOpener::TryGetClientContext(opener);
 	if (client_context) {
-		logger = client_context->logger;
+		logger = client_context->services->GetLoggerPtr();
 	}
 }
 
