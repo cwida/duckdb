@@ -124,7 +124,7 @@ public:
 			auto offset = stream.CurrentOffset();
 			auto file_size = stream.FileSize();
 
-			if (offset + size > file_size) {
+			if (offset > file_size || size > file_size - offset) {
 				throw SerializationException(
 				    "Corrupt WAL file: entry size exceeded remaining data in file at byte position %llu "
 				    "(found entry with size %llu bytes, file size %llu bytes)",
@@ -184,7 +184,9 @@ public:
 				tag.SetSize(0);
 			}
 
-			if (offset + nonce.size() + ciphertext_size + tag.size() > file_size) {
+			const auto trailer_size = nonce.size() + sizeof(uint64_t) + tag.size();
+			if (offset > file_size || trailer_size > file_size - offset ||
+			    size > file_size - offset - trailer_size) {
 				throw SerializationException(
 				    "Corrupt Encrypted WAL file: entry size exceeded remaining data in file at byte position %llu "
 				    "(found entry with size %llu bytes, file size %llu bytes)",

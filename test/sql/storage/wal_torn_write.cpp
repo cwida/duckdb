@@ -225,3 +225,44 @@ TEST_CASE("Test WAL checksums", "[storage][.]") {
 	DeleteDatabase(storage_database);
 	DeleteDatabase(source_database);
 }
+
+TEST_CASE("Test WAL entry size that overflows the bound check", "[storage][.]") {
+	auto config = GetTestConfig();
+	auto storage_database = TestCreatePath("wal_size_overflow");
+	auto storage_wal = storage_database + ".wal";
+	auto source_database = TestCreatePath("wal_size_overflow_source");
+	auto source_wal = source_database + ".wal";
+
+	LocalFileSystem lfs;
+	config->options.checkpoint_wal_size = idx_t(-1);
+	config->options.checkpoint_on_shutdown = false;
+	config->options.abort_on_wal_failure = false;
+	DeleteDatabase(storage_database);
+	DeleteDatabase(source_database);
+	{
+		DuckDB db(source_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE A (a INTEGER);"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE B (a INTEGER);"));
+	}
+	auto commit_boundaries = GetWALCommitBoundaries(lfs, source_wal);
+	CopyFile(lfs, source_database, storage_database);
+	CopyFile(lfs, source_wal, storage_wal);
+	TruncateWAL(lfs, storage_wal, commit_boundaries.first);
+	{
+		// append an entry header with an entry size of 2^64 - 1: the size check must not overflow
+		auto handle = lfs.OpenFile(storage_wal, FileFlags::FILE_FLAGS_WRITE);
+		data_t header[2 * sizeof(uint64_t)];
+		memset(header, 0xFF, sizeof(header));
+		handle->Write(QueryContext(), header, sizeof(header), commit_boundaries.first);
+	}
+	{
+		// the oversized entry is treated as a torn write: table A is replayed, table B is not
+		DuckDB db(storage_database, config.get());
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("FROM A"));
+		REQUIRE_FAIL(con.Query("FROM B"));
+	}
+	DeleteDatabase(storage_database);
+	DeleteDatabase(source_database);
+}
