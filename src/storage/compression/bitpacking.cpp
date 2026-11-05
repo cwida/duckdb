@@ -1149,25 +1149,20 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	T *result_data = FlatVector::GetDataMutable<T>(result) + result_offset;
 
-	// the selection vector is expected to be sorted - otherwise we scan everything and gather
-	bool sorted = true;
-	for (idx_t i = 1; i < sel_count && sorted; i++) {
-		sorted = sel.get_index(i - 1) < sel.get_index(i);
-	}
-	if (!sorted) {
-		auto scratch = make_uniq<Vector>(result.GetType(), vector_count);
-		BitpackingScanPartial<T>(segment, state, vector_count, *scratch, 0);
-		auto scratch_data = FlatVector::GetData<T>(*scratch);
-		for (idx_t i = 0; i < sel_count; i++) {
-			result_data[i] = scratch_data[sel.get_index(i)];
+	idx_t previous_index = 0;
+	auto next_index = [&](idx_t sel_idx) {
+		const idx_t index = sel.get_index(sel_idx);
+		if (index < previous_index) {
+			InternalException::Throw("Error in BitpackingSelect - selection vector indices are not ordered");
 		}
-		return;
-	}
+		previous_index = index;
+		return index;
+	};
 
 	idx_t pos = 0;
 	idx_t i = 0;
 	while (i < sel_count) {
-		const idx_t target = sel.get_index(i);
+		const idx_t target = next_index(i);
 		D_ASSERT(target >= pos && target < vector_count);
 		scan_state.Skip(target - pos);
 		pos = target;
@@ -1185,12 +1180,12 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 		idx_t run_end = pos + group.Remaining();
 		switch (group.metadata.mode) {
 		case BitpackingMode::CONSTANT:
-			for (; i < sel_count && sel.get_index(i) < run_end; i++) {
+			for (; i < sel_count && next_index(i) < run_end; i++) {
 				result_data[i] = group.constant;
 			}
 			break;
 		case BitpackingMode::CONSTANT_DELTA:
-			for (; i < sel_count && sel.get_index(i) < run_end; i++) {
+			for (; i < sel_count && next_index(i) < run_end; i++) {
 				idx_t multiplier = group.offset + (sel.get_index(i) - pos);
 				// Operands read from disk can contain any T value, so use defined wrapping.
 				result_data[i] = static_cast<T>((static_cast<T_U>(group.constant) * multiplier) +
@@ -1204,7 +1199,7 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 			                                       offset_in_algorithm_group);
 			group.UnpackAlgorithmGroups(unsafe_array_ptr<T>(scan_state.decompression_buffer,
 			                                                BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
-			for (; i < sel_count && sel.get_index(i) < run_end; i++) {
+			for (; i < sel_count && next_index(i) < run_end; i++) {
 				T_U value = static_cast<T_U>(
 				    scan_state.decompression_buffer[offset_in_algorithm_group + (sel.get_index(i) - pos)]);
 				result_data[i] = static_cast<T>(value + static_cast<T_U>(group.frame_of_reference));
@@ -1225,7 +1220,7 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 			const idx_t first = i;
 			// prefix-sum the deltas up to each selected row, emitting the running value
 			idx_t cur = pos;
-			for (; i < sel_count && sel.get_index(i) < run_end; i++) {
+			for (; i < sel_count && next_index(i) < run_end; i++) {
 				const idx_t selected = sel.get_index(i);
 				for (; cur <= selected; cur++) {
 					carry += deltas[cur - pos] + frame;
