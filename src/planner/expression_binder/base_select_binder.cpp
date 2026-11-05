@@ -56,6 +56,10 @@ ProjectionIndex BaseSelectBinder::FindGroup(ParsedExpression &expr) {
 	if (node.bind_state.group_map.empty() && node.bind_state.group_alias_map.empty()) {
 		return ProjectionIndex();
 	}
+	// qualification below does not know the lambda parameters and would turn one into a column of this scope
+	if (ReferencesLambdaParameter(expr)) {
+		return ProjectionIndex();
+	}
 	// the groups are keyed by the qualified form, so qualify against this scope before matching
 	auto qualified = expr.Copy();
 	ExpressionBinder::QualifyColumnNames(binder, qualified);
@@ -79,8 +83,16 @@ ProjectionIndex BaseSelectBinder::TryBindGroup(ParsedExpression &expr) {
 	if (inside_aggregate) {
 		return ProjectionIndex();
 	}
-	// first check the group alias map, if expr is a ColumnRefExpression
 	auto &alias_map = node.bind_state.group_alias_map;
+	auto &group_map = node.bind_state.group_map;
+	if (alias_map.empty() && group_map.empty()) {
+		return ProjectionIndex();
+	}
+	// a lambda parameter is the innermost name in its body, and no group is defined in terms of one
+	if (ReferencesLambdaParameter(expr)) {
+		return ProjectionIndex();
+	}
+	// first check the group alias map, if expr is a ColumnRefExpression
 	if (expr.GetExpressionType() == ExpressionType::COLUMN_REF) {
 		auto &colref = expr.Cast<ColumnRefExpression>();
 		if (!colref.IsQualified()) {
@@ -93,7 +105,6 @@ ProjectionIndex BaseSelectBinder::TryBindGroup(ParsedExpression &expr) {
 	}
 	// no alias reference found
 	// check the list of group columns for a match
-	auto &group_map = node.bind_state.group_map;
 	auto entry = group_map.find(expr);
 	if (entry != group_map.end()) {
 		return entry->second;
@@ -123,8 +134,7 @@ BindResult BaseSelectBinder::BindGroupingFunction(OperatorExpression &op, idx_t 
 		}
 	} else {
 		for (auto &child : op.GetChildrenMutable()) {
-			ExpressionBinder::QualifyColumnNames(binder, child);
-			auto idx = TryBindGroup(*child);
+			auto idx = FindGroup(*child);
 			if (!idx.IsValid()) {
 				return BindResult(BinderException(op, "GROUPING child %s must be a grouping column", child->GetName()));
 			}

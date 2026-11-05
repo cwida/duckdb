@@ -7,6 +7,7 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/parser/expression/lambdaref_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_qualifier.hpp"
@@ -223,6 +224,72 @@ static void CollectResolvableColumns(ParsedExpression &expr, vector<identifier_s
 	    expr, [&](ParsedExpression &child) { CollectResolvableColumns(child, lambda_params, result); });
 }
 
+//! Reads lambda declarations as `ColumnQualifier::QualifyColumnNames` does, since that walk decides which names stay
+//! bare: only a lambda passed as a function argument declares parameters, and any other arrow is the JSON operator.
+static bool ReferencesLambdaParameter(ParsedExpression &expr, optional_ptr<vector<DummyBinding>> lambda_bindings,
+                                      vector<identifier_set_t> &declared_params) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::SUBQUERY:
+		return false;
+	case ExpressionClass::COLUMN_REF: {
+		auto &col_ref = expr.Cast<ColumnRefExpression>();
+		return !col_ref.IsQualified() &&
+		       !LambdaExpression::IsLambdaParameter(declared_params, col_ref.GetColumnName()) &&
+		       LambdaRefExpression::FindMatchingBinding(lambda_bindings, col_ref.GetColumnName());
+	}
+	case ExpressionClass::FUNCTION: {
+		auto &function = expr.Cast<FunctionExpression>();
+		if (!function.IsLambdaFunction()) {
+			break;
+		}
+		for (auto &argument : function.GetArgumentsMutable()) {
+			auto &child = *argument.GetExpressionMutable();
+			if (child.GetExpressionClass() != ExpressionClass::LAMBDA) {
+				if (ReferencesLambdaParameter(child, lambda_bindings, declared_params)) {
+					return true;
+				}
+				continue;
+			}
+			auto &lambda = child.Cast<LambdaExpression>();
+			string error_message;
+			auto parameters = lambda.ExtractColumnRefExpressions(error_message);
+			if (!error_message.empty()) {
+				if (ReferencesLambdaParameter(*lambda.LeftMutable(), lambda_bindings, declared_params) ||
+				    ReferencesLambdaParameter(*lambda.RightMutable(), lambda_bindings, declared_params)) {
+					return true;
+				}
+				continue;
+			}
+			declared_params.emplace_back();
+			for (auto &parameter : parameters) {
+				declared_params.back().emplace(parameter.get().Cast<ColumnRefExpression>().GetName());
+			}
+			auto found = ReferencesLambdaParameter(*lambda.RightMutable(), lambda_bindings, declared_params);
+			declared_params.pop_back();
+			if (found) {
+				return true;
+			}
+		}
+		return false;
+	}
+	default:
+		break;
+	}
+	bool found = false;
+	ParsedExpressionIterator::EnumerateChildren(expr, [&](ParsedExpression &child) {
+		found = found || ReferencesLambdaParameter(child, lambda_bindings, declared_params);
+	});
+	return found;
+}
+
+bool ExpressionBinder::ReferencesLambdaParameter(ParsedExpression &expr) {
+	if (!lambda_bindings) {
+		return false;
+	}
+	vector<identifier_set_t> declared_params;
+	return duckdb::ReferencesLambdaParameter(expr, lambda_bindings, declared_params);
+}
+
 optional_idx ExpressionBinder::ResolveAggregateOwner(FunctionExpression &aggregate, idx_t start) {
 	vector<reference<ColumnRefExpression>> columns;
 	vector<identifier_set_t> lambda_params;
@@ -266,6 +333,12 @@ optional_idx ExpressionBinder::ResolveOwner(vector<reference<ColumnRefExpression
 }
 
 optional_idx ExpressionBinder::ResolveOuterGroup(vector<reference<ParsedExpression>> &expressions, idx_t start) {
+	for (auto &expr : expressions) {
+		// a lambda parameter is bound in this scope, so no group of any scope is defined in terms of one
+		if (ReferencesLambdaParameter(expr.get())) {
+			return optional_idx();
+		}
+	}
 	for (idx_t depth = start; depth < ScopeCount(); depth++) {
 		bool all_match = true;
 		for (auto &expr : expressions) {

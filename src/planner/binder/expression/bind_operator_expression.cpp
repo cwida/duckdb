@@ -143,11 +143,7 @@ BindResult ExpressionBinder::BindGroupingInEnclosingScope(OperatorExpression &op
                                                           idx_t depth) {
 	ErrorData bind_error;
 	for (optional_idx scope = owner; scope.IsValid(); scope = ResolveOuterGroup(children, scope.GetIndex() + 1)) {
-		// BindGroupingFunction qualifies the children against the scope binding them, so bind a copy and
-		// leave the original intact for the scopes further out
-		auto attempt = op.Copy();
-		auto result = ScopeAt(scope.GetIndex())
-		                  .BindGroupingFunction(attempt->Cast<OperatorExpression>(), depth + scope.GetIndex());
+		auto result = ScopeAt(scope.GetIndex()).BindGroupingFunction(op, depth + scope.GetIndex());
 		if (!result.HasError()) {
 			ExtractCorrelatedExpressions(binder, *result.expression);
 			return result;
