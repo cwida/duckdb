@@ -60,6 +60,7 @@ struct TestScanState : public GlobalTableFunctionState {
 
 struct TestRunData : public TableFunctionData {
 	vector<TestDescription> tests;
+	vector<string> test_flags;
 };
 
 struct TestRunState : public GlobalTableFunctionState {
@@ -126,6 +127,40 @@ static vector<string> ReadStringList(const Value &value, const string &argument_
 		result.push_back(StringValue::Get(child));
 	}
 	return result;
+}
+
+static void ConfigureTestFlags(const vector<string> &test_flags) {
+	static mutex config_lock;
+	static bool initialized = false;
+	static vector<string> configured_flags;
+	lock_guard<mutex> guard(config_lock);
+	if (initialized) {
+		if (test_flags != configured_flags) {
+			throw InvalidInputException("The test extension cannot be reconfigured with different test flags");
+		}
+		return;
+	}
+
+	auto &config = TestConfiguration::Get();
+	config.Initialize();
+	vector<string> arguments {"test"};
+	arguments.insert(arguments.end(), test_flags.begin(), test_flags.end());
+	vector<char *> argv;
+	for (auto &argument : arguments) {
+		argv.push_back(&argument[0]);
+	}
+	for (idx_t index = 1; index < argv.size(); index++) {
+		auto argument = string(argv[index]);
+		try {
+			if (!config.ParseArgument(argument, NumericCast<idx_t>(argv.size()), argv.data(), index)) {
+				throw InvalidInputException("Unsupported test flag '%s'", argument);
+			}
+		} catch (std::exception &ex) {
+			throw InvalidInputException("Invalid test flag '%s': %s", argument, ex.what());
+		}
+	}
+	configured_flags = test_flags;
+	initialized = true;
 }
 
 static string NormalizePath(const string &path) {
@@ -311,13 +346,10 @@ static void AddBundleTest(void *data, const duckdb_test::TestCase *test_case) {
 }
 
 static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistryState &registry,
-                                             const vector<string> &test_roots, const vector<string> &extension_roots) {
+                                             const vector<string> &test_roots, const vector<string> &extension_roots,
+                                             const vector<string> &test_flags) {
+	ConfigureTestFlags(test_flags);
 	auto &config = TestConfiguration::Get();
-	static bool config_initialized = false;
-	if (!config_initialized) {
-		config.Initialize();
-		config_initialized = true;
-	}
 	DiscoverBundles(context, extension_roots);
 	vector<TestDescription> result;
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -340,10 +372,10 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
 			test.name = normalized_path;
 			test.kind = "sql";
 			test.tags = is_sqlite_root ? "[sqlitelogic][.]" : SQLTestTags(normalized_path);
-			test.source = normalized_path;
 			test.is_slow = test.tags.find("[.]") != string::npos;
 			test.auto_switch_test_dir =
 			    StringUtil::EndsWith(normalized_root, "/test/sql") && normalized_path.find("/test/sql") != string::npos;
+			test.source = test.auto_switch_test_dir ? NormalizePath(path) : normalized_path;
 			if (config.ShouldSkipTest(test.name)) {
 				return;
 			}
@@ -370,10 +402,11 @@ static unique_ptr<FunctionData> TestScanBind(ClientContext &context, TableFuncti
 	auto test_roots = ReadStringList(input.inputs[1], "test_roots");
 	auto extension_roots = ReadStringList(input.inputs[2], "extension_roots");
 	auto include_slow = BooleanValue::Get(input.inputs[3]);
+	auto test_flags = ReadStringList(input.inputs[4], "test_flags");
 	auto &registry = GetTestRegistry(context);
 
 	auto result = make_uniq<TestScanData>();
-	for (auto &test : DiscoverTests(context, registry, test_roots, extension_roots)) {
+	for (auto &test : DiscoverTests(context, registry, test_roots, extension_roots, test_flags)) {
 		if ((!test.is_slow || include_slow) && MatchesSelector(test, selectors)) {
 			result->tests.push_back(std::move(test));
 		}
@@ -507,8 +540,9 @@ static unique_ptr<FunctionData> TestRunBind(ClientContext &context, TableFunctio
 	auto test_ids = ReadStringList(input.inputs[0], "test_ids");
 	auto test_roots = ReadStringList(input.inputs[1], "test_roots");
 	auto extension_roots = ReadStringList(input.inputs[2], "extension_roots");
+	auto test_flags = ReadStringList(input.inputs[3], "test_flags");
 	auto &registry = GetTestRegistry(context);
-	auto available = DiscoverTests(context, registry, test_roots, extension_roots);
+	auto available = DiscoverTests(context, registry, test_roots, extension_roots, test_flags);
 	unordered_map<string, TestDescription> tests_by_id;
 	for (auto &test : available) {
 		tests_by_id.emplace(test.test_id, std::move(test));
@@ -522,6 +556,7 @@ static unique_ptr<FunctionData> TestRunBind(ClientContext &context, TableFunctio
 		}
 		result->tests.push_back(entry->second);
 	}
+	result->test_flags = std::move(test_flags);
 	names = {"test_id", "status", "duration_ms", "assertion_count", "failures", "message"};
 	return_types = {LogicalType::VARCHAR,
 	                LogicalType::VARCHAR,
@@ -557,8 +592,13 @@ static unique_ptr<GlobalTableFunctionState> TestRunInit(ClientContext &context, 
 		for (auto &name : selected->second) {
 			names.push_back(name.c_str());
 		}
+		vector<const char *> test_flags;
+		for (auto &test_flag : data.test_flags) {
+			test_flags.push_back(test_flag.c_str());
+		}
 		BundleResultContext callback_context {result->results, entry.name};
-		entry.bundle->run(entry.bundle->data, names.data(), names.size(), AddBundleResult, &callback_context);
+		entry.bundle->run(entry.bundle->data, names.data(), names.size(), test_flags.data(), test_flags.size(),
+		                  AddBundleResult, &callback_context);
 	}
 
 	unordered_map<string, idx_t> result_order;
@@ -605,13 +645,14 @@ void LoadTestExtension(ExtensionLoader &loader) {
 
 	TableFunction scan("test_scan",
 	                   {LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR),
-	                    LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BOOLEAN},
+	                    LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BOOLEAN,
+	                    LogicalType::LIST(LogicalType::VARCHAR)},
 	                   TestScanFunction, TestScanBind, TestScanInit);
 	loader.RegisterFunction(std::move(scan));
 
 	TableFunction run("test_run",
 	                  {LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR),
-	                   LogicalType::LIST(LogicalType::VARCHAR)},
+	                   LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR)},
 	                  TestRunFunction, TestRunBind, TestRunInit);
 	loader.RegisterFunction(std::move(run));
 }

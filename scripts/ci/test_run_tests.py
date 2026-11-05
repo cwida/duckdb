@@ -254,10 +254,19 @@ class RunTestsScriptTest(unittest.TestCase):
         self.assertEqual(stdout_buffer.getvalue(), b"\\u274c ran tests\n")
         self.assertEqual(stderr_buffer.getvalue(), b"\\u274c failed\n")
 
-    def test_protocol_runner_rejects_undefined_test_flags(self):
-        proc = start_runner(["--test-flags=--force-storage", "unused-binary"])
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("--test-flags is not supported by test_run yet", proc.stderr)
+    def test_protocol_runner_passes_test_flags_to_scan(self):
+        test_file = StringIO()
+        result = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.ci.run_tests.run_test_protocol_query", return_value=result) as query:
+            run_tests.generate_test_list(
+                test_file,
+                "unused-binary",
+                "--force-storage --on-init 'SET threads=1'",
+                [],
+            )
+
+        sql = query.call_args.args[1]
+        self.assertIn("['--force-storage', '--on-init', 'SET threads=1']", sql)
 
     def test_highlight_stack_trace_lines_colors_frame_index_and_function_name(self):
         lines = run_tests.highlight_stack_trace_lines(

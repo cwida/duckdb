@@ -46,8 +46,8 @@ struct TestBundle {
 	const char *name;
 	void *data;
 	void (*enumerate)(void *data, test_case_callback_t callback, void *callback_data);
-	void (*run)(void *data, const char *const *test_names, uint64_t test_count, test_result_callback_t callback,
-	            void *callback_data);
+	void (*run)(void *data, const char *const *test_names, uint64_t test_count, const char *const *test_flags,
+	            uint64_t test_flag_count, test_result_callback_t callback, void *callback_data);
 };
 
 struct TestRegistry {

@@ -328,7 +328,12 @@ def core_functions_load_statement(duckdb_bin: str):
 
 def build_test_protocol_sql(duckdb_bin: str, query: str):
     test_extension, _, _ = resolve_test_protocol_paths(duckdb_bin)
-    return core_functions_load_statement(duckdb_bin) + f"LOAD {sql_string(test_extension)};\n" + query + "\n"
+    return (
+        core_functions_load_statement(duckdb_bin)
+        + f"LOAD {sql_string(test_extension)};\n"
+        + query
+        + "\n"
+    )
 
 
 def run_test_protocol_query(
@@ -484,7 +489,7 @@ def generate_test_list(
     query = (
         "SELECT test_id, is_slow FROM test_scan("
         f"{sql_string_list(selectors)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
-        f"{'true' if include_slow else 'false'});"
+        f"{'true' if include_slow else 'false'}, {sql_string_list(shlex.split(test_flags))});"
     )
     proc = run_test_protocol_query(unittest_bin, query, coverage_profile_dir, test_config)
     if proc.returncode != 0:
@@ -1889,7 +1894,8 @@ def run_batch(config: TestRunnerConfig, batch):
     _, test_roots, bundle_roots = resolve_test_protocol_paths(config.unittest_bin)
     query = (
         "SELECT * FROM test_run("
-        f"{sql_string_list(batch)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)});"
+        f"{sql_string_list(batch)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
+        f"{sql_string_list(shlex.split(config.test_flags))});"
     )
     sql = build_test_protocol_sql(config.unittest_bin, query)
     # Capture the child's stdout/stderr to temp files rather than pipes, avoid deadlock
@@ -2594,9 +2600,6 @@ def main_impl(argv: list[str] | None = None):
     TEST_ROOT_OVERRIDES = args.test_root
     TEST_BUNDLE_ROOT_OVERRIDES = args.test_bundle_root
     args.coverage_profile_dir = None
-    if args.test_flags and args.test_command is None:
-        print("error: --test-flags is not supported by test_run yet", file=sys.stderr)
-        return 1
     if args.timeout_policy == "warn" and args.batch_size != 1:
         print("error: --timeout-policy warn requires --batch-size 1")
         return 1

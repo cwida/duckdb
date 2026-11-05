@@ -89,7 +89,7 @@ target_include_directories(
           "${PROJECT_SOURCE_DIR}/test/sqlite"
           "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
 target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner)
-duckdb_link_extensions(test_loadable_extension core_functions parquet json icu)
+link_extension_libraries(test_loadable_extension "")
 
 if(${ENABLE_UNITTEST_CPP_TESTS})
   duckdb_add_test_bundle(duckdb_tests SOURCES ${UNITTEST_OBJECT_FILES})
@@ -97,10 +97,8 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
                              PRIVATE DUCKDB_TEST_BUNDLE_DEBUG_FS)
   target_include_directories(
     duckdb_tests_loadable_extension
-    PRIVATE
-      "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
-  duckdb_link_extensions(duckdb_tests_loadable_extension core_functions parquet
-                         json icu)
+    PRIVATE "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
+  link_extension_libraries(duckdb_tests_loadable_extension "")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux"

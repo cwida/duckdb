@@ -31,10 +31,27 @@ struct CapturedFailure {
 };
 
 struct CaptureState {
+	string test_name;
 	vector<CapturedFailure> failures;
 	idx_t assertions = 0;
 	bool skipped = false;
 	string skip_reason;
+	std::chrono::steady_clock::time_point start;
+};
+
+struct CapturedResult {
+	string test_name;
+	TestStatus status;
+	double duration_ms;
+	idx_t assertions;
+	vector<CapturedFailure> failures;
+	string message;
+};
+
+struct RunContext {
+	CaptureState capture;
+	vector<CapturedResult> results;
+	bool test_active = false;
 };
 
 struct StreamCapture {
@@ -59,7 +76,7 @@ struct TempDirReclaimer {
 	bool success = false;
 };
 
-static thread_local optional_ptr<CaptureState> current_capture;
+static thread_local optional_ptr<RunContext> current_run;
 
 class TestBundleReporter : public Catch::StreamingReporterBase<TestBundleReporter> {
 public:
@@ -73,10 +90,11 @@ public:
 	}
 
 	bool assertionEnded(Catch::AssertionStats const &stats) override {
-		if (!current_capture) {
+		if (!current_run || !current_run->test_active) {
 			return true;
 		}
-		current_capture->assertions++;
+		auto &capture = current_run->capture;
+		capture.assertions++;
 		auto &result = stats.assertionResult;
 		if (!result.isOk()) {
 			auto source = result.getSourceInfo();
@@ -86,22 +104,51 @@ public:
 			failure.expression =
 			    result.hasExpandedExpression() ? result.getExpandedExpression() : result.getExpression();
 			failure.message = result.getMessage();
-			current_capture->failures.push_back(std::move(failure));
+			capture.failures.push_back(std::move(failure));
 		}
 		return true;
 	}
 
+	void testCaseStarting(Catch::TestCaseInfo const &test_info) override {
+		StreamingReporterBase::testCaseStarting(test_info);
+		if (!current_run) {
+			return;
+		}
+		current_run->capture = CaptureState();
+		current_run->capture.test_name = test_info.name;
+		current_run->capture.start = std::chrono::steady_clock::now();
+		current_run->test_active = true;
+	}
+
 	void testCaseEnded(Catch::TestCaseStats const &stats) override {
-		if (current_capture && stats.totals.skippedTests > 0) {
-			current_capture->skipped = true;
+		if (current_run && current_run->test_active) {
+			auto &capture = current_run->capture;
+			if (stats.totals.skippedTests > 0) {
+				capture.skipped = true;
+				if (!stats.totals.skippedTestReasons.empty()) {
+					capture.skip_reason = stats.totals.skippedTestReasons.begin()->first;
+				}
+			}
+			auto status = TestStatus::PASSED;
+			if (capture.skipped) {
+				status = TestStatus::SKIPPED;
+			} else if (stats.totals.testCases.failed > 0 || stats.totals.assertions.failed > 0 ||
+			           stats.totals.error != 0) {
+				status = TestStatus::FAILED;
+			}
+			auto end = std::chrono::steady_clock::now();
+			auto duration = std::chrono::duration<double, std::milli>(end - capture.start).count();
+			current_run->results.push_back({capture.test_name, status, duration, capture.assertions,
+			                                std::move(capture.failures), std::move(capture.skip_reason)});
+			current_run->test_active = false;
 		}
 		StreamingReporterBase::testCaseEnded(stats);
 	}
 
 	void skipTest(Catch::TestCaseInfo const &test_info) override {
-		if (current_capture) {
-			current_capture->skipped = true;
-			current_capture->skip_reason = test_info.name;
+		if (current_run) {
+			current_run->results.push_back(
+			    {test_info.name, TestStatus::SKIPPED, 0, 0, {}, "Skipped after an earlier test aborted the run"});
 		}
 	}
 };
@@ -126,7 +173,6 @@ static void InitializeTestEnvironment() {
 		return;
 	}
 	auto &config = TestConfiguration::Get();
-	config.Initialize();
 	config.ChangeWorkingDirectory(TestRootDirectory());
 	string error;
 	if (!PrepareTempDir(error)) {
@@ -162,56 +208,97 @@ static void EnumerateTests(void *, test_case_callback_t callback, void *callback
 	}
 }
 
-static void RunTests(void *, const char *const *test_names, uint64_t test_count, test_result_callback_t callback,
-                     void *callback_data) {
+static void ConfigureTestFlags(const char *const *test_flags, uint64_t test_flag_count) {
+	static bool initialized = false;
+	static vector<string> configured_flags;
+	vector<string> flags;
+	for (uint64_t index = 0; index < test_flag_count; index++) {
+		flags.emplace_back(test_flags[index]);
+	}
+	if (initialized) {
+		if (flags != configured_flags) {
+			throw InvalidInputException("A C++ test bundle cannot be reconfigured with different test flags");
+		}
+		return;
+	}
+
+	auto &config = TestConfiguration::Get();
+	config.Initialize();
+	vector<string> arguments {"duckdb_tests"};
+	arguments.insert(arguments.end(), flags.begin(), flags.end());
+	vector<char *> argv;
+	for (auto &argument : arguments) {
+		argv.push_back(&argument[0]);
+	}
+	for (idx_t index = 1; index < argv.size(); index++) {
+		auto argument = string(argv[index]);
+		try {
+			if (!config.ParseArgument(argument, NumericCast<idx_t>(argv.size()), argv.data(), index)) {
+				throw InvalidInputException("Unsupported C++ test flag '%s'", argument);
+			}
+		} catch (std::exception &ex) {
+			throw InvalidInputException("Invalid C++ test flag '%s': %s", argument, ex.what());
+		}
+	}
+	configured_flags = std::move(flags);
+	initialized = true;
+}
+
+static void RunTests(void *, const char *const *test_names, uint64_t test_count, const char *const *test_flags,
+                     uint64_t test_flag_count, test_result_callback_t callback, void *callback_data) {
+	static mutex run_lock;
+	lock_guard<mutex> guard(run_lock);
+	ConfigureTestFlags(test_flags, test_flag_count);
 	InitializeTestEnvironment();
 	TempDirReclaimer temp_dir_reclaimer;
 	temp_dir_reclaimer.success = true;
+
+	RunContext run_context;
+	current_run = run_context;
+
+	// Catch destroys its global test registry with a Session, so keep the embedded session process-local.
+	static auto session = new Catch::Session();
+	Catch::ConfigData config;
+	config.name = DUCKDB_TEST_BUNDLE_NAME;
+	config.reporterName = "duckdb_test_bundle";
+	config.useColour = Catch::UseColour::No;
+	string test_filter;
 	for (uint64_t test_idx = 0; test_idx < test_count; test_idx++) {
-		string test_name(test_names[test_idx]);
-		CaptureState capture;
-		current_capture = capture;
-
-		Catch::Session session;
-		auto &config = session.configData();
-		config.name = DUCKDB_TEST_BUNDLE_NAME;
-		config.reporterName = "duckdb_test_bundle";
-		config.useColour = Catch::UseColour::No;
-		config.testsOrTags.push_back(QuoteCatchTest(test_name));
-
-		auto start = std::chrono::steady_clock::now();
-		int return_code;
-		string run_output;
-		{
-			StreamCapture stream_capture;
-			return_code = session.run();
-			run_output = stream_capture.output.str();
+		if (!test_filter.empty()) {
+			test_filter += ",";
 		}
-		auto end = std::chrono::steady_clock::now();
-		current_capture = nullptr;
+		test_filter += QuoteCatchTest(test_names[test_idx]);
+	}
+	config.testsOrTags.push_back(std::move(test_filter));
+	session->useConfigData(config);
+	string run_output;
+	{
+		StreamCapture stream_capture;
+		session->run();
+		run_output = stream_capture.output.str();
+	}
+	current_run = nullptr;
 
+	for (auto &captured : run_context.results) {
 		vector<TestFailure> failures;
-		failures.reserve(capture.failures.size());
-		for (auto &failure : capture.failures) {
+		failures.reserve(captured.failures.size());
+		for (auto &failure : captured.failures) {
 			failures.push_back(
 			    {failure.file.c_str(), failure.line, failure.expression.c_str(), failure.message.c_str()});
 		}
-		auto status = return_code == 0 ? TestStatus::PASSED : TestStatus::FAILED;
-		if (capture.skipped) {
-			status = TestStatus::SKIPPED;
-		}
-		if (status == TestStatus::FAILED) {
+		if (captured.status == TestStatus::FAILED) {
 			temp_dir_reclaimer.success = false;
 		}
-		auto duration = std::chrono::duration<double, std::milli>(end - start).count();
-		auto message = capture.skip_reason;
-		if (return_code != 0 && message.empty()) {
-			message = std::move(run_output);
+		if (captured.status == TestStatus::FAILED && captured.message.empty() && failures.empty()) {
+			captured.message = run_output;
 		}
-		TestResult result {test_name.c_str(), status,
-		                   duration,          NumericCast<uint64_t>(capture.assertions),
-		                   failures.data(),   NumericCast<uint64_t>(failures.size()),
-		                   message.c_str()};
+		TestResult result {captured.test_name.c_str(),
+		                   captured.status,
+		                   captured.duration_ms,
+		                   NumericCast<uint64_t>(captured.assertions),
+		                   failures.data(),
+		                   NumericCast<uint64_t>(failures.size()),
+		                   captured.message.c_str()};
 		callback(callback_data, &result);
 	}
 }
