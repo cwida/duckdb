@@ -1,0 +1,95 @@
+# name: test/sql/cte/test_recursive_cte_union_all_types.test
+# description: A WITH RECURSIVE CTE that does not reference itself must derive its column types from both sides
+# group: [cte]
+
+# NULL on the left, BOOLEAN on the right
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT true) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+# BOOLEAN on the left, NULL on the right
+query II
+WITH RECURSIVE t(a) AS (SELECT true UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+# INTEGER
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT 42) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	INTEGER
+42	INTEGER
+
+query II
+WITH RECURSIVE t(a) AS (SELECT 42 UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	INTEGER
+42	INTEGER
+
+# VARCHAR
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT 'x') SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	VARCHAR
+x	VARCHAR
+
+query II
+WITH RECURSIVE t(a) AS (SELECT 'x' UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	VARCHAR
+x	VARCHAR
+
+# UNION (not ALL)
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION SELECT true) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+query II
+WITH RECURSIVE t(a) AS (SELECT true UNION SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+# multiple columns, only some need widening
+query IIII
+WITH RECURSIVE t(a, b) AS (SELECT NULL, 1 UNION ALL SELECT 'x', 2) SELECT a, b, typeof(a), typeof(b) FROM t ORDER BY b;
+----
+NULL	1	VARCHAR	INTEGER
+x	2	VARCHAR	INTEGER
+
+# a truly recursive CTE with mixed column types keeps working
+query III
+WITH RECURSIVE t(i, s) AS (
+	SELECT 1, 'a'
+	UNION ALL
+	SELECT i + 1, s || 'b' FROM t WHERE i < 3
+)
+SELECT i, s, typeof(s) FROM t ORDER BY i;
+----
+1	a	VARCHAR
+2	ab	VARCHAR
+3	abb	VARCHAR
+
+query II
+WITH RECURSIVE t(i, b) AS (
+	SELECT 1, true
+	UNION
+	SELECT i + 1, NULL FROM t WHERE i < 3
+)
+SELECT i, typeof(b) FROM t ORDER BY i;
+----
+1	BOOLEAN
+2	BOOLEAN
+3	BOOLEAN
+
+# an all-NULL column keeps the NULL type, so it still combines with any other type
+query I
+WITH RECURSIVE c(a) AS (SELECT NULL UNION ALL SELECT NULL) SELECT coalesce(a, DATE '2026-01-01') FROM c;
+----
+2026-01-01
+2026-01-01

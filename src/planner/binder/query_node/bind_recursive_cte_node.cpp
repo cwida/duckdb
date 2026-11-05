@@ -260,16 +260,30 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	auto left_node = std::move(left.plan);
 	auto right_node = std::move(right.plan);
 
-	// for both the left and right sides, cast them to the same types
-	left_node = CastLogicalOperatorToTypes(left.types, internal_types, std::move(left_node));
-	right_node = CastLogicalOperatorToTypes(right.types, internal_types, std::move(right_node));
-
 	auto recurring_binding = right_binder->GetCTEBinding(BindingAlias("recurring", ctename));
 	bool ref_recurring = recurring_binding && recurring_binding->IsReferenced();
 
 	// Check if there is a reference to the recursive or recurring table, if not create a set operator.
 	auto cte_binding = right_binder->GetCTEBinding(BindingAlias(ctename));
 	bool ref_cte = cte_binding && cte_binding->IsReferenced();
+	if (!ref_cte && !ref_recurring && !is_using_key) {
+		// the CTE is not actually recursive, so the right side did not depend on the types of the left side:
+		// pick the max type of both sides, like a regular set operation does
+		// (USING KEY binds its key and payload expressions against the left types, so it is left as is)
+		for (idx_t i = 0; i < internal_types.size(); i++) {
+			auto max_type = LogicalType::ForceMaxLogicalType(context, left.types[i], right.types[i]);
+			if (!CanContainNulls() && ExpressionBinder::ContainsNullType(max_type)) {
+				max_type = ExpressionBinder::ExchangeNullType(max_type);
+			}
+			internal_types[i] = max_type;
+			result.types[i] = max_type;
+		}
+	}
+
+	// for both the left and right sides, cast them to the same types
+	left_node = CastLogicalOperatorToTypes(left.types, internal_types, std::move(left_node));
+	right_node = CastLogicalOperatorToTypes(right.types, internal_types, std::move(right_node));
+
 	if (!ref_cte && !ref_recurring) {
 		auto root = make_uniq<LogicalSetOperation>(setop_index, internal_types.size(), std::move(left_node),
 		                                           std::move(right_node), LogicalOperatorType::LOGICAL_UNION,
