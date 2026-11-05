@@ -152,6 +152,9 @@ statement ok
 CREATE TABLE expected AS SELECT * FROM t
 
 # the strings survive WAL replay
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
 restart
 
 statement ok
