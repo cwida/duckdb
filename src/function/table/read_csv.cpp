@@ -198,45 +198,15 @@ static bool PushdownProjectionExpressionMultiFile(ClientContext &context,
 	return true;
 }
 
-//! Binds a read_csv scan and declares its stability - see BaseTableFunction::stability
-static unique_ptr<FunctionData> ReadCSVBind(ClientContext &context, TableFunctionBindInput &input,
-                                            vector<LogicalType> &return_types, vector<Identifier> &names) {
-	if (!input.table_function.function_info) {
-		throw InvalidInputException("Multi-file table function %s was bound without its function info",
-		                            input.table_function.GetName());
-	}
-	auto &info = input.table_function.function_info->Cast<TableFunctionMultiFileInfo>();
-	auto result = TableFunctionMultiFileWrapper::MultiFileBindWith(context, input, return_types, names, info.function,
-	                                                               info.settings);
-	auto &bind_data = result->Cast<MultiFileBindData>();
-	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
-	// the normalized CSV options live on the per-file bind data - take the bind that determined the schema, or the
-	// first bound file when the schema was combined by type
-	optional_ptr<const FunctionData> file_bind_data = data.options.schema_bind_data.get();
-	if (!file_bind_data && !bind_data.union_readers.empty()) {
-		file_bind_data = bind_data.union_readers[0]->Cast<TableFunctionUnionData>().bind_data.get();
-	}
-	if (!file_bind_data) {
-		// no bound file to inspect the options on (e.g. the schema was given upfront) - stay conservative
-		return result;
-	}
-	// store_rejects writes reject tables, an observable side effect per execution. CSVReaderOptions::Verify folds
-	// the rejects_table and rejects_scan options into store_rejects, so checking it covers those spellings too
-	if (!file_bind_data->Cast<ReadCSVData>().options.store_rejects.GetValue()) {
-		// the file list is fixed at bind and file content is assumed stable within one query
-		input.table_function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	}
-	return result;
-}
-
 TableFunction ReadCSVTableFunction::GetFunction() {
 	// the multi-file CSV reader is the single-file CSV reader wrapped into a multi-file function
 	auto read_csv = ReadCSVTableFunction::GetMultiFileFunction("read_csv");
 	read_csv.serialize = CSVReaderSerialize;
 	read_csv.deserialize = CSVReaderDeserialize;
 	read_csv.projection_expression_pushdown = PushdownProjectionExpressionMultiFile;
-	// the stability of the scan depends on the bound options, so it is declared by a bind of our own
-	read_csv.bind = ReadCSVBind;
+	// the file list is fixed at bind, file content is assumed stable within one query, and reject recording
+	// reflects the executions of the optimized scan
+	read_csv.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
 	return read_csv;
 }
 

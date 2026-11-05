@@ -51,8 +51,9 @@ EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv'
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
 
-# A store_rejects CSV scan writes reject tables - an observable side effect per execution - so it is not
-# repeatable and must never be shared, independently of the identity guard above.
+# A store_rejects CSV scan declares the same within-query stability as any other CSV scan - reject recording
+# reflects the executions of the optimized scan, and sharing would write the rejects once. Sharing is still
+# blocked by the scan identity guard above, like the plain read_csv scans.
 statement ok
 COPY (SELECT * FROM (VALUES ('1'), ('oops'), ('3')) t(k)) TO '{TEST_DIR}/repeatability_rejects.csv' (FORMAT csv, HEADER);
 
