@@ -1,0 +1,78 @@
+# name: test/parquet/corrupt/int96_struct_out_of_range.test
+# description: Reading INT96 values with a day or a time outside their ranges as a struct gives a clean error
+# group: [corrupt]
+
+require parquet
+
+# Julian day 0xffffffff, which the writer produces for the day before Julian day 0, is outside the DATE range
+statement error
+SELECT ts FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_out_of_range.parquet', int96_as='struct');
+----
+Int96 timestamp is out of range
+
+statement error
+SELECT ts['date'] FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_out_of_range.parquet', int96_as='struct');
+----
+Int96 timestamp is out of range
+
+# the day counts right at the DATE infinity and just below it
+statement error
+SELECT ts FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_infinity.parquet', int96_as='struct');
+----
+Int96 timestamp is out of range
+
+query II
+SELECT ts['date'], ts['time'] FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_max.parquet', int96_as='struct');
+----
+5881580-07-10	00:00:00
+
+# Julian day zero, the lowest day the field holds
+query II
+SELECT ts['date'], ts['time'] FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_zero.parquet', int96_as='struct');
+----
+4714-11-24 (BC)	00:00:00
+
+# the other read modes keep their behavior
+statement error
+SELECT ts FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_out_of_range.parquet');
+----
+Int96 timestamp is out of range
+
+query I
+SELECT ts FROM read_parquet('data/parquet-testing/corrupt/int96_struct_day_out_of_range.parquet', int96_as='timestamp_ns');
+----
+infinity
+
+# INT64_MIN nanoseconds is not a time of day
+statement error
+SELECT ts FROM read_parquet('data/parquet-testing/corrupt/int96_nanosecond_subtraction_overflow.parquet', int96_as='struct');
+----
+Invalid TIME value -9223372036854775808 in Parquet file - TIME values must be within a day
+
+statement error
+SELECT ts['time']::VARCHAR FROM read_parquet('data/parquet-testing/corrupt/int96_nanosecond_subtraction_overflow.parquet', int96_as='struct');
+----
+Invalid TIME value -9223372036854775808 in Parquet file - TIME values must be within a day
+
+# one nanosecond past the day
+statement error
+SELECT ts FROM read_parquet('data/parquet-testing/corrupt/int96_struct_time_past_day.parquet', int96_as='struct');
+----
+Invalid TIME value 86400000000001 in Parquet file - TIME values must be within a day
+
+# the end of the day is a valid time
+query I
+SELECT ts::VARCHAR FROM read_parquet('data/parquet-testing/corrupt/int96_struct_time_full_day.parquet', int96_as='struct');
+----
+{'date': 1969-12-31, 'time': '24:00:00'}
+
+query II
+SELECT ts['date'], ts['time'] FROM read_parquet('data/parquet-testing/corrupt/int96_struct_time_full_day.parquet', int96_as='struct');
+----
+1969-12-31	24:00:00
+
+# the database stays usable after the errors
+query I
+SELECT 42;
+----
+42
