@@ -1149,6 +1149,23 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	T *result_data = FlatVector::GetDataMutable<T>(result) + result_offset;
 
+	// dense selections decode (nearly) every algorithm group anyway: scan the range and gather in place
+	if (sel_count > 0 && sel_count * BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE >= vector_count &&
+	    result_offset + vector_count <= FlatVector::GetCapacity(result)) {
+		// the in-place gather requires sel[i] >= i, which holds for strictly increasing selections
+		bool strictly_increasing = true;
+		for (idx_t i = 1; i < sel_count && strictly_increasing; i++) {
+			strictly_increasing = sel.get_index(i - 1) < sel.get_index(i);
+		}
+		if (strictly_increasing && sel.get_index(sel_count - 1) < vector_count) {
+			BitpackingScanPartial<T>(segment, state, vector_count, result, result_offset);
+			for (idx_t i = 0; i < sel_count; i++) {
+				result_data[i] = result_data[sel.get_index(i)];
+			}
+			return;
+		}
+	}
+
 	idx_t previous_index = 0;
 	auto next_index = [&](idx_t sel_idx) {
 		const idx_t index = sel.get_index(sel_idx);
@@ -1164,8 +1181,19 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 	while (i < sel_count) {
 		const idx_t target = next_index(i);
 		D_ASSERT(target >= pos && target < vector_count);
-		scan_state.Skip(target - pos);
-		pos = target;
+		idx_t skip_target = target;
+		if (scan_state.HasCurrentGroup()) {
+			auto &current = scan_state.GetCurrentGroup();
+			if (current.metadata.mode == BitpackingMode::DELTA_FOR && !current.AtEnd() &&
+			    target - pos < current.Remaining()) {
+				// stop at the target's algorithm group: the prefix sum below covers the rows before the target
+				const idx_t target_in_algorithm_group =
+				    (current.offset + (target - pos)) % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+				skip_target = MaxValue<idx_t>(pos, target - target_in_algorithm_group);
+			}
+		}
+		scan_state.Skip(skip_target - pos);
+		pos = skip_target;
 		if (!scan_state.HasCurrentGroup()) {
 			ThrowBitpackingReadPastEnd();
 		}
@@ -1226,6 +1254,11 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 					carry += deltas[cur - pos] + frame;
 				}
 				result_data[i] = static_cast<T>(carry);
+			}
+			// finish the unpacked algorithm group so that the next Skip does not decode it again
+			const idx_t unpacked_end = MinValue<idx_t>(run_end, vector_count);
+			for (; cur < unpacked_end; cur++) {
+				carry += deltas[cur - pos] + frame;
 			}
 			if (scan_state.is_bool) {
 				VerifyBooleanValues(result_data + first, i - first);
