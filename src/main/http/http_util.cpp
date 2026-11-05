@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
@@ -575,9 +576,9 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 		http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(*db);
 	}
 
-	auto client_context = FileOpener::TryGetClientContext(opener);
-	if (client_context) {
-		logger = client_context->services->GetLoggerPtr();
+	auto services = FileOpener::TryGetContext(opener);
+	if (services && services->IsClient()) {
+		logger = services->GetLoggerPtr();
 	}
 }
 

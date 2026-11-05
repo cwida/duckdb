@@ -24,10 +24,6 @@ SettingLookupResult ClientContextFileOpener::TryGetCurrentSetting(const Identifi
 	return context.TryGetCurrentSetting(key, result);
 }
 
-optional_ptr<ClientContext> ClientContextFileOpener::TryGetClientContext() {
-	return context.TryGetClientContext();
-}
-
 optional_ptr<DatabaseInstance> ClientContextFileOpener::TryGetDatabase() {
 	return &context.GetDatabase();
 }
@@ -40,9 +36,9 @@ unique_ptr<CatalogTransaction> FileOpener::TryGetCatalogTransaction(optional_ptr
 	if (!opener) {
 		return nullptr;
 	}
-	auto context = opener->TryGetClientContext();
-	if (context) {
-		return make_uniq<CatalogTransaction>(CatalogTransaction::GetSystemCatalogTransaction(*context));
+	auto client_context = opener->TryGetContext().TryGetClientContext();
+	if (client_context) {
+		return make_uniq<CatalogTransaction>(CatalogTransaction::GetSystemCatalogTransaction(*client_context));
 	}
 
 	auto db = opener->TryGetDatabase();
@@ -52,11 +48,11 @@ unique_ptr<CatalogTransaction> FileOpener::TryGetCatalogTransaction(optional_ptr
 	return nullptr;
 }
 
-optional_ptr<ClientContext> FileOpener::TryGetClientContext(optional_ptr<FileOpener> opener) {
+optional_ptr<Context> FileOpener::TryGetContext(optional_ptr<FileOpener> opener) {
 	if (!opener) {
 		return nullptr;
 	}
-	return opener->TryGetClientContext();
+	return &opener->TryGetContext();
 }
 
 optional_ptr<DatabaseInstance> FileOpener::TryGetDatabase(optional_ptr<FileOpener> opener) {

@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/file_system.hpp"
 
 #include "duckdb/common/checksum.hpp"
@@ -1003,9 +1004,9 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 		return;
 	}
 
-	auto context = opener.TryGetClientContext();
-	if (context && Logger::Get(*context).ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
-		logger = context->services->GetLoggerPtr();
+	auto &services = opener.TryGetContext();
+	if (services.IsClient() && services.GetLogger().ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
+		logger = services.GetLoggerPtr();
 		return;
 	}
 

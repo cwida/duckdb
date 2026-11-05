@@ -1,0 +1,39 @@
+diff --git a/src/azure_filesystem.cpp b/src/azure_filesystem.cpp
+index 38f009f..1c7fa99 100644
+--- a/src/azure_filesystem.cpp
++++ b/src/azure_filesystem.cpp
+@@ -253,7 +253,7 @@ shared_ptr<AzureContextState> AzureStorageFileSystem::GetOrCreateStorageContext(
+ 	if (FileOpener::TryGetCurrentSetting(opener, "azure_context_caching", value)) {
+ 		azure_context_caching = value.GetValue<bool>();
+ 	}
+-	auto client_context = FileOpener::TryGetClientContext(opener);
++	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
+ 
+ 	shared_ptr<AzureContextState> result;
+ 	if (azure_context_caching && client_context) {
+diff --git a/src/azure_http_state.cpp b/src/azure_http_state.cpp
+index d4a7eff..61f9abd 100644
+--- a/src/azure_http_state.cpp
++++ b/src/azure_http_state.cpp
+@@ -18,7 +18,7 @@ shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(ClientContext &context) {
+ }
+ 
+ shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(optional_ptr<FileOpener> opener) {
+-	auto client_context = FileOpener::TryGetClientContext(opener);
++	auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
+ 	if (client_context) {
+ 		return TryGetState(*client_context);
+ 	}
+diff --git a/src/azure_storage_account_client.cpp b/src/azure_storage_account_client.cpp
+index a137518..01c5fd7 100644
+--- a/src/azure_storage_account_client.cpp
++++ b/src/azure_storage_account_client.cpp
+@@ -142,7 +142,7 @@ static T ToClientOptions(const Azure::Core::Http::Policies::TransportOptions &tr
+ 		http_logging_enabled = enable_http_logging_value.GetValue<bool>();
+ 	}
+ 	if (http_logging_enabled) {
+-		auto client_context = FileOpener::TryGetClientContext(opener);
++		auto client_context = Context::TryGetClientContext(FileOpener::TryGetContext(opener));
+ 		if (client_context && client_context->Services().GetLoggerPtr()) {
+ 			// Read redaction config options
+ 			std::unordered_set<std::string> redact_query_params;

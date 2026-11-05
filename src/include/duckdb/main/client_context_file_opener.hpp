@@ -25,7 +25,9 @@ public:
 	SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result, FileOpenerInfo &info) override;
 	SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result) override;
 
-	optional_ptr<ClientContext> TryGetClientContext() override;
+	Context &TryGetContext() override {
+		return context;
+	}
 	optional_ptr<DatabaseInstance> TryGetDatabase() override;
 	HTTPUtil &GetHTTPUtil() override;
 
