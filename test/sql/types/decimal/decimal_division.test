@@ -239,6 +239,18 @@ SELECT decimal_division(170141183460469231731687303715884105727::{type}, 2::DECI
 
 endloop
 
+# Arguments in different physical tiers keep their resolved types through plan serialization
+statement ok
+CREATE TABLE cross_tier(x BIGINT, y INTEGER, dx DECIMAL(19,0), dy DECIMAL(10,0));
+
+statement ok
+INSERT INTO cross_tier VALUES (10, 4, 10, 4);
+
+query IIII
+SELECT decimal_division(x, y), typeof(decimal_division(x, y)), decimal_division(dx, dy), decimal_division(y, x) FROM cross_tier;
+----
+2.50000000000	DECIMAL(30,11)	2.50000000000	0.40000000000000000000
+
 # Mixed integer / decimal with an explicit scale
 query I
 SELECT decimal_division(127, 4.00, 2);

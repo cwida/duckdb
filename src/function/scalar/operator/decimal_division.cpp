@@ -1,6 +1,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/hugeint.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -160,6 +162,8 @@ static scalar_function_t GetDecimalDivExecuteFunction(PhysicalType result_physic
 // Bind function
 //===--------------------------------------------------------------------===//
 
+static void SelectDecimalDivFunction(BoundScalarFunction &bound_function);
+
 // Result width and scale for e1 / e2 (SQL Server semantics):
 //   result_scale = max(6, s1 + p2 + 1)
 //   result_width = p1 - s1 + s2 + result_scale
@@ -212,25 +216,11 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 		    result_width, Decimal::MAX_WIDTH_DECIMAL);
 	}
 
-	PhysicalType result_physical;
-	if (result_width <= Decimal::MAX_WIDTH_INT16) {
-		result_physical = PhysicalType::INT16;
-	} else if (result_width <= Decimal::MAX_WIDTH_INT32) {
-		result_physical = PhysicalType::INT32;
-	} else if (result_width <= Decimal::MAX_WIDTH_INT64) {
-		result_physical = PhysicalType::INT64;
-	} else {
-		result_physical = PhysicalType::INT128;
-	}
-
 	bound_function.SetReturnType(LogicalType::DECIMAL(result_width, result_scale));
 
 	auto lhs_physical = lhs_decimal_type.InternalType();
 	auto rhs_physical = rhs_decimal_type.InternalType();
 	auto wider = MaxValue<PhysicalType>(lhs_physical, rhs_physical);
-
-	int32_t scale_exp = int32_t(s2) + int32_t(result_scale) - int32_t(s1);
-	int32_t abs_scale_exp = scale_exp < 0 ? -scale_exp : scale_exp;
 
 	uint32_t input_max_width;
 	switch (wider) {
@@ -250,14 +240,24 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 		throw InternalException("decimal_division: unexpected physical type");
 	}
 
-	// For same-tier inputs, preserve the original argument type so bind is idempotent
-	// during plan deserialization (bind is re-called with the stored argument types, and
-	// changing p changes the result-width formula).
-	// For cross-tier inputs, promote the narrower argument to the wider physical tier.
+	// Promote a narrower argument to the wider physical tier. This changes the result type formula, so plans
+	// restore the resolved types through the function serializer instead of resolving them again.
 	bound_function.GetArguments()[0] =
 	    (lhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s1) : lhs_decimal_type;
 	bound_function.GetArguments()[1] =
 	    (rhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s2) : rhs_decimal_type;
+	SelectDecimalDivFunction(bound_function);
+}
+
+//! Pick the execute function from the resolved argument and return types
+static void SelectDecimalDivFunction(BoundScalarFunction &bound_function) {
+	auto &arguments = bound_function.GetArguments();
+	const auto result_physical = bound_function.GetReturnType().InternalType();
+	const auto wider = MaxValue<PhysicalType>(arguments[0].InternalType(), arguments[1].InternalType());
+	const int32_t scale_exp = int32_t(DecimalType::GetScale(arguments[1])) +
+	                          int32_t(DecimalType::GetScale(bound_function.GetReturnType())) -
+	                          int32_t(DecimalType::GetScale(arguments[0]));
+	const int32_t abs_scale_exp = scale_exp < 0 ? -scale_exp : scale_exp;
 
 	switch (wider) {
 	case PhysicalType::INT16:
@@ -296,6 +296,24 @@ static unique_ptr<FunctionData> DecimalDivisionBind(BindScalarFunctionInput &inp
 }
 
 //===--------------------------------------------------------------------===//
+// Serialization
+//===--------------------------------------------------------------------===//
+
+// The serializer stores the resolved argument and return types, which must not be resolved again
+static void SerializeDecimalDivision(Serializer &, const optional_ptr<FunctionData>, const BoundScalarFunction &) {
+}
+
+static unique_ptr<FunctionData> DeserializeDecimalDivision(Deserializer &deserializer,
+                                                           BoundScalarFunction &bound_function) {
+	bound_function.SetReturnType(deserializer.Get<const LogicalType &>());
+	SelectDecimalDivFunction(bound_function);
+	auto lhs_scale = DecimalType::GetScale(bound_function.GetArguments()[0]);
+	auto rhs_scale = DecimalType::GetScale(bound_function.GetArguments()[1]);
+	auto result_scale = DecimalType::GetScale(bound_function.GetReturnType());
+	return make_uniq<DecimalDivBindData>(int32_t(rhs_scale) + int32_t(result_scale) - int32_t(lhs_scale));
+}
+
+//===--------------------------------------------------------------------===//
 // Registration
 //===--------------------------------------------------------------------===//
 
@@ -306,6 +324,8 @@ ScalarFunctionSet DecimalDivisionFun::GetFunctions() {
 	ScalarFunction two_arg({}, decimal_type, DecimalDivExecute<hugeint_t, hugeint_t, hugeint_t>, DecimalDivisionBind);
 	two_arg.GetSignature().AddParameter("x", decimal_type).AddParameter("y", decimal_type);
 	two_arg.SetResolveTypesCallback(DecimalDivisionResolveTypes);
+	two_arg.SetSerializeCallback(SerializeDecimalDivision);
+	two_arg.SetDeserializeCallback(DeserializeDecimalDivision);
 	two_arg.SetFallible();
 	set.AddFunction(two_arg);
 
@@ -315,6 +335,8 @@ ScalarFunctionSet DecimalDivisionFun::GetFunctions() {
 	    .AddParameter("y", decimal_type)
 	    .AddParameter("scale", LogicalType::INTEGER);
 	three_arg.SetResolveTypesCallback(DecimalDivisionResolveTypes);
+	three_arg.SetSerializeCallback(SerializeDecimalDivision);
+	three_arg.SetDeserializeCallback(DeserializeDecimalDivision);
 	three_arg.SetFallible();
 	set.AddFunction(three_arg);
 
