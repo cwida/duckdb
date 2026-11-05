@@ -27,8 +27,10 @@ struct TryDivideOperator {
 	static inline bool Operation(T left, T right, T &result) {
 		D_ASSERT(right != 0); // this should be checked before!
 		// with a non-zero divisor, division only overflows for the minimum value divided by -1
-		if (left == NumericLimits<T>::Minimum() && right == T(-1)) {
-			return false;
+		if constexpr (NumericLimits<T>::IsSigned()) {
+			if (left == NumericLimits<T>::Minimum() && right == T(-1)) {
+				return false;
+			}
 		}
 		result = DivideOperator::Operation<T, T, T>(left, right);
 		return true;

@@ -8,14 +8,15 @@
 
 #pragma once
 
+#include "duckdb/common/allocator.hpp"
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/optional_idx.hpp"
+#include "duckdb/storage/storage_info.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 
 namespace duckdb {
 class BlockMemory;
-class Allocator;
 class AsyncTask;
 class BufferPool;
 class TemporaryMemoryManager;
@@ -95,7 +96,7 @@ public:
 	virtual shared_ptr<BlockHandle> RegisterSmallMemory(MemoryTag tag, const idx_t size);
 
 	//! Get the buffer allocator.
-	virtual DUCKDB_API Allocator &GetBufferAllocator();
+	virtual DUCKDB_API BufferAllocator &GetBufferAllocator();
 	//! Reserve memory.
 	virtual DUCKDB_API void ReserveMemory(idx_t size);
 	//! Free reserved memory.

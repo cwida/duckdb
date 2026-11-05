@@ -34,7 +34,7 @@ SELECT parse_path('/path/to/file.csv', 'forward_slash');
 query T
 select parse_path('\path\to\file', 'forward_slash');
 ----
-[\path\to\file]
+['\\path\\to\\file']
 
 # consecutive separators
 query T

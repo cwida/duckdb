@@ -1,0 +1,46 @@
+# name: test/sql/types/enum/enum_cast_optimizer.test
+# description: ENUM to ENUM casts are not removed by the optimizer when they change semantics
+# group: [enum]
+
+statement ok
+CREATE TYPE e1 AS ENUM ('a','b','c');
+
+statement ok
+CREATE TYPE e2 AS ENUM ('c','b','a');
+
+statement ok
+CREATE TABLE t(e e1);
+
+statement ok
+INSERT INTO t VALUES ('a'),('b'),('c');
+
+# the enums order their values differently
+query IT
+SELECT e, e::e2 >= 'c'::e2 FROM t ORDER BY e;
+----
+a	true
+b	true
+c	true
+
+# TRY_CAST that fails yields NULL
+query IT
+SELECT e, TRY_CAST(e AS ENUM('a','b')) NOT IN ('a'::ENUM('a','b')) FROM t ORDER BY e;
+----
+a	false
+b	true
+c	NULL
+
+# CAST that fails raises an error
+statement error
+SELECT e, CAST(e AS ENUM('a','b')) IN ('a'::ENUM('a','b')) FROM t ORDER BY e;
+----
+<REGEX>:Conversion Error.*
+
+# widening with the same order still works
+statement ok
+CREATE TYPE e3 AS ENUM ('a','b','c','d');
+
+query I
+SELECT count(*) FROM t WHERE e::e3 IN ('a'::e3, 'd'::e3);
+----
+1

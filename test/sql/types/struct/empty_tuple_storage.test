@@ -1,0 +1,43 @@
+# name: test/sql/types/struct/empty_tuple_storage.test
+# description: Storing lists of empty tuples
+# group: [struct]
+
+load {TEST_DIR}/empty_tuple_storage.db
+
+statement ok
+CREATE TABLE t AS SELECT [row()] l, CASE WHEN range % 2 = 0 THEN [row(), row()] END l2 FROM range(3000)
+
+query II
+SELECT count(l), count(l2) FROM t
+----
+3000	1500
+
+query I
+SELECT l2 FROM t LIMIT 2
+----
+[(), ()]
+NULL
+
+statement ok
+UPDATE t SET l2 = [row()] WHERE l2 IS NULL
+
+statement ok
+DELETE FROM t WHERE rowid % 3 = 0
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT count(*), count(l2), sum(len(l2)) FROM t
+----
+2000	2000	3000
+
+statement ok
+CREATE TABLE t2 AS SELECT MAP {1: row()} m, array_value(row(), row()) a, [[row()], []] l
+
+query III
+SELECT * FROM t2
+----
+{1=()}	[(), ()]	[[()], []]

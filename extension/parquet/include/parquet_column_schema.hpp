@@ -45,6 +45,54 @@ enum class ParquetExtraTypeInfo {
 	FLOAT16
 };
 
+constexpr LogicalTypeId ParquetTimestampLogicalType(ParquetExtraTypeInfo type_info) {
+	switch (type_info) {
+	case ParquetExtraTypeInfo::IMPALA_TIMESTAMP:
+	case ParquetExtraTypeInfo::UNIT_MS:
+	case ParquetExtraTypeInfo::UNIT_MICROS:
+		return LogicalTypeId::TIMESTAMP;
+	case ParquetExtraTypeInfo::UNIT_NS:
+		return LogicalTypeId::TIMESTAMP_NS;
+	default:
+		return LogicalTypeId::INVALID;
+	}
+}
+
+constexpr LogicalTypeId ParquetTimestampTzLogicalType(ParquetExtraTypeInfo type_info) {
+	switch (type_info) {
+	case ParquetExtraTypeInfo::UNIT_NS:
+		return LogicalTypeId::TIMESTAMP_TZ_NS;
+	case ParquetExtraTypeInfo::UNIT_MS:
+	case ParquetExtraTypeInfo::UNIT_MICROS:
+		return LogicalTypeId::TIMESTAMP_TZ;
+	default:
+		return LogicalTypeId::INVALID;
+	}
+}
+
+constexpr LogicalTypeId ParquetTimeLogicalType(ParquetExtraTypeInfo type_info) {
+	switch (type_info) {
+	case ParquetExtraTypeInfo::UNIT_NS:
+		return LogicalTypeId::TIME_NS;
+	case ParquetExtraTypeInfo::UNIT_MS:
+	case ParquetExtraTypeInfo::UNIT_MICROS:
+		return LogicalTypeId::TIME;
+	default:
+		return LogicalTypeId::INVALID;
+	}
+}
+
+constexpr LogicalTypeId ParquetTimeTzLogicalType(ParquetExtraTypeInfo type_info) {
+	switch (type_info) {
+	case ParquetExtraTypeInfo::UNIT_MS:
+	case ParquetExtraTypeInfo::UNIT_MICROS:
+	case ParquetExtraTypeInfo::UNIT_NS:
+		return LogicalTypeId::TIME_TZ;
+	default:
+		return LogicalTypeId::INVALID;
+	}
+}
+
 struct ParquetColumnSchema {
 public:
 	ParquetColumnSchema() = default;
@@ -76,7 +124,7 @@ public:
 
 public:
 	unique_ptr<BaseStatistics> Stats(const FileMetaData &file_meta_data, const ParquetOptions &parquet_options,
-	                                 idx_t row_group_idx_p, const vector<duckdb_parquet::ColumnChunk> &columns) const;
+	                                 idx_t row_group_idx_p, const duckdb_parquet::ColumnChunkList &columns) const;
 	void ValidateColumnMetadata(const duckdb_parquet::ColumnChunk &column, int64_t row_group_num_rows,
 	                            bool validate_row_count, const char *file_name = nullptr) const;
 

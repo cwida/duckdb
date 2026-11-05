@@ -1,0 +1,30 @@
+# name: test/sql/copy/csv/test_csv_error_projection.test
+# description: CSV errors in projected columns, and extra values that are a prefix of the NULL string
+# group: [csv]
+
+statement error
+SELECT count(b) FROM read_csv('data/csv/invalid_utf8_projected.csv', sample_size=1)
+----
+Invalid unicode (byte sequence mismatch) detected
+
+statement error
+SELECT b FROM read_csv('data/csv/invalid_utf8_projected.csv', sample_size=1)
+----
+Invalid unicode (byte sequence mismatch) detected
+
+query I
+SELECT count(b) FROM read_csv('data/csv/invalid_utf8_projected.csv', sample_size=1, ignore_errors=true)
+----
+2100
+
+# the extra value 'x' is not the NULL string 'xyz'
+statement error
+SELECT * FROM read_csv('data/csv/extra_value_null_prefix.csv', columns={'a':'INT','b':'INT'}, strict_mode=true, nullstr='xyz', header=false, auto_detect=false, delim=',')
+----
+Expected Number of Columns: 2 Found: 3
+
+query II
+SELECT * FROM read_csv('data/csv/extra_value_null_prefix.csv', columns={'a':'INT','b':'INT'}, strict_mode=true, nullstr='x', header=false, auto_detect=false, delim=',')
+----
+1	2
+3	4

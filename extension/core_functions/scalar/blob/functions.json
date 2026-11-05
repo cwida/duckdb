@@ -1,7 +1,7 @@
 [
     {
         "name": "decode",
-        "parameters": "blob,varchar",
+        "parameters": "blob,error_option",
         "description": "Converts `blob` to `VARCHAR`. Invalid UTF-8 is handled based on the error behavior argument. Can be 'strict' (default, fail), 'replace' to replace invalid characters with '?', or 'ignore' to skip invalid characters.",
         "examples": [
             "decode('\\xC3\\xBC'::BLOB)",

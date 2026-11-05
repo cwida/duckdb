@@ -1,0 +1,127 @@
+# name: test/sql/sql_export/pivot_sql_export.test
+# description: Verify SQL export of native list PIVOT operators
+# group: [sql_export]
+
+statement ok
+SET pivot_filter_threshold=0;
+
+query TIIIIII rowsort
+SELECT *
+FROM (VALUES ('g','a',10),('g','a',NULL),('g','b',20),('h','a',NULL)) t(g,k,v)
+PIVOT (sum(v) AS s, count(v) AS c FOR k IN ('a','b','z'));
+----
+g	10	1	20	1	NULL	0
+h	NULL	0	NULL	0	NULL	0
+
+query IIIIII
+FROM (SELECT NULL::INTEGER v, 'a' k WHERE false) t
+PIVOT (sum(v) AS s, count(v) AS c, count(*) AS cs FOR k IN ('a','b'));
+----
+NULL	0	0	NULL	0	0
+
+query III
+FROM (VALUES ('a',1),('a',2),('b',NULL)) t(k,v)
+PIVOT (array_agg(v) FOR k IN ('a','b','z'));
+----
+[1, 2]	[NULL]	NULL
+
+query III
+FROM (VALUES ('a',1),('a',2),('b',NULL)) t(k,v)
+PIVOT (list(v) FOR k IN ('a','b','z'));
+----
+[1, 2]	[NULL]	NULL
+
+query IIIIII
+FROM (VALUES ('a',1),('a',NULL),('b',4)) t(k,v)
+PIVOT (min(v) AS lo, max(v) AS hi FOR k IN ('a','b','z'));
+----
+1	1	4	4	NULL	NULL
+
+query TII
+SELECT *
+FROM (SELECT NULL::VARCHAR g, NULL::VARCHAR k, NULL::INTEGER v WHERE false) t
+PIVOT (sum(v) FOR k IN ('a','b'));
+----
+
+query III rowsort
+FROM (VALUES (1,'a_b','c',10),(2,'a','b_c',20)) t(g,k1,k2,v)
+PIVOT (sum(v) FOR (k1,k2) IN (('a_b','c'),('a','b_c')));
+----
+1	10	NULL
+2	NULL	20
+
+statement ok
+CREATE SEQUENCE pivot_export_sequence;
+
+query I
+SELECT a_s
+FROM (VALUES ('a',1),('b',2),('a',3)) t(k,v)
+PIVOT (sum(v) AS s, max(nextval('pivot_export_sequence')) AS effect FOR k IN ('a','b','z'))
+LIMIT 1;
+----
+4
+
+query I
+SELECT currval('pivot_export_sequence');
+----
+3
+
+statement ok
+CREATE SEQUENCE pivot_count_sequence;
+
+query I
+SELECT count(*)
+FROM (FROM (VALUES ('a',1),('b',2),('a',3)) t(k,v)
+      PIVOT (sum(v) AS s, max(nextval('pivot_count_sequence')) AS effect FOR k IN ('a','b','z')));
+----
+1
+
+query I
+SELECT currval('pivot_count_sequence');
+----
+3
+
+# Collated grouping can add an aggregate to recover the original group value.
+
+query TIIIIII rowsort
+SELECT lower(g), * EXCLUDE (g)
+FROM (VALUES ('g' COLLATE nocase,'a',1),('G','a',2),('h','b',NULL)) t(g,k,v)
+PIVOT (sum(v) AS s, count(v) AS c FOR k IN ('a','b','z'));
+----
+g	3	2	NULL	0	NULL	0
+h	NULL	0	NULL	0	NULL	0
+
+# Empty defaults rebind the same aggregate arguments, including folded parameters.
+
+query RTTRTT
+FROM (VALUES ('a',2),('a',6),('a',NULL)) t(k,v)
+PIVOT (quantile_cont(v,0.25) AS q, string_agg(v::VARCHAR,'|' ORDER BY v) AS s,
+       list(v ORDER BY v) AS l FOR k IN ('a','z'));
+----
+3.0	2|6	[2, 6, NULL]	NULL	NULL	NULL
+
+# A fallible pivot default cannot move into the generated query.
+
+query ITT rowsort
+FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bitstring_agg(v, 1, 3) FOR k IN ('p','q'));
+----
+g	100	NULL
+h	NULL	010
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bitstring_agg(v, 1, 3) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+# The same aggregate still exports outside of a PIVOT default.
+
+query TT
+EXPLAIN (SQL) SELECT bitstring_agg(v, 1, 3) AS b FROM (VALUES (1),(2)) t(v);
+----
+sql	<REGEX>:.*bitstring_agg.*
+
+
+statement ok
+RESET pivot_filter_threshold;

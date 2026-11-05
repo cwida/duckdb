@@ -17,7 +17,7 @@ namespace duckdb {
 
 struct HistogramFun {
 	static constexpr const char *Name = "histogram";
-	static constexpr const char *Parameters = "arg";
+	static constexpr const char *Parameters = "arg,bins";
 	static constexpr const char *Description = "Returns a LIST of STRUCTs with the fields bucket and count.";
 	static constexpr const char *Example = "histogram(A)";
 	static constexpr const char *Categories = "";

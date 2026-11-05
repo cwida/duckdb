@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #ifdef DEBUG
@@ -47,25 +48,16 @@ public:
 	static constexpr uint32_t MAX_LEADING_ZERO_BLOCKS = CHIMP_GROUP_SIZE / LEADING_ZERO_BLOCK_SIZE;
 	static constexpr uint32_t MAX_BITS_USED_BY_ZERO_BLOCKS = MAX_LEADING_ZERO_BLOCKS * LEADING_ZERO_BLOCK_BIT_SIZE;
 	static constexpr uint32_t MAX_BYTES_USED_BY_ZERO_BLOCKS = MAX_BITS_USED_BY_ZERO_BLOCKS / 8;
-
-	// Add an extra byte to prevent heap buffer overflow on the last group, because we'll be addressing 4 bytes each
-	static constexpr uint32_t BUFFER_SIZE =
-	    MAX_BYTES_USED_BY_ZERO_BLOCKS + (sizeof(uint32_t) - (LEADING_ZERO_BLOCK_BIT_SIZE / 8));
-
-	template <typename T>
-	const T Load(const uint8_t *ptr) {
-		T ret;
-		memcpy(&ret, ptr, sizeof(ret));
-		return ret;
-	}
+	static constexpr uint32_t BUFFER_SIZE = MAX_BYTES_USED_BY_ZERO_BLOCKS;
 
 public:
-	LeadingZeroBuffer() : current(0), counter(0), buffer(nullptr) {
+	explicit LeadingZeroBuffer(unsafe_array_ptr<const uint8_t> buffer)
+	    : current(0), counter(0), read_buffer(buffer), write_buffer(nullptr) {
 	}
 	void SetBuffer(uint8_t *buffer) {
 		// Set the internal buffer, when inserting this should be BUFFER_SIZE bytes in length
 		// This buffer does not need to be zero-initialized for inserting
-		this->buffer = buffer;
+		write_buffer = buffer;
 		this->counter = 0;
 	}
 	void Flush() {
@@ -104,12 +96,12 @@ public:
 			return;
 		}
 		const auto buffer_idx = BlockIndex();
-		memcpy((void *)(buffer + buffer_idx), (uint8_t *)&current, 3);
+		memcpy((void *)(write_buffer + buffer_idx), (uint8_t *)&current, 3);
 #ifdef DEBUG
 		// Verify that the bits are copied correctly
 
 		uint32_t temp_value = 0;
-		memcpy(reinterpret_cast<uint8_t *>(&temp_value), (void *)(buffer + buffer_idx), 3);
+		memcpy(reinterpret_cast<uint8_t *>(&temp_value), (void *)(write_buffer + buffer_idx), 3);
 		for (idx_t i = 0; i < flags.size(); i++) {
 			D_ASSERT(flags[i] == ExtractValue(temp_value, i));
 		}
@@ -138,7 +130,8 @@ public:
 
 	inline uint8_t Extract() {
 		const auto buffer_idx = BlockIndex();
-		auto const temp = Load<uint32_t>(buffer + buffer_idx);
+		uint32_t temp = 0;
+		memcpy(&temp, read_buffer.data() + buffer_idx, 3);
 
 		const uint8_t result = UnsafeNumericCast<uint8_t>((temp & LeadingZeroBufferConstants::MASKS[counter & 7]) >>
 		                                                  LeadingZeroBufferConstants::SHIFTS[counter & 7]);
@@ -156,7 +149,8 @@ private:
 private:
 	uint32_t current;
 	uint32_t counter = 0; // block_index * 8
-	uint8_t *buffer;
+	unsafe_array_ptr<const uint8_t> read_buffer;
+	uint8_t *write_buffer;
 #ifdef DEBUG
 	vector<uint8_t> flags;
 #endif

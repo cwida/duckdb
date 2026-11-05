@@ -65,19 +65,19 @@ SELECT count(*) > 0 FROM glob('{TEST_DIR}/tmp_acct/*.block');
 ----
 true
 
-# Core invariant: with .block files on disk for OVERFLOW_STRINGS data, the per-tag
-# counter must be > 0. The buffer manager performs intra-INSERT read-backs of evicted
-# overflow strings, so this single assertion is sufficient to catch the double-decrement
-# bug — it failed before the fix at standard_buffer_manager.cpp:569 was removed.
+query I
+SELECT count(*) > 0 FROM duckdb_temporary_files() WHERE path LIKE '%.block';
+----
+true
+
 query I
 SELECT temporary_storage_bytes > 0 FROM duckdb_memory() WHERE tag = 'OVERFLOW_STRINGS';
 ----
 true
 
-# Combined sanity: both signals must agree — files on disk implies tracked bytes.
 query II
 SELECT
-    (SELECT count(*) > 0 FROM glob('{TEST_DIR}/tmp_acct/*.block'))                                AS block_files_exist,
-    (SELECT temporary_storage_bytes > 0 FROM duckdb_memory() WHERE tag = 'OVERFLOW_STRINGS')      AS bytes_tracked;
+    (SELECT count(*) > 0 FROM glob('{TEST_DIR}/tmp_acct/*.block')) AS block_files_exist,
+    (SELECT temporary_storage_bytes > 0 FROM duckdb_memory() WHERE tag = 'OVERFLOW_STRINGS') AS bytes_tracked;
 ----
 true	true

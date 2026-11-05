@@ -40,6 +40,7 @@ protected:
 
 public:
 	// Source interface
+	ProgressData GetProgress(ClientContext &context, GlobalSourceState &gstate) const override;
 	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
 	unique_ptr<LocalSourceState> GetLocalSourceState(ExecutionContext &context,
 	                                                 GlobalSourceState &gstate) const override;
@@ -74,6 +75,10 @@ public:
 public:
 	//! Returns a list of the types of the join conditions
 	vector<LogicalType> GetJoinTypes() const;
+
+private:
+	vector<idx_t> mark_projection_map;
+	bool track_unknown;
 
 private:
 	// resolve joins that output max N elements (SEMI, ANTI, MARK)

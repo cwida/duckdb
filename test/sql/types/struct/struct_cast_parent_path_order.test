@@ -1,0 +1,46 @@
+# name: test/sql/types/struct/struct_cast_parent_path_order.test
+# description: A cast struct parent must not replace paths through its uncast children
+# group: [struct]
+
+statement ok
+CREATE TABLE cast_parent(n STRUCT(x STRUCT(a INTEGER, b INTEGER)));
+
+statement ok
+INSERT INTO cast_parent VALUES
+	({'x': {'a': 1, 'b': 11}}),
+	({'x': {'a': 2, 'b': 22}}),
+	({'x': NULL}),
+	(NULL);
+
+statement ok
+CREATE VIEW cast_parent_view AS SELECT * FROM cast_parent;
+
+foreach source cast_parent cast_parent_view
+
+# The parent cast changes the field order and type.
+query II rowsort
+SELECT n.x::STRUCT(b INTEGER, a BIGINT), n.x.a FROM {source};
+----
+NULL	NULL
+NULL	NULL
+{'b': 11, 'a': 1}	1
+{'b': 22, 'a': 2}	2
+
+query II rowsort
+SELECT n.x.a, n.x::STRUCT(b INTEGER, a BIGINT) FROM {source};
+----
+1	{'b': 11, 'a': 1}
+2	{'b': 22, 'a': 2}
+NULL	NULL
+NULL	NULL
+
+# The uncast parent covers the child but must not discard the other cast.
+query III rowsort
+SELECT n.x.a, n.x::STRUCT(b INTEGER, a BIGINT), n.x FROM {source};
+----
+1	{'b': 11, 'a': 1}	{'a': 1, 'b': 11}
+2	{'b': 22, 'a': 2}	{'a': 2, 'b': 22}
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+endloop

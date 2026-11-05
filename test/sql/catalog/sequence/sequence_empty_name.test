@@ -1,0 +1,32 @@
+# name: test/sql/catalog/sequence/sequence_empty_name.test
+# description: Functions that parse a qualified name from a string reject empty identifiers
+# group: [sequence]
+
+foreach name '' '.' '.s' 'main..s' '""'
+
+statement error
+SELECT nextval({name});
+----
+Zero-length
+
+statement error
+SELECT currval({name});
+----
+Zero-length
+
+statement error
+SELECT setval({name}, 1);
+----
+Zero-length
+
+statement error
+CREATE TABLE t(i INT DEFAULT nextval({name}));
+----
+Zero-length
+
+statement error
+SELECT * FROM pragma_table_info({name});
+----
+Zero-length
+
+endloop

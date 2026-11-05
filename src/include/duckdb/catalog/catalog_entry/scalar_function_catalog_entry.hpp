@@ -29,5 +29,9 @@ public:
 
 public:
 	unique_ptr<CatalogEntry> AlterEntry(CatalogTransaction transaction, AlterInfo &info) override;
+
+private:
+	friend class ExtensionLoader;
+	shared_ptr<const ScalarFunction> FinalizeFunction(ScalarFunction function) const;
 };
 } // namespace duckdb

@@ -1,7 +1,6 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "tpcds_extension.hpp"
-#include "duckdb/main/pending_query_result.hpp"
 
 using namespace duckdb;
 
@@ -16,14 +15,14 @@ TEST_CASE("Test TPC-DS dsdgen progress", "[tpcds][progress-bar][.]") {
 	REQUIRE_NO_FAIL(con.Query("PRAGMA progress_bar_time=1"));
 	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_print_progress_bar"));
 
-	auto pending = con.PendingQuery("CALL dsdgen(sf=0.01, suffix='_progress')");
+	auto pending = con.Submit("CALL dsdgen(sf=0.01, suffix='_progress')");
 	double previous_percentage = -1;
 	bool saw_intermediate_progress = false;
 	bool saw_progress_before_ready = false;
 
 	while (true) {
 		auto state = pending->ExecuteTask();
-		auto result_ready = PendingQueryResult::IsResultReady(state);
+		auto result_ready = IsObservable(state);
 		auto query_progress = con.context->GetQueryProgress();
 		auto percentage = query_progress.GetPercentage();
 		if (percentage >= 0) {
@@ -43,12 +42,13 @@ TEST_CASE("Test TPC-DS dsdgen progress", "[tpcds][progress-bar][.]") {
 		if (result_ready) {
 			break;
 		}
-		if (state == PendingExecutionResult::BLOCKED) {
+		if (state == QueryResultState::BLOCKED) {
 			pending->WaitForTask();
 		}
 	}
 
-	auto result = pending->Execute();
+	pending->Complete();
+	auto &result = pending;
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(saw_intermediate_progress);
 	REQUIRE(saw_progress_before_ready);
@@ -68,7 +68,7 @@ TEST_CASE("Test TPC-DS dsdgen parallel progress starts gradually", "[tpcds][prog
 	REQUIRE_NO_FAIL(con.Query("PRAGMA progress_bar_time=1"));
 	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_print_progress_bar"));
 
-	auto pending = con.PendingQuery("CALL dsdgen(sf=1, suffix='_parallel_progress')");
+	auto pending = con.Submit("CALL dsdgen(sf=1, suffix='_parallel_progress')");
 	double previous_percentage = -1;
 	double first_positive_percentage = 101;
 	double max_percentage_before_ready = 0;
@@ -77,7 +77,7 @@ TEST_CASE("Test TPC-DS dsdgen parallel progress starts gradually", "[tpcds][prog
 
 	while (true) {
 		auto state = pending->ExecuteTask();
-		auto result_ready = PendingQueryResult::IsResultReady(state);
+		auto result_ready = IsObservable(state);
 		auto query_progress = con.context->GetQueryProgress();
 		auto percentage = query_progress.GetPercentage();
 		if (percentage >= 0) {
@@ -107,12 +107,13 @@ TEST_CASE("Test TPC-DS dsdgen parallel progress starts gradually", "[tpcds][prog
 		if (result_ready) {
 			break;
 		}
-		if (state == PendingExecutionResult::BLOCKED) {
+		if (state == QueryResultState::BLOCKED) {
 			pending->WaitForTask();
 		}
 	}
 
-	auto result = pending->Execute();
+	pending->Complete();
+	auto &result = pending;
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(saw_intermediate_progress);
 	REQUIRE(saw_progress_before_ready);
@@ -166,7 +167,7 @@ TEST_CASE("Test TPC-DS dsdgen parallel output matches sequential output", "[tpcd
 		    con.Query("SELECT count(*) FROM ((SELECT * FROM " + table + "_seq EXCEPT ALL SELECT * FROM " + table +
 		              "_par) UNION ALL (SELECT * FROM " + table + "_par EXCEPT ALL SELECT * FROM " + table + "_seq))");
 		REQUIRE_NO_FAIL(*diff);
-		REQUIRE(diff->GetValue<int64_t>(0, 0) == 0);
+		REQUIRE(diff->Collection().GetValue(0, 0).GetValue<int64_t>() == 0);
 	}
 #endif
 }
@@ -185,12 +186,13 @@ TEST_CASE("Test TPC-DS dsdgen rollback after interrupted optimistic write", "[tp
 	REQUIRE_NO_FAIL(con.Query("PRAGMA threads=4"));
 	REQUIRE_NO_FAIL(con.Query("SET write_buffer_row_group_count=1"));
 
-	auto pending = con.PendingQuery("CALL dsdgen(sf=1, suffix='_interrupted')");
+	auto pending = con.Submit("CALL dsdgen(sf=1, suffix='_interrupted')");
 	auto state = pending->ExecuteTask();
-	REQUIRE(!PendingQueryResult::IsResultReady(state));
+	REQUIRE(!IsObservable(state));
 
 	con.Interrupt();
-	auto result = pending->Execute();
+	pending->Complete();
+	auto &result = pending;
 	REQUIRE(result->HasError());
 	con.context->ClearInterrupt();
 

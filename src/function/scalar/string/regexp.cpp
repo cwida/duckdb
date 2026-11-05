@@ -21,6 +21,7 @@ namespace duckdb {
 using regexp_util::CreateStringPiece;
 using regexp_util::ParseRegexOptions;
 using regexp_util::TryParseConstantPattern;
+using regexp_util::VerifyUTF8Result;
 
 // Zero-copy slice of capture group `group_index` from `input`'s buffer; caller must call
 // StringVector::AddHeapReference(result, source) first.
@@ -33,7 +34,9 @@ static inline string_t ExtractCaptureGroup(const string_t &input, const RE2 &re,
 	duckdb_re2::StringPiece submatch[10];
 	const int nsubmatch = group_index + 1;
 	if (re.Match(in_piece, 0, in_piece.size(), duckdb_re2::RE2::UNANCHORED, submatch, nsubmatch)) {
-		return string_t(submatch[group_index].data(), UnsafeNumericCast<uint32_t>(submatch[group_index].size()));
+		auto &group = submatch[group_index];
+		VerifyUTF8Result(group.data(), group.size());
+		return string_t(group.data(), UnsafeNumericCast<uint32_t>(group.size()));
 	}
 	return no_match_returns_input ? input : string_t(nullptr, 0);
 }
@@ -74,12 +77,9 @@ RegexpMatchesBindData::RegexpMatchesBindData(duckdb_re2::RE2::Options options, s
                                              bool constant_pattern)
     : RegexpBaseBindData(options, std::move(constant_string_p), constant_pattern) {
 	if (constant_pattern) {
+		// an invalid pattern is reported when the function state is initialized
 		auto pattern = make_uniq<RE2>(constant_string, options);
-		if (!pattern->ok()) {
-			throw InvalidInputException(pattern->error());
-		}
-
-		range_success = pattern->PossibleMatchRange(&range_min, &range_max, 1000);
+		range_success = pattern->ok() && pattern->PossibleMatchRange(&range_min, &range_max, 1000);
 	} else {
 		range_success = false;
 	}
@@ -180,6 +180,18 @@ static unique_ptr<FunctionData> RegexReplaceBind(BindScalarFunctionInput &input)
 		ParseRegexOptions(input.GetConstant(3), data->options, &data->global_replace);
 	}
 	data->options.set_log_errors(false);
+
+	auto replacement = input.TryGetConstant(2);
+	if (data->constant_pattern && replacement && !replacement->IsNull() &&
+	    data->constant_string.find("\\C") == string::npos) {
+		RE2 validation_re(data->constant_string, data->options);
+		std::string rewrite_error;
+		if (validation_re.ok() &&
+		    validation_re.CheckRewriteString(CreateStringPiece(StringValue::Get(*replacement)), &rewrite_error)) {
+			// A valid pattern without byte escapes and a valid replacement cannot throw.
+			input.GetBoundFunction().SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
+	}
 	return std::move(data);
 }
 
@@ -207,6 +219,7 @@ static void RegexReplaceFunction(DataChunk &args, ExpressionState &state, Vector
 			    } else {
 				    RE2::Replace(&sstring, lstate.constant_pattern, replace_piece);
 			    }
+			    VerifyUTF8Result(sstring.c_str(), sstring.size());
 			    return heap.AddString(sstring);
 		    });
 	} else {
@@ -227,6 +240,7 @@ static void RegexReplaceFunction(DataChunk &args, ExpressionState &state, Vector
 			    } else {
 				    RE2::Replace(&sstring, re, replace_piece);
 			    }
+			    VerifyUTF8Result(sstring.c_str(), sstring.size());
 			    return heap.AddString(sstring);
 		    });
 	}
@@ -276,6 +290,9 @@ static void RegexExtractFunction(DataChunk &args, ExpressionState &state, Vector
 		BinaryExecutor::Execute<string_t, string_t, string_t>(
 		    strings, patterns, result, [&](string_t input, string_t pattern) {
 			    RE2 re(CreateStringPiece(pattern), info.options);
+			    if (!re.ok()) {
+				    throw InvalidInputException(re.error());
+			    }
 			    return ExtractCaptureGroup(input, re, info.group_index, info.no_match_returns_input);
 		    });
 	}
@@ -325,6 +342,9 @@ static void RegexExtractStructFunction(DataChunk &args, ExpressionState &state, 
 				auto &child_entry = child_entries[col];
 				ConstantVector::SetNull(child_entry, false);
 				auto &extracted = ws[col];
+				if (match) {
+					VerifyUTF8Result(extracted.data(), extracted.size());
+				}
 				auto cdata = ConstantVector::GetData<string_t>(child_entry);
 				cdata[0] = string_t(extracted.data(), UnsafeNumericCast<uint32_t>(match ? extracted.size() : 0));
 			}
@@ -351,6 +371,9 @@ static void RegexExtractStructFunction(DataChunk &args, ExpressionState &state, 
 				auto &child_entry = child_entries[col];
 				auto cdata = FlatVector::GetDataMutable<string_t>(child_entry);
 				auto &extracted = ws[col];
+				if (match) {
+					VerifyUTF8Result(extracted.data(), extracted.size());
+				}
 				cdata[entry.GetIndex()] =
 				    string_t(extracted.data(), UnsafeNumericCast<uint32_t>(match ? extracted.size() : 0));
 			}
@@ -401,20 +424,40 @@ static unique_ptr<FunctionData> RegexExtractBind(BindScalarFunctionInput &input)
 		}
 	}
 
+	if (constant_pattern && constant_string.find("\\C") == string::npos) {
+		auto validation_options = options;
+		validation_options.set_log_errors(false);
+		if (RE2(constant_string, validation_options).ok()) {
+			// A valid UTF-8 pattern without byte escapes cannot return a partial character.
+			bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
+	}
+
 	return make_uniq<RegexpExtractBindData>(options, std::move(constant_string), constant_pattern, group_index,
 	                                        no_match_returns_input);
 }
 
+// Constructs a regex-family ScalarFunction and names its (up to 4) parameters via the builder pattern, since these
+// functions share the same string/regex/group/options/name_list/replacement parameter names across many overloads.
+static ScalarFunction MakeRegexFunction(const vector<pair<Identifier, LogicalType>> &params, LogicalType return_type,
+                                        scalar_function_t function, bind_scalar_function_t bind,
+                                        init_local_state_t init_state = nullptr) {
+	ScalarFunction fun({}, std::move(return_type), std::move(function), bind, nullptr, init_state, LogicalType::INVALID,
+	                   FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING);
+	for (auto &param : params) {
+		fun.GetSignature().AddParameter(param.first, param.second);
+	}
+	return fun;
+}
+
 ScalarFunctionSet RegexpFun::GetFunctions() {
 	ScalarFunctionSet regexp_full_match("regexp_full_match");
-	regexp_full_match.AddFunction(
-	    ScalarFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}}, LogicalType::BOOLEAN,
-	                   RegexpMatchesFunction<RegexFullMatch>, RegexpMatchesBind, nullptr, RegexInitLocalState,
-	                   LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_full_match.AddFunction(ScalarFunction(
+	regexp_full_match.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}},
+	                                                LogicalType::BOOLEAN, RegexpMatchesFunction<RegexFullMatch>,
+	                                                RegexpMatchesBind, RegexInitLocalState));
+	regexp_full_match.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"options", LogicalType::VARCHAR}},
-	    LogicalType::BOOLEAN, RegexpMatchesFunction<RegexFullMatch>, RegexpMatchesBind, nullptr, RegexInitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
+	    LogicalType::BOOLEAN, RegexpMatchesFunction<RegexFullMatch>, RegexpMatchesBind, RegexInitLocalState));
 	regexp_full_match.SetFallible();
 	return (regexp_full_match);
 }
@@ -422,28 +465,26 @@ ScalarFunctionSet RegexpFun::GetFunctions() {
 ScalarFunctionSet RegexpMatchesFun::GetFunctions() {
 	ScalarFunctionSet regexp_partial_match("regexp_matches");
 	regexp_partial_match.AddFunction(
-	    ScalarFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}}, LogicalType::BOOLEAN,
-	                   RegexpMatchesFunction<RegexPartialMatch>, RegexpMatchesBind, nullptr, RegexInitLocalState,
-	                   LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_partial_match.AddFunction(ScalarFunction(
+	    MakeRegexFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}}, LogicalType::BOOLEAN,
+	                      RegexpMatchesFunction<RegexPartialMatch>, RegexpMatchesBind, RegexInitLocalState));
+	regexp_partial_match.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"options", LogicalType::VARCHAR}},
-	    LogicalType::BOOLEAN, RegexpMatchesFunction<RegexPartialMatch>, RegexpMatchesBind, nullptr, RegexInitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
+	    LogicalType::BOOLEAN, RegexpMatchesFunction<RegexPartialMatch>, RegexpMatchesBind, RegexInitLocalState));
 	regexp_partial_match.SetFallible();
 	return (regexp_partial_match);
 }
 
 ScalarFunctionSet RegexpReplaceFun::GetFunctions() {
 	ScalarFunctionSet regexp_replace("regexp_replace");
-	regexp_replace.AddFunction(ScalarFunction(
+	regexp_replace.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"replacement", LogicalType::VARCHAR}},
-	    LogicalType::VARCHAR, RegexReplaceFunction, RegexReplaceBind, nullptr, RegexInitLocalState));
-	regexp_replace.AddFunction(ScalarFunction({{"string", LogicalType::VARCHAR},
-	                                           {"regex", LogicalType::VARCHAR},
-	                                           {"replacement", LogicalType::VARCHAR},
-	                                           {"options", LogicalType::VARCHAR}},
-	                                          LogicalType::VARCHAR, RegexReplaceFunction, RegexReplaceBind, nullptr,
-	                                          RegexInitLocalState));
+	    LogicalType::VARCHAR, RegexReplaceFunction, RegexReplaceBind, RegexInitLocalState));
+	regexp_replace.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                              {"regex", LogicalType::VARCHAR},
+	                                              {"replacement", LogicalType::VARCHAR},
+	                                              {"options", LogicalType::VARCHAR}},
+	                                             LogicalType::VARCHAR, RegexReplaceFunction, RegexReplaceBind,
+	                                             RegexInitLocalState));
 	// throws for invalid replacement strings
 	regexp_replace.SetFallible();
 	return (regexp_replace);
@@ -451,78 +492,69 @@ ScalarFunctionSet RegexpReplaceFun::GetFunctions() {
 
 ScalarFunctionSet RegexpExtractFun::GetFunctions() {
 	ScalarFunctionSet regexp_extract("regexp_extract");
-	regexp_extract.AddFunction(ScalarFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}},
-	                                          LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, nullptr,
-	                                          RegexInitLocalState, LogicalType::INVALID, FunctionStability::CONSISTENT,
-	                                          FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_extract.AddFunction(ScalarFunction(
+	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}},
+	                                             LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind,
+	                                             RegexInitLocalState));
+	regexp_extract.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"group", LogicalType::INTEGER}},
-	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, nullptr, RegexInitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_extract.AddFunction(ScalarFunction(
+	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, RegexInitLocalState));
+	regexp_extract.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"options", LogicalType::VARCHAR}},
-	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, nullptr, RegexInitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_extract.AddFunction(ScalarFunction({{"string", LogicalType::VARCHAR},
-	                                           {"regex", LogicalType::VARCHAR},
-	                                           {"group", LogicalType::INTEGER},
-	                                           {"options", LogicalType::VARCHAR}},
-	                                          LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, nullptr,
-	                                          RegexInitLocalState, LogicalType::INVALID, FunctionStability::CONSISTENT,
-	                                          FunctionNullHandling::SPECIAL_HANDLING));
+	    LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind, RegexInitLocalState));
+	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                              {"regex", LogicalType::VARCHAR},
+	                                              {"group", LogicalType::INTEGER},
+	                                              {"options", LogicalType::VARCHAR}},
+	                                             LogicalType::VARCHAR, RegexExtractFunction, RegexExtractBind,
+	                                             RegexInitLocalState));
 	// REGEXP_EXTRACT(<string>, <pattern>, [<group 1 name>[, <group n name>]...])
-	regexp_extract.AddFunction(ScalarFunction({{"string", LogicalType::VARCHAR},
-	                                           {"regex", LogicalType::VARCHAR},
-	                                           {"name_list", LogicalType::LIST(LogicalType::VARCHAR)}},
-	                                          LogicalType::VARCHAR, RegexExtractStructFunction, RegexExtractBind,
-	                                          nullptr, RegexInitLocalState, LogicalType::INVALID,
-	                                          FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
+	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                              {"regex", LogicalType::VARCHAR},
+	                                              {"name_list", LogicalType::LIST(LogicalType::VARCHAR)}},
+	                                             LogicalType::VARCHAR, RegexExtractStructFunction, RegexExtractBind,
+	                                             RegexInitLocalState));
 	// REGEXP_EXTRACT(<string>, <pattern>, [<group 1 name>[, <group n name>]...], <options>)
-	regexp_extract.AddFunction(ScalarFunction({{"string", LogicalType::VARCHAR},
-	                                           {"regex", LogicalType::VARCHAR},
-	                                           {"name_list", LogicalType::LIST(LogicalType::VARCHAR)},
-	                                           {"options", LogicalType::VARCHAR}},
-	                                          LogicalType::VARCHAR, RegexExtractStructFunction, RegexExtractBind,
-	                                          nullptr, RegexInitLocalState, LogicalType::INVALID,
-	                                          FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
+	regexp_extract.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                              {"regex", LogicalType::VARCHAR},
+	                                              {"name_list", LogicalType::LIST(LogicalType::VARCHAR)},
+	                                              {"options", LogicalType::VARCHAR}},
+	                                             LogicalType::VARCHAR, RegexExtractStructFunction, RegexExtractBind,
+	                                             RegexInitLocalState));
+	// throws when \C splits a character
+	regexp_extract.SetFallible();
 	return (regexp_extract);
 }
 
 ScalarFunctionSet RegexpExtractAllFun::GetFunctions() {
 	ScalarFunctionSet regexp_extract_all("regexp_extract_all");
-	regexp_extract_all.AddFunction(ScalarFunction(
+	regexp_extract_all.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}}, LogicalType::LIST(LogicalType::VARCHAR),
-	    RegexpExtractAll::Execute, RegexpExtractAll::Bind, nullptr, RegexpExtractAll::InitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_extract_all.AddFunction(ScalarFunction(
+	    RegexpExtractAll::Execute, RegexpExtractAll::Bind, RegexpExtractAll::InitLocalState));
+	regexp_extract_all.AddFunction(MakeRegexFunction(
 	    {{"string", LogicalType::VARCHAR}, {"regex", LogicalType::VARCHAR}, {"group", LogicalType::INTEGER}},
-	    LogicalType::LIST(LogicalType::VARCHAR), RegexpExtractAll::Execute, RegexpExtractAll::Bind, nullptr,
-	    RegexpExtractAll::InitLocalState, LogicalType::INVALID, FunctionStability::CONSISTENT,
-	    FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_extract_all.AddFunction(ScalarFunction({{"string", LogicalType::VARCHAR},
-	                                               {"regex", LogicalType::VARCHAR},
-	                                               {"group", LogicalType::INTEGER},
-	                                               {"options", LogicalType::VARCHAR}},
-	                                              LogicalType::LIST(LogicalType::VARCHAR), RegexpExtractAll::Execute,
-	                                              RegexpExtractAll::Bind, nullptr, RegexpExtractAll::InitLocalState,
-	                                              LogicalType::INVALID, FunctionStability::CONSISTENT,
-	                                              FunctionNullHandling::SPECIAL_HANDLING));
+	    LogicalType::LIST(LogicalType::VARCHAR), RegexpExtractAll::Execute, RegexpExtractAll::Bind,
+	    RegexpExtractAll::InitLocalState));
+	regexp_extract_all.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                                  {"regex", LogicalType::VARCHAR},
+	                                                  {"group", LogicalType::INTEGER},
+	                                                  {"options", LogicalType::VARCHAR}},
+	                                                 LogicalType::LIST(LogicalType::VARCHAR), RegexpExtractAll::Execute,
+	                                                 RegexpExtractAll::Bind, RegexpExtractAll::InitLocalState));
 	// Struct multi-match variant(s): pattern must be constant due to bind-time struct shape inference
-	regexp_extract_all.AddFunction(ScalarFunction(
-	    {{"string", LogicalType::VARCHAR},
-	     {"regex", LogicalType::VARCHAR},
-	     {"name_list", LogicalType::LIST(LogicalType::VARCHAR)}},
-	    LogicalType::LIST(LogicalType::VARCHAR), // temporary, replaced in bind
-	    RegexpExtractAllStruct::Execute, RegexpExtractAllStruct::Bind, nullptr, RegexpExtractAllStruct::InitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
-	regexp_extract_all.AddFunction(ScalarFunction(
-	    {{"string", LogicalType::VARCHAR},
-	     {"regex", LogicalType::VARCHAR},
-	     {"name_list", LogicalType::LIST(LogicalType::VARCHAR)},
-	     {"options", LogicalType::VARCHAR}},
-	    LogicalType::LIST(LogicalType::VARCHAR), // temporary, replaced in bind
-	    RegexpExtractAllStruct::Execute, RegexpExtractAllStruct::Bind, nullptr, RegexpExtractAllStruct::InitLocalState,
-	    LogicalType::INVALID, FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING));
+	// return type is temporary, replaced in bind
+	regexp_extract_all.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                                  {"regex", LogicalType::VARCHAR},
+	                                                  {"name_list", LogicalType::LIST(LogicalType::VARCHAR)}},
+	                                                 LogicalType::LIST(LogicalType::VARCHAR),
+	                                                 RegexpExtractAllStruct::Execute, RegexpExtractAllStruct::Bind,
+	                                                 RegexpExtractAllStruct::InitLocalState));
+	regexp_extract_all.AddFunction(MakeRegexFunction({{"string", LogicalType::VARCHAR},
+	                                                  {"regex", LogicalType::VARCHAR},
+	                                                  {"name_list", LogicalType::LIST(LogicalType::VARCHAR)},
+	                                                  {"options", LogicalType::VARCHAR}},
+	                                                 LogicalType::LIST(LogicalType::VARCHAR),
+	                                                 RegexpExtractAllStruct::Execute, RegexpExtractAllStruct::Bind,
+	                                                 RegexpExtractAllStruct::InitLocalState));
 	// throws when accessing a group that the pattern does not have
 	regexp_extract_all.SetFallible();
 	return (regexp_extract_all);

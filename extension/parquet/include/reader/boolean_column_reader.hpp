@@ -9,6 +9,7 @@
 #pragma once
 
 #include "column_reader.hpp"
+#include "parquet_arena.h"
 #include "reader/templated_column_reader.hpp"
 
 namespace duckdb {
@@ -26,7 +27,7 @@ public:
 
 	uint8_t byte_pos;
 
-	void InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows, const vector<ColumnChunk> &columns,
+	void InitializeRead(idx_t row_group_idx_p, idx_t row_group_num_rows, const duckdb_parquet::ColumnChunkList &columns,
 	                    TProtocol &protocol_p) override {
 		byte_pos = 0;
 		TemplatedColumnReader<bool, BooleanParquetValueConversion>::InitializeRead(row_group_idx_p, row_group_num_rows,

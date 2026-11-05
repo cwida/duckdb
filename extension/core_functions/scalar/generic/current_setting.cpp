@@ -56,9 +56,11 @@ unique_ptr<FunctionData> CurrentSettingBind(BindScalarFunctionInput &input) {
 } // namespace
 
 ScalarFunction CurrentSettingFun::GetFunction() {
-	auto fun = ScalarFunction({{"setting_name", LogicalType::VARCHAR}}, LogicalType::ANY, CurrentSettingFunction,
-	                          CurrentSettingBind);
+	auto fun = ScalarFunction({}, LogicalType::ANY, CurrentSettingFunction, CurrentSettingBind);
+	fun.GetSignature().AddParameter("setting_name", LogicalType::VARCHAR);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// the value of the setting can change between queries
+	fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	return fun;
 }
 

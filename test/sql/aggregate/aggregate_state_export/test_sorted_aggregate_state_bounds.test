@@ -1,0 +1,15 @@
+# name: test/sql/aggregate/aggregate_state_export/test_sorted_aggregate_state_bounds.test
+# description: Test validation of argument_count and order by column indices against the buffered struct
+# group: [aggregate_state_export]
+
+#case1 : argument_count exceeds the count of fields in buffered struct
+statement error 
+SELECT finalize(to_aggregate_state([ {'v0' : 1} ], 'string_agg', [ 'VARCHAR', 'VARCHAR' ], NULL,[ {'column' : 0, 'order' : 'ASC NULLS FIRST'} ]));
+----
+Binder Error: to_aggregate_state: argument count 2 exceeds the number of state columns (1)
+
+#case2 : argument_count correctly match the buffered struct shape
+query I
+SELECT finalize(to_aggregate_state([ {'v0' : 'b'}, {'v0' : 'a'} ], 'string_agg', ['VARCHAR'], NULL,[ {'column' : 0, 'order' : 'ASC NULLS FIRST'} ]));
+----
+a,b

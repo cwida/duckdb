@@ -1,0 +1,34 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_batch_insert_sub_rowgroup.test
+# description: Batch insert of 90%-100% of a row group optimistically flushes a partial row group; commit must revert and re-append it
+# group: [optimistic_write]
+
+statement ok
+ATTACH '{TEST_DIR}/batch_insert_sub_rowgroup.db' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t SELECT range FROM range(1836) ORDER BY range;
+
+query I
+SELECT count(*) FROM t;
+----
+1836
+
+query I
+SELECT sum(i) FROM t;
+----
+1684530
+
+# second batch: appends to a non-empty table take the same revert-and-re-append path for optimistic writer
+statement ok
+INSERT INTO t SELECT range FROM range(1836) ORDER BY range;
+
+query I
+SELECT count(*) FROM t;
+----
+3672

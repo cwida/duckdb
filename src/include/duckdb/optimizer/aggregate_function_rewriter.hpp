@@ -13,7 +13,6 @@
 namespace duckdb {
 
 class Optimizer;
-class AggregateRewriteRule;
 
 //! Rewrites aggregate functions. Currently registered rules:
 //! AVG(x) -> SUM(x) / COUNT(x)
@@ -27,7 +26,6 @@ public:
 
 private:
 	Optimizer &optimizer;
-	vector<unique_ptr<AggregateRewriteRule>> rules;
 };
 
 } // namespace duckdb

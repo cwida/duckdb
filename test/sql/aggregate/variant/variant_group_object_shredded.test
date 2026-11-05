@@ -1,0 +1,42 @@
+# name: test/sql/aggregate/variant/variant_group_object_shredded.test
+# description: Test variant_group_object with shredded VARIANT inputs
+# group: [variant]
+
+load {TEST_DIR}/variant_group_object_shredded.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+SET force_variant_shredding = 'STRUCT(b INTEGER, a INTEGER)';
+
+statement ok
+CREATE TABLE shredded_values(id INTEGER, k VARCHAR, v VARIANT);
+
+statement ok
+INSERT INTO shredded_values VALUES
+    (1, 'first', {'a': 1, 'b': 2}::VARIANT),
+    (2, 'second', {'a': 3}::VARIANT),
+    (3, 'null_root', NULL::VARIANT),
+    (4, 'scalar', 42::VARIANT);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT DISTINCT vector_type(v) FROM shredded_values;
+----
+SHREDDED_VECTOR
+
+query I
+SELECT variant_comparator(variant_group_object(k, v)) = variant_comparator({
+    'first': {'a': 1, 'b': 2},
+    'second': {'a': 3},
+    'null_root': NULL,
+    'scalar': 42
+}::VARIANT)
+FROM shredded_values;
+----
+true

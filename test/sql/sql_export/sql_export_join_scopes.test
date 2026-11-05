@@ -1,0 +1,69 @@
+# name: test/sql/sql_export/sql_export_join_scopes.test
+# description: SQL export preserves join semantics when reusing plain input scopes
+# group: [sql_export]
+
+statement ok
+CREATE TABLE t(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1,'a'),(1,'b'),(2,'a'),(NULL,'n'),(4,'z');
+
+statement ok
+CREATE TABLE u(i INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1,2),(1,3),(2,5),(3,7),(NULL,11);
+
+query TI
+SELECT t.s,sum(u.v) FROM t JOIN u USING(i) GROUP BY t.s ORDER BY 1 LIMIT 10
+----
+a	10
+b	5
+
+query TII
+SELECT t.s,count(u.v),sum(u.v) FROM t LEFT JOIN u USING(i) GROUP BY t.s ORDER BY 1
+----
+a	3	10
+b	2	5
+n	0	NULL
+z	0	NULL
+
+query I
+SELECT count(*) FROM t FULL OUTER JOIN u USING(i)
+----
+9
+
+query I
+SELECT count(*) FROM t SEMI JOIN u USING(i)
+----
+3
+
+query I
+SELECT count(*) FROM t ANTI JOIN u USING(i)
+----
+2
+
+query I
+SELECT count(*) FROM t JOIN (SELECT DISTINCT i FROM u) r USING(i)
+----
+3
+
+query II
+SELECT count(*),sum(v) FROM t LEFT JOIN (SELECT * FROM u ORDER BY v LIMIT 1) r USING(i)
+----
+5	4
+
+query II
+SELECT count(*),sum(v) FROM t LEFT JOIN (SELECT * FROM u WHERE v=2) r USING(i)
+----
+5	4
+
+query I
+SELECT count(*) FROM t LEFT JOIN (u RIGHT JOIN (VALUES(1),(5)) r(k) ON u.i=r.k) ON t.i=u.i
+----
+7
+
+query I
+WITH r AS MATERIALIZED (SELECT DISTINCT i FROM u) SELECT count(*) FROM t JOIN r USING(i)
+----
+3

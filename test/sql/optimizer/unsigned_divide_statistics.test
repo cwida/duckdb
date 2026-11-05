@@ -1,0 +1,29 @@
+# name: test/sql/optimizer/unsigned_divide_statistics.test
+# description: Unsigned division derives bounds when the dividend can be zero
+# group: [optimizer]
+
+# UHUGEINT covers both 2^64 - 1 and its own maximum value.
+foreach type,divisor UTINYINT,255 USMALLINT,65535 UINTEGER,4294967295 UBIGINT,18446744073709551615 UHUGEINT,18446744073709551615 UHUGEINT,340282366920938463463374607431768211455
+
+statement ok
+CREATE TABLE unsigned_divide_stats(i {type});
+
+statement ok
+INSERT INTO unsigned_divide_stats VALUES (0), ({divisor});
+
+query II
+SELECT s.min, s.max
+FROM (SELECT stats(i // {divisor}::{type}) AS s FROM unsigned_divide_stats LIMIT 1);
+----
+0	1
+
+query I
+SELECT i // {divisor}::{type} FROM unsigned_divide_stats ORDER BY i;
+----
+0
+1
+
+statement ok
+DROP TABLE unsigned_divide_stats;
+
+endloop

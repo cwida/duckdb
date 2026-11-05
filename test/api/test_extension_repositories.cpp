@@ -103,7 +103,7 @@ TEST_CASE("Test that the core and community signing keys are separate", "[api]")
 static idx_t UserRepositoryCount(Connection &con) {
 	auto result = con.Query("SELECT count(*) FROM duckdb_extension_repositories() WHERE type='USER_PROVIDED'");
 	REQUIRE_NO_FAIL(*result);
-	return result->GetValue(0, 0).GetValue<idx_t>();
+	return result->Collection().GetValue(0, 0).GetValue<idx_t>();
 }
 
 TEST_CASE("Test that forbidding repositories distrusts their keys", "[api]") {

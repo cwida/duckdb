@@ -1,0 +1,43 @@
+# name: test/sql/merge/merge_into_returning_explain_no_optimizer.test
+# description: Test EXPLAIN of MERGE INTO with RETURNING when the optimizer is disabled
+# group: [merge]
+
+statement ok
+PRAGMA disable_optimizer;
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+CREATE TABLE u(i INTEGER);
+
+statement ok
+EXPLAIN MERGE INTO t USING (SELECT 1 AS i) AS s ON t.i=s.i WHEN MATCHED THEN DELETE RETURNING i;
+
+statement ok
+EXPLAIN MERGE INTO t USING (SELECT 1 AS i) AS s ON t.i=s.i WHEN MATCHED THEN UPDATE SET i=2 RETURNING i;
+
+statement ok
+EXPLAIN MERGE INTO t USING (SELECT 1 AS i) AS s ON t.i=s.i WHEN NOT MATCHED THEN INSERT VALUES (s.i) RETURNING i;
+
+statement ok
+EXPLAIN MERGE INTO t USING (SELECT 1 AS i) AS s ON t.i=s.i WHEN MATCHED THEN DO NOTHING RETURNING i;
+
+statement ok
+EXPLAIN MERGE INTO t USING u ON t.i=u.i WHEN MATCHED THEN DELETE RETURNING *;
+
+statement ok
+EXPLAIN ANALYZE MERGE INTO t USING (SELECT 1 AS i) AS s ON t.i=s.i WHEN MATCHED THEN DELETE RETURNING i;
+
+statement ok
+INSERT INTO t VALUES (1), (2);
+
+query II
+MERGE INTO t USING (SELECT 1 AS i) AS s ON t.i=s.i WHEN MATCHED THEN DELETE RETURNING i, merge_action;
+----
+1	DELETE
+
+query I
+SELECT * FROM t
+----
+2

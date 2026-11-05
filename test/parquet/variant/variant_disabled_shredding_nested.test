@@ -1,0 +1,271 @@
+# name: test/parquet/variant/variant_disabled_shredding_nested.test
+# description: Disable shredding of fields and array elements within an explicitly shredded VARIANT
+# group: [variant]
+
+require parquet
+
+# Bare NULL and ANY cannot be used as nested SQL type names.
+foreach invalid_type NULL null ANY any
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(kept INTEGER, raw {invalid_type})'});
+----
+<REGEX>:(?s)Invalid Input Error: Value .* can not be converted to a DuckDB Type.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: '{invalid_type}[]'});
+----
+<REGEX>:(?s)Invalid Input Error: Value .* can not be converted to a DuckDB Type.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(nested STRUCT(raw {invalid_type}))'});
+----
+<REGEX>:(?s)Invalid Input Error: Value .* can not be converted to a DuckDB Type.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: '{invalid_type}[][]'});
+----
+<REGEX>:(?s)Invalid Input Error: Value .* can not be converted to a DuckDB Type.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(raw {invalid_type})[]'});
+----
+<REGEX>:(?s)Invalid Input Error: Value .* can not be converted to a DuckDB Type.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(items STRUCT(raw {invalid_type}[])[])'});
+----
+<REGEX>:(?s)Invalid Input Error: Value .* can not be converted to a DuckDB Type.*
+
+endloop
+
+# Internal and unrecognized type names must fail during binding, including when quoted.
+foreach invalid_type UNKNOWN SQLNULL INVALID NOT_A_TYPE "ANY"
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(kept INTEGER, raw {invalid_type})'});
+----
+<REGEX>:(?s)Catalog Error: Type with name .* does not exist!.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: '{invalid_type}[]'});
+----
+<REGEX>:(?s)Catalog Error: Type with name .* does not exist!.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(nested STRUCT(raw {invalid_type}))'});
+----
+<REGEX>:(?s)Catalog Error: Type with name .* does not exist!.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: '{invalid_type}[][]'});
+----
+<REGEX>:(?s)Catalog Error: Type with name .* does not exist!.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(raw {invalid_type})[]'});
+----
+<REGEX>:(?s)Catalog Error: Type with name .* does not exist!.*
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid_nested_shredding.parquet'
+(SHREDDING {v: 'STRUCT(items STRUCT(raw {invalid_type}[])[])'});
+----
+<REGEX>:(?s)Catalog Error: Type with name .* does not exist!.*
+
+endloop
+
+statement ok
+CREATE MACRO struct_data() AS TABLE (
+	FROM (VALUES
+		({'raw': {'x': 1}, 'kept': 10, 'nested': {'raw': [1, 2], 'kept': 20}, 'whole': {'x': [3, 4]}}::VARIANT),
+		({'raw': 'hello', 'kept': 11, 'nested': {'raw': {'x': 5}, 'kept': 21}, 'whole': [6, 7]}::VARIANT),
+		({'raw': [8, NULL], 'kept': NULL, 'nested': {'raw': NULL, 'kept': 22}, 'whole': NULL}::VARIANT),
+		({'raw': true, 'kept': 13, 'nested': NULL}::VARIANT),
+		({'kept': 14, 'nested': {'kept': 24}}::VARIANT),
+		(NULL::VARIANT)
+	) t(v)
+);
+
+statement ok
+CREATE MACRO list_data() AS TABLE (
+	SELECT [v, NULL]::VARIANT AS v FROM struct_data()
+	UNION ALL SELECT []::VARIANT
+	UNION ALL SELECT NULL::VARIANT
+);
+
+statement ok
+CREATE MACRO elements_data() AS TABLE (
+	FROM (VALUES
+		([1::VARIANT, 'hello', {'x': 2}, [3, 4], NULL]::VARIANT),
+		([[1, 2]::VARIANT, ['hello', NULL], [{'x': 3}], [], NULL]::VARIANT),
+		([]::VARIANT),
+		(NULL::VARIANT)
+	) t(v)
+);
+
+statement ok
+CREATE MACRO deep_elements_data() AS TABLE (
+	FROM (VALUES
+		({'kept': 1, 'items': [{'kept': 2, 'raw': [1::VARIANT, 'two', {'x': [3, 4]}, NULL]}]}::VARIANT),
+		({'kept': 3, 'items': [{'kept': 4, 'raw': []}::VARIANT, {'kept': 5, 'raw': NULL}, {'kept': 6}]}::VARIANT),
+		({'kept': 7, 'items': []}::VARIANT),
+		({'kept': 8, 'items': NULL}::VARIANT),
+		({'kept': 9}::VARIANT),
+		(NULL::VARIANT)
+	) t(v)
+);
+
+foreach serialize_enabled true false
+
+statement ok
+SET debug_verify_serializer = {serialize_enabled};
+
+# Both VARIANT and the quoted NULL type disable shredding, case-insensitively.
+foreach unshredded_type VARIANT variant "NULL" "null"
+
+# Disable raw and whole at depth 1 and nested.raw at depth 2, while shredding kept fields.
+# Wrapping the objects in an array adds another level to each field's path.
+foreach container struct list
+
+statement ok
+SET VARIABLE granular_type = 'STRUCT(raw {unshredded_type}, kept INTEGER, nested STRUCT(raw {unshredded_type}, kept INTEGER), whole {unshredded_type})';
+
+onlyif container=list
+statement ok
+SET VARIABLE granular_type = getvariable('granular_type') || '[]';
+
+query I nosort granular_fields
+FROM {container}_data();
+----
+
+statement ok
+COPY (FROM {container}_data()) TO '{TEST_DIR}/variant_disabled_{container}_fields.parquet' (
+	SHREDDING {v: getvariable('granular_type')}
+);
+
+# Each disabled field has only value; each enabled sibling also has typed_value.
+query II
+SELECT name, num_children FROM parquet_schema('{TEST_DIR}/variant_disabled_{container}_fields.parquet')
+WHERE name IN ('raw', 'kept', 'whole') ORDER BY column_id;
+----
+raw	1
+kept	2
+raw	1
+kept	2
+whole	1
+
+query II
+SELECT count(*) FILTER (WHERE path_in_schema LIKE '%, raw, typed_value%' OR path_in_schema LIKE '%, whole, typed_value%'),
+       count(*) FILTER (WHERE path_in_schema LIKE '%, kept, typed_value')
+FROM parquet_metadata('{TEST_DIR}/variant_disabled_{container}_fields.parquet');
+----
+0	2
+
+query I nosort granular_fields
+FROM '{TEST_DIR}/variant_disabled_{container}_fields.parquet';
+----
+
+reset label granular_fields
+
+onlyif container=struct
+query III
+SELECT v.raw.x::INTEGER, v.nested.raw[1]::INTEGER, v.whole.x[2]::INTEGER
+FROM '{TEST_DIR}/variant_disabled_struct_fields.parquet'
+WHERE v.kept = 10 AND v.nested.kept = 20;
+----
+1	1	4
+
+endloop
+
+# Shred array structure while disabling elements at depth 1 or 2.
+foreach depth 1 2
+
+onlyif depth=1
+statement ok
+SET VARIABLE elements_type = '{unshredded_type}[]';
+
+onlyif depth=2
+statement ok
+SET VARIABLE elements_type = '{unshredded_type}[][]';
+
+query I nosort granular_elements
+FROM elements_data();
+----
+
+statement ok
+COPY (FROM elements_data()) TO '{TEST_DIR}/variant_disabled_elements.parquet' (
+	SHREDDING {v: getvariable('elements_type')}
+);
+
+query II
+SELECT count(*) FILTER (WHERE name = 'typed_value') = {depth},
+       count(*) FILTER (WHERE name = 'element') = {depth}
+FROM parquet_schema('{TEST_DIR}/variant_disabled_elements.parquet');
+----
+true	true
+
+# The deepest element group contains only the untyped value.
+query II
+SELECT name, num_children FROM parquet_schema('{TEST_DIR}/variant_disabled_elements.parquet')
+WHERE name = 'element' ORDER BY column_id DESC LIMIT 1;
+----
+element	1
+
+query I nosort granular_elements
+FROM '{TEST_DIR}/variant_disabled_elements.parquet';
+----
+
+endloop
+
+# Object -> array -> object -> array: disable elements at depth 4.
+query I nosort deep_elements
+FROM deep_elements_data();
+----
+
+statement ok
+COPY (FROM deep_elements_data()) TO '{TEST_DIR}/variant_disabled_deep_elements.parquet' (
+	SHREDDING {v: 'STRUCT(kept INTEGER, items STRUCT(kept INTEGER, raw {unshredded_type}[])[])'}
+);
+
+# Both object and array levels remain shredded; the innermost elements have only value.
+query I
+SELECT path_in_schema FROM parquet_metadata('{TEST_DIR}/variant_disabled_deep_elements.parquet')
+ORDER BY path_in_schema;
+----
+v, metadata
+v, typed_value, items, typed_value, list, element, typed_value, kept, typed_value
+v, typed_value, items, typed_value, list, element, typed_value, kept, value
+v, typed_value, items, typed_value, list, element, typed_value, raw, typed_value, list, element, value
+v, typed_value, items, typed_value, list, element, typed_value, raw, value
+v, typed_value, items, typed_value, list, element, value
+v, typed_value, items, value
+v, typed_value, kept, typed_value
+v, typed_value, kept, value
+v, value
+
+query I nosort deep_elements
+FROM '{TEST_DIR}/variant_disabled_deep_elements.parquet';
+----
+
+query I
+SELECT v.items[1].raw[3].x[2]::INTEGER
+FROM '{TEST_DIR}/variant_disabled_deep_elements.parquet'
+WHERE v.kept = 1;
+----
+4
+
+endloop
+
+endloop

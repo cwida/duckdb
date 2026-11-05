@@ -2,7 +2,7 @@
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/extension_callback_manager.hpp"
-#include "duckdb/parser/dialect_extension.hpp"
+#include "duckdb/parser/peg/dialect_extension.hpp"
 
 namespace duckdb {
 
@@ -21,7 +21,7 @@ static unique_ptr<FunctionData> DuckDBDialectsBind(ClientContext &context, Table
 static unique_ptr<GlobalTableFunctionState> DuckDBDialectsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBDialectsData>();
 	for (auto &dialect : ExtensionCallbackManager::Get(context).DialectExtensions()) {
-		result->dialects.push_back(dialect.name);
+		result->dialects.push_back(dialect->Name());
 	}
 	return std::move(result);
 }

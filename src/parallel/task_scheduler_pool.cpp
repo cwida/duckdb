@@ -18,9 +18,6 @@
 #elif defined(__GNUC__)
 #include <sched.h>
 #include <unistd.h>
-#if defined(__GLIBC__)
-#include <pthread.h>
-#endif
 #endif
 
 namespace duckdb {
@@ -103,21 +100,6 @@ static vector<int> GetProcessCPUMask() {
 #endif
 }
 
-static void SetThreadAffinity(thread &thread, const vector<int> &available_cpus, idx_t thread_idx) {
-#if defined(__GLIBC__)
-	if (thread_idx < available_cpus.size()) {
-		const auto cpu_id = available_cpus[thread_idx];
-		cpu_set_t cpuset;
-		CPU_ZERO(&cpuset);
-		CPU_SET(cpu_id, &cpuset);
-
-		// note that we don't care about the return value here
-		// if we did not manage to set affinity, the thread just does not have affinity, which is OK
-		pthread_setaffinity_np(thread.native_handle(), sizeof(cpu_set_t), &cpuset);
-	}
-#endif
-}
-
 // Returns the available CPU ids when the pool should pin its threads, or an empty vector to skip pinning.
 // Thread count means the number of threads that the pool should contain.
 static vector<int> GetAvailableCPUsForPinning(TaskSchedulerType pool_type, ThreadPinMode pin_thread_mode,
@@ -147,12 +129,6 @@ static vector<int> GetAvailableCPUsForPinning(TaskSchedulerType pool_type, Threa
 	}
 
 	return {};
-}
-#endif
-
-#ifndef DUCKDB_NO_THREADS
-static void ThreadExecuteTasks(TaskScheduler *scheduler, atomic<bool> *marker, const TaskSchedulerType pool_type) {
-	scheduler->ExecuteForever(marker, pool_type);
 }
 #endif
 
@@ -199,10 +175,10 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 			auto marker = unique_ptr<atomic<bool>>(new atomic<bool>(true));
 			unique_ptr<thread> worker_thread;
 			try {
-				worker_thread = make_uniq<thread>(ThreadExecuteTasks, &scheduler, marker.get(), pool_type);
-				if (!available_cpus.empty()) {
-					SetThreadAffinity(*worker_thread, available_cpus, threads.size());
-				}
+				const auto cpu = threads.size() < available_cpus.size() ? optional_idx(available_cpus[threads.size()])
+				                                                        : optional_idx();
+				worker_thread =
+				    make_uniq<thread>(&TaskScheduler::ExecuteForever, &scheduler, marker.get(), pool_type, cpu);
 			} catch (std::exception &ex) {
 				// thread constructor failed - this can happen when the system has too many threads allocated
 				// in this case we cannot allocate more threads - stop launching them
@@ -215,7 +191,10 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 		}
 	}
 	current_thread_count = threads.size() + (pool_type == TaskSchedulerType::REGULAR ? external_threads : 0);
-	BlockAllocator::Get(db).FlushAll();
+	// On destroy the scheduler flushes fallback allocations after joining all pools.
+	if (!destroy) {
+		BlockAllocator::Get(db).FlushAll();
+	}
 #endif
 }
 

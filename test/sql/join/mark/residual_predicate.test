@@ -1,0 +1,56 @@
+# name: test/sql/join/mark/residual_predicate.test
+# description: Nested-loop SEMI and ANTI joins retain residual predicates
+# group: [mark]
+
+statement ok
+SET nested_loop_join_threshold=10000;
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+statement ok
+CREATE OR REPLACE TABLE residual_probe(a INTEGER);
+
+statement ok
+INSERT INTO residual_probe VALUES (NULL),(0),(1),(3);
+
+statement ok
+CREATE OR REPLACE TABLE residual_build(b INTEGER);
+
+statement ok
+INSERT INTO residual_build VALUES (2),(NULL),(2);
+
+query I rowsort
+SELECT a FROM residual_probe JOIN BY (TYPE SEMI) residual_build ON a<b AND a+b=2;
+----
+0
+
+query I rowsort
+SELECT a FROM residual_probe JOIN BY (TYPE ANTI) residual_build ON a<b AND a+b=2;
+----
+1
+3
+NULL
+
+statement ok
+DELETE FROM residual_build;
+
+query I
+SELECT count(*) FROM residual_probe JOIN BY (TYPE SEMI) residual_build ON a<b AND a+b=2;
+----
+0
+
+query I
+SELECT count(*) FROM residual_probe JOIN BY (TYPE ANTI) residual_build ON a<b AND a+b=2;
+----
+4
+
+endloop
+
+statement ok
+RESET debug_disable_optimizer;
+
+statement ok
+RESET nested_loop_join_threshold;

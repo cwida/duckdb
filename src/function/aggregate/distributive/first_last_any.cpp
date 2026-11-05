@@ -30,12 +30,7 @@ unique_ptr<Expression> RewriteOrderedFirst(AggregateRewriteInput &input) {
 	}
 	aggregate->GetOrderBysMutable().reset();
 
-	ErrorData error;
-	auto sort_key =
-	    binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key", std::move(sort_children), error);
-	if (!sort_key) {
-		error.Throw();
-	}
+	auto sort_key = binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key", std::move(sort_children));
 
 	auto children = std::move(aggregate->GetChildrenMutable());
 	children.emplace_back(std::move(sort_key));
@@ -86,24 +81,25 @@ struct FirstStringStateBase {
 	bool value_is_valid;
 	//! Whether the state has been set (i.e. we have seen a row)
 	bool is_set;
-	//! The size of the arena allocation for a non-inlined string value - not part of the exported state
-	uint32_t alloc_size;
+	//! The size of the arena allocation for a non-inlined string value - not part of the exported state.
+	//! Must be wide enough for NextPowerOfTwo(MAX_STRING_SIZE), which does not fit in a uint32_t.
+	idx_t alloc_size;
 
 	void Assign(string_t input, AggregateInputData &input_data) {
 		if (input.IsInlined()) {
 			value = input;
 			alloc_size = 0;
 		} else {
-			auto len = UnsafeNumericCast<uint32_t>(input.GetSize());
+			auto len = input.GetSize();
 			char *ptr;
 			if (alloc_size >= len) {
 				ptr = value.GetDataWriteable();
 			} else {
-				alloc_size = UnsafeNumericCast<uint32_t>(NextPowerOfTwo(len));
+				alloc_size = NextPowerOfTwo(len);
 				ptr = char_ptr_cast(input_data.allocator.Allocate(alloc_size));
 			}
 			memcpy(ptr, input.GetData(), len);
-			value = string_t(ptr, len);
+			value = string_t(ptr, UnsafeNumericCast<uint32_t>(len));
 		}
 	}
 };
@@ -302,24 +298,18 @@ struct FirstVectorFunction : FirstFunctionStringBase<LAST, SKIP_NULLS> {
 
 	static void Update(Vector inputs[], AggregateInputData &input_data, idx_t, Vector &state_vector, idx_t count) {
 		auto &input = inputs[0];
-		UnifiedVectorFormat idata;
-		input.ToUnifiedFormat(idata);
 
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(sdata);
+		auto states = UnifiedVectorFormat::GetData<STATE *>(sdata);
 
+		// Gather the rows that can still be assigned before touching the input: reading the values can be expensive
+		// (a shredded VARIANT has to be materialized), while in a grouped aggregate the states are typically set
+		// after the first few chunks, leaving nothing to do.
 		sel_t assign_sel[STANDARD_VECTOR_SIZE];
 		idx_t assign_count = 0;
-
-		auto states = UnifiedVectorFormat::GetData<STATE *>(sdata);
 		for (idx_t i = 0; i < count; i++) {
-			const auto idx = idata.sel->get_index(i);
-			bool is_null = !idata.validity.RowIsValid(idx);
-			if (SKIP_NULLS && is_null) {
-				continue;
-			}
-			auto &state = *states[sdata.sel->get_index(i)];
-			if (!LAST && state.is_set) {
+			if (!LAST && states[sdata.sel->get_index(i)]->is_set) {
 				continue;
 			}
 			assign_sel[assign_count++] = NumericCast<sel_t>(i);
@@ -328,6 +318,9 @@ struct FirstVectorFunction : FirstFunctionStringBase<LAST, SKIP_NULLS> {
 			// fast path - nothing to set
 			return;
 		}
+
+		UnifiedVectorFormat idata;
+		input.ToUnifiedFormat(idata);
 
 		Vector sort_key(LogicalType::BLOB);
 		OrderModifiers modifiers(OrderType::ASCENDING, OrderByNullType::NULLS_LAST);
@@ -343,14 +336,18 @@ struct FirstVectorFunction : FirstFunctionStringBase<LAST, SKIP_NULLS> {
 
 		// now assign sort keys
 		for (idx_t i = 0; i < assign_count; i++) {
+			const auto idx = idata.sel->get_index(assign_sel[i]);
+			bool is_null = !idata.validity.RowIsValid(idx);
+			if (SKIP_NULLS && is_null) {
+				continue;
+			}
+
 			const auto state_idx = sdata.sel->get_index(assign_sel[i]);
 			auto &state = *states[state_idx];
 			if (!LAST && state.is_set) {
 				continue;
 			}
 
-			const auto idx = idata.sel->get_index(assign_sel[i]);
-			bool is_null = !idata.validity.RowIsValid(idx);
 			FirstFunctionStringBase<LAST, SKIP_NULLS>::template SetValue<STATE>(state, input_data, sort_key_data[i],
 			                                                                    is_null);
 		}
@@ -384,10 +381,10 @@ void FirstFunctionClusterUpdate(Vector inputs[], AggregateInputData &aggregate_i
 	inputs[0].ToUnifiedFormat(idata);
 	auto input_data = UnifiedVectorFormat::GetData<T>(idata);
 	AggregateUnaryInput unary_input(aggregate_input_data, idata.validity);
-	for (idx_t r = 0; r < clustered.n_group_runs; r++) {
-		auto &state = *reinterpret_cast<FirstState<T> *>(clustered.group_runs[r].state);
-		const auto *run_sel = clustered.group_runs[r].sel;
-		const auto run_count = clustered.group_runs[r].count;
+	for (auto &run : clustered.runs()) {
+		auto &state = *reinterpret_cast<FirstState<T> *>(run.state);
+		const auto *run_sel = run.sel;
+		const auto run_count = run.count;
 		FirstFunction<LAST, SKIP_NULLS>::template ClusteredOp<T, FirstState<T>, FirstFunction<LAST, SKIP_NULLS>>(
 		    state, input_data, unary_input, run_sel, *idata.sel, idata.validity, 0, run_count);
 	}
@@ -520,12 +517,16 @@ unique_ptr<FunctionData> BindFirst(BindAggregateFunctionInput &input) {
 
 template <bool LAST, bool SKIP_NULLS>
 void AddFirstOperator(AggregateFunctionSet &set) {
-	set.AddFunction(AggregateFunction({LogicalTypeId::DECIMAL}, LogicalTypeId::DECIMAL, nullptr, nullptr, nullptr,
-	                                  nullptr, nullptr, FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr,
-	                                  BindDecimalFirst<LAST, SKIP_NULLS>));
-	set.AddFunction(AggregateFunction({LogicalType::ANY}, LogicalType::ANY, nullptr, nullptr, nullptr, nullptr, nullptr,
-	                                  FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr,
-	                                  BindFirst<LAST, SKIP_NULLS>));
+	AggregateFunction decimal_fun({}, LogicalTypeId::DECIMAL, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                              FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr,
+	                              BindDecimalFirst<LAST, SKIP_NULLS>);
+	decimal_fun.GetSignature().AddParameter("arg", LogicalTypeId::DECIMAL);
+	set.AddFunction(decimal_fun);
+
+	AggregateFunction any_fun({}, LogicalType::ANY, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                          FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr, BindFirst<LAST, SKIP_NULLS>);
+	any_fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
+	set.AddFunction(any_fun);
 }
 
 } // namespace

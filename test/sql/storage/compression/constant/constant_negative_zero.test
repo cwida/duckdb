@@ -1,0 +1,61 @@
+# name: test/sql/storage/compression/constant/constant_negative_zero.test
+# description: Test that constant compression keeps the sign of zero for FLOAT/DOUBLE columns
+# group: [constant]
+
+require no_alternative_verify
+
+load {TEST_DIR}/constant_negative_zero.db
+
+# -0.0 and 0.0 compare equal, so a mix of them must not be stored as a constant segment
+statement ok
+CREATE TABLE mixed_zero(id INTEGER, v DOUBLE, vf FLOAT);
+
+statement ok
+INSERT INTO mixed_zero VALUES (1, '-0.0', '-0.0'), (2, '0.0', '0.0');
+
+# all -0.0 or all 0.0 can still use constant compression
+statement ok
+CREATE TABLE neg_zero AS SELECT '-0.0'::DOUBLE AS v, '-0.0'::FLOAT AS vf FROM range(3);
+
+statement ok
+CREATE TABLE pos_zero AS SELECT '0.0'::DOUBLE AS v, '0.0'::FLOAT AS vf FROM range(3);
+
+statement ok
+checkpoint;
+
+query I
+SELECT DISTINCT compression = 'Constant' FROM pragma_storage_info('mixed_zero') WHERE column_name IN ('v', 'vf') AND segment_type IN ('DOUBLE', 'FLOAT');
+----
+false
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('neg_zero') WHERE segment_type IN ('DOUBLE', 'FLOAT');
+----
+Constant
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('pos_zero') WHERE segment_type IN ('DOUBLE', 'FLOAT');
+----
+Constant
+
+loop i 0 2
+
+query III
+SELECT id, signbit(v), signbit(vf) FROM mixed_zero ORDER BY id;
+----
+1	true	true
+2	false	false
+
+query II
+SELECT DISTINCT signbit(v), signbit(vf) FROM neg_zero;
+----
+true	true
+
+query II
+SELECT DISTINCT signbit(v), signbit(vf) FROM pos_zero;
+----
+false	false
+
+restart
+
+endloop

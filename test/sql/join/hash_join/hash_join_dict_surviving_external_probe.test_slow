@@ -1,0 +1,31 @@
+# name: test/sql/join/hash_join/hash_join_dict_surviving_external_probe.test_slow
+# description: A probe column of a hash join on the build side is not narrowed - it loses its dictionary when the probe side spills
+# group: [hash_join]
+
+load {TEST_DIR}/hash_join_dict_surviving_external_probe.db
+
+statement ok
+SET threads=4
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization'
+
+statement ok
+SET memory_limit='100MB'
+
+statement ok
+CREATE TABLE nation AS SELECT i AS nk, 'NATION_' || (i % 5) AS n_name FROM range(25) t(i);
+
+statement ok
+CREATE TABLE customer AS SELECT i * 7000 AS ck, i % 25 AS nk FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE big AS SELECT i * 1000 AS ck, 'padpadpadpadpadpadpad' || i AS pad FROM range(4000000) t(i);
+
+statement ok
+CREATE TABLE probe AS SELECT i * 7000 AS ck FROM range(200000) t(i);
+
+query IIII
+SELECT count(*), min(n_name), max(n_name), min(pad) FROM probe p JOIN (SELECT j0.ck, j0.n_name, big.pad FROM (SELECT c.ck, n.n_name FROM customer c JOIN nation n ON c.nk = n.nk) j0 JOIN big ON j0.ck = big.ck) b ON p.ck = b.ck;
+----
+200000	NATION_0	NATION_4	padpadpadpadpadpadpad0

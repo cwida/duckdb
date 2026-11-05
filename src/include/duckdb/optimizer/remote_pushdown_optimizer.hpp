@@ -90,6 +90,17 @@ public:
 
 	void Rewrite(unique_ptr<SQLStatement> &statement);
 
+	//! Drop the given catalog qualifier from every name in the tree. A two-part name (e.g. "db1.t") parses as
+	//! schema.name, so the catalog can sit in either slot
+	static void StripCatalogName(SQLStatement &statement, const Identifier &catalog_name);
+	static void StripCatalogName(QueryNode &node, const Identifier &catalog_name);
+	static void StripCatalogName(TableRef &ref, const Identifier &catalog_name);
+	static void StripCatalogName(CreateInfo &info, const Identifier &catalog_name);
+	static void StripCatalogName(AlterInfo &info, const Identifier &catalog_name);
+	//! Strip catalog prefix from expression column refs. When strip_subquery_bodies=false, leaves subquery
+	//! bodies untouched (used for partial pushdown where inner subqueries are not being pushed).
+	static void StripCatalogName(ParsedExpression &expr, const Identifier &catalog_name);
+
 private:
 	void FindRemoteCatalogsInSearchPath();
 	CatalogPushdownResult Rewrite(QueryNode &node);
@@ -183,14 +194,6 @@ private:
 
 	static CatalogPushdownResult Merge(CatalogPushdownResult a, CatalogPushdownResult b);
 	unique_ptr<TableRef> CreateRemoteFunctionRef(CatalogPushdownResult &result, unique_ptr<QueryNode> node);
-	static void StripCatalogName(SQLStatement &statement, const Identifier &catalog_name);
-	static void StripCatalogName(QueryNode &node, const Identifier &catalog_name);
-	static void StripCatalogName(TableRef &ref, const Identifier &catalog_name);
-	static void StripCatalogName(CreateInfo &info, const Identifier &catalog_name);
-	static void StripCatalogName(AlterInfo &info, const Identifier &catalog_name);
-	//! Strip catalog prefix from expression column refs. When strip_subquery_bodies=false, leaves subquery
-	//! bodies untouched (used for partial pushdown where inner subqueries are not being pushed).
-	static void StripCatalogName(ParsedExpression &expr, const Identifier &catalog_name);
 	bool RefersToLocalTable(const ColumnRefExpression &col_ref) const;
 
 	bool RefersToCTE(const Identifier &cte_name, CatalogPushdownResult &result) const;

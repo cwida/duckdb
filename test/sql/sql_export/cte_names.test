@@ -1,0 +1,36 @@
+# name: test/sql/sql_export/cte_names.test
+# description: SQL export preserves CTE scope when retaining readable names
+# group: [sql_export]
+
+query II
+WITH r0(x) AS MATERIALIZED (VALUES (1)), r1(y) AS MATERIALIZED (VALUES (2))
+SELECT x,y FROM r0,r1;
+----
+1	2
+
+query II
+WITH r0(x) AS MATERIALIZED (VALUES (1))
+SELECT x,y FROM r0,
+(WITH R0(y) AS MATERIALIZED (VALUES (2)) SELECT y FROM R0) q;
+----
+1	2
+
+query I
+WITH RECURSIVE "quoted cte"(x) AS (
+VALUES (1) UNION ALL SELECT x+1 FROM "quoted cte" WHERE x<3)
+SELECT sum(x) FROM "quoted cte";
+----
+6
+
+query II
+WITH RECURSIVE r0(x) AS (VALUES (1) UNION ALL SELECT x+1 FROM r0 WHERE x<3)
+SELECT x,y FROM r0,
+(WITH RECURSIVE r0(y) AS (VALUES (10) UNION ALL SELECT y+10 FROM r0 WHERE y<20)
+ SELECT y FROM r0) q ORDER BY x,y;
+----
+1	10
+1	20
+2	10
+2	20
+3	10
+3	20

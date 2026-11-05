@@ -1,0 +1,46 @@
+# name: test/sql/index/art/storage/test_art_if_not_exists_constraint_name.test
+# description: CREATE INDEX with the name of a constraint-backed index creates an independent index
+# group: [storage]
+
+load {TEST_DIR}/test_art_if_not_exists_constraint_name.db
+
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY, val INTEGER);
+
+statement ok
+CREATE TABLE child (id INTEGER REFERENCES parent(id), val INTEGER);
+
+statement ok
+INSERT INTO parent SELECT range, range * 10 FROM range(3000);
+
+statement ok
+INSERT INTO child SELECT range, range * 10 FROM range(3000);
+
+# The explicit indexes cover a different column than the constraint indexes with the same name.
+statement ok
+CREATE INDEX IF NOT EXISTS PRIMARY_parent_0 ON parent(val);
+
+statement ok
+CREATE INDEX FOREIGN_child_0 ON child(val);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+DROP INDEX PRIMARY_parent_0;
+
+statement ok
+DROP INDEX FOREIGN_child_0;
+
+# The constraint indexes keep their own data and survive dropping the explicit indexes.
+statement error
+INSERT INTO parent VALUES (1, 1);
+----
+<REGEX>:Constraint Error.*violates primary key constraint.*
+
+statement error
+DELETE FROM parent WHERE id = 1;
+----
+<REGEX>:Constraint Error.*still referenced by a foreign key.*

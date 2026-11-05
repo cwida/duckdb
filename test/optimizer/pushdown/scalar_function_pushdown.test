@@ -518,3 +518,13 @@ query I
 SELECT strlen(s) FROM '{TEST_DIR}/scalar-pushdown-filter.parquet' WHERE r = 2;
 ----
 13
+
+statement ok
+COPY (SELECT 'hello' AS s)
+TO '{TEST_DIR}/virtual_scalar.parquet' (FORMAT PARQUET);
+
+query II
+SELECT strlen(s), strlen(filename) > 0
+FROM read_parquet('{TEST_DIR}/virtual_scalar.parquet');
+----
+5	true

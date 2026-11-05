@@ -1,0 +1,162 @@
+# name: test/sql/parser/literal_round_trip.test
+# description: Literal atoms keep their source text through parsing, views, macros and storage
+# group: [parser]
+
+load {TEST_DIR}/literal_round_trip.db
+
+# every literal kind binds to the same type and value as before
+query IIIIIIIIIIIIIIIIII
+SELECT 1_000, 1e3, 1.50, -9223372036854775808, -170141183460469231731687303715884105728, X'FF', B'0101', E'a\x41b', $$a'b$$, N'x', 'it''s', DATE '2020-01-01', -(-5), 2 - -5, .5, 170141183460469231731687303715884105728, 123456789012345678901234567890123456789012345678901234567890, TRUE
+----
+1000	1000.0	1.50	-9223372036854775808	-170141183460469231731687303715884105728	\xFF	0101	aAb	a'b	x	it's	2020-01-01	5	7	0.5	170141183460469231731687303715884105728	123456789012345678901234567890123456789012345678901234567890	true
+
+query IIIIIIIIII
+SELECT typeof(1_000), typeof(1e3), typeof(1.50), typeof(-9223372036854775808), typeof(-170141183460469231731687303715884105728), typeof(X'FF'), typeof(B'0101'), typeof(.5), typeof(170141183460469231731687303715884105728), typeof(123456789012345678901234567890123456789012345678901234567890)
+----
+INTEGER	DOUBLE	DECIMAL(3,2)	BIGINT	HUGEINT	BLOB	BIT	DECIMAL(1,1)	UHUGEINT	BIGNUM
+
+# negation folds into the number text
+query III
+SELECT typeof(-1), typeof(- -1), -(-(-3))
+----
+INTEGER	INTEGER	-3
+
+# malformed hex strings are rejected while parsing
+statement error
+SELECT X'F'
+----
+even number of hex digits
+
+statement error
+SELECT B'012'
+----
+non-binary character
+
+# the view keeps the literals as written
+statement ok
+CREATE VIEW v AS SELECT 1_000 a, 1e3 b, 1.50 c, X'FF' d, B'0101' e, 'it''s' f, DATE '2020-01-01' g, [1, 2, 3][:2] h, [1, 2, 3][2:] i, [1, 2, 3][:-1] j, TRUE k, NULL l
+
+query I
+SELECT sql FROM duckdb_views() WHERE view_name = 'v'
+----
+CREATE VIEW v AS SELECT 1_000 AS a, 1e3 AS b, 1.50 AS c, X'FF' AS d, B'0101' AS e, 'it''s' AS f, CAST('2020-01-01' AS DATE) AS g, list_value(1, 2, 3)[:2] AS h, list_value(1, 2, 3)[2:] AS i, list_value(1, 2, 3)[:-1] AS j, true AS k, NULL AS l;
+
+# macro defaults and column defaults are literals too
+statement ok
+CREATE MACRO m(a := 1_000, b := 'x') AS a || b
+
+statement ok
+CREATE TABLE t(i INTEGER DEFAULT 1_000, s VARCHAR DEFAULT 'it''s', d DATE DEFAULT DATE '2020-01-01', f DOUBLE DEFAULT 1e3)
+
+statement ok
+INSERT INTO t DEFAULT VALUES
+
+restart
+
+query IIIIIIIIIIII
+SELECT * FROM v
+----
+1000	1000.0	1.50	\xFF	0101	it's	2020-01-01	[1, 2]	[2, 3]	[1, 2, 3]	true	NULL
+
+query IIII
+SELECT typeof(a), typeof(b), typeof(c), typeof(d) FROM v
+----
+INTEGER	DOUBLE	DECIMAL(3,2)	BLOB
+
+query II
+SELECT m(), m(b := 'y')
+----
+1000x	1000y
+
+statement ok
+INSERT INTO t DEFAULT VALUES
+
+query IIII
+SELECT * FROM t
+----
+1000	it's	2020-01-01	1000.0
+1000	it's	2020-01-01	1000.0
+
+# positional references, parameters and other places that read the literal directly
+query I
+SELECT i FROM t GROUP BY 1 ORDER BY 1
+----
+1000
+
+statement error
+SELECT i FROM t ORDER BY 0
+----
+out of range
+
+statement error
+SELECT i FROM t ORDER BY 'i'
+----
+non-integer literal
+
+query I
+SELECT #1 FROM (SELECT 42)
+----
+42
+
+statement ok
+PREPARE p AS SELECT $1 + $2
+
+query I
+EXECUTE p(1, 2)
+----
+3
+
+statement ok
+PREPARE q AS SELECT ?::INTEGER + ?::INTEGER
+
+query I
+EXECUTE q(1, 2)
+----
+3
+
+query I
+SELECT 'a' COLLATE NOCASE = 'A'
+----
+true
+
+query I
+SELECT count(*) FROM range(100) USING SAMPLE 10 ROWS
+----
+10
+
+query I
+SELECT count(*) <= 100 FROM range(100) USING SAMPLE 10%
+----
+true
+
+# an empty list is the placeholder for an omitted slice bound
+query II
+SELECT [1, 2, 3, 4, 5][2:[]], [1, 2, 3, 4, 5][[]:2]
+----
+[2, 3, 4, 5]	[1, 2]
+
+statement error
+SELECT [1, 2, 3][[1]:2]
+----
+must be a BIGINT
+
+# a struct remap persists its mapping as a struct_pack tree and remaps the column default
+statement ok
+CREATE TABLE s(v STRUCT(a INTEGER, b VARCHAR) DEFAULT {'a': 1, 'b': 'x'})
+
+statement ok
+INSERT INTO s DEFAULT VALUES
+
+statement ok
+ALTER TABLE s ADD COLUMN v.c INTEGER DEFAULT 7
+
+restart
+
+statement ok
+INSERT INTO s DEFAULT VALUES
+
+query I
+SELECT v FROM s ORDER BY ALL
+----
+{'a': 1, 'b': x, 'c': 7}
+{'a': 1, 'b': x, 'c': 7}

@@ -5,4 +5,4 @@ template benchmark/recursive_cte/flummi/recursive_cte_flummi.benchmark.in
 LOAD=ray
 QUERY=flummi_ray
 BENCHMARK_NAME=Flummi recursive ray tracer
-DESCRIPTION=Render a deterministic 384 by 240 image with Flummi's generated ray tracer
+DESCRIPTION=Render a deterministic 224 by 140 image with Flummi's generated ray tracer

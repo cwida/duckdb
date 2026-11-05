@@ -24,4 +24,4 @@ insert into m_2 values ('1')
 statement error
 insert into m SELECT * FROM m_2
 ----
-<REGEX>:.*Conversion Error.*out of range for the destination type.*
+Type ENUM('1', '2', '3') with value 1 can't be cast to the destination type ENUM('sad', 'ok', 'happy')

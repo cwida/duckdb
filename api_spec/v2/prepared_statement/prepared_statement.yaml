@@ -18,9 +18,9 @@ module: prepared_statement
 # turns that into a prepare-time failure for a caller that only wants the handle if it is
 # the fast path.
 #
-# One live result per connection, as everywhere else in this API: both
+# One running statement per connection, as everywhere else in this API: both
 # `prepared_statement_create` and `prepared_statement_execute` refuse with
-# `ERROR_RESOURCE_IN_USE` while the connection has a live result. Open another connection
+# `ERROR_RESOURCE_IN_USE` while a statement on the connection is still running. Open another connection
 # for concurrency; a prepared statement belongs to the connection it was prepared on.
 #
 # The handle is opaque and exposes no signature of its own: `statement_bind` already
@@ -50,7 +50,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Prepares a parsed statement into a reusable handle. Non-consuming.
 
@@ -64,8 +64,13 @@ functions:
       `ERROR_INPUT_INVALID` when the plan would not be reused, so a caller who wants the handle only for the speedup
       finds out here rather than after silently taking the slow path.
 
-      Refuses with `ERROR_RESOURCE_IN_USE` while the connection has a live result. Drain, destroy, or interrupt that
-      result first, or prepare on another connection. `*out_prepared` is set to NULL on failure.
+      A statement that DuckDB expands into several, such as a dynamic PIVOT, is kept as written and expanded again at
+      each execution, in the transaction state of that execution. It runs nothing here, its plan is never reused, and
+      its result's metadata is deferred as for `[[statement_execute]]`. Parameters on such a statement are refused
+      with `ERROR_INPUT_INVALID`.
+
+      Refuses with `ERROR_RESOURCE_IN_USE` while a statement on the connection is still running. Drain, destroy, or
+      interrupt that result first, or prepare on another connection. `*out_prepared` is set to NULL on failure.
     role: constructor
     belongs_to: prepared_statement
     parameters:
@@ -96,7 +101,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_execute:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Executes a prepared statement, streaming its result. Non-consuming.
 
@@ -118,8 +123,8 @@ functions:
       prepared, or a parameter type that differs from the one the cached plan assumed, triggers a re-bind that is
       invisible apart from its cost.
 
-      Refuses with `ERROR_RESOURCE_IN_USE` while the connection has a live result; drain, destroy, or interrupt it
-      first, or execute on another connection. A failed execution, at any stage, leaves the prepared statement usable.
+      Refuses with `ERROR_RESOURCE_IN_USE` while a statement on the connection is still running; drain, destroy, or
+      interrupt that result first, or execute on another connection. A failed execution, at any stage, leaves the prepared statement usable.
       `*out_result` is set to NULL on failure.
     role: method
     belongs_to: prepared_statement
@@ -131,6 +136,7 @@ functions:
         type: identifier
         indirection: 1
         const: true
+        kind: IN
         description: |
           Optional. An array of `parameter_count` parameter names; a non-empty entry binds its value to the named
           parameter ($name, case-insensitive), a {NULL, 0} entry keeps it positional ($1 = element 0). Pass NULL to
@@ -162,7 +168,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_reuses_plan:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports whether the prepared statement reuses its compiled plan across executions.
 
@@ -197,7 +203,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   prepared_statement_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys a prepared statement.
 

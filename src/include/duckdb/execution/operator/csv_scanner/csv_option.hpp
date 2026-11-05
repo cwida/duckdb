@@ -41,7 +41,7 @@ public:
 		D_ASSERT(!(by_user && set_by_user));
 		if (!set_by_user) {
 			// If it's not set by user we can change the value
-			value = value_p;
+			value = std::move(value_p); // NOLINT(performance-move-const-arg)
 			set_by_user = by_user;
 		}
 	}

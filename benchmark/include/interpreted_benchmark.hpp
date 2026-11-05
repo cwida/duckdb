@@ -15,8 +15,10 @@
 
 namespace duckdb {
 struct BenchmarkFileReader;
-class MaterializedQueryResult;
 struct InterpretedBenchmarkState;
+
+//! How the benchmark consumes the result of its run query
+enum class BenchmarkResultMode : uint8_t { RETAINED, STREAMING, ARROW, ARROW_STREAM };
 
 const string DEFAULT_DB_PATH = "duckdb_benchmark_db.db";
 
@@ -69,15 +71,9 @@ public:
 	bool RequireReinit() override {
 		return require_reinit;
 	}
-	QueryResultType ResultMode() const {
-		return result_type;
-	}
-	idx_t ArrowBatchSize() const {
-		return arrow_batch_size;
-	}
 
 private:
-	string VerifyInternal(BenchmarkState *state_p, const BenchmarkQuery &query, MaterializedQueryResult &result);
+	string VerifyInternal(BenchmarkState *state_p, const BenchmarkQuery &query, QueryResult &result);
 
 	BenchmarkQuery ReadQueryFromFile(BenchmarkFileReader &reader, string file);
 	BenchmarkQuery ReadQueryFromReader(BenchmarkFileReader &reader, const string &sql, const string &header);
@@ -117,7 +113,7 @@ private:
 
 	bool in_memory = true;
 	string storage_version;
-	QueryResultType result_type = QueryResultType::MATERIALIZED_RESULT;
+	BenchmarkResultMode result_mode = BenchmarkResultMode::RETAINED;
 	//! Discard fetched chunks instead of materializing them into the benchmark result
 	bool discard_stream_result = false;
 	idx_t arrow_batch_size = STANDARD_VECTOR_SIZE;

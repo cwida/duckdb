@@ -1,13 +1,13 @@
 #include "duckdb/optimizer/topn_window_elimination.hpp"
 
-#include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/late_materialization_helper.hpp"
+#include "duckdb/optimizer/remove_unused_columns.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression_nullability.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -232,7 +232,7 @@ unique_ptr<LogicalOperator> TopNWindowElimination::Optimize(unique_ptr<LogicalOp
 
 unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<LogicalOperator> op,
                                                                     ColumnBindingReplacer &replacer) {
-	if (!CanOptimize(*op)) {
+	if (!CanOptimize(*op).IsValid()) {
 		// Traverse through query plan to find grouped top-n pattern
 		if (op->children.size() > 1) {
 			// If an operator has multiple children, we do not want them to overwrite each other's stop operator.
@@ -276,6 +276,8 @@ unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<L
 	child = *filter.children[0];
 
 	// Get bindings and types from filter to use in top-most operator later
+	// the types are not necessarily resolved at this point (e.g., after previous optimizers changed the plan)
+	filter.ResolveOperatorTypes();
 	const auto topmost_bindings = filter.GetColumnBindings();
 	const auto topmost_types = filter.types;
 	vector<ColumnBinding> new_bindings;
@@ -331,7 +333,6 @@ unique_ptr<Expression>
 TopNWindowElimination::CreateAggregateExpression(vector<unique_ptr<Expression>> aggregate_params,
                                                  const bool requires_arg,
                                                  const TopNWindowEliminationParameters &params) const {
-	auto &catalog = Catalog::GetSystemCatalog(context);
 	FunctionBinder function_binder(context);
 
 	// If the value column can be null, we must use the nulls_last function to follow null ordering semantics
@@ -346,9 +347,7 @@ TopNWindowElimination::CreateAggregateExpression(vector<unique_ptr<Expression>> 
 	fun_name += params.order_type == OrderType::ASCENDING ? "min" : "max";
 	fun_name += params.can_be_null && (requires_arg || change_to_arg) ? "_nulls_last" : "";
 
-	auto &fun_entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(
-	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), Identifier(fun_name)));
-	const auto &fun = fun_entry.functions.GetFunctionByArguments(context, ExtractReturnTypes(aggregate_params));
+	auto fun = GetBuiltinAggregateFunction(context, Identifier(fun_name), ExtractReturnTypes(aggregate_params));
 	return function_binder.BindAggregateFunction(fun, std::move(aggregate_params));
 }
 
@@ -366,14 +365,7 @@ TopNWindowElimination::CreateAggregateOperator(LogicalWindow &window, vector<uni
 		aggregate_params.push_back(std::move(args[0]));
 	} else if (args.size() > 1) {
 		// For more than one arg, we must use struct pack
-		auto &catalog = Catalog::GetSystemCatalog(context);
-		FunctionBinder function_binder(context);
-		auto &struct_pack_entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
-		    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "struct_pack"));
-		const auto &struct_pack_fun =
-		    struct_pack_entry.functions.GetFunctionByArguments(context, ExtractReturnTypes(args));
-		auto struct_pack_expr = function_binder.BindScalarFunction(struct_pack_fun, std::move(args));
-		aggregate_params.push_back(std::move(struct_pack_expr));
+		aggregate_params.push_back(BindBuiltinScalarFunction(context, "struct_pack", std::move(args)));
 	}
 
 	aggregate_params.push_back(std::move(window_expr.OrderByMutable()[0].expression));
@@ -415,32 +407,18 @@ TopNWindowElimination::CreateAggregateOperator(LogicalWindow &window, vector<uni
 unique_ptr<Expression>
 TopNWindowElimination::CreateRowNumberGenerator(unique_ptr<Expression> aggregate_column_ref) const {
 	// Create unnest(generate_series(1, array_length(column_ref, 1))) function to generate row ids
-	FunctionBinder function_binder(context);
-	auto &catalog = Catalog::GetSystemCatalog(context);
-
 	// array_length
-	auto &array_length_entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
-	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "array_length"));
 	vector<unique_ptr<Expression>> array_length_exprs;
 	array_length_exprs.push_back(std::move(aggregate_column_ref));
 	array_length_exprs.push_back(make_uniq<BoundConstantExpression>(1));
-
-	const auto &array_length_fun = array_length_entry.functions.GetFunctionByArguments(
-	    context, {array_length_exprs[0]->GetReturnType(), array_length_exprs[1]->GetReturnType()});
-	auto bound_array_length_fun = function_binder.BindScalarFunction(array_length_fun, std::move(array_length_exprs));
+	auto bound_array_length_fun = BindBuiltinScalarFunction(context, "array_length", std::move(array_length_exprs));
 
 	// generate_series
-	auto &generate_series_entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
-	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "generate_series"));
-
 	vector<unique_ptr<Expression>> generate_series_exprs;
 	generate_series_exprs.push_back(make_uniq<BoundConstantExpression>(1));
 	generate_series_exprs.push_back(std::move(bound_array_length_fun));
-
-	const auto &generate_series_fun = generate_series_entry.functions.GetFunctionByArguments(
-	    context, {generate_series_exprs[0]->GetReturnType(), generate_series_exprs[1]->GetReturnType()});
 	auto bound_generate_series_fun =
-	    function_binder.BindScalarFunction(generate_series_fun, std::move(generate_series_exprs));
+	    BindBuiltinScalarFunction(context, "generate_series", std::move(generate_series_exprs));
 
 	// unnest
 	auto unnest_row_number_expr = make_uniq<BoundUnnestExpression>(LogicalType::BIGINT);
@@ -492,11 +470,8 @@ void TopNWindowElimination::AddStructExtractExprs(
     vector<unique_ptr<Expression>> &exprs, const LogicalType &struct_type,
     const unique_ptr<BoundColumnRefExpression> &aggregate_column_ref) const {
 	FunctionBinder function_binder(context);
-	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto &struct_extract_entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
-	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "struct_extract"));
-	const auto &struct_extract_fun =
-	    struct_extract_entry.functions.GetFunctionByArguments(context, {struct_type, LogicalType::VARCHAR});
+	// resolved once - the same overload binds for every field of the struct
+	auto struct_extract_fun = GetBuiltinScalarFunction(context, "struct_extract", {struct_type, LogicalType::VARCHAR});
 
 	const auto &child_types = StructType::GetChildTypes(struct_type);
 	for (idx_t i = 0; i < child_types.size(); i++) {
@@ -562,14 +537,24 @@ TopNWindowElimination::CreateProjectionOperator(unique_ptr<LogicalOperator> op,
 	return unique_ptr<LogicalOperator>(std::move(logical_projection));
 }
 
-bool TopNWindowElimination::CanOptimize(LogicalOperator &op) {
+class ColumnReferenceExtractor : public BaseColumnPruner {
+public:
+	static column_binding_map_t<ReferencedColumn> GetReferences(unique_ptr<Expression> *expression) {
+		ColumnReferenceExtractor extractor;
+		extractor.VisitExpression(expression);
+		return extractor.column_references;
+	}
+};
+
+optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
+	const optional_idx cant_optimize;
 	if (op.type != LogicalOperatorType::LOGICAL_FILTER) {
-		return false;
+		return cant_optimize;
 	}
 
 	const auto &filter = op.Cast<LogicalFilter>();
 	if (filter.expressions.size() != 1) {
-		return false;
+		return cant_optimize;
 	}
 
 	const auto comparison = filter.expressions[0]->GetExpressionType();
@@ -579,122 +564,129 @@ bool TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 	case ExpressionType::COMPARE_EQUAL:
 		break;
 	default:
-		return false;
+		return cant_optimize;
 	}
 
 	auto &filter_comparison = filter.expressions[0]->Cast<BoundFunctionExpression>();
 	auto &right = BoundComparisonExpression::Right(filter_comparison);
 	if (right.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
-		return false;
+		return cant_optimize;
 	}
 	auto &filter_value = right.Cast<BoundConstantExpression>();
 	if (filter_value.GetValue().type() != LogicalType::BIGINT) {
-		return false;
+		return cant_optimize;
 	}
 	if (filter_value.GetValue().IsNull()) {
-		return false;
+		return cant_optimize;
 	}
 
 	const auto bigint_value = filter_value.GetValue().GetValue<int64_t>();
+	optional_idx can_optimize;
 	switch (comparison) {
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 		if (bigint_value < 1) {
-			return false;
+			return cant_optimize;
 		}
 		if (bigint_value >= MIN_MAX_N_MAX_VALUE) {
 			// The rewrite passes the limit as the n value to the min/max/arg_min/arg_max "n" aggregates, which
 			// require n < MIN_MAX_N_MAX_VALUE. Fall back to the regular window plan for larger limits.
-			return false;
+			return cant_optimize;
 		}
+		can_optimize = UnsafeNumericCast<idx_t>(bigint_value);
 		break;
 	case ExpressionType::COMPARE_LESSTHAN:
 		if (bigint_value < 2) {
-			return false;
+			return cant_optimize;
 		}
 		if (bigint_value - 1 >= MIN_MAX_N_MAX_VALUE) {
-			return false;
+			return cant_optimize;
 		}
+		can_optimize = UnsafeNumericCast<idx_t>(bigint_value - 1);
 		break;
 	case ExpressionType::COMPARE_EQUAL:
 		//	TODO: Handle other values
 		if (bigint_value != 1) {
-			return false;
+			return cant_optimize;
 		}
+		can_optimize = UnsafeNumericCast<idx_t>(bigint_value);
 		break;
 	default:
-		return false;
+		return cant_optimize;
 	}
 
 	auto &left = BoundComparisonExpression::LeftMutable(filter_comparison);
 	if (left->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-		return false;
+		return cant_optimize;
 	}
-	VisitExpression(&left);
+	auto column_references = ColumnReferenceExtractor::GetReferences(&left);
 
 	reference<LogicalOperator> child = *filter.children[0];
 	while (child.get().type == LogicalOperatorType::LOGICAL_PROJECTION) {
 		auto &projection = child.get().Cast<LogicalProjection>();
 		if (column_references.size() != 1) {
-			column_references.clear();
-			return false;
+			return cant_optimize;
 		}
 
 		const auto current_column_ref = column_references.begin()->first;
-		column_references.clear();
 		D_ASSERT(current_column_ref.table_index == projection.table_index);
-		VisitExpression(&projection.expressions[current_column_ref.column_index]);
+		// The filter has to name the window column itself. An expression that only mentions it, such as
+		// row_number + 10, is a different predicate, and following the inner reference would drop that expression.
+		auto &proj_expr = *projection.expressions[current_column_ref.column_index];
+		if (proj_expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			return cant_optimize;
+		}
+		column_references =
+		    ColumnReferenceExtractor::GetReferences(&projection.expressions[current_column_ref.column_index]);
 
 		child = *child.get().children[0];
 	}
 
 	if (column_references.size() != 1) {
-		column_references.clear();
-		return false;
+		return cant_optimize;
 	}
 	const auto filter_col_idx = column_references.begin()->first.table_index;
-	column_references.clear();
 
 	if (child.get().type != LogicalOperatorType::LOGICAL_WINDOW) {
-		return false;
+		return cant_optimize;
 	}
 	const auto &window = child.get().Cast<LogicalWindow>();
 	if (window.window_index != filter_col_idx) {
-		return false;
+		return cant_optimize;
 	}
 	const auto &first_window_expr = window.expressions[0]->Cast<BoundWindowExpression>();
 	for (auto &partition : first_window_expr.Partitions()) {
 		if (partition->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-			return false;
+			return cant_optimize;
 		}
 	}
 	if (window.expressions.size() != 1) {
 		for (idx_t i = 1; i < window.expressions.size(); ++i) {
 			if (!window.expressions[i]->Equals(first_window_expr)) {
-				return false;
+				return cant_optimize;
 			}
 		}
 	}
 	if (window.expressions[0]->GetExpressionType() != ExpressionType::WINDOW_ROW_NUMBER) {
-		return false;
+		return cant_optimize;
 	}
 	auto &window_expr = window.expressions[0]->Cast<BoundWindowExpression>();
 
 	if (!window_expr.ArgOrders().empty()) {
-		return false;
+		return cant_optimize;
 	}
 	if (window_expr.OrderBy().size() != 1) {
-		return false;
+		return cant_optimize;
 	}
 	if (window_expr.OrderBy()[0].type != OrderType::DESCENDING &&
 	    window_expr.OrderBy()[0].type != OrderType::ASCENDING) {
-		return false;
+		return cant_optimize;
 	}
 	if (window_expr.OrderBy()[0].null_order != OrderByNullType::NULLS_LAST) {
-		return false;
+		return cant_optimize;
 	}
 
 	// We have found a grouped top-n window construct!
-	return true;
+	return can_optimize;
 }
 
 vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(const vector<ColumnBinding> &bindings,
@@ -712,9 +704,8 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 	column_binding_map_t<idx_t> group_bindings;
 	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
 		auto &expr = window_expr.PartitionsMutable()[i];
-		VisitExpression(&expr);
+		auto column_references = ColumnReferenceExtractor::GetReferences(&expr);
 		group_bindings[column_references.begin()->first] = i;
-		column_references.clear();
 	}
 
 	for (idx_t i = 0; i < bindings.size(); i++) {
@@ -745,7 +736,7 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 
 	if (aggregate_args.size() == 1) {
 		// If we only project the aggregate value itself, we do not need it as an arg
-		VisitExpression(&window_expr.OrderByMutable()[0].expression);
+		auto column_references = ColumnReferenceExtractor::GetReferences(&window_expr.OrderByMutable()[0].expression);
 		if (column_references.size() != 1) {
 			column_references.clear();
 			return aggregate_args;
@@ -774,13 +765,12 @@ bool TopNWindowElimination::TraverseProjectionBindings(const vector<ColumnBindin
 		for (idx_t i = 0; i < new_bindings.size(); i++) {
 			auto &new_binding = new_bindings[i];
 			D_ASSERT(new_binding.table_index == projection.table_index);
-			VisitExpression(&projection.expressions[new_binding.column_index]);
+			auto column_references =
+			    ColumnReferenceExtractor::GetReferences(&projection.expressions[new_binding.column_index]);
 			if (column_references.size() != 1) {
-				column_references.clear();
 				return false;
 			}
 			new_binding = column_references.begin()->first;
-			column_references.clear();
 		}
 		op = *op.get().children[0];
 	}
@@ -893,7 +883,7 @@ TopNWindowElimination::UpdateTopmostBindings(TableIndex window_idx, unique_ptr<L
 		auto &new_binding = new_bindings[i];
 		unique_ptr<Expression> proj_expr = make_uniq<BoundColumnRefExpression>(original.types[i], new_binding);
 		if (original.types[i] != types[i]) {
-			proj_expr = BoundCastExpression::AddDefaultCastToType(std::move(proj_expr), types[i]);
+			proj_expr = BoundCastExpression::AddCastToType(context, std::move(proj_expr), types[i]);
 		}
 		proj_exprs.emplace_back(std::move(proj_expr));
 		new_binding.table_index = proj_table;
@@ -926,24 +916,10 @@ TopNWindowElimination::ExtractOptimizerParameters(const LogicalWindow &window, c
 	params.partition_count = window_expr.Partitions().size();
 	params.order_type = window_expr.OrderBy()[0].type;
 
-	VisitExpression(&window_expr.OrderByMutable()[0].expression);
-	if (params.payload_type == TopNPayloadType::SINGLE_COLUMN && !aggregate_payload.empty()) {
-		VisitExpression(&aggregate_payload[0]);
-	}
-	for (const auto &column_ref : column_references) {
-		const auto &column_stats = stats->find(column_ref.first);
-		if (column_stats == stats->end() || column_stats->second->CanHaveNull()) {
-			params.can_be_null = true;
-			break;
-		}
-	}
-	// A compound ORDER BY expression (NULLIF, arithmetic, cast, ...) can produce NULLs even when its input
-	// columns are non-null. Only a direct column reference inherits the column's known nullability, so treat a
-	// non-column-reference as potentially null to keep the nulls-last aggregate variant.
-	if (window_expr.OrderBy()[0].expression->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
-		params.can_be_null = true;
-	}
-	column_references.clear();
+	// The statistics of a column binding are those at the top of the plan: a filter above the window (e.g. on the
+	// result of a decorrelated LATERAL join) can have narrowed them to non-NULL although the input of the window
+	// contains NULLs. They cannot tell whether the window input can be NULL, so keep the NULL-preserving variants.
+	params.can_be_null = true;
 
 	return params;
 }
@@ -953,13 +929,11 @@ bool TopNWindowElimination::ExtractSingleBinding(unique_ptr<Expression> *expr, C
 	if (require_direct_column_ref && expr->get()->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 		return false;
 	}
-	VisitExpression(expr);
+	auto column_references = ColumnReferenceExtractor::GetReferences(expr);
 	if (column_references.size() != 1) {
-		column_references.clear();
 		return false;
 	}
 	binding = column_references.begin()->first;
-	column_references.clear();
 	return true;
 }
 
@@ -1146,12 +1120,22 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 		}
 	}
 	// Check if we need the projection map
-	for (idx_t i = 0; i < projections.size(); i++) {
-		if (projections[i].column_index != i) {
-			for (auto &proj : projections) {
-				lhs_projections.push_back(proj.column_index);
+	bool need_projection = false;
+	for (idx_t i = 0; i < projections.size() && !need_projection; i++) {
+		need_projection = projections[i].column_index != i;
+	}
+	// ConstructJoin expects the row id columns to be the last columns of the LHS. A row id that is also used as a
+	// payload column sits somewhere before that, so it has to be projected again to end up in the right position.
+	for (const auto &col_idx : rowid_column_idxs) {
+		for (auto &column_index : logical_get.GetColumnIds()) {
+			if (column_index.GetPrimaryIndex() == col_idx) {
+				need_projection = true;
 			}
-			break;
+		}
+	}
+	if (need_projection) {
+		for (auto &proj : projections) {
+			lhs_projections.push_back(proj.column_index);
 		}
 	}
 	return true;
@@ -1210,7 +1194,7 @@ TopNWindowElimination::TryPrepareLateMaterialization(const LogicalWindow &window
 				for (const auto &rowid_binding : rhs_rowid_bindings) {
 					auto entry = std::find(child_bindings.begin(), child_bindings.end(), rowid_binding);
 					D_ASSERT(entry != child_bindings.end());
-					const ProjectionIndex projection_idx(entry - child_bindings.begin());
+					const ProjectionIndex projection_idx(NumericCast<idx_t>(entry - child_bindings.begin()));
 					if (std::find(filter.projection_map.begin(), filter.projection_map.end(), projection_idx) ==
 					    filter.projection_map.end()) {
 						filter.projection_map.push_back(projection_idx);
@@ -1232,7 +1216,7 @@ TopNWindowElimination::TryPrepareLateMaterialization(const LogicalWindow &window
 					for (const auto &rowid_binding : rhs_rowid_bindings) {
 						auto entry = std::find(child_bindings.begin(), child_bindings.end(), rowid_binding);
 						D_ASSERT(entry != child_bindings.end());
-						const ProjectionIndex projection_idx(entry - child_bindings.begin());
+						const ProjectionIndex projection_idx(NumericCast<idx_t>(entry - child_bindings.begin()));
 						if (std::find(projection_map.begin(), projection_map.end(), projection_idx) ==
 						    projection_map.end()) {
 							projection_map.push_back(projection_idx);

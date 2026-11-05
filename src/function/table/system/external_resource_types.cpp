@@ -153,14 +153,19 @@ static void ExternalResourceTypesFunction(ClientContext &context, TableFunctionI
 //===--------------------------------------------------------------------===//
 
 void RegisterExternalResourceTypeFun::RegisterFunction(BuiltinFunctions &set) {
-	TableFunction fn("register_external_resource_type", {LogicalType::VARCHAR}, RegisterExternalResourceTypeFunction,
-	                 RegisterExternalResourceTypeBind, RegisterExternalResourceTypeInit);
-	fn.named_parameters["kind"] = LogicalType::VARCHAR;
-	fn.named_parameters["create_function"] = LogicalType::VARCHAR;
-	fn.named_parameters["status_function"] = LogicalType::VARCHAR;
-	fn.named_parameters["destroy_function"] = LogicalType::VARCHAR;
-	fn.named_parameters["resolve_function"] = LogicalType::VARCHAR;
-	fn.named_parameters["list_function"] = LogicalType::VARCHAR;
+	TableFunction fn(
+	    "register_external_resource_type", FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR),
+	    RegisterExternalResourceTypeFunction, RegisterExternalResourceTypeBind, RegisterExternalResourceTypeInit);
+	fn.GetSignature()
+	    .AddKeywordOnly("kind", LogicalType::VARCHAR)
+	    .AddKeywordOnly("create_function", LogicalType::VARCHAR)
+	    .WithTypedKwargs("options", [](TypedKwargs &kwargs) {
+		    kwargs.Add("status_function", LogicalType::VARCHAR)
+		        .Add("destroy_function", LogicalType::VARCHAR)
+		        .Add("resolve_function", LogicalType::VARCHAR)
+		        .Add("list_function", LogicalType::VARCHAR);
+	    });
+
 	set.AddFunction(fn);
 }
 

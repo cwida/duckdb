@@ -1,0 +1,56 @@
+# name: test/sql/types/nested/array/array_lateral_unnest.test
+# description: UNNEST of a fixed-size ARRAY in the FROM clause (#26435)
+# group: [array]
+
+statement ok
+CREATE TABLE m(id INT, fixed INT[2]);
+
+statement ok
+INSERT INTO m VALUES (1, [1, 2]), (2, [3, 4]), (3, NULL);
+
+# the unnest rewriter turns the lateral join into a LogicalUnnest, which needs a LIST child
+query III
+SELECT * FROM m, UNNEST(m.fixed) AS s(v) ORDER BY ALL;
+----
+1	[1, 2]	1
+1	[1, 2]	2
+2	[3, 4]	3
+2	[3, 4]	4
+
+query II
+SELECT id, v FROM m, UNNEST(m.fixed) AS s(v) WHERE v > 1 ORDER BY ALL;
+----
+1	2
+2	3
+2	4
+
+query II
+SELECT id, v FROM m LEFT JOIN UNNEST(m.fixed) AS s(v) ON true ORDER BY ALL;
+----
+1	1
+1	2
+2	3
+2	4
+3	NULL
+
+# the rewrite of a materialized CTE takes the same path
+query II
+WITH c AS MATERIALIZED (SELECT * FROM m) SELECT id, v FROM c, UNNEST(c.fixed) AS s(v) ORDER BY ALL;
+----
+1	1
+1	2
+2	3
+2	4
+
+# nested arrays unnest one level
+statement ok
+CREATE TABLE n(id INT, grid INT[2][2]);
+
+statement ok
+INSERT INTO n VALUES (1, [[1, 2], [3, 4]]);
+
+query II
+SELECT id, v FROM n, UNNEST(n.grid) AS s(v) ORDER BY ALL;
+----
+1	[1, 2]
+1	[3, 4]

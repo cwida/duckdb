@@ -156,8 +156,9 @@ void DuckDBSequencesFunction(ClientContext &context, TableFunctionInput &data_p,
 }
 
 void DuckDBSequencesFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(
-	    TableFunction("duckdb_sequences", {}, DuckDBSequencesFunction, DuckDBSequencesBind, DuckDBSequencesInit));
+	auto function =
+	    TableFunction("duckdb_sequences", {}, DuckDBSequencesFunction, DuckDBSequencesBind, DuckDBSequencesInit);
+	set.AddFunction(std::move(function));
 }
 
 } // namespace duckdb

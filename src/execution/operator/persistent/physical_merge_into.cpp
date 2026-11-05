@@ -77,6 +77,8 @@ public:
 	idx_t consumer_idx;
 	idx_t max_threads;
 	atomic<bool> unregistered {false};
+	//! The exchange total grows while the producer outruns its estimate - keeps the scan progress monotonic
+	MonotonicProgress scan_progress;
 };
 
 class MergeActionLocalSourceState : public LocalSourceState {
@@ -110,7 +112,7 @@ ProgressData PhysicalMergeActionSource::GetProgress(ClientContext &context, Glob
 	auto &gstate = gstate_p.Cast<MergeActionGlobalSourceState>();
 	// we do not know how many rows the merge into will push into this action - the exchange reports the rows we have
 	// consumed out of the rows that have been pushed so far
-	return gstate.exchange->ScanProgress(gstate.consumer_idx, estimated_cardinality);
+	return gstate.scan_progress.Update(gstate.exchange->ScanProgress(gstate.consumer_idx, estimated_cardinality));
 }
 
 void PhysicalMergeActionSource::SourceFinished(ClientContext &context, GlobalSourceState &gstate_p) const {
@@ -671,6 +673,8 @@ void PhysicalMergeInto::BuildPipelines(Pipeline &current, MetaPipeline &meta_pip
 		if (!action->op) {
 			continue;
 		}
+		action->op->op_state.reset();
+		action->op->sink_state.reset();
 		auto &action_meta_pipeline = meta_pipeline.CreateChildMetaPipeline(current, *action->op);
 		action_meta_pipeline.Build(action->op->children[0].get());
 		auto &action_pipeline = action_meta_pipeline.GetBasePipeline();

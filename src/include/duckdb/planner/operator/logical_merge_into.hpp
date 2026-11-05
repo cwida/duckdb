@@ -14,6 +14,7 @@
 #include "duckdb/planner/bound_constraint.hpp"
 
 namespace duckdb {
+struct CreateInfo;
 class TableCatalogEntry;
 class LogicalGet;
 class LogicalProjection;
@@ -64,6 +65,9 @@ public:
 public:
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
+
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
 
 	idx_t EstimateCardinality(ClientContext &context) override;
 	vector<TableIndex> GetTableIndex() const override;

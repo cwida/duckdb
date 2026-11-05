@@ -1,12 +1,11 @@
 #include "duckdb/optimizer/partial_aggregate_pushdown.hpp"
 
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -385,7 +384,6 @@ static bool PassesLowerGroupHeuristic(const LogicalAggregate &aggr, const Partia
 static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &aggr, TableIndex lower_aggregate_index,
                                    vector<unique_ptr<Expression>> &lower_aggregates,
                                    vector<unique_ptr<Expression>> &upper_aggregates) {
-	auto combine_function = CombineAggrFun::GetFunction();
 	FunctionBinder function_binder(context);
 
 	for (idx_t i = 0; i < aggr.expressions.size(); i++) {
@@ -399,6 +397,7 @@ static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &agg
 		vector<unique_ptr<Expression>> arguments;
 		auto lower_binding = ColumnBinding(lower_aggregate_index, ProjectionIndex(i));
 		arguments.push_back(make_uniq<BoundColumnRefExpression>(lower_type, lower_binding));
+		auto combine_function = GetBuiltinAggregateFunction(context, CombineAggrFun::Name, {lower_type});
 		auto upper_aggregate = function_binder.BindAggregateFunction(combine_function, std::move(arguments));
 		if (!upper_aggregate->GetReturnType().IsAggregateState()) {
 			return false;
@@ -557,37 +556,21 @@ struct DoubleEagerSide {
 
 static unique_ptr<BoundAggregateExpression> DEBindAggregate(ClientContext &context, const string &name,
                                                             vector<unique_ptr<Expression>> children) {
-	auto &entry = Catalog::GetEntry<AggregateFunctionCatalogEntry>(
-	    context, QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier(name)));
 	vector<LogicalType> types;
 	for (auto &child : children) {
 		types.push_back(child->GetReturnType());
 	}
-	ErrorData error;
-	FunctionBinder function_binder(context);
-	auto best = function_binder.BindFunction(entry.name, entry.functions, types, error);
-	if (!best.IsValid()) {
+	auto func = TryGetBuiltinAggregateFunction(context, Identifier(name), types);
+	if (!func) {
 		return nullptr;
 	}
-	auto &func = entry.functions.GetFunctionByOffset(best.GetIndex());
+	FunctionBinder function_binder(context);
 	return function_binder.BindAggregateFunction(func, std::move(children));
 }
 
 static unique_ptr<BoundAggregateExpression> DEBindCombineAggr(ClientContext &context,
                                                               vector<unique_ptr<Expression>> children) {
-	auto functions = CombineAggrFun::GetFunctions();
-	vector<LogicalType> types;
-	for (auto &child : children) {
-		types.push_back(child->GetReturnType());
-	}
-	ErrorData error;
-	FunctionBinder function_binder(context);
-	auto best = function_binder.BindFunction(functions.name, functions, types, error);
-	if (!best.IsValid()) {
-		return nullptr;
-	}
-	auto &func = functions.GetFunctionByOffset(best.GetIndex());
-	return function_binder.BindAggregateFunction(func, std::move(children));
+	return DEBindAggregate(context, CombineAggrFun::Name, std::move(children));
 }
 
 struct DoubleEagerHeuristics {
@@ -959,12 +942,12 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	auto aggregate_stats = stats_extractor.Extract(*join.children[info.aggregate_side]);
 	auto key_stats = aggregate_stats ? aggregate_stats->GetColumnStats(aggregate_key) : nullptr;
 	if (!aggregate_stats || !key_stats ||
-	    (key_stats->distinct_count.source != DistinctCountSource::EXACT &&
-	     key_stats->distinct_count.source != DistinctCountSource::HLL)) {
+	    (key_stats->total_domain.source != DistinctCountSource::EXACT &&
+	     key_stats->total_domain.source != DistinctCountSource::HLL)) {
 		return false;
 	}
 	const auto aggregate_cardinality = aggregate_stats->cardinality;
-	const auto key_count = MinValue(key_stats->distinct_count.distinct_count, aggregate_cardinality);
+	const auto key_count = MinValue(key_stats->total_domain.distinct_count, aggregate_cardinality);
 	if (aggregate_cardinality == 0 || key_count == 0 ||
 	    static_cast<double>(aggregate_cardinality) <
 	        static_cast<double>(PartialAggregatePushdownHeuristics::MIN_AGGREGATE_TO_DIMENSION_RATIO) *

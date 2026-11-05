@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/csv_error.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
@@ -18,7 +19,8 @@ LinesPerBoundary::LinesPerBoundary(idx_t boundary_idx_p, idx_t lines_in_batch_p)
     : boundary_idx(boundary_idx_p), lines_in_batch(lines_in_batch_p) {
 }
 
-CSVErrorHandler::CSVErrorHandler(bool ignore_errors_p) : ignore_errors(ignore_errors_p) {
+CSVErrorHandler::CSVErrorHandler(bool ignore_errors_p, bool store_ignored_errors_p)
+    : ignore_errors(ignore_errors_p), store_ignored_errors(store_ignored_errors_p) {
 }
 
 void CSVErrorHandler::ThrowError(const CSVError &csv_error) {
@@ -62,8 +64,15 @@ void CSVErrorHandler::ThrowError(const CSVError &csv_error) {
 
 void CSVErrorHandler::Error(const CSVError &csv_error, bool force_error) {
 	lock_guard<mutex> parallel_lock(main_mutex);
-	if (!force_error && (ignore_errors || (PrintLineNumber(csv_error) && !CanGetLine(csv_error.GetBoundaryIndex())))) {
-		// We store this error, we can't throw it now, or we are ignoring it
+	if (!force_error && ignore_errors) {
+		// We are ignoring this error - it is only kept if something (e.g. the rejects table) will read it
+		if (store_ignored_errors) {
+			errors.push_back(csv_error);
+		}
+		return;
+	}
+	if (!force_error && PrintLineNumber(csv_error) && !CanGetLine(csv_error.GetBoundaryIndex())) {
+		// We store this error, we can't throw it now
 		errors.push_back(csv_error);
 		return;
 	}
@@ -186,7 +195,7 @@ string CSVErrorTypeToEnum(CSVErrorType type) {
 
 void CSVErrorHandler::FillRejectsTable(InternalAppender &errors_appender, const idx_t file_idx, const idx_t scan_idx,
                                        const CSVFileScan &file, CSVRejectsTable &rejects,
-                                       const MultiFileBindData &bind_data, const idx_t limit) {
+                                       const vector<Identifier> &column_names, const idx_t limit) {
 	lock_guard<mutex> parallel_lock(main_mutex);
 	// We first insert the file into the file scans table
 	for (auto &error : file.error_handler->errors) {
@@ -232,15 +241,15 @@ void CSVErrorHandler::FillRejectsTable(InternalAppender &errors_appender, const 
 				errors_appender.Append(Value());
 				break;
 			case CSVErrorType::TOO_FEW_COLUMNS:
-				if (col_idx + 1 < bind_data.names.size()) {
-					errors_appender.Append(string_t(bind_data.names[col_idx + 1].GetIdentifierName()));
+				if (col_idx + 1 < column_names.size()) {
+					errors_appender.Append(string_t(column_names[col_idx + 1].GetIdentifierName()));
 				} else {
 					errors_appender.Append(Value());
 				}
 				break;
 			default:
-				if (col_idx < bind_data.names.size()) {
-					errors_appender.Append(string_t(bind_data.names[col_idx].GetIdentifierName()));
+				if (col_idx < column_names.size()) {
+					errors_appender.Append(string_t(column_names[col_idx].GetIdentifierName()));
 				} else {
 					errors_appender.Append(Value());
 				}
@@ -334,8 +343,8 @@ CSVError CSVError::CastError(const CSVReaderOptions &options, const string &colu
 	if (!options.WasTypeManuallySet(column_idx)) {
 		how_to_fix_it << "This type was auto-detected from the CSV file." << '\n';
 		how_to_fix_it << "Possible solutions:" << '\n';
-		how_to_fix_it << "* Override the type for this column manually by setting the type explicitly, e.g., types={'"
-		              << column_name << "': 'VARCHAR'}" << '\n';
+		how_to_fix_it << "* Override the type for this column manually by setting the type explicitly, e.g., types={"
+		              << SQLString::ToString(column_name) << ": 'VARCHAR'}" << '\n';
 		how_to_fix_it
 		    << "* Set the sample size to a larger value to enable the auto-detection to scan more values, e.g., "
 		       "sample_size=-1"

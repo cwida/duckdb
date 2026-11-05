@@ -16,6 +16,7 @@ namespace duckdb {
 
 class Optimizer;
 class ClientContext;
+class ColumnBindingReplacer;
 class LogicalOperator;
 class Expression;
 class BoundColumnRefExpression;
@@ -104,7 +105,9 @@ private:
 	static constexpr double JOIN_CARDINALITY_RATIO_THRESHOLD = 8;
 
 public:
-	CompressedMaterialization(Optimizer &optimizer, LogicalOperator &root, statistics_map_t &statistics_map);
+	CompressedMaterialization(Optimizer &optimizer, LogicalOperator &root,
+	                          const vector<reference<unique_ptr<LogicalOperator>>> &ancestors,
+	                          statistics_map_t &statistics_map);
 
 	void Compress(unique_ptr<LogicalOperator> &op);
 
@@ -137,6 +140,8 @@ private:
 	                              vector<unique_ptr<CompressExpression>> compress_exprs,
 	                              CompressedMaterializationInfo &info, CMChildInfo &child_info);
 	void CreateDecompressProjection(unique_ptr<LogicalOperator> &op, CompressedMaterializationInfo &info);
+	//! Rebind references to compressed bindings, which can only occur in the ancestors of the compressed operator
+	void RebindAncestors(ColumnBindingReplacer &replacer);
 	unique_ptr<Expression> CreateRestoreExpression(unique_ptr<Expression> input, const CMBindingInfo &binding_info,
 	                                               const BaseStatistics &stats);
 
@@ -172,6 +177,8 @@ private:
 	ClientContext &context;
 	//! The root of the query plan
 	optional_ptr<LogicalOperator> root;
+	//! The chain of operators from the root down to the operator being compressed
+	const vector<reference<unique_ptr<LogicalOperator>>> &ancestors;
 	//! The map of ColumnBinding -> statistics for the various nodes
 	statistics_map_t &statistics_map;
 };

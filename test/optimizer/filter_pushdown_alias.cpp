@@ -65,7 +65,7 @@ TEST_CASE("Filter pushdown rewrites BoundColumnRef alias to the scan column name
 	string explain;
 	for (idx_t row = 0; row < result->RowCount(); row++) {
 		for (idx_t col = 0; col < result->ColumnCount(); col++) {
-			explain += result->GetValue(col, row).ToString();
+			explain += result->Collection().GetValue(col, row).ToString();
 		}
 	}
 	REQUIRE(StringUtil::Contains(explain, "FilterAlias: col"));

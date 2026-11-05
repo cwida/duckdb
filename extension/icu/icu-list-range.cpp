@@ -149,26 +149,35 @@ struct ICUListRange : public ICUDateFunc {
 				list.WriteElement().WriteValue(range_value);
 			}
 		}
-		result.Verify(args.size());
+		result.Verify();
 	}
 
 	static void AddICUListRangeFunction(ExtensionLoader &loader) {
 		ScalarFunctionSet range("range");
-		range.AddFunction(ScalarFunction({LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL},
-		                                 LogicalType::LIST(LogicalType::TIMESTAMP_TZ), ICUListRangeFunction<false>,
-		                                 Bind));
+		ScalarFunction range_fun({}, LogicalType::LIST(LogicalType::TIMESTAMP_TZ), ICUListRangeFunction<false>, Bind);
+		range_fun.GetSignature()
+		    .AddParameter("start", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("stop", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("step", LogicalType::INTERVAL);
+		range.AddFunction(range_fun);
 		// throws for infinite or mixed-sign intervals
 		range.SetFallible();
+		range.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(range);
 
 		// generate_series: similar to range, but inclusive instead of exclusive bounds on the RHS
 		ScalarFunctionSet generate_series("generate_series");
-		generate_series.AddFunction(
-		    ScalarFunction({LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL},
-		                   LogicalType::LIST(LogicalType::TIMESTAMP_TZ), ICUListRangeFunction<true>, Bind));
+		ScalarFunction generate_series_fun({}, LogicalType::LIST(LogicalType::TIMESTAMP_TZ), ICUListRangeFunction<true>,
+		                                   Bind);
+		generate_series_fun.GetSignature()
+		    .AddParameter("start", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("stop", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("step", LogicalType::INTERVAL);
+		generate_series.AddFunction(generate_series_fun);
 
 		// throws for infinite or mixed-sign intervals
 		generate_series.SetFallible();
+		generate_series.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(generate_series);
 	}
 };

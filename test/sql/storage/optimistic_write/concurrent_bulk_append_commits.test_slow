@@ -2,7 +2,7 @@
 # description: Concurrent bulk-append commits to separate tables flush their blocks before the WAL lock
 # group: [optimistic_write]
 
-load __TEST_DIR__/concurrent_bulk_append_commits.db
+load {TEST_DIR}/concurrent_bulk_append_commits.db
 
 statement ok
 SET checkpoint_threshold='999999GB';
@@ -10,12 +10,12 @@ SET checkpoint_threshold='999999GB';
 loop i 0 8
 
 statement ok
-CREATE TABLE t${i} (r BIGINT, s VARCHAR);
+CREATE TABLE t{i} (r BIGINT, s VARCHAR);
 
 # seed row: the table being non-empty forces the commit off the empty-table fast path, so
 # the bulk-append decision depends on the append being at least one row group
 statement ok
-INSERT INTO t${i} VALUES (-1, 'seed');
+INSERT INTO t{i} VALUES (-1, 'seed');
 
 endloop
 
@@ -25,14 +25,14 @@ endloop
 concurrentloop i 0 8
 
 statement ok
-INSERT INTO t${i} SELECT r, repeat('abcdefgh', 25) || r FROM range(245000) tt(r);
+INSERT INTO t{i} SELECT r, repeat('abcdefgh', 25) || r FROM range(245000) tt(r);
 
 endloop
 
 loop i 0 8
 
 query III
-SELECT COUNT(*), MIN(r), MAX(r) FROM t${i}
+SELECT COUNT(*), MIN(r), MAX(r) FROM t{i}
 ----
 245001	-1	244999
 
@@ -43,12 +43,12 @@ restart
 loop i 0 8
 
 query III
-SELECT COUNT(*), MIN(r), MAX(r) FROM t${i}
+SELECT COUNT(*), MIN(r), MAX(r) FROM t{i}
 ----
 245001	-1	244999
 
 query I
-SELECT s = repeat('abcdefgh', 25) || r FROM t${i} WHERE r = 122880
+SELECT s = repeat('abcdefgh', 25) || r FROM t{i} WHERE r = 122880
 ----
 true
 

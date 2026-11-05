@@ -1,0 +1,20 @@
+# name: benchmark/micro/match_recognize/match_recognize_navigation.benchmark
+# description: MATCH_RECOGNIZE whose DEFINE navigates the match, forcing per row evaluation
+# group: [match_recognize]
+
+name MatchRecognize Navigation
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE readings AS
+    SELECT i::INTEGER AS i, (i * 2654435761 % 1000)::INTEGER AS v FROM range(0, 200000) t(i);
+
+run
+SELECT count(*) FROM readings MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES i AS start_i
+    ONE ROW PER MATCH
+    PATTERN (A B+)
+    DEFINE A AS true, B AS v > LAST(A.v)
+);

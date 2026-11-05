@@ -136,9 +136,9 @@ SELECT INTERVAL '1 day' / 2
 ----
 12:00:00
 
-# null_on_division_by_zero restores the old behavior of returning NULL
+# disabling error_on_division_by_zero restores the old behavior of returning NULL
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT DECIMAL(4,1) DECIMAL(9,2) DECIMAL(18,3) DECIMAL(38,4)
 
@@ -194,7 +194,7 @@ NULL
 endloop
 
 statement ok
-SET null_on_division_by_zero=false;
+SET error_on_division_by_zero=true;
 
 statement error
 SELECT 7 // 0

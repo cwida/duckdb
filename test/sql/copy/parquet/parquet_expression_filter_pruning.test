@@ -154,8 +154,8 @@ SkipRowGroup	9
 statement ok
 CALL truncate_duckdb_logs()
 
-# can_have_nan=true disables stats pruning entirely (NaN compares larger than anything),
-# but the NaN row must still survive the filter
+# Explicit zero counts in the other nine groups override can_have_nan=true.
+# The NaN-containing group must still survive the filter.
 statement ok
 CALL enable_logging('PhysicalOperator')
 
@@ -170,7 +170,8 @@ CALL disable_logging()
 query II
 SELECT event, count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='ParquetReader' GROUP BY event ORDER BY event
 ----
-ReadRowGroup	10
+ReadRowGroup	1
+SkipRowGroup	9
 
 statement ok
 CALL truncate_duckdb_logs()
@@ -232,7 +233,7 @@ EXPLAIN ANALYZE SELECT count(*)
 FROM '{TEST_DIR}/expr_prune_prefix_corner.parquet'
 WHERE prefix(s, '') OR prefix(s, 'zz')
 ----
-analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 4 / 4.*
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 3 / 4.*
 
 query I
 SELECT count(*)
@@ -453,3 +454,55 @@ FROM '{TEST_DIR}/expr_prune_string_length.parquet'
 WHERE octet_length(b) > 30
 ----
 analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 1 / 3.*
+
+# Positive nan_count with finite bounds overrides can_have_nan=false during row group pruning
+# The fixture contains FLOAT f and DOUBLE d with [1, NaN, NULL], min=max=1 and nan_count=1.
+foreach column f d
+
+# row group pruning checks both the [min, max] and the NaN domain
+statement ok
+SET disabled_optimizers='statistics_propagation'
+
+# [1, 1] rejects > 1 but NaN does not - the row group must be read
+statement ok
+CALL enable_logging('PhysicalOperator')
+
+query I
+SELECT {column} FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan=false) WHERE {column} > 1
+----
+nan
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT event, count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='ParquetReader' GROUP BY event ORDER BY event
+----
+ReadRowGroup	1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# both [1, 1] and NaN reject > 1 AND < 2 - the row group is skipped
+statement ok
+CALL enable_logging('PhysicalOperator')
+
+query I
+SELECT {column} FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan=false) WHERE {column} > 1 AND {column} < 2
+----
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT event, count(*) FROM duckdb_logs_parsed('PhysicalOperator') WHERE class='ParquetReader' GROUP BY event ORDER BY event
+----
+SkipRowGroup	1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET disabled_optimizers=''
+
+endloop

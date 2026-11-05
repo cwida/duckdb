@@ -56,6 +56,48 @@ struct ConstantOrSequenceInfo {
 	bool is_constant = true;
 };
 
+static const vector<Value> &GetNestedValueChildren(const Value &value) {
+	switch (value.type().InternalType()) {
+	case PhysicalType::STRUCT:
+		return StructValue::GetChildren(value);
+	case PhysicalType::LIST:
+		return ListValue::GetChildren(value);
+	case PhysicalType::ARRAY:
+		return ArrayValue::GetChildren(value);
+	default:
+		throw InternalException("Expected a nested value");
+	}
+}
+
+static bool CanShareConstantValue(const Value &left, const Value &right) {
+	if (left.type() != right.type()) {
+		return false;
+	}
+	if (left.IsNull() || right.IsNull()) {
+		return left.IsNull() == right.IsNull();
+	}
+	switch (left.type().InternalType()) {
+	case PhysicalType::STRUCT:
+	case PhysicalType::LIST:
+	case PhysicalType::ARRAY: {
+		// Compare VARIANT storage children directly to preserve payload types and object fields.
+		auto &left_children = GetNestedValueChildren(left);
+		auto &right_children = GetNestedValueChildren(right);
+		if (left_children.size() != right_children.size()) {
+			return false;
+		}
+		for (idx_t i = 0; i < left_children.size(); i++) {
+			if (!CanShareConstantValue(left_children[i], right_children[i])) {
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return ValueOperations::NotDistinctFrom(left, right);
+	}
+}
+
 OperatorResultType VerifyEmitSequenceVector(const DataChunk &input_p, DataChunk &chunk, OperatorState &state_p) {
 	auto &state = state_p.Cast<VerifyVectorState>();
 	D_ASSERT(state.const_idx < input_p.size());
@@ -97,7 +139,7 @@ OperatorResultType VerifyEmitSequenceVector(const DataChunk &input_p, DataChunk 
 			if (info.values.empty()) {
 				info.values.push_back(std::move(val));
 			} else if (info.is_constant) {
-				if (!ValueOperations::DistinctFrom(val, info.values[0]) && can_be_constant) {
+				if (can_be_constant && CanShareConstantValue(val, info.values[0])) {
 					// found the same value! continue
 					info.values.push_back(std::move(val));
 					continue;

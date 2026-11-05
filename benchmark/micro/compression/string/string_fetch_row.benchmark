@@ -1,0 +1,27 @@
+# name: benchmark/micro/compression/string/string_fetch_row.benchmark
+# description: Fetch Uncompressed Strings One Row at a Time
+# group: [string]
+
+name Fetch Uncompressed Strings One Row at a Time
+group string
+storage persistent
+cache string_fetch_row.db
+
+init
+SET debug_force_fetch_row=true;
+
+load
+CREATE TABLE string_values(s VARCHAR USING COMPRESSION UNCOMPRESSED);
+INSERT INTO string_values SELECT 'string-' || lpad(i::VARCHAR, 9, '0') FROM range(100_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('string_values') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+Uncompressed
+
+run
+SELECT SUM(strlen(s)) FROM string_values;
+
+result I
+1600000

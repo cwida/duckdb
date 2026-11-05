@@ -1,0 +1,28 @@
+# name: test/sql/sql_export/legacy_source_serialization.test
+# description: SQL export report mode falls back when old plan formats omit source invocation arguments
+# group: [sql_export]
+
+require parquet
+
+statement ok
+SET storage_compatibility_version='v1.0.0';
+
+statement ok
+COPY (SELECT * FROM (VALUES (10,1),(10,1),(NULL,1),(20,2),(30,NULL)) t(i,p)) TO '{TEST_DIR}/legacy_source_parquet' (FORMAT parquet, PARTITION_BY(p));
+
+statement ok
+SET debug_verify_serializer=true;
+
+foreach mode none explain_sql
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/legacy_source_parquet/*/*.parquet', hive_partitioning := true) WHERE p=1 ORDER BY i;
+----
+10
+10
+NULL
+
+endloop

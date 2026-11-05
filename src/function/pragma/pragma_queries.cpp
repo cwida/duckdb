@@ -170,12 +170,15 @@ static string PragmaImportDatabase(ClientContext &context, const FunctionParamet
 		auto query = string(buffer.get(), UnsafeNumericCast<uint32_t>(fsize));
 		// Replace the placeholder with the path provided to IMPORT
 		if (file == "load.sql") {
-			Parser parser;
+			auto parser = Parser::GetBuiltinParser();
 			parser.ParseQuery(query);
 			auto copy_statements = std::move(parser.statements);
 			query.clear();
 			for (auto &statement_p : copy_statements) {
-				D_ASSERT(statement_p->type == StatementType::COPY_STATEMENT);
+				if (statement_p->type != StatementType::COPY_STATEMENT) {
+					throw InvalidInputException("IMPORT DATABASE: load.sql may only contain COPY statements, found: %s",
+					                            statement_p->ToString());
+				}
 				auto &statement = statement_p->Cast<CopyStatement>();
 				auto &info = *statement.info;
 				auto file_name = fs.ExtractName(info.file_path);
@@ -216,23 +219,29 @@ static string PragmaUserAgent(ClientContext &context, const FunctionParameters &
 }
 
 void PragmaQueries::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(PragmaFunction::PragmaCall("table_info", PragmaTableInfo, {LogicalType::VARCHAR}));
-	set.AddFunction(PragmaFunction::PragmaCall("storage_info", PragmaStorageInfo, {LogicalType::VARCHAR}));
+	set.AddFunction(PragmaFunction::PragmaCall(
+	    "table_info", PragmaTableInfo, FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR)));
+	set.AddFunction(PragmaFunction::PragmaCall(
+	    "storage_info", PragmaStorageInfo, FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR)));
 	set.AddFunction(PragmaFunction::PragmaCall("metadata_info", PragmaMetadataInfo, {}));
 	set.AddFunction(PragmaFunction::PragmaStatement("show_tables", PragmaShowTables));
 	set.AddFunction(PragmaFunction::PragmaStatement("show_tables_expanded", PragmaShowTablesExpanded));
 	set.AddFunction(PragmaFunction::PragmaStatement("show_databases", PragmaShowDatabases));
 	set.AddFunction(PragmaFunction::PragmaStatement("database_list", PragmaDatabaseList));
 	set.AddFunction(PragmaFunction::PragmaStatement("collations", PragmaCollations));
-	set.AddFunction(PragmaFunction::PragmaCall("show", PragmaShow, {LogicalType::VARCHAR}));
+	set.AddFunction(PragmaFunction::PragmaCall(
+	    "show", PragmaShow, FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR)));
 	set.AddFunction(PragmaFunction::PragmaStatement("version", PragmaVersion));
 	set.AddFunction(PragmaFunction::PragmaStatement("extension_versions", PragmaExtensionVersions));
 	set.AddFunction(PragmaFunction::PragmaStatement("platform", PragmaPlatform));
 	set.AddFunction(PragmaFunction::PragmaStatement("database_size", PragmaDatabaseSize));
 	set.AddFunction(PragmaFunction::PragmaStatement("functions", PragmaFunctionsQuery));
-	set.AddFunction(PragmaFunction::PragmaCall("import_database", PragmaImportDatabase, {LogicalType::VARCHAR}));
-	set.AddFunction(
-	    PragmaFunction::PragmaCall("copy_database", PragmaCopyDatabase, {LogicalType::VARCHAR, LogicalType::VARCHAR}));
+	set.AddFunction(PragmaFunction::PragmaCall("import_database", PragmaImportDatabase,
+	                                           FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR)));
+	set.AddFunction(PragmaFunction::PragmaCall("copy_database", PragmaCopyDatabase,
+	                                           FunctionSignature()
+	                                               .AddPositionalOnly("from_database", LogicalType::VARCHAR)
+	                                               .AddPositionalOnly("to_database", LogicalType::VARCHAR)));
 	set.AddFunction(PragmaFunction::PragmaStatement("user_agent", PragmaUserAgent));
 }
 

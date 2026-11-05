@@ -117,3 +117,25 @@ statement error
 SELECT UNNEST(UNNEST([{'a': 42, 'b': 88}, {'a': NULL, 'b': 99}]))
 ----
 Nested UNNEST calls are not supported
+
+# unnest of a NULL struct
+query II
+SELECT unnest(NULL::STRUCT(a INT, b INT[]), recursive := true);
+----
+NULL	NULL
+
+query II
+SELECT unnest(NULL::STRUCT(a INT, b STRUCT(c INT)), recursive := true, keep_parent_names := true);
+----
+NULL	NULL
+
+query II
+SELECT unnest(s, recursive := true) FROM (VALUES (NULL::STRUCT(a INT, b INT[])), ({'a': 1, 'b': [2, 3]})) t(s);
+----
+NULL	NULL
+1	[2, 3]
+
+query II
+SELECT typeof(COLUMNS(*)) FROM (SELECT unnest(NULL::STRUCT(a INT, b INT[]), recursive := true));
+----
+INTEGER	INTEGER[]

@@ -15,7 +15,7 @@ CALL enable_logging(storage_path='${BENCHMARK_DIR}/duckdb_persistent_q1_with_def
 
 run
 ATTACH '${BENCHMARK_DIR}/duckdb_persistent_q1_with_default_logging.db' as my_db;
-CREATE OR REPLACE TABLE my_db.lineitem AS FROM memory.lineitem;
+CREATE OR REPLACE TABLE my_db.lineitem AS FROM memory.lineitem LIMIT 600000;
 use my_db;
 PRAGMA tpch(1);
 
@@ -24,4 +24,4 @@ CALL truncate_duckdb_logs();
 use memory;
 DETACH my_db;
 
-result extension/tpch/dbgen/answers/sf1/q01.csv
+result benchmark/micro/logger/logging_overhead/answers/q1_600k.csv

@@ -1,0 +1,41 @@
+# name: test/sql/function/variant/blob_offset_overflow.test
+# description: Test the unshredded tuple size and write passes
+# group: [variant]
+
+require json
+
+# ROW(...), not a named STRUCT literal: a named STRUCT of variant supported types is cast via the
+# shredded fast path, which never accumulates a combined blob offset and so cant hit this overflow
+
+query I
+SELECT CAST(ROW(repeat('a', 2), repeat('b', 2), repeat('c', 2)) AS VARIANT);
+----
+[aa, bb, cc]
+
+query I
+SELECT CAST(ROW('before', '[]'::JSON, '{}'::JSON, '[[],{}]'::JSON, 'after') AS VARIANT);
+----
+[before, [], {}, [[], {}], after]
+
+# UINT32_MAX boundary coverage uses length-only descriptors in test/common/test_variant_size.cpp.
+# These real payloads cover both passes and changes in the encoded length-prefix size.
+
+statement ok
+CREATE TABLE inputs AS
+SELECT repeat('a', i) a, repeat('b', i) b, repeat('c', i) c
+FROM (VALUES (0), (1), (127), (128), (16383), (16384), (70000)) t(i);
+
+statement ok
+INSERT INTO inputs VALUES (NULL, '', 'z'), ('', NULL, ''), ('', '', NULL);
+
+statement ok
+CREATE TABLE encoded AS SELECT a, b, c, CAST(ROW(a, b, c) AS VARIANT) v FROM inputs;
+
+query II
+SELECT count(*), bool_and(
+    v[1]::VARCHAR IS NOT DISTINCT FROM a AND
+    v[2]::VARCHAR IS NOT DISTINCT FROM b AND
+    v[3]::VARCHAR IS NOT DISTINCT FROM c
+) FROM encoded;
+----
+10	true

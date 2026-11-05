@@ -57,6 +57,11 @@ public:
 public:
 	DUCKDB_API ~HTTPTransportManager();
 
+	//! Retire excess idle clients and discard excess active clients on release
+	DUCKDB_API void SetCapacity(idx_t capacity) DUCKDB_EXCLUDES(lock);
+	DUCKDB_API idx_t GetCapacity() const DUCKDB_EXCLUDES(lock);
+	DUCKDB_API static idx_t AutomaticCapacity(const DBConfig &config);
+
 private:
 	explicit HTTPTransportManager(const shared_ptr<HTTPUtil> &initial_http_util);
 
@@ -120,10 +125,10 @@ private:
 
 	//! Database lifecycle helpers.
 	static unique_ptr<HTTPTransportManager> Create(const shared_ptr<HTTPUtil> &initial_http_util);
-	void Initialize(idx_t system_concurrency) DUCKDB_EXCLUDES(lock);
+	void Initialize(const DBConfig &config) DUCKDB_EXCLUDES(lock);
 	void Close() noexcept DUCKDB_EXCLUDES(lock);
-	static idx_t CalculateCapacity(idx_t system_concurrency, optional_idx file_descriptor_limit);
-	static optional_idx GetFileDescriptorLimit();
+	static idx_t CalculateCapacity(idx_t system_concurrency, optional_idx file_descriptor_limit,
+	                               idx_t io_concurrency = 0);
 	static bool AdvanceConnectionEpoch(uint64_t &connection_epoch, bool &reuse_poisoned) noexcept;
 	void SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util) DUCKDB_EXCLUDES(lock);
 	HTTPUtil &GetHTTPUtil() const DUCKDB_EXCLUDES(lock);

@@ -142,16 +142,16 @@ insert into tbl select '{"test":123,"hello":[],"world":{"test":true}}';
 query I
 select var::VARIANT from tbl;
 ----
-{'test': 123, 'hello': [1, 2, 3], 'world': {'test': true}}
-{'test': 123, 'hello': [4, 5, 6], 'world': {'test': true}}
-{'test': 123, 'hello': [], 'world': {'test': true}}
+{'hello': [1, 2, 3], 'test': 123, 'world': {'test': true}}
+{'hello': [4, 5, 6], 'test': 123, 'world': {'test': true}}
+{'hello': [], 'test': 123, 'world': {'test': true}}
 
 query I
 select var::VARIANT::JSON from tbl;
 ----
-{"test":123,"hello":[1,2,3],"world":{"test":true}}
-{"test":123,"hello":[4,5,6],"world":{"test":true}}
-{"test":123,"hello":[],"world":{"test":true}}
+{"hello":[1,2,3],"test":123,"world":{"test":true}}
+{"hello":[4,5,6],"test":123,"world":{"test":true}}
+{"hello":[],"test":123,"world":{"test":true}}
 
 query I
 with base as (
@@ -190,5 +190,5 @@ with base as (
 select {'var': a::JSON}::VARIANT from base;
 ----
 {'var': NULL}
-{'var': {'b': [1, 2, true, hello], 'a': NULL}}
+{'var': {'a': NULL, 'b': [1, 2, true, hello]}}
 {'var': true}

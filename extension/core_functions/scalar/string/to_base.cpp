@@ -1,21 +1,9 @@
 #include "core_functions/scalar/string_functions.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
 static const char alphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-static unique_ptr<FunctionData> ToBaseBind(BindScalarFunctionInput &input) {
-	auto &arguments = input.GetArguments();
-	// If no min_length is specified, default to 0
-	D_ASSERT(arguments.size() == 2 || arguments.size() == 3);
-	if (arguments.size() == 2) {
-		arguments.push_back(make_uniq_base<Expression, BoundConstantExpression>(Value::INTEGER(0)));
-		input.GetBoundFunction().GetArguments().push_back(LogicalType::INTEGER);
-	}
-	return nullptr;
-}
 
 static void ToBaseFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &input = args.data[0];
@@ -56,10 +44,13 @@ static void ToBaseFunction(DataChunk &args, ExpressionState &state, Vector &resu
 ScalarFunctionSet ToBaseFun::GetFunctions() {
 	ScalarFunctionSet set("to_base");
 
-	set.AddFunction(
-	    ScalarFunction({LogicalType::BIGINT, LogicalType::INTEGER}, LogicalType::VARCHAR, ToBaseFunction, ToBaseBind));
-	set.AddFunction(ScalarFunction({LogicalType::BIGINT, LogicalType::INTEGER, LogicalType::INTEGER},
-	                               LogicalType::VARCHAR, ToBaseFunction, ToBaseBind));
+	auto function = ScalarFunction({}, LogicalType::VARCHAR, ToBaseFunction);
+	function.GetSignature()
+	    .AddParameter("number", LogicalType::BIGINT)
+	    .AddParameter("radix", LogicalType::INTEGER)
+	    .AddParameter("min_length", LogicalType::INTEGER);
+	function.GetSignature().GetParameter(2).SetDefaultValue(Value::INTEGER(0));
+	set.AddFunction(std::move(function));
 
 	// throws if the number, radix or min_length are out of range
 	set.SetFallible();

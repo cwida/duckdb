@@ -1,0 +1,13 @@
+# name: test/sql/binder/default_expression_errors.test
+# description: DEFAULT is rejected outside a defaultable expression
+# group: [binder]
+
+statement error
+SELECT 1 WHERE DEFAULT;
+----
+WHERE clause cannot contain DEFAULT clause
+
+statement error
+CREATE TABLE default_expression_error(i INTEGER DEFAULT DEFAULT);
+----
+DEFAULT value cannot contain DEFAULT clause

@@ -1,0 +1,30 @@
+# name: test/sql/sql_export/values_effect_rejection.test
+# description: Reject effectful child-backed VALUES without executing its sequence
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+CREATE TABLE values_input(v INTEGER);
+
+statement ok
+INSERT INTO values_input VALUES (1),(2);
+
+statement ok
+CREATE SEQUENCE values_guard;
+
+statement ok
+SET disabled_optimizers='compressed_materialization';
+
+statement error
+EXPLAIN (SQL) SELECT count(*) FROM values_input a, values_input b JOIN LATERAL (VALUES (a.v+nextval('values_guard')),(-1)) ss(x) ON b.v=ss.x;
+----
+<REGEX>:.*EXPLAIN \(SQL\) cannot render this query: VALUES with input requires nonvolatile, nonthrowing expressions.*
+
+# Export rejection must not advance the sequence.
+
+statement error
+SELECT currval('values_guard');
+----
+<REGEX>:.*sequence is not yet defined.*

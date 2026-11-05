@@ -18,7 +18,6 @@ struct TableDeleteState {
 	bool has_delete_constraints = false;
 	DataChunk verify_chunk;
 	vector<StorageIndex> col_ids;
-	shared_ptr<CheckpointLock> checkpoint_lock;
 };
 
 } // namespace duckdb

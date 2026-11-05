@@ -1,0 +1,59 @@
+# name: test/sql/function/list/cardinality_list.test
+# description: cardinality() on lists and arrays
+# group: [list]
+
+query I
+SELECT cardinality([1, 2, 3])
+----
+3
+
+query I
+SELECT cardinality([])
+----
+0
+
+query I
+SELECT cardinality(NULL::INTEGER[])
+----
+NULL
+
+query I
+SELECT cardinality(['a', NULL, 'c'])
+----
+3
+
+query I
+SELECT cardinality([[1, 2], [3]])
+----
+2
+
+query I
+SELECT cardinality(array_value(1, 2, 3, 4))
+----
+4
+
+query I
+SELECT cardinality(MAP {'a': 1, 'b': 2})
+----
+2
+
+statement ok
+CREATE TABLE lists AS SELECT * FROM (VALUES ([1, 2]), ([]), (NULL), ([5, 6, 7])) t(l);
+
+query I
+SELECT cardinality(l) FROM lists
+----
+2
+0
+NULL
+3
+
+statement error
+SELECT cardinality(42)
+----
+<REGEX>:Binder Error.*Cardinality can only operate on MAPs, LISTs and ARRAYs.*
+
+statement error
+SELECT cardinality('abc')
+----
+<REGEX>:Binder Error.*

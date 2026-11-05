@@ -4,13 +4,10 @@
 
 ########################################################################################################################
 #                                                                                                                      #
-#   table setup                                                                                          #
+#   table setup                                                                                                        #
 #                                                                                                                      #
 ########################################################################################################################
 
-
-# PRIMARY_tbl1_0
-# UNIQUE_tbl1_1
 statement ok
 CREATE TABLE tbl1(
     id INTEGER PRIMARY KEY,
@@ -28,8 +25,6 @@ CREATE UNIQUE INDEX tbl1_idx_txt ON tbl1(txt);
 statement ok
 INSERT INTO tbl1 (id, uid, txt) VALUES (1, 10, 'alpha'), (2, 20, 'beta'), (3, 30, 'gamma');
 
-# PRIMARY_tbl2_0
-# FOREIGN_tbl2_1
 statement ok
 CREATE TABLE tbl2(
     ref_id INTEGER PRIMARY KEY,
@@ -66,66 +61,154 @@ FROM generate_series(1, 100) AS t(i);
 
 # Omitting catalog and schema uses defaults
 query I
-SELECT index_key({'table': 'tbl1'}, 'tbl1_idx_composite', 1, 'alpha');
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_composite'}, 1, 'alpha');
 ----
 \x80\x00\x00\x01alpha\x00
 
 # Explicit schema, omit catalog
 query I
-SELECT index_key({'schema': 'main', 'table': 'tbl1'}, 'tbl1_idx_composite', 1, 'alpha');
+SELECT index_key({'schema': 'main', 'table': 'tbl1', 'index': 'tbl1_idx_composite'}, 1, 'alpha');
 ----
 \x80\x00\x00\x01alpha\x00
 
 # Explicit catalog, omit schema
 query I
-SELECT index_key({'catalog': current_catalog(), 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'catalog': current_catalog(), 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 \x80\x00\x00\x01
 
 # Explicit catalog and schema
 query I
-SELECT index_key({'catalog': current_catalog(), 'schema': 'main', 'table': 'tbl1'}, 'tbl1_idx_composite', 1, 'alpha');
+SELECT index_key({'catalog': current_catalog(), 'schema': 'main', 'table': 'tbl1', 'index': 'tbl1_idx_composite'}, 1, 'alpha');
 ----
 \x80\x00\x00\x01alpha\x00
 
 # Empty catalog is an error
 statement error
-SELECT index_key({'catalog': '', 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'catalog': '', 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path field "catalog" cannot be empty
 
 # NULL catalog is an error
 statement error
-SELECT index_key({'catalog': NULL::VARCHAR, 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'catalog': NULL::VARCHAR, 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path field "catalog" cannot be NULL
 
 # NULL schema is an error
 statement error
-SELECT index_key({'schema': NULL::VARCHAR, 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'schema': NULL::VARCHAR, 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path field "schema" cannot be NULL
 
 ########################################################################################################################
 #                                                                                                                      #
-#   Index types: primary key, unique, foreign key                                                                      #
+#   Constraint indexes: primary key, unique, foreign key                                                               #
 #                                                                                                                      #
 ########################################################################################################################
 
 query I
-SELECT index_key({'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 \x80\x00\x00\x01
 
 query I
-SELECT index_key({'table': 'tbl1'}, 'UNIQUE_tbl1_1', 20::BIGINT);
+SELECT index_key({'table': 'tbl1', 'constraint': 'unique', 'columns': ['uid']}, 20::BIGINT);
 ----
 \x80\x00\x00\x00\x00\x00\x00\x14
 
 query I
-SELECT index_key({'table': 'tbl2'}, 'FOREIGN_tbl2_1', 1);
+SELECT index_key({'table': 'tbl2', 'constraint': 'foreign', 'columns': ['tbl1_id']}, 1);
 ----
 \x80\x00\x00\x01
+
+# Composite constraints are matched by their columns, in order
+statement ok
+CREATE TABLE tbl_composite(a INTEGER, b VARCHAR, c INTEGER, PRIMARY KEY (a, c), UNIQUE (a, b));
+
+query II
+SELECT
+    index_key({'table': 'tbl_composite', 'constraint': 'primary', 'columns': ['a', 'c']}, 1, 2),
+    index_key({'table': 'tbl_composite', 'constraint': 'unique', 'columns': ['a', 'b']}, 1, 'x');
+----
+\x80\x00\x00\x01\x80\x00\x00\x02	\x80\x00\x00\x01x\x00
+
+statement error
+SELECT index_key({'table': 'tbl_composite', 'constraint': 'unique', 'columns': ['b', 'a']}, 'x', 1);
+----
+Catalog Error: index_key: UNIQUE constraint was not found on table tbl_composite
+
+# Foreign keys: the referenced side uses the parent's primary key index
+statement ok
+CREATE TABLE parent(id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE child(pid INTEGER REFERENCES parent(id));
+
+query II
+SELECT
+    index_key({'table': 'parent', 'constraint': 'primary'}, 1),
+    index_key({'table': 'child', 'constraint': 'foreign', 'columns': ['pid']}, 1);
+----
+\x80\x00\x00\x01	\x80\x00\x00\x01
+
+statement error
+SELECT index_key({'table': 'parent', 'constraint': 'foreign', 'columns': ['id']}, 1);
+----
+Catalog Error: index_key: FOREIGN constraint was not found on table parent
+
+# 'columns' can be omitted when the table has a single constraint of the requested type
+query III
+SELECT
+    index_key({'table': 'tbl1', 'constraint': 'unique'}, 20::BIGINT),
+    index_key({'table': 'tbl2', 'constraint': 'foreign'}, 1),
+    index_key({'table': 'child', 'constraint': 'foreign'}, 1);
+----
+\x80\x00\x00\x00\x00\x00\x00\x14	\x80\x00\x00\x01	\x80\x00\x00\x01
+
+statement ok
+CREATE TABLE tbl_multi(a INTEGER UNIQUE, b INTEGER UNIQUE, pa INTEGER REFERENCES parent(id), pb INTEGER REFERENCES parent(id));
+
+statement error
+SELECT index_key({'table': 'tbl_multi', 'constraint': 'unique'}, 1);
+----
+Binder Error: index_key: table tbl_multi has multiple UNIQUE constraints, specify 'columns' to select one
+
+statement error
+SELECT index_key({'table': 'tbl_multi', 'constraint': 'foreign'}, 1);
+----
+Binder Error: index_key: table tbl_multi has multiple FOREIGN constraints, specify 'columns' to select one
+
+########################################################################################################################
+#                                                                                                                      #
+#   User-defined indexes and constraint indexes do not share a namespace                                               #
+#                                                                                                                      #
+########################################################################################################################
+
+statement ok
+CREATE TABLE tbl_collide(a INTEGER PRIMARY KEY, b VARCHAR);
+
+statement ok
+CREATE INDEX PRIMARY_tbl_collide_0 ON tbl_collide(b);
+
+query II
+SELECT
+    index_key({'table': 'tbl_collide', 'constraint': 'primary'}, 1),
+    index_key({'table': 'tbl_collide', 'index': 'PRIMARY_tbl_collide_0'}, 'x');
+----
+\x80\x00\x00\x01	x\x00
+
+# Constraint indexes cannot be selected through their internal names
+statement error
+SELECT index_key({'table': 'tbl1', 'index': 'PRIMARY_tbl1_0'}, 1);
+----
+Catalog Error: index_key: index "PRIMARY_tbl1_0" was not found on table tbl1
+
+# A user-defined index on another table is not visible
+statement error
+SELECT index_key({'table': 'tbl1', 'index': 'tbl3_idx'}, 1, 'row1', 2);
+----
+Catalog Error: index_key: index "tbl3_idx" was not found on table tbl1
 
 ########################################################################################################################
 #                                                                                                                      #
@@ -134,7 +217,7 @@ SELECT index_key({'table': 'tbl2'}, 'FOREIGN_tbl2_1', 1);
 ########################################################################################################################
 
 statement error
-SELECT index_key({'table': 'tbl1'}, 'PRIMARY_tbl1_0', 143243243242432::BIGINT);
+SELECT index_key({'table': 'tbl1', 'constraint': 'primary'}, 143243243242432::BIGINT);
 ----
 Conversion Error: Type INT64 with value 143243243242432 can't be cast because the value is out of range for the destination type INT32
 
@@ -146,13 +229,13 @@ statement ok
 INSERT INTO tbl3_wrong_type VALUES ('test', 1, 100);
 
 statement error
-SELECT index_key({'table': 'tbl3'}, 'tbl3_idx', c1, c2, c3) FROM tbl3_wrong_type;
+SELECT index_key({'table': 'tbl3', 'index': 'tbl3_idx'}, c1, c2, c3) FROM tbl3_wrong_type;
 ----
 Conversion Error: Could not convert string 'test' to INT32
 
 # Implicit cast from SMALLINT to BIGINT - result should be 8 bytes (BIGINT size)
 query I
-SELECT index_key({'table': 'tbl1'}, 'UNIQUE_tbl1_1', 42::SMALLINT);
+SELECT index_key({'table': 'tbl1', 'constraint': 'unique', 'columns': ['uid']}, 42::SMALLINT);
 ----
 \x80\x00\x00\x00\x00\x00\x00*
 
@@ -163,7 +246,7 @@ SELECT index_key({'table': 'tbl1'}, 'UNIQUE_tbl1_1', 42::SMALLINT);
 ########################################################################################################################
 
 query I
-SELECT index_key({'table': 'tbl1'}, 'tbl1_idx_composite', id, txt)
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_composite'}, id, txt)
 FROM tbl1
 WHERE id IN (1, 2, 3)
 ORDER BY txt DESC;
@@ -173,7 +256,7 @@ ORDER BY txt DESC;
 \x80\x00\x00\x01alpha\x00
 
 query I
-SELECT index_key({'table': 'tbl1'}, 'PRIMARY_tbl1_0', v.id)
+SELECT index_key({'table': 'tbl1', 'constraint': 'primary'}, v.id)
 FROM (VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12)) AS v(id);
 ----
 \x80\x00\x00\x01
@@ -191,8 +274,8 @@ FROM (VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12)) AS v
 
 query II
 SELECT
-    index_key({'table': 'tbl1'}, 'tbl1_idx_composite', v.id, v.txt) AS composite_key,
-    index_key({'table': 'tbl1'}, 'PRIMARY_tbl1_0', v.id) AS pkey_key
+    index_key({'table': 'tbl1', 'index': 'tbl1_idx_composite'}, v.id, v.txt) AS composite_key,
+    index_key({'table': 'tbl1', 'constraint': 'primary'}, v.id) AS pkey_key
 FROM (VALUES (1, 'alpha'), (2, 'beta')) AS v(id, txt);
 ----
 \x80\x00\x00\x01alpha\x00	\x80\x00\x00\x01
@@ -208,7 +291,7 @@ FROM (VALUES (1, 'alpha'), (2, 'beta')) AS v(id, txt);
 # Note: the reason 5 is skipped for key1 is because the byte renders as a space char, and for some reason the space at
 # the end of the blob gets cut when the test is run.
 query I
-SELECT index_key({'table': 'tbl3'}, 'tbl3_idx', key1, key2, key3)
+SELECT index_key({'table': 'tbl3', 'index': 'tbl3_idx'}, key1, key2, key3)
 FROM tbl3
 WHERE key1 BETWEEN 1 AND 4 OR key1 BETWEEN 6 AND 16
 ORDER BY key1;
@@ -230,7 +313,7 @@ ORDER BY key1;
 \x80\x00\x00\x10row16\x00\x80\x00\x00\x00\x00\x01\x00\x00
 
 query I
-SELECT index_key({'schema': 'main', 'table': 'tbl3'}, 'tbl3_idx', key1, key2, key3)
+SELECT index_key({'schema': 'main', 'table': 'tbl3', 'index': 'tbl3_idx'}, key1, key2, key3)
 FROM tbl3
 WHERE key1 BETWEEN 1 AND 4
 ORDER BY key1;
@@ -241,7 +324,7 @@ ORDER BY key1;
 \x80\x00\x00\x04row4\x00\x80\x00\x00\x00\x00\x00\x00\x10
 
 query I
-SELECT index_key({'catalog': current_catalog(), 'schema': 'main', 'table': 'tbl3'}, 'tbl3_idx', key1, key2, key3)
+SELECT index_key({'catalog': current_catalog(), 'schema': 'main', 'table': 'tbl3', 'index': 'tbl3_idx'}, key1, key2, key3)
 FROM tbl3
 WHERE key1 BETWEEN 1 AND 3
 ORDER BY key1;
@@ -252,7 +335,7 @@ ORDER BY key1;
 
 query I
 SELECT COUNT(*)
-FROM (SELECT index_key({'table': 'tbl3'}, 'tbl3_idx', key1, key2, key3) as key_blob
+FROM (SELECT index_key({'table': 'tbl3', 'index': 'tbl3_idx'}, key1, key2, key3) as key_blob
       FROM tbl3);
 ----
 100
@@ -271,7 +354,7 @@ CREATE TABLE other.tbl1(id INTEGER PRIMARY KEY);
 
 # Access index in attached catalog
 query I
-SELECT index_key({'catalog': 'other', 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 42);
+SELECT index_key({'catalog': 'other', 'table': 'tbl1', 'constraint': 'primary'}, 42);
 ----
 \x80\x00\x00*
 
@@ -288,15 +371,20 @@ statement ok
 CREATE TABLE test_schema.tbl4(id INTEGER PRIMARY KEY, value VARCHAR);
 
 statement ok
+CREATE INDEX tbl4_value_idx ON test_schema.tbl4(value);
+
+statement ok
 INSERT INTO test_schema.tbl4 VALUES (1, 'test1'), (2, 'test2');
 
-query I
-SELECT index_key({'schema': 'test_schema', 'table': 'tbl4'}, 'PRIMARY_tbl4_0', id)
+query II
+SELECT
+    index_key({'schema': 'test_schema', 'table': 'tbl4', 'constraint': 'primary'}, id),
+    index_key({'schema': 'test_schema', 'table': 'tbl4', 'index': 'tbl4_value_idx'}, value)
 FROM test_schema.tbl4
 ORDER BY id;
 ----
-\x80\x00\x00\x01
-\x80\x00\x00\x02
+\x80\x00\x00\x01	test1\x00
+\x80\x00\x00\x02	test2\x00
 
 ########################################################################################################################
 #                                                                                                                      #
@@ -305,22 +393,22 @@ ORDER BY id;
 ########################################################################################################################
 
 query I
-SELECT index_key({'table': 'tbl' || '1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': 'tbl' || '1', 'constraint': 'primary'}, 1);
 ----
 \x80\x00\x00\x01
 
 query I
-SELECT index_key({'table': 'tbl1'}, 'PRIMARY_' || 'tbl1_0', 1);
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_' || 'txt'}, 'alpha');
 ----
-\x80\x00\x00\x01
+alpha\x00
 
 statement error
-SELECT index_key({'table': 'tbl1'}, txt, 1) FROM tbl1;
+SELECT index_key({'table': 'tbl1', 'index': txt}, 1) FROM tbl1;
 ----
 must be a constant expression
 
 statement error
-SELECT index_key($1, 'PRIMARY_tbl1_0', 1);
+SELECT index_key($1, 1);
 ----
 Invalid Input Error: Values were not provided for the following parameters: 1
 
@@ -331,40 +419,74 @@ Invalid Input Error: Values were not provided for the following parameters: 1
 ########################################################################################################################
 
 statement error
-SELECT index_key({'schema': 'main'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'schema': 'main', 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path must contain a 'table' field
 
 statement error
-SELECT index_key({'table': NULL::VARCHAR}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': NULL::VARCHAR, 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path field "table" cannot be NULL
 
 statement error
-SELECT index_key({'table': 123}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': 123, 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path field "table" must be VARCHAR
 
 statement error
-SELECT index_key({'table': ''}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': '', 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: path field "table" cannot be empty
 
-
 statement error
-SELECT index_key({'foo': 'bar', 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'foo': 'bar', 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Binder Error: index_key: unknown field "foo" in path
 
 statement error
-SELECT index_key('tbl1', 'PRIMARY_tbl1_0', 1);
+SELECT index_key('tbl1', 1);
 ----
 Binder Error: No function matches the given name and argument types
 
 statement error
-SELECT index_key({'schema': 'main', 'schema': 'main', 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'schema': 'main', 'schema': 'main', 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Binder Error: Duplicate
+
+statement error
+SELECT index_key({'table': 'tbl1'}, 1);
+----
+Binder Error: index_key: path must contain exactly one of the 'index' or 'constraint' fields
+
+statement error
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_txt', 'constraint': 'primary'}, 1);
+----
+Binder Error: index_key: path must contain exactly one of the 'index' or 'constraint' fields
+
+statement error
+SELECT index_key({'table': 'tbl1', 'constraint': 'check'}, 1);
+----
+Binder Error: index_key: constraint must be one of 'primary', 'unique' or 'foreign'
+
+statement error
+SELECT index_key({'table': 'tbl1', 'constraint': 'none'}, 1);
+----
+Binder Error: index_key: constraint must be one of 'primary', 'unique' or 'foreign'
+
+query I
+SELECT index_key({'table': 'tbl1', 'constraint': 'PRIMARY'}, 1);
+----
+\x80\x00\x00\x01
+
+statement error
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_txt', 'columns': ['txt']}, 'alpha');
+----
+Binder Error: index_key: path field 'columns' requires a 'constraint' field
+
+statement error
+SELECT index_key({'table': 'tbl1', 'constraint': 'unique', 'columns': 'uid'}, 1);
+----
+Binder Error: index_key: path field "columns" must be VARCHAR[]
 
 ########################################################################################################################
 #                                                                                                                      #
@@ -373,23 +495,18 @@ Binder Error: Duplicate
 ########################################################################################################################
 
 query I
-SELECT index_key({'table': 'tbl1'}, NULL, 1);
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_composite'}, NULL::INTEGER, NULL::VARCHAR);
 ----
 NULL
 
 query I
-SELECT index_key({'table': 'tbl1'}, 'tbl1_idx_composite', NULL::INTEGER, NULL::VARCHAR);
-----
-NULL
-
-query I
-SELECT index_key(NULL::STRUCT(t VARCHAR), 'PRIMARY_tbl1_0', 1);
+SELECT index_key(NULL::STRUCT(t VARCHAR), 1);
 ----
 NULL
 
 # Multi-row with mixed NULL and non-NULL key values
 query I
-SELECT index_key({'table': 'tbl1'}, 'PRIMARY_tbl1_0', v.id)
+SELECT index_key({'table': 'tbl1', 'constraint': 'primary'}, v.id)
 FROM (VALUES (1), (NULL), (2), (NULL), (3)) AS v(id);
 ----
 \x80\x00\x00\x01
@@ -400,7 +517,7 @@ NULL
 
 # Multi-column composite with mixed NULLs
 query I
-SELECT index_key({'table': 'tbl1'}, 'tbl1_idx_composite', v.id, v.txt)
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_composite'}, v.id, v.txt)
 FROM (VALUES (1, 'a'), (NULL, 'b'), (2, NULL), (NULL, NULL), (3, 'c')) AS v(id, txt);
 ----
 \x80\x00\x00\x01a\x00
@@ -416,14 +533,19 @@ NULL
 ########################################################################################################################
 
 statement error
-SELECT index_key({'table': 'tbl1'});
+SELECT index_key();
 ----
 Binder Error: No function matches the given name and argument types
 
 statement error
-SELECT index_key({'table': 'tbl1'}, 'tbl1_idx_composite', 1);
+SELECT index_key({'table': 'tbl1', 'index': 'tbl1_idx_composite'}, 1);
 ----
-Binder Error: index_key: index 'tbl1_idx_composite' expects 2 key column(s), but 1 argument(s) provided
+Binder Error: index_key: index "tbl1_idx_composite" on table tbl1 expects 2 key column(s), but 1 argument(s) provided
+
+statement error
+SELECT index_key({'table': 'tbl1', 'constraint': 'primary'}, 1, 2);
+----
+Binder Error: index_key: PRIMARY constraint index on table tbl1 expects 1 key column(s), but 2 argument(s) provided
 
 ########################################################################################################################
 #                                                                                                                      #
@@ -432,35 +554,30 @@ Binder Error: index_key: index 'tbl1_idx_composite' expects 2 key column(s), but
 ########################################################################################################################
 
 statement error
-SELECT index_key({'table': 'nonexistent_table'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': 'nonexistent_table', 'constraint': 'primary'}, 1);
 ----
 Catalog Error: Table with name nonexistent_table does not exist!
 
 statement error
-SELECT index_key({'table': 'tbl1'}, 'nonexistent_index', 1);
+SELECT index_key({'table': 'tbl1', 'index': 'nonexistent_index'}, 1);
 ----
-Catalog Error: index_key: index "nonexistent_index" was not found on table tbl1. Available indexes: PRIMARY_tbl1_0, UNIQUE_tbl1_1, tbl1_idx_composite, tbl1_idx_txt
-
-statement error
-SELECT index_key({'table': 'tbl2'}, 'FOREIGN_tbl2_2', 1);
-----
-Catalog Error: index_key: index "FOREIGN_tbl2_2" was not found on table tbl2. Available indexes: PRIMARY_tbl2_0, FOREIGN_tbl2_1
+Catalog Error: index_key: index "nonexistent_index" was not found on table tbl1
 
 statement ok
 CREATE TABLE no_index_tbl(id INTEGER, value VARCHAR);
 
 statement error
-SELECT index_key({'table': 'no_index_tbl'}, 'some_index', 1);
+SELECT index_key({'table': 'no_index_tbl', 'constraint': 'primary'}, 1);
 ----
-Catalog Error: index_key: index "some_index" was not found on table no_index_tbl. No indexes found on this table.
+Catalog Error: index_key: PRIMARY constraint was not found on table no_index_tbl
 
 statement error
-SELECT index_key({'schema': 'nonexistent_schema', 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'schema': 'nonexistent_schema', 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Catalog Error: Table with name "nonexistent_schema.tbl1" does not exist because schema "nonexistent_schema" does not exist.
 
 statement error
-SELECT index_key({'catalog': 'nonexistent_catalog', 'table': 'tbl1'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'catalog': 'nonexistent_catalog', 'table': 'tbl1', 'constraint': 'primary'}, 1);
 ----
 Binder Error: Catalog "nonexistent_catalog" does not exist!
 
@@ -469,6 +586,6 @@ statement ok
 CREATE VIEW tbl1_view AS SELECT * FROM tbl1;
 
 statement error
-SELECT index_key({'table': 'tbl1_view'}, 'PRIMARY_tbl1_0', 1);
+SELECT index_key({'table': 'tbl1_view', 'constraint': 'primary'}, 1);
 ----
 Catalog Error: tbl1_view is not an table

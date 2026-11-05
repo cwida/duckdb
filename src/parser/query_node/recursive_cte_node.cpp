@@ -9,7 +9,7 @@ string RecursiveCTENode::ToString() const {
 	result += "(" + left->ToString() + ")";
 	result += " UNION ";
 	if (union_all) {
-		result += " ALL ";
+		result += "ALL ";
 	}
 	result += "(" + right->ToString() + ")";
 	return result;

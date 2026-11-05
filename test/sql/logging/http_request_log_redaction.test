@@ -1,0 +1,99 @@
+# name: test/sql/logging/http_request_log_redaction.test
+# description: HTTP request logging redacts headers unless explicitly enabled
+# group: [logging]
+
+require httpfs
+
+require noforcestorage
+
+require skip_reload
+
+statement ok
+CALL enable_logging('HTTP', storage = 'memory');
+
+statement ok
+SET enable_external_file_cache = false;
+
+statement ok
+SET enable_http_metadata_cache = false;
+
+statement ok
+CREATE SECRET http_log_headers (
+    TYPE HTTP,
+    SCOPE 'https://raw.githubusercontent.com/duckdb/duckdb/v2.0-cyanoptera/data/csv/header.csv',
+    EXTRA_HTTP_HEADERS MAP {
+        'aUtHoRiZaTiOn': 'dummy-authorization',
+        'Cookie': 'dummy-cookie',
+        'x-amz-security-token': 'dummy-token',
+        'X-Custom': 'dummy-custom',
+        'X-Amz-Target': 'AWSGlue.GetTable',
+        'ETag': 'dummy-etag',
+        'AcCePt': 'text/csv',
+        'AcCePt-EnCoDiNg': 'identity'
+    }
+);
+
+# HTTPFS supplies the secret headers, while core redacts their values in the HTTP logs.
+statement maybe
+FROM 'https://raw.githubusercontent.com/duckdb/duckdb/v2.0-cyanoptera/data/csv/header.csv';
+----
+
+query TT rowsort
+SELECT DISTINCT entry.key, entry.value
+FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(request.headers)) AS headers(entry)
+WHERE lower(entry.key) IN ('authorization', 'cookie', 'x-amz-security-token', 'x-amz-target', 'x-custom', 'etag', 'accept', 'accept-encoding');
+----
+AcCePt	text/csv
+AcCePt-EnCoDiNg	identity
+Cookie	redacted
+ETag	redacted
+X-Amz-Target	AWSGlue.GetTable
+X-Custom	redacted
+aUtHoRiZaTiOn	redacted
+x-amz-security-token	redacted
+
+statement ok
+SET redact_http_logs = false;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+FROM 'https://raw.githubusercontent.com/duckdb/duckdb/v2.0-cyanoptera/data/csv/header.csv';
+----
+
+query TT rowsort
+SELECT DISTINCT entry.key, entry.value
+FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(request.headers)) AS headers(entry)
+WHERE lower(entry.key) IN ('authorization', 'cookie', 'x-amz-security-token', 'x-amz-target', 'x-custom', 'etag', 'accept', 'accept-encoding');
+----
+AcCePt	text/csv
+AcCePt-EnCoDiNg	identity
+Cookie	dummy-cookie
+ETag	dummy-etag
+X-Amz-Target	AWSGlue.GetTable
+X-Custom	dummy-custom
+aUtHoRiZaTiOn	dummy-authorization
+x-amz-security-token	dummy-token
+
+statement ok
+RESET redact_http_logs;
+
+query I
+SELECT current_setting('redact_http_logs');
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+FROM 'https://raw.githubusercontent.com/duckdb/duckdb/v2.0-cyanoptera/data/csv/header.csv';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(entry.value = 'redacted')
+FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(request.headers)) AS headers(entry)
+WHERE lower(entry.key) = 'authorization';
+----
+true

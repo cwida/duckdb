@@ -1,0 +1,147 @@
+# name: test/sql/optimizer/constant_function_zonemap_pruning.test
+# description: Constant function inputs propagate statistics for row group pruning
+# group: [optimizer]
+
+statement ok
+ATTACH '{TEST_DIR}/constant_function_pruning.duckdb' AS const_db (ROW_GROUP_SIZE 2048);
+
+# RG 1: only 17; RG 2: only 42; RG 3: 17 and NULL; RG 4: values 0 through 63.
+statement ok
+CREATE TABLE const_db.constant_inputs AS
+SELECT CASE WHEN i < 2048 THEN 17 WHEN i < 4096 THEN 42
+            WHEN i < 6144 THEN CASE WHEN i % 2 = 0 THEN 17 END ELSE i % 64 END AS x
+FROM range(8192) t(i);
+
+# No callback: constants produce stats; nullable and varying inputs fail both propagation paths.
+query I
+SELECT count(*) FROM const_db.constant_inputs WHERE hash(x)=hash(42::BIGINT);
+----
+2080
+
+query II
+EXPLAIN ANALYZE SELECT x FROM const_db.constant_inputs WHERE hash(x)=hash(42::BIGINT);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 4.*
+
+# The modulo callback also derives bounds for the nullable row group: only RG 2 and RG 4 can hold 42.
+query I
+SELECT count(*) FROM const_db.constant_inputs WHERE x%100=42;
+----
+2080
+
+query II
+EXPLAIN ANALYZE SELECT x FROM const_db.constant_inputs WHERE x%100=42;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+# hash(NULL) is a non-NULL value: min = max = 17 does not describe the NULL rows.
+query I
+SELECT count(*) FROM const_db.constant_inputs WHERE hash(x) = hash(NULL::BIGINT);
+----
+1024
+
+# Equal floating-point bounds do not distinguish signed zeros, but atan2 does.
+# Keep them in memory: constant compression can discard the sign of zero.
+statement ok
+CREATE TEMP TABLE signed_zeros AS SELECT x FROM (VALUES ('0'::DOUBLE), ('-0'::DOUBLE)) t(x);
+
+query II
+SELECT count(*) FILTER (WHERE atan2(x, -1) < 0), count(*) FILTER (WHERE atan2(x, -1) > 0) FROM signed_zeros;
+----
+1	1
+
+statement ok
+DROP TABLE signed_zeros;
+
+# Nonzero floating-point constants can be propagated; zero remains inconclusive because its sign is not in the stats.
+statement ok
+CREATE TABLE const_db.constant_doubles AS
+SELECT CASE WHEN i < 2048 THEN -1::DOUBLE WHEN i < 4096 THEN 1::DOUBLE
+            WHEN i < 6144 THEN 0::DOUBLE ELSE (i % 2)::DOUBLE END AS x
+FROM range(8192) t(i);
+
+query I
+SELECT count(*) FROM const_db.constant_doubles WHERE atan2(x, -1) < 0;
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT x FROM const_db.constant_doubles WHERE atan2(x, -1) < 0;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 4.*
+
+# RG 1: all NULL; RG 2: alpha; RG 3: beta; RG 4: two strings sharing a truncated 12-byte prefix.
+statement ok
+CREATE TABLE const_db.constant_strings AS
+SELECT CASE WHEN i < 2048 THEN NULL WHEN i < 4096 THEN 'alpha'
+            WHEN i < 6144 THEN 'beta' ELSE 'abcdefghijkl' || (i % 2)::VARCHAR END AS s
+FROM range(8192) t(i);
+
+# RG 4 remains unknown; regexp_matches also exercises direct BOOLEAN pruning.
+foreach predicate hash(s)=hash('beta') reverse(s)='ateb' regexp_matches(s,'(t|z)')
+
+query I
+SELECT count(*) FROM const_db.constant_strings WHERE {predicate};
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE {predicate};
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+endloop
+
+# Literal NULL remains foldable; the all-NULL row group is scanned.
+query I
+SELECT count(*) FROM const_db.constant_strings WHERE hash(s) = hash(NULL::VARCHAR);
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE hash(s) = hash(NULL::VARCHAR);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+# With a callback: RGs 2-3 use constant evaluation; RGs 1 and 4 use string-length statistics.
+query I
+SELECT count(*) FROM const_db.constant_strings WHERE length_grapheme(s) = 4;
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE length_grapheme(s) = 4;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
+
+# CONSISTENT_WITHIN_QUERY functions are consistent within the query, so RGs 1-3 use constant evaluation and RG 4 is scanned.
+query I
+SELECT count(*) FROM const_db.constant_strings WHERE in_search_path('const_db', s);
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE in_search_path('const_db', s);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
+
+# Identical inexact bounds must not be treated as a constant input.
+query I
+SELECT count(*) FROM const_db.constant_strings WHERE reverse(s) = '0lkjihgfedcba';
+----
+1024
+
+query II
+EXPLAIN ANALYZE SELECT s FROM const_db.constant_strings WHERE reverse(s) = '0lkjihgfedcba';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
+
+# Equal intervals can have different month/day components.
+statement ok
+CREATE TABLE equal_intervals AS SELECT x FROM (VALUES (INTERVAL '1 month'), (INTERVAL '30 days')) t(x);
+
+query II
+SELECT count(*) FILTER (WHERE x::VARCHAR = '1 month'),
+       count(*) FILTER (WHERE x::VARCHAR = '30 days') FROM equal_intervals;
+----
+1	1

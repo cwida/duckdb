@@ -38,7 +38,7 @@ public:
 	FullSortGlobalSinkState(ClientContext &client, const FullSort &full_sort);
 
 	// OVER(PARTITION BY...) (hash grouping)
-	ProgressData GetSinkProgress(ClientContext &context, const ProgressData source_progress) const;
+	ProgressData GetSinkProgress(ClientContext &context, const ProgressData source_progress);
 
 	//! System and query state
 	ClientContext &client;
@@ -50,6 +50,8 @@ public:
 
 	// Threading
 	atomic<idx_t> count;
+	//! Keeps the sink progress monotonic
+	MonotonicProgress sink_progress;
 };
 
 FullSortGlobalSinkState::FullSortGlobalSinkState(ClientContext &client, const FullSort &full_sort)
@@ -58,23 +60,10 @@ FullSortGlobalSinkState::FullSortGlobalSinkState(ClientContext &client, const Fu
 	hash_group = make_uniq<FullSortGroup>(client, *full_sort.sort);
 }
 
-ProgressData FullSortGlobalSinkState::GetSinkProgress(ClientContext &client, const ProgressData source) const {
-	ProgressData result;
-	result.done = source.done / 2;
-	result.total = source.total;
-	result.invalid = source.invalid;
-
-	// Sort::GetSinkProgress assumes that there is only 1 sort.
-	// So we just use it to figure out how many rows have been sorted.
-	const ProgressData zero_progress;
+ProgressData FullSortGlobalSinkState::GetSinkProgress(ClientContext &client, const ProgressData source) {
 	lock_guard<mutex> guard(lock);
-	const auto &sort = full_sort.sort;
-
-	const auto group_progress = sort->GetSinkProgress(client, *hash_group->sort_global, zero_progress);
-	result.done += group_progress.done;
-	result.invalid = result.invalid || group_progress.invalid;
-
-	return result;
+	const auto sorted_count = hash_group ? full_sort.sort->GetSortedCount(*hash_group->sort_global) : 0;
+	return Sort::GetSinkProgress(source, sorted_count, count, sink_progress);
 }
 
 SinkFinalizeType FullSort::Finalize(ClientContext &client, OperatorSinkFinalizeInput &finalize) const {

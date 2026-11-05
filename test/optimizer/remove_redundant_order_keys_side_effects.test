@@ -1,0 +1,71 @@
+# name: test/optimizer/remove_redundant_order_keys_side_effects.test
+# description: dropped ORDER BY keys take their errors and side effects with them (issue #24000)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(id INTEGER PRIMARY KEY, payload VARCHAR, grp INTEGER);
+
+statement ok
+INSERT INTO t VALUES (3, 'c', 1), (1, 'a', 2), (2, NULL, 1), (5, 'a', NULL), (4, 'b', 2);
+
+statement ok
+CREATE SEQUENCE seq_elide START 1;
+
+# keep the sort under the aggregate so that the key removal is what is tested
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
+# a dropped key never raises, and never runs its side effect
+query I
+SELECT count(*) FROM (SELECT id FROM t ORDER BY id, CAST(payload AS INTEGER)) q;
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT id FROM t ORDER BY id, nextval('seq_elide')) q;
+----
+5
+
+query I
+SELECT last_value IS NULL FROM duckdb_sequences() WHERE sequence_name = 'seq_elide';
+----
+true
+
+# a key before the unique prefix is still evaluated
+statement ok
+CREATE SEQUENCE seq_keep START 1;
+
+query I
+SELECT count(*) FROM (SELECT id FROM t ORDER BY nextval('seq_keep'), id) q;
+----
+5
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_keep';
+----
+5
+
+# without the optimizer that key does raise
+statement ok
+SET disabled_optimizers = 'redundant_order_keys,redundant_order';
+
+statement error
+SELECT count(*) FROM (SELECT id FROM t ORDER BY id, CAST(payload AS INTEGER)) q;
+----
+Conversion Error
+
+statement ok
+CREATE SEQUENCE seq_evaluated START 1;
+
+query I
+SELECT count(*) FROM (SELECT id FROM t ORDER BY id, nextval('seq_evaluated')) q;
+----
+5
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_evaluated';
+----
+5
+
+statement ok
+RESET disabled_optimizers;

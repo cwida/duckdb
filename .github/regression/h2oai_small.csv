@@ -1,0 +1,15 @@
+benchmark/h2oai/group/q01.benchmark
+benchmark/h2oai/group/q02.benchmark
+benchmark/h2oai/group/q03.benchmark
+benchmark/h2oai/group/q04.benchmark
+benchmark/h2oai/group/q05.benchmark
+benchmark/h2oai/group/q06.benchmark
+benchmark/h2oai/group/q07.benchmark
+benchmark/h2oai/group/q08.benchmark
+benchmark/h2oai/group/q09.benchmark
+benchmark/h2oai/group/q10_small.benchmark
+benchmark/h2oai/join/q01.benchmark
+benchmark/h2oai/join/q02.benchmark
+benchmark/h2oai/join/q03_small.benchmark
+benchmark/h2oai/join/q04.benchmark
+benchmark/h2oai/join/q05_small.benchmark

@@ -4,6 +4,8 @@
 #include "test_cpp_api.hpp"
 
 #include <atomic>
+#include <optional>
+#include <string>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -119,8 +121,8 @@ void OpaqueExec(ScalarFunction::ExecInput &input) {
 }
 
 // Resolves an ANY return type to INTEGER through the binding context.
-void AnyReturnBind(ScalarFunction::BindInput &input) {
-	input.SetReturnType(input.GetContext().ParseType("INTEGER"));
+void AnyReturnResolveTypes(ScalarFunction::ResolveTypesInput &input) {
+	input.SetReturnType(input.GetContext().GetFactory().ParseType("INTEGER"));
 }
 
 // out[i] = a[i] * 2
@@ -164,6 +166,10 @@ void ArgProbeBind(ScalarFunction::BindInput &input) {
 	// The first argument is whatever the caller passed, so it may well not be constant.
 	arg_probe.tried_non_constant = input.TryGetConstantArgument(0).has_value();
 	arg_probe.tried_out_of_range = input.TryGetConstantArgument(input.GetArgCount()).has_value();
+}
+
+// The return type follows the type of the second argument.
+void ArgProbeResolveTypes(ScalarFunction::ResolveTypesInput &input) {
 	input.SetReturnType(input.GetArgType(1));
 }
 
@@ -179,15 +185,15 @@ void ArgProbeExec(ScalarFunction::ExecInput &input) {
 } // namespace
 
 TEST_CASE("Stable C++API: scalar function registers and executes", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("plus_one").SetExecCallback(PlusOneExec);
 	function.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	function.Register();
+	conn.Register(function);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT plus_one(41)")) == std::vector<int32_t> {42});
 	REQUIRE(CollectInts(conn.Execute("SELECT plus_one(r::INTEGER) FROM range(4) t(r)")) ==
@@ -195,20 +201,20 @@ TEST_CASE("Stable C++API: scalar function registers and executes", "[cpp_api]") 
 }
 
 TEST_CASE("Stable C++API: scalar function data flows user->bind->init->exec", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
 	bind_runs = 0;
 	init_runs = 0;
 	exec_runs = 0;
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("cpp_flow").SetUserData<Factor>(Factor {3});
 	function.GetSignature().AddParameter("a", integer).SetReturnType(integer);
 	function.SetBindCallback(FlowBind).SetInitCallback(FlowInit).SetExecCallback(FlowExec);
-	function.Register();
+	conn.Register(function);
 
 	// 5 * 3 + (3 + 7) = 25
 	REQUIRE(CollectInts(conn.Execute("SELECT cpp_flow(5)")) == std::vector<int32_t> {25});
@@ -225,15 +231,15 @@ TEST_CASE("Stable C++API: scalar function data flows user->bind->init->exec", "[
 }
 
 TEST_CASE("Stable C++API: scalar function bind data without operator== compares by identity", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("cpp_opaque").SetBindCallback(OpaqueBind).SetExecCallback(OpaqueExec);
 	function.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	function.Register();
+	conn.Register(function);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT cpp_opaque(1)")) == std::vector<int32_t> {101});
 	// Two calls in one query mean two bind-data instances that the engine may compare.
@@ -242,15 +248,15 @@ TEST_CASE("Stable C++API: scalar function bind data without operator== compares 
 }
 
 TEST_CASE("Stable C++API: scalar function variadic tail via GetArgCount", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("cpp_vsum").SetExecCallback(VsumExec);
-	function.GetSignature().AddParameter("a", integer).SetVarArgs(integer).SetReturnType(integer);
-	function.Register();
+	function.GetSignature().AddParameter("a", integer).AddArgs("rest", integer).SetReturnType(integer);
+	conn.Register(function);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT cpp_vsum(1)")) == std::vector<int32_t> {1});
 	REQUIRE(CollectInts(conn.Execute("SELECT cpp_vsum(1, 2, 3, 4)")) == std::vector<int32_t> {10});
@@ -258,17 +264,17 @@ TEST_CASE("Stable C++API: scalar function variadic tail via GetArgCount", "[cpp_
 	        std::vector<int32_t> {110, 111});
 }
 
-TEST_CASE("Stable C++API: scalar function bind resolves an ANY return type", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+TEST_CASE("Stable C++API: scalar function resolve types resolves an ANY return type", "[cpp_api]") {
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
 
-	auto function = ScalarFunction::Create(conn);
-	function.SetName("cpp_double").SetBindCallback(AnyReturnBind).SetExecCallback(DoubleExec);
+	auto function = ScalarFunction::Create(conn.GetFactory());
+	function.SetName("cpp_double").SetResolveTypesCallback(AnyReturnResolveTypes).SetExecCallback(DoubleExec);
 	function.GetSignature()
-	    .AddParameter("a", conn.ParseType("INTEGER"))
-	    .SetReturnType(conn.CreateType(LogicalTypeId::ANY));
-	function.Register();
+	    .AddParameter("a", factory.ParseType("INTEGER"))
+	    .SetReturnType(factory.CreateType(LogicalTypeId::ANY));
+	conn.Register(function);
 
 	auto result = conn.Execute("SELECT cpp_double(21)");
 	REQUIRE(result.GetSchema().GetFieldType(0).ToText() == "INTEGER");
@@ -276,17 +282,20 @@ TEST_CASE("Stable C++API: scalar function bind resolves an ANY return type", "[c
 }
 
 TEST_CASE("Stable C++API: scalar function bind reads argument types and constants", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
 
-	auto function = ScalarFunction::Create(conn);
-	function.SetName("cpp_arg_probe").SetBindCallback(ArgProbeBind).SetExecCallback(ArgProbeExec);
+	auto function = ScalarFunction::Create(conn.GetFactory());
+	function.SetName("cpp_arg_probe")
+	    .SetResolveTypesCallback(ArgProbeResolveTypes)
+	    .SetBindCallback(ArgProbeBind)
+	    .SetExecCallback(ArgProbeExec);
 	function.GetSignature()
-	    .AddParameter("a", conn.CreateType(LogicalTypeId::ANY))
-	    .AddParameter("b", conn.ParseType("INTEGER"))
-	    .SetReturnType(conn.CreateType(LogicalTypeId::ANY));
-	function.Register();
+	    .AddParameter("a", factory.CreateType(LogicalTypeId::ANY))
+	    .AddParameter("b", factory.ParseType("INTEGER"))
+	    .SetReturnType(factory.CreateType(LogicalTypeId::ANY));
+	conn.Register(function);
 
 	arg_probe = {};
 	REQUIRE(CollectInts(conn.Execute("SELECT cpp_arg_probe('hello', 21)")) == std::vector<int32_t> {21});
@@ -310,57 +319,60 @@ TEST_CASE("Stable C++API: scalar function bind reads argument types and constant
 }
 
 TEST_CASE("Stable C++API: scalar function callback errors fail the query", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto failing = ScalarFunction::Create(conn);
+	auto failing = ScalarFunction::Create(conn.GetFactory());
 	failing.SetName("cpp_fail").SetExecCallback(FailingExec);
 	failing.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	failing.Register();
+	conn.Register(failing);
 
 	REQUIRE_THROWS_MATCHES(conn.Execute("SELECT cpp_fail(1)").Drain(), InvalidInputException,
 	                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
 	// GetUserData when nothing was planted reports the misuse rather than derefing null.
-	auto no_data = ScalarFunction::Create(conn);
+	auto no_data = ScalarFunction::Create(conn.GetFactory());
 	no_data.SetName("cpp_no_user_data").SetExecCallback(NoUserDataExec);
 	no_data.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	no_data.Register();
+	conn.Register(no_data);
 
 	REQUIRE_THROWS_MATCHES(conn.Execute("SELECT cpp_no_user_data(1)").Drain(), Exception,
 	                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 }
 
 TEST_CASE("Stable C++API: scalar function registration validation", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
 	// No name.
 	{
-		auto function = ScalarFunction::Create(conn);
+		auto function = ScalarFunction::Create(conn.GetFactory());
 		function.SetExecCallback(PlusOneExec);
 		function.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 
 	// No exec callback.
 	{
-		auto function = ScalarFunction::Create(conn);
+		auto function = ScalarFunction::Create(conn.GetFactory());
 		function.SetName("cpp_no_exec");
 		function.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 
-	// An ANY return type without a bind callback to resolve it.
+	// An ANY return type without a resolve types callback to resolve it.
 	{
-		auto function = ScalarFunction::Create(conn);
+		auto function = ScalarFunction::Create(conn.GetFactory());
 		function.SetName("cpp_unresolved_any").SetExecCallback(PlusOneExec);
-		function.GetSignature().AddParameter("a", integer).SetReturnType(conn.CreateType(LogicalTypeId::ANY));
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		function.GetSignature().AddParameter("a", integer).SetReturnType(factory.CreateType(LogicalTypeId::ANY));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 }
 
@@ -404,15 +416,15 @@ void ExecutorWrongArityExec(ScalarFunction::ExecInput &input) {
 } // namespace
 
 TEST_CASE("Stable C++API: ScalarExecutor computes rows and propagates NULLs", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("exec_add").SetExecCallback(ExecutorAddExec);
 	function.GetSignature().AddParameter("a", integer).AddParameter("b", integer).SetReturnType(integer);
-	function.Register();
+	conn.Register(function);
 
 	// Constant, flat, and filtered (selection vector) inputs.
 	REQUIRE(CollectInts(conn.Execute("SELECT exec_add(40, 2)")) == std::vector<int32_t> {42});
@@ -428,56 +440,56 @@ TEST_CASE("Stable C++API: ScalarExecutor computes rows and propagates NULLs", "[
 }
 
 TEST_CASE("Stable C++API: ScalarExecutor handles nullary and mixed-type functions", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto seven = ScalarFunction::Create(conn);
+	auto seven = ScalarFunction::Create(conn.GetFactory());
 	seven.SetName("exec_seven").SetExecCallback(ExecutorSevenExec);
 	seven.GetSignature().SetReturnType(integer);
-	seven.Register();
+	conn.Register(seven);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT exec_seven()")) == std::vector<int32_t> {7});
 	REQUIRE(CollectInts(conn.Execute("SELECT exec_seven() FROM range(3)")) == std::vector<int32_t> {7, 7, 7});
 
-	auto mixed = ScalarFunction::Create(conn);
+	auto mixed = ScalarFunction::Create(conn.GetFactory());
 	mixed.SetName("exec_mixed").SetExecCallback(ExecutorMixedExec);
 	mixed.GetSignature()
 	    .AddParameter("a", integer)
-	    .AddParameter("b", conn.ParseType("BIGINT"))
-	    .SetReturnType(conn.ParseType("BIGINT"));
-	mixed.Register();
+	    .AddParameter("b", factory.ParseType("BIGINT"))
+	    .SetReturnType(factory.ParseType("BIGINT"));
+	conn.Register(mixed);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT exec_mixed(6, 7)::INTEGER")) == std::vector<int32_t> {42});
 }
 
 TEST_CASE("Stable C++API: ScalarExecutor refuses an arity mismatch", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto function = ScalarFunction::Create(conn);
+	auto function = ScalarFunction::Create(conn.GetFactory());
 	function.SetName("exec_wrong_arity").SetExecCallback(ExecutorWrongArityExec);
 	function.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	function.Register();
+	conn.Register(function);
 
 	REQUIRE_THROWS_MATCHES(conn.Execute("SELECT exec_wrong_arity(1)").Drain(), InvalidInputException,
 	                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 }
 
 TEST_CASE("Stable C++API: ScalarExecutor drives vectors directly", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
 	// Two argument columns and a result column, no scalar function involved.
 	std::vector<LogicalType> arg_types;
-	arg_types.push_back(conn.ParseType("INTEGER"));
-	arg_types.push_back(conn.ParseType("INTEGER"));
-	DataChunk args(conn, arg_types);
+	arg_types.push_back(factory.ParseType("INTEGER"));
+	arg_types.push_back(factory.ParseType("INTEGER"));
+	DataChunk args(factory, arg_types);
 
 	constexpr idx_t kCount = 4;
 	auto a = args.GetVector(0);
@@ -493,8 +505,8 @@ TEST_CASE("Stable C++API: ScalarExecutor drives vectors directly", "[cpp_api]") 
 	a.SetNull(2);
 
 	std::vector<LogicalType> out_types;
-	out_types.push_back(conn.ParseType("INTEGER"));
-	DataChunk out(conn, out_types);
+	out_types.push_back(factory.ParseType("INTEGER"));
+	DataChunk out(factory, out_types);
 	auto result = out.GetVector(0);
 	result.SetSize(kCount);
 
@@ -573,15 +585,15 @@ void RefAddExec(ScalarFunction::ExecInput &input) {
 } // namespace
 
 TEST_CASE("Stable C++API: ScalarExecutor optional results and arguments", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto safe_div = ScalarFunction::Create(conn);
+	auto safe_div = ScalarFunction::Create(conn.GetFactory());
 	safe_div.SetName("exec_safe_div").SetExecCallback(SafeDivExec);
 	safe_div.GetSignature().AddParameter("a", integer).AddParameter("b", integer).SetReturnType(integer);
-	safe_div.Register();
+	conn.Register(safe_div);
 
 	auto rows =
 	    CollectNullableInts(conn.Execute("SELECT exec_safe_div(a, b) FROM (VALUES (10, 2), (1, 0), (9, 3)) t(a, b)"));
@@ -589,10 +601,10 @@ TEST_CASE("Stable C++API: ScalarExecutor optional results and arguments", "[cpp_
 	REQUIRE(rows == expected);
 
 	nullopt_seen = 0;
-	auto opt_bump = ScalarFunction::Create(conn);
+	auto opt_bump = ScalarFunction::Create(conn.GetFactory());
 	opt_bump.SetName("exec_opt_bump").SetExecCallback(OptBumpExec);
 	opt_bump.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	opt_bump.Register();
+	conn.Register(opt_bump);
 
 	rows = CollectNullableInts(conn.Execute("SELECT exec_opt_bump(x) FROM (VALUES (1), (NULL), (3)) t(x)"));
 	expected = std::vector<std::pair<bool, int32_t>> {{true, 2}, {false, 0}, {true, 4}};
@@ -602,16 +614,16 @@ TEST_CASE("Stable C++API: ScalarExecutor optional results and arguments", "[cpp_
 }
 
 TEST_CASE("Stable C++API: ScalarExecutor tuple arguments read STRUCT fields", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
-	const auto point = conn.ParseType("STRUCT(x INTEGER, y INTEGER)");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
+	const auto point = factory.ParseType("STRUCT(x INTEGER, y INTEGER)");
 
-	auto psum = ScalarFunction::Create(conn);
+	auto psum = ScalarFunction::Create(conn.GetFactory());
 	psum.SetName("exec_psum").SetExecCallback(PointSumExec);
 	psum.GetSignature().AddParameter("p", point).SetReturnType(integer);
-	psum.Register();
+	conn.Register(psum);
 
 	// A NULL struct row and a NULL non-optional field both null the row.
 	auto rows = CollectNullableInts(
@@ -621,10 +633,10 @@ TEST_CASE("Stable C++API: ScalarExecutor tuple arguments read STRUCT fields", "[
 	REQUIRE(rows == expected);
 
 	// With the field declared optional, only the whole-struct NULL nulls the row.
-	auto psum_opt = ScalarFunction::Create(conn);
+	auto psum_opt = ScalarFunction::Create(conn.GetFactory());
 	psum_opt.SetName("exec_psum_opt").SetExecCallback(PointSumOptYExec);
 	psum_opt.GetSignature().AddParameter("p", point).SetReturnType(integer);
-	psum_opt.Register();
+	conn.Register(psum_opt);
 
 	rows = CollectNullableInts(
 	    conn.Execute("SELECT exec_psum_opt(s::STRUCT(x INTEGER, y INTEGER)) FROM (VALUES ({'x': 1, 'y': 2}), (NULL), "
@@ -634,16 +646,16 @@ TEST_CASE("Stable C++API: ScalarExecutor tuple arguments read STRUCT fields", "[
 }
 
 TEST_CASE("Stable C++API: ScalarExecutor tuple result writes STRUCT fields", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
 
-	auto make_point = ScalarFunction::Create(conn);
+	auto make_point = ScalarFunction::Create(conn.GetFactory());
 	make_point.SetName("exec_make_point").SetExecCallback(MakePointExec);
 	make_point.GetSignature()
-	    .AddParameter("a", conn.ParseType("INTEGER"))
-	    .SetReturnType(conn.ParseType("STRUCT(x INTEGER, y INTEGER)"));
-	make_point.Register();
+	    .AddParameter("a", factory.ParseType("INTEGER"))
+	    .SetReturnType(factory.ParseType("STRUCT(x INTEGER, y INTEGER)"));
+	conn.Register(make_point);
 
 	auto rows = CollectNullableInts(conn.Execute("SELECT (exec_make_point(r::INTEGER)).x + (exec_make_point("
 	                                             "r::INTEGER)).y FROM range(3) t(r)"));
@@ -657,15 +669,15 @@ TEST_CASE("Stable C++API: ScalarExecutor tuple result writes STRUCT fields", "[c
 }
 
 TEST_CASE("Stable C++API: ScalarExecutor reference arguments", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
-	auto ref_add = ScalarFunction::Create(conn);
+	auto ref_add = ScalarFunction::Create(conn.GetFactory());
 	ref_add.SetName("exec_ref_add").SetExecCallback(RefAddExec);
 	ref_add.GetSignature().AddParameter("a", integer).AddParameter("b", integer).SetReturnType(integer);
-	ref_add.Register();
+	conn.Register(ref_add);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT exec_ref_add(r::INTEGER, 100) FROM range(3) t(r)")) ==
 	        std::vector<int32_t> {100, 101, 102});
@@ -692,23 +704,23 @@ void CountingOneExec(ScalarFunction::ExecInput &input) {
 } // namespace
 
 TEST_CASE("Stable C++API: scalar function properties", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
-	const auto integer = conn.ParseType("INTEGER");
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
 
 	// CONSISTENT (the default): a call with a constant argument is folded to a
 	// single evaluation instead of running per row.
-	auto consistent = ScalarFunction::Create(conn);
+	auto consistent = ScalarFunction::Create(conn.GetFactory());
 	consistent.SetName("prop_consistent").SetExecCallback(CountingOneExec);
 	consistent.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	consistent.Register();
+	conn.Register(consistent);
 
 	// The same function declared VOLATILE must be evaluated for every row.
-	auto vol = ScalarFunction::Create(conn);
+	auto vol = ScalarFunction::Create(conn.GetFactory());
 	vol.SetName("prop_volatile").SetExecCallback(CountingOneExec).SetStability(FunctionStability::VOLATILE);
 	vol.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	vol.Register();
+	conn.Register(vol);
 
 	prop_exec_rows = 0;
 	CollectInts(conn.Execute("SELECT prop_consistent(42) FROM range(1000)"));
@@ -721,12 +733,167 @@ TEST_CASE("Stable C++API: scalar function properties", "[cpp_api]") {
 	REQUIRE(volatile_rows >= 1000);
 	REQUIRE(consistent_rows < volatile_rows);
 
+	// The catalog reports CONSISTENT_WITHIN_QUERY, and index keys cannot contain the function.
+	auto within_query = ScalarFunction::Create(conn.GetFactory());
+	within_query.SetName("prop_query")
+	    .SetExecCallback(CountingOneExec)
+	    .SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+	within_query.GetSignature().AddParameter("a", integer).SetReturnType(integer);
+	conn.Register(within_query);
+
+	REQUIRE(CollectInts(conn.Execute("SELECT count(*)::INTEGER FROM duckdb_functions() WHERE function_name = "
+	                                 "'prop_query' AND stability = 'CONSISTENT_WITHIN_QUERY'")) ==
+	        std::vector<int32_t> {1});
+	conn.Execute("CREATE TABLE prop_keys (a INTEGER)").Drain();
+	REQUIRE_THROWS_MATCHES(conn.Execute("CREATE INDEX prop_index ON prop_keys ((prop_query(a)))").Drain(), Exception,
+	                       HasErrorCode(DUCKDB_V2_ERROR_QUERY_BINDER));
+
 	// SPECIAL null handling: the callback runs for a NULL argument and produces
 	// a value; with default handling the result would be NULL.
-	auto special = ScalarFunction::Create(conn);
+	auto special = ScalarFunction::Create(conn.GetFactory());
 	special.SetName("prop_special").SetExecCallback(CountingOneExec).SetNullHandling(FunctionNullHandling::SPECIAL);
 	special.GetSignature().AddParameter("a", integer).SetReturnType(integer);
-	special.Register();
+	conn.Register(special);
 
 	REQUIRE(CollectInts(conn.Execute("SELECT prop_special(NULL::INTEGER)")) == std::vector<int32_t> {1});
+}
+
+// ---------------------------------------------------------------------------
+// Parameter kinds: cpp_kw(x, /, *args, scale := 1, **kwargs) = (x + sum(args) + sum(kwargs)) * scale.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct KindBind {
+	idx_t scale_index;
+	bool operator==(const KindBind &other) const {
+		return scale_index == other.scale_index;
+	}
+};
+
+struct {
+	ArgumentCounts counts;
+	std::vector<std::string> names;
+	std::optional<int32_t> scale;
+	LogicalTypeId scale_type = LogicalTypeId::INVALID;
+	bool missing_found = true;
+} kind_probe;
+
+void KindBindCb(ScalarFunction::BindInput &input) {
+	kind_probe.counts = input.GetArgumentCounts();
+	kind_probe.names.clear();
+	for (idx_t i = 0; i < input.GetArgCount(); i++) {
+		kind_probe.names.push_back(input.GetArgName(i));
+	}
+	kind_probe.missing_found = input.FindArg("missing").has_value();
+	// "scale" is named-only, so the call always has it
+	const auto scale_index = input.FindArg("scale").value();
+	kind_probe.scale_type = input.GetArgType(scale_index).GetTypeId();
+	const auto scale = input.TryGetConstantArgument(scale_index);
+	kind_probe.scale = scale ? std::optional<int32_t>(scale->Get<int32_t>()) : std::nullopt;
+	input.SetBindData<KindBind>(KindBind {scale_index});
+}
+
+void KindExecCb(ScalarFunction::ExecInput &input) {
+	const auto scale_index = input.GetBindData<KindBind>().scale_index;
+	auto result = input.GetResult();
+	auto *out = result.GetDataMutable<int32_t>();
+	const auto count = input.GetRowCount();
+	for (idx_t i = 0; i < count; i++) {
+		out[i] = 0;
+	}
+	auto accumulate = [&](Vector vector, bool multiply) {
+		const auto view = vector.GetView();
+		for (idx_t i = 0; i < count; i++) {
+			const auto value = view.Data<int32_t>()[view.SelAt(i)];
+			out[i] = multiply ? out[i] * value : out[i] + value;
+		}
+	};
+	for (idx_t i = 0; i < input.GetArgCount(); i++) {
+		if (i != scale_index) {
+			accumulate(input.GetArg(i), false);
+		}
+	}
+	accumulate(input.GetArg(scale_index), true);
+}
+
+} // namespace
+
+TEST_CASE("Stable C++API: scalar function parameter kinds lay out the argument list", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
+
+	auto function = ScalarFunction::Create(conn.GetFactory());
+	function.SetName("cpp_kw").SetBindCallback(KindBindCb).SetExecCallback(KindExecCb);
+	function.WithSignature([&](FunctionSignature &sig) {
+		sig.AddKwargs("kwargs", integer);
+		sig.AddParameter("scale", integer, Value::Create(factory, int32_t {1}), FunctionParameterKind::NAMED_ONLY);
+		sig.AddArgs("args", integer);
+		sig.AddParameter("x", integer, FunctionParameterKind::POSITIONAL_ONLY);
+		sig.SetReturnType(integer);
+	});
+	conn.Register(function);
+
+	REQUIRE(CollectInts(conn.Execute("SELECT cpp_kw(4)")) == std::vector<int32_t> {4});
+	REQUIRE(kind_probe.counts.positional_fixed == 1);
+	REQUIRE(kind_probe.counts.positional_variadic == 0);
+	REQUIRE(kind_probe.counts.named_fixed == 1);
+	REQUIRE(kind_probe.counts.named_variadic == 0);
+	REQUIRE(kind_probe.names == std::vector<std::string> {"x", "scale"});
+	REQUIRE(kind_probe.scale == 1);
+	REQUIRE(kind_probe.scale_type == LogicalTypeId::INTEGER);
+	REQUIRE_FALSE(kind_probe.missing_found);
+
+	REQUIRE(CollectInts(conn.Execute("SELECT cpp_kw(1, 2, 3, extra := 4, scale := 2, x := 5)")) ==
+	        std::vector<int32_t> {30});
+	REQUIRE(kind_probe.counts.positional_variadic == 2);
+	REQUIRE(kind_probe.counts.named_variadic == 2);
+	REQUIRE(kind_probe.counts.NamedOffset() == 3);
+	REQUIRE(kind_probe.names == std::vector<std::string> {"x", "", "", "scale", "extra", "x"});
+	REQUIRE(kind_probe.scale == 2);
+
+	// A column passed as "scale" has no constant value at bind time.
+	REQUIRE(CollectInts(conn.Execute("SELECT cpp_kw(r::INTEGER, scale := r::INTEGER) FROM range(3) t(r)")) ==
+	        std::vector<int32_t> {0, 1, 4});
+	REQUIRE_FALSE(kind_probe.scale.has_value());
+}
+
+TEST_CASE("Stable C++API: scalar function overloads carry their own description and examples", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	auto &factory = conn.GetFactory();
+	const auto integer = factory.ParseType("INTEGER");
+
+	auto one = ScalarFunction::Create(factory);
+	one.SetName("cpp_documented").SetExecCallback(PlusOneExec);
+	one.GetSignature().AddParameter("a", integer).SetReturnType(integer);
+	one.GetDocs()
+	    .SetDescription("Adds one.")
+	    .AddExample("Add one", "cpp_documented(41)")
+	    .AddExample("", "cpp_documented(-1)")
+	    .AddCategory("numeric")
+	    .AddCategory("example");
+	conn.Register(one);
+
+	auto two = ScalarFunction::Create(factory);
+	two.SetName("cpp_documented").SetExecCallback(PlusOneExec);
+	two.GetSignature().AddParameter("a", integer).AddParameter("b", integer).SetReturnType(integer);
+	two.GetDocs().SetDescription("Adds one, ignoring b.");
+	conn.Register(two);
+
+	auto result = conn.Execute(
+	    "SELECT description, array_to_string(examples, '|'), parameters::VARCHAR, array_to_string(categories, '|') "
+	    "FROM duckdb_functions() WHERE function_name = 'cpp_documented' ORDER BY len(parameters)");
+	auto chunk = result.FetchChunk();
+	REQUIRE(chunk.GetRowCount() == 2);
+	REQUIRE(chunk.GetVector(0).GetValue(0).ToText() == "Adds one.");
+	REQUIRE(chunk.GetVector(1).GetValue(0).ToText() == "cpp_documented(41)|cpp_documented(-1)");
+	REQUIRE(chunk.GetVector(2).GetValue(0).ToText() == "[a]");
+	REQUIRE(chunk.GetVector(0).GetValue(1).ToText() == "Adds one, ignoring b.");
+	REQUIRE(chunk.GetVector(1).GetValue(1).ToText() == "");
+	REQUIRE(chunk.GetVector(2).GetValue(1).ToText() == "[a, b]");
+	REQUIRE(chunk.GetVector(3).GetValue(0).ToText() == "numeric|example");
+	REQUIRE(chunk.GetVector(3).GetValue(1).ToText() == "");
 }

@@ -19,9 +19,9 @@
 
 namespace duckdb {
 
-static void PragmaEnableProfilingStatement(ClientContext &context, const FunctionParameters &parameters) {
+static string PragmaEnableProfilingStatement(ClientContext &context, const FunctionParameters &parameters) {
 	auto &config = ClientConfig::GetConfig(context);
-	config.enable_profiler = true;
+	return StringUtil::Format("SET enable_profiling=%s", SQLString(config.profiler_print_format));
 }
 
 void RegisterEnableProfiling(BuiltinFunctions &set) {
@@ -33,24 +33,25 @@ void RegisterEnableProfiling(BuiltinFunctions &set) {
 }
 
 static void PragmaDisableProfiling(ClientContext &context, const FunctionParameters &parameters) {
+	DBConfig::GetConfig(context).CheckLock(EnableProfilingSetting::Name);
 	auto &config = ClientConfig::GetConfig(context);
 	config.enable_profiler = false;
 }
 
-static void PragmaEnableProgressBar(ClientContext &context, const FunctionParameters &parameters) {
-	ClientConfig::GetConfig(context).enable_progress_bar = true;
+static string PragmaEnableProgressBar(ClientContext &context, const FunctionParameters &parameters) {
+	return "SET enable_progress_bar=true";
 }
 
-static void PragmaDisableProgressBar(ClientContext &context, const FunctionParameters &parameters) {
-	ClientConfig::GetConfig(context).enable_progress_bar = false;
+static string PragmaDisableProgressBar(ClientContext &context, const FunctionParameters &parameters) {
+	return "SET enable_progress_bar=false";
 }
 
-static void PragmaEnablePrintProgressBar(ClientContext &context, const FunctionParameters &parameters) {
-	ClientConfig::GetConfig(context).print_progress_bar = true;
+static string PragmaEnablePrintProgressBar(ClientContext &context, const FunctionParameters &parameters) {
+	return "SET enable_progress_bar_print=true";
 }
 
-static void PragmaDisablePrintProgressBar(ClientContext &context, const FunctionParameters &parameters) {
-	ClientConfig::GetConfig(context).print_progress_bar = false;
+static string PragmaDisablePrintProgressBar(ClientContext &context, const FunctionParameters &parameters) {
+	return "SET enable_progress_bar_print=false";
 }
 
 //! Warn that a pragma that no longer does anything is on its way out
@@ -71,14 +72,17 @@ static void PragmaDisableVerification(ClientContext &context, const FunctionPara
 }
 
 static void PragmaEnableForceParallelism(ClientContext &context, const FunctionParameters &parameters) {
+	DBConfig::GetConfig(context).CheckLock("verify_parallelism");
 	ClientConfig::GetConfig(context).verify_parallelism = true;
 }
 
 static void PragmaForceCheckpoint(ClientContext &context, const FunctionParameters &parameters) {
+	DBConfig::GetConfig(context).CheckLock("force_checkpoint");
 	DBConfig::GetConfig(context).options.force_checkpoint = true;
 }
 
 static void PragmaDisableForceParallelism(ClientContext &context, const FunctionParameters &parameters) {
+	DBConfig::GetConfig(context).CheckLock("verify_parallelism");
 	ClientConfig::GetConfig(context).verify_parallelism = false;
 }
 
@@ -91,19 +95,21 @@ static void PragmaDisableObjectCache(ClientContext &context, const FunctionParam
 }
 
 static void PragmaEnableCheckpointOnShutdown(ClientContext &context, const FunctionParameters &parameters) {
+	DBConfig::GetConfig(context).CheckLock("checkpoint_on_shutdown");
 	DBConfig::GetConfig(context).options.checkpoint_on_shutdown = true;
 }
 
 static void PragmaDisableCheckpointOnShutdown(ClientContext &context, const FunctionParameters &parameters) {
+	DBConfig::GetConfig(context).CheckLock("checkpoint_on_shutdown");
 	DBConfig::GetConfig(context).options.checkpoint_on_shutdown = false;
 }
 
-static void PragmaEnableOptimizer(ClientContext &context, const FunctionParameters &parameters) {
-	Settings::Set<EnableOptimizerSetting>(context, SetScope::SESSION, Value::BOOLEAN(true));
+static string PragmaEnableOptimizer(ClientContext &context, const FunctionParameters &parameters) {
+	return "SET SESSION enable_optimizer=true";
 }
 
-static void PragmaDisableOptimizer(ClientContext &context, const FunctionParameters &parameters) {
-	Settings::Set<EnableOptimizerSetting>(context, SetScope::SESSION, Value::BOOLEAN(false));
+static string PragmaDisableOptimizer(ClientContext &context, const FunctionParameters &parameters) {
+	return "SET SESSION enable_optimizer=false";
 }
 
 void PragmaFunctions::RegisterFunction(BuiltinFunctions &set) {

@@ -6,10 +6,6 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-#include <sys/resource.h>
-#endif
-
 namespace duckdb {
 
 static constexpr idx_t HTTP_TRANSPORT_MAX_CAPACITY = 256;
@@ -204,7 +200,7 @@ HTTPTransportManager::HTTPTransportManager(const shared_ptr<HTTPUtil> &initial_h
 	}
 	auto reuse_policy = initial_http_util->GetTransportReusePolicy();
 	ValidateReusePolicy(reuse_policy);
-	providers.push_back(make_uniq<HTTPTransportManagerState>(initial_http_util, reuse_policy, 0));
+	providers.push_back(make_uniq<HTTPTransportManagerState>(initial_http_util, reuse_policy, idx_t(0)));
 }
 
 HTTPTransportManager::~HTTPTransportManager() {
@@ -213,7 +209,8 @@ HTTPTransportManager::~HTTPTransportManager() {
 	D_ASSERT(clients.IsEmpty());
 }
 
-idx_t HTTPTransportManager::CalculateCapacity(idx_t system_concurrency, optional_idx file_descriptor_limit) {
+idx_t HTTPTransportManager::CalculateCapacity(idx_t system_concurrency, optional_idx file_descriptor_limit,
+                                              idx_t io_concurrency) {
 	idx_t cpu_target;
 	if (system_concurrency >= 128) {
 		cpu_target = HTTP_TRANSPORT_MAX_CAPACITY;
@@ -221,26 +218,13 @@ idx_t HTTPTransportManager::CalculateCapacity(idx_t system_concurrency, optional
 		cpu_target = system_concurrency * 2;
 		cpu_target = MaxValue<idx_t>(cpu_target, 16);
 	}
+	// every async I/O thread can hold a client at once, so do not let the pool be the smaller of the two
+	cpu_target = MaxValue<idx_t>(cpu_target, io_concurrency);
 	if (!file_descriptor_limit.IsValid()) {
 		return cpu_target;
 	}
-	auto fd_target = MaxValue<idx_t>(file_descriptor_limit.GetIndex() / 8, 1);
+	auto fd_target = FileSystem::GetFileDescriptorShare(file_descriptor_limit.GetIndex());
 	return MinValue<idx_t>(cpu_target, fd_target);
-}
-
-optional_idx HTTPTransportManager::GetFileDescriptorLimit() {
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-	struct rlimit limit;
-	if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
-		return optional_idx();
-	}
-	if (limit.rlim_cur >= NumericLimits<idx_t>::Maximum()) {
-		return optional_idx();
-	}
-	return optional_idx(static_cast<idx_t>(limit.rlim_cur));
-#else
-	return optional_idx();
-#endif
 }
 
 bool HTTPTransportManager::AdvanceConnectionEpoch(uint64_t &connection_epoch, bool &reuse_poisoned) noexcept {
@@ -255,8 +239,13 @@ bool HTTPTransportManager::AdvanceConnectionEpoch(uint64_t &connection_epoch, bo
 	return false;
 }
 
-void HTTPTransportManager::Initialize(idx_t system_concurrency) {
-	auto new_capacity = CalculateCapacity(system_concurrency, GetFileDescriptorLimit());
+void HTTPTransportManager::Initialize(const DBConfig &config) {
+	auto new_capacity = config.options.http_client_pool_capacity == DConstants::INVALID_INDEX
+	                        ? AutomaticCapacity(config)
+	                        : config.options.http_client_pool_capacity;
+	if (new_capacity == 0) {
+		throw InvalidInputException("The HTTP client pool capacity must be at least 1");
+	}
 	HTTPClientPool new_clients(new_capacity);
 
 	annotated_lock_guard<annotated_mutex> guard(lock);
@@ -268,6 +257,36 @@ void HTTPTransportManager::Initialize(idx_t system_concurrency) {
 	}
 	clients = std::move(new_clients);
 	initialized = true;
+}
+
+idx_t HTTPTransportManager::AutomaticCapacity(const DBConfig &config) {
+	auto &fs = *config.file_system;
+	auto io_concurrency = config.options.async_threads == DConstants::INVALID_INDEX
+	                          ? DBConfig::GetSystemMaxAsyncThreads(fs)
+	                          : config.options.async_threads;
+	return CalculateCapacity(DBConfig::GetSystemMaxThreads(fs), FileSystem::GetFileDescriptorLimit(), io_concurrency);
+}
+
+idx_t HTTPTransportManager::GetCapacity() const {
+	annotated_lock_guard<annotated_mutex> guard(lock);
+	return clients.GetCapacity();
+}
+
+void HTTPTransportManager::SetCapacity(idx_t capacity) {
+	if (capacity == 0) {
+		throw InvalidInputException("The HTTP client pool capacity must be at least 1");
+	}
+	{
+		annotated_lock_guard<annotated_mutex> guard(lock);
+		if (!initialized) {
+			throw InternalException("HTTP transport manager capacity was set before initialization");
+		}
+		if (clients.IsClosed()) {
+			return;
+		}
+		clients.SetCapacity(capacity);
+	}
+	DisposeIdle(IdleFilter::EXCESS);
 }
 
 HTTPTransportManager::SessionReservation HTTPTransportManager::ReserveSession() {
@@ -342,7 +361,7 @@ void HTTPTransportManager::SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util
 		if (clients.IsClosed()) {
 			throw InvalidInputException("HTTP transport manager is closed");
 		}
-		if (providers.size() == DConstants::INVALID_INDEX) {
+		if (providers.size() == providers.max_size()) {
 			throw InternalException("HTTP provider identifiers exhausted");
 		}
 		old_provider_epoch = current_provider_epoch;
@@ -469,8 +488,9 @@ unique_ptr<HTTPResponse> HTTPTransportManager::PerformRequest(Session &session, 
 }
 
 bool HTTPTransportManager::CanReturnClientLocked(const Lease &lease, bool cleanup_succeeded) const {
-	if (!cleanup_succeeded || !lease.reusable || !lease.client || clients.IsClosed() || !lease.state ||
-	    !lease.bucket.IsValid() || !IsStateValidLocked(*lease.state)) {
+	if (!cleanup_succeeded || !lease.reusable || !lease.client || clients.IsClosed() ||
+	    clients.ReservedClients() > clients.GetCapacity() || !lease.state || !lease.bucket.IsValid() ||
+	    !IsStateValidLocked(*lease.state)) {
 		return false;
 	}
 	auto &state = *lease.state;

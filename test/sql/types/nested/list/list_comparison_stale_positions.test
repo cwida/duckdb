@@ -1,0 +1,105 @@
+# name: test/sql/types/nested/list/list_comparison_stale_positions.test
+# description: Nested comparisons must only scatter back the rows that were actually compared
+# group: [list]
+
+# The position-by-position list comparator resolves rows whose list ran out of elements and
+# compacts the remaining rows. Scattering back more rows than were compared re-read stale
+# selection indices from the previous position and clobbered already-resolved rows.
+
+statement ok
+CREATE TABLE t(l INTEGER[]);
+
+statement ok
+INSERT INTO t VALUES ([1, NULL]), ([1, 2]), ([1, NULL, 3]);
+
+query II
+SELECT l, l IS NOT DISTINCT FROM [1, NULL, 3] FROM t
+----
+[1, NULL]	false
+[1, 2]	false
+[1, NULL, 3]	true
+
+query II
+SELECT l, l IS DISTINCT FROM [1, NULL, 3] FROM t
+----
+[1, NULL]	true
+[1, 2]	true
+[1, NULL, 3]	false
+
+statement ok
+DELETE FROM t
+
+statement ok
+INSERT INTO t VALUES ([1, NULL, 3]), ([1, NULL]), ([1, 2]), ([1, NULL, 3])
+
+query II
+SELECT l, l IS NOT DISTINCT FROM [1, NULL, 3] FROM t
+----
+[1, NULL, 3]	true
+[1, NULL]	false
+[1, 2]	false
+[1, NULL, 3]	true
+
+# the ordering comparisons walk the same path
+query IIII
+SELECT l, l < [1, NULL, 3], l > [1, NULL, 3], l <= [1, NULL, 3] FROM t
+----
+[1, NULL, 3]	false	false	true
+[1, NULL]	true	false	true
+[1, 2]	true	false	true
+[1, NULL, 3]	false	false	true
+
+# same shape one level deeper
+statement ok
+CREATE TABLE n(l INTEGER[][]);
+
+statement ok
+INSERT INTO n VALUES ([[1], [NULL]]), ([[1], [2]]), ([[1], [NULL], [3]])
+
+query II
+SELECT l, l IS NOT DISTINCT FROM [[1], [NULL], [3]] FROM n
+----
+[[1], [NULL]]	false
+[[1], [2]]	false
+[[1], [NULL], [3]]	true
+
+# and for fixed-size arrays, which share the comparator
+statement ok
+CREATE TABLE a(l INTEGER[3]);
+
+statement ok
+INSERT INTO a VALUES ([1, NULL, 9]), ([1, 2, 3]), ([1, NULL, 3])
+
+query II
+SELECT l, l IS NOT DISTINCT FROM [1, NULL, 3]::INTEGER[3] FROM a
+----
+[1, NULL, 9]	false
+[1, 2, 3]	false
+[1, NULL, 3]	true
+
+# the distinct ordering must stay total: exactly one of <, >, "not distinct" holds
+statement ok
+CREATE TABLE r AS
+SELECT CASE WHEN random() < 0.1 THEN NULL
+            ELSE [CASE WHEN random() < 0.3 THEN NULL ELSE (random() * 3)::INT END
+                  FOR x IN range((random() * 4)::INT + 1)] END AS a,
+       CASE WHEN random() < 0.1 THEN NULL
+            ELSE [CASE WHEN random() < 0.3 THEN NULL ELSE (random() * 3)::INT END
+                  FOR x IN range((random() * 4)::INT + 1)] END AS b
+FROM range(20000);
+
+query I
+SELECT count(*) FROM r WHERE (a < b)::INT + (a > b)::INT + (a IS NOT DISTINCT FROM b)::INT <> 1
+----
+0
+
+# ... and must agree with an element-wise definition of IS NOT DISTINCT FROM
+query I
+SELECT count(*) FROM r
+WHERE (a IS NOT DISTINCT FROM b) <> (
+    CASE WHEN a IS NULL AND b IS NULL THEN true
+         WHEN a IS NULL OR b IS NULL THEN false
+         WHEN len(a) <> len(b) THEN false
+         ELSE len(list_filter(range(1, len(a) + 1), lambda i: a[i] IS DISTINCT FROM b[i])) = 0 END)
+----
+0

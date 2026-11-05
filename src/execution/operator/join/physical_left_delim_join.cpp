@@ -78,11 +78,22 @@ public:
 	void Reset(ClientContext &context) override {
 		lhs_data.ResetForReuse();
 		LeftDelimBindScanCollection(delim_join, lhs_data);
+		// forward the worker bound so the internal distinct aggregate sizes its restart from it
+		if (delim_join.distinct.sink_state) {
+			delim_join.distinct.sink_state->reschedule_worker_limit = reschedule_worker_limit;
+			delim_join.distinct.sink_state->reschedule_single_producer = reschedule_single_producer;
+		}
 		LeftDelimResetSinkState(delim_join.distinct, context, delim_join.distinct.sink_state);
 		if (delim_join.delim_scans.size() > 1) {
 			PhysicalHashAggregate::SetMultiScan(*delim_join.distinct.sink_state);
 		}
 		GlobalSinkState::Reset(context);
+	}
+
+	void AdjustRescheduledWorkers(ClientContext &context, idx_t scheduled_workers) override {
+		if (delim_join.distinct.sink_state) {
+			delim_join.distinct.sink_state->AdjustRescheduledWorkers(context, scheduled_workers);
+		}
 	}
 
 	void Merge(ColumnDataCollection &input) {

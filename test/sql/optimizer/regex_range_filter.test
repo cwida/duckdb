@@ -1,0 +1,32 @@
+# name: test/sql/optimizer/regex_range_filter.test
+# description: Test range filters derived from full regular-expression matches
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = 'OPTIMIZED_ONLY';
+
+statement ok
+CREATE TABLE regex_values(s VARCHAR);
+
+statement ok
+INSERT INTO regex_values VALUES ('foo'), ('food'), ('bar'), (NULL);
+
+# Keep the derived range as a separate filter so it is visible in the logical plan.
+statement ok
+SET disabled_optimizers = 'filter_pushdown';
+
+query II
+EXPLAIN SELECT s FROM regex_values WHERE regexp_full_match(s, 'foo');
+----
+logical_opt	<REGEX>:(?s).*regexp_full_match.*s >= 'foo'::BLOB.*s <= 'foo'::BLOB.*
+
+statement ok
+SET disabled_optimizers = '';
+
+query T
+SELECT s FROM regex_values WHERE regexp_full_match(s, 'foo');
+----
+foo

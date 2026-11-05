@@ -1,0 +1,10 @@
+# name: test/sql/table_function/issue_25882.test
+# description: Test reading procfs files with a reported size of zero
+# group: [table_function]
+
+require linux
+
+query II
+SELECT size, length(content) > 0 FROM read_text('/proc/self/status');
+----
+0	true

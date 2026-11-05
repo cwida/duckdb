@@ -26,13 +26,17 @@ static void CheckQNameParts(const QualifiedName &name, const char *function_name
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_qname_parse(duckdb_v2_str text, duckdb_v2_qname_handle *out_name,
+DUCKDB_V2_ERROR duckdb_v2_qname_parse(const duckdb_v2_str *text, duckdb_v2_qname_handle *out_name,
                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(text);
 	DUCKDB_CHECK_ARG(out_name);
 	*out_name = nullptr;
 	return WithErrorHandler(err, [&]() {
-		auto parsed = duckdb::QualifiedName::Parse(duckdb::string(Convert(text)));
+		duckdb::QualifiedName parsed;
+		duckdb::string error;
+		if (!duckdb::QualifiedName::TryParse(duckdb::string(ConvertIdentifierName(text)), parsed, error)) {
+			throw duckdb::InvalidInputException("%s in duckdb_v2_qname_parse.", error);
+		}
 		CheckQNameParts(parsed, "duckdb_v2_qname_parse");
 		*out_name = Convert(new duckdb::QualifiedName(std::move(parsed)));
 	});
@@ -54,9 +58,10 @@ DUCKDB_V2_ERROR duckdb_v2_qname_create(const duckdb_v2_identifier_t *parts, idx_
 		// The last part is the object name; everything before it is the qualification.
 		duckdb::vector<duckdb::Identifier> qualification;
 		for (idx_t i = 0; i + 1 < part_count; i++) {
-			qualification.push_back(duckdb::Identifier(Convert(parts[i])));
+			qualification.push_back(duckdb::Identifier(ConvertIdentifierName(parts[i])));
 		}
-		auto name = duckdb::QualifiedName(std::move(qualification), duckdb::Identifier(Convert(parts[part_count - 1])));
+		auto name = duckdb::QualifiedName(std::move(qualification),
+		                                  duckdb::Identifier(ConvertIdentifierName(parts[part_count - 1])));
 		CheckQNameParts(name, "duckdb_v2_qname_create");
 		*out_name = Convert(new duckdb::QualifiedName(std::move(name)));
 	});

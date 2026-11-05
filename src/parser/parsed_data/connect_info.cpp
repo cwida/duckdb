@@ -15,10 +15,17 @@ unique_ptr<ConnectInfo> ConnectInfo::Copy() const {
 		result->parsed_options[entry.first] = entry.second->Copy();
 	}
 	result->options = options;
+	if (external_resource) {
+		result->external_resource = external_resource->Copy();
+	}
 	return result;
 }
 
 string ConnectInfo::ToString() const {
+	if (external_resource) {
+		// Only the borrow form can carry connect options; provisioning gives its one list to the recipe.
+		return "CONNECT TO " + external_resource->ToString() + RenderOptionList(parsed_options, options) + ";";
+	}
 	if (target_is_local) {
 		return "CONNECT LOCAL;";
 	}
@@ -31,18 +38,7 @@ string ConnectInfo::ToString() const {
 	} else {
 		result += SQLIdentifier(name);
 	}
-	if (!parsed_options.empty() || !options.empty()) {
-		vector<string> stringified;
-		for (auto &opt : parsed_options) {
-			stringified.push_back(
-			    StringUtil::Format("%s %s", SQLIdentifier::ToString(opt.first), opt.second->ToString()));
-		}
-		for (auto &opt : options) {
-			stringified.push_back(
-			    StringUtil::Format("%s %s", SQLIdentifier::ToString(opt.first), opt.second.ToSQLString()));
-		}
-		result += " (" + StringUtil::Join(stringified, ", ") + ")";
-	}
+	result += RenderOptionList(parsed_options, options);
 	result += ";";
 	return result;
 }

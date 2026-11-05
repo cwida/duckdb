@@ -16,6 +16,9 @@ namespace duckdb {
 //! LogicalCTERef represents a reference to a recursive CTE
 class LogicalCTERef : public LogicalOperator {
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_CTE_REF;
 
 public:

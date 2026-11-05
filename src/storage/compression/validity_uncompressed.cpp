@@ -520,7 +520,7 @@ void ValidityScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_cou
 // Select
 //===--------------------------------------------------------------------===//
 void ValiditySelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
-                    const SelectionVector &sel, idx_t sel_count) {
+                    const SelectionVector &sel, idx_t sel_count, idx_t result_offset, ScanVectorType) {
 	auto start = state.GetPositionInSegment();
 	if (sel_count == 0) {
 		return;
@@ -528,36 +528,22 @@ void ValiditySelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector
 	D_ASSERT(start <= segment.count && vector_count <= segment.count - start);
 	D_ASSERT(sel_count <= vector_count);
 
-	result.Flatten();
+	if (result_offset == 0) {
+		result.Flatten();
+	}
 
 	auto &scan_state = state.scan_state->Cast<ValidityScanState>();
+	auto input_data = ValidityScanData(scan_state.reader, start, vector_count);
+	auto input_start = start % ValidityMask::BITS_PER_VALUE;
 	auto &result_mask = FlatVector::ValidityMutable(result);
 	for (idx_t i = 0; i < sel_count; i++) {
 		auto selected_index = sel.get_index(i);
 		D_ASSERT(selected_index < vector_count);
-		auto source_idx = start + selected_index;
-		auto entry_offset = source_idx / ValidityMask::BITS_PER_VALUE * sizeof(validity_t);
-		auto entry = scan_state.reader.Get<validity_t>(entry_offset);
+		auto source_idx = input_start + selected_index;
+		auto entry = input_data[source_idx / ValidityMask::BITS_PER_VALUE];
 		if (!ValidityMask::RowIsValid(entry, source_idx % ValidityMask::BITS_PER_VALUE)) {
-			result_mask.SetInvalid(i);
+			result_mask.SetInvalid(result_offset + i);
 		}
-	}
-}
-
-//===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ValidityFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	D_ASSERT(row_id >= 0 && row_id < row_t(segment.count));
-	auto row_index = NumericCast<idx_t>(row_id);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	auto reader = CompressionSegmentReader::FromSegment(handle, segment, "validity segment");
-	auto entry_offset = row_index / ValidityMask::BITS_PER_VALUE * sizeof(validity_t);
-	auto entry = reader.Get<validity_t>(entry_offset);
-	auto &result_mask = FlatVector::ValidityMutable(result);
-	if (!ValidityMask::RowIsValid(entry, row_index % ValidityMask::BITS_PER_VALUE)) {
-		result_mask.SetInvalid(result_idx);
 	}
 }
 
@@ -592,7 +578,8 @@ idx_t ValidityAppend(CompressionAppendState &append_state, ColumnSegment &segmen
 		return append_count;
 	}
 
-	ValidityMask mask(reinterpret_cast<validity_t *>(append_state.handle.GetDataMutable()), max_tuples);
+	ValidityMask mask(reinterpret_cast<validity_t *>(append_state.handle.GetDataMutable() + segment.GetBlockOffset()),
+	                  max_tuples);
 	for (idx_t i = 0; i < append_count; i++) {
 		auto idx = data.sel->get_index(offset + i);
 		if (!data.validity.RowIsValidUnsafe(idx)) {
@@ -622,7 +609,7 @@ void ValidityRevertAppend(ColumnSegment &segment, idx_t new_count) {
 		idx_t byte_pos = start_bit / 8;
 		idx_t bit_end = (byte_pos + 1) * 8;
 		ValidityMask mask(reinterpret_cast<validity_t *>(buffer_ptr), segment.count);
-		for (idx_t i = start_bit; i < bit_end; i++) {
+		for (idx_t i = start_bit; i < bit_end && i < segment.count; i++) {
 			mask.SetValid(i);
 		}
 		revert_start = bit_end / 8;
@@ -638,12 +625,14 @@ void ValidityRevertAppend(ColumnSegment &segment, idx_t new_count) {
 //===--------------------------------------------------------------------===//
 CompressionFunction ValidityUncompressed::GetFunction(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::BIT);
-	return CompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, data_type, ValidityInitAnalyze,
+	CompressionFunction result(CompressionType::COMPRESSION_UNCOMPRESSED, data_type, ValidityInitAnalyze,
 	                           ValidityAnalyze, ValidityFinalAnalyze, UncompressedFunctions::InitCompression,
 	                           UncompressedFunctions::Compress, UncompressedFunctions::FinalizeCompress,
-	                           ValidityInitScan, ValidityScan, ValidityScanPartial, ValidityFetchRow,
-	                           UncompressedFunctions::EmptySkip, ValidityInitSegment, ValidityInitAppend,
-	                           ValidityAppend, ValidityFinalizeAppend, ValidityRevertAppend);
+	                           ValidityInitScan, ValidityScan, ValidityScanPartial, UncompressedFunctions::EmptySkip,
+	                           ValidityInitSegment, ValidityInitAppend, ValidityAppend, ValidityFinalizeAppend,
+	                           ValidityRevertAppend);
+	result.select = ValiditySelect;
+	return result;
 }
 
 } // namespace duckdb

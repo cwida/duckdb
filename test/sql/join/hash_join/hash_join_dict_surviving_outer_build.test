@@ -1,0 +1,179 @@
+# name: test/sql/join/hash_join/hash_join_dict_surviving_outer_build.test
+# description: A FULL/RIGHT join on the build side feeds the hash join from two pipelines (issue #26911)
+# group: [hash_join]
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side'
+
+# dense nation key picks a perfect hash join that mints a global dictionary for n_name
+statement ok
+CREATE TABLE nation AS SELECT i AS nk, 'NATION_' || (i % 5) AS n_name FROM range(25) t(i)
+
+statement ok
+CREATE TABLE customer AS SELECT i * 1000 AS ck, i % 25 AS nk FROM range(2000) t(i)
+
+statement ok
+CREATE TABLE returns AS SELECT i * 2000 AS ck, i % 7 AS dk FROM range(1500) t(i)
+
+statement ok
+CREATE TABLE dates AS SELECT i AS dk, 'day_' || i AS d_name FROM range(7) t(i)
+
+statement ok
+PRAGMA verify_parallelism
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads}
+
+# The FULL join forwards the n_name dictionary for matched probe rows, but its unmatched build rows come from a
+# second pipeline that fills n_name with NULLs. The RIGHT join stores those rows under the reserved NULL index of
+# its owned dictionary instead of failing on the non-dictionary chunk.
+query III
+SELECT count(*), count(DISTINCT n_name), count(DISTINCT d_name)
+FROM dates d RIGHT JOIN (
+    SELECT c.ck, n.n_name, r.dk
+    FROM customer c JOIN nation n ON c.nk = n.nk
+    FULL OUTER JOIN returns r ON c.ck = r.ck
+) b ON d.dk = b.dk
+----
+2500	5	7
+
+query II
+SELECT n_name, count(*)
+FROM dates d RIGHT JOIN (
+    SELECT c.ck, n.n_name, r.dk
+    FROM customer c JOIN nation n ON c.nk = n.nk
+    FULL OUTER JOIN returns r ON c.ck = r.ck
+) b ON d.dk = b.dk
+GROUP BY n_name ORDER BY n_name NULLS LAST
+----
+NATION_0	400
+NATION_1	400
+NATION_2	400
+NATION_3	400
+NATION_4	400
+NULL	500
+
+# the NULL rows are the unmatched returns rows, the matched ones keep their value
+query III
+SELECT d_name, n_name, count(*)
+FROM dates d RIGHT JOIN (
+    SELECT c.ck, n.n_name, r.dk
+    FROM customer c JOIN nation n ON c.nk = n.nk
+    FULL OUTER JOIN returns r ON c.ck = r.ck
+) b ON d.dk = b.dk
+WHERE d_name IN ('day_0', 'day_3') AND (n_name IS NULL OR n_name = 'NATION_1')
+GROUP BY ALL ORDER BY ALL NULLS LAST
+----
+day_0	NATION_1	28
+day_0	NULL	72
+day_3	NATION_1	29
+day_3	NULL	71
+
+# same with a RIGHT join on the build side
+query III
+SELECT count(*), count(DISTINCT n_name), count(DISTINCT d_name)
+FROM dates d RIGHT JOIN (
+    SELECT c.ck, n.n_name, r.dk
+    FROM customer c JOIN nation n ON c.nk = n.nk
+    RIGHT JOIN returns r ON c.ck = r.ck
+) b ON d.dk = b.dk
+----
+1500	5	7
+
+# an inner join on the build side is a single pipeline
+query III
+SELECT count(*), count(DISTINCT n_name), count(DISTINCT d_name)
+FROM dates d RIGHT JOIN (
+    SELECT c.ck, n.n_name, r.dk
+    FROM customer c JOIN nation n ON c.nk = n.nk
+    JOIN returns r ON c.ck = r.ck
+) b ON d.dk = b.dk
+----
+1000	5	7
+
+endloop
+
+# NULLs inside the upstream dictionary and the reserved NULL slot coexist
+statement ok
+CREATE TABLE nation_nulls AS SELECT i AS nk, CASE WHEN i % 5 = 0 THEN NULL ELSE 'NATION_' || (i % 5) END AS n_name FROM range(25) t(i)
+
+query III
+SELECT count(*), count(n_name), count(DISTINCT n_name)
+FROM dates d RIGHT JOIN (
+    SELECT c.ck, n.n_name, r.dk
+    FROM customer c JOIN nation_nulls n ON c.nk = n.nk
+    FULL OUTER JOIN returns r ON c.ck = r.ck
+) b ON d.dk = b.dk
+----
+2500	1600	4
+
+# a 256-entry dictionary needs a 2-byte index once the NULL slot is reserved: the unmatched returns rows are stored
+# under the reserved index 256
+statement ok
+CREATE TABLE dim256 AS SELECT i AS dk256, 'DIM_' || i AS d256_name FROM range(256) t(i)
+
+statement ok
+CREATE TABLE fact256 AS SELECT i * 1000 AS ck, i % 256 AS dk256 FROM range(1000) t(i)
+
+query IIII
+SELECT count(*), count(d256_name), count(DISTINCT d256_name), count(DISTINCT d_name)
+FROM dates d RIGHT JOIN (
+    SELECT f.ck, n.d256_name, r.dk
+    FROM fact256 f JOIN dim256 n ON f.dk256 = n.dk256
+    FULL OUTER JOIN returns r ON f.ck = r.ck
+) b ON d.dk = b.dk
+----
+2000	1000	256	7
+
+query III
+SELECT d256_name IS NULL AS unmatched_returns, d_name IS NULL AS unmatched_fact, count(*)
+FROM dates d RIGHT JOIN (
+    SELECT f.ck, n.d256_name, r.dk
+    FROM fact256 f JOIN dim256 n ON f.dk256 = n.dk256
+    FULL OUTER JOIN returns r ON f.ck = r.ck
+) b ON d.dk = b.dk
+GROUP BY ALL ORDER BY ALL
+----
+false	false	500
+false	true	500
+true	false	1000
+
+# A recursive CTE reruns the build side every iteration. The upstream join then mints a new dictionary (here with
+# different values, because of nextval), so the hash join must publish its layout and dictionary afresh.
+statement ok
+SET threads = 1
+
+statement ok
+SET enable_caching_operators = true
+
+statement ok
+CREATE TABLE nation2 AS SELECT i AS nk FROM range(2) t(i)
+
+statement ok
+CREATE TABLE customer2 AS SELECT i * 1000000 AS ck, i % 2 AS nk FROM range(3) t(i)
+
+statement ok
+CREATE SEQUENCE dict_epoch
+
+query III
+WITH RECURSIVE r(iter, k, x) AS (
+    SELECT 0, 0::BIGINT, NULL::BIGINT
+    UNION ALL
+    SELECT r.iter + 1, b.ck, b.x
+    FROM r JOIN (
+        SELECT c.ck, n.x
+        FROM customer2 c
+        JOIN (
+            SELECT nk, nextval('dict_epoch') AS x FROM nation2
+        ) n ON c.nk = n.nk
+    ) b ON r.k = b.ck
+    WHERE r.iter < 3
+)
+SELECT iter, k, x FROM r ORDER BY iter
+----
+0	0	NULL
+1	0	1
+2	0	3
+3	0	5

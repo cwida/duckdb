@@ -1,0 +1,76 @@
+# name: test/sql/constraints/test_named_column_constraints.test
+# description: Named column constraints can be repeated and follow unnamed constraints
+# group: [constraints]
+
+statement ok
+CREATE TABLE p(id INT PRIMARY KEY);
+
+statement ok
+INSERT INTO p VALUES (1), (2);
+
+statement ok
+CREATE TABLE t(
+    a INT
+      CONSTRAINT name_that_is_not_stored_just_like_the_rest CHECK (a > 0)
+      CONSTRAINT c_not_null NOT NULL,
+    b INT DEFAULT 5 CONSTRAINT chk CHECK (b > 0) CONSTRAINT u UNIQUE,
+    c INT CONSTRAINT pk PRIMARY KEY CONSTRAINT fk REFERENCES p(id)
+);
+
+# constraint names are not stored, every constraint is registered under a generated name
+query IIII
+SELECT constraint_type, constraint_name, constraint_column_names, constraint_text
+FROM duckdb_constraints() WHERE table_name = 't' ORDER BY constraint_name;
+----
+CHECK	t_a_check	[a]	CHECK((a > 0))
+NOT NULL	t_a_not_null	[a]	NOT NULL
+CHECK	t_b_check	[b]	CHECK((b > 0))
+UNIQUE	t_b_key	[b]	UNIQUE(b)
+FOREIGN KEY	t_c_id_fkey	[c]	FOREIGN KEY (c) REFERENCES p(id)
+NOT NULL	t_c_not_null	[c]	NOT NULL
+PRIMARY KEY	t_c_pkey	[c]	PRIMARY KEY(c)
+
+query III
+SELECT column_name, column_default, is_nullable FROM duckdb_columns() WHERE table_name = 't' ORDER BY column_index;
+----
+a	NULL	false
+b	5	true
+c	NULL	false
+
+statement ok
+INSERT INTO t (a, c) VALUES (1, 1);
+
+query III
+SELECT * FROM t;
+----
+1	5	1
+
+statement error
+INSERT INTO t VALUES (0, 6, 2);
+----
+Constraint Error: CHECK constraint failed
+
+statement error
+INSERT INTO t VALUES (NULL, 6, 2);
+----
+Constraint Error: NOT NULL constraint failed
+
+statement error
+INSERT INTO t VALUES (1, -1, 2);
+----
+Constraint Error: CHECK constraint failed
+
+statement error
+INSERT INTO t VALUES (1, 5, 2);
+----
+Constraint Error: Duplicate key "b: 5"
+
+statement error
+INSERT INTO t VALUES (1, 6, 3);
+----
+Constraint Error: Violates foreign key constraint
+
+statement error
+CREATE TABLE t_err(a INT CONSTRAINT c CONSTRAINT d CHECK (a > 0));
+----
+Parser Error: syntax error

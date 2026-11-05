@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/helper/physical_reset.hpp"
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/execution/operator/helper/physical_set.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -9,9 +10,12 @@ namespace duckdb {
 
 void PhysicalReset::ResetExtensionVariable(ExecutionContext &context, DBConfig &config,
                                            ExtensionOption &extension_option) const {
-	auto effective_scope = scope == SetScope::AUTOMATIC ? extension_option.default_scope : scope;
+	auto effective_scope = extension_option.ResolveScope(Identifier(name.ToStdString()), scope);
 	if (extension_option.set_function) {
 		extension_option.set_function(context.client, effective_scope, extension_option.default_value);
+	}
+	if (extension_option.info) {
+		extension_option.info->OnSet(context.client, effective_scope, extension_option.default_value, true);
 	}
 	if (effective_scope == SetScope::GLOBAL) {
 		config.ResetOption(extension_option);

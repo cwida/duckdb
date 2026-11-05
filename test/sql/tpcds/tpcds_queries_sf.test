@@ -1,0 +1,101 @@
+# name: test/sql/tpcds/tpcds_queries_sf.test
+# description: Test TPC-DS queries with scale factor dependent substitution parameters
+# group: [tpcds]
+
+require tpcds
+
+# the stored queries carry the substitution parameters for SF 1
+query I
+SELECT count(*) FROM tpcds_queries() q JOIN tpcds_queries(sf=1) s USING (query_nr) WHERE q.query <> s.query
+----
+0
+
+# only Q9 has scale factor dependent parameters: its store_sales count thresholds
+query I
+SELECT list(query_nr) FROM tpcds_queries() q JOIN tpcds_queries(sf=10) s USING (query_nr) WHERE q.query <> s.query
+----
+[9]
+
+query I
+SELECT regexp_extract_all(query, '> ([0-9]+) THEN', 1) FROM tpcds_queries() WHERE query_nr = 9
+----
+[74129, 122840, 56580, 10097, 165306]
+
+query I
+SELECT regexp_extract_all(query, '> ([0-9]+) THEN', 1) FROM tpcds_queries(sf=10) WHERE query_nr = 9
+----
+[741290, 1228400, 565800, 100970, 1653060]
+
+# the scale factor can also be given positionally
+query I
+SELECT regexp_extract_all(query, '> ([0-9]+) THEN', 1) FROM tpcds_queries(0.01) WHERE query_nr = 9
+----
+[741, 1228, 566, 101, 1653]
+
+# thresholds never drop below one
+query I
+SELECT regexp_extract_all(query, '> ([0-9]+) THEN', 1) FROM tpcds_queries(sf=0.000001) WHERE query_nr = 9
+----
+[1, 1, 1, 1, 1]
+
+query I
+SELECT count(*) FROM tpcds_queries(sf=100)
+----
+99
+
+# invalid scale factors
+statement error
+SELECT * FROM tpcds_queries(sf=0)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpcds_queries(-1)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpcds_queries(100001)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpcds_queries('nan'::DOUBLE)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpcds_queries(sf=NULL)
+----
+<REGEX>:.*cannot use NULL as scale factor.*
+
+statement error
+SELECT * FROM tpcds_queries(10, sf=10)
+----
+<REGEX>:.*positional argument or as "sf", not both.*
+
+# the pragma accepts the scale factor as well
+statement ok
+CALL dsdgen(sf=0.01)
+
+statement error
+PRAGMA tpcds(9, sf=NULL)
+----
+<REGEX>:.*Cannot use NULL as scale factor.*
+
+statement error
+PRAGMA tpcds(9, sf=0)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+# at SF 0.01 no bucket reaches the SF 1 thresholds, so every CASE takes the ELSE branch (avg(ss_net_paid))
+query IIIII
+PRAGMA tpcds(9)
+----
+359.00385262764166	1043.4335452686373	1711.0083180884824	2364.3500851378863	3119.924483585393
+
+# with the thresholds scaled to SF 0.01 every bucket takes the THEN branch (avg(ss_ext_discount_amt))
+query IIIII
+PRAGMA tpcds(9, sf=0.01)
+----
+39.36634514925373	104.90828900874094	199.25563233376792	250.3250544581872	345.94857590272665

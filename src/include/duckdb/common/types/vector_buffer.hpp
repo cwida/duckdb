@@ -26,6 +26,8 @@ class VectorBuffer;
 class Vector;
 struct ValidityMask;
 struct SelCache;
+class Serializer;
+class Deserializer;
 
 enum class VectorBufferType : uint8_t {
 	STANDARD_BUFFER,   // VectorType::FLAT/CONSTANT - Fixed-Size Type - Holds a single array of data
@@ -92,6 +94,9 @@ public:
 public:
 	virtual data_ptr_t GetData() {
 		return nullptr;
+	}
+	virtual data_ptr_t GetDataMutable() {
+		return GetData();
 	}
 	virtual idx_t Capacity() const {
 		throw InternalException("VectorBuffer does not have a capacity");
@@ -188,14 +193,26 @@ public:
 	//! Slice the buffer with a selection vector, returning a new buffer
 	virtual buffer_ptr<VectorBuffer> SliceWithCache(SelCache &cache, const LogicalType &type,
 	                                                const SelectionVector &sel, idx_t count);
+	//! Create a constant buffer of "count" rows holding the entry at "index" of "source". A string or a list shares
+	//! the heap or the child of the source, which has to stay valid while the result is used, as for a slice. A
+	//! shredded source is flattened in place first, so that its constants share the unshredded data
+	static buffer_ptr<VectorBuffer> ConstantReference(const Vector &source, idx_t index, count_t count);
 	//! Create a UnifiedVectorFormat from the buffer's data
 	virtual void ToUnifiedFormat(UnifiedVectorFormat &format) const;
+	//! Serialize the buffer as-is (including the vector_type), returns false if the vector must be serialized flat
+	virtual bool TrySerialize(Serializer &serializer, const LogicalType &type, bool compressed_serialization) const;
+	//! Deserialize a buffer written by TrySerialize
+	static buffer_ptr<VectorBuffer> Deserialize(Deserializer &deserializer, VectorType vector_type,
+	                                            const LogicalType &type, idx_t count);
 
 protected:
 	//! Slice a constant vector with a specific count
 	buffer_ptr<VectorBuffer> ConstantSlice(const LogicalType &type, count_t count);
 	//! Slice a constant vector with a specific count
 	virtual buffer_ptr<VectorBuffer> ConstantSliceInternal(const LogicalType &type, count_t count);
+	//! Create a constant buffer of "count" rows holding the entry at "index", by default by copying its value
+	virtual buffer_ptr<VectorBuffer> ConstantReferenceInternal(const LogicalType &type, idx_t index,
+	                                                           count_t count) const;
 	//! Slice the buffer with a selection vector, returning a new buffer
 	virtual buffer_ptr<VectorBuffer> SliceInternal(const LogicalType &type, const SelectionVector &sel, idx_t count);
 	//! Slice the buffer with an offset range, returning a new buffer

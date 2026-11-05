@@ -149,10 +149,10 @@ struct CountFunction : public BaseCountFunction {
 	static void CountClusteredRuns(const ClusteredAggr &cs, const ValidityMask &validity, INDEXER indexer) {
 		const bool all_valid = !validity.CanHaveNull();
 		idx_t pos = 0;
-		for (idx_t r = 0; r < cs.n_group_runs; r++) {
-			auto &state = *reinterpret_cast<STATE *>(cs.group_runs[r].state);
-			const auto *run_sel = cs.group_runs[r].sel;
-			const auto run_count = cs.group_runs[r].count;
+		for (auto &run : cs.runs()) {
+			auto &state = *reinterpret_cast<STATE *>(run.state);
+			const auto *run_sel = run.sel;
+			const auto run_count = run.count;
 			if (all_valid) {
 				state += UnsafeNumericCast<STATE>(run_count);
 			} else {
@@ -200,13 +200,13 @@ struct CountFunction : public BaseCountFunction {
 			if (ConstantVector::IsNull(inputs[0])) {
 				return;
 			}
-			for (idx_t r = 0; r < clustered.n_group_runs; r++) {
-				auto &state = *reinterpret_cast<STATE *>(clustered.group_runs[r].state);
-				state += UnsafeNumericCast<STATE>(clustered.group_runs[r].count);
+			for (auto &run : clustered.runs()) {
+				auto &state = *reinterpret_cast<STATE *>(run.state);
+				state += UnsafeNumericCast<STATE>(run.count);
 			}
 			return;
 		}
-		auto *cluster_iter = clustered.ClusterIter(inputs[0], count);
+		auto *cluster_iter = clustered.ClusterIter(inputs[0]);
 		if (cluster_iter) {
 			CountClusteredDict<true>(inputs[0], clustered, count, cluster_iter);
 			return;
@@ -221,7 +221,7 @@ struct CountFunction : public BaseCountFunction {
 		// pre-composes the dict sel once for the whole chunk.
 		if (aggr_input_data.clustered) {
 			auto &cs = *aggr_input_data.clustered;
-			auto *cluster_iter = cs.ClusterIter(inputs[0], count);
+			auto *cluster_iter = cs.ClusterIter(inputs[0]);
 			if (cluster_iter) {
 				CountClusteredDict<true>(inputs[0], cs, count, cluster_iter);
 				return;
@@ -279,8 +279,7 @@ unique_ptr<BaseStatistics> CountPropagateStats(ClientContext &context, BoundAggr
                                                AggregateStatisticsInput &input) {
 	if (!expr.IsDistinct() && !input.child_stats[0].CanHaveNull()) {
 		// count on a column without null values: use count star
-		expr.FunctionMutable().ReplaceImplementation(CountStarFun::GetFunction());
-		expr.FunctionMutable().SetName("count_star");
+		expr.FunctionMutable() = BoundAggregateFunction(CountStarFun::GetFunction());
 		expr.GetChildrenMutable().clear();
 	}
 	return nullptr;
@@ -289,13 +288,15 @@ unique_ptr<BaseStatistics> CountPropagateStats(ClientContext &context, BoundAggr
 } // namespace
 
 AggregateFunction CountFunctionBase::GetFunction() {
-	AggregateFunction fun({LogicalType(LogicalTypeId::ANY)}, LogicalType::BIGINT, AggregateFunction::StateSize<int64_t>,
+	AggregateFunction fun({}, LogicalType::BIGINT, AggregateFunction::StateSize<int64_t>,
 	                      AggregateFunction::StateInitialize<int64_t, CountFunction>, CountFunction::CountScatter,
 	                      AggregateFunction::StateCombine<int64_t, CountFunction>,
 	                      AggregateFunction::StateFinalize<int64_t, int64_t, CountFunction>,
 	                      FunctionNullHandling::SPECIAL_HANDLING, CountFunction::CountClusterUpdate);
+	fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
 	fun.SetName("count");
 	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	fun.SetCollationHandling(FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS);
 	fun.SetStructStateExport(GetCountStateType);
 	fun.SetStatisticsCallback(CountPropagateStats);
 	return fun;

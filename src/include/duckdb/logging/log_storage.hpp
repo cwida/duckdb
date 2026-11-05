@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/logging/logging.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/types.hpp"
@@ -20,6 +21,7 @@
 #include "duckdb/parallel/thread_context.hpp"
 
 namespace duckdb {
+struct TableFunctionBindInput;
 struct RegisteredLoggingContext;
 class ColumnDataCollection;
 struct ColumnDataScanState;
@@ -88,6 +90,8 @@ public:
 	DUCKDB_API virtual unique_ptr<LogStorageScanState> CreateScanState(LoggingTargetTable table) const;
 	DUCKDB_API virtual bool Scan(LogStorageScanState &state, DataChunk &result) const;
 	DUCKDB_API virtual void InitializeScan(LogStorageScanState &state) const;
+	//! The number of rows a scan of the table produces, if known (used for progress reporting)
+	DUCKDB_API virtual optional_idx GetScanRowCount(LoggingTargetTable table) const;
 
 	// Reading interface 2: using bind_replace
 	DUCKDB_API virtual unique_ptr<TableRef> BindReplace(ClientContext &context, TableFunctionBindInput &input,
@@ -336,6 +340,7 @@ public:
 	unique_ptr<LogStorageScanState> CreateScanState(LoggingTargetTable table) const override;
 	bool Scan(LogStorageScanState &state, DataChunk &result) const override;
 	void InitializeScan(LogStorageScanState &state) const override;
+	optional_idx GetScanRowCount(LoggingTargetTable table) const override;
 
 protected:
 	/// Implement BufferingLogStorage interface

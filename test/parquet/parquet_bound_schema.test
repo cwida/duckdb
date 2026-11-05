@@ -1,0 +1,150 @@
+# name: test/parquet/parquet_bound_schema.test
+# description: Declared Parquet output is mapped before conversions and predicates
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 0::DOUBLE v) TO '{TEST_DIR}/bound_double.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 1::INTEGER v) TO '{TEST_DIR}/bound_integer.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 1.4::DOUBLE v) TO '{TEST_DIR}/bound_fraction.parquet' (FORMAT parquet)
+
+# A worker subset must not first narrow to the schema of its first file.
+query R
+SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_integer.parquet', '{TEST_DIR}/bound_fraction.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+----
+2.4
+
+query R
+SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_fraction.parquet', '{TEST_DIR}/bound_integer.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+----
+2.4
+
+query R
+SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_double.parquet', '{TEST_DIR}/bound_integer.parquet', '{TEST_DIR}/bound_fraction.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+----
+2.4
+
+# Filter-only and join keys must see mapped values too.
+query R
+SELECT v FROM read_parquet(['{TEST_DIR}/bound_integer.parquet', '{TEST_DIR}/bound_fraction.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false) WHERE v > 1
+----
+1.4
+
+query RI
+SELECT v, n FROM read_parquet(['{TEST_DIR}/bound_integer.parquet', '{TEST_DIR}/bound_fraction.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false) JOIN (VALUES (1.4::DOUBLE, 30)) t(k,n) ON v=k
+----
+1.4	30
+
+statement ok
+COPY (SELECT 1::SMALLINT v) TO '{TEST_DIR}/bound_small.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 100000::BIGINT v) TO '{TEST_DIR}/bound_big.parquet' (FORMAT parquet)
+
+query I
+SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_small.parquet','{TEST_DIR}/bound_big.parquet'], bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+100001
+
+# Physical roots are checked on demand, including when the first file differs.
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_integer.parquet', bound_schema={'missing':'BIGINT','v':'DOUBLE'}, hive_partitioning=false)
+----
+1
+
+query R
+SELECT v FROM read_parquet('{TEST_DIR}/bound_integer.parquet', bound_schema={'missing':'BIGINT','v':'DOUBLE'}, hive_partitioning=false)
+----
+1.0
+
+statement error
+SELECT missing FROM read_parquet('{TEST_DIR}/bound_integer.parquet', bound_schema={'missing':'BIGINT','v':'DOUBLE'}, hive_partitioning=false)
+----
+missing
+
+statement ok
+COPY (SELECT {'a':10,'bad':'not an integer'} s) TO '{TEST_DIR}/bound_nested.parquet' (FORMAT parquet)
+
+# Child projection is an optimizer contract. Check both modes locally, then restore
+# the caller's setting for the remaining reader and lifecycle coverage.
+statement ok
+SET VARIABLE bound_schema_saved_optimizer = current_setting('debug_disable_optimizer')
+
+statement ok
+SET debug_disable_optimizer = false
+
+# Optimized child selection need not convert an unused invalid child.
+query I
+SELECT s.a FROM read_parquet('{TEST_DIR}/bound_nested.parquet', bound_schema={'s':'STRUCT(a BIGINT, bad INTEGER, absent VARCHAR)'}, hive_partitioning=false)
+----
+10
+
+# Without child projection, the reader converts the whole STRUCT.
+statement ok
+SET debug_disable_optimizer = true
+
+statement error
+SELECT s.a FROM read_parquet('{TEST_DIR}/bound_nested.parquet', bound_schema={'s':'STRUCT(a BIGINT, bad INTEGER, absent VARCHAR)'}, hive_partitioning=false)
+----
+Could not convert
+
+statement ok
+SET debug_disable_optimizer = getvariable('bound_schema_saved_optimizer')
+
+statement ok
+RESET VARIABLE bound_schema_saved_optimizer
+
+statement error
+SELECT s FROM read_parquet('{TEST_DIR}/bound_nested.parquet', bound_schema={'s':'STRUCT(a BIGINT, bad INTEGER, absent VARCHAR)'}, hive_partitioning=false)
+----
+Could not convert
+
+statement ok
+COPY (SELECT {'other':5} s UNION ALL SELECT NULL) TO '{TEST_DIR}/bound_disjoint.parquet' (FORMAT parquet)
+
+# A missing child is NULL. A NULL parent is not a present all-NULL struct.
+query II rowsort
+SELECT s IS NULL, s.a IS NULL FROM read_parquet('{TEST_DIR}/bound_disjoint.parquet', bound_schema={'s':'STRUCT(a INTEGER)'}, hive_partitioning=false)
+----
+false	true
+true	true
+
+statement ok
+COPY (SELECT {'b':2,'a':3} s, [{'b':4,'a':5}] l, MAP {'k':{'b':6,'a':7}} m) TO '{TEST_DIR}/bound_containers.parquet' (FORMAT parquet)
+
+query III
+SELECT s.a, l[1].a, m['k'].a FROM read_parquet('{TEST_DIR}/bound_containers.parquet', bound_schema={'m':'MAP(VARCHAR, STRUCT(a BIGINT,b INTEGER))','s':'STRUCT(a BIGINT,b INTEGER)','l':'STRUCT(a BIGINT,b INTEGER)[]'}, hive_partitioning=false)
+----
+3	5	7
+
+statement ok
+COPY (SELECT 1::SMALLINT v WHERE false) TO '{TEST_DIR}/bound_empty.parquet' (FORMAT parquet)
+
+query TI
+SELECT typeof(any_value(v)), count(*) FROM read_parquet('{TEST_DIR}/bound_empty.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+BIGINT	0
+
+statement ok
+PREPARE bound_reuse AS SELECT sum(v) FROM read_parquet(['{TEST_DIR}/bound_integer.parquet','{TEST_DIR}/bound_fraction.parquet'], bound_schema={'v':'DOUBLE'}, hive_partitioning=false)
+
+query R
+EXECUTE bound_reuse
+----
+2.4
+
+query R
+EXECUTE bound_reuse
+----
+2.4
+
+# Existing explicit schema defaults and renames retain their separate meaning.
+query I
+SELECT renamed FROM read_parquet('{TEST_DIR}/bound_integer.parquet', schema=MAP {'not_in_file': {'name':'renamed','type':'BIGINT','default_value':17}})
+----
+17

@@ -1,0 +1,147 @@
+# name: test/sql/storage/metadata/unchanged_table_statistics.test
+# description: Retain statistics when checkpointing unchanged tables
+# group: [metadata]
+
+load {TEST_DIR}/unchanged_table_statistics.db
+
+statement ok
+SET experimental_metadata_reuse=true;
+
+statement ok
+CREATE TABLE stable(i INTEGER PRIMARY KEY, s VARCHAR, items INTEGER[]);
+
+statement ok
+INSERT INTO stable SELECT i, 'value-' || i::VARCHAR, [i, i + 1] FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE empty_table(i INTEGER);
+
+statement ok
+CREATE TABLE changed(i INTEGER);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+ANALYZE stable;
+
+# compare the stats join-free: a join resets additive statistics (e.g. the total string length)
+statement ok
+SET VARIABLE int_stats = (SELECT stats(i) FROM stable LIMIT 1);
+
+statement ok
+SET VARIABLE string_stats = (SELECT stats(s) FROM stable LIMIT 1);
+
+loop iteration 1 4
+
+statement ok
+INSERT INTO changed VALUES ({iteration});
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT stats(i) IS NOT DISTINCT FROM getvariable('int_stats'),
+       stats(s) IS NOT DISTINCT FROM getvariable('string_stats')
+FROM stable LIMIT 1;
+----
+true	true
+
+query III
+SELECT count(*), sum(i), sum(items[2]) FROM stable;
+----
+1000	499500	500500
+
+query I
+SELECT count(*) FROM empty_table;
+----
+0
+
+endloop
+
+restart
+
+statement ok
+SET experimental_metadata_reuse=true;
+
+query III
+SELECT count(*), sum(i), sum(items[2]) FROM stable;
+----
+1000	499500	500500
+
+query III
+SELECT i, items[1], items[2] FROM stable WHERE s = 'value-17';
+----
+17	17	18
+
+statement ok
+UPDATE stable SET i = i + 1000 WHERE i < 10;
+
+statement ok
+DELETE FROM stable WHERE i >= 1005;
+
+statement ok
+INSERT INTO empty_table VALUES (42);
+
+statement ok
+CHECKPOINT;
+
+query IIII
+SELECT count(*), sum(i), min(i), max(i) FROM stable;
+----
+995	504465	10	1004
+
+statement ok
+SET VARIABLE int_stats = (SELECT stats(i) FROM stable LIMIT 1);
+
+statement ok
+SET VARIABLE string_stats = (SELECT stats(s) FROM stable LIMIT 1);
+
+statement ok
+INSERT INTO changed VALUES (4);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT stats(i) IS NOT DISTINCT FROM getvariable('int_stats'),
+       stats(s) IS NOT DISTINCT FROM getvariable('string_stats')
+FROM stable LIMIT 1;
+----
+true	true
+
+restart
+
+statement ok
+SET experimental_metadata_reuse=true;
+
+query IIII
+SELECT count(*), sum(i), min(i), max(i) FROM stable;
+----
+995	504465	10	1004
+
+query I
+SELECT i FROM empty_table;
+----
+42
+
+statement ok
+SET experimental_metadata_reuse=false;
+
+statement ok
+INSERT INTO changed VALUES (5);
+
+statement ok
+CHECKPOINT;
+
+query III
+SELECT i, items[1], items[2] FROM stable WHERE s = 'value-0';
+----
+1000	0	1
+
+restart
+
+query II
+SELECT count(*), sum(i) FROM stable;
+----
+995	504465

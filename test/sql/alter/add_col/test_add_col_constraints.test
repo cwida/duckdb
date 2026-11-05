@@ -1,0 +1,29 @@
+# name: test/sql/alter/add_col/test_add_col_constraints.test
+# description: Test unsupported constraints on ALTER TABLE ADD COLUMN
+# group: [add_col]
+
+statement ok
+CREATE TABLE t1(i INTEGER)
+
+statement ok
+CREATE TABLE t2(i INTEGER PRIMARY KEY)
+
+statement error
+ALTER TABLE t1 ADD COLUMN j INTEGER PRIMARY KEY
+----
+Parser Error: Adding columns with PRIMARY KEY constraints is not supported yet
+
+statement error
+ALTER TABLE t1 ADD COLUMN j INTEGER CHECK (j > 0)
+----
+Parser Error: Adding columns with CHECK constraints is not supported yet
+
+statement error
+ALTER TABLE t1 ADD COLUMN j INTEGER REFERENCES t2(i)
+----
+Parser Error: Adding columns with FOREIGN KEY constraints is not supported yet
+
+query I
+SELECT count(*) FROM pragma_table_info('t1')
+----
+1

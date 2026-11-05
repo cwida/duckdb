@@ -1,0 +1,30 @@
+# name: test/sql/types/enum/test_26369.test
+# description: Constant inference must ignore bounds of empty statistics, e.g. of an empty ENUM column (#26369)
+# group: [enum]
+
+statement ok
+CREATE TYPE mood AS ENUM();
+
+statement ok
+CREATE TABLE t (m mood);
+
+query I
+PIVOT t ON m USING count(*) GROUP BY rowid;
+----
+
+query I
+SELECT m::VARCHAR FROM t;
+----
+
+statement ok
+INSERT INTO t VALUES (NULL);
+
+query I
+SELECT m::VARCHAR FROM t;
+----
+NULL
+
+query I
+PIVOT t ON m USING count(*) GROUP BY rowid;
+----
+0

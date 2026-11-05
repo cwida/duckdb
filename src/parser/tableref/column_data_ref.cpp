@@ -53,9 +53,7 @@ optionally_owned_ptr<ColumnDataCollection> CopyCollection(optionally_owned_ptr<C
 	if (unique) {
 		// uniquely owned - need to copy over all the data and make a new collection
 		auto new_collection = make_uniq<ColumnDataCollection>(collection->GetAllocator(), collection->Types());
-		for (auto &chunk : collection->Chunks()) {
-			new_collection->Append(chunk);
-		}
+		new_collection->Append(*collection);
 		return std::move(new_collection);
 	}
 	auto &shared = collection.get_owned_shared();

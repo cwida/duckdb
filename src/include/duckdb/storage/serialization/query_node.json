@@ -25,13 +25,17 @@
     "finalize_deserialization": [
       "if (type == QueryNodeType::CTE_NODE) {",
       "\tresult = std::move(result->Cast<CTENode>().child);",
-      "}"
+      "}",
+      "QueryNode::VerifyDeserialized(result);"
     ]
   },
   {
     "class": "SelectNode",
     "base": "QueryNode",
     "enum": "SELECT_NODE",
+    "includes": [
+      "duckdb/parser/tableref/emptytableref.hpp"
+    ],
     "members": [
       {
         "id": 200,
@@ -80,6 +84,18 @@
         "name": "qualify",
         "type": "ParsedExpression*"
       }
+    ],
+    "finalize_deserialization": [
+      "if (!result->from_table) {",
+      "\tresult->from_table = make_uniq<EmptyTableRef>();",
+      "}",
+      "for (auto &grouping_set : result->groups.grouping_sets) {",
+      "\tfor (auto &group_index : grouping_set) {",
+      "\t\tif (!group_index.IsValid() || group_index.GetIndex() >= result->groups.group_expressions.size()) {",
+      "\t\t\tthrow SerializationException(\"Grouping set refers to a group that does not exist\");",
+      "\t\t}",
+      "\t}",
+      "}"
     ]
   },
   {

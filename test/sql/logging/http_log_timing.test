@@ -17,20 +17,21 @@ FROM "http://localhost:2338/test.csv"
 ----
 
 # Confirm that our request timing returns something reasonable
-query  IIII
+query  IIIII
 SELECT 
 	request.type, 
 	request.duration_ms >= 0,
 	request.duration_ms <= 1000 * 1000,
+	request.duration_us // 1000 = request.duration_ms,
 	request.request_body_length
 FROM 
 	duckdb_logs_parsed('HTTP')
 WHERE 
 	request.type='HEAD'
 ----
-HEAD	true	true	NULL
-HEAD	true	true	NULL
-HEAD	true	true	NULL
+HEAD	true	true	true	NULL
+HEAD	true	true	true	NULL
+HEAD	true	true	true	NULL
 
 query II
 SELECT DISTINCT

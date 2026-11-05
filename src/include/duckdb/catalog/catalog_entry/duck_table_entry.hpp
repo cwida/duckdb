@@ -10,7 +10,6 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_set.hpp"
-#include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/planner/constraints/bound_unique_constraint.hpp"
 
 namespace duckdb {
@@ -53,6 +52,9 @@ public:
 	void CommitAlter(string &column_name, CommitDropState &drop_state);
 	void CommitDrop(CommitDropState &drop_state);
 
+	//! Returns the backing index OIDs of UNIQUE constraints that are not in prev_table.
+	vector<idx_t> GetAddedUniqueIndexOids(const DuckTableEntry &prev_table) const;
+
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;
 
 	vector<ColumnSegmentInfo>
@@ -67,6 +69,9 @@ public:
 	bool IsDuckTable() const override {
 		return true;
 	}
+	optional_ptr<DuckTableEntry> TryGetDuckTableEntry() override {
+		return this;
+	}
 
 	//! Returns the virtual columns for this table
 	virtual_column_map_t GetVirtualColumns() const override;
@@ -75,10 +80,10 @@ public:
 	optional_ptr<CatalogEntry> GetTrigger(CatalogTransaction transaction, const Identifier &name) const override;
 	void ScanTriggers(CatalogTransaction transaction,
 	                  const std::function<void(CatalogEntry &)> &callback) const override;
-	//! Scan all triggers without a transaction (used by checkpoint writer)
-	void ScanTriggersNonTransactional(const std::function<void(CatalogEntry &)> &callback);
+	//! Scan the triggers visible at the bound (used by checkpoint writer)
+	void ScanTriggers(VisibilityBound bound, const std::function<void(CatalogEntry &)> &callback);
 	//! Drop a trigger by name
-	bool DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade);
+	bool DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade) override;
 
 private:
 	unique_ptr<CatalogEntry> RenameColumn(ClientContext &context, RenameColumnInfo &info);

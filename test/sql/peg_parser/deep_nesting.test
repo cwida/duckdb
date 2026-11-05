@@ -1,9 +1,6 @@
 # name: test/sql/peg_parser/deep_nesting.test
-# description: Test deeply nested input with the heap-based PEG parser
+# description: Test deeply nested input with the PEG parser
 # group: [peg_parser]
-
-statement ok
-SET heap_based_parser=true;
 
 statement ok
 SET max_expression_depth=1000000;

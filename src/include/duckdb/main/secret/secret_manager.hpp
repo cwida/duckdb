@@ -143,6 +143,8 @@ public:
 
 	//! List all secret types
 	DUCKDB_API vector<SecretType> AllSecretTypes();
+	//! List all secret functions
+	DUCKDB_API vector<CreateSecretFunction> AllSecretFunctions();
 
 	//! Secret Manager settings
 	DUCKDB_API virtual void SetEnablePersistentSecrets(bool enabled);
@@ -220,7 +222,8 @@ private:
 //! The DefaultGenerator for persistent secrets. This is used to store lazy loaded secrets in the catalog
 class DefaultSecretGenerator : public DefaultGenerator {
 public:
-	DefaultSecretGenerator(Catalog &catalog, SecretManager &secret_manager, identifier_set_t &persistent_secrets);
+	DefaultSecretGenerator(Catalog &catalog, SecretManager &secret_manager, identifier_set_t &persistent_secrets,
+	                       shared_ptr<PersistentSecretFiles> files);
 
 public:
 	unique_ptr<CatalogEntry> CreateDefaultEntry(CatalogTransaction transaction, const Identifier &entry_name) override;
@@ -236,6 +239,7 @@ protected:
 	SecretManager &secret_manager;
 	mutex lock;
 	identifier_set_t persistent_secrets;
+	shared_ptr<PersistentSecretFiles> files;
 };
 
 } // namespace duckdb

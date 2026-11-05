@@ -1,0 +1,27 @@
+# name: test/sql/logging/test_enable_logging_unknown_type_file_storage.test
+# description: enable_logging with an unknown log type and file storage fails without changing the logging settings
+# group: [logging]
+
+statement ok
+CALL enable_logging(level := 'warning', storage := 'memory');
+
+statement error
+CALL enable_logging('nope', storage := 'file', storage_path := '{TEST_DIR}/enable_logging_unknown.csv');
+----
+Unknown log type: 'nope'
+
+statement error
+SELECT * FROM enable_logging('a', storage_path := '{TEST_DIR}/enable_logging_unknown_2.csv');
+----
+Unknown log type: 'a'
+
+# the previous settings are still in place
+query I
+SELECT current_setting('logging_storage');
+----
+memory
+
+query I
+SELECT 42
+----
+42

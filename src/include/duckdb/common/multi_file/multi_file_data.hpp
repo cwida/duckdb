@@ -26,6 +26,22 @@ public:
 	virtual idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) = 0;
 };
 
+//! A delete filter that forwards to one owned by somebody else - used to hand a reader the filter of the scan it is
+//! part of, which outlives it
+class BorrowedDeleteFilter : public DeleteFilter {
+public:
+	explicit BorrowedDeleteFilter(DeleteFilter &filter_p) : filter(filter_p) {
+	}
+
+public:
+	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) override {
+		return filter.Filter(start_row_index, count, result_sel);
+	}
+
+private:
+	DeleteFilter &filter;
+};
+
 struct HivePartitioningIndex {
 	HivePartitioningIndex(string value, idx_t index);
 
@@ -38,7 +54,8 @@ struct HivePartitioningIndex {
 
 struct MultiFileColumnDefinition {
 public:
-	MultiFileColumnDefinition(const Identifier &name, const LogicalType &type) : name(name), type(type) {
+	MultiFileColumnDefinition(Identifier name_p, LogicalType type_p)
+	    : name(std::move(name_p)), type(std::move(type_p)) {
 	}
 	MultiFileColumnDefinition(const char *name, const LogicalType &type) : name(name), type(type) {
 	}
@@ -74,6 +91,14 @@ public:
 		return result;
 	}
 
+	//! The definition of a column, with a child for every nested field an identifier can be attached to: the fields of
+	//! a STRUCT, the elements of a LIST or ARRAY, the "key_value" entries of a MAP, and the members of a UNION
+	DUCKDB_API static MultiFileColumnDefinition CreateNested(const Identifier &name, const LogicalType &type);
+	//! The definition of the nested field a path of child indexes addresses, starting at this column: a STRUCT field by
+	//! its index, the elements of a LIST or ARRAY by 0, the keys of a MAP by 0 and its values by 1, and a UNION member
+	//! by its index. Requires a definition from CreateNested; throws when the path addresses no nested field
+	DUCKDB_API MultiFileColumnDefinition &ResolveChildPath(const vector<idx_t> &child_path);
+
 	static vector<MultiFileColumnDefinition> ColumnsFromNamesAndTypes(const vector<Identifier> &names,
 	                                                                  const vector<LogicalType> &types) {
 		vector<MultiFileColumnDefinition> columns;
@@ -102,6 +127,9 @@ public:
 		return identifier.GetValue<int32_t>();
 	}
 
+	DUCKDB_API void Serialize(Serializer &serializer) const;
+	DUCKDB_API static MultiFileColumnDefinition Deserialize(Deserializer &deserializer);
+
 	string GetIdentifierName() const {
 		if (identifier.IsNull()) {
 			// No identifier was provided, assume the name as the identifier
@@ -111,19 +139,14 @@ public:
 		return identifier.GetValue<string>();
 	}
 
-	Value GetDefaultValue() const {
-		D_ASSERT(default_expression);
-		if (default_expression->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
-			throw NotImplementedException("Default expression that isn't constant is not supported yet");
-		}
-		auto &constant_expr = default_expression->Cast<ConstantExpression>();
-		return constant_expr.GetValue();
-	}
-
 public:
 	Identifier name;
 	LogicalType type;
 	vector<MultiFileColumnDefinition> children;
+	//! Fallback when no file column/field matches this definition. A NULL fallback must be an explicit
+	//! ConstantExpression containing a typed NULL, rather than a nullptr.
+	//! With field-id mapping, nullptr requires a matching field; a missing field raises InvalidInputException.
+	//! With name mapping, nullptr rejects missing root columns but fills missing nested fields with NULL.
 	unique_ptr<ParsedExpression> default_expression;
 
 	//! Either the field_id or the name to map on

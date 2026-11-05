@@ -11,6 +11,7 @@
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/planner/table_filter_set.hpp"
 
 namespace duckdb {
 
@@ -19,8 +20,9 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::INOUT_FUNCTION;
 
 public:
-	PhysicalTableInOutFunction(PhysicalPlan &physical_plan, vector<LogicalType> types, TableFunction function_p,
+	PhysicalTableInOutFunction(PhysicalPlan &physical_plan, vector<LogicalType> types, BoundTableFunction function_p,
 	                           unique_ptr<FunctionData> bind_data_p, vector<ColumnIndex> column_ids_p,
+	                           vector<idx_t> projection_ids_p, unique_ptr<TableFilterSet> table_filters_p,
 	                           idx_t estimated_cardinality, vector<column_t> projected_input);
 
 public:
@@ -45,6 +47,9 @@ public:
 
 	//! Information for WITH ORDINALITY
 	optional_idx ordinality_idx;
+	//! Whether the function consumes a TABLE parameter: its input rows form one invocation,
+	//! so the ordinality numbering continues across them instead of restarting per row
+	bool table_input = false;
 
 	OrderPreservationType OperatorOrder() const override {
 		return function.order_preservation_type;
@@ -52,11 +57,15 @@ public:
 
 private:
 	//! The table function
-	TableFunction function;
+	BoundTableFunction function;
 	//! Bind data of the function
 	unique_ptr<FunctionData> bind_data;
 	//! The set of column ids to fetch
 	vector<ColumnIndex> column_ids;
+	//! The projected-out column ids
+	vector<idx_t> projection_ids;
+	//! Filters pushed into the table in-out function
+	unique_ptr<TableFilterSet> table_filters;
 	//! The set of input columns to project out
 	vector<column_t> projected_input;
 };

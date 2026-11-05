@@ -1,0 +1,50 @@
+# name: test/sql/window/parallel_collection_combine.test
+# description: Parallel window finalization publishes combined values and validity masks together
+# group: [window]
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+CREATE TABLE collection_input AS
+SELECT i, CASE WHEN i % 4 = 0 THEN i END AS v,
+       CASE WHEN i % 4 = 0 THEN i::VARCHAR END AS s,
+       NULL::BIGINT AS null_v
+FROM range(65536) t(i);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE last_v IS DISTINCT FROM i - i % 4
+       OR last_s IS DISTINCT FROM (i - i % 4)::VARCHAR
+       OR first_i IS DISTINCT FROM 0
+       OR last_null IS NOT NULL
+       OR n IS DISTINCT FROM i + 1
+)
+FROM (
+    SELECT i,
+           last_value(v IGNORE NULLS) OVER w AS last_v,
+           last_value(s IGNORE NULLS) OVER w AS last_s,
+           first_value(i) OVER w AS first_i,
+           last_value(null_v IGNORE NULLS) OVER w AS last_null,
+           count(*) OVER w AS n
+    FROM collection_input
+    WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+) t;
+----
+65536	0
+
+# COUNT(*) needs no materialized input columns.
+query I
+SELECT count(*) FROM (
+    SELECT i, count(*) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS n
+    FROM collection_input
+) t WHERE n IS DISTINCT FROM i + 1;
+----
+0
+
+endloop

@@ -1,0 +1,33 @@
+# name: test/optimizer/regex_optimizer_anchors.test
+# description: Regex optimizations must preserve the anchors and the back-references of the pattern
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ('ab'), ('a'), ('b'), ('xab')) t(s);
+
+# anchors in the middle of the pattern can never match here
+query IIII
+SELECT s, regexp_matches(s, 'a^b'), regexp_matches(s, 'a$b'), regexp_matches(s, 'a\Ab') FROM t ORDER BY s
+----
+a	false	false	false
+ab	false	false	false
+b	false	false	false
+xab	false	false	false
+
+query IIII
+SELECT s, regexp_matches(s, '^ab$'), regexp_matches(s, '^a'), regexp_matches(s, 'b$') FROM t ORDER BY s
+----
+a	false	true	false
+ab	true	true	true
+b	false	false	true
+xab	false	false	true
+
+statement error
+SELECT regexp_replace('aaa', '^(a+)$', '\2')
+----
+Invalid replacement string for regexp_replace
+
+query II
+SELECT regexp_replace('aaa', '^(a+)$', '\1'), regexp_replace('aaa', '^(a+)$', '\0')
+----
+aaa	aaa

@@ -1,0 +1,32 @@
+# name: test/sql/copy/partitioned/partitioned_flush_join_race.test
+# description: Cover the window between joining a sink state and moving it to flushing
+# group: [partitioned]
+
+require parquet
+
+statement ok
+PRAGMA threads=16;
+
+statement ok
+SET partitioned_write_flush_threshold=2048;
+
+statement ok
+CREATE TABLE flush_join_src AS SELECT (i % 64)::INTEGER AS p, i::BIGINT AS v FROM range(262144) tbl(i);
+
+statement ok
+COPY flush_join_src TO '{TEST_DIR}/flush_join_race' (FORMAT PARQUET, PARTITION_BY (p));
+
+query III
+SELECT count(*), count(DISTINCT v), sum(v)
+FROM read_parquet('{TEST_DIR}/flush_join_race/**/*.parquet', hive_partitioning = true);
+----
+262144	262144	34359607296
+
+statement ok
+COPY flush_join_src TO '{TEST_DIR}/flush_join_race_ordered' (FORMAT PARQUET, PARTITION_BY (p), ORDER_BY (v));
+
+query III
+SELECT count(*), count(DISTINCT v), sum(v)
+FROM read_parquet('{TEST_DIR}/flush_join_race_ordered/**/*.parquet', hive_partitioning = true);
+----
+262144	262144	34359607296

@@ -53,8 +53,7 @@ jobs:
 
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
-      ENABLE_EXTENSION_AUTOLOADING: 1
-      ENABLE_EXTENSION_AUTOINSTALL: 1
+      DUCKDB_CAPABILITIES: 'httplib loadable_extensions'
       GEN: ninja
       EXTENSION_STATIC_BUILD: 1
       DUCKDB_PLATFORM: android_${{ matrix.arch}}

@@ -75,6 +75,15 @@ SELECT * FROM generate_series(10, 0, -1) ORDER BY 1 ASC
 9
 10
 
+# Descending cardinality must not cause LIMIT to be removed.
+query I
+SELECT * FROM generate_series(5, 1, -1) LIMIT 4;
+----
+5
+4
+3
+2
+
 query I
 SELECT * FROM range(0, -5, -1)
 ----

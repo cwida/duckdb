@@ -140,7 +140,15 @@ unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundFunct
 
 	result->Finalize();
 	if (expr.Function().HasInitStateCallback()) {
-		result->local_state = expr.Function().GetInitStateCallback()(*result, expr, expr.BindInfo().get());
+		try {
+			result->local_state = expr.Function().GetInitStateCallback()(*result, expr, expr.BindInfo().get());
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			if (!root.inside_try || !Exception::IsExecutionError(error.Type())) {
+				throw;
+			}
+			result->init_error = std::move(error);
+		}
 	}
 	return std::move(result);
 }
@@ -186,6 +194,29 @@ static idx_t SelectBooleanResult(Vector &result, const SelectionVector *sel, idx
 	    result, sel, count, [](bool value) { return value; }, true_sel, false_sel);
 }
 
+static void SetConstantArgumentCardinality(DataChunk &arguments, vector<buffer_ptr<VectorBuffer>> &buffers) {
+	buffers.clear();
+	for (auto &arg : arguments.data) {
+		buffers.push_back(arg.GetBufferRef());
+	}
+	arguments.SetChildCardinality(1ULL);
+}
+
+static void RestoreConstantArgumentCardinality(DataChunk &arguments, vector<buffer_ptr<VectorBuffer>> &buffers,
+                                               idx_t count) {
+	for (auto &arg : arguments.data) {
+		arg.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+	arguments.SetChildCardinality(count);
+	// the function can have replaced an argument's buffer (e.g. by flattening it)
+	for (auto &buffer : buffers) {
+		if (buffer) {
+			buffer->SetVectorSize(count);
+		}
+	}
+	buffers.clear();
+}
+
 static void ExecuteConstantSelectFunction(const BoundFunctionExpression &expr, DataChunk &args, ExpressionState &state,
                                           Vector &result) {
 	D_ASSERT(args.size() == 1);
@@ -222,15 +253,18 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 			}
 		}
 	}
+	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
+	if (execute_function_state.init_error.HasError()) {
+		execute_function_state.init_error.Throw();
+	}
 	if (all_constant) {
 		// if all arguments are constant temporarily set the child cardinality to 1
-		arguments.SetChildCardinality(1ULL);
+		SetConstantArgumentCardinality(arguments, execute_function_state.constant_argument_buffers);
 	} else {
 		arguments.SetChildCardinality(count);
 	}
 	arguments.Verify(context);
 
-	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
 	auto dictionary_executed = expr.Function().HasFunctionCallback() && !all_constant &&
 	                           execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result);
 	if (!dictionary_executed) {
@@ -243,11 +277,7 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 		}
 	}
 	if (all_constant) {
-		// restore the input cardinality
-		for (auto &arg : arguments.data) {
-			arg.SetVectorType(VectorType::CONSTANT_VECTOR);
-		}
-		arguments.SetChildCardinality(count);
+		RestoreConstantArgumentCardinality(arguments, execute_function_state.constant_argument_buffers, count);
 		// ensure the result type is constant
 		result.FlattenAndSetConstant();
 	}
@@ -281,9 +311,13 @@ idx_t ExpressionExecutor::Select(const BoundFunctionExpression &expr, Expression
 			return SelectBooleanResult(result, sel, count, true_sel, false_sel);
 		}
 	}
+	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
+	if (execute_function_state.init_error.HasError()) {
+		execute_function_state.init_error.Throw();
+	}
 	if (all_constant) {
 		// if all arguments are constant we only need to run the function on one value
-		arguments.SetChildCardinality(1ULL);
+		SetConstantArgumentCardinality(arguments, execute_function_state.constant_argument_buffers);
 	} else {
 		arguments.SetChildCardinality(count);
 	}
@@ -296,14 +330,9 @@ idx_t ExpressionExecutor::Select(const BoundFunctionExpression &expr, Expression
 		} else {
 			ExecuteConstantSelectFunction(expr, arguments, *state, result);
 		}
-		// restore the input cardinality
-		for (auto &arg : arguments.data) {
-			arg.SetVectorType(VectorType::CONSTANT_VECTOR);
-		}
-		arguments.SetChildCardinality(count);
+		RestoreConstantArgumentCardinality(arguments, execute_function_state.constant_argument_buffers, count);
 		return SelectBooleanResult(result, sel, count, true_sel, false_sel);
 	}
-	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
 	if (expr.Function().HasFunctionCallback()) {
 		Vector result(LogicalType::BOOLEAN);
 		auto dictionary_executed =

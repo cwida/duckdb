@@ -25,7 +25,7 @@ select sum(m)
 from (
     select median(a) over (
         order by b asc
-        rows between mod(b * 47, 521) preceding and 100 - mod(b * 47, 521) following) as m
+        rows between mod(b * 47, 521) preceding and GREATEST(100 - mod(b * 47, 521), 0) following) as m
     from rank100
     ) q;
 ----
@@ -49,11 +49,11 @@ select min(iqr), max(iqr)
 from (
     select quantile_cont(a, [0.25, 0.5, 0.75]) over (
         order by b asc
-        rows between mod(b * 47, 521) preceding and 100 - mod(b * 47, 521) following) as iqr
+        rows between mod(b * 47, 521) preceding and GREATEST(100 - mod(b * 47, 521), 0) following) as iqr
     from rank100
     ) q;
 ----
-[0.0, 0.0, 0.0]	[76.5, 84.0, 91.5]
+[0.75, 1.5, 2.25]	[76.5, 84.0, 91.5]
 
 # window_mad_fixed_100
 query I
@@ -73,8 +73,8 @@ select sum(m)
 from (
     select mad(a) over (
         order by b asc
-        rows between mod(b * 47, 521) preceding and 100 - mod(b * 47, 521) following) as m
+        rows between mod(b * 47, 521) preceding and GREATEST(100 - mod(b * 47, 521), 0) following) as m
     from rank100
     ) q;
 ----
-249994596.000000
+245602962.0

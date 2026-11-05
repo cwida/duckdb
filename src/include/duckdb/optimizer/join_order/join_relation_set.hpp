@@ -29,6 +29,8 @@ public:
 public:
 	unsafe_unique_array<RelationIndex> relations;
 	idx_t count;
+	//! Bitmask over the relation indexes for fast subset/intersection checks
+	vector<idx_t> bitmask;
 };
 
 //! The JoinRelationTree is a structure holding all the created JoinRelationSet objects and allowing fast lookup on to
@@ -53,6 +55,8 @@ public:
 	JoinRelationSet &GetJoinRelation(unsafe_unique_array<RelationIndex> relations, idx_t count);
 	//! Union two sets of relations together and create a new relation set
 	JoinRelationSet &Union(JoinRelationSet &left, JoinRelationSet &right);
+	JoinRelationSet &Intersection(const JoinRelationSet &left, const JoinRelationSet &right);
+	JoinRelationSet &Difference(const JoinRelationSet &left, const JoinRelationSet &right);
 	string ToString() const;
 	void Print();
 

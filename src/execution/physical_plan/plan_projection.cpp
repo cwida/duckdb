@@ -23,7 +23,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalProjection &op) {
 		for (idx_t i = 0; i < op.types.size(); i++) {
 			if (op.expressions[i]->GetExpressionType() == ExpressionType::BOUND_REF) {
 				auto &bound_ref = op.expressions[i]->Cast<BoundReferenceExpression>();
-				if (bound_ref.Index() == i) {
+				if (bound_ref.Index() == i && op.types[i].EqualsIncludingCollation(plan.GetTypes()[i])) {
 					continue;
 				}
 			}

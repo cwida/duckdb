@@ -1,0 +1,37 @@
+# name: test/sql/storage/in_memory_autocheckpoint_large_commit.test
+# description: A large commit checkpoints an in-memory database instead of writing to the WAL
+# group: [storage]
+
+statement ok
+SET checkpoint_threshold='1KB'
+
+# a commit above this estimated size checkpoints instead of writing to the WAL
+statement ok
+SET auto_checkpoint_skip_wal_threshold=1024
+
+statement ok
+CREATE TABLE t(i INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO t SELECT range, repeat('x', 100) FROM range(10000)
+
+query II
+SELECT COUNT(*), SUM(i) FROM t
+----
+10000	49995000
+
+statement ok
+INSERT INTO t SELECT range, repeat('y', 100) FROM range(10000)
+
+query II
+SELECT COUNT(*), SUM(i) FROM t
+----
+20000	99990000
+
+statement ok
+DELETE FROM t WHERE i < 5000
+
+query II
+SELECT COUNT(*), SUM(i) FROM t
+----
+10000	74995000

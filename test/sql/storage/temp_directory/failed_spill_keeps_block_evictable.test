@@ -1,0 +1,41 @@
+# name: test/sql/storage/temp_directory/failed_spill_keeps_block_evictable.test
+# description: A block whose spill fails must stay in the eviction queue, so it can be evicted once the temp directory has room again
+# group: [temp_directory]
+
+require skip_reload
+
+load {TEST_DIR}/failed_spill.db
+
+statement ok
+SET threads=1;
+
+statement ok
+SET memory_limit='200MB';
+
+statement ok
+CREATE TEMP TABLE t AS SELECT range AS i, repeat('x', 200)::VARCHAR AS s FROM range(400000);
+
+# no room in the temp directory: every attempt to lower the limit fails on the first block it tries to spill
+statement ok
+SET max_temp_directory_size='0B';
+
+loop i 0 40
+
+statement error
+SET memory_limit='4MB';
+----
+failed to offload
+
+endloop
+
+# room again: every block of t is unpinned, so the limit must be reachable
+statement ok
+SET max_temp_directory_size='10GB';
+
+statement ok
+SET memory_limit='4MB';
+
+query I
+SELECT max(length(s)) FROM t;
+----
+200

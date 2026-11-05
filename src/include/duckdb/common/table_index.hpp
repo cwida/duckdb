@@ -8,40 +8,13 @@
 
 #pragma once
 
-#include "duckdb/common/constants.hpp"
+#include "duckdb/common/typed_index.hpp"
 #include <functional>
 
 namespace duckdb {
 
-struct TableIndex {
-	TableIndex() : index(DConstants::INVALID_INDEX) {
-	}
-	explicit TableIndex(idx_t index) : index(index) {
-	}
-
-	idx_t index;
-
-	inline bool operator==(const TableIndex &rhs) const {
-		return index == rhs.index;
-	};
-	inline bool operator<(const TableIndex &rhs) const {
-		return index < rhs.index;
-	};
-	bool operator!=(const TableIndex &other) const {
-		return !(*this == other);
-	}
-	bool operator>(const TableIndex &other) const {
-		return other < *this;
-	}
-	bool operator<=(const TableIndex &other) const {
-		return !(other < *this);
-	}
-	bool operator>=(const TableIndex &other) const {
-		return !(*this < other);
-	}
-	bool IsValid() const {
-		return index != DConstants::INVALID_INDEX;
-	}
+struct TableIndex : public TypedIndex<TableIndex> {
+	using TypedIndex::TypedIndex;
 };
 
 } // namespace duckdb

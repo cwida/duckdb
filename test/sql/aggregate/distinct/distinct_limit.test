@@ -133,6 +133,28 @@ EXPLAIN SELECT i % 100 FROM range(1000000) t(i) GROUP BY 1 LIMIT 10
 ----
 physical_plan	<REGEX>:.*LIMITED_DISTINCT.*
 
+# EXPLAIN: a perfect-hash group key whose bounds cannot reach the limit keeps the perfect hash aggregate
+query II
+EXPLAIN SELECT i % 8 FROM range(1000000) t(i) GROUP BY 1 LIMIT 100
+----
+physical_plan	<REGEX>:.*PERFECT_HASH_GROUP_BY.*
+
+query I
+SELECT count(*) FROM (SELECT i % 8 FROM range(1000000) t(i) GROUP BY 1 LIMIT 100)
+----
+8
+
+# EXPLAIN: a perfect-hash group key that can reach the limit uses LIMITED_DISTINCT
+query II
+EXPLAIN SELECT i % 8 FROM range(1000000) t(i) GROUP BY 1 LIMIT 5
+----
+physical_plan	<REGEX>:.*LIMITED_DISTINCT.*
+
+query I
+SELECT count(*) FROM (SELECT i % 8 FROM range(1000000) t(i) GROUP BY 1 LIMIT 5)
+----
+5
+
 # EXPLAIN: GROUP BY with aggregates uses HASH_GROUP_BY
 query II
 EXPLAIN SELECT i % 100, COUNT(*) FROM range(1000000) t(i) GROUP BY 1 LIMIT 10

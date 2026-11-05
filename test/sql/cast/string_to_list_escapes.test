@@ -14,12 +14,12 @@ SELECT $$["hello\ world", world]$$::VARCHAR[];
 query I
 SELECT $$[hello\ world, world]$$::VARCHAR[];
 ----
-[hello\ world, world]
+['hello\\ world', world]
 
 query I
 SELECT $$[hello\,world, test]$$::VARCHAR[];
 ----
-[hello\, world, test]
+['hello\\', world, test]
 
 query I
 SELECT $$["hello\,world", test]$$::VARCHAR[];
@@ -34,7 +34,7 @@ SELECT $$["hello\,", test]$$::VARCHAR[];
 query I
 SELECT $$[hello\,, test]$$::VARCHAR[];
 ----
-[hello\, '', test]
+['hello\\', '', test]
 
 query III
 SELECT $$['']$$::VARCHAR[] a, a::VARCHAR::VARCHAR[] b, a == b;
@@ -50,12 +50,12 @@ SELECT $$[hello\"quoted\"text, more]$$::VARCHAR[];
 query I
 SELECT $$[escaped\\backslash, test]$$::VARCHAR[];
 ----
-[escaped\\backslash, test]
+['escaped\\\\backslash', test]
 
 query I
 SELECT $$["escaped\\backslash", test]$$::VARCHAR[];
 ----
-[escaped\backslash, test]
+['escaped\\backslash', test]
 
 query I
 SELECT $$[nested[brackets], test]$$::VARCHAR[];
@@ -80,7 +80,7 @@ SELECT $$[quote\'in\'string, test]$$::VARCHAR[];
 query I
 SELECT $$[mix\ of\ special\,chars]$$::VARCHAR[];
 ----
-[mix\ of\ special\, chars]
+['mix\\ of\\ special\\', chars]
 
 query I
 SELECT $$["mix\ of\ special\,chars"]$$::VARCHAR[];
@@ -115,7 +115,7 @@ SELECT $$["ends with bracket]", "[bracket"]$$::VARCHAR[];
 query I
 SELECT $$["backslash at end\\", "\\"]$$::VARCHAR[];
 ----
-[backslash at end\, \]
+['backslash at end\\', '\\']
 
 query I
 SELECT $$[" space at start", " leading space"]$$::VARCHAR[];
@@ -140,7 +140,7 @@ SELECT $$["[bracket at start", "[leading bracket"]$$::VARCHAR[];
 query I
 SELECT $$["\\backslash at start", "\\leading backslash"]$$::VARCHAR[];
 ----
-[\backslash at start, \leading backslash]
+['\\backslash at start', '\\leading backslash']
 
 query I
 SELECT $$[" space at start and end ", " leading and trailing space "]$$::VARCHAR[];
@@ -165,7 +165,7 @@ SELECT $$["[bracket at start and end]", "[leading and trailing bracket]"]$$::VAR
 query I
 SELECT $$["\\backslash at start and end\\", "\\leading and trailing backslash\\"]$$::VARCHAR[];
 ----
-[\backslash at start and end\, \leading and trailing backslash\]
+['\\backslash at start and end\\', '\\leading and trailing backslash\\']
 
 
 query I
@@ -186,7 +186,7 @@ SELECT $$["\"quotes\" and \ spaces ", "\ leading and trailing \ "]$$::VARCHAR[];
 query I
 SELECT $$["[complex\ combination, of\" special]", "\\all cases covered\\"]$$::VARCHAR[];
 ----
-['[complex combination, of" special]', \all cases covered\]
+['[complex combination, of" special]', '\\all cases covered\\']
 
 query I
 SELECT $$["hello, world"]$$::VARCHAR[];
@@ -231,7 +231,7 @@ SELECT $$[" "]$$::VARCHAR[]; -- List with whitespace string
 query I
 SELECT $$["\\"]$$::VARCHAR[]; -- List with only a backslash
 ----
-[\]
+['\\']
 
 query I
 SELECT $$["\""]$$::VARCHAR[]; -- List with only a quote
@@ -241,7 +241,7 @@ SELECT $$["\""]$$::VARCHAR[]; -- List with only a quote
 query I
 SELECT $$[\,]$$::VARCHAR[]; -- List with only a comma (not quoted)
 ----
-[\, '']
+['\\', '']
 
 query I
 SELECT $$["\,"]$$::VARCHAR[]; -- List with only a comma

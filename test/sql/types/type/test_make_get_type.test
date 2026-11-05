@@ -24,7 +24,7 @@ STRUCT(a INTEGER, b VARCHAR)
 statement error
 SELECT make_type('STRUCT', make_type('INTEGER'), b := make_type('VARCHAR'));
 ----
-Binder Error: STRUCT type arguments must have names
+<REGEX>:.*Binder Error.*Type "STRUCT" does not accept type parameters.*
 
 query I
 SELECT make_type('LIST', make_type('STRUCT', a := make_type('STRUCT', x := make_type('INTEGER')), b := make_type('VARCHAR')));

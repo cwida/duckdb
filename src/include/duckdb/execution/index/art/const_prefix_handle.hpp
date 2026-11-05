@@ -20,8 +20,8 @@ public:
 	static constexpr NType PREFIX = NType::PREFIX;
 
 public:
-	explicit ConstPrefixHandle(const ART &art, const NodePtr node) : handle(art, node) {
-		D_ASSERT(node.GetType() == PREFIX);
+	explicit ConstPrefixHandle(const ART &art, const NodePtr node_ptr) : handle(art, node_ptr) {
+		D_ASSERT(node_ptr.GetType() == PREFIX);
 	}
 
 	ConstPrefixHandle(const ConstPrefixHandle &) = delete;
@@ -54,27 +54,27 @@ public:
 	}
 
 	//! Traverses and verifies the node and its subtree.
-	static void Verify(ART &art, const NodePtr &node);
+	static void Verify(ART &art, const NodePtr &node_ptr);
 
 	//! Returns the string representation of the node using ToStringOptions.
-	static string ToString(ART &art, const NodePtr &node, const ToStringOptions &options);
+	static string ToString(ART &art, const NodePtr &node_ptr, const ToStringOptions &options);
 
 private:
 	template <class F>
-	static NodePtr Iterator(ART &art, NodePtr node, const bool exit_gate, F &&lambda) {
-		while (node.HasMetadata() && node.GetType() == PREFIX) {
-			ConstNodeHandle handle(art, node);
+	static NodePtr Iterator(ART &art, NodePtr node_ptr, const bool exit_gate, F &&lambda) {
+		while (node_ptr.HasMetadata() && node_ptr.GetType() == PREFIX) {
+			ConstNodeHandle handle(art, node_ptr);
 			auto data = handle.GetPtr();
-			NodePtr child = ChildRef(art, handle);
+			NodePtr child_ptr = ChildRef(art, handle);
 
-			lambda(handle, data, child);
+			lambda(handle, data, child_ptr);
 
-			node = child;
-			if (exit_gate && node.GetGateStatus() == GateStatus::GATE_SET) {
+			node_ptr = child_ptr;
+			if (exit_gate && node_ptr.GetGateStatus() == GateStatus::GATE_SET) {
 				break;
 			}
 		}
-		return node;
+		return node_ptr;
 	}
 
 private:

@@ -180,12 +180,13 @@ AggregateFunctionSet StringAggFun::GetFunctions() {
 	    AggregateFunction::StateFinalize<StringAggState, string_t, StringAggFunction>,
 	    FunctionNullHandling::DEFAULT_NULL_HANDLING, AggregateFunction::NoClusterUpdate(), StringAggBind);
 
-	string_agg_param.GetSignature().GetParameter(0).SetName("input");
+	string_agg_param.GetSignature().GetParameter(0).SetName("str");
 	string_agg_param.SetSerializeCallback(StringAggSerialize);
 	string_agg_param.SetDeserializeCallback(StringAggDeserialize);
 	string_agg_param.SetStructStateExport(StringAggStateType);
+	string_agg_param.SetFallible(); // the update callback throws when the result exceeds the maximum string size
 	string_agg.AddFunction(string_agg_param);
-	string_agg_param.GetSignature().AddParameter("separator", LogicalType::VARCHAR);
+	string_agg_param.GetSignature().AddParameter("arg", LogicalType::VARCHAR);
 	string_agg.AddFunction(string_agg_param);
 	return string_agg;
 }

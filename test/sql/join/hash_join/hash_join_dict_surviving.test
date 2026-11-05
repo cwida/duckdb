@@ -479,3 +479,32 @@ LABEL_1	104880
 LABEL_2	104880
 LABEL_3	104880
 LABEL_4	104880
+
+# Shared dictionary copies must own long strings and preserve NULLs, including after spill/repartition.
+statement ok
+UPDATE dim SET d_label = CASE WHEN d_key = 'KEY_0' THEN NULL ELSE repeat(d_key, 32) END
+
+foreach threads 1 8
+
+statement ok
+SET threads={threads}
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external}
+
+query III
+SELECT count(*), count(d.d_label), count(*) FILTER (
+    WHERE d.d_label IS DISTINCT FROM CASE WHEN substring(f2.f2_ckey, 6)::INTEGER % 100 = 0 THEN NULL
+        ELSE repeat('KEY_' || (substring(f2.f2_ckey, 6)::INTEGER % 100), 32) END)
+FROM dim d JOIN fact1 f1 ON d.d_key = f1.f1_dkey JOIN fact2 f2 ON f1.f1_ckey = f2.f2_ckey
+----
+524400	519156	0
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_force_external

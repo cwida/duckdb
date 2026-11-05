@@ -1,0 +1,170 @@
+# name: test/sql/sql_export/source_results.test
+# description: SQL export preserves range invocations, system rows and scan projections
+# group: [sql_export]
+
+# Ordinary registered sources need no export callback.
+foreach serializer false true
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query I
+SELECT count(*)>0 FROM duckdb_functions();
+----
+1
+
+endloop
+
+endloop
+
+statement ok
+SET debug_verify_serializer=false;
+
+statement ok
+RESET debug_verify_statement;
+
+query I
+SELECT count(*) FROM range(4);
+----
+4
+
+query I
+SELECT * FROM range(NULL::BIGINT);
+----
+
+query II
+SELECT x,x FROM range(5) t(x) WHERE x>=2 ORDER BY x DESC;
+----
+4	4
+3	3
+2	2
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TT nosort source_rows_0
+SELECT * FROM duckdb_keywords() ORDER BY ALL;
+
+endloop
+
+reset label source_rows_0
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort source_rows_1
+SELECT * FROM duckdb_optimizers() ORDER BY ALL;
+
+endloop
+
+reset label source_rows_1
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTT nosort source_rows_2
+SELECT database_name,schema_name,table_name FROM system.main.duckdb_tables() ORDER BY ALL;
+
+endloop
+
+reset label source_rows_2
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort source_rows_3
+SELECT * FROM pragma_user_agent();
+
+endloop
+
+reset label source_rows_3
+
+statement ok
+RESET debug_verify_statement;
+
+statement ok
+CREATE TABLE scan_rows(i INTEGER, j INTEGER, "text value" VARCHAR, n DECIMAL(12,3), xs INTEGER[]);
+
+statement ok
+INSERT INTO scan_rows VALUES (1,3,'first',1.125,[1,NULL]),(2,2,NULL,NULL,[]),(2,2,'duplicate',2.250,[2]),(2,2,'duplicate',2.250,[2]),(NULL,4,'null',4.500,NULL);
+
+query IITRT rowsort
+SELECT * FROM scan_rows;
+----
+1	3	first	1.125	[1, NULL]
+2	2	NULL	NULL	[]
+2	2	duplicate	2.250	[2]
+2	2	duplicate	2.250	[2]
+NULL	4	null	4.500	NULL
+
+query TIT rowsort
+SELECT "text value",i,"text value" FROM scan_rows WHERE i>=2;
+----
+NULL	2	NULL
+duplicate	2	duplicate
+duplicate	2	duplicate
+
+query RT rowsort
+SELECT n,xs FROM scan_rows WHERE i IS NULL OR i=1;
+----
+1.125	[1, NULL]
+4.500	NULL
+
+query II rowsort
+SELECT rowid,i FROM scan_rows WHERE j=2;
+----
+1	2
+2	2
+3	2
+
+query T rowsort
+SELECT "text value" FROM scan_rows WHERE j=2;
+----
+NULL
+duplicate
+duplicate
+
+query R rowsort
+SELECT n FROM scan_rows WHERE i<j;
+----
+1.125
+
+query I rowsort
+SELECT count(*) FROM scan_rows WHERE j=2;
+----
+3
+
+query ITI rowsort
+SELECT a,e,b FROM scan_rows AS q(a,b,c,d,e) WHERE b=2;
+----
+2	[2]	2
+2	[2]	2
+2	[]	2
+
+query I rowsort
+SELECT i FROM scan_rows WHERE i+j=4;
+----
+1
+2
+2
+2
+
+query R rowsort
+SELECT n FROM scan_rows WHERE j=2;
+----
+2.250
+2.250
+NULL

@@ -1,0 +1,14 @@
+# name: test/sql/unnest/list_constant_reference.test
+# description: UNNEST preserves validity when reusing constant list references
+# group: [unnest]
+
+statement ok
+CREATE TABLE list_probes AS
+SELECT * FROM (VALUES (0,NULL::INTEGER[]),(1,[1,2]),(2,[]::INTEGER[]),(3,NULL::INTEGER[]),
+                     (4,[1,NULL::INTEGER]),(5,[2,1]),(6,NULL::INTEGER[]),(7,[1,2])) p(id,k);
+
+query T
+SELECT list(k ORDER BY id, n)
+FROM (SELECT id, k, unnest([0,1]) AS n FROM list_probes) p;
+----
+[NULL, NULL, [1, 2], [1, 2], [], [], NULL, NULL, [1, NULL], [1, NULL], [2, 1], [2, 1], NULL, NULL, [1, 2], [1, 2]]

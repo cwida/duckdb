@@ -1,0 +1,31 @@
+# name: test/optimizer/topn_window_elimination_nearest_setop.test
+# description: TopN window elimination over set operations of NEAREST joins without statistics propagation
+# group: [optimizer]
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+CREATE TABLE products(product_id VARCHAR, embedding FLOAT[3]);
+
+statement ok
+INSERT INTO products VALUES ('P1',[0.9,0.1,0.1]),('P2',[0.8,0.2,0.0]),('P3',[0.1,0.9,0.1]);
+
+query I
+SELECT t.product_id FROM (SELECT [1.0,0.0,0.0]::FLOAT[3] AS embedding) q
+  INNER JOIN products t APPROX NEAREST 3 BY DISTANCE array_distance(q.embedding, t.embedding)
+EXCEPT
+SELECT t.product_id FROM (SELECT [1.0,0.0,0.0]::FLOAT[3] AS embedding) q
+  INNER JOIN products t EXACT NEAREST 3 BY DISTANCE array_distance(q.embedding, t.embedding);
+----
+
+query I rowsort
+SELECT t.product_id FROM (SELECT [1.0,0.0,0.0]::FLOAT[3] AS embedding) q
+  INNER JOIN products t APPROX NEAREST 3 BY DISTANCE array_distance(q.embedding, t.embedding)
+UNION
+SELECT t.product_id FROM (SELECT [1.0,0.0,0.0]::FLOAT[3] AS embedding) q
+  INNER JOIN products t EXACT NEAREST 3 BY DISTANCE array_distance(q.embedding, t.embedding);
+----
+P1
+P2
+P3

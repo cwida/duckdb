@@ -214,3 +214,46 @@ query I
 SELECT try(parse_formatted_bytes('null'));
 ----
 NULL
+
+# Boundary: largest accepted value per unit, and the first value whose product does not fit uint64
+query I
+SELECT parse_formatted_bytes('17179869183 GiB');
+----
+18446744072635809792
+
+statement error
+SELECT parse_formatted_bytes('17179869184 GiB');
+----
+Invalid Input Error: Memory value out of range: value is too large
+
+query I
+SELECT parse_formatted_bytes('18014398509481982 KiB');
+----
+18446744073709549568
+
+statement error
+SELECT parse_formatted_bytes('18014398509481984 KiB');
+----
+Invalid Input Error: Memory value out of range: value is too large
+
+query I
+SELECT parse_formatted_bytes('18446744073709 KB');
+----
+18446744073709000
+
+# decimal units reach 2^64 below the naive max/multiplier boundary
+query I
+SELECT parse_formatted_bytes('18446744073709551 KB');
+----
+18446744073709551000
+
+statement error
+SELECT parse_formatted_bytes('18446744073709552 KB');
+----
+Invalid Input Error: Memory value out of range: value is too large
+
+# the memory_limit setting shares the same parser
+statement error
+SET memory_limit='17179869184GiB';
+----
+Memory value out of range: value is too large

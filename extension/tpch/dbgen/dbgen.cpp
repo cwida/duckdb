@@ -2,6 +2,7 @@
 #include "dbgen/dbgen_gunk.hpp"
 #include "tpch_constants.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
@@ -51,6 +52,20 @@ struct tpch_append_information {
 	idx_t active_row = DConstants::INVALID_INDEX;
 	idx_t active_col = 0;
 	bool finalized = false;
+	//! raw column pointers of the current chunk, so the per-value append path does no bounds or type checks
+	static constexpr idx_t MAX_COLUMNS = 16;
+	Vector *columns[MAX_COLUMNS];
+	data_ptr_t column_data[MAX_COLUMNS];
+
+	void RefreshColumnPointers() {
+		D_ASSERT(chunk.ColumnCount() <= MAX_COLUMNS);
+		for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
+			auto &vector = chunk.data[col];
+			D_ASSERT(vector.GetVectorType() == VectorType::FLAT_VECTOR);
+			columns[col] = &vector;
+			column_data[col] = FlatVector::GetDataMutable(vector);
+		}
+	}
 
 	~tpch_append_information() {
 		if (optimistic_writer) {
@@ -61,6 +76,7 @@ struct tpch_append_information {
 	void Initialize(ClientContext &context, TableCatalogEntry &table, idx_t flush_count) {
 		appender = make_uniq<InternalAppender>(context, table, flush_count);
 		chunk.Initialize(context, table.GetTypes());
+		RefreshColumnPointers();
 	}
 
 	void InitializeOptimistic(ClientContext &context, DuckTableEntry &table,
@@ -71,10 +87,12 @@ struct tpch_append_information {
 		    optimistic_writer->CreateCollection(table.GetStorage(), table.GetTypes(), partial_manager_type);
 		auto &row_collection = *collection->collection;
 		row_collection.InitializeEmpty();
-		row_collection.InitializeAppend(append_state);
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		row_collection.InitializeAppend(DuckTransaction::Get(context, table.catalog), append_state);
 		optimistic_collection_index = table.GetStorage().CreateOptimisticCollection(context, std::move(collection));
 		optimistic_collection = table.GetStorage().GetOptimisticCollection(context, optimistic_collection_index);
 		chunk.Initialize(context, table.GetTypes());
+		RefreshColumnPointers();
 	}
 
 	void ResetOptimisticCollection(ClientContext &context) {
@@ -102,6 +120,7 @@ struct tpch_append_information {
 			}
 		}
 		chunk.Reset();
+		RefreshColumnPointers();
 		row = 0;
 		active_col = 0;
 	}
@@ -161,9 +180,8 @@ struct tpch_append_information {
 			return;
 		}
 		FlushChunk();
-		auto transaction_data = TransactionData::Unversioned();
 		auto &row_collection = *optimistic_collection->collection;
-		row_collection.FinalizeAppend(transaction_data, append_state);
+		row_collection.FinalizeAppend(append_state.transaction, append_state);
 		finalized = true;
 	}
 
@@ -201,29 +219,32 @@ static void append_end_row(tpch_append_information &info) {
 static Vector &append_next_column(tpch_append_information &info) {
 	D_ASSERT(info.active_row != DConstants::INVALID_INDEX);
 	D_ASSERT(info.active_col < info.chunk.ColumnCount());
-	return info.chunk.data[info.active_col++];
+	return *info.columns[info.active_col++];
+}
+
+template <class T>
+static T *append_next_column_data(tpch_append_information &info) {
+	D_ASSERT(info.active_row != DConstants::INVALID_INDEX);
+	D_ASSERT(info.active_col < info.chunk.ColumnCount());
+	D_ASSERT(info.chunk.data[info.active_col].GetType().InternalType() == GetTypeId<T>());
+	return reinterpret_cast<T *>(info.column_data[info.active_col++]);
 }
 
 void append_int32(tpch_append_information &info, int32_t value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<int32_t>(vector)[info.active_row] = value;
+	append_next_column_data<int32_t>(info)[info.active_row] = value;
 }
 
 void append_int64(tpch_append_information &info, int64_t value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<int64_t>(vector)[info.active_row] = value;
+	append_next_column_data<int64_t>(info)[info.active_row] = value;
 }
 
 void append_string_reference(tpch_append_information &info, const char *value, idx_t length) {
 	// Only use for stable DBGEN strings; non-inlined string_t values keep a pointer until the chunk is appended.
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<string_t>(vector)[info.active_row] =
-	    string_t(value, UnsafeNumericCast<uint32_t>(length));
+	append_next_column_data<string_t>(info)[info.active_row] = string_t(value, UnsafeNumericCast<uint32_t>(length));
 }
 
 void append_decimal(tpch_append_information &info, int64_t value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<int64_t>(vector)[info.active_row] = value;
+	append_next_column_data<int64_t>(info)[info.active_row] = value;
 }
 
 void append_char(tpch_append_information &info, char value) {
@@ -238,13 +259,12 @@ static date_t raw_tpch_date(DSS_HUGE value) {
 }
 
 void append_date(tpch_append_information &info, DSS_HUGE value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<date_t>(vector)[info.active_row] = raw_tpch_date(value);
+	append_next_column_data<date_t>(info)[info.active_row] = raw_tpch_date(value);
 }
 
 static string_t &append_empty_string(tpch_append_information &info, idx_t length) {
-	auto &vector = append_next_column(info);
-	auto data = FlatVector::GetDataMutable<string_t>(vector);
+	auto &vector = *info.columns[info.active_col];
+	auto data = append_next_column_data<string_t>(info);
 	data[info.active_row] = StringVector::EmptyString(vector, length);
 	return data[info.active_row];
 }
@@ -347,13 +367,14 @@ static DSS_HUGE RetailPrice(DSS_HUGE part_key) {
 
 static DSS_HUGE PartSuppBridge(DBGenContext *ctx, DSS_HUGE part_key, DSS_HUGE supp_num) {
 	DSS_HUGE total_supplier_count = ctx->tdefs[SUPP].base * ctx->scale_factor;
-	return (part_key + supp_num * (total_supplier_count / SUPP_PER_PART + (long)((part_key - 1) / total_supplier_count))) %
+	return (part_key +
+	        supp_num * (total_supplier_count / SUPP_PER_PART + (long)((part_key - 1) / total_supplier_count))) %
 	           total_supplier_count +
 	       1;
 }
 
 static void AppendPartName(tpch_append_information &info, DBGenContext *ctx) {
-	permute_dist(&colors, &ctx->Seed[P_NAME_SD], ctx);
+	permute_dist(&colors, P_NAME_SCL, &ctx->Seed[P_NAME_SD], ctx);
 	idx_t length = 0;
 	for (idx_t i = 0; i < P_NAME_SCL; i++) {
 		length += NumericCast<idx_t>(colors.list[ctx->permute[i]].length);
@@ -377,8 +398,8 @@ static void AppendPartName(tpch_append_information &info, DBGenContext *ctx) {
 
 static void AppendSupplierComment(tpch_append_information &info, DBGenContext *ctx) {
 	const char *source;
-	auto length = dbg_text_source(int(S_CMNT_LEN * V_STR_LOW), int(S_CMNT_LEN * V_STR_HGH), &ctx->Seed[S_CMNT_SD],
-	                              &source);
+	auto length =
+	    dbg_text_source(int(S_CMNT_LEN * V_STR_LOW), int(S_CMNT_LEN * V_STR_HGH), &ctx->Seed[S_CMNT_SD], &source);
 	// Supplier comments can be patched with BBB text, so they need writable vector-owned storage.
 	auto &result = append_empty_string(info, NumericCast<idx_t>(length));
 	auto target = result.GetDataWriteable();
@@ -436,9 +457,8 @@ static void GenerateOrderLine(DSS_HUGE index, tpch_append_information *info, DBG
 	DSS_HUGE clerk_number;
 	RANDOM(clerk_number, 1, MAX((ctx->scale_factor * O_CLRK_SCL), O_CLRK_SCL), &ctx->Seed[O_CLRK_SD]);
 	const char *order_comment;
-	auto order_comment_length =
-	    dbg_text_source(int(O_CMNT_LEN * V_STR_LOW), int(O_CMNT_LEN * V_STR_HGH), &ctx->Seed[O_CMNT_SD],
-	                    &order_comment);
+	auto order_comment_length = dbg_text_source(int(O_CMNT_LEN * V_STR_LOW), int(O_CMNT_LEN * V_STR_HGH),
+	                                            &ctx->Seed[O_CMNT_SD], &order_comment);
 
 	DSS_HUGE line_count;
 	RANDOM(line_count, O_LCNT_MIN, O_LCNT_MAX, &ctx->Seed[O_LCNT_SD]);
@@ -453,9 +473,8 @@ static void GenerateOrderLine(DSS_HUGE index, tpch_append_information *info, DBG
 		auto ship_instruct = PickDistribution(&l_instruct_set, &ctx->Seed[L_SHIP_SD]);
 		auto ship_mode = PickDistribution(&l_smode_set, &ctx->Seed[L_SMODE_SD]);
 		const char *line_comment;
-		auto line_comment_length =
-		    dbg_text_source(int(L_CMNT_LEN * V_STR_LOW), int(L_CMNT_LEN * V_STR_HGH), &ctx->Seed[L_CMNT_SD],
-		                    &line_comment);
+		auto line_comment_length = dbg_text_source(int(L_CMNT_LEN * V_STR_LOW), int(L_CMNT_LEN * V_STR_HGH),
+		                                           &ctx->Seed[L_CMNT_SD], &line_comment);
 		if (ctx->scale_factor >= 30000) {
 			dss_random64(&part_key, L_PKEY_MIN, L_PKEY_MAX, &ctx->Seed[L_PKEY_SD]);
 		} else {
@@ -603,7 +622,8 @@ static void GenerateNation(DSS_HUGE index, tpch_append_information *info, DBGenC
 	auto &append_info = info[NATION];
 	append_begin_row(append_info);
 	append_int32(append_info, NumericCast<int32_t>(index - 1));
-	append_string_reference(append_info, nations.list[index - 1].text, NumericCast<idx_t>(nations.list[index - 1].length));
+	append_string_reference(append_info, nations.list[index - 1].text,
+	                        NumericCast<idx_t>(nations.list[index - 1].length));
 	append_int32(append_info, NumericCast<int32_t>(nations.list[index - 1].weight));
 	AppendText(append_info, N_CMNT_LEN, &ctx->Seed[N_CMNT_SD]);
 	append_end_row(append_info);
@@ -613,7 +633,8 @@ static void GenerateRegion(DSS_HUGE index, tpch_append_information *info, DBGenC
 	auto &append_info = info[REGION];
 	append_begin_row(append_info);
 	append_int32(append_info, NumericCast<int32_t>(index - 1));
-	append_string_reference(append_info, regions.list[index - 1].text, NumericCast<idx_t>(regions.list[index - 1].length));
+	append_string_reference(append_info, regions.list[index - 1].text,
+	                        NumericCast<idx_t>(regions.list[index - 1].length));
 	AppendText(append_info, R_CMNT_LEN, &ctx->Seed[R_CMNT_SD]);
 	append_end_row(append_info);
 }
@@ -798,8 +819,8 @@ static void ValidateTPCHTableSchema(const TableCatalogEntry &table, const string
 
 		if (column.Type() != T::Types[i]) {
 			throw InvalidInputException(
-			    "TPC-H table \"%s\" has an incompatible schema: column \"%s\" has type %s but expected %s",
-			    table_name, T::Columns[i], column.Type().ToString(), T::Types[i].ToString());
+			    "TPC-H table \"%s\" has an incompatible schema: column \"%s\" has type %s but expected %s", table_name,
+			    T::Columns[i], column.Type().ToString(), T::Types[i].ToString());
 		}
 	}
 }
@@ -983,7 +1004,8 @@ public:
 			}
 			if (parameters.tables[i]) {
 				auto &tbl_catalog = *parameters.tables[i];
-				if (!tbl_catalog.IsDuckTable()) {
+				auto duck_table = tbl_catalog.TryGetDuckTableEntry();
+				if (!duck_table) {
 					throw InvalidInputException("dbgen is only supported for DuckDB database files");
 				}
 				switch (append_mode) {
@@ -991,10 +1013,9 @@ public:
 					append_info[i].Initialize(context, tbl_catalog, flush_count);
 					break;
 				case TPCHAppendMode::OPTIMISTIC: {
-					auto partial_manager_type = i == LINE ? OptimisticWritePartialManagers::GLOBAL
-					                                      : OptimisticWritePartialManagers::PER_COLUMN;
-					append_info[i].InitializeOptimistic(context, tbl_catalog.Cast<DuckTableEntry>(),
-					                                    partial_manager_type);
+					auto partial_manager_type =
+					    i == LINE ? OptimisticWritePartialManagers::GLOBAL : OptimisticWritePartialManagers::PER_COLUMN;
+					append_info[i].InitializeOptimistic(context, *duck_table, partial_manager_type);
 					break;
 				}
 				default:
@@ -1142,7 +1163,7 @@ public:
 		auto &catalog = Catalog::GetCatalog(context, catalog_name);
 		parameters = make_uniq<TPCHDBgenParameters>(context, catalog, schema, suffix);
 
-		load_dists(10 * 1024 * 1024, &base_context); // 10MiB
+		load_dists(TEXT_POOL_SIZE, &base_context);
 		distributions_loaded = true;
 		/* have to do this after init */
 		base_context.tdefs[NATION].base = nations.count;
@@ -1203,8 +1224,7 @@ public:
 		auto generated_progress = static_cast<double>(current_generated_work) / static_cast<double>(total_work);
 		auto flushed_progress = static_cast<double>(current_flushed_work) / static_cast<double>(total_work);
 		auto flush_weight = mode == DBGenMode::PARALLEL ? 0.05 : 0.5;
-		auto current_progress =
-		    100.0 * (generated_progress * (1.0 - flush_weight) + flushed_progress * flush_weight);
+		auto current_progress = 100.0 * (generated_progress * (1.0 - flush_weight) + flushed_progress * flush_weight);
 		return MinValue<double>(current_progress, 99.9);
 	}
 
@@ -1282,10 +1302,10 @@ private:
 			if (!(table & (1 << table_index))) {
 				continue;
 			}
-			auto children = UseStatsCompatibleChildCount(table_index)
-			                    ? NumericCast<int>(GetDefaultChildCount())
-			                    : NumericCast<int>(
-			                          GetDefaultTableChildCount(base_context, table_index, parallel_thread_count));
+			auto children =
+			    UseStatsCompatibleChildCount(table_index)
+			        ? NumericCast<int>(GetDefaultChildCount())
+			        : NumericCast<int>(GetDefaultTableChildCount(base_context, table_index, parallel_thread_count));
 			for (int step = 0; step < children; step++) {
 				auto row_count = GetDBGenTableRowCount(base_context, table_index);
 				auto range = GetDBGenTableRange(row_count, children, step);
@@ -1355,23 +1375,20 @@ private:
 			     thr_idx++, launched_offset++) {
 				auto &work_item = parallel_work_items[launched_offset];
 				new_appenders.push_back(make_uniq<TPCHDataAppender>(
-				    context, *parameters, base_context, TPCHAppendMode::OPTIMISTIC,
-				    NumericLimits<int64_t>::Maximum(), &generated_work, work_item.table_index));
+				    context, *parameters, base_context, TPCHAppendMode::OPTIMISTIC, NumericLimits<int64_t>::Maximum(),
+				    &generated_work, work_item.table_index));
 			}
 			for (auto &appender : new_appenders) {
-				auto task = make_uniq<ParallelTPCHAppendTask>(executor, *appender,
-				                                              parallel_work_items[parallel_work_offset]);
+				auto task =
+				    make_uniq<ParallelTPCHAppendTask>(executor, *appender, parallel_work_items[parallel_work_offset]);
 				executor.ScheduleTask(std::move(task));
 				parallel_work_offset++;
 			}
 			executor.WorkOnTasks();
-			if (executor.HasError()) {
-				executor.ThrowError();
-			}
 			for (idx_t appender_idx = 0; appender_idx < new_appenders.size(); appender_idx++) {
 				auto work_item_idx = parallel_work_offset - new_appenders.size() + appender_idx;
-				finished_appenders.push_back(make_uniq<FinishedDBGenAppender>(
-				    parallel_work_items[work_item_idx], std::move(new_appenders[appender_idx])));
+				finished_appenders.push_back(make_uniq<FinishedDBGenAppender>(parallel_work_items[work_item_idx],
+				                                                              std::move(new_appenders[appender_idx])));
 			}
 			return false;
 		}
@@ -1384,9 +1401,8 @@ private:
 		if (sequential_appender) {
 			return;
 		}
-		sequential_appender =
-		    make_uniq<TPCHDataAppender>(context, *parameters, base_context, TPCHAppendMode::APPENDER,
-		                                BaseAppender::DEFAULT_FLUSH_COUNT, &generated_work);
+		sequential_appender = make_uniq<TPCHDataAppender>(context, *parameters, base_context, TPCHAppendMode::APPENDER,
+		                                                  BaseAppender::DEFAULT_FLUSH_COUNT, &generated_work);
 		sequential_table = 0;
 		sequential_table_started = false;
 	}
@@ -1484,8 +1500,8 @@ unique_ptr<DBGenGenerator> CreateDBGenGenerator(ClientContext &context, double s
 
 void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, const Identifier &catalog_name,
                                 const Identifier &schema, string suffix, int children, int current_step) {
-	auto generator = CreateDBGenGenerator(context, flt_scale, catalog_name, schema, std::move(suffix), children,
-	                                      current_step);
+	auto generator =
+	    CreateDBGenGenerator(context, flt_scale, catalog_name, schema, std::move(suffix), children, current_step);
 	while (!generator->GenerateNext()) {
 	}
 }
@@ -1495,6 +1511,25 @@ string DBGenWrapper::GetQuery(int query) {
 		throw SyntaxException("Out of range TPC-H query number %d", query);
 	}
 	return TPCH_QUERIES[query - 1];
+}
+
+//! The stored Q11 carries the FRACTION substitution parameter for SF 1
+static constexpr const char *TPCH_Q11_SF1_FRACTION = "0.0001000000";
+
+string DBGenWrapper::GetQuery(int query, double sf) {
+	if (Value::IsNan(sf) || sf <= 0 || sf > MAX_SCALE) {
+		throw InvalidInputException("TPC-H queries require a scale factor between 0 and %d",
+		                            static_cast<int>(MAX_SCALE));
+	}
+	auto result = GetQuery(query);
+	if (query != 11) {
+		return result;
+	}
+	// Q11 selects the parts whose stock value exceeds FRACTION of the total, where qgen sets FRACTION = 0.0001 / SF
+	auto fraction = StringUtil::Format("%.10f", 0.0001 / sf);
+	auto pos = result.find(TPCH_Q11_SF1_FRACTION);
+	D_ASSERT(pos != string::npos);
+	return result.replace(pos, strlen(TPCH_Q11_SF1_FRACTION), fraction);
 }
 
 string DBGenWrapper::GetAnswer(double sf, int query) {

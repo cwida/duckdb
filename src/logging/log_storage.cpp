@@ -1,4 +1,5 @@
 #include "duckdb/logging/log_storage.hpp"
+#include "duckdb/function/table_function.hpp"
 
 #include "duckdb/common/csv_writer.hpp"
 #include "duckdb/common/local_file_system.hpp"
@@ -77,6 +78,9 @@ bool LogStorage::Scan(LogStorageScanState &state, DataChunk &result) const {
 }
 void LogStorage::InitializeScan(LogStorageScanState &state) const {
 	throw NotImplementedException("Not implemented for this LogStorage: InitializeScanEntries");
+}
+optional_idx LogStorage::GetScanRowCount(LoggingTargetTable table) const {
+	return optional_idx();
 }
 void LogStorage::Truncate() {
 	throw NotImplementedException("Not implemented for this LogStorage: TruncateLogStorage");
@@ -235,13 +239,13 @@ void CSVLogStorage::FlushChunk(LoggingTargetTable table, DataChunk &chunk) {
 
 void BufferingLogStorage::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_map_t<Value> &config) {
 	for (const auto &it : config) {
-		if (StringUtil::Lower(it.first) == "buffer_size") {
+		if (StringUtil::CIEquals(it.first, "buffer_size")) {
 			buffer_limit = it.second.GetValue<uint64_t>();
 			ResetAllBuffers();
-		} else if (StringUtil::Lower(it.first) == "only_flush_on_full_buffer") {
+		} else if (StringUtil::CIEquals(it.first, "only_flush_on_full_buffer")) {
 			// This is a debug option used during testing. It disables the manual
 			only_flush_on_full_buffer = it.second.GetValue<bool>();
-		} else if (StringUtil::Lower(it.first) == "normalize") {
+		} else if (StringUtil::CIEquals(it.first, "normalize")) {
 			throw InternalException("'normalize' setting should be handled in child class");
 		} else {
 			throw InvalidInputException("Unrecognized log storage config option for storage: '%s': '%s'",
@@ -481,7 +485,7 @@ unique_ptr<TableRef> FileLogStorage::BindReplaceInternal(ClientContext &context,
 	string sub_query_string =
 	    StringUtil::Format("%s FROM read_csv_auto(%s, columns={%s})", select_clause, SQLString(path), csv_columns);
 
-	Parser parser(context.GetParserOptions());
+	Parser parser(context);
 	parser.ParseQuery(sub_query_string);
 	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
 
@@ -767,6 +771,11 @@ bool InMemoryLogStorage::Scan(LogStorageScanState &state, DataChunk &result) con
 	unique_lock<mutex> lck(lock);
 	auto &in_mem_scan_state = state.Cast<InMemoryLogStorageScanState>();
 	return GetBuffer(in_mem_scan_state.table).Scan(in_mem_scan_state.scan_state, result);
+}
+
+optional_idx InMemoryLogStorage::GetScanRowCount(LoggingTargetTable table) const {
+	unique_lock<mutex> lck(lock);
+	return GetBuffer(table).Count();
 }
 
 void InMemoryLogStorage::InitializeScan(LogStorageScanState &state) const {

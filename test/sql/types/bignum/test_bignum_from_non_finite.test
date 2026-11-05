@@ -1,0 +1,37 @@
+# name: test/sql/types/bignum/test_bignum_from_non_finite.test
+# description: Casting non-finite floating point values to BIGNUM fails with a conversion error
+# group: [bignum]
+
+statement error
+SELECT 'nan'::FLOAT::BIGNUM
+----
+Conversion Error
+
+statement error
+SELECT 'inf'::DOUBLE::BIGNUM
+----
+Conversion Error
+
+statement ok
+CREATE TABLE f AS SELECT * FROM (VALUES ('nan'::FLOAT), (1::FLOAT), ('inf'::FLOAT)) t(x);
+
+query II
+SELECT TRY(x::BIGNUM), TRY_CAST(x AS BIGNUM) FROM f
+----
+NULL	NULL
+1	1
+NULL	NULL
+
+# BIGNUM and FLOAT have no implicit cast between them: the comparison is resolved in DOUBLE, so the non-finite
+# values compare without a conversion error
+query I
+SELECT x = 1::BIGNUM FROM f
+----
+false
+true
+false
+
+query II
+SELECT 1.5::DOUBLE::BIGNUM, 2::FLOAT::BIGNUM
+----
+1	2

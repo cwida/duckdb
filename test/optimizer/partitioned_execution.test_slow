@@ -73,14 +73,15 @@ endloop
 
 # no tests for single-column GROUP BY here because the optimization doesn't trigger due to low estimated cardinality
 
-# WINDOW
+# WINDOW: reference idx so the window is retained by column pruning.
 query II
 EXPLAIN WITH cte AS (
     SELECT ROW_NUMBER() OVER (PARTITION BY {c}) AS idx, *
     FROM test
 )
 SELECT bit_xor(hash(*COLUMNS('^t_')))
-FROM cte;
+FROM cte
+WHERE idx > 0;
 ----
 logical_opt	<REGEX>:.*UNION.*
 
@@ -90,7 +91,8 @@ WITH cte AS (
     FROM test
 )
 SELECT bit_xor(hash(*COLUMNS('^t_')))
-FROM cte;
+FROM cte
+WHERE idx > 0;
 ----
 
 endloop
@@ -145,14 +147,15 @@ SELECT bit_xor(hash(*COLUMNS('^t_')))
 FROM cte2;
 ----
 
-# WINDOW
+# WINDOW: reference idx so the window is retained by column pruning.
 query II
 EXPLAIN WITH cte AS (
     SELECT ROW_NUMBER() OVER (PARTITION BY t_const, t_high_cardinality_recurring, t_low_cardinality_recurring) AS idx, *
     FROM test
 )
 SELECT bit_xor(hash(*COLUMNS('^t_')))
-FROM cte;
+FROM cte
+WHERE idx > 0;
 ----
 logical_opt	<REGEX>:.*UNION.*
 
@@ -162,7 +165,8 @@ WITH cte AS (
     FROM test
 )
 SELECT bit_xor(hash(*COLUMNS('^t_')))
-FROM cte;
+FROM cte
+WHERE idx > 0;
 ----
 
 # make sure the order is correct for the order by stuff with the order-preserving hash

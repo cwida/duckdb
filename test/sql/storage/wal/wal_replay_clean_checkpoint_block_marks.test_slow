@@ -1,0 +1,64 @@
+# name: test/sql/storage/wal/wal_replay_clean_checkpoint_block_marks.test_slow
+# description: WAL replay must not double reference block usage marks when the WAL is discarded because its checkpoint completed cleanly
+# group: [wal]
+
+load {TEST_DIR}/wal_replay_clean_checkpoint_block_marks.db
+
+statement ok
+SET preserve_insertion_order = false;
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+CREATE TABLE t (r BIGINT, s VARCHAR);
+
+# large insert - row groups are written to disk optimistically, the WAL only references their blocks
+statement ok
+INSERT INTO t SELECT r, repeat(md5(r::VARCHAR), 10) FROM range(200000) tt(r);
+
+# simulate a crash after the checkpoint header is written but before the WAL is truncated
+statement ok
+PRAGMA debug_checkpoint_abort='before_wal_finish';
+
+statement error
+CHECKPOINT;
+----
+Checkpoint aborted
+
+restart
+
+# the crash simulation is done - the abort setting survives the restart, reset it
+statement ok
+PRAGMA debug_checkpoint_abort='none';
+
+# the checkpoint completed cleanly, so the WAL is discarded without being replayed -
+# the deserialize-only scan must not have leaked block usage marks for the ROW_GROUP_DATA blocks
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+SET debug_verify_blocks=true;
+
+query I
+SELECT count(*) FROM t;
+----
+200000
+
+statement ok
+DROP TABLE t;
+
+# with leaked marks the blocks are never freed (and this checkpoint fails block verification)
+statement ok
+CHECKPOINT;
+
+query I
+SELECT (used_blocks = 1 AND free_blocks > 0)::INT FROM pragma_database_size();
+----
+1

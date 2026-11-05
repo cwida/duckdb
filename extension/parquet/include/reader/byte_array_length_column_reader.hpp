@@ -9,6 +9,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "parquet_arena.h"
 
 #include "column_reader.hpp"
 #include "duckdb/common/constants.hpp"
@@ -32,7 +33,7 @@ public:
 
 	idx_t fixed_width_string_length;
 
-	unique_ptr<BaseStatistics> Stats(idx_t, const vector<ColumnChunk> &) override {
+	unique_ptr<BaseStatistics> Stats(idx_t, const duckdb_parquet::ColumnChunkList &) override {
 		return {};
 	}
 

@@ -248,13 +248,18 @@ auto TryGetExceptionTypeFromErrorCode(DUCKDB_V2_ERROR code) -> optional<Exceptio
 	}
 }
 
-auto RenderCaughtError(DUCKDB_V2_ERROR &code, string &text, string &raw_message) noexcept -> void {
+auto RenderCaughtError(DUCKDB_V2_ERROR &code, string &text, optional<string> &raw_message) noexcept -> void {
 	// Set the fallback code first (non-throwing), then render the detail.
 	code = DUCKDB_V2_ERROR_API;
 	try {
 		// The bare throw re-raises the exception currently being handled so the catch clauses can dispatch on its type.
 		try {
 			throw;
+		} catch (const MetadataDeferredException &ex) {
+			ErrorData error_data(ex);
+			code = DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED;
+			text = error_data.Message();
+			raw_message = error_data.RawMessage();
 		} catch (const duckdb::Exception &ex) {
 			ErrorData error_data(ex);
 			code = GetErrorCodeFromExceptionType(error_data.Type());
@@ -272,11 +277,11 @@ auto RenderCaughtError(DUCKDB_V2_ERROR &code, string &text, string &raw_message)
 		// Rendering the detail exhausted memory: that supersedes the original report.
 		code = DUCKDB_V2_ERROR_RESOURCE_OUT_OF_MEMORY;
 		text.clear();
-		raw_message.clear();
+		raw_message.reset();
 	} catch (...) {
 		// Rendering the detail failed: keep the code produced so far with no detail.
 		text.clear();
-		raw_message.clear();
+		raw_message.reset();
 	}
 }
 
@@ -302,7 +307,7 @@ auto NullArgumentError(duckdb_v2_error_info_handle *err, const char *function, c
 	auto &out = *Convert(*err);
 	out.code = code;
 	out.message.clear();
-	out.raw_message.clear();
+	out.raw_message.reset();
 	try {
 		// Render through ErrorData so message/raw_message match what WithErrorHandler
 		// produces for a thrown InvalidInputException.
@@ -328,18 +333,34 @@ auto NullArgumentError(duckdb_v2_error_info_handle *err, const char *function, c
 // Map DuckDB's SettingScopeTarget to the V2 enum.
 // Legacy options (declared via DUCKDB_GLOBAL / DUCKDB_LOCAL / DUCKDB_GLOBAL_LOCAL) carry SettingScopeTarget::INVALID;
 // we surface that as UNKNOWN so V2 callers can distinguish "unconstrained legacy" from a declared scope.
-static DUCKDB_V2_OPTION_TARGET_SCOPE MapScopeTarget(SettingScopeTarget s) {
-	switch (s) {
+// The scopes a core option may be written at, and where an AUTOMATIC write goes; mirrors PhysicalSet::GetSettingScope.
+static void PopulateOptionScopes(const unique_ptr<CV2Option> &out, const ConfigurationOption &option) {
+	if (option.set_local || option.set_global) {
+		// legacy option: the setters it has decide
+		out->supports_session = option.set_local != nullptr;
+		out->supports_global = option.set_global != nullptr;
+		out->default_scope = option.set_local ? DUCKDB_V2_SETTING_SCOPE_SESSION : DUCKDB_V2_SETTING_SCOPE_GLOBAL;
+		return;
+	}
+	switch (option.scope) {
 	case SettingScopeTarget::GLOBAL_ONLY:
-		return DUCKDB_V2_OPTION_TARGET_SCOPE_GLOBAL_ONLY;
+		out->supports_global = true;
+		out->default_scope = DUCKDB_V2_SETTING_SCOPE_GLOBAL;
+		break;
 	case SettingScopeTarget::LOCAL_ONLY:
-		return DUCKDB_V2_OPTION_TARGET_SCOPE_LOCAL_ONLY;
+		out->supports_session = true;
+		out->default_scope = DUCKDB_V2_SETTING_SCOPE_SESSION;
+		break;
 	case SettingScopeTarget::GLOBAL_DEFAULT:
-		return DUCKDB_V2_OPTION_TARGET_SCOPE_GLOBAL_DEFAULT;
+		out->supports_global = out->supports_session = true;
+		out->default_scope = DUCKDB_V2_SETTING_SCOPE_GLOBAL;
+		break;
 	case SettingScopeTarget::LOCAL_DEFAULT:
-		return DUCKDB_V2_OPTION_TARGET_SCOPE_LOCAL_DEFAULT;
+		out->supports_global = out->supports_session = true;
+		out->default_scope = DUCKDB_V2_SETTING_SCOPE_SESSION;
+		break;
 	default:
-		return DUCKDB_V2_OPTION_TARGET_SCOPE_UNKNOWN;
+		break;
 	}
 }
 
@@ -358,59 +379,72 @@ static void PopulateOptionAliases(const unique_ptr<CV2Option> &out, const Identi
 	}
 }
 
-// Read the effective setting for `name` through `client`'s setting cascade.
-// For a databases internal connection (no LOCAL overrides) this returns GLOBAL -> static default;
-// For a client connection it returns LOCAL -> GLOBAL -> static default.
-// Falls back to `fallback_default` if the cascade returned NULL.
-static std::string ReadEffectiveSetting(ClientContext &client, const Identifier &name,
-                                        const std::string &fallback_default) {
-	if (Value result; client.TryGetCurrentSetting(name, result) && !result.IsNull()) {
-		return result.ToString();
+DUCKDB_V2_SETTING_SCOPE CV2OptionSource::ReadValue(std::string_view name, Value &result) const {
+	Identifier name_id(name);
+	auto option = DBConfig::GetOptionByName(name_id);
+	ExtensionOption extension_option;
+	if (!option && !config.TryGetExtensionOption(name_id, extension_option)) {
+		throw InvalidInputException("unknown configuration option: %s", name_id.GetIdentifierName());
 	}
-	return fallback_default;
+	auto canonical_name = option ? Identifier(option->name) : name_id;
+	auto lookup = context ? context->TryGetCurrentSetting(canonical_name, result)
+	                      : config.TryGetCurrentSetting(canonical_name, result);
+	if (!lookup) {
+		// neither set nor defaulted
+		result = Value();
+		return DUCKDB_V2_SETTING_SCOPE_GLOBAL;
+	}
+	return lookup.GetScope() == SettingScope::LOCAL ? DUCKDB_V2_SETTING_SCOPE_SESSION : DUCKDB_V2_SETTING_SCOPE_GLOBAL;
 }
 
-static unique_ptr<CV2Option> PopulateOptionFromCore(const ConfigurationOption &option, ClientContext &client) {
+static unique_ptr<CV2Option> PopulateOptionFromCore(const ConfigurationOption &option, const CV2OptionSource &source) {
 	auto out = make_uniq<CV2Option>();
 
 	out->name = option.name ? option.name : "";
 	out->description = option.description ? option.description : "";
-	out->target_scope = MapScopeTarget(option.scope);
-	out->default_setting = option.default_value ? option.default_value : "";
+	PopulateOptionScopes(out, option);
+	if (!DBConfig::TryGetDefaultValue(&option, out->default_value)) {
+		out->default_value = Value();
+	}
 	out->aliases.clear();
 	PopulateOptionAliases(out, out->name);
-	out->setting = ReadEffectiveSetting(client, out->name, out->default_setting);
 
 	return out;
 }
 
-// Populate `out` from an extension option. Extension options carry no
-// SettingScopeTarget (the V2 enum reports UNKNOWN) and no aliases.
+// Populate `out` from an extension option. Extension options carry no aliases.
 static unique_ptr<CV2Option> PopulateOptionFromExtension(const Identifier &name, const ExtensionOption &ext_option,
-                                                         ClientContext &client) {
+                                                         const CV2OptionSource &source) {
 	auto out = make_uniq<CV2Option>();
 
 	out->name = name;
 	out->description = ext_option.description;
-	out->target_scope = DUCKDB_V2_OPTION_TARGET_SCOPE_UNKNOWN;
-	out->default_setting = ext_option.default_value.IsNull() ? std::string() : ext_option.default_value.ToString();
+	// AUTOMATIC writes the session unless the option declares GLOBAL
+	out->supports_global = ext_option.supports_global;
+	out->supports_session = ext_option.supports_session;
+	out->default_scope =
+	    ext_option.default_scope == SetScope::GLOBAL ? DUCKDB_V2_SETTING_SCOPE_GLOBAL : DUCKDB_V2_SETTING_SCOPE_SESSION;
+	out->default_value = ext_option.default_value;
 	out->aliases.clear();
-	out->setting = ReadEffectiveSetting(client, name, out->default_setting);
 
 	return out;
 }
 
-unique_ptr<CV2Option> CV2Option::FromIndex(ClientContext &context, DBConfig &config, idx_t index) {
+idx_t CV2Option::Count(const CV2OptionSource &source) {
+	return DBConfig::GetOptionCount() + source.GetConfig().GetExtensionSettings().size();
+}
+
+unique_ptr<CV2Option> CV2Option::FromIndex(const CV2OptionSource &source, idx_t index) {
 	const auto core_count = DBConfig::GetOptionCount();
 	if (index < core_count) {
 		auto option = DBConfig::GetOptionByIndex(index);
 		if (!option) {
 			throw InvalidInputException("core option not found at given index");
 		}
-		return PopulateOptionFromCore(*option, context);
+		return PopulateOptionFromCore(*option, source);
 	}
 	const idx_t ext_rel = index - core_count;
-	auto ext_settings = config.GetExtensionSettings();
+	auto ext_settings = source.GetConfig().GetExtensionSettings();
 	if (ext_rel >= ext_settings.size()) {
 		throw InvalidInputException("option index out of range");
 	}
@@ -418,20 +452,20 @@ unique_ptr<CV2Option> CV2Option::FromIndex(ClientContext &context, DBConfig &con
 
 	for (const auto &[name, option] : ext_settings) {
 		if (i == ext_rel) {
-			return PopulateOptionFromExtension(name, option, context);
+			return PopulateOptionFromExtension(name, option, source);
 		}
 		++i;
 	}
 	throw InvalidInputException("option index out of range");
 }
 
-unique_ptr<CV2Option> CV2Option::FromName(ClientContext &context, DBConfig &config, std::string_view name) {
+unique_ptr<CV2Option> CV2Option::FromName(const CV2OptionSource &source, std::string_view name) {
 	Identifier name_id(name);
 	if (auto option = DBConfig::GetOptionByName(name_id)) {
-		return PopulateOptionFromCore(*option, context);
+		return PopulateOptionFromCore(*option, source);
 	}
-	if (ExtensionOption ext_option; config.TryGetExtensionOption(name_id, ext_option)) {
-		return PopulateOptionFromExtension(name_id, ext_option, context);
+	if (ExtensionOption ext_option; source.GetConfig().TryGetExtensionOption(name_id, ext_option)) {
+		return PopulateOptionFromExtension(name_id, ext_option, source);
 	}
 	throw InvalidInputException("unknown configuration option: %s", name_id.GetIdentifierName());
 }

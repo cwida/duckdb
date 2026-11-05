@@ -3,6 +3,9 @@
 #include "core_functions/scalar/string_functions.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/storage/statistics/string_stats.hpp"
 
 namespace duckdb {
 
@@ -70,13 +73,56 @@ static void RepeatListFunction(DataChunk &args, ExpressionState &, Vector &resul
 	result.Verify();
 }
 
+static unique_ptr<BaseStatistics> RepeatStringStats(ClientContext &, FunctionStatisticsInput &input) {
+	auto &children = input.expr.GetChildren();
+	if (children[1]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT ||
+	    !StringStats::HasMaxStringLength(input.child_stats[0])) {
+		return nullptr;
+	}
+	auto &count_value = children[1]->Cast<BoundConstantExpression>().GetValue();
+	if (count_value.IsNull()) {
+		return nullptr;
+	}
+	auto count = count_value.GetValue<int64_t>();
+	auto input_size = StringStats::MaxStringLength(input.child_stats[0]);
+	uint64_t result_size = 0;
+	if (count > 0 && !TryMultiplyOperator::Operation<uint64_t, uint64_t, uint64_t>(
+	                     input_size, NumericCast<uint64_t>(count), result_size)) {
+		return nullptr;
+	}
+	if (result_size > string_t::MAX_STRING_SIZE || result_size > NumericLimits<uint32_t>::Maximum()) {
+		return nullptr;
+	}
+	auto result = StringStats::CreateUnknown(input.expr.GetReturnType());
+	StringStats::SetMaxStringLength(result, NumericCast<uint32_t>(result_size));
+	result.CopyValidity(input.child_stats[0]);
+	if (input.child_stats[1].CanHaveNull()) {
+		result.Set(StatsInfo::CAN_HAVE_NULL_VALUES);
+	}
+	if (!input.child_stats[1].CanHaveNoNull()) {
+		result.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
+	}
+	input.expr.FunctionMutable().SetErrorMode(FunctionErrors::CANNOT_ERROR);
+	return result.ToUnique();
+}
+
 ScalarFunctionSet RepeatFun::GetFunctions() {
 	ScalarFunctionSet repeat;
-	for (const auto &type : {LogicalType::VARCHAR, LogicalType::BLOB}) {
-		repeat.AddFunction(ScalarFunction({type, LogicalType::BIGINT}, type, RepeatFunction));
-	}
-	repeat.AddFunction(ScalarFunction({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::BIGINT},
-	                                  LogicalType::LIST(LogicalType::TEMPLATE("T")), RepeatListFunction));
+
+	ScalarFunction string_fun({}, LogicalType::VARCHAR, RepeatFunction, nullptr, RepeatStringStats);
+	string_fun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("count", LogicalType::BIGINT);
+	repeat.AddFunction(string_fun);
+
+	ScalarFunction blob_fun({}, LogicalType::BLOB, RepeatFunction, nullptr, RepeatStringStats);
+	blob_fun.GetSignature().AddParameter("blob", LogicalType::BLOB).AddParameter("count", LogicalType::BIGINT);
+	repeat.AddFunction(blob_fun);
+
+	ScalarFunction list_fun({}, LogicalType::LIST(LogicalType::TEMPLATE("T")), RepeatListFunction);
+	list_fun.GetSignature()
+	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
+	    .AddParameter("count", LogicalType::BIGINT);
+	repeat.AddFunction(list_fun);
+
 	repeat.SetFallible();
 	return repeat;
 }

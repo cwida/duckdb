@@ -1,0 +1,142 @@
+# name: test/sql/alter/alter_schema_set_schema_options.test
+# description: Test ALTER SCHEMA SET/RESET schema options
+# group: [alter]
+
+require no_force_storage
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+set variable location='my/location/path';
+
+statement error
+ALTER SCHEMA s1 SET ('foo'='baz', 'buzz'='wizz');
+----
+<REGEX>:.*Not implemented Error: SET .*options.* is not supported for DuckDB schemas.*
+
+statement error
+ALTER SCHEMA s1 SET (foo='baz', buzz='wizz');
+----
+<REGEX>:.*Not implemented Error: SET .*options.* is not supported for DuckDB schemas.*
+
+# works with Functions
+statement error
+ALTER SCHEMA s1 SET (foo=getvariable('location'));
+----
+<REGEX>:.*Not implemented Error: SET .*options.* is not supported for DuckDB schemas.*
+
+statement error
+ALTER SCHEMA s1 RESET ('foo', 'buzz');
+----
+<REGEX>:.*Not implemented Error: RESET .*options.* is not supported for DuckDB schemas.*
+
+statement error
+ALTER SCHEMA s1 RESET (foo, buzz);
+----
+<REGEX>:.*Not implemented Error: RESET .*options.* is not supported for DuckDB schemas.*
+
+statement error
+ALTER SCHEMA s1 RESET ('foo'='baz', 'buzz'='wizz');
+----
+<REGEX>:.*Parser Error.* Reset option.*cannot set any value.*
+
+statement error
+ALTER SCHEMA s1 RESET (foo='baz', buzz='wizz');
+----
+<REGEX>:.*Parser Error.* Reset option.*cannot set any value.*
+
+statement error
+ALTER SCHEMA s1 RESET ();
+----
+<REGEX>:.*Parser Error.*syntax error.*
+
+statement error
+ALTER SCHEMA s1 SET ();
+----
+<REGEX>:.*Parser Error.*syntax error.*
+
+# schema that does not exist
+statement error
+ALTER SCHEMA s2 SET (foo='baz');
+----
+<REGEX>:.*Catalog Error.*s2.*does not exist.*
+
+statement error
+ALTER SCHEMA s2 RESET (foo);
+----
+<REGEX>:.*Catalog Error.*s2.*does not exist.*
+
+# IF EXISTS on a schema that does not exist is a no-op
+statement ok
+ALTER SCHEMA IF EXISTS s2 SET (foo='baz');
+
+statement ok
+ALTER SCHEMA IF EXISTS s2 RESET (foo);
+
+# IF EXISTS on a schema that exists still reaches the catalog
+statement error
+ALTER SCHEMA IF EXISTS s1 SET (foo='baz');
+----
+<REGEX>:.*Not implemented Error: SET .*options.* is not supported for DuckDB schemas.*
+
+# schema in another attached database
+statement ok
+ATTACH ':memory:' AS other_db
+
+statement ok
+CREATE SCHEMA other_db.s3
+
+statement error
+ALTER SCHEMA other_db.s3 SET (foo='baz');
+----
+<REGEX>:.*Not implemented Error: SET .*options.* is not supported for DuckDB schemas.*
+
+statement error
+ALTER SCHEMA other_db.s3 RESET (foo);
+----
+<REGEX>:.*Not implemented Error: RESET .*options.* is not supported for DuckDB schemas.*
+
+statement ok
+ALTER SCHEMA IF EXISTS other_db.s1 SET (foo='baz');
+
+# nested schemas
+statement ok
+CREATE SCHEMA s1.child
+
+statement ok
+CREATE SCHEMA s1.child.grandchild
+
+statement error
+ALTER SCHEMA s1.child SET (foo='baz');
+----
+<REGEX>:.*Not implemented Error: SET .*options.* is not supported for DuckDB schemas.*
+
+statement ok
+CREATE SCHEMA other_db.s3.child
+
+statement ok
+CREATE SCHEMA other_db.s3.child.grandchild
+
+statement error
+ALTER SCHEMA other_db.s3.child.grandchild RESET (foo);
+----
+<REGEX>:.*Not implemented Error: RESET .*options.* is not supported for DuckDB schemas.*
+
+statement error
+ALTER SCHEMA s1.missing SET (foo='baz');
+----
+<REGEX>:.*Catalog Error.*missing.*does not exist.*
+
+# IF EXISTS with a missing nested schema, and with a missing parent schema
+statement ok
+ALTER SCHEMA IF EXISTS s1.missing SET (foo='baz');
+
+statement ok
+ALTER SCHEMA IF EXISTS s1.missing_parent.child RESET (foo);
+
+# renaming schemas is still not supported
+statement error
+ALTER SCHEMA s1 RENAME TO s4;
+----
+<REGEX>:.*Not implemented Error: Altering schemas is not yet supported.*

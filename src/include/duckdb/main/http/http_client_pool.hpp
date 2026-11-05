@@ -76,7 +76,7 @@ public:
 	};
 
 	enum class ReservationKind : uint8_t { REUSE, NEW_CLIENT };
-	enum class IdleFilter : uint8_t { PROVIDER, CONNECTION, SESSION, ALL };
+	enum class IdleFilter : uint8_t { PROVIDER, CONNECTION, SESSION, EXCESS, ALL };
 
 	struct Reservation {
 	public:
@@ -104,6 +104,9 @@ public:
 	void Close() noexcept;
 	bool IsClosed() const;
 	bool HasAdmissionResource() const;
+	//! Reserve storage before increasing the admission limit
+	void SetCapacity(idx_t new_capacity);
+	idx_t GetCapacity() const;
 	Reservation Reserve(const ClientKey &key, const string &origin, const HTTPTransportConfig &transport_config,
 	                    bool cacheable);
 	void AdoptPreparedBucket(Reservation &reservation);

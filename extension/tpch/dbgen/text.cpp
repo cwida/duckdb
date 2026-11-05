@@ -64,6 +64,18 @@
 
 #include "dbgen/dss.h"
 #include "dbgen/dsstypes.h"
+#include "dbgen/text_pool_checkpoints.h"
+
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/helper.hpp"
+#include "duckdb/storage/storage_info.hpp"
+
+#include <atomic>
+#include <thread>
+
+using duckdb::idx_t;
+using duckdb::InternalException;
+using duckdb::MinValue;
 
 /*
  * txt_vp() --
@@ -259,9 +271,6 @@ static char *auxillaries_index[AUXILLARIES_MAX_WEIGHT + 1];
 static char *verbs_index[VERBS_MAX_WEIGHT + 1];
 static char *prepositions_index[PREPOSITIONS_MAX_WEIGHT + 1];
 
-static char *szTextPool = NULL;
-static long txtBufferSize = 0;
-
 // generate a lookup table for weight -> str
 static void gen_index(char **index, distribution *s) {
 	for (size_t w = 0; w <= s->list[s->count - 1].weight; w++) {
@@ -273,7 +282,6 @@ static void gen_index(char **index, distribution *s) {
 }
 
 static char *gen_text_index(char *dest, seed_t *seed, char **index, distribution *s) {
-	long i = 0;
 	DSS_HUGE j;
 
 	RANDOM(j, 1, s->list[s->count - 1].weight, seed);
@@ -397,11 +405,94 @@ static char *gen_sentence(char *dest, seed_t *seed) {
 }
 
 /*
+ * The text pool is 300MiB of pseudo-text in one contiguous arena, split into chunks that are generated in
+ * place on first use. Every chunk starts from a precomputed checkpoint (sentence offset + RNG state), so
+ * chunks are independent of each other and can be generated in parallel by the dbgen worker threads.
+ * Untouched chunks cost no physical memory.
+ */
+static_assert(TEXT_POOL_SIZE == ((long)TEXT_POOL_CHUNK_COUNT << TEXT_POOL_CHUNK_SHIFT),
+              "text pool checkpoints do not match TEXT_POOL_SIZE");
+static_assert((idx_t(1) << TEXT_POOL_CHUNK_SHIFT) == DEFAULT_BLOCK_ALLOC_SIZE,
+              "a text pool chunk is sized like a memory block");
+
+enum class TextPoolChunkState : uint8_t { EMPTY = 0, GENERATING = 1, READY = 2 };
+
+static char *text_pool = nullptr;
+static std::atomic<TextPoolChunkState> text_pool_chunk_state[TEXT_POOL_CHUNK_COUNT];
+static long txtBufferSize = 0;
+
+// generate the bytes [chunk_start, chunk_end) in place
+static void gen_text_pool_chunk(idx_t chunk) {
+	auto &start_checkpoint = TEXT_POOL_CHECKPOINTS[chunk];
+	auto &end_checkpoint = TEXT_POOL_CHECKPOINTS[chunk + 1];
+	const idx_t chunk_start = chunk << TEXT_POOL_CHUNK_SHIFT;
+	const idx_t chunk_end = chunk_start + (idx_t(1) << TEXT_POOL_CHUNK_SHIFT);
+
+	seed_t seed = {};
+	seed.value = start_checkpoint.seed;
+	char sentence[TEXT_POOL_MAX_SENTENCE_LEN + 1];
+
+	idx_t pos = start_checkpoint.offset;
+	idx_t sentence_start = pos;
+	DSS_HUGE sentence_seed = seed.value;
+	while (pos < chunk_end) {
+		// the sentence covering the chunk end must match the next checkpoint
+		sentence_start = pos;
+		sentence_seed = seed.value;
+		auto length = idx_t(gen_sentence(sentence, &seed) - sentence);
+		D_ASSERT(length <= TEXT_POOL_MAX_SENTENCE_LEN);
+		// copy the part of the sentence that falls inside this chunk
+		idx_t copy_begin = pos < chunk_start ? chunk_start - pos : 0;
+		idx_t copy_end = MinValue<idx_t>(length, chunk_end - pos);
+		if (copy_begin < copy_end) {
+			memcpy(text_pool + (pos + copy_begin), sentence + copy_begin, copy_end - copy_begin);
+		}
+		pos += length;
+	}
+	if (pos == chunk_end) {
+		// the next chunk starts exactly on a sentence boundary
+		sentence_start = pos;
+		sentence_seed = seed.value;
+	}
+	if (end_checkpoint.offset != sentence_start || (DSS_HUGE)end_checkpoint.seed != sentence_seed) {
+		throw InternalException("TPC-H text pool checkpoint %llu does not match the generated text", chunk + 1);
+	}
+}
+
+static void ensure_text_pool_chunk(idx_t chunk) {
+	auto &state = text_pool_chunk_state[chunk];
+	auto current = state.load(std::memory_order_acquire);
+	if (current == TextPoolChunkState::READY) {
+		return;
+	}
+	if (current == TextPoolChunkState::EMPTY &&
+	    state.compare_exchange_strong(current, TextPoolChunkState::GENERATING, std::memory_order_acq_rel)) {
+		try {
+			gen_text_pool_chunk(chunk);
+		} catch (...) {
+			state.store(TextPoolChunkState::EMPTY, std::memory_order_release);
+			throw;
+		}
+		state.store(TextPoolChunkState::READY, std::memory_order_release);
+		return;
+	}
+	// another thread is generating this chunk
+	while (state.load(std::memory_order_acquire) != TextPoolChunkState::READY) {
+		std::this_thread::yield();
+	}
+}
+
+/*
  * init_text_pool() --
- *    allocate and initialize the internal text pool buffer (szTextPool).
- *    Make sure to call it before using dbg_text().
+ *    reserve the text pool; chunks are generated lazily by dbg_text_source().
  */
 void init_text_pool(long bSize, DBGenContext *ctx) {
+	if (bSize != TEXT_POOL_SIZE) {
+		throw InternalException("TPC-H text pool must be %ld bytes", (long)TEXT_POOL_SIZE);
+	}
+	if ((DSS_HUGE)TEXT_POOL_CHECKPOINTS[0].seed != ctx->Seed[5].value || TEXT_POOL_CHECKPOINTS[0].offset != 0) {
+		throw InternalException("TPC-H text pool checkpoints do not match the text seed");
+	}
 	gen_index(noun_index, &nouns);
 	gen_index(adjectives_index, &adjectives);
 	gen_index(adverbs_index, &adverbs);
@@ -409,32 +500,45 @@ void init_text_pool(long bSize, DBGenContext *ctx) {
 	gen_index(verbs_index, &verbs);
 	gen_index(prepositions_index, &prepositions);
 
-  txtBufferSize = bSize;
-  szTextPool = (char*)malloc(bSize + 1 + 100);
-
-	char *ptr = szTextPool;
-	char *endptr = szTextPool + bSize + 1;
-	while (ptr < endptr) {
-		ptr = gen_sentence(ptr, &ctx->Seed[5]);
+	D_ASSERT(!text_pool);
+	text_pool = (char *)malloc(TEXT_POOL_SIZE);
+	if (!text_pool) {
+		throw std::bad_alloc();
 	}
-	szTextPool[bSize] = '\0';
+	for (auto &state : text_pool_chunk_state) {
+		state.store(TextPoolChunkState::EMPTY, std::memory_order_relaxed);
+	}
+	txtBufferSize = bSize;
 }
 
 void free_text_pool() {
-  free(szTextPool);
+	free(text_pool);
+	text_pool = nullptr;
+	txtBufferSize = 0;
 }
 
 /*
- * dbg_text() --
- *		produce ELIZA-like text of random, bounded length, truncating the last
- *		generated sentence as required
+ * dbg_text_source() --
+ *		select a random slice of the text pool; the result stays valid until free_text_pool()
  */
 int dbg_text_source(int min, int max, seed_t *seed, const char **source) {
 	DSS_HUGE hgLength = 0, hgOffset;
 	RANDOM(hgOffset, 0, txtBufferSize - max, seed);
 	RANDOM(hgLength, min, max, seed);
-	/* source points into szTextPool and remains valid until free_text_pool() */
-	*source = &szTextPool[hgOffset];
+	D_ASSERT(hgLength > 0 && hgLength < (1 << TEXT_POOL_CHUNK_SHIFT));
+	auto first_chunk = idx_t(hgOffset) >> TEXT_POOL_CHUNK_SHIFT;
+	auto last_chunk = idx_t(hgOffset + hgLength - 1) >> TEXT_POOL_CHUNK_SHIFT;
+	ensure_text_pool_chunk(first_chunk);
+	if (last_chunk != first_chunk) {
+		ensure_text_pool_chunk(last_chunk);
+	}
+	*source = text_pool + hgOffset;
+#ifndef _MSC_VER
+	// the bytes are copied out later, when the chunk is appended; warm the cache lines now
+	for (auto line = *source; line < *source + hgLength; line += 64) {
+		__builtin_prefetch(line);
+	}
+#endif
 	return (int)hgLength;
 }
 
@@ -443,6 +547,4 @@ void dbg_text(char *tgt, int min, int max, seed_t *seed) {
 	auto hgLength = dbg_text_source(min, max, seed, &source);
 	memcpy(&tgt[0], source, (size_t)hgLength);
 	tgt[hgLength] = '\0';
-
-	return;
 }

@@ -38,11 +38,14 @@ void Base64DecodeFunction(DataChunk &args, ExpressionState &state, Vector &resul
 } // namespace
 
 ScalarFunction ToBase64Fun::GetFunction() {
-	return ScalarFunction({LogicalType::BLOB}, LogicalType::VARCHAR, Base64EncodeFunction);
+	ScalarFunction func({}, LogicalType::VARCHAR, Base64EncodeFunction);
+	func.GetSignature().AddParameter("blob", LogicalType::BLOB);
+	return func;
 }
 
 ScalarFunction FromBase64Fun::GetFunction() {
-	ScalarFunction function({LogicalType::VARCHAR}, LogicalType::BLOB, Base64DecodeFunction);
+	ScalarFunction function({}, LogicalType::BLOB, Base64DecodeFunction);
+	function.GetSignature().AddParameter("string", LogicalType::VARCHAR);
 	function.SetFallible();
 	return function;
 }

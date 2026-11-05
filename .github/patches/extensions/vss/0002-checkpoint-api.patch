@@ -1,0 +1,78 @@
+diff --git a/src/hnsw/hnsw_index.cpp b/src/hnsw/hnsw_index.cpp
+index 3a3ac60..6b7eb43 100644
+--- a/src/hnsw/hnsw_index.cpp
++++ b/src/hnsw/hnsw_index.cpp
+@@ -31,6 +31,7 @@
+ #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+ #include "duckdb/planner/expression_iterator.hpp"
+ #include "duckdb/planner/operator/logical_get.hpp"
++#include "duckdb/storage/checkpoint/table_index_writer.hpp"
+ #include "duckdb/storage/partial_block_manager.hpp"
+ #include "duckdb/storage/storage_info.hpp"
+ #include "duckdb/storage/table/scan_state.hpp"
+@@ -162,7 +163,7 @@ HNSWIndex::HNSWIndex(const Identifier &name, IndexConstraintType index_constrain
+ 
+ 	// Create a allocator for the linked blocks
+ 	auto &block_manager = table_io_manager.GetIndexBlockManager();
+-	linked_block_allocator = make_uniq<FixedSizeAllocator>(sizeof(LinkedBlock), block_manager);
++	linked_block_allocator = make_unsafe_uniq<FixedSizeAllocator>(sizeof(LinkedBlock), block_manager);
+ 
+ 	// We only support one ARRAY column
+ 	D_ASSERT(logical_types.size() == 1);
+@@ -556,25 +557,20 @@ void HNSWIndex::PersistToDisk() {
+ 	is_dirty = false;
+ }
+ 
+-IndexStorageInfo HNSWIndex::SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) {
+-
++IndexCheckpointResult HNSWIndex::Checkpoint(PartialBlockManager &partial_block_manager, StorageVersion) {
+ 	PersistToDisk();
+ 
++	auto new_linked_block_allocator = linked_block_allocator->Persist(partial_block_manager);
++	linked_block_allocator = std::move(new_linked_block_allocator);
++
+ 	IndexStorageInfo info;
+ 	info.name = name;
+ 	info.root = root_block_ptr.Get();
+-
+-	// Use the partial block manager to serialize allocator data.
+-	auto &block_manager = table_io_manager.GetIndexBlockManager();
+-	PartialBlockManager partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT);
+-	linked_block_allocator->SerializeBuffers(partial_block_manager);
+-	partial_block_manager.FlushPartialBlocks();
+ 	info.allocator_infos.push_back(linked_block_allocator->GetInfo());
+-
+-	return info;
++	return {make_shared_ptr<IndexStorageInfo>(std::move(info)), nullptr};
+ }
+ 
+-IndexStorageInfo HNSWIndex::SerializeToWAL(const case_insensitive_map_t<Value> &options) {
++IndexStorageInfo HNSWIndex::SerializeToWAL(StorageVersion version) {
+ 
+ 	PersistToDisk();
+ 
+diff --git a/src/include/hnsw/hnsw_index.hpp b/src/include/hnsw/hnsw_index.hpp
+index 28dc8cd..6248c7b 100644
+--- a/src/include/hnsw/hnsw_index.hpp
++++ b/src/include/hnsw/hnsw_index.hpp
+@@ -50,7 +50,7 @@ public:
+ 	IndexPointer root_block_ptr;
+ 
+ 	//! The allocator used to persist linked blocks
+-	unique_ptr<FixedSizeAllocator> linked_block_allocator;
++	unsafe_unique_ptr<FixedSizeAllocator> linked_block_allocator;
+ 
+ 	unique_ptr<IndexScanState> InitializeMultiScan(ClientContext &context) const;
+ 	idx_t ExecuteMultiScan(IndexScanState &state, float *query_vector, idx_t limit) const;
+@@ -88,9 +88,9 @@ public:
+ 	ErrorData Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) override;
+ 
+ 	//! Serializes HNSW memory to disk and returns the index storage information.
+-	IndexStorageInfo SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) override;
++	IndexCheckpointResult Checkpoint(PartialBlockManager &partial_block_manager, StorageVersion) override;
+ 	//! Serializes HNSW memory to the WAL and returns the index storage information.
+-	IndexStorageInfo SerializeToWAL(const case_insensitive_map_t<Value> &options) override;
++	IndexStorageInfo SerializeToWAL(StorageVersion version) override;
+ 
+ 	idx_t GetInMemorySize(IndexLock &state) const override;
+ 

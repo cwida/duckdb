@@ -9,7 +9,7 @@ namespace duckdb {
 
 namespace {
 
-unique_ptr<FunctionData> UnionTagBind(BindScalarFunctionInput &input) {
+void UnionTagResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
 	if (arguments.empty()) {
@@ -44,8 +44,6 @@ unique_ptr<FunctionData> UnionTagBind(BindScalarFunctionInput &input) {
 	}
 	auto enum_type = LogicalType::ENUM(varchar_vector, member_count);
 	bound_function.SetReturnType(enum_type);
-
-	return nullptr;
 }
 
 void UnionTagFunction(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -56,8 +54,11 @@ void UnionTagFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 } // namespace
 
 ScalarFunction UnionTagFun::GetFunction() {
-	return ScalarFunction({LogicalTypeId::UNION}, LogicalTypeId::ANY, UnionTagFunction, UnionTagBind, nullptr,
-	                      nullptr); // TODO: Statistics?
+	// TODO: Statistics?
+	ScalarFunction fun({}, LogicalTypeId::ANY, UnionTagFunction, nullptr, nullptr, nullptr);
+	fun.GetSignature().AddParameter("union", LogicalTypeId::UNION);
+	fun.SetResolveTypesCallback(UnionTagResolveTypes);
+	return fun;
 }
 
 } // namespace duckdb

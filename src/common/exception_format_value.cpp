@@ -58,7 +58,9 @@ ExceptionFormatValue ExceptionFormatValue::CreateFormatValue(const String &value
 }
 template <>
 ExceptionFormatValue ExceptionFormatValue::CreateFormatValue(const Identifier &value) {
-	return SQLQuotedIdentifier::ToString(value);
+	ExceptionFormatValue result(SQLQuotedIdentifier::ToString(value));
+	result.quoted_identifier = true;
+	return result;
 }
 
 template <>
@@ -92,7 +94,39 @@ ExceptionFormatValue ExceptionFormatValue::CreateFormatValue(const uhugeint_t &v
 	return ExceptionFormatValue(value);
 }
 
+//! Whether a placeholder of the format string that receives a quoted identifier is itself wrapped in quotes
+[[maybe_unused]] static bool HasDoubleQuotedIdentifier(const string &msg,
+                                                       const std::vector<ExceptionFormatValue> &values) {
+	idx_t arg_idx = 0;
+	for (idx_t i = 0; i < msg.size(); i++) {
+		if (msg[i] != '%') {
+			continue;
+		}
+		if (i + 1 < msg.size() && msg[i + 1] == '%') {
+			i++;
+			continue;
+		}
+		// skip flags, width and precision up to the conversion character
+		idx_t end = i + 1;
+		while (end < msg.size() && !isalpha(msg[end])) {
+			end++;
+		}
+		if (arg_idx < values.size() && values[arg_idx].quoted_identifier) {
+			bool quote_before = i > 0 && msg[i - 1] == '"';
+			bool quote_after = end + 1 < msg.size() && msg[end + 1] == '"';
+			if (quote_before && quote_after) {
+				return true;
+			}
+		}
+		arg_idx++;
+		i = end;
+	}
+	return false;
+}
+
 string ExceptionFormatValue::Format(const string &msg, std::vector<ExceptionFormatValue> &values) {
+	// identifiers are quoted by the formatter, the format string must not quote them again
+	D_ASSERT(!HasDoubleQuotedIdentifier(msg, values));
 	try {
 		std::vector<duckdb_fmt::basic_format_arg<duckdb_fmt::printf_context>> format_args;
 		for (auto &val : values) {

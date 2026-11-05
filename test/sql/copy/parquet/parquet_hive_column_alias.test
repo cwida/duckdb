@@ -1,0 +1,47 @@
+# name: test/sql/copy/parquet/parquet_hive_column_alias.test
+# description: Hive pruning uses source columns independently of SQL column aliases
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES (1,7), (1,7), (NULL,7), (2,9)) t(id,part)) TO '{TEST_DIR}/aliased_hive' (FORMAT parquet, PARTITION_BY(part))
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') AS t(a,b) WHERE b=999
+----
+0
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') AS t(a,b) WHERE b=7
+----
+3
+
+# An alias equal to a partition name does not turn a stored column into that partition column.
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') AS t(part,renamed) WHERE part=1
+----
+2
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') AS t(part,renamed) WHERE part IS NULL
+----
+1
+
+query II rowsort
+SELECT a,b FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') AS t(a,b) WHERE b=7
+----
+1	7
+1	7
+NULL	7
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') WHERE part=7
+----
+3
+
+# Renaming a partition column must retain file pruning.
+query II
+EXPLAIN SELECT a,b FROM read_parquet('{TEST_DIR}/aliased_hive/*/*.parquet') AS t(a,b) WHERE b=7
+----
+physical_plan	<REGEX>:.*Scanning Files: 1/2.*

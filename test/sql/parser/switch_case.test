@@ -87,10 +87,13 @@ one
 other
 other
 
-statement error
+# the cases map only has to be constant - its keys and values can be any constant expression
+query I
 SELECT switch(val, MAP { 1+1 : 'one', 1: 'is_null'}, 'other') FROM null_test ORDER BY val;
 ----
-Not implemented Error: Only constant expressions are supported for keys inside SWITCH
+is_null
+one
+other
 
 statement error
 SELECT switch(val, MAP {}, 'other') FROM null_test ORDER BY val;
@@ -112,3 +115,42 @@ statement error
 SELECT switch(i, MAP {i : 1}) FROM (SELECT 1 i);
 ----
 Binder Error: SWITCH expected a constant map for the cases
+
+# which argument holds the cases map comes from the resolved overload, not from scanning for the
+# first MAP-typed argument - a MAP-typed key argument makes the types ambiguous (issue #25379)
+
+query I
+SELECT switch(map([false],[10]), map([map([false],[10])],[999]), 777);
+----
+999
+
+# all four overloads still resolve to the right argument
+
+query I
+SELECT switch(2, map([1,2,3],['a','b','c']));
+----
+b
+
+query I
+SELECT switch(9, map([1,2],['a','b']), 'dflt');
+----
+dflt
+
+query I
+SELECT switch(map([true],[10]), 99);
+----
+10
+
+query I
+SELECT switch(map([true],[10]));
+----
+10
+
+# a MAP-typed key is only well-typed when the cases map's key type matches it, and building such a
+# cases map needs map() calls as keys, which SWITCH does not accept - so the shape above is the only
+# reachable one. Guard that the key type is still checked rather than silently ignored.
+
+statement error
+SELECT switch(map([1],[2]), map([true],[7]), 55);
+----
+<REGEX>:.*Cannot deduce template type 'K'.*

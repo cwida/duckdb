@@ -6,16 +6,51 @@ statement ok
 set extension_directory='{TEST_DIR}/extension_dir'
 
 statement ok
-SET allowed_directories=['{TEST_DIR}', 'http://foo.com/bar', 'https://foo.com/baz'];
+SET allowed_directories=['{TEST_DIR}', 'http://127.0.0.1:1/allowed', 'https://foo.com/baz'];
 
 statement ok
 SET enable_external_access=false;
 
-# error messsage `Failed to download extension` means duckdb
+# an allowed repository passes the check: httpfs then cannot read the CA bundle, the built-in client cannot reach port 1
+statement error
+INSTALL bogus FROM 'http://127.0.0.1:1/allowed';
+----
+<REGEX>:.*(Permission Error: Cannot read a CA certificate bundle|Failed to download extension).*
+
+# a repository outside of allowed_directories is rejected before any request is made
 statement error
 INSTALL bogus FROM 'http://example.com';
 ----
-Failed to download extension
+<REGEX>:Permission Error: Cannot download extension from "https?://example.com/.*
+
+statement error
+INSTALL 'http://example.com/bogus.duckdb_extension';
+----
+Permission Error: Cannot download extension
+
+# a prefix of an allowed directory is not enough
+statement error
+INSTALL bogus FROM 'http://127.0.0.1:1/allowed_not';
+----
+Permission Error: Cannot download extension
+
+# dot segments could be resolved by the server to a location outside of the allowed directory
+statement error
+INSTALL bogus FROM 'http://127.0.0.1:1/allowed/..';
+----
+Permission Error: Cannot download extension
+
+# the default repository can be changed, but its downloads are still checked
+statement ok
+SET custom_extension_repository='http://example.com/repository';
+
+statement error
+INSTALL bogus;
+----
+Permission Error: Cannot download extension
+
+statement ok
+RESET custom_extension_repository;
 
 # now switch the extension directory to one that is not in the allowed_directories list
 statement ok
@@ -23,6 +58,6 @@ set extension_directory='/tmp'
 
 # duckdb will throw permission error because /tmp is not allowed
 statement error
-INSTALL bogus FROM 'http://example.com';
+INSTALL bogus FROM 'http://127.0.0.1:1/allowed';
 ----
 Permission Error: Cannot access directory

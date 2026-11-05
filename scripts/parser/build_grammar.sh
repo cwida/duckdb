@@ -16,17 +16,6 @@ fi
 
 echo "Successfully built grammar files"
 
-# Generate Internal transformer wrappers for auto-generatable grammar rules
-GEN_TRANSFORMER_FILE="scripts/parser/generate_transformer.py"
-if [[ ! -f "$GEN_TRANSFORMER_FILE" ]]; then
-  echo "Error: $GEN_TRANSFORMER_FILE not found"
-  exit 1
-fi
-
-"$PYTHON_BIN" "$GEN_TRANSFORMER_FILE" --write
-
-echo "Successfully generated transformer wrappers"
-
 GEN_TRAMPOLINE_FILE="scripts/parser/generate_transformer_trampoline.py"
 if [[ ! -f "$GEN_TRAMPOLINE_FILE" ]]; then
   echo "Error: $GEN_TRAMPOLINE_FILE not found"
@@ -35,6 +24,6 @@ fi
 
 "$PYTHON_BIN" "$GEN_TRAMPOLINE_FILE" --write
 
-echo "Successfully generated trampoline transformer wrappers"
+echo "Successfully generated transformer wrappers"
 
-make format-parser-grammar
+DUCKDB_FORMAT_SKIP_TYPOS=1 make format-parser-grammar

@@ -15,7 +15,9 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/function/table/read_csv.hpp"
 #include "duckdb/common/multi_file/multi_file_function.hpp"
-#include "duckdb/execution/operator/csv_scanner/csv_multi_file_info.hpp"
+#include "duckdb/execution/operator/csv_scanner/csv_file_scanner.hpp"
+#include "duckdb/execution/operator/csv_scanner/csv_schema_discovery.hpp"
+#include "duckdb/common/multi_file/union_by_name.hpp"
 
 namespace duckdb {
 
@@ -37,11 +39,14 @@ CSVReaderOptions ReadCSVRelationBind(const shared_ptr<ClientContext> &context, c
 	D_ASSERT(!files.empty());
 
 	auto &file_name = files[0];
-	CSVFileReaderOptions csv_file_options;
-	auto &csv_options = csv_file_options.options;
+	CSVReaderOptions csv_options;
 	csv_options.file_path = file_name.path;
 	vector<string> empty;
-	csv_options.FromNamedParameters(options, *context, file_options);
+	named_argument_map_t named_arguments;
+	for (auto &option : options) {
+		named_arguments.insert(option.first, option.second);
+	}
+	csv_options.FromNamedParameters(named_arguments, *context, file_options);
 
 	// Run the auto-detect, populating the options with the detected settings
 	SimpleMultiFileList multi_file_list(files);
@@ -49,12 +54,14 @@ CSVReaderOptions ReadCSVRelationBind(const shared_ptr<ClientContext> &context, c
 	if (file_options.union_by_name) {
 		vector<LogicalType> types;
 		vector<Identifier> names;
-		auto result = make_uniq<MultiFileBindData>();
-		auto csv_data = make_uniq<ReadCSVData>();
-		result->interface = make_uniq<CSVMultiFileInfo>();
-
-		multi_file_reader->BindUnionReader(*context, types, names, multi_file_list, *result, csv_file_options,
-		                                   file_options);
+		// sniff every file and unify the columns of the files by name
+		identifier_map_t<idx_t> union_names_map;
+		for (auto &file : files) {
+			auto file_csv_options = csv_options;
+			file_csv_options.file_path = file.path;
+			CSVFileScan file_scan(*context, file, file_csv_options, file_options);
+			UnionByName::CombineUnionTypes(file_scan.GetNames(), file_scan.GetTypes(), types, names, union_names_map);
+		}
 		if (!csv_options.sql_types_per_column.empty()) {
 			const auto exception = CSVError::ColumnTypesError(csv_options.sql_types_per_column, names);
 			if (!exception.error_message.empty()) {

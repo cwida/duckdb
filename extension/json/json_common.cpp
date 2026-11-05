@@ -1,6 +1,7 @@
 #include "json_common.hpp"
 #include "yyjson_memory.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
+#include "duckdb/common/type_visitor.hpp"
 
 namespace duckdb {
 
@@ -55,13 +56,15 @@ public:
 	}
 
 	inline bool IsWildCard() {
-		return key == "*";
+		// a quoted "*" is a regular key
+		return !quoted && key == "*";
 	}
 
 public:
 	idx_t chars_read;
 	bool recursive;
 	string key;
+	bool quoted = false;
 };
 
 static inline JSONKeyReadResult ReadString(const char *ptr, const char *const end, const bool escaped) {
@@ -127,6 +130,10 @@ static inline idx_t ReadInteger(const char *ptr, const char *const end, idx_t &i
 		}
 		ptr++;
 	}
+	if (ptr == end || *ptr != ']') {
+		// No closing ']', or too many digits
+		return 0;
+	}
 	// Invalid if overflow
 	return idx >= (idx_t)IDX_T_MAX ? 0 : ptr - before;
 }
@@ -166,6 +173,7 @@ static inline JSONKeyReadResult ReadKey(const char *ptr, const char *const end) 
 	}
 	if (escaped) {
 		result.chars_read += 2; // Account for surrounding quotes
+		result.quoted = true;
 	}
 	if (recursive) {
 		result.chars_read += 1;
@@ -420,6 +428,164 @@ void JSONCommon::GetWildcardPath(yyjson_val *val, const char *ptr, const idx_t &
 	const char *const end = ptr + len;
 	ptr++; // Skip past '$'
 	GetWildcardPathInternal(val, ptr, end, vals);
+}
+
+//! Shallow copy of a mutable value - the children of containers are copied by MutValMutCopy
+static yyjson_mut_val *MutValShallowCopy(yyjson_mut_doc *doc, yyjson_mut_val *val) {
+	auto result = unsafe_yyjson_mut_val(doc, 1);
+	if (!result) {
+		return nullptr;
+	}
+	result->tag = val->tag;
+	switch (unsafe_yyjson_get_type(val)) {
+	case YYJSON_TYPE_OBJ:
+	case YYJSON_TYPE_ARR:
+		result->uni.ptr = nullptr;
+		break;
+	case YYJSON_TYPE_RAW:
+	case YYJSON_TYPE_STR:
+		result->uni.str = unsafe_yyjson_mut_strncpy(doc, val->uni.str, unsafe_yyjson_get_len(val));
+		if (!result->uni.str) {
+			return nullptr;
+		}
+		break;
+	default:
+		result->uni = val->uni;
+		break;
+	}
+	return result;
+}
+
+bool JSONCommon::NumbersAsRaw(const LogicalType &type) {
+	return TypeVisitor::Contains(type, LogicalTypeId::DECIMAL);
+}
+
+bool JSONCommon::NumbersAsRaw(const vector<LogicalType> &types) {
+	for (auto &type : types) {
+		if (NumbersAsRaw(type)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+yyjson_read_flag JSONCommon::GetReadFlag(yyjson_read_flag flag, bool numbers_as_raw) {
+	if (numbers_as_raw) {
+		flag &= ~YYJSON_READ_BIGNUM_AS_RAW;
+		flag |= YYJSON_READ_NUMBER_AS_RAW;
+	}
+	return flag;
+}
+
+//! Whether the value, or a value nested in it, is a number kept as text that ReadRawNumber parses
+static bool HasRawNumber(yyjson_val *val) {
+	// the values of an immutable document are contiguous: a container is followed by all of its children
+	yyjson_val number;
+	for (auto cur = val; cur < unsafe_yyjson_get_next(val); cur++) {
+		if (unsafe_yyjson_is_raw(cur) && JSONCommon::ReadRawNumber(cur, number)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Replaces a number kept as text by the number the default flags would have read, in place
+static void ParseRawNumber(yyjson_mut_val *val) {
+	yyjson_val number;
+	if (!JSONCommon::ReadRawNumber(unsafe_yyjson_get_str(val), number)) {
+		return;
+	}
+	switch (unsafe_yyjson_get_subtype(&number)) {
+	case YYJSON_SUBTYPE_UINT:
+		yyjson_mut_set_uint(val, unsafe_yyjson_get_uint(&number));
+		break;
+	case YYJSON_SUBTYPE_SINT:
+		yyjson_mut_set_sint(val, unsafe_yyjson_get_sint(&number));
+		break;
+	default:
+		yyjson_mut_set_real(val, unsafe_yyjson_get_real(&number));
+		break;
+	}
+}
+
+string_t JSONRawNumberWriter::Write(yyjson_val *val) {
+	if (!HasRawNumber(val)) {
+		return JSONCommon::WriteVal<yyjson_val>(val, alc);
+	}
+	if (!doc) {
+		doc = JSONCommon::CreateDocument(alc);
+	}
+	auto copy = yyjson_val_mut_copy(doc, val);
+	// iterative, like MutValMutCopy, so that deeply nested values do not overflow the stack
+	containers.clear();
+	if (unsafe_yyjson_is_raw(copy)) {
+		ParseRawNumber(copy);
+	} else if (unsafe_yyjson_is_ctn(copy) && unsafe_yyjson_get_len(copy) > 0) {
+		containers.push_back(copy);
+	}
+	while (!containers.empty()) {
+		auto container = containers.back();
+		containers.pop_back();
+		// the children of a container form a circular list - the container points to the last child
+		auto last = reinterpret_cast<yyjson_mut_val *>(container->uni.ptr);
+		auto child = last;
+		do {
+			if (unsafe_yyjson_is_raw(child)) {
+				ParseRawNumber(child);
+			} else if (unsafe_yyjson_is_ctn(child) && unsafe_yyjson_get_len(child) > 0) {
+				containers.push_back(child);
+			}
+			child = child->next;
+		} while (child != last);
+	}
+	return JSONCommon::WriteVal<yyjson_mut_val>(copy, alc);
+}
+
+yyjson_mut_val *JSONCommon::MutValMutCopy(yyjson_mut_doc *doc, yyjson_mut_val *val) {
+	if (!doc || !val) {
+		return nullptr;
+	}
+	struct CopyEntry {
+		yyjson_mut_val *source;
+		yyjson_mut_val *target;
+	};
+	vector<CopyEntry> containers;
+	auto result = MutValShallowCopy(doc, val);
+	if (!result) {
+		return nullptr;
+	}
+	if (unsafe_yyjson_is_ctn(val) && unsafe_yyjson_get_len(val) > 0) {
+		containers.push_back({val, result});
+	}
+	while (!containers.empty()) {
+		auto entry = containers.back();
+		containers.pop_back();
+		// the children of a container form a circular list - the container points to the last child
+		auto last = reinterpret_cast<yyjson_mut_val *>(entry.source->uni.ptr);
+		auto source_child = last;
+		yyjson_mut_val *first_copy = nullptr;
+		yyjson_mut_val *prev_copy = nullptr;
+		do {
+			auto child_copy = MutValShallowCopy(doc, source_child);
+			if (!child_copy) {
+				return nullptr;
+			}
+			if (unsafe_yyjson_is_ctn(source_child) && unsafe_yyjson_get_len(source_child) > 0) {
+				containers.push_back({source_child, child_copy});
+			}
+			if (prev_copy) {
+				prev_copy->next = child_copy;
+			} else {
+				first_copy = child_copy;
+			}
+			prev_copy = child_copy;
+			source_child = source_child->next;
+		} while (source_child != last);
+		// the copies were made starting from the last child - close the circle, and point the copy at the last child
+		prev_copy->next = first_copy;
+		entry.target->uni.ptr = first_copy;
+	}
+	return result;
 }
 
 } // namespace duckdb

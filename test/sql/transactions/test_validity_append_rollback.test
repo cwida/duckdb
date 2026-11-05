@@ -1,0 +1,69 @@
+# name: test/sql/transactions/test_validity_append_rollback.test
+# description: Rollback of a conflicting append must not exceed validity segment count
+# group: [transactions]
+
+statement ok con1
+CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok con1
+CREATE TABLE pos(fname VARCHAR, off BIGINT);
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+INSERT INTO t VALUES (1,101),(2,102);
+
+statement ok con2
+INSERT INTO t VALUES (1,201),(3,203);
+
+statement ok con1
+INSERT INTO pos VALUES ('a',1);
+
+statement ok con1
+COMMIT;
+
+statement ok con2
+INSERT INTO pos VALUES ('b',2);
+
+statement error con2
+COMMIT;
+----
+<REGEX>:.*TransactionContext Error.*duplicate key.*
+
+query II con1
+SELECT * FROM t ORDER BY id;
+----
+1	101
+2	102
+
+query TI con1
+SELECT * FROM pos ORDER BY fname;
+----
+a	1
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+INSERT INTO t VALUES (4,104);
+
+statement ok con1
+COMMIT;
+
+statement ok con2
+BEGIN;
+
+statement ok con2
+INSERT INTO t VALUES (5,105);
+
+statement ok con2
+COMMIT;
+
+query I con2
+SELECT count(*) FROM t;
+----
+4

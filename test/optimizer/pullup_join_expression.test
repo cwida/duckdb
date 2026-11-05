@@ -1,0 +1,170 @@
+# name: test/optimizer/pullup_join_expression.test
+# description: Keep fallible join predicates below projections so their joins can be reconstructed
+# group: [optimizer]
+
+statement ok
+SET max_execution_time = 10000;
+
+statement ok
+CREATE TABLE ss AS SELECT range % 365 AS ss_sold_date_sk, range AS ss_item_sk FROM range(20000);
+
+statement ok
+CREATE TABLE dd AS SELECT range AS d_date_sk, range AS d_date FROM range(365);
+
+# All three equalities must remain hash joins through the nested SELECT * projections.
+query TT
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM dd d3
+JOIN (SELECT * FROM dd d2
+      JOIN (SELECT * FROM dd d1 JOIN ss ON d1.d_date_sk = ss.ss_sold_date_sk + 7) a
+      ON d2.d_date_sk = a.ss_sold_date_sk + 14) b
+ON d3.d_date_sk = b.ss_sold_date_sk + 21;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+query I
+SELECT count(*)
+FROM dd d3
+JOIN (SELECT * FROM dd d2
+      JOIN (SELECT * FROM dd d1 JOIN ss ON d1.d_date_sk = ss.ss_sold_date_sk + 7) a
+      ON d2.d_date_sk = a.ss_sold_date_sk + 14) b
+ON d3.d_date_sk = b.ss_sold_date_sk + 21;
+----
+18866
+
+statement ok
+CREATE TABLE f AS SELECT i FROM range(10) t(i);
+
+statement ok
+CREATE TABLE d AS SELECT i AS k FROM range(10) t(i);
+
+query TT
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT * FROM d d1 JOIN f ON d1.k = f.i + 1) a
+      ON d2.k = a.i + 2) b
+ON d3.k = b.i + 3;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+query I
+SELECT count(*) FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT * FROM d d1 JOIN f ON d1.k = f.i + 1) a
+      ON d2.k = a.i + 2) b
+ON d3.k = b.i + 3;
+----
+7
+
+# Deeper nesting must not leave additional cross products behind.
+query TT
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM d d6
+JOIN (SELECT * FROM d d5
+      JOIN (SELECT * FROM d d4
+            JOIN (SELECT * FROM d d3
+                  JOIN (SELECT * FROM d d2
+                        JOIN (SELECT * FROM d d1 JOIN f ON d1.k = f.i + 1) a
+                        ON d2.k = a.i + 2) b
+                  ON d3.k = b.i + 3) c
+            ON d4.k = c.i + 4) e
+      ON d5.k = e.i + 5) g
+ON d6.k = g.i + 6;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+query I
+SELECT count(*) FROM d d6
+JOIN (SELECT * FROM d d5
+      JOIN (SELECT * FROM d d4
+            JOIN (SELECT * FROM d d3
+                  JOIN (SELECT * FROM d d2
+                        JOIN (SELECT * FROM d d1 JOIN f ON d1.k = f.i + 1) a
+                        ON d2.k = a.i + 2) b
+                  ON d3.k = b.i + 3) c
+            ON d4.k = c.i + 4) e
+      ON d5.k = e.i + 5) g
+ON d6.k = g.i + 6;
+----
+4
+
+# Flat joins and nonthrowing equalities retain their existing hash joins.
+query TT
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM f
+JOIN d d1 ON d1.k = f.i + 1
+JOIN d d2 ON d2.k = f.i + 2
+JOIN d d3 ON d3.k = f.i + 3;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+query I
+SELECT count(*) FROM f
+JOIN d d1 ON d1.k = f.i + 1
+JOIN d d2 ON d2.k = f.i + 2
+JOIN d d3 ON d3.k = f.i + 3;
+----
+7
+
+query TT
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT * FROM d d1 JOIN f ON d1.k = f.i) a
+      ON d2.k = a.i) b
+ON d3.k = b.i;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+query I
+SELECT count(*) FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT * FROM d d1 JOIN f ON d1.k = f.i) a
+      ON d2.k = a.i) b
+ON d3.k = b.i;
+----
+10
+
+# Recover the inner join even when a computed projection must remain.
+query TT
+EXPLAIN (FORMAT JSON) SELECT count(*), sum(payload) FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT *, abs(f.i) AS payload FROM d d1 JOIN f ON d1.k = f.i + 1) a
+      ON d2.k = a.i + 2) b
+ON d3.k = b.i + 3;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*HASH_JOIN.*HASH_JOIN.*
+
+query II
+SELECT count(*), sum(payload) FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT *, abs(f.i) AS payload FROM d d1 JOIN f ON d1.k = f.i + 1) a
+      ON d2.k = a.i + 2) b
+ON d3.k = b.i + 3;
+----
+7	21
+
+# The volatile projection must run on the nine inner-join matches, not the Cartesian product.
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+statement ok
+CREATE OR REPLACE SEQUENCE projection_calls START 1;
+
+query II
+SELECT count(*), sum(payload) > 0 FROM d d3
+JOIN (SELECT * FROM d d2
+      JOIN (SELECT *, nextval('projection_calls') AS payload FROM d d1 JOIN f ON d1.k = f.i + 1) a
+      ON d2.k = a.i + 2) b
+ON d3.k = b.i + 3;
+----
+7	true
+
+query I
+SELECT currval('projection_calls');
+----
+9
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;

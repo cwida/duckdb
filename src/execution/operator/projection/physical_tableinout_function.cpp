@@ -33,11 +33,14 @@ public:
 };
 
 PhysicalTableInOutFunction::PhysicalTableInOutFunction(PhysicalPlan &physical_plan, vector<LogicalType> types,
-                                                       TableFunction function_p, unique_ptr<FunctionData> bind_data_p,
-                                                       vector<ColumnIndex> column_ids_p, idx_t estimated_cardinality,
-                                                       vector<column_t> project_input_p)
+                                                       BoundTableFunction function_p,
+                                                       unique_ptr<FunctionData> bind_data_p,
+                                                       vector<ColumnIndex> column_ids_p, vector<idx_t> projection_ids_p,
+                                                       unique_ptr<TableFilterSet> table_filters_p,
+                                                       idx_t estimated_cardinality, vector<column_t> project_input_p)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::INOUT_FUNCTION, std::move(types), estimated_cardinality),
       function(std::move(function_p)), bind_data(std::move(bind_data_p)), column_ids(std::move(column_ids_p)),
+      projection_ids(std::move(projection_ids_p)), table_filters(std::move(table_filters_p)),
       projected_input(std::move(project_input_p)) {
 }
 
@@ -45,10 +48,10 @@ unique_ptr<OperatorState> PhysicalTableInOutFunction::GetOperatorState(Execution
 	auto &gstate = op_state->Cast<TableInOutGlobalState>();
 	auto result = make_uniq<TableInOutLocalState>();
 	if (function.init_local) {
-		TableFunctionInitInput input(bind_data.get(), column_ids, vector<idx_t>(), nullptr);
+		TableFunctionInitInput input(bind_data.get(), column_ids, projection_ids, table_filters.get());
 		result->local_state = function.init_local(context, input, gstate.global_state.get());
 	}
-	if (!projected_input.empty()) {
+	if (!projected_input.empty() || (ordinality_idx.IsValid() && !table_input)) {
 		vector<LogicalType> input_types;
 		auto &child_types = children[0].get().GetTypes();
 		idx_t input_length = child_types.size() - projected_input.size();
@@ -66,7 +69,7 @@ unique_ptr<OperatorState> PhysicalTableInOutFunction::GetOperatorState(Execution
 unique_ptr<GlobalOperatorState> PhysicalTableInOutFunction::GetGlobalOperatorState(ClientContext &context) const {
 	auto result = make_uniq<TableInOutGlobalState>();
 	if (function.init_global) {
-		TableFunctionInitInput input(bind_data.get(), column_ids, vector<idx_t>(), nullptr);
+		TableFunctionInitInput input(bind_data.get(), column_ids, projection_ids, table_filters.get());
 		result->global_state = function.init_global(context, input);
 	}
 	return std::move(result);
@@ -86,10 +89,11 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 	auto &gstate = gstate_p.Cast<TableInOutGlobalState>();
 	auto &state = state_p.Cast<TableInOutLocalState>();
 	TableFunctionInput data(bind_data.get(), state.local_state.get(), gstate.global_state.get());
-	if (projected_input.empty()) {
+	if (projected_input.empty() && (!this->ordinality_idx.IsValid() || table_input)) {
 		// straightforward case - no need to project input
 		auto result = function.in_out_function(context, data, input, chunk);
 		if (this->ordinality_idx.IsValid()) {
+			// a TABLE parameter's rows form one invocation: the numbering continues across them
 			const idx_t ordinality = chunk.size();
 			SetOrdinality(chunk, this->ordinality_idx, state.current_ordinality_idx, ordinality);
 			state.current_ordinality_idx += ordinality;
@@ -97,7 +101,8 @@ OperatorResultType PhysicalTableInOutFunction::Execute(ExecutionContext &context
 		chunk.SetChildCardinality(chunk.size());
 		return result;
 	}
-	// when project_input is set we execute the input function row-by-row
+	// with project_input or ordinality over scalar parameters we execute the input function row-by-row
+	// (the ordinality numbering restarts for every input row)
 	if (state.new_row) {
 		if (state.row_index >= input.size()) {
 			// finished processing this chunk
@@ -152,7 +157,7 @@ InsertionOrderPreservingMap<string> PhysicalTableInOutFunction::ParamsToString()
 			result[it.first] = it.second;
 		}
 	} else {
-		result["Name"] = function.name.GetIdentifierName();
+		result["Name"] = function.GetName().GetIdentifierName();
 	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;

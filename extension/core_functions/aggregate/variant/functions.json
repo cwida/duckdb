@@ -1,0 +1,10 @@
+[
+  {
+    "name": "variant_group_object",
+    "parameters": "key,value",
+    "description": "Returns a VARIANT object containing all key, value pairs in the aggregation.",
+    "example": "variant_group_object(key, value)",
+    "categories": ["variant"],
+    "type": "aggregate_function"
+  }
+]

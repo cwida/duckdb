@@ -267,38 +267,38 @@ public:
 		return false; // not matched
 	}
 
-	void Match(const char *str) {
-		if (!TryMatch(str)) {
-			// Check if this would go EOF
-			if (pos + strlen(str) >= end) {
-				throw MakeError("Expected '%s' but got end of input", str);
-			}
-
-			throw MakeError("Expected '%s' but got '%c'", str, *pos);
+	bool Match(const char *str) {
+		if (TryMatch(str)) {
+			return true;
 		}
+		// Check if this would go EOF
+		if (pos + strlen(str) >= end) {
+			return SetError("Expected '%s' but got end of input", str);
+		}
+		return SetError("Expected '%s' but got '%c'", str, *pos);
 	}
 
-	void Match(char c) {
-		if (!TryMatch(c)) {
-			if (pos >= end) {
-				throw MakeError("Expected '%c' but got end of input", c);
-			}
-			throw MakeError("Expected '%c' but got '%c'", c, *pos);
+	bool Match(char c) {
+		if (TryMatch(c)) {
+			return true;
 		}
+		if (pos >= end) {
+			return SetError("Expected '%c' but got end of input", c);
+		}
+		return SetError("Expected '%c' but got '%c'", c, *pos);
 	}
 
-	double MatchNumber() {
+	bool MatchNumber(double &num) {
 		// Now use fast_float to parse the number
-		double num;
 		const auto res = duckdb_fast_float::from_chars(pos, end, num);
 		if (res.ec != std::errc()) {
-			throw MakeError("Expected number");
+			return SetError("Expected number");
 		}
 
 		pos = res.ptr; // update position to the end of the parsed number
 
 		SkipWhitespace(); // remove trailing whitespace
-		return num;       // return the parsed number
+		return true;
 	}
 
 	idx_t GetPosition() const {
@@ -314,18 +314,25 @@ public:
 		pos = beg;
 	}
 
+	//! Records a parse error at the current position, always returns false
 	template <class... ARGS>
-	InvalidInputException MakeError(const char *raw_msg, ARGS... args) const {
-		const auto byte_offset = UnsafeNumericCast<idx_t>(pos - beg);
-		auto msg = StringUtil::Format("Failed to parse geometry: %s at offset %lu",
-		                              StringUtil::Format(raw_msg, args...), byte_offset);
+	bool SetError(const char *raw_msg, ARGS... args) {
+		error_message = StringUtil::Format(raw_msg, args...);
+		error_offset = UnsafeNumericCast<idx_t>(pos - beg);
+		return false;
+	}
+
+	string GetErrorMessage() const {
+		return StringUtil::Format("Failed to parse geometry: %s at offset %lu", error_message, error_offset);
+	}
+
+	InvalidInputException MakeError() const {
 		if (query_location.IsValid()) {
 			// point at the specific byte within the WKT literal where parsing failed
-			const QueryLocation expr_location(query_location.Start() + byte_offset, 0);
-			return InvalidInputException(Exception::InitializeExtraInfo(expr_location), msg);
-		} else {
-			return InvalidInputException(msg);
+			const QueryLocation expr_location(query_location.Start() + error_offset, 0);
+			return InvalidInputException(Exception::InitializeExtraInfo(expr_location), GetErrorMessage());
 		}
+		return InvalidInputException(GetErrorMessage());
 	}
 
 	void SetQueryLocation(QueryLocation location) {
@@ -343,11 +350,14 @@ private:
 	const char *pos;
 	const char *end;
 	QueryLocation query_location;
+	string error_message;
+	idx_t error_offset = 0;
 };
 
-void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth, bool parent_has_z, bool parent_has_m) {
+//! Returns false if the text is not valid WKT, the error is recorded in the reader
+bool FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth, bool parent_has_z, bool parent_has_m) {
 	if (depth == Geometry::MAX_RECURSION_DEPTH) {
-		throw reader.MakeError("Geometry string exceeds maximum recursion depth of %d", Geometry::MAX_RECURSION_DEPTH);
+		return reader.SetError("Geometry string exceeds maximum recursion depth of %d", Geometry::MAX_RECURSION_DEPTH);
 	}
 
 	// Skip leading whitespace
@@ -355,9 +365,16 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 
 	// EWKT dialect (ignore SRID if present)
 	if (reader.TryMatch("SRID")) {
-		reader.Match('=');
-		reader.MatchNumber();
-		reader.Match(';');
+		if (!reader.Match('=')) {
+			return false;
+		}
+		double srid;
+		if (!reader.MatchNumber(srid)) {
+			return false;
+		}
+		if (!reader.Match(';')) {
+			return false;
+		}
 	}
 
 	GeometryType type = GeometryType::INVALID;
@@ -377,7 +394,7 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 	} else if (reader.TryMatch("geometrycollection")) {
 		type = GeometryType::GEOMETRYCOLLECTION;
 	} else {
-		throw reader.MakeError("Unknown geometry type");
+		return reader.SetError("Unknown geometry type");
 	}
 
 	const auto has_z = reader.TryMatch("z");
@@ -386,7 +403,7 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 	const auto is_empty = reader.TryMatch("empty");
 
 	if ((depth != 0) && ((parent_has_z != has_z) || (parent_has_m != has_m))) {
-		throw reader.MakeError("Geometry has inconsistent Z/M dimensions");
+		return reader.SetError("Geometry has inconsistent Z/M dimensions");
 	}
 
 	// How many dimensions does this geometry have?
@@ -406,12 +423,19 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 				writer.Write<double>(std::numeric_limits<double>::quiet_NaN());
 			}
 		} else {
-			reader.Match('(');
+			if (!reader.Match('(')) {
+				return false;
+			}
 			for (uint32_t d_idx = 0; d_idx < dims; d_idx++) {
-				auto value = reader.MatchNumber();
+				double value;
+				if (!reader.MatchNumber(value)) {
+					return false;
+				}
 				writer.Write<double>(value);
 			}
-			reader.Match(')');
+			if (!reader.Match(')')) {
+				return false;
+			}
 		}
 	} break;
 	case GeometryType::LINESTRING: {
@@ -420,15 +444,22 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 			break;
 		}
 		auto vert_count = writer.Reserve<uint32_t>();
-		reader.Match('(');
+		if (!reader.Match('(')) {
+			return false;
+		}
 		do {
 			for (uint32_t d_idx = 0; d_idx < dims; d_idx++) {
-				auto value = reader.MatchNumber();
+				double value;
+				if (!reader.MatchNumber(value)) {
+					return false;
+				}
 				writer.Write<double>(value);
 			}
 			vert_count.value++;
 		} while (reader.TryMatch(','));
-		reader.Match(')');
+		if (!reader.Match(')')) {
+			return false;
+		}
 		writer.Write(vert_count);
 	} break;
 	case GeometryType::POLYGON: {
@@ -437,22 +468,33 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 			break; // No rings in empty polygon
 		}
 		auto ring_count = writer.Reserve<uint32_t>();
-		reader.Match('(');
+		if (!reader.Match('(')) {
+			return false;
+		}
 		do {
 			auto vert_count = writer.Reserve<uint32_t>();
-			reader.Match('(');
+			if (!reader.Match('(')) {
+				return false;
+			}
 			do {
 				for (uint32_t d_idx = 0; d_idx < dims; d_idx++) {
-					auto value = reader.MatchNumber();
+					double value;
+					if (!reader.MatchNumber(value)) {
+						return false;
+					}
 					writer.Write<double>(value);
 				}
 				vert_count.value++;
 			} while (reader.TryMatch(','));
-			reader.Match(')');
+			if (!reader.Match(')')) {
+				return false;
+			}
 			writer.Write(vert_count);
 			ring_count.value++;
 		} while (reader.TryMatch(','));
-		reader.Match(')');
+		if (!reader.Match(')')) {
+			return false;
+		}
 		writer.Write(ring_count);
 	} break;
 	case GeometryType::MULTIPOINT: {
@@ -461,7 +503,9 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 			break;
 		}
 		auto part_count = writer.Reserve<uint32_t>();
-		reader.Match('(');
+		if (!reader.Match('(')) {
+			return false;
+		}
 		do {
 			bool has_paren = reader.TryMatch('(');
 
@@ -476,25 +520,34 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 				}
 			} else {
 				for (uint32_t d_idx = 0; d_idx < dims; d_idx++) {
-					auto value = reader.MatchNumber();
+					double value;
+					if (!reader.MatchNumber(value)) {
+						return false;
+					}
 					writer.Write<double>(value);
 				}
 			}
 			if (has_paren) {
-				reader.Match(')'); // Match the closing parenthesis if it was opened
+				if (!reader.Match(')')) { // Match the closing parenthesis if it was opened
+					return false;
+				}
 			}
 			part_count.value++;
 		} while (reader.TryMatch(','));
-		reader.Match(')');
+		if (!reader.Match(')')) {
+			return false;
+		}
 		writer.Write(part_count);
 	} break;
 	case GeometryType::MULTILINESTRING: {
 		if (is_empty) {
 			writer.Write<uint32_t>(0);
-			return; // No linestrings in empty multilinestring
+			return true; // No linestrings in empty multilinestring
 		}
 		auto part_count = writer.Reserve<uint32_t>();
-		reader.Match('(');
+		if (!reader.Match('(')) {
+			return false;
+		}
 		do {
 			const auto part_meta =
 			    static_cast<uint32_t>(GeometryType::LINESTRING) + (has_z ? 1000 : 0) + (has_m ? 2000 : 0);
@@ -506,20 +559,29 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 				part_count.value++;
 			} else {
 				auto vert_count = writer.Reserve<uint32_t>();
-				reader.Match('(');
+				if (!reader.Match('(')) {
+					return false;
+				}
 				do {
 					for (uint32_t d_idx = 0; d_idx < dims; d_idx++) {
-						auto value = reader.MatchNumber();
+						double value;
+						if (!reader.MatchNumber(value)) {
+							return false;
+						}
 						writer.Write<double>(value);
 					}
 					vert_count.value++;
 				} while (reader.TryMatch(','));
-				reader.Match(')');
+				if (!reader.Match(')')) {
+					return false;
+				}
 				writer.Write(vert_count);
 				part_count.value++;
 			}
 		} while (reader.TryMatch(','));
-		reader.Match(')');
+		if (!reader.Match(')')) {
+			return false;
+		}
 		writer.Write(part_count);
 	} break;
 	case GeometryType::MULTIPOLYGON: {
@@ -528,7 +590,9 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 			break;
 		}
 		auto part_count = writer.Reserve<uint32_t>();
-		reader.Match('(');
+		if (!reader.Match('(')) {
+			return false;
+		}
 		do {
 			const auto part_meta =
 			    static_cast<uint32_t>(GeometryType::POLYGON) + (has_z ? 1000 : 0) + (has_m ? 2000 : 0);
@@ -540,27 +604,40 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 				part_count.value++;
 			} else {
 				auto ring_count = writer.Reserve<uint32_t>();
-				reader.Match('(');
+				if (!reader.Match('(')) {
+					return false;
+				}
 				do {
 					auto vert_count = writer.Reserve<uint32_t>();
-					reader.Match('(');
+					if (!reader.Match('(')) {
+						return false;
+					}
 					do {
 						for (uint32_t d_idx = 0; d_idx < dims; d_idx++) {
-							auto value = reader.MatchNumber();
+							double value;
+							if (!reader.MatchNumber(value)) {
+								return false;
+							}
 							writer.Write<double>(value);
 						}
 						vert_count.value++;
 					} while (reader.TryMatch(','));
-					reader.Match(')');
+					if (!reader.Match(')')) {
+						return false;
+					}
 					writer.Write(vert_count);
 					ring_count.value++;
 				} while (reader.TryMatch(','));
-				reader.Match(')');
+				if (!reader.Match(')')) {
+					return false;
+				}
 				writer.Write(ring_count);
 				part_count.value++;
 			}
 		} while (reader.TryMatch(','));
-		reader.Match(')');
+		if (!reader.Match(')')) {
+			return false;
+		}
 		writer.Write(part_count);
 	} break;
 	case GeometryType::GEOMETRYCOLLECTION: {
@@ -569,18 +646,25 @@ void FromStringRecursive(TextReader &reader, BlobWriter &writer, uint32_t depth,
 			break;
 		}
 		auto part_count = writer.Reserve<uint32_t>();
-		reader.Match('(');
+		if (!reader.Match('(')) {
+			return false;
+		}
 		do {
 			// Recursively parse the geometry inside the collection
-			FromStringRecursive(reader, writer, depth + 1, has_z, has_m);
+			if (!FromStringRecursive(reader, writer, depth + 1, has_z, has_m)) {
+				return false;
+			}
 			part_count.value++;
 		} while (reader.TryMatch(','));
-		reader.Match(')');
+		if (!reader.Match(')')) {
+			return false;
+		}
 		writer.Write(part_count);
 	} break;
 	default:
-		throw reader.MakeError("Unknown geometry type %d", static_cast<int>(type));
+		return reader.SetError("Unknown geometry type %d", static_cast<int>(type));
 	}
+	return true;
 }
 
 void ToStringRecursive(BlobReader &reader, TextWriter &writer, idx_t depth, bool parent_has_z, bool parent_has_m) {
@@ -895,17 +979,48 @@ struct WKBAnalysis {
 	bool any_m = false;
 	bool any_unknown = false;
 	bool any_ewkb = false;
+	bool has_trailing_data = false;
+};
+
+//! A collection whose parts are being analyzed
+struct WKBAnalysisFrame {
+	//! The number of parts that remain to be analyzed
+	uint32_t parts_remaining;
+	//! The type the parts must have, or 0 if they can have any type
+	uint32_t part_type;
 };
 
 WKBAnalysis AnalyzeWKB(BlobReader &reader) {
 	WKBAnalysis result;
+	// Collection children are complete WKB objects embedded in the root object.
+	vector<WKBAnalysisFrame> collections;
+	bool is_root = true;
+	bool root_has_z = false;
+	bool root_has_m = false;
 
-	while (!reader.IsAtEnd()) {
+	while (is_root || !collections.empty()) {
+		uint32_t required_type = 0;
+		if (!is_root) {
+			auto &collection = collections.back();
+			if (collection.parts_remaining == 0) {
+				collections.pop_back();
+				continue;
+			}
+			collection.parts_remaining--;
+			required_type = collection.part_type;
+			if (collections.size() >= Geometry::MAX_RECURSION_DEPTH) {
+				throw InvalidInputException("Geometry exceeds maximum recursion depth of %d",
+				                            Geometry::MAX_RECURSION_DEPTH);
+			}
+		}
 		const auto le = reader.Read<uint8_t>() == 1;
 
 		const auto meta = reader.Read<uint32_t>(le);
 		const auto type_id = (meta & 0x0000FFFF) % 1000;
 		const auto flag_id = (meta & 0x0000FFFF) / 1000;
+		if (flag_id > 3) {
+			throw InvalidInputException("Unsupported geometry flag %d in WKB", flag_id);
+		}
 
 		// Extended WKB detection
 		const auto has_extz = (meta & 0x80000000) != 0;
@@ -914,6 +1029,21 @@ WKBAnalysis AnalyzeWKB(BlobReader &reader) {
 
 		const auto has_z = ((flag_id & 0x01) != 0) || has_extz;
 		const auto has_m = ((flag_id & 0x02) != 0) || has_extm;
+
+		if (is_root) {
+			root_has_z = has_z;
+			root_has_m = has_m;
+			is_root = false;
+		} else {
+			if (has_z != root_has_z || has_m != root_has_m) {
+				throw InvalidInputException("Geometry has inconsistent Z/M dimensions, starting at position %zu",
+				                            reader.GetPosition());
+			}
+			if (required_type != 0 && type_id != required_type) {
+				throw InvalidInputException("Unexpected geometry type %d in a collection of type %d at position %zu",
+				                            type_id, required_type + 3, reader.GetPosition());
+			}
+		}
 
 		if (has_srid) {
 			result.any_ewkb = true;
@@ -957,7 +1087,9 @@ WKBAnalysis AnalyzeWKB(BlobReader &reader) {
 		case 5:   // MULTILINESTRING
 		case 6:   // MULTIPOLYGON
 		case 7: { // GEOMETRYCOLLECTION
-			reader.Skip(sizeof(uint32_t));
+			const auto part_count = reader.Read<uint32_t>(le);
+			// MULTIPOINT, MULTILINESTRING and MULTIPOLYGON contain POINT, LINESTRING and POLYGON parts
+			collections.push_back({part_count, type_id == 7 ? 0 : type_id - 3});
 			result.size += sizeof(uint32_t); // part count
 		} break;
 		default: {
@@ -966,6 +1098,7 @@ WKBAnalysis AnalyzeWKB(BlobReader &reader) {
 		}
 		}
 	}
+	result.has_trailing_data = !reader.IsAtEnd();
 	return result;
 }
 
@@ -1051,7 +1184,23 @@ constexpr const idx_t Geometry::MAX_RECURSION_DEPTH;
 bool Geometry::FromBinary(const string_t &wkb, string_t &result, StringHeap &heap, bool strict) {
 	BlobReader reader(wkb.GetData(), static_cast<uint32_t>(wkb.GetSize()));
 
-	const auto analysis = AnalyzeWKB(reader);
+	WKBAnalysis analysis;
+	try {
+		analysis = AnalyzeWKB(reader);
+	} catch (InvalidInputException &) {
+		// Truncated input (e.g. a collection declaring more children than are present) must
+		// uphold the non-strict contract: report failure instead of throwing.
+		if (strict) {
+			throw;
+		}
+		return false;
+	}
+	if (analysis.has_trailing_data) {
+		if (strict) {
+			throw InvalidInputException("Unexpected trailing data at position %zu", reader.GetPosition());
+		}
+		return false;
+	}
 	if (analysis.any_unknown) {
 		if (strict) {
 			throw InvalidInputException("Unsupported geometry type in WKB");
@@ -1103,25 +1252,45 @@ void Geometry::ToBinary(const Vector &source, Vector &result) {
 	result.Reinterpret(source);
 }
 
+//! Returns false if the text is not valid WKT, the error is recorded in the reader
+static bool TryParseWKT(TextReader &reader, string_t &result, StringHeap &heap, bool &trailing_text) {
+	BlobWriter writer;
+	trailing_text = false;
+	if (!FromStringRecursive(reader, writer, 0, false, false)) {
+		return false;
+	}
+	// Check whether reader has consumed over all meaningful characters.
+	if (!reader.IsAtEnd()) {
+		trailing_text = true;
+		return reader.SetError("Unexpected trailing text");
+	}
+	const auto &buffer = writer.GetBuffer();
+	result = heap.AddBlob(buffer.data(), buffer.size());
+	return true;
+}
+
+bool Geometry::TryFromString(const string_t &wkt_text, string_t &result, StringHeap &heap, string &error_message) {
+	TextReader reader(wkt_text.GetData(), static_cast<uint32_t>(wkt_text.GetSize()));
+	bool trailing_text;
+	if (!TryParseWKT(reader, result, heap, trailing_text)) {
+		error_message = reader.GetErrorMessage();
+		return false;
+	}
+	return true;
+}
+
 bool Geometry::FromString(const string_t &wkt_text, string_t &result, StringHeap &heap, bool strict,
                           QueryLocation query_location) {
 	TextReader reader(wkt_text.GetData(), static_cast<uint32_t>(wkt_text.GetSize()));
 	reader.SetQueryLocation(query_location);
-	BlobWriter writer;
-
-	FromStringRecursive(reader, writer, 0, false, false);
-
-	// Check whether reader has consumed over all meaningful characters.
-	if (!reader.IsAtEnd()) {
-		if (strict) {
-			throw reader.MakeError("Unexpected trailing text");
-		}
+	bool trailing_text;
+	if (TryParseWKT(reader, result, heap, trailing_text)) {
+		return true;
+	}
+	if (trailing_text && !strict) {
 		return false;
 	}
-
-	const auto &buffer = writer.GetBuffer();
-	result = heap.AddBlob(buffer.data(), buffer.size());
-	return true;
+	throw reader.MakeError();
 }
 
 bool Geometry::FromString(const string_t &wkt_text, string_t &result, Vector &result_vector, bool strict) {

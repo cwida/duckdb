@@ -1,0 +1,33 @@
+# name: test/sql/function/generic/cast_to_type_collation.test
+# description: Explicit cast_to_type preserves target collations
+# group: [generic]
+
+query I
+SELECT cast_to_type('a', NULL::VARCHAR COLLATE nocase) = 'A'
+----
+true
+
+query I
+SELECT cast_to_type('a' COLLATE nocase, NULL::VARCHAR COLLATE "binary") = 'A'
+----
+false
+
+query T
+SELECT list_sort(cast_to_type(['a','B'], [NULL::VARCHAR COLLATE nocase]), 'ASC', 'NULLS FIRST')
+----
+[a, B]
+
+query T
+SELECT list_sort(cast_to_type(['a' COLLATE nocase,'B'], [NULL::VARCHAR COLLATE "binary"]), 'ASC', 'NULLS FIRST')
+----
+[B, a]
+
+query I
+SELECT cast_to_type('42', NULL::INTEGER)
+----
+42
+
+query I
+SELECT cast_to_type(NULL, NULL::INTEGER) IS NULL
+----
+true

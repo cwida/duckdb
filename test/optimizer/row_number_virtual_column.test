@@ -243,3 +243,146 @@ query II
 EXPLAIN SELECT x, ROW_NUMBER() OVER () FROM read_duckdb('{TEST_DIR}/row_number_read_duckdb.db', table_name='t')
 ----
 physical_plan	<REGEX>:.*WINDOW.*
+
+# Issue #25553: vector-sized assignments must reserve only their visible rows.
+foreach parallelism verify_parallelism disable_verify_parallelism
+
+statement ok
+PRAGMA {parallelism};
+
+foreach threads 1 4
+
+statement ok
+SET threads = {threads};
+
+foreach row_count 2047 2048 2049 2050 130000
+
+statement ok
+CREATE OR REPLACE TABLE rn_batches AS SELECT range AS i FROM range({row_count});
+
+query I
+SELECT count(*) = {row_count} AND min(rn) = 1 AND max(rn) = {row_count} AND count(DISTINCT rn) = {row_count}
+FROM (SELECT row_number() OVER () AS rn FROM rn_batches);
+----
+true
+
+# Keep the scan optimization enabled: correctness must not come from a fallback.
+query II
+EXPLAIN SELECT row_number() OVER () FROM rn_batches;
+----
+physical_plan	<!REGEX>:.*WINDOW.*
+
+statement ok
+DELETE FROM rn_batches WHERE i < 5;
+
+query I
+SELECT count(*) = {row_count} - 5 AND min(rn) = 1 AND max(rn) = {row_count} - 5 AND count(DISTINCT rn) = {row_count} - 5
+FROM (SELECT row_number() OVER () AS rn FROM rn_batches);
+----
+true
+
+# The final base of the table scan is also the initial base for local rows.
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO rn_batches VALUES (-1), (-2);
+
+query I
+SELECT count(*) = {row_count} - 3 AND min(rn) = 1 AND max(rn) = {row_count} - 3 AND count(DISTINCT rn) = {row_count} - 3
+FROM (SELECT row_number() OVER () AS rn FROM rn_batches);
+----
+true
+
+statement ok
+ROLLBACK;
+
+# Entirely invisible assignments must not consume any row numbers.
+statement ok
+DELETE FROM rn_batches WHERE i < 2048;
+
+query I
+SELECT count(*) = greatest({row_count} - 2048, 0)
+       AND coalesce(min(rn), 1) = 1
+       AND coalesce(max(rn), 0) = greatest({row_count} - 2048, 0)
+       AND count(DISTINCT rn) = greatest({row_count} - 2048, 0)
+FROM (SELECT row_number() OVER () AS rn FROM rn_batches);
+----
+true
+
+endloop
+
+# Local storage can itself span multiple scan assignments, with no visible base rows.
+statement ok
+CREATE OR REPLACE TABLE rn_local(i BIGINT);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO rn_local SELECT range FROM range(2050);
+
+statement ok
+DELETE FROM rn_local WHERE i < 5;
+
+query IIII
+SELECT count(*), min(rn), max(rn), count(DISTINCT rn)
+FROM (SELECT row_number() OVER () AS rn FROM rn_local);
+----
+2045	1	2045	2045
+
+statement ok
+ROLLBACK;
+
+endloop
+
+endloop
+
+# A reader's snapshot keeps rows deleted by a later committed transaction visible.
+statement ok con1
+PRAGMA verify_parallelism;
+
+statement ok con1
+CREATE TABLE rn_snapshot AS SELECT range AS i FROM range(2050);
+
+statement ok con1
+BEGIN;
+
+query I con1
+SELECT count(*) FROM rn_snapshot;
+----
+2050
+
+statement ok con2
+DELETE FROM rn_snapshot WHERE i < 2048;
+
+query IIII con1
+SELECT count(*), min(rn), max(rn), count(DISTINCT rn)
+FROM (SELECT row_number() OVER () AS rn FROM rn_snapshot);
+----
+2050	1	2050	2050
+
+# Later inserts must also remain invisible to the existing snapshot.
+statement ok con2
+INSERT INTO rn_snapshot SELECT range FROM range(2050, 4100);
+
+query IIII con1
+SELECT count(*), min(rn), max(rn), count(DISTINCT rn)
+FROM (SELECT row_number() OVER () AS rn FROM rn_snapshot);
+----
+2050	1	2050	2050
+
+statement ok con1
+COMMIT;
+
+query IIII con1
+SELECT count(*), min(rn), max(rn), count(DISTINCT rn)
+FROM (SELECT row_number() OVER () AS rn FROM rn_snapshot);
+----
+2052	1	2052	2052
+
+statement ok
+PRAGMA disable_verify_parallelism;
+
+statement ok
+RESET threads;

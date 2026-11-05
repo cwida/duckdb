@@ -68,3 +68,55 @@ query I
 SELECT 2**3^2;
 ----
 64
+
+# prefix bitwise NOT binds below arithmetic and above bitwise operators
+query I
+SELECT ~1 + 2;
+----
+-4
+
+query I
+SELECT ~1 * 2;
+----
+-3
+
+query I
+SELECT ~(1 + 2);
+----
+-4
+
+query I
+SELECT (~1) + 2;
+----
+0
+
+query I
+SELECT ~1 & 3;
+----
+2
+
+query I
+SELECT ~1 | 3;
+----
+-1
+
+query I
+SELECT 5 & ~1 + 2;
+----
+4
+
+query I
+SELECT ~ ~1 + 2;
+----
+3
+
+# exponentiation produces DOUBLE, which bitwise NOT cannot accept
+statement error
+SELECT ~2 ^ 2;
+----
+Binder Error: No function matches the given name and argument types '~(DOUBLE)'. You might need to add explicit type casts.
+
+query I
+SELECT (~2) ^ 2;
+----
+9

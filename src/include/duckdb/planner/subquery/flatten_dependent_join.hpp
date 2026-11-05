@@ -21,6 +21,7 @@ namespace duckdb {
 class LogicalAggregate;
 class LogicalComparisonJoin;
 class LogicalCTERef;
+class LogicalDependentJoin;
 class LogicalExpressionGet;
 class LogicalJoin;
 
@@ -72,6 +73,8 @@ private:
 	SubtreeAccess GetSubtreeAccess(LogicalOperator &op) const;
 	idx_t GetDelimKeyIndex(idx_t index) const;
 
+	//! propagate_null_values: everything above cannot distinguish one row with all-NULL original columns from
+	//! no row at all. Must be cleared when descending below any operator that breaks that equivalence.
 	UnnestingState PushDownCorrelatedNode(unique_ptr<LogicalOperator> &plan, bool propagate_null_values = true);
 	UnnestingState PushDownCorrelatedNode(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                      vector<ColumnBinding> state);
@@ -97,8 +100,9 @@ private:
 	                             bool include_names) const;
 	void AddDelimColumnsToGroup(LogicalAggregate &aggr, const vector<ColumnBinding> &state) const;
 	void AddCorrelatedFirstAggregates(LogicalAggregate &aggr, const vector<ColumnBinding> &state) const;
+	vector<optional_idx> GetCTERefCorrelatedPositions(const LogicalCTERef &cteref) const;
 	void AddCTERefJoinConditions(LogicalComparisonJoin &join, const LogicalCTERef &cteref,
-	                             const vector<ColumnBinding> &state) const;
+	                             const vector<optional_idx> &positions, const vector<ColumnBinding> &state) const;
 	void AddCorrelatedJoinConditions(LogicalJoin &join, const vector<ColumnBinding> &left_state,
 	                                 const vector<ColumnBinding> &right_state) const;
 	vector<ColumnBinding> CreateDelimCrossProduct(unique_ptr<LogicalOperator> &plan,
@@ -112,6 +116,7 @@ private:
 	                             vector<ColumnBinding> state, bool rewrite_parent = true, idx_t child_idx = 0);
 	UnnestingState FinalizeDependentJoin(unique_ptr<LogicalOperator> &plan, UnnestingState outer_state,
 	                                     const UnnestingState &right_state, DependentJoinOutput output);
+	void MaterializeCorrelatedAggregateRewrites(LogicalDependentJoin &op, UnnestingState &outer_state);
 	UnnestingState AttachDelimToIndependentJoinLeft(unique_ptr<LogicalOperator> &plan);
 	UnnestingState PushDownSingleCorrelatedChild(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                             vector<ColumnBinding> state, bool correlated_left);
@@ -130,7 +135,8 @@ private:
 	UnnestingState PushDownWindow(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                              vector<ColumnBinding> state);
 	UnnestingState PushDownSetOperation(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
-	UnnestingState PushDownDistinct(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
+	UnnestingState PushDownDistinct(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
+	                                vector<ColumnBinding> state);
 	UnnestingState PushDownExpressionGet(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                     vector<ColumnBinding> state);
 	UnnestingState PushDownDML(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,

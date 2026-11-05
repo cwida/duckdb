@@ -8,6 +8,7 @@
 #include "duckdb/function/compression/compression.hpp"
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/storage/segment/uncompressed.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/string_uncompressed.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 
@@ -60,8 +61,6 @@ struct DictionaryCompressionStorage {
 	static void StringScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
 	                              idx_t result_offset);
 	static void StringScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result);
-	static void StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-	                           idx_t result_idx);
 };
 
 //===--------------------------------------------------------------------===//
@@ -122,9 +121,7 @@ void DictionaryCompressionStorage::FinalizeCompress(CompressionState &state_p) {
 unique_ptr<SegmentScanState> DictionaryCompressionStorage::StringInitScan(const QueryContext &context,
                                                                           ColumnSegment &segment) {
 	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto state = make_uniq<CompressedStringScanState>(buffer_manager.Pin(segment.GetBlockHandle()));
-	state->Initialize(segment, true);
-	return std::move(state);
+	return make_uniq<CompressedStringScanState>(buffer_manager.Pin(context, segment.GetBlockHandle()), segment);
 }
 
 //===--------------------------------------------------------------------===//
@@ -137,6 +134,15 @@ void DictionaryCompressionStorage::StringScanPartial(ColumnSegment &segment, Col
 	auto &scan_state = state.scan_state->Cast<CompressedStringScanState>();
 
 	auto start = state.GetPositionInSegment();
+	D_ASSERT(start <= segment.count.load());
+	D_ASSERT(scan_count <= segment.count.load() - start);
+	if (state.string_scan_type == StringScanType::COPY_STRINGS) {
+		scan_state.ScanToFlatVector<true>(result, result_offset, start, scan_count, StringScanType::COPY_STRINGS);
+		return;
+	}
+	if (!scan_state.dictionary) {
+		scan_state.InitializeDictionary(segment);
+	}
 	if (!ALLOW_DICT_VECTORS || scan_count != STANDARD_VECTOR_SIZE) {
 		scan_state.ScanToFlatVector(result, result_offset, start, scan_count);
 	} else {
@@ -150,17 +156,6 @@ void DictionaryCompressionStorage::StringScan(ColumnSegment &segment, ColumnScan
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void DictionaryCompressionStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id,
-                                                  Vector &result, idx_t result_idx) {
-	// fetch a single row from the string segment
-	CompressedStringScanState scan_state(state.GetOrInsertHandle(segment));
-	scan_state.Initialize(segment, false);
-	scan_state.ScanToFlatVector<true>(result, result_idx, NumericCast<idx_t>(row_id), 1);
-}
-
-//===--------------------------------------------------------------------===//
 // Get Function
 //===--------------------------------------------------------------------===//
 CompressionFunction DictionaryCompressionFun::GetFunction(PhysicalType data_type) {
@@ -170,8 +165,7 @@ CompressionFunction DictionaryCompressionFun::GetFunction(PhysicalType data_type
 	    DictionaryCompressionStorage::InitCompression, DictionaryCompressionStorage::Compress,
 	    DictionaryCompressionStorage::FinalizeCompress, DictionaryCompressionStorage::StringInitScan,
 	    DictionaryCompressionStorage::StringScan, DictionaryCompressionStorage::StringScanPartial<false>,
-	    DictionaryCompressionStorage::StringFetchRow, UncompressedFunctions::EmptySkip,
-	    UncompressedStringStorage::StringInitSegment);
+	    UncompressedFunctions::EmptySkip, UncompressedStringStorage::StringInitSegment);
 }
 
 bool DictionaryCompressionFun::TypeIsSupported(const PhysicalType physical_type) {

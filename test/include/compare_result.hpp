@@ -16,8 +16,6 @@ namespace duckdb {
 
 bool CHECK_COLUMN(QueryResult &result, size_t column_number, vector<duckdb::Value> values);
 bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::QueryResult> &result, size_t column_number, vector<duckdb::Value> values);
-bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::MaterializedQueryResult> &result, size_t column_number,
-                  vector<duckdb::Value> values);
 
 string compare_csv(duckdb::QueryResult &result, string csv, bool header = false);
 string compare_csv_collection(duckdb::ColumnDataCollection &collection, string csv, bool header = false);

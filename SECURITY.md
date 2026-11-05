@@ -17,9 +17,9 @@ To run untrusted SQL, sandbox at the OS level (container, VM, or [DuckDB-Wasm](h
 
 ### Data files
 
-Format readers (Parquet, CSV, JSON, Arrow, Avro, Iceberg and Delta metadata, DuckDB database files) assume a well-formed file from a trusted writer. Crafted or corrupted files may crash the process, allocate unbounded memory, or read out of bounds. We fix these as bugs, but do not treat them as vulnerabilities. `ATTACH` on a database file is closer to loading a shared library than to opening a document; the file format is not a security boundary. Do not open data files from untrusted parties.
+Format readers (Parquet, CSV, JSON, Arrow, Avro, Iceberg and Delta metadata, DuckDB database files) assume a well-formed file from a trusted writer. Crafted or corrupted files may crash the process, allocate unbounded memory, or read out of bounds. We fix these as bugs, but do not treat them as vulnerabilities. Even a well-formed DuckDB database file can contain executable SQL in stored objects such as macros, views and triggers. These objects can do anything DuckDB can do, such as reading arbitrary files and making network calls. `ATTACH` on a database file is closer to loading a shared library than to opening a document; the file format is not a security boundary. Do not open data files from untrusted parties.
 
-Data *inside* a well-formed file is a separate case and is in scope. Column values are frequently attacker controlled (user input, scraped text, log lines). Memory corruption, code execution, or unexpected file or network access caused by the values in a file rather than by its structure is a vulnerability, and is prioritized as such.
+Column values *inside* a well-formed file are a separate case and are in scope. These are frequently attacker controlled (user input, scraped text, log lines). Memory corruption, code execution, or unexpected file or network access caused by the values in a file rather than by its structure is a vulnerability, and is prioritized as such.
 
 ### Extensions
 

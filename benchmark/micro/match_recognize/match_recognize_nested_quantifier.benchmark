@@ -1,0 +1,22 @@
+# name: benchmark/micro/match_recognize/match_recognize_nested_quantifier.benchmark
+# description: A quantifier inside a quantifier over a long run that never reaches the closing symbol
+# group: [match_recognize]
+
+# (A+)+ can carve a run of rows into repetitions in as many ways as the run has compositions, and
+# with no B anywhere every one of them has to be tried before the match fails.
+
+name MatchRecognize Nested Quantifier
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE run AS SELECT i::INTEGER AS i, 'a' AS c FROM range(0, 2000000) t(i);
+
+run
+SELECT count(*) FROM run MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH
+    PATTERN ((A+)+ B)
+    DEFINE A AS A.c = 'a', B AS B.c = 'b'
+);

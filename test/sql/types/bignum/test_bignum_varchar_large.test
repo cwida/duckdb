@@ -1,0 +1,34 @@
+# name: test/sql/types/bignum/test_bignum_varchar_large.test
+# description: Convert large BIGNUM values to VARCHAR
+# group: [bignum]
+
+statement ok
+CREATE TABLE strings AS
+SELECT n, CASE WHEN n % 3 = 0 THEN '-' ELSE '' END || (1 + n % 9)::VARCHAR ||
+       array_to_string(list_transform(range(n), lambda j: ((j * 7 + n) % 10)::VARCHAR), '') AS s
+FROM range(0, 20000, 97) t(n);
+
+query I
+SELECT count(*) FROM strings WHERE s::BIGNUM::VARCHAR <> s;
+----
+0
+
+query I
+SELECT (repeat('9', 20000)::BIGNUM + 1::BIGNUM)::VARCHAR = '1' || repeat('0', 20000);
+----
+true
+
+query I
+SELECT (('1' || repeat('0', 30000))::BIGNUM - 1::BIGNUM)::VARCHAR = repeat('9', 30000);
+----
+true
+
+query I
+SELECT (('-1' || repeat('0', 12345) || '1')::BIGNUM)::VARCHAR = '-1' || repeat('0', 12345) || '1';
+----
+true
+
+query I
+SELECT length(('3' || repeat('1', 40000))::BIGNUM::VARCHAR);
+----
+40001

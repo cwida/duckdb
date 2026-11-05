@@ -58,7 +58,7 @@ unique_ptr<MergeIntoOperator> PlanMergeIntoAction(ClientContext &context, Logica
 		return_types.pop_back();
 	}
 
-	auto cardinality = op.EstimateCardinality(context);
+	auto cardinality = op.estimated_cardinality;
 	switch (action.action_type) {
 	case MergeActionType::MERGE_UPDATE: {
 		vector<unique_ptr<Expression>> defaults;
@@ -212,7 +212,7 @@ static unique_ptr<MergeIntoOperator> PlanGenericMergeIntoAction(ClientContext &c
 	auto &catalog = op.table.catalog;
 	// the operators of an action emit the same rows as those of a regular INSERT/UPDATE/DELETE - resolve the types
 	// and cardinality of the logical operators in the same manner
-	auto cardinality = op.EstimateCardinality(context);
+	auto cardinality = op.estimated_cardinality;
 	switch (action.action_type) {
 	case MergeActionType::MERGE_UPDATE: {
 		// a regular UPDATE reads the new values of a row followed by its row id - project the rows of the action into
@@ -326,6 +326,8 @@ PhysicalOperator &Catalog::PlanMergeInto(ClientContext &context, PhysicalPlanGen
 }
 
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalMergeInto &op) {
+	// planning the child consumes its logical operators - estimate the cardinality beforehand
+	op.estimated_cardinality = op.EstimateCardinality(context);
 	auto &plan = CreatePlan(*op.children[0]);
 	D_ASSERT(op.children.size() == 1);
 	dependencies.AddDependency(op.table);

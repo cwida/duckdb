@@ -1,0 +1,14 @@
+diff --git a/test/sql/stats/timestamptz_retype_stats_time_zone.test b/test/sql/stats/timestamptz_retype_stats_time_zone.test
+index 056ea9cb..4bfc5fb5 100644
+--- a/test/sql/stats/timestamptz_retype_stats_time_zone.test
++++ b/test/sql/stats/timestamptz_retype_stats_time_zone.test
+@@ -8,6 +8,9 @@ require parquet
+ 
+ require icu
+ 
++statement ok
++LOAD icu
++
+ test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+ 
+ test-env DATA_PATH {TEST_DIR}

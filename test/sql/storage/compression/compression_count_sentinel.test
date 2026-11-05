@@ -1,0 +1,8 @@
+# name: test/sql/storage/compression/compression_count_sentinel.test
+# description: The CompressionType size sentinel must not be accepted as a compression type
+# group: [compression]
+
+statement error
+CREATE TABLE t (i INTEGER USING COMPRESSION compression_count);
+----
+unrecognized value

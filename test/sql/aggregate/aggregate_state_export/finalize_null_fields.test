@@ -1,0 +1,16 @@
+# name: test/sql/aggregate/aggregate_state_export/finalize_null_fields.test
+# description: finalize treats NULL state fields as an empty state, also across chunks
+# group: [aggregate_state_export]
+
+query II
+SELECT count(*), count(r) FROM (
+    SELECT finalize(to_aggregate_state(s, 'avg', ['BIGINT'])) r
+    FROM (SELECT CASE WHEN i < 2048 THEN {'count': 5, 'value': 10::HUGEINT} ELSE {'count': NULL, 'value': NULL::HUGEINT} END s FROM range(3000) t(i))
+)
+----
+3000	2048
+
+query I
+SELECT finalize(to_aggregate_state({'count': NULL, 'value': NULL::HUGEINT}, 'avg', ['BIGINT']))
+----
+NULL

@@ -18,6 +18,25 @@ EXPLAIN ANALYZE SELECT sum(rowid) FROM integers WHERE (x > 3000) = true;
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
 
+foreach wrapper = IS
+
+query I
+SELECT count(*) FROM integers WHERE (x < 3000) {wrapper} FALSE;
+----
+1096
+
+query II
+EXPLAIN ANALYZE SELECT sum(rowid) FROM integers WHERE (x < 3000) {wrapper} FALSE;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+endloop
+
+query I
+SELECT count(*) FROM integers WHERE FALSE = (x < 3000);
+----
+1096
+
 query II
 EXPLAIN ANALYZE SELECT sum(rowid) FROM integers WHERE (x > 3000) IS TRUE;
 ----
@@ -37,11 +56,22 @@ false	false	false
 true	true	true
 NULL	NULL	false
 
-# Rewriting a nested IS TRUE would incorrectly exclude the NULL row
+query III
+SELECT FALSE = (p = true), (p = true) = FALSE, (p = true) IS FALSE FROM booleans ORDER BY p NULLS LAST;
+----
+true	true	true
+false	false	false
+NULL	NULL	false
+
+# Rewriting a nested IS TRUE/FALSE would incorrectly exclude the NULL row
+foreach value TRUE FALSE
+
 query I
-SELECT count(*) FROM booleans WHERE NOT (p IS TRUE);
+SELECT count(*) FROM booleans WHERE NOT ((p = true) IS {value});
 ----
 2
+
+endloop
 
 statement ok
 CREATE SEQUENCE s;

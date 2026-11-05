@@ -1,0 +1,40 @@
+# name: test/sql/function/timestamp/icu_try_cast_varchar_timestamptz_range.test
+# description: TRY_CAST from VARCHAR to TIMESTAMPTZ when the time zone moves the value out of range
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET TimeZone='America/New_York';
+
+query I
+SELECT TRY_CAST('294247-01-10 04:00:54.775806' AS TIMESTAMPTZ);
+----
+NULL
+
+query I
+SELECT TRY_CAST('294247-01-10 04:00:54.775806' AS TIMESTAMPTZ_NS);
+----
+NULL
+
+query I
+SELECT TRY_CAST('290309-12-22 (BC) 00:00:00 Asia/Tokyo' AS TIMESTAMPTZ);
+----
+NULL
+
+statement error
+SELECT CAST('294247-01-10 04:00:54.775806' AS TIMESTAMPTZ);
+----
+Conversion Error
+
+query I
+SELECT TRY_CAST(s AS TIMESTAMPTZ) FROM (VALUES ('2024-01-02 03:04:05'), ('294247-01-10 04:00:54.775806'), ('2024-06-01 12:00:00 Asia/Tokyo')) t(s);
+----
+2024-01-02 03:04:05-05
+NULL
+2024-05-31 23:00:00-04
+
+query I
+SELECT 42;
+----
+42

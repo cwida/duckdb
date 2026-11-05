@@ -1,4 +1,5 @@
 #include "duckdb/parser/expression/window_expression.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 
@@ -94,8 +95,9 @@ void WindowExpression::SetFunctionName(const string &function_name_p) {
 }
 
 string WindowExpression::ToString() const {
+	// the name of the function can be a keyword, which only reads back as a name if it is quoted
 	return ToString<WindowExpression, ParsedExpression, OrderByNode>(*this, qualified_name.QualificationToString(),
-	                                                                 qualified_name.Name().GetIdentifierName());
+	                                                                 SQLIdentifier::ToString(qualified_name.Name()));
 }
 
 void WindowExpression::Serialize(Serializer &serializer) const {
@@ -141,6 +143,10 @@ void WindowExpression::Serialize(Serializer &serializer) const {
 	if (serializer.ShouldSerialize(StorageVersion::V2_0_0) || qualified_name.Path().size() > 3) {
 		// the catalog/schema properties above cannot represent a nested schema path
 		serializer.WriteProperty<QualifiedName>(219, "qualified_name", qualified_name);
+	}
+
+	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		serializer.WritePropertyWithDefault<bool>(220, "is_legacy_function_call", is_legacy_function_call);
 	}
 }
 
@@ -189,6 +195,12 @@ unique_ptr<ParsedExpression> WindowExpression::Deserialize(Deserializer &deseria
 	    deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(219, "qualified_name", QualifiedName());
 	if (!qualified_name.Path().empty()) {
 		result->SetQualifiedName(std::move(qualified_name));
+	}
+
+	bool is_legacy_function_call = false;
+	deserializer.ReadPropertyWithDefault<bool>(220, "is_legacy_function_call", is_legacy_function_call);
+	if (is_legacy_function_call) {
+		result->is_legacy_function_call = true;
 	}
 
 	return std::move(result);

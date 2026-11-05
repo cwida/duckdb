@@ -6,59 +6,71 @@
 #include "duckdb/common/vector_operations/ternary_executor.hpp"
 #include "duckdb/common/pair.hpp"
 
-#include "utf8proc.hpp"
+#include "duckdb/function/scalar/string_common.hpp"
 
 namespace duckdb {
 
 static pair<idx_t, idx_t> PadCountChars(const idx_t len, const char *data, const idx_t size) {
 	//  Count how much of str will fit in the output
-	auto str = reinterpret_cast<const utf8proc_uint8_t *>(data);
 	idx_t nbytes = 0;
 	idx_t nchars = 0;
 	for (; nchars < len && nbytes < size; ++nchars) {
-		utf8proc_int32_t codepoint;
-		auto bytes = utf8proc_iterate(str + nbytes, UnsafeNumericCast<utf8proc_ssize_t>(size - nbytes), &codepoint);
-		D_ASSERT(bytes > 0);
-		nbytes += UnsafeNumericCast<idx_t>(bytes);
+		int32_t codepoint;
+		nbytes += DecodeCodepoint(data + nbytes, size - nbytes, codepoint);
 	}
 
 	return pair<idx_t, idx_t>(nbytes, nchars);
 }
 
-static bool InsertPadding(const idx_t len, const string_t &pad, vector<char> &result) {
-	//  Copy the padding until the output is long enough
-	auto data = pad.GetData();
-	auto size = pad.GetSize();
+//! The padding a call writes: whole copies of the pad, then the bytes of its first remainder characters. Decided from
+//! the pad's geometry, counted once per call, so that the output is copied rather than decoded character by character.
+struct PadPlan {
+	idx_t pad_bytes = 0;
+	idx_t pad_chars = 0;
+	idx_t copies = 0;
+	idx_t remainder_bytes = 0;
 
-	//  Check whether we need data that we don't have
-	if (len > 0 && size == 0) {
-		return false;
+	idx_t Bytes() const {
+		return copies * pad_bytes + remainder_bytes;
 	}
+};
 
-	//  Insert characters until we have all we need.
-	auto str = reinterpret_cast<const utf8proc_uint8_t *>(data);
-	idx_t nbytes = 0;
-	for (idx_t nchars = 0; nchars < len; ++nchars) {
-		//  If we are at the end of the pad, flush all of it and loop back
-		if (nbytes >= size) {
-			result.insert(result.end(), data, data + size);
-			nbytes = 0;
-		}
-
-		//  Write the next character
-		utf8proc_int32_t codepoint;
-		auto bytes = utf8proc_iterate(str + nbytes, UnsafeNumericCast<utf8proc_ssize_t>(size - nbytes), &codepoint);
-		D_ASSERT(bytes > 0);
-		nbytes += UnsafeNumericCast<idx_t>(bytes);
+static PadPlan PlanPadding(const idx_t len, const string_t &pad) {
+	PadPlan plan;
+	plan.pad_bytes = pad.GetSize();
+	plan.pad_chars = PadCountChars(NumericLimits<idx_t>::Maximum(), pad.GetData(), plan.pad_bytes).second;
+	if (len == 0 || plan.pad_chars == 0) {
+		return plan;
 	}
-
-	//  Flush the remaining pad
-	result.insert(result.end(), data, data + nbytes);
-
-	return true;
+	plan.copies = len / plan.pad_chars;
+	plan.remainder_bytes = PadCountChars(len % plan.pad_chars, pad.GetData(), plan.pad_bytes).first;
+	return plan;
 }
 
-static string_t LeftPadFunction(const string_t &str, const int32_t len, const string_t &pad, vector<char> &result) {
+static void CheckPadResultSize(const idx_t written_bytes, const PadPlan &plan, const char *name) {
+	auto result_size = written_bytes + plan.Bytes();
+	if (result_size > string_t::MAX_STRING_SIZE) {
+		throw OutOfRangeException(
+		    "Cannot create a string of size: '%d' in %s, the maximum supported string size is: '%d'", result_size, name,
+		    string_t::MAX_STRING_SIZE);
+	}
+}
+
+static void InsertPadding(const string_t &pad, const PadPlan &plan, vector<char> &result) {
+	auto data = pad.GetData();
+	if (plan.pad_bytes == 1) {
+		result.insert(result.end(), plan.copies, data[0]);
+		return;
+	}
+	for (idx_t i = 0; i < plan.copies; i++) {
+		result.insert(result.end(), data, data + plan.pad_bytes);
+	}
+	result.insert(result.end(), data, data + plan.remainder_bytes);
+}
+
+template <bool LEFT>
+static string_t PadString(const string_t &str, const int32_t len, const string_t &pad, vector<char> &result,
+                          const char *name) {
 	//  Reuse the buffer
 	result.clear();
 
@@ -66,53 +78,37 @@ static string_t LeftPadFunction(const string_t &str, const int32_t len, const st
 	auto data_str = str.GetData();
 	auto size_str = str.GetSize();
 
-	//  Count how much of str will fit in the output
+	//  Count how much of str will fit in the output, and pad by the number of characters still needed
 	auto written = PadCountChars(UnsafeNumericCast<idx_t>(len), data_str, size_str);
-
-	//  Left pad by the number of characters still needed
-	if (!InsertPadding(UnsafeNumericCast<idx_t>(len) - written.second, pad, result)) {
-		throw InvalidInputException("Insufficient padding in LPAD.");
+	auto padding_chars = UnsafeNumericCast<idx_t>(len) - written.second;
+	auto plan = PlanPadding(padding_chars, pad);
+	CheckPadResultSize(written.first, plan, name);
+	if (padding_chars > 0 && plan.pad_chars == 0) {
+		throw InvalidInputException("Insufficient padding in %s.", name);
 	}
+	result.reserve(written.first + plan.Bytes());
 
-	//  Append as much of the original string as fits
-	result.insert(result.end(), data_str, data_str + written.first);
-
+	if (LEFT) {
+		InsertPadding(pad, plan, result);
+		result.insert(result.end(), data_str, data_str + written.first);
+	} else {
+		result.insert(result.end(), data_str, data_str + written.first);
+		InsertPadding(pad, plan, result);
+	}
 	return string_t(result.data(), UnsafeNumericCast<uint32_t>(result.size()));
 }
 
 struct LeftPadOperator {
 	static inline string_t Operation(const string_t &str, const int32_t len, const string_t &pad,
 	                                 vector<char> &result) {
-		return LeftPadFunction(str, len, pad, result);
+		return PadString<true>(str, len, pad, result, "LPAD");
 	}
 };
-
-static string_t RightPadFunction(const string_t &str, const int32_t len, const string_t &pad, vector<char> &result) {
-	//  Reuse the buffer
-	result.clear();
-
-	// Get information about the base string
-	auto data_str = str.GetData();
-	auto size_str = str.GetSize();
-
-	// Count how much of str will fit in the output
-	auto written = PadCountChars(UnsafeNumericCast<idx_t>(len), data_str, size_str);
-
-	//  Append as much of the original string as fits
-	result.insert(result.end(), data_str, data_str + written.first);
-
-	//  Right pad by the number of characters still needed
-	if (!InsertPadding(UnsafeNumericCast<idx_t>(len) - written.second, pad, result)) {
-		throw InvalidInputException("Insufficient padding in RPAD.");
-	};
-
-	return string_t(result.data(), UnsafeNumericCast<uint32_t>(result.size()));
-}
 
 struct RightPadOperator {
 	static inline string_t Operation(const string_t &str, const int32_t len, const string_t &pad,
 	                                 vector<char> &result) {
-		return RightPadFunction(str, len, pad, result);
+		return PadString<false>(str, len, pad, result, "RPAD");
 	}
 };
 
@@ -132,15 +128,21 @@ static void PadFunction(DataChunk &args, ExpressionState &state, Vector &result)
 }
 
 ScalarFunction LpadFun::GetFunction() {
-	ScalarFunction func({LogicalType::VARCHAR, LogicalType::INTEGER, LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                    PadFunction<LeftPadOperator>);
+	ScalarFunction func({}, LogicalType::VARCHAR, PadFunction<LeftPadOperator>);
+	func.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("count", LogicalType::INTEGER)
+	    .AddParameter("character", LogicalType::VARCHAR);
 	func.SetFallible();
 	return func;
 }
 
 ScalarFunction RpadFun::GetFunction() {
-	ScalarFunction func({LogicalType::VARCHAR, LogicalType::INTEGER, LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                    PadFunction<RightPadOperator>);
+	ScalarFunction func({}, LogicalType::VARCHAR, PadFunction<RightPadOperator>);
+	func.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("count", LogicalType::INTEGER)
+	    .AddParameter("character", LogicalType::VARCHAR);
 	func.SetFallible();
 	return func;
 }

@@ -15,7 +15,7 @@ private:
 	mutable weak_ptr<T> __weak_this_; // NOLINT: __weak_this_ is reserved
 
 protected:
-	constexpr enable_shared_from_this() noexcept {
+	constexpr enable_shared_from_this() noexcept { // NOLINT(bugprone-crtp-constructor-accessibility)
 	}
 	enable_shared_from_this(enable_shared_from_this const &) noexcept { // NOLINT: not marked as explicit
 	}

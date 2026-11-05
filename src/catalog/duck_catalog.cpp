@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/parser/parsed_data/alter_schema_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/catalog/default/default_schemas.hpp"
 #include "duckdb/function/built_in_functions.hpp"
@@ -76,51 +77,42 @@ optional_ptr<CatalogEntry> DuckCatalog::CreateSchemaInternal(CatalogTransaction 
 		}
 		return result;
 	}
-	// nested schema: navigate to the deepest parent schema, then create the schema inside it
-	optional_ptr<CatalogEntry> parent_entry = schemas->GetEntry(transaction, parents[0]);
-	if (!parent_entry) {
-		// the root component was not a catalog (otherwise it would have been resolved as one) nor an existing schema
-		throw CatalogException("%s is not a catalog or schema", parents[0]);
+	EntryLookupInfo lookup(CatalogType::SCHEMA_ENTRY, info.GetQualifiedName().Parent().Parent());
+	auto parent =
+	    LookupSchemaPath(transaction, lookup, OnEntryNotFound::THROW_EXCEPTION, [&](const EntryLookupInfo &root) {
+		    auto entry = schemas->GetEntry(transaction, root.GetEntryIdentifier());
+		    if (!entry) {
+			    throw CatalogException("%s is not a catalog or schema", root.GetEntryIdentifier());
+		    }
+		    return entry;
+	    });
+	return parent->Cast<DuckSchemaEntry>().CreateSchema(transaction, info);
+}
+
+void DuckCatalog::AlterSchema(CatalogTransaction transaction, SchemaCatalogEntry &schema, AlterSchemaInfo &info) {
+	switch (info.alter_schema_type) {
+	case AlterSchemaType::SET_SCHEMA_OPTIONS:
+		throw NotImplementedException("SET (<options>) is not supported for DuckDB schemas");
+	case AlterSchemaType::RESET_SCHEMA_OPTIONS:
+		throw NotImplementedException("RESET (<options>) is not supported for DuckDB schemas");
+	default:
+		throw InternalException("Unrecognized alter schema type!");
 	}
-	for (idx_t i = 1; i < parents.size(); i++) {
-		auto &duck_parent = parent_entry->Cast<DuckSchemaEntry>();
-		parent_entry = duck_parent.GetCatalogSet(CatalogType::SCHEMA_ENTRY).GetEntry(transaction, parents[i]);
-		if (!parent_entry) {
-			throw CatalogException("Cannot create nested schema %s: parent schema %s does not exist", info.SchemaName(),
-			                       parents[i]);
-		}
-	}
-	return parent_entry->Cast<DuckSchemaEntry>().CreateSchema(transaction, info);
 }
 
 optional_ptr<CatalogEntry> DuckCatalog::CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) {
 	D_ASSERT(!info.SchemaName().empty());
 	auto result = CreateSchemaInternal(transaction, info);
 	if (!result) {
-		switch (info.on_conflict) {
-		case OnCreateConflict::ERROR_ON_CONFLICT:
-			throw CatalogException::EntryAlreadyExists(CatalogType::SCHEMA_ENTRY, info.SchemaName());
-		case OnCreateConflict::REPLACE_ON_CONFLICT: {
+		if (info.ShouldReplaceOnConflict()) {
 			DropInfo drop_info;
 			drop_info.type = CatalogType::SCHEMA_ENTRY;
-			// build the path [catalog, parent schemas..., schema] so a nested schema can be navigated on drop
-			vector<Identifier> drop_path;
-			drop_path.push_back(info.SchemaCatalog());
-			for (auto &parent : info.ParentSchemas()) {
-				drop_path.push_back(parent);
-			}
-			drop_info.SetQualifiedName(QualifiedName(std::move(drop_path), info.SchemaName()));
+			drop_info.SetQualifiedName(info.GetQualifiedName().Parent());
 			DropSchema(transaction, drop_info);
 			result = CreateSchemaInternal(transaction, info);
 			if (!result) {
 				throw InternalException("Failed to create schema entry in CREATE_OR_REPLACE");
 			}
-			break;
-		}
-		case OnCreateConflict::IGNORE_ON_CONFLICT:
-			break;
-		default:
-			throw InternalException("Unsupported OnCreateConflict for CreateSchema");
 		}
 		return nullptr;
 	}
@@ -128,28 +120,15 @@ optional_ptr<CatalogEntry> DuckCatalog::CreateSchema(CatalogTransaction transact
 }
 
 void DuckCatalog::DropSchema(CatalogTransaction transaction, DropInfo &info) {
-	auto &path = info.GetQualifiedName().Path();
-	auto &schema_name = info.GetQualifiedName().Name();
-	D_ASSERT(!schema_name.empty());
-	// navigate to the catalog set that holds the schema to drop: the root set for a top-level schema, or the nested
-	// schemas set of the deepest parent. The path is [catalog, parent schemas..., schema] after binding; for internal
-	// callers it can be just [schema].
-	reference<CatalogSet> target_set = *schemas;
-	for (idx_t i = 1; i + 1 < path.size(); i++) {
-		auto parent_entry = target_set.get().GetEntry(transaction, path[i]);
-		if (!parent_entry) {
-			if (info.if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
-				throw CatalogException("Cannot drop schema %s: parent schema %s does not exist", schema_name, path[i]);
-			}
-			return;
-		}
-		target_set = parent_entry->Cast<DuckSchemaEntry>().GetCatalogSet(CatalogType::SCHEMA_ENTRY);
+	EntryLookupInfo lookup(CatalogType::SCHEMA_ENTRY, info.GetQualifiedName());
+	auto schema = LookupSchema(transaction, lookup, info.if_not_found);
+	if (!schema) {
+		return;
 	}
-	// drop exactly this schema - the dependency manager blocks the drop (RESTRICT) or cascades to the schema's
-	// contents, including any nested schemas (which depend on it), when CASCADE is given
-	if (!target_set.get().DropEntry(transaction, schema_name, info.cascade, info.allow_drop_internal)) {
+	D_ASSERT(schema->set);
+	if (!schema->set->DropEntry(transaction, schema->name, info.cascade, info.allow_drop_internal)) {
 		if (info.if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
-			throw CatalogException::MissingEntry(CatalogType::SCHEMA_ENTRY, schema_name, string());
+			throw CatalogException::MissingEntry(lookup, string());
 		}
 	}
 }
@@ -158,22 +137,12 @@ void DuckCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 	DropSchema(GetCatalogTransaction(context), info);
 }
 
-static void ScanNestedSchemas(CatalogTransaction transaction, SchemaCatalogEntry &schema,
-                              const std::function<void(SchemaCatalogEntry &)> &callback) {
-	// scan the nested schemas using the already-obtained transaction - re-deriving it from the context here would
-	// acquire the meta-transaction lock while a catalog set lock is held, inverting the lock order
-	schema.Cast<DuckSchemaEntry>().GetCatalogSet(CatalogType::SCHEMA_ENTRY).Scan(transaction, [&](CatalogEntry &entry) {
-		auto &nested = entry.Cast<SchemaCatalogEntry>();
+static void ScanNestedSchemas(VisibilityBound bound, DuckSchemaEntry &schema,
+                              const std::function<void(DuckSchemaEntry &)> &callback) {
+	schema.Scan(CatalogType::SCHEMA_ENTRY, bound, [&](CatalogEntry &entry) {
+		auto &nested = entry.Cast<DuckSchemaEntry>();
 		callback(nested);
-		ScanNestedSchemas(transaction, nested, callback);
-	});
-}
-
-static void ScanNestedSchemas(SchemaCatalogEntry &schema, const std::function<void(SchemaCatalogEntry &)> &callback) {
-	schema.Scan(CatalogType::SCHEMA_ENTRY, [&](CatalogEntry &entry) {
-		auto &nested = entry.Cast<SchemaCatalogEntry>();
-		callback(nested);
-		ScanNestedSchemas(nested, callback);
+		ScanNestedSchemas(bound, nested, callback);
 	});
 }
 
@@ -183,16 +152,15 @@ void DuckCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaC
 	auto transaction = GetCatalogTransaction(context);
 	schemas->Scan(transaction, [&](CatalogEntry &entry) {
 		auto &schema = entry.Cast<SchemaCatalogEntry>();
-		callback(schema);
-		ScanNestedSchemas(transaction, schema, callback);
+		schema.ScanSchemaTree(transaction, callback);
 	});
 }
 
-void DuckCatalog::ScanSchemas(std::function<void(SchemaCatalogEntry &)> callback) {
-	schemas->Scan([&](CatalogEntry &entry) {
-		auto &schema = entry.Cast<SchemaCatalogEntry>();
+void DuckCatalog::ScanSchemas(VisibilityBound bound, std::function<void(DuckSchemaEntry &)> callback) {
+	schemas->Scan(bound, [&](CatalogEntry &entry) {
+		auto &schema = entry.Cast<DuckSchemaEntry>();
 		callback(schema);
-		ScanNestedSchemas(schema, callback);
+		ScanNestedSchemas(bound, schema, callback);
 	});
 }
 
@@ -203,38 +171,9 @@ CatalogSet &DuckCatalog::GetSchemaCatalogSet() {
 optional_ptr<SchemaCatalogEntry> DuckCatalog::LookupSchema(CatalogTransaction transaction,
                                                            const EntryLookupInfo &schema_lookup,
                                                            OnEntryNotFound if_not_found) {
-	// build the (possibly nested) schema path from the qualification. A qualified schema lookup always leads with the
-	// catalog component (e.g. [catalog, schema], [catalog, "", schema] or a nested [catalog, s1, s2]); a bare lookup is
-	// just [schema]. Drop that leading catalog component and any empty placeholders.
-	auto &qualified_path = schema_lookup.GetQualifiedName().Path();
-	vector<Identifier> schema_path;
-	for (idx_t i = 0; i < qualified_path.size(); i++) {
-		if (i == 0 && qualified_path.size() > 1) {
-			continue;
-		}
-		if (qualified_path[i].empty()) {
-			continue;
-		}
-		schema_path.push_back(qualified_path[i]);
-	}
-	D_ASSERT(!schema_path.empty());
-	// navigate the schema chain: the outermost schema lives in the catalog, each subsequent one in its parent's schemas
-	reference<CatalogSet> current_set = *schemas;
-	optional_ptr<CatalogEntry> entry;
-	for (idx_t i = 0; i < schema_path.size(); i++) {
-		entry = current_set.get().GetEntry(transaction, schema_path[i]);
-		if (!entry) {
-			if (if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
-				throw CatalogException(schema_lookup.GetErrorContext(), "Schema with name %s does not exist!",
-				                       schema_path[i].GetIdentifierName());
-			}
-			return nullptr;
-		}
-		if (i + 1 < schema_path.size()) {
-			current_set = entry->Cast<DuckSchemaEntry>().GetCatalogSet(CatalogType::SCHEMA_ENTRY);
-		}
-	}
-	return &entry->Cast<SchemaCatalogEntry>();
+	return LookupSchemaPath(transaction, schema_lookup, if_not_found, [&](const EntryLookupInfo &lookup) {
+		return schemas->GetEntry(transaction, lookup.GetEntryIdentifier());
+	});
 }
 
 DatabaseSize DuckCatalog::GetDatabaseSize(ClientContext &context) {

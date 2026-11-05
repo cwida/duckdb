@@ -6,6 +6,13 @@ require parquet
 
 require skip_reload
 
+# Keep parallel reader buffers within the fixed memory budget.
+statement ok
+SET threads=8;
+
+statement ok
+SET threads=4;
+
 statement ok
 SET external_file_cache_spill=true;
 
@@ -13,7 +20,7 @@ statement ok
 SET cache_local_files=true;
 
 statement ok
-SET external_file_cache_local_block_size=2097152;
+SET external_file_cache_local_max_block_size=2097152;
 
 statement ok
 SET memory_limit='200MB';
@@ -31,10 +38,13 @@ TO '{TEST_DIR}/efc_spill.parquet' (FORMAT parquet);
 
 # local files can be re-read at the same cost as a spilled block, so even with spilling
 # enabled and large cache blocks, evicted local blocks are dropped, never spilled
-query I
-SELECT sum(a) - (SELECT sum(hash(i)) FROM range(12000000) t(i)) FROM read_parquet('{TEST_DIR}/efc_spill.parquet');
+query III
+SELECT sum(a) - (SELECT sum(hash(i)) FROM range(12000000) t(i)),
+       sum(b) - (SELECT sum(hash(i * 2)) FROM range(12000000) t(i)),
+       sum(c) - (SELECT sum(hash(i * 3)) FROM range(12000000) t(i))
+FROM read_parquet('{TEST_DIR}/efc_spill.parquet');
 ----
-0
+0	0	0
 
 query I
 SELECT count(*) > 0 FROM duckdb_external_file_cache() WHERE NOT loaded;
@@ -59,9 +69,9 @@ FROM read_parquet('{TEST_DIR}/efc_spill.parquet');
 ----
 0	0
 
-# reads reassemble the correct content after a cache block size change re-indexes the cache
+# reads reassemble the correct content after a cache block size change
 statement ok
-SET external_file_cache_local_block_size=16384;
+SET external_file_cache_local_max_block_size=16384;
 
 query I
 SELECT sum(a) - (SELECT sum(hash(i)) FROM range(12000000) t(i)) FROM read_parquet('{TEST_DIR}/efc_spill.parquet');
@@ -70,6 +80,13 @@ SELECT sum(a) - (SELECT sum(hash(i)) FROM range(12000000) t(i)) FROM read_parque
 
 # remote cache blocks above the block size are marked for spilling instead of dropping
 require httpfs
+
+# drop the metadata of the many small local blocks, which alone exceeds the tiny memory limit below
+statement ok
+SET enable_external_file_cache=false;
+
+statement ok
+SET enable_external_file_cache=true;
 
 query IRR
 SELECT count(*), min(temp), max(temp)

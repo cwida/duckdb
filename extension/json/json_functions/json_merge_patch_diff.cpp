@@ -1,5 +1,6 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "json_stack.hpp"
 
 namespace duckdb {
 
@@ -17,12 +18,11 @@ static yyjson_mut_val *ComputeDiff(yyjson_mut_doc *doc, yyjson_val *old_val, yyj
 	};
 
 	yyjson_mut_val *result = nullptr;
-	auto stack = std::vector<stack_item>();
-	stack.push_back(stack_item {nullptr, old_val, new_val, nullptr, nullptr, false});
+	Stack<stack_item> stack;
+	stack.Push(stack_item {nullptr, old_val, new_val, nullptr, nullptr, false});
 
-	while (!stack.empty()) {
-		auto item = stack.back();
-		stack.pop_back();
+	while (!stack.Empty()) {
+		auto item = stack.Pop();
 
 		// finalize phase: update result
 		if (item.finalize) {
@@ -37,7 +37,7 @@ static yyjson_mut_val *ComputeDiff(yyjson_mut_doc *doc, yyjson_val *old_val, yyj
 		}
 
 		// Both objects: compute structural diff
-		if (item.old_node && item.new_node && yyjson_is_obj(item.old_node) && yyjson_is_obj(item.new_node)) {
+		if (yyjson_is_obj(item.old_node) && yyjson_is_obj(item.new_node)) {
 			auto builder = yyjson_mut_obj(doc);
 
 			// Keys in old but not in new: removed (emit null)
@@ -51,13 +51,13 @@ static yyjson_mut_val *ComputeDiff(yyjson_mut_doc *doc, yyjson_val *old_val, yyj
 				}
 			}
 
-			stack.push_back({item.key, nullptr, nullptr, item.parent_builder, builder, true});
+			stack.Push({item.key, nullptr, nullptr, item.parent_builder, builder, true});
 
 			// Keys in new: collect in order
 			{
 				idx_t idx, max;
 				yyjson_val *key, *new_child;
-				std::vector<stack_item> children;
+				vector<stack_item> children;
 				yyjson_obj_foreach(item.new_node, idx, max, key, new_child) {
 					auto old_child =
 					    yyjson_obj_getn(item.old_node, unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key));
@@ -67,7 +67,7 @@ static yyjson_mut_val *ComputeDiff(yyjson_mut_doc *doc, yyjson_val *old_val, yyj
 				}
 				// push to stack in reverse to preserve order in output
 				for (auto it = children.rbegin(); it != children.rend(); ++it) {
-					stack.push_back(*it);
+					stack.Push(*it);
 				}
 			}
 		} else if (!item.old_node || !yyjson_equals(item.old_node, item.new_node)) {
@@ -134,8 +134,9 @@ static void MergePatchDiffFunction(DataChunk &args, ExpressionState &state, Vect
 }
 
 ScalarFunctionSet JSONFunctions::GetMergePatchDiffFunction() {
-	ScalarFunction fun("json_merge_patch_diff", {LogicalType::JSON(), LogicalType::JSON()}, LogicalType::JSON(),
-	                   MergePatchDiffFunction, nullptr, nullptr, JSONFunctionLocalState::Init);
+	ScalarFunction fun("json_merge_patch_diff", {}, LogicalType::JSON(), MergePatchDiffFunction, nullptr, nullptr,
+	                   JSONFunctionLocalState::Init);
+	fun.GetSignature().AddParameter("old", LogicalType::JSON()).AddParameter("new", LogicalType::JSON());
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetFallible();
 

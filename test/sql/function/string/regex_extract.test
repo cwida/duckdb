@@ -191,3 +191,11 @@ statement error
 SELECT regexp_replace('foobarbaz', 'b..', 'X', 'k')
 ----
 <REGEX>:.*Option 'k'.*
+
+# Non-constant patterns are compiled per row
+query T
+SELECT regexp_extract(s, pattern, 1)
+FROM (VALUES ('abc', '(b)'), ('def', '(x)')) t(s, pattern);
+----
+b
+(empty)

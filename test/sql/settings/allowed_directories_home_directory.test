@@ -1,0 +1,24 @@
+# name: test/sql/settings/allowed_directories_home_directory.test
+# description: Test allowed_directories with a connection-specific home_directory
+# group: [settings]
+
+require skip_reload
+
+statement ok
+COPY (SELECT 99 AS col1, 100 AS col2) TO '{TEST_DIR}/outside_home.csv'
+
+# The process home is allowed, but the connection home points somewhere else.
+statement ok
+SET allowed_directories=['~']
+
+statement ok
+SET enable_external_access=false
+
+statement ok
+SET home_directory='{TEST_DIR}'
+
+# The access check and the file open must resolve '~' to the same directory.
+statement error
+SELECT * FROM read_csv({'filename': '~/outside_home.csv'}::VARIANT)
+----
+Permission Error

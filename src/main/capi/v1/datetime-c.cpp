@@ -27,8 +27,13 @@ duckdb_date_struct duckdb_from_date(duckdb_date date) {
 }
 
 duckdb_date duckdb_to_date(duckdb_date_struct date) {
+	date_t internal_result;
+	if (!Date::TryFromDate(date.year, date.month, date.day, internal_result)) {
+		internal_result = date_t(0);
+	}
+
 	duckdb_date result;
-	result.days = Date::FromDate(date.year, date.month, date.day).days;
+	result.days = internal_result.days;
 	return result;
 }
 
@@ -74,9 +79,13 @@ duckdb_time duckdb_to_time(duckdb_time_struct time) {
 }
 
 duckdb_timestamp_struct duckdb_from_timestamp(duckdb_timestamp ts) {
-	date_t date;
-	dtime_t time;
-	Timestamp::Convert(timestamp_t(ts.micros), date, time);
+	const timestamp_t timestamp(ts.micros);
+	date_t date = Timestamp::GetDate(timestamp);
+	dtime_t time(0);
+	// an infinite timestamp has no time of day, it gets the parts of the infinite date as this function cannot throw
+	if (timestamp.IsFinite()) {
+		Timestamp::Convert(timestamp, date, time);
+	}
 
 	duckdb_date ddate;
 	ddate.days = date.days;
@@ -91,11 +100,16 @@ duckdb_timestamp_struct duckdb_from_timestamp(duckdb_timestamp ts) {
 }
 
 duckdb_timestamp duckdb_to_timestamp(duckdb_timestamp_struct ts) {
-	date_t date = date_t(duckdb_to_date(ts.date).days);
+	date_t date;
 	dtime_t time = dtime_t(duckdb_to_time(ts.time).micros);
+	timestamp_t internal_result;
+	if (!Date::TryFromDate(ts.date.year, ts.date.month, ts.date.day, date) ||
+	    !Timestamp::TryFromDatetime(date, time, internal_result)) {
+		internal_result = timestamp_t(0);
+	}
 
 	duckdb_timestamp result;
-	result.micros = Timestamp::FromDatetime(date, time).value;
+	result.micros = internal_result.value;
 	return result;
 }
 

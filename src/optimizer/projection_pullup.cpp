@@ -41,31 +41,20 @@ optional_ptr<LogicalOperator> ProjectionPullup::FindParent(LogicalOperator &targ
 void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, unique_ptr<LogicalOperator> &child,
                                                bool stop_at_op) {
 	if (child->type != LogicalOperatorType::LOGICAL_PROJECTION) {
-		child->ResolveOperatorTypes();
 		auto proj_index = optimizer.binder.GenerateTableIndex();
 		auto child_bindings = child->GetColumnBindings();
-		const auto child_types = child->types;
-		const auto column_count = child_bindings.size();
-
-		vector<unique_ptr<Expression>> expressions;
-		expressions.reserve(column_count);
-		for (idx_t i = 0; i < column_count; i++) {
-			expressions.push_back(make_uniq<BoundColumnRefExpression>(child_types[i], child_bindings[i]));
-		}
 
 		ColumnBindingReplacer replacer;
-		for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
+		for (idx_t col_idx = 0; col_idx < child_bindings.size(); col_idx++) {
 			const auto &old_binding = child_bindings[col_idx];
 			replacer.replacement_bindings.emplace_back(old_binding,
 			                                           ColumnBinding(proj_index, ProjectionIndex(col_idx)));
 		}
 
-		auto new_projection = make_uniq<LogicalProjection>(proj_index, std::move(expressions));
-		if (child->has_estimated_cardinality) {
-			new_projection->SetEstimatedCardinality(child->estimated_cardinality);
+		auto new_projection = LogicalProjection::CreateIdentity(proj_index, std::move(child));
+		if (new_projection->children[0]->has_estimated_cardinality) {
+			new_projection->SetEstimatedCardinality(new_projection->children[0]->estimated_cardinality);
 		}
-
-		new_projection->children.emplace_back(std::move(child));
 		child = std::move(new_projection);
 
 		if (stop_at_op) {
@@ -75,7 +64,11 @@ void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, 
 		}
 		replacer.VisitOperator(*root);
 	}
-	ProjectionPullup next(optimizer, root);
+	// the projection kept below this operator is a binding barrier: nothing above it
+	// can reference bindings produced underneath, so the subtree runs its own pass
+	// with the projection as replacement root instead of walking the whole plan for
+	// every pull inside it
+	ProjectionPullup next(optimizer, child);
 	next.Optimize(child->children[0]);
 }
 
@@ -157,6 +150,8 @@ void ProjectionPullup::PullUpNonColrefProjection(unique_ptr<LogicalOperator> &op
 	column_binding_set_t existing_bindings(proj_bindings.begin(), proj_bindings.end());
 	auto projection_to_move = std::move(op);
 	op = std::move(projection_to_move->children[0]);
+	projection_to_move->has_estimated_cardinality = insert_at_node.has_estimated_cardinality;
+	projection_to_move->estimated_cardinality = insert_at_node.estimated_cardinality;
 
 	idx_t next_col = proj.expressions.size();
 	for (idx_t i = 0; i < insert_bindings.size(); i++) {
@@ -183,10 +178,38 @@ void ProjectionPullup::PullUpNonColrefProjection(unique_ptr<LogicalOperator> &op
 			}
 		}
 	}
+
+	// The caller's traversal no longer reaches the subtree left behind by the moved projection.
+	ProjectionPullup next(optimizer, root);
+	next.Optimize(op);
+}
+
+static bool HasJoinBelow(const LogicalOperator &op) {
+	reference<const LogicalOperator> current = op;
+	while (current.get().children.size() == 1) {
+		current = *current.get().children[0];
+	}
+	return current.get().children.size() > 1;
+}
+
+// Filter pushdown keeps throwing expressions above projections. Removing a projection over a join would let the join
+// order optimizer evaluate them before the joins that remove rows, also when they reference other relations.
+static bool IsThrowingProjectionFilter(const Expression &expr,
+                                       const column_binding_map_t<unique_ptr<Expression>> &projection_map) {
+	if (!expr.CanThrow()) {
+		return false;
+	}
+	bool references_projection = false;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &colref) {
+		if (projection_map.find(colref.Binding()) != projection_map.end()) {
+			references_projection = true;
+		}
+	});
+	return references_projection;
 }
 
 void ProjectionPullup::CanPullThrough(column_binding_map_t<unique_ptr<Expression>> &projection_map,
-                                      bool &can_pull_through) {
+                                      bool keep_throwing_filters_above, bool &can_pull_through) {
 	// if expressions in the projections are colrefs, we can always pull it up
 	// if it's not a colref, we can pull it up only if it does not appear in the operator enumerate expressions
 	for (idx_t i = parents.size(); i > 0; i--) {
@@ -195,6 +218,10 @@ void ProjectionPullup::CanPullThrough(column_binding_map_t<unique_ptr<Expression
 		can_pull_through = true;
 
 		LogicalOperatorVisitor::EnumerateExpressions(parent_op, [&](unique_ptr<Expression> *expr) {
+			if (keep_throwing_filters_above && IsThrowingProjectionFilter(**expr, projection_map)) {
+				can_pull_through = false;
+				return;
+			}
 			ExpressionIterator::EnumerateExpression(*expr, [&](unique_ptr<Expression> &child_expr) {
 				if (child_expr->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 					return;
@@ -287,7 +314,6 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &proj = op->Cast<LogicalProjection>();
 		auto proj_bindings = proj.GetColumnBindings();
-
 		// Check if all expressions are simple column refs
 		// Cannot pull this projection up safely if any expression is not a column ref
 		bool all_column_refs = true;
@@ -297,7 +323,7 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 			if (proj.expressions[i]->GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
 				all_column_refs = false;
 			}
-			if (proj.expressions[i]->IsVolatile()) {
+			if (proj.expressions[i]->IsVolatile() || proj.expressions[i]->CanThrow()) {
 				ProjectionPullup next(optimizer, root);
 				next.Optimize(proj.children[0]);
 				return; // bail
@@ -309,7 +335,7 @@ void ProjectionPullup::VisitOperator(unique_ptr<LogicalOperator> &op) {
 		// if expressions in the projections are colrefs, we can always pull it up
 		// if it's not a colref, we can pull it up only if it does not appear in the operator enumerate expressions
 		idx_t pull_up_to_here = parents.size();
-		CanPullThrough(projection_map, can_pull_through);
+		CanPullThrough(projection_map, HasJoinBelow(proj), can_pull_through);
 
 		// Partial pullup is intentionally not implemented.
 		// Pulling a projection only partially up could leave it in an intermediate state between operators. This would

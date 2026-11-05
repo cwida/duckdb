@@ -1,0 +1,143 @@
+# name: test/sql/copy/parquet/parquet_schema_hive_partitioning.test
+# description: Test the schema option combined with hive partitioning
+# group: [parquet]
+
+require parquet
+
+# A Hive-partitioned tree whose files do not hold the partition column: COPY ... PARTITION_BY writes it
+# into the path only. The later partition has a column the earlier ones lack.
+
+statement ok
+COPY (SELECT range AS i, (range % 2)::INTEGER AS k FROM range(0, 4))
+TO '{TEST_DIR}/schema_hive' (FORMAT parquet, PARTITION_BY (k));
+
+statement ok
+COPY (SELECT range AS i, 'x' || range AS b, 9::INTEGER AS k FROM range(10, 12))
+TO '{TEST_DIR}/schema_hive' (FORMAT parquet, PARTITION_BY (k), APPEND);
+
+# The schema of the files, without the partition column.
+statement ok
+CREATE MACRO file_schema() AS MAP {
+    'i': {'name': 'i', 'type': 'BIGINT', 'default_value': NULL},
+    'b': {'name': 'b', 'type': 'VARCHAR', 'default_value': NULL}};
+
+# Without asking for hive partitioning, a schema scan reads the schema it was given and nothing else -
+# the partition column is not added, as before.
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+                                                          "schema" := file_schema()));
+----
+2
+
+# hive_partitioning adds the partition column to the given schema, typed from the values in the paths
+# just as it is when the schema is not given.
+query IIII
+SELECT i, b, k, typeof(k) FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+                                            "schema" := file_schema(), hive_partitioning := true)
+ORDER BY i;
+----
+0	NULL	0	BIGINT
+1	NULL	1	BIGINT
+2	NULL	0	BIGINT
+3	NULL	1	BIGINT
+10	x10	9	BIGINT
+11	x11	9	BIGINT
+
+# hive_types types the partition column, and implies hive partitioning on this path as it does elsewhere.
+query II
+SELECT DISTINCT typeof(k), count(*) OVER () FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+    "schema" := file_schema(), hive_types := {'k': 'INTEGER'}, hive_types_autocast := false);
+----
+INTEGER	6
+
+query I
+SELECT DISTINCT typeof(k) FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+    "schema" := file_schema(), hive_partitioning := true, hive_types := {'k': 'SMALLINT'});
+----
+SMALLINT
+
+# A subset of the files reads the same columns with the same types: the schema and the partition type are
+# both given, so neither is inferred from the files at hand.
+query IIII
+SELECT i, b, k, typeof(k) FROM read_parquet('{TEST_DIR}/schema_hive/k=9/*.parquet',
+    "schema" := file_schema(), hive_types := {'k': 'INTEGER'}, hive_types_autocast := false)
+ORDER BY i;
+----
+10	x10	9	INTEGER
+11	x11	9	INTEGER
+
+query IIII
+SELECT i, b, k, typeof(k) FROM read_parquet('{TEST_DIR}/schema_hive/k=0/*.parquet',
+    "schema" := file_schema(), hive_types := {'k': 'INTEGER'}, hive_types_autocast := false)
+ORDER BY i;
+----
+0	NULL	0	INTEGER
+2	NULL	0	INTEGER
+
+# A filter on the partition column prunes files by their path.
+query II
+SELECT k, count(*) FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+    "schema" := file_schema(), hive_types := {'k': 'INTEGER'})
+WHERE k = 9 GROUP BY k;
+----
+9	2
+
+# A schema that also names the partition column must declare the partition's type. The path supplies the
+# value, never the schema's default: every file has the key.
+query III
+SELECT i, k, typeof(k) FROM read_parquet('{TEST_DIR}/schema_hive/k=0/*.parquet',
+    "schema" := MAP {'i': {'name': 'i', 'type': 'BIGINT', 'default_value': NULL},
+                     'k': {'name': 'k', 'type': 'INTEGER', 'default_value': 7}},
+    hive_partitioning := true, hive_types := {'k': 'INTEGER'})
+ORDER BY i;
+----
+0	0	INTEGER
+2	0	INTEGER
+
+query II
+SELECT DISTINCT k, typeof(k) FROM read_parquet('{TEST_DIR}/schema_hive/k=9/*.parquet',
+    "schema" := MAP {'k': {'name': 'k', 'type': 'BIGINT', 'default_value': NULL}}, hive_partitioning := true);
+----
+9	BIGINT
+
+# A declared type that differs is an error, whether the partition type is taken from the paths or given.
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+    "schema" := MAP {'k': {'name': 'k', 'type': 'DATE', 'default_value': NULL}}, hive_partitioning := true);
+----
+Binder Error: 'schema' declares column "k" as DATE, but its hive partition type is BIGINT
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet',
+    "schema" := MAP {'k': {'name': 'k', 'type': 'BIGINT', 'default_value': NULL}}, hive_types := {'k': 'INTEGER'});
+----
+Binder Error: 'schema' declares column "k" as BIGINT, but its hive partition type is INTEGER
+
+statement ok
+COPY (SELECT 1 AS i, 'abc' AS k) TO '{TEST_DIR}/schema_hive_str' (FORMAT parquet, PARTITION_BY (k));
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/schema_hive_str/**/*.parquet',
+    "schema" := MAP {'k': {'name': 'k', 'type': 'INTEGER', 'default_value': NULL}}, hive_partitioning := true);
+----
+Binder Error: 'schema' declares column "k" as INTEGER, but its hive partition type is VARCHAR
+
+# union_by_name still cannot be combined with schema: both decide the scan's schema.
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet', "schema" := file_schema(),
+                           union_by_name := true);
+----
+<REGEX>:.*'schema' cannot be combined with union_by_name=true.*
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet', "schema" := file_schema(),
+                           union_by_name := true, hive_partitioning := true);
+----
+<REGEX>:.*'schema' cannot be combined with union_by_name=true.*
+
+# An explicit hive_partitioning := false is not overridden by hive_types, as on the autodetecting path.
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/schema_hive/**/*.parquet', "schema" := file_schema(),
+                           hive_partitioning := false, hive_types := {'k': 'INTEGER'});
+----
+<REGEX>:.*hive_partitioning.*hive_types.*

@@ -25,7 +25,7 @@
     },
     {
         "name": "<<",
-        "parameters": "input",
+        "parameters": "input,shift",
         "description": "Bitwise shift left",
         "example": "1 << 4",
         "type": "scalar_function_set",
@@ -33,7 +33,7 @@
     },
     {
         "name": ">>",
-        "parameters": "input",
+        "parameters": "input,shift",
         "description": "Bitwise shift right",
         "example": "8 >> 2",
         "type": "scalar_function_set",

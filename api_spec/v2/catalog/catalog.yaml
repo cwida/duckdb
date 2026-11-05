@@ -32,7 +32,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_describe_table:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Resolves a table name and snapshots its description.
 
@@ -40,8 +40,8 @@ functions:
       partial: an unqualified or schema-qualified name resolves through the connection's search path, exactly as the
       same name resolves in SQL. A two-part name tries the first part as a schema and as an attached database, as SQL
       does, and is rejected when both readings exist. A name that resolves to nothing is rejected with the engine's
-      missing-table error; a name that resolves to a view is rejected with the engine's not-a-table error, since a
-      description snapshots a base table.
+      missing-table error. A name that resolves to a view is rejected with the same error: a description snapshots a
+      base table, and a view is not one, so it is reported as a table that does not exist.
     role: constructor
     belongs_to: table_description
     parameters:
@@ -67,7 +67,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   table_description_get_qname:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the resolved qualified name of the described table.
 
@@ -93,7 +93,7 @@ functions:
 
   table_description_is_readonly:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns whether the described table's catalog is read-only.
 
@@ -118,7 +118,7 @@ functions:
 
   table_description_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns of the described table.
 
@@ -143,7 +143,7 @@ functions:
 
   table_description_get_column:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns an owned description of the column at index.
 
@@ -171,7 +171,7 @@ functions:
 
   table_description_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys the table description, releasing its resources.
 
@@ -191,7 +191,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   column_description_get_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Borrows the name of the column.
 
@@ -215,7 +215,7 @@ functions:
 
   column_description_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Borrows the type of the column.
     role: getter
@@ -237,7 +237,7 @@ functions:
 
   column_description_has_default:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns whether the column has a default value.
 
@@ -262,7 +262,7 @@ functions:
 
   column_description_has_generated:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns whether the column is generated.
 
@@ -287,7 +287,7 @@ functions:
 
   column_description_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys the column description, releasing its resources.
 

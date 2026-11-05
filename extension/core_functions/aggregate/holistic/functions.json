@@ -29,7 +29,7 @@
     },
     {
         "name": "quantile_disc",
-        "parameters": "x,pos",
+        "parameters": "x,quantile",
         "description": "Returns the exact quantile number between 0 and 1 . If pos is a LIST of FLOATs, then the result is a LIST of the corresponding exact quantiles.",
         "example": "quantile_disc(x, 0.5)",
         "type": "aggregate_function_set",
@@ -37,7 +37,7 @@
     },
     {
         "name": "quantile_cont",
-        "parameters": "x,pos",
+        "parameters": "x,quantile",
         "description": "Returns the interpolated quantile number between 0 and 1 . If pos is a LIST of FLOATs, then the result is a LIST of the corresponding interpolated quantiles.\t",
         "example": "quantile_cont(x, 0.5)",
         "type": "aggregate_function_set"

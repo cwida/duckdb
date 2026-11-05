@@ -438,7 +438,7 @@ extern "C" u32 duckdb_fsst_export(duckdb_fsst_encoder_t *encoder, u8 *buf) {
 
 #define FSST_CORRUPT 32774747032022883 /* 7-byte number in little endian containing "corrupt" */
 
-extern "C" u32 duckdb_fsst_import(duckdb_fsst_decoder_t *decoder, u8 *buf, size_t buf_size) {
+extern "C" u32 duckdb_fsst_import(duckdb_fsst_decoder_t *decoder, const u8 *buf, size_t buf_size) {
 	u64 version = 0;
 	u32 code, pos = 17;
 	u8 lenHisto[8];

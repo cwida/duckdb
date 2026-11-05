@@ -1,0 +1,273 @@
+# name: test/sql/catalog/function/default_macro_shadowing.test
+# description: Default macro bodies resolve in their defining context, not under session shadows
+# group: [function]
+
+# a session macro shadowing a builtin must not change what a default macro body computes
+
+statement ok
+CREATE MACRO generate_series(a, b) AS a + b;
+
+query I
+SELECT generate_subscripts([10, 20], 1) AS s;
+----
+1
+2
+
+# a default macro calling a scalar builtin
+
+statement ok
+CREATE MACRO lower(x) AS 'evil';
+
+query I
+SELECT pg_typeof(1);
+----
+integer
+
+# a default macro calling another default macro
+
+statement ok
+CREATE MACRO list_aggr(l, f) AS 'evil';
+
+query I
+SELECT list_histogram([1, 1, 2]);
+----
+{1=2, 2=1}
+
+# a bare SQL value function name inside a default macro body
+
+statement ok
+CREATE MACRO current_user() AS 'evil';
+
+query I
+SELECT user;
+----
+duckdb
+
+# an arithmetic operator inside a default macro body
+
+statement ok
+CREATE MACRO "+"(a, b) AS 999;
+
+query I
+SELECT date_add(DATE '2000-01-01', INTERVAL 1 DAY);
+----
+2000-01-02 00:00:00
+
+# a window-style default macro: aggregate detection and the transferred name stay pinned
+
+statement ok
+CREATE MACRO avg(x) AS 'evil';
+
+statement ok
+CREATE TABLE win_t AS SELECT range AS v FROM range(1, 5);
+
+query R
+SELECT round(geomean(v) OVER (), 3) AS r FROM win_t LIMIT 1;
+----
+2.213
+
+# schema-only references inside a default body anchor to the system catalog
+
+statement ok
+CREATE MACRO main.current_database() AS '__shadow__';
+
+query I
+SELECT system.main.current_catalog() = system.main.current_database() AS ok;
+----
+true
+
+# operators lowered to backing-function lookups resolve in the system catalog
+
+statement ok
+CREATE MACRO array_slice(a, b, c) AS a;
+
+query I
+SELECT system.main.array_pop_front([10, 20, 30]);
+----
+[20, 30]
+
+statement ok
+CREATE MACRO array_extract(a, b) AS a;
+
+query I
+SELECT system.main.split_part('a,b', ',', 2);
+----
+b
+
+# operator syntax in user queries keeps its existing backing-name resolution: a shadowing
+# macro captures the lookup and operator syntax rejects it (unchanged behavior)
+
+statement error
+SELECT ([1, 2, 3])[2:];
+----
+<REGEX>:.*array_slice.*
+
+# a default macro calling another default macro
+
+statement ok
+CREATE MACRO list_append(a, b) AS [999];
+
+query I
+SELECT array_append([1], 2);
+----
+[1, 2]
+
+# caller argument expressions keep caller-context resolution through a pinned body
+
+statement ok
+CREATE MACRO abs(x) AS 'caller';
+
+query I
+SELECT pg_typeof(abs(-1));
+----
+varchar
+
+# protection: shadowing the default macro itself still wins for unqualified calls
+
+statement ok
+CREATE MACRO generate_subscripts(a, b) AS 42;
+
+query I
+SELECT generate_subscripts([10, 20], 1);
+----
+42
+
+# protection: the pinned default macro stays reachable through qualification
+
+query I
+SELECT system.main.generate_subscripts([10, 20], 1) AS s;
+----
+1
+2
+
+# protection: user macros keep caller-context resolution, both as callers and through shadows
+
+statement ok
+CREATE MACRO my_lower_user(x) AS lower(x);
+
+query I
+SELECT my_lower_user('AB');
+----
+evil
+
+# protection: macro parameters named like builtins are untouched in user macros
+
+statement ok
+CREATE MACRO param_macro(lower) AS lower || '!';
+
+query I
+SELECT param_macro('x');
+----
+x!
+
+# pg_catalog default macros resolve their references through main
+
+statement ok
+CREATE MACRO typeof(x) AS 'evil';
+
+query I
+SELECT pg_typeof(42);
+----
+integer
+
+# arithmetic and concatenation operator spellings inside default bodies are pinned
+
+statement ok
+CREATE MACRO "//"(a, b) AS 0;
+
+statement ok
+CREATE MACRO "%"(a, b) AS 0;
+
+statement ok
+CREATE MACRO "||"(a, b) AS 'captured';
+
+statement ok
+CREATE MACRO "*"(a, b) AS 1000;
+
+statement ok
+CREATE MACRO "-"(a, b) AS 0;
+
+statement ok
+CREATE MACRO "/"(a, b) AS 42;
+
+query I
+SELECT fdiv(5, 2)::INT;
+----
+2
+
+query I
+SELECT fmod(5, 2)::INT;
+----
+1
+
+query I
+SELECT array_pop_back([10, 20, 30]);
+----
+[10, 20]
+
+query R
+SELECT wavg(x, w) FROM (VALUES (1, 1), (3, 1)) t(x, w);
+----
+2
+
+statement error
+SELECT assert_true(false, 'msg');
+----
+<REGEX>:.*Assertion: msg.*
+
+# bare value-function names inside default bodies are pinned to the system catalog
+
+statement ok
+CREATE MACRO get_current_timestamp() AS TIMESTAMPTZ '2000-01-01 00:00:00+00';
+
+query I
+SELECT pg_conf_load_time() > TIMESTAMPTZ '2020-01-01 00:00:00+00';
+----
+true
+
+# struct literals inside default bodies spell their constructor
+
+statement ok
+CREATE MACRO struct_pack(key, value) AS 999;
+
+query I
+SELECT map_contains_entry(map(['k'], [1]), 'k', 1);
+----
+true
+
+# the ENUM arm of format_pg_type keeps its qualified lower (lower is shadowed above)
+
+query I
+SELECT format_pg_type('ENUM', 'Mood');
+----
+mood
+
+# format_type: the outer concatenation and the typemod arithmetic stay pinned under the
+# "||", "//" and "%" shadows created above
+
+query I
+SELECT format_type(23, 10002);
+----
+int4(10,2)
+
+query I
+SELECT system.pg_catalog.format_type(NULL::BIGINT, -1);
+----
+NULL
+
+# the ILIKE pin through duckdb_logs_parsed lives in default_macro_shadowing_logging.test,
+# since in-memory log contents cannot survive the reload harness
+
+# ago needs the ICU TIMESTAMPTZ arithmetic, its pinned value function and minus run with icu
+
+require icu
+
+# under autoloading, an overload miss on the existing "-" does not trigger the icu load,
+# so force it through an icu-registered setting first
+statement ok
+SET TimeZone = 'UTC';
+
+query I
+SELECT ago(INTERVAL 1 DAY) > TIMESTAMPTZ '2020-01-01 00:00:00+00';
+----
+true

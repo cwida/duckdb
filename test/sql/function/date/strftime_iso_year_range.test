@@ -1,0 +1,18 @@
+# name: test/sql/function/date/strftime_iso_year_range.test
+# description: strftime %G with ISO years outside of [0, 9999]
+# group: [date]
+
+query I
+SELECT strftime(d, '%Y|%G|%V') FROM (VALUES (DATE '12345-06-01'), (DATE '-0005-06-01'), (DATE '0000-01-01'), (DATE '-12345-06-01'), (DATE '2024-12-30'), (DATE '0001-01-01')) t(d)
+----
+12345|12345|22
+-5|-5|22
+0000|-1|52
+-12345|-12345|22
+2024|2025|01
+0001|0001|01
+
+query I
+SELECT strftime(TIMESTAMP '12345-06-01 10:00:00', '%G-%Y %H')
+----
+12345-12345 10

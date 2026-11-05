@@ -1,0 +1,39 @@
+# name: test/sql/execution/limit_percent_runtime.test
+# description: Test runtime LIMIT PERCENT and OFFSET values
+# group: [execution]
+
+statement ok
+PREPARE runtime_percent AS SELECT i FROM range(10) t(i) LIMIT ?%
+
+query I
+EXECUTE runtime_percent(NULL)
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+statement error
+EXECUTE runtime_percent(-1)
+----
+<REGEX>:Out of Range Error:.*Limit percent out of range.*
+
+statement ok
+PREPARE runtime_offset AS SELECT i FROM range(5) t(i) LIMIT 50% OFFSET ?
+
+query I
+EXECUTE runtime_offset(NULL)
+----
+0
+1
+
+statement error
+EXECUTE runtime_offset(9223372036854775807)
+----
+<REGEX>:Binder Error:.*Max value.*LIMIT/OFFSET.*

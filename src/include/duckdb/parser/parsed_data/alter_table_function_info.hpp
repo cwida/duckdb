@@ -10,6 +10,7 @@
 
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
+#include "duckdb/parser/parsed_data/create_function_info.hpp"
 
 namespace duckdb {
 
@@ -32,10 +33,13 @@ public:
 // AddTableFunctionOverloadInfo
 //===--------------------------------------------------------------------===//
 struct AddTableFunctionOverloadInfo : public AlterTableFunctionInfo {
-	AddTableFunctionOverloadInfo(const AlterEntryData &data, TableFunctionSet new_overloads);
+	AddTableFunctionOverloadInfo(const AlterEntryData &data, TableFunctionSet new_overloads,
+	                             vector<FunctionDescription> new_descriptions = {});
 	~AddTableFunctionOverloadInfo() override;
 
 	TableFunctionSet new_overloads;
+	//! The descriptions of the new overloads
+	vector<FunctionDescription> new_descriptions;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;

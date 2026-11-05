@@ -22,6 +22,10 @@ public:
 	idx_t col_idx;
 	unique_ptr<ColumnWriterState> child_state;
 	idx_t parent_index = 0;
+	//! Null containers, excluding absent parents and empty containers
+	idx_t own_null_count = 0;
+	//! Containers with a present parent, including null and empty containers
+	idx_t num_values = 0;
 };
 
 class ListColumnWriter : public ColumnWriter {
@@ -45,7 +49,7 @@ public:
 	void Write(ColumnWriterState &state, Vector &vector, idx_t count) override;
 	void PrepareWrite(ColumnWriterState &state) override;
 	void FinalizeWrite(ColumnWriterState &state) override;
-	idx_t FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) override;
+	idx_t FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) override;
 
 protected:
 	ColumnWriter &GetChildWriter();

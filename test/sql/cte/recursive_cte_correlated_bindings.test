@@ -1,0 +1,143 @@
+# name: test/sql/cte/recursive_cte_correlated_bindings.test
+# description: CTE references map correlated columns by binding rather than position (issue #25554)
+# group: [cte]
+
+foreach mode enable_optimizer disable_optimizer
+
+statement ok
+PRAGMA {mode};
+
+# The recurring subquery starts with b; the CTE stores a before b.
+query TTI
+SELECT *
+FROM (SELECT {x: 1} AS a, {y: 3} AS b) seed,
+LATERAL (
+    WITH RECURSIVE t(n) USING KEY (n) AS (
+        SELECT a.x
+        UNION ALL
+        SELECT n + 1 FROM t
+        WHERE n < b.y
+          AND NOT EXISTS (SELECT 1 FROM recurring.t r WHERE r.n = b.y)
+    )
+    SELECT * FROM t
+) q
+ORDER BY n;
+----
+{'x': 1}	{'y': 3}	1
+{'x': 1}	{'y': 3}	2
+{'x': 1}	{'y': 3}	3
+
+# Reverse the outer column order without changing the recursive result.
+query TTI
+SELECT *
+FROM (SELECT {y: 3} AS b, {x: 1} AS a) seed,
+LATERAL (
+    WITH RECURSIVE t(n) USING KEY (n) AS (
+        SELECT a.x
+        UNION ALL
+        SELECT n + 1 FROM t
+        WHERE n < b.y
+          AND NOT EXISTS (SELECT 1 FROM recurring.t r WHERE r.n = b.y)
+    )
+    SELECT * FROM t
+) q
+ORDER BY n;
+----
+{'y': 3}	{'x': 1}	1
+{'y': 3}	{'x': 1}	2
+{'y': 3}	{'x': 1}	3
+
+# Equal types must not hide swapped bindings. Preserve independent domains, duplicates and NULLs.
+query III rowsort
+SELECT a.x, b.x, n
+FROM (
+    SELECT {x: lo} AS a, {x: hi} AS b
+    FROM (VALUES (1, 3), (2, 4), (1, 3), (NULL, 3), (1, NULL)) bounds(lo, hi)
+) seed,
+LATERAL (
+    WITH RECURSIVE t(n) USING KEY (n) AS (
+        SELECT a.x
+        UNION ALL
+        SELECT n + 1 FROM t
+        WHERE n < b.x
+          AND NOT EXISTS (SELECT 1 FROM recurring.t r WHERE r.n = b.x)
+    )
+    SELECT * FROM t
+) q;
+----
+1	3	1
+1	3	1
+1	3	2
+1	3	2
+1	3	3
+1	3	3
+1	NULL	1
+2	4	2
+2	4	3
+2	4	4
+NULL	3	NULL
+
+# Ordinary recursive CTE references use the same correlation mapping.
+query TTI
+SELECT *
+FROM (SELECT {x: 1} AS a, {y: 3} AS b) seed,
+LATERAL (
+    WITH RECURSIVE t(n) AS (
+        SELECT a.x
+        UNION ALL
+        SELECT n + 1 FROM t
+        WHERE n < b.y
+          AND NOT EXISTS (SELECT 1 FROM t r WHERE r.n = b.y)
+    )
+    SELECT * FROM t
+) q
+ORDER BY n;
+----
+{'x': 1}	{'y': 3}	1
+{'x': 1}	{'y': 3}	2
+{'x': 1}	{'y': 3}	3
+
+# More than two outer correlations can have different discovery orders.
+query I
+SELECT n
+FROM (SELECT {x: 1} AS a, {y: 5} AS b, {z: 3} AS c) seed,
+LATERAL (
+    WITH RECURSIVE t(n) USING KEY (n) AS (
+        SELECT a.x
+        UNION ALL
+        SELECT n + 1 FROM t
+        WHERE n < b.y
+          AND NOT EXISTS (SELECT 1 FROM recurring.t r WHERE r.n = c.z)
+    )
+    SELECT * FROM t
+) q
+ORDER BY n;
+----
+1
+2
+3
+
+# The inner subquery also needs the current recursive row, which is not an outer CTE correlation.
+query I
+SELECT n
+FROM (SELECT {x: 1} AS a, {y: 3} AS b) seed,
+LATERAL (
+    WITH RECURSIVE t(n) USING KEY (n) AS (
+        SELECT a.x
+        UNION ALL
+        SELECT n + 1 FROM t
+        WHERE n < b.y
+          AND NOT EXISTS (SELECT 1 FROM recurring.t r WHERE r.n = b.y AND r.n = t.n)
+    )
+    SELECT * FROM t
+) q
+ORDER BY n;
+----
+1
+2
+3
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;

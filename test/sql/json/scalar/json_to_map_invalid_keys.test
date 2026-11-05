@@ -1,0 +1,50 @@
+# name: test/sql/json/scalar/json_to_map_invalid_keys.test
+# description: Converting JSON objects to MAPs that would have duplicate or NULL keys
+# group: [scalar]
+
+require json
+
+statement error
+SELECT '{"a":1,"a":2}'::JSON::MAP(VARCHAR, INT);
+----
+Map keys must be unique
+
+query I
+SELECT TRY_CAST('{"a":1,"a":2}'::JSON AS MAP(VARCHAR, INT));
+----
+NULL
+
+query I
+SELECT TRY_CAST(j::JSON AS MAP(VARCHAR, INT)) FROM (VALUES ('{"a":1,"b":2}'), ('{"a":1,"a":2}'), ('{"c":3}')) t(j);
+----
+{a=1, b=2}
+NULL
+{c=3}
+
+# non-strict: a key that cannot be converted would be NULL, so the map is NULL
+query I
+SELECT from_json('{"x":2}', '"MAP(INT,INT)"');
+----
+NULL
+
+query I
+SELECT from_json(j, '"MAP(INT,INT)"') FROM (VALUES ('{"1":2}'), ('{"x":2}'), ('{"3":4,"3":5}')) t(j);
+----
+{1=2}
+NULL
+NULL
+
+query I
+SELECT from_json('{"x":2}', '"MAP(INT,INT)"')::MAP(BIGINT, INT);
+----
+NULL
+
+statement error
+SELECT json_transform_strict('{"x":2}', '"MAP(INT,INT)"');
+----
+<REGEX>:.*Conversion Error.*
+
+query I
+SELECT '{"a":1,"b":2}'::JSON::MAP(VARCHAR, INT);
+----
+{a=1, b=2}

@@ -1,0 +1,141 @@
+# name: test/sql/execution/physical_verify_vector.test
+# description: Test physical vector verification modes
+# group: [execution]
+
+statement ok
+SET debug_verify_vector = 'dictionary_operator'
+
+query II
+SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE i::VARCHAR END
+FROM range(4) t(i)
+----
+0	NULL
+1	1
+2	NULL
+3	3
+
+statement ok
+SET debug_verify_vector = 'constant_operator'
+
+query II
+SELECT i, i % 2
+FROM range(4) t(i)
+----
+0	0
+1	1
+2	0
+3	1
+
+statement ok
+SET debug_verify_vector = 'sequence_operator'
+
+query III
+SELECT i::TINYINT, (i * 200)::SMALLINT, CASE WHEN i = 2 THEN NULL ELSE i END
+FROM range(4) t(i)
+----
+0	0	0
+1	200	1
+2	400	NULL
+3	600	3
+
+query III
+SELECT i, i / 2, INTERVAL '1 day' * i
+FROM range(4) t(i)
+----
+0	0.0	00:00:00
+1	0.5	1 day
+2	1.0	2 days
+3	1.5	3 days
+
+query II
+SELECT *
+FROM (VALUES (1, 5), (1, 5), (2, 5), (4, 5)) t(irregular, constant_value)
+----
+1	5
+1	5
+2	5
+4	5
+
+query I
+SELECT * FROM (VALUES (1), (2), (4)) t(irregular)
+----
+1
+2
+4
+
+query IIII
+SELECT *
+FROM (VALUES
+	((-128)::TINYINT, (-32768)::SMALLINT, (-2147483648)::INTEGER, (-9223372036854775808)::BIGINT),
+	(127::TINYINT, 32767::SMALLINT, 2147483647::INTEGER, 9223372036854775807::BIGINT)
+) t(tiny_value, small_value, integer_value, bigint_value)
+----
+-128	-32768	-2147483648	-9223372036854775808
+127	32767	2147483647	9223372036854775807
+
+query I
+SELECT * FROM (VALUES (1), (NULL)) t(nullable_value)
+----
+1
+NULL
+
+# Constant detection must not cast differently shaped VARIANT objects to a common STRUCT.
+query I
+SELECT unnest([empty_struct::VARIANT, struct::VARIANT]) FROM test_all_types();
+----
+{}
+{'a': NULL, 'b': NULL}
+{}
+{'a': 42, 'b': 🦆🦆🦆🦆🦆🦆}
+NULL
+NULL
+
+# Equal-looking payloads must retain their types, including inside nested SQL containers.
+query IIII
+SELECT variant_typeof(v), variant_typeof(s.v), variant_typeof(l[1]), variant_typeof(a[1])
+FROM (
+	SELECT v, {'v': v} AS s, [v] AS l, [v]::VARIANT[1] AS a
+	FROM (VALUES (42::VARIANT), (42::DOUBLE::VARIANT), ('42'::VARIANT), (NULL::VARIANT)) t(v)
+);
+----
+INT32	INT32	INT32	INT32
+DOUBLE	DOUBLE	DOUBLE	DOUBLE
+VARCHAR	VARCHAR	VARCHAR	VARCHAR
+VARIANT_NULL	VARIANT_NULL	VARIANT_NULL	VARIANT_NULL
+
+statement ok
+SET debug_verify_vector = 'nested_shuffle'
+
+query II
+SELECT [i, i + 1], {'id': i, 'label': i::VARCHAR}
+FROM range(4) t(i)
+----
+[0, 1]	{'id': 0, 'label': 0}
+[1, 2]	{'id': 1, 'label': 1}
+[2, 3]	{'id': 2, 'label': 2}
+[3, 4]	{'id': 3, 'label': 3}
+
+statement ok
+SET debug_verify_vector = 'variant_vector'
+
+query I
+SELECT i + 1 FROM range(4) t(i)
+----
+1
+2
+3
+4
+
+statement ok
+SET debug_verify_vector = 'shredded_vector'
+
+query I
+SELECT i::VARIANT FROM range(4) t(i)
+----
+0
+1
+2
+3
+
+statement ok
+RESET debug_verify_vector

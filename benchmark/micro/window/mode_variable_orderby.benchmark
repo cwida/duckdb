@@ -20,14 +20,16 @@ SELECT
 FROM lineitem
 WINDOW w AS (
     order by l_orderkey, l_shipdate 
-        rows between mod(rowid * 47, 521) preceding and 400 - mod(rowid * 47, 521) following
+        rows between mod(rowid * 47, 521) preceding and GREATEST(400 - mod(rowid * 47, 521), 0) following
 )
 QUALIFY l_mode > 1
 ORDER BY ALL
 ;
 
 result IIII
-39	1996-12-08	6	3
+3	1993-12-04	4	6
+3	1993-12-14	5	6
+3	1994-01-16	3	6
 599938	1995-07-03	6	2
 599942	1995-08-08	1	2
 599968	1997-03-18	1	2

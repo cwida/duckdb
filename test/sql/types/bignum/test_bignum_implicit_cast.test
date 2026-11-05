@@ -34,3 +34,20 @@ query I
 select sum(a) from t;
 ----
 1111100000000000000000000000000000000000000000000000000000000000000000000
+
+# FLOAT does not implicitly cast to BIGNUM: a FLOAT operand makes the arithmetic happen in DOUBLE
+query II
+SELECT 10::BIGNUM + 1.5::FLOAT, typeof(10::BIGNUM + 1.5::FLOAT)
+----
+11.5	DOUBLE
+
+query II
+SELECT 10::BIGNUM - 1.5::FLOAT, typeof(10::BIGNUM - 1.5::FLOAT)
+----
+8.5	DOUBLE
+
+# an explicit cast still truncates
+query I
+SELECT 2.7::FLOAT::BIGNUM
+----
+2

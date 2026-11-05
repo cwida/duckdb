@@ -1005,12 +1005,13 @@ int32_t FieldCalendar::TryGuessDifference(int64_t start, int64_t target, Calenda
 	if (length <= 0) {
 		return false;
 	}
-	const auto estimate = (target - start) / length;
+	const auto estimate = (static_cast<double>(target) - static_cast<double>(start)) / length;
 	// a small difference is found by the search below in about as many steps as the guess would
 	// take to check, so it is only worth guessing once the two instants are further apart
 	static constexpr double WORTH_GUESSING = 8;
-	if (!(std::fabs(estimate) >= WORTH_GUESSING) || estimate < NumericLimits<int32_t>::Minimum() / 2 ||
-	    estimate > NumericLimits<int32_t>::Maximum() / 2) {
+	if (!(std::fabs(estimate) >= WORTH_GUESSING) ||
+	    estimate < static_cast<double>(NumericLimits<int32_t>::Minimum()) / 2.0 ||
+	    estimate > static_cast<double>(NumericLimits<int32_t>::Maximum()) / 2.0) {
 		return false;
 	}
 

@@ -1,0 +1,101 @@
+# name: test/sql/error/test_try_nested_conditional.test
+# description: TRY with nested CASE/COALESCE expressions
+# group: [error]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (0), (1), (2), (3), (4)) AS t(x);
+
+# COALESCE writes its result at the physical row index - the TRY per-row retry must account for that
+query I
+SELECT TRY(COALESCE(1 // x, 999)) FROM t
+----
+NULL
+1
+0
+0
+0
+
+query I
+SELECT TRY(COALESCE(NULL::INTEGER, 1 // x, 999)) FROM t
+----
+NULL
+1
+0
+0
+0
+
+# CASE, with only some of the rows taking the erroring branch
+query I
+SELECT TRY(CASE WHEN x % 2 = 0 THEN 1 // (x - 2) ELSE -1 END) FROM t
+----
+0
+-1
+NULL
+-1
+0
+
+# nested CASE inside COALESCE
+query I
+SELECT TRY(COALESCE(CASE WHEN x > 2 THEN NULL ELSE 1 // x END, 42)) FROM t
+----
+NULL
+1
+0
+42
+42
+
+# varchar results, i.e. a fill loop that copies string heap data
+query I
+SELECT TRY(COALESCE(repeat('a', 20 // x), 'none')) FROM t
+----
+NULL
+aaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaa
+aaaaaa
+aaaaa
+
+# TRY nested inside a CASE, so that TRY itself is executed with a selection vector
+query I
+SELECT CASE WHEN x > 1 THEN TRY(COALESCE(1 // (x - 2), 999)) ELSE -1 END FROM t
+----
+-1
+-1
+NULL
+1
+0
+
+# multiple vectors, so that the retried rows have physical indices beyond the first row
+query II
+SELECT count(*), count(v) FROM (
+	SELECT TRY(COALESCE(10000 // (i % 5000), -1)) AS v FROM range(10000) tbl(i)
+) q
+----
+10000	9998
+
+# every retried row must get the same result it would get without TRY
+query I
+SELECT count(*) FROM (
+	SELECT i, TRY(COALESCE(10000 // (i % 5000), -1)) AS v FROM range(10000) tbl(i)
+) q
+WHERE CASE WHEN i % 5000 = 0 THEN v IS NOT NULL ELSE v IS DISTINCT FROM 10000 // (i % 5000) END
+----
+0
+
+# nested types, i.e. a fill loop that copies child vectors
+query I
+SELECT TRY(COALESCE([1 // x], [999])) FROM t
+----
+NULL
+[1]
+[0]
+[0]
+[0]
+
+query I
+SELECT TRY(COALESCE({'a': 1 // x}, {'a': 999})) FROM t
+----
+NULL
+{'a': 1}
+{'a': 0}
+{'a': 0}
+{'a': 0}

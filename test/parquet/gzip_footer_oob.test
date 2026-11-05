@@ -1,0 +1,25 @@
+# name: test/parquet/gzip_footer_oob.test
+# description: Test reading Parquet GZIP pages with a truncated gzip member footer
+# group: [parquet]
+
+require parquet
+
+query II
+SELECT count(*), sum(i) FROM '{DATA_DIR}/parquet-testing/oob_gzip/complete.parquet';
+----
+100	4950
+
+statement error
+FROM '{DATA_DIR}/parquet-testing/oob_gzip/half_footer.parquet';
+----
+<REGEX>:.*incomplete GZIP member footer.*
+
+statement error
+FROM '{DATA_DIR}/parquet-testing/oob_gzip/one_byte_footer.parquet';
+----
+<REGEX>:.*incomplete GZIP member footer.*
+
+statement error
+FROM '{DATA_DIR}/parquet-testing/oob_gzip/no_footer.parquet';
+----
+<REGEX>:.*incomplete GZIP member footer.*

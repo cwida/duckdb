@@ -65,13 +65,13 @@ void GroupBinder::ReplaceSelectRef(SelectNode &node, SelectBindState &bind_state
 	case ExpressionClass::CONSTANT: {
 		// root is a constant
 		auto &constant = expr.Cast<ConstantExpression>();
-		if (!constant.GetValue().type().IsIntegral()) {
+		int64_t index;
+		if (!constant.GetLiteral().TryGetInt64(index)) {
 			// non-integral expression, we just leave the constant here.
 			return;
 		}
 		// INTEGER constant: we use the integer as an index into the select list (e.g. GROUP BY 1)
-		auto index = (idx_t)constant.GetValue().GetValue<int64_t>();
-		select_list_idx = index - 1;
+		select_list_idx = (idx_t)index - 1;
 		break;
 	}
 	case ExpressionClass::PARAMETER:
@@ -91,7 +91,7 @@ void GroupBinder::ReplaceSelectRef(SelectNode &node, SelectBindState &bind_state
 		// e.g. GROUP BY k, k or GROUP BY 1, 1
 		// in this case, we can just replace the grouping with a constant since the second grouping has no effect
 		// (the constant grouping will be optimized out later)
-		expr_ptr = make_uniq<ConstantExpression>(Value::INTEGER(42));
+		expr_ptr = ConstantExpression::Integer(42);
 		return;
 	}
 	if (select_list_idx >= node.select_list.size()) {
@@ -119,7 +119,7 @@ bool GroupBinder::TryResolveAliasReference(ColumnRefExpression &colref, idx_t de
 		return false;
 	}
 	result = BindResult(BinderException(
-	    colref, "Alias with name \"%s\" exists, but aliases cannot be used as part of an expression in the GROUP BY",
+	    colref, "Alias with name %s exists, but aliases cannot be used as part of an expression in the GROUP BY",
 	    alias_name));
 	return true;
 }

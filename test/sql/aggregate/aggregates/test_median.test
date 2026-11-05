@@ -152,7 +152,7 @@ FROM (VALUES
 	('00:00:00+00'),
 ) tbl(ttz);
 ----
-00:00:00-04:30
+04:30:00+00
 
 query I
 SELECT MEDIAN(x)

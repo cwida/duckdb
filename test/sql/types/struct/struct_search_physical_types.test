@@ -1,0 +1,34 @@
+# name: test/sql/types/struct/struct_search_physical_types.test
+# description: Exercise struct search dispatch for scalar physical types
+# group: [struct]
+
+foreach type smallint bigint hugeint utinyint usmallint uinteger ubigint uhugeint float double
+
+query I
+SELECT struct_contains(row(1::{type}, 2::{type}), 2::{type});
+----
+true
+
+query I
+SELECT struct_position(row(1::{type}, 2::{type}), 3::{type});
+----
+NULL
+
+endloop
+
+query I
+SELECT struct_contains(row(INTERVAL '1 day', INTERVAL '2 days'), INTERVAL '2 days');
+----
+true
+
+# Keep the nullable tuple as a non-constant vector so the function sees its
+# top-level validity mask instead of being eliminated by null propagation.
+query I rowsort
+SELECT struct_contains(
+           CASE WHEN i = 0 THEN NULL ELSE row(i::INTEGER, (i + 1)::INTEGER) END,
+           i::INTEGER
+       )
+FROM range(2) t(i);
+----
+true
+NULL

@@ -1,0 +1,34 @@
+// Generated from extension/loader/static_extension_loader.c.in. Do not edit.
+// Registers the extensions: @LINK_EXTENSION_LIST@
+//
+// Static extension loader: duckdb_register_static_extensions registers each extension with the engine through its
+// describe function, which
+// also pulls the extensions out of their archives. Call it before opening a database, or compile
+// extension/loader/static_extension_autoregister.cpp next to this file to have it called before main.
+// Compile it into the program and put the extension archives before libduckdb_static.a.
+
+#include "duckdb_static_extension.h"
+
+#ifndef DUCKDB_STATIC_EXTENSION_LOADER_API
+#if defined(__GNUC__) || defined(__clang__)
+#define DUCKDB_STATIC_EXTENSION_LOADER_API __attribute__((visibility("hidden")))
+#else
+#define DUCKDB_STATIC_EXTENSION_LOADER_API
+#endif
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+@DESCRIBE_DECLARATIONS@
+
+DUCKDB_STATIC_EXTENSION_LOADER_API int32_t duckdb_register_static_extensions(void) {
+	int32_t result = 0;
+@DESCRIBE_REGISTRATIONS@
+	return result;
+}
+
+#ifdef __cplusplus
+}
+#endif

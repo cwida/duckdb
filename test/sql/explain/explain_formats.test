@@ -52,6 +52,23 @@ EXPLAIN (FORMAT mermaid) SELECT * FROM renderer_plan
 ----
 physical_plan	<REGEX>:(?s).*flowchart TD.*TOP_N.*HASH_JOIN.*
 
+# one operator per line, indented by depth, with the estimate in parentheses and the properties after it
+query II
+EXPLAIN (FORMAT compact) SELECT * FROM renderer_plan
+----
+physical_plan	<REGEX>:(?s).*TOP_N \(est=\d+\).*\n +HASH_JOIN \(est=\d+\) Join Type: INNER; Conditions: .*
+
+# plain ASCII: no box-drawing characters in the compact format
+query II
+EXPLAIN (FORMAT compact) SELECT * FROM renderer_plan
+----
+physical_plan	<REGEX>:^[\x00-\x7F]*$
+
+query II
+EXPLAIN ANALYZE (FORMAT compact) SELECT * FROM renderer_plan
+----
+analyzed_plan	<REGEX>:(?s).*TOP_N \(est=\d+, rows=\d+, time=[0-9.]+s\).*HASH_JOIN.*
+
 # the aliases of the text renderer
 query II
 EXPLAIN (FORMAT default) SELECT * FROM renderer_plan

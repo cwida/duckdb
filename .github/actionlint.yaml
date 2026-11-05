@@ -1,8 +1,10 @@
 self-hosted-runner:
   labels:
     - namespace-profile-linux-slim
+    - namespace-profile-linux-slim;job.priority=1
     - namespace-profile-linux-small
     - namespace-profile-linux-x64
+    - namespace-profile-linux-x64;job.priority=2
     - namespace-profile-linux-22-x64
     - namespace-profile-linux-arm64
     - namespace-profile-windows-x64

@@ -13,10 +13,12 @@ TableFunctionCatalogEntry::TableFunctionCatalogEntry(Catalog &catalog, SchemaCat
                                                      CreateTableFunctionInfo &info)
     : FunctionEntry(CatalogType::TABLE_FUNCTION_ENTRY, catalog, schema, info), functions(std::move(info.functions)) {
 	D_ASSERT(this->functions.Size() > 0);
-	functions.ApplyToFunctions([&](TableFunction &function) {
-		function.SetCatalogName(catalog.GetAttached().GetName());
-		function.SetSchemaName(schema.name);
-	});
+	functions.name = name;
+	functions.ApplyToFunctions([&](TableFunction &function) { FinalizeFunction(function); });
+}
+
+void TableFunctionCatalogEntry::FinalizeFunction(TableFunction &function) const {
+	function.SetQualifiedName(schema.GetQualifiedName(name));
 }
 
 unique_ptr<CatalogEntry> TableFunctionCatalogEntry::AlterEntry(CatalogTransaction transaction, AlterInfo &info) {
@@ -32,9 +34,13 @@ unique_ptr<CatalogEntry> TableFunctionCatalogEntry::AlterEntry(CatalogTransactio
 
 	TableFunctionSet new_set = functions;
 	if (!new_set.MergeFunctionSet(add_overloads.new_overloads)) {
-		throw BinderException("Failed to add new function overloads to function \"%s\": function already exists", name);
+		throw BinderException("Failed to add new function overloads to function %s: function already exists", name);
 	}
 	CreateTableFunctionInfo new_info(std::move(new_set));
+	new_info.internal = internal;
+	new_info.descriptions = descriptions;
+	new_info.descriptions.insert(new_info.descriptions.end(), add_overloads.new_descriptions.begin(),
+	                             add_overloads.new_descriptions.end());
 	return make_uniq<TableFunctionCatalogEntry>(catalog, schema, new_info);
 }
 

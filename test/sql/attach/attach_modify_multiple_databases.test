@@ -42,3 +42,24 @@ a single transaction can only write to a single attached database
 
 statement ok
 ROLLBACK
+
+# writes to temporary objects do not count as writes to an attached database
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+CREATE TEMP TABLE tmp AS SELECT * FROM range(3) t(i);
+
+statement ok
+INSERT INTO database.integers SELECT * FROM tmp;
+
+statement ok
+INSERT INTO tmp VALUES (3);
+
+statement error
+INSERT INTO integers SELECT * FROM tmp;
+----
+a single transaction can only write to a single attached database
+
+statement ok
+ROLLBACK

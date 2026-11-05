@@ -12,6 +12,7 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 
 namespace duckdb {
+class SchemaCatalogEntry;
 
 //! Physically CREATE TABLE statement
 class PhysicalCreateTable : public PhysicalOperator {

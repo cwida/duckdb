@@ -1,0 +1,18 @@
+# name: test/sql/function/date/date_trunc_min_date.test
+# description: date_trunc to the week of dates close to the minimum date
+# group: [date]
+
+statement error
+SELECT date_trunc('week', DATE '-5877641-06-25')
+----
+Date out of range
+
+statement error
+SELECT date_trunc('isoyear', DATE '-5877641-06-25')
+----
+Date out of range
+
+query III
+SELECT date_trunc('week', DATE '2024-10-06'), date_trunc('isoyear', DATE '2024-10-06'), date_trunc('week', DATE 'infinity')
+----
+2024-09-30 00:00:00	2024-01-01 00:00:00	infinity

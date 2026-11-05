@@ -1,3 +1,4 @@
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
@@ -26,7 +27,8 @@ public:
 				auto result = make_uniq<CreateViewInfo>();
 				result->SetQualifiedName(QualifiedName({Identifier::DefaultSchema()}, entry));
 				result->sql = StringUtil::Format("SELECT * FROM %s", SQLString(file));
-				auto view_info = CreateViewInfo::FromSelect(context, std::move(result));
+				auto parser = Parser::GetBuiltinParser();
+				auto view_info = CreateViewInfo::FromSelect(parser, std::move(result));
 				return make_uniq_base<CatalogEntry, ViewCatalogEntry>(catalog, schema, *view_info);
 			}
 		}

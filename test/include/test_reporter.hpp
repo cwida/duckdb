@@ -33,7 +33,7 @@ struct TestFailureException {
 
 //! Sink for the verdicts the sqllogictest runner produces. The runner reports through this
 //! interface instead of calling a test framework directly, so the same runner can be driven by the
-//! Catch-based unittest binary or in-process (the unittester extension).
+//! Catch-based unittest binary or in-process (the sqllogictest extension).
 class TestReporter {
 public:
 	virtual ~TestReporter() = default;
@@ -64,6 +64,21 @@ public:
 	atomic<idx_t> assertion_count {0};
 	//! Reason passed to the last Skip call.
 	string skip_reason;
+};
+
+//! Installs a reporter for as long as it is in scope, restoring the previous one afterwards (a test
+//! run nested inside another one must not leave the outer driver without its reporter).
+class TestReporterScope {
+public:
+	explicit TestReporterScope(TestReporter &reporter) : previous(TestReporter::Get()) {
+		TestReporter::Set(reporter);
+	}
+	~TestReporterScope() {
+		TestReporter::Set(previous);
+	}
+
+private:
+	TestReporter &previous;
 };
 
 } // namespace duckdb

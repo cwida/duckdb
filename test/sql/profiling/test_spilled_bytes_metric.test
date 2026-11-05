@@ -1,0 +1,49 @@
+# name: test/sql/profiling/test_spilled_bytes_metric.test
+# description: Test the system.total_bytes_spilled profiling metric
+# group: [profiling]
+
+require json
+
+require no_vector_verification
+
+require vector_size 2048
+
+# Force spilling: a small memory limit plus a large sort that exceeds it, with a
+# temporary directory to spill into. A single thread with insertion order not
+# preserved keeps the sort's working set within the limit so it spills to disk
+# rather than failing with an out-of-memory error.
+statement ok
+PRAGMA temp_directory = '{TEST_DIR}/spilled_bytes_tmp';
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET preserve_insertion_order = false;
+
+statement ok
+PRAGMA memory_limit = '100MB';
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/spilled_bytes.json';
+
+statement ok
+SET tracked_metrics = ['system.total_bytes_spilled'];
+
+# Sorting ~20M BIGINTs (~160MB) under a 100MB limit forces the sort to spill.
+# first() reads its input in order, so the optimizer keeps the sort below the aggregate.
+statement ok
+SELECT first(i) FROM (SELECT i FROM range(20000000) t(i) ORDER BY i DESC);
+
+statement ok
+PRAGMA disable_profiling;
+
+# The query spilled to disk, so the cumulative spilled-bytes metric is > 0.
+query I
+SELECT prof.system.total_bytes_spilled > 0
+FROM read_json('{TEST_DIR}/spilled_bytes.json') prof;
+----
+true

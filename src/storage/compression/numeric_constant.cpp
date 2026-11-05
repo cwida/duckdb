@@ -23,23 +23,11 @@ static optional_ptr<const BoundFunctionExpression> TryGetFunctionExpression(cons
 	return expression.Cast<BoundFunctionExpression>();
 }
 
-static bool IsSimpleFilterColumnRef(const Expression &expression) {
-	return expression.GetExpressionType() == ExpressionType::BOUND_REF ||
-	       expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
-}
-
 static bool TryComparisonFiltersNullValues(const BoundFunctionExpression &comparison, bool &filters_nulls,
                                            bool &filters_valid_values) {
-	optional_ptr<const BoundConstantExpression> constant_expr;
-	auto &left = BoundComparisonExpression::Left(comparison);
-	auto &right = BoundComparisonExpression::Right(comparison);
-	auto comparison_type = comparison.GetExpressionType();
-	if (IsSimpleFilterColumnRef(left) && right.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
-		constant_expr = right.Cast<BoundConstantExpression>();
-	} else if (IsSimpleFilterColumnRef(right) && left.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
-		constant_expr = left.Cast<BoundConstantExpression>();
-		comparison_type = FlipComparisonExpression(comparison_type);
-	} else {
+	ExpressionType comparison_type;
+	auto constant_expr = ExpressionFilter::TryGetColumnConstantComparison(comparison, comparison_type);
+	if (!constant_expr) {
 		return false;
 	}
 	if (constant_expr->GetValue().IsNull()) {
@@ -111,7 +99,7 @@ static bool TryExpressionFiltersNullValues(const Expression &expression, bool &f
 
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
 		auto &op = expression.Cast<BoundOperatorExpression>();
-		if (op.GetChildren().size() != 1 || !IsSimpleFilterColumnRef(*op.GetChildren()[0])) {
+		if (op.GetChildren().size() != 1 || !ExpressionFilter::IsSimpleFilterColumnRef(*op.GetChildren()[0])) {
 			return false;
 		}
 		switch (expression.GetExpressionType()) {
@@ -147,14 +135,8 @@ static bool TryExpressionFiltersNullValues(const Expression &expression, bool &f
 		return true;
 	}
 	if (function_name == SelectivityOptionalFilterScalarFun::NAME) {
-		if (!func_expr->BindInfo()) {
-			return false;
-		}
-		auto &data = func_expr->BindInfo()->Cast<SelectivityOptionalFilterFunctionData>();
-		if (!data.child_filter_expr) {
-			return false;
-		}
-		return TryExpressionFiltersNullValues(*data.child_filter_expr, filters_nulls, filters_valid_values);
+		auto optional_child = ExpressionFilter::GetOptionalFilterChild(*func_expr);
+		return optional_child && TryExpressionFiltersNullValues(*optional_child, filters_nulls, filters_valid_values);
 	}
 	if (function_name == PrefixRangeScalarFun::NAME) {
 		if (!func_expr->BindInfo()) {
@@ -205,6 +187,9 @@ template <class T>
 void ConstantFillFunction(ColumnSegment &segment, Vector &result, idx_t start_idx, idx_t count) {
 	const auto &nstats = segment.GetStats();
 
+	if (!NumericStats::HasMin(nstats)) {
+		DataCorruptionException::Throw("Constant segment is missing its constant value");
+	}
 	auto data = FlatVector::GetDataMutable<T>(result);
 	auto constant_value = NumericStats::GetMin<T>(nstats);
 	for (idx_t i = 0; i < count; i++) {
@@ -250,30 +235,26 @@ void ConstantScanFunction(ColumnSegment &segment, ColumnScanState &state, idx_t 
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ConstantFetchRowValidity(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                              idx_t result_idx) {
-	ConstantFillFunctionValidity(segment, result, result_idx, 1);
-}
-
-template <class T>
-void ConstantFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	ConstantFillFunction<T>(segment, result, result_idx, 1);
-}
-
-//===--------------------------------------------------------------------===//
 // Select
 //===--------------------------------------------------------------------===//
 void ConstantSelectValidity(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
-                            const SelectionVector &sel, idx_t sel_count) {
-	ConstantScanFunctionValidity(segment, state, sel_count, result);
+                            const SelectionVector &sel, idx_t sel_count, idx_t result_offset,
+                            ScanVectorType scan_type) {
+	if (scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR) {
+		ConstantScanFunctionValidity(segment, state, sel_count, result);
+		return;
+	}
+	ConstantScanPartialValidity(segment, state, sel_count, result, result_offset);
 }
 
 template <class T>
 void ConstantSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
-                    const SelectionVector &sel, idx_t sel_count) {
-	ConstantScanFunction<T>(segment, state, vector_count, result);
+                    const SelectionVector &sel, idx_t sel_count, idx_t result_offset, ScanVectorType scan_type) {
+	if (scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR) {
+		ConstantScanFunction<T>(segment, state, vector_count, result);
+		return;
+	}
+	ConstantScanPartial<T>(segment, state, sel_count, result, result_offset);
 }
 
 //===--------------------------------------------------------------------===//
@@ -324,19 +305,23 @@ void ConstantFilterValidity(ColumnSegment &segment, ColumnScanState &state, idx_
 //===--------------------------------------------------------------------===//
 CompressionFunction ConstantGetFunctionValidity(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::BIT);
-	return CompressionFunction(CompressionType::COMPRESSION_CONSTANT, data_type, nullptr, nullptr, nullptr, nullptr,
+	CompressionFunction result(CompressionType::COMPRESSION_CONSTANT, data_type, nullptr, nullptr, nullptr, nullptr,
 	                           nullptr, nullptr, ConstantInitScan, ConstantScanFunctionValidity,
-	                           ConstantScanPartialValidity, ConstantFetchRowValidity, UncompressedFunctions::EmptySkip,
-	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-	                           ConstantSelectValidity, ConstantFilterValidity);
+	                           ConstantScanPartialValidity, UncompressedFunctions::EmptySkip, nullptr, nullptr, nullptr,
+	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, ConstantSelectValidity,
+	                           ConstantFilterValidity);
+	result.supports_null_block = true;
+	return result;
 }
 
 template <class T>
 CompressionFunction ConstantGetFunction(PhysicalType data_type) {
-	return CompressionFunction(CompressionType::COMPRESSION_CONSTANT, data_type, nullptr, nullptr, nullptr, nullptr,
+	CompressionFunction result(CompressionType::COMPRESSION_CONSTANT, data_type, nullptr, nullptr, nullptr, nullptr,
 	                           nullptr, nullptr, ConstantInitScan, ConstantScanFunction<T>, ConstantScanPartial<T>,
-	                           ConstantFetchRow<T>, UncompressedFunctions::EmptySkip, nullptr, nullptr, nullptr,
-	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, ConstantSelect<T>);
+	                           UncompressedFunctions::EmptySkip, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                           nullptr, nullptr, nullptr, ConstantSelect<T>);
+	result.supports_null_block = true;
+	return result;
 }
 
 CompressionFunction ConstantFun::GetFunction(PhysicalType data_type) {

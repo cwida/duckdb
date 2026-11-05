@@ -13,10 +13,15 @@ constexpr const char *ScalarFunctionCatalogEntry::Name;
 ScalarFunctionCatalogEntry::ScalarFunctionCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema,
                                                        CreateScalarFunctionInfo &info)
     : FunctionEntry(CatalogType::SCALAR_FUNCTION_ENTRY, catalog, schema, info), functions(info.functions) {
-	functions.ApplyToFunctions([&](ScalarFunction &function) {
-		function.SetCatalogName(catalog.GetAttached().GetName());
-		function.SetSchemaName(schema.name);
-	});
+	for (auto &function : functions.functions) {
+		function = FinalizeFunction(*function);
+	}
+}
+
+shared_ptr<const ScalarFunction> ScalarFunctionCatalogEntry::FinalizeFunction(ScalarFunction function) const {
+	auto result = make_shared_ptr<ScalarFunction>(std::move(function));
+	result->SetQualifiedName(schema.GetQualifiedName(name));
+	return result;
 }
 
 unique_ptr<CatalogEntry> ScalarFunctionCatalogEntry::AlterEntry(CatalogTransaction transaction, AlterInfo &info) {
@@ -32,8 +37,8 @@ unique_ptr<CatalogEntry> ScalarFunctionCatalogEntry::AlterEntry(CatalogTransacti
 
 	ScalarFunctionSet new_set = functions;
 	if (!new_set.MergeFunctionSet(add_overloads.new_overloads->functions, true)) {
-		throw BinderException(
-		    "Failed to add new function overloads to function \"%s\": function overload already exists", name);
+		throw BinderException("Failed to add new function overloads to function %s: function overload already exists",
+		                      name);
 	}
 	CreateScalarFunctionInfo new_info(std::move(new_set));
 	new_info.internal = internal;

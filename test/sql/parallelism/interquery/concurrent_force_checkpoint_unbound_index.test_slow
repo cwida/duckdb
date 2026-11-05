@@ -1,0 +1,64 @@
+# name: test/sql/parallelism/interquery/concurrent_force_checkpoint_unbound_index.test_slow
+# description: Test FORCE CHECKPOINT while a running CHECKPOINT binds an unbound index
+# group: [interquery]
+
+require skip_reload
+
+load {TEST_DIR}/concurrent_force_checkpoint_unbound_index.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+CREATE TABLE t AS SELECT range AS i FROM range(1000)
+
+statement ok
+CREATE INDEX idx ON t(i)
+
+statement ok
+CHECKPOINT
+
+# after the restart the index is loaded lazily and stays unbound until the checkpoint binds it
+restart
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+# put something in the WAL so that the checkpoint has work to do, without touching the index
+statement ok
+CREATE TABLE u AS SELECT 42 AS j
+
+statement ok
+SET debug_checkpoint_sleep_ms=5000
+
+concurrentloop i 0 2
+
+onlyif i=1
+statement ok
+SET max_execution_time=15000
+
+# thread 0 takes the checkpoint lock and sleeps inside the checkpoint before binding the index.
+# If thread 1 got there first, this fails harmlessly instead of exercising the race.
+onlyif i=0
+statement maybe
+CHECKPOINT
+----
+there are other write transactions active
+
+# thread 1 arrives while the first checkpoint is still sleeping
+onlyif i=1
+sleep 1000 millisecond
+
+onlyif i=1
+statement ok
+FORCE CHECKPOINT
+
+endloop
+
+statement ok
+SET debug_checkpoint_sleep_ms=0
+
+query I
+SELECT COUNT(*) FROM t WHERE i = 500
+----
+1

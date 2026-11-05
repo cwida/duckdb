@@ -80,12 +80,6 @@ timestamp_tz_t ICUCalendarAdd::Operation(timestamp_tz_t timestamp, interval_t in
 		--millis;
 	}
 
-	// Make sure the value is still in range
-	date_t d;
-	dtime_t t;
-	auto us = MultiplyOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(millis, Interval::MICROS_PER_MSEC);
-	Timestamp::Convert(timestamp_t(us), d, t);
-
 	// Now use the calendar to add the other parts
 	calendar->SetTime(millis);
 
@@ -133,7 +127,7 @@ timestamp_tz_t ICUCalendarAdd::Operation(interval_t interval, timestamp_tz_t tim
 
 template <>
 timestamp_tz_t ICUCalendarSub::Operation(timestamp_tz_t timestamp, interval_t interval, TZCalendar &calendar) {
-	const interval_t negated {-interval.months, -interval.days, -interval.micros};
+	const auto negated = Interval::Invert(interval);
 	return ICUCalendarAdd::template Operation<timestamp_tz_t, interval_t, timestamp_tz_t>(timestamp, negated, calendar);
 }
 
@@ -263,12 +257,19 @@ struct ICUDateAdd : public ICUDateFunc {
 	static void AddDateAddOperators(const Identifier &name, ExtensionLoader &loader) {
 		//	temporal + interval
 		ScalarFunctionSet set {name};
-		set.AddFunction(GetDateAddFunction<timestamp_tz_t, interval_t, ICUCalendarAdd>(LogicalType::TIMESTAMP_TZ,
-		                                                                               LogicalType::INTERVAL));
-		set.AddFunction(GetDateAddFunction<interval_t, timestamp_tz_t, ICUCalendarAdd>(LogicalType::INTERVAL,
-		                                                                               LogicalType::TIMESTAMP_TZ));
+		auto tstz_interval_fun = GetDateAddFunction<timestamp_tz_t, interval_t, ICUCalendarAdd>(
+		    LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL);
+		tstz_interval_fun.GetSignature().GetParameter(0).SetName("left");
+		tstz_interval_fun.GetSignature().GetParameter(1).SetName("right");
+		set.AddFunction(tstz_interval_fun);
+		auto interval_tstz_fun = GetDateAddFunction<interval_t, timestamp_tz_t, ICUCalendarAdd>(
+		    LogicalType::INTERVAL, LogicalType::TIMESTAMP_TZ);
+		interval_tstz_fun.GetSignature().GetParameter(0).SetName("left");
+		interval_tstz_fun.GetSignature().GetParameter(1).SetName("right");
+		set.AddFunction(interval_tstz_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
@@ -285,23 +286,38 @@ struct ICUDateAdd : public ICUDateFunc {
 	static void AddDateSubOperators(const Identifier &name, ExtensionLoader &loader) {
 		//	temporal - interval
 		ScalarFunctionSet set {name};
-		set.AddFunction(GetDateAddFunction<timestamp_tz_t, interval_t, ICUCalendarSub>(LogicalType::TIMESTAMP_TZ,
-		                                                                               LogicalType::INTERVAL));
+		auto tstz_interval_fun = GetDateAddFunction<timestamp_tz_t, interval_t, ICUCalendarSub>(
+		    LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL);
+		tstz_interval_fun.GetSignature().GetParameter(0).SetName("left");
+		tstz_interval_fun.GetSignature().GetParameter(1).SetName("right");
+		set.AddFunction(tstz_interval_fun);
 
 		//	temporal - temporal
-		set.AddFunction(GetBinaryAgeFunction<timestamp_tz_t, timestamp_tz_t, ICUCalendarSub>(
-		    LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ));
+		auto tstz_tstz_fun = GetBinaryAgeFunction<timestamp_tz_t, timestamp_tz_t, ICUCalendarSub>(
+		    LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ);
+		tstz_tstz_fun.GetSignature().GetParameter(0).SetName("left");
+		tstz_tstz_fun.GetSignature().GetParameter(1).SetName("right");
+		set.AddFunction(tstz_tstz_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 
 	static void AddDateAgeFunctions(const Identifier &name, ExtensionLoader &loader) {
 		//	age(temporal, temporal)
 		ScalarFunctionSet set {name};
-		set.AddFunction(GetBinaryAgeFunction<timestamp_tz_t, timestamp_tz_t, ICUCalendarAge>(
-		    LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ));
-		set.AddFunction(GetUnaryAgeFunction<timestamp_tz_t, ICUCalendarAge>(LogicalType::TIMESTAMP_TZ));
+		auto binary_fun = GetBinaryAgeFunction<timestamp_tz_t, timestamp_tz_t, ICUCalendarAge>(
+		    LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ);
+		binary_fun.GetSignature().GetParameter(0).SetName("timestamp1");
+		binary_fun.GetSignature().GetParameter(1).SetName("timestamp2");
+		binary_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+		set.AddFunction(binary_fun);
+		auto unary_fun = GetUnaryAgeFunction<timestamp_tz_t, ICUCalendarAge>(LogicalType::TIMESTAMP_TZ);
+		unary_fun.GetSignature().GetParameter(0).SetName("timestamp");
+		// the age is taken at the start of the transaction
+		unary_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+		set.AddFunction(unary_fun);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
 		loader.RegisterFunction(set);

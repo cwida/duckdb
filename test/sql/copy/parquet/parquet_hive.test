@@ -197,3 +197,9 @@ query II
 EXPLAIN select a from parquet_scan('{TEMP_DIR}/hive_filters_2/*/*/*.parquet', HIVE_PARTITIONING=1, HIVE_TYPES_AUTOCAST=0) where c::INT > 500 and c::INT < 500;
 ----
 physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+# MAX on a hive column after prune (issue #25629)
+query I
+select max(date) from parquet_scan('{DATA_DIR}/parquet-testing/hive-partitioning/simple/*/*/test.parquet', HIVE_PARTITIONING=1) where date < '2013-01-01';
+----
+2012-01-01

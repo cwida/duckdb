@@ -5,6 +5,7 @@
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
 #include "zstd.h"
+#include "zstd_errors.h"
 
 namespace duckdb {
 namespace datetime {
@@ -101,7 +102,13 @@ static unique_ptr<TZBlock> Decompress() {
 	block->bytes = unique_ptr<uint8_t[]>(new uint8_t[TZ_UNCOMPRESSED_SIZE]);
 	const auto size =
 	    duckdb_zstd::ZSTD_decompress(block->bytes.get(), TZ_UNCOMPRESSED_SIZE, TZ_COMPRESSED, TZ_COMPRESSED_SIZE);
-	if (duckdb_zstd::ZSTD_isError(size) || size != TZ_UNCOMPRESSED_SIZE) {
+	if (duckdb_zstd::ZSTD_isError(size)) {
+		if (duckdb_zstd::ZSTD_getErrorCode(size) == duckdb_zstd::ZSTD_error_memory_allocation) {
+			throw OutOfMemoryException("Could not allocate memory to decompress the time zone data");
+		}
+		throw InternalException("Failed to decompress the time zone data");
+	}
+	if (size != TZ_UNCOMPRESSED_SIZE) {
 		throw InternalException("Failed to decompress the time zone data");
 	}
 
@@ -114,7 +121,7 @@ static unique_ptr<TZBlock> Decompress() {
 	const auto data_offsets = reader.Read<uint32_t>(header->zone_data_count);
 	const auto name_offsets = reader.Read<uint32_t>(header->zone_count);
 	const auto rule_values = reader.Read<int32_t>(header->rule_count * RULE_FIELD_COUNT);
-	const auto windows_entries = reader.Read<uint32_t>(header->windows_zone_count * 3);
+	const auto windows_entries = reader.Read<uint32_t>(static_cast<idx_t>(header->windows_zone_count) * 3);
 	reader.Align(sizeof(uint16_t));
 	const auto data_indexes = reader.Read<uint16_t>(header->zone_count);
 	const auto pool = reinterpret_cast<const char *>(reader.Read<uint8_t>(header->pool_size));

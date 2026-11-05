@@ -19,13 +19,21 @@ bool TableFunctionRef::Equals(const TableRef &other_p) const {
 		return false;
 	}
 	auto &other = other_p.Cast<TableFunctionRef>();
-	return function->Equals(*other.function);
+	return bind_info == other.bind_info && function->Equals(*other.function);
+}
+
+const unique_ptr<ParsedExpression> &TableFunctionRef::SerializableFunction() const {
+	if (bind_info) {
+		throw NotImplementedException("Cannot serialize a table function with process-local bind input");
+	}
+	return function;
 }
 
 unique_ptr<TableRef> TableFunctionRef::Copy() {
 	auto copy = make_uniq<TableFunctionRef>();
 
 	copy->function = function->Copy();
+	copy->bind_info = bind_info;
 	copy->column_name_alias = column_name_alias;
 	copy->with_ordinality = with_ordinality;
 	CopyProperties(*copy);

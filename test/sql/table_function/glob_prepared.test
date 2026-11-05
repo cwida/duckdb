@@ -1,0 +1,22 @@
+# name: test/sql/table_function/glob_prepared.test
+# description: glob re-scans the file system on every execution of a prepared statement
+# group: [table_function]
+
+statement ok
+COPY (SELECT 1 i) TO '{TEST_DIR}/glob_prepared_1.csv';
+
+statement ok
+PREPARE p AS SELECT count(*) FROM glob('{TEST_DIR}/glob_prepared_*.csv');
+
+query I
+EXECUTE p;
+----
+1
+
+statement ok
+COPY (SELECT 1 i) TO '{TEST_DIR}/glob_prepared_2.csv';
+
+query I
+EXECUTE p;
+----
+2

@@ -30,6 +30,8 @@ public:
 	//! Returns the underlying arrow array
 	DUCKDB_API ArrowArray Finalize();
 	idx_t RowCount() const;
+	//! The bytes the appended rows occupy. Valid until Finalize hands the buffers to the array
+	DUCKDB_API idx_t ByteSize() const;
 	static void ReleaseArray(ArrowArray *array);
 	static ArrowArray *FinalizeChild(const LogicalType &type, unique_ptr<ArrowAppendData> append_data_p);
 	static unique_ptr<ArrowAppendData>

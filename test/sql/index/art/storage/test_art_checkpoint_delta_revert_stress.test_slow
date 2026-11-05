@@ -2,7 +2,7 @@
 # description: Stress reverting index appends while checkpoints are active
 # group: [storage]
 
-load __TEST_DIR__/checkpoint_delta_revert_stress.db
+load {TEST_DIR}/checkpoint_delta_revert_stress.db
 
 statement ok
 PRAGMA disable_checkpoint_on_shutdown;
@@ -23,7 +23,7 @@ loop run 0 5
 
 statement ok
 INSERT INTO checkpoint_data
-SELECT ${run} * 1000000 + i, md5(i::VARCHAR)
+SELECT {run} * 1000000 + i, md5(i::VARCHAR)
 FROM range(1000000) t(i);
 
 concurrentloop role 0 3
@@ -34,7 +34,7 @@ BEGIN TRANSACTION;
 
 onlyif role=0
 statement maybe
-INSERT INTO t SELECT ${run} * 10000 + range FROM range(2049);
+INSERT INTO t SELECT {run} * 10000 + range FROM range(2049);
 ----
 
 onlyif role=1
@@ -43,7 +43,7 @@ SELECT sum(hash(i)) FROM range(500000) t(i);
 
 onlyif role=1
 statement maybe
-INSERT INTO t VALUES (${run} * 10000 + 2048);
+INSERT INTO t VALUES ({run} * 10000 + 2048);
 ----
 
 onlyif role=0
@@ -72,10 +72,10 @@ ROLLBACK;
 endloop
 
 statement ok
-INSERT OR IGNORE INTO t VALUES (${run} * 10000);
+INSERT OR IGNORE INTO t VALUES ({run} * 10000);
 
 query I
-SELECT count(*) FROM t WHERE i = ${run} * 10000;
+SELECT count(*) FROM t WHERE i = {run} * 10000;
 ----
 1
 

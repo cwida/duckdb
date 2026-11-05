@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/identifier.hpp"
 
 namespace duckdb {
 class DatabaseInstance;
@@ -25,6 +26,8 @@ public:
 	static vector<SecretType> GetDefaultSecretTypes();
 	//! Get the default secret functions
 	static vector<CreateSecretFunction> GetDefaultSecretFunctions();
+	//! Current sensitive keys for both new and persisted HTTP secrets.
+	static identifier_set_t GetRedactedKeys();
 
 protected:
 	//! HTTP secret CONFIG provider

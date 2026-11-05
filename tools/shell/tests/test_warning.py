@@ -11,7 +11,7 @@ def test_trace(shell, tmp_path):
     test = (
         ShellTest(shell)
         .statement("CALL enable_logging('FileSystem', level = 'trace', storage = 'shell_log_storage');")
-        .statement(f"copy (select 1 as a) to 'temp_file'")
+        .statement(f"copy (select 1 as a) to '{temp_file.as_posix()}'")
     )
     result = test.run()
     result.check_stdout("TRACE:")
@@ -80,7 +80,10 @@ def test_multiple_warnings(shell):
 
 
 def test_changing_logging_settings(shell, tmp_path):
-    test = ShellTest(shell).statement("CALL enable_logging(storage = 'file', storage_config = {'path': 'hello'});")
+    log_dir = tmp_path / 'log_dir'
+    test = ShellTest(shell).statement(
+        f"CALL enable_logging(storage = 'file', storage_config = {{'path': '{log_dir.as_posix()}'}});"
+    )
 
     result = test.run()
     print(result.stderr)

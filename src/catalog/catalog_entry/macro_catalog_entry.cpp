@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 
@@ -15,6 +16,14 @@ MacroCatalogEntry::MacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schem
 	this->dependencies = info.dependencies;
 	this->comment = info.comment;
 	this->tags = info.tags;
+}
+
+unique_ptr<MacroCatalogEntry> MacroCatalogEntry::Create(Catalog &catalog, SchemaCatalogEntry &schema,
+                                                        CreateMacroInfo &info) {
+	if (info.type == CatalogType::TABLE_MACRO_ENTRY) {
+		return make_uniq<TableMacroCatalogEntry>(catalog, schema, info);
+	}
+	return make_uniq<ScalarMacroCatalogEntry>(catalog, schema, info);
 }
 
 ScalarMacroCatalogEntry::ScalarMacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateMacroInfo &info)

@@ -11,6 +11,7 @@ IndexCatalogEntry::IndexCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schem
 	this->temporary = info.temporary;
 	this->dependencies = info.dependencies;
 	this->comment = info.comment;
+	this->tags = info.tags;
 	for (auto &expr : expressions) {
 		D_ASSERT(expr);
 		expressions.push_back(expr->Copy());

@@ -1,0 +1,42 @@
+# name: test/sql/sql_export/plan_reconstruction_coverage.test
+# description: SQL export reconstructs optimized recursive steps and retained function inputs
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I
+WITH RECURSIVE c(x) AS (
+	SELECT 1
+	UNION ALL
+	SELECT count(*)::INTEGER FROM c WHERE false
+)
+SELECT x FROM c LIMIT 4;
+----
+1
+0
+0
+0
+
+query III
+SELECT x,
+	sum(DISTINCT x) FILTER (WHERE x > 1) OVER (),
+	first_value(x ORDER BY x DESC NULLS LAST) OVER ()
+FROM (VALUES (1),(2),(3)) t(x)
+ORDER BY x;
+----
+1	5	3
+2	5	3
+3	5	3
+
+query T
+SELECT list_transform([1,2], lambda x: x + y)
+FROM (VALUES (10)) t(y);
+----
+[11, 12]
+
+query I
+SELECT x
+FROM (VALUES (10)) t(i), LATERAL (VALUES (i)) v(x);
+----
+10

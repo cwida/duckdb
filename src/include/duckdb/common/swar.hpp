@@ -9,7 +9,11 @@
 #pragma once
 
 #include "duckdb/common/bit_utils.hpp"
+#include "duckdb/common/bswap.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 
@@ -58,6 +62,82 @@ struct SwarWord {
 #else
 		return CountZeros<uint64_t>::Trailing(mask) / 8;
 #endif
+	}
+
+	//! Packs the flags of a mask into the low eight bits, byte i (in memory order) to bit i
+	static inline uint64_t PackFlags(uint64_t mask) {
+#if DUCKDB_IS_BIG_ENDIAN
+		mask = BSwap(mask);
+#endif
+		return ((mask >> 7) * PACK_MULTIPLIER) >> 56;
+	}
+
+private:
+	//! Moves the flag of byte i to bit 56 + i
+	static constexpr uint64_t PACK_MULTIPLIER = 0x0102040810204080ULL;
+};
+
+//! Bit masks over blocks of 64 bytes, one bit per byte (bit i is byte i)
+struct SwarBlock {
+	static constexpr idx_t SIZE = 64;
+	static constexpr idx_t WORDS = SIZE / SwarWord::SIZE;
+
+	//! A byte pattern repeated over a word, a byte matches when it equals `value` on the bits set in `mask`
+	struct BytePattern {
+		//! Matches one byte
+		static BytePattern Byte(uint8_t byte) {
+			return BytePattern(byte, 0xff);
+		}
+		//! Matches both bytes, and every byte that agrees with them on the bits where they agree
+		static BytePattern Either(uint8_t a, uint8_t b) {
+			const auto mask = static_cast<uint8_t>(~(a ^ b));
+			return BytePattern(a, mask);
+		}
+		uint64_t value;
+		uint64_t mask;
+
+	private:
+		BytePattern(uint8_t value_p, uint8_t mask_p)
+		    : value(SwarWord::Repeat(value_p & mask_p)), mask(SwarWord::Repeat(mask_p)) {
+		}
+	};
+
+	//! The fewest and the most patterns MaybeAnyMask takes at once
+	static constexpr idx_t MIN_PATTERNS = 2;
+	static constexpr idx_t MAX_PATTERNS = 5;
+
+	//! Mask of the bytes matching any pattern plus possibly bytes right above a match, no match is ever missed
+	static inline uint64_t MaybeAnyMask(const_data_ptr_t block, const vector<BytePattern> &patterns) {
+		//! We have between 2 (delimiter/newline) and 5 (delimiter,newline,comment,quote,escape) patterns
+		switch (patterns.size()) {
+		case 2:
+			return MaybeAnyMaskUnrolled<2>(block, patterns);
+		case 3:
+			return MaybeAnyMaskUnrolled<3>(block, patterns);
+		case 4:
+			return MaybeAnyMaskUnrolled<4>(block, patterns);
+		case 5:
+			return MaybeAnyMaskUnrolled<5>(block, patterns);
+		default:
+			throw InternalException("SwarBlock::MaybeAnyMask takes %d to %d patterns, got %d", MIN_PATTERNS,
+			                        MAX_PATTERNS, patterns.size());
+		}
+	}
+
+private:
+	//! MaybeAnyMask with the pattern loop unrolled for a count known at compile time
+	template <idx_t PATTERN_COUNT>
+	static inline uint64_t MaybeAnyMaskUnrolled(const_data_ptr_t block, const vector<BytePattern> &patterns) {
+		uint64_t mask = 0;
+		for (idx_t i = 0; i < WORDS; i++) {
+			const auto word = Load<uint64_t>(block + i * SwarWord::SIZE);
+			uint64_t flags = 0;
+			for (idx_t p = 0; p < PATTERN_COUNT; p++) {
+				flags |= SwarWord::MaybeZeroBytes((word & patterns.get(p).mask) ^ patterns.get(p).value);
+			}
+			mask |= SwarWord::PackFlags(flags) << (i * SwarWord::SIZE);
+		}
+		return mask;
 	}
 };
 

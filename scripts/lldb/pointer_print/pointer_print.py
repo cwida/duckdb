@@ -37,7 +37,6 @@ SMART_PTR_TYPES = (
 SMART_PTR_REGEX = r"^duckdb::(" + "|".join(SMART_PTR_TYPES) + r")<.+>$"
 PRINT_COMMAND_NAME = "duckdb-p"
 _LAST_ROOT_EXPRESSION = ""
-_LAST_ROOT_IS_SMART_PTR = False
 
 
 def __lldb_init_module(debugger, _internal_dict):
@@ -61,11 +60,10 @@ def __lldb_init_module(debugger, _internal_dict):
 
 
 def duckdb_print_command(debugger, command, result, _internal_dict):
-    global _LAST_ROOT_EXPRESSION, _LAST_ROOT_IS_SMART_PTR
+    global _LAST_ROOT_EXPRESSION
     expr_text = _extract_expression_text(command)
     _LAST_ROOT_EXPRESSION = _normalize_expression_text(expr_text)
-    _LAST_ROOT_IS_SMART_PTR = _expression_is_supported_smart_ptr(debugger, expr_text)
-    debugger.HandleCommand(_build_expression_command(command))
+    debugger.GetCommandInterpreter().HandleCommand(_build_expression_command(command), result)
 
 
 def _build_expression_command(command):
@@ -180,8 +178,9 @@ def _should_expand_children(value):
 
     if path == _LAST_ROOT_EXPRESSION:
         return True
-    if _LAST_ROOT_IS_SMART_PTR and path.startswith("$") and _is_expression_result(value):
-        return True
+    if path.startswith("$") and _is_expression_result(value):
+        type_name = value.GetType().GetUnqualifiedType().GetName() or ""
+        return _is_supported_smart_ptr_type(type_name)
     return False
 
 
@@ -189,35 +188,6 @@ def _is_expression_result(value):
     if value is None or not value.IsValid():
         return False
     return value.GetValueType() == getattr(lldb, "eValueTypeConstResult", 7)
-
-
-def _expression_is_supported_smart_ptr(debugger, expression_text):
-    if debugger is None or lldb is None:
-        return False
-
-    target = debugger.GetSelectedTarget()
-    if not target or not target.IsValid():
-        return False
-    process = target.GetProcess()
-    if not process or not process.IsValid():
-        return False
-    thread = process.GetSelectedThread()
-    if not thread or not thread.IsValid():
-        return False
-    frame = thread.GetSelectedFrame()
-    if not frame or not frame.IsValid():
-        return False
-
-    value = frame.EvaluateExpression(expression_text)
-    if value is None or not value.IsValid():
-        return False
-
-    type_obj = value.GetType()
-    if type_obj is None or not type_obj.IsValid():
-        return False
-
-    type_name = type_obj.GetUnqualifiedType().GetName() or ""
-    return _is_supported_smart_ptr_type(type_name)
 
 
 def _dereference_pointer(pointer_value):

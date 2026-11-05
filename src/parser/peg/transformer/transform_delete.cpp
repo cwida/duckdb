@@ -29,12 +29,16 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformDeleteStatement(
 
 unique_ptr<BaseTableRef> PEGTransformerFactory::TransformTargetOptAlias(PEGTransformer &transformer,
                                                                         unique_ptr<BaseTableRef> base_table_name,
-                                                                        const bool &has_result,
-                                                                        const optional<Identifier> &col_id) {
-	if (col_id && !col_id->empty()) {
-		base_table_name->alias = Identifier(*col_id);
+                                                                        const optional<Identifier> &target_alias) {
+	if (target_alias && !target_alias->empty()) {
+		base_table_name->alias = Identifier(*target_alias);
 	}
 	return base_table_name;
+}
+
+Identifier PEGTransformerFactory::TransformTargetAlias(PEGTransformer &transformer, const bool &has_result,
+                                                       const Identifier &col_id) {
+	return col_id;
 }
 
 vector<unique_ptr<TableRef>> PEGTransformerFactory::TransformDeleteUsingClause(PEGTransformer &transformer,
@@ -44,10 +48,24 @@ vector<unique_ptr<TableRef>> PEGTransformerFactory::TransformDeleteUsingClause(P
 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformTruncateStatement(PEGTransformer &transformer,
                                                                            const bool &has_result,
-                                                                           unique_ptr<BaseTableRef> base_table_name) {
+                                                                           unique_ptr<BaseTableRef> base_table_name,
+                                                                           optional<bool> truncate_options) {
+	if (truncate_options && *truncate_options) {
+		throw NotImplementedException("TRUNCATE ... CASCADE is not implemented");
+	}
 	auto result = make_uniq<DeleteStatement>();
 	result->node->table = std::move(base_table_name);
 	return std::move(result);
+}
+
+bool PEGTransformerFactory::TransformTruncateAliasOptions(PEGTransformer &transformer, const Identifier &target_alias,
+                                                          optional<bool> truncate_drop_behavior) {
+	// the alias is ignored, the result is whether CASCADE was given
+	return truncate_drop_behavior && *truncate_drop_behavior;
+}
+
+bool PEGTransformerFactory::TransformTruncateDropBehavior(PEGTransformer &transformer, const bool &drop_behavior) {
+	return drop_behavior;
 }
 
 } // namespace duckdb

@@ -15,7 +15,8 @@ static void CreateDataChunk(Allocator &allocator, const duckdb_v2_logical_type_h
 		if (!types[i]) {
 			throw InvalidInputException("null logical type at index %llu", i);
 		}
-		const auto &ltype = *Convert(types[i]);
+		auto ltype_ref = Convert(types[i]);
+		const auto &ltype = *ltype_ref;
 		// ANY is a signature wildcard with no physical layout; a chunk allocates
 		// storage, so reject it (an ANY vector throws InternalException).
 		if (TypeVisitor::Contains(ltype, LogicalTypeId::ANY)) {
@@ -28,12 +29,12 @@ static void CreateDataChunk(Allocator &allocator, const duckdb_v2_logical_type_h
 	*out_chunk = Convert(chunk.release());
 }
 
-static void CopyDataChunk(ClientContext &context, duckdb_v2_data_chunk_handle chunk,
+static void CopyDataChunk(DatabaseInstance &db, duckdb_v2_data_chunk_handle chunk,
                           duckdb_v2_data_chunk_handle *out_chunk) {
 	*out_chunk = nullptr;
 	auto &source = *Convert(chunk);
 	auto copy = make_uniq<CV2DataChunk>();
-	copy->Initialize(Allocator::Get(context), source.GetTypes(), MaxValue<idx_t>(source.size(), STANDARD_VECTOR_SIZE));
+	copy->Initialize(Allocator::Get(db), source.GetTypes(), MaxValue<idx_t>(source.size(), STANDARD_VECTOR_SIZE));
 	source.Copy(*copy);
 	copy->SetCardinalityUnsafe(source.size());
 	*out_chunk = Convert(copy.release());
@@ -45,55 +46,28 @@ static void CopyDataChunk(ClientContext &context, duckdb_v2_data_chunk_handle ch
 using namespace duckdb::capiv2;
 
 // TODO: this should be removed.
-DUCKDB_V2_ERROR duckdb_v2_data_chunk_create(const duckdb_v2_logical_type_handle *types, idx_t column_count,
+DUCKDB_V2_ERROR duckdb_v2_data_chunk_create(duckdb_v2_factory_handle factory,
+                                            const duckdb_v2_logical_type_handle *types, idx_t column_count,
                                             duckdb_v2_data_chunk_handle *out_chunk, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(types);
-	DUCKDB_CHECK_ARG(out_chunk);
-	return WithErrorHandler(
-	    err, [&]() { CreateDataChunk(duckdb::Allocator::DefaultAllocator(), types, column_count, out_chunk); });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_data_chunk_create_with_connection(duckdb_v2_connection_handle conn,
-                                                            const duckdb_v2_logical_type_handle *types,
-                                                            idx_t column_count, duckdb_v2_data_chunk_handle *out_chunk,
-                                                            duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(conn);
+	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(types);
 	DUCKDB_CHECK_ARG(out_chunk);
 	return WithErrorHandler(err, [&]() {
-		CreateDataChunk(duckdb::Allocator::Get(*Convert(conn)->context), types, column_count, out_chunk);
+		CreateDataChunk(duckdb::Allocator::Get(Convert(factory)->GetDatabase()), types, column_count, out_chunk);
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_data_chunk_create_with_context(duckdb_v2_context_handle context,
-                                                         const duckdb_v2_logical_type_handle *types, idx_t column_count,
-                                                         duckdb_v2_data_chunk_handle *out_chunk,
-                                                         duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(context);
-	DUCKDB_CHECK_ARG(types);
-	DUCKDB_CHECK_ARG(out_chunk);
-	return WithErrorHandler(
-	    err, [&]() { CreateDataChunk(duckdb::Allocator::Get(*Convert(context)), types, column_count, out_chunk); });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_data_chunk_copy_with_connection(duckdb_v2_connection_handle conn,
-                                                          duckdb_v2_data_chunk_handle chunk,
-                                                          duckdb_v2_data_chunk_handle *out_chunk,
-                                                          duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(conn);
+DUCKDB_V2_ERROR duckdb_v2_data_chunk_copy(duckdb_v2_factory_handle factory, duckdb_v2_data_chunk_handle chunk,
+                                          duckdb_v2_data_chunk_handle *out_chunk, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(chunk);
 	DUCKDB_CHECK_ARG(out_chunk);
-	return WithErrorHandler(err, [&]() { CopyDataChunk(*Convert(conn)->context, chunk, out_chunk); });
+	return WithErrorHandler(err, [&]() { CopyDataChunk(Convert(factory)->GetDatabase(), chunk, out_chunk); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_data_chunk_copy_with_context(duckdb_v2_context_handle context,
-                                                       duckdb_v2_data_chunk_handle chunk,
-                                                       duckdb_v2_data_chunk_handle *out_chunk,
-                                                       duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(context);
+DUCKDB_V2_ERROR duckdb_v2_data_chunk_clear(duckdb_v2_data_chunk_handle chunk, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(chunk);
-	DUCKDB_CHECK_ARG(out_chunk);
-	return WithErrorHandler(err, [&]() { CopyDataChunk(*Convert(context), chunk, out_chunk); });
+	return WithErrorHandler(err, [&]() { Convert(chunk)->Reset(); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_data_chunk_destroy(duckdb_v2_data_chunk_handle *chunk) {
@@ -113,6 +87,13 @@ DUCKDB_V2_ERROR duckdb_v2_data_chunk_get_size(duckdb_v2_data_chunk_handle chunk,
 	DUCKDB_CHECK_ARG(chunk);
 	DUCKDB_CHECK_ARG(out_size);
 	return WithErrorHandler(err, [&]() { *out_size = Convert(chunk)->size(); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_data_chunk_get_capacity(duckdb_v2_data_chunk_handle chunk, idx_t *out_capacity,
+                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(chunk);
+	DUCKDB_CHECK_ARG(out_capacity);
+	return WithErrorHandler(err, [&]() { *out_capacity = Convert(chunk)->GetCapacity(); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_data_chunk_get_vector_count(duckdb_v2_data_chunk_handle chunk, idx_t *out_count,

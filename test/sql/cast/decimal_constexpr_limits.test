@@ -1,0 +1,33 @@
+# name: test/sql/cast/decimal_constexpr_limits.test
+# description: Decimal string parsing at the narrow and wide integer limits
+# group: [cast]
+
+foreach width 18 19 28 38
+
+foreach sign + -
+
+query II
+SELECT CAST('{sign}' || repeat('9', {width}) AS DECIMAL({width},0))::VARCHAR =
+           CASE WHEN '{sign}' = '-' THEN '-' ELSE '' END || repeat('9', {width}),
+       TRY_CAST('{sign}' || '1' || repeat('0', {width}) AS DECIMAL({width},0)) IS NULL;
+----
+true	true
+
+# Leading zeros and an exponent preserve the value.
+query I
+SELECT CAST('{sign}00012345.6789012345e1' AS DECIMAL({width},10)) =
+       CAST('{sign}123456.7890123450' AS DECIMAL({width},10));
+----
+true
+
+# Rounding at the limit can overflow the logical width.
+query II
+SELECT TRY_CAST('{sign}' || repeat('9', {width}) || '.5' AS DECIMAL({width},0)) IS NULL,
+       CAST('{sign}' || repeat('9', {width}) || '.4' AS DECIMAL({width},0)) =
+           CAST('{sign}' || repeat('9', {width}) AS DECIMAL({width},0));
+----
+true	true
+
+endloop
+
+endloop

@@ -1,0 +1,20 @@
+# name: test/sql/types/nested/nested_constant_comparison.test
+# description: Comparisons between constant nested values produce constant results
+# group: [nested]
+
+query IIII
+SELECT [1] IN ([1]), {'a': 1} IN ({'a': 1}), MAP {1: 2} IN (MAP {1: 2}), [1, 2]::INT[2] IN ([1, 2]::INT[2])
+----
+true	true	true	true
+
+query III
+SELECT [1] = [2], [NULL::INT] = [1], NULL::INT[] = [1]
+----
+false	false	NULL
+
+query I
+SELECT l = [1] FROM (VALUES ([1]), ([2]), (NULL)) t(l)
+----
+true
+false
+NULL

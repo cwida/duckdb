@@ -1,4 +1,5 @@
 #include "duckdb/parser/peg/ast/macro_parameter.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/function/table_macro_function.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
@@ -40,10 +41,15 @@ bool PEGTransformerFactory::TransformFunctionKeyword(PEGTransformer &transformer
 	return false;
 }
 
-unique_ptr<MacroFunction>
-PEGTransformerFactory::TransformMacroDefinition(PEGTransformer &transformer,
-                                                optional<vector<MacroParameter>> macro_parameters,
-                                                unique_ptr<MacroFunction> macro_definition_body) {
+unique_ptr<MacroFunction> PEGTransformerFactory::TransformMacroDefinition(
+    PEGTransformer &transformer, optional<vector<MacroParameter>> macro_parameters,
+    const optional<LogicalType> &returns_type, unique_ptr<MacroFunction> macro_definition_body) {
+	if (returns_type) {
+		if (macro_definition_body->type == MacroType::TABLE_MACRO) {
+			throw ParserException("RETURNS types are not supported for table macros");
+		}
+		macro_definition_body->return_type = *returns_type;
+	}
 	if (!macro_parameters) {
 		return macro_definition_body;
 	}

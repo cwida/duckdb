@@ -1,0 +1,33 @@
+# name: test/sql/function/array/array_size_mismatch_argument.test
+# description: Function arguments with ARRAY types of different sizes are cast
+# group: [array]
+
+statement error
+SELECT list_concat([[1,2,3]::INT[3]], [[5]::INT[1]]);
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT list_append([[1]::INT[1]], [9,8]::INT[2]);
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+SELECT greatest([5,9]::INT[2], [1,2,3]::INT[3]);
+----
+<REGEX>:.*Conversion Error.*
+
+query I
+SELECT list_concat([[1,2]::INT[2]], [[5,6]::INT[2]]);
+----
+[[1, 2], [5, 6]]
+
+statement error
+UNPIVOT (SELECT [[1,2],[7,8]]::INT[2][] a, [[3,4,5]]::INT[3][] b) ON a, b INTO NAME n VALUE v;
+----
+<REGEX>:.*Conversion Error.*
+
+statement error
+UNPIVOT (SELECT [1,2]::INT[2] a, [3,4,5]::INT[3] b) ON a, b INTO NAME n VALUE v;
+----
+<REGEX>:.*Conversion Error.*

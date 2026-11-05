@@ -214,3 +214,56 @@ WHERE class = 'PhysicalRecursiveCTE' AND event = 'EpochSummary';
 
 statement ok
 RESET disabled_optimizers;
+
+# Four row groups provide parallel build work while the recursive frontier stays at one row.
+statement ok
+CREATE TABLE parallel_build_edges AS
+SELECT i AS src, i + 1 AS dst FROM range(491520) t(i);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+query III
+WITH RECURSIVE walk(node, depth) AS (
+	SELECT 0::BIGINT, 0
+	UNION ALL
+	SELECT e.dst, w.depth + 1
+	FROM walk w
+	JOIN parallel_build_edges e ON e.src = w.node
+	WHERE w.depth < 2
+)
+SELECT count(*), max(depth), sum(node) FROM walk;
+----
+3	2	3
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics'
+  AND parameters['CTE Name'] = 'walk';
+----
+1
+
+query II
+SELECT info.workers_max::UBIGINT, info.max_pipeline_workers::UBIGINT = {threads}
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'EpochSummary'
+  AND parameters['CTE Name'] = 'walk';
+----
+1	1
+
+endloop
+
+statement ok
+RESET threads;

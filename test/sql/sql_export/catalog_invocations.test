@@ -1,0 +1,83 @@
+# name: test/sql/sql_export/catalog_invocations.test
+# description: SQL export preserves qualified catalog scans and version source invocations
+# group: [sql_export]
+
+statement ok
+ATTACH ':memory:' AS attached;
+
+statement ok
+CREATE SCHEMA attached.outer_schema;
+
+statement ok
+CREATE SCHEMA attached.outer_schema."inner.schema";
+
+statement ok
+CREATE TABLE attached.outer_schema."inner.schema".scan_rows(i INTEGER, rowid VARCHAR,g INTEGER GENERATED ALWAYS AS (i+1));
+
+statement ok
+INSERT INTO attached.outer_schema."inner.schema".scan_rows VALUES (1,'one'),(2,NULL);
+
+statement ok
+CREATE TEMP TABLE scan_rows(i INTEGER);
+
+statement ok
+INSERT INTO scan_rows VALUES (99);
+
+query ITI rowsort
+SELECT * FROM attached.outer_schema."inner.schema".scan_rows;
+----
+1	one	2
+2	NULL	3
+
+query III rowsort
+SELECT q.x,q.z,q.x FROM attached.outer_schema."inner.schema".scan_rows q(x,y,z) WHERE x>=1;
+----
+1	2	1
+2	3	2
+
+query I rowsort
+SELECT count(*) FROM attached.outer_schema."inner.schema".scan_rows WHERE i=1;
+----
+1
+
+query I rowsort
+SELECT * FROM temp.main.scan_rows;
+----
+99
+
+# Compare complete build-dependent rows with native calls from the same database.
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTT nosort version_all
+SELECT * FROM pragma_version();
+
+endloop
+
+reset label version_all
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TT nosort version_fields
+SELECT source_id,codename FROM pragma_version();
+
+endloop
+
+reset label version_fields
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort platform
+SELECT platform FROM pragma_platform();
+
+endloop
+
+reset label platform

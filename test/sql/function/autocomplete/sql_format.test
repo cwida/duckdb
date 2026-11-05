@@ -4,6 +4,93 @@
 
 require autocomplete
 
+# Parameter names retain their spelling, including keyword names and numeric positions.
+query I
+SELECT duckdb_format_sql('select $customer, $MiXeD, $select, $year, $1') = $$SELECT $customer, $MiXeD, $select, $year, $1$$
+----
+true
+
+query I
+SELECT duckdb_format_sql('SELECT $customer, $MiXeD, $SELECT, $YEAR, $1', MAP {'keyword_case': 'lower'}) = $$select $customer, $MiXeD, $SELECT, $YEAR, $1$$
+----
+true
+
+# A parameter at the beginning of a multiline clause must remain a single token.
+query I
+SELECT duckdb_format_sql('select $select from t where id=$1', MAP {'inline_threshold': '0'}) = $$SELECT
+    $select
+FROM
+    t
+WHERE
+    id = $1$$
+----
+true
+
+# Dollar signs inside string literals are not parameters.
+query I
+SELECT duckdb_format_sql('select ''$customer, $select'', $1') = $$SELECT '$customer, $select', $1$$
+----
+true
+
+# Preserve mode leaves both the SQL keyword and parameter spelling unchanged.
+query I
+SELECT duckdb_format_sql('Select $customer, $MiXeD, $SELECT, $YEAR, $1', MAP {'keyword_case': 'preserve'}) = $$Select $customer, $MiXeD, $SELECT, $YEAR, $1$$
+----
+true
+
+# Register the parameter in the outer query before binding the formatted SQL.
+foreach keyword_case upper lower preserve
+
+foreach parameter customer MiXeD select year 1
+
+statement ok
+PREPARE formatted_parameter AS
+SELECT $"{parameter}"::INTEGER AS supplied, *
+FROM query(duckdb_format_sql('SELECT $' || '{parameter}' || '::INTEGER AS value', MAP {'keyword_case': '{keyword_case}'}));
+
+query II
+EXECUTE formatted_parameter("{parameter}" := 42);
+----
+42	42
+
+endloop
+
+endloop
+
+# Later CASE expansion must not interpret parameter names as SQL keywords.
+# Cover the default line threshold and a smaller threshold.
+foreach threshold 100 20
+
+foreach parameter when else end case
+
+query II
+SELECT contains(formatted, '$' || '{parameter}'), starts_with(formatted, 'SELECT CASE' || chr(10))
+FROM (SELECT duckdb_format_sql(
+    'SELECT CASE WHEN $' || '{parameter}' || ' THEN repeat(''x'', 120) ELSE repeat(''y'', 120) END AS very_long_result_column_alias_0123456789',
+    MAP {'inline_threshold': '{threshold}'}) AS formatted);
+----
+true	true
+
+statement ok
+PREPARE formatted_case AS
+SELECT $"{parameter}" AS supplied, * FROM query(duckdb_format_sql(
+    'SELECT CASE WHEN $' || '{parameter}' || ' THEN repeat(''x'', 120) ELSE repeat(''y'', 120) END AS very_long_result_column_alias_0123456789',
+    MAP {'inline_threshold': '{threshold}'}));
+
+query IT
+EXECUTE formatted_case("{parameter}" := true);
+----
+true	xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+query IT
+EXECUTE formatted_case("{parameter}" := false);
+----
+false	yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+
+endloop
+
+endloop
+
 # ── Basic SELECT with WHERE / GROUP BY / ORDER BY / LIMIT ─────────────────────
 # Default config inlines short clauses (inline_threshold=60).
 query I

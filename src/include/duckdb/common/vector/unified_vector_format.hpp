@@ -40,11 +40,11 @@ struct UnifiedVectorFormat {
 		D_ASSERT(StorageTypeCompatible<T>(physical_type));
 #else
 		if (!StorageTypeCompatible<T>(physical_type)) {
-			throw InternalException("Expected unified vector format of type %s, but found type %s", GetTypeId<T>(),
-			                        physical_type);
+			ThrowVectorTypeMismatch(GetTypeId<T>());
 		}
 #endif
 	}
+	[[noreturn]] DUCKDB_API void ThrowVectorTypeMismatch(PhysicalType expected) const;
 
 	template <class T>
 	static inline const T *GetDataUnsafe(const UnifiedVectorFormat &format) {

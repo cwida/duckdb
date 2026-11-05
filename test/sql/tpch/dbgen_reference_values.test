@@ -1,0 +1,46 @@
+# name: test/sql/tpch/dbgen_reference_values.test
+# description: dbgen output must match the reference TPC-H dbgen byte for byte (text pool and address generation)
+# group: [tpch]
+
+require tpch
+
+statement ok
+CALL dbgen(sf=0.01);
+
+query IIII
+SELECT c_custkey,
+       c_address = 'IVhzIApeRb ot,c,E',
+       c_comment = 'to the even, regular platelets. regular, ironic epitaphs nag e',
+       c_comment = 'l accounts. blithely ironic theodolites integrate boldly: caref'
+FROM customer WHERE c_custkey <= 2 ORDER BY c_custkey;
+----
+1	true	true	false
+2	false	false	true
+
+query III
+SELECT s_suppkey,
+       s_address = ' N kD4on9OM Ipw3,gf0JBoQDd7tgrzrddZ',
+       s_comment = 'each slyly above the careful'
+FROM supplier WHERE s_suppkey = 1;
+----
+1	true	true
+
+query II
+SELECT o_orderkey, o_comment = 'nstructions sleep furiously among '
+FROM orders WHERE o_orderkey = 1;
+----
+1	true
+
+# Q13 depends on o_comment and matches the reference generator
+query II
+SELECT c_count, custdist FROM (
+    SELECT c_count, count(*) AS custdist FROM (
+        SELECT c_custkey, count(o_orderkey) AS c_count
+        FROM customer LEFT OUTER JOIN orders ON c_custkey = o_custkey AND o_comment NOT LIKE '%special%requests%'
+        GROUP BY c_custkey) c_orders
+    GROUP BY c_count)
+ORDER BY custdist DESC, c_count DESC LIMIT 3;
+----
+0	500
+11	68
+10	64

@@ -1,12 +1,33 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/default_expression.hpp"
 
 namespace duckdb {
 
-// ResetStatement <- 'RESET' SetVariableOrSetting
+static SetScope GetSettingScope(const optional<SetScope> &setting_scope) {
+	return setting_scope ? *setting_scope : SetScope::AUTOMATIC;
+}
+
+// ResetStatement <- 'RESET' ResetTarget
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformResetStatement(PEGTransformer &transformer,
-                                                                        const SettingInfo &set_variable_or_setting) {
+                                                                        unique_ptr<SQLStatement> reset_target) {
+	return reset_target;
+}
+
+// ResetTimeZone <- SettingScope? 'TIME' 'ZONE'
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformResetTimeZone(PEGTransformer &transformer,
+                                                                       const optional<SetScope> &setting_scope) {
+	if (setting_scope && *setting_scope == SetScope::LOCAL) {
+		throw NotImplementedException("RESET LOCAL is not implemented.");
+	}
+	return make_uniq<ResetVariableStatement>("timezone", GetSettingScope(setting_scope));
+}
+
+// ResetVariableOrSetting <- SetVariableOrSetting
+unique_ptr<SQLStatement>
+PEGTransformerFactory::TransformResetVariableOrSetting(PEGTransformer &transformer,
+                                                       const SettingInfo &set_variable_or_setting) {
 	if (set_variable_or_setting.scope == SetScope::LOCAL) {
 		throw NotImplementedException("RESET LOCAL is not implemented.");
 	}
@@ -32,18 +53,29 @@ SettingInfo PEGTransformerFactory::TransformSetSetting(PEGTransformer &transform
 	return result;
 }
 
-// SetStatement <- 'SET' SetAssignmentOrTimeZone
+// SetKeywordStatement <- 'SET' SetAssignmentOrTimeZone
 unique_ptr<SQLStatement>
-PEGTransformerFactory::TransformSetStatement(PEGTransformer &transformer,
-                                             unique_ptr<SetStatement> set_assignment_or_time_zone) {
+PEGTransformerFactory::TransformSetKeywordStatement(PEGTransformer &transformer,
+                                                    unique_ptr<SetStatement> set_assignment_or_time_zone) {
 	return std::move(set_assignment_or_time_zone);
 }
 
-// SetSchema <- 'SCHEMA' StringLiteral
+// VariableAssignment <- '$' Identifier ':=' Expression
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformVariableAssignment(PEGTransformer &transformer,
+                                                                            const Identifier &identifier,
+                                                                            unique_ptr<ParsedExpression> expression) {
+	return make_uniq<SetVariableStatement>(identifier, std::move(expression), SetScope::VARIABLE);
+}
+
+// SetSchema <- SettingScope? 'SCHEMA' StringLiteral
 unique_ptr<SetStatement> PEGTransformerFactory::TransformSetSchema(PEGTransformer &transformer,
+                                                                   const optional<SetScope> &setting_scope,
                                                                    const string &string_literal) {
-	auto value = make_uniq<ConstantExpression>(Value(string_literal));
-	return make_uniq<SetVariableStatement>("schema", std::move(value), SetScope::AUTOMATIC);
+	if (setting_scope && *setting_scope == SetScope::LOCAL) {
+		throw NotImplementedException("SET LOCAL is not implemented.");
+	}
+	auto value = ConstantExpression::String(string_literal);
+	return make_uniq<SetVariableStatement>("schema", std::move(value), GetSettingScope(setting_scope));
 }
 
 // ZoneLocal <- 'LOCAL'
@@ -59,22 +91,27 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformZoneDefault(PEGTran
 // ZoneStringLiteral <- StringLiteral
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformZoneStringLiteral(PEGTransformer &transformer,
                                                                                const string &string_literal) {
-	return make_uniq<ConstantExpression>(Value(string_literal));
+	return ConstantExpression::String(string_literal);
 }
 
 // ZoneIdentifier <- Identifier
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformZoneIdentifier(PEGTransformer &transformer,
                                                                             const Identifier &identifier) {
-	return make_uniq<ConstantExpression>(Value(identifier));
+	return ConstantExpression::String(identifier.GetIdentifierName());
 }
 
-// SetTimeZone <- 'TIME' 'ZONE' ZoneValue
+// SetTimeZone <- SettingScope? 'TIME' 'ZONE' ZoneValue
 unique_ptr<SetStatement> PEGTransformerFactory::TransformSetTimeZone(PEGTransformer &transformer,
+                                                                     const optional<SetScope> &setting_scope,
                                                                      unique_ptr<ParsedExpression> zone_value) {
-	if (zone_value->GetExpressionClass() == ExpressionClass::DEFAULT) {
-		return make_uniq<ResetVariableStatement>("timezone", SetScope::AUTOMATIC);
+	if (setting_scope && *setting_scope == SetScope::LOCAL) {
+		throw NotImplementedException("SET LOCAL is not implemented.");
 	}
-	return make_uniq<SetVariableStatement>("timezone", std::move(zone_value), SetScope::AUTOMATIC);
+	auto scope = GetSettingScope(setting_scope);
+	if (zone_value->GetExpressionClass() == ExpressionClass::DEFAULT) {
+		return make_uniq<ResetVariableStatement>("timezone", scope);
+	}
+	return make_uniq<SetVariableStatement>("timezone", std::move(zone_value), scope);
 }
 
 // SetVariable <- VariableScope Identifier
@@ -101,7 +138,11 @@ PEGTransformerFactory::TransformStandardAssignment(PEGTransformer &transformer,
 	if (value->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 		// SET value cannot be a column reference
 		auto &col_ref = value->Cast<ColumnRefExpression>();
-		value = make_uniq<ConstantExpression>(col_ref.GetColumnName());
+		if (col_ref.IsQualified()) {
+			value = ConstantExpression::String(col_ref.ToString());
+		} else {
+			value = ConstantExpression::String(col_ref.GetColumnName().GetIdentifierName());
+		}
 	} else if (value->GetExpressionClass() == ExpressionClass::DEFAULT) {
 		return make_uniq<ResetVariableStatement>(set_variable_or_setting.name, set_variable_or_setting.scope);
 	}
@@ -140,14 +181,14 @@ SetScope PEGTransformerFactory::TransformGlobalScope(PEGTransformer &transformer
 unique_ptr<ParsedExpression>
 PEGTransformerFactory::TransformZoneIntervalWithInterval(PEGTransformer &transformer, const string &string_literal,
                                                          const optional<DatePartSpecifier> &interval) {
-	auto expr = make_uniq<ConstantExpression>(Value(string_literal));
+	auto expr = ConstantExpression::String(string_literal);
 	return make_uniq<CastExpression>(LogicalType::INTERVAL, std::move(expr));
 }
 
 // ZoneIntervalWithPrecision <- 'INTERVAL' Parens(NumberLiteral) StringLiteral
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformZoneIntervalWithPrecision(
     PEGTransformer &transformer, unique_ptr<ParsedExpression> number_literal, const string &string_literal) {
-	auto expr = make_uniq<ConstantExpression>(Value(string_literal));
+	auto expr = ConstantExpression::String(string_literal);
 	return make_uniq<CastExpression>(LogicalType::INTERVAL, std::move(expr));
 }
 

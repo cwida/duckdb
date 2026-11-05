@@ -50,8 +50,16 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 
 	// No non-NULL elements: never contains any value.
 	if (non_null_elements.empty()) {
+		if (ListValue::GetChildren(list_val).empty()) {
+			// An empty list never contains anything, not even NULL - but keep volatile/throwing probes.
+			if (probe_arg->IsVolatile() || probe_arg->CanThrow()) {
+				return nullptr;
+			}
+			changes_made = true;
+			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
+		}
 		changes_made = true;
-		return ExpressionRewriter::ConstantOrNull(probe_arg->Copy(), Value::BOOLEAN(false));
+		return ExpressionRewriter::ConstantOrNull(GetContext(), probe_arg->Copy(), Value::BOOLEAN(false));
 	}
 
 	// Fully constant probe: let constant folding handle it.

@@ -1,0 +1,183 @@
+# name: test/sql/sql_export/pivot_list_results.test
+# description: List PIVOT results, errors and list ordering settings
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+SET threads=1;
+
+statement ok
+SET pivot_filter_threshold=0;
+
+foreach threshold 0 3
+
+statement ok
+SET pivot_filter_threshold={threshold};
+
+query TTTTTTT
+SELECT * FROM (VALUES ('g','a',10),('g','a',NULL),('g','b',20),('h','a',NULL)) t(g,k,v) PIVOT (sum(v) AS s,count(v) AS c FOR k IN ('a','b','z')) ORDER BY g;
+----
+g	10	1	20	1	NULL	0
+h	NULL	0	NULL	0	NULL	0
+
+endloop
+
+foreach threshold 0 3
+
+statement ok
+SET pivot_filter_threshold={threshold};
+
+query TTT
+FROM (VALUES ('a',1),('b',2)) t(k,v) PIVOT (sum(v) FOR k IN ('a','b','z'));
+----
+1	2	NULL
+
+endloop
+
+statement ok
+SET pivot_filter_threshold=0;
+
+query TT
+EXPLAIN SELECT a_ok FROM (VALUES ('a',1),('b',2)) t(k,v) PIVOT (sum(v) AS ok,sum(CASE WHEN v=2 THEN error('pivot export error')::INTEGER ELSE v END) AS effect FOR k IN ('a','b','z'));
+----
+physical_plan	<REGEX>:.*Pivot.*
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement error
+SELECT a_ok FROM (VALUES ('a',1),('b',2)) t(k,v) PIVOT (sum(v) AS ok,sum(CASE WHEN v=2 THEN error('pivot export error')::INTEGER ELSE v END) AS effect FOR k IN ('a','b','z'));
+----
+pivot export error
+
+endloop
+
+foreach collation 'nocase' ''
+
+statement ok
+SET default_collation={collation};
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT list_sort(x) FROM (VALUES (['b','B']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT array_sort(x) FROM (VALUES (['b','B']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT list_grade_up(x) FROM (VALUES (['b','B']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT array_grade_up(x) FROM (VALUES (['b','B']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT grade_up(x) FROM (VALUES (['b','B']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT list_reverse_sort(x) FROM (VALUES (['B','b']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT array_reverse_sort(x) FROM (VALUES (['B','b']::VARCHAR[]))t(x);
+
+endloop
+
+reset label list_result
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T nosort list_result
+SELECT list_sort(list(x)) FROM (VALUES ('b',0),('B',1))t(x,r);
+
+endloop
+
+reset label list_result
+
+endloop
+
+endloop
+
+statement ok
+SET pivot_limit=3;
+
+statement error
+FROM (VALUES ('a',1),('b',2)) t(k,v) PIVOT (sum(v) FOR k IN ('a','b','z'));
+----
+<REGEX>:Binder Error: Pivot column limit of 3 exceeded.*
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('a',1),('b',2)) t(k,v) PIVOT (sum(v) FOR k IN ('a','b','z'));
+----
+<REGEX>:Binder Error: Pivot column limit of 3 exceeded.*
+
+statement ok
+RESET pivot_limit;

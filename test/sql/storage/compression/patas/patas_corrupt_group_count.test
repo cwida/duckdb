@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/patas/patas_corrupt_group_count.test
+# description: An inflated Patas segment count must not walk past the metadata table
+# group: [patas]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/patas_corrupt_group_count.db.gz {TEST_DIR}/patas_corrupt_group_count.db
+
+load {TEST_DIR}/patas_corrupt_group_count.db readonly
+
+statement ok
+USE patas_corrupt_group_count;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE segment_type='DOUBLE' LIMIT 1;
+----
+Patas
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Patas segment: metadata table exceeds the segment
+
+restart
+
+statement ok
+USE patas_corrupt_group_count;
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Patas segment: metadata table exceeds the segment

@@ -47,18 +47,18 @@ void MaddExec(duckdb::cxx::ScalarFunction::ExecInput &input) {
 } // namespace
 
 DUCKDB_CPP_EXTENSION_ENTRYPOINT(duckdb::cxx::Extension &extension, duckdb::cxx::Context &context) {
-	const auto type = context.ParseType("DECIMAL(18, 3)");
+	const auto type = context.GetFactory().ParseType("DECIMAL(18, 3)");
 	context.Log(duckdb::cxx::LogLevel::LOG_INFO, "cpp_api_static_demo loaded, parsed " + type.ToText(),
 	            "CppApiStaticDemo");
 
 	// Register a scalar function through the C++ wrapper, exercising every data slot.
-	const auto integer = context.ParseType("INTEGER");
-	auto function = duckdb::cxx::ScalarFunction::Create(extension);
+	const auto integer = context.GetFactory().ParseType("INTEGER");
+	auto function = duckdb::cxx::ScalarFunction::Create(context.GetFactory());
 	function.SetName("cpp_demo_madd");
 	function.GetSignature().AddParameter("a", integer).AddParameter("b", integer).SetReturnType(integer);
 	function.SetUserData<Factor>(Factor {3});
 	function.SetBindCallback(MaddBind);
 	function.SetInitCallback(MaddInit);
 	function.SetExecCallback(MaddExec);
-	function.Register();
+	extension.Register(function);
 }

@@ -1,0 +1,42 @@
+# name: test/sql/alter/add_pk/test_add_pk_concurrent_null.test
+# description: A NULL committed while ADD PRIMARY KEY builds its index must not end up in the key column
+# group: [add_pk]
+
+# a large table per attempt
+require vector_size 512
+
+loop attempt 0 10
+
+statement ok
+CREATE OR REPLACE TABLE t (id INTEGER);
+
+statement ok
+INSERT INTO t SELECT i FROM range(1, 100001) tbl(i);
+
+concurrentforeach task alter insert
+
+onlyif task=alter
+statement maybe
+ALTER TABLE t ADD PRIMARY KEY (id);
+----
+
+# delay the insert by a varying amount, so it lands at different points of the index build
+onlyif task=insert
+statement ok
+SELECT sum(i) FROM range({attempt} * 2000) tbl(i);
+
+onlyif task=insert
+statement maybe
+INSERT INTO t VALUES (NULL);
+----
+
+endloop
+
+# either the primary key was not added, or no NULL is left in its column
+query I
+SELECT (SELECT count(*) FROM t WHERE id IS NULL) = 0
+    OR (SELECT count(*) FROM duckdb_constraints() WHERE table_name = 't' AND constraint_type = 'PRIMARY KEY') = 0;
+----
+true
+
+endloop

@@ -243,8 +243,8 @@ idx_t ExpressionHeuristics::Cost(const TableFilter &filter) {
 			return 0;
 		}
 		if (func.Function().GetName() == SelectivityOptionalFilterScalarFun::NAME && func.BindInfo()) {
-			auto &data = func.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>();
-			return data.child_filter_expr ? Cost(*data.child_filter_expr) : 0;
+			auto optional_child = ExpressionFilter::GetOptionalFilterChild(func);
+			return optional_child ? Cost(*optional_child) : 0;
 		}
 	}
 	if (ExpressionFilter::IsOptionalExpression(expr)) {

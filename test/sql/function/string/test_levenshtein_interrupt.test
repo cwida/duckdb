@@ -1,0 +1,19 @@
+# name: test/sql/function/string/test_levenshtein_interrupt.test
+# description: levenshtein and damerau_levenshtein respect max_execution_time
+# group: [string]
+
+statement ok
+SET max_execution_time=1000;
+
+statement error
+SELECT levenshtein(repeat('a',300000), repeat('b',300000));
+----
+<REGEX>:.*Query exceeded maximum execution time.*
+
+statement ok
+SET max_execution_time=0;
+
+query II
+SELECT levenshtein('kitten', 'sitting'), damerau_levenshtein('ab', 'ba');
+----
+3	1

@@ -1,0 +1,16 @@
+# name: test/sql/filter/test_dynamic_filter_nullable.test
+# description: Test dynamic filter does not fire assertion on nullable columns (issue #26437)
+# group: [filter]
+
+require json
+
+statement ok
+CREATE TABLE t0(c3 JSON);
+
+statement ok
+INSERT INTO t0 VALUES (NULL);
+
+query I
+SELECT 'x'::BLOB AS c0 UNION ALL SELECT c3 FROM t0 ORDER BY c0 LIMIT 1;
+----
+"x"

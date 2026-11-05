@@ -20,7 +20,6 @@ BoundStatement Binder::Bind(PrepareStatement &stmt) {
 	// this is required because most clients ALWAYS invoke prepared statements
 	auto &properties = GetStatementProperties();
 	properties.requires_valid_transaction = false;
-	properties.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
 	properties.bound_all_parameters = true;
 	properties.parameter_count = 0;
 	properties.return_type = StatementReturnType::NOTHING;

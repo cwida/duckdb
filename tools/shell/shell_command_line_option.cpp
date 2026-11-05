@@ -8,6 +8,13 @@ namespace duckdb_shell {
 #define SEP_Unit   "\x1F"
 #define SEP_Record "\x1E"
 
+//! An output mode on the command line is a deliberate choice of format: it switches detected agent mode off (see
+//! DetectAgentMode). Runs in the first pass, before the mode itself is applied
+MetadataResult MarkOutputModeFlag(ShellState &state, const vector<string> &args) {
+	state.output_mode_flag = true;
+	return MetadataResult::SUCCESS;
+}
+
 template <RenderMode output_mode>
 MetadataResult ToggleOutputMode(ShellState &state, const vector<string> &args) {
 	state.cMode = state.mode = output_mode;
@@ -39,6 +46,12 @@ MetadataResult EnableBatch(ShellState &state, const vector<string> &args) {
 
 MetadataResult DisableBatch(ShellState &state, const vector<string> &args) {
 	state.stdin_is_interactive = true;
+	return MetadataResult::SUCCESS;
+}
+
+template <OptionType AGENT_MODE>
+MetadataResult SetAgentMode(ShellState &state, const vector<string> &args) {
+	state.agent_mode = AGENT_MODE;
 	return MetadataResult::SUCCESS;
 }
 
@@ -88,8 +101,7 @@ MetadataResult LaunchUI(ShellState &state, const vector<string> &args) {
 	// run the UI command
 	auto rc = state.RunInitialCommand((char *)state.ui_command.c_str(), true);
 	if (rc != 0) {
-		ShellState::Exit(rc);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -139,13 +151,11 @@ bool ShellState::ExpandCommandParameters(const string &command, string &result) 
 static MetadataResult RunConfiguredCommand(ShellState &state, const string &command) {
 	string expanded_command;
 	if (!state.ExpandCommandParameters(command, expanded_command)) {
-		ShellState::Exit(1);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	auto rc = state.RunInitialCommand(expanded_command.c_str(), true);
 	if (rc != 0) {
-		ShellState::Exit(rc);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -186,7 +196,6 @@ MetadataResult MarkClientMode(ShellState &state, const vector<string> &args) {
 	string type, secret;
 	if (!ParseConnectionTarget(state, "connect", args[1], type, secret)) {
 		ShellState::Exit(1);
-		return MetadataResult::EXIT;
 	}
 	state.command_parameters["type"] = type;
 	if (!secret.empty()) {
@@ -202,14 +211,12 @@ MetadataResult SetServeTarget(ShellState &state, const vector<string> &args) {
 	string type, secret;
 	if (!ParseConnectionTarget(state, "serve", args[1], type, secret)) {
 		ShellState::Exit(1);
-		return MetadataResult::EXIT;
 	}
 	if (!StringUtil::CIEquals(type, SERVE_TYPE)) {
 		state.PrintF(PrintOutput::STDERR,
 		             "%s: Error: cannot serve a database of type '%s' - only '%s' is supported by '-serve'\n",
 		             state.program_name, type.c_str(), SERVE_TYPE);
 		ShellState::Exit(1);
-		return MetadataResult::EXIT;
 	}
 	if (!secret.empty()) {
 		state.command_parameters["serve_secret"] = StringUtil::Format(", secret='%s'", QuoteSecretName(secret));
@@ -252,8 +259,7 @@ MetadataResult ProcessFile(ShellState &state, const vector<string> &args) {
 	state.readStdin = false;
 	auto &file = args[1];
 	if (!state.ProcessFile(file)) {
-		ShellState::Exit(1);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -281,8 +287,7 @@ MetadataResult RunCommand(ShellState &state, const vector<string> &args) {
 	auto &cmd = args[1];
 	auto rc = state.RunInitialCommand(cmd.c_str(), bail);
 	if (rc != 0) {
-		ShellState::Exit(rc);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -291,8 +296,7 @@ MetadataResult RunManual(ShellState &state, const vector<string> &args) {
 	// show the manual page and exit; unlike -c we keep interactive detection so the output stays colored
 	state.readStdin = false;
 	if (state.DisplayManual(args) == MetadataResult::FAIL) {
-		ShellState::Exit(1);
-		return MetadataResult::EXIT;
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -337,17 +341,22 @@ MetadataResult FormatFile(ShellState &state, const vector<string> &args) {
 }
 
 static const CommandLineOption command_line_options[] = {
-    {"ascii", 0, "", nullptr, ToggleASCIIMode, "set output mode to 'ascii'"},
+    {"agent", 0, "", SetAgentMode<OptionType::ON>, nullptr,
+     "render output for an AI coding agent (compact markdown tables with a loud row/byte cap and a result hash, "
+     "JSON errors, compact plans, cost estimates and progress on stderr). Default: on when an agent's environment "
+     "variable is set, stdout is not a terminal and no output mode is given; DUCKDB_AGENT_MODE=1 / 0 forces it on / "
+     "off"},
+    {"ascii", 0, "", MarkOutputModeFlag, ToggleASCIIMode, "set output mode to 'ascii'"},
     {"bail", 0, "", nullptr, EnableBail, "stop after hitting an error"},
     {"batch", 0, "", EnableBatch, EnableBatch, "force batch I/O'"},
-    {"box", 0, "", nullptr, ToggleOutputMode<RenderMode::BOX>, "set output mode to 'box'"},
-    {"column", 0, "", nullptr, ToggleOutputMode<RenderMode::COLUMN>, "set output mode to 'column'"},
+    {"box", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::BOX>, "set output mode to 'box'"},
+    {"column", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::COLUMN>, "set output mode to 'column'"},
     {"cmd", 1, "COMMAND", nullptr, RunCommand<false>, "run \"COMMAND\" before reading stdin"},
     {"connect", 0, "[TYPE[:SECRET]]", MarkClientMode, ConnectToServer,
      "connect to a database of the given type, optionally using a named secret. Default: 'quack' "
      "(configurable with .connect_command)",
      true},
-    {"csv", 0, "", nullptr, ToggleCSVMode, "set output mode to 'csv'"},
+    {"csv", 0, "", MarkOutputModeFlag, ToggleCSVMode, "set output mode to 'csv'"},
     {"c", 1, "COMMAND", EnableBatch, RunCommand<true>, "run \"COMMAND\" and exit"},
     {"dark-mode", 0, "", SetColorScheme<HighlightMode::DARK_MODE>, SetColorScheme<HighlightMode::DARK_MODE>,
      "use dark mode colors"},
@@ -359,22 +368,23 @@ static const CommandLineOption command_line_options[] = {
     {"header", 0, "", nullptr, ToggleHeader<true>, "turn headers on"},
     {"h", 0, "", EnableBatch, PrintHelpAndExit, "show help message"},
     {"help", 0, "", EnableBatch, PrintHelpAndExit, "show help message"},
-    {"html", 0, "", nullptr, ToggleOutputMode<RenderMode::HTML>, "set output mode to HTML"},
+    {"html", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::HTML>, "set output mode to HTML"},
     {"interactive", 0, "", nullptr, DisableBatch, "force interactive I/O"},
-    {"json", 0, "", nullptr, ToggleOutputMode<RenderMode::JSON>, "set output mode to 'json'"},
-    {"jsonlines", 0, "", nullptr, ToggleOutputMode<RenderMode::JSONLINES>, "set output mode to 'jsonlines'"},
+    {"json", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::JSON>, "set output mode to 'json'"},
+    {"jsonlines", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::JSONLINES>, "set output mode to 'jsonlines'"},
     {"light-mode", 0, "", SetColorScheme<HighlightMode::LIGHT_MODE>, SetColorScheme<HighlightMode::LIGHT_MODE>,
      "use light mode colors"},
-    {"line", 0, "", nullptr, ToggleOutputMode<RenderMode::LINE>, "set output mode to 'line'"},
-    {"list", 0, "", nullptr, ToggleOutputMode<RenderMode::LIST>, "set output mode to 'list'"},
+    {"line", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::LINE>, "set output mode to 'line'"},
+    {"list", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::LIST>, "set output mode to 'list'"},
     {"manual", 1, "FUNCTION", nullptr, RunManual, "show the manual page for a SQL function and exit"},
-    {"markdown", 0, "", nullptr, ToggleOutputMode<RenderMode::MARKDOWN>, "set output mode to 'markdown'"},
+    {"markdown", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::MARKDOWN>, "set output mode to 'markdown'"},
     {"newline", 1, "SEP", nullptr, SetNewlineSeparator, "set output row separator. Default: '\\n'"},
+    {"no-agent", 0, "", SetAgentMode<OptionType::OFF>, nullptr, "never render output for an AI coding agent"},
     {"no-init", 0, "", SkipInit, nullptr, "skip processing the init file"},
     {"no-stdin", 0, "", nullptr, DisableStdin, "exit after processing options instead of reading stdin"},
     {"noheader", 0, "", nullptr, ToggleHeader<false>, "turn headers off"},
     {"nullvalue", 1, "TEXT", nullptr, ShellState::SetNullValue, "set text string for NULL values. Default 'NULL'"},
-    {"quote", 0, "", nullptr, ToggleOutputMode<RenderMode::QUOTE>, "set output mode to 'quote'"},
+    {"quote", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::QUOTE>, "set output mode to 'quote'"},
     {"readonly", 0, "", SetReadOnlyMode, nullptr, "open the database read-only"},
     {"s", 1, "COMMAND", EnableBatch, RunCommand<true>, "run \"COMMAND\" and exit"},
     {"safe", 0, "", ShellState::EnableSafeMode, nullptr, "enable safe-mode"},
@@ -383,7 +393,7 @@ static const CommandLineOption command_line_options[] = {
      "serve this database, optionally using a named secret (configurable with .serve_command)", true},
     {"storage-version", 1, "VER", SetStorageVersion, nullptr,
      "database storage compatibility version to use. Default: 'v0.10.0'"},
-    {"table", 0, "", nullptr, ToggleOutputMode<RenderMode::TABLE>, "set output mode to 'table'"},
+    {"table", 0, "", MarkOutputModeFlag, ToggleOutputMode<RenderMode::TABLE>, "set output mode to 'table'"},
     {"ui", 0, "", nullptr, LaunchUI, "launches a web interface using the ui extension (configurable with .ui_command)"},
     {"unredacted", 0, "", AllowUnredacted, nullptr, "allow printing unredacted secrets"},
     {"unsigned", 0, "", AllowUnsigned, nullptr, "allow loading of unsigned extensions"},

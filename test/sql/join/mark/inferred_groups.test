@@ -1,0 +1,128 @@
+# name: test/sql/join/mark/inferred_groups.test
+# description: MARK group inference preserves group-local UNKNOWN and empty-group FALSE
+# group: [mark]
+
+statement ok
+CREATE TABLE probes(id INTEGER, g INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO probes VALUES (0,0,NULL),(1,1,7),(2,2,5),(3,3,4),(4,4,7),(5,NULL,9),(6,5,NULL);
+
+statement ok
+CREATE TABLE candidates(g INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO candidates VALUES (1,NULL),(2,5),(2,5),(3,NULL),(3,6),(4,8),(NULL,9);
+
+# The ordinary correlated query and its explicit reconstruction use the same groups.
+query II
+SELECT id, p.v = ANY(SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g) FROM probes p ORDER BY id;
+----
+0	false
+1	NULL
+2	true
+3	NULL
+4	false
+5	true
+6	false
+
+query II
+SELECT id,__mark_join_marker FROM probes p JOIN BY (TYPE MARK) candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.v=c.v ORDER BY id;
+----
+0	false
+1	NULL
+2	true
+3	NULL
+4	false
+5	true
+6	false
+
+# Group keys must precede the quantified comparison.
+statement error
+SELECT id,__mark_join_marker FROM probes p JOIN BY (TYPE MARK) candidates c ON p.v=c.v AND p.g IS NOT DISTINCT FROM c.g ORDER BY id;
+----
+Unsupported explicit MARK join conditions
+
+query TT
+EXPLAIN SELECT __mark_join_marker FROM probes p JOIN BY (TYPE MARK) candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.v=c.v;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+statement ok
+DELETE FROM candidates;
+
+query I
+SELECT count(*) FROM (SELECT __mark_join_marker AS marker FROM probes p JOIN BY (TYPE MARK) candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.v=c.v) q WHERE marker IS NOT FALSE;
+----
+0
+
+# Multiple group keys and each supported scalar quantified comparison.
+statement ok
+CREATE TABLE multi_probes(id INTEGER, g INTEGER, h INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO multi_probes VALUES (0,0,0,NULL),(1,1,1,NULL),(2,1,2,2),(3,2,1,2),(4,NULL,1,1),(5,NULL,2,2),(6,2,NULL,2);
+
+statement ok
+CREATE TABLE multi_candidates(g INTEGER, h INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO multi_candidates VALUES (1,1,NULL),(1,2,1),(1,2,3),(NULL,1,1),(NULL,2,NULL),(2,NULL,3),(2,NULL,3);
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+foreach comparison = <> < <= > >=
+
+query I
+WITH actual AS (SELECT id,__mark_join_marker m FROM multi_probes p JOIN BY(TYPE MARK) multi_candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h AND p.v {comparison} c.v), expected AS (SELECT id, (SELECT CASE WHEN bool_or(p.v {comparison} c.v) THEN true WHEN bool_or((p.v {comparison} c.v) IS NULL) THEN NULL ELSE false END FROM multi_candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) m FROM multi_probes p) SELECT count(*) FROM actual a JOIN expected e USING(id) WHERE a.m IS DISTINCT FROM e.m;
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_force_external;
+
+statement ok
+RESET debug_disable_optimizer;
+
+# Prepared reconstruction retains collated and nested grouping semantics after rebinding.
+statement ok
+CREATE TABLE typed_probes(id INTEGER, g VARCHAR COLLATE nocase, h INTEGER[], v INTEGER);
+
+statement ok
+INSERT INTO typed_probes VALUES (0,'A',[1,NULL],NULL),(1,'a',[1,NULL],2),(2,'b',NULL,4),(3,NULL,[2],3),(4,'missing',[1],NULL);
+
+statement ok
+CREATE TABLE typed_candidates(g VARCHAR COLLATE nocase, h INTEGER[], v INTEGER);
+
+statement ok
+INSERT INTO typed_candidates VALUES ('a',[1,NULL],2),('a',[1,NULL],NULL),('B',NULL,4),(NULL,[2],3),(NULL,[2],3);
+
+statement ok
+PREPARE typed_groups AS WITH actual AS (SELECT id,__mark_join_marker m FROM typed_probes p JOIN BY(TYPE MARK) typed_candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h AND p.v=c.v), expected AS (SELECT id,p.v=ANY(SELECT c.v FROM typed_candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) m FROM typed_probes p) SELECT count(*) FROM actual a JOIN expected e USING(id) WHERE a.m IS DISTINCT FROM e.m;
+
+query I
+EXECUTE typed_groups;
+----
+0
+
+statement ok
+DELETE FROM typed_candidates;
+
+query I
+EXECUTE typed_groups;
+----
+0

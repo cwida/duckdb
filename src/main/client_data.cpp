@@ -1,4 +1,5 @@
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/common/multi_file/multi_file_list.hpp"
 
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/constants.hpp"
@@ -16,24 +17,6 @@
 #include "duckdb/storage/buffer/block_handle.hpp"
 
 namespace duckdb {
-
-class ClientFileSystem : public OpenerFileSystem {
-public:
-	explicit ClientFileSystem(ClientContext &context_p) : context(context_p) {
-	}
-
-	FileSystem &GetFileSystem() const override {
-		auto &config = DBConfig::GetConfig(context);
-		return *config.file_system;
-	}
-
-	optional_ptr<FileOpener> GetOpener() const override {
-		return ClientData::Get(context).file_opener.get();
-	}
-
-private:
-	ClientContext &context;
-};
 
 //! ClientBufferManager wraps the buffer manager to optionally forward the client context.
 class ClientBufferManager : public BufferManager {
@@ -61,7 +44,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, idx_t block_size, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(tag, block_size, can_destroy);
+		auto result = buffer_manager.Allocate(QueryContext(context), tag, block_size, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
@@ -69,7 +52,7 @@ public:
 		return result;
 	}
 	BufferHandle Allocate(MemoryTag tag, BlockManager *block_manager, bool can_destroy = true) override {
-		auto result = buffer_manager.Allocate(tag, block_manager, can_destroy);
+		auto result = buffer_manager.Allocate(QueryContext(context), tag, block_manager, can_destroy);
 		// Track allocation based on actual allocated size from the handle
 		if (result.GetBlockHandle()) {
 			TrackMemoryAllocation(result.GetBlockHandle()->GetMemory().GetMemoryUsage());
@@ -92,7 +75,7 @@ public:
 		return result;
 	}
 	BufferHandle Pin(shared_ptr<BlockHandle> &handle) override {
-		return Pin(QueryContext(), handle);
+		return Pin(QueryContext(context), handle);
 	}
 	BufferHandle Pin(const QueryContext &context, shared_ptr<BlockHandle> &handle) override {
 		return buffer_manager.Pin(context, handle);
@@ -147,7 +130,7 @@ public:
 		return result;
 	}
 
-	Allocator &GetBufferAllocator() override {
+	BufferAllocator &GetBufferAllocator() override {
 		return buffer_manager.GetBufferAllocator();
 	}
 	void ReserveMemory(idx_t size) override {
@@ -233,12 +216,10 @@ private:
 ClientData::ClientData(ClientContext &context) : catalog_search_path(make_uniq<CatalogSearchPath>(context)) {
 	auto &db = DatabaseInstance::GetDatabase(context);
 
-	profiler = make_shared_ptr<QueryProfiler>(context);
+	default_database = DatabaseManager::Get(db).GetDefaultDatabase();
 	temporary_objects = make_shared_ptr<AttachedDatabase>(db, AttachedDatabaseType::TEMP_DATABASE);
 	temporary_objects->oid = DatabaseManager::Get(db).NextOid();
 	random_engine = make_uniq<RandomEngine>();
-	file_opener = make_uniq<ClientContextFileOpener>(context);
-	client_file_system = make_uniq<ClientFileSystem>(context);
 	client_buffer_manager = make_uniq<ClientBufferManager>(context, db.GetBufferManager());
 
 	temporary_objects->Initialize();

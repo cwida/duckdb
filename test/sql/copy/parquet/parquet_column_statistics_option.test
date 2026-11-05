@@ -1,0 +1,153 @@
+# name: test/sql/copy/parquet/parquet_column_statistics_option.test
+# description: The column_statistics option hands a multi-file scan its column statistics
+# group: [parquet]
+
+require parquet
+
+# The option is part of the scan's bind data: round-trip it through the serializer along with the rest
+statement ok
+SET debug_verify_serializer=true
+
+statement ok
+COPY (SELECT i AS id, (i % 25)::INTEGER AS nation, CASE WHEN i % 2 = 0 THEN NULL ELSE i END AS half, 'r_' || i AS name
+      FROM range(100000) t(i))
+TO '{TEST_DIR}/column_stats_1.parquet' (FORMAT parquet);
+
+statement ok
+COPY (SELECT i AS id, (i % 25)::INTEGER AS nation, CASE WHEN i % 2 = 0 THEN NULL ELSE i END AS half, 'r_' || i AS name
+      FROM range(100000, 200000) t(i))
+TO '{TEST_DIR}/column_stats_2.parquet' (FORMAT parquet);
+
+# A scan of several files has no column statistics of its own: the files' footers are not opened to be asked, so a
+# filter outside the data's range stays in the plan
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'])
+WHERE id > 1000000;
+----
+physical_plan	<!REGEX>:(?s).*Empty Result.*
+
+# column_statistics gives the scan the statistics of what it reads, in the shape COPY ... (RETURN_STATS) reports them:
+# the optimizer takes them for the scan's and prunes the filter
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'],
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '199999', 'count': '200000', 'null_count': '0', 'distinct_count': '200000'}})
+WHERE id > 1000000;
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+# ... and only outside the bounds
+query III
+SELECT count(*), min(id), max(id) FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'],
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '199999', 'count': '200000', 'null_count': '0', 'distinct_count': '200000'}})
+WHERE id >= 150000;
+----
+50000	150000	199999
+
+# The null flags: a column reported without NULLs is known not to have any, whatever its type
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'],
+    column_statistics := MAP {'name': MAP {'count': '200000', 'null_count': '0'}})
+WHERE name IS NULL;
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+# A column the option says nothing about is left as it was
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'],
+    column_statistics := MAP {'name': MAP {'count': '200000', 'null_count': '0'}})
+WHERE half IS NULL;
+----
+physical_plan	<!REGEX>:(?s).*Empty Result.*
+
+# The given statistics take precedence over the file's own, which lets a caller that knows more than the file does -
+# a filter it already applied, say - tighten them; here the single file's footer says 0..99999 and the option says
+# 0..1000
+query II
+EXPLAIN SELECT id FROM read_parquet('{TEST_DIR}/column_stats_1.parquet',
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '1000'}})
+WHERE id > 5000;
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+# Bounds are cast to the column's type; the min/max of a type without numeric statistics are ignored
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/column_stats_1.parquet',
+    column_statistics := MAP {'name': MAP {'min': 'r_0', 'max': 'r_99999', 'null_count': '0'}})
+WHERE name = 'r_7';
+----
+1
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/column_stats_1.parquet', column_statistics := 42);
+----
+must be a MAP of column name
+
+# The option is checked at bind, whether or not the optimizer ever asks for the statistics
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/column_stats_1.parquet', column_statistics := MAP {'id': MAP {'count': 'many'}});
+----
+must be a count
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/column_stats_1.parquet', column_statistics := MAP {'nope': MAP {'min': '0'}});
+----
+names no column of the scan
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/column_stats_1.parquet', column_statistics := MAP {'id': MAP {'min': 'zero', 'max': 'ten'}});
+----
+Could not convert
+
+# NULL means no statistics were given
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/column_stats_1.parquet', column_statistics := NULL);
+----
+100000
+
+# Nested columns are keyed the way RETURN_STATS keys them: the quoted path. The statistics of a struct field reach
+# the optimizer through the field's extraction
+statement ok
+COPY (SELECT i AS id, {'x': i, 'y': 'v_' || i} AS s, [i, i + 1] AS l FROM range(1000) t(i))
+TO '{TEST_DIR}/column_stats_nested_1.parquet' (FORMAT parquet);
+
+statement ok
+COPY (SELECT i AS id, {'x': i, 'y': 'v_' || i} AS s, [i, i + 1] AS l FROM range(1000, 2000) t(i))
+TO '{TEST_DIR}/column_stats_nested_2.parquet' (FORMAT parquet);
+
+query II
+EXPLAIN SELECT s.x FROM read_parquet(['{TEST_DIR}/column_stats_nested_1.parquet', '{TEST_DIR}/column_stats_nested_2.parquet'],
+    column_statistics := MAP {'"s"."x"': MAP {'min': '0', 'max': '1999', 'count': '2000', 'null_count': '0'}})
+WHERE s.x > 5000;
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/column_stats_nested_1.parquet', '{TEST_DIR}/column_stats_nested_2.parquet'],
+    column_statistics := MAP {'"s"."x"': MAP {'min': '0', 'max': '1999', 'count': '2000', 'null_count': '0'}})
+WHERE s.x >= 1500;
+----
+500
+
+# A path that names nothing of the column is an error, as is a malformed key
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/column_stats_nested_1.parquet', column_statistics := MAP {'"s"."z"': MAP {'min': '0'}});
+----
+names no part of column
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/column_stats_nested_1.parquet', column_statistics := MAP {'"s".x': MAP {'min': '0'}});
+----
+not a quoted column path
+
+# The keys name the scan's columns, not a file's: with files that renamed a column, the statistics go under the
+# name the scan produces
+statement ok
+COPY (SELECT i AS ident FROM range(1000, 2000) t(i)) TO '{TEST_DIR}/column_stats_renamed.parquet' (FORMAT parquet);
+
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_renamed.parquet'], union_by_name := true,
+    column_statistics := MAP {'"id"': MAP {'min': '0', 'max': '99999', 'count': '101000', 'null_count': '1000'},
+                              '"ident"': MAP {'min': '1000', 'max': '1999', 'count': '101000', 'null_count': '100000'}})
+WHERE ident > 5000;
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*

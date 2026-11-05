@@ -1,0 +1,26 @@
+# name: test/sql/parser/cte_printing.test
+# description: CTE SQL printing separates the main query and UNION ALL keywords
+# group: [parser]
+
+statement ok
+CREATE VIEW printable_cte AS WITH x AS (SELECT 1 AS i) SELECT i FROM x;
+
+statement ok
+CREATE VIEW printable_recursive_cte AS WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r WHERE i < 3) SELECT i FROM r;
+
+query I
+SELECT contains(sql, ') SELECT ') FROM duckdb_views() WHERE view_name = 'printable_cte';
+----
+true
+
+query II
+SELECT contains(sql, ') SELECT '), contains(sql, ' UNION ALL ') FROM duckdb_views() WHERE view_name = 'printable_recursive_cte';
+----
+true	true
+
+query I
+SELECT * FROM printable_recursive_cte ORDER BY i;
+----
+1
+2
+3

@@ -29,15 +29,24 @@ set memory_limit='300mb'
 statement ok
 set read_ahead_depth=0
 
-# runs out of memory when caching operators are enabled because strings are accumulated
+# caching operators merge the small chunks into one, so the writer is handed all 64 strings at once.
+# ROW_GROUP_SIZE rounds up to a chunk, so the whole 512 MB is buffered before it can be flushed
 statement error
 copy (
     select c
     from '{TEST_DIR}/enable_caching_operators_input*.parquet'
     where id in (from build)
-) to '{TEST_DIR}/enable_caching_operators_output.parquet' (row_group_size_bytes '64mb');
+) to '{TEST_DIR}/enable_caching_operators_output.parquet' (row_group_size 8);
 ----
 Out of Memory
+
+# ROW_GROUP_SIZE_BYTES is not rounded up to a chunk, so the same write stays within the memory limit
+statement ok
+copy (
+    select c
+    from '{TEST_DIR}/enable_caching_operators_input*.parquet'
+    where id in (from build)
+) to '{TEST_DIR}/enable_caching_operators_output.parquet' (row_group_size_bytes '64mb');
 
 # runs fine when disabled
 statement ok
@@ -48,4 +57,4 @@ copy (
     select c
     from '{TEST_DIR}/enable_caching_operators_input*.parquet'
     where id in (from build)
-) to '{TEST_DIR}/enable_caching_operators_output.parquet' (row_group_size_bytes '64mb');
+) to '{TEST_DIR}/enable_caching_operators_output.parquet' (row_group_size 8);

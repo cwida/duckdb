@@ -1,0 +1,37 @@
+# name: test/sql/sample/system_sample_index_scan.test
+# description: A pushed down SYSTEM sample must still be applied when the scan can use an index
+# group: [sample]
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t0(c1 BOOLEAN);
+
+statement ok
+CREATE INDEX i0 ON t0 (c1);
+
+statement ok
+INSERT INTO t0(c1) SELECT (i % 8 = 1) FROM range(16384) g(i);
+
+query I
+SELECT count(*) FROM t0 WHERE c1 IN (VALUES (true));
+----
+2048
+
+query I
+SELECT count(*) < 16384 FROM t0 TABLESAMPLE SYSTEM (10%) REPEATABLE (7);
+----
+true
+
+query I
+SELECT (SELECT count(*) FROM t0 TABLESAMPLE SYSTEM (10%) REPEATABLE (7) WHERE c1 IN (VALUES (true)))
+    <= (SELECT count(*) FROM t0 TABLESAMPLE SYSTEM (10%) REPEATABLE (7));
+----
+true
+
+query I
+SELECT (SELECT count(*) FROM t0 TABLESAMPLE SYSTEM (10%) REPEATABLE (7) WHERE c1 IN (VALUES (true)))
+     = (SELECT count(*) FROM t0 TABLESAMPLE SYSTEM (10%) REPEATABLE (7) WHERE c1 = true);
+----
+true

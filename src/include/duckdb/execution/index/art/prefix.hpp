@@ -30,59 +30,56 @@ public:
 
 public:
 	Prefix() = delete;
-	Prefix(const ART &art, const NodePtr node, const bool is_mutable = false, const bool set_in_memory = false);
-	Prefix(FixedSizeAllocator &allocator, const NodePtr node, const idx_t count);
+	Prefix(const ART &art, const NodePtr node_ptr, const bool is_mutable = false, const bool set_in_memory = false);
+	Prefix(FixedSizeAllocator &allocator, const NodePtr node_ptr, const idx_t count);
 
 	data_ptr_t data;
 	NodePtr *child_slot;
 	bool in_memory;
 
 public:
-	static uint8_t GetByte(const ART &art, const NodePtr &node, const uint8_t pos);
+	static uint8_t GetByte(const ART &art, const NodePtr &node_ptr, const uint8_t pos);
 
 public:
 	//! Get a new list of prefix nodes. The node reference holds the child of the last prefix node.
-	static void New(ART &art, reference<NodePtr> &node_ref, const ARTKey &key, const idx_t depth, idx_t count);
+	static void New(ART &art, reference<NodePtr> &node_ptr_ref, const ARTKey &key, const idx_t depth, idx_t count);
 
 	//! Concatenates parent -> prev_node4 -> child.
-	static void Concat(ART &art, NodePtr &parent, NodePtr &node4, const NodePtr child, uint8_t byte,
+	static void Concat(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr, uint8_t byte,
 	                   const GateStatus node4_status, const GateStatus status);
 
 	//! Removes up to pos bytes from the prefix.
 	//! Shifts all subsequent bytes by pos. Frees empty nodes.
-	static void Reduce(ART &art, NodePtr &node, const idx_t pos);
-	//! Splits the prefix at pos.
-	//! node_ref references the node that replaces the split byte.
-	//! child references the remaining node after the split.
-	//! Returns GATE_SET, if a gate node was freed, else GATE_NOT_SET.
-	//! If it returns GATE_SET, then the caller must set the gate for the node replacing the split byte,
-	//! after its creation.
-	static GateStatus Split(ART &art, reference<NodePtr> &node_ref, NodePtr &child, const uint8_t pos);
+	static void Reduce(ART &art, NodePtr &node_ptr, const idx_t pos);
 
 private:
-	static Prefix NewInternal(ART &art, NodePtr &node, const data_ptr_t data, const uint8_t count, const idx_t offset);
+	static Prefix NewInternal(ART &art, NodePtr &node_ptr, const data_ptr_t data, const uint8_t count,
+	                          const idx_t offset);
 
-	static Prefix GetTail(ART &art, const NodePtr &node);
+	static Prefix GetTail(ART &art, const NodePtr &node_ptr);
 
-	static void ConcatInternal(ART &art, NodePtr &parent, NodePtr &node4, const NodePtr child, uint8_t byte,
+	static void ConcatInternal(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr, uint8_t byte,
 	                           const GateStatus status);
-	static void ConcatNode4WasGate(ART &art, NodePtr &node4, const NodePtr child, uint8_t byte);
-	static void ConcatChildIsGate(ART &art, NodePtr &parent, NodePtr &node4, const NodePtr child, uint8_t byte);
-	static void ConcatOutsideGate(ART &art, NodePtr &parent, NodePtr &node4, const NodePtr child, uint8_t byte);
+	static void ConcatNode4WasGate(ART &art, NodePtr &node4_ptr, const NodePtr child_ptr, uint8_t byte);
+	static void ConcatChildIsGate(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
+	                              uint8_t byte);
+	static void ConcatOutsideGate(ART &art, NodePtr &parent_ptr, NodePtr &node4_ptr, const NodePtr child_ptr,
+	                              uint8_t byte);
 
 	Prefix Append(ART &art, const uint8_t byte);
-	void Append(ART &art, NodePtr other);
+	void Append(ART &art, NodePtr other_ptr);
 	Prefix TransformToDeprecatedAppend(ART &art, FixedSizeAllocator &allocator, uint8_t byte);
 
 private:
 	template <class F, class NODE>
-	static void Iterator(ART &art, reference<NODE> &node_ref, const bool exit_gate, const bool is_mutable, F &&lambda) {
-		while (node_ref.get().HasMetadata() && node_ref.get().GetType() == PREFIX) {
-			Prefix prefix(art, node_ref, is_mutable);
+	static void Iterator(ART &art, reference<NODE> &node_ptr_ref, const bool exit_gate, const bool is_mutable,
+	                     F &&lambda) {
+		while (node_ptr_ref.get().HasMetadata() && node_ptr_ref.get().GetType() == PREFIX) {
+			Prefix prefix(art, node_ptr_ref, is_mutable);
 			lambda(prefix);
 
-			node_ref = *prefix.child_slot;
-			if (exit_gate && node_ref.get().GetGateStatus() == GateStatus::GATE_SET) {
+			node_ptr_ref = *prefix.child_slot;
+			if (exit_gate && node_ptr_ref.get().GetGateStatus() == GateStatus::GATE_SET) {
 				break;
 			}
 		}

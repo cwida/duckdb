@@ -1,0 +1,144 @@
+# name: test/sql/timezone/test_icu_calendar_range_error.test
+# description: Date parts that cannot be represented in a non-Gregorian calendar throw a conversion error
+# group: [timezone]
+
+require icu
+
+statement ok
+SET Calendar='chinese';
+
+statement error
+SELECT era(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT year(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT month(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT day(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT decade(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT century(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT millennium(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT microsecond(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT millisecond(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT second(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT minute(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT hour(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT dayofweek(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT isodow(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT week(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT dayofyear(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT quarter(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT isoyear(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT timezone(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT julian(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT yearweek(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT dayofmonth(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT weekday(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT weekofyear(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT monthname(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+statement error
+SELECT dayname(TIMESTAMPTZ '294247-01-10 04:00:54.775806+00');
+----
+Conversion Error: Unable to extract calendar part
+
+# the error is recoverable
+query I
+SELECT year(TIMESTAMPTZ '2024-01-10 04:00:00+00') > 0;
+----
+true

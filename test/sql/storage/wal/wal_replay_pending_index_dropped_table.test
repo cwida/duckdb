@@ -1,0 +1,48 @@
+# name: test/sql/storage/wal/wal_replay_pending_index_dropped_table.test
+# description: WAL replay of same-transaction ADD PRIMARY KEY + RENAME + DROP TABLE
+# group: [wal]
+
+require skip_reload
+
+load {TEST_DIR}/wal_replay_pending_index_dropped_table.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB'
+
+statement ok
+CREATE TABLE t(a INT)
+
+statement ok
+INSERT INTO t VALUES (1), (2)
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE t ADD PRIMARY KEY (a)
+
+statement ok
+ALTER TABLE t RENAME TO s
+
+statement ok
+DROP TABLE s
+
+statement ok
+COMMIT
+
+statement ok
+CREATE TABLE other(x INT)
+
+statement ok
+INSERT INTO other VALUES (42)
+
+# Trigger WAL replay.
+restart
+
+query I
+SELECT x FROM other
+----
+42

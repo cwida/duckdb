@@ -1,4 +1,6 @@
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/parser/parsed_data/create_macro_info.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/statement/copy_database_statement.hpp"
 #include "duckdb/catalog/catalog_entry/list.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -27,10 +29,15 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
 	catalog_entries = PhysicalExport::GetNaiveExportOrder(context, from_database);
 
 	auto info = make_uniq<CopyDatabaseInfo>(target_database_name);
+	auto &target_catalog = Catalog::GetCatalog(context, target_database_name);
 	for (auto &entry : catalog_entries) {
 		auto create_info = entry.get().GetInfo();
 		// re-root the entry (keeping its possibly nested schema path) in the target database
 		create_info->SetQualifiedName(create_info->GetQualifiedName().WithCatalog(target_database_name));
+		if (create_info->type == CatalogType::MACRO_ENTRY || create_info->type == CatalogType::TABLE_MACRO_ENTRY) {
+			// this path bypasses the CREATE binder, enforce the storage-version gate here
+			CheckMacroStorageVersion(target_catalog, create_info->Cast<CreateMacroInfo>());
+		}
 		auto on_conflict = create_info->type == CatalogType::SCHEMA_ENTRY ? OnCreateConflict::IGNORE_ON_CONFLICT
 		                                                                  : OnCreateConflict::ERROR_ON_CONFLICT;
 		// Update all the dependencies of the entry to point to the newly created entries on the target database
@@ -50,14 +57,13 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
 
 unique_ptr<LogicalOperator> Binder::BindCopyDatabaseData(Catalog &source_catalog,
                                                          const Identifier &target_database_name) {
-	auto source_schemas = source_catalog.GetSchemas(context);
-
-	// We can just use ExtractEntries here because the order doesn't matter
-	ExportEntries entries;
-	PhysicalExport::ExtractEntries(context, source_schemas, entries);
+	auto entries = PhysicalExport::GetNaiveExportOrder(context, source_catalog);
 
 	vector<unique_ptr<LogicalOperator>> insert_nodes;
-	for (auto &table_ref : entries.tables) {
+	for (auto &table_ref : entries) {
+		if (table_ref.get().type != CatalogType::TABLE_ENTRY) {
+			continue;
+		}
 		auto &table = table_ref.get().Cast<TableCatalogEntry>();
 		// generate the insert statement
 		InsertStatement insert_stmt;
@@ -112,6 +118,9 @@ BoundStatement Binder::Bind(CopyDatabaseStatement &stmt) {
 		throw BinderException("Cannot copy from %s to %s - FROM and TO databases are the same", stmt.from_database,
 		                      stmt.to_database);
 	}
+	if (target_catalog.IsSystemCatalog()) {
+		throw BinderException("Cannot copy to the system catalog");
+	}
 	if (stmt.copy_type == CopyDatabaseType::COPY_SCHEMA) {
 		result.types = {LogicalType::BOOLEAN};
 		result.names = {"Success"};
@@ -127,7 +136,6 @@ BoundStatement Binder::Bind(CopyDatabaseStatement &stmt) {
 	result.plan = std::move(plan);
 
 	auto &properties = GetStatementProperties();
-	properties.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
 	properties.return_type = StatementReturnType::NOTHING;
 
 	DatabaseModificationType modification;

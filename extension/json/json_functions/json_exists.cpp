@@ -15,11 +15,17 @@ static void ManyExistsFunction(DataChunk &args, ExpressionState &state, Vector &
 }
 
 static void GetExistsFunctionsInternal(ScalarFunctionSet &set, const LogicalType &input_type) {
-	set.AddFunction(ScalarFunction({input_type, LogicalType::VARCHAR}, LogicalType::BOOLEAN, BinaryExistsFunction,
-	                               JSONReadFunctionData::Bind, nullptr, JSONFunctionLocalState::Init));
-	set.AddFunction(ScalarFunction({input_type, LogicalType::LIST(LogicalType::VARCHAR)},
-	                               LogicalType::LIST(LogicalType::BOOLEAN), ManyExistsFunction,
-	                               JSONReadManyFunctionData::Bind, nullptr, JSONFunctionLocalState::Init));
+	ScalarFunction single_fun({}, LogicalType::BOOLEAN, BinaryExistsFunction, JSONReadFunctionData::Bind, nullptr,
+	                          JSONFunctionLocalState::Init);
+	single_fun.GetSignature().AddParameter("json", input_type).AddParameter("path", LogicalType::VARCHAR);
+	single_fun.SetResolveTypesCallback(JSONReadFunctionData::ResolveTypes);
+	set.AddFunction(single_fun);
+	ScalarFunction many_fun({}, LogicalType::LIST(LogicalType::BOOLEAN), ManyExistsFunction,
+	                        JSONReadManyFunctionData::Bind, nullptr, JSONFunctionLocalState::Init);
+	many_fun.GetSignature()
+	    .AddParameter("json", input_type)
+	    .AddParameter("path", LogicalType::LIST(LogicalType::VARCHAR));
+	set.AddFunction(many_fun);
 }
 
 ScalarFunctionSet JSONFunctions::GetExistsFunction() {

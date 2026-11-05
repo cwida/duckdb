@@ -1,0 +1,591 @@
+# name: test/sql/sql_export/sampling_values.test
+# description: SQL export preserves sampling placement, seeds and evaluation counts
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,CASE WHEN i%5=0 THEN NULL ELSE i%3 END v FROM range(10000)t(i) WHERE i%2=0) USING SAMPLE 31 (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,nextval('seq') v FROM range(10000)t(i)) USING SAMPLE 31 (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,i v FROM range(0)t(i)) USING SAMPLE 31 (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,CASE WHEN i%5=0 THEN NULL ELSE i%3 END v FROM range(10000)t(i) WHERE i%2=0) USING SAMPLE 20% (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,nextval('seq') v FROM range(10000)t(i)) USING SAMPLE 20% (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,i v FROM range(0)t(i)) USING SAMPLE 20% (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,CASE WHEN i%5=0 THEN NULL ELSE i%3 END v FROM range(10000)t(i) WHERE i%2=0) USING SAMPLE 50% (bernoulli,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,nextval('seq') v FROM range(10000)t(i)) USING SAMPLE 50% (bernoulli,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,i v FROM range(0)t(i)) USING SAMPLE 50% (bernoulli,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,CASE WHEN i%5=0 THEN NULL ELSE i%3 END v FROM range(10000)t(i) WHERE i%2=0) USING SAMPLE 50% (system,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,nextval('seq') v FROM range(10000)t(i)) USING SAMPLE 50% (system,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,i v FROM range(0)t(i)) USING SAMPLE 50% (system,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,CASE WHEN i%5=0 THEN NULL ELSE i%3 END v FROM range(10000)t(i) WHERE i%2=0) USING SAMPLE 80% (system,1);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,nextval('seq') v FROM range(10000)t(i)) USING SAMPLE 80% (system,1);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,i v FROM range(0)t(i)) USING SAMPLE 80% (system,1);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,CASE WHEN i%5=0 THEN NULL ELSE i%3 END v FROM range(10000)t(i) WHERE i%2=0) USING SAMPLE 0 (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,nextval('seq') v FROM range(10000)t(i)) USING SAMPLE 0 (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II nosort sample_result
+SELECT * FROM (SELECT i,i v FROM range(0)t(i)) USING SAMPLE 0 (reservoir,42);
+
+query I nosort sample_result_effects
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+
+endloop
+
+reset label sample_result
+
+reset label sample_result_effects
+
+endloop
+
+statement ok
+SET threads=1;
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query I nosort sample_37
+SELECT * FROM range(10000) USING SAMPLE 31 (system,42);
+
+endloop
+
+reset label sample_37
+
+# The invalid method/count combination fails during generated preparation.
+statement ok
+SET debug_verify_statement='none';
+
+statement error
+SELECT * FROM range(10000) USING SAMPLE 31 (bernoulli,42);
+----
+<REGEX>:Parser Error:.*cannot be used with a discrete sample count.*
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query TT
+EXPLAIN (SQL) SELECT * FROM range(10000) USING SAMPLE 31 (bernoulli,42);
+----
+sql	<REGEX>:.*USING SAMPLE 31[[:space:]]*[(](?i:Bernoulli), 42[)].*
+
+statement ok
+CREATE TABLE sample_source AS SELECT i FROM range(10000) t(i);
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query I nosort sample_38
+SELECT * FROM sample_source USING SAMPLE 31 (system,42) ORDER BY i;
+
+endloop
+
+reset label sample_38
+
+query TT
+EXPLAIN (SQL) SELECT * FROM sample_source USING SAMPLE 31 (system,42) ORDER BY i;
+----
+sql	<REGEX>:.*USING SAMPLE.*
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query I nosort sample_39
+SELECT * FROM sample_source USING SAMPLE 25% (system,42) ORDER BY i;
+
+endloop
+
+reset label sample_39
+
+query TT
+EXPLAIN (SQL) SELECT * FROM sample_source USING SAMPLE 25% (system,42) ORDER BY i;
+----
+sql	<REGEX>:.*USING SAMPLE.*
+
+query I
+SELECT * FROM sample_source USING SAMPLE 31 (system) ORDER BY i;
+----
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+
+query TT
+EXPLAIN (SQL) SELECT * FROM sample_source USING SAMPLE 31 (system) ORDER BY i;
+----
+sql	<REGEX>:.*USING SAMPLE 31[[:space:]]*[(](?i:System)[)].*
+
+query III
+SELECT count(*),count(DISTINCT x),count(*) FILTER (WHERE x>=0 AND x<10000) FROM (SELECT * FROM sample_source USING SAMPLE 31 (system) ORDER BY i) t(x);
+----
+31	31	31
+
+query I
+SELECT * FROM range(10000) USING SAMPLE 31 (reservoir);
+----
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+<REGEX>:[0-9]{1,4}
+
+query TT
+EXPLAIN (SQL) SELECT * FROM range(10000) USING SAMPLE 31 (reservoir);
+----
+sql	<REGEX>:.*USING SAMPLE 31[[:space:]]*[(](?i:Reservoir)[)].*
+
+query III
+SELECT count(*),count(DISTINCT x),count(*) FILTER (WHERE x>=0 AND x<10000) FROM (SELECT * FROM range(10000) USING SAMPLE 31 (reservoir)) t(x);
+----
+31	31	31
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(10000) USING SAMPLE 31 (system,42));
+----
+31

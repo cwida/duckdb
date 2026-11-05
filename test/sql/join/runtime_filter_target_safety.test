@@ -1,0 +1,175 @@
+# name: test/sql/join/runtime_filter_target_safety.test
+# description: Runtime filters select eligible columns and respect row-selection boundaries
+# group: [join]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE probe(a BIGINT);
+
+statement ok
+INSERT INTO probe VALUES (0),(1),(2);
+
+statement ok
+CREATE TABLE build AS SELECT 1::BIGINT AS b, 1::INTEGER AS c;
+
+statement ok
+CREATE SEQUENCE target_seq;
+
+query II
+SELECT a, v FROM (SELECT a, nextval('target_seq') AS v FROM probe) p JOIN build ON a=b;
+----
+1	2
+
+query I
+SELECT currval('target_seq');
+----
+3
+
+statement ok
+CREATE OR REPLACE SEQUENCE target_seq;
+
+query I
+SELECT a FROM (SELECT a FROM probe WHERE nextval('target_seq')=2) p JOIN build ON a=b;
+----
+1
+
+query I
+SELECT currval('target_seq');
+----
+3
+
+statement ok
+CREATE TABLE choices(a INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO choices VALUES (1,10),(1,20),(2,30);
+
+query I
+SELECT v FROM (SELECT DISTINCT ON (a) a,v FROM choices ORDER BY a,v) p
+JOIN (SELECT 20 AS b) b ON v=b;
+----
+
+query II rowsort
+SELECT a,total FROM (
+    SELECT a,sum(v) AS total FROM choices GROUP BY GROUPING SETS ((a),())
+) p JOIN (SELECT 1 AS b) b ON a=b;
+----
+1	30
+
+query III rowsort
+SELECT a,v,total FROM (
+    SELECT a,v,count(*) AS total FROM choices GROUP BY GROUPING SETS ((a,v),(a))
+) p JOIN (SELECT 1 AS b) b ON a=b;
+----
+1	10	1
+1	20	1
+1	NULL	2
+
+query I
+SELECT v FROM (SELECT v FROM choices ORDER BY v LIMIT 1) p
+JOIN (SELECT 20 AS b) b ON v=b;
+----
+
+query II
+SELECT a,v FROM (
+    SELECT a,(SELECT max(v) FROM choices WHERE choices.a=probe.a) AS v FROM probe
+) p JOIN build ON a=b;
+----
+1	20
+
+# NULL-retaining TopN filters must not create unmatched rows in an outer join.
+query I
+SELECT choices.a FROM choices RIGHT JOIN probe ON choices.a=probe.a
+ORDER BY choices.a NULLS FIRST LIMIT 2;
+----
+NULL
+1
+
+query I
+SELECT choices.a FROM choices FULL JOIN probe ON choices.a=probe.a
+ORDER BY choices.a NULLS FIRST LIMIT 2;
+----
+NULL
+1
+
+# Use multiple row groups so an unsafe TopN filter actually prunes.
+statement ok
+CREATE TABLE topn_left AS SELECT i AS a FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE topn_right AS SELECT i AS a FROM range(-1, 1000000) t(i);
+
+query I
+SELECT topn_left.a FROM topn_left RIGHT JOIN topn_right ON topn_left.a=topn_right.a
+ORDER BY topn_left.a NULLS FIRST LIMIT 2;
+----
+NULL
+0
+
+statement ok
+CREATE TABLE prepared_probe AS SELECT i AS a, [i % 2] AS items FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE prepared_build(b BIGINT, c BIGINT);
+
+statement ok
+PREPARE mixed_columns AS
+SELECT a FROM (SELECT a,unnest(items) AS e FROM prepared_probe) p
+JOIN prepared_build ON a=b AND e=c ORDER BY a;
+
+statement ok
+INSERT INTO prepared_build VALUES (42,0);
+
+# The generated UNNEST column must not prevent filtering the input column.
+query TT
+EXPLAIN ANALYZE SELECT a FROM (SELECT a,unnest(items) AS e FROM prepared_probe) p
+JOIN prepared_build ON a=b AND e=c;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*
+
+query I
+EXECUTE mixed_columns;
+----
+42
+
+statement ok
+DELETE FROM prepared_build;
+
+statement ok
+INSERT INTO prepared_build VALUES (73,1),(9999,1);
+
+query I
+EXECUTE mixed_columns;
+----
+73
+9999
+
+statement ok
+DELETE FROM prepared_build;
+
+query I
+EXECUTE mixed_columns;
+----
+
+statement ok
+INSERT INTO prepared_build VALUES (84,0);
+
+query I
+EXECUTE mixed_columns;
+----
+84
+
+# Join on both a grouping column and an aggregate result.
+statement ok
+CREATE TABLE group_build AS SELECT 42::BIGINT AS b,1::BIGINT AS c;
+
+query I
+SELECT a FROM (SELECT a,count(*) AS total FROM prepared_probe GROUP BY a) p
+JOIN group_build ON a=b AND total=c;
+----
+42

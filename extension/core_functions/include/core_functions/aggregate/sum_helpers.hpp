@@ -12,9 +12,11 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/function/aggregate_state_layout.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include <type_traits>
 #include <utility>
 
@@ -65,11 +67,19 @@ struct RepeatedStateValue {
 	}
 };
 
+//! Neumaier summation: the exact rounding error of each addition (TwoSum) is accumulated in err
+//! The compensated sum is summed - err
 static inline void KahanAddInternal(double input, double &summed, double &err) {
-	double diff = input - err;
-	double newval = summed + diff;
-	err = (newval - summed) - diff;
+	double newval = summed + input;
+	double input_part = newval - summed;
+	double rounding = (summed - (newval - input_part)) + (input - input_part);
+	err -= rounding;
 	summed = newval;
+}
+
+static inline double KahanFinalize(double summed, double err) {
+	// once the sum overflows the error term is meaningless (inf - inf)
+	return Value::IsFinite(summed) ? summed - err : summed;
 }
 
 template <class T>
@@ -100,7 +110,7 @@ struct KahanSumState {
 	void Combine(const KahanSumState &other) {
 		this->is_set = other.is_set || this->is_set;
 		KahanAddInternal(other.value, this->value, this->err);
-		KahanAddInternal(other.err, this->value, this->err);
+		this->err += other.err;
 	}
 };
 
@@ -268,5 +278,22 @@ struct BaseSumOperation {
 		return true;
 	}
 };
+
+//! The DECIMAL overloads can be selected for non-DECIMAL arguments (e.g. through named arguments) - the bind runs
+//! before the argument is cast, so cast it to the DECIMAL type that represents its values here
+inline LogicalType BindDecimalArgument(ClientContext &context, unique_ptr<Expression> &argument,
+                                       const string &function_name) {
+	auto type = argument->GetReturnType();
+	if (type.id() == LogicalTypeId::DECIMAL) {
+		return type;
+	}
+	uint32_t width, scale;
+	if (!type.GetDecimalProperties(width, scale)) {
+		throw BinderException("%s: cannot compute the DECIMAL aggregate of type %s", function_name, type.ToString());
+	}
+	auto decimal_type = LogicalType::DECIMAL(width, scale);
+	argument = BoundCastExpression::AddCastToType(context, std::move(argument), decimal_type);
+	return decimal_type;
+}
 
 } // namespace duckdb

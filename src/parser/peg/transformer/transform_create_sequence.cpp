@@ -130,6 +130,13 @@ pair<string, unique_ptr<SequenceOption>> PEGTransformerFactory::TransformSeqNoCy
 	return make_pair("cycle", make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_CYCLE, Value(false)));
 }
 
+//! Sequence options take integer constants; anything else used to be rounded or cast silently
+static void CheckIntegerSequenceOption(const char *option, const Literal &literal) {
+	if (!literal.IsNull() && literal.kind != LiteralKind::INTEGER) {
+		throw ParserException("Expected an integer argument for %s, got %s", option, literal.ToString());
+	}
+}
+
 pair<string, unique_ptr<SequenceOption>>
 PEGTransformerFactory::TransformSeqSetIncrement(PEGTransformer &transformer, const bool &has_result,
                                                 unique_ptr<ParsedExpression> expression) {
@@ -142,15 +149,19 @@ PEGTransformerFactory::TransformSeqSetIncrement(PEGTransformer &transformer, con
 		if (func_expr->GetArguments()[0].GetExpression().GetExpressionClass() != ExpressionClass::CONSTANT) {
 			throw InvalidInputException("Expected constant expression as child of minus function");
 		}
-		const auto const_value =
-		    func_expr->GetArguments()[0].GetExpression().Cast<ConstantExpression>().GetValue().GetValue<hugeint_t>();
-		expression = make_uniq<ConstantExpression>(Value::Numeric(LogicalType::BIGINT, -const_value));
+		auto &literal = func_expr->GetArguments()[0].GetExpression().Cast<ConstantExpression>().GetLiteral();
+		if (!literal.IsNumeric()) {
+			throw InvalidInputException("Expected constant expression as child of minus function");
+		}
+		expression = ConstantExpression::FromLiteral(literal.Negate());
 	}
 	if (expression->GetExpressionClass() != ExpressionClass::CONSTANT) {
 		throw ParserException("Expected constant expression.");
 	}
-	auto const_expr = expression->Cast<ConstantExpression>();
-	return make_pair("increment", make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_INC, const_expr.GetValue()));
+	auto &const_expr = expression->Cast<ConstantExpression>();
+	CheckIntegerSequenceOption("INCREMENT", const_expr.GetLiteral());
+	return make_pair("increment",
+	                 make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_INC, const_expr.GetLiteral().ToValue()));
 }
 
 pair<string, unique_ptr<SequenceOption>>
@@ -165,17 +176,20 @@ PEGTransformerFactory::TransformSeqSetMinMax(PEGTransformer &transformer, const 
 		if (func_expr->GetArguments()[0].GetExpression().GetExpressionClass() != ExpressionClass::CONSTANT) {
 			throw InvalidInputException("Expected constant expression as child of minus function");
 		}
-		const auto const_value =
-		    func_expr->GetArguments()[0].GetExpression().Cast<ConstantExpression>().GetValue().GetValue<hugeint_t>();
-		expression = make_uniq<ConstantExpression>(Value::Numeric(LogicalType::BIGINT, -const_value));
+		auto &literal = func_expr->GetArguments()[0].GetExpression().Cast<ConstantExpression>().GetLiteral();
+		if (!literal.IsNumeric()) {
+			throw InvalidInputException("Expected constant expression as child of minus function");
+		}
+		expression = ConstantExpression::FromLiteral(literal.Negate());
 	}
 
 	if (expression->GetExpressionClass() != ExpressionClass::CONSTANT) {
 		throw ParserException("Expected constant expression.");
 	}
-	auto const_expr = expression->Cast<ConstantExpression>();
+	auto &const_expr = expression->Cast<ConstantExpression>();
+	CheckIntegerSequenceOption(seq_min_or_max == "minvalue" ? "MINVALUE" : "MAXVALUE", const_expr.GetLiteral());
 	auto seq_info = seq_min_or_max == "minvalue" ? SequenceInfo::SEQ_MIN : SequenceInfo::SEQ_MAX;
-	return make_pair(seq_min_or_max, make_uniq<ValueSequenceOption>(seq_info, const_expr.GetValue()));
+	return make_pair(seq_min_or_max, make_uniq<ValueSequenceOption>(seq_info, const_expr.GetLiteral().ToValue()));
 }
 
 pair<string, unique_ptr<SequenceOption>> PEGTransformerFactory::TransformSeqNoMinMax(PEGTransformer &transformer,
@@ -190,8 +204,10 @@ PEGTransformerFactory::TransformSeqStartWith(PEGTransformer &transformer, const 
 	if (expression->GetExpressionClass() != ExpressionClass::CONSTANT) {
 		throw ParserException("Expected constant expression.");
 	}
-	auto const_expr = expression->Cast<ConstantExpression>();
-	return make_pair("start", make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_START, const_expr.GetValue()));
+	auto &const_expr = expression->Cast<ConstantExpression>();
+	CheckIntegerSequenceOption("START", const_expr.GetLiteral());
+	return make_pair("start",
+	                 make_uniq<ValueSequenceOption>(SequenceInfo::SEQ_START, const_expr.GetLiteral().ToValue()));
 }
 
 pair<string, unique_ptr<SequenceOption>>

@@ -1,0 +1,47 @@
+# name: test/sql/aggregate/variant/variant_group_object_fallible.test
+# description: variant_group_object validates keys at runtime and must be registered as fallible
+# group: [variant]
+
+# NULL and duplicate keys raise as regular errors in plain aggregation
+
+statement error
+SELECT variant_group_object(k, v::VARIANT) FROM (VALUES (NULL::VARCHAR, 1)) t(k, v);
+----
+variant_group_object key cannot be NULL
+
+statement error
+SELECT variant_group_object(k, v::VARIANT) FROM (VALUES ('a', 1), ('a', 2)) t(k, v);
+----
+variant_group_object contains duplicate key
+
+# the degenerate CURRENT ROW frame scalarizes the aggregate into a window scalar function that
+# copies the aggregate's properties - the error must stay a regular error instead of becoming an
+# internal "not marked as fallible" error
+
+statement error
+SELECT variant_group_object(k, v::VARIANT) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES (NULL::VARCHAR, 1)) t(k, v);
+----
+variant_group_object key cannot be NULL
+
+# a fallible error mode blocks whole-dictionary execution of the scalarized aggregate
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT variant_group_object(k, v::VARIANT) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES ('a', 1), ('b', 2)) t(k, v);
+----
+{'a': 1}
+{'b': 2}
+
+statement ok
+RESET debug_verify_vector;
+
+# valid aggregation is unaffected
+
+query I
+SELECT variant_group_object(k, v::VARIANT) FROM (VALUES ('a', 1), ('b', 2)) t(k, v);
+----
+{'a': 1, 'b': 2}

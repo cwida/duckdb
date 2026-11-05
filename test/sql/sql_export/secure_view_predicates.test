@@ -1,0 +1,129 @@
+# name: test/sql/sql_export/secure_view_predicates.test
+# description: Preserve caller predicates through secure-view pushdown and pruning
+# group: [sql_export]
+
+statement ok
+CREATE TABLE private_rows(i INTEGER, p VARCHAR);
+
+statement ok
+INSERT INTO private_rows VALUES (1,'a'),(2,'b'),(NULL,'n'),(1,'a');
+
+statement ok
+CREATE SECURE VIEW public_rows AS SELECT * FROM private_rows;
+
+statement ok
+CREATE SECURE VIEW nested_rows AS SELECT * FROM public_rows;
+
+foreach view public_rows nested_rows
+
+query T
+SELECT p FROM {view} WHERE i=1 ORDER BY p;
+----
+a
+a
+
+query T
+SELECT p FROM {view} WHERE i IS NOT NULL AND p<>'b' ORDER BY p;
+----
+a
+a
+
+query T
+SELECT p FROM {view} WHERE i IS NULL;
+----
+n
+
+endloop
+
+query T
+WITH c AS MATERIALIZED (SELECT * FROM nested_rows) SELECT p FROM c WHERE i=1 ORDER BY p;
+----
+a
+a
+
+query T
+WITH c AS NOT MATERIALIZED (SELECT * FROM nested_rows) SELECT p FROM c WHERE i=1 ORDER BY p;
+----
+a
+a
+
+
+statement ok
+CREATE TABLE private_text(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO private_text VALUES (1,'7'),(2,'bad'),(1,'7'),(1,NULL);
+
+statement ok
+CREATE SECURE VIEW public_text AS SELECT s FROM private_text WHERE i=1;
+
+query I
+SELECT s::INTEGER FROM public_text WHERE s::INTEGER=7 ORDER BY 1;
+----
+7
+7
+
+query II
+SELECT count(*), count(s) FROM public_text;
+----
+3	2
+
+query TT
+EXPLAIN (SQL) SELECT p FROM public_rows WHERE i=1;
+----
+sql	<REGEX>:.*public_rows.*WHERE.*
+
+# Barriers retain their row boundary, including observable sequence evaluation.
+statement ok
+CREATE TABLE barrier_rows(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO barrier_rows VALUES (1,'hidden'),(2,'42');
+
+statement ok
+CREATE TABLE visible_ids AS SELECT 2 AS i;
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+query T
+SELECT r.s FROM barrier_rows r JOIN visible_ids v USING(i) WHERE __internal_barrier(r.s::INTEGER=42);
+----
+42
+
+statement ok
+CREATE SECURE VIEW barrier_view AS SELECT r.* FROM barrier_rows r JOIN visible_ids v USING(i);
+
+query IT
+SELECT * FROM barrier_view WHERE s::INTEGER=42;
+----
+2	42
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+CREATE SEQUENCE barrier_sequence;
+
+query I
+SELECT count(*) FROM barrier_view WHERE nextval('barrier_sequence') > 0;
+----
+1
+
+query I
+SELECT currval('barrier_sequence');
+----
+1
+
+statement ok
+CREATE SEQUENCE limit_sequence;
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(10) LIMIT 3) WHERE __internal_barrier(nextval('limit_sequence') > 0);
+----
+3
+
+query I
+SELECT currval('limit_sequence');
+----
+3

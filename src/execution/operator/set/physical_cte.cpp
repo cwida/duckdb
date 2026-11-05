@@ -44,6 +44,8 @@ public:
 	idx_t consumer_idx;
 	idx_t max_threads;
 	atomic<bool> unregistered {false};
+	//! The exchange total grows while the producer outruns its estimate - keeps the scan progress monotonic
+	MonotonicProgress scan_progress;
 };
 
 class CTEConsumerLocalSourceState : public LocalSourceState {
@@ -110,7 +112,7 @@ bool PhysicalCTEConsumerSource::ParallelSource() const {
 
 ProgressData PhysicalCTEConsumerSource::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
 	auto &state = gstate.Cast<CTEConsumerGlobalSourceState>();
-	return state.exchange->ScanProgress(state.consumer_idx, estimated_cardinality);
+	return state.scan_progress.Update(state.exchange->ScanProgress(state.consumer_idx, estimated_cardinality));
 }
 
 void PhysicalCTEConsumerSource::SourceFinished(ClientContext &context, GlobalSourceState &gstate) const {
@@ -506,6 +508,11 @@ void PhysicalCTE::RegisterMaterializedConsumer(idx_t consumer_idx) {
 	exchange->SelectMaterializedConsumer(consumer_idx);
 }
 
+void PhysicalCTE::DemoteBufferedConsumer(idx_t consumer_idx) {
+	D_ASSERT(exchange);
+	exchange->DemoteBufferedConsumerToMaterialized(consumer_idx);
+}
+
 CTEExecutionMode PhysicalCTE::GetExecutionMode() const {
 	if (!exchange) {
 		return CTEExecutionMode::MATERIALIZED;
@@ -606,11 +613,8 @@ ProgressData PhysicalCTE::GetSinkProgress(ClientContext &context, GlobalSinkStat
 	if (!state.working_table_ref) {
 		return ProgressData {0, 1, true};
 	}
-	auto count = double(state.ordered_data ? state.ordered_data->Count() : state.working_table_ref->Count());
-	ProgressData progress;
-	progress.done = count;
-	progress.total = count + source_progress.total;
-	return progress;
+	// materializing the CTE is done once the source is exhausted
+	return source_progress;
 }
 
 } // namespace duckdb

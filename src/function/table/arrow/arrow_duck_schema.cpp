@@ -119,17 +119,21 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(string &format) {
 		}
 		switch (bitwidth) {
 		case 32:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_32));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_32));
 		case 64:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_64));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_64));
 		case 128:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_128));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_128));
 		case 256:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_256));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_256));
 		default:
 			throw NotImplementedException("Unsupported bit-width value of %d  for Arrow Decimal type", bitwidth);
 		}
@@ -338,6 +342,13 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 	if (!use_dictionary) {
 		return type;
 	}
+	if (HasExtension()) {
+		// A registered extension type's type info describes the extension's STORAGE tree, which need not
+		// mirror the logical type's children — reconstructing through it would produce a hybrid type.
+		// The logical type is authoritative here; any dictionaries inside the storage are handled by the
+		// storage-side conversion, not by the output type.
+		return type;
+	}
 	// Dictionaries can exist in arbitrarily nested schemas
 	// have to reconstruct the type
 	auto id = type.id();
@@ -417,7 +428,11 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromSchema(ClientContext &context, Arrow
 		if (config.HasArrowExtension(extension_info)) {
 			auto extension = config.GetArrowExtension(extension_info);
 			arrow_type = extension.GetType(context, schema, schema_metadata);
-			arrow_type->extension_data = extension.GetTypeExtension();
+			if (!arrow_type->extension_data) {
+				// GetType may have attached per-column extension data (e.g. to record the incoming
+				// schema's field order); fall back to the registered instance otherwise
+				arrow_type->extension_data = extension.GetTypeExtension();
+			}
 		}
 	}
 

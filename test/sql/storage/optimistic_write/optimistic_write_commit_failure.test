@@ -1,0 +1,60 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_commit_failure.test
+# description: Test that optimistically written blocks are reclaimed when commit fails
+# group: [optimistic_write]
+
+load {TEST_DIR}/optimistic_write_commit_failure.db
+
+statement ok
+SET GLOBAL debug_verify_blocks = true;
+
+statement ok
+CREATE TABLE t(i INT);
+
+statement ok
+CHECKPOINT;
+
+query III
+SELECT total_blocks, used_blocks, free_blocks FROM pragma_database_size();
+----
+1	1	0
+
+statement ok
+SET debug_force_commit_failure = true;
+
+statement error
+INSERT INTO t SELECT * FROM range(130000);
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false;
+
+# Force checkpoint even though the WAL was truncated
+statement ok
+PRAGMA force_checkpoint;
+
+# Checkpoint reclaims modified_blocks and truncates the trailing free block from disk without verification errors.
+statement ok
+CHECKPOINT;
+
+query III
+SELECT total_blocks, used_blocks, free_blocks FROM pragma_database_size();
+----
+1	1	0
+
+# Subsequent insert and checkpoint should work normally and verify database health
+statement ok
+INSERT INTO t VALUES (1);
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM t;
+----
+1
+
+query III
+SELECT total_blocks, used_blocks, free_blocks FROM pragma_database_size();
+----
+1	1	0

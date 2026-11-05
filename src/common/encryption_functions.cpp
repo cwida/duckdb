@@ -66,15 +66,18 @@ string EncryptionEngine::AddKeyToCache(DatabaseInstance &db, data_ptr_t key) {
 	return key_id;
 }
 
+void EncryptionEngine::GenerateRandomKey(DatabaseInstance &db, data_ptr_t key, idx_t key_length) {
+	// key generation needs the read-write encryption util
+	auto metadata = make_uniq<EncryptionStateMetadata>(EncryptionTypes::GCM, key_length, EncryptionTypes::V0_1);
+	auto encryption_state = db.GetEncryptionUtil(false)->CreateEncryptionState(std::move(metadata));
+	encryption_state->GenerateRandomData(key, key_length);
+}
+
 void EncryptionEngine::AddTempKeyToCache(DatabaseInstance &db) {
 	//! Add a temporary key to the cache
 	const auto length = MainHeader::DEFAULT_ENCRYPTION_KEY_LENGTH;
 	data_t temp_key[length];
-
-	// we cannot generate temporary keys with read-only enabled
-	auto metadata = make_uniq<EncryptionStateMetadata>(EncryptionTypes::GCM, length, EncryptionTypes::V0_1);
-	auto encryption_state = db.GetEncryptionUtil(false)->CreateEncryptionState(std::move(metadata));
-	encryption_state->GenerateRandomData(temp_key, length);
+	GenerateRandomKey(db, temp_key, length);
 
 	string key_id = "temp_key";
 	AddKeyToCache(db, temp_key, key_id);

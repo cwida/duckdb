@@ -49,7 +49,9 @@ static void ReverseFunction(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 ScalarFunction ReverseFun::GetFunction() {
-	return ScalarFunction("reverse", {LogicalType::VARCHAR}, LogicalType::VARCHAR, ReverseFunction);
+	ScalarFunction fun("reverse", {}, LogicalType::VARCHAR, ReverseFunction);
+	fun.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	return fun;
 }
 
 } // namespace duckdb

@@ -5,19 +5,32 @@ Subject: [PATCH 7/8] Use MSG_NOSIGNAL when available
 
 
 diff --git a/third_party/httplib/httplib.hpp b/third_party/httplib/httplib.hpp
-index e446393..27de210 100644
+index 537f64e..9cf33b6 100644
 --- a/third_party/httplib/httplib.hpp
 +++ b/third_party/httplib/httplib.hpp
-@@ -195,8 +195,12 @@
+@@ -194,10 +194,6 @@
+ #define CPPHTTPLIB_RECV_FLAGS 0
  #endif
  
- #ifndef CPPHTTPLIB_SEND_FLAGS
+-#ifndef CPPHTTPLIB_SEND_FLAGS
+-#define CPPHTTPLIB_SEND_FLAGS 0
+-#endif
+-
+ #ifndef CPPHTTPLIB_LISTEN_BACKLOG
+ #define CPPHTTPLIB_LISTEN_BACKLOG 128
+ #endif
+@@ -325,6 +321,14 @@ using socket_t = int;
+ #endif
+ #endif //_WIN32
+ 
++#ifndef CPPHTTPLIB_SEND_FLAGS
 +#ifdef MSG_NOSIGNAL
 +#define CPPHTTPLIB_SEND_FLAGS MSG_NOSIGNAL
 +#else
- #define CPPHTTPLIB_SEND_FLAGS 0
- #endif
++#define CPPHTTPLIB_SEND_FLAGS 0
 +#endif
- 
- #ifndef CPPHTTPLIB_LISTEN_BACKLOG
- #define CPPHTTPLIB_LISTEN_BACKLOG 128
++#endif
++
+ #if defined(__APPLE__)
+ #include <TargetConditionals.h>
+ #endif

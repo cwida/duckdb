@@ -1,14 +1,63 @@
 module: function signature
 
+#-----------------------------------------------------------------------------------------------------------------------
+# Enums
+#-----------------------------------------------------------------------------------------------------------------------
+enums:
+  FUNCTION_PARAMETER_KIND:
+    description: |
+      How a caller passes the argument for a parameter, following Python's parameter kinds. A signature orders its
+      parameters by kind, in the order the values are listed here. Pass one of these to
+      `[[function_signature_add_parameter]]`.
+    # The values match duckdb::FunctionParameterKind
+    values:
+      FUNCTION_PARAMETER_KIND_POSITIONAL_ONLY:
+        value: 0
+        description: |
+          Passed by position only. The name is invisible to a caller: a named argument with the same name is received
+          by `**kwargs`, or rejected when the signature has none.
+      FUNCTION_PARAMETER_KIND_STANDARD:
+        value: 1
+        description: Passed by position or by name.
+      FUNCTION_PARAMETER_KIND_POSITIONAL_VARIADIC:
+        value: 2
+        description: |
+          `*args`: receives the positional arguments left over after the positional-only and standard parameters,
+          each cast to the parameter type. ANY leaves them un-cast.
+      FUNCTION_PARAMETER_KIND_NAMED_ONLY:
+        value: 3
+        description: Passed by name only.
+      FUNCTION_PARAMETER_KIND_NAMED_VARIADIC:
+        value: 4
+        description: |
+          `**kwargs`: receives the named arguments that match no other parameter, each cast to the parameter type.
+          ANY leaves them un-cast.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
 handles:
   function_signature:
     description: |
-      An opaque handle to a function signature. Carries the function's argument types and return type.
+      An opaque handle to a function signature. Carries the function's parameters and return type.
 
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
 functions:
   function_signature_add_parameter:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
+    description: |
+      Adds a parameter to a signature.
+
+      The kind decides how a caller passes the argument; see `[[FUNCTION_PARAMETER_KIND]]`. The signature keeps its
+      parameters ordered by kind, and parameters of the same kind in the order they were added, so parameters of
+      different kinds can be added in any order. A default value makes the parameter optional; `*args` and
+      `**kwargs` cannot have one.
+
+      Registration fails when two parameters share a name, when the signature has more than one `*args` or
+      `**kwargs` parameter, or when a standard parameter without a default value follows one with a default value.
     parameters:
       sig:
         type: function_signature
@@ -16,54 +65,32 @@ functions:
         description: The signature to configure.
       name:
         type: identifier
+        indirection: 1
+        const: true
         kind: IN
         description: The parameter name. Borrowed and copied.
       type:
         type: logical_type
         kind: IN
-        description: The parameter type. Borrowed and copied.
+        description: The parameter type. ANY accepts an argument of any type without casting it. Borrowed and copied.
       value:
         type: value
         kind: IN
         description: Optional default value, borrowed and copied. Will be cast to the parameter type.
+      kind:
+        type: FUNCTION_PARAMETER_KIND
+        kind: IN
+        description: How a caller passes the argument for the parameter.
       err:
         type: error_info
         indirection: 1
         kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-    return_type: ERROR
-
-  function_signature_set_varargs:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
-    description: |
-      Sets the variadic tail type of a signature.
-
-      Makes the signature variadic: after its fixed parameters it accepts any
-      number of extra trailing arguments, each implicitly cast to type. Pass
-      ANY for a heterogeneous tail whose arguments keep their own types. A
-      NULL or INVALID type is rejected with INVALID_INPUT; ANY is accepted.
-      Calling this again overwrites the previous variadic tail type. The type
-      is borrowed and copied.
-    role: setter
-    belongs_to: function_signature
-    parameters:
-      sig:
-        type: function_signature
-        description: The signature to configure.
-      type:
-        type: logical_type
-        description: The type extra trailing arguments are cast to. ANY leaves them un-cast.
-      err:
-        type: error_info
-        indirection: 1
-        kind: OUT
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
   function_signature_set_return_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the return type of a signature.
 

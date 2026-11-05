@@ -60,3 +60,84 @@ query I
 SELECT count(*) FROM doubles WHERE i NOT IN (1, 2, 3);
 ----
 1
+
+# Each row group contains one string; NOT IN excludes the first and third groups.
+statement ok
+CREATE TABLE strings AS
+SELECT CASE range // 2048
+    WHEN 0 THEN 'v000000'
+    WHEN 1 THEN 'v000001'
+    WHEN 2 THEN 'v000010'
+    ELSE 'v999999'
+END AS s, 1 AS payload
+FROM range(8192);
+
+query I
+SELECT sum(payload) FROM strings WHERE s NOT IN ('v000000', 'v000010');
+----
+4096
+
+query I
+SELECT sum(payload) FROM strings WHERE s <> 'v000000' AND s <> 'v000010';
+----
+4096
+
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM strings WHERE s <> 'v000000' AND s <> 'v000010';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM strings WHERE s NOT IN ('v000000', 'v000010');
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+# A listed string mixed with NULLs can be pruned, but a mixed string range must remain eligible.
+statement ok
+CREATE TABLE nullable_strings AS
+SELECT CASE range // 2048
+    WHEN 0 THEN CASE WHEN range % 2 = 0 THEN NULL ELSE 'a' END
+    WHEN 1 THEN CASE WHEN range % 2 = 0 THEN 'a' ELSE 'b' END
+    WHEN 2 THEN 'z'
+    ELSE 'c'
+END AS s, 1 AS payload
+FROM range(8192);
+
+query I
+SELECT sum(payload) FROM nullable_strings WHERE s NOT IN ('a', 'z');
+----
+3072
+
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM nullable_strings WHERE s NOT IN ('a', 'z');
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+query I
+SELECT sum(payload) FROM nullable_strings WHERE s IN ('a', 'z', NULL);
+----
+4096
+
+query I
+SELECT count(*) FROM nullable_strings WHERE s NOT IN ('a', 'z', NULL);
+----
+0
+
+# Equal truncated prefixes do not prove that every string is an IN-list member.
+statement ok
+CREATE TABLE long_strings AS
+SELECT CASE WHEN range < 2048 THEN 'abcdefghijkl'
+    WHEN range % 2 = 0 THEN 'abcdefghijkla'
+    ELSE 'abcdefghijklb'
+END AS s, 1 AS payload
+FROM range(4096);
+
+query I
+SELECT sum(payload) FROM long_strings WHERE s NOT IN ('abcdefghijkla', 'abcdefghijklc');
+----
+3072
+
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM long_strings WHERE s NOT IN ('abcdefghijkla', 'abcdefghijklc');
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 2.*

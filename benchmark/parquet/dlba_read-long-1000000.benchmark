@@ -1,0 +1,7 @@
+# name: benchmark/parquet/dlba_read-long-1000000.benchmark
+# description: Read DELTA_LENGTH_BYTE_ARRAY-encoded data from Parquet, 1000000 unique long strings
+# group: [parquet]
+
+template benchmark/parquet/dlba_read.benchmark.in
+UNIQUE_COUNT=1000000
+PREFIX=veryveryverylongstring_

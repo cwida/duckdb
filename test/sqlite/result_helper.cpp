@@ -61,7 +61,7 @@ void TestResultHelper::SortQueryResult(SortStyle sort_style, vector<string> &res
 }
 
 bool TestResultHelper::CheckQueryResult(const Query &query, ExecuteContext &context,
-                                        duckdb::unique_ptr<MaterializedQueryResult> owned_result) {
+                                        duckdb::unique_ptr<QueryResult> owned_result) {
 	auto &result = *owned_result;
 	auto &runner = query.runner;
 	auto expected_column_count = query.expected_column_count;
@@ -76,6 +76,7 @@ bool TestResultHelper::CheckQueryResult(const Query &query, ExecuteContext &cont
 			runner.finished_processing_file = true;
 			return true;
 		}
+		runner.last_error_message = result.GetError();
 		if (!FailureSummary::SkipLoggingSameError(context.error_file)) {
 			logger.UnexpectedFailure(result);
 		}
@@ -283,72 +284,135 @@ bool TestResultHelper::CheckQueryResult(const Query &query, ExecuteContext &cont
 	return true;
 }
 
+static bool IsRegexComparison(const string &expected) {
+	return StringUtil::StartsWith(expected, "<REGEX>:") || StringUtil::StartsWith(expected, "<!REGEX>:");
+}
+
+bool TestResultHelper::ErrorMatchesExpected(SQLLogicTestLogger &logger, const string &expected,
+                                            const string &actual) const {
+	// We run both comparisons on purpose, we might move to only the second but might require some changes in tests
+	// This is due to some errors containing absolute paths, some relatives
+	if (StringUtil::Contains(actual, expected) || StringUtil::Contains(actual, runner.ReplaceKeywords(expected))) {
+		return true;
+	}
+
+	if (!IsRegexComparison(expected)) {
+		return false;
+	}
+	//! NOTE: mimicks 'QueryResult::ToString' behavior if 'error' is set
+	auto error_message = actual + "\n";
+	return MatchesRegex(logger, error_message, expected);
+}
+
+optional<string> TestResultHelper::EvaluateStatementResult(SQLLogicTestLogger &logger, const Statement &statement,
+                                                           ExecuteContext &context,
+                                                           const optional<string> &error) const {
+	//! Check to see if we are expecting success or failure
+	auto expected_result = statement.expected_result;
+	switch (expected_result) {
+	case ExpectedResult::RESULT_SUCCESS: {
+		//! If there's an error, it's always unexpected.
+		return error;
+	}
+	case ExpectedResult::RESULT_UNKNOWN:
+	case ExpectedResult::RESULT_ERROR: {
+		const bool success_is_not_an_error = expected_result == ExpectedResult::RESULT_UNKNOWN;
+		if (!error) {
+			if (success_is_not_an_error) {
+				//! OK is not unexpected
+				return std::nullopt;
+			}
+			//! Expected an error, didn't get an error - always unexpected
+			//! NOTE: Signal unexpected result, without performing extra logging
+			return "";
+		}
+		const auto &expected = statement.expected_error;
+		const auto &actual = *error;
+		if (expected.empty() || ErrorMatchesExpected(logger, expected, actual)) {
+			//! Either no explicit expectation was set, or the error matches - not unexpected
+			return std::nullopt;
+		}
+		return error;
+	}
+	default: {
+		//! The result is never unexpected, we accept all results (apart from the special cases handled above)
+		return std::nullopt;
+	}
+	}
+}
+
 bool TestResultHelper::CheckStatementResult(const Statement &statement, ExecuteContext &context,
-                                            duckdb::unique_ptr<MaterializedQueryResult> owned_result) {
+                                            duckdb::unique_ptr<QueryResult> owned_result) {
 	auto &result = *owned_result;
-	bool error = result.HasError();
 	SQLLogicTestLogger logger(context, statement);
 	if (runner.output_result_mode || runner.debug_mode) {
 		result.Print();
 	}
 
-	/* Check to see if we are expecting success or failure */
-	auto expected_result = statement.expected_result;
-	if (expected_result != ExpectedResult::RESULT_SUCCESS) {
-		// even in the case of "statement error", we do not accept ALL errors
-		// internal errors are never expected
-		// neither are "unoptimized result differs from original result" errors
-
-		if (result.HasError() && TestIsInternalError(runner.always_fail_error_messages, result.GetError())) {
-			logger.InternalException(result);
-			return false;
-		}
-		if (expected_result == ExpectedResult::RESULT_UNKNOWN || expected_result == ExpectedResult::RESULT_DONT_CARE) {
-			error = false;
-		} else {
-			error = !error;
-		}
-		if (result.HasError() && !statement.expected_error.empty()) {
-			// We run both comparions on purpose, we might move to only the second but might require some changes in
-			// tests
-			// This is due to some errors containing absolute paths, some relatives
-			if (!StringUtil::Contains(result.GetError(), statement.expected_error) &&
-			    !StringUtil::Contains(result.GetError(), runner.ReplaceKeywords(statement.expected_error))) {
-				bool success = false;
-				if (StringUtil::StartsWith(statement.expected_error, "<REGEX>:") ||
-				    StringUtil::StartsWith(statement.expected_error, "<!REGEX>:")) {
-					success = MatchesRegex(logger, result.ToString(), statement.expected_error);
-				}
-				if (!success) {
-					// don't log the same test failure many times:
-					// e.g. log only the first failure in
-					// `./build/debug/test/unittest --on-init "SET max_memory='400kb';"
-					// test/fuzzer/pedro/concurrent_catalog_usage.test`
-					if (!SkipErrorMessage(result.GetError()) &&
-					    !FailureSummary::SkipLoggingSameError(statement.file_name)) {
-						logger.ExpectedErrorMismatch(statement.expected_error, result);
-						return false;
-					}
-				}
-				TEST_ASSERTION();
-				return true;
-			}
-		}
+	optional<string> error;
+	if (result.HasError()) {
+		error = result.GetError();
 	}
 
-	/* Report an error if the results do not match expectation */
-	if (error) {
-		if (expected_result == ExpectedResult::RESULT_SUCCESS && SkipErrorMessage(result.GetError())) {
+	if (error && TestIsInternalError(runner.always_fail_error_messages, *error)) {
+		//! Encountered an internal exception, regardless of what statement type, this is unexpected
+		logger.InternalException(result);
+		return false;
+	}
+
+	auto unexpected_result = EvaluateStatementResult(logger, statement, context, error);
+	if (!unexpected_result) {
+		TEST_ASSERTION();
+		return true;
+	}
+
+	//! Statement ended in an unexpected result, deal with it
+	auto expected_result = statement.expected_result;
+
+	switch (expected_result) {
+	case ExpectedResult::RESULT_SUCCESS: {
+		if (SkipErrorMessage(*unexpected_result)) {
+			//! File is skipped as a result of the encountered error message
+			runner.finished_processing_file = true;
+			return true;
+		}
+		runner.last_error_message = *unexpected_result;
+		if (!FailureSummary::SkipLoggingSameError(statement.file_name)) {
+			logger.UnexpectedStatement(true, result);
+		}
+		return false;
+	}
+	case ExpectedResult::RESULT_UNKNOWN:
+	case ExpectedResult::RESULT_ERROR: {
+		auto &error_message = *unexpected_result;
+		//! NOTE: We use the empty string to indicate the statement ended in success unexpectedly
+		const bool no_error_result = error_message.empty();
+		if (expected_result == ExpectedResult::RESULT_UNKNOWN && no_error_result) {
+			throw InternalException("OK (no error) is never unexpected for 'statement maybe'");
+		}
+		if (!no_error_result && SkipErrorMessage(error_message)) {
+			//! File is skipped as a result of the encountered error message
 			runner.finished_processing_file = true;
 			return true;
 		}
 		if (!FailureSummary::SkipLoggingSameError(statement.file_name)) {
-			logger.UnexpectedStatement(expected_result == ExpectedResult::RESULT_SUCCESS, result);
+			if (no_error_result) {
+				//! Expected an error but the statement succeeded!
+				logger.UnexpectedStatement(false, result);
+			} else {
+				//! Received an error but it didn't match
+				const auto &expected = statement.expected_error;
+				logger.ExpectedErrorMismatch(expected, result);
+			}
 		}
 		return false;
 	}
-	TEST_ASSERTION();
-	return true;
+	default: {
+		//! Other types will never result in an unexpected result, because they accept anything
+		throw InternalException("Unexpected ExpectedResult type encountered: %d",
+		                        static_cast<uint8_t>(expected_result));
+	}
+	};
 }
 
 vector<string> TestResultHelper::LoadResultFromFile(string fname, vector<string> names, idx_t &expected_column_count,
@@ -431,16 +495,16 @@ string TestResultHelper::SQLLogicTestConvertValue(Value value, LogicalType sql_t
 }
 
 // standard result conversion: one line per value
-void TestResultHelper::DuckDBConvertResult(MaterializedQueryResult &result, bool original_sqlite_test,
-                                           vector<string> &out_result) {
+void TestResultHelper::DuckDBConvertResult(QueryResult &result, bool original_sqlite_test, vector<string> &out_result) {
 	size_t r, c;
 	idx_t row_count = result.RowCount();
 	idx_t column_count = result.ColumnCount();
 
 	out_result.resize(row_count * column_count);
+	auto rows = result.Collection().GetRows();
 	for (r = 0; r < row_count; r++) {
 		for (c = 0; c < column_count; c++) {
-			auto value = result.GetValue(c, r);
+			auto value = rows.GetValue(c, r);
 			auto converted_value = SQLLogicTestConvertValue(value, result.GetTypes()[c], original_sqlite_test);
 			out_result[r * column_count + c] = converted_value;
 		}
@@ -476,7 +540,7 @@ bool TestResultHelper::ResultIsFile(string result) {
 	return StringUtil::StartsWith(result, "<FILE>:");
 }
 
-bool TestResultHelper::CompareValues(SQLLogicTestLogger &logger, MaterializedQueryResult &result, string lvalue_str,
+bool TestResultHelper::CompareValues(SQLLogicTestLogger &logger, QueryResult &result, string lvalue_str,
                                      string rvalue_str, idx_t current_row, idx_t current_column, vector<string> &values,
                                      idx_t expected_column_count, bool row_wise, vector<string> &result_values,
                                      bool print_error) {
@@ -570,7 +634,7 @@ bool TestResultHelper::CompareValues(SQLLogicTestLogger &logger, MaterializedQue
 	return true;
 }
 
-bool TestResultHelper::MatchesRegex(SQLLogicTestLogger &logger, string lvalue_str, string rvalue_str) {
+bool TestResultHelper::MatchesRegex(SQLLogicTestLogger &logger, string lvalue_str, string rvalue_str) const {
 	bool want_match = StringUtil::StartsWith(rvalue_str, "<REGEX>:");
 	string regex_str = StringUtil::Replace(StringUtil::Replace(rvalue_str, "<REGEX>:", ""), "<!REGEX>:", "");
 	RE2::Options options;

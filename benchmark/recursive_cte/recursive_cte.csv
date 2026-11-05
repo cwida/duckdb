@@ -62,3 +62,4 @@ benchmark/recursive_cte/aoc2022_day25.benchmark
 benchmark/recursive_cte/aoc2024_day16_using_key.benchmark
 benchmark/recursive_cte/aoc2024_day20.benchmark
 benchmark/recursive_cte/aoc2024_day20_using_key.benchmark
+benchmark/recursive_cte/tiny_frontier_invariant_build.benchmark

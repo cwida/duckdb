@@ -1,0 +1,147 @@
+# name: test/sql/transactions/test_read_only_transaction_temp_writes.test
+# description: A read-only transaction can still write temporary objects, but not persistent ones
+# group: [transactions]
+
+statement ok
+CREATE TABLE p(i INTEGER)
+
+statement ok
+INSERT INTO p VALUES (7)
+
+statement ok
+CREATE SEQUENCE ps
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement ok
+CREATE TEMP TABLE t(i INTEGER PRIMARY KEY)
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3)
+
+statement ok
+UPDATE t SET i = i + 10 WHERE i = 3
+
+statement ok
+DELETE FROM t WHERE i = 1
+
+statement ok
+INSERT OR REPLACE INTO t VALUES (2)
+
+statement ok
+ALTER TABLE t RENAME COLUMN i TO k
+
+statement ok
+CREATE INDEX t_k ON t(k)
+
+statement ok
+CREATE TEMP VIEW v AS SELECT k FROM t
+
+query I
+SELECT k FROM v ORDER BY k
+----
+2
+13
+
+statement ok
+CREATE TEMP TABLE snapshot AS SELECT i FROM p
+
+statement ok
+INSERT INTO snapshot SELECT i + 1 FROM p
+
+query I
+SELECT i FROM snapshot ORDER BY i
+----
+7
+8
+
+statement ok
+CREATE TEMP TABLE tr(i INTEGER)
+
+statement ok
+CREATE TEMP TABLE audit(msg VARCHAR)
+
+statement ok
+CREATE TRIGGER trg AFTER INSERT ON tr FOR EACH STATEMENT INSERT INTO audit VALUES ('fired')
+
+statement ok
+INSERT INTO tr VALUES (1)
+
+query I
+SELECT msg FROM audit
+----
+fired
+
+statement ok
+CREATE TEMP SEQUENCE s
+
+query II
+SELECT nextval('s'), nextval('s')
+----
+1	2
+
+query I
+SELECT setval('s', 10)
+----
+10
+
+query I
+SELECT currval('s')
+----
+10
+
+statement ok
+DROP SEQUENCE s
+
+statement ok
+DROP VIEW v
+
+statement ok
+DROP INDEX t_k
+
+statement ok
+DROP TRIGGER trg ON tr
+
+statement ok
+DROP TABLE t
+
+statement error
+INSERT INTO p VALUES (1)
+----
+<REGEX>:.*transaction is launched in read-only mode.*
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+SELECT nextval('ps')
+----
+<REGEX>:.*transaction is launched in read-only mode.*
+
+statement ok
+ROLLBACK
+
+# temporary writes made in a read-only transaction are kept on commit
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement ok
+CREATE TEMP TABLE c AS SELECT range i FROM range(3)
+
+statement ok
+CREATE TEMP SEQUENCE cs
+
+statement ok
+SELECT nextval('cs')
+
+statement ok
+COMMIT
+
+query II
+SELECT sum(i), nextval('cs') FROM c
+----
+3	2

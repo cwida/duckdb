@@ -10,6 +10,11 @@ select variant_typeof({'a': 42}::VARIANT);
 OBJECT(a)
 
 query I
+select variant_typeof({'c': [1], 'b': 2, 'a': 3}::VARIANT);
+----
+OBJECT(a, b, c)
+
+query I
 select variant_typeof(({'a': 42}::VARIANT).variant_extract('a'));
 ----
 INT32
@@ -17,9 +22,9 @@ INT32
 query I
 select variant_typeof(struct_pack(*COLUMNS(*))::VARIANT) test from test_all_types();
 ----
-OBJECT(bool, tinyint, smallint, int, bigint, hugeint, uhugeint, utinyint, usmallint, uint, ubigint, bignum, date, time, timestamp, timestamp_s, timestamp_ms, timestamp_ns, time_tz, timestamp_tz, timestamp_tz_ns, float, double, dec_4_1, dec_9_4, dec_18_6, dec38_10, uuid, interval, varchar, blob, bit, small_enum, medium_enum, large_enum, int_array, double_array, date_array, timestamp_array, timestamptz_array, varchar_array, nested_int_array, struct, empty_struct, struct_of_arrays, array_of_structs, map, union, fixed_int_array, fixed_varchar_array, fixed_nested_int_array, fixed_nested_varchar_array, fixed_struct_array, struct_of_fixed_array, fixed_array_of_int_list, list_of_fixed_int_array, time_ns, geometry, tuple)
-OBJECT(bool, tinyint, smallint, int, bigint, hugeint, uhugeint, utinyint, usmallint, uint, ubigint, bignum, date, time, timestamp, timestamp_s, timestamp_ms, timestamp_ns, time_tz, timestamp_tz, timestamp_tz_ns, float, double, dec_4_1, dec_9_4, dec_18_6, dec38_10, uuid, interval, varchar, blob, bit, small_enum, medium_enum, large_enum, int_array, double_array, date_array, timestamp_array, timestamptz_array, varchar_array, nested_int_array, struct, empty_struct, struct_of_arrays, array_of_structs, map, union, fixed_int_array, fixed_varchar_array, fixed_nested_int_array, fixed_nested_varchar_array, fixed_struct_array, struct_of_fixed_array, fixed_array_of_int_list, list_of_fixed_int_array, time_ns, geometry, tuple)
-OBJECT(bool, tinyint, smallint, int, bigint, hugeint, uhugeint, utinyint, usmallint, uint, ubigint, bignum, date, time, timestamp, timestamp_s, timestamp_ms, timestamp_ns, time_tz, timestamp_tz, timestamp_tz_ns, float, double, dec_4_1, dec_9_4, dec_18_6, dec38_10, uuid, interval, varchar, blob, bit, small_enum, medium_enum, large_enum, int_array, double_array, date_array, timestamp_array, timestamptz_array, varchar_array, nested_int_array, struct, empty_struct, struct_of_arrays, array_of_structs, map, union, fixed_int_array, fixed_varchar_array, fixed_nested_int_array, fixed_nested_varchar_array, fixed_struct_array, struct_of_fixed_array, fixed_array_of_int_list, list_of_fixed_int_array, time_ns, geometry, tuple)
+OBJECT(array_of_structs, bigint, bignum, bit, blob, bool, date, date_array, dec38_10, dec_18_6, dec_4_1, dec_9_4, double, double_array, empty_struct, fixed_array_of_int_list, fixed_int_array, fixed_nested_int_array, fixed_nested_varchar_array, fixed_struct_array, fixed_varchar_array, float, geometry, hugeint, int, int_array, interval, large_enum, list_of_fixed_int_array, map, medium_enum, nested_int_array, small_enum, smallint, struct, struct_of_arrays, struct_of_fixed_array, time, time_ns, time_tz, timestamp, timestamp_array, timestamp_ms, timestamp_ns, timestamp_s, timestamp_tz, timestamp_tz_ns, timestamptz_array, tinyint, tuple, ubigint, uhugeint, uint, union, usmallint, utinyint, uuid, varchar, varchar_array)
+OBJECT(array_of_structs, bigint, bignum, bit, blob, bool, date, date_array, dec38_10, dec_18_6, dec_4_1, dec_9_4, double, double_array, empty_struct, fixed_array_of_int_list, fixed_int_array, fixed_nested_int_array, fixed_nested_varchar_array, fixed_struct_array, fixed_varchar_array, float, geometry, hugeint, int, int_array, interval, large_enum, list_of_fixed_int_array, map, medium_enum, nested_int_array, small_enum, smallint, struct, struct_of_arrays, struct_of_fixed_array, time, time_ns, time_tz, timestamp, timestamp_array, timestamp_ms, timestamp_ns, timestamp_s, timestamp_tz, timestamp_tz_ns, timestamptz_array, tinyint, tuple, ubigint, uhugeint, uint, union, usmallint, utinyint, uuid, varchar, varchar_array)
+OBJECT(array_of_structs, bigint, bignum, bit, blob, bool, date, date_array, dec38_10, dec_18_6, dec_4_1, dec_9_4, double, double_array, empty_struct, fixed_array_of_int_list, fixed_int_array, fixed_nested_int_array, fixed_nested_varchar_array, fixed_struct_array, fixed_varchar_array, float, geometry, hugeint, int, int_array, interval, large_enum, list_of_fixed_int_array, map, medium_enum, nested_int_array, small_enum, smallint, struct, struct_of_arrays, struct_of_fixed_array, time, time_ns, time_tz, timestamp, timestamp_array, timestamp_ms, timestamp_ns, timestamp_s, timestamp_tz, timestamp_tz_ns, timestamptz_array, tinyint, tuple, ubigint, uhugeint, uint, union, usmallint, utinyint, uuid, varchar, varchar_array)
 
 statement ok
 CREATE TABLE T (v VARIANT);

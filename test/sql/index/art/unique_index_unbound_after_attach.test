@@ -1,0 +1,94 @@
+# name: test/sql/index/art/unique_index_unbound_after_attach.test
+# description: Transaction-local uniqueness checks of a unique index that is not bound yet after an ATTACH
+# group: [art]
+
+statement ok
+ATTACH '{TEMP_DIR}/unbound_uidx.db' AS w;
+
+statement ok
+CREATE TABLE w.t(id BIGINT, k VARCHAR);
+
+statement ok
+CREATE UNIQUE INDEX idi ON w.t(id);
+
+statement ok
+INSERT INTO w.t VALUES (1, 'a'), (2, 'b');
+
+statement ok
+DETACH w;
+
+statement ok
+ATTACH '{TEMP_DIR}/unbound_uidx.db' AS w;
+
+# deleting a key and inserting it again in the same transaction
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM w.t WHERE id = 2;
+
+statement ok
+INSERT INTO w.t VALUES (2, 'b');
+
+statement ok
+COMMIT;
+
+query II
+SELECT id, k FROM w.t ORDER BY id;
+----
+1	a
+2	b
+
+statement ok
+DETACH w;
+
+statement ok
+ATTACH '{TEMP_DIR}/unbound_uidx.db' AS w;
+
+# a duplicate within the transaction is detected by the statement that inserts it
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM w.t WHERE id = 1;
+
+statement ok
+INSERT INTO w.t VALUES (3, 'x');
+
+statement error
+INSERT INTO w.t VALUES (3, 'y');
+----
+<REGEX>:Constraint Error.*duplicate key.*
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM w.t;
+----
+2
+
+# a non-key update of a table with a LIST column is executed as a delete and an insert
+statement ok
+CREATE TABLE w.tl(id BIGINT, l INT[]);
+
+statement ok
+CREATE UNIQUE INDEX idl ON w.tl(id);
+
+statement ok
+INSERT INTO w.tl VALUES (1, [1]), (2, [2]);
+
+statement ok
+DETACH w;
+
+statement ok
+ATTACH '{TEMP_DIR}/unbound_uidx.db' AS w;
+
+statement ok
+UPDATE w.tl SET l = [5] WHERE id = 2;
+
+query II
+SELECT id, l FROM w.tl ORDER BY id;
+----
+1	[1]
+2	[5]

@@ -44,6 +44,21 @@ struct ICUDateFunc {
 		duckdb::unique_ptr<FunctionData> info;
 	};
 
+	template <typename SRC, typename DST>
+	static inline DST TruncCast(const SRC &src) {
+		DST dst;
+		if (SRC::PRECISION == DST::PRECISION || !src.IsFinite()) {
+			dst.value = src.value;
+		} else {
+			//	Truncate towards -infinity, not epoch.
+			D_ASSERT(SRC::PRECISION > DST::PRECISION);
+			const int64_t scaling = SRC::PRECISION / DST::PRECISION;
+			int64_t frac;
+			Timestamp::SplitTime(src.value, scaling, dst.value, frac);
+		}
+		return dst;
+	}
+
 	//! Per-thread cache of resolved time zones. Resolving a time zone name looks the name up and
 	//! then builds a zone and a calendar for it, so functions with per-row time zone arguments
 	//! must resolve each distinct zone only once per thread.
@@ -62,6 +77,8 @@ struct ICUDateFunc {
 
 		//! Returns a calendar for the time zone. Throws for unknown zones.
 		Calendar *GetCalendar(const string_t &tz_id);
+		//! Returns a calendar for the time zone, or nullptr for unknown zones (filling error_message if provided).
+		Calendar *TryGetCalendar(const string_t &tz_id, string *error_message = nullptr);
 		//! Sets the time zone for the calendar.
 		//! For unknown zones, fills error_message if provided and throws otherwise.
 		void SetTimeZone(Calendar *calendar, const string_t &tz_id, string *error_message = nullptr);
@@ -83,6 +100,8 @@ struct ICUDateFunc {
 
 	//! Binds a default calendar object for use by the function
 	static duckdb::unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
+	//! Binds the calendar of the TimeZone and Calendar settings for a cast, whose result then depends on them
+	static duckdb::unique_ptr<CastData> BindCastData(BindCastInput &input);
 	//! Initializes a CalendarCacheState from the function's BindData
 	static duckdb::unique_ptr<FunctionLocalState>
 	InitCalendarCache(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data);
@@ -105,6 +124,11 @@ struct ICUDateFunc {
 	static uint64_t SetTimeNS(Calendar *calendar, timestamp_tz_ns_t date);
 	//! Extracts the field from the calendar
 	static int32_t ExtractField(Calendar *calendar, CalendarField field);
+	//! Extracts the UTC offset (in seconds) of the calendar, returns false if a TIMETZ cannot represent it
+	static bool TryGetTimeTZOffset(Calendar *calendar, int32_t &offset);
+	//! Extracts the UTC offset (in seconds) of the calendar, throws if a TIMETZ cannot represent it
+	static int32_t GetTimeTZOffset(Calendar *calendar);
+	static string TimeTZOffsetError(int32_t offset);
 	//! Subtracts the field of the given date from the calendar
 	static int32_t SubtractField(Calendar *calendar, CalendarField field, timestamp_tz_t end_date);
 	//! Adds the timestamp and the interval using the calendar
@@ -117,6 +141,8 @@ struct ICUDateFunc {
 	//! constructs an ICU timestamp, and then converts that back to a DuckDB instant
 	//! Adding offset doesn't really work around DST because the bin values are ambiguous
 	static timestamp_tz_t FromNaive(Calendar *calendar, timestamp_t naive);
+	//! Non-throwing form of FromNaive - sets the error and returns false if the result is out of range
+	static bool TryFromNaive(Calendar *calendar, timestamp_t naive, timestamp_tz_t &result, string &error);
 
 	//! Truncates the calendar time to the given part precision
 	typedef void (*part_trunc_t)(Calendar *calendar, uint64_t &micros);

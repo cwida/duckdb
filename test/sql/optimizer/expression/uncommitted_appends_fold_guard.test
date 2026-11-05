@@ -1,0 +1,65 @@
+# name: test/sql/optimizer/expression/uncommitted_appends_fold_guard.test
+# description: Folding guard against uncommitted appends that committed-only statistics do not see
+# group: [expression]
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t VALUES (1), (2), (3);
+
+statement ok
+INSERT INTO t VALUES (NULL);
+
+# i * 2 <> 5 becomes constant_or_null(TRUE, i) via move_constants
+query I
+SELECT count(*) FROM t WHERE i * 2 <> 5;
+----
+3
+
+# the NULL row is visible, it just must not pass the predicate
+query I
+SELECT count(*) FROM t WHERE i IS NULL;
+----
+1
+
+statement ok
+COMMIT;
+
+# same query after the append is committed - statistics are up to date, result is correct
+query I
+SELECT count(*) FROM t WHERE i * 2 <> 5;
+----
+3
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+statement ok
+CREATE TABLE m1(m mood);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO m1 VALUES ('sad'), ('ok'), ('happy');
+
+statement ok
+INSERT INTO m1 VALUES (NULL);
+
+# full-domain ENUM IN rewrites to constant_or_null(TRUE, m)
+query I
+SELECT count(*) FROM m1 WHERE m IN ('sad', 'ok', 'happy');
+----
+3
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM m1 WHERE m IN ('sad', 'ok', 'happy');
+----
+3

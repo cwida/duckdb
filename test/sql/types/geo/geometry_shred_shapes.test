@@ -1,0 +1,102 @@
+# name: test/sql/types/geo/geometry_shred_shapes.test
+# description: Exercise specialized storage for the non-point geometry shapes
+# group: [geo]
+
+load {TEST_DIR}/geometry_shred_shapes.db readwrite v1.5.0
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET geometry_minimum_shredding_size = 0
+
+statement ok
+CREATE TABLE points(g GEOMETRY)
+
+statement ok
+INSERT INTO points VALUES ('POINT(1 2)'), (NULL)
+
+statement ok
+CREATE TABLE lines(g GEOMETRY)
+
+statement ok
+INSERT INTO lines VALUES ('LINESTRING(0 0, 1 1)'), (NULL)
+
+statement ok
+CREATE TABLE polygons(g GEOMETRY)
+
+statement ok
+INSERT INTO polygons VALUES ('POLYGON((0 0, 4 0, 4 4, 0 0))'), (NULL)
+
+statement ok
+CREATE TABLE multipoints(g GEOMETRY)
+
+statement ok
+INSERT INTO multipoints VALUES ('MULTIPOINT(0 0, 1 1)'), (NULL)
+
+statement ok
+CREATE TABLE multilines(g GEOMETRY)
+
+statement ok
+INSERT INTO multilines VALUES ('MULTILINESTRING((0 0, 1 1), (2 2, 3 3))'), (NULL)
+
+statement ok
+CREATE TABLE multipolygons(g GEOMETRY)
+
+statement ok
+INSERT INTO multipolygons VALUES
+	('MULTIPOLYGON(((0 0, 4 0, 4 4, 0 0)), ((5 5, 6 5, 6 6, 5 5)))'),
+	(NULL)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT segment_type FROM pragma_storage_info('points') WHERE segment_type = 'GEOMETRY'
+UNION ALL
+SELECT segment_type FROM pragma_storage_info('lines') WHERE segment_type = 'GEOMETRY'
+UNION ALL
+SELECT segment_type FROM pragma_storage_info('polygons') WHERE segment_type = 'GEOMETRY'
+UNION ALL
+SELECT segment_type FROM pragma_storage_info('multipoints') WHERE segment_type = 'GEOMETRY'
+UNION ALL
+SELECT segment_type FROM pragma_storage_info('multilines') WHERE segment_type = 'GEOMETRY'
+UNION ALL
+SELECT segment_type FROM pragma_storage_info('multipolygons') WHERE segment_type = 'GEOMETRY'
+----
+
+query I
+SELECT g FROM points ORDER BY rowid
+----
+POINT (1 2)
+NULL
+
+query I
+SELECT g FROM lines ORDER BY rowid
+----
+LINESTRING (0 0, 1 1)
+NULL
+
+query I
+SELECT g FROM polygons ORDER BY rowid
+----
+POLYGON ((0 0, 4 0, 4 4, 0 0))
+NULL
+
+query I
+SELECT g FROM multipoints ORDER BY rowid
+----
+MULTIPOINT (0 0, 1 1)
+NULL
+
+query I
+SELECT g FROM multilines ORDER BY rowid
+----
+MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))
+NULL
+
+query I
+SELECT g FROM multipolygons ORDER BY rowid
+----
+MULTIPOLYGON (((0 0, 4 0, 4 4, 0 0)), ((5 5, 6 5, 6 6, 5 5)))
+NULL

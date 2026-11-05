@@ -13,3 +13,65 @@ statement error
 CREATE INDEX i3 ON t1 USING random_index_method (foo) WITH (my_option = getenv('some_env_variable'), is_cool);
 ----
 <REGEX>:.*Invalid Input Error.*Create index option must be a constant value.*
+
+# reserved keywords as option names
+statement ok
+CREATE INDEX i1 ON t1(foo) WITH (deferrable);
+
+statement ok
+CREATE INDEX i2 ON t1(foo) WITH (default);
+
+statement ok
+CREATE INDEX i3 ON t1(foo) WITH (where);
+
+# dotted option names, including ones that start with a reserved keyword
+statement ok
+CREATE INDEX i4 ON t1(foo) WITH ('default' = 5);
+
+statement ok
+CREATE INDEX i5 ON t1(foo) WITH (default.x = 1);
+
+statement ok
+CREATE INDEX i6 ON t1(foo) WITH ('default' = 5, deferrable, default.x = 1);
+
+query I
+SELECT sql FROM duckdb_indexes() WHERE index_name IN ('i1', 'i2', 'i3', 'i4', 'i5') ORDER BY index_name
+----
+CREATE INDEX i1 ON t1(foo) WITH ("deferrable" );
+CREATE INDEX i2 ON t1(foo) WITH ("default" );
+CREATE INDEX i3 ON t1(foo) WITH ("where" );
+CREATE INDEX i4 ON t1(foo) WITH ("default" = 5 );
+CREATE INDEX i5 ON t1(foo) WITH ("default.x" = 1 );
+
+# option names are case-insensitive, duplicates are rejected
+statement error
+CREATE INDEX i10 ON t1(foo) WITH (default = 5, DEFAULT = 6);
+----
+<REGEX>:.*Parser Error.*Duplicate option.*
+
+
+# other statements sharing the option grammar treat keyword names like any other name
+statement error
+ALTER TABLE t1 SET (default = 1);
+----
+<REGEX>:.*Not implemented Error.*SET \(<options>\) is not supported.*
+
+statement error
+ALTER TABLE t1 RESET (where);
+----
+<REGEX>:.*Not implemented Error.*RESET \(<options>\) is not supported.*
+
+statement error
+CREATE SCHEMA s WITH (order = 1);
+----
+<REGEX>:.*Catalog Error.*WITH clause is not supported for schemas.*
+
+statement error
+CREATE TABLE t3 (a INT) WITH (default = 1);
+----
+<REGEX>:.*Catalog Error.*WITH clause is not supported for tables.*
+
+statement error
+CREATE VIEW v WITH (default) AS SELECT 1;
+----
+<REGEX>:.*Parser Error.*Only DEFER_BINDING is currently supported.*

@@ -1,0 +1,36 @@
+# name: test/sql/types/variant/variant_cast_parent_path_order.test
+# description: Registering a cast parent must preserve its uncast child path
+# group: [variant]
+
+statement ok
+CREATE TABLE cast_parent AS SELECT {'x': {'a': 1}::VARIANT} AS n;
+
+statement ok
+CREATE TABLE variant_parent AS SELECT n::VARIANT AS n FROM cast_parent;
+
+statement ok
+CREATE VIEW cast_parent_view AS SELECT * FROM cast_parent;
+
+statement ok
+CREATE VIEW variant_parent_view AS SELECT * FROM variant_parent;
+
+foreach source cast_parent cast_parent_view variant_parent variant_parent_view
+
+query II
+SELECT n.x::STRUCT(a BIGINT), n.x.a FROM {source};
+----
+{'a': 1}	1
+
+# A cast parent cannot replace the uncast child path, regardless of registration order.
+query II
+SELECT n.x.a, n.x::STRUCT(a BIGINT) FROM {source};
+----
+1	{'a': 1}
+
+# An uncast parent can still cover the child without replacing the cast parent.
+query III
+SELECT n.x.a, n.x::STRUCT(a BIGINT), n.x FROM {source};
+----
+1	{'a': 1}	{'a': 1}
+
+endloop

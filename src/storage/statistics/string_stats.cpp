@@ -626,8 +626,18 @@ void StringStats::MergeStats(BaseStatistics &stats, string_t &target, StringStat
 		return;
 	}
 	bool new_is_more_extreme = is_min ? comparison < 0 : comparison > 0;
+	// for min: a prefix is always <= its extensions, so the shorter value is already a safe lower bound
+	// for max: a truncated prefix represents unknown larger extensions and must be kept as the upper bound
+	if (!is_min && memcmp(source.GetData(), target.GetData(), MinValue(source.GetSize(), target.GetSize())) == 0) {
+		if (comparison < 0) {
+			// source is a prefix of target: source wins if it is truncated
+			new_is_more_extreme = source_type == StringStatsType::TRUNCATED_STATS;
+		} else {
+			// target is a prefix of source: target wins if it is truncated
+			new_is_more_extreme = target_type != StringStatsType::TRUNCATED_STATS;
+		}
+	}
 	if (!new_is_more_extreme) {
-		// old value is more extreme - bail
 		return;
 	}
 	// assign the new value
@@ -751,11 +761,14 @@ FilterPropagateResult StringStats::CheckZonemap(string_t min, StringStatsType mi
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:
 	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+		if (min_comp == 0 && max_comp == 0 && min_type == StringStatsType::EXACT_STATS &&
+		    max_type == StringStatsType::EXACT_STATS) {
+			return FilterPropagateResult::FILTER_ALWAYS_TRUE;
+		}
 		if (min_comp >= 0 && max_comp <= 0) {
 			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
-		} else {
-			return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 		}
+		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 	case ExpressionType::COMPARE_NOTEQUAL:
 	case ExpressionType::COMPARE_DISTINCT_FROM:
 		if (min_comp < 0 || max_comp > 0) {

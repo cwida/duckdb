@@ -48,9 +48,9 @@ SELECT fdiv(42, 0)
 ----
 <REGEX>:.*Division by zero.*
 
-# unless null_on_division_by_zero is set
+# unless error_on_division_by_zero is disabled
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 # fmod by 0 results in NULL: should be NaN (if supported)
 query I
@@ -83,7 +83,7 @@ SELECT fdiv(0, 0)
 NULL
 
 statement ok
-SET null_on_division_by_zero=false;
+SET error_on_division_by_zero=true;
 
 query R
 SELECT fmod(12.3456789, 5)

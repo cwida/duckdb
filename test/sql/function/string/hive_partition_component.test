@@ -1,0 +1,61 @@
+# name: test/sql/function/string/hive_partition_component.test
+# description: Test the hive_partition_component function
+# group: [string]
+
+query I
+SELECT hive_partition_component('year', 2024);
+----
+year=2024
+
+query I
+SELECT hive_partition_component('year', NULL);
+----
+year=__HIVE_DEFAULT_PARTITION__
+
+# the name and the value are escaped like url_encode
+query I
+SELECT hive_partition_component('a/b', 'c d');
+----
+a%2Fb=c%20d
+
+# the percent sign is escaped as well
+query I
+SELECT hive_partition_component('p', 'a b%2Fc');
+----
+p=a%20b%252Fc
+
+# a value that would collide with the NULL directory gets its first character escaped
+query I
+SELECT hive_partition_component('p', '__HIVE_DEFAULT_PARTITION__');
+----
+p=%5F_HIVE_DEFAULT_PARTITION__
+
+# an empty value keeps the trailing =
+query I
+SELECT hive_partition_component('p', '');
+----
+p=
+
+# values of other types use their string representation
+query I
+SELECT hive_partition_component('k', TIMESTAMP '2024-01-15 10:30:00');
+----
+k=2024-01-15%2010%3A30%3A00
+
+query I
+SELECT hive_partition_component('k', {'x': 'a/b'});
+----
+k=%7B%27x%27%3A%20a%2Fb%7D
+
+# the hive layout is the components joined with path_join
+query I
+SELECT path_join(hive_partition_component('year', 2024), hive_partition_component('month', 1));
+----
+year=2024/month=1
+
+query II
+SELECT k, hive_partition_component('p', k) FROM (VALUES ('a'), (NULL), ('b')) v(k) ORDER BY 1;
+----
+a	p=a
+b	p=b
+NULL	p=__HIVE_DEFAULT_PARTITION__

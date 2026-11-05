@@ -32,19 +32,23 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   qname_parse:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Parses SQL text into a qualified name.
 
       Applies the engine's qualified-name rules: dots separate parts, and a double-quoted part may contain dots and
       doubled interior quotes. More than three parts and an unterminated quote are rejected with the parser's own
-      error; text without at least one non-empty part is rejected with `ERROR_INPUT_INVALID`. When the parts are
-      already separate, build the name with `[[qname_create]]` rather than joining them and parsing the result.
+      error. Invalid UTF-8 and text without at least one non-empty part are rejected with `ERROR_INPUT_INVALID`.
+      When the parts are already separate, build the name with `[[qname_create]]` rather than joining them and parsing
+      the result.
     role: constructor
     belongs_to: qname
     parameters:
       text:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The name text to parse. Borrowed for the call only.
       name:
         type: qname
@@ -59,7 +63,7 @@ functions:
 
   qname_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a qualified name from its parts.
 
@@ -74,6 +78,7 @@ functions:
         type: identifier
         indirection: 1
         const: true
+        kind: IN
         description: An array of `part_count` non-empty identifier views, outermost first.
       part_count:
         type: idx
@@ -94,7 +99,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   qname_get_part_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Returns how many parts the qualified name has.
 
@@ -119,7 +124,7 @@ functions:
 
   qname_get_part:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Borrows one part of the qualified name.
 
@@ -148,7 +153,7 @@ functions:
 
   qname_render:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Renders the qualified name as SQL text.
 
@@ -189,7 +194,7 @@ functions:
 
   qname_equals:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Compares two qualified names.
 
@@ -218,7 +223,7 @@ functions:
 
   qname_hash:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Hashes a qualified name.
 
@@ -247,7 +252,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   qname_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the qualified name, releasing its resources.
 

@@ -1,0 +1,61 @@
+# name: test/sql/sql_export/alias.test
+# description: SQL export preserves bound alias names and argument evaluation
+# group: [sql_export]
+
+statement ok
+CREATE TABLE names("MiXeD" INTEGER, other INTEGER);
+
+statement ok
+INSERT INTO names VALUES (1,2),(NULL,3),(1,2);
+
+query TT rowsort
+SELECT alias(mixed), alias(other) AS "explicit name" FROM names
+----
+MiXeD	explicit name
+MiXeD	explicit name
+MiXeD	explicit name
+
+query T rowsort
+SELECT alias(renamed) FROM (SELECT "MiXeD" AS renamed FROM names)
+----
+renamed
+renamed
+renamed
+
+query T
+SELECT alias(sum("MiXeD")) AS "total" FROM names
+----
+total
+
+query T rowsort
+SELECT alias("MiXeD") FROM names WHERE alias("MiXeD") = 'MiXeD'
+----
+MiXeD
+MiXeD
+MiXeD
+
+statement error
+SELECT alias(error('alias argument'))
+----
+alias argument
+
+query T
+SELECT alias(i) AS renamed FROM (VALUES (1),(2),(NULL)) t(i);
+----
+renamed
+renamed
+renamed
+
+query T
+SELECT alias(i+1) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+(i + 1)
+(i + 1)
+(i + 1)
+
+query T
+SELECT upper(alias(i)) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+I
+I
+I

@@ -48,7 +48,7 @@ SET VARIABLE recursive_sql = (SELECT content FROM read_text('benchmark/recursive
 query III
 SELECT * FROM query(getvariable('recursive_sql'));
 ----
-200	441	11
+70	441	80
 
 # k-means
 statement ok
@@ -84,7 +84,7 @@ SET VARIABLE recursive_sql = (SELECT content FROM read_text('benchmark/recursive
 query III
 SELECT * FROM query(getvariable('recursive_sql'));
 ----
-39800	364200	17
+22350	161400	13
 
 # Medium connected components
 statement ok
@@ -111,7 +111,7 @@ SET VARIABLE recursive_sql = (SELECT content FROM read_text('benchmark/recursive
 query IIRR
 SELECT * FROM query(getvariable('recursive_sql'));
 ----
-50000	30	1.0	24998.6206529
+12000	30	1.0	5995.88382031
 
 # Medium k-means
 statement ok

@@ -1,0 +1,34 @@
+# name: test/sql/function/string/test_similarity_utf8.test
+# description: String similarity and distance functions compare characters, not the bytes of their UTF-8 encoding
+# group: [string]
+
+query IIIIII
+SELECT levenshtein('é', 'e'), editdist3('é', 'e'), damerau_levenshtein('é', 'e'), damerau_levenshtein('éü', 'üé'), hamming('é', 'e'), hamming('éa', 'üa')
+----
+1	1	1	1	1	1
+
+query IIIII
+SELECT jaccard('é', 'ü'), jaccard('éa', 'aé'), jaro_similarity('é', 'ü'), jaro_winkler_similarity('é', 'ü'), jaro_similarity('héllo', 'héllo')
+----
+0.0	1.0	0.0	0.0	1.0
+
+# a constant argument (cached) and non-ASCII strings
+query II
+SELECT jaro_similarity('é', s), jaro_winkler_similarity(s, 'é') FROM (VALUES (1, 'ü'), (2, 'é'), (3, 'e')) t(i, s) ORDER BY i
+----
+0.0	0.0
+1.0	1.0
+0.0	0.0
+
+query I
+SELECT jaro_similarity('abc', s) FROM (VALUES (1, 'abd'), (2, 'abé'), (3, 'xyz')) t(i, s) ORDER BY i
+----
+0.7777777777777777
+0.7777777777777777
+0.0
+
+# ASCII strings are unchanged
+query IIIII
+SELECT levenshtein('kitten', 'sitting'), damerau_levenshtein('ca', 'ac'), hamming('abc', 'abd'), jaccard('ab', 'bc'), round(jaro_similarity('martha', 'marhta'), 4)
+----
+3	1	1	0.3333333333333333	0.9444

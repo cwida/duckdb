@@ -123,6 +123,51 @@ select json_transform('[{"a": 42}, {"a": null}, {"a": 7}]', '[{"a": "UBIGINT"}]'
 ----
 [{'a': 42}, {'a': NULL}, {'a': 7}]
 
+# Vectorized primitive, fixed-array, and struct transforms
+query T
+SELECT from_json(j, '"DOUBLE"')
+FROM (VALUES ('1'::JSON), ('2.5'::JSON), ('"3"'::JSON), ('null'::JSON)) values_(j);
+----
+1.0
+2.5
+3.0
+NULL
+
+query T
+SELECT from_json(j, '"INTEGER[2]"')
+FROM (VALUES ('[1,2]'::JSON), ('[3,4]'::JSON), ('null'::JSON)) values_(j);
+----
+[1, 2]
+[3, 4]
+NULL
+
+query T
+SELECT from_json(j, '{"a":"INTEGER"}')
+FROM (VALUES ('{"a":1}'::JSON), ('[]'::JSON), ('null'::JSON)) values_(j);
+----
+{'a': 1}
+{'a': NULL}
+NULL
+
+# Strict vectorized transforms report container and fixed-array mismatches
+statement error
+SELECT from_json_strict(j, '"INTEGER[2]"')
+FROM (VALUES ('[1]'::JSON), ('[2,3]'::JSON)) values_(j);
+----
+<REGEX>:.*Invalid Input Error.*Expected array of size 2.*
+
+statement error
+SELECT from_json_strict(j, '["INTEGER"]')
+FROM (VALUES ('{}'::JSON), ('[1]'::JSON)) values_(j);
+----
+<REGEX>:.*Invalid Input Error.*Expected ARRAY, but got OBJECT.*
+
+statement error
+SELECT from_json_strict(j, '{"a":"INTEGER"}')
+FROM (VALUES ('[]'::JSON), ('{"a":1}'::JSON)) values_(j);
+----
+<REGEX>:.*Invalid Input Error.*Expected OBJECT, but got ARRAY.*
+
 # we can have missing keys, these become NULL
 query T
 select json_transform('[{"a": 42}, {"a": null, "b": 33}, {"b": 7}]', '[{"a": "UBIGINT", "b": "UBIGINT"}]')
@@ -248,6 +293,23 @@ query T
 select json_transform('42', '"BLOB"')
 ----
 42
+
+query T
+select json_transform('"\\x42"', '"BLOB"')
+----
+B
+
+# objects and arrays read as BLOB keep the raw rendered text: ordinary JSON escapes are not interpreted as BLOB
+# escapes, and decimal numbers normalize the same way they do for VARCHAR
+query I
+select hex(json_transform('{"a": "x\ny"}', '"BLOB"'))
+----
+7B2261223A22785C6E79227D
+
+query I
+select hex(json_transform('["x\ny", {"b": "c\td"}]', '"BLOB"'))
+----
+5B22785C6E79222C7B2262223A22635C7464227D5D
 
 query T
 select json_transform('-42', '"VARCHAR"')

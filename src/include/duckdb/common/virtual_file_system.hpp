@@ -37,6 +37,8 @@ public:
 	string GetVersionTag(FileHandle &handle) override;
 	FileType GetFileType(FileHandle &handle) override;
 	FileMetadata Stats(FileHandle &handle) override;
+	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file,
+	                                        optional_ptr<FileOpener> opener = nullptr) override;
 
 	void Truncate(FileHandle &handle, int64_t new_size) override;
 
@@ -109,7 +111,8 @@ private:
 	// Return nullptr if compression is not involved, throw exception if compression is requested but no usable
 	// filesystem gets registered.
 	optional_ptr<FileSystem> FindCompressionFileSystem(FileSystemRegistry &registry,
-	                                                   const FileCompressionType &compression, const string &path);
+	                                                   const FileCompressionType &compression, const string &path,
+	                                                   bool for_writing);
 
 private:
 	mutex registry_lock;

@@ -52,6 +52,12 @@ Not specifying any argument will run all benchmarks.
 
 `build/release/benchmark/benchmark_runner`
 
+#### Parser-only microbenchmarks
+
+Use the `Parser.*` benchmarks to measure `Parser::ParseQuery()` without query execution.
+See [the parser benchmark guide](micro/parser/README.md) for workloads, timing boundaries,
+and revision comparisons using `.github/regression/parser.csv`.
+
 #### Other options
 `--info` gives you some other information about the benchmark.
 
@@ -109,5 +115,4 @@ SELECT MIN(i + 1) FROM integers
 │          (0.08s)          │
 └───────────────────────────┘      
 ```
-
 

@@ -45,6 +45,15 @@ SELECT COUNT(*) FROM test_table USING SAMPLE 0 ROWS (system);
 ----
 0
 
+# A row-count sample from a source estimated to be empty avoids dividing by zero.
+statement ok
+CREATE TABLE empty_table(i INTEGER);
+
+query I
+SELECT COUNT(*) FROM empty_table USING SAMPLE 5 ROWS (system);
+----
+0
+
 # Edge case: exactly one row
 query I
 SELECT COUNT(*) FROM test_table USING SAMPLE 1 ROWS (system);

@@ -38,7 +38,7 @@ SELECT sum(a + b + c + g)
 FROM read_parquet('{TEST_DIR}/rgo.parquet')
 WHERE a > 5 AND b > 15
 
-# If we read all columns they all get together in one request of whole_group
+# Expensive filters read the whole group before observing matches.
 query ITTT
 SELECT row_group_id, fully_filtered, strategy, prefetch_groups
 FROM duckdb_logs_parsed('ParquetPrefetch')
@@ -68,7 +68,7 @@ FROM duckdb_logs_parsed('ParquetPrefetch')
 WHERE file_path LIKE '%rgo.parquet'
 ORDER BY row_group_id
 ----
-0	true	whole_group	[[a, b, c, g]]
+0	true	prefetch_filters	[[c], [a, b, *c*, g]]
 1	true	prefetch_filters	[[c], [a, b, *c*, g]]
 2	true	prefetch_filters	[[c], [a, b, *c*, g]]
 3	true	prefetch_filters	[[c], [a, b, *c*, g]]

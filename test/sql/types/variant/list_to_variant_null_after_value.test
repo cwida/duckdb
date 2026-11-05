@@ -1,0 +1,34 @@
+# name: test/sql/types/variant/list_to_variant_null_after_value.test
+# description: Casting a LIST with a NULL after a valid element to VARIANT does not reserve blob space for the NULL
+# group: [variant]
+
+statement ok
+CREATE TABLE v AS SELECT ['hello world long string', NULL]::VARIANT v FROM range(3);
+
+statement ok
+INSERT INTO v SELECT ['hello world long string', NULL]::VARIANT FROM range(3);
+
+query II
+SELECT count(DISTINCT v), count(DISTINCT v::VARCHAR) FROM v
+----
+1	1
+
+query I
+SELECT count(DISTINCT hash(v)) FROM v
+----
+1
+
+query I
+SELECT hash(['hello world long string', NULL]::VARIANT) = hash(['hello world long string', NULL]::VARIANT)
+----
+true
+
+query I
+SELECT count(DISTINCT hash(x)) FROM (SELECT [{'a': 1}, {'a': NULL}, NULL, {'a': i % 1}]::VARIANT x FROM range(100) t(i))
+----
+1
+
+query I
+SELECT ['hello world long string', NULL, 'another long string value', NULL]::VARIANT::VARCHAR
+----
+[hello world long string, NULL, another long string value, NULL]

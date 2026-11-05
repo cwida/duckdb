@@ -1,0 +1,34 @@
+# name: test/sql/function/array/array_value_size_mismatch.test
+# description: array_value over arrays of different sizes raises a regular error
+# group: [array]
+
+statement error
+SELECT array_value(array_value(1, 2), array_value(3, 4, 3));
+----
+Cannot cast array of size 2 to array of size 3
+
+statement ok
+CREATE TABLE t(a INT[2], b INT[3]);
+
+statement ok
+INSERT INTO t VALUES ([1, 2], [3, 4, 5]);
+
+statement error
+SELECT array_value(a, b) FROM t;
+----
+Cannot cast array of size 2 to array of size 3
+
+query I
+SELECT TRY(array_value(a, b)) FROM t;
+----
+NULL
+
+query I
+SELECT array_value(b, b) FROM t;
+----
+[[3, 4, 5], [3, 4, 5]]
+
+query I
+SELECT 42;
+----
+42

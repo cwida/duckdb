@@ -1,0 +1,169 @@
+# name: test/sql/sql_export/scope_reuse.test
+# description: SQL export reuses source scopes and preserves filter and projection evaluation
+# group: [sql_export]
+
+statement ok
+CREATE TABLE t(i INTEGER, s VARCHAR);
+
+statement ok
+CREATE TABLE u(i INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO t VALUES (0,'first'),(1,'a'),(1,'a'),(2,'b'),(4,'last'),(NULL,'n');
+
+statement ok
+INSERT INTO u VALUES (0,0),(1,10),(1,NULL),(3,30),(4,40),(NULL,50);
+
+query ITI
+SELECT t.i,t.s,u.v FROM t JOIN u USING (i) ORDER BY ALL;
+----
+0	first	0
+1	a	10
+1	a	10
+1	a	NULL
+1	a	NULL
+4	last	40
+
+query ITI
+SELECT t.i,t.s,u.v FROM t LEFT JOIN u USING (i) ORDER BY ALL;
+----
+0	first	0
+1	a	10
+1	a	10
+1	a	NULL
+1	a	NULL
+2	b	NULL
+4	last	40
+NULL	n	NULL
+
+query ITI
+SELECT t.i,t.s,u.v FROM t FULL JOIN u USING (i) ORDER BY ALL;
+----
+0	first	0
+1	a	10
+1	a	10
+1	a	NULL
+1	a	NULL
+2	b	NULL
+4	last	40
+NULL	n	NULL
+NULL	NULL	30
+NULL	NULL	50
+
+query II
+SELECT l.range,r.range FROM range(2) l CROSS JOIN range(2) r ORDER BY ALL;
+----
+0	0
+0	1
+1	0
+1	1
+
+# Throwing expressions keep only the scope needed to preserve their evaluation.
+
+query I
+SELECT sum(x) FROM (SELECT i+1 AS x FROM (VALUES (1),(2),(4),(NULL)) t(i)) q WHERE x>2;
+----
+8
+
+query I
+SELECT sum(i) FROM (VALUES (1),(2),(4),(NULL)) t(i) WHERE i+1>2;
+----
+6
+
+query I
+SELECT i+2 FROM (VALUES (1),(2),(4),(NULL)) t(i) WHERE i+1>2;
+----
+4
+6
+
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE i>1) q WHERE i<4;
+----
+2
+3
+
+query I
+SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE i+1>1) q WHERE i<4;
+----
+1
+2
+3
+
+query I
+SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE random()>=0) q WHERE i>1;
+----
+2
+3
+4
+
+query T
+SELECT s FROM (SELECT s FROM (VALUES ('1'),('bad')) t(s) WHERE s!='bad') q WHERE CAST(s AS INTEGER)>0;
+----
+1
+
+query I
+SELECT CAST(s AS INTEGER) FROM (VALUES ('1'),('bad')) t(s) WHERE s!='bad';
+----
+1
+
+query I
+SELECT i+1 FROM (VALUES (1),(2),(NULL)) t(i) WHERE random()>=0;
+----
+2
+3
+NULL
+
+query I
+SELECT sum(i) FROM (VALUES (1),(2),(NULL)) t(i) WHERE random()>=0;
+----
+3
+
+# A repeated output must reuse the computed value, including volatile calls.
+
+query II
+SELECT x,x FROM (SELECT i+1 AS x FROM (VALUES (1),(2),(2),(NULL)) t(i)) q;
+----
+2	2
+3	3
+3	3
+NULL	NULL
+
+query RR
+SELECT x,x FROM (SELECT random() AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+<REGEX>:[0-9.eE+-]+	<REGEX>:[0-9.eE+-]+
+<REGEX>:[0-9.eE+-]+	<REGEX>:[0-9.eE+-]+
+<REGEX>:[0-9.eE+-]+	<REGEX>:[0-9.eE+-]+
+
+query I
+SELECT x IS NOT DISTINCT FROM y FROM (SELECT x,x FROM (SELECT random() AS x FROM (VALUES (1),(2),(2)) t(i)) q) compared(x,y);
+----
+true
+true
+true
+
+statement ok
+CREATE SEQUENCE export_sequence;
+
+query II
+SELECT x,x FROM (SELECT nextval('export_sequence') AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+1	1
+2	2
+3	3
+
+query I
+SELECT currval('export_sequence');
+----
+3
+
+statement error
+SELECT x,x FROM (SELECT CAST(s AS INTEGER) AS x FROM (VALUES ('1'),('bad')) t(s)) q;
+----
+Could not convert string 'bad'
+
+statement ok
+PRAGMA enable_optimizer;

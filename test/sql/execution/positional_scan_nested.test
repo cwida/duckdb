@@ -1,0 +1,31 @@
+# name: test/sql/execution/positional_scan_nested.test
+# description: Test nested positional scans over table functions
+# group: [execution]
+
+query III
+SELECT *
+FROM range(2) a(i)
+POSITIONAL JOIN range(3) b(j)
+POSITIONAL JOIN range(4) c(k)
+----
+0	0	0
+1	1	1
+NULL	2	2
+NULL	NULL	3
+
+statement ok
+SET debug_verify_serializer = true
+
+query III
+SELECT *
+FROM range(4) a(i)
+POSITIONAL JOIN range(2) b(j)
+POSITIONAL JOIN range(3) c(k)
+----
+0	0	0
+1	1	1
+2	NULL	2
+3	NULL	NULL
+
+statement ok
+RESET debug_verify_serializer

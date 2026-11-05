@@ -33,6 +33,13 @@ SELECT arg_max(even_groups, i, 3) FROM t2;
 [4, 3, 2]
 
 
+# Concrete MIN/MAX and their N overloads still use their native implementations.
+query IIII
+SELECT min(v), max(v), min(v, 2), max(v, 2) FROM (VALUES (1),(4),(1),(NULL)) input(v);
+----
+1	4	[1, 1]	[4, 1]
+
+
 # Test limits
 
 foreach FUNC min max

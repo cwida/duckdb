@@ -1,10 +1,15 @@
 #include "duckdb/common/identifier.hpp"
 
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/uuid.hpp"
 
 #include <ostream>
 
 namespace duckdb {
+
+Identifier GenerateInternalName(const char *prefix) {
+	return Identifier(prefix + UUID::ToString(UUID::GenerateRandomUUID()));
+}
 
 bool Identifier::StartsWith(const string &prefix) const {
 	return StringUtil::CIStartsWith(value, prefix);
@@ -28,10 +33,10 @@ bool operator==(const string &a, const Identifier &b) {
 	return StringUtil::CIEquals(a, b.GetIdentifierName());
 }
 bool operator==(const Identifier &a, const char *b) {
-	return StringUtil::CIEquals(a.GetIdentifierName(), string(b));
+	return StringUtil::CIEquals(a.GetIdentifierName(), b);
 }
 bool operator==(const char *a, const Identifier &b) {
-	return StringUtil::CIEquals(string(a), b.GetIdentifierName());
+	return StringUtil::CIEquals(a, b.GetIdentifierName());
 }
 
 bool operator<(const Identifier &a, const Identifier &b) {

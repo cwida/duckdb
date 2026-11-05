@@ -45,7 +45,7 @@ unique_ptr<TableRef> duckdb_capi_replacement_callback(ClientContext &context, Re
 	auto table_function = make_uniq<TableFunctionRef>();
 	vector<unique_ptr<ParsedExpression>> children;
 	for (auto &param : info.parameters) {
-		children.push_back(make_uniq<ConstantExpression>(std::move(param)));
+		children.push_back(ConstantExpression::FromValue(param));
 	}
 	table_function->function =
 	    make_uniq<FunctionExpression>(duckdb::Identifier(info.function_name), std::move(children));

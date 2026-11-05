@@ -5,7 +5,7 @@
 statement error
 FROM repeat_row(NULL)
 ----
-repeat_rows requires num_rows to be specified
+No function matches
 
 query I
 FROM repeat_row(NULL, num_rows=3)

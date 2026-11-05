@@ -1,0 +1,39 @@
+# name: test/sql/storage/external_file_cache/internal_issue_10700.test
+# description: Internal issue 10700 - Reloading spilled external cache blocks preserves their buffer type
+# group: [external_file_cache]
+
+require parquet
+
+require httpfs
+
+require skip_reload
+
+statement ok
+SET external_file_cache_spill=true;
+
+statement ok
+SET memory_limit='200MB';
+
+statement ok
+SET temp_directory='{TEST_DIR}/internal_issue_10700';
+
+query I
+SELECT count(*)
+FROM read_parquet('https://github.com/duckdb/duckdb-data/releases/download/v1.0/city_temperature.parquet');
+----
+2905886
+
+statement ok
+SET memory_limit='1MB';
+
+statement ok
+SET memory_limit='200MB';
+
+query I
+SELECT count(*)
+FROM read_parquet('https://github.com/duckdb/duckdb-data/releases/download/v1.0/city_temperature.parquet');
+----
+2905886
+
+# Destroy the database while the reloaded cache blocks are still present.
+restart

@@ -1,0 +1,44 @@
+# name: test/sql/sql_export/compressed_materialization_sql_export.test
+# description: Verify SQL export of built-in compressed-materialization casts
+# group: [sql_export]
+
+statement ok
+CREATE TABLE compressed_values(i BIGINT);
+
+statement ok
+INSERT INTO compressed_values SELECT i FROM range(100) t(i);
+
+query I
+SELECT sum(i) FROM (SELECT i FROM compressed_values ORDER BY i)
+----
+4950
+
+statement ok
+CREATE TABLE offset_values AS SELECT (i + 300)::INTEGER AS i FROM range(10) t(i);
+
+query I
+SELECT sum(i) FROM (SELECT i FROM offset_values ORDER BY i)
+----
+3045
+
+statement ok
+CREATE TABLE compressed_strings(s VARCHAR, v INTEGER);
+
+statement ok
+INSERT INTO compressed_strings VALUES ('a', 1), ('é', 2), ('abc', 4), ('a', 3), (NULL, 5);
+
+query TI
+SELECT s, sum(v) FROM compressed_strings GROUP BY s ORDER BY s NULLS LAST
+----
+a	4
+abc	4
+é	2
+NULL	5
+
+statement ok
+CREATE TABLE null_strings AS SELECT NULL::VARCHAR AS s FROM range(2);
+
+query TI
+SELECT s, count(*) FROM null_strings GROUP BY s
+----
+NULL	2

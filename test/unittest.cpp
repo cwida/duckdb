@@ -1,11 +1,27 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #define CATCH_CONFIG_RUNNER
 #include "catch.hpp"
 #include <stdlib.h>
+#include <cerrno>
+#include <cstring>
 #include <fstream>
+#include <limits>
+#include <thread>
 #include <unordered_set>
+
+#if defined(__linux__)
+#include <features.h>
+#include <pthread.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "debug_fs_extension.hpp"
 #include "sqlite/catch_test_reporter.hpp"
 #include "sqlite/sqllogic_test_logger.hpp"
 #include "sqlite/sqllogic_test_runner.hpp"
@@ -15,6 +31,260 @@
 using namespace duckdb;
 
 namespace {
+
+#if defined(__linux__) && !defined(DUCKDB_NO_THREADS) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 18)
+#define DUCKDB_UNITTEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+#endif
+#endif
+
+static bool TryParseThreadStackSize(const string &value, size_t &result) {
+	if (value.empty()) {
+		return false;
+	}
+	size_t parsed_value = 0;
+	for (auto character : value) {
+		if (character < '0' || character > '9') {
+			return false;
+		}
+		auto digit = static_cast<size_t>(character - '0');
+		if (parsed_value > (std::numeric_limits<size_t>::max() - digit) / 10) {
+			return false;
+		}
+		parsed_value = parsed_value * 10 + digit;
+	}
+	if (parsed_value == 0) {
+		return false;
+	}
+	result = parsed_value;
+	return true;
+}
+
+#ifdef DUCKDB_UNITTEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+static string PthreadError(const char *function, int error) {
+	return string(function) + " failed: " + std::strerror(error);
+}
+
+enum class ThreadStackProbeResult : uint8_t { SUCCESS, TOO_SMALL, ERROR };
+
+// glibc's fixed Linux minimum excludes the binary-specific static TLS overhead.
+static constexpr size_t GLIBC_PTHREAD_STACK_MIN = 16384;
+
+static void *MinimumThreadStackProbe(void *) {
+	return nullptr;
+}
+
+// Probes run on a stack this function maps itself to not pollute the glibc stack cache with stacks created during these
+// probes.
+static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &error) {
+	pthread_attr_t attributes;
+	auto result = pthread_attr_init(&attributes);
+	if (result != 0) {
+		error = PthreadError("pthread_attr_init", result);
+		return ThreadStackProbeResult::ERROR;
+	}
+
+	auto stack = mmap(nullptr, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+	if (stack == MAP_FAILED) {
+		pthread_attr_destroy(&attributes);
+		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
+		return ThreadStackProbeResult::ERROR;
+	}
+
+	result = pthread_attr_setstack(&attributes, stack, stack_size);
+	if (result != 0) {
+		pthread_attr_destroy(&attributes);
+		munmap(stack, stack_size);
+		if (result == EINVAL) {
+			return ThreadStackProbeResult::TOO_SMALL;
+		}
+		error = PthreadError("pthread_attr_setstack", result);
+		return ThreadStackProbeResult::ERROR;
+	}
+
+	pthread_t probe;
+	result = pthread_create(&probe, &attributes, MinimumThreadStackProbe, nullptr);
+	auto destroy_result = pthread_attr_destroy(&attributes);
+	if (result != 0) {
+		munmap(stack, stack_size);
+		if (result == EINVAL) {
+			return ThreadStackProbeResult::TOO_SMALL;
+		}
+		error = PthreadError("pthread_create", result);
+		return ThreadStackProbeResult::ERROR;
+	}
+	auto join_result = pthread_join(probe, nullptr);
+	// only once the thread is gone is the stack free to unmap
+	munmap(stack, stack_size);
+	if (join_result != 0) {
+		error = PthreadError("pthread_join", join_result);
+		return ThreadStackProbeResult::ERROR;
+	}
+	if (destroy_result != 0) {
+		error = PthreadError("pthread_attr_destroy", destroy_result);
+		return ThreadStackProbeResult::ERROR;
+	}
+	return ThreadStackProbeResult::SUCCESS;
+}
+
+static bool GetMinimumThreadStackSize(size_t default_stack_size, size_t page_size, size_t &minimum_stack_size,
+                                      string &error) {
+	auto lower_page = (GLIBC_PTHREAD_STACK_MIN + page_size - 1) / page_size;
+	auto upper_page = default_stack_size / page_size;
+	if (upper_page < lower_page) {
+		error = "Default pthread stack size is below the glibc minimum";
+		return false;
+	}
+	auto default_probe_result = TryThreadStackSize(upper_page * page_size, error);
+	if (default_probe_result != ThreadStackProbeResult::SUCCESS) {
+		if (default_probe_result == ThreadStackProbeResult::TOO_SMALL) {
+			error = "Unable to create a thread with the default pthread stack size";
+		} else {
+			error = "Unable to create a thread with the default pthread stack size: " + error;
+		}
+		return false;
+	}
+
+	while (lower_page < upper_page) {
+		auto middle_page = lower_page + (upper_page - lower_page) / 2;
+		auto probe_result = TryThreadStackSize(middle_page * page_size, error);
+		if (probe_result == ThreadStackProbeResult::SUCCESS) {
+			upper_page = middle_page;
+		} else if (probe_result == ThreadStackProbeResult::TOO_SMALL) {
+			lower_page = middle_page + 1;
+		} else {
+			return false;
+		}
+	}
+	minimum_stack_size = lower_page * page_size;
+	return true;
+}
+
+static bool SetThreadStackSize(size_t requested_stack_size, string &error) {
+	pthread_attr_t default_attributes;
+	auto result = pthread_getattr_default_np(&default_attributes);
+	if (result != 0) {
+		error = PthreadError("pthread_getattr_default_np", result);
+		return false;
+	}
+
+	size_t default_stack_size;
+	result = pthread_attr_getstacksize(&default_attributes, &default_stack_size);
+	if (result != 0) {
+		pthread_attr_destroy(&default_attributes);
+		error = PthreadError("pthread_attr_getstacksize", result);
+		return false;
+	}
+	auto page_size_result = sysconf(_SC_PAGESIZE);
+	if (page_size_result <= 0) {
+		pthread_attr_destroy(&default_attributes);
+		error = "Failed to determine the system page size";
+		return false;
+	}
+	auto page_size = static_cast<size_t>(page_size_result);
+	size_t minimum_stack_size;
+	if (!GetMinimumThreadStackSize(default_stack_size, page_size, minimum_stack_size, error)) {
+		pthread_attr_destroy(&default_attributes);
+		return false;
+	}
+	auto stack_overhead = minimum_stack_size - GLIBC_PTHREAD_STACK_MIN;
+	if (requested_stack_size > std::numeric_limits<size_t>::max() - stack_overhead) {
+		pthread_attr_destroy(&default_attributes);
+		error = "--thread-stack-size is too large";
+		return false;
+	}
+	auto configured_stack_size = requested_stack_size + stack_overhead;
+
+	result = pthread_attr_setstacksize(&default_attributes, configured_stack_size);
+	if (result == 0) {
+		result = pthread_setattr_default_np(&default_attributes);
+	}
+	auto destroy_result = pthread_attr_destroy(&default_attributes);
+	if (result != 0) {
+		error = PthreadError("setting the default pthread stack size", result);
+		return false;
+	}
+	if (destroy_result != 0) {
+		error = PthreadError("pthread_attr_destroy", destroy_result);
+		return false;
+	}
+
+	size_t observed_stack_size = 0;
+	int probe_result = 0;
+	try {
+		std::thread probe([&]() {
+			pthread_attr_t probe_attributes;
+			probe_result = pthread_getattr_np(pthread_self(), &probe_attributes);
+			if (probe_result != 0) {
+				return;
+			}
+			probe_result = pthread_attr_getstacksize(&probe_attributes, &observed_stack_size);
+			auto probe_destroy_result = pthread_attr_destroy(&probe_attributes);
+			if (probe_result == 0) {
+				probe_result = probe_destroy_result;
+			}
+		});
+		probe.join();
+	} catch (std::exception &ex) {
+		error = string("Failed to create thread stack size probe: ") + ex.what();
+		return false;
+	}
+	if (probe_result != 0) {
+		error = PthreadError("reading the probe thread stack size", probe_result);
+		return false;
+	}
+
+	auto effective_stack_size = observed_stack_size > stack_overhead ? observed_stack_size - stack_overhead : 0;
+	auto difference = effective_stack_size > requested_stack_size ? effective_stack_size - requested_stack_size
+	                                                              : requested_stack_size - effective_stack_size;
+	if (difference > page_size) {
+		error = "Thread stack size probe reported " + to_string(observed_stack_size) + " total bytes (" +
+		        to_string(effective_stack_size) + " after glibc overhead) after requesting " +
+		        to_string(requested_stack_size) + " bytes";
+		return false;
+	}
+	return true;
+}
+#endif
+
+static bool ConfigureThreadStackSize(int argc, char *argv[], string &error) {
+	bool stack_size_specified = false;
+#ifdef DUCKDB_UNITTEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+	size_t requested_stack_size = 0;
+#endif
+	for (int i = 1; i < argc; i++) {
+		if (string(argv[i]) != "--thread-stack-size") {
+			continue;
+		}
+		if (stack_size_specified) {
+			error = "--thread-stack-size may only be specified once";
+			return false;
+		}
+		if (++i >= argc) {
+			error = "--thread-stack-size expected a size in bytes";
+			return false;
+		}
+		size_t parsed_stack_size;
+		if (!TryParseThreadStackSize(argv[i], parsed_stack_size)) {
+			error = "--thread-stack-size expected a positive integer size in bytes";
+			return false;
+		}
+#ifdef DUCKDB_UNITTEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+		requested_stack_size = parsed_stack_size;
+#endif
+		stack_size_specified = true;
+	}
+	if (!stack_size_specified) {
+		return true;
+	}
+
+#ifdef DUCKDB_UNITTEST_HAS_DEFAULT_PTHREAD_ATTRIBUTES
+	return SetThreadStackSize(requested_stack_size, error);
+#else
+	error = "--thread-stack-size is only supported on Linux with glibc 2.18 or newer";
+	return false;
+#endif
+}
 
 struct TempDirReclaimer {
 	~TempDirReclaimer() {
@@ -65,11 +335,19 @@ static bool TryReadExactSQLLogicTestFilter(const vector<string> &input_files, ve
 }
 
 int main(int argc_in, char *argv[]) {
-	string test_directory = DUCKDB_ROOT_DIRECTORY;
+	string thread_stack_error;
+	if (!ConfigureThreadStackSize(argc_in, argv, thread_stack_error)) {
+		fprintf(stderr, "%s\n", thread_stack_error.c_str());
+		return 1;
+	}
+
+	string test_directory = TestRootDirectory();
 
 	// route the sqllogictest runner's verdicts into the Catch session
 	static CatchTestReporter catch_reporter;
 	TestReporter::Set(catch_reporter);
+	// debug_fs is linked into this binary; hand it to every database the runner creates
+	SetStaticExtensionLoader([](DuckDB &db) { db.LoadStaticExtension<DebugFsExtension>(); });
 
 	auto &test_config = TestConfiguration::Get();
 	try {
@@ -104,11 +382,13 @@ int main(int argc_in, char *argv[]) {
 			use_stdin = true;
 		} else if (argument == "--emit-test-events") {
 			SetEmitTestEvents(true);
+		} else if (argument == "--thread-stack-size") {
+			i++;
 		} else {
 			try {
 				if (!test_config.ParseArgument(argument, argc, argv, i)) {
 					if ((argument == "-f" || argument == "--input-file") && i + 1 < argc) {
-						input_files.push_back(argv[i + 1]);
+						input_files.push_back(TestMakeAbsolute(argv[i + 1], TestGetCurrentDirectory()));
 						input_file_arg_indices.insert(new_argc);
 						input_file_arg_indices.insert(new_argc + 1);
 					}
@@ -130,6 +410,13 @@ int main(int argc_in, char *argv[]) {
 		return 1;
 	}
 
+	// Keep input filenames anchored to the invocation directory, including Catch's filter fallback.
+	idx_t input_file_index = 0;
+	for (int i = 0; i < new_argc; i++) {
+		if (input_file_arg_indices.find(i) != input_file_arg_indices.end()) {
+			new_argv[++i] = &input_files[input_file_index++][0];
+		}
+	}
 	test_config.ChangeWorkingDirectory(test_directory);
 
 	vector<string> exact_sqllogic_tests;

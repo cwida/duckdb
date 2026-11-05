@@ -27,6 +27,8 @@ capigen extension_header \
 	--internal-out src/include/duckdb/main/capi/extension_api.hpp \
 	-o src/include/duckdb_extension.h
 
-"$FORMAT_PYTHON" scripts/format.py src/include/duckdb.h --fix --noconfirm
-"$FORMAT_PYTHON" scripts/format.py src/include/duckdb_extension.h --fix --noconfirm
-"$FORMAT_PYTHON" scripts/format.py src/include/duckdb/main/capi/extension_api.hpp --fix --noconfirm
+printf '%s\n' \
+	src/include/duckdb.h \
+	src/include/duckdb_extension.h \
+	src/include/duckdb/main/capi/extension_api.hpp |
+	"$FORMAT_PYTHON" scripts/format.py --files-from - --fix --noconfirm --skip-typos

@@ -1,0 +1,21 @@
+# name: test/sql/copy/file_size_bytes_existing_target.test
+# description: FILE_SIZE_BYTES against an existing target file must give a clear error, not crash
+# group: [copy]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 AS a) TO '{TEST_DIR}/tgt.parquet' (FORMAT parquet);
+
+statement error
+COPY (SELECT range FROM range(1000)) TO '{TEST_DIR}/tgt.parquet' (FORMAT parquet, FILE_SIZE_BYTES '1kb');
+----
+<REGEX>:.*it exists and is a file, not a directory.*
+
+statement ok
+COPY (SELECT range FROM range(1000)) TO '{TEST_DIR}/tgt.parquet' (FORMAT parquet, FILE_SIZE_BYTES '1kb', OVERWRITE);
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/tgt.parquet/*.parquet');
+----
+1000

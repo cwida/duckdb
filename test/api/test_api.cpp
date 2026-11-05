@@ -4,7 +4,13 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/connection_manager.hpp"
+#include "duckdb/main/valid_checker.hpp"
+#include "duckdb/parser/statement/logical_plan_statement.hpp"
+#include "duckdb/main/statement_iterator.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/planner.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/storage/metadata/metadata_manager.hpp"
 #include "duckdb/storage/storage_info.hpp"
@@ -19,7 +25,7 @@ TEST_CASE("Test comment in CPP API", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
-	con.SendQuery("--ups");
+	con.Query("--ups");
 	//! Should not crash
 	REQUIRE(1);
 }
@@ -34,6 +40,23 @@ TEST_CASE("Test StarExpression replace_list parameter", "[api]") {
 	auto &select_node = select_stmt.node->Cast<SelectNode>();
 
 	REQUIRE(select_node.select_list[0]->HasParameter());
+}
+
+TEST_CASE("Test ExtractStatements with an explicit transaction", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(a INT)"));
+
+	// The ALTER expands into several statements when it runs, inside the user's transaction
+	auto stmts = con.ExtractStatements("BEGIN; ALTER TABLE t ADD COLUMN c INT DEFAULT 1 NOT NULL; COMMIT;");
+	REQUIRE(stmts.size() == 3);
+	REQUIRE(stmts[1]->type == StatementType::MULTI_STATEMENT);
+	for (auto &stmt : stmts) {
+		REQUIRE_NO_FAIL(con.Query(std::move(stmt)));
+	}
+	REQUIRE(!con.context->transaction.HasActiveTransaction());
+	auto result = con.Query("SELECT column_name FROM duckdb_columns() WHERE table_name = 't' ORDER BY column_index");
+	REQUIRE(CHECK_COLUMN(result, 0, {"a", "c"}));
 }
 
 TEST_CASE("Test using connection after database is gone", "[api]") {
@@ -119,12 +142,13 @@ TEST_CASE("Test closing result after database is gone", "[api]") {
 	db = make_uniq<DuckDB>(nullptr);
 	conn = make_uniq<Connection>(*db);
 	// check that the connection works
-	auto streaming_result = conn->SendQuery("SELECT 42");
+	auto stream = OpenStream(*conn, "SELECT 42");
 	// destroy the database
 	db.reset();
 	conn.reset();
+	auto streaming_result = DrainStream(*stream);
 	REQUIRE(CHECK_COLUMN(streaming_result, 0, {42}));
-	streaming_result.reset();
+	stream.reset();
 }
 
 TEST_CASE("Test closing database with open prepared statements", "[api]") {
@@ -163,6 +187,21 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 
 		REQUIRE(db->instance->config.options.temporary_directory == ".tmp");
 	}
+}
+
+TEST_CASE("Test max_temp_directory_size set at startup is enforced", "[api]") {
+	auto config = GetTestConfig();
+	config->SetOptionByName("temp_directory", TestCreatePath("max_temp_directory_size_startup"));
+	config->SetOptionByName("max_temp_directory_size", "0KiB");
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA memory_limit='4MB'"));
+
+	// the table does not fit in memory, so it has to be offloaded, which the limit does not allow
+	auto result = con.Query("CREATE TABLE t AS SELECT random() FROM range(1000000)");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::OUT_OF_MEMORY);
+	REQUIRE(StringUtil::Contains(result->GetError(), "failed to offload data block"));
 }
 
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
@@ -230,13 +269,6 @@ TEST_CASE("Test multiple result sets", "[api]") {
 	result = std::move(result->next);
 	REQUIRE(CHECK_COLUMN(result, 0, {84}));
 	REQUIRE(!result->next);
-
-	// also with stream api
-	result = con.SendQuery("SELECT 42; SELECT 84");
-	REQUIRE(CHECK_COLUMN(result, 0, {42}));
-	result = std::move(result->next);
-	REQUIRE(CHECK_COLUMN(result, 0, {84}));
-	REQUIRE(!result->next);
 }
 
 TEST_CASE("Test streaming API errors", "[api]") {
@@ -244,60 +276,48 @@ TEST_CASE("Test streaming API errors", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
-	// multiple streaming result
-	result = con.SendQuery("SELECT 42;");
-	result2 = con.SendQuery("SELECT 42;");
-	// "result" is invalidated
-	REQUIRE_THROWS(CHECK_COLUMN(result, 0, {42}));
-	// "result2" we can read
+	const string failing_query =
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);";
+
+	// a second stream is refused while the first is open
+	auto stream = OpenStream(con, "SELECT 42;");
+	auto refused = con.Submit("SELECT 42;");
+	REQUIRE(refused->HasError());
+	REQUIRE(refused->GetErrorType() == ExceptionType::RESOURCE_IN_USE);
+	result2 = DrainStream(*stream);
+	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
+	auto stream2 = OpenStream(con, "SELECT 42;");
+	result2 = DrainStream(*stream2);
 	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
 
-	// streaming result followed by non-streaming result
-	result = con.SendQuery("SELECT 42;");
+	// a retained result is refused while a stream is open, and taken once the stream is closed
+	stream = OpenStream(con, "SELECT 42;");
 	result2 = con.Query("SELECT 42;");
-	// "result" is invalidated
-	REQUIRE_THROWS(CHECK_COLUMN(result, 0, {42}));
-	// "result2" we can read
+	REQUIRE(result2->HasError());
+	REQUIRE(result2->GetErrorType() == ExceptionType::RESOURCE_IN_USE);
+	stream->Close();
+	result2 = con.Query("SELECT 42;");
 	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
 
 	// error in binding
-	result = con.SendQuery("SELECT * FROM nonexistanttable");
+	result = con.Query("SELECT * FROM nonexistanttable");
 	REQUIRE(!result->ToString().empty());
-	REQUIRE(result->GetResultType() == QueryResultType::MATERIALIZED_RESULT);
 	REQUIRE_FAIL(result);
 
 	// error in stream that only happens after fetching
-	result = con.SendQuery(
-	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
-	while (!result->HasError()) {
-		auto chunk = result->Fetch();
+	stream = OpenStream(con, failing_query);
+	while (!stream->HasError()) {
+		auto chunk = stream->Fetch();
 		if (!chunk || chunk->size() == 0) {
 			break;
 		}
 	}
-	REQUIRE(!result->ToString().empty());
-	REQUIRE_FAIL(result);
+	REQUIRE(stream->HasError());
 
-	// same query but call Materialize
-	result = con.SendQuery(
-	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	// same query, retained instead of streamed
+	result = con.Submit(failing_query);
+	result->Complete();
 	REQUIRE(!result->ToString().empty());
-	REQUIRE(result->GetResultType() == QueryResultType::STREAM_RESULT);
-	result = ((StreamQueryResult &)*result).Materialize();
-	REQUIRE_FAIL(result);
-
-	// same query but call materialize after fetching
-	result = con.SendQuery(
-	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
-	while (!result->HasError()) {
-		auto chunk = result->Fetch();
-		if (!chunk || chunk->size() == 0) {
-			break;
-		}
-	}
-	REQUIRE(!result->ToString().empty());
-	REQUIRE(result->GetResultType() == QueryResultType::STREAM_RESULT);
-	result = ((StreamQueryResult &)*result).Materialize();
 	REQUIRE_FAIL(result);
 }
 
@@ -311,37 +331,37 @@ TEST_CASE("Test fetch API", "[api]") {
 	result = con.Query("SELECT 'hello'::INT");
 	REQUIRE_THROWS(result->Fetch());
 
-	result = con.SendQuery("CREATE TABLE test (a INTEGER);");
+	result = con.Query("CREATE TABLE test (a INTEGER);");
 
 	result = con.Query("select a from test where 1 <> 1");
 	REQUIRE(CHECK_COLUMN(result, 0, {}));
 
-	result = con.SendQuery("INSERT INTO test VALUES (42)");
-	result = con.SendQuery("SELECT a from test");
+	result = con.Query("INSERT INTO test VALUES (42)");
+	result = con.Query("SELECT a from test");
 	REQUIRE(CHECK_COLUMN(result, 0, {42}));
 
 	auto materialized_result = con.Query("select a from test");
 	REQUIRE(CHECK_COLUMN(materialized_result, 0, {42}));
 
-	// override fetch result
-	result = con.SendQuery("SELECT a from test");
-	result = con.SendQuery("SELECT a from test");
-	result = con.SendQuery("SELECT a from test");
-	result = con.SendQuery("SELECT a from test");
-	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	// one stream at a time: each drained stream frees the connection for the next
+	for (idx_t i = 0; i < 4; i++) {
+		auto stream = OpenStream(con, "SELECT a from test");
+		result = DrainStream(*stream);
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	}
 }
 
 TEST_CASE("Test fetch API not to completion", "[api]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);
 	// remove connection with active stream result
-	auto result = conn->SendQuery("SELECT 42");
+	auto stream = OpenStream(*conn, "SELECT 42");
 	// close the connection
 	conn.reset();
 	// now try to fetch a chunk, this should not return a nullptr
-	auto chunk = result->Fetch();
+	auto chunk = stream->Fetch();
 	REQUIRE(chunk);
-	// Only if we would call Fetch again would we Close the QueryResult
+	// Only if we would call Fetch again would we close the stream
 	// this is testing that it can get cleaned up without this.
 
 	db.reset();
@@ -352,49 +372,50 @@ TEST_CASE("Test fetch API robustness", "[api]") {
 	auto conn = make_uniq<Connection>(*db);
 
 	// remove connection with active stream result
-	auto result = conn->SendQuery("SELECT 42");
+	auto stream = OpenStream(*conn, "SELECT 42");
 	// close the connection
 	conn.reset();
 	// now try to fetch a chunk, this should not return a nullptr
-	auto chunk = result->Fetch();
+	auto chunk = stream->Fetch();
 	REQUIRE(chunk);
 
 	// now close the entire database
 	conn = make_uniq<Connection>(*db);
-	result = conn->SendQuery("SELECT 42");
+	stream = OpenStream(*conn, "SELECT 42");
 
 	db.reset();
 	// fetch should not fail
-	chunk = result->Fetch();
+	chunk = stream->Fetch();
 	REQUIRE(chunk);
-	// new queries on the connection should not fail either
-	REQUIRE_NO_FAIL(conn->SendQuery("SELECT 42"));
+	// new queries on the connection should not fail either, once the stream has ended
+	REQUIRE(!stream->Fetch());
+	REQUIRE_NO_FAIL(conn->Query("SELECT 42"));
 
-	// override fetch result
+	// a second stream is refused while the first is open
 	db = make_uniq<DuckDB>(nullptr);
 	conn = make_uniq<Connection>(*db);
-	auto result1 = conn->SendQuery("SELECT 42");
-	auto result2 = conn->SendQuery("SELECT 84");
-	REQUIRE_NO_FAIL(*result1);
-	REQUIRE_NO_FAIL(*result2);
+	auto stream1 = OpenStream(*conn, "SELECT 42");
+	REQUIRE(!stream1->HasError());
+	auto refused = conn->Submit("SELECT 84");
+	REQUIRE(refused->HasError());
+	REQUIRE(refused->GetErrorType() == ExceptionType::RESOURCE_IN_USE);
 
-	// result1 should be closed now
-	REQUIRE_THROWS(result1->Fetch());
-	// result2 should work
-	REQUIRE(result2->Fetch());
+	// stream1 is untouched
+	REQUIRE(stream1->Fetch());
+	stream1->Close();
+	auto stream2 = OpenStream(*conn, "SELECT 84");
+	REQUIRE(stream2->Fetch());
+	stream2->Close();
 
-	// test materialize
-	result1 = conn->SendQuery("SELECT 42");
-	REQUIRE(result1->GetResultType() == QueryResultType::STREAM_RESULT);
-	auto materialized = ((StreamQueryResult &)*result1).Materialize();
-	result2 = conn->SendQuery("SELECT 84");
-
-	// we can read materialized still, even after opening a new result
+	// a retained result stays readable after another query starts
+	auto materialized = conn->Query("SELECT 42");
+	auto result2 = conn->Query("SELECT 84");
 	REQUIRE(CHECK_COLUMN(materialized, 0, {42}));
 	REQUIRE(CHECK_COLUMN(result2, 0, {84}));
 }
 
-static void VerifyStreamResult(duckdb::unique_ptr<QueryResult> result) {
+template <class T>
+static void VerifyStreamResult(duckdb::unique_ptr<T> result) {
 	REQUIRE(result->GetTypes()[0] == LogicalType::INTEGER);
 	size_t current_row = 0;
 	int current_expected_value = 0;
@@ -430,14 +451,12 @@ TEST_CASE("Test fetch API with big results", "[api][.]") {
 	REQUIRE_NO_FAIL(con.Query("COMMIT"));
 
 	// stream the results using the Fetch() API
-	auto result = con.SendQuery("SELECT CAST(a AS INTEGER) FROM test ORDER BY a");
-	VerifyStreamResult(std::move(result));
-	// we can also stream a materialized result
-	auto materialized = con.Query("SELECT CAST(a AS INTEGER) FROM test ORDER BY a");
-	VerifyStreamResult(std::move(materialized));
-	// return multiple results using the stream API
-	result = con.SendQuery("SELECT CAST(a AS INTEGER) FROM test ORDER BY a; SELECT CAST(a AS INTEGER) FROM test ORDER "
-	                       "BY a; SELECT CAST(a AS INTEGER) FROM test ORDER BY a;");
+	VerifyStreamResult(OpenStream(con, "SELECT CAST(a AS INTEGER) FROM test ORDER BY a"));
+	// we can also cursor over a retained result
+	VerifyStreamResult(con.Query("SELECT CAST(a AS INTEGER) FROM test ORDER BY a"));
+	// return multiple results from one query
+	auto result = con.Query("SELECT CAST(a AS INTEGER) FROM test ORDER BY a; SELECT CAST(a AS INTEGER) FROM test ORDER "
+	                        "BY a; SELECT CAST(a AS INTEGER) FROM test ORDER BY a;");
 	auto next = std::move(result->next);
 	while (next) {
 		auto nextnext = std::move(next->next);
@@ -456,21 +475,23 @@ TEST_CASE("Test TryFlushCachingOperators interrupted ExecutePushInternal", "[api
 
 	// Use PhysicalCrossProduct with a very low amount of produced tuples, this caches the result in the
 	// CachingOperatorState This gets flushed with FinalExecute in PipelineExecutor::TryFlushCachingOperator
-	auto pending_query = con.PendingQuery("select unnest(range(a.a)) from tbl a, tbl b;");
+	auto pending_query = con.Submit("select unnest(range(a.a)) from tbl a, tbl b;");
 
 	// Through `unnest(range(a.a.))` this FinalExecute multiple chunks, more than the ExecutionBudget can handle with
 	// PROCESS_PARTIAL
 	pending_query->ExecuteTask();
 
 	// query the connection as normal after
-	auto res = pending_query->Execute();
+	auto &res = pending_query;
+	res->Complete();
 	REQUIRE(!res->HasError());
-	auto &materialized_res = res->Cast<MaterializedQueryResult>();
+	auto &materialized_res = *res;
 	idx_t initial_tuples = 2 * 2;
 	REQUIRE(materialized_res.RowCount() == initial_tuples * 100000);
+	auto rows = materialized_res.Collection().GetRows();
 	for (idx_t i = 0; i < initial_tuples; i++) {
 		for (idx_t j = 0; j < 100000; j++) {
-			auto value = static_cast<idx_t>(materialized_res.GetValue<int64_t>(0, (i * 100000) + j));
+			auto value = static_cast<idx_t>(rows.GetValue(0, (i * 100000) + j).GetValue<int64_t>());
 			REQUIRE(value == j);
 		}
 	}
@@ -481,7 +502,7 @@ TEST_CASE("Test streaming query during stack unwinding", "[api]") {
 	Connection con(db);
 
 	try {
-		auto result = con.SendQuery("SELECT * FROM range(1000000)");
+		auto stream = OpenStream(con, "SELECT * FROM range(1000000)");
 
 		throw std::runtime_error("hello");
 	} catch (...) {
@@ -522,6 +543,31 @@ TEST_CASE("Test prepare dependencies with multiple connections", "[catalog]") {
 	REQUIRE_NO_FAIL(con3->Query("COMMIT"));
 }
 
+TEST_CASE("Extract the plan of joins the optimizer rewrites", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE a AS SELECT 1 AS id, DATE '2025-01-01' AS dt"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE r AS SELECT 1 AS id, DATE '2024-01-01' AS rd, NULL::DATE AS fd"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE p (pid BIGINT PRIMARY KEY)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE knows (p1 BIGINT, p2 BIGINT, PRIMARY KEY (p1, p2))"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE interest (pid BIGINT, tag BIGINT, PRIMARY KEY (pid, tag))"));
+	const vector<string> queries {
+	    "SELECT a.id FROM a JOIN r ON r.id = a.id WHERE r.rd <= a.dt",
+	    "SELECT a.id FROM a JOIN r ON r.id = a.id WHERE r.fd IS NULL OR r.fd > a.dt",
+	    // an ANTI join that closes a join cycle
+	    "SELECT count(i.tag) FROM p AS p1 JOIN knows AS k1 ON k1.p1 = p1.pid JOIN knows AS k2 ON k1.p2 = k2.p1 "
+	    "JOIN p AS p3 ON k2.p2 = p3.pid JOIN interest AS i ON i.pid = p3.pid "
+	    "ANTI JOIN knows AS k3 ON k3.p1 = p1.pid AND k3.p2 = p3.pid"};
+	for (auto &query : queries) {
+		auto plan = con.ExtractPlan(query);
+		REQUIRE(plan);
+		auto result = con.Query(query);
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(plan->types == result->GetTypes());
+	}
+}
+
 TEST_CASE("Test connection API", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -550,9 +596,101 @@ TEST_CASE("Test connection API", "[api]") {
 	REQUIRE(con.IsAutoCommit());
 }
 
+TEST_CASE("Test connection transaction API error scenarios", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+
+	// a failed nested BEGIN does not abort the outer transaction
+	REQUIRE_NOTHROW(con.BeginTransaction());
+	REQUIRE_THROWS(con.BeginTransaction());
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO integers VALUES (42)"));
+	REQUIRE_NOTHROW(con.Commit());
+	auto result = con.Query("SELECT i FROM integers");
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+
+	// COMMIT on an invalidated transaction rolls back instead of throwing
+	REQUIRE_NOTHROW(con.BeginTransaction());
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO integers VALUES (84)"));
+	ValidChecker::Invalidate(con.context->ActiveTransaction(), "test invalidation");
+	REQUIRE_FAIL(con.Query("SELECT 42"));
+	REQUIRE_NOTHROW(con.Commit());
+	// the transaction was rolled back and the connection is usable again
+	REQUIRE(con.IsAutoCommit());
+	result = con.Query("SELECT count(*) FROM integers");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+
+	// no transaction is active anymore - COMMIT and ROLLBACK throw again
+	REQUIRE_THROWS(con.Commit());
+	REQUIRE_THROWS(con.Rollback());
+}
+
 TEST_CASE("Test parser tokenize", "[api]") {
-	Parser parser;
-	REQUIRE_NOTHROW(parser.Tokenize("SELECT * FROM table WHERE i+1=3 AND j='hello'; --tokenize example query"));
+	string sql = "SELECT * FROM table WHERE i+1=3 AND j='hello'; --tokenize example query";
+	auto tokens = Parser::Tokenize(sql);
+
+	using T = SimplifiedTokenType;
+	vector<pair<T, idx_t>> expected {
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 0},           // SELECT
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 7},          // *
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 9},           // FROM
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 14},          // table
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 20},          // WHERE
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 26},       // i
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 27},         // +
+	    {T::SIMPLIFIED_TOKEN_NUMERIC_CONSTANT, 28}, // 1
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 29},         // =
+	    {T::SIMPLIFIED_TOKEN_NUMERIC_CONSTANT, 30}, // 3
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 32},          // AND
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 36},       // j
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 37},         // =
+	    {T::SIMPLIFIED_TOKEN_STRING_CONSTANT, 38},  // 'hello'
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 45},         // ;
+	    {T::SIMPLIFIED_TOKEN_COMMENT, 47},          // --tokenize example query
+	};
+	REQUIRE(tokens.size() >= expected.size());
+	for (idx_t i = 0; i < expected.size(); i++) {
+		REQUIRE(tokens[i].type == expected[i].first);
+		REQUIRE(tokens[i].start == expected[i].second);
+	}
+	// The end-of-input sentinel is not a token: nothing starts at or past the input length.
+	REQUIRE(tokens.back().start < sql.size());
+	REQUIRE(tokens.size() == expected.size());
+}
+
+TEST_CASE("Test parser tokenize of words the grammar matches literally", "[api]") {
+	// REPOSITORY, PREFIX, PUBLIC and KEYS are in none of the keyword lists, the grammar matches them literally;
+	// highlighting shows them as keywords, while names and quoted identifiers stay identifiers
+	string sql = "CREATE EXTENSION REPOSITORY r WITH PREFIX 'p' USING PUBLIC KEYS [\"prefix\"]";
+	auto tokens = Parser::Tokenize(sql);
+
+	using T = SimplifiedTokenType;
+	vector<pair<T, idx_t>> expected {
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 0},          // CREATE
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 7},          // EXTENSION
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 17},         // REPOSITORY
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 28},      // r
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 30},         // WITH
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 35},         // PREFIX
+	    {T::SIMPLIFIED_TOKEN_STRING_CONSTANT, 42}, // 'p'
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 46},         // USING
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 52},         // PUBLIC
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 59},         // KEYS
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 64},        // [
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 65},      // "prefix"
+	};
+	REQUIRE(tokens.size() >= expected.size());
+	for (idx_t i = 0; i < expected.size(); i++) {
+		REQUIRE(tokens[i].type == expected[i].first);
+		REQUIRE(tokens[i].start == expected[i].second);
+	}
+
+	// the grammar also matches the quotes of quoted identifiers literally: an unfinished one stays an identifier
+	for (auto &unfinished : {"\"", "`", "SELECT \""}) {
+		auto unfinished_tokens = Parser::Tokenize(unfinished);
+		REQUIRE(!unfinished_tokens.empty());
+		REQUIRE(unfinished_tokens.back().type == T::SIMPLIFIED_TOKEN_IDENTIFIER);
+	}
 }
 
 TEST_CASE("Test opening an invalid database file", "[api]") {
@@ -660,12 +798,12 @@ TEST_CASE("Issue #4583: Catch Insert/Update/Delete errors", "[api]") {
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE t0 (c0 int);"));
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO t0 VALUES (1);"));
 
-	result = con.SendQuery(
+	result = con.Query(
 	    "INSERT INTO t0(VALUES('\\x15\\x00\\x00\\x00\\x00@\\x01\\x0A\\x27:!\\x0A\\x00\\x00x12e\"\\x00'::BLOB));");
 	//! Should not terminate the process
 	REQUIRE_FAIL(result);
 
-	result = con.SendQuery("SELECT MIN(c0) FROM t0;");
+	result = con.Query("SELECT MIN(c0) FROM t0;");
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 }
 
@@ -699,7 +837,7 @@ TEST_CASE("Issue #6284: CachingPhysicalOperator in pull causes issues", "[api][.
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE T1 AS SELECT record_nb, 0.0 x_1, 1.0 y_1 FROM T0"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE T2 AS SELECT record_nb, 0.0 x_2, 1.0 y_2 FROM T0"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE T3 AS SELECT record_nb, 0.0 x_3, 1.0 y_3 FROM T0"));
-	auto result = con.SendQuery(R"(
+	auto stream = OpenStream(con, R"(
         SELECT T0.record_nb,
             T1.x_1 x_1,
             T1.y_1 y_1,
@@ -715,7 +853,7 @@ TEST_CASE("Issue #6284: CachingPhysicalOperator in pull causes issues", "[api][.
 
 	idx_t count = 0;
 	while (true) {
-		auto chunk = result->Fetch();
+		auto chunk = stream->Fetch();
 		if (!chunk) {
 			break;
 		}
@@ -734,8 +872,8 @@ TEST_CASE("Fuzzer 50 - Alter table heap-use-after-free", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 
-	con.SendQuery("CREATE TABLE t0(c0 INT);");
-	con.SendQuery("ALTER TABLE t0 ADD c1 TIMESTAMP_SEC;");
+	con.Query("CREATE TABLE t0(c0 INT);");
+	con.Query("ALTER TABLE t0 ADD c1 TIMESTAMP_SEC;");
 }
 
 TEST_CASE("Test loading database with enable_external_access set to false", "[api]") {
@@ -793,6 +931,43 @@ TEST_CASE("Test a logical execute still has types after an optimization pass", "
 	REQUIRE((query_plan->types[0].id() == LogicalTypeId::INTEGER));
 }
 
+static bool HasFlippedDelimJoin(const LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_DELIM_JOIN && op.Cast<LogicalComparisonJoin>().delim_flipped) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (HasFlippedDelimJoin(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+TEST_CASE("Test executing an optimized plan with a flipped delim join", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO integers VALUES (1), (2), (3), (NULL)"));
+
+	REQUIRE_NO_FAIL(con.Query("SET delim_join_as_cte = false"));
+	con.BeginTransaction();
+	Parser parser(*con.context);
+	parser.ParseQuery(
+	    "SELECT a.i, b.i, x FROM integers a, integers b JOIN LATERAL (VALUES (a.i)) ss(x) ON (true) ORDER BY ALL");
+	Planner planner(*con.context);
+	planner.CreatePlan(std::move(parser.statements[0]));
+	Optimizer optimizer(*planner.binder, *con.context);
+	auto plan = optimizer.Optimize(std::move(planner.plan));
+	con.Commit();
+	REQUIRE(HasFlippedDelimJoin(*plan));
+	REQUIRE_NO_FAIL(con.Query("SET delim_join_as_cte = true"));
+
+	REQUIRE_NO_FAIL(con.Query("PRAGMA disable_optimizer"));
+	auto result = con.Query(make_uniq<LogicalPlanStatement>(std::move(plan)));
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->RowCount() == 16);
+}
+
 TEST_CASE("Test SqlStatement::ToString for UPDATE, INSERT, DELETE statements with alias of RETURNING clause", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -815,54 +990,66 @@ TEST_CASE("Test SqlStatement::ToString for UPDATE, INSERT, DELETE statements wit
 TEST_CASE("Test buffer managed query result", "[api]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto con = make_uniq<Connection>(*db);
+	auto close_database = [&]() {
+		con.reset();
+		db.reset();
+	};
+	auto reopen_database = [&]() {
+		db = make_uniq<DuckDB>(nullptr);
+		con = make_uniq<Connection>(*db);
+	};
 
-	// Send query with in-memory result
+	// An in-memory result outlives the database
 	QueryParameters parameters;
-	parameters.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
-	parameters.memory_type = QueryResultMemoryType::IN_MEMORY;
-	auto result = con->SendQuery("SELECT 42;", parameters);
-
-	// Query result is accessible
+	parameters.format = ChunkFormat::InMemory();
+	auto result = con->context->Query("SELECT 42;", parameters);
+	REQUIRE_NOTHROW(result->ToString());
+	close_database();
 	REQUIRE_NOTHROW(result->ToString());
 
-	// Reset connection AND db
-	con.reset();
-	db.reset();
-
-	// Query result is still accessible after resetting
+	// A buffer-managed result dies with the database
+	reopen_database();
+	parameters.format = ChunkFormat::BufferManaged();
+	result = con->context->Query("SELECT 42;", parameters);
 	REQUIRE_NOTHROW(result->ToString());
-
-	// Do it again with a buffer-managed query result
-	db = make_uniq<DuckDB>(nullptr);
-	con = make_uniq<Connection>(*db);
-	parameters.memory_type = QueryResultMemoryType::BUFFER_MANAGED;
-	result = con->SendQuery("SELECT 42;", parameters);
-
-	// Query result is accessible
-	REQUIRE_NOTHROW(result->ToString());
-
-	// Reset connection AND db
-	con.reset();
-	db.reset();
-
-	// Query result is no longer accessible
+	close_database();
 	REQUIRE_THROWS(result->ToString());
 
-	// And again with order preservation disabled
-	db = make_uniq<DuckDB>(nullptr);
-	con = make_uniq<Connection>(*db);
-	result = con->SendQuery("SET preserve_insertion_order=false;");
-	result = con->SendQuery("SELECT 42;", parameters);
-
-	// Query result is accessible
+	reopen_database();
+	REQUIRE_NO_FAIL(con->Query("SET preserve_insertion_order=false;"));
+	result = con->context->Query("SELECT 42;", parameters);
 	REQUIRE_NOTHROW(result->ToString());
-
-	// Reset connection AND db
-	con.reset();
-	db.reset();
-
-	// Query result is no longer accessible
+	close_database();
 	REQUIRE_THROWS(result->ToString());
+
+	reopen_database();
+	REQUIRE_NO_FAIL(con->Query("CREATE TABLE integers AS SELECT range AS i FROM range(10000);"));
+	result = con->context->Query("SELECT * FROM integers;", parameters);
+	REQUIRE(result->RowCount() == 10000);
+	close_database();
+	REQUIRE_THROWS(result->ToString());
+
+	reopen_database();
+	result = con->Submit("SELECT 42;", ChunkFormat::BufferManaged());
+	result->Materialize();
+	REQUIRE_NOTHROW(result->ToString());
+	close_database();
+	REQUIRE_THROWS(result->ToString());
+
+	// Through the statement overload the shell uses
+	reopen_database();
+	auto statements = con->ExtractStatements("SELECT 42;");
+	result = con->Query(std::move(statements[0]), ChunkFormat::BufferManaged());
+	REQUIRE_NOTHROW(result->ToString());
+	close_database();
+	REQUIRE_THROWS(result->ToString());
+
+	// The parameterized Query template keeps the in-memory default of the other Query forms
+	reopen_database();
+	result = con->Query("SELECT ?::INTEGER;", 42);
+	REQUIRE_NOTHROW(result->ToString());
+	close_database();
+	REQUIRE_NOTHROW(result->ToString());
 }
 
 TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible operations", "[api]") {
@@ -925,4 +1112,160 @@ TEST_CASE("Test ClientInterruptState suppresses interrupts after irreversible op
 		context.ClearInterrupt();
 		REQUIRE_NO_FAIL(con.Query("DROP TABLE suppress_test"));
 	}
+}
+
+TEST_CASE("Test internal connections follow the interrupts of their base client", "[api]") {
+	DuckDB db;
+	Connection con(db);
+	auto child = Connection::CreateInternal(*con.context);
+	auto grandchild = Connection::CreateInternal(*child.context);
+	REQUIRE(grandchild.context->base_context == con.context);
+	REQUIRE(grandchild.context->internal_depth == 2);
+
+	SECTION("Interrupting the base interrupts every internal connection") {
+		con.context->Interrupt();
+		REQUIRE(child.context->IsInterrupted());
+		REQUIRE(grandchild.context->IsInterrupted());
+		REQUIRE_THROWS(grandchild.context->InterruptCheck());
+		con.context->ClearInterrupt();
+		REQUIRE(!grandchild.context->IsInterrupted());
+	}
+
+	SECTION("Interrupting an internal connection does not interrupt the base") {
+		child.context->Interrupt();
+		REQUIRE(!con.context->IsInterrupted());
+		child.context->ClearInterrupt();
+	}
+
+	SECTION("The base client's query deadline applies to internal connections while it is set") {
+		REQUIRE_NOTHROW(grandchild.context->BlockingInterruptCheck());
+		// a deadline in the past, as a base query that ran out of time would leave it
+		con.context->query_deadline = 1;
+		REQUIRE_THROWS(grandchild.context->BlockingInterruptCheck());
+		REQUIRE_THROWS(child.context->BlockingInterruptCheck());
+		con.context->query_deadline.SetInvalid();
+		REQUIRE_NOTHROW(grandchild.context->BlockingInterruptCheck());
+	}
+
+	SECTION("A query running on behalf of the base stops when the base is interrupted") {
+		REQUIRE_NO_FAIL(
+		    con.Query("CREATE MACRO slow_deleter(h) AS TABLE SELECT sum(i) AS s FROM range(100000000000) t(i)"));
+		auto start = std::chrono::steady_clock::now();
+		std::thread interrupter([&]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			con.Interrupt();
+		});
+		auto result = con.Query("FROM destroy_external_resource('slow_deleter', 1)");
+		interrupter.join();
+		REQUIRE(result->HasError());
+		REQUIRE(std::chrono::steady_clock::now() - start < std::chrono::seconds(30));
+	}
+}
+
+TEST_CASE("Test ExtractStatements error location", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_THROWS_WITH(con.ExtractStatements("FROM (VALUES ('1', '2'), ('1'))"),
+	                    Catch::Matchers::Contains("LINE 1: FROM (VALUES ('1', '2'), ('1'))"));
+}
+
+TEST_CASE("Test a parser error in Submit invalidates the transaction", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("SET current_transaction_invalidation_policy='ALL_ERRORS_INVALIDATE_TRANSACTION'"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (21)"));
+	auto result = con.Submit("inser into audit_backup from audit");
+	REQUIRE(result->HasError());
+	REQUIRE_FAIL(con.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(con.Query("ABORT"));
+
+	result = con.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+}
+
+TEST_CASE("Test a parser error while iterating statements invalidates the transaction", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	auto iterator = con.context->IterateStatements("INSERT INTO audit VALUES (21); inser into audit_backup from audit");
+	REQUIRE(iterator.Peek());
+	REQUIRE_NO_FAIL(con.Query(iterator.GetStatementForExecution()));
+	REQUIRE_THROWS_WITH(iterator.Peek(), Catch::Matchers::Contains("syntax error"));
+	REQUIRE_FAIL(con.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(con.Query("ABORT"));
+
+	auto result = con.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+}
+
+TEST_CASE("Test invalid UTF-8 while iterating statements invalidates the transaction", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (21)"));
+	REQUIRE_THROWS_WITH(con.context->IterateStatements("SELECT '\xff'"), Catch::Matchers::Contains("Invalid UTF-8"));
+	REQUIRE_FAIL(con.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(con.Query("ABORT"));
+
+	auto result = con.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+}
+
+TEST_CASE("Test iterating statements without applying the invalidation policy", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (21)"));
+	auto iterator = con.context->IterateStatements("inser into audit_backup from audit", false);
+	REQUIRE_THROWS_WITH(iterator.Peek(), Catch::Matchers::Contains("syntax error"));
+	REQUIRE_THROWS_WITH(con.context->IterateStatements("SELECT '\xff'", false),
+	                    Catch::Matchers::Contains("Invalid UTF-8"));
+	REQUIRE_THROWS_WITH(con.ExtractStatements("inser into audit_backup from audit", false),
+	                    Catch::Matchers::Contains("syntax error"));
+	REQUIRE_THROWS_WITH(con.GetTableNames("inser into audit_backup from audit"),
+	                    Catch::Matchers::Contains("syntax error"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(con.Query("COMMIT"));
+
+	auto result = con.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+}
+
+TEST_CASE("Test a parser error while iterating statements follows the invalidation policy", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN"));
+	REQUIRE_NO_FAIL(con.Query("SET current_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (21)"));
+	auto iterator = con.context->IterateStatements("inser into audit_backup from audit");
+	REQUIRE_THROWS_WITH(iterator.Peek(), Catch::Matchers::Contains("syntax error"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(con.Query("COMMIT"));
+
+	auto result = con.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+}
+
+TEST_CASE("Test a parser error while iterating statements in autocommit mode", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE audit(i INT)"));
+
+	auto iterator = con.context->IterateStatements("inser into audit_backup from audit");
+	REQUIRE_THROWS_WITH(iterator.Peek(), Catch::Matchers::Contains("syntax error"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO audit VALUES (21)"));
+
+	auto result = con.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 }

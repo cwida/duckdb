@@ -30,9 +30,9 @@ CHECKPOINT
 query I
 select * from fails;
 ----
-(world, hello)
+{'': world, 'x': hello}
 
 query I
 select * from succeeds;
 ----
-(1, {'y': t})
+{'': 1, 'x': {'y': t}}

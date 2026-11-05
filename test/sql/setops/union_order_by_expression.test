@@ -1,0 +1,84 @@
+# name: test/sql/setops/union_order_by_expression.test
+# description: ORDER BY expressions over the columns of a set operation
+# group: [setops]
+
+statement ok
+CREATE TABLE t1 AS SELECT * FROM (VALUES (1, 'a'), (NULL, 'b'), (3, 'c')) t(i, s);
+
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES (2, 'd'), (NULL, 'e'), (3, 'c')) t(i, s);
+
+# an expression over a set operation column
+query IT
+SELECT i, s FROM t1 UNION ALL SELECT i, s FROM t2 ORDER BY i IS NULL, i, s
+----
+1	a
+2	d
+3	c
+3	c
+NULL	b
+NULL	e
+
+# CASE over the result, combined with LIMIT
+query IT
+SELECT i, s FROM t1 UNION ALL SELECT i, s FROM t2 ORDER BY CASE WHEN s = 'e' THEN 0 ELSE 1 END, i NULLS FIRST, s LIMIT 3
+----
+NULL	e
+NULL	b
+1	a
+
+# UNION keeps its DISTINCT semantics under the wrapped ORDER BY
+query IT
+SELECT i, s FROM t1 UNION SELECT i, s FROM t2 ORDER BY i IS NULL, i DESC, s
+----
+3	c
+2	d
+1	a
+NULL	b
+NULL	e
+
+# a subquery in the ORDER BY expression
+query T
+SELECT s FROM t1 UNION ALL SELECT s FROM t2 ORDER BY s IN (SELECT s FROM t2 WHERE i = 2) DESC, s
+----
+d
+a
+b
+c
+c
+e
+
+# an expression that every child provides is still resolved against the select lists
+query I
+SELECT i + 1 FROM t1 UNION ALL SELECT i + 1 FROM t2 ORDER BY i + 1
+----
+2
+3
+4
+4
+NULL
+NULL
+
+# plain column references and positions keep working
+query IT
+SELECT i, s FROM t1 UNION ALL SELECT i, s FROM t2 ORDER BY 2 DESC, 1
+----
+NULL	e
+2	d
+3	c
+3	c
+NULL	b
+1	a
+
+# ORDER BY ALL over a set operation
+query IT
+SELECT i, s FROM t1 EXCEPT SELECT i, s FROM t2 ORDER BY ALL
+----
+1	a
+NULL	b
+
+# an ORDER BY expression over a column that is not part of the result is still an error
+statement error
+SELECT i FROM t1 UNION ALL SELECT i FROM t2 ORDER BY s IS NULL
+----
+<REGEX>:Binder Error.*

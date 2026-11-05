@@ -199,6 +199,12 @@ unique_ptr<HyperLogLog> HyperLogLog::Deserialize(Deserializer &deserializer) {
 	default:
 		throw SerializationException("Unknown HyperLogLog storage type!");
 	}
+	for (idx_t i = 0; i < M; i++) {
+		// registers hold the number of leading zeros (plus one) of the hashes
+		if (result->k[i] > Q + 1) {
+			throw SerializationException("Invalid HyperLogLog register value %d", result->k[i]);
+		}
+	}
 	return result;
 }
 

@@ -29,11 +29,21 @@ print_array data_ptr standard_vector_size
 
 - `<path>` must evaluate to a non-null pointer in the selected frame
 - `<size>` must evaluate to a positive integer
+- fractional sizes are rejected, and size expressions are evaluated once
 
 `<size>` can be either:
 
 - a decimal literal such as `1024`
 - an expression LLDB can evaluate in the selected frame, such as `count`
+
+Quote arguments containing spaces, for example:
+
+```lldb
+print_array "row_ids + offset" "count - offset"
+```
+
+The command cannot determine the allocation's bounds; keep the size within the
+known valid element count.
 
 ## Behavior
 

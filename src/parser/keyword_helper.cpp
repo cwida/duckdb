@@ -5,29 +5,12 @@
 
 namespace duckdb {
 
-static KeywordCategory GetPEGKeywordCategory(const string &text) {
-	auto &helper = DuckDBKeywordHelper::Instance();
-	if (helper.KeywordCategoryType(text, PEGKeywordCategory::KEYWORD_RESERVED)) {
-		return KeywordCategory::KEYWORD_RESERVED;
-	}
-	if (helper.KeywordCategoryType(text, PEGKeywordCategory::KEYWORD_UNRESERVED)) {
-		return KeywordCategory::KEYWORD_UNRESERVED;
-	}
-	if (helper.KeywordCategoryType(text, PEGKeywordCategory::KEYWORD_TYPE_FUNC)) {
-		return KeywordCategory::KEYWORD_TYPE_FUNC;
-	}
-	if (helper.KeywordCategoryType(text, PEGKeywordCategory::KEYWORD_COL_NAME)) {
-		return KeywordCategory::KEYWORD_COL_NAME;
-	}
-	return KeywordCategory::KEYWORD_NONE;
-}
-
 bool KeywordHelper::IsKeyword(const string &text, KeywordCategory category) {
-	return GetPEGKeywordCategory(text) != category;
+	return DuckDBKeywordHelper::Instance().GetKeywordCategory(text) != category;
 }
 
 KeywordCategory KeywordHelper::KeywordCategoryType(const string &text) {
-	return GetPEGKeywordCategory(text);
+	return DuckDBKeywordHelper::Instance().GetKeywordCategory(text);
 }
 
 bool KeywordHelper::RequiresQuotes(const string &text, bool allow_caps) {
@@ -76,8 +59,14 @@ string KeywordHelper::WriteQuoted(const string &text, char quote) {
 	return WriteQuotedAndEscaped(text, quote);
 }
 
+static bool RequiresQuotesForPrinting(const string &text, bool allow_caps) {
+	// After a qualification dot, an underscore followed by a digit can begin a decimal literal.
+	const bool ambiguous_after_dot = text.size() > 1 && text[0] == '_' && StringUtil::CharacterIsDigit(text[1]);
+	return text.empty() || ambiguous_after_dot || KeywordHelper::RequiresQuotes(text, allow_caps);
+}
+
 string KeywordHelper::WriteOptionallyQuoted(const string &text, char quote, bool allow_caps) {
-	if (!RequiresQuotes(text, allow_caps)) {
+	if (!RequiresQuotesForPrinting(text, allow_caps)) {
 		return text;
 	}
 	return WriteQuotedAndEscaped(text, quote);
@@ -87,7 +76,7 @@ SQLIdentifier::SQLIdentifier(const Identifier &id) : raw_string(id.GetIdentifier
 }
 
 string SQLIdentifier::ToString(const string &identifier) {
-	if (!KeywordHelper::RequiresQuotes(identifier)) {
+	if (!RequiresQuotesForPrinting(identifier, true)) {
 		return identifier;
 	}
 	return SQLQuotedIdentifier::ToString(identifier);

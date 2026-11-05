@@ -68,7 +68,7 @@ foreach fp_type FLOAT DOUBLE
 
 query II
 WITH floating_values(id, val) AS (
-	VALUES (1, 0::${fp_type}), (2, 'NaN'::${fp_type}), (3, -1::${fp_type}), (4, NULL::${fp_type})
+	VALUES (1, 0::{fp_type}), (2, 'NaN'::{fp_type}), (3, -1::{fp_type}), (4, NULL::{fp_type})
 )
 SELECT arg_min_nulls_last(id, val, 4), arg_max_nulls_last(id, val, 4) FROM floating_values
 ----
@@ -77,7 +77,7 @@ SELECT arg_min_nulls_last(id, val, 4), arg_max_nulls_last(id, val, 4) FROM float
 # Check that heap ordering does not depend on input order
 query II
 WITH floating_values(id, val) AS (
-	VALUES (2, 'NaN'::${fp_type}), (4, NULL::${fp_type}), (3, -1::${fp_type}), (1, 0::${fp_type})
+	VALUES (2, 'NaN'::{fp_type}), (4, NULL::{fp_type}), (3, -1::{fp_type}), (1, 0::{fp_type})
 )
 SELECT arg_min_nulls_last(id, val, 4), arg_max_nulls_last(id, val, 4) FROM floating_values
 ----

@@ -1,5 +1,5 @@
 # name: test/sql/peg_parser/parser/custom_operator.test
-# description: Test inet operator in peg parser
+# description: Test custom operators in peg parser
 # group: [parser]
 
 require autocomplete
@@ -14,5 +14,10 @@ statement ok
 CALL check_peg_parser($TEST_PEG_PARSER$SELECT 2**2 + 1;$TEST_PEG_PARSER$);
 
 statement ok
-CALL check_peg_parser($TEST_PEG_PARSER$select 1 not null; $TEST_PEG_PARSER$);
+CALL check_peg_parser($TEST_PEG_PARSER$SELECT 1 @@@ 2;$TEST_PEG_PARSER$);
 
+statement ok
+CALL check_peg_parser($TEST_PEG_PARSER$SELECT 1 @ 2;$TEST_PEG_PARSER$);
+
+statement ok
+CALL check_peg_parser($TEST_PEG_PARSER$select 1 not null; $TEST_PEG_PARSER$);

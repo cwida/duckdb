@@ -136,6 +136,14 @@ select stddev(0) from range(10)
 ----
 0
 
+# constant input in a window aggregate
+query R
+select stddev_pop(42) over () from range(3)
+----
+0.0
+0.0
+0.0
+
 # extreme values produce inf variance/stddev (IEEE-754 compliant)
 query R
 select stddev(a) from (values (1e301), (-1e301)) tbl(a)
@@ -179,4 +187,3 @@ CREATE TABLE inf_test AS SELECT 1.0/0.0 AS inf_col, 2.0 AS normal_col UNION ALL 
 
 statement ok
 SUMMARIZE inf_test;
-

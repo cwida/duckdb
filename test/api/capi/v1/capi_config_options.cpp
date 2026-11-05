@@ -107,3 +107,16 @@ TEST_CASE("Test Custom Configuration Options in C API", "[capi]") {
 	duckdb_destroy_value(&default_str_value);
 	duckdb_destroy_value(&default_int_value);
 }
+
+TEST_CASE("Issue #25056: duckdb_set_config crashes on a boolean option set to false", "[capi]") {
+	// debug_force_mbedtls_unsafe consults the attached databases when it is disabled, but there is no
+	// database instance yet when the option is set on a config
+	for (const auto &alias : {"force_mbedtls_unsafe", "debug_force_mbedtls_unsafe"}) {
+		for (const auto &value : {"true", "false", "1", "0"}) {
+			duckdb_config config;
+			REQUIRE(duckdb_create_config(&config) == DuckDBSuccess);
+			REQUIRE(duckdb_set_config(config, alias, value) == DuckDBSuccess);
+			duckdb_destroy_config(&config);
+		}
+	}
+}

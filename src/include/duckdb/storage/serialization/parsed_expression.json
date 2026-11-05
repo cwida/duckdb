@@ -5,6 +5,9 @@
     "set_parameters": [
       "type"
     ],
+    "finalize_deserialization": [
+      "result->VerifyDeserialized();"
+    ],
     "includes": [
       "duckdb/parser/expression/list.hpp"
     ],
@@ -226,9 +229,21 @@
       {
         "id": 200,
         "name": "value",
-        "type": "Value"
+        "type": "Value",
+        "status": "read_only",
+        "version": "v2.0.0",
+        "serialize_property": "GetValueForSerialization()",
+        "deserialize_default": "Value()"
+      },
+      {
+        "id": 201,
+        "name": "literal",
+        "type": "Literal",
+        "version": "v2.0.0",
+        "deserialize_default": "Literal()"
       }
-    ]
+    ],
+    "constructor_method": "ConstantExpression::DeserializeConstant"
   },
   {
     "class": "DefaultExpression",
@@ -331,12 +346,16 @@
         "accessor_mut": "GetLambdaSyntaxTypeMutable()",
         "accessor": "GetLambdaSyntaxType()"
       }
+    ],
+    "finalize_deserialization": [
+      "result->FinalizeDeserialization(deserializer);"
     ]
   },
   {
     "class": "OperatorExpression",
     "base": "ParsedExpression",
     "enum": "OPERATOR",
+    "custom_implementation": true,
     "members": [
       {
         "id": 200,
@@ -361,6 +380,13 @@
         "type": "duckdb::Identifier"
       }
     ]
+  },
+  {
+    "class": "PatternExpression",
+    "base": "ParsedExpression",
+    "enum": "PATTERN",
+    "custom_implementation": true,
+    "custom_switch_code": "result = PatternExpression::Deserialize(deserializer);\nbreak;"
   },
   {
     "class": "PositionalReferenceExpression",

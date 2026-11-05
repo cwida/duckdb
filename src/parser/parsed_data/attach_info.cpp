@@ -18,11 +18,26 @@ unique_ptr<AttachInfo> AttachInfo::Copy() const {
 		result->parsed_options[entry.first] = entry.second->Copy();
 	}
 	result->on_conflict = on_conflict;
+	if (external_resource) {
+		result->external_resource = external_resource->Copy();
+	}
 	return result;
 }
 
 string AttachInfo::ToString() const {
 	string result = "";
+	// `ATTACH TO [NEW TEMPORARY] EXTERNAL RESOURCE <resource> [(create opts)] AS name [(attach opts)]`
+	if (external_resource) {
+		// No IF NOT EXISTS / OR REPLACE: AttachToExternalResource has no slot for either, so rendering
+		// one would produce SQL that cannot be parsed back.
+		result += "ATTACH TO " + external_resource->ToString();
+		if (!name.empty()) {
+			result += " AS " + SQLIdentifier(name);
+		}
+		result += RenderOptionList(parsed_options, options);
+		result += ";";
+		return result;
+	}
 	result += "ATTACH";
 	if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		result += " IF NOT EXISTS";
@@ -38,18 +53,7 @@ string AttachInfo::ToString() const {
 	if (!name.empty()) {
 		result += " AS " + SQLIdentifier(name);
 	}
-	if (!parsed_options.empty() || !options.empty()) {
-		vector<string> stringified;
-		for (auto &opt : parsed_options) {
-			stringified.push_back(
-			    StringUtil::Format("%s %s", SQLIdentifier::ToString(opt.first), opt.second->ToString()));
-		}
-		for (auto &opt : options) {
-			stringified.push_back(
-			    StringUtil::Format("%s %s", SQLIdentifier::ToString(opt.first), opt.second.ToSQLString()));
-		}
-		result += " (" + StringUtil::Join(stringified, ", ") + ")";
-	}
+	result += RenderOptionList(parsed_options, options);
 	result += ";";
 	return result;
 }

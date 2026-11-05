@@ -1,0 +1,70 @@
+# name: test/sql/window/test_parallel_group_cleanup.test
+# description: Retiring parallel window groups preserves heap-backed aggregate results
+# group: [window]
+
+statement ok
+CREATE TABLE cleanup_input AS
+SELECT p, j, lpad((p * 521 + j)::VARCHAR, 20, '0') AS s
+FROM range(257) parts(p), range(521) rows(j)
+
+foreach threads 1 8 32
+
+statement ok
+SET threads={threads}
+
+# Many groups retire while other groups are still producing output into a downstream sort.
+statement ok
+CREATE TABLE retained AS
+SELECT p, j, list(s) OVER w AS items, string_agg(s, '|') OVER w AS joined,
+       row_number() OVER w AS rn, count(*) OVER w AS n
+FROM cleanup_input
+WINDOW w AS (PARTITION BY p ORDER BY j ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+ORDER BY p, j
+
+query II
+SELECT count(*), count(*) FILTER (
+    WHERE items IS DISTINCT FROM expected
+       OR joined IS DISTINCT FROM array_to_string(expected, '|')
+       OR rn <> j + 1 OR n <> len(expected)
+)
+FROM (
+    SELECT *, list_transform(range(greatest(j - 1, 0), least(j + 1, 520) + 1),
+                             lambda k: lpad((p * 521 + k)::VARCHAR, 20, '0')) AS expected
+    FROM retained
+) t
+----
+133897	0
+
+statement ok
+DROP TABLE retained
+
+# Early termination also leaves groups for normal source-state cleanup.
+query II
+SELECT count(*), count(*) FILTER (WHERE first_s IS DISTINCT FROM lpad((p * 521)::VARCHAR, 20, '0'))
+FROM (
+    SELECT p, first_value(s) OVER (PARTITION BY p ORDER BY j) AS first_s
+    FROM cleanup_input
+    LIMIT 1000
+) t
+----
+1000	0
+
+# A downstream failure cancels workers that may be retiring other groups.
+statement error
+SELECT CASE WHEN p = 128 AND len(items) > 0 THEN error('window cleanup cancellation') ELSE len(items) END
+FROM (
+    SELECT p, list(s) OVER (PARTITION BY p ORDER BY j ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS items
+    FROM cleanup_input
+) t
+----
+window cleanup cancellation
+
+# The same connection can run another parallel window after cancellation drains its tasks.
+query I
+SELECT count(*) FROM (
+    SELECT row_number() OVER (PARTITION BY p ORDER BY j) AS rn FROM cleanup_input
+) t WHERE rn = 1
+----
+257
+
+endloop

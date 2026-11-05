@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/capi/capi_function_signature.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -9,6 +10,7 @@
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
 namespace duckdb {
+
 namespace {
 //===--------------------------------------------------------------------===//
 // Structures
@@ -111,6 +113,7 @@ unique_ptr<FunctionData> CTableFunctionBind(ClientContext &context, TableFunctio
 	D_ASSERT(info.bind && info.function && info.init);
 
 	auto result = make_uniq<CTableBindData>(info);
+	// the cast values are kept, so that a plan that repeats this bind needs no literal types
 	CTableInternalBindInfo bind_info(context, input.inputs, input.named_parameters, return_types, names, *result, info);
 	info.bind(ToCTableFunctionBindInfo(bind_info));
 	if (!bind_info.success) {
@@ -157,6 +160,9 @@ unique_ptr<NodeStatistics> CTableFunctionCardinality(ClientContext &context, con
 }
 
 void CTableFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	for (auto &vector : output.data) {
+		PrepareCAPIVector(vector);
+	}
 	auto &bind_data = data_p.bind_data->Cast<CTableBindData>();
 	auto &global_data = data_p.global_state->Cast<CTableGlobalInitData>();
 	auto &local_data = data_p.local_state->Cast<CTableLocalInitData>();
@@ -205,7 +211,9 @@ void duckdb_table_function_add_parameter(duckdb_table_function function, duckdb_
 	}
 	auto &tf = GetCTableFunction(function);
 	auto logical_type = reinterpret_cast<duckdb::LogicalType *>(type);
-	tf.GetArguments().push_back(*logical_type);
+	// v1 declares no parameter name, so the parameter is positional-only - see duckdb_scalar_function_add_parameter.
+	// duckdb_table_function_add_named_parameter is the one that declares a name a caller can use
+	duckdb::CAPIFunctionSignature::AddPositionalOnly(tf.GetSignature(), *logical_type);
 }
 
 void duckdb_table_function_add_named_parameter(duckdb_table_function function, const char *name,
@@ -215,7 +223,19 @@ void duckdb_table_function_add_named_parameter(duckdb_table_function function, c
 	}
 	auto &tf = GetCTableFunction(function);
 	auto logical_type = reinterpret_cast<duckdb::LogicalType *>(type);
-	tf.named_parameters.insert({name, *logical_type});
+	// an option the call leaves out does not reach the bind, where duckdb_bind_get_named_parameter reports it absent
+	auto add_option = [&](duckdb::TypedKwargs &options) {
+		auto option_name = duckdb::Identifier(name);
+		if (!options.Find(option_name)) {
+			options.Add(std::move(option_name), *logical_type);
+		}
+	};
+	auto &signature = tf.GetSignature();
+	if (signature.GetTypedKwargs()) {
+		signature.ExtendTypedKwargs(add_option);
+	} else {
+		signature.WithTypedKwargs("options", add_option);
+	}
 }
 
 void duckdb_table_function_set_extra_info(duckdb_table_function function, void *extra_info,
@@ -284,14 +304,20 @@ duckdb_state duckdb_register_table_function(duckdb_connection connection, duckdb
 	if (tf.name.empty() || !info.bind || !info.init || !info.function) {
 		return DuckDBError;
 	}
-	for (auto it = tf.named_parameters.begin(); it != tf.named_parameters.end(); it++) {
-		if (duckdb::TypeVisitor::Contains(it->second, duckdb::LogicalTypeId::INVALID)) {
+	for (auto &param : tf.GetSignature().GetParameters()) {
+		// a variadic parameter carries no type of its own
+		if (param.IsVariadic()) {
+			continue;
+		}
+		if (duckdb::TypeVisitor::Contains(param.GetType(), duckdb::LogicalTypeId::INVALID)) {
 			return DuckDBError;
 		}
 	}
-	for (const auto &argument : tf.GetArguments()) {
-		if (duckdb::TypeVisitor::Contains(argument, duckdb::LogicalTypeId::INVALID)) {
-			return DuckDBError;
+	if (auto option_schema = tf.GetSignature().GetTypedKwargs()) {
+		for (auto &option : option_schema->GetOptions()) {
+			if (duckdb::TypeVisitor::Contains(option.type, duckdb::LogicalTypeId::INVALID)) {
+				return DuckDBError;
+			}
 		}
 	}
 

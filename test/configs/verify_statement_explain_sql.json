@@ -1,0 +1,136 @@
+{
+  "description": "Round-trip supported queries through SQL; reject verification defects and preserve native expectations",
+  "on_init": "SET debug_verify_statement='explain_sql';",
+  "on_new_connection": "SET debug_verify_statement='explain_sql';",
+  "skip_compiled": true,
+  "skip_tests": [
+    {
+      "reason": "The generated SQL changes the query pipelines whose tasks the fixture counts",
+      "paths": [
+        "test/sql/json/table/json_table_in_out_threads.test"
+      ]
+    },
+    {
+      "reason": "A second binding pass adds transaction or file-operation log events",
+      "paths": [
+        "test/sql/logging/logging.test",
+        "test/sql/logging/logging_csv.test",
+        "test/sql/logging/logging_types.test",
+        "test/sql/logging/test_logging_function.test",
+        "test/sql/logging/logging_buffer_size.test",
+        "test/sql/logging/logging_context_ids.test",
+        "test/sql/logging/http_logging.test",
+        "test/sql/logging/file_system_logging.test",
+        "test/sql/pragma/test_query_log.test",
+        "test/sql/logging/logging_file_truncate_rewrite.test"
+      ]
+    },
+    {
+      "reason": "Reoptimization changes stats() observations and physical scan profiling; these fixtures assert the original plan",
+      "paths": [
+        "test/sql/types/geo/geometry_from_wkb_stats.test",
+        "test/sql/types/geo/geometry_vertex_extract.test",
+        "test/optimizer/statistics/statistics_filter_pruning.test",
+        "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test",
+        "test/sql/optimizer/test_rowid_vector_pruning.test"
+      ]
+    },
+    {
+      "reason": "A volatile collated subquery group is grouped differently once its GROUP BY ALL is expanded to SQL",
+      "paths": [
+        "test/sql/collate/collate_group_by_all.test"
+      ]
+    },
+    {
+      "reason": "Native join reordering or implied filters change whether casts on excluded rows are evaluated",
+      "paths": [
+        "test/optimizer/pullup_join_expression_errors.test",
+        "test/sql/join/natural/natural_join.test",
+        "test/sql/function/generic/test_barrier.test",
+        "test/sql/optimizer/secure_view_pushdown.test"
+      ]
+    },
+    {
+      "reason": "The fixture expects a particular row order without ORDER BY; rebinding may choose another valid order",
+      "paths": [
+        "test/fuzzer/pedro/nested_subquery_table_function.test"
+      ]
+    },
+    {
+      "reason": "The extension injects an internal rowid_filter without a SQL catalog entry; it has no rebindable SQL representation",
+      "paths": [
+        "test/extension/test_extensible_filter.test"
+      ]
+    },
+    {
+      "reason": "PARQUET_VARIANT is an internal type alias that is not registered for SQL type lookup",
+      "paths": [
+        "test/parquet/variant/variant_to_parquet_variant.test",
+        "test/parquet/variant/variant_bytes_to_variant.test"
+      ]
+    },
+    {
+      "reason": "Generated SQL exposes a native IEJoin payload type mismatch with debug_verification_projection, reproducible with SQL export disabled",
+      "paths": [
+        "test/optimizer/projection_placement_results.test"
+      ]
+    },
+    {
+      "reason": "The native progress stress fixture folds range(500000) into a list; reconstructing and rebinding its 500000 SQL literals exceeds the configuration budget",
+      "paths": [
+        "test/sql/progress/test_verify_progress.test"
+      ]
+    },
+    {
+      "reason": "Reconstructed expressions have locations in generated SQL rather than the original source; the fixture requires original-source error carets",
+      "paths": [
+        "test/sql/cast/cast_error_location.test"
+      ]
+    },
+    {
+      "reason": "The internal EXPLAIN exceeds the 300 KiB limit; the fixture deliberately distinguishes SELECT from EXPLAIN allocations",
+      "paths": [
+        "test/issues/internal/test_5457.test"
+      ]
+    },
+    {
+      "reason": "Statement verification temporarily disables profiling for its internal EXPLAIN, changing current_setting observations",
+      "paths": [
+        "test/sql/pragma/profiling/test_custom_profiling_using_groups.test",
+        "test/sql/pragma/profiling/call_enable_profiling_function.test",
+        "test/sql/profiling/test_failed_query_profile.test",
+        "test/sql/settings/lock_configuration_pragmas.test"
+      ]
+    },
+    {
+      "reason": "The fixture imposes a 30 second execution deadline that the additional planning and rebinding pass exceeds",
+      "paths": [
+        "test/sql/cte/recursive_cte_aoc2022.test_slow"
+      ]
+    },
+    {
+      "reason": "FIXME: the rendered SQL of a DISTINCT aggregate over a collated argument fails to rebind with a collation mismatch",
+      "paths": [
+        "test/sql/collate/collate_distinct_aggregate_icu.test"
+      ]
+    },
+    {
+      "reason": "The internal EXPLAIN and the generated SQL change the pipelines of the probes, so their logging context spans differ",
+      "paths": [
+        "test/sql/table_function/range_lateral_threads.test"
+      ]
+    },
+    {
+      "reason": "FIXME: the exact DECIMAL quantile parameter lives in the bind data while the bound child is a DOUBLE cast, so the rendered SQL rebinds a non-throwing DOUBLE-rank quantile",
+      "paths": [
+        "test/sql/aggregate/aggregates/quantile_fallible_decimal_param.test"
+      ]
+    },
+    {
+      "reason": "FIXME: name-bound sum_no_overflow delegates its binding to sum, so the rendered SQL rebinds the checked HUGEINT sum and no longer raises",
+      "paths": [
+        "test/sql/aggregate/aggregates/sum_no_overflow_fallible.test"
+      ]
+    }
+  ]
+}

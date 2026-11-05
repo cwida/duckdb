@@ -20,7 +20,7 @@
 
 namespace duckdb {
 
-class ClientContext;
+class Context;
 class TaskExecutor;
 
 //! Compile-time policy used by the async write layers.
@@ -84,7 +84,7 @@ class AsyncWriteQueue {
 	friend class AsyncWriteQueueTaskGuard;
 
 public:
-	DUCKDB_API AsyncWriteQueue(ClientContext &client_context, AsyncWriteTarget &target);
+	DUCKDB_API AsyncWriteQueue(Context &services, AsyncWriteTarget &target);
 	DUCKDB_API ~AsyncWriteQueue();
 
 	AsyncWriteQueue(const AsyncWriteQueue &) = delete;
@@ -153,7 +153,7 @@ private:
 	void CancelPendingRequestsAfterFailure(const ErrorData &error) noexcept;
 
 private:
-	ClientContext &client_context;
+	Context &services;
 	AsyncWriteTarget &target;
 	//! Maximum scheduled/running write tasks for this queue.
 	idx_t max_active_tasks = 1;
@@ -214,7 +214,7 @@ public:
 	enum class SchedulePolicy : uint8_t { THRESHOLD, FORCE };
 
 public:
-	DUCKDB_API ManagedAsyncWriteQueue(ClientContext &client_context, AsyncWriteTarget &target);
+	DUCKDB_API ManagedAsyncWriteQueue(Context &services, AsyncWriteTarget &target);
 	DUCKDB_API ~ManagedAsyncWriteQueue() override;
 
 	ManagedAsyncWriteQueue(const ManagedAsyncWriteQueue &) = delete;
@@ -299,7 +299,7 @@ private:
 	void Write(data_ptr_t buffer, idx_t size, idx_t offset) override;
 
 private:
-	ClientContext &client_context;
+	Context &services;
 	AsyncWriteTarget &target;
 
 	//! Low-level positional request scheduler.
@@ -331,6 +331,8 @@ private:
 //! V1 is a contiguous logical write queue: each RegisterWrite offset must match the next expected offset.
 //! Callers are responsible for assigning offsets and externally serializing RegisterWrite calls.
 class ManagedAsyncWriteStreamQueue : private AsyncWriteTarget {
+	friend class ManagedAsyncWriteQueueTest;
+
 public:
 	//! Whether registering a payload may schedule an async drain request immediately.
 	enum class ScheduleMode : uint8_t { ALLOW, DEFER };
@@ -340,7 +342,7 @@ public:
 	enum class BatchDrainMode : uint8_t { PRESERVE_BATCH, FORCE_CLOSE_BATCH };
 
 public:
-	DUCKDB_API ManagedAsyncWriteStreamQueue(ClientContext &client_context, ManagedAsyncWriteStreamTarget &target);
+	DUCKDB_API ManagedAsyncWriteStreamQueue(Context &services, ManagedAsyncWriteStreamTarget &target);
 	DUCKDB_API ~ManagedAsyncWriteStreamQueue() override;
 
 	ManagedAsyncWriteStreamQueue(const ManagedAsyncWriteStreamQueue &) = delete;
@@ -435,7 +437,7 @@ private:
 	void Write(data_ptr_t buffer, idx_t size, idx_t offset) override;
 
 private:
-	ClientContext &client_context;
+	Context &services;
 	ManagedAsyncWriteStreamTarget &target;
 
 	//! Managed queue that owns TMM reservation, backpressure, and task scheduling for physical write requests.

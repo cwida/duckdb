@@ -25,7 +25,7 @@ add_library_unity(
   json_modify.cpp
   json_strip_nulls.cpp
   read_json.cpp
-  read_json_objects.cpp)
+  read_single_json_file.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_json_functions>
     PARENT_SCOPE)

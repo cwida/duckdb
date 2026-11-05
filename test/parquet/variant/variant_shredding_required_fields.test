@@ -1,0 +1,237 @@
+# name: test/parquet/variant/variant_shredding_required_fields.test
+# description: Shredded Variant object fields and list elements must be REQUIRED per Parquet VariantShredding.md
+# group: [variant]
+
+require parquet
+
+# Object shredding: each named field group under typed_value must be REQUIRED.
+# typed_value itself, and the field's value/typed_value children, remain OPTIONAL.
+statement ok
+COPY (
+	SELECT {'a': 42::INTEGER, 'b': 'x'}::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_object.parquet' (
+	SHREDDING {v: 'STRUCT(a INTEGER, b VARCHAR)'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_object.parquet')
+WHERE name IN ('metadata', 'a', 'b') OR (name = 'typed_value' AND num_children = 2) OR (name = 'value' AND column_id = (
+	SELECT MIN(column_id) FROM parquet_schema('{TEST_DIR}/variant_required_object.parquet') WHERE name = 'value'
+))
+ORDER BY column_id;
+----
+metadata	REQUIRED
+value	OPTIONAL
+typed_value	OPTIONAL
+a	REQUIRED
+b	REQUIRED
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_object.parquet')
+WHERE name IN ('value', 'typed_value') AND column_id > (
+	SELECT column_id FROM parquet_schema('{TEST_DIR}/variant_required_object.parquet') WHERE name = 'a'
+) AND column_id < (
+	SELECT column_id FROM parquet_schema('{TEST_DIR}/variant_required_object.parquet') WHERE name = 'b'
+)
+ORDER BY column_id;
+----
+value	OPTIONAL
+typed_value	OPTIONAL
+
+# Nested object shredding: nested field groups must also be REQUIRED
+statement ok
+COPY (
+	SELECT {'loc': {'lat': 1.5::DOUBLE, 'lon': 2.5::DOUBLE}}::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_nested_object.parquet' (
+	SHREDDING {v: 'STRUCT(loc STRUCT(lat DOUBLE, lon DOUBLE))'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_nested_object.parquet')
+WHERE name IN ('loc', 'lat', 'lon')
+ORDER BY column_id;
+----
+loc	REQUIRED
+lat	REQUIRED
+lon	REQUIRED
+
+# Array shredding: list element groups must be REQUIRED
+statement ok
+COPY (
+	SELECT ['a', 'b']::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_array.parquet' (
+	SHREDDING {v: 'VARCHAR[]'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_array.parquet')
+WHERE name = 'element';
+----
+element	REQUIRED
+
+# Array shredding with a non-list scalar: typed_value is unused, element group is still REQUIRED
+statement ok
+COPY (
+	SELECT '42'::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_array_scalar.parquet' (
+	SHREDDING {v: 'VARCHAR[]'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_array_scalar.parquet')
+WHERE name = 'element';
+----
+element	REQUIRED
+
+query I
+SELECT v FROM '{TEST_DIR}/variant_required_array_scalar.parquet';
+----
+42
+
+# Missing shredded fields: unused field groups are still REQUIRED
+statement ok
+COPY (
+	SELECT {'a': 1::INTEGER}::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_missing_field.parquet' (
+	SHREDDING {v: 'STRUCT(a INTEGER, b VARCHAR)'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_missing_field.parquet')
+WHERE name IN ('a', 'b')
+ORDER BY name;
+----
+a	REQUIRED
+b	REQUIRED
+
+query I
+SELECT v FROM '{TEST_DIR}/variant_required_missing_field.parquet';
+----
+{'a': 1}
+
+# Ordinary STRUCT columns named value/typed_value must not be forced REQUIRED
+statement ok
+COPY (
+	SELECT {
+		'inner': CASE WHEN i = 0 THEN NULL ELSE {'value': 'x'::BLOB, 'typed_value': 1} END
+	} AS s
+	FROM range(2) t(i)
+) TO '{TEST_DIR}/non_variant_value_typed_value.parquet';
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/non_variant_value_typed_value.parquet')
+WHERE name IN ('inner', 'value', 'typed_value')
+ORDER BY column_id;
+----
+inner	OPTIONAL
+value	OPTIONAL
+typed_value	OPTIONAL
+
+query I
+SELECT s.inner.typed_value FROM '{TEST_DIR}/non_variant_value_typed_value.parquet' ORDER BY 1 NULLS FIRST;
+----
+NULL
+1
+
+# Inferred shredding (no SHREDDING option): field groups added in AnalyzeSchemaFinalize must also be REQUIRED
+statement ok
+COPY (
+	SELECT {'a': 42::INTEGER, 'b': 'x'}::VARIANT AS v FROM range(3)
+) TO '{TEST_DIR}/variant_required_inferred.parquet';
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_inferred.parquet')
+WHERE name IN ('a', 'b') OR (name = 'typed_value' AND num_children = 2)
+ORDER BY name;
+----
+a	REQUIRED
+b	REQUIRED
+typed_value	OPTIONAL
+
+query I
+SELECT v FROM '{TEST_DIR}/variant_required_inferred.parquet' LIMIT 1;
+----
+{'a': 42, 'b': x}
+
+# List-of-struct: both the list element group and nested field groups must be REQUIRED
+statement ok
+COPY (
+	SELECT [{'a': 1::INTEGER, 'b': 'x'}]::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_list_of_struct.parquet' (
+	SHREDDING {v: 'STRUCT(a INTEGER, b VARCHAR)[]'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_list_of_struct.parquet')
+WHERE name IN ('element', 'a', 'b')
+ORDER BY name;
+----
+a	REQUIRED
+b	REQUIRED
+element	REQUIRED
+
+query I
+SELECT v FROM '{TEST_DIR}/variant_required_list_of_struct.parquet';
+----
+[{'a': 1, 'b': x}]
+
+# Struct-of-list: field group and its list element group must both be REQUIRED
+statement ok
+COPY (
+	SELECT {'a': ['x', 'y']::VARCHAR[]}::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_struct_of_list.parquet' (
+	SHREDDING {v: 'STRUCT(a VARCHAR[])'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_struct_of_list.parquet')
+WHERE name IN ('a', 'element')
+ORDER BY name;
+----
+a	REQUIRED
+element	REQUIRED
+
+query I
+SELECT v FROM '{TEST_DIR}/variant_required_struct_of_list.parquet';
+----
+{'a': [x, y]}
+
+# VARIANT nested in a shredded struct field: field group has only value (no typed_value) and must be REQUIRED
+statement ok
+COPY (
+	SELECT {'a': 1::INTEGER, 'b': {'x': 2}::VARIANT}::VARIANT AS v
+) TO '{TEST_DIR}/variant_required_nested_variant.parquet' (
+	SHREDDING {v: 'STRUCT(a INTEGER, b VARIANT)'}
+);
+
+query II
+SELECT name, repetition_type
+FROM parquet_schema('{TEST_DIR}/variant_required_nested_variant.parquet')
+WHERE name IN ('a', 'b')
+ORDER BY name;
+----
+a	REQUIRED
+b	REQUIRED
+
+# Nested VARIANT field has only a value child (no typed_value)
+query I
+SELECT num_children
+FROM parquet_schema('{TEST_DIR}/variant_required_nested_variant.parquet')
+WHERE name = 'b';
+----
+1
+
+query I
+SELECT v FROM '{TEST_DIR}/variant_required_nested_variant.parquet';
+----
+{'a': 1, 'b': {'x': 2}}

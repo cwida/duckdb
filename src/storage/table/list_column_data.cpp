@@ -50,14 +50,15 @@ void ListColumnData::SetDataType(ColumnDataType data_type) {
 	validity->SetDataType(data_type);
 }
 
-FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                   optional_idx &checked_end) {
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
-void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                        idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 
 	// we can't know how many rows we need to prefetch for the child of this list without looking at the actual data
 	// we make an estimation by looking at how many rows the child column has versus this column
@@ -66,7 +67,15 @@ void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnSca
 	if (child_column->count > this->count && this->count > 0) {
 		rows_per_list = child_column->count / this->count;
 	}
-	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], rows * rows_per_list);
+	// the child rows of the range are estimated from the child row the list scan is at, which last_offset holds
+	D_ASSERT(start_row >= scan_state.offset_in_column);
+	const idx_t child_start = scan_state.last_offset + (start_row - scan_state.offset_in_column) * rows_per_list;
+	if (child_start >= child_column->GetMaxEntry()) {
+		// no child rows remain
+		return;
+	}
+	const idx_t child_end = scan_state.last_offset + (end_row - scan_state.offset_in_column) * rows_per_list;
+	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], child_start, child_end);
 }
 
 void ListColumnData::InitializeScan(ColumnScanState &state) {
@@ -84,11 +93,10 @@ uint64_t ListColumnData::FetchListOffset(idx_t row_idx) {
 	if (row_idx >= count) {
 		throw DataCorruptionException("Corrupted database: list offset row ID is out of range");
 	}
-	auto segment = data.GetSegment(row_idx);
-	ColumnFetchState fetch_state;
+	ColumnScanState offset_state(nullptr);
+	ColumnData::InitializeScanWithOffset(offset_state, row_idx);
 	Vector result(LogicalType::UBIGINT, 1);
-	auto index_in_segment = UnsafeNumericCast<row_t>(row_idx - segment->GetRowStart());
-	segment->GetNode().FetchRow(fetch_state, index_in_segment, result, 0U);
+	ScanVector(offset_state, result, 1, ScanVectorType::SCAN_FLAT_VECTOR);
 	auto offset = FlatVector::GetData<uint64_t>(result)[0];
 	ValidateListOffset(offset, child_column->GetMaxEntry());
 
@@ -111,6 +119,9 @@ void ListColumnData::InitializeScanWithOffset(ColumnScanState &state, idx_t row_
 	auto child_offset = FetchListOffset(row_idx - 1);
 	if (child_offset < child_column->GetMaxEntry()) {
 		child_column->InitializeScanWithOffset(state.child_states[1], child_offset);
+	} else {
+		// no child rows remain, start the child scan over so that it does not keep the position of an earlier scan
+		child_column->InitializeScan(state.child_states[1]);
 	}
 	state.last_offset = child_offset;
 }
@@ -176,7 +187,11 @@ void ListColumnData::Skip(ColumnScanState &state, idx_t count) {
 	// however, let's just read all "count" entries for now
 	Vector offset_vector(LogicalType::UBIGINT, count);
 	idx_t scan_count = ScanVector(state, offset_vector, count, ScanVectorType::SCAN_FLAT_VECTOR);
-	D_ASSERT(scan_count > 0);
+	if (scan_count == 0) {
+		// no offsets were scanned - there is nothing to skip in the child, and reading offset[-1] below would be
+		// an out-of-bounds read
+		return;
+	}
 
 	UnifiedVectorFormat offsets;
 	offset_vector.ToUnifiedFormat(offsets);
@@ -198,11 +213,13 @@ void ListColumnData::InitializeAppend(ColumnAppendState &state) {
 
 	// initialize the validity append
 	ColumnAppendState validity_append_state;
+	validity_append_state.transient = state.transient;
 	validity->InitializeAppend(validity_append_state);
 	state.child_appends.push_back(std::move(validity_append_state));
 
 	// initialize the child column append
 	ColumnAppendState child_append_state;
+	child_append_state.transient = state.transient;
 	child_column->InitializeAppend(child_append_state);
 	state.child_appends.push_back(std::move(child_append_state));
 }
@@ -280,16 +297,10 @@ void ListColumnData::FinalizeAppend(ColumnDataFinalizeAppendState &finalize_stat
 void ListColumnData::RevertAppend(row_t new_count) {
 	ColumnData::RevertAppend(new_count);
 	validity->RevertAppend(new_count);
+	// revert append in the child column, also when no list is left
 	auto column_count = GetMaxEntry();
-	if (column_count > 0) {
-		// revert append in the child column
-		auto list_offset = FetchListOffset(column_count - 1);
-		child_column->RevertAppend(UnsafeNumericCast<row_t>(list_offset));
-	}
-}
-
-idx_t ListColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("List Fetch");
+	auto list_offset = column_count > 0 ? FetchListOffset(column_count - 1) : 0;
+	child_column->RevertAppend(UnsafeNumericCast<row_t>(list_offset));
 }
 
 void ListColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
@@ -318,12 +329,31 @@ void ListColumnData::FetchRows(TransactionData transaction, ColumnFetchState &st
 	validity->FetchRowsAtSegmentLevel(transaction, *state.child_states[0], offsets, sel, fetch_count, result,
 	                                  result_offset);
 
-	auto &validity_mask = FlatVector::ValidityMutable(result);
-	auto list_data = FlatVector::GetDataMutable<list_entry_t>(result);
+	// each list ends at its own offset and starts at the offset of the row before it
+	Vector end_offsets(LogicalType::UBIGINT, fetch_count);
+	FetchRowsAtSegmentLevel(transaction, state, offsets, sel, fetch_count, end_offsets, 0);
+	auto previous_rows = make_unsafe_uniq_array<idx_t>(fetch_count);
+	SelectionVector previous_sel(fetch_count);
+	idx_t previous_count = 0;
 	for (idx_t idx = 0; idx < fetch_count; idx++) {
 		const auto row_id = offsets[sel.get_index(idx)];
-		auto start_offset = row_id == 0 ? 0 : FetchListOffset(row_id - 1);
-		auto end_offset = FetchListOffset(row_id);
+		if (row_id > 0) {
+			previous_rows[idx] = row_id - 1;
+			previous_sel.set_index(previous_count++, idx);
+		}
+	}
+	Vector start_offsets(LogicalType::UBIGINT, fetch_count);
+	FetchRowsAtSegmentLevel(transaction, state, previous_rows.get(), previous_sel, previous_count, start_offsets, 0);
+	auto end_data = FlatVector::GetData<uint64_t>(end_offsets);
+	auto start_data = FlatVector::GetData<uint64_t>(start_offsets);
+
+	auto &validity_mask = FlatVector::ValidityMutable(result);
+	auto list_data = FlatVector::GetDataMutable<list_entry_t>(result);
+	idx_t start_idx = 0;
+	for (idx_t idx = 0; idx < fetch_count; idx++) {
+		const auto row_id = offsets[sel.get_index(idx)];
+		auto start_offset = row_id == 0 ? 0 : start_data[start_idx++];
+		auto end_offset = end_data[idx];
 		auto length = GetListLength(start_offset, end_offset, child_column->GetMaxEntry());
 		auto result_idx = result_offset + idx;
 		auto &list_entry = list_data[result_idx];

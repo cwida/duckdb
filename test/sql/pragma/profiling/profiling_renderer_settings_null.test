@@ -1,0 +1,37 @@
+# name: test/sql/pragma/profiling/profiling_renderer_settings_null.test
+# description: NULL values in profiling_renderer_settings
+# group: [profiling]
+
+statement error
+SET profiling_renderer_settings = MAP {'expand_all': NULL::INTEGER[]};
+----
+cannot be NULL
+
+statement error
+SET profiling_renderer_settings = MAP {'expand_all': NULL};
+----
+cannot be NULL
+
+statement error
+SET profiling_renderer_settings = MAP {'max_extra_lines': 3, 'expand_all': NULL::BOOLEAN};
+----
+cannot be NULL
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement error
+SET profiling_renderer_settings = MAP {'max_extra_lines': NULL::INTEGER};
+----
+cannot be NULL
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+SET profiling_renderer_settings = MAP {'max_extra_lines': 3};
+
+query I
+SELECT 42;
+----
+42

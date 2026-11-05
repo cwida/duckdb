@@ -13,17 +13,6 @@ BatchedDataCollection::BatchedDataCollection(ClientContext &context_p, vector<Lo
     : context(context_p), types(std::move(types_p)), allocator_type(allocator_type_p), lifetime(lifetime_p) {
 }
 
-BatchedDataCollection::BatchedDataCollection(ClientContext &context, vector<LogicalType> types,
-                                             QueryResultMemoryType memory_type)
-    : BatchedDataCollection(context, std::move(types),
-                            memory_type == QueryResultMemoryType::BUFFER_MANAGED
-                                ? ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR
-                                : ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR,
-                            memory_type == QueryResultMemoryType::BUFFER_MANAGED
-                                ? ColumnDataCollectionLifetime::THROW_ERROR_AFTER_DATABASE_CLOSES
-                                : ColumnDataCollectionLifetime::REGULAR) {
-}
-
 BatchedDataCollection::BatchedDataCollection(ClientContext &context_p, vector<LogicalType> types_p, batch_map_t batches,
                                              ColumnDataAllocatorType allocator_type_p,
                                              ColumnDataCollectionLifetime lifetime_p)

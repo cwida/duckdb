@@ -6,17 +6,17 @@ load {TEST_DIR}/variant_legacy_encoding.db readwrite v1.5.0
 require parquet
 
 query I
-select current_setting('__delta_only_variant_encoding_enabled')
+select current_setting('debug_delta_only_variant_encoding_enabled')
 ----
 false
 
 statement error
-set __delta_only_variant_encoding_enabled = true;
+set debug_delta_only_variant_encoding_enabled = true;
 ----
 Invalid Input Error: This setting is not adjustable by a user
 
 statement error
-reset __delta_only_variant_encoding_enabled;
+reset debug_delta_only_variant_encoding_enabled;
 ----
 Invalid Input Error: This setting is not adjustable by a user
 

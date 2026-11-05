@@ -107,3 +107,66 @@ statement error
 select RPAD('a', 100000000000000000, 0)
 ----
 
+# results larger than the maximum string size
+statement error
+select LPAD('', 1100000000, '😀')
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+select RPAD('', 1100000000, '😀')
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+select LPAD('😀😀', 1073741824, '😀')
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+select RPAD('😀😀', 1073741824, '😀')
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+statement error
+select LPAD('abc', 2147483647, 'xyz😀😀')
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*
+
+query I
+select LPAD('ab', 7, 'xy😀')
+----
+xy😀xyab
+
+query I
+select RPAD('ab', 7, 'xy😀')
+----
+abxy😀xy
+
+# a one-byte pad, a one-character multibyte pad, and a pad longer than the padding
+query IIII
+select LPAD('x', 10, '0'), LPAD('x', 4, '😀'), LPAD('x', 3, '😀ab'), RPAD('x', 3, '😀ab')
+----
+000000000x	😀😀😀x	😀ax	x😀a
+
+# the padding is counted in characters whatever the byte width of the pad
+query III
+select length(LPAD('', 1000, 'é')), strlen(LPAD('', 1000, 'é')), LPAD('ab', 5, 'é') = 'éééab'
+----
+1000	2000	true
+
+# no padding needed: the pad is not read
+query II
+select LPAD('abc', 3, ''), RPAD('abcd', 3, '')
+----
+abc	abc
+
+statement error
+select LPAD('abc', 4, '')
+----
+Insufficient padding in LPAD
+
+statement error
+select RPAD('abc', 4, '')
+----
+Insufficient padding in RPAD

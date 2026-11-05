@@ -1,0 +1,215 @@
+# name: test/sql/constraints/deferred/test_deferred_statements.test
+# description: Deferred constraints with different key types and statements
+# group: [deferred]
+
+# composite and VARCHAR keys
+statement ok
+CREATE TABLE composite(i INTEGER, s VARCHAR, PRIMARY KEY(i, s) DEFERRED);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO composite VALUES (1, 'a'), (1, 'b'), (2, 'a'), (1, 'a');
+
+query I
+SELECT count(*) FROM composite WHERE i = 1 AND s = 'a';
+----
+2
+
+statement error
+COMMIT;
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+statement ok
+INSERT INTO composite VALUES (1, 'a'), (1, 'b'), (2, 'a'), (1, 'a long string that is not inlined');
+
+statement error
+INSERT INTO composite VALUES (1, 'a long string that is not inlined');
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM composite;
+----
+4
+
+# UNIQUE allows multiple NULLs
+statement ok
+CREATE TABLE nulls(i INTEGER UNIQUE DEFERRED);
+
+statement ok
+INSERT INTO nulls VALUES (NULL), (NULL), (1);
+
+statement ok
+INSERT INTO nulls VALUES (NULL);
+
+statement error
+INSERT INTO nulls VALUES (NULL), (1);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM nulls;
+----
+4
+
+# temporary tables
+statement ok
+CREATE TEMPORARY TABLE temp_t(i INTEGER PRIMARY KEY DEFERRED);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO temp_t VALUES (1), (1);
+
+statement ok
+DELETE FROM temp_t WHERE rowid = (SELECT min(rowid) FROM temp_t);
+
+statement ok
+COMMIT;
+
+statement error
+INSERT INTO temp_t VALUES (1);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+# RETURNING and prepared statements
+statement ok
+CREATE TABLE t(i INTEGER PRIMARY KEY DEFERRED, j INTEGER);
+
+statement ok
+PREPARE insert_t AS INSERT INTO t VALUES ($1, $2) RETURNING i, j;
+
+statement ok
+BEGIN TRANSACTION;
+
+query II
+EXECUTE insert_t(1, 10);
+----
+1	10
+
+query II
+EXECUTE insert_t(1, 20);
+----
+1	20
+
+query II
+UPDATE t SET i = 2 WHERE j = 20 RETURNING i, j;
+----
+2	20
+
+statement ok
+COMMIT;
+
+statement error
+EXECUTE insert_t(2, 30);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query II rowsort
+SELECT i, j FROM t;
+----
+1	10
+2	20
+
+# MERGE INTO with insert, update, and delete actions
+statement ok
+BEGIN TRANSACTION;
+
+query I
+MERGE INTO t USING (VALUES (1, 11), (3, 30), (4, 40)) s(i, j) ON t.j = s.j - 1
+WHEN MATCHED THEN UPDATE SET i = 3
+WHEN NOT MATCHED THEN INSERT VALUES (s.i, s.j);
+----
+3
+
+query I
+SELECT count(*) FROM t WHERE i = 3;
+----
+2
+
+statement ok
+MERGE INTO t USING (VALUES (30)) s(j) ON t.j = s.j
+WHEN MATCHED THEN DELETE;
+
+statement ok
+COMMIT;
+
+query II rowsort
+SELECT i, j FROM t;
+----
+2	20
+3	10
+4	40
+
+statement error
+MERGE INTO t USING (VALUES (5, 50)) s(i, j) ON t.i = s.i
+WHEN NOT MATCHED THEN INSERT VALUES (3, s.j);
+----
+Failed to commit: PRIMARY KEY or UNIQUE constraint violation: duplicate key
+
+query I
+SELECT count(*) FROM t;
+----
+3
+
+# a deferred constraint comes before an immediate constraint on the same columns
+statement ok
+CREATE TABLE both_timings(i INTEGER, UNIQUE(i) DEFERRED, PRIMARY KEY(i));
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO both_timings VALUES (1);
+
+statement error
+INSERT INTO both_timings VALUES (1);
+----
+<REGEX>:Constraint Error.*(D|d)uplicate key.*
+
+statement ok
+ROLLBACK;
+
+# a foreign key references the immediate constraint
+statement ok
+CREATE TABLE both_child(i INTEGER REFERENCES both_timings(i));
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO both_timings VALUES (1);
+
+statement ok
+INSERT INTO both_child VALUES (1);
+
+statement ok
+COMMIT;
+
+statement ok
+INSERT INTO both_timings VALUES (1) ON CONFLICT (i) DO NOTHING;
+
+query I
+SELECT count(*) FROM both_timings;
+----
+1
+
+statement error
+DELETE FROM both_timings WHERE i = 1;
+----
+still referenced by a foreign key
+
+statement error
+INSERT INTO both_child VALUES (2);
+----
+does not exist in the referenced table
+
+# a self-referencing foreign key cannot reference a deferred primary key
+statement error
+CREATE TABLE employee(id INTEGER PRIMARY KEY DEFERRED, manager INTEGER REFERENCES employee(id));
+----
+the referenced PRIMARY KEY or UNIQUE constraint cannot be DEFERRED

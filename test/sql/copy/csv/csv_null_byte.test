@@ -27,3 +27,16 @@ query II
 select * from read_csv('{DATA_DIR}/csv/nullbyte_header.csv', columns={'col1': 'VARCHAR', 'col2': 'VARCHAR'}, delim='|', header=True);
 ----
 val1	val2
+
+# a NUL byte at the start of a field with quoting disabled, inside a full block of the scanner
+query III
+select * from read_csv('{DATA_DIR}/csv/nul_field_start.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, quote='', escape='', header=false) where a <> 'aaaa'
+----
+a	\0b	c
+d	e	f
+\0g	h	i
+
+query I
+select count(*) from read_csv('{DATA_DIR}/csv/nul_field_start.csv', columns={'a': 'VARCHAR', 'b': 'VARCHAR', 'c': 'VARCHAR'}, quote='', escape='', header=false)
+----
+19

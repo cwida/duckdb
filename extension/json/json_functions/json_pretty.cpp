@@ -19,8 +19,10 @@ static void PrettyPrintFunction(DataChunk &args, ExpressionState &state, Vector 
 }
 
 static void GetPrettyPrintFunctionInternal(ScalarFunctionSet &set, const LogicalType &json) {
-	set.AddFunction(ScalarFunction("json_pretty", {json}, LogicalType::VARCHAR, PrettyPrintFunction, nullptr, nullptr,
-	                               JSONFunctionLocalState::Init));
+	ScalarFunction fun("json_pretty", {}, LogicalType::VARCHAR, PrettyPrintFunction, nullptr, nullptr,
+	                   JSONFunctionLocalState::Init);
+	fun.GetSignature().AddParameter("json", json);
+	set.AddFunction(fun);
 }
 
 ScalarFunctionSet JSONFunctions::GetPrettyPrintFunction() {

@@ -6,11 +6,8 @@ duckdb_data_chunk duckdb_stream_fetch_chunk(duckdb_result result) {
 	if (!result.internal_data) {
 		return nullptr;
 	}
-	auto &result_data = *((duckdb::DuckDBResultData *)result.internal_data);
-	if (result_data.result->GetResultType() != duckdb::QueryResultType::STREAM_RESULT) {
-		// We can only fetch from a StreamQueryResult
-		return nullptr;
-	}
+	// A streaming entry point hands out a retained result for a statement it does not stream, and its rows are read
+	// here too, since this is the reader its caller was told to use
 	return duckdb_fetch_chunk(result);
 }
 
@@ -23,15 +20,22 @@ duckdb_data_chunk duckdb_fetch_chunk(duckdb_result result) {
 		return nullptr;
 	}
 	result_data.result_set_type = duckdb::CAPIResultSetType::CAPI_RESULT_TYPE_STREAMING;
-	auto &result_instance = (duckdb::QueryResult &)*result_data.result;
-	// FetchRaw ? Do we care about flattening them?
 	try {
-		auto chunk = result_instance.Fetch();
+		auto chunk = result_data.Fetch();
+		if (chunk) {
+			for (auto &vector : chunk->data) {
+				duckdb::PrepareCAPIVector(vector);
+			}
+		}
 		return reinterpret_cast<duckdb_data_chunk>(chunk.release());
 	} catch (std::exception &e) {
 		// Set the error on the result so duckdb_result_error can retrieve it
 		duckdb::ErrorData error(e);
-		result_instance.SetError(error);
+		if (result_data.stream) {
+			result_data.stream->SetError(std::move(error));
+		} else {
+			result_data.result->SetError(std::move(error));
+		}
 		return nullptr;
 	}
 }

@@ -1,7 +1,3 @@
-if(POLICY CMP0063)
-    cmake_policy(SET CMP0063 NEW)
-endif()
-
 set(ZSTD_FILES
 	compress/zstd_compress_superblock.cpp
 	compress/zstdmt_compress.cpp

@@ -22,6 +22,10 @@ SET threads=1
 statement ok
 SET async_threads=4
 
+# disable read-ahead so the I/O is scheduled by the per-thread scan path this test asserts
+statement ok
+SET read_ahead_depth=0
+
 statement ok
 SET storage_block_prefetch='debug_force_always'
 

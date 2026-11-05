@@ -1,0 +1,31 @@
+# name: test/sql/storage/optimistic_write/optimistic_write_alter_then_append.test
+# description: Test optimistic write followed by ALTER TABLE then another append in the same transaction
+# group: [optimistic_write]
+
+load {TEST_DIR}/optimistic_write_alter_then_append.db
+
+statement ok
+SET write_buffer_row_group_count = 1
+
+statement ok
+CREATE TABLE t(a INTEGER, b VARCHAR, c DOUBLE)
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+INSERT INTO t SELECT range, 'val_'||range, range*1.5 FROM range(130000)
+
+statement ok
+ALTER TABLE t ALTER COLUMN c TYPE BIGINT
+
+statement ok
+INSERT INTO t SELECT range+130000, 'new_'||(range+130000), range*2 FROM range(130000)
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(c) FROM t
+----
+260000	29574772500

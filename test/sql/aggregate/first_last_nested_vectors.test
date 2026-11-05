@@ -1,0 +1,40 @@
+# name: test/sql/aggregate/first_last_nested_vectors.test
+# description: Exercise first, last and any_value with nested values and partially selected vectors
+# group: [aggregate]
+
+# first and last without an ORDER BY depend on the order the threads combine their states in
+statement ok
+SET threads=1
+
+query I
+SELECT first([i]) = CASE WHEN i >= 2500 THEN [2500] ELSE [0] END
+FROM range(3000) r(i)
+GROUP BY i >= 2500
+ORDER BY i >= 2500;
+----
+true
+true
+
+query I
+SELECT last([i]) = CASE WHEN i >= 2500 THEN [2999] ELSE [2499] END
+FROM range(3000) r(i)
+GROUP BY i >= 2500
+ORDER BY i >= 2500;
+----
+true
+true
+
+query I
+SELECT any_value(CASE WHEN i % 5 = 0 THEN {'value': i, 'items': [i, i + 1]} END) IS NOT NULL
+FROM range(3000) r(i)
+GROUP BY i >= 2500
+ORDER BY i >= 2500;
+----
+true
+true
+
+query III
+SELECT first(x), last(x), any_value(x)
+FROM (VALUES (NULL::INTEGER[]), ([1, 2]), ([3])) t(x);
+----
+NULL	[3]	[1, 2]

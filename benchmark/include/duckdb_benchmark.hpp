@@ -15,6 +15,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/main/result_format.hpp"
 #include "duckdb/common/helper.hpp"
 
 namespace duckdb {
@@ -105,7 +106,7 @@ public:
 		if (query.empty()) {
 			RunBenchmark(state);
 		} else {
-			state->result = state->conn.Query(query);
+			state->result = state->conn.Query(query, ChunkFormat::BufferManaged());
 		}
 	}
 

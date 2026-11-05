@@ -1,0 +1,89 @@
+# name: test/sql/copy/parquet/union_by_name_struct_extract_stats.test
+# description: Issue #26156 - statistics of a struct field pushed into a union_by_name scan
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'key': 'key-0', 'default': 'value'} AS status) TO '{TEST_DIR}/issue_26156_0.parquet'
+
+statement ok
+COPY (SELECT {'key': 'key-1', 'default': 'value'} AS status) TO '{TEST_DIR}/issue_26156_1.parquet'
+
+query I
+SELECT count(*)
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+WHERE status.default = 'value'
+----
+2
+
+query I
+SELECT count(*)
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+WHERE status.key = 'key-1'
+----
+1
+
+query II
+SELECT min(status.key), max(status.default)
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+----
+key-0	value
+
+query I
+SELECT status.key
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+WHERE status.default = 'value'
+ORDER BY ALL
+----
+key-0
+key-1
+
+# Pruning the first union member must not interpret another file's physical child order as the output order.
+statement ok
+COPY (SELECT {'a': 1, 'b': 100} AS s) TO '{TEST_DIR}/nested_order_a.parquet'
+
+statement ok
+COPY (SELECT {'b': 200, 'a': 2} AS s) TO '{TEST_DIR}/nested_order_b.parquet'
+
+statement ok
+COPY (SELECT {'b': 300} AS s) TO '{TEST_DIR}/nested_order_c.parquet'
+
+query II
+SELECT s.a, s.b
+FROM read_parquet(['{TEST_DIR}/nested_order_a.parquet', '{TEST_DIR}/nested_order_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/nested_order_b.parquet' AND s.a = 2
+----
+2	200
+
+query II
+SELECT s.a, s.b
+FROM read_parquet(['{TEST_DIR}/nested_order_a.parquet', '{TEST_DIR}/nested_order_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/nested_order_b.parquet' AND s.b = 200
+----
+2	200
+
+query II
+SELECT s.a, s.b
+FROM read_parquet(['{TEST_DIR}/nested_order_a.parquet', '{TEST_DIR}/nested_order_c.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/nested_order_c.parquet' AND s.a IS NULL
+----
+NULL	300
+
+# Partition column accessors use physical ordinals; pruning must retain the union output mapping.
+statement ok
+COPY (SELECT 1 AS a, 2 AS b) TO '{TEST_DIR}/root_order_a.parquet'
+
+statement ok
+COPY (SELECT 20 AS b, 10 AS a) TO '{TEST_DIR}/root_order_b.parquet'
+
+query II
+SELECT min(a), max(b)
+FROM read_parquet(['{TEST_DIR}/root_order_a.parquet', '{TEST_DIR}/root_order_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/root_order_b.parquet'
+----
+10	20

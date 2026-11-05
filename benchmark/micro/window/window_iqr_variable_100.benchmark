@@ -14,10 +14,10 @@ select min(iqr), max(iqr)
 from (
     select quantile_cont(a, [0.25, 0.5, 0.75]) over (
         order by b asc
-        rows between mod(b * 47, 521) preceding and 100 - mod(b * 47, 521) following) as iqr
+        rows between mod(b * 47, 521) preceding and GREATEST(100 - mod(b * 47, 521), 0) following) as iqr
     from rank100
     ) q;
 
 result II
-[0.000000, 0.000000, 0.000000]	[76.500000, 84.000000, 91.500000]
+[0.75, 1.5, 2.25]	[76.500000, 84.000000, 91.500000]
 

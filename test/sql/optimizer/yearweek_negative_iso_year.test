@@ -1,0 +1,113 @@
+# name: test/sql/optimizer/yearweek_negative_iso_year.test
+# description: yearweek decreases inside negative ISO years, so filters cannot use endpoint bounds
+# group: [optimizer]
+
+# Negative ISO years are encoded as yyyy * 100 - week, so the value falls as the week number
+# rises. A range whose endpoints still look ordered (or inverted) must not be pruned from those
+# endpoints.
+
+statement ok
+CREATE TABLE dates AS
+SELECT DATE '-00043-01-01' + CAST(i AS INTEGER) AS d
+FROM range(800) r(i);
+
+query I
+SELECT count(*) FROM dates WHERE yearweek(d) >= -4310;
+----
+506
+
+query I
+SELECT count(*) FROM dates WHERE yearweek(d) < -4310;
+----
+294
+
+query I
+SELECT count(*) FROM dates WHERE date_part('yearweek', d) < -4310;
+----
+294
+
+query I
+SELECT count(*) FROM dates WHERE extract(yearweek FROM d) < -4310;
+----
+294
+
+statement ok
+PREPARE yearweek_ge AS SELECT count(*) FROM dates WHERE yearweek(d) >= $1;
+
+query I
+EXECUTE yearweek_ge(-4310);
+----
+506
+
+# Entirely inside one negative ISO year the endpoints are inverted (-4301 then -4318).
+statement ok
+CREATE TABLE timestamps AS
+SELECT TIMESTAMP '-00043-01-01' + INTERVAL (i) DAY AS ts
+FROM range(120) r(i);
+
+query I
+SELECT count(*) FROM timestamps WHERE yearweek(ts) >= -4310;
+----
+69
+
+query I
+SELECT count(*) FROM timestamps WHERE yearweek(ts) < -4310;
+----
+51
+
+# ISO year 0 still uses the subtracted-week encoding.
+statement ok
+CREATE TABLE year_zero AS
+SELECT DATE '-00001-11-01' + CAST(i AS INTEGER) AS d
+FROM range(120) r(i);
+
+query I
+SELECT count(*) FROM year_zero WHERE yearweek(d) >= -10;
+----
+57
+
+# Positive ISO years remain exact, including a predicate satisfied by every row.
+statement ok
+CREATE TABLE modern AS
+SELECT DATE '2020-01-01' + CAST(i AS INTEGER) AS d
+FROM range(400) r(i);
+
+query I
+SELECT count(*) FROM modern WHERE yearweek(d) >= 202010;
+----
+339
+
+query I
+SELECT count(*) FROM modern WHERE yearweek(d) >= -4310;
+----
+400
+
+# NULL and infinities do not satisfy the comparison.
+statement ok
+CREATE TABLE special(d DATE);
+
+statement ok
+INSERT INTO special VALUES (NULL), ('infinity'), ('-infinity'), (DATE '-00043-01-01'), (DATE '-00043-01-01' + 69);
+
+query II
+SELECT d, yearweek(d) FROM special WHERE yearweek(d) >= -4310 ORDER BY d;
+----
+0044-01-01 (BC)	-4301
+
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT count(*) FROM dates WHERE yearweek(d) >= -4310;
+----
+506
+
+query I
+SELECT count(*) FROM timestamps WHERE yearweek(ts) < -4310;
+----
+51
+
+query I
+SELECT count(*) FROM year_zero WHERE yearweek(d) >= -10;
+----
+57

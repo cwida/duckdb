@@ -1,0 +1,338 @@
+# name: test/sql/subquery/lateral/lateral_domain_filter_shapes.test
+# description: Restrict independent correlation partitions across recursive and join shapes
+# group: [lateral]
+
+statement ok
+SET enable_optimizer=true;
+
+statement ok
+SET debug_verify_serializer=false;
+
+statement ok
+SET max_execution_time=10000;
+
+statement ok
+CREATE TABLE vertices AS SELECT i::INTEGER id FROM range(100) t(i);
+
+statement ok
+CREATE VIEW shape_union AS
+SELECT input.id,w.depth FROM vertices input
+CROSS JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0+input.id*0
+        UNION
+        SELECT depth+1 FROM walk WHERE depth<7
+    )
+    SELECT depth FROM walk
+) w
+JOIN vertices target ON target.id=w.depth+1;
+
+query I
+SELECT count(*) FROM shape_union WHERE id=3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM shape_union WHERE id=3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+statement ok
+CREATE VIEW shape_exists AS
+SELECT input.id,w.depth FROM vertices input
+CROSS JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0+input.id*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<7 AND EXISTS (SELECT 1 FROM vertices v WHERE v.id=walk.depth)
+    )
+    SELECT depth FROM walk
+) w
+JOIN vertices target ON target.id=w.depth+1;
+
+query I
+SELECT count(*) FROM shape_exists WHERE id=3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM shape_exists WHERE id=3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+statement ok
+CREATE VIEW shape_anti_body AS
+SELECT input.id,w.depth FROM vertices input
+CROSS JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0+input.id*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<7 AND NOT EXISTS (SELECT 1 FROM vertices v WHERE v.id=walk.depth+100)
+    )
+    SELECT depth FROM walk
+) w
+JOIN vertices target ON target.id=w.depth+1;
+
+query I
+SELECT count(*) FROM shape_anti_body WHERE id=3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM shape_anti_body WHERE id=3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+statement ok
+CREATE VIEW shape_mark_body AS
+SELECT input.id,w.depth FROM vertices input
+CROSS JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0+input.id*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<7 AND (walk.depth IN (SELECT id FROM vertices) OR walk.depth=1)
+    )
+    SELECT depth FROM walk
+) w
+JOIN vertices target ON target.id=w.depth+1;
+
+query I
+SELECT count(*) FROM shape_mark_body WHERE id=3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM shape_mark_body WHERE id=3;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+statement ok
+CREATE VIEW shape_range AS
+SELECT input.id,w.depth FROM range(100) input(id)
+CROSS JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0+input.id*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<7
+    )
+    SELECT depth FROM walk
+) w
+JOIN vertices target ON target.id=w.depth+1;
+
+query I
+SELECT count(*) FROM shape_range WHERE id=3;
+----
+8
+
+query II
+EXPLAIN SELECT count(*) FROM shape_range WHERE id=3;
+----
+physical_plan	<REGEX>:[\s\S]*id = 3[\s\S]*id = 3[\s\S]*
+
+statement ok
+CREATE TABLE owners(person INTEGER, class INTEGER);
+
+statement ok
+INSERT INTO owners VALUES (1,10),(1,10),(1,NULL),(2,10),(3,20);
+
+query I
+SELECT count(*) FROM owners input
+LEFT JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT coalesce(input.class,0)*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<2
+    ) SELECT * FROM walk WHERE depth > 2
+) w ON true
+JOIN vertices target ON target.id=input.person
+WHERE person=1;
+----
+3
+
+query II
+EXPLAIN SELECT count(*) FROM owners input
+LEFT JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT coalesce(input.class,0)*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<2
+    ) SELECT * FROM walk WHERE depth > 2
+) w ON true
+JOIN vertices target ON target.id=input.person
+WHERE person=1;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: person = 1[\s\S]*
+
+query I
+SELECT count(*) FROM (
+    SELECT input.person, EXISTS (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT coalesce(input.class,0)*0
+            UNION ALL
+            SELECT depth+1 FROM walk WHERE depth<2
+        ) SELECT * FROM walk WHERE depth=2 AND input.class IS NOT NULL) AS found
+    FROM owners input JOIN vertices target ON target.id=input.person
+) q WHERE person=1 AND found;
+----
+2
+
+query II
+EXPLAIN SELECT count(*) FROM (
+    SELECT input.person, EXISTS (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT coalesce(input.class,0)*0
+            UNION ALL
+            SELECT depth+1 FROM walk WHERE depth<2
+        ) SELECT * FROM walk WHERE depth=2 AND input.class IS NOT NULL) AS found
+    FROM owners input JOIN vertices target ON target.id=input.person
+) q WHERE person=1 AND found;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: person = 1[\s\S]*
+
+query I
+SELECT count(*) FROM (
+    SELECT input.person, NOT EXISTS (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT coalesce(input.class,0)*0
+            UNION ALL
+            SELECT depth+1 FROM walk WHERE depth<2
+        ) SELECT * FROM walk WHERE depth=2 AND input.class IS NOT NULL) AS found
+    FROM owners input JOIN vertices target ON target.id=input.person
+) q WHERE person=1 AND found;
+----
+1
+
+query II
+EXPLAIN SELECT count(*) FROM (
+    SELECT input.person, NOT EXISTS (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT coalesce(input.class,0)*0
+            UNION ALL
+            SELECT depth+1 FROM walk WHERE depth<2
+        ) SELECT * FROM walk WHERE depth=2 AND input.class IS NOT NULL) AS found
+    FROM owners input JOIN vertices target ON target.id=input.person
+) q WHERE person=1 AND found;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: person = 1[\s\S]*
+
+# UNION deduplicates within each key, including NULL keys and duplicate outer rows.
+query II
+SELECT count(*), sum(w.depth) FROM owners input, LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT coalesce(input.class,0)*0
+        UNION
+        SELECT (depth+1)%2 FROM walk
+    ) SELECT * FROM walk
+) w JOIN vertices target ON target.id=w.depth+1 WHERE person=1;
+----
+6	3
+
+# The same partitioning must hold without CTE filter pushdown and after serialization.
+foreach disabled cte_filter_pusher filter_pushdown
+
+statement ok
+SET disabled_optimizers='{disabled}';
+
+query I
+SELECT count(*) FROM shape_union WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_exists WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_anti_body WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_mark_body WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_range WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM owners input
+LEFT JOIN LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT coalesce(input.class,0)*0
+        UNION ALL
+        SELECT depth+1 FROM walk WHERE depth<2
+    ) SELECT * FROM walk WHERE depth > 2
+) w ON true
+JOIN vertices target ON target.id=input.person
+WHERE person=1;
+----
+3
+
+query I
+SELECT count(*) FROM (
+    SELECT input.person, EXISTS (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT coalesce(input.class,0)*0
+            UNION ALL
+            SELECT depth+1 FROM walk WHERE depth<2
+        ) SELECT * FROM walk WHERE depth=2 AND input.class IS NOT NULL) AS found
+    FROM owners input JOIN vertices target ON target.id=input.person
+) q WHERE person=1 AND found;
+----
+2
+
+query I
+SELECT count(*) FROM (
+    SELECT input.person, NOT EXISTS (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT coalesce(input.class,0)*0
+            UNION ALL
+            SELECT depth+1 FROM walk WHERE depth<2
+        ) SELECT * FROM walk WHERE depth=2 AND input.class IS NOT NULL) AS found
+    FROM owners input JOIN vertices target ON target.id=input.person
+) q WHERE person=1 AND found;
+----
+1
+
+statement ok
+RESET disabled_optimizers;
+
+endloop
+
+statement ok
+SET debug_verify_serializer=true;
+
+query I
+SELECT count(*) FROM shape_union WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_exists WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_anti_body WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_mark_body WHERE id=3;
+----
+8
+
+query I
+SELECT count(*) FROM shape_range WHERE id=3;
+----
+8
+
+statement ok
+RESET debug_verify_serializer;
+
+statement ok
+RESET max_execution_time;

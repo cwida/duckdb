@@ -1,0 +1,94 @@
+# name: test/sql/join/hash_join/hash_join_dict_surviving_cte.test
+# description: CTE producers can change dictionaries after a hash join has chosen its build layout
+# group: [hash_join]
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side'
+
+statement ok
+CREATE TABLE small_dim AS SELECT i AS k, 'small_dictionary_' || i AS label FROM range(25) t(i)
+
+statement ok
+CREATE TABLE large_dim AS SELECT i AS k, 'large_dictionary_' || i AS label FROM range(300) t(i)
+
+statement ok
+CREATE TABLE small_fact AS SELECT i * 1000 AS k, i % 25 AS dk FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE large_fact AS SELECT i * 1000 + 500 AS k, i % 300 AS dk FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE probe AS SELECT i * 500 AS k FROM range(10000) t(i)
+
+statement ok
+CREATE VIEW mixed_dictionaries AS
+SELECT f.k, d.label FROM small_fact f JOIN small_dim d ON f.dk=d.k
+UNION ALL
+SELECT f.k, d.label FROM large_fact f JOIN large_dim d ON f.dk=d.k
+
+statement ok
+PRAGMA verify_parallelism
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads}
+
+# Both branches produce global dictionaries, but the second needs wider indices.
+query II
+WITH c AS MATERIALIZED (FROM mixed_dictionaries)
+SELECT count(*), count(DISTINCT c.label) FROM probe p JOIN c ON p.k=c.k
+----
+10000	325
+
+# A later producer can also emit flat vectors instead of a global dictionary.
+query II
+WITH c AS MATERIALIZED (
+    SELECT f.k, d.label FROM small_fact f JOIN small_dim d ON f.dk=d.k
+    UNION ALL
+    SELECT k, 'flat_payload_' || dk FROM large_fact
+)
+SELECT count(*), count(DISTINCT c.label) FROM probe p JOIN c ON p.k=c.k
+----
+10000	325
+
+# Follow streaming operators and joins to find the CTE scan.
+query II
+WITH c AS MATERIALIZED (FROM mixed_dictionaries)
+SELECT count(*), count(DISTINCT b.label)
+FROM probe p JOIN (
+    SELECT c.k, c.label FROM c JOIN small_dim d ON c.k % 25=d.k WHERE c.k % 2000 < 1000
+) b ON p.k=b.k
+----
+5000	175
+
+# Blocking single-input operators materialize the mixed producers before the build.
+# The optimizer would drop a sort below a join, so keep it for this query.
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
+query II
+WITH c AS MATERIALIZED (FROM mixed_dictionaries)
+SELECT count(*), count(DISTINCT b.label)
+FROM probe p JOIN (SELECT * FROM c ORDER BY k) b ON p.k=b.k
+----
+10000	325
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+WITH c AS MATERIALIZED (FROM mixed_dictionaries)
+SELECT count(*), count(DISTINCT b.label)
+FROM probe p JOIN (SELECT k, min(label) AS label FROM c GROUP BY k) b ON p.k=b.k
+----
+10000	325
+
+query III
+WITH c AS MATERIALIZED (FROM mixed_dictionaries)
+SELECT count(*), count(DISTINCT b.label), sum(b.rn)
+FROM probe p JOIN (SELECT *, row_number() OVER (ORDER BY k) AS rn FROM c) b ON p.k=b.k
+----
+10000	325	50005000
+
+endloop

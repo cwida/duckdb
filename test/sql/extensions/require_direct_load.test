@@ -1,0 +1,16 @@
+# name: test/sql/extensions/require_direct_load.test
+# description: Test that require loads extensions directly from the build repository
+# group: [extensions]
+
+require no_extension_autoloading "EXPECTED: This verifies the non-autoload require path"
+
+require tpcds
+
+query I
+SELECT count(*)
+FROM duckdb_extensions()
+WHERE extension_name = 'tpcds'
+  AND loaded
+  AND install_mode IN ('NOT_INSTALLED', 'STATICALLY_LINKED');
+----
+1

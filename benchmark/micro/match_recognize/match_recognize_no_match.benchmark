@@ -1,0 +1,28 @@
+# name: benchmark/micro/match_recognize/match_recognize_no_match.benchmark
+# description: A funnel whose last step never occurs, over long runs of each earlier step
+# group: [match_recognize]
+
+# Every start row has a long run of each of the first three steps ahead of it and then fails on the
+# last one, so the matcher does the most work a pattern of this shape can ask for and returns nothing.
+
+name MatchRecognize No Match
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE runs AS
+    SELECT i::INTEGER AS seq,
+           CASE WHEN i % 3000 < 1000 THEN 'browse'
+                WHEN i % 3000 < 2000 THEN 'select'
+                ELSE 'checkout' END AS action
+    FROM range(0, 200000) t(i);
+
+run
+SELECT count(*) FROM runs MATCH_RECOGNIZE(
+    ORDER BY seq
+    MEASURES count(*) AS steps
+    ONE ROW PER MATCH
+    PATTERN (BROWSE+ SELECT_IT+ CHECKOUT+ REFUND)
+    DEFINE BROWSE AS BROWSE.action = 'browse', SELECT_IT AS SELECT_IT.action = 'select',
+           CHECKOUT AS CHECKOUT.action = 'checkout', REFUND AS REFUND.action = 'refund'
+);

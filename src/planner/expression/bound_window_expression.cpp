@@ -1,6 +1,8 @@
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/catalog/catalog_entry/window_function_catalog_entry.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/parser/expression_map.hpp"
 
 #include "duckdb/function/aggregate_function.hpp"
@@ -21,6 +23,11 @@ BoundWindowExpression::BoundWindowExpression(LogicalType return_type, unique_ptr
 bool BoundWindowExpression::IsVolatile() const {
 	auto stability = aggregate ? aggregate->GetStability() : window->GetStability();
 	return stability == FunctionStability::VOLATILE || Expression::IsVolatile();
+}
+
+bool BoundWindowExpression::CanThrow() const {
+	auto errors = aggregate ? aggregate->GetErrorMode() : window->GetErrorMode();
+	return errors == FunctionErrors::CAN_THROW_RUNTIME_ERROR || Expression::CanThrow();
 }
 
 string BoundWindowExpression::ToString() const {
@@ -151,6 +158,17 @@ bool BoundWindowExpression::KeysAreCompatible(const BoundWindowExpression &other
 	return true;
 }
 
+void BoundWindowExpression::RetainSQLRange(optional_ptr<const Expression> start, optional_ptr<const Expression> end,
+                                           const LogicalType &order_type) {
+	sql_range_start = start && start->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT
+	                      ? ConstantExpression::FromValue(start->Cast<BoundConstantExpression>().GetValue())
+	                      : nullptr;
+	sql_range_end = end && end->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT
+	                    ? ConstantExpression::FromValue(end->Cast<BoundConstantExpression>().GetValue())
+	                    : nullptr;
+	sql_range_order_type = order_type;
+}
+
 unique_ptr<Expression> BoundWindowExpression::Copy() const {
 	unique_ptr<BoundAggregateFunction> agg_copy;
 	if (aggregate) {
@@ -195,6 +213,14 @@ unique_ptr<Expression> BoundWindowExpression::Copy() const {
 	new_window->exclude_clause = exclude_clause;
 	new_window->start_expr = start_expr ? start_expr->Copy() : nullptr;
 	new_window->end_expr = end_expr ? end_expr->Copy() : nullptr;
+	new_window->sql_range_start = sql_range_start ? sql_range_start->Copy() : nullptr;
+	new_window->sql_range_end = sql_range_end ? sql_range_end->Copy() : nullptr;
+	new_window->sql_range_order_type = sql_range_order_type;
+	new_window->sql_range_start_boundary =
+	    sql_range_start_boundary ? make_uniq<WindowRangeBoundary>(*sql_range_start_boundary) : nullptr;
+	new_window->sql_range_end_boundary =
+	    sql_range_end_boundary ? make_uniq<WindowRangeBoundary>(*sql_range_end_boundary) : nullptr;
+	new_window->sql_range_order_casts = sql_range_order_casts;
 	new_window->ignore_nulls = ignore_nulls;
 	new_window->distinct = distinct;
 
@@ -273,6 +299,15 @@ void BoundWindowExpression::Serialize(Serializer &serializer) const {
 	serializer.WriteProperty(212, "exclude_clause", exclude_clause);
 	serializer.WriteProperty(213, "distinct", distinct);
 	serializer.WriteProperty(214, "arg_orders", arg_orders);
+	serializer.WritePropertyWithDefault(215, "sql_range_start", sql_range_start, unique_ptr<ParsedExpression>());
+	serializer.WritePropertyWithDefault(216, "sql_range_end", sql_range_end, unique_ptr<ParsedExpression>());
+	serializer.WritePropertyWithDefault<LogicalType>(217, "sql_range_order_type", sql_range_order_type,
+	                                                 LogicalType::INVALID);
+	serializer.WritePropertyWithDefault(218, "sql_range_start_boundary", sql_range_start_boundary,
+	                                    unique_ptr<WindowRangeBoundary>());
+	serializer.WritePropertyWithDefault(219, "sql_range_end_boundary", sql_range_end_boundary,
+	                                    unique_ptr<WindowRangeBoundary>());
+	serializer.WritePropertyWithDefault<vector<WindowRangeCast>>(220, "sql_range_order_casts", sql_range_order_casts);
 }
 
 unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserializer) {
@@ -318,6 +353,18 @@ unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserial
 	deserializer.ReadProperty(212, "exclude_clause", result->exclude_clause);
 	deserializer.ReadProperty(213, "distinct", result->distinct);
 	deserializer.ReadPropertyWithExplicitDefault(214, "arg_orders", result->arg_orders, vector<BoundOrderByNode>());
+	deserializer.ReadPropertyWithExplicitDefault(215, "sql_range_start", result->sql_range_start,
+	                                             unique_ptr<ParsedExpression>());
+	deserializer.ReadPropertyWithExplicitDefault(216, "sql_range_end", result->sql_range_end,
+	                                             unique_ptr<ParsedExpression>());
+	deserializer.ReadPropertyWithExplicitDefault<LogicalType>(217, "sql_range_order_type", result->sql_range_order_type,
+	                                                          LogicalType::INVALID);
+	deserializer.ReadPropertyWithExplicitDefault(218, "sql_range_start_boundary", result->sql_range_start_boundary,
+	                                             unique_ptr<WindowRangeBoundary>());
+	deserializer.ReadPropertyWithExplicitDefault(219, "sql_range_end_boundary", result->sql_range_end_boundary,
+	                                             unique_ptr<WindowRangeBoundary>());
+	deserializer.ReadPropertyWithExplicitDefault<vector<WindowRangeCast>>(220, "sql_range_order_casts",
+	                                                                      result->sql_range_order_casts, {});
 
 	//	Builtin window functions didn't used to be serialized, so we need to look them up in the system catalog
 	if (!result->aggregate && !result->window) {
@@ -335,16 +382,15 @@ unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserial
 		                                     OnEntryNotFound::THROW_EXCEPTION);
 		auto &func = entry->Cast<WindowFunctionCatalogEntry>();
 
-		FunctionBinder function_binder(*binder);
-		ErrorData error_win;
-		auto best = function_binder.BindFunction(func.name, func.functions, arguments, error_win);
-		if (!best.IsValid()) {
-			error_win.Throw();
+		auto best = FunctionBinder::SelectFunction(binder->context, func.functions, arguments);
+		if (!best.IsSuccess()) {
+			best.GetError().Throw();
 		}
+		FunctionBinder function_binder(*binder);
 
-		const auto &win_func = func.functions.GetFunctionByOffset(best.GetIndex());
-
-		auto [bound_func, bind_info] = function_binder.ResolveFunction(win_func, result->children);
+		vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+		auto [bound_func, bind_info] =
+		    function_binder.ResolveWindowFunction(best.GetBinding(), result->children, keyword_args);
 
 		result->bind_info = std::move(bind_info);
 		result->type = expression_type;

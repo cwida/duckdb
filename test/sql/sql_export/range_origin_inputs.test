@@ -1,0 +1,79 @@
+# name: test/sql/sql_export/range_origin_inputs.test
+# description: RANGE reconstruction preserves subquery evaluation and rewritten input bindings
+# group: [sql_export]
+
+require skip_reload
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query II
+SELECT x, sum(x) OVER (ORDER BY x RANGE BETWEEN (SELECT 1) PRECEDING AND CURRENT ROW)
+FROM (VALUES (1),(2),(3)) t(x) ORDER BY x;
+----
+1	1
+2	3
+3	5
+
+statement ok
+CREATE OR REPLACE SEQUENCE range_origin_calls;
+
+query II
+SELECT x, sum(x) OVER (ORDER BY x RANGE BETWEEN (SELECT nextval('range_origin_calls')) PRECEDING AND CURRENT ROW)
+FROM (VALUES (1::BIGINT),(2),(3)) t(x) ORDER BY x;
+----
+1	1
+2	3
+3	5
+
+query I
+SELECT currval('range_origin_calls');
+----
+1
+
+query II
+SELECT x, sum(x) OVER (ORDER BY x RANGE BETWEEN (SELECT NULL::INTEGER) PRECEDING AND CURRENT ROW)
+FROM (VALUES (1),(2),(3)) t(x) ORDER BY x;
+----
+1	1
+2	2
+3	3
+
+statement ok
+CREATE OR REPLACE TABLE range_origin_structs AS
+SELECT {'unused': 99, 'k': x, 'delta': 1} AS s FROM (VALUES (1),(2),(3)) t(x);
+
+query II
+SELECT s.k, sum(s.k) OVER (ORDER BY s.k RANGE BETWEEN s.delta PRECEDING AND CURRENT ROW)
+FROM range_origin_structs ORDER BY s.k;
+----
+1	1
+2	3
+3	5
+
+query II
+SELECT x, sum(x) OVER (ORDER BY x RANGE BETWEEN 1::INTEGER PRECEDING AND CURRENT ROW)
+FROM (VALUES (1::BIGINT),(2),(3)) t(x) ORDER BY x;
+----
+1	1
+2	3
+3	5
+
+query II
+SELECT x::INTEGER, count(*) OVER (ORDER BY x DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+FROM (VALUES (1::DECIMAL(38,1)),(2),(3)) t(x) ORDER BY x;
+----
+1	2
+2	3
+3	2
+
+endloop
+
+endloop

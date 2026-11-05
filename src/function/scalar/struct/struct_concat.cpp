@@ -103,7 +103,7 @@ static unique_ptr<BaseStatistics> StructConcatStats(ClientContext &context, Func
 ScalarFunction StructConcatFun::GetFunction() {
 	ScalarFunction fun("struct_concat", {}, LogicalTypeId::STRUCT, StructConcatFunction, StructConcatBind,
 	                   StructConcatStats);
-	fun.SetVarArgs(LogicalType::ANY);
+	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }

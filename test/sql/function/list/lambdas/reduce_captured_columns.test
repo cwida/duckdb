@@ -1,0 +1,72 @@
+# name: test/sql/function/list/lambdas/reduce_captured_columns.test
+# description: Test captured columns in list_reduce with an initial value
+# group: [lambdas]
+
+query I
+SELECT list_reduce(l, lambda acc, x: acc + x + v, 0)
+FROM (VALUES ([1], 10), ([1, 2], 30)) t(l, v);
+----
+11
+63
+
+# Captured columns from a filtered input
+query II
+SELECT v, list_reduce(l, lambda acc, x: acc + x + v, 0)
+FROM (VALUES ([], 0), ([1], 10), ([1, 2], 30)) t(l, v)
+WHERE v > 0;
+----
+10	11
+30	63
+
+statement ok
+CREATE TABLE t (l INTEGER[], v INTEGER, initial INTEGER);
+
+statement ok
+INSERT INTO t VALUES ([1], 10, 100), ([], 20, 200), (NULL, 25, 250), ([1, 2], 30, 300), ([1, 2, 3], NULL, 400);
+
+# Lists finish at different iterations; captured columns must follow the remaining rows.
+query II
+SELECT list_reduce(l, lambda acc, x: acc + x + v, 0),
+       list_reduce(l, lambda acc, x: acc + x + v, initial)
+FROM t;
+----
+11	111
+0	200
+NULL	NULL
+63	363
+NULL	NULL
+
+# Multiple captured columns and an index parameter
+query II
+SELECT list_reduce(l, lambda acc, x: acc + x + v + initial, 0),
+       list_reduce(l, lambda acc, x, i: acc + x + v + i, 0)
+FROM t;
+----
+111	12
+0	0
+NULL	NULL
+663	66
+NULL	NULL
+
+query I
+SELECT list_reduce(l, lambda acc, x: acc + x + v)
+FROM t WHERE len(l) > 0;
+----
+1
+33
+NULL
+
+query TT
+SELECT label, list_reduce(l, lambda acc, x: acc || label || x, '')
+FROM (VALUES (['x'], 'A'), (['x', 'y'], 'B')) t(l, label);
+----
+A	Ax
+B	BxBy
+
+# A NULL in another row must not affect the result.
+query I
+SELECT list_reduce(l, lambda acc, x: acc + x + v, 0)
+FROM (VALUES ([1], NULL), ([1, 2], 30)) t(l, v);
+----
+NULL
+63

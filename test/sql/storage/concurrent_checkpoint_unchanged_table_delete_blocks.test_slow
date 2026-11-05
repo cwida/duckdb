@@ -1,0 +1,116 @@
+# name: test/sql/storage/concurrent_checkpoint_unchanged_table_delete_blocks.test_slow
+# description: A delete committed while a checkpoint reuses its table's metadata keeps the persisted delete blocks
+# group: [storage]
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+# small blocks and one large row group: the persisted deletes below span several metadata blocks that hold
+# nothing else
+statement ok
+ATTACH '{TEST_DIR}/unchanged_table_delete_blocks.db' AS db (BLOCK_SIZE 16384, ROW_GROUP_SIZE 1048576)
+
+statement ok
+CREATE TABLE db.test AS SELECT i, 'str' || i AS s FROM range(400000) t(i)
+
+statement ok
+CREATE SEQUENCE db.marker
+
+statement ok
+CHECKPOINT db
+
+# half of every vector deleted, persisted by this checkpoint as full bitmasks
+statement ok
+DELETE FROM db.test WHERE i % 2 = 0
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT COUNT(*) FROM db.test
+----
+200000
+
+# reload the table: a row group rewritten by a checkpoint counts as changed until it is read from disk again
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/unchanged_table_delete_blocks.db' AS db
+
+# the checkpoint pauses for four seconds after it found the table unchanged, before it finishes
+statement ok
+SET debug_checkpoint_scan_sleep_ms=4000
+
+concurrentloop threadid 0 2
+
+# a delete that commits during the pause: it lies above the checkpoint's bound and must not touch the persisted blocks
+onlyif threadid=1
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=1
+query I
+SELECT COUNT(*) FROM db.test
+----
+200000
+
+onlyif threadid=1
+statement ok
+DELETE FROM db.test WHERE i % 4 = 1
+
+sleep 1000 millisecond
+
+# a commit after the transaction's snapshot, so that the checkpoint is concurrent instead of waiting for the
+# transaction; it writes no table, so that the checkpoint pauses only for the table under test
+onlyif threadid=0
+statement ok
+SELECT nextval('db.marker')
+
+onlyif threadid=0
+statement ok
+CHECKPOINT db
+
+sleep 2000 millisecond
+
+onlyif threadid=1
+statement ok
+COMMIT
+
+endloop
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+query I
+SELECT COUNT(*) FROM db.test
+----
+100000
+
+# an append of two full row groups, written to free blocks before the commit: a delete block the checkpoint freed while
+# the reused metadata still referenced it is overwritten here
+statement ok
+CREATE TABLE db.filler (i BIGINT, j BIGINT)
+
+statement ok
+INSERT INTO db.filler SELECT range, range FROM range(2100000)
+
+# reopen without a checkpoint: replaying the delete loads the persisted deletes
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/unchanged_table_delete_blocks.db' AS db
+
+query I
+SELECT COUNT(*) FROM db.test
+----
+100000
+
+query I
+SELECT COUNT(*) FROM db.filler
+----
+2100000

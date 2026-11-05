@@ -1,0 +1,121 @@
+# name: test/optimizer/statistics/statistics_all_null_comparison.test
+# description: A comparison that statistics prove TRUE or NULL, with an operand that folds to NULL over a column that is NULL in every row
+# group: [statistics]
+
+require parquet
+
+statement ok
+CREATE TABLE products(version VARCHAR);
+
+statement ok
+INSERT INTO products VALUES (NULL), (NULL), (NULL);
+
+statement ok
+CREATE TABLE ints(i INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (NULL), (NULL);
+
+statement ok
+CREATE TABLE other(x VARCHAR);
+
+statement ok
+INSERT INTO other VALUES ('1'), ('2');
+
+statement ok
+COPY products TO '{TEST_DIR}/all_null_products.parquet';
+
+# a condition that is always NULL keeps no row, so the scan is replaced by an empty result
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = 'physical_only';
+
+query II
+EXPLAIN SELECT count(*) FROM products WHERE split_part(version, '.', 1) <> '0';
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+EXPLAIN SELECT count(*) FROM products WHERE (CASE WHEN version IS NOT NULL THEN 'a' END) <> '0';
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM products WHERE split_part(version, '.', 1) <> '0';
+----
+0
+
+query I
+SELECT count(*) FROM products WHERE (CASE WHEN version IS NOT NULL THEN 'a' END) <> '0';
+----
+0
+
+query I
+SELECT count(*) FROM products WHERE split_part(version, '.', 1) = '0';
+----
+0
+
+query I
+SELECT count(*) FROM products WHERE split_part(version, '.', 1) < '0';
+----
+0
+
+query I
+SELECT count(*) FROM ints WHERE (CASE WHEN i IS NOT NULL THEN 1 END) <> 0;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/all_null_products.parquet' WHERE split_part(version, '.', 1) <> '0';
+----
+0
+
+# the comparison is NULL in a projection
+query I
+SELECT split_part(version, '.', 1) <> '0' FROM products;
+----
+NULL
+NULL
+NULL
+
+# the folded comparison is a BOOLEAN NULL, so it can be stored in a BOOLEAN column
+statement ok
+CREATE TABLE comparison_results AS SELECT split_part(version, '.', 1) <> '0' AS c FROM products;
+
+query III
+SELECT typeof(c), count(*), count(c) FROM comparison_results GROUP BY ALL;
+----
+BOOLEAN	3	0
+
+query I
+SELECT count(*) FROM (SELECT version FROM products GROUP BY version HAVING split_part(version, '.', 1) <> '0');
+----
+0
+
+# as a join condition
+query I
+SELECT count(*) FROM products p JOIN other o ON split_part(p.version, '.', 1) <> '0' OR o.x = 'z';
+----
+0
+
+query I
+SELECT count(*) FROM other o LEFT JOIN products p ON split_part(p.version, '.', 1) <> o.x;
+----
+2
+
+query II
+SELECT x, x IN (SELECT split_part(version, '.', 1) FROM products) FROM other ORDER BY x;
+----
+1	NULL
+2	NULL
+
+# a filter that is not pushed into the scan
+statement ok
+SET disabled_optimizers = 'filter_pushdown';
+
+query I
+SELECT count(*) FROM products WHERE split_part(version, '.', 1) <> '0';
+----
+0

@@ -23,7 +23,7 @@ struct PEGExpression {
 public:
 	explicit PEGExpression(Type type_p) : type(type_p), text(string_t("")) {
 	}
-	PEGExpression(Type type_p, string_t text_p) : type(type_p), text(std::move(text_p)) {
+	PEGExpression(Type type_p, string_t text_p) : type(type_p), text(text_p) {
 	}
 
 public:

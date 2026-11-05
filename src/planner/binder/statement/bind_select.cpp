@@ -7,7 +7,6 @@ namespace duckdb {
 
 BoundStatement Binder::Bind(SelectStatement &stmt) {
 	auto &properties = GetStatementProperties();
-	properties.output_type = QueryResultOutputType::ALLOW_STREAMING;
 	properties.return_type = StatementReturnType::QUERY_RESULT;
 	auto result = Bind(*stmt.node);
 	// A bare table-function passthrough honors the function's call_return_type (e.g. a CONNECT-routed

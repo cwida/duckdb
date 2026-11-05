@@ -1,0 +1,159 @@
+# name: test/sql/function/interval/date_part_monotonicity.test
+# description: Interval date parts do not preserve interval ordering
+# group: [interval]
+
+foreach part,years,days year,1,400 decade,10,4000 century,100,40000 millennium,1000,400000
+
+statement ok
+CREATE TABLE intervals(i INTERVAL);
+
+statement ok
+INSERT INTO intervals VALUES (INTERVAL '0 days'), (INTERVAL '{years} years'), (INTERVAL '{days} days'), (NULL);
+
+# The endpoint date parts are both zero, but the middle interval has date part one.
+query I
+SELECT count(*) FROM intervals WHERE {part}(i) = 1;
+----
+1
+
+query I
+SELECT count(*) FROM intervals WHERE {part}(i) IS NULL;
+----
+1
+
+# Reversed endpoint results must not produce an invalid statistics range.
+statement ok
+CREATE TABLE reversed_intervals AS SELECT i FROM intervals WHERE i IS NOT NULL AND i <> INTERVAL '0 days';
+
+query I rowsort
+SELECT {part}(i) FROM reversed_intervals;
+----
+0
+1
+
+# Equal intervals can have different date parts because comparison uses 30-day months.
+statement ok
+CREATE TABLE equal_intervals AS SELECT INTERVAL '{years} years' AS i UNION ALL SELECT {years} * INTERVAL '360 days';
+
+query I
+SELECT count(*) FROM equal_intervals WHERE {part}(i) = 1;
+----
+1
+
+statement ok
+DROP TABLE intervals;
+
+statement ok
+DROP TABLE reversed_intervals;
+
+statement ok
+DROP TABLE equal_intervals;
+
+endloop
+
+# epoch uses 365.25 days per year, while interval comparison uses 360.
+statement ok
+CREATE TABLE epochs(i INTERVAL);
+
+statement ok
+INSERT INTO epochs VALUES (INTERVAL '0 days'), (INTERVAL '1 year'), (INTERVAL '361 days'), (NULL);
+
+query I
+SELECT count(*) FROM epochs WHERE epoch(i) > epoch(INTERVAL '362 days');
+----
+1
+
+query I
+SELECT count(*) FROM epochs WHERE epoch(i) IS NULL;
+----
+1
+
+statement ok
+CREATE TABLE reversed_epochs AS SELECT i FROM epochs WHERE i IS NOT NULL AND i <> INTERVAL '0 days';
+
+query I rowsort
+SELECT epoch(i) FROM reversed_epochs;
+----
+31190400
+31557600
+
+statement ok
+CREATE TABLE equal_epochs AS SELECT INTERVAL '1 year' AS i UNION ALL SELECT INTERVAL '360 days';
+
+query I
+SELECT count(*) FROM equal_epochs WHERE epoch(i) = 31557600;
+----
+1
+
+# epoch_ms truncates the microsecond component before adding days and months.
+statement ok
+CREATE TABLE milliseconds(i INTERVAL);
+
+statement ok
+INSERT INTO milliseconds VALUES (INTERVAL '0 days'), (INTERVAL '1 day -999 microseconds'), (INTERVAL '86399999002 microseconds'), (NULL);
+
+query I
+SELECT count(*) FROM milliseconds WHERE epoch_ms(i) = 86400000;
+----
+1
+
+query I
+SELECT count(*) FROM milliseconds WHERE epoch_ms(i) IS NULL;
+----
+1
+
+statement ok
+CREATE TABLE reversed_milliseconds AS SELECT i FROM milliseconds WHERE i IS NOT NULL AND i <> INTERVAL '0 days';
+
+query I rowsort
+SELECT epoch_ms(i) FROM reversed_milliseconds;
+----
+86399999
+86400000
+
+statement ok
+CREATE TABLE equal_milliseconds AS SELECT INTERVAL '1 day -999 microseconds' AS i UNION ALL SELECT INTERVAL '86399999001 microseconds';
+
+query I
+SELECT count(*) FROM equal_milliseconds WHERE epoch_ms(i) = 86400000;
+----
+1
+
+# Microsecond and nanosecond conversion use the same normalization as interval comparison.
+query II
+SELECT epoch_us(i), epoch_ns(i) FROM reversed_milliseconds ORDER BY i;
+----
+86399999001	86399999001000
+86399999002	86399999002000
+
+query I
+SELECT count(*) FROM equal_milliseconds WHERE epoch_us(i) = 86399999001 AND epoch_ns(i) = 86399999001000;
+----
+2
+
+foreach type DATE TIMESTAMP
+
+statement ok
+CREATE TABLE temporal_values(t {type});
+
+statement ok
+INSERT INTO temporal_values VALUES ('1970-01-01'), ('2000-01-01'), ('2020-01-01'), (NULL);
+
+foreach part,value,count year,2000,1 decade,200,1 century,20,2 millennium,2,2 epoch,946684800,1 epoch_ms,946684800000,1
+
+query I
+SELECT count(*) = {count} FROM temporal_values WHERE {part}(t) = {value};
+----
+true
+
+query I
+SELECT count(*) FROM temporal_values WHERE {part}(t) IS NULL;
+----
+1
+
+endloop
+
+statement ok
+DROP TABLE temporal_values;
+
+endloop

@@ -1,0 +1,250 @@
+# name: test/sql/parser/backtick_identifiers.test
+# description: Backtick-quoted identifiers are accepted as an alternative to double quotes
+# group: [parser]
+
+statement ok
+PRAGMA enable_verification
+
+# simple backtick-quoted column reference
+query I
+SELECT `x` FROM (SELECT 1 x) t;
+----
+1
+
+# backtick-quoted alias
+query I
+SELECT 42 AS `my alias`;
+----
+42
+
+query I
+SELECT `my alias` FROM (SELECT 42 AS `my alias`);
+----
+42
+
+# DDL with spaces in identifiers
+statement ok
+CREATE TABLE `my table`(`a col` INTEGER, `b col` VARCHAR);
+
+statement ok
+INSERT INTO `my table` VALUES (1, 'one'), (2, 'two');
+
+# qualified reference with backtick-quoted table alias
+query II
+SELECT `t`.`a col`, `t`.`b col` FROM `my table` `t` ORDER BY `t`.`a col`;
+----
+1	one
+2	two
+
+query II
+SELECT `t`.`a col`, `t`.`b col` FROM `my table` AS `t` ORDER BY ALL;
+----
+1	one
+2	two
+
+# backticks and double quotes refer to the same identifier
+query II
+SELECT "a col", `a col` FROM "my table" ORDER BY `a col`;
+----
+1	1
+2	2
+
+# schema-qualified names (`db`.`table`)
+statement ok
+CREATE SCHEMA `my schema`;
+
+statement ok
+CREATE TABLE `my schema`.`tbl`(`i` INTEGER);
+
+statement ok
+INSERT INTO `my schema`.`tbl` VALUES (7);
+
+query I
+SELECT `i` FROM `my schema`.`tbl`;
+----
+7
+
+query I
+SELECT i FROM "my schema".tbl;
+----
+7
+
+# backtick-quoted identifiers in other DDL positions
+statement ok
+ALTER TABLE `my table` ADD COLUMN `c col` INTEGER DEFAULT 3;
+
+query I
+SELECT `c col` FROM `my table` LIMIT 1;
+----
+3
+
+statement ok
+CREATE VIEW `my view` AS SELECT `a col` FROM `my table`;
+
+query I
+SELECT COUNT(*) FROM `my view`;
+----
+2
+
+statement ok
+UPDATE `my table` SET `b col` = 'ONE' WHERE `a col` = 1;
+
+query I
+SELECT `b col` FROM `my table` WHERE `a col` = 1;
+----
+ONE
+
+statement ok
+DELETE FROM `my table` WHERE `a col` = 2;
+
+query I
+SELECT COUNT(*) FROM `my table`;
+----
+1
+
+# a doubled backtick escapes a backtick inside the identifier
+query I
+SELECT column_name FROM (DESCRIBE SELECT 1 AS `a``b`);
+----
+a`b
+
+query I
+SELECT "a`b" FROM (SELECT 1 AS `a``b`);
+----
+1
+
+# a double quote has no special meaning inside backticks, and vice versa
+query I
+SELECT column_name FROM (DESCRIBE SELECT 1 AS `a"b`);
+----
+a"b
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT 1 AS "a`b");
+----
+a`b
+
+query I
+SELECT `a"b` FROM (SELECT 1 AS "a""b");
+----
+1
+
+# backticks inside string literals are plain characters
+query I
+SELECT '`' || 'a' || '`';
+----
+`a`
+
+query I
+SELECT 'it''s `quoted`';
+----
+it's `quoted`
+
+# dollar-quoted strings are unaffected
+query I
+SELECT $$`x`$$;
+----
+`x`
+
+query I
+SELECT $tag$a ` b$tag$;
+----
+a ` b
+
+# backticks inside comments are ignored
+query I
+SELECT 1 -- `not an identifier
+;
+----
+1
+
+query I
+SELECT /* `also` not */ 2;
+----
+2
+
+# operators still work next to backtick-quoted identifiers
+query I
+SELECT `b col` || `b col` FROM `my table`;
+----
+ONEONE
+
+query I
+SELECT `a col`! FROM `my table`;
+----
+1
+
+query I
+SELECT -`a col` FROM `my table`;
+----
+-1
+
+query I
+SELECT `a col`+`c col`*2 FROM `my table`;
+----
+7
+
+# backtick-quoted identifiers are not keywords
+query I
+SELECT `select` FROM (SELECT 5 AS `select`);
+----
+5
+
+query I
+SELECT `from`.`select` FROM (SELECT 5 AS `select`) `from`;
+----
+5
+
+# quoting is not applied to functions by backtick, same as with double quotes
+query I
+SELECT `upper`('abc');
+----
+ABC
+
+# zero-length and unterminated identifiers are errors
+statement error
+SELECT ``;
+----
+Parser Error: zero-length delimited identifier
+
+statement error
+SELECT `x FROM (SELECT 1 x);
+----
+Parser Error: unterminated quoted identifier
+
+statement error
+SELECT 1 AS `a``;
+----
+Parser Error: unterminated quoted identifier
+
+# mismatched delimiters are not a quoted identifier
+statement error
+SELECT `x" FROM (SELECT 1 x);
+----
+Parser Error: unterminated quoted identifier
+
+# backtick-quoted identifiers keep their case like double-quoted ones
+statement ok
+SET preserve_identifier_case TO 'lowercase';
+
+statement ok
+CREATE TABLE `MixedCase`(`ColA` INTEGER, ColB INTEGER);
+
+query II
+SELECT table_name, column_name FROM duckdb_columns() WHERE table_name = 'MixedCase' ORDER BY column_name;
+----
+MixedCase	ColA
+MixedCase	colb
+
+query II
+SELECT `ColA`, ColB FROM `MixedCase` LIMIT 0;
+----
+
+statement ok
+RESET preserve_identifier_case;
+
+# ToString round-trips: backtick-quoted identifiers are emitted with standard double quotes
+query I
+SELECT sql FROM duckdb_views() WHERE view_name = 'my view';
+----
+CREATE VIEW "my view" AS SELECT "a col" FROM "my table";

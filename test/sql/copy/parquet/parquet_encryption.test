@@ -22,6 +22,12 @@ PRAGMA add_parquet_key('my_invalid_duck_key', 'ZHVjaw==')
 ----
 Invalid Input Error: Invalid AES key. Must have a length of 128, 192, or 256 bits (16, 24, or 32 bytes)
 
+# key name and key cannot be NULL
+statement error
+PRAGMA add_parquet_key(NULL, 'somekey')
+----
+Invalid Input Error: add_parquet_key: key name and key cannot be NULL
+
 # we dont support this yet
 statement error
 COPY (SELECT 42 i) to '{TEST_DIR}/encrypted.parquet' (ENCRYPTION_CONFIG {column_keys: {key_name: ['col0', 'col1']}})
@@ -42,6 +48,10 @@ PRAGMA add_parquet_key('key192', '012345678911234501234567')
 
 statement ok
 PRAGMA add_parquet_key('key256', '01234567891123450123456789112345')
+
+# encryption options must survive serialization for both COPY and scans
+statement ok
+SET debug_verify_serializer=true
 
 # test all valid AES key lengths
 foreach key_len 128 192 256
@@ -66,6 +76,9 @@ SELECT * FROM test
 42
 
 endloop
+
+statement ok
+SET debug_verify_serializer=false
 
 # what happens if we don't try to decrypt even if the file is encrypted?
 statement error

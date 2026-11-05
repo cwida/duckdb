@@ -27,7 +27,8 @@ module: vector
 # from the epoch in their named unit — are the ones DuckDB uses throughout, and
 # the logical type module carries the full table.
 #
-#   - primitives (BOOL, INT*, UINT*, FLOAT, DOUBLE, DATE, TIME*, TIMESTAMP*)
+#   - primitives (BOOL, INT(8/16/32/64), UINT(8/16/32/64), FLOAT, DOUBLE, DATE, TIME,
+#     TIME_TZ, TIMESTAMP(_S/_MS/_NS/_TZ))
 #     → typed leaf array (cast to const T *)
 #   - HUGEINT / UUID / DECIMAL128 → cast to const hugeint_t *
 #     (decimal width and scale via logical_type_get_param; UUID stores the
@@ -74,8 +75,7 @@ module: vector
 #
 # Per-kind index convention:
 #   LIST    → 1 child:  [0] = elements
-#   MAP     → 2 children: [0] = keys, [1] = values
-#               (V2 hides MAP's internal LIST<STRUCT(K,V)>)
+#   MAP     → 1 child:  [0] = entries, a STRUCT(key, value)
 #   ARRAY   → 1 child:  [0] = elements
 #   STRUCT / TUPLE → N children: [i] = field i
 #   UNION   → N+1 children: [0] = tag, [1..N] = members
@@ -160,7 +160,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_vector_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the internal representation kind: flat, constant, or dictionary.
 
@@ -186,7 +186,7 @@ functions:
     return_type: ERROR
   vector_get_logical_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the vector's logical type.
 
@@ -201,8 +201,8 @@ functions:
       out_type:
         type: logical_type
         indirection: 1
-        kind: OUT_BORROW
-        description: Receives the caller-owned logical type handle.
+        kind: OUT
+        description: Receives the caller-owned logical type handle. Destroy via logical_type_destroy.
       err:
         type: error_info
         indirection: 1
@@ -214,7 +214,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_view:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Reads a vector as a unified view of data, validity, selection, and count.
 
@@ -266,7 +266,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of elements in the vector.
 
@@ -293,12 +293,12 @@ functions:
     return_type: ERROR
   vector_set_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets the number of elements in the vector.
 
       The counterpart of vector_get_size: it declares how many logical elements
-      the vector now holds, and does not allocate or initialize anything.
+      the vector now holds. It reserves enough space for size logical elements.
     role: setter
     belongs_to: vector
     parameters:
@@ -319,7 +319,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Reads one cell of a vector as an owned value.
 
@@ -356,7 +356,7 @@ functions:
     return_type: ERROR
   vector_set_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Writes one cell of a FLAT vector from a value.
 
@@ -395,13 +395,16 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_data_mutable:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns a mutable pointer to the data of a FLAT or CONSTANT vector.
 
       Any other representation returns ERROR_INPUT_INVALID. The pointer is
       valid until the owning chunk is destroyed, and the vector's storage shape
       must not change — through a flatten, say — while it is in use.
+
+      When writing VARCHAR values, the caller must ensure that the bytes
+      contain valid UTF-8.
     role: getter
     belongs_to: vector
     parameters:
@@ -424,7 +427,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_flatten:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Forces a vector into FLAT representation, in place.
 
@@ -445,19 +448,79 @@ functions:
         kind: OUT
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
+  vector_cast:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Casts every row of a vector into another vector, using a factory.
+
+      The conversion is the one SQL `CAST` / `TRY_CAST` performs, registered
+      custom casts included, from the type of `source` to the type of
+      `target`. It covers as many rows as `source` holds
+      (`[[vector_get_size]]`), of any representation. `target` is replaced
+      by the result, as `[[vector_reference]]` would, taking its size: data
+      and views taken from it beforehand do not survive the call, and nothing
+      it held before carries over. In CAST_MODE_NORMAL a row that does not convert fails the call
+      with the engine's conversion error, and the contents of `target` are
+      unspecified. In CAST_MODE_TRY such rows are NULL in `target` instead and
+      the call succeeds; compare the validity of `source` and `target` to find
+      them. `cast_err` then receives the conversion error of one of them, e.g.
+      to report why the cast did not convert every row.
+
+      A connection's or callback's factory casts with that client's cast
+      functions and settings (e.g. TimeZone). An instance's factory supports
+      only the built-in casts, with default settings. `source` and `target`
+      must be different vectors; `target` is typically a vector of a data
+      chunk created by the caller, or the result vector of a callback.
+    role: method
+    belongs_to: vector
+    parameters:
+      factory:
+        type: factory
+        description: The factory supplying the cast functions.
+      source:
+        type: vector
+        description: The vector to cast. Borrowed for the call only.
+      target:
+        type: vector
+        description: The vector to write the cast rows into. Its logical type is the target type.
+      mode:
+        type: CAST_MODE
+        description: Whether a row that does not convert fails the call, or becomes NULL.
+      out_converted:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: |
+          Optional. Receives whether every row converted. Always true when a
+          CAST_MODE_NORMAL cast succeeds.
+      cast_err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: |
+          Optional. When a CAST_MODE_TRY cast succeeds without converting every
+          row, receives an opaque info handle with the conversion error of one
+          row that did not convert, which the caller must destroy via
+          error_info_destroy. Otherwise receives NULL.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
   vector_reference:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Repoints a vector at another vector's data and type, without copying.
+      Repoints a vector at another vector's data, without copying.
 
-      `vector` takes on the storage and logical type of `source`: no data
-      moves, and the two alias the same buffers until one of them is reset or
-      re-referenced. Works for any type, nested included. The source's data
-      must outlive every read of `vector`. Use it to hand an
-      already-materialized vector — a chunk column produced by
-      arrow_array_to_data_chunk, say — straight to an output vector without a
-      per-row copy.
+      `vector` takes on the storage of `source`: no data moves, and the two alias
+      the same buffers until one of them is reset or re-referenced. Works for any
+      type, including nested types. The source's logical type must equal the
+      vector's; a mismatch returns ERROR_INPUT_INVALID. The source's data must
+      outlive every read of `vector`. Use it to hand an already-materialized
+      vector straight to an output vector without a per-row copy.
     role: method
     belongs_to: vector
     parameters:
@@ -466,7 +529,7 @@ functions:
         description: The vector to repoint at the source's data.
       source:
         type: vector
-        description: The vector whose data and logical type to reference.
+        description: The vector whose data to reference. Its logical type must equal the vector's.
       err:
         type: error_info
         indirection: 1
@@ -475,7 +538,7 @@ functions:
     return_type: ERROR
   vector_make_constant:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Turns the vector into a CONSTANT vector holding the given value.
 
@@ -504,7 +567,7 @@ functions:
     return_type: ERROR
   vector_make_sequence:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets a vector to a SEQUENCE representation.
 
@@ -538,7 +601,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_set_null:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets one row of a FLAT vector to NULL, nested children included.
 
@@ -572,7 +635,7 @@ functions:
     return_type: ERROR
   vector_flat_get_validity_mutable:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns a mutable pointer to the validity mask of a FLAT vector.
 
@@ -605,7 +668,7 @@ functions:
     return_type: ERROR
   vector_constant_set_valid:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets the validity of a CONSTANT vector.
 
@@ -634,7 +697,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_arena:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows a string-backed vector's arena for writing.
 
@@ -665,7 +728,7 @@ functions:
   #
   # Per-kind index convention, repeated from the top of this file:
   #   LIST    → 1 child:  [0] = elements
-  #   MAP     → 2 children: [0] = keys, [1] = values
+  #   MAP     → 1 child:  [0] = entries, a STRUCT(key, value)
   #   ARRAY   → 1 child:  [0] = elements
   #   STRUCT / TUPLE → N children: [i] = field i
   #   UNION   → N+1 children: [0] = tag, [1..N] = members
@@ -677,14 +740,13 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_child_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of child vectors a nested vector exposes.
 
-      1 for LIST and ARRAY; 2 for MAP, the keys and the values; the field count
-      for STRUCT; member_count + 1 for UNION, the tag plus the members; and 0
-      for any non-nested kind. vector_get_child documents what each index
-      addresses.
+      1 for LIST, MAP and ARRAY; the field count for STRUCT; member_count + 1
+      for UNION, the tag plus the members; and 0 for any non-nested kind.
+      vector_get_child documents what each index addresses.
     role: getter
     belongs_to: vector
     parameters:
@@ -704,14 +766,14 @@ functions:
     return_type: ERROR
   vector_get_child:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows a child vector by index.
 
       What each index addresses, by kind: LIST and ARRAY expose [0] = the
-      elements; MAP [0] = keys and [1] = values, hiding its internal
-      LIST<STRUCT(K, V)>; STRUCT and TUPLE [i] = field i; and UNION [0] = the
-      tag with [1..N] = the members. Note that value_get_child diverges on
+      elements; MAP [0] = the entries, a STRUCT(key, value) whose children are
+      the keys and the values; STRUCT and TUPLE [i] = field i; and UNION [0] =
+      the tag with [1..N] = the members. Note that value_get_child diverges on
       UNION, exposing only the active member.
 
       The returned child is borrowed and lives as long as the owning chunk.
@@ -755,12 +817,12 @@ functions:
   # as VARCHAR or BLOB, dispatching inline vs pointer on the transparent bytes
   # type, or read a BIGNUM value's storage with value_get_blob, then decode.
   # To write: encode the magnitude, then write the BIGNUM vector exactly like
-  # a VARCHAR or BLOB one — size the buffer, allocate it out of the vector's
+  # a VARCHAR or BLOB one: size the buffer, allocate it out of the vector's
   # arena, encode into it, and assemble the bytes payload.
   # -----------------------------------------------------------------------
   bignum_decode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Decodes BIGNUM storage bytes into a caller-supplied magnitude buffer + sign flag.
 
@@ -826,7 +888,7 @@ functions:
     return_type: ERROR
   bignum_encode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Encodes a magnitude + sign flag into BIGNUM storage bytes.
 
@@ -878,6 +940,32 @@ functions:
         indirection: 1
         kind: OUT
         description: Receives the storage size in bytes — written on success and on ERROR_INPUT_OBJECT_SIZE.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  validate_utf8:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-17" ]
+    description: |
+      Validates all text->len bytes as UTF-8, including bytes after embedded NUL characters.
+
+      Returns ERROR_INPUT_INVALID if any of:
+      - text is NULL.
+      - text->ptr is NULL and text->len is nonzero.
+      - The input contains malformed UTF-8.
+
+      A view with a NULL ptr and zero length is valid.
+    parameters:
+      text:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The bytes to validate.
       err:
         type: error_info
         indirection: 1

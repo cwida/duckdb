@@ -1,0 +1,20 @@
+# name: test/sql/json/test_deserialize_function_validation.test
+# description: json_deserialize_sql validates the modifiers and flags of function expressions
+# group: [json]
+
+require json
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+# mismatched modifier type in the order_bys slot
+statement error
+SELECT json_deserialize_sql(replace(json_serialize_sql('SELECT a+1 FROM t'), '"order_bys":{"type":"ORDER_MODIFIER"', '"order_bys":{"type":"LIMIT_MODIFIER"'));
+----
+<REGEX>:Serialization Error.*order_bys is not an ORDER BY modifier.*
+
+# a DISTINCT operator
+statement error
+SELECT json_deserialize_sql(replace(json_serialize_sql('SELECT 1 + 2'), '"distinct":false,"is_operator":true', '"distinct":true,"is_operator":true'));
+----
+<REGEX>:Serialization Error.*an operator cannot be DISTINCT.*

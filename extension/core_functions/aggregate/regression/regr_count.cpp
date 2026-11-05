@@ -9,6 +9,8 @@ namespace duckdb {
 AggregateFunction RegrCountFun::GetFunction() {
 	auto regr_count = AggregateFunction::BinaryAggregate<uint64_t, double, double, uint32_t, RegrCountFunction>(
 	    LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::UINTEGER);
+	regr_count.GetSignature().GetParameter(0).SetName("y");
+	regr_count.GetSignature().GetParameter(1).SetName("x");
 	regr_count.SetName("regr_count");
 	regr_count.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return regr_count;

@@ -1,0 +1,34 @@
+# name: test/sql/types/enum/test_25633.test
+# description: Failed conversions inside ENUM casts must propagate instead of reporting success (#25633)
+# group: [enum]
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+statement ok
+CREATE TYPE years AS ENUM ('2001', '2006');
+
+# the strict cast surfaces the inner VARCHAR->target conversion failure
+statement error
+SELECT 'sad'::mood::UINTEGER;
+----
+<REGEX>:.*Could not convert string 'sad' to UINT32.*
+
+# try_cast turns the same failure into NULL
+query I
+SELECT TRY_CAST('sad'::mood AS UINTEGER);
+----
+NULL
+
+# values that do convert still work
+query I
+SELECT '2001'::years::UINTEGER;
+----
+2001
+
+# scalar TryCastAs callers rely on the cast's return value: a failed ENUM->BOOLEAN
+# conversion must be reported as failure, not as an engaged NULL
+statement error
+SET allow_persistent_secrets = 'sad'::mood;
+----
+<REGEX>:.*Failed to cast value.*Could not convert string 'sad' to BOOL.*

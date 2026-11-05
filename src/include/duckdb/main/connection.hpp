@@ -8,15 +8,15 @@
 
 #pragma once
 
+#include <type_traits>
+
 #include "duckdb/main/profiler/profiler_print_format.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
 #include "duckdb/common/winapi.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
-#include "duckdb/main/pending_query_result.hpp"
 #include "duckdb/main/prepared_statement.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/main/query_result_stream.hpp"
 #include "duckdb/main/relation.hpp"
-#include "duckdb/main/stream_query_result.hpp"
 #include "duckdb/main/table_description.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 
@@ -28,8 +28,10 @@ class ClientContext;
 class DatabaseInstance;
 class DuckDB;
 class LogicalOperator;
+class ResultFormat;
 class SelectStatement;
 struct CSVReaderOptions;
+struct TableFunctionInfo;
 
 typedef void (*warning_callback_t)(std::string);
 
@@ -39,6 +41,10 @@ class Connection {
 public:
 	DUCKDB_API explicit Connection(DuckDB &database);
 	DUCKDB_API explicit Connection(DatabaseInstance &database);
+	DUCKDB_API static Connection CreateInternal(DatabaseInstance &database);
+	//! Creates an internal connection that runs on behalf of `caller`: it follows the interrupts and the query
+	//! deadline of caller's base client
+	DUCKDB_API static Connection CreateInternal(ClientContext &caller);
 	// disable copy constructors
 	Connection(const Connection &other) = delete;
 	Connection &operator=(const Connection &) = delete;
@@ -49,12 +55,15 @@ public:
 
 	shared_ptr<ClientContext> context;
 
+private:
+	Connection(DatabaseInstance &database, ConnectionType connection_type);
+
 public:
 	//! Returns query profiling information for the current query, formatted according to the given ProfilerPrintFormat
 	//! (e.g. ProfilerPrintFormat::JSON()). ProfilerPrintFormat::Default() uses the configured default profiler format.
 	DUCKDB_API string GetProfilingInformation(const ProfilerPrintFormat &format = ProfilerPrintFormat::Default());
 
-	//! Interrupt execution of the current query
+	//! Interrupts the current query. Async-signal-safe
 	DUCKDB_API void Interrupt();
 
 	//! Get query progress of current query
@@ -74,50 +83,44 @@ public:
 	//! Force parallel execution, even for smaller tables. Should only be used in testing.
 	DUCKDB_API void ForceParallelism();
 
-	//! Issues a query to the database and returns a QueryResult. This result can be either a StreamQueryResult or a
-	//! MaterializedQueryResult. The result can be stepped through with calls to Fetch(). Note that there can only be
-	//! one active StreamQueryResult per Connection object. Calling SendQuery() will invalidate any previously existing
-	//! StreamQueryResult.
-	DUCKDB_API unique_ptr<QueryResult>
-	SendQuery(const string &query, QueryParameters query_parameters = QueryResultOutputType::ALLOW_STREAMING);
-	DUCKDB_API unique_ptr<QueryResult>
-	SendQuery(unique_ptr<SQLStatement> statement,
-	          QueryParameters query_parameters = QueryResultOutputType::ALLOW_STREAMING);
-	//! Issues a query to the database and materializes the result (if necessary). Always returns a
-	//! MaterializedQueryResult.
-	DUCKDB_API unique_ptr<MaterializedQueryResult> Query(const string &query);
-	//! Issues a query to the database and materializes the result (if necessary). Always returns a
-	//! MaterializedQueryResult.
-	DUCKDB_API unique_ptr<MaterializedQueryResult>
-	Query(unique_ptr<SQLStatement> statement, QueryResultMemoryType memory_type = QueryResultMemoryType::IN_MEMORY);
+	//! Blocking. Runs the query to completion and returns its handle. The result is retained: it can be read
+	//! repeatedly and at random.
+	DUCKDB_API unique_ptr<QueryResult> Query(const string &query);
+	DUCKDB_API unique_ptr<QueryResult> Query(unique_ptr<SQLStatement> statement,
+	                                         shared_ptr<ResultFormat> format = nullptr);
+	//! As above, in the given result format
+	DUCKDB_API unique_ptr<QueryResult> Query(const string &query, shared_ptr<ResultFormat> format);
 	// prepared statements
 	template <typename... ARGS>
 	unique_ptr<QueryResult> Query(const string &query, ARGS... args) {
 		vector<Value> values;
 		return QueryParamsRecursive(query, values, args...);
 	}
+	//! Overload resolution otherwise prefers the prepared-statement template above for a derived format pointer
+	template <class FORMAT, typename std::enable_if<std::is_base_of<ResultFormat, FORMAT>::value, int>::type = 0>
+	unique_ptr<QueryResult> Query(const string &query, shared_ptr<FORMAT> format) {
+		return Query(query, shared_ptr<ResultFormat>(std::move(format)));
+	}
 
-	//! Issues a query to the database and returns a Pending Query Result. Note that "query" may only contain
-	//! a single statement.
-	DUCKDB_API unique_ptr<PendingQueryResult>
-	PendingQuery(const string &query, QueryParameters query_parameters = QueryResultOutputType::FORCE_MATERIALIZED);
-	//! Issues a query to the database and returns a Pending Query Result
-	DUCKDB_API unique_ptr<PendingQueryResult>
-	PendingQuery(unique_ptr<SQLStatement> statement,
-	             QueryParameters query_parameters = QueryResultOutputType::FORCE_MATERIALIZED);
-	DUCKDB_API unique_ptr<PendingQueryResult>
-	PendingQuery(unique_ptr<SQLStatement> statement, identifier_map_t<BoundParameterData> &named_values,
-	             QueryParameters query_parameters = QueryResultOutputType::FORCE_MATERIALIZED);
-	DUCKDB_API unique_ptr<PendingQueryResult>
-	PendingQuery(const string &query, identifier_map_t<BoundParameterData> &named_values,
-	             QueryParameters query_parameters = QueryResultOutputType::FORCE_MATERIALIZED);
-	DUCKDB_API unique_ptr<PendingQueryResult>
-	PendingQuery(const string &query, vector<Value> &values,
-	             QueryParameters query_parameters = QueryResultOutputType::FORCE_MATERIALIZED);
-	DUCKDB_API unique_ptr<PendingQueryResult> PendingQuery(const string &query, PendingQueryParameters parameters);
-	DUCKDB_API unique_ptr<PendingQueryResult>
-	PendingQuery(unique_ptr<SQLStatement> statement, vector<Value> &values,
-	             QueryParameters query_parameters = QueryResultOutputType::FORCE_MATERIALIZED);
+	//! Non-blocking. Submits the query and returns its handle. The engine runs it iff threads - external_threads > 0,
+	//! but produces no data until the caller either calls a materializing method on the handle or opens a
+	//! QueryResultStream on it. The query may only contain a single statement.
+	DUCKDB_API unique_ptr<QueryResult> Submit(const string &query, const QueryParameters &query_parameters = {});
+	//! Non-blocking. As above, for a parsed statement and for bound parameter values
+	DUCKDB_API unique_ptr<QueryResult> Submit(unique_ptr<SQLStatement> statement,
+	                                          const QueryParameters &query_parameters = {});
+	//! Non-blocking. As above, in the given result format
+	DUCKDB_API unique_ptr<QueryResult> Submit(const string &query, shared_ptr<ResultFormat> format);
+	DUCKDB_API unique_ptr<QueryResult> Submit(unique_ptr<SQLStatement> statement, shared_ptr<ResultFormat> format);
+	DUCKDB_API unique_ptr<QueryResult> Submit(unique_ptr<SQLStatement> statement,
+	                                          identifier_map_t<BoundParameterData> &named_values,
+	                                          const QueryParameters &query_parameters = {});
+	DUCKDB_API unique_ptr<QueryResult> Submit(const string &query, identifier_map_t<BoundParameterData> &named_values,
+	                                          const QueryParameters &query_parameters = {});
+	DUCKDB_API unique_ptr<QueryResult> Submit(const string &query, vector<Value> &values,
+	                                          const QueryParameters &query_parameters = {});
+	DUCKDB_API unique_ptr<QueryResult> Submit(unique_ptr<SQLStatement> statement, vector<Value> &values,
+	                                          const QueryParameters &query_parameters = {});
 
 	//! Prepare the specified query, returning a prepared statement object
 	DUCKDB_API unique_ptr<PreparedStatement> Prepare(const string &query);
@@ -133,8 +136,10 @@ public:
 	//! DEFAULT_SCHEMA.
 	DUCKDB_API unique_ptr<TableDescription> TableInfo(const Identifier &table_name);
 
-	//! Extract a set of SQL statements from a specific query
-	DUCKDB_API vector<unique_ptr<SQLStatement>> ExtractStatements(const string &query);
+	//! Extract the user statements of a script as parsed, without expanding any of them. apply_invalidation_policy
+	//! works as for ClientContext::IterateStatements.
+	DUCKDB_API vector<unique_ptr<SQLStatement>> ExtractStatements(const string &query,
+	                                                              bool apply_invalidation_policy = true);
 	//! Extract the logical plan that corresponds to a query
 	DUCKDB_API unique_ptr<LogicalOperator> ExtractPlan(const string &query);
 
@@ -154,6 +159,10 @@ public:
 	DUCKDB_API shared_ptr<Relation> TableFunction(const string &tname, const vector<Value> &values,
 	                                              const named_parameter_map_t &named_parameters);
 	DUCKDB_API shared_ptr<Relation> TableFunction(const string &tname, const vector<Value> &values);
+	//! Calls a table function with process-local input for this invocation
+	DUCKDB_API shared_ptr<Relation> TableFunction(const string &tname, const vector<Value> &values,
+	                                              const named_parameter_map_t &named_parameters,
+	                                              shared_ptr<TableFunctionInfo> bind_info);
 	//! Returns a relation that produces values
 	DUCKDB_API shared_ptr<Relation> Values(const vector<vector<Value>> &values);
 	DUCKDB_API shared_ptr<Relation> Values(vector<vector<unique_ptr<ParsedExpression>>> &&values);

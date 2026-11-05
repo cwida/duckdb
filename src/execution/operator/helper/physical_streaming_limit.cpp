@@ -31,6 +31,11 @@ public:
 	std::atomic<idx_t> current_offset;
 };
 
+void PhysicalStreamingLimit::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// every output column only references or slices the input
+	chunk.Initialize(allocator, types, vector<bool>(types.size(), false));
+}
+
 unique_ptr<OperatorState> PhysicalStreamingLimit::GetOperatorState(ExecutionContext &context) const {
 	return make_uniq<StreamingLimitOperatorState>(*this);
 }
@@ -73,7 +78,7 @@ InsertionOrderPreservingMap<string> PhysicalStreamingLimit::ParamsToString() con
 	if (limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		result["Limit"] = to_string(limit_val.GetConstantValue());
 	} else if (limit_val.Type() == LimitNodeType::CONSTANT_PERCENTAGE) {
-		result["Limit"] = to_string(limit_val.GetConstantPercentage()) + "%";
+		result["Limit"] = StringUtil::ToString(limit_val.GetConstantPercentage()) + "%";
 	}
 	if (offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		auto offset = offset_val.GetConstantValue();

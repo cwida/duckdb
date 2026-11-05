@@ -27,6 +27,7 @@
 namespace duckdb {
 
 class DataTable;
+class DuckTableEntry;
 struct CreateTriggerInfo;
 
 struct RenameColumnInfo;
@@ -109,8 +110,15 @@ public:
 	virtual TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data,
 	                                      const EntryLookupInfo &lookup_info);
 
+	//! Whether this table should be bound like a DuckDB table. Entries that are not a DuckTableEntry can also
+	//! return true (e.g. to have DML bound with the DuckDB table layout), so use TryGetDuckTableEntry() instead of
+	//! casting.
 	virtual bool IsDuckTable() const {
 		return false;
+	}
+	//! Returns this entry as a DuckTableEntry, or nullptr if it is not one
+	virtual optional_ptr<DuckTableEntry> TryGetDuckTableEntry() {
+		return nullptr;
 	}
 
 	DUCKDB_API static string ColumnsToSQL(const ColumnList &columns, const vector<unique_ptr<Constraint>> &constraints);
@@ -156,6 +164,8 @@ public:
 	                          const std::function<void(CatalogEntry &)> &callback) const;
 	//! Get the trigger with the given name on this table
 	virtual optional_ptr<CatalogEntry> GetTrigger(CatalogTransaction transaction, const Identifier &name) const;
+	//! Drop a trigger from this table (throws for table types that don't support triggers)
+	virtual bool DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade);
 	//! Collect triggers matching the given event type and for_each granularity, regardless of timing
 	vector<const_reference<TriggerCatalogEntry>>
 	GetTriggersForEvent(CatalogTransaction transaction, TriggerEventType event_type, TriggerForEach for_each) const;

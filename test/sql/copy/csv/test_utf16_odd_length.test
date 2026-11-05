@@ -1,0 +1,9 @@
+# name: test/sql/copy/csv/test_utf16_odd_length.test
+# description: UTF-16 input with a trailing odd byte is rejected
+# group: [csv]
+
+statement error
+FROM read_csv('data/csv/encodings/utf16_odd_length.csv', encoding = 'utf-16', header = false);
+----
+File is not utf-16 encoded
+

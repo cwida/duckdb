@@ -1,0 +1,57 @@
+# name: test/sql/json/table/read_json_dates_vector_boundary.test
+# description: Read json files - timezone offset detection across a vector boundary
+# group: [table]
+
+require json
+
+require vector_size 2048
+
+# Sticky elimination across a vector boundary (STANDARD_VECTOR_SIZE = 2048):
+# first 2048 rows are offset timestamps; row 2049 is plain (no offset) -> permanently drop TIMESTAMPTZ.
+# Mixed sample => VARCHAR.
+statement ok
+copy (
+	select json_object('ts', CASE WHEN i <= 2048 THEN '2024-01-01T00:00:00Z' ELSE '2024-01-01T00:00:00' END)
+	from generate_series(1, 2049) t(i)
+) to '{TEMP_DIR}/iso8601_vector_boundary.json' (format csv, quote '', header 0);
+
+query I
+select typeof(ts) from read_json_auto('{TEMP_DIR}/iso8601_vector_boundary.json') limit 1
+----
+VARCHAR
+
+# Same boundary but all rows keep an offset -> TIMESTAMPTZ
+statement ok
+copy (
+	select json_object('ts', '2024-01-01T00:00:00Z')
+	from generate_series(1, 2049) t(i)
+) to '{TEMP_DIR}/iso8601_vector_boundary_all_tz.json' (format csv, quote '', header 0);
+
+query II
+select typeof(ts), count(*) from read_json_auto('{TEMP_DIR}/iso8601_vector_boundary_all_tz.json') group by 1
+----
+TIMESTAMP WITH TIME ZONE	2049
+
+# Offset rows then nulls across the vector boundary must keep TIMESTAMPTZ (nulls are not evidence against TZ)
+statement ok
+copy (
+	select CASE WHEN i <= 2048 THEN json_object('ts', '2024-01-01T00:00:00Z') ELSE json_object('ts', NULL) END
+	from generate_series(1, 2049) t(i)
+) to '{TEMP_DIR}/iso8601_vector_boundary_tz_then_null.json' (format csv, quote '', header 0);
+
+query II
+select typeof(ts), count(*) filter (where ts is not null) from read_json_auto('{TEMP_DIR}/iso8601_vector_boundary_tz_then_null.json') group by 1
+----
+TIMESTAMP WITH TIME ZONE	2048
+
+# Specials across a vector boundary must not stick WITH_OFFSET onto a later plain timestamp
+statement ok
+copy (
+	select json_object('ts', CASE WHEN i <= 2048 THEN 'infinity' ELSE '2024-01-01T00:00:00' END)
+	from generate_series(1, 2049) t(i)
+) to '{TEMP_DIR}/iso8601_vector_boundary_infinity_then_plain.json' (format csv, quote '', header 0);
+
+query I
+select typeof(ts) from read_json_auto('{TEMP_DIR}/iso8601_vector_boundary_infinity_then_plain.json') limit 1
+----
+TIMESTAMP

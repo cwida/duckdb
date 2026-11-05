@@ -1,0 +1,93 @@
+# name: test/sql/join/test_between_null_bound_join.test
+# description: BETWEEN with a NULL bound must follow SQL three-valued logic regardless of vector representation
+# group: [join]
+
+# https://github.com/duckdb/duckdb/issues/25170
+
+statement ok
+CREATE TABLE t0(c0 BOOLEAN, c1 INT, c2 INT);
+
+statement ok
+INSERT INTO t0 SELECT false, r, NULL FROM range(1, 23) t(r);
+
+statement ok
+INSERT INTO t0 VALUES (false, 23, -1);
+
+# the RHS is larger than the LHS, so the LHS rows are fed to the condition as constant vectors
+query I
+SELECT count(*) FROM t0 RIGHT JOIN (SELECT 1 FROM range(100)) s
+  ON ((EXISTS (SELECT 1 FROM t0 WHERE t0.c2 < 0)) NOT BETWEEN (t0.c2 = t0.c1) AND t0.c0);
+----
+2300
+
+# the RHS is smaller than the LHS, so the LHS rows stay flat
+query I
+SELECT count(*) FROM t0 RIGHT JOIN (SELECT 1 FROM range(10)) s
+  ON ((EXISTS (SELECT 1 FROM t0 WHERE t0.c2 < 0)) NOT BETWEEN (t0.c2 = t0.c1) AND t0.c0);
+----
+230
+
+# constant NULL lower bound with a FALSE upper comparison is FALSE, not NULL
+query II
+SELECT ((EXISTS (SELECT 1)) BETWEEN NULL::BOOLEAN AND false) AS b, ((EXISTS (SELECT 1)) BETWEEN NULL::BOOLEAN AND false) IS NULL;
+----
+false	false
+
+query I
+SELECT ((EXISTS (SELECT 1)) NOT BETWEEN NULL::BOOLEAN AND false);
+----
+true
+
+# statistics propagation: one comparison false-or-null, the other unknown, must not fold to NULL
+statement ok
+CREATE TABLE tt(x INT, l INT, u INT);
+
+statement ok
+INSERT INTO tt VALUES (10, NULL, 5), (10, 20, 50), (NULL, 20, 50), (10, NULL, 50);
+
+query IIII
+SELECT x, l, u, (CASE WHEN random() < 2 THEN x ELSE x END) BETWEEN l AND u FROM tt ORDER BY ALL;
+----
+10	20	50	false
+10	NULL	5	false
+10	NULL	50	NULL
+NULL	20	50	NULL
+
+# the original issue: UNION ALL over identical RIGHT JOINs with a shared subplan
+statement ok
+CREATE TABLE t1(c0 BOOLEAN, c1 INT, c2 INT, PRIMARY KEY(c1));
+
+statement ok
+CREATE UNIQUE INDEX i0 ON t1 (c1);
+
+statement ok
+CREATE UNIQUE INDEX i1 ON t1 (c1);
+
+loop i 0 11
+
+statement ok
+INSERT INTO t1(c1, c0) VALUES ({i} * 2 + 1, false), ({i} * 2 + 2, false);
+
+endloop
+
+statement ok
+INSERT INTO t1(c1, c0, c2) VALUES (23, false, -1);
+
+query I
+SELECT count(*) FROM (
+  SELECT 1 FROM t1 RIGHT JOIN (SELECT 1 AS col0 FROM t1) AS sub0
+    ON ((EXISTS (SELECT 1 FROM t1 WHERE t1.c2 < 0)) NOT BETWEEN (t1.c2 = t1.c1) AND t1.c0)
+) x;
+----
+529
+
+query I
+SELECT count(*) FROM (
+  SELECT 1 FROM t1 RIGHT JOIN (SELECT 1 AS col0 FROM t1) AS sub0
+    ON ((EXISTS (SELECT 1 FROM t1 WHERE t1.c2 < 0)) NOT BETWEEN (t1.c2 = t1.c1) AND t1.c0)
+  UNION ALL
+  SELECT 1 FROM t1 RIGHT JOIN (SELECT 1 AS col0 FROM t1) AS sub0
+    ON ((EXISTS (SELECT 1 FROM t1 WHERE t1.c2 < 0)) NOT BETWEEN (t1.c2 = t1.c1) AND t1.c0)
+) x;
+----
+1058

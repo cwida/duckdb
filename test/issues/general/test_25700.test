@@ -1,0 +1,211 @@
+# name: test/issues/general/test_25700.test
+# description: Streaming window functions evaluate volatile arguments once per row
+# group: [general]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = PHYSICAL_ONLY;
+
+statement ok
+CREATE SEQUENCE lead_seq START 1;
+
+query IIII
+SELECT min(x), max(x), sum(x), count(*)
+FROM (
+	SELECT LEAD(nextval('lead_seq'), 1, -1) OVER () AS x
+	FROM range(5000)
+);
+----
+-1	5000	12502498	5000
+
+query I
+SELECT nextval('lead_seq');
+----
+5001
+
+statement ok
+CREATE SEQUENCE lag_seq START 1;
+
+query IIII
+SELECT min(x), max(x), sum(x), count(*)
+FROM (
+	SELECT LAG(nextval('lag_seq'), -1, -1) OVER () AS x
+	FROM range(5000)
+);
+----
+-1	5000	12502498	5000
+
+query I
+SELECT nextval('lag_seq');
+----
+5001
+
+statement ok
+CREATE SEQUENCE last_seq START 1;
+
+query IIII
+SELECT min(x), max(x), sum(x), count(*)
+FROM (
+	SELECT LAST_VALUE(nextval('last_seq')) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+	FROM range(5000)
+);
+----
+1	5000	12502500	5000
+
+query I
+SELECT nextval('last_seq');
+----
+5001
+
+statement ok
+CREATE SEQUENCE first_seq START 1;
+
+query IIII
+SELECT min(x), max(x), sum(x), count(*)
+FROM (
+	SELECT FIRST_VALUE(nextval('first_seq')) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+	FROM range(5000)
+);
+----
+1	1	5000	5000
+
+query I
+SELECT nextval('first_seq');
+----
+5001
+
+statement ok
+CREATE SEQUENCE nth_seq START 1;
+
+query IIII
+SELECT min(x), max(x), sum(x), count(*)
+FROM (
+	SELECT NTH_VALUE(nextval('nth_seq'), 3000) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+	FROM range(5000)
+);
+----
+3000	3000	6003000	5000
+
+query I
+SELECT nextval('nth_seq');
+----
+5001
+
+# LAG with a non-negative offset never re-reads the read-ahead buffer, so it keeps streaming
+
+statement ok
+CREATE SEQUENCE lag_fast_seq START 1;
+
+query IIII
+SELECT min(x), max(x), sum(x), count(*)
+FROM (
+	SELECT LAG(nextval('lag_fast_seq'), 1, -1) OVER () AS x
+	FROM range(5000)
+);
+----
+-1	4999	12497499	5000
+
+query I
+SELECT nextval('lag_fast_seq');
+----
+5001
+
+statement ok
+CREATE SEQUENCE lag_lead_seq START 1;
+
+query IIIII
+SELECT min(x), max(x), sum(x), min(y), count(*)
+FROM (
+	SELECT LAG(nextval('lag_lead_seq'), 1, -1) OVER () AS x, LEAD(i, 1, -1) OVER () AS y
+	FROM range(5000) tbl(i)
+);
+----
+-1	4999	12497499	-1	5000
+
+query I
+SELECT nextval('lag_lead_seq');
+----
+5001
+
+# Window aggregates evaluate their arguments once per row, so they keep streaming too
+
+statement ok
+CREATE SEQUENCE agg_seq START 1;
+
+query III
+SELECT min(x), max(x), count(*)
+FROM (
+	SELECT sum(nextval('agg_seq')) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+	FROM range(5000)
+);
+----
+1	12502500	5000
+
+query I
+SELECT nextval('agg_seq');
+----
+5001
+
+statement ok
+CREATE SEQUENCE plan_seq START 1;
+
+query TT
+EXPLAIN
+SELECT LAG(nextval('plan_seq'), 1, -1) OVER () AS x
+FROM range(5000);
+----
+physical_plan	<REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT LAG(i, 1, -1) OVER () AS x
+FROM range(5000) tbl(i);
+----
+physical_plan	<REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT sum(nextval('plan_seq')) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+FROM range(5000);
+----
+physical_plan	<REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT LEAD(nextval('plan_seq'), 1, -1) OVER () AS x
+FROM range(5000);
+----
+physical_plan	<!REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT LAG(nextval('plan_seq'), -1, -1) OVER () AS x
+FROM range(5000);
+----
+physical_plan	<!REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT FIRST_VALUE(nextval('plan_seq')) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+FROM range(5000);
+----
+physical_plan	<!REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT LAST_VALUE(nextval('plan_seq')) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+FROM range(5000);
+----
+physical_plan	<!REGEX>:.*STREAMING_WINDOW.*
+
+query TT
+EXPLAIN
+SELECT NTH_VALUE(nextval('plan_seq'), 3000) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+FROM range(5000);
+----
+physical_plan	<!REGEX>:.*STREAMING_WINDOW.*

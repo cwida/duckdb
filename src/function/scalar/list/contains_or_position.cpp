@@ -70,7 +70,7 @@ static FilterPropagateResult ListContainsFilterPrune(const FunctionStatisticsPru
 	if (!ListSearchNeverMatches(list_stats, needle_stats, false)) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
-	// list_contains is NULL if either side is NULL, and false otherwise.
+	// list_contains is NULL if either side is NULL (except an empty list, which gives false), and false otherwise.
 	const bool can_have_null = list_stats->CanHaveNull() || !needle_stats || needle_stats->CanHaveNull();
 	return can_have_null ? FilterPropagateResult::FILTER_FALSE_OR_NULL : FilterPropagateResult::FILTER_ALWAYS_FALSE;
 }
@@ -92,16 +92,21 @@ static unique_ptr<BaseStatistics> ListPositionPropagateStats(ClientContext &, Fu
 }
 
 ScalarFunction ListContainsFun::GetFunction() {
-	auto fun = ScalarFunction({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::TEMPLATE("T")},
-	                          LogicalType::BOOLEAN, ListSearchFunction<bool>);
+	auto fun = ScalarFunction({}, LogicalType::BOOLEAN, ListSearchFunction<bool>);
+	fun.GetSignature()
+	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
+	    .AddParameter("element", LogicalType::TEMPLATE("T"));
+	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetFilterPruneCallback(ListContainsFilterPrune);
 	return fun;
 }
 
 ScalarFunction ListPositionFun::GetFunction() {
-	auto fun = ScalarFunction({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::TEMPLATE("T")},
-	                          LogicalType::INTEGER, ListSearchFunction<int32_t, true>);
+	auto fun = ScalarFunction({}, LogicalType::INTEGER, ListSearchFunction<int32_t, true>);
+	fun.GetSignature()
+	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
+	    .AddParameter("element", LogicalType::TEMPLATE("T"));
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetStatisticsCallback(ListPositionPropagateStats);

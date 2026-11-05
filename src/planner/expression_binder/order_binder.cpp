@@ -56,7 +56,8 @@ optional_idx OrderBinder::TryGetProjectionReference(ParsedExpression &expr) cons
 	case ExpressionClass::CONSTANT: {
 		auto &constant = expr.Cast<ConstantExpression>();
 		// ORDER BY a constant
-		if (!constant.GetValue().type().IsIntegral()) {
+		int64_t order_value;
+		if (!constant.GetLiteral().TryGetInt64(order_value)) {
 			// non-integral expression
 			// ORDER BY <constant> has no effect
 			// this is disabled by default (matching Postgres) - but we can control this with a setting
@@ -71,7 +72,6 @@ optional_idx OrderBinder::TryGetProjectionReference(ParsedExpression &expr) cons
 			break;
 		}
 		// INTEGER constant: we use the integer as an index into the select list (e.g. ORDER BY 1)
-		auto order_value = constant.GetValue().GetValue<int64_t>();
 		return static_cast<idx_t>(order_value <= 0 ? NumericLimits<int64_t>::Maximum() : order_value - 1);
 	}
 	case ExpressionClass::COLUMN_REF: {

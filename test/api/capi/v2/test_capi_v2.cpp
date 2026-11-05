@@ -14,7 +14,7 @@ DUCKDB_V2_ERROR SetErrorInfo(duckdb_v2_error_info_handle *err, DUCKDB_V2_ERROR c
 		info.code = code;
 		info.message = msg ? msg : "";
 		// Directly-set message has no body; clear any from a prior failure.
-		info.raw_message.clear();
+		info.raw_message.reset();
 	}
 	return code;
 }

@@ -1,0 +1,38 @@
+# name: test/sql/copy/partitioned/partitioned_row_group_size_bytes_boundary.test
+# description: A partition that starts exactly at a chunk boundary stays its own partition with ROW_GROUP_SIZE_BYTES (#26724)
+# group: [partitioned]
+
+require parquet
+
+statement ok
+SET threads=1
+
+statement ok
+SET preserve_insertion_order=false
+
+# the second day starts at row 2048, the boundary of the first chunk
+statement ok
+COPY (
+	SELECT repeat('w', 1024) AS name, '2026' AS year, '07' AS month,
+	       CASE WHEN i < 2048 THEN '07' ELSE '08' END AS day
+	FROM range(4096) t(i)
+) TO '{TEST_DIR}/boundary_partitions' (FORMAT PARQUET, PARTITION_BY (year, month, day), PRESERVE_ORDER false, ROW_GROUP_SIZE_BYTES '50MiB')
+
+query II
+SELECT day, count(*) FROM read_parquet('{TEST_DIR}/boundary_partitions/**/*.parquet', hive_partitioning = true) GROUP BY ALL ORDER BY ALL
+----
+07	2048
+08	2048
+
+# a small byte budget splits the partitions into several row groups but still keeps them apart
+statement ok
+COPY (
+	SELECT repeat('w', 1024) AS name, CASE WHEN i < 2048 THEN 'a' ELSE 'b' END AS part
+	FROM range(4096) t(i)
+) TO '{TEST_DIR}/boundary_partitions_small' (FORMAT PARQUET, PARTITION_BY (part), PRESERVE_ORDER false, ROW_GROUP_SIZE_BYTES '256KiB')
+
+query II
+SELECT part, count(*) FROM read_parquet('{TEST_DIR}/boundary_partitions_small/**/*.parquet', hive_partitioning = true) GROUP BY ALL ORDER BY ALL
+----
+a	2048
+b	2048

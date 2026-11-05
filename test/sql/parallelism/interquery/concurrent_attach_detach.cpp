@@ -59,7 +59,7 @@ const idx_t nr_initial_rows = 2050;
 vector<vector<string>> logging;
 atomic<bool> success {true};
 
-unique_ptr<MaterializedQueryResult> execQuery(Connection &conn, const string &query) {
+unique_ptr<QueryResult> execQuery(Connection &conn, const string &query) {
 	auto result = conn.Query(query);
 	if (result->HasError()) {
 		auto err = result->GetError();
@@ -108,7 +108,7 @@ public:
 	}
 
 public:
-	unique_ptr<MaterializedQueryResult> execQuery(const string &query) {
+	unique_ptr<QueryResult> execQuery(const string &query) {
 		return ::execQuery(conn, query);
 	}
 	void Work();

@@ -33,7 +33,8 @@ static void SleepFunction(DataChunk &input, ExpressionState &state, Vector &resu
 }
 
 ScalarFunction SleepMsFun::GetFunction() {
-	auto sleep_fun = ScalarFunction({LogicalType::BIGINT}, LogicalType::SQLNULL, SleepFunction, nullptr);
+	auto sleep_fun = ScalarFunction({}, LogicalType::SQLNULL, SleepFunction, nullptr);
+	sleep_fun.GetSignature().AddParameter("milliseconds", LogicalType::BIGINT);
 	sleep_fun.SetVolatile();
 	sleep_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return sleep_fun;

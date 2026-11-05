@@ -11,6 +11,7 @@
 #include "duckdb/common/serializer/varint.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/checked_integer.hpp"
 
 namespace duckdb {
 namespace variant {
@@ -31,13 +32,24 @@ public:
 	static uint32_t *GetBlob(DataChunk &offsets) {
 		return FlatVector::GetDataMutable<uint32_t>(offsets.data[3]);
 	}
+	//! Adds len to offset, throwing if the running total would exceed what a uint32_t blob offset can represent.
+	static void AddBlobOffset(uint32_t &offset, uint32_t len) {
+		try {
+			offset = uinteger_t(offset) += len;
+		} catch (OutOfRangeException &) {
+			throw InvalidInputException(
+			    "Cannot convert value to VARIANT: encoded row size exceeds the maximum supported %u bytes",
+			    NumericLimits<uint32_t>::Maximum());
+		}
+	}
 };
 
 struct ToVariantGlobalResultData {
 public:
 	ToVariantGlobalResultData(VariantVectorData &variant, DataChunk &offsets,
-	                          OrderedOwningStringMap<uint32_t> &dictionary, SelectionVector &keys_selvec)
-	    : variant(variant), offsets(offsets), dictionary(dictionary), keys_selvec(keys_selvec) {
+	                          OrderedOwningStringMap<uint32_t> &dictionary, SelectionVector &keys_selvec,
+	                          Allocator &allocator)
+	    : variant(variant), offsets(offsets), dictionary(dictionary), keys_selvec(keys_selvec), allocator(allocator) {
 	}
 
 public:
@@ -54,14 +66,15 @@ public:
 	OrderedOwningStringMap<uint32_t> &dictionary;
 	//! The selection vector to populate with mapping from keys index -> dictionary index
 	SelectionVector &keys_selvec;
+	//! Allocator for temporary conversion memory (e.g. JSON parsing), tracked by DuckDB's memory accounting
+	Allocator &allocator;
 };
 
 template <bool WRITE_DATA>
 void WriteContainerData(VariantVectorData &result, idx_t result_index, uint32_t &blob_offset, idx_t length,
                         idx_t children_offset) {
 	const auto length_varint_size = GetVarintSize(length);
-	const auto child_offset_varint_size =
-	    NumericCast<uint32_t>(length_varint_size ? GetVarintSize(children_offset) : 0);
+	const auto child_offset_varint_size = NumericCast<uint32_t>(length ? GetVarintSize(children_offset) : 0);
 
 	if (WRITE_DATA) {
 		auto &blob_value = result.blob_data[result_index];
@@ -72,7 +85,7 @@ void WriteContainerData(VariantVectorData &result, idx_t result_index, uint32_t 
 		}
 	}
 
-	blob_offset += length_varint_size + child_offset_varint_size;
+	OffsetData::AddBlobOffset(blob_offset, length_varint_size + child_offset_varint_size);
 }
 
 struct ContainerSelectionVectors {

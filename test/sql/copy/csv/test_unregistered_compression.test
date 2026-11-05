@@ -1,0 +1,66 @@
+# name: test/sql/copy/csv/test_unregistered_compression.test
+# description: A file whose extension names a compression without a registered filesystem is an error, not plain text
+# group: [csv]
+
+require json
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEMP_DIR}/plain.csv';
+
+foreach extension bz2 XZ lz4 br lzma zip
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEMP_DIR}/data.csv.{extension}' (COMPRESSION none);
+
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/data.csv.{extension}');
+----
+<REGEX>:.*compression type is not supported.*set compression = 'none' to treat it as uncompressed.*
+
+query I
+SELECT * FROM read_csv('{TEMP_DIR}/data.csv.{extension}', compression = 'none');
+----
+42
+
+endloop
+
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/data.csv.bz2');
+----
+(compression type "bzip2")
+
+query I
+SELECT * FROM read_csv('{TEMP_DIR}/plain.csv');
+----
+42
+
+# the JSON reader detects it as well
+statement ok
+COPY (SELECT 42 AS i) TO '{TEMP_DIR}/data.json.xz' (FORMAT json, COMPRESSION none);
+
+statement error
+SELECT * FROM read_json('{TEMP_DIR}/data.json.xz');
+----
+(compression type "xz")
+
+query I
+SELECT i FROM read_json('{TEMP_DIR}/data.json.xz', compression = 'none');
+----
+42
+
+# writing under such a name writes the bytes as is, e.g. a blob that is already compressed
+statement ok
+COPY (SELECT 'already compressed'::BLOB AS content) TO '{TEMP_DIR}/payload.tar.xz' (FORMAT BLOB);
+
+query I
+SELECT content FROM read_blob('{TEMP_DIR}/payload.tar.xz');
+----
+already compressed
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEMP_DIR}/written.csv.bz2';
+
+query I
+SELECT * FROM read_csv('{TEMP_DIR}/written.csv.bz2', compression = 'none');
+----
+42

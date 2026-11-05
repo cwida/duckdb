@@ -1,0 +1,204 @@
+# name: test/sql/collate/collate_nested.test
+# description: Test that collations are applied to elements inside nested types
+# group: [collate]
+
+# preserve NULL structs separately from structs with NULL fields
+query I
+SELECT NULL::STRUCT(x VARCHAR) = {'x': 'a' COLLATE NOCASE}
+----
+NULL
+
+query I
+SELECT NULL::STRUCT(x VARCHAR) IS DISTINCT FROM {'x': NULL::VARCHAR COLLATE NOCASE}
+----
+true
+
+query I
+SELECT {'x': NULL::VARCHAR COLLATE NOCASE} = {'x': NULL::VARCHAR}
+----
+true
+
+query I
+SELECT [{'x': 'a' COLLATE NOCASE}, NULL::STRUCT(x VARCHAR)] = [{'x': 'A'}, NULL::STRUCT(x VARCHAR)]
+----
+true
+
+# the source is evaluated once even when both fields require collation
+statement ok
+CREATE SEQUENCE collate_sequence
+
+query I
+SELECT {'x': nextval('collate_sequence')::VARCHAR COLLATE NOCASE,
+        'y': nextval('collate_sequence')::VARCHAR COLLATE NOCASE} = {'x': '1', 'y': '2'}
+----
+true
+
+query I
+SELECT currval('collate_sequence')
+----
+2
+
+statement ok
+DROP SEQUENCE collate_sequence
+
+# scalar and tuple ordering use the same collation
+query I
+SELECT 'a' COLLATE NOCASE < 'B'
+----
+true
+
+query I
+SELECT ('a' COLLATE NOCASE, 0) < ('B', 0)
+----
+true
+
+query I
+SELECT {'x': 'b' COLLATE NOCASE} = {'x': 'B'}
+----
+true
+
+query I
+SELECT {'x': 'b' COLLATE NOCASE} != {'x': 'B'}
+----
+false
+
+query I
+SELECT {'x': 'a' COLLATE NOCASE} < {'x': 'B'}
+----
+true
+
+query I
+SELECT {'x': 'B' COLLATE NOCASE} >= {'x': 'a'}
+----
+true
+
+# TIMETZ ordering accounts for the timezone offset
+query I
+SELECT {'x': '10:00:00+00'::TIMETZ} < {'x': '09:00:00-05'::TIMETZ}
+----
+true
+
+# fields compare in order, so 'y' decides once the 'x' fields are equal under NOCASE
+query I
+SELECT {'x': 'a' COLLATE NOCASE, 'y': 2} < {'x': 'A', 'y': 1}
+----
+false
+
+# the first field decides when its values differ under NOCASE
+query I
+SELECT {'x': 'B' COLLATE NOCASE, 'y': 2} < {'x': 'a', 'y': 1}
+----
+false
+
+# combined collations
+query I
+SELECT {'x': 'héllo' COLLATE NOACCENT.NOCASE} = {'x': 'HELLO'}
+----
+true
+
+# comparisons without a collation remain case-sensitive
+query I
+SELECT {'x': 'b'} = {'x': 'B'}
+----
+false
+
+query I
+SELECT ('b', 0) < ('B', 0)
+----
+false
+
+# nesting in either direction
+query I
+SELECT [{'x': 'a' COLLATE NOCASE}] < [{'x': 'B'}]
+----
+true
+
+query I
+SELECT {'x': ['a' COLLATE NOCASE]} < {'x': ['B']}
+----
+true
+
+query I
+SELECT {'x': {'y': 'b' COLLATE NOCASE}} = {'x': {'y': 'B'}}
+----
+true
+
+query I
+SELECT {'x': {'y': {'z': 'HELLO' COLLATE NOCASE}}} = {'x': {'y': {'z': 'hello'}}}
+----
+true
+
+query I
+SELECT {'x': ['HELLO' COLLATE NOCASE]} = {'x': ['hello']}
+----
+true
+
+query I
+SELECT [{'x': 'HELLO' COLLATE NOCASE}] = [{'x': 'hello'}]
+----
+true
+
+statement ok
+CREATE TABLE t(id INTEGER, s VARCHAR COLLATE NOCASE)
+
+statement ok
+INSERT INTO t VALUES (1, 'B'), (2, 'a'), (3, 'b')
+
+query I
+SELECT id FROM t ORDER BY {'x': s}, id
+----
+2
+1
+3
+
+# 'B' and 'b' are one value under NOCASE
+query I
+SELECT count(*) FROM (SELECT DISTINCT {'x': s} FROM t)
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT {'x': s} AS g, count(*) FROM t GROUP BY g)
+----
+2
+
+query I
+SELECT count(*) FROM t AS l JOIN t AS r ON {'x': l.s} = {'x': r.s}
+----
+5
+
+statement ok
+CREATE TABLE tz(t TIMETZ)
+
+statement ok
+INSERT INTO tz VALUES ('10:00:00+00'), ('09:00:00-05')
+
+query I
+SELECT string_agg(t::VARCHAR, ',' ORDER BY t) FROM tz
+----
+10:00:00+00,09:00:00-05
+
+query I
+SELECT string_agg(t::VARCHAR, ',' ORDER BY {'x': t}) FROM tz
+----
+10:00:00+00,09:00:00-05
+
+# IN with a list uses list membership
+query I
+SELECT {'x': 'a' COLLATE NOCASE} IN [{'x': 'A'}, {'x': 'z'}]
+----
+true
+
+# the collation comes from the setting rather than from the type
+statement ok
+PRAGMA default_collation=NOCASE
+
+query I
+SELECT {'x': 'b'} = {'x': 'B'}
+----
+true
+
+query I
+SELECT ('b', 0) = ('B', 0)
+----
+true

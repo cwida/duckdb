@@ -1,0 +1,144 @@
+# name: test/sql/optimizer/expression/enum_full_domain_fold_guard.test
+# description: Folding guard of ConstantOrNullSimplification over DML plans and non-ENUM constant_or_null producers
+# group: [expression]
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+# The folding half of ConstantOrNullSimplification rewrites constant_or_null(c, x) into the plain
+# constant c, which drops the per-row NULL handling. That rewrite is only valid if x cannot be
+# NULL, and the proof comes from table statistics - a snapshot that does not see rows appended by
+# DML running in the same statement. On side-effecting plans folding stays disabled, so the filter
+# keeps its per-row constant_or_null evaluation and rows inserted by a DML CTE are filtered by
+# their own NULL semantics.
+
+statement ok
+CREATE TABLE t_enum(m mood);
+
+statement ok
+INSERT INTO t_enum VALUES ('sad'), ('ok'), ('happy');
+
+# the CTE inserts a NULL that the optimizer's statistics snapshot does not see; that row is
+# visible to the main query, but NULL IN (...) is NULL, so it must not be counted
+query I
+WITH ins AS (INSERT INTO t_enum VALUES (NULL) RETURNING *) SELECT count(*) FROM t_enum WHERE m IN ('sad', 'ok', 'happy');
+----
+3
+
+# pin the premise: the inserted row really is visible in the same statement
+query I
+SELECT count(*) FROM t_enum WHERE m IS NULL;
+----
+1
+
+# the same hazard is not ENUM specific: move_constants rewrites i * 2 <> 5 into
+# constant_or_null(TRUE, i), and the fold would delete that filter as well
+statement ok
+CREATE TABLE t_int(i INTEGER);
+
+statement ok
+INSERT INTO t_int VALUES (1), (2), (3);
+
+query I
+WITH ins AS (INSERT INTO t_int VALUES (NULL) RETURNING *) SELECT count(*) FROM t_int WHERE i * 2 <> 5;
+----
+3
+
+query I
+SELECT count(*) FROM t_int WHERE i IS NULL;
+----
+1
+
+# UPDATE: a folded filter would also update the CTE-inserted NULL row
+statement ok
+CREATE TABLE t_upd(m mood, x INTEGER);
+
+statement ok
+INSERT INTO t_upd VALUES ('sad', 0), ('ok', 0), ('happy', 0);
+
+statement ok
+WITH ins AS (INSERT INTO t_upd VALUES (NULL, 0) RETURNING *) UPDATE t_upd SET x = 1 WHERE m IN ('sad', 'ok', 'happy');
+
+query I
+SELECT count(*) FROM t_upd WHERE x = 1;
+----
+3
+
+query I
+SELECT count(*) FROM t_upd;
+----
+4
+
+# the guard is plan-wide: DML on one table also disables folding for an unrelated table.
+# Correct, but conservative - this is the part the reviewer on #25133 asked to narrow down.
+statement ok
+CREATE TABLE t_a(i INTEGER);
+
+statement ok
+CREATE TABLE t_b(i INTEGER);
+
+statement ok
+INSERT INTO t_b VALUES (1), (2), (3);
+
+query I
+WITH ins AS (INSERT INTO t_a VALUES (NULL) RETURNING *) SELECT count(*) FROM t_b WHERE i * 2 <> 5;
+----
+3
+
+# once the append is committed the statistics see the NULL row, so the plain query filters it
+query I
+SELECT count(*) FROM t_int WHERE i * 2 <> 5;
+----
+3
+
+# prepared statements re-plan, so a plan folded against older statistics is not reused
+statement ok
+CREATE TABLE t_prep(i INTEGER);
+
+statement ok
+INSERT INTO t_prep VALUES (1), (2), (3);
+
+statement ok
+PREPARE p AS SELECT count(*) FROM t_prep WHERE i * 2 <> 5;
+
+query I
+EXECUTE p;
+----
+3
+
+statement ok
+INSERT INTO t_prep VALUES (NULL);
+
+query I
+EXECUTE p;
+----
+3
+
+# volatility does NOT gate the fold: folding constant_or_null(c, x) drops only the per-row
+# evaluation of x, and the nullability proof can establish x only as a column reference or a
+# non-NULL constant - never as a volatile expression. A volatile sibling conjunct (random()
+# here), or a volatile expression in an operator below the filter, keeps being evaluated and
+# must not disable the fold.
+statement ok
+CREATE TABLE t_vol(m mood);
+
+statement ok
+INSERT INTO t_vol SELECT ['sad', 'ok', 'happy'][1 + (range % 3)]::mood FROM range(1024);
+
+query II
+explain
+SELECT count(*) FROM t_vol WHERE m IN ('sad', 'ok', 'happy') AND random() > 0.5;
+----
+physical_plan	<!REGEX>:.*IS NOT NULL.*
+
+query II
+explain
+SELECT count(*) FROM (SELECT m, random() AS r FROM t_vol) t WHERE m IN ('sad', 'ok', 'happy') AND r > 0.5;
+----
+physical_plan	<!REGEX>:.*IS NOT NULL.*
+
+query I
+SELECT count(*) FROM t_vol WHERE m IN ('sad', 'ok', 'happy');
+----
+1024
+

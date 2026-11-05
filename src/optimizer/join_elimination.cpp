@@ -115,6 +115,15 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		}
 		break;
 	}
+	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_TOP_N:
+	case LogicalOperatorType::LOGICAL_SAMPLE:
+	case LogicalOperatorType::LOGICAL_WINDOW: {
+		// these pick rows by cardinality, or compute values that depend on row multiplicity (window), so a
+		// distinct group above them does not hold below them
+		pipe_info.distinct_groups.clear();
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_GET: {
 		auto &get = op.Cast<LogicalGet>();
 		if (get.table_filters.HasFilters()) {
@@ -127,7 +136,16 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 	}
 
 	if (op.children.size() == 1) {
+		// UNNEST emits multiple rows per input row, so a distinct group found below it does not hold above it
+		const auto invalidates_distinct = op.type == LogicalOperatorType::LOGICAL_UNNEST;
+		unordered_map<TableIndex, column_binding_set_t> distinct_groups_above;
+		if (invalidates_distinct) {
+			distinct_groups_above = pipe_info.distinct_groups;
+		}
 		OptimizeChildren(*op.children[0], op, idx);
+		if (invalidates_distinct) {
+			pipe_info.distinct_groups = std::move(distinct_groups_above);
+		}
 	} else {
 		children_root = op;
 		for (auto &child : op.children) {

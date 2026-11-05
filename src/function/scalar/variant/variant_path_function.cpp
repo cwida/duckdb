@@ -8,27 +8,23 @@ ScalarFunctionSet VariantPathFunction::CreateFunctionSet(const Identifier &name,
 	ScalarFunctionSet fun_set(name);
 
 	if (path_optional) {
-		fun_set.AddFunction(ScalarFunction {{{"input_variant", LogicalType::VARIANT()}},
-		                                    return_type,
-		                                    function,
-		                                    VariantBindUtils::VariantPathBind,
-		                                    nullptr});
+		ScalarFunction no_path_fun({}, return_type, function, VariantBindUtils::VariantPathBind, nullptr);
+		no_path_fun.GetSignature().AddParameter("input_variant", LogicalType::VARIANT());
+		fun_set.AddFunction(std::move(no_path_fun));
 	}
 
-	fun_set.AddFunction(ScalarFunction {{{"input_variant", LogicalType::VARIANT()}, {"path", LogicalType::VARCHAR}},
-	                                    return_type,
-	                                    function,
-	                                    VariantBindUtils::VariantPathBind,
-	                                    nullptr,
-	                                    init_state});
+	ScalarFunction path_fun({}, return_type, function, VariantBindUtils::VariantPathBind, nullptr, init_state);
+	path_fun.GetSignature()
+	    .AddParameter("input_variant", LogicalType::VARIANT())
+	    .AddParameter("path", LogicalType::VARCHAR);
+	fun_set.AddFunction(std::move(path_fun));
 
-	fun_set.AddFunction(
-	    ScalarFunction {{{"input_variant", LogicalType::VARIANT()}, {"path", LogicalType::LIST(LogicalType::VARCHAR)}},
-	                    LogicalType::LIST(return_type),
-	                    function,
-	                    VariantBindUtils::VariantPathBind,
-	                    nullptr,
-	                    init_state});
+	ScalarFunction path_list_fun({}, LogicalType::LIST(return_type), function, VariantBindUtils::VariantPathBind,
+	                             nullptr, init_state);
+	path_list_fun.GetSignature()
+	    .AddParameter("input_variant", LogicalType::VARIANT())
+	    .AddParameter("path", LogicalType::LIST(LogicalType::VARCHAR));
+	fun_set.AddFunction(std::move(path_list_fun));
 
 	return fun_set;
 }

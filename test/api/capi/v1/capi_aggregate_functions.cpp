@@ -227,6 +227,15 @@ TEST_CASE("Test Aggregate Functions C API", "[capi]") {
 		REQUIRE(result->Fetch<int64_t>(1, 0) == 4900);
 		REQUIRE(result->Fetch<int64_t>(0, 1) == 1);
 		REQUIRE(result->Fetch<int64_t>(1, 1) == 5000);
+
+		// window and ordered aggregates update a single constant state with many rows
+		result = tester.Query("SELECT my_weighted_sum(i, 2) OVER () FROM range(3000) t(i) LIMIT 1");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->Fetch<int64_t>(0, 0) == 8997000);
+
+		result = tester.Query("SELECT my_weighted_sum(i, 2 ORDER BY i DESC) FROM range(3000) t(i)");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->Fetch<int64_t>(0, 0) == 8997000);
 	}
 }
 

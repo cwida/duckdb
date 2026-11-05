@@ -1,0 +1,170 @@
+# name: test/sql/copy/parquet/read_single_parquet_file.test
+# description: Test read_single_parquet_file, the single-file reader read_parquet is built on
+# group: [parquet]
+
+require parquet
+
+# read_single_parquet_file reads exactly one file
+query I
+SELECT count(*) FROM read_single_parquet_file('data/parquet-testing/lineitem-top10000.gzip.parquet')
+----
+10000
+
+# it does not accept a glob or a list of files
+statement error
+SELECT * FROM read_single_parquet_file(['data/parquet-testing/lineitem-top10000.gzip.parquet'])
+----
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as VARCHAR\[\].*
+
+# projection pushdown - the columns come out in the order they are requested
+query II
+SELECT l_partkey, l_orderkey FROM read_single_parquet_file('data/parquet-testing/lineitem-top10000.gzip.parquet') LIMIT 2
+----
+155190	1
+67310	1
+
+# filters are pushed into the reader, which prunes row groups on them
+query I
+SELECT count(*) FROM read_single_parquet_file('data/parquet-testing/lineitem-top10000.gzip.parquet') WHERE l_orderkey < 100
+----
+105
+
+# a file with several row groups is read completely, and its rows come out in order
+statement ok
+COPY (SELECT i AS id, 'value_' || i AS s FROM range(200000) t(i)) TO '{TEST_DIR}/single_rg.parquet' (FORMAT parquet, ROW_GROUP_SIZE 20000)
+
+query II
+SELECT count(*), sum(id) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet')
+----
+200000	19999900000
+
+query I
+SELECT bool_and(id = rn) FROM (SELECT id, row_number() OVER () - 1 AS rn FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet'))
+----
+true
+
+# a filter that only matches rows in the last row group still finds them - an empty chunk is not the end of a
+# row group, it only means every row of that chunk was filtered out
+query I
+SELECT count(*) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet') WHERE id > 199998
+----
+1
+
+query I
+SELECT count(*) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet') WHERE id > 150000
+----
+49999
+
+query I
+SELECT count(*) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet') WHERE s = 'value_199999'
+----
+1
+
+# the statistics of the file are read from its metadata
+query I
+SELECT stats(id) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet') LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 199999, 'min': 0}
+
+# count/min/max are answered from the metadata of the file, without scanning it
+query III
+SELECT count(*), min(id), max(id) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet')
+----
+200000	0	199999
+
+query II
+EXPLAIN SELECT count(*), min(id), max(id) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet')
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+# virtual columns are produced as columns of their own, appended after the ones the file has
+query I
+SELECT max(file_row_number) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet')
+----
+199999
+
+query I
+SELECT count(DISTINCT file_row_group_number) FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet')
+----
+10
+
+query II
+SELECT file_row_number, id FROM read_single_parquet_file('{TEST_DIR}/single_rg.parquet') WHERE id = 12345
+----
+12345	12345
+
+# ------------------------------------------------------------------------------------------------
+# read_parquet - the multi file function wrapping read_single_parquet_file
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+COPY (SELECT 1 AS a, 'x' AS b) TO '{TEST_DIR}/multi_1.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 2 AS a, 'y' AS b) TO '{TEST_DIR}/multi_2.parquet' (FORMAT parquet)
+
+query II
+SELECT * FROM read_parquet('{TEST_DIR}/multi_*.parquet') ORDER BY a
+----
+1	x
+2	y
+
+query I
+SELECT count(DISTINCT filename) FROM read_parquet('{TEST_DIR}/multi_*.parquet', filename=true)
+----
+2
+
+# virtual columns through the multi file reader
+query I
+SELECT count(DISTINCT file_row_group_number) FROM read_parquet('{TEST_DIR}/single_rg.parquet')
+----
+10
+
+query I
+SELECT max(file_row_number) FROM read_parquet('{TEST_DIR}/single_rg.parquet')
+----
+199999
+
+# statistics survive the multi file reader
+query I
+SELECT stats(id) FROM read_parquet('{TEST_DIR}/single_rg.parquet') LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 199999, 'min': 0}
+
+# as is count/min/max through the multi file reader
+query III
+SELECT count(*), min(id), max(id) FROM read_parquet('{TEST_DIR}/single_rg.parquet')
+----
+200000	0	199999
+
+query II
+EXPLAIN SELECT count(*), min(id), max(id) FROM read_parquet('{TEST_DIR}/single_rg.parquet')
+----
+physical_plan	<REGEX>:.*Column Data Scan.*
+
+# filters and ordering through the multi file reader
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/single_rg.parquet') WHERE id > 199998
+----
+1
+
+query I
+SELECT bool_and(id = rn) FROM (SELECT id, row_number() OVER () - 1 AS rn FROM read_parquet('{TEST_DIR}/single_rg.parquet'))
+----
+true
+
+# union_by_name unifies the columns of files with different schemas
+statement ok
+COPY (SELECT 3 AS a, 'z' AS c) TO '{TEST_DIR}/multi_3.parquet' (FORMAT parquet)
+
+query III
+SELECT a, b, c FROM read_parquet('{TEST_DIR}/multi_*.parquet', union_by_name=true) ORDER BY a
+----
+1	x	NULL
+2	y	NULL
+3	NULL	z
+
+statement error
+SELECT * FROM read_parquet('{TEST_DIR}/this_file_does_not_exist.parquet')
+----
+<REGEX>:.*No files found.*

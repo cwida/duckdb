@@ -555,6 +555,7 @@ void LogicalExplain::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<string>(201, "physical_plan", physical_plan);
 	serializer.WritePropertyWithDefault<string>(202, "logical_plan_unopt", logical_plan_unopt);
 	serializer.WritePropertyWithDefault<string>(203, "logical_plan_opt", logical_plan_opt);
+	serializer.WritePropertyWithDefault<vector<Identifier>>(204, "sql_output_names", sql_output_names, vector<Identifier>());
 }
 
 unique_ptr<LogicalOperator> LogicalExplain::Deserialize(Deserializer &deserializer) {
@@ -563,6 +564,7 @@ unique_ptr<LogicalOperator> LogicalExplain::Deserialize(Deserializer &deserializ
 	deserializer.ReadPropertyWithDefault<string>(201, "physical_plan", result->physical_plan);
 	deserializer.ReadPropertyWithDefault<string>(202, "logical_plan_unopt", result->logical_plan_unopt);
 	deserializer.ReadPropertyWithDefault<string>(203, "logical_plan_opt", result->logical_plan_opt);
+	deserializer.ReadPropertyWithExplicitDefault<vector<Identifier>>(204, "sql_output_names", result->sql_output_names, vector<Identifier>());
 	return std::move(result);
 }
 
@@ -673,12 +675,14 @@ void LogicalLimit::Serialize(Serializer &serializer) const {
 	LogicalOperator::Serialize(serializer);
 	serializer.WriteProperty<BoundLimitNode>(200, "limit_val", limit_val);
 	serializer.WriteProperty<BoundLimitNode>(201, "offset_val", offset_val);
+	serializer.WritePropertyWithDefault<optional_idx>(202, "unpruned_offset", unpruned_offset, optional_idx());
 }
 
 unique_ptr<LogicalOperator> LogicalLimit::Deserialize(Deserializer &deserializer) {
 	auto limit_val = deserializer.ReadProperty<BoundLimitNode>(200, "limit_val");
 	auto offset_val = deserializer.ReadProperty<BoundLimitNode>(201, "offset_val");
 	auto result = duckdb::unique_ptr<LogicalLimit>(new LogicalLimit(std::move(limit_val), std::move(offset_val)));
+	deserializer.ReadPropertyWithExplicitDefault<optional_idx>(202, "unpruned_offset", result->unpruned_offset, optional_idx());
 	return std::move(result);
 }
 
@@ -836,12 +840,30 @@ void LogicalSecureView::Serialize(Serializer &serializer) const {
 	LogicalOperator::Serialize(serializer);
 	serializer.WritePropertyWithDefault<string>(200, "view_name", view_name);
 	serializer.WritePropertyWithDefault<vector<string>>(201, "pushed_filters", pushed_filters);
+	serializer.WritePropertyWithDefault<bool>(202, "has_source", has_source);
+	serializer.WritePropertyWithDefault<QualifiedName>(203, "source_name", source_name, QualifiedName());
+	serializer.WritePropertyWithDefault<vector<LogicalType>>(204, "source_types", source_types);
+	serializer.WritePropertyWithDefault<bool>(205, "has_at_clause", has_at_clause);
+	serializer.WritePropertyWithDefault<Identifier>(206, "at_unit", at_unit);
+	serializer.WritePropertyWithDefault<Value>(207, "at_value", at_value, Value());
+	serializer.WritePropertyWithDefault<vector<ColumnBinding>>(208, "output_bindings", output_bindings);
+	serializer.WritePropertyWithDefault<vector<unique_ptr<Expression>>>(209, "output_expressions", output_expressions);
+	serializer.WritePropertyWithDefault<vector<unique_ptr<Expression>>>(210, "source_filters", source_filters);
 }
 
 unique_ptr<LogicalOperator> LogicalSecureView::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<LogicalSecureView>(new LogicalSecureView());
 	deserializer.ReadPropertyWithDefault<string>(200, "view_name", result->view_name);
 	deserializer.ReadPropertyWithDefault<vector<string>>(201, "pushed_filters", result->pushed_filters);
+	deserializer.ReadPropertyWithDefault<bool>(202, "has_source", result->has_source);
+	deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(203, "source_name", result->source_name, QualifiedName());
+	deserializer.ReadPropertyWithDefault<vector<LogicalType>>(204, "source_types", result->source_types);
+	deserializer.ReadPropertyWithDefault<bool>(205, "has_at_clause", result->has_at_clause);
+	deserializer.ReadPropertyWithDefault<Identifier>(206, "at_unit", result->at_unit);
+	deserializer.ReadPropertyWithExplicitDefault<Value>(207, "at_value", result->at_value, Value());
+	deserializer.ReadPropertyWithDefault<vector<ColumnBinding>>(208, "output_bindings", result->output_bindings);
+	deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(209, "output_expressions", result->output_expressions);
+	deserializer.ReadPropertyWithDefault<vector<unique_ptr<Expression>>>(210, "source_filters", result->source_filters);
 	return std::move(result);
 }
 
@@ -882,6 +904,7 @@ void LogicalTopN::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<BoundOrderByNode>>(200, "orders", orders);
 	serializer.WritePropertyWithDefault<idx_t>(201, "limit", limit);
 	serializer.WritePropertyWithDefault<idx_t>(202, "offset", offset);
+	serializer.WritePropertyWithDefault<optional_idx>(203, "unpruned_offset", unpruned_offset, optional_idx());
 }
 
 unique_ptr<LogicalOperator> LogicalTopN::Deserialize(Deserializer &deserializer) {
@@ -889,6 +912,7 @@ unique_ptr<LogicalOperator> LogicalTopN::Deserialize(Deserializer &deserializer)
 	auto limit = deserializer.ReadPropertyWithDefault<idx_t>(201, "limit");
 	auto offset = deserializer.ReadPropertyWithDefault<idx_t>(202, "offset");
 	auto result = duckdb::unique_ptr<LogicalTopN>(new LogicalTopN(std::move(orders), limit, offset));
+	deserializer.ReadPropertyWithExplicitDefault<optional_idx>(203, "unpruned_offset", result->unpruned_offset, optional_idx());
 	return std::move(result);
 }
 

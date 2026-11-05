@@ -1,0 +1,25 @@
+# name: benchmark/micro/aggregate/sparse_case_sums.benchmark
+# group: [aggregate]
+
+name Sparse CASE aggregate inputs
+group micro
+subgroup aggregate
+
+load
+CREATE TABLE sparse_sums AS SELECT (i//12)%256 AS g, hash(i)%7 AS day, (i%100)::DECIMAL(12,2) AS x FROM range(7000000) t(i);
+
+run
+SELECT sum(s0+s1+s2+s3+s4+s5+s6) FROM (
+    SELECT g,
+           sum(CASE WHEN day=0 THEN x END) AS s0,
+           sum(CASE WHEN day=1 THEN x END) AS s1,
+           sum(CASE WHEN day=2 THEN x END) AS s2,
+           sum(CASE WHEN day=3 THEN x END) AS s3,
+           sum(CASE WHEN day=4 THEN x END) AS s4,
+           sum(CASE WHEN day=5 THEN x END) AS s5,
+           sum(CASE WHEN day=6 THEN x END) AS s6
+    FROM sparse_sums GROUP BY g
+);
+
+result I
+346500000

@@ -1,0 +1,220 @@
+# name: test/sql/index/art/storage/test_art_node256_leaf_layout.test
+# description: Node256Leaf bitmap boundaries, reinsertion and persisted allocator layouts
+# group: [storage]
+
+statement ok
+SET index_scan_max_count = 1000;
+
+statement ok
+SET index_scan_percentage = 1.0;
+
+foreach version v1.0.0 v1.5.0 v2.0.0
+
+# Small blocks exercise multiple compact allocator buffers with a modest row count.
+statement ok
+ATTACH '{TEST_DIR}/node256_{version}.db' AS leaf_db (STORAGE_VERSION '{version}', BLOCK_SIZE 16384)
+
+statement ok
+CREATE TABLE leaf_db.t AS SELECT i // 256 AS k, i AS id FROM range(262144) r(i)
+
+statement ok
+CREATE INDEX leaf_idx ON leaf_db.t(k)
+
+statement ok
+CHECKPOINT leaf_db
+
+statement ok
+DETACH leaf_db
+
+statement ok
+ATTACH '{TEST_DIR}/node256_{version}.db' AS leaf_db
+
+# A selective lookup should use the persisted ART after reopening.
+query II
+EXPLAIN ANALYZE SELECT count(*), min(id), max(id) FROM leaf_db.t WHERE k=1023;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+# Includes every bit boundary, and leaves in multiple allocator buffers.
+query III
+SELECT count(*), min(id), max(id) FROM leaf_db.t WHERE k=1023
+----
+256	261888	262143
+
+query I
+SELECT count(*) FROM leaf_db.t WHERE k=0 AND id IN (0,63,64,127,128,191,192,255)
+----
+8
+
+# Delete most rows for one key, then insert rows for that key again.
+statement ok
+DELETE FROM leaf_db.t WHERE k=0 AND id>=12
+
+query I
+SELECT count(*) FROM leaf_db.t WHERE k=0
+----
+12
+
+statement ok
+INSERT INTO leaf_db.t SELECT 0,i FROM range(12,256) r(i)
+
+statement ok
+INSERT INTO leaf_db.t SELECT 0,i FROM range(262144,262400) r(i)
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM leaf_db.t WHERE k=0
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM leaf_db.t WHERE k=0
+----
+512
+
+statement ok
+UPDATE leaf_db.t SET k=0 WHERE k=1
+
+statement ok
+CHECKPOINT leaf_db
+
+statement ok
+DETACH leaf_db
+
+statement ok
+ATTACH '{TEST_DIR}/node256_{version}.db' AS leaf_db
+
+query I
+SELECT count(*) FROM leaf_db.t WHERE k=0
+----
+768
+
+query I
+SELECT count(*) FROM leaf_db.t WHERE k=1
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM leaf_db.t WHERE k=0;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT count(*) FROM leaf_db.t
+----
+262400
+
+statement ok
+DETACH leaf_db
+
+endloop
+
+# Upgrade the same database file in place, retaining the old index layout.
+statement ok
+ATTACH '{TEST_DIR}/node256_upgrade.db' AS upgrade_db (STORAGE_VERSION 'v1.5.0', BLOCK_SIZE 16384)
+
+statement ok
+CREATE TABLE upgrade_db.old_t AS SELECT i // 256 AS k, i AS id FROM range(262144) r(i)
+
+statement ok
+CREATE INDEX old_idx ON upgrade_db.old_t(k)
+
+statement ok
+CHECKPOINT upgrade_db
+
+statement ok
+DETACH upgrade_db
+
+statement ok
+ATTACH '{TEST_DIR}/node256_upgrade.db' AS upgrade_db (STORAGE_VERSION 'v2.0.0')
+
+query I
+SELECT count(*) FROM upgrade_db.old_t WHERE k=1023
+----
+256
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.old_t WHERE k=1023
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+INSERT INTO upgrade_db.old_t SELECT 0, i FROM range(262144,262400) r(i)
+
+statement ok
+DELETE FROM upgrade_db.old_t WHERE k=1
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM upgrade_db.old_t WHERE k=0
+
+statement ok
+ROLLBACK
+
+statement ok
+CREATE TABLE upgrade_db.new_t AS SELECT i // 256 AS k, i AS id FROM range(1024) r(i)
+
+statement ok
+CREATE INDEX new_idx ON upgrade_db.new_t(k)
+
+query I
+SELECT count(*) FROM upgrade_db.old_t WHERE k=0
+----
+512
+
+query I
+SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+----
+256
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+CHECKPOINT upgrade_db
+
+statement ok
+DETACH upgrade_db
+
+statement ok
+ATTACH '{TEST_DIR}/node256_upgrade.db' AS upgrade_db
+
+query I
+SELECT count(*) FROM upgrade_db.old_t WHERE k=1023
+----
+256
+
+query I
+SELECT count(*) FROM upgrade_db.old_t WHERE k=0
+----
+512
+
+query I
+SELECT count(*) FROM upgrade_db.old_t WHERE k=1
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.old_t WHERE k=0
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+----
+256
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM upgrade_db.new_t WHERE k=3
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+DETACH upgrade_db

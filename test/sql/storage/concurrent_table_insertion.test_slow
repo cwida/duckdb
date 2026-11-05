@@ -7,7 +7,6 @@
 # This is spurious and I cannot reproduce it locally.
 require no_vector_verification
 
-mode skip flaky
 
 load {TEST_DIR}/concurrent_table_insertions.db
 

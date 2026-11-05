@@ -1,0 +1,40 @@
+# name: test/sql/types/geo/geometry_stats_prune_nan.test
+# description: NaN coordinates must not make bounding box pruning drop matching rows
+# group: [geo]
+
+statement ok
+CREATE TABLE p(g GEOMETRY);
+
+statement ok
+INSERT INTO p VALUES ('POINT(nan 5)'), ('POINT(1 1)');
+
+query I
+SELECT list(g && 'POINT(100 5)'::GEOMETRY ORDER BY g::VARCHAR) FROM p;
+----
+[false, true]
+
+query I
+SELECT count(*) FROM p WHERE g && 'POINT(100 5)'::GEOMETRY;
+----
+1
+
+query I
+SELECT count(*) FROM p WHERE g && 'POINT(1 1)'::GEOMETRY;
+----
+1
+
+statement ok
+CREATE TABLE persisted AS SELECT CASE WHEN i = 7 THEN 'POINT(nan 5)'::GEOMETRY ELSE ('POINT(' || i || ' 1)')::GEOMETRY END g FROM range(5000) t(i);
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT count(*) FROM persisted WHERE g && 'POINT(100000 5)'::GEOMETRY;
+----
+1
+
+query I
+SELECT count(*) FROM persisted WHERE g && 'POINT(3 1)'::GEOMETRY;
+----
+1

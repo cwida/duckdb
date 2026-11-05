@@ -8,8 +8,9 @@
 
 #pragma once
 
-#include "duckdb/storage/storage_info.hpp"
 #include "duckdb/common/file_buffer.hpp"
+#include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 
 namespace duckdb {
 class BlockHandle;
@@ -46,6 +47,7 @@ public:
 	}
 	//! Gets the underlying file buffer. Handle must be valid.
 	DUCKDB_API FileBuffer &GetFileBuffer();
+	DUCKDB_API const FileBuffer &GetFileBuffer() const;
 	//! Destroys the buffer handle
 	DUCKDB_API void Destroy();
 

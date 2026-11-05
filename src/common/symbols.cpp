@@ -12,11 +12,9 @@
 #include "duckdb/execution/column_binding_resolver.hpp"
 #include "duckdb/execution/join_hashtable.hpp"
 #include "duckdb/execution/physical_operator.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/relation.hpp"
-#include "duckdb/main/stream_query_result.hpp"
 #include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
 #include "duckdb/optimizer/rule.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
@@ -119,8 +117,6 @@ template class unique_ptr<CatalogEntry>;
 template class unique_ptr<BindContext>;
 template class unique_ptr<char[]>;
 template class unique_ptr<QueryResult>;
-template class unique_ptr<MaterializedQueryResult>;
-template class unique_ptr<StreamQueryResult>;
 template class unique_ptr<LogicalOperator>;
 template class unique_ptr<PhysicalOperator>;
 template class unique_ptr<OperatorState>;

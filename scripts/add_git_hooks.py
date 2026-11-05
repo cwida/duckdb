@@ -10,23 +10,37 @@ HOOK_PATH = '.git/hooks/pre-commit'
 FORMAT_SCRIPT = (
     'duckdb/scripts/format.py' if os.path.isfile('duckdb/scripts/format.py') else 'scripts/format.py'
 )  # this is to support extension repos
-FORMAT_CMD = f'python3 {FORMAT_SCRIPT} {{}} --fix --noconfirm'
+FORMAT_CMD = f'python3 {FORMAT_SCRIPT} --staged --fix --noconfirm --modified-list "$modified_files"'
 
 HOOK_BODY = f"""\
 
 # make format-fix hook #
-# Get list of staged files
-staged_files=$(git diff --cached --name-only)
-# Run formatter on staged files
-echo "$staged_files" | xargs -P 0 -I {{}} {FORMAT_CMD}
-# Re-stage files that were:
-# 1. Originally staged
-# 2. Modified by the formatter
-echo "$staged_files" | while read -r file; do
-    if [ -n "$file" ] && git diff --name-only | grep -Fxq "$file"; then
-        git add "$file"
+# format.py determines the staged files itself (skipping deleted files and files
+# it does not format) and parallelises over them, so this is a single invocation
+# rather than one per file.
+modified_files=$(mktemp)
+trap 'rm -f "$modified_files"' EXIT
+{FORMAT_CMD} || exit 1
+if [ -s "$modified_files" ]; then
+    # By default the formatting is left unstaged and the commit is aborted: staging
+    # it automatically would also sweep in changes that were deliberately left
+    # unstaged (e.g. after a `git add -p`). Set DUCKDB_FORMAT_HOOK_RESTAGE=1 to
+    # stage the reformatted files and let the commit proceed.
+    if [ "${{DUCKDB_FORMAT_HOOK_RESTAGE:-0}}" = "1" ]; then
+        xargs -0 -r git add -- <"$modified_files"
+    else
+        echo ""
+        echo "The formatter reformatted the following files:"
+        tr '\\0' '\\n' <"$modified_files" | while read -r file; do
+            echo "  $file"
+        done
+        echo ""
+        echo "The changes were left unstaged. Review them, stage them with 'git add'"
+        echo "and commit again, or set DUCKDB_FORMAT_HOOK_RESTAGE=1 to stage them"
+        echo "automatically."
+        exit 1
     fi
-done
+fi
 """
 
 

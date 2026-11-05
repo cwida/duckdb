@@ -1,0 +1,1120 @@
+# name: test/sql/match_recognize/test_match_recognize_oracle.test_slow
+# description: MATCH_RECOGNIZE results checked against Oracle
+# group: [match_recognize]
+
+# Every expected result below was produced by Oracle AI Database 26ai Free (23.26.3.0.0) running the
+# query above it, unchanged. The clause order is Oracle's fixed one and nothing engine specific
+# appears in the queries, so the same text runs on both and a difference in the output would be a
+# difference in the implementations rather than in how the question was asked.
+#
+# The data is small enough to check by hand: AAA walks down, up, along a plateau, down, up, a second
+# plateau, then spikes, so one partition carries falls, rises, ties and reversals. BBB carries a tie
+# and a NULL.
+
+statement ok
+pragma threads=1;
+
+statement ok
+CREATE TABLE ticks (sym VARCHAR(4), ts INTEGER, price INTEGER);
+
+statement ok
+CREATE TABLE evt (g INTEGER, seq INTEGER, c VARCHAR(1));
+
+statement ok
+CREATE TABLE odd (p INTEGER, k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO ticks VALUES
+    ('AAA', 1, 10),
+    ('AAA', 2, 8),
+    ('AAA', 3, 6),
+    ('AAA', 4, 9),
+    ('AAA', 5, 12),
+    ('AAA', 6, 12),
+    ('AAA', 7, 7),
+    ('AAA', 8, 5),
+    ('AAA', 9, 9),
+    ('AAA', 10, 9),
+    ('AAA', 11, 3),
+    ('AAA', 12, 15),
+    ('BBB', 1, 5),
+    ('BBB', 2, 4),
+    ('BBB', 3, 4),
+    ('BBB', 4, 6),
+    ('BBB', 5, NULL),
+    ('BBB', 6, 7);
+
+statement ok
+INSERT INTO evt VALUES (1, 1, 'a'), (1, 2, 'a'), (1, 3, 'b'), (1, 4, 'a'), (1, 5, 'c'), (2, 1, 'b'), (2, 2, 'b'), (2, 3, 'b'), (3, 1, 'a');
+
+statement ok
+INSERT INTO odd VALUES (1, 1, 1), (2, NULL, 1), (2, NULL, 2), (2, NULL, 3), (3, 5, 1), (3, 5, 2), (3, 5, 3), (4, 1, 0), (4, 2, 0);
+
+# v shape
+query TIIII
+SELECT sym, start_ts, bottom_ts, end_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS start_ts, LAST(DOWN.ts) AS bottom_ts, LAST(ts) AS end_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (STRT DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, start_ts
+----
+AAA	1	3	5	5
+AAA	6	8	9	4
+AAA	10	11	12	3
+
+# greedy giveback
+query TII
+SELECT sym, first_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS first_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+ B B)
+  DEFINE A AS price > 0, B AS price > 0
+) ORDER BY sym, first_ts
+----
+AAA	1	12
+BBB	1	4
+
+# greedy star then symbol
+query TII
+SELECT sym, first_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS first_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A* B)
+  DEFINE A AS price >= 9, B AS price < 9
+) ORDER BY sym, first_ts
+----
+AAA	1	2
+AAA	3	1
+AAA	4	4
+AAA	8	1
+AAA	9	3
+BBB	1	1
+BBB	2	1
+BBB	3	1
+BBB	4	1
+BBB	6	1
+
+# empty matches star
+query IIITI
+SELECT g, seq, mno, cls, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls, COUNT(*) AS len
+  ALL ROWS PER MATCH
+  PATTERN (Z*)
+  DEFINE Z AS c = 'z'
+) ORDER BY g, seq
+----
+1	1	1	NULL	0
+1	2	2	NULL	0
+1	3	3	NULL	0
+1	4	4	NULL	0
+1	5	5	NULL	0
+2	1	1	NULL	0
+2	2	2	NULL	0
+2	3	3	NULL	0
+3	1	1	NULL	0
+
+# empty matches one row
+query III
+SELECT g, mno, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (Z*)
+  DEFINE Z AS c = 'z'
+) ORDER BY g, mno
+----
+1	1	0
+1	2	0
+1	3	0
+1	4	0
+1	5	0
+2	1	0
+2	2	0
+2	3	0
+3	1	0
+
+# optional tail
+query III
+SELECT g, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A B?)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, first_seq
+----
+1	1	1
+1	2	2
+1	4	1
+3	1	1
+
+# alternation prefers left
+query IIT
+SELECT g, seq, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES CLASSIFIER() AS cls
+  ALL ROWS PER MATCH
+  PATTERN ((X | Y)+)
+  DEFINE X AS c IN ('a','b','c'), Y AS c IN ('a','b','c')
+) ORDER BY g, seq
+----
+1	1	X
+1	2	X
+1	3	X
+1	4	X
+1	5	X
+2	1	X
+2	2	X
+2	3	X
+3	1	X
+
+# alternation prefers right
+query IIT
+SELECT g, seq, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES CLASSIFIER() AS cls
+  ALL ROWS PER MATCH
+  PATTERN ((Y | X)+)
+  DEFINE X AS c IN ('a','b','c'), Y AS c IN ('a','b','c')
+) ORDER BY g, seq
+----
+1	1	Y
+1	2	Y
+1	3	Y
+1	4	Y
+1	5	Y
+2	1	Y
+2	2	Y
+2	3	Y
+3	1	Y
+
+# skip past last row
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A A)
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	2
+1	2	3	2
+2	1	1	2
+
+# skip to next row
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW
+  PATTERN (A A)
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	2
+1	2	2	2
+1	3	3	2
+1	4	4	2
+2	1	1	2
+2	2	2	2
+
+# skip to last var
+query TIII
+SELECT sym, mno, first_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES MATCH_NUMBER() AS mno, FIRST(ts) AS first_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP TO LAST DOWN
+  PATTERN (STRT DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, mno
+----
+AAA	1	1	5
+AAA	2	6	4
+AAA	3	10	3
+
+# skip to first var
+query TIII
+SELECT sym, mno, first_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES MATCH_NUMBER() AS mno, FIRST(ts) AS first_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP TO FIRST UP
+  PATTERN (STRT DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, mno
+----
+AAA	1	1	5
+AAA	2	6	4
+AAA	3	10	3
+
+# running vs final
+query TIIIII
+SELECT sym, ts, run_cnt, fin_cnt, run_max, fin_max
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES RUNNING COUNT(*) AS run_cnt, FINAL COUNT(*) AS fin_cnt,
+           RUNNING MAX(price) AS run_max, FINAL MAX(price) AS fin_max
+  ALL ROWS PER MATCH
+  PATTERN (A+)
+  DEFINE A AS price > 0
+) ORDER BY sym, ts
+----
+AAA	1	1	12	10	15
+AAA	2	2	12	10	15
+AAA	3	3	12	10	15
+AAA	4	4	12	10	15
+AAA	5	5	12	12	15
+AAA	6	6	12	12	15
+AAA	7	7	12	12	15
+AAA	8	8	12	12	15
+AAA	9	9	12	12	15
+AAA	10	10	12	12	15
+AAA	11	11	12	12	15
+AAA	12	12	12	15	15
+BBB	1	1	4	5	6
+BBB	2	2	4	5	6
+BBB	3	3	4	5	6
+BBB	4	4	4	6	6
+BBB	6	1	1	7	7
+
+# navigation first last offsets
+query TIIII
+SELECT sym, f0, f1, l0, l1
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(price, 0) AS f0, FIRST(price, 1) AS f1,
+           LAST(price, 0) AS l0, LAST(price, 1) AS l1
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A{4})
+  DEFINE A AS price > 0
+) ORDER BY sym, f0, f1
+----
+AAA	9	9	15	3
+AAA	10	8	9	6
+AAA	12	12	5	7
+BBB	5	4	6	4
+
+# navigation prev next in measures
+query TITT
+SELECT sym, ts, p1, n1
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES PREV(price) AS p1, NEXT(price) AS n1
+  ALL ROWS PER MATCH
+  PATTERN (A+)
+  DEFINE A AS price > 0
+) ORDER BY sym, ts
+----
+AAA	1	NULL	8
+AAA	2	10	6
+AAA	3	8	9
+AAA	4	6	12
+AAA	5	9	12
+AAA	6	12	7
+AAA	7	12	5
+AAA	8	7	9
+AAA	9	5	9
+AAA	10	9	3
+AAA	11	9	15
+AAA	12	3	NULL
+BBB	1	NULL	4
+BBB	2	5	4
+BBB	3	4	6
+BBB	4	4	NULL
+BBB	6	NULL	NULL
+
+# navigation prev offset in define
+query TII
+SELECT sym, first_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS first_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+)
+  DEFINE A AS price > PREV(price, 2)
+) ORDER BY sym, first_ts
+----
+AAA	4	3
+AAA	9	2
+AAA	12	1
+BBB	4	1
+BBB	6	1
+
+# classifier all rows
+query TIIT
+SELECT sym, ts, mno, cls
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (STRT DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, ts
+----
+AAA	1	1	STRT
+AAA	2	1	DOWN
+AAA	3	1	DOWN
+AAA	4	1	UP
+AAA	5	1	UP
+AAA	6	2	STRT
+AAA	7	2	DOWN
+AAA	8	2	DOWN
+AAA	9	2	UP
+AAA	10	3	STRT
+AAA	11	3	DOWN
+AAA	12	3	UP
+
+# exclusion
+query TIITI
+SELECT sym, ts, mno, cls, fin_cnt
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls, FINAL COUNT(*) AS fin_cnt
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ({- STRT -} DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, ts
+----
+AAA	2	1	DOWN	5
+AAA	3	1	DOWN	5
+AAA	4	1	UP	5
+AAA	5	1	UP	5
+AAA	7	2	DOWN	4
+AAA	8	2	DOWN	4
+AAA	9	2	UP	4
+AAA	11	3	DOWN	3
+AAA	12	3	UP	3
+
+# subset measure
+query TIII
+SELECT sym, first_ts, last_du, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS first_ts, LAST(DU.ts) AS last_du, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (STRT DOWN+ UP+)
+  SUBSET DU = (DOWN, UP)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, first_ts
+----
+AAA	1	5	5
+AAA	6	9	4
+AAA	10	12	3
+
+# reluctant plus
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+? B)
+  DEFINE A AS c IN ('a','b','c'), B AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	2
+1	2	3	2
+2	1	1	2
+
+# reluctant star
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A*? B)
+  DEFINE A AS c IN ('a','b','c'), B AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	1
+1	2	2	1
+1	3	3	1
+1	4	4	1
+1	5	5	1
+2	1	1	1
+2	2	2	1
+2	3	3	1
+3	1	1	1
+
+# reluctant range
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A{1,3}?)
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	1
+1	2	2	1
+1	3	3	1
+1	4	4	1
+1	5	5	1
+2	1	1	1
+2	2	2	1
+2	3	3	1
+3	1	1	1
+
+# reluctant optional
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A?? B)
+  DEFINE A AS c = 'a', B AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	1
+1	2	2	1
+1	3	3	1
+1	4	4	1
+1	5	5	1
+2	1	1	1
+2	2	2	1
+2	3	3	1
+3	1	1	1
+
+# permute two
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (PERMUTE(A, B))
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, mno
+----
+1	1	2	2
+
+# permute preference
+query IIT
+SELECT g, seq, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (PERMUTE(X, Y))
+  DEFINE X AS c IN ('a','b','c'), Y AS c IN ('a','b','c')
+) ORDER BY g, seq
+----
+1	1	X
+1	2	Y
+1	3	X
+1	4	Y
+2	1	X
+2	2	Y
+
+# permute three
+query IIT
+SELECT g, seq, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (PERMUTE(A, B, C))
+  DEFINE A AS c = 'a', B AS c = 'b', C AS c = 'c'
+) ORDER BY g, seq
+----
+1	3	B
+1	4	A
+1	5	C
+
+# anchor start
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (^ A+)
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	5
+2	1	1	3
+3	1	1	1
+
+# anchor both
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (^ A{2} $)
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+
+# anchor end only
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A{2} $)
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	4	2
+2	1	2	2
+
+# null in condition
+query TII
+SELECT sym, first_ts, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS first_ts, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+)
+  DEFINE A AS price > 0
+) ORDER BY sym, first_ts
+----
+AAA	1	12
+BBB	1	4
+BBB	6	1
+
+# null at match edge
+query TTII
+SELECT sym, first_price, last_price, len
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(price) AS first_price, LAST(price) AS last_price, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A A)
+  DEFINE A AS 1 = 1
+) ORDER BY sym, len, first_price
+----
+AAA	3	15	2
+AAA	6	9	2
+AAA	7	5	2
+AAA	9	9	2
+AAA	10	8	2
+AAA	12	12	2
+BBB	4	6	2
+BBB	5	4	2
+BBB	NULL	7	2
+
+# null aggregates
+query TIII
+SELECT sym, n_all, n_price, s_price
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES COUNT(*) AS n_all, COUNT(price) AS n_price, SUM(price) AS s_price
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+)
+  DEFINE A AS 1 = 1
+) ORDER BY sym
+----
+AAA	12	12	105
+BBB	6	5	26
+
+# bounded quantifier
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A{2,3})
+  DEFINE A AS c IN ('a','b','c')
+) ORDER BY g, mno
+----
+1	1	1	3
+1	2	4	2
+2	1	1	3
+
+# nested quantifier
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ((A B?)+)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, mno
+----
+1	1	1	4
+3	1	1	1
+
+# navigation offsets all rows
+query TITT
+SELECT sym, ts, f1, l1
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(price, 1) AS f1, LAST(price, 1) AS l1
+  ALL ROWS PER MATCH
+  PATTERN (A+)
+  DEFINE A AS 1 = 1
+) ORDER BY sym, ts
+----
+AAA	1	NULL	NULL
+AAA	2	8	10
+AAA	3	8	8
+AAA	4	8	6
+AAA	5	8	9
+AAA	6	8	12
+AAA	7	8	12
+AAA	8	8	7
+AAA	9	8	5
+AAA	10	8	9
+AAA	11	8	9
+AAA	12	8	3
+BBB	1	NULL	NULL
+BBB	2	4	5
+BBB	3	4	4
+BBB	4	4	4
+BBB	5	4	6
+BBB	6	4	NULL
+
+# navigation offsets qualified
+query TIIT
+SELECT sym, first_ts, d0, d1
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES FIRST(ts) AS first_ts, LAST(DOWN.price, 0) AS d0, LAST(DOWN.price, 1) AS d1
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (STRT DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, first_ts
+----
+AAA	1	6	8
+AAA	6	5	7
+AAA	10	3	NULL
+
+# empty match numbering
+query IIITI
+SELECT g, seq, mno, cls, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls, COUNT(*) AS len
+  ALL ROWS PER MATCH
+  PATTERN (B*)
+  DEFINE B AS c = 'b'
+) ORDER BY g, seq
+----
+1	1	1	NULL	0
+1	2	2	NULL	0
+1	3	3	B	1
+1	4	4	NULL	0
+1	5	5	NULL	0
+2	1	1	B	1
+2	2	1	B	2
+2	3	1	B	3
+3	1	1	NULL	0
+
+# empty match aggregates
+query IIITT
+SELECT g, mno, len, s_seq, l_seq
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, COUNT(*) AS len, SUM(seq) AS s_seq, LAST(seq) AS l_seq
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (B*)
+  DEFINE B AS c = 'b'
+) ORDER BY g, mno
+----
+1	1	0	NULL	NULL
+1	2	0	NULL	NULL
+1	3	1	3	3
+1	4	0	NULL	NULL
+1	5	0	NULL	NULL
+2	1	3	6	3
+3	1	0	NULL	NULL
+
+# measure of unmatched variable
+query IITI
+SELECT g, first_seq, last_b, cnt_b
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES FIRST(seq) AS first_seq, LAST(B.seq) AS last_b, COUNT(B.seq) AS cnt_b
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A B?)
+  DEFINE A AS c = 'a', B AS c = 'z'
+) ORDER BY g, first_seq
+----
+1	1	NULL	0
+1	2	NULL	0
+1	4	NULL	0
+3	1	NULL	0
+
+# single row partition
+query III
+SELECT p, mno, len
+FROM odd MATCH_RECOGNIZE (
+  PARTITION BY p ORDER BY k
+  MEASURES MATCH_NUMBER() AS mno, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A{2})
+  DEFINE A AS 1 = 1
+) ORDER BY p, mno
+----
+2	1	2
+3	1	2
+4	1	2
+
+# nothing matches
+query III
+SELECT p, mno, len
+FROM odd MATCH_RECOGNIZE (
+  PARTITION BY p ORDER BY k
+  MEASURES MATCH_NUMBER() AS mno, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+)
+  DEFINE A AS v > 100
+) ORDER BY p, mno
+----
+
+# prev before partition start
+query IITT
+SELECT g, seq, p2, n2
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES PREV(seq, 2) AS p2, NEXT(seq, 2) AS n2
+  ALL ROWS PER MATCH
+  PATTERN (A+)
+  DEFINE A AS 1 = 1
+) ORDER BY g, seq
+----
+1	1	NULL	3
+1	2	NULL	4
+1	3	1	5
+1	4	2	NULL
+1	5	3	NULL
+2	1	NULL	3
+2	2	NULL	NULL
+2	3	1	NULL
+3	1	NULL	NULL
+
+# exclusion of whole pattern
+query IIIT
+SELECT g, seq, mno, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ({- A+ -})
+  DEFINE A AS c = 'a'
+) ORDER BY g, seq
+----
+
+# exclusion then tail
+query IIIT
+SELECT g, seq, mno, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A {- B -} A)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, seq
+----
+1	2	1	A
+1	4	1	A
+
+# subset of one
+query III
+SELECT g, first_seq, last_u
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES FIRST(seq) AS first_seq, LAST(U.seq) AS last_u
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+ B?)
+  SUBSET U = (A)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, first_seq
+----
+1	1	2
+1	4	4
+3	1	1
+
+# subset with offset
+query IIIT
+SELECT g, first_seq, u0, u1
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES FIRST(seq) AS first_seq, LAST(U.seq, 0) AS u0, LAST(U.seq, 1) AS u1
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ((A | B)+)
+  SUBSET U = (A, B)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, first_seq
+----
+1	1	4	3
+2	1	3	2
+3	1	1	NULL
+
+# overlapping matches all rows
+query IIIT
+SELECT g, seq, mno, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP TO NEXT ROW
+  PATTERN (A A)
+  DEFINE A AS 1 = 1
+) ORDER BY g, mno, seq
+----
+1	1	1	A
+1	2	1	A
+1	2	2	A
+1	3	2	A
+1	3	3	A
+1	4	3	A
+1	4	4	A
+1	5	4	A
+2	1	1	A
+2	2	1	A
+2	2	2	A
+2	3	2	A
+
+# navigation far offsets
+query IITTT
+SELECT g, seq, p9, f9, l9
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES PREV(seq, 9) AS p9, FIRST(seq, 9) AS f9, LAST(seq, 9) AS l9
+  ALL ROWS PER MATCH
+  PATTERN (A+)
+  DEFINE A AS 1 = 1
+) ORDER BY g, seq
+----
+1	1	NULL	NULL	NULL
+1	2	NULL	NULL	NULL
+1	3	NULL	NULL	NULL
+1	4	NULL	NULL	NULL
+1	5	NULL	NULL	NULL
+2	1	NULL	NULL	NULL
+2	2	NULL	NULL	NULL
+2	3	NULL	NULL	NULL
+3	1	NULL	NULL	NULL
+
+# measure aggregates
+query TIIII
+SELECT sym, n, mn, mx, sm
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES COUNT(*) AS n, MIN(price) AS mn, MAX(price) AS mx, SUM(price) AS sm
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A{3})
+  DEFINE A AS 1 = 1
+) ORDER BY sym, n, mn
+----
+AAA	3	3	15	27
+AAA	3	5	9	21
+AAA	3	6	10	24
+AAA	3	9	12	33
+BBB	3	4	5	13
+BBB	3	6	7	13
+
+# aggregate over unmatched variable
+query IITIT
+SELECT g, first_seq, sum_b, cnt_b, min_b
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES FIRST(seq) AS first_seq, SUM(B.seq) AS sum_b, COUNT(B.seq) AS cnt_b, MIN(B.seq) AS min_b
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+ B?)
+  DEFINE A AS c = 'a', B AS c = 'z'
+) ORDER BY g, first_seq
+----
+1	1	NULL	0	NULL
+1	4	NULL	0	NULL
+3	1	NULL	0	NULL
+
+# aggregate of subset
+query IIII
+SELECT g, first_seq, sum_u, cnt_u
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES FIRST(seq) AS first_seq, SUM(U.seq) AS sum_u, COUNT(U.seq) AS cnt_u
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ((A | B)+)
+  SUBSET U = (A, B)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, first_seq
+----
+1	1	10	4
+2	1	6	3
+3	1	1	1
+
+# classifier reports the variable
+query IIT
+SELECT g, seq, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ((A | B)+)
+  SUBSET U = (A, B)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, seq
+----
+1	1	A
+1	2	A
+1	3	B
+1	4	A
+2	1	B
+2	2	B
+2	3	B
+3	1	A
+
+# match number per partition
+query III
+SELECT g, mno, first_seq
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A)
+  DEFINE A AS 1 = 1
+) ORDER BY g, mno
+----
+1	1	1
+1	2	2
+1	3	3
+1	4	4
+1	5	5
+2	1	1
+2	2	2
+2	3	3
+3	1	1
+
+# alternation same variable
+query IIT
+SELECT g, seq, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN ((A | A)+)
+  DEFINE A AS 1 = 1
+) ORDER BY g, seq
+----
+1	1	A
+1	2	A
+1	3	A
+1	4	A
+1	5	A
+2	1	A
+2	2	A
+2	3	A
+3	1	A
+
+# exclusion inside quantifier
+query IIIT
+SELECT g, seq, mno, cls
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A ({- B -})+ A)
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, seq
+----
+1	2	1	A
+1	4	1	A
+
+# exclusion at the end
+query IIITI
+SELECT g, seq, mno, cls, fin
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, CLASSIFIER() AS cls, FINAL COUNT(*) AS fin
+  ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A+ {- B -})
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, seq
+----
+1	1	1	A	3
+1	2	1	A	3
+
+# permute repeated argument
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (PERMUTE(A, A))
+  DEFINE A AS 1 = 1
+) ORDER BY g, mno
+----
+1	1	1	2
+1	2	3	2
+2	1	1	2
+
+# permute of quantified
+query IIII
+SELECT g, mno, first_seq, len
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY seq
+  MEASURES MATCH_NUMBER() AS mno, FIRST(seq) AS first_seq, COUNT(*) AS len
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (PERMUTE(A+, B))
+  DEFINE A AS c = 'a', B AS c = 'b'
+) ORDER BY g, mno
+----
+1	1	1	3
+
+# order by varchar
+query ITI
+SELECT g, c, pos
+FROM evt MATCH_RECOGNIZE (
+  PARTITION BY g ORDER BY c, seq
+  MEASURES COUNT(*) AS pos
+  ALL ROWS PER MATCH
+  PATTERN (A+)
+  DEFINE A AS 1 = 1
+) ORDER BY g, pos
+----
+1	a	1
+1	a	2
+1	a	3
+1	b	4
+1	c	5
+2	b	1
+2	b	2
+2	b	3
+3	a	1
+
+# measure across variables
+query TII
+SELECT sym, span, drop_then_rise
+FROM ticks MATCH_RECOGNIZE (
+  PARTITION BY sym ORDER BY ts
+  MEASURES LAST(UP.ts) - FIRST(STRT.ts) AS span,
+           (LAST(DOWN.price) - FIRST(STRT.price)) + (LAST(UP.price) - LAST(DOWN.price)) AS drop_then_rise
+  ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (STRT DOWN+ UP+)
+  DEFINE DOWN AS price < PREV(price), UP AS price > PREV(price)
+) ORDER BY sym, span
+----
+AAA	2	6
+AAA	3	-3
+AAA	4	2

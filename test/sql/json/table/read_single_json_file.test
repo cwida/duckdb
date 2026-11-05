@@ -1,0 +1,487 @@
+# name: test/sql/json/table/read_single_json_file.test
+# description: Test read_single_json_file and the TableFunctionMultiFileWrapper that read_json is built on
+# group: [table]
+
+require json
+
+# read_single_json_file reads exactly one file
+query II
+SELECT * FROM read_single_json_file('data/json/example_n.ndjson')
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+# it does not accept a glob or a list of files
+statement error
+SELECT * FROM read_single_json_file('data/json/example_*.ndjson')
+----
+<REGEX>:.*IO Error.*
+
+statement error
+SELECT * FROM read_single_json_file(['data/json/example_n.ndjson'])
+----
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as VARCHAR\[\].*
+
+# projection pushdown
+query I
+SELECT name FROM read_single_json_file('data/json/example_n.ndjson') WHERE id > 3 ORDER BY id
+----
+Broadcast News
+Raising Arizona
+
+# explicit columns
+query II
+SELECT * FROM read_single_json_file('data/json/example_n.ndjson', columns={id: 'INTEGER', name: 'VARCHAR'}) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+# records=false gives a single column
+query I
+SELECT typeof(json) FROM read_single_json_file('data/json/example_r.ndjson', records=false) LIMIT 1
+----
+STRUCT(id BIGINT, "name" VARCHAR)
+
+# the same options as read_json are supported
+query II
+SELECT * FROM read_single_json_file('data/json/unterminated_quotes.ndjson', ignore_errors=true) LIMIT 3
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+NULL	NULL
+
+statement error
+SELECT * FROM read_single_json_file('data/json/unterminated_quotes.ndjson')
+----
+<REGEX>:.*Malformed JSON.*
+
+statement error
+SELECT * FROM read_single_json_file('data/json/example_n.ndjson', auto_detect=false)
+----
+<REGEX>:.*auto_detect=false.*
+
+# geojson is detected from the file name, like it is for read_json
+query I
+SELECT geometry FROM read_single_json_file('data/json/geojson/geometries.geojsonl')
+----
+POINT (1 2)
+LINESTRING (0 0, 1 1)
+GEOMETRYCOLLECTION (POINT (7 8))
+
+# ------------------------------------------------------------------------------------------------
+# read_json - the multi file function wrapping read_single_json_file
+# ------------------------------------------------------------------------------------------------
+
+query II
+SELECT * FROM read_json('data/json/example_n.ndjson')
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+# globs, lists of files and the filename column all come from the multi file reader
+query II
+SELECT count(*), count(DISTINCT filename) FROM read_json('data/json/example_*.ndjson', filename=true)
+----
+15	3
+
+query I
+SELECT count(*) FROM read_json(['data/json/example_n.ndjson', 'data/json/example_r.ndjson'])
+----
+10
+
+# the wrapped function still gets its own named parameters
+query II
+SELECT * FROM read_json('data/json/example_n.ndjson', columns={id: 'INTEGER', name: 'VARCHAR'}) ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+query I
+SELECT count(*) FROM read_json('data/json/unterminated_quotes.ndjson', ignore_errors=true)
+----
+5
+
+statement error
+SELECT * FROM read_json('data/json/example_n.ndjson', unknown_option=true)
+----
+<REGEX>:.*Invalid named parameter.*
+
+# union by name binds every file separately and unifies the resulting schemas
+query II
+SELECT * FROM read_json(['data/json/example_n.ndjson', 'data/json/different_schemas.ndjson'], union_by_name=true) ORDER BY ALL
+----
+1	O Brother, Where Art Thou?
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+2	NULL
+3	The Firm
+3	The Firm
+4	Broadcast News
+4	NULL
+5	Raising Arizona
+5	Raising Arizona
+
+# hive partitioning
+statement ok
+COPY (SELECT 1 AS id, 'a' AS part UNION ALL SELECT 2, 'b') TO '{TEST_DIR}/json_hive' (FORMAT json, PARTITION_BY part)
+
+query II
+SELECT part, id FROM read_json('{TEST_DIR}/json_hive/*/*.json', hive_partitioning=true) ORDER BY part
+----
+a	1
+b	2
+
+query II
+SELECT part, id FROM read_json('{TEST_DIR}/json_hive/*/*.json', hive_partitioning=true) WHERE part='b'
+----
+b	2
+
+# reading a directory works through the fallback glob
+query I
+SELECT count(*) FROM read_json('{TEST_DIR}/json_hive/part=a')
+----
+1
+
+# empty files
+query I
+SELECT count(*) FROM read_json('data/json/empty.ndjson')
+----
+0
+
+statement error
+SELECT * FROM read_json('data/json/this_file_does_not_exist.json')
+----
+<REGEX>:.*No files found.*
+
+query I
+SELECT count(*) FROM read_json('data/json/this_file_does_not_exist.json', allow_empty=true)
+----
+0
+
+# a larger file is read in parallel by multiple threads
+statement ok
+COPY (SELECT i AS id, 'string_' || i AS name FROM range(200000) t(i)) TO '{TEST_DIR}/big.ndjson' (FORMAT json)
+
+query II
+SELECT count(*), sum(id) FROM read_json('{TEST_DIR}/big.ndjson')
+----
+200000	19999900000
+
+# ------------------------------------------------------------------------------------------------
+# maximum_sample_files - the schema is combined from the schemas of the sampled files
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+COPY (SELECT 1 AS a) TO '{TEST_DIR}/sample_schema_f1.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT 2 AS b) TO '{TEST_DIR}/sample_schema_f2.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT 3 AS c) TO '{TEST_DIR}/sample_schema_f3.ndjson' (FORMAT json)
+
+# by default up to 32 files are sampled - every column is found, files missing a column read NULL
+query III
+SELECT a, b, c FROM read_json('{TEST_DIR}/sample_schema_*.ndjson') ORDER BY ALL
+----
+1	NULL	NULL
+NULL	2	NULL
+NULL	NULL	3
+
+# sampling can be limited - with a single sampled file only the first file's schema is used
+statement error
+SELECT b FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=1)
+----
+<REGEX>:.*Binder Error.*
+
+# every file is read using the schema of the sampled file, so files without the column read NULL
+query I
+SELECT a FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=1) ORDER BY ALL
+----
+1
+NULL
+NULL
+
+# two sampled files gives the first two schemas
+query II
+SELECT a, b FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=2) ORDER BY ALL
+----
+1	NULL
+NULL	2
+NULL	NULL
+
+statement error
+SELECT c FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=2)
+----
+<REGEX>:.*Binder Error.*
+
+# -1 samples every file
+query III
+SELECT a, b, c FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=-1) ORDER BY ALL
+----
+1	NULL	NULL
+NULL	2	NULL
+NULL	NULL	3
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=0)
+----
+<REGEX>:.*must be positive.*
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/sample_schema_*.ndjson', maximum_sample_files=NULL)
+----
+<REGEX>:.*Binder Error.*
+
+# types that differ between the sampled files are combined into a common type
+statement ok
+COPY (SELECT 1 AS v) TO '{TEST_DIR}/sample_types_f1.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT 2.5 AS v) TO '{TEST_DIR}/sample_types_f2.ndjson' (FORMAT json)
+
+query I
+SELECT v FROM read_json('{TEST_DIR}/sample_types_*.ndjson') ORDER BY ALL
+----
+1.0
+2.5
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/sample_types_*.ndjson'))
+----
+DOUBLE
+
+# nested structs are combined field by field
+statement ok
+COPY (SELECT {'x': 1} AS s) TO '{TEST_DIR}/sample_nested_f1.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'y': 2} AS s) TO '{TEST_DIR}/sample_nested_f2.ndjson' (FORMAT json)
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/sample_nested_*.ndjson'))
+----
+STRUCT(x BIGINT, y BIGINT)
+
+# ------------------------------------------------------------------------------------------------
+# combining schemas - the JSON structures of the sampled files are merged, like read_json does
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+COPY (SELECT 1 AS v) TO '{TEST_DIR}/combine_mixed_f1.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT 'hello' AS v) TO '{TEST_DIR}/combine_mixed_f2.ndjson' (FORMAT json)
+
+# a column with both a number and a string becomes JSON - not VARCHAR
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/combine_mixed_*.ndjson'))
+----
+JSON
+
+query I
+SELECT v::VARCHAR FROM read_json('{TEST_DIR}/combine_mixed_*.ndjson') ORDER BY ALL
+----
+"hello"
+1
+
+# the same applies when the schemas are combined through union_by_name
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/combine_mixed_*.ndjson', union_by_name=true))
+----
+JSON
+
+# lists are combined element-wise
+statement ok
+COPY (SELECT [1] AS l) TO '{TEST_DIR}/combine_list_f1.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT ['x'] AS l) TO '{TEST_DIR}/combine_list_f2.ndjson' (FORMAT json)
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/combine_list_*.ndjson'))
+----
+JSON[]
+
+# many files with a distinct key each are inferred as a MAP, like read_json does - this needs the
+# appearance counts of the merged structure, which combining the types alone cannot reproduce
+statement ok
+COPY (SELECT {'k1': 1} AS o) TO '{TEST_DIR}/combine_map_f01.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k2': 2} AS o) TO '{TEST_DIR}/combine_map_f02.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k3': 3} AS o) TO '{TEST_DIR}/combine_map_f03.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k4': 4} AS o) TO '{TEST_DIR}/combine_map_f04.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k5': 5} AS o) TO '{TEST_DIR}/combine_map_f05.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k6': 6} AS o) TO '{TEST_DIR}/combine_map_f06.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k7': 7} AS o) TO '{TEST_DIR}/combine_map_f07.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k8': 8} AS o) TO '{TEST_DIR}/combine_map_f08.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k9': 9} AS o) TO '{TEST_DIR}/combine_map_f09.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k10': 10} AS o) TO '{TEST_DIR}/combine_map_f10.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT {'k11': 11} AS o) TO '{TEST_DIR}/combine_map_f11.ndjson' (FORMAT json)
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/combine_map_*.ndjson'))
+----
+MAP(VARCHAR, BIGINT)
+
+query I
+SELECT count(*) FROM read_json('{TEST_DIR}/combine_map_*.ndjson') WHERE cardinality(o) = 1
+----
+11
+
+# explicitly specified columns are not combined - every file is read with the given schema
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_json('{TEST_DIR}/combine_mixed_*.ndjson', columns={v: 'VARCHAR'}))
+----
+VARCHAR
+
+# columns that are duplicates for us (e.g. "id" and "Id") are renamed - a renamed column can no longer
+# be used as the JSON key to read, so those schemas are combined by type instead
+statement ok
+COPY (SELECT 1 AS a, 2 AS id, 3 AS "Id") TO '{TEST_DIR}/combine_dup_f1.ndjson' (FORMAT json)
+
+statement ok
+COPY (SELECT 2 AS a) TO '{TEST_DIR}/combine_dup_f2.ndjson' (FORMAT json)
+
+query III
+SELECT a, id, Id_1 FROM read_json('{TEST_DIR}/combine_dup_*.ndjson') ORDER BY ALL
+----
+1	2	3
+2	NULL	NULL
+
+# ------------------------------------------------------------------------------------------------
+# COPY ... FROM through the multi-file wrapper - it accepts exactly the options of the table function
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE copy_target(id BIGINT, name VARCHAR)
+
+statement ok
+COPY copy_target FROM 'data/json/example_n.ndjson' (FORMAT json)
+
+query II
+SELECT * FROM copy_target ORDER BY id
+----
+1	O Brother, Where Art Thou?
+2	Home for the Holidays
+3	The Firm
+4	Broadcast News
+5	Raising Arizona
+
+# globs work, and the columns come from the target table rather than from auto-detection
+statement ok
+DELETE FROM copy_target
+
+statement ok
+COPY copy_target FROM 'data/json/example_*.ndjson' (FORMAT json)
+
+query I
+SELECT count(*) FROM copy_target
+----
+15
+
+# a subset of the columns of the file
+statement ok
+CREATE TABLE copy_one(id BIGINT)
+
+statement ok
+COPY copy_one FROM 'data/json/example_n.ndjson' (FORMAT json)
+
+query I
+SELECT sum(id) FROM copy_one
+----
+15
+
+# options are the named parameters of the table function - a value, or bare for "true"
+statement ok
+CREATE TABLE copy_errors(id BIGINT, name VARCHAR)
+
+statement ok
+COPY copy_errors FROM 'data/json/unterminated_quotes.ndjson' (FORMAT json, ignore_errors true)
+
+query I
+SELECT count(*) FROM copy_errors
+----
+5
+
+statement ok
+DELETE FROM copy_errors
+
+statement ok
+COPY copy_errors FROM 'data/json/unterminated_quotes.ndjson' (FORMAT json, ignore_errors)
+
+query I
+SELECT count(*) FROM copy_errors
+----
+5
+
+statement error
+COPY copy_errors FROM 'data/json/example_n.ndjson' (FORMAT json, not_an_option true)
+----
+<REGEX>:.*Unsupported option for COPY FROM.*
+
+statement error
+COPY copy_errors FROM 'data/json/example_n.ndjson' (FORMAT json, dateformat ('a', 'b'))
+----
+<REGEX>:.*expects a single argument.*
+
+# GeoJSON Features are unnested into the columns of the target table
+statement ok
+CREATE TABLE copy_geo(geometry GEOMETRY, name VARCHAR)
+
+statement ok
+COPY copy_geo FROM 'data/json/geojson/features.geojson' (FORMAT json, geojson true)
+
+query II
+SELECT geometry, name FROM copy_geo ORDER BY name
+----
+POINT (1 2)	alpha
+LINESTRING (0 0, 1 1)	beta
+NULL	delta
+POLYGON ((0 0, 1 0, 1 1, 0 0))	gamma
+
+# COPY TO is shared with the regular JSON copy function, so a round trip works
+statement ok
+COPY (SELECT 1 AS id, 'x' AS name) TO '{TEST_DIR}/copy_roundtrip.json' (FORMAT json)
+
+statement ok
+CREATE TABLE copy_rt(id BIGINT, name VARCHAR)
+
+statement ok
+COPY copy_rt FROM '{TEST_DIR}/copy_roundtrip.json' (FORMAT json)
+
+query II
+SELECT * FROM copy_rt
+----
+1	x

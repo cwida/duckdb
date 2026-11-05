@@ -1,0 +1,32 @@
+# name: test/sql/cast/struct_from_string_duplicate_keys.test
+# description: Casting a string with duplicate keys to a STRUCT fails
+# group: [cast]
+
+statement error
+SELECT '{a: 1, a: 2}'::STRUCT(a INT);
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT '{a: x, a: 2}'::STRUCT(a INT);
+----
+<REGEX>:Conversion Error.*
+
+query I
+SELECT TRY_CAST('{a: 1, a: 2}' AS STRUCT(a INT));
+----
+NULL
+
+# keys are still matched by name and in any order
+query I
+SELECT '{b: 2, a: 1}'::STRUCT(a INT, b INT);
+----
+{'a': 1, 'b': 2}
+
+# a duplicate key in a different row only affects that row with TRY_CAST
+query I
+SELECT TRY_CAST(s AS STRUCT(a INT)) FROM (VALUES ('{a: 1}'), ('{a: 1, a: 2}'), ('{a: 3}')) t(s);
+----
+{'a': 1}
+NULL
+{'a': 3}

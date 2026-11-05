@@ -1,0 +1,209 @@
+# name: test/sql/filter/transitive_filter_bounds.test
+# description: Transitive bounds preserve comparisons, NULLs and evaluation effects
+# group: [filter]
+
+# A derived bound must not introduce another evaluation of nextval.
+statement ok
+CREATE SEQUENCE transitive_calls;
+
+query I
+SELECT i FROM range(5) t(i) WHERE i > 0 AND nextval('transitive_calls') >= i ORDER BY i;
+----
+1
+2
+3
+4
+
+# The optimizer can evaluate the original expression on the excluded row, too.
+query I
+SELECT last_value BETWEEN 4 AND 5 FROM duckdb_sequences() WHERE sequence_name='transitive_calls';
+----
+true
+
+statement ok
+CREATE SEQUENCE transitive_reordered_calls;
+
+query I
+SELECT i FROM range(5) t(i) WHERE nextval('transitive_reordered_calls') >= i AND i > 0 ORDER BY i;
+----
+1
+2
+3
+4
+
+query I
+SELECT last_value BETWEEN 4 AND 5 FROM duckdb_sequences() WHERE sequence_name='transitive_reordered_calls';
+----
+true
+
+# The same restriction applies while combining predicates across relations.
+statement ok
+CREATE SEQUENCE transitive_join_calls;
+
+query I
+SELECT i FROM range(5) t(i), range(1) u(j)
+WHERE i+j > 0 AND nextval('transitive_join_calls') >= i+j ORDER BY i;
+----
+1
+2
+3
+4
+
+query I
+SELECT last_value BETWEEN 4 AND 5 FROM duckdb_sequences() WHERE sequence_name='transitive_join_calls';
+----
+true
+
+# Recombining join bounds must also keep the volatile predicate intact.
+statement ok
+CREATE SEQUENCE transitive_join_bound_calls;
+
+query I
+SELECT i FROM range(5) t(i), range(4,5) u(j)
+WHERE i > 0 AND nextval('transitive_join_bound_calls') >= i AND j >= i ORDER BY i;
+----
+1
+2
+3
+4
+
+query I
+SELECT last_value BETWEEN 4 AND 5 FROM duckdb_sequences() WHERE sequence_name='transitive_join_bound_calls';
+----
+true
+
+# Throwing casts remain in the original predicate.
+query I
+SELECT i FROM (VALUES (1, '2'), (2, '2'), (3, '2'), (NULL, '2')) t(i,s)
+WHERE i >= 1 AND s::INTEGER >= i ORDER BY i;
+----
+1
+2
+
+statement error
+SELECT i FROM (VALUES (1, 'bad')) t(i,s) WHERE i >= 1 AND s::INTEGER >= i;
+----
+Could not convert string 'bad'
+
+# Cycles and fan-out preserve the original comparisons and duplicates.
+statement ok
+CREATE TABLE bounds(a INTEGER, b INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO bounds VALUES (0,0,0), (1,1,2), (1,1,2), (1,2,3),
+	(2,1,3), (NULL,1,2), (1,NULL,2), (1,1,NULL);
+
+query III rowsort
+SELECT * FROM bounds WHERE a >= 0 AND b >= a AND a >= b AND c > b;
+----
+1	1	2
+1	1	2
+
+query III rowsort
+SELECT * FROM bounds WHERE a >= 1 AND b >= a AND c > a;
+----
+1	1	2
+1	1	2
+1	2	3
+
+query III
+SELECT * FROM bounds WHERE a > 0 AND a = b AND b > a;
+----
+
+# A bound pushed into the right side must preserve unmatched left rows.
+statement ok
+CREATE TABLE lhs AS SELECT * FROM (VALUES (1), (2)) t(i);
+
+statement ok
+CREATE TABLE rhs AS SELECT * FROM (VALUES (0), (1), (NULL)) t(j);
+
+query II rowsort
+SELECT i,j FROM lhs LEFT JOIN rhs ON j >= i WHERE i >= 1;
+----
+1	1
+2	NULL
+
+query II rowsort
+SELECT i,j FROM rhs RIGHT JOIN lhs ON j >= i WHERE i >= 1;
+----
+1	1
+2	NULL
+
+# A single scan keeps lazy inference to avoid adding a row filter for every column in a chain.
+statement ok
+CREATE TABLE single_scan AS SELECT range i0, range i1, range i2, range i3,
+	range i4, range i5, range i6, range i7 FROM range(10);
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+PRAGMA explain_output='OPTIMIZED_ONLY';
+
+query II
+EXPLAIN SELECT * FROM single_scan
+WHERE i0 >= 5 AND i1 >= i0 AND i2 >= i1 AND i3 >= i2 AND i4 >= i3
+	AND i5 >= i4 AND i6 >= i5 AND i7 >= i6;
+----
+logical_opt	<!REGEX>:.*i7 >= 5.*
+
+query I
+SELECT i7 FROM single_scan
+WHERE i0 >= 5 AND i1 >= i0 AND i2 >= i1 AND i3 >= i2 AND i4 >= i3
+	AND i5 >= i4 AND i6 >= i5 AND i7 >= i6 ORDER BY i7;
+----
+5
+6
+7
+8
+9
+
+# An adjacent join must not expand every local comparison into a row filter, either.
+query II
+EXPLAIN SELECT * FROM single_scan, range(1) u(j)
+WHERE i0 >= 5 AND i1 >= i0 AND i2 >= i1 AND i3 >= i2 AND i4 >= i3
+	AND i5 >= i4 AND i6 >= i5 AND i7 >= i6 AND i0 >= j;
+----
+logical_opt	<!REGEX>:.*i7 >= 5.*
+
+query I
+SELECT i7 FROM single_scan, range(1) u(j)
+WHERE i0 >= 5 AND i1 >= i0 AND i2 >= i1 AND i3 >= i2 AND i4 >= i3
+	AND i5 >= i4 AND i6 >= i5 AND i7 >= i6 AND i0 >= j ORDER BY i7;
+----
+5
+6
+7
+8
+9
+
+# Keep casts intact when looking up their bounds.
+statement ok
+SET disabled_optimizers='expression_rewriter';
+
+query II
+SELECT i,j FROM (VALUES (1), (2)) t(i), (VALUES (1::DOUBLE), (2::DOUBLE)) u(j)
+WHERE CAST(i AS DOUBLE) >= 1::DOUBLE AND j >= CAST(i AS DOUBLE) ORDER BY i,j;
+----
+1	1.0
+1	2.0
+2	2.0
+
+query II
+SELECT i,j FROM (VALUES (1), (2)) t(i), (VALUES (1::DOUBLE), (2::DOUBLE)) u(j)
+WHERE TRY_CAST(i AS DOUBLE) >= 1::DOUBLE AND j >= TRY_CAST(i AS DOUBLE) ORDER BY i,j;
+----
+1	1.0
+1	2.0
+2	2.0
+
+query II
+SELECT i,j FROM (VALUES (1), (2)) t(i), (VALUES (1::DOUBLE), (2::DOUBLE)) u(j)
+WHERE j >= CAST(i AS DOUBLE) AND CAST(i AS DOUBLE) >= 1::DOUBLE ORDER BY i,j;
+----
+1	1.0
+1	2.0
+2	2.0
+
+statement ok
+RESET disabled_optimizers;

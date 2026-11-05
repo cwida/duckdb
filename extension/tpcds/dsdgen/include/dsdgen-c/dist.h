@@ -81,7 +81,6 @@ int distsize(const char *szDistname);
 int dist_type(const char *szDistName, int vset);
 d_idx_t *find_dist(const char *name);
 int IntegrateDist(const char *szDistName, int nPct, int nStartIndex, int nWeightSet);
-void dump_dist(const char *szName);
 int dist_active(const char *szName, int nWeightSet);
 int DistNameIndex(const char *szDist, int nNameType, const char *szName);
 int DistSizeToShiftWidth(const char *szDist, int nWeightSet);

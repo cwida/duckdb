@@ -34,7 +34,8 @@ CREATE TABLE tf_4 (
 );
 
 query IIIIIIIIII
-SELECT * EXCLUDE (database_name, schema_oid, table_oid, database_oid, constraint_name) FROM duckdb_constraints();
+SELECT * EXCLUDE (database_name, schema_oid, table_oid, database_oid, constraint_name, constraint_check_mode)
+FROM duckdb_constraints();
 ----
 main	tf_1	0	PRIMARY KEY	PRIMARY KEY(a)	NULL	[0]	[a]	NULL	[]
 main	tf_1	1	UNIQUE	UNIQUE("b c")	NULL	[1]	[b c]	NULL	[]

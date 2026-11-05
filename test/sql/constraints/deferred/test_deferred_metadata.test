@@ -1,0 +1,50 @@
+# name: test/sql/constraints/deferred/test_deferred_metadata.test
+# description: Constraint metadata reports whether a constraint is deferred
+# group: [deferred]
+
+statement ok
+CREATE TABLE p(a INTEGER PRIMARY KEY, b INTEGER UNIQUE IMMEDIATE, c INTEGER UNIQUE DEFERRED, d INTEGER CHECK (d > 0));
+
+statement ok
+CREATE TABLE q(i INTEGER PRIMARY KEY DEFERRED, j INTEGER);
+
+statement ok
+ALTER TABLE q ADD UNIQUE(j) DEFERRED;
+
+statement ok
+CREATE TABLE child(x INTEGER REFERENCES p(a));
+
+query III rowsort
+SELECT table_name, constraint_text, constraint_check_mode FROM duckdb_constraints()
+WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE');
+----
+p	PRIMARY KEY(a)	DEFAULT
+p	UNIQUE(b) IMMEDIATE	IMMEDIATE
+p	UNIQUE(c) DEFERRED	DEFERRED
+q	PRIMARY KEY(i) DEFERRED	DEFERRED
+q	UNIQUE(j) DEFERRED	DEFERRED
+
+# NOT NULL, CHECK and FOREIGN KEY constraints are never deferred
+query I
+SELECT count(*) FROM duckdb_constraints() WHERE constraint_check_mode <> 'DEFAULT' AND constraint_type NOT IN ('PRIMARY KEY', 'UNIQUE');
+----
+0
+
+query IIII rowsort
+SELECT table_name, constraint_type, is_deferrable, initially_deferred FROM information_schema.table_constraints
+WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE');
+----
+p	PRIMARY KEY	NO	NO
+p	UNIQUE	NO	NO
+p	UNIQUE	YES	YES
+q	PRIMARY KEY	YES	YES
+q	UNIQUE	YES	YES
+
+query IIII rowsort
+SELECT conname, contype, condeferrable, condeferred FROM pg_constraint WHERE contype IN ('p', 'u');
+----
+PRIMARY KEY(a)	p	false	false
+PRIMARY KEY(i) DEFERRED	p	true	true
+UNIQUE(b) IMMEDIATE	u	false	false
+UNIQUE(c) DEFERRED	u	true	true
+UNIQUE(j) DEFERRED	u	true	true

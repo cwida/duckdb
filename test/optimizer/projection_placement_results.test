@@ -1,0 +1,123 @@
+# name: test/optimizer/projection_placement_results.test
+# description: Projection placement results across optimizer configurations
+# group: [optimizer]
+
+statement ok
+CREATE TABLE placement_result_dimension AS
+SELECT i::INTEGER AS i, (i % 10)::INTEGER AS k, lpad(i::VARCHAR, 100, 'x') AS v
+FROM range(100) t(i);
+
+statement ok
+CREATE TABLE placement_result_fact AS
+SELECT (i % 100)::INTEGER AS i
+FROM range(1000) t(i);
+
+query I
+SELECT sum(length(s))
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_result_dimension) d
+JOIN placement_result_fact USING (i);
+----
+20000
+
+query II
+SELECT sum(length(ls)), sum(length(rs))
+FROM (
+	SELECT substring(l.v, 1, 20) AS ls, substring(r.v, 1, 30) AS rs
+	FROM placement_result_dimension l
+	JOIN placement_result_dimension r USING (k)
+);
+----
+20000	30000
+
+# Preserve the first placed expression when a later placement shifts its join output
+query II
+SELECT sum(length(rs)), sum(length(ls))
+FROM (
+	SELECT substring(r.v, 1, 20) AS rs, substring(l.v, 1, 30) AS ls
+	FROM placement_result_dimension l
+	JOIN placement_result_dimension r USING (k)
+	JOIN placement_result_fact f ON f.i = l.i
+);
+----
+200000	300000
+
+statement ok
+CREATE TABLE placement_result_values(i INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO placement_result_values VALUES (1, 'abcd'), (1, 'abcd'), (2, NULL), (NULL, 'null');
+
+statement ok
+CREATE TABLE placement_result_matches(i INTEGER);
+
+statement ok
+INSERT INTO placement_result_matches VALUES (1), (1), (2), (NULL);
+
+query IT
+SELECT p.i, p.s
+FROM (SELECT i, substring(v, 1, 2) AS s FROM placement_result_values) p
+JOIN placement_result_matches USING (i)
+ORDER BY ALL;
+----
+1	ab
+1	ab
+1	ab
+1	ab
+2	NULL
+
+# A projection that cannot cross UNNEST must not be retried indefinitely
+query I
+SELECT sum(length(s))
+FROM (
+	SELECT i, repeat(v, 100) AS s, unnest([1]) AS u
+	FROM placement_result_dimension
+) d
+JOIN placement_result_dimension f USING (i);
+----
+1000000
+
+# Verification projections preserve IEJoin payload types
+statement ok
+SET debug_verification_projection = true;
+
+statement ok
+SET merge_join_threshold = 0;
+
+statement ok
+SET nested_loop_join_threshold = 0;
+
+statement ok
+SET prefer_range_joins = true;
+
+statement ok
+CREATE TABLE placement_ie_left(id INTEGER, start DATE, stop DATE, price DECIMAL);
+
+statement ok
+INSERT INTO placement_ie_left VALUES
+	(1, '2026-01-01', '2026-01-02', 150),
+	(2, '2026-01-02', '2026-01-03', 151),
+	(3, '2026-01-03', '2026-01-04', 380),
+	(4, '2026-01-05', NULL, 410),
+	(5, NULL, '2026-01-06', 420);
+
+statement ok
+CREATE TABLE placement_ie_right(start DATE, stop DATE, bid DECIMAL);
+
+statement ok
+INSERT INTO placement_ie_right VALUES
+	('2026-01-01', '2026-01-03', 149.5),
+	('2026-01-03', '2026-01-04', 150.5),
+	('2026-01-04', '2026-01-05', 379);
+
+query III
+SELECT l.id, l.start, l.stop
+FROM placement_ie_left l
+ANTI JOIN placement_ie_right r
+	ON l.start < r.stop
+	AND r.start < l.stop
+	AND l.price + r.bid > 300
+ORDER BY 1;
+----
+1	2026-01-01	2026-01-02
+4	2026-01-05	NULL
+5	NULL	2026-01-06

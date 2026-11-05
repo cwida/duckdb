@@ -1,0 +1,24 @@
+diff --git a/src/fts_indexing.cpp b/src/fts_indexing.cpp
+index c9305fd..1cbafe3 100644
+--- a/src/fts_indexing.cpp
++++ b/src/fts_indexing.cpp
+@@ -3,6 +3,7 @@
+ #include "fts_index_common.hpp"
+ #include "fts_index_maintenance.hpp"
+ 
++#include "duckdb/catalog/catalog.hpp"
+ #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+ #include "duckdb/catalog/catalog_search_path.hpp"
+ #include "duckdb/common/exception.hpp"
+diff --git a/src/include/fts_indexing.hpp b/src/include/fts_indexing.hpp
+index 222333a..249fb46 100644
+--- a/src/include/fts_indexing.hpp
++++ b/src/include/fts_indexing.hpp
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "duckdb/main/client_context.hpp"
++#include "duckdb/function/function.hpp"
+ 
+ namespace duckdb {
+ 

@@ -1,0 +1,115 @@
+# name: test/sql/sql_export/sql_export_aggregate_order_by_null.test
+# description: SQL export omits ORDER BY keys that fold to constants
+# group: [sql_export]
+
+statement ok
+CREATE TABLE t(s VARCHAR, i INT);
+
+statement ok
+INSERT INTO t VALUES ('b', 1), ('a', 2);
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I
+SELECT list(s ORDER BY NULL || s, s) FROM t;
+----
+[a, b]
+
+query I
+SELECT string_agg(s, ',' ORDER BY NULL || s, s DESC) FROM t;
+----
+b,a
+
+query I
+SELECT list(i ORDER BY i, NULL || s) FROM t;
+----
+[1, 2]
+
+query II
+SELECT s, row_number() OVER (ORDER BY NULL || s, s) FROM t ORDER BY s;
+----
+a	1
+b	2
+
+query I
+SELECT s FROM t ORDER BY NULL || s, s;
+----
+a
+b
+
+# every ORDER BY key is constant
+
+query I
+SELECT list_sort(list(s ORDER BY NULL || s)) FROM t;
+----
+[a, b]
+
+query I
+SELECT list_sort(list(s ORDER BY 1 + 1, NULL || s)) FROM t;
+----
+[a, b]
+
+query IIIII
+SELECT s, rank() OVER (ORDER BY NULL || s), count(*) OVER (ORDER BY NULL || s),
+       cume_dist() OVER (ORDER BY NULL || s), percent_rank() OVER (ORDER BY NULL || s)
+FROM t ORDER BY s;
+----
+a	1	2	1.0	0.0
+b	1	2	1.0	0.0
+
+query II
+SELECT s, count(*) OVER (ORDER BY NULL || s ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE GROUP)
+FROM t ORDER BY s;
+----
+a	0
+b	0
+
+query II
+SELECT s, count(*) OVER (ORDER BY NULL || s GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t ORDER BY s;
+----
+a	2
+b	2
+
+query II
+SELECT s, first(s ORDER BY NULL || s, s) OVER () FROM t ORDER BY s;
+----
+a	a
+b	a
+
+query I rowsort
+SELECT s FROM t ORDER BY NULL || s;
+----
+a
+b
+
+query I
+SELECT count(*) FROM (SELECT s FROM t ORDER BY NULL || s LIMIT 1);
+----
+1
+
+query I
+SELECT s FROM (SELECT DISTINCT ON (i) s, i FROM t ORDER BY NULL || s) ORDER BY s;
+----
+a
+b
+
+statement ok
+RESET debug_verify_statement;
+
+# constant keys are omitted from the generated SQL
+
+query TT
+EXPLAIN (SQL) SELECT list(s ORDER BY NULL || s) FROM t;
+----
+sql	<!REGEX>:.*ORDER BY [^(].*
+
+query TT
+EXPLAIN (SQL) SELECT list(s ORDER BY 1 + 1, s) FROM t;
+----
+sql	<!REGEX>:.*ORDER BY CAST.*
+
+query TT
+EXPLAIN (SQL) SELECT row_number() OVER (ORDER BY NULL || s) FROM t;
+----
+sql	<!REGEX>:.*ORDER BY [^(].*

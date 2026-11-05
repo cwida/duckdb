@@ -7,10 +7,12 @@ set variable sf 0.01
 
 include test/sql/tpch/tpch_setup.test_template
 
-query I nosort res
-select lineitem::json from lineitem limit 2;
+query IIIII
+select count(*),
+       bool_and(list_sort(json_keys(lineitem::json)) = variant_keys(lineitem::json::variant)),
+       bool_and(lineitem::json::variant = lineitem::json::variant::JSON::variant),
+       bool_and(lineitem::json::variant::JSON = lineitem::json::variant::JSON::variant::JSON),
+       bool_and(json_keys(lineitem::json::variant::JSON) = list_sort(json_keys(lineitem::json)))
+from lineitem;
 ----
-
-query I nosort res
-select lineitem::json::variant::JSON from lineitem limit 2;
-----
+60175	true	true	true	true

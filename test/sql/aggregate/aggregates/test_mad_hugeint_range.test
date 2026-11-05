@@ -1,0 +1,13 @@
+# name: test/sql/aggregate/aggregates/test_mad_hugeint_range.test
+# description: mad over DECIMAL(38) values that are further apart than the range of a HUGEINT
+# group: [aggregates]
+
+query I
+SELECT mad(x) FROM (VALUES (99999999999999999999999999999999999999::DECIMAL(38,0)), (-99999999999999999999999999999999999999::DECIMAL(38,0)), (-99999999999999999999999999999999999999::DECIMAL(38,0))) t(x)
+----
+0
+
+query I
+SELECT mad(x) FROM (VALUES (1::DECIMAL(38,0)), (2), (10)) t(x)
+----
+1

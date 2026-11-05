@@ -1,0 +1,24 @@
+# name: benchmark/micro/compression/roaring/roaring_bool_short_run_read.benchmark
+# description: Scan Roaring Boolean values with 64 sixteen-row false runs per container
+# group: [roaring]
+
+name Roaring Boolean Scan Short Runs
+group roaring
+storage persistent v1.5.0
+
+load
+SET force_compression = 'roaring';
+CREATE TABLE tbl AS
+SELECT i % 32 < 16 AS a FROM range(250_000_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('tbl') WHERE column_name = 'a' AND segment_type = 'BOOLEAN';
+----
+Roaring
+
+run
+SELECT count(*) FROM tbl WHERE a;
+
+result I
+125000000

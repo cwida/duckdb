@@ -36,10 +36,6 @@ SELECT * FROM a RIGHT JOIN b ON a.id>b.id
 ----
 NULL	NULL	1	hello
 
-# unsupported operations
-# TODO
-mode skip instable
-
 # subquery
 query I
 SELECT (SELECT b FROM a)

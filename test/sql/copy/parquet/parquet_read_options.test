@@ -1,0 +1,66 @@
+# name: test/sql/copy/parquet/parquet_read_options.test
+# description: Parquet options used by COPY FROM and read_parquet
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/read_options.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE target(i INTEGER)
+
+# read options accepted by COPY FROM
+statement ok
+COPY target FROM '{TEST_DIR}/read_options.parquet' (
+    FORMAT parquet,
+    COMPRESSION 'zstd',
+    BINARY_AS_STRING false,
+    FILE_ROW_NUMBER false,
+    DEBUG_USE_OPENSSL false,
+    CAN_HAVE_NAN true
+)
+
+query I
+SELECT * FROM target
+----
+42
+
+# boolean COPY options without an argument default to true
+statement ok
+CREATE TABLE bare_option(i INTEGER)
+
+statement ok
+COPY bare_option FROM '{TEST_DIR}/read_options.parquet' (FORMAT parquet, BINARY_AS_STRING)
+
+query I
+SELECT * FROM bare_option
+----
+42
+
+# file_row_number can be included in the COPY FROM result
+statement ok
+CREATE TABLE with_row_number(i INTEGER, file_row_number BIGINT)
+
+statement ok
+COPY with_row_number FROM '{TEST_DIR}/read_options.parquet' (FORMAT parquet, FILE_ROW_NUMBER true)
+
+query II
+SELECT * FROM with_row_number
+----
+42	0
+
+# a bare boolean option means "true"
+statement ok
+COPY target FROM '{TEST_DIR}/read_options.parquet' (FORMAT parquet, CAN_HAVE_NAN)
+
+statement error
+COPY target FROM '{TEST_DIR}/read_options.parquet' (FORMAT parquet, ENCRYPTION_CONFIG)
+----
+Binder Error: Parquet encryption_config must be of type STRUCT
+
+# explicit_cardinality supplies the optimizer estimate without changing the result
+query I
+SELECT * FROM read_parquet('{TEST_DIR}/read_options.parquet', explicit_cardinality=123)
+----
+42

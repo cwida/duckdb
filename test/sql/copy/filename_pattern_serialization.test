@@ -1,0 +1,54 @@
+# name: test/sql/copy/filename_pattern_serialization.test
+# description: Filename patterns survive plan serialization, including an explicitly empty pattern
+# group: [copy]
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS a;
+
+# an explicitly empty pattern writes the bare extension
+statement ok
+COPY t TO '{TEST_DIR}/fp_empty' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN '');
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_empty/.csv');
+----
+1
+
+# a legacy-compatible custom pattern
+statement ok
+COPY t TO '{TEST_DIR}/fp_custom' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'custom_{i}');
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_custom/custom_0.csv');
+----
+1
+
+# a uuid prefix shape through the legacy representation
+statement ok
+COPY t TO '{TEST_DIR}/fp_uuid' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'prefix_{uuid}');
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_uuid/prefix_*.csv');
+----
+1
+
+# a uuid v7 shape through the segment representation
+statement ok
+COPY t TO '{TEST_DIR}/fp_uuidv7' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'v7_{uuidv7}_tail');
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_uuidv7/v7_*_tail.csv');
+----
+1
+
+# the default pattern stays the default
+statement ok
+COPY t TO '{TEST_DIR}/fp_default' (FORMAT csv, PER_THREAD_OUTPUT true);
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_default/data_0.csv');
+----
+1

@@ -1,0 +1,242 @@
+# name: test/sql/match_recognize/test_match_recognize_spec.test
+# description: The worked examples of ISO/IEC 19075-5, with the result tables the standard prints
+# group: [match_recognize]
+
+# Every query below is copied from the standard and every expected result is the table the standard
+# prints for it, so a change here is a change in conformance rather than a change in taste. The
+# sample data is the Ticker partition of 4.3, "Example of ONE ROW PER MATCH".
+
+statement ok
+pragma threads=1;
+
+statement ok
+CREATE TABLE Ticker(Symbol VARCHAR, Tradeday DATE, Price INTEGER);
+
+statement ok
+INSERT INTO Ticker VALUES
+    ('XYZ','2009-06-08',50),('XYZ','2009-06-09',60),('XYZ','2009-06-10',49),
+    ('XYZ','2009-06-11',40),('XYZ','2009-06-12',35),('XYZ','2009-06-15',45),
+    ('XYZ','2009-06-16',45),('XYZ','2009-06-17',45),('XYZ','2009-06-18',43),
+    ('XYZ','2009-06-19',47),('XYZ','2009-06-22',52),('XYZ','2009-06-23',70),
+    ('XYZ','2009-06-24',60);
+
+# 4.3 Example of ONE ROW PER MATCH -> Table 2, "Results of ONE ROW PER MATCH"
+query IIIIII
+SELECT M.Symbol, M.Matchno, M.Startp, M.Bottomp, M.Endp, M.Avgp
+FROM Ticker MATCH_RECOGNIZE (
+    PARTITION BY Symbol ORDER BY Tradeday
+    MEASURES MATCH_NUMBER() AS Matchno, A.Price AS Startp,
+             LAST(B.Price) AS Bottomp, LAST(C.Price) AS Endp, AVG(U.Price) AS Avgp
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B+ C+) SUBSET U = (A, B, C)
+    DEFINE B AS B.Price < PREV(B.Price), C AS C.Price > PREV(C.Price)
+) AS M ORDER BY M.Matchno
+----
+XYZ	1	60	35	45	45.8
+XYZ	2	45	43	70	51.4
+
+# 4.4 Example of ALL ROWS PER MATCH -> Table 3, "Results of ALL ROWS PER MATCH"
+query IIIIIIII
+SELECT M.Matchno, M.Tradeday, M.Price, M.Classy, M.Startp, M.Bottomp, M.Endp, M.Avgp
+FROM Ticker MATCH_RECOGNIZE (
+    PARTITION BY Symbol ORDER BY Tradeday
+    MEASURES MATCH_NUMBER() AS Matchno, CLASSIFIER() AS Classy, A.Price AS Startp,
+             FINAL LAST(B.Price) AS Bottomp, FINAL LAST(C.Price) AS Endp, FINAL AVG(U.Price) AS Avgp
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B+ C+) SUBSET U = (A, B, C)
+    DEFINE B AS B.Price < PREV(B.Price), C AS C.Price > PREV(C.Price)
+) AS M ORDER BY M.Tradeday
+----
+1	2009-06-09	60	A	60	35	45	45.8
+1	2009-06-10	49	B	60	35	45	45.8
+1	2009-06-11	40	B	60	35	45	45.8
+1	2009-06-12	35	B	60	35	45	45.8
+1	2009-06-15	45	C	60	35	45	45.8
+2	2009-06-17	45	A	45	43	70	51.4
+2	2009-06-18	43	B	45	43	70	51.4
+2	2009-06-19	47	C	45	43	70	51.4
+2	2009-06-22	52	C	45	43	70	51.4
+2	2009-06-23	70	C	45	43	70	51.4
+
+# 4.12.2 Handling empty matches -> Table 6, "Result of query permitting empty matches".
+# Note the match numbering: an empty match takes a number of its own, so the two non-empty matches
+# are numbered 2 and 6 and the run at the end is 10.
+query III
+SELECT M.Matchno, M.Firstp, M.Lastp
+FROM Ticker MATCH_RECOGNIZE (
+    PARTITION BY Symbol ORDER BY Tradeday
+    MEASURES MATCH_NUMBER() AS Matchno, FIRST(A.Price) AS Firstp, LAST(A.Price) AS Lastp
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A*) DEFINE A AS A.Price > PREV(A.Price)
+) AS M ORDER BY M.Matchno
+----
+1	NULL	NULL
+2	60	60
+3	NULL	NULL
+4	NULL	NULL
+5	NULL	NULL
+6	45	45
+7	NULL	NULL
+8	NULL	NULL
+9	NULL	NULL
+10	47	70
+11	NULL	NULL
+
+# 4.12.2 -> Table 7, "Results of query using SHOW EMPTY ROWS"
+query IIIII
+SELECT M.Matchno, M.Tradeday, M.Price, M.Classy, M.Lastp
+FROM Ticker MATCH_RECOGNIZE (
+    PARTITION BY Symbol ORDER BY Tradeday
+    MEASURES MATCH_NUMBER() AS Matchno, CLASSIFIER() AS Classy,
+             FINAL FIRST(A.Price) AS Firstp, FINAL LAST(A.Price) AS Lastp
+    ALL ROWS PER MATCH SHOW EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A*) DEFINE A AS A.Price > PREV(A.Price)
+) AS M ORDER BY M.Tradeday
+----
+1	2009-06-08	50	NULL	NULL
+2	2009-06-09	60	A	60
+3	2009-06-10	49	NULL	NULL
+4	2009-06-11	40	NULL	NULL
+5	2009-06-12	35	NULL	NULL
+6	2009-06-15	45	A	45
+7	2009-06-16	45	NULL	NULL
+8	2009-06-17	45	NULL	NULL
+9	2009-06-18	43	NULL	NULL
+10	2009-06-19	47	A	70
+10	2009-06-22	52	A	70
+10	2009-06-23	70	A	70
+11	2009-06-24	60	NULL	NULL
+
+# 4.12.2 -> Table 8, "Results of query using OMIT EMPTY ROWS". Note the gaps in the numbering.
+query IIII
+SELECT M.Matchno, M.Tradeday, M.Price, M.Classy
+FROM Ticker MATCH_RECOGNIZE (
+    PARTITION BY Symbol ORDER BY Tradeday
+    MEASURES MATCH_NUMBER() AS Matchno, CLASSIFIER() AS Classy
+    ALL ROWS PER MATCH OMIT EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A*) DEFINE A AS A.Price > PREV(A.Price)
+) AS M ORDER BY M.Tradeday
+----
+2	2009-06-09	60	A
+6	2009-06-15	45	A
+10	2009-06-19	47	A
+10	2009-06-22	52	A
+10	2009-06-23	70	A
+
+# 4.12.3 Handling unmatched rows -> Table 9, "Results of ALL ROWS PER MATCH"
+query IIIIII
+SELECT M.Matchno, M.Tradeday, M.Price, M.Classy, M.Startp, M.Avgp
+FROM Ticker MATCH_RECOGNIZE (
+    PARTITION BY Symbol ORDER BY Tradeday
+    MEASURES MATCH_NUMBER() AS Matchno, CLASSIFIER() AS Classy, A.Price AS Startp,
+             FINAL AVG(U.Price) AS Avgp
+    ALL ROWS PER MATCH WITH UNMATCHED ROWS AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B+ C+) SUBSET U = (A, B, C)
+    DEFINE B AS B.Price < PREV(B.Price), C AS C.Price > PREV(C.Price)
+) AS M ORDER BY M.Tradeday
+----
+NULL	2009-06-08	50	NULL	NULL	NULL
+1	2009-06-09	60	A	60	45.8
+1	2009-06-10	49	B	60	45.8
+1	2009-06-11	40	B	60	45.8
+1	2009-06-12	35	B	60	45.8
+1	2009-06-15	45	C	60	45.8
+NULL	2009-06-16	45	NULL	NULL	NULL
+2	2009-06-17	45	A	45	51.4
+2	2009-06-18	43	B	45	51.4
+2	2009-06-19	47	C	45	51.4
+2	2009-06-22	52	C	45	51.4
+2	2009-06-23	70	C	45	51.4
+NULL	2009-06-24	60	NULL	NULL	NULL
+
+# 5.6.3 FIRST and LAST -> the equalities the standard states for Table 15, with A on rows 1, 3, 5
+statement ok
+CREATE TABLE Nav(i INTEGER, Price INTEGER);
+
+statement ok
+INSERT INTO Nav VALUES (1,10),(2,20),(3,30),(4,40),(5,50);
+
+query IIIIIIII
+SELECT M.f0, M.f1, M.f2, M.f3, M.l0, M.l1, M.l2, M.l3
+FROM Nav MATCH_RECOGNIZE (
+    ORDER BY i
+    MEASURES FINAL FIRST(A.Price) AS f0, FINAL FIRST(A.Price, 1) AS f1,
+             FINAL FIRST(A.Price, 2) AS f2, FINAL FIRST(A.Price, 3) AS f3,
+             FINAL LAST(A.Price) AS l0, FINAL LAST(A.Price, 1) AS l1,
+             FINAL LAST(A.Price, 2) AS l2, FINAL LAST(A.Price, 3) AS l3
+    ONE ROW PER MATCH PATTERN (A B A C A)
+    DEFINE A AS Price IN (10, 30, 50), B AS Price = 20, C AS Price = 40
+) AS M
+----
+10	30	50	NULL	50	30	10	NULL
+
+# 4.10 Row pattern variables: the sets a match maps to each variable, including the empty set for a
+# variable no row was mapped to, and the union a SUBSET stands for
+query IIIII
+SELECT M.a, M.b, M.c, M.d, M.s
+FROM Nav MATCH_RECOGNIZE (
+    ORDER BY i
+    MEASURES count(A.Price) AS a, count(B.Price) AS b, count(C.Price) AS c,
+             count(D.Price) AS d, count(S.Price) AS s
+    ONE ROW PER MATCH PATTERN (A+ (B+ | C+) D) SUBSET S = (B, D)
+    DEFINE A AS Price <= 20, B AS Price IN (30, 40), C AS Price = 99, D AS Price = 50
+) AS M
+----
+2	2	0	1	3
+
+# 5.8 MATCH_NUMBER: a condition that reads it makes the matches alternate between A+ and B+
+statement ok
+CREATE TABLE Alt(i INTEGER, Price INTEGER);
+
+statement ok
+INSERT INTO Alt VALUES (1,10),(2,20),(3,15),(4,12),(5,18),(6,25);
+
+query III
+SELECT M.i, M.mn, M.cls FROM Alt MATCH_RECOGNIZE (
+    ORDER BY i MEASURES MATCH_NUMBER() AS mn, CLASSIFIER() AS cls
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A+ | B+))
+    DEFINE A AS (MOD(MATCH_NUMBER(), 2) = 1 AND A.Price > PREV(A.Price)),
+           B AS (MOD(MATCH_NUMBER(), 2) = 0 AND B.Price < PREV(B.Price))
+) AS M ORDER BY M.i
+----
+2	1	A
+3	2	B
+4	2	B
+5	3	A
+6	3	A
+
+# 7.2.8 Infinite repetitions of empty matches: Perl's stopping rule, so (A??)* terminates and the
+# match is B alone rather than an unbounded run of empty matches
+query II
+SELECT M.i, M.cls FROM Alt MATCH_RECOGNIZE (
+    ORDER BY i MEASURES CLASSIFIER() AS cls
+    ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ((A??)* B) DEFINE A AS false, B AS true
+) AS M ORDER BY M.i
+----
+1	B
+2	B
+3	B
+4	B
+5	B
+6	B
+
+# 5.6.4 Nesting FIRST and LAST within PREV or NEXT -> Table 16, "Data set and mappings for nesting
+# example". The standard walks the evaluation of PREV (LAST (A.Price + A.Tax, 1), 3) through: the rows
+# mapped to A are R2, R4 and R6; LAST offsets one in from the end of that set, arriving at R4; PREV
+# steps 3 rows back through the partition, arriving at R1; and A.Price + A.Tax is evaluated there,
+# giving 10 + 1 = 11 - on a row that is mapped to no variable at all.
+statement ok
+CREATE TABLE Nest(rn INTEGER, Price INTEGER, Tax INTEGER)
+
+statement ok
+INSERT INTO Nest VALUES (1,10,1),(2,20,2),(3,30,3),(4,40,4),(5,50,5),(6,60,6)
+
+query I
+SELECT M.s FROM Nest MATCH_RECOGNIZE (
+    ORDER BY rn MEASURES PREV(LAST(A.Price + A.Tax, 1), 3) AS s
+    PATTERN (A B A C A) DEFINE A AS Price IN (20,40,60), B AS Price = 30, C AS Price = 50
+) AS M
+----
+11

@@ -1,0 +1,80 @@
+# name: test/sql/index/art/storage/test_art_allocator_bitmap_checkpoint.test
+# description: Persist allocator bitmap changes when deleting whole ART leaves
+# group: [storage]
+
+statement ok
+SET index_scan_max_count = 1000;
+
+statement ok
+SET index_scan_percentage = 1.0;
+
+foreach version v1.0.0 v1.5.0 v2.0.0
+
+statement ok
+ATTACH '{TEST_DIR}/allocator_bitmap_{version}.db' AS bitmap_db (STORAGE_VERSION '{version}', BLOCK_SIZE 16384)
+
+# Fill every legacy leaf allocator buffer so reinsertion must reuse freed slots.
+statement ok
+CREATE TABLE bitmap_db.t AS SELECT i // 256 AS k, i AS id FROM range(21760) r(i)
+
+statement ok
+CREATE INDEX bitmap_idx ON bitmap_db.t(k)
+
+statement ok
+CHECKPOINT bitmap_db
+
+statement ok
+DETACH bitmap_db
+
+statement ok
+ATTACH '{TEST_DIR}/allocator_bitmap_{version}.db' AS bitmap_db
+
+statement ok
+DELETE FROM bitmap_db.t WHERE k=0
+
+statement ok
+CHECKPOINT bitmap_db
+
+statement ok
+DETACH bitmap_db
+
+statement ok
+ATTACH '{TEST_DIR}/allocator_bitmap_{version}.db' AS bitmap_db
+
+query I
+SELECT count(*) FROM bitmap_db.t WHERE k=0
+----
+0
+
+# Reuse the allocator slots released before the previous checkpoint.
+statement ok
+INSERT INTO bitmap_db.t SELECT 0, i FROM range(21760,22016) r(i)
+
+statement ok
+CHECKPOINT bitmap_db
+
+statement ok
+DETACH bitmap_db
+
+statement ok
+ATTACH '{TEST_DIR}/allocator_bitmap_{version}.db' AS bitmap_db
+
+query III
+SELECT count(*), min(id), max(id) FROM bitmap_db.t WHERE k=0
+----
+256	21760	22015
+
+query I
+SELECT count(*) FROM bitmap_db.t
+----
+21760
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM bitmap_db.t WHERE k=0
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+DETACH bitmap_db
+
+endloop

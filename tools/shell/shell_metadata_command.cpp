@@ -191,7 +191,7 @@ MetadataResult ExitProcess(ShellState &state, const vector<string> &args) {
 	}
 	int rc = 0;
 	if (args.size() > 1 && (rc = (int)ShellState::StringToInt(args[1])) != 0) {
-		// exit immediately if a custom error code is provided
+		// Stop all input processing and return through main's cleanup.
 		ShellState::Exit(rc);
 	}
 	return MetadataResult::EXIT;
@@ -243,6 +243,10 @@ MetadataResult ToggleHighlightResult(ShellState &state, const vector<string> &ar
 
 MetadataResult ShowHelp(ShellState &state, const vector<string> &args) {
 	if (args.size() >= 2) {
+		if (duckdb::StringUtil::CIEquals(args[1], "agent")) {
+			state.PrintAgentHelp(PrintOutput::STDOUT, false);
+			return MetadataResult::SUCCESS;
+		}
 #ifdef HAVE_LINENOISE
 		if (duckdb::StringUtil::CIEquals(args[1], "shortcuts")) {
 			auto shortcuts = duckdb::GetShellShortcuts();
@@ -315,9 +319,10 @@ MetadataResult PrintHistory(ShellState &state, const vector<string> &args) {
 			start = row_count - limit;
 		}
 	}
+	auto rows = result->Collection().GetRows();
 	for (idx_t row = start; row < row_count; row++) {
-		auto id = result->GetValue(0, row).GetValue<int64_t>();
-		auto sql = result->GetValue(1, row).GetValue<string>();
+		auto id = rows.GetValue(0, row).GetValue<int64_t>();
+		auto sql = rows.GetValue(1, row).GetValue<string>();
 		state.HighlightSQL(sql);
 		// prefix each entry with its index - align any continuation lines (from multi-line
 		// statements) underneath the SQL by padding them with spaces to the prefix width
@@ -336,6 +341,30 @@ MetadataResult ToggleLog(ShellState &state, const vector<string> &args) {
 	const char *zFile = args[1].c_str();
 	state.CloseOutputFile(state.pLog);
 	state.pLog = state.OpenOutputFile(zFile, 0);
+	return MetadataResult::SUCCESS;
+}
+
+MetadataResult SetMaxBytes(ShellState &state, const vector<string> &args) {
+	if (args.size() > 2) {
+		return MetadataResult::PRINT_USAGE;
+	}
+	if (args.size() == 1) {
+		state.PrintF("current max bytes: %zu\n", state.max_bytes);
+		return MetadataResult::SUCCESS;
+	}
+	state.max_bytes = (size_t)ShellState::StringToInt(args[1]);
+	return MetadataResult::SUCCESS;
+}
+
+MetadataResult SetMaxCellWidth(ShellState &state, const vector<string> &args) {
+	if (args.size() > 2) {
+		return MetadataResult::PRINT_USAGE;
+	}
+	if (args.size() == 1) {
+		state.PrintF("current max cell width: %zu\n", state.max_cell_width);
+		return MetadataResult::SUCCESS;
+	}
+	state.max_cell_width = (size_t)ShellState::StringToInt(args[1]);
 	return MetadataResult::SUCCESS;
 }
 
@@ -466,21 +495,21 @@ MetadataResult QuitProcess(ShellState &, const vector<string> &args) {
 }
 
 MetadataResult SetOutput(ShellState &state, const vector<string> &args) {
-	if (!state.SetOutputFile(args, '\0')) {
+	if (!state.SetOutputFile(args, OutputCommand::OUTPUT)) {
 		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
 
 MetadataResult SetOutputOnce(ShellState &state, const vector<string> &args) {
-	if (!state.SetOutputFile(args, 'o')) {
+	if (!state.SetOutputFile(args, OutputCommand::ONCE)) {
 		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
 
 MetadataResult SetOutputExcel(ShellState &state, const vector<string> &args) {
-	if (!state.SetOutputFile(args, 'e')) {
+	if (!state.SetOutputFile(args, OutputCommand::EXCEL)) {
 		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
@@ -669,32 +698,41 @@ enum class DeprecatedHighlightColors {
 template <DeprecatedHighlightColors T>
 MetadataResult SetHighlightingColor(ShellState &state, const vector<string> &args) {
 	string literal;
+	string hint;
 	switch (T) {
 	case DeprecatedHighlightColors::COMMENT:
 		literal = "comment";
+		hint = literal;
 		break;
 	case DeprecatedHighlightColors::CONSTANT:
-		literal = "constant";
-		break;
+		state.PrintF(PrintOutput::STDERR,
+		             ".constant has been split into numeric_constant and string_constant, use .highlight_colors "
+		             "numeric_constant %s and .highlight_colors string_constant %s instead\n",
+		             args[1].c_str(), args[1].c_str());
+		return MetadataResult::FAIL;
 	case DeprecatedHighlightColors::KEYWORD:
 		literal = "keyword";
+		hint = literal;
 		break;
 	case DeprecatedHighlightColors::ERROR:
 		literal = "error";
+		hint = literal;
 		break;
 	case DeprecatedHighlightColors::CONT:
 		literal = "cont";
+		hint = "continuation";
 		break;
 	case DeprecatedHighlightColors::CONT_SEL:
 		literal = "cont_sel";
+		hint = "continuation_selected";
 		break;
 	default:
 		throw std::runtime_error("eek");
 	}
 	state.PrintF(PrintOutput::STDERR,
-	             "WARNING: .%s [COLOR] will be removed in a future release, use .render_color %s %s instead\n",
-	             literal.c_str(), literal.c_str(), args[1].c_str());
-	return TrySetHighlightColor(state, literal, args[1]);
+	             "WARNING: .%s [COLOR] will be removed in a future release, use .highlight_colors %s %s instead\n",
+	             literal.c_str(), hint.c_str(), args[1].c_str());
+	return TrySetHighlightColor(state, hint, args[1]);
 }
 
 #endif
@@ -881,6 +919,10 @@ MetadataResult SetPager(ShellState &state, const vector<string> &args) {
 	} else if (args[1] == "automatic") {
 		state.pager_mode = PagerMode::PAGER_AUTOMATIC;
 	} else {
+		if (state.safe_mode) {
+			state.Print(PrintOutput::STDERR, ".pager cannot be used in -safe mode\n");
+			return MetadataResult::FAIL;
+		}
 		state.pager_command = args[1];
 	}
 	return MetadataResult::SUCCESS;
@@ -935,7 +977,7 @@ static const MetadataCommand metadata_commands[] = {
      "--bom\tPut a UTF8 byte-order mark on intermediate file"},
     {"exit", 0, ExitProcess, "?CODE?", "Exit this program with return-code CODE", 0, ""},
     {"headers", 2, ToggleHeaders, "on|off", "Turn display of headers on or off", 0, ""},
-    {"help", 0, ShowHelp, "?-all? ?PATTERN?", "Show help text for PATTERN", 0, ""},
+    {"help", 0, ShowHelp, "?-all? ?PATTERN?", "Show help text for PATTERN (.help agent: the agent mode)", 0, ""},
     {"highlight", 2, ToggleHighlighting, "on|off", "Toggle syntax highlighting in the shell on/off", 0, ""},
     {"highlight_colors", 0, SetHighlightColors, "OPTIONS", "Configure highlighting colors", 0, ""},
     {"highlight_errors", 2, ToggleHighlightErrors, "on|off", "Turn highlighting of errors on or off", 0, ""},
@@ -964,8 +1006,14 @@ static const MetadataCommand metadata_commands[] = {
     {"manual", 2, ShowManual, "FUNCTION", "Show the manual page for a SQL function", 0,
      "Displays the signatures, descriptions and examples of all overloads of FUNCTION.\n"
      "FUNCTION may be qualified: [database.][schema.]function."},
+    {"maxbytes", 0, SetMaxBytes, "COUNT",
+     "Sets the maximum number of bytes of rows for display (0 = all). Only for markdown mode in -agent mode.", 0, ""},
+    {"maxcellwidth", 0, SetMaxCellWidth, "COUNT",
+     "Sets the maximum number of characters per cell (0 = all). Only for markdown mode in -agent mode.", 0, ""},
     {"maxrows", 0, SetMaxRows, "COUNT",
-     "Sets the maximum number of rows for display (default: 40). Only for duckbox mode.", 0, ""},
+     "Sets the maximum number of rows for display (default: 40, -1 = all). Only for duckbox mode and for markdown "
+     "mode in -agent mode.",
+     0, ""},
     {"maxwidth", 0, SetMaxWidth, "COUNT",
      "Sets the maximum width in characters. 0 defaults to terminal width. Only for duckbox mode.", 0, ""},
     {"mode", 0, SetOutputMode, "MODE ?TABLE?", "Set output mode", 0,
@@ -1029,7 +1077,8 @@ static const MetadataCommand metadata_commands[] = {
     {"tables", 0, ShowTables, "?TABLE?", "List names of tables matching LIKE pattern TABLE", 2, ""},
     {"thousand_sep", 0, SetThousandSep, "SEP",
      "Sets the thousand separator used when rendering numbers. Only for duckbox mode.", 4, ""},
-    {"timer", 2, ShellState::ToggleTimer, "on|off", "Turn SQL timer on or off", 0, ""},
+    {"timer", 0, ShellState::ToggleTimer, "on|off [DIGITS]",
+     "Turn SQL timer on or off, DIGITS decimals for the real time (default 3)", 0, ""},
     {"ui_command", 0, SetUICommand, "[command]", "Set the UI command", 0, ""},
     {"version", 1, ShowVersion, "", "Show the version", 0, ""},
     {"web", 1, OpenProfileWeb, "", "Open the last query profile (EXPLAIN ANALYZE) in a web browser", 0, ""},

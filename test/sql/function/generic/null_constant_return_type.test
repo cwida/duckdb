@@ -1,0 +1,218 @@
+# name: test/sql/function/generic/null_constant_return_type.test
+# description: A function call with a typed NULL constant argument must keep its return type when folded to NULL
+# group: [generic]
+
+# the original bug: || with a typed NULL constant was folded to an untyped NULL,
+# which made repeat() resolve to the BLOB overload
+query I
+SELECT typeof(repeat(CAST(NULL AS VARCHAR) || 'z', 2))
+----
+VARCHAR
+
+# the BLOB type then leaked into the UNION and corrupted the other branch
+query III
+SELECT s = 'a' || chr(9) || 'b', length(s), typeof(s) FROM (
+	SELECT ('a' || chr(9) || 'b') AS s UNION ALL
+	SELECT repeat(CAST(NULL AS VARCHAR) || 'z', 2)) u WHERE s IS NOT NULL
+----
+true	3	VARCHAR
+
+query I
+SELECT typeof(s) FROM (
+	SELECT ('a' || chr(9) || 'b') AS s UNION ALL
+	SELECT repeat(CAST(NULL AS VARCHAR) || 'z', 2)) u
+----
+VARCHAR
+VARCHAR
+
+# functions whose return type is only known after binding (|| is declared as ANY -> ANY)
+query IIII
+SELECT typeof(NULL::VARCHAR || 'z'), typeof('z' || NULL::VARCHAR), typeof(NULL::VARCHAR || NULL::VARCHAR), typeof(NULL::INT || 'z')
+----
+VARCHAR	VARCHAR	VARCHAR	VARCHAR
+
+query III
+SELECT typeof(NULL::BLOB || 'z'::BLOB), typeof('z'::BLOB || NULL::BLOB), typeof(NULL::BLOB || NULL::BLOB)
+----
+BLOB	BLOB	BLOB
+
+# BLOB || VARCHAR is VARCHAR regardless of NULL-ness
+query II
+SELECT typeof(NULL::BLOB || 'z'), typeof('z'::BLOB || 'z')
+----
+VARCHAR	VARCHAR
+
+query III
+SELECT typeof([1] || NULL::INT[]), typeof(NULL::INT[] || [2]), typeof(NULL::INT[] || NULL::INT[])
+----
+INTEGER[]	INTEGER[]	INTEGER[]
+
+query II
+SELECT typeof([1] || NULL::BIGINT[]), typeof(NULL::INT[3] || [2])
+----
+BIGINT[]	INTEGER[]
+
+# other functions that resolve their return type in resolve_types
+query IIII
+SELECT typeof(list_extract(NULL::INT[], 1)), typeof(array_extract(NULL::DATE[3], 1)), typeof(list_aggr(NULL::INT[], 'sum')), typeof(struct_insert(NULL::STRUCT(x INT), a := 'a'))
+----
+INTEGER	DATE	HUGEINT	STRUCT(x INTEGER, a VARCHAR)
+
+query I
+SELECT typeof(struct_extract(NULL::STRUCT(a DATE), 'a'))
+----
+DATE
+
+# functions that only resolve their return type in the bind callback still fold to an untyped NULL
+query I
+SELECT typeof(union_extract(NULL::UNION(a DATE, b INT), 'a'))
+----
+"NULL"
+
+# constant_or_null has the type of its leading constant, also when a typed NULL argument folds it
+query IIIII
+SELECT typeof(constant_or_null(true, 1)), typeof(constant_or_null(true, NULL::INT)), typeof(constant_or_null(1::BIGINT, 2, NULL::VARCHAR)), typeof(constant_or_null(NULL::DATE, 1)), typeof(constant_or_null([1, 2], NULL::INT[]))
+----
+BOOLEAN	BOOLEAN	BIGINT	DATE	INTEGER[]
+
+query II
+SELECT constant_or_null(true, NULL::INT), constant_or_null(NULL::DATE, 1)
+----
+NULL	NULL
+
+statement ok
+CREATE TABLE folded_constant_or_null AS SELECT constant_or_null(1::BIGINT, NULL::INT) AS c, constant_or_null({'a': 'x'}, NULL::INT) AS s
+
+query II
+SELECT typeof(c), typeof(s) FROM folded_constant_or_null
+----
+BIGINT	STRUCT(a VARCHAR)
+
+query III
+SELECT typeof(list_concat(NULL::INT[], [1::BIGINT])), typeof(array_slice(NULL::INT[3], 1, 2)), typeof(map_extract(NULL::MAP(INT, DATE), 1))
+----
+BIGINT[]	INTEGER[]	DATE[]
+
+# the folded NULL is still NULL
+query IIII
+SELECT NULL::VARCHAR || 'z', [1] || NULL::INT[], NULL::BLOB || 'z'::BLOB, list_extract(NULL::INT[], 1)
+----
+NULL	NULL	NULL	NULL
+
+# NULL constants that are not literal casts (e.g. function calls that fold to NULL)
+query III
+SELECT typeof(nullif('a', 'a') || 'z'), typeof(repeat(nullif('a', 'a') || 'z', 2)), typeof(upper(NULL::VARCHAR) || 'z')
+----
+VARCHAR	VARCHAR	VARCHAR
+
+query II
+SELECT typeof((CASE WHEN 1=1 THEN NULL::INT[] END) || [1]), typeof(list_extract((CASE WHEN 1=1 THEN NULL::DATE[] END), 1))
+----
+INTEGER[]	DATE
+
+# nested: the type must propagate into enclosing constructs
+query III
+SELECT typeof(struct_pack(a := NULL::VARCHAR || 'z')), typeof([NULL::VARCHAR || 'z']), typeof(coalesce(NULL::BLOB || 'z'::BLOB, 'q'::BLOB))
+----
+STRUCT(a VARCHAR)	VARCHAR[]	BLOB
+
+query III
+SELECT typeof(repeat(NULL::BLOB || 'z'::BLOB, 2)), typeof(length(NULL::VARCHAR || 'z')), typeof(list_extract([NULL::INT[] || [1]], 1))
+----
+BLOB	BIGINT	INTEGER[]
+
+# overload resolution downstream picks the same overload as the non-NULL case
+query IIII
+SELECT typeof(repeat('z', 2)), typeof(repeat(NULL::VARCHAR || 'z', 2)), typeof(repeat('z'::BLOB, 2)), typeof(repeat(NULL::BLOB || 'z'::BLOB, 2))
+----
+VARCHAR	VARCHAR	BLOB	BLOB
+
+# type resolution in set operations
+query I
+SELECT typeof(s) FROM (SELECT 'a' AS s UNION ALL SELECT NULL::VARCHAR || 'z') u
+----
+VARCHAR
+VARCHAR
+
+query I
+SELECT typeof(s) FROM (SELECT [1] AS s UNION ALL SELECT NULL::INT[] || [2]) u
+----
+INTEGER[]
+INTEGER[]
+
+# type resolution when creating tables / views
+statement ok
+CREATE TABLE tbl AS SELECT NULL::VARCHAR || 'z' AS s, NULL::INT[] || [1] AS l, NULL::BLOB || 'z'::BLOB AS b
+
+query III
+SELECT typeof(s), typeof(l), typeof(b) FROM tbl
+----
+VARCHAR	INTEGER[]	BLOB
+
+statement ok
+CREATE VIEW v AS SELECT repeat(NULL::VARCHAR || 'z', 2) AS s
+
+query I
+SELECT data_type FROM duckdb_columns() WHERE table_name = 'v'
+----
+VARCHAR
+
+# typed NULL constants in macros
+statement ok
+CREATE MACRO concat_null(x) AS x || NULL::VARCHAR
+
+query II
+SELECT typeof(concat_null('a')), typeof(repeat(concat_null('a'), 2))
+----
+VARCHAR	VARCHAR
+
+# with prepared statement parameters the type is not known at bind time
+statement ok
+PREPARE p AS SELECT typeof(repeat(?::VARCHAR || 'z', 2))
+
+query I
+EXECUTE p(NULL)
+----
+VARCHAR
+
+# typed NULL constants in the column of a table scan are not constants and go through regular execution
+statement ok
+CREATE TABLE nulls AS SELECT NULL::VARCHAR AS s, NULL::INT[] AS l
+
+query II
+SELECT typeof(repeat(s || 'z', 2)), typeof(l || [1]) FROM nulls
+----
+VARCHAR	INTEGER[]
+
+# a type error is a type error, regardless of whether the value is NULL
+statement error
+SELECT [1] || NULL::VARCHAR
+----
+Cannot concatenate types INTEGER[] and VARCHAR
+
+statement error
+SELECT struct_extract(NULL::INT, 'a')
+----
+
+# untyped NULLs keep their untyped behaviour
+query IIII
+SELECT typeof(NULL || 'z'), typeof([1] || NULL), typeof(NULL || NULL), typeof(list_extract(NULL, 1))
+----
+"NULL"	"NULL"	"NULL"	VARCHAR
+
+query I
+SELECT typeof(constant_or_null(true, NULL))
+----
+"NULL"
+
+# functions with a known return type still fold typed NULLs without binding
+query IIII
+SELECT typeof(upper(NULL::VARCHAR)), typeof(concat(NULL::VARCHAR, 'z')), typeof(length(NULL::VARCHAR)), typeof(abs(NULL::DOUBLE))
+----
+VARCHAR	VARCHAR	BIGINT	DOUBLE
+
+# functions with special NULL handling are unaffected
+query III
+SELECT coalesce(NULL::VARCHAR, 'z'), list_concat(NULL::INT[], [1]), constant_or_null('a', NULL::INT)
+----
+z	[1]	NULL

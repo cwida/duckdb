@@ -118,6 +118,18 @@ NULL	NULL
 2	4
 3	5
 
+# subquery with LIMIT + OFFSET exceeding the BIGINT range
+query II
+SELECT x, (SELECT count(*) FROM (SELECT v FROM generate_series(1, 100) t(v) WHERE v >= x LIMIT 9223372036854775807 OFFSET 1)) FROM (VALUES (3), (100)) t(x) ORDER BY x;
+----
+3	97
+100	0
+
+query I
+SELECT count(*) FROM (VALUES (3)) t(x) WHERE x IN (SELECT v FROM generate_series(1, 100) t(v) WHERE v >= x - 1 LIMIT 9223372036854775807 OFFSET 1);
+----
+1
+
 # subquery with ORDER BY
 query II
 SELECT i, (SELECT i+i1.i FROM integers ORDER BY i NULLS LAST LIMIT 1) AS j FROM integers i1 ORDER BY i;

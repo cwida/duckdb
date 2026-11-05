@@ -1,0 +1,124 @@
+# name: test/sql/catalog/view/view_catalog_alias.test
+# description: Test that views referencing their own catalog survive re-attaching under a different alias
+# group: [view]
+
+statement ok
+ATTACH '{TEST_DIR}/view_catalog_alias.db' AS db1;
+
+statement ok
+CREATE SCHEMA db1.s1;
+
+statement ok
+CREATE TABLE db1.t(i INTEGER);
+
+statement ok
+INSERT INTO db1.t VALUES (42);
+
+statement ok
+CREATE TABLE db1.s1.t(i INTEGER);
+
+statement ok
+INSERT INTO db1.s1.t VALUES (84);
+
+# base table ref - two-part and three-part qualification
+statement ok
+CREATE VIEW db1.v_base AS SELECT * FROM db1.t;
+
+statement ok
+CREATE VIEW db1.v_full AS SELECT * FROM db1.main.t;
+
+# qualified column references
+statement ok
+CREATE VIEW db1.v_colref AS SELECT db1.t.i FROM db1.t;
+
+# subqueries and CTEs
+statement ok
+CREATE VIEW db1.v_subquery AS SELECT (SELECT max(i) FROM db1.t) AS i;
+
+statement ok
+CREATE VIEW db1.v_cte AS WITH c AS (SELECT * FROM db1.t) SELECT * FROM c;
+
+# a view living in a non-default schema
+statement ok
+CREATE VIEW db1.s1.v_schema AS SELECT * FROM db1.s1.t;
+
+# a deferred-binding view is normalized as well
+statement ok
+CREATE VIEW db1.v_deferred WITH (DEFER_BINDING) AS SELECT * FROM db1.t;
+
+# the catalog qualifier is dropped from the stored SQL
+query II
+SELECT view_name, trim(sql, chr(10)) FROM duckdb_views() WHERE database_name='db1' ORDER BY view_name;
+----
+v_base	CREATE VIEW v_base AS SELECT * FROM t;
+v_colref	CREATE VIEW v_colref AS SELECT t.i FROM t;
+v_cte	CREATE VIEW v_cte AS WITH c AS (SELECT * FROM t) SELECT * FROM c;
+v_deferred	CREATE VIEW v_deferred AS SELECT * FROM t;
+v_full	CREATE VIEW v_full AS SELECT * FROM main.t;
+v_schema	CREATE VIEW s1.v_schema AS SELECT * FROM s1.t;
+v_subquery	CREATE VIEW v_subquery AS SELECT (SELECT max(i) FROM t) AS i;
+
+statement ok
+DETACH db1;
+
+statement ok
+ATTACH '{TEST_DIR}/view_catalog_alias.db' AS db2;
+
+query I
+SELECT * FROM db2.v_base;
+----
+42
+
+query I
+SELECT * FROM db2.v_full;
+----
+42
+
+query I
+SELECT * FROM db2.v_colref;
+----
+42
+
+query I
+SELECT * FROM db2.v_subquery;
+----
+42
+
+query I
+SELECT * FROM db2.v_cte;
+----
+42
+
+query I
+SELECT * FROM db2.s1.v_schema;
+----
+84
+
+query I
+SELECT * FROM db2.v_deferred;
+----
+42
+
+# views referencing another catalog keep their qualification
+statement ok
+ATTACH '{TEST_DIR}/view_catalog_alias_other.db' AS other;
+
+statement ok
+CREATE TABLE other.t(i INTEGER);
+
+statement ok
+INSERT INTO other.t VALUES (7);
+
+statement ok
+CREATE VIEW db2.v_other AS SELECT * FROM db2.t UNION ALL SELECT * FROM other.t;
+
+query I
+SELECT trim(sql, chr(10)) FROM duckdb_views() WHERE view_name='v_other';
+----
+CREATE VIEW v_other AS (SELECT * FROM t) UNION ALL (SELECT * FROM other.t);
+
+query I
+SELECT * FROM db2.v_other ORDER BY 1;
+----
+7
+42

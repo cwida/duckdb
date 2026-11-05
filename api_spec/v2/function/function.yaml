@@ -1,0 +1,239 @@
+module: function
+# What the scalar, aggregate and table function families share. The function bind info is the part of a bind callback
+# they have in common: the arguments of the call site being bound, the function's user data, and the bind data. The
+# family's own bind info handle carries what that family's bind produces, such as a return type or result columns.
+#
+# The arguments form one list in four parts, matching the parameter kinds of the function's signature:
+#   * positional fixed:    every positional-only and standard parameter, in declaration order
+#   * positional variadic: the arguments "*args" received, in call order
+#   * named fixed:         every named-only parameter, in declaration order
+#   * named variadic:      the arguments "**kwargs" received, in call order
+# The exec callbacks of the families present their argument vectors in the same list, at the same indices.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  function_bind_info:
+    description: |
+      A borrowed opaque handle to the call site a bind callback is binding. Every function family's bind callback
+      receives this handle next to its own bind info. It gives access to the arguments of the call, the function's
+      user data, and the bind data.
+
+      The arguments form one list in four parts, in this order: one argument per positional-only and standard
+      parameter, in declaration order; the arguments `*args` received, in call order; one argument per named-only
+      parameter, in declaration order; and the arguments `**kwargs` received, in call order. How the caller passed an
+      argument does not matter: a standard parameter passed by name is at its declared position. A parameter the call
+      omitted is present with its default value. See `[[function_bind_get_arg_count]]` for the size of each part.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # User Data and Bind Data
+  #---------------------------------------------------------------------------------------------------------------------
+  function_bind_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: Retrieves the user data set on the function being bound, e.g. via `[[scalar_function_set_user_data]]`.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_bind_set_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: |
+      Sets the function's "bind data" from the bind callback.
+
+      The bind data is stored with the bound call site and retrievable from every later callback. The opaque
+      handle bundles the pointer with an optional destructor, invoked when the bind data is no longer needed,
+      and an optional equality callback used when comparing two bound call sites; without one, pointer equality
+      is used. Scalar functions set their bind data through `[[scalar_function_bind_set_bind_data]]` instead.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      data:
+        type: opaque
+        indirection: 1
+        description: Opaque handle bundling the bind data pointer plus optional destructor and equality callbacks.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Arguments
+  #---------------------------------------------------------------------------------------------------------------------
+  function_bind_get_arg_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: |
+      Returns the number of arguments of the call site being bound, split into the four parts of the argument list.
+
+      The parts follow each other in this order: the positional-only and standard parameters, the arguments `*args`
+      received, the named-only parameters, and the arguments `**kwargs` received. The argument at index `i` of the
+      named-only part is therefore at index `positional_fixed + positional_variadic + i`. Valid indices for the
+      other argument functions are [0, the sum of the four counts). Every out-parameter may be NULL, in which case
+      nothing is written to it.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      positional_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of positional-only and standard parameters.
+      positional_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `*args` received, 0 when the signature has none.
+      named_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of named-only parameters.
+      named_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `**kwargs` received, 0 when the signature has none.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_bind_get_arg_type:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: |
+      Retrieves the type of the argument at the given index.
+
+      Fails if the index is out of bounds. The returned type is owned by the caller and must be destroyed via
+      `[[logical_type_destroy]]`.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      index:
+        type: idx
+        description: The index of the argument.
+      type:
+        type: logical_type
+        indirection: 1
+        kind: OUT
+        description: Receives the argument type. Owned by the caller; destroy via `[[logical_type_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_bind_get_arg_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: |
+      Folds the argument at the given index to a constant value.
+
+      Fails if the argument is not constant, e.g. a column reference, or if the index is out of bounds. The
+      arguments of a table or pragma function are always constant. The resulting value may be NULL. The returned value is
+      owned by the caller and must be destroyed via `[[value_destroy]]`.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      index:
+        type: idx
+        description: The index of the argument.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the constant value. Owned by the caller; destroy via `[[value_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_bind_get_arg_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: |
+      Retrieves the name of the argument at the given index.
+
+      For an argument of a declared parameter, this is the parameter name. For an argument `**kwargs` received, it
+      is the name the caller passed, which may be the name of a positional-only parameter. An argument `*args`
+      received has no name, and yields an empty name. Fails if the index is out of bounds. The name is borrowed
+      and valid only for the duration of the callback.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      index:
+        type: idx
+        description: The index of the argument.
+      name:
+        type: identifier
+        indirection: 1
+        kind: OUT_BORROW
+        description: Receives a borrowed view of the argument name. Valid only for the duration of the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_bind_get_arg_index:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
+    description: |
+      Looks up the index of an argument by name.
+
+      Names are matched case-insensitively, against the names a caller can pass an argument by: those of the
+      standard and named-only parameters, and those `**kwargs` received. Positional-only parameters are skipped,
+      so `f(1, x := 2)` with a positional-only `x` finds the argument `**kwargs` received. A name the call did not
+      pass is not an error: `found` receives false and `index` is left untouched. A standard or named-only
+      parameter is always found, as the call either passed it or it carries its default value.
+    parameters:
+      info:
+        type: function_bind_info
+        description: The bind info handle.
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to look up. Borrowed for the call only.
+      index:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the index of the argument, if found.
+      found:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the call has an argument of that name.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR

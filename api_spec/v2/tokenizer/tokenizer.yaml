@@ -1,0 +1,164 @@
+module: tokenizer
+#
+# Lexical tokenization of SQL text, in the context of whatever grammar extensions are loaded on the given connection.
+# The connection is not used for anything else and `[[token_iterator]]` can outlive the connection. Offsets are byte
+# offsets into the input exactly as given, the input is not normalized or validated.
+#
+# The iterator yields one token per `[[token_iterator_next]]` call and reports the end of input as a
+# TOKEN_TYPE_END_OF_INPUT token (and will repeat it for any subsequent call).
+
+handles:
+  token_iterator:
+    description: |
+      An opaque, owned handle to an iterator over the tokens of a SQL string, produced by tokenize_sql.
+    cleanup_with: token_iterator_destroy
+
+enums:
+  TOKEN_TYPE:
+    description: |
+      The lexical class of a token.
+    values:
+      TOKEN_TYPE_INVALID:
+        value: 0
+        description: "Not an actual token class; out_type is set to this when `[[token_iterator_next]]` fails."
+      TOKEN_TYPE_KEYWORD:
+        value: 1
+        description: "A keyword of the connection's grammar."
+      TOKEN_TYPE_IDENTIFIER:
+        value: 2
+        description: "A bare or double-quoted identifier, quotes included."
+      TOKEN_TYPE_STRING_LITERAL:
+        value: 3
+        description: "A quoted or dollar-quoted string, delimiters included."
+      TOKEN_TYPE_NUMBER_LITERAL:
+        value: 4
+        description: "A numeric literal."
+      TOKEN_TYPE_OPERATOR:
+        value: 5
+        description: "An operator or punctuation run other than the statement terminator."
+      TOKEN_TYPE_COMMENT:
+        value: 6
+        description: "A line or block comment, delimiters included."
+      TOKEN_TYPE_TERMINATOR:
+        value: 7
+        description: "A statement-terminating semicolon."
+      TOKEN_TYPE_END_OF_INPUT:
+        value: 8
+        description: "Not a token; reported by token_iterator_next once the input is exhausted, with start equal to the input length and length 0."
+
+functions:
+  tokenize_sql:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
+    description: |
+      Tokenizes a SQL string into an iterator over its tokens.
+
+      Lexical tokenization, in the context of whatever grammar extensions are loaded on the given connection. Closing
+      the connection or changing settings afterwards does not affect the tokens. The SQL string is borrowed for the call
+      only, the caller may free it once this call returns. Whitespace is not a token. Malformed input is not an error;
+      `[[token_iterator_ends_unterminated]]` reports whether the input ended inside an open token.
+
+      *out_iterator is set to NULL on failure.
+    role: constructor
+    belongs_to: token_iterator
+    parameters:
+      conn:
+        type: connection
+        description: The connection supplying the grammar.
+      sql:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The SQL text. Borrowed for the call only; may contain interior null bytes. {NULL, 0} is the empty input.
+      out_iterator:
+        type: token_iterator
+        indirection: 1
+        kind: OUT
+        description: Receives the new iterator handle. Destroy via token_iterator_destroy.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  token_iterator_next:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
+    description: |
+      Yields the next token, or END_OF_INPUT once exhausted.
+
+      On success writes the token's class, byte offset and byte length into the out-parameters. The lexeme is the input
+      bytes [start, start + length). Once the input is exhausted, every call gives TOKEN_TYPE_END_OF_INPUT with start
+      equal to the input length and length 0. On failure out params are set to TOKEN_TYPE_INVALID, 0, 0.
+    role: method
+    belongs_to: token_iterator
+    parameters:
+      iterator:
+        type: token_iterator
+        description: The iterator to advance.
+      out_type:
+        type: TOKEN_TYPE
+        indirection: 1
+        kind: OUT
+        description: Receives the token's class, or TOKEN_TYPE_END_OF_INPUT once exhausted.
+      out_start:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the token's byte offset into the input; the input length for END_OF_INPUT.
+      out_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the token's byte length; 0 for END_OF_INPUT.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  token_iterator_ends_unterminated:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
+    description: |
+      Reports whether the input ended before the closing delimiter of its last token.
+
+      True when the input ends inside an open string, quoted identifier, block comment or dollar-quoted string, or in a
+      line comment with no trailing newline; false otherwise, including for empty or whitespace-only input.
+      Equivalently, the last token `[[token_iterator_next]]` yields before TOKEN_TYPE_END_OF_INPUT is the open one, so
+      its class and lexeme say which delimiter is missing. A property of the input, not of the iterator position: the
+      answer is the same before, during and after draining. The only failure is a null argument.
+    role: getter
+    belongs_to: token_iterator
+    parameters:
+      iterator:
+        type: token_iterator
+        description: The iterator.
+      out_ends_unterminated:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the input ended inside an open token.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  token_iterator_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
+    description: |
+      Destroys a token iterator handle.
+    role: destructor
+    belongs_to: token_iterator
+    parameters:
+      iterator:
+        type: token_iterator
+        indirection: 1
+        description: The iterator to destroy.
+    return_type: ERROR

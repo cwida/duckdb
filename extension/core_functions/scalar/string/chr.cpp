@@ -37,13 +37,14 @@ static void ChrFunction(DataChunk &args, ExpressionState &state, Vector &result)
 #endif
 
 ScalarFunction ChrFun::GetFunction() {
-	ScalarFunction function("chr", {LogicalType::INTEGER}, LogicalType::VARCHAR,
+	ScalarFunction function("chr", {}, LogicalType::VARCHAR,
 #ifdef DUCKDB_DEBUG_NO_INLINE
 	                        ChrFunction
 #else
 	                        ScalarFunction::UnaryFunction<int32_t, string_t, ChrOperator>
 #endif
 	);
+	function.GetSignature().AddParameter("code_point", LogicalType::INTEGER);
 	// throws if the codepoint is not a valid UTF8 codepoint
 	function.SetFallible();
 	return function;

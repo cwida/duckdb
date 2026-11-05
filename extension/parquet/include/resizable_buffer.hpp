@@ -121,6 +121,12 @@ public:
 		ptr = new_ptr;
 	}
 
+	//! Shrink the readable length without touching the allocation.
+	void Truncate(const idx_t new_len) {
+		D_ASSERT(new_len <= len);
+		len = new_len;
+	}
+
 protected:
 	data_ptr_t ptr = nullptr;
 

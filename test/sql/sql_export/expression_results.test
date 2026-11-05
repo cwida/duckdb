@@ -1,0 +1,136 @@
+# name: test/sql/sql_export/expression_results.test
+# description: SQL export preserves default arguments, date parts, lambda captures and alias effects
+# group: [sql_export]
+
+query TTT rowsort
+SELECT
+	to_base(42, 16),
+	to_base(42, 16, 5),
+	to_base(42, 16, NULL);
+----
+2A	0002A	NULL
+
+statement ok
+CREATE TABLE dates(ts TIMESTAMP);
+
+statement ok
+INSERT INTO dates VALUES (TIMESTAMP '2024-02-29 12:34:56'), (NULL);
+
+query IIIRR rowsort
+SELECT
+	date_part('year', ts),
+	date_part('dayofweek', ts),
+	date_part('microseconds', ts),
+	date_part('epoch', ts),
+	date_part('julian', ts)
+FROM dates;
+----
+2024	4	56000000	1709210096.0	2460370.5242592595
+NULL	NULL	NULL	NULL	NULL
+
+# Cover both the retained binary invocation and the specialized unary call after serialization.
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query RRI rowsort
+SELECT date_part(part, ts), datepart(part := part, ts := ts), date_part(ts := ts, part := 'year')
+FROM dates, (VALUES ('year'), ('month')) parts(part);
+----
+2.0	2.0	2024
+2024.0	2024.0	2024
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+endloop
+
+statement ok
+SET debug_verify_serializer=false;
+
+query TT
+EXPLAIN (SQL) SELECT date_part('year', ts) FROM dates;
+----
+sql	<REGEX>:.*main[.]"?year"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT date_part('dayofweek', ts) FROM dates;
+----
+sql	<REGEX>:.*main[.]"?dayofweek"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT date_part('microseconds', ts) FROM dates;
+----
+sql	<REGEX>:.*main[.]"?microsecond"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT date_part('epoch', ts) FROM dates;
+----
+sql	<REGEX>:.*main[.]"?epoch"?[(].*
+
+query TT
+EXPLAIN (SQL) SELECT date_part('julian', ts) FROM dates;
+----
+sql	<REGEX>:.*main[.]"?julian"?[(].*
+
+statement ok
+CREATE SEQUENCE alias_effect;
+
+query T rowsort
+SELECT alias(1) AS wanted;
+----
+wanted
+
+query T rowsort
+SELECT alias(NULL) AS wanted;
+----
+wanted
+
+query T rowsort
+SELECT alias(nextval('alias_effect')) AS wanted;
+----
+wanted
+
+query I
+SELECT currval('alias_effect');
+----
+1
+
+query TTITT rowsort
+SELECT
+	list_aggr(['a',NULL,'a'], 'string_agg', ' / '),
+	list_aggr([]::VARCHAR[], 'string_agg', ' / '),
+	list_aggr([1,2,2,NULL,4], 'quantile_disc', 0.25),
+	list_aggr([1,2,2,NULL,4], 'quantile_cont', [0.25,0.75]),
+	list_aggr([4,1,NULL,1,2], 'min', 2);
+----
+a / a	NULL	1	[1.75, 2.5]	[1, 1]
+
+query I rowsort
+SELECT constant_or_null(42, i) FROM (VALUES (1), (NULL)) t(i);
+----
+42
+NULL
+
+statement ok
+CREATE TABLE lists(l INTEGER[], c INTEGER);
+
+statement ok
+INSERT INTO lists VALUES ([10, 9, 8, 7, 6], 5);
+
+query T rowsort
+SELECT list_transform(l, lambda x: list_transform(l, lambda y: x + y + c)) FROM lists;
+----
+[[25, 24, 23, 22, 21], [24, 23, 22, 21, 20], [23, 22, 21, 20, 19], [22, 21, 20, 19, 18], [21, 20, 19, 18, 17]]
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query T rowsort
+SELECT list_transform(l, lambda x, i: x + c + CAST(i AS INTEGER)) FROM lists;
+----
+[16, 16, 16, 16, 16]
+
+endloop

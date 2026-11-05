@@ -1,0 +1,360 @@
+# name: test/sql/sql_export/statement_verification.test
+# description: Statement verification through exported SQL: results, effects, fallback, transactions and logging
+# group: [sql_export]
+
+# The logging checks depend on session state across statements.
+require skip_reload
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I rowsort
+SELECT count(*) FROM system.main.duckdb_tables();
+----
+0
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT rowsort type_source_0
+SELECT * FROM test_all_types();
+
+endloop
+
+reset label type_source_0
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T rowsort type_source_1
+SELECT test_vector FROM test_vector_types(NULL::INTEGER);
+
+endloop
+
+reset label type_source_1
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TT rowsort type_source_2
+SELECT * FROM test_vector_types(NULL::VARCHAR, NULL::INTEGER[], all_flat=true);
+
+endloop
+
+reset label type_source_2
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T rowsort type_source_3
+WITH t AS NOT MATERIALIZED (SELECT * FROM test_all_types()) SELECT count(*) FROM t a, t b;
+
+endloop
+
+reset label type_source_3
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query T rowsort type_source_4
+WITH t AS MATERIALIZED (SELECT * FROM test_vector_types(NULL::INTEGER)) SELECT count(*) FROM t a, t b;
+
+endloop
+
+reset label type_source_4
+
+statement ok
+CREATE SEQUENCE type_source_calls;
+
+query I
+SELECT nextval('type_source_calls') FROM test_all_types();
+----
+1
+2
+3
+
+query I
+SELECT currval('type_source_calls');
+----
+3
+
+query R
+SELECT random() FROM test_all_types();
+----
+<REGEX>:[0-9.eE+-]+
+<REGEX>:[0-9.eE+-]+
+<REGEX>:[0-9.eE+-]+
+
+query I rowsort
+SELECT sum(i) AS "quoted total" FROM (VALUES (1),(2),(2),(4)) t(i) WHERE i>1;
+----
+8
+
+query T
+SELECT typeof(sum(i)) FROM (VALUES (1),(2),(2),(4)) t(i) WHERE i>1;
+----
+HUGEINT
+
+query TIT rowsort
+SELECT b AS "same",a AS "same",b AS "a""b" FROM (VALUES (1,'x'),(1,'x'),(NULL,NULL)) t(a,b);
+----
+NULL	NULL	NULL
+x	1	x
+x	1	x
+
+query III
+SELECT b AS same,a AS same,b AS same FROM (VALUES (10,20)) t(a,b);
+----
+20	10	20
+
+statement ok
+CREATE TABLE lhs(i INTEGER);
+
+statement ok
+CREATE TABLE rhs(s VARCHAR);
+
+statement ok
+INSERT INTO lhs VALUES (1);
+
+statement ok
+INSERT INTO rhs VALUES ('x');
+
+statement error
+SELECT * FROM lhs RIGHT JOIN rhs ON lhs.i=CAST(rhs.s AS INTEGER);
+----
+Could not convert string
+
+query II
+SELECT i,o FROM range(100000) WITH ORDINALITY t(i,o) WHERE o>99995 ORDER BY o;
+----
+99995	99996
+99996	99997
+99997	99998
+99998	99999
+99999	100000
+
+statement ok
+CREATE SEQUENCE sql_export_sequence;
+
+query II
+SELECT x,x FROM (SELECT nextval('sql_export_sequence') AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+1	1
+2	2
+3	3
+
+query I
+VALUES (nextval('sql_export_sequence'));
+----
+4
+
+query I rowsort
+SELECT write_log('not emitted', disable_logging := true, return_value := 42::INTEGER);
+----
+42
+
+statement ok
+CREATE SCHEMA shadow;
+
+statement ok
+CREATE MACRO shadow.prefix(a,b) AS false;
+
+statement ok
+SET search_path='shadow,main';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query II
+SELECT abs(i),sum(i) OVER () FROM (VALUES (-2),(2)) t(i);
+----
+2	0
+2	0
+
+query I
+SELECT sum(abs(i)) FROM (VALUES (-2),(2)) t(i);
+----
+4
+
+query RII
+SELECT avg(i),count(i),count(*) FROM (VALUES (1),(2),(NULL)) t(i);
+----
+1.5	2	3
+
+query I
+SELECT s LIKE 'a%' FROM (VALUES ('abc'),('xyz')) t(s);
+----
+true
+false
+
+endloop
+
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (-3,-1),(-2,2),(1,-3),(2,2)) v(i,j);
+
+query I rowsort
+SELECT i FROM t WHERE abs(i)=2;
+----
+-2
+2
+
+query I rowsort
+SELECT i FROM t WHERE abs(i)+abs(j)=4;
+----
+-2
+-3
+1
+2
+
+query I rowsort
+SELECT i FROM t WHERE i<j;
+----
+-2
+-3
+
+statement ok
+RESET search_path;
+
+statement ok
+RESET debug_verify_serializer;
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement error
+SELECT error('exported execution failure');
+----
+exported execution failure
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+PREPARE statement_export_parameter AS SELECT $1::INTEGER + 1;
+
+query I
+EXECUTE statement_export_parameter(4);
+----
+5
+
+statement ok
+RESET debug_verify_statement;
+
+statement ok
+CREATE TABLE export_transaction(i INTEGER);
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+statement ok
+BEGIN;
+
+query I
+WITH ins AS (INSERT INTO export_transaction VALUES (1)) SELECT 42;
+----
+42
+
+query I
+SELECT count(*) FROM export_transaction;
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM export_transaction;
+----
+0
+
+foreach verification explain_sql explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{verification}';
+
+statement ok
+BEGIN;
+
+statement error
+SELECT error('exported runtime failure');
+----
+exported runtime failure
+
+statement error
+SELECT 42;
+----
+Current transaction is aborted
+
+statement ok
+ROLLBACK;
+
+endloop
+
+statement ok
+RESET debug_verify_statement;
+
+# Non-strict verification falls back to the native plan when export is rejected. Strict mode reports the rejection.
+statement ok
+CREATE TYPE fallback_empty_enum AS ENUM ();
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+query T
+SELECT NULL::fallback_empty_enum;
+----
+NULL
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement error
+SELECT NULL::fallback_empty_enum;
+----
+<REGEX>:.*The nested value type has no SQL constructor.*
+
+statement ok
+RESET debug_verify_statement;
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I
+SELECT 42
+----
+42
+
+statement ok
+CALL enable_logging();
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Exercise the verification route: EXPLAIN has its own query log entries.
+query I
+SELECT 42
+----
+42
+
+statement ok
+SET debug_verify_statement='none';
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type='QueryLog' AND message='SELECT 42';
+----
+1

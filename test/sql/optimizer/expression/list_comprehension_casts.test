@@ -1,0 +1,102 @@
+# name: test/sql/optimizer/expression/list_comprehension_casts.test
+# description: Preserve casts in nested list lambda rewrites
+# group: [expression]
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+# A lossy round trip must not be replaced with the original value.
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := true, result := x)), lambda s: s.filter),
+	lambda s: s.result::BOOLEAN::INTEGER
+) FROM (VALUES ([2])) t(l);
+----
+[1]
+
+# Changing the result's physical type must also preserve the cast.
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := true, result := x)), lambda s: s.filter),
+	lambda s: s.result::VARCHAR
+) FROM (VALUES ([2])) t(l);
+----
+[2]
+
+# A filter's intermediate cast can change which elements qualify.
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := x, result := x)),
+	            lambda s: s.filter::DECIMAL(1,0)::BOOLEAN),
+	lambda s: s.result
+) FROM (VALUES ([0.1,0.9])) t(l);
+----
+[0.9]
+
+# TRY_CAST rejects an unconvertible filter value without throwing.
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := x, result := x)),
+	            lambda s: TRY_CAST(s.filter AS BOOLEAN)),
+	lambda s: s.result
+) FROM (VALUES (['true','bad'])) t(l);
+----
+[true]
+
+# Casts around the packed struct cannot be discarded either.
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := true, result := x)
+	            ::STRUCT(filter BOOLEAN,result BOOLEAN)::STRUCT(filter BOOLEAN,result INTEGER)), lambda s: s.filter),
+	lambda s: s.result
+) FROM (VALUES ([2])) t(l);
+----
+[1]
+
+# The struct used by a field projection may itself have been converted.
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := true, result := x)), lambda s: s.filter),
+	lambda s: (s::STRUCT(filter BOOLEAN,result BOOLEAN)::STRUCT(filter BOOLEAN,result INTEGER)).result
+) FROM (VALUES ([2])) t(l);
+----
+[1]
+
+query I
+SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := true, result := x)), lambda s: s.filter),
+	lambda s: s.result::BOOLEAN::INTEGER
+) FROM (VALUES (1, [0,2,NULL,-3]), (2, []), (3, NULL)) t(id,l) ORDER BY id;
+----
+[0, 1, NULL, 1]
+[]
+NULL
+
+# Exercise more than one vector with a nonconstant list column.
+query I
+SELECT count(*) FROM (
+	SELECT list_transform(
+		list_filter(list_transform([i + 2], lambda x: struct_pack(filter := true, result := x)), lambda s: s.filter),
+		lambda s: s.result::BOOLEAN::BIGINT
+	) AS l FROM range(6145) t(i)
+) t WHERE l = [1];
+----
+6145
+
+statement ok
+PREPARE list_cast AS SELECT list_transform(
+	list_filter(list_transform(l, lambda x: struct_pack(filter := true, result := x)), lambda s: s.filter),
+	lambda s: s.result::BOOLEAN::INTEGER
+) FROM (VALUES ($1)) t(l);
+
+query I
+EXECUTE list_cast([2]);
+----
+[1]
+
+statement ok
+DEALLOCATE list_cast;
+
+endloop

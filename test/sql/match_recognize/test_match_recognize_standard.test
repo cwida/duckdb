@@ -1,0 +1,228 @@
+# name: test/sql/match_recognize/test_match_recognize_standard.test
+# description: MATCH_RECOGNIZE - SQL:2016 spellings checked against Oracle
+# group: [match_recognize]
+
+# These are the shapes JSqlParser's MATCH_RECOGNIZE fixtures cover, each of which was executed
+# against Oracle 23ai. The data is theirs too, so the answers can be compared with a real one.
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+pragma threads=1
+
+statement ok
+CREATE TABLE events(seq INTEGER, price INTEGER)
+
+statement ok
+INSERT INTO events VALUES (1, 10), (2, 20), (3, -5), (4, 15)
+
+# Naming a variable without saying which of its rows resumes at its last one, which is what
+# AFTER MATCH SKIP TO LAST spells out.
+
+query I
+SELECT n FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n AFTER MATCH SKIP TO B
+    PATTERN (A+ B) DEFINE A AS price > 0, B AS price <= 0
+)
+----
+3
+
+query I
+SELECT n FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n AFTER MATCH SKIP TO LAST B
+    PATTERN (A+ B) DEFINE A AS price > 0, B AS price <= 0
+)
+----
+3
+
+# () matches where it stands and takes no row, so A () is one A and no more
+
+query I
+SELECT n FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n PATTERN (A ()) DEFINE A AS price > 0
+)
+----
+1
+1
+1
+
+# an empty alternative, which is what the empty match falls through to
+query II
+SELECT * FROM (
+    SELECT * FROM events MATCH_RECOGNIZE (
+        ORDER BY seq MEASURES count(*) AS n, FIRST(seq) AS f PATTERN (A | ()) DEFINE A AS price > 0
+    )
+) ORDER BY f NULLS LAST
+----
+1	1
+1	2
+1	4
+0	NULL
+
+query I
+SELECT n FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n PATTERN (A ()*) DEFINE A AS price > 0
+)
+----
+1
+1
+1
+
+# RUNNING and FINAL say how much of the match the call below them reads, wherever that call sits
+
+query III
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES RUNNING SUM(A.price) + FINAL SUM(A.price) AS total
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	40	10
+2	60	20
+4	30	15
+
+query III
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES 1 + RUNNING SUM(A.price) AS total
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	11	10
+2	31	20
+4	16	15
+
+query III
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES CASE WHEN FINAL count(*) > 1 THEN RUNNING count(*) END AS n
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	1	10
+2	2	20
+4	NULL	15
+
+# they only mean something where there is a match to be running or final over
+statement error
+SELECT RUNNING sum(price) FROM events
+----
+RUNNING and FINAL are only meaningful in the MEASURES of a MATCH_RECOGNIZE
+
+# A condition is decided while the match is still being assembled, so running is the only semantics
+# it has: RUNNING may be written there for clarity, FINAL may not (ISO/IEC 19075-5 5.4). Trino and
+# Oracle draw the same line.
+query I
+SELECT n FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (A+) DEFINE A AS A.price >= RUNNING LAST(A.price)
+)
+----
+4
+
+statement error
+SELECT n FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (A+) DEFINE A AS A.price >= FINAL LAST(A.price)
+)
+----
+<REGEX>:Binder Error:.*only RUNNING is available there.*
+
+statement error
+SELECT * FROM events WHERE FINAL count(*) > 0
+----
+RUNNING and FINAL are only meaningful in the MEASURES of a MATCH_RECOGNIZE
+
+# a column named like one of them is still a column
+query I
+SELECT running FROM (SELECT 1 AS running)
+----
+1
+
+# What ALL ROWS PER MATCH does with a match covering no rows, and with a row covering no match.
+
+query IIIII
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n, CLASSIFIER() AS c, MATCH_NUMBER() AS m
+    ALL ROWS PER MATCH SHOW EMPTY MATCHES PATTERN (A*) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	1	A	1	10
+2	2	A	1	20
+3	0	NULL	2	-5
+4	1	A	3	15
+
+query IIIII
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n, CLASSIFIER() AS c, MATCH_NUMBER() AS m
+    ALL ROWS PER MATCH PATTERN (A*) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	1	A	1	10
+2	2	A	1	20
+3	0	NULL	2	-5
+4	1	A	3	15
+
+query IIIII
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n, CLASSIFIER() AS c, MATCH_NUMBER() AS m
+    ALL ROWS PER MATCH OMIT EMPTY MATCHES PATTERN (A*) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	1	A	1	10
+2	2	A	1	20
+4	1	A	3	15
+
+# a row in no match reports itself and nothing else: every measure it has is about a match
+query IIIII
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n, CLASSIFIER() AS c, MATCH_NUMBER() AS m
+    ALL ROWS PER MATCH WITH UNMATCHED ROWS PATTERN (A+) DEFINE A AS price > 0
+) ORDER BY seq
+----
+1	1	A	1	10
+2	2	A	1	20
+3	NULL	NULL	NULL	-5
+4	1	A	2	15
+
+# An excluded row is left out of a match it is part of. WITH UNMATCHED ROWS cannot be combined with
+# {- -}: it is there to report every row and the exclusion is there to drop some, and a row it drops
+# is one a match did cover, so reporting it as unmatched would say the opposite. The standard forbids
+# the combination and test_match_recognize_errors.test pins the refusal.
+query III
+SELECT * FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n
+    ALL ROWS PER MATCH PATTERN ({- A -} A) DEFINE A AS price > 0
+) ORDER BY seq
+----
+2	2	20
+
+# an excluded row and an empty match are two different reasons for a row not to be reported, and a
+# clause may ask for both: SHOW EMPTY MATCHES keeps the rows that started an empty match, OMIT EMPTY
+# MATCHES drops them, and either way the rows inside a {- -} are gone
+query I
+SELECT x FROM range(6) t(x) MATCH_RECOGNIZE (
+    ORDER BY x ALL ROWS PER MATCH SHOW EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ({- A -}* B*) DEFINE A AS x % 3 = 0, B AS x % 3 = 1
+) ORDER BY x
+----
+1
+2
+4
+5
+
+query I
+SELECT x FROM range(6) t(x) MATCH_RECOGNIZE (
+    ORDER BY x ALL ROWS PER MATCH OMIT EMPTY MATCHES AFTER MATCH SKIP PAST LAST ROW
+    PATTERN ({- A -}* B*) DEFINE A AS x % 3 = 0, B AS x % 3 = 1
+) ORDER BY x
+----
+1
+4
+
+# ONE ROW PER MATCH takes none of them
+statement error
+SELECT count(*) FROM events MATCH_RECOGNIZE (
+    ORDER BY seq MEASURES count(*) AS n ONE ROW PER MATCH OMIT EMPTY MATCHES
+    PATTERN (A*) DEFINE A AS price > 0
+)
+----
+<REGEX>:Parser Error.*syntax error.*

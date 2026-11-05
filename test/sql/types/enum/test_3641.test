@@ -43,4 +43,4 @@ SELECT * FROM m WHERE m=m_2
 statement error
 SELECT * FROM m WHERE m::mood_2=m_2
 ----
-<REGEX>:.*Conversion Error.*out of range for the destination type.*
+Type ENUM('sad', 'ok', 'happy') with value sad can't be cast to the destination type ENUM('very sad', 'very ok', 'very happy')

@@ -12,10 +12,10 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/enums/file_compression_type.hpp"
 #include "duckdb/common/file_system.hpp"
-#include "duckdb/common/multi_file/base_file_reader.hpp"
-#include "duckdb/common/multi_file/multi_file_reader.hpp"
+#include "duckdb/common/open_file_info.hpp"
 #include "json_reader_options.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/query_context.hpp"
 #include "json_common.hpp"
 #include "json_enums.hpp"
 #include "yyjson_memory.hpp"
@@ -26,7 +26,7 @@ class JSONReader;
 
 struct JSONBufferHandle {
 public:
-	JSONBufferHandle(JSONReader &reader, idx_t buffer_index, idx_t readers, AllocatedData &&buffer, idx_t buffer_size,
+	JSONBufferHandle(JSONReader &reader, idx_t buffer_index, idx_t readers, AllocatedData buffer, idx_t buffer_size,
 	                 idx_t buffer_start);
 
 public:
@@ -43,6 +43,8 @@ public:
 	const idx_t buffer_size;
 	//! The start position in the buffer
 	idx_t buffer_start;
+	//! The start of the line copied in from the previous buffer, set once it is copied
+	atomic<idx_t> remainder_start;
 };
 
 struct JSONFileHandle {
@@ -58,6 +60,8 @@ public:
 
 	idx_t FileSize() const;
 	idx_t Remaining() const;
+	//! The fraction of the file that has been read, in [0, 1]
+	double GetProgress() const;
 
 	bool CanSeek() const;
 	bool IsPipe() const;
@@ -69,6 +73,9 @@ public:
 	bool Read(char *pointer, idx_t &read_size, idx_t requested_size);
 	//! Read at position optionally allows passing a custom handle to read from, otherwise the default one is used
 	void ReadAtPosition(char *pointer, idx_t size, idx_t position, optional_ptr<FileHandle> override_handle = nullptr);
+	//! The bytes of the stored file read since the last call - for a compressed file, its compressed bytes. Bytes read
+	//! again after a reset are only returned once
+	idx_t TakeStoredBytesRead();
 
 private:
 	idx_t ReadInternal(char *pointer, const idx_t requested_size);
@@ -84,12 +91,19 @@ private:
 	//! File properties
 	const bool can_seek;
 	const idx_t file_size;
+	//! Whether the file is compressed - the read position then refers to the decompressed data
+	const bool compressed;
 
 	//! Read properties
 	atomic<idx_t> read_position;
 	atomic<idx_t> requested_reads;
 	atomic<idx_t> actual_reads;
 	atomic<bool> last_read_requested;
+
+	//! The bytes of the stored file read and not yet returned by TakeStoredBytesRead
+	atomic<idx_t> stored_bytes_untaken {0};
+	//! For a compressed file, the compressed bytes added to stored_bytes_untaken since the file was (re)opened
+	idx_t compressed_bytes_counted = 0;
 
 	//! Cached buffers for resetting when reading stream
 	vector<AllocatedData> cached_buffers;
@@ -181,7 +195,8 @@ struct JSONError {
 	string error_msg;
 };
 
-class JSONReader : public BaseFileReader {
+//! Reads a single JSON file
+class JSONReader {
 public:
 	JSONReader(ClientContext &context, JSONReaderOptions options, OpenFileInfo file);
 
@@ -207,21 +222,10 @@ public:
 	JSONFileHandle &GetFileHandle() const;
 
 public:
-	string GetReaderType() const override {
-		return "JSON";
-	}
-
-	void PrepareReader(ClientContext &context, GlobalTableFunctionState &) override;
-	bool TryInitializeScan(ClientContext &context, GlobalTableFunctionState &gstate,
-	                       LocalTableFunctionState &lstate) override;
-	AsyncResult Scan(ClientContext &context, GlobalTableFunctionState &global_state,
-	                 LocalTableFunctionState &local_state, DataChunk &chunk) override;
-	void FinishFile(ClientContext &context, GlobalTableFunctionState &gstate_p) override;
-	double GetProgressInFile(ClientContext &context) override;
-
-public:
-	//! Get a new buffer index (must hold the lock)
+	//! Get a new buffer index (grabs the lock)
 	idx_t GetBufferIndex();
+	//! The index the next buffer will receive (grabs the lock)
+	idx_t GetNextBufferIndex();
 	//! Set line count for a buffer that is done (grabs the lock)
 	void SetBufferLineOrObjectCount(JSONBufferHandle &handle, idx_t count);
 	//! Records a parse error in the specified buffer
@@ -244,6 +248,13 @@ public:
 	//! Scan progress
 	double GetProgress() const;
 
+	//! Counts what the file was read for as scanned, once a query scans it
+	void CountBytesScanned();
+	//! Set when a query starts scanning the file, so reading samples of it to detect its schema is not counted
+	bool scanning = false;
+	//! The bytes of the stored file scanned but not yet reported to the profiler
+	atomic<idx_t> bytes_scanned_unreported {0};
+
 	void DecrementBufferUsage(JSONBufferHandle &handle, idx_t lines_or_object_in_buffer, AllocatedData &buffer);
 
 private:
@@ -259,7 +270,7 @@ private:
 	void FinalizeBuffer(JSONReaderScanState &scan_state);
 
 	//! Insert/get/remove buffer (grabs the lock)
-	void InsertBuffer(idx_t buffer_idx, unique_ptr<JSONBufferHandle> &&buffer);
+	void InsertBuffer(idx_t buffer_idx, unique_ptr<JSONBufferHandle> buffer);
 	optional_ptr<JSONBufferHandle> GetBuffer(idx_t buffer_idx);
 	AllocatedData RemoveBuffer(JSONBufferHandle &handle);
 
@@ -274,8 +285,12 @@ private:
 	optional_idx TryGetLineNumber(idx_t buf_index, idx_t line_or_object_in_buf);
 
 private:
+	//! The file that is read
+	OpenFileInfo file;
 	ClientContext &context;
 	JSONReaderOptions options;
+	//! The flags documents are parsed with: numbers are kept as text when a column is or contains a DECIMAL
+	yyjson_read_flag read_flag;
 
 	//! File handle
 	unique_ptr<JSONFileHandle> file_handle;

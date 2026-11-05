@@ -1,0 +1,18 @@
+# name: test/sql/aggregate/aggregates/test_ordered_aggregate_inner_error.test
+# description: Ordered aggregates whose inner aggregate throws while finalizing
+# group: [aggregates]
+
+statement error
+SELECT approx_top_k(1, NULL ORDER BY i DESC) FROM range(5) t(i)
+----
+k value cannot be NULL
+
+statement error
+SELECT histogram(1, NULL ORDER BY i DESC) FROM range(5) t(i)
+----
+Histogram bin list cannot be NULL
+
+query II
+SELECT approx_top_k(i, 2 ORDER BY i DESC), list(i ORDER BY i DESC) FROM range(5) t(i)
+----
+[4, 3]	[4, 3, 2, 1, 0]

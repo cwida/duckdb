@@ -1,0 +1,33 @@
+# name: test/optimizer/pushdown/lateral_projection_evaluation.test
+# description: Preserve projection evaluation counts when restricting a correlation domain
+# group: [pushdown]
+
+statement ok
+CREATE TABLE vertices AS SELECT i::INTEGER AS id FROM range(1, 101) t(i);
+
+statement ok
+CREATE VIEW walk_rows AS
+SELECT t.id, r.depth
+FROM vertices t,
+LATERAL (
+    WITH RECURSIVE walk(depth) AS (
+        SELECT 0 + t.id * 0
+        UNION ALL
+        SELECT depth + 1 FROM walk WHERE depth < 7
+    )
+    SELECT depth FROM walk
+) r;
+
+statement ok
+CREATE SEQUENCE projected_calls;
+
+# Filter pushdown restricts the input before evaluating the projection on the retained rows.
+query II
+SELECT sum(v), count(*) FROM (SELECT id, nextval('projected_calls') AS v FROM walk_rows) q WHERE id = 3;
+----
+36	8
+
+query I
+SELECT currval('projected_calls');
+----
+8

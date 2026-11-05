@@ -1,6 +1,7 @@
 #include "duckdb/execution/operator/helper/physical_limit.hpp"
 
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/types/batched_data_collection.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -80,30 +81,27 @@ void PhysicalLimit::SetInitialLimits(const BoundLimitNode &limit_val, const Boun
 	}
 }
 
+idx_t PhysicalLimit::GetLimitValue(const Value &val, idx_t null_value) {
+	if (val.IsNull()) {
+		return null_value;
+	}
+	auto value = val.GetValue<idx_t>();
+	if (value > MAX_LIMIT_VALUE) {
+		throw BinderException("Max value %llu for LIMIT/OFFSET is %llu", value, MAX_LIMIT_VALUE);
+	}
+	return value;
+}
+
 bool PhysicalLimit::ComputeOffset(ExecutionContext &context, DataChunk &input, optional_idx &limit,
                                   optional_idx &offset, idx_t current_offset, idx_t &max_element,
                                   const BoundLimitNode &limit_val, const BoundLimitNode &offset_val) {
 	if (!limit.IsValid()) {
 		Value val = GetDelimiter(context, input, limit_val.GetValueExpression());
-		if (!val.IsNull()) {
-			limit = val.GetValue<idx_t>();
-		} else {
-			limit = MAX_LIMIT_VALUE;
-		}
-		if (limit.GetIndex() > MAX_LIMIT_VALUE) {
-			throw BinderException("Max value %lld for LIMIT/OFFSET is %lld", limit.GetIndex(), MAX_LIMIT_VALUE);
-		}
+		limit = GetLimitValue(val, MAX_LIMIT_VALUE);
 	}
 	if (!offset.IsValid()) {
 		Value val = GetDelimiter(context, input, offset_val.GetValueExpression());
-		if (!val.IsNull()) {
-			offset = val.GetValue<idx_t>();
-		} else {
-			offset = 0;
-		}
-		if (offset.GetIndex() > MAX_LIMIT_VALUE) {
-			throw BinderException("Max value %lld for LIMIT/OFFSET is %lld", offset.GetIndex(), MAX_LIMIT_VALUE);
-		}
+		offset = GetLimitValue(val, 0);
 	}
 	max_element = limit.GetIndex() + offset.GetIndex();
 	if (limit == 0 || current_offset >= max_element) {
@@ -159,11 +157,17 @@ public:
 	LimitSourceState() {
 		initialized = false;
 		current_offset = 0;
+		scanned_rows = 0;
+		total_rows = 0;
 	}
 
 	bool initialized;
 	idx_t current_offset;
 	BatchedChunkScanState scan_state;
+	//! The number of rows scanned from the collection (including rows skipped by the offset)
+	atomic<idx_t> scanned_rows;
+	//! The number of rows that will be scanned - set when the scan is initialized
+	atomic<idx_t> total_rows;
 };
 
 unique_ptr<GlobalSourceState> PhysicalLimit::GetGlobalSourceState(ClientContext &context) const {
@@ -177,9 +181,15 @@ SourceResultType PhysicalLimit::GetDataInternal(ExecutionContext &context, DataC
 	while (state.current_offset < gstate.limit + gstate.offset) {
 		if (!state.initialized) {
 			gstate.data.InitializeScan(state.scan_state);
+			idx_t total_rows = gstate.data.Count();
+			if (gstate.limit != DConstants::INVALID_INDEX) {
+				total_rows = MinValue<idx_t>(total_rows, gstate.limit + gstate.offset);
+			}
+			state.total_rows = total_rows;
 			state.initialized = true;
 		}
 		gstate.data.Scan(state.scan_state, chunk);
+		state.scanned_rows.fetch_add(chunk.size(), std::memory_order_relaxed);
 		if (chunk.size() == 0) {
 			return SourceResultType::FINISHED;
 		}
@@ -189,6 +199,15 @@ SourceResultType PhysicalLimit::GetDataInternal(ExecutionContext &context, DataC
 	}
 
 	return chunk.size() > 0 ? SourceResultType::HAVE_MORE_OUTPUT : SourceResultType::FINISHED;
+}
+
+ProgressData PhysicalLimit::GetProgress(ClientContext &context, GlobalSourceState &gstate_p) const {
+	auto &state = gstate_p.Cast<LimitSourceState>();
+	idx_t total = state.total_rows;
+	ProgressData progress;
+	progress.total = static_cast<double>(MaxValue<idx_t>(total, 1));
+	progress.done = static_cast<double>(MinValue<idx_t>(state.scanned_rows, total));
+	return progress;
 }
 
 bool PhysicalLimit::HandleOffset(DataChunk &input, idx_t &current_offset, idx_t offset, idx_t limit) {
@@ -235,9 +254,7 @@ Value PhysicalLimit::GetDelimiter(ExecutionContext &context, DataChunk &input, c
 	// only evaluate the expression on the first row of the input
 	DataChunk single_row_input;
 	single_row_input.InitializeEmpty(input.GetTypes());
-	for (idx_t c = 0; c < input.ColumnCount(); c++) {
-		ConstantVector::Reference(single_row_input.data[c], count_t(1), input.data[c], 0, input.size());
-	}
+	single_row_input.Slice(input, 0, MinValue<idx_t>(input.size(), 1));
 	limit_executor.Execute(single_row_input, limit_chunk);
 	auto limit_value = limit_chunk.GetValue(0, 0);
 	return limit_value;
@@ -248,7 +265,7 @@ InsertionOrderPreservingMap<string> PhysicalLimit::ParamsToString() const {
 	if (limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		result["Limit"] = to_string(limit_val.GetConstantValue());
 	} else if (limit_val.Type() == LimitNodeType::CONSTANT_PERCENTAGE) {
-		result["Limit"] = to_string(limit_val.GetConstantPercentage()) + "%";
+		result["Limit"] = StringUtil::ToString(limit_val.GetConstantPercentage()) + "%";
 	}
 	if (offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		auto offset = offset_val.GetConstantValue();

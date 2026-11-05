@@ -1,0 +1,232 @@
+# name: test/sql/copy/parquet/int96_as.test
+# description: Test the int96_as read option for Parquet INT96 (Impala timestamp) columns
+# group: [parquet]
+
+require parquet
+
+# By default INT96 is read as TIMESTAMP (microseconds), truncating the nanosecond part
+query II
+SELECT typeof(ts), ts::VARCHAR
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet')
+ORDER BY ts
+----
+TIMESTAMP	1970-01-02 00:00:00
+TIMESTAMP	2026-09-16 10:20:30.123456
+TIMESTAMP	2200-12-31 23:59:59.987654
+TIMESTAMP	NULL
+
+# int96_as='timestamp' is the explicit default
+query II
+SELECT typeof(ts), ts::VARCHAR
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='timestamp')
+ORDER BY ts
+----
+TIMESTAMP	1970-01-02 00:00:00
+TIMESTAMP	2026-09-16 10:20:30.123456
+TIMESTAMP	2200-12-31 23:59:59.987654
+TIMESTAMP	NULL
+
+# int96_as='timestamp_ns' preserves the full nanosecond precision
+query II
+SELECT typeof(ts), ts::VARCHAR
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='timestamp_ns')
+ORDER BY ts
+----
+TIMESTAMP_NS	1970-01-02 00:00:00.000000001
+TIMESTAMP_NS	2026-09-16 10:20:30.123456789
+TIMESTAMP_NS	2200-12-31 23:59:59.987654321
+TIMESTAMP_NS	NULL
+
+# int96_as='timestamp_ns' also works for dictionary-encoded INT96 columns
+query II
+SELECT typeof(ts), ts::VARCHAR
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds_dictionary.parquet', int96_as='timestamp_ns')
+ORDER BY ts
+----
+TIMESTAMP_NS	1970-01-01 00:00:00.000000001
+TIMESTAMP_NS	2026-09-16 10:20:30.123456789
+TIMESTAMP_NS	2026-09-16 10:20:30.123456789
+TIMESTAMP_NS	2026-09-16 10:20:30.123456789
+TIMESTAMP_NS	NULL
+
+# int96_as='struct' reads the value losslessly as STRUCT(date DATE, time TIME_NS)
+query II
+SELECT typeof(ts), ts
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='struct')
+ORDER BY ts
+----
+STRUCT(date DATE, "time" TIME_NS)	{'date': 1970-01-02, 'time': '00:00:00.000000001'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2026-09-16, 'time': '10:20:30.123456789'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2200-12-31, 'time': '23:59:59.987654321'}
+STRUCT(date DATE, "time" TIME_NS)	NULL
+
+# extracting the struct children preserves full nanosecond precision
+query II
+SELECT typeof(ts['date']), typeof(ts['time'])
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='struct')
+LIMIT 1
+----
+DATE	TIME_NS
+
+query II
+SELECT ts['date'], ts['time']
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='struct')
+ORDER BY ts['date']
+----
+1970-01-02	00:00:00.000000001
+2026-09-16	10:20:30.123456789
+2200-12-31	23:59:59.987654321
+NULL	NULL
+
+# casts applied on top of an extract are pushed down into the reader as well
+query I
+SELECT ts['date']::TIMESTAMP
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='struct')
+WHERE ts['date'] = DATE '2026-09-16'
+----
+2026-09-16 00:00:00
+
+# the option also works for dictionary-encoded INT96 columns
+query II
+SELECT typeof(ts), ts
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds_dictionary.parquet', int96_as='struct')
+ORDER BY ts
+----
+STRUCT(date DATE, "time" TIME_NS)	{'date': 1970-01-01, 'time': '00:00:00.000000001'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2026-09-16, 'time': '10:20:30.123456789'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2026-09-16, 'time': '10:20:30.123456789'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2026-09-16, 'time': '10:20:30.123456789'}
+STRUCT(date DATE, "time" TIME_NS)	NULL
+
+# int96_as is also available on parquet_scan
+query I
+SELECT typeof(ts['date'])
+FROM parquet_scan('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='struct')
+LIMIT 1
+----
+DATE
+
+query I
+SELECT typeof(ts)
+FROM parquet_scan('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='timestamp_ns')
+LIMIT 1
+----
+TIMESTAMP_NS
+
+# int96_as also works as a COPY ... FROM option
+statement ok
+CREATE TABLE int96_copy(ts STRUCT(date DATE, "time" TIME_NS))
+
+statement ok
+COPY int96_copy FROM '{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet'
+    (FORMAT parquet, int96_as 'struct')
+
+query II
+SELECT typeof(ts), ts
+FROM int96_copy
+ORDER BY ts
+----
+STRUCT(date DATE, "time" TIME_NS)	{'date': 1970-01-02, 'time': '00:00:00.000000001'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2026-09-16, 'time': '10:20:30.123456789'}
+STRUCT(date DATE, "time" TIME_NS)	{'date': 2200-12-31, 'time': '23:59:59.987654321'}
+STRUCT(date DATE, "time" TIME_NS)	NULL
+
+statement ok
+CREATE TABLE int96_copy_ns(ts TIMESTAMP_NS)
+
+statement ok
+COPY int96_copy_ns FROM '{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet'
+    (FORMAT parquet, int96_as 'timestamp_ns')
+
+query II
+SELECT typeof(ts), ts::VARCHAR
+FROM int96_copy_ns
+ORDER BY ts
+----
+TIMESTAMP_NS	1970-01-02 00:00:00.000000001
+TIMESTAMP_NS	2026-09-16 10:20:30.123456789
+TIMESTAMP_NS	2200-12-31 23:59:59.987654321
+TIMESTAMP_NS	NULL
+
+# an unrecognized value raises a binder error
+statement error
+SELECT * FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds.parquet', int96_as='invalid')
+----
+<REGEX>:Binder Error.*Unrecognized int96_as.*
+
+# int96_as='struct' also works for dictionary-encoded INT96 columns with extracts
+query II
+SELECT ts['date'], ts['time']
+FROM read_parquet('{DATA_DIR}/parquet-testing/int96_nanoseconds_dictionary.parquet', int96_as='struct')
+ORDER BY ts['date'], ts['time'] DESC
+----
+1970-01-01	00:00:00.000000001
+2026-09-16	10:20:30.123456789
+2026-09-16	10:20:30.123456789
+2026-09-16	10:20:30.123456789
+NULL	NULL
+
+# the struct mode reads the full 0001-9999 range without clamping
+statement ok
+CREATE TABLE int96_full_range(lo TIMESTAMP, hi TIMESTAMP)
+
+statement ok
+INSERT INTO int96_full_range VALUES (TIMESTAMP '0001-01-01 00:00:00', TIMESTAMP '9999-12-31 23:59:59.999999')
+
+statement ok
+COPY int96_full_range TO '{TEST_DIR}/int96_full_range.parquet'
+    (FORMAT parquet, write_timestamp_as_int96 true)
+
+# the default reads these files fine (at microsecond precision)
+query I
+SELECT lo::VARCHAR || '|' || hi::VARCHAR FROM read_parquet('{TEST_DIR}/int96_full_range.parquet')
+----
+0001-01-01 00:00:00|9999-12-31 23:59:59.999999
+
+# timestamp_ns saturates the out-of-range sentinels to -infinity / +infinity
+query II
+SELECT lo::VARCHAR, hi::VARCHAR FROM read_parquet('{TEST_DIR}/int96_full_range.parquet', int96_as='timestamp_ns')
+----
+-infinity	infinity
+
+statement ok
+COPY (
+	SELECT TIMESTAMP '1677-09-21 12:00:00' AS ts
+) TO '{TEST_DIR}/int96_lower_bound.parquet'
+	(FORMAT PARQUET, write_timestamp_as_int96 true);
+
+query I
+SELECT ts
+FROM read_parquet('{TEST_DIR}/int96_lower_bound.parquet', int96_as='timestamp_ns');
+----
+1677-09-21 12:00:00
+
+# the struct mode is the only one that reads the full 0001-9999 range intact
+query IIII
+SELECT lo['date'], lo['time'], hi['date'], hi['time']
+FROM read_parquet('{TEST_DIR}/int96_full_range.parquet', int96_as='struct')
+----
+0001-01-01	00:00:00	9999-12-31	23:59:59.999999
+
+# the option has no effect on non-INT96 (INT64) timestamp columns
+statement ok
+COPY (SELECT TIMESTAMP_NS '1992-01-01 12:03:27.123456789' AS ts) TO '{TEST_DIR}/int64_ns.parquet'
+    (FORMAT parquet)
+
+query II
+SELECT typeof(ts), ts::VARCHAR FROM read_parquet('{TEST_DIR}/int64_ns.parquet', int96_as='struct')
+----
+TIMESTAMP_NS	1992-01-01 12:03:27.123456789
+
+# Verify TIMESTAMPTZ_NS statistics
+statement ok
+COPY (SELECT TIMESTAMPTZ_NS '2026-09-16 10:20:30.123456789+00' AS ts)
+TO '{TEST_DIR}/timezone_stats.parquet' (FORMAT PARQUET);
+
+query II
+SELECT stats_min_value, stats_max_value
+FROM parquet_metadata('{TEST_DIR}/timezone_stats.parquet');
+----
+2026-09-16 10:20:30.123456789+00	2026-09-16 10:20:30.123456789+00
+
+

@@ -79,6 +79,8 @@ public:
 
 	virtual void Serialize(Serializer &serializer) const;
 	static unique_ptr<QueryNode> Deserialize(Deserializer &deserializer);
+	//! Throws a SerializationException if a deserialized query node does not have a valid shape
+	static void VerifyDeserialized(const unique_ptr<QueryNode> &node);
 
 protected:
 	//! Copy base QueryNode properties from another expression to this one,
@@ -89,7 +91,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast query node to type - query node type mismatch");
+			InternalException::Throw("Failed to cast query node to type - query node type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -97,7 +99,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast query node to type - query node type mismatch");
+			InternalException::Throw("Failed to cast query node to type - query node type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

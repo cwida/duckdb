@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/contains_row_group_pruning.test
-# description: Row-group pruning through contains when all values in a row group are identical
+# description: Row-group pruning through contains using constant values and shared prefixes
 # group: [optimizer]
 
 statement ok
@@ -88,3 +88,19 @@ query I
 SELECT count(*) FROM long_strings WHERE contains(s, 'python');
 ----
 0
+
+# The first two row groups share /api/health/; the first also contains a NULL.
+statement ok
+CREATE TABLE requests AS
+SELECT CASE WHEN i = 0 THEN NULL WHEN i < 4096 THEN '/api/health/' ELSE '/api/orders/' END || i::VARCHAR AS path
+FROM range(6144) t(i);
+
+query I
+SELECT count(*) FROM requests WHERE path NOT LIKE '%health%';
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT path FROM requests WHERE path NOT LIKE '%health%';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*

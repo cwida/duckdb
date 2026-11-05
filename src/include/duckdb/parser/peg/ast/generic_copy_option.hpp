@@ -42,7 +42,7 @@ struct GenericCopyOption {
 
 	unique_ptr<ParsedExpression> GetFirstChildOrExpression() const {
 		if (!children.empty()) {
-			return make_uniq<ConstantExpression>(children[0]);
+			return ConstantExpression::FromValue(children[0]);
 		}
 		if (!expression) {
 			throw InvalidInputException("No expression in GenericCopyOption");

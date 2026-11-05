@@ -1,14 +1,16 @@
 module: environment
-# The environment is the required root for opening databases. Create one at
+# The environment is the required root for creating instances: it is the
+# instance cache every instance is created through, so opening the
+# same database file twice is detected across all of them. Create one at
 # program start; destroy it at program end. Destroying it refuses while any
-# database opened through it is still alive — the only handle in V2 with
-# refuse-on-destroy semantics, kept as a guard for the program-lifetime root.
+# instance created through it is still alive. The environment is the only handle
+# in V2 with refuse-on-destroy semantics, kept as a guard for the
+# program-lifetime root.
 functions:
 
-  # Create Environment
-  create_environment:
+  environment_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: "Creates the V2 environment. Call once at program start."
     role: constructor
     belongs_to: environment
@@ -22,19 +24,18 @@ functions:
         type: error_info
         indirection: 1
         kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
-  # Destroy Environment
-  destroy_environment:
+  environment_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys the environment.
 
-      Refuses with ERROR_RESOURCE_IN_USE while any database opened through this
-      environment is still alive; close those databases first, then retry. On
-      success the handle is set to null.
+      Refuses with ERROR_RESOURCE_IN_USE while any instance created through
+      this environment is still alive; destroy those instances first, then
+      retry. On success the handle is set to null.
     role: destructor
     belongs_to: environment
     parameters:
@@ -44,15 +45,14 @@ functions:
         description: "The environment."
     return_type: ERROR
 
-  # Get Environment database count
-  environment_database_count:
+  environment_get_instance_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
-      Returns the number of databases currently open under the environment.
+      Returns the number of instances currently alive under the environment.
 
-      A diagnostic accessor, for tracking down leaked database handles when
-      destroy_environment returns ERROR_RESOURCE_IN_USE. The count is a
+      A diagnostic accessor, for tracking down leaked instances when
+      `[[environment_destroy]]` returns ERROR_RESOURCE_IN_USE. The count is a
       snapshot and may change before the next call.
     role: getter
     belongs_to: environment
@@ -64,10 +64,10 @@ functions:
         type: idx
         indirection: 1
         kind: OUT
-        description: "Receives the number of currently-open databases."
+        description: "Receives the number of live instances."
       err:
         type: error_info
         indirection: 1
         kind: OUT
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy."
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR

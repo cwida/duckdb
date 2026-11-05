@@ -1,0 +1,51 @@
+# name: test/sql/catalog/function/query_table_file_paths.test
+# description: query_table reads file paths and URLs as given, not as qualified table names
+# group: [function]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 AS x) TO '{TEST_DIR}/query_table_path.parquet'
+
+query I
+FROM query_table('{TEST_DIR}/query_table_path.parquet')
+----
+42
+
+query I
+FROM query_table('{TEST_DIR}/./query_table_path.parquet')
+----
+42
+
+query I
+FROM query_table(['{TEST_DIR}/query_table_path.parquet', '{TEST_DIR}/../' || parse_filename('{TEST_DIR}') || '/query_table_path.parquet'])
+----
+42
+42
+
+# every host label is kept
+statement error
+FROM query_table('nonexistent://blobs.duckdb.org/data/query_table_path.parquet')
+----
+nonexistent://blobs.duckdb.org/data/query_table_path.parquet
+
+# qualified names, including quoted components containing a slash, are still table names
+statement ok
+CREATE SCHEMA "a/b"
+
+statement ok
+CREATE TABLE "a/b".t AS SELECT 7 AS i
+
+query I
+FROM query_table('"a/b".t')
+----
+7
+
+# a replacement scan sees every component of a name qualified deeper than catalog.schema.table
+statement ok
+COPY (SELECT 1 AS y) TO '{TEST_DIR}/a.b.c.parquet'
+
+query I
+FROM "{TEST_DIR}/a".b.c.parquet
+----
+1

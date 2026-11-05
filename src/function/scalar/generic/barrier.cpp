@@ -27,7 +27,8 @@ unique_ptr<BaseStatistics> BarrierStats(ClientContext &context, FunctionStatisti
 }
 
 ScalarFunction GetBarrierFunction(const LogicalType &type) {
-	ScalarFunction fun(BarrierFun::Name, {type}, type, BarrierFunction);
+	ScalarFunction fun(BarrierFun::Name, {}, type, BarrierFunction);
+	fun.GetSignature().AddParameter("arg", type);
 	fun.SetBindCallback(BarrierBind);
 	fun.SetStatisticsCallback(BarrierStats);
 	// default null handling replaces the call with a NULL constant when the argument is typed as NULL - that would

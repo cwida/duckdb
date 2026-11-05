@@ -19,10 +19,11 @@ class DatabaseFilePathManager;
 
 struct DatabaseCacheEntry {
 	DatabaseCacheEntry();
-	explicit DatabaseCacheEntry(const shared_ptr<DuckDB> &database);
+	explicit DatabaseCacheEntry(const shared_ptr<DatabaseInstance> &instance);
 	~DatabaseCacheEntry();
 
-	weak_ptr<DuckDB> database;
+	//! Connections and unfinished results keep the instance alive after its last handle is closed
+	weak_ptr<DatabaseInstance> instance;
 	mutex update_database_mutex;
 };
 
@@ -46,6 +47,11 @@ public:
 	shared_ptr<DuckDB> GetOrCreateInstance(const string &database, DBConfig &config_dict,
 	                                       CacheBehavior cache_behavior = CacheBehavior::AUTOMATIC,
 	                                       const std::function<void(DuckDB &)> &on_create = nullptr);
+
+	//! Creates an uncached instance with no database attached (see DuckDB::CreateEmpty). Databases attached to it
+	//! later go through this cache's path manager, so opening one file twice is detected across every instance
+	//! created through the cache.
+	shared_ptr<DuckDB> CreateEmptyInstance(DBConfig &config);
 
 private:
 	shared_ptr<DatabaseFilePathManager> path_manager;

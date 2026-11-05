@@ -1,0 +1,109 @@
+# name: test/sql/function/numeric/round_null_beyond_width.test
+# description: Rounding a decimal to a precision beyond its width keeps NULLs
+# group: [numeric]
+
+# a negative precision that drops more digits than the decimal holds rounds every value to zero;
+# the NULL inputs have to stay NULL
+
+statement ok
+CREATE TABLE dec18(x DECIMAL(18,3));
+
+statement ok
+INSERT INTO dec18 VALUES (123.456), (NULL), (-9.5), (0), (NULL), (999999999999999.999);
+
+query IIIII
+SELECT x, round(x, -20), round_even(x, -20), trunc(x, -20), round(x, -16) FROM dec18 ORDER BY x NULLS FIRST;
+----
+NULL	NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL	NULL
+-9.500	0	0	0	0
+0.000	0	0	0	0
+123.456	0	0	0	0
+999999999999999.999	0	0	0	0
+
+query IIII
+SELECT count(*), count(round(x, -20)), count(round_even(x, -20)), count(trunc(x, -20)) FROM dec18;
+----
+6	4	4	4
+
+statement ok
+CREATE TABLE dec38(x DECIMAL(38,3));
+
+statement ok
+INSERT INTO dec38 VALUES (123.456), (NULL), (-9.5), (0), (NULL), (99999999999999999999999999999999999.999);
+
+query IIIII
+SELECT x, round(x, -300), round_even(x, -300), trunc(x, -300), trunc(x, -36) FROM dec38 ORDER BY x NULLS FIRST;
+----
+NULL	NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL	NULL
+-9.500	0	0	0	0
+0.000	0	0	0	0
+123.456	0	0	0	0
+99999999999999999999999999999999999.999	0	0	0	0
+
+query IIII
+SELECT count(*), count(round(x, -300)), count(round_even(x, -300)), count(trunc(x, -300)) FROM dec38;
+----
+6	4	4	4
+
+# narrower tiers
+statement ok
+CREATE TABLE dec4(x DECIMAL(4,1));
+
+statement ok
+INSERT INTO dec4 VALUES (123.4), (NULL), (-9.5);
+
+query IIII
+SELECT x, round(x, -5), round_even(x, -5), trunc(x, -5) FROM dec4 ORDER BY x NULLS FIRST;
+----
+NULL	NULL	NULL	NULL
+-9.5	0	0	0
+123.4	0	0	0
+
+statement ok
+CREATE TABLE dec9(x DECIMAL(9,2));
+
+statement ok
+INSERT INTO dec9 VALUES (1234567.89), (NULL), (-9.5);
+
+query IIII
+SELECT x, round(x, -10), round_even(x, -10), trunc(x, -10) FROM dec9 ORDER BY x NULLS FIRST;
+----
+NULL	NULL	NULL	NULL
+-9.50	0	0	0
+1234567.89	0	0	0
+
+# all-NULL and constant inputs
+query III
+SELECT round(x, -20), round_even(x, -20), trunc(x, -20) FROM (SELECT NULL::DECIMAL(18,3) x UNION ALL SELECT NULL) t;
+----
+NULL	NULL	NULL
+NULL	NULL	NULL
+
+query III
+SELECT round(NULL::DECIMAL(38,3), -300), round_even(NULL::DECIMAL(38,3), -300), trunc(NULL::DECIMAL(38,3), -300);
+----
+NULL	NULL	NULL
+
+# the result type and the non-NULL results are unchanged
+query I
+SELECT typeof(round(x, -20)) FROM dec18 LIMIT 1;
+----
+DECIMAL(18,0)
+
+query I
+SELECT typeof(round(x, -300)) FROM dec38 LIMIT 1;
+----
+DECIMAL(38,0)
+
+# the precision just within the width still rounds the values
+query IIII
+SELECT x, round(x, -15), round_even(x, -15), trunc(x, -15) FROM dec18 ORDER BY x NULLS FIRST;
+----
+NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL
+-9.500	0	0	0
+0.000	0	0	0
+123.456	0	0	0
+999999999999999.999	1000000000000000	1000000000000000	0

@@ -80,3 +80,19 @@ query I
 SELECT '00:00:00'::TIME::TIMETZ AS ttz
 ----
 00:00:00+00
+
+# The ICU cast raises the same error as the built-in cast for infinite timestamps
+statement error
+SELECT CAST(TIMESTAMPTZ 'infinity' AS TIMETZ);
+----
+Can't get TIME of infinite TIMESTAMP
+
+statement error
+SELECT CAST(TIMESTAMPTZ '-infinity' AS TIMETZ);
+----
+Can't get TIME of infinite TIMESTAMP
+
+query I
+SELECT TRY_CAST(TIMESTAMPTZ 'infinity' AS TIMETZ);
+----
+NULL

@@ -1,0 +1,30 @@
+# name: test/sql/logging/logging_config_separate_databases.test
+# description: Databases used from the same thread keep their own log config
+# group: [logging]
+
+# one config change on each database, so both are at the same config version
+statement ok enabled_db:enabled_con
+SET enable_logging = true;
+
+statement ok disabled_db:disabled_con
+SET logging_level = 'info';
+
+loop i 0 2
+
+statement ok enabled_db:enabled_con
+SELECT write_log('enabled', log_type := 'separate_databases_test')
+
+statement ok disabled_db:disabled_con
+SELECT write_log('disabled', log_type := 'separate_databases_test')
+
+endloop
+
+query I enabled_db:enabled_con
+SELECT count(*) FROM duckdb_logs WHERE type = 'separate_databases_test'
+----
+2
+
+query I disabled_db:disabled_con
+SELECT count(*) FROM duckdb_logs WHERE type = 'separate_databases_test'
+----
+0

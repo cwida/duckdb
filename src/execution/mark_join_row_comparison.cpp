@@ -2,6 +2,7 @@
 
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
 namespace duckdb {
@@ -73,6 +74,32 @@ void MarkJoinRowComparison::CompareEquality(const Vector &left, idx_t left_row, 
 	CompareRowEqualityInternal(left, left_row, left_count, right, right_count, active, row_is_false, row_is_unknown);
 	for (idx_t right_row = 0; right_row < right_count; right_row++) {
 		D_ASSERT(!row_is_false[right_row] || !row_is_unknown[right_row]);
+	}
+}
+
+void MarkJoinRowComparison::Compare(const Vector &left, const Vector &right, ExpressionType comparison_type,
+                                    Vector &result) {
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	FlatVector::ValidityMutable(result).Reset(right.size());
+	switch (comparison_type) {
+	case ExpressionType::COMPARE_EQUAL:
+		return VectorOperations::Equals(left, right, result);
+	case ExpressionType::COMPARE_NOTEQUAL:
+		return VectorOperations::NotEquals(left, right, result);
+	case ExpressionType::COMPARE_LESSTHAN:
+		return VectorOperations::LessThan(left, right, result);
+	case ExpressionType::COMPARE_GREATERTHAN:
+		return VectorOperations::GreaterThan(left, right, result);
+	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+		return VectorOperations::LessThanEquals(left, right, result);
+	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		return VectorOperations::GreaterThanEquals(left, right, result);
+	case ExpressionType::COMPARE_DISTINCT_FROM:
+		return VectorOperations::DistinctFrom(left, right, result);
+	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+		return VectorOperations::NotDistinctFrom(left, right, result);
+	default:
+		throw InternalException("Unsupported comparison type for MARK join");
 	}
 }
 

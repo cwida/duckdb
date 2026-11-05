@@ -45,6 +45,7 @@ public:
 
 public:
 	DUCKDB_API static CastFunctionSet &Get(ClientContext &context);
+	DUCKDB_API static const CastFunctionSet &Get(const ClientContext &context);
 	DUCKDB_API static CastFunctionSet &Get(DatabaseInstance &db);
 
 	//! Returns a cast function (from source -> target)
@@ -64,6 +65,9 @@ public:
 	                                     int64_t implicit_cast_cost = -1);
 	DUCKDB_API void RegisterCastFunction(const LogicalType &source, const LogicalType &target,
 	                                     bind_cast_function_t bind, int64_t implicit_cast_cost = -1);
+	//! Whether a registered cast can change this default conversion, including nested casts.
+	//! Data-dependent VARIANT conversions are treated conservatively.
+	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;
 
 	//! Register a combine rule for LogicalType::TryGetMaxLogicalType, consulted before previously registered rules
 	//! and the built-in rules
@@ -85,9 +89,13 @@ private:
 	vector<CombineTypesRule> combine_rules;
 	//! If any custom cast functions have been defined using RegisterCastFunction, this holds the map
 	optional_ptr<MapCastInfo> map_info;
+	//! A default-only binding probe observes registrations without invoking them.
+	optional_ptr<const CastFunctionSet> registration_probe;
+	bool registered_cast_found = false;
 
 private:
 	void RegisterCastFunction(const LogicalType &source, const LogicalType &target, MapCastNode node);
+	bool HasRegisteredCast(const LogicalType &source, const LogicalType &target) const;
 };
 
 } // namespace duckdb

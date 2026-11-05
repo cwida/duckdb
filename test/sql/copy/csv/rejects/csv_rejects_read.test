@@ -184,6 +184,17 @@ SELECT * EXCLUDE (scan_id, file_id) FROM reject_scans ORDER BY ALL;
 {DATA_DIR}/csv/error/mismatch/small1.csv	,	(empty)	(empty)	\n	0	1	{'num': 'INTEGER','str': 'VARCHAR'}	NULL	NULL	store_rejects=true
 {DATA_DIR}/csv/error/mismatch/small2.csv	,	(empty)	(empty)	\n	0	1	{'num': 'INTEGER','str': 'VARCHAR'}	NULL	NULL	store_rejects=true
 
+# the scans of a query report their files under different ids, so the errors of one can be told from the other
+query II
+SELECT count(DISTINCT file_id), count(DISTINCT scan_id) FROM reject_scans;
+----
+2	1
+
+query I
+SELECT count(DISTINCT file_id) FROM reject_errors;
+----
+2
+
 query IIIIIIII
 SELECT * EXCLUDE (scan_id, file_id) FROM reject_errors ORDER BY ALL;
 ----

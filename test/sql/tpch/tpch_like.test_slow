@@ -11,7 +11,7 @@ CALL dbgen(sf=0.1)
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE '%horse%'
 ----
-1262
+1230
 
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE 'horse%'
@@ -21,13 +21,13 @@ SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE 'horse%'
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE '%horse'
 ----
-50
+62
 
 # with underscore
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE '%h_rse%'
 ----
-1262
+1230
 
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE 'h_rse%'
@@ -37,36 +37,36 @@ SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE 'h_rse%'
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment LIKE '%h_rse'
 ----
-50
+62
 
 # NOT LIKE
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment NOT LIKE '%a%'
 ----
-105580
+106409
 
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment NOT LIKE 'h%'
 ----
-588270
+588151
 
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment NOT LIKE '%a'
 ----
-563861
+564066
 
 # with underscore
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment NOT LIKE '%a_%'
 ----
-114512
+115225
 
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment NOT LIKE 'a_%'
 ----
-563657
+563905
 
 query I
 SELECT COUNT(*) FROM lineitem WHERE l_comment NOT LIKE '%_a'
 ----
-563861
+564066

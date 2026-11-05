@@ -2,7 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -79,15 +79,14 @@ private:
 	bool started = false;
 };
 
-AsyncTaskQueue::AsyncTaskQueue(ClientContext &client_context_p, idx_t max_active_tasks_p)
-    : client_context(client_context_p) {
-	auto &scheduler = TaskScheduler::GetScheduler(client_context);
+AsyncTaskQueue::AsyncTaskQueue(Context &services_p, idx_t max_active_tasks_p) : services(services_p) {
+	auto &scheduler = services.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_tasks = max_active_tasks_p > 0 ? max_active_tasks_p : MaxValue<idx_t>(async_threads, 1);
 	if (async_threads == 0) {
 		return;
 	}
-	executor = make_uniq<TaskExecutor>(client_context, TaskSchedulerType::ASYNC);
+	executor = make_uniq<TaskExecutor>(services, TaskSchedulerType::ASYNC);
 }
 
 AsyncTaskQueue::~AsyncTaskQueue() {
@@ -114,14 +113,7 @@ void AsyncTaskQueue::Submit(AsyncTaskRequest request) {
 	}
 	auto request_size = request.Size();
 	if (executor && executor->HasError()) {
-		ErrorData error;
-		try {
-			executor->ThrowError();
-		} catch (const std::exception &ex) {
-			error = ErrorData(ex);
-		} catch (...) { // LCOV_EXCL_START
-			error = ErrorData("Unknown exception during async task");
-		} // LCOV_EXCL_STOP
+		auto error = executor->GetError();
 		request.task.reset();
 		CompleteRequest(request, request_size, error);
 		error.Throw();
@@ -299,15 +291,10 @@ void AsyncTaskQueue::Flush() {
 		return;
 	}
 
-	try {
+	{
+		// join before leaving this scope, whether the scheduling succeeds or throws
+		TaskExecutor::JoinGuard join(*executor);
 		ScheduleTasksInternal();
-		executor->WorkOnTasks();
-	} catch (...) {
-		try {
-			executor->WorkOnTasks();
-		} catch (...) {
-		}
-		throw;
 	}
 	RethrowTaskError();
 }
@@ -379,12 +366,12 @@ void AsyncTaskQueue::VerifyOpen() const {
 //===--------------------------------------------------------------------===//
 // ManagedAsyncTaskQueue
 //===--------------------------------------------------------------------===//
-ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(ClientContext &client_context_p, idx_t max_active_tasks)
-    : client_context(client_context_p), memory_governor(client_context_p) {
-	auto &scheduler = TaskScheduler::GetScheduler(client_context);
+ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(Context &services_p, idx_t max_active_tasks)
+    : services(services_p), memory_governor(services_p) {
+	auto &scheduler = services.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_drain_tasks = max_active_tasks > 0 ? max_active_tasks : MaxValue<idx_t>(async_threads, 1);
-	task_queue = make_uniq<AsyncTaskQueue>(client_context, max_active_drain_tasks);
+	task_queue = make_uniq<AsyncTaskQueue>(services, max_active_drain_tasks);
 }
 
 ManagedAsyncTaskQueue::~ManagedAsyncTaskQueue() {

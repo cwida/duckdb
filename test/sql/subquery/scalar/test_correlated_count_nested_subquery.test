@@ -1,0 +1,45 @@
+# name: test/sql/subquery/scalar/test_correlated_count_nested_subquery.test
+# description: Correlated zero-returning aggregate whose select list contains another correlated subquery
+# group: [scalar]
+
+statement ok
+CREATE TABLE w(x INT);
+
+statement ok
+CREATE TABLE a(x INT);
+
+statement ok
+CREATE TABLE b(x INT);
+
+statement ok
+INSERT INTO w VALUES (1), (5);
+
+statement ok
+INSERT INTO a VALUES (1), (2);
+
+statement ok
+INSERT INTO b VALUES (1), (2), (3);
+
+query I
+SELECT (SELECT count(*) + (SELECT w.x) FROM a WHERE a.x = w.x) FROM w ORDER BY w.x
+----
+2
+5
+
+query I
+SELECT (SELECT count(*) + (SELECT count(*) FROM b WHERE b.x = w.x) FROM a WHERE a.x = w.x) FROM w ORDER BY w.x
+----
+2
+0
+
+query I
+SELECT (SELECT count(*) + (SELECT count(*) FROM b WHERE b.x >= w.x) FROM a WHERE a.x >= w.x) FROM w ORDER BY w.x
+----
+5
+0
+
+query I
+SELECT (SELECT count(*) + (SELECT w.x) FROM a HAVING count(*) > 0) FROM w ORDER BY w.x
+----
+3
+7

@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/column_binding_replacer.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/subquery/pair_dependent_full_outer_join.hpp"
 #include "duckdb/function/window/rows_functions.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -92,7 +93,7 @@ static void CollectPairDependentBindings(Expression &expression, const unordered
 
 static unique_ptr<LogicalOperator> AddRowIdentity(Binder &binder, unique_ptr<LogicalOperator> source) {
 	auto window = make_uniq<LogicalWindow>(binder.GenerateTableIndex());
-	auto row_number = RowNumberFun::GetFunction().Bind(binder.context);
+	auto row_number = GetBuiltinWindowFunction(binder.context, RowNumberFun::Name, {})->Bind(binder.context);
 	row_number->WindowStartMutable() = WindowBoundary::UNBOUNDED_PRECEDING;
 	row_number->WindowEndMutable() = WindowBoundary::CURRENT_ROW_ROWS;
 	row_number->SetAlias("__duckdb_pair_rowid");
@@ -226,19 +227,9 @@ PairDependentJoinPlan PairDependentFullOuterJoinBuilder::Build() {
 	condition_replacer.VisitExpression(&condition);
 
 	auto match_root = LogicalCrossProduct::Create(std::move(left_domain.plan), std::move(right_domain.plan));
-
-	vector<unique_ptr<Expression>> match_expressions;
-	for (idx_t i = 0; i < left_domain.bindings.size(); i++) {
-		match_expressions.push_back(make_uniq<BoundColumnRefExpression>(left_domain.types[i], left_domain.bindings[i]));
-	}
-	for (idx_t i = 0; i < right_domain.bindings.size(); i++) {
-		match_expressions.push_back(
-		    make_uniq<BoundColumnRefExpression>(right_domain.types[i], right_domain.bindings[i]));
-	}
-	match_expressions.push_back(std::move(condition));
 	unique_ptr<LogicalOperator> match_projection =
-	    make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(match_expressions));
-	match_projection->children.push_back(std::move(match_root));
+	    LogicalProjection::CreateIdentity(binder.GenerateTableIndex(), std::move(match_root));
+	match_projection->expressions.push_back(std::move(condition));
 	RecursiveDependentJoinPlanner::Plan(binder, match_projection);
 	match_projection->ResolveOperatorTypes();
 	auto match_bindings = match_projection->GetColumnBindings();

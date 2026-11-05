@@ -30,9 +30,6 @@ public:
 	~ClientData();
 
 public:
-	//! The query profiler of this client.
-	shared_ptr<QueryProfiler> profiler;
-
 	//! The set of temporary objects belonging to this client.
 	shared_ptr<AttachedDatabase> temporary_objects;
 	//! The set of bound prepared statements belonging to this client.
@@ -44,11 +41,10 @@ public:
 
 	//! The catalog search path.
 	unique_ptr<CatalogSearchPath> catalog_search_path;
+	//! The instance's default database as it was when this client connected; later DatabaseManager::SetDefaultDatabase
+	//! calls only affect new clients. Empty when there was none.
+	Identifier default_database;
 
-	//! The file opener of the client context.
-	unique_ptr<FileOpener> file_opener;
-	//! The clients' file system wrapper.
-	unique_ptr<FileSystem> client_file_system;
 	//! The clients' buffer manager wrapper.
 	unique_ptr<BufferManager> client_buffer_manager;
 

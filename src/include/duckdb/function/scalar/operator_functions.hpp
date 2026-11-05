@@ -17,7 +17,7 @@ namespace duckdb {
 
 struct OperatorAddFun {
 	static constexpr const char *Name = "+";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "left,right";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -33,7 +33,7 @@ struct AddFun {
 
 struct OperatorSubtractFun {
 	static constexpr const char *Name = "-";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "left,right";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -49,7 +49,7 @@ struct SubtractFun {
 
 struct OperatorMultiplyFun {
 	static constexpr const char *Name = "*";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "left,right";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -65,7 +65,7 @@ struct MultiplyFun {
 
 struct OperatorFloatDivideFun {
 	static constexpr const char *Name = "/";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "left,right";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -75,7 +75,7 @@ struct OperatorFloatDivideFun {
 
 struct OperatorIntegerDivideFun {
 	static constexpr const char *Name = "//";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "left,right";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -91,7 +91,7 @@ struct DivideFun {
 
 struct OperatorModuloFun {
 	static constexpr const char *Name = "%";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "left,right";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -103,6 +103,16 @@ struct ModFun {
 	using ALIAS = OperatorModuloFun;
 
 	static constexpr const char *Name = "mod";
+};
+
+struct FmodFun {
+	static constexpr const char *Name = "fmod";
+	static constexpr const char *Parameters = "x,y";
+	static constexpr const char *Description = "Calculates the modulo value with the sign of y. Always returns a floating point number.";
+	static constexpr const char *Example = "fmod(-10, 3)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunctionSet GetFunctions();
 };
 
 struct CastFun {
@@ -117,7 +127,7 @@ struct CastFun {
 
 struct DecimalDivisionFun {
 	static constexpr const char *Name = "decimal_division";
-	static constexpr const char *Parameters = "x,y[,scale]";
+	static constexpr const char *Parameters = "x,y,scale";
 	static constexpr const char *Description = "Divides two DECIMAL values using exact integer arithmetic and round-half-to-even, returning a DECIMAL result with scale determined by SQL Server semantics (result_scale = max(6, s1 + p2 + 1)).";
 	static constexpr const char *Example = "decimal_division(10.00::DECIMAL(10,2), 3.00::DECIMAL(10,2))";
 	static constexpr const char *Categories = "";

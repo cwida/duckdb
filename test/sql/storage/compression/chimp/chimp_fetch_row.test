@@ -1,0 +1,25 @@
+# name: test/sql/storage/compression/chimp/chimp_fetch_row.test
+# description: Fetch-row over Chimp compressed floating point columns
+# group: [chimp]
+
+# The database is written with a vector size of 2048.
+require vector_size 2048
+
+load test/sql/storage/compression/chimp/chimp.db readonly
+
+statement ok
+SET debug_force_fetch_row=true;
+
+query T
+SELECT temperature::VARCHAR FROM temperatures_double LIMIT 3;
+----
+49.4
+48.8
+46.4
+
+query T
+SELECT temperature::VARCHAR FROM temperatures_float LIMIT 3;
+----
+49.4
+48.8
+46.4

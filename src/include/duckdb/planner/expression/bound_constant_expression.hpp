@@ -24,9 +24,9 @@ public:
 	const Value &GetValue() const {
 		return value;
 	}
-	Value &GetValueMutable() {
-		return value;
-	}
+	void SetValue(Value value_p);
+	Value TakeValue();
+	void SetReturnType(LogicalType type) override;
 	string ToString() const override;
 
 	bool Equals(const BaseExpression &other) const override;

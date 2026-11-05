@@ -1,0 +1,85 @@
+# name: test/sql/create/create_schema_options.test
+# description: Test CREATE SCHEMA with a WITH clause
+# group: [create]
+
+require no_force_storage
+
+statement error
+CREATE SCHEMA s1 WITH ('location'='s3://bucket/folder', 'format'='parquet');
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+# unquoted option keys
+statement error
+CREATE SCHEMA s1 WITH (location='s3://bucket/folder', format='parquet');
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+# single value options
+statement error
+CREATE SCHEMA s1 WITH (location, format);
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+statement error
+CREATE SCHEMA IF NOT EXISTS s1 WITH (location='s3://bucket/folder');
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+statement error
+CREATE OR REPLACE SCHEMA s1 WITH (location='s3://bucket/folder');
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+statement ok
+SET VARIABLE location_var='boop'
+
+statement error
+CREATE SCHEMA s1 WITH (location=getvariable('location_var'));
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+statement ok
+ATTACH ':memory:' AS other_db
+
+statement error
+CREATE SCHEMA other_db.s1 WITH (location='s3://bucket/folder');
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+# nested schema
+statement ok
+CREATE SCHEMA parent_schema
+
+statement error
+CREATE SCHEMA parent_schema.child WITH (location='s3://bucket/folder');
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*
+
+# WITH must come after the schema name
+statement error
+CREATE SCHEMA WITH (location='s3://bucket/folder') s1;
+----
+<REGEX>:.*Parser Error.*
+
+# the schema was never created
+statement error
+CREATE TABLE s1.t(i INTEGER);
+----
+<REGEX>:.*Catalog Error.*s1.*
+
+# a schema without options still works
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE TABLE s1.t(i INTEGER);
+
+# option keys are escaped when the statement is stringified
+statement ok
+SET debug_verify_statement='reparse_statement'
+
+statement error
+CREATE SCHEMA s2 WITH ('a''b'=1);
+----
+<REGEX>:.*WITH clause is not supported for schemas in a duckdb catalog.*

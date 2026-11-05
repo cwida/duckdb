@@ -87,12 +87,20 @@ void FindGetsAndProjections(LogicalOperator &op, Analyses &analyses, Projections
 	}
 }
 
+// A column binding into a GET is an index into its column ids, not a column id
+// itself. Virtual columns (e.g. "filename") have no entry in returned_types, so
+// nothing can be pushed into them.
+static bool IsRealGetColumn(const LogicalGet &get, ProjectionIndex column_index) {
+	const auto &column_ids = get.GetColumnIds();
+	return column_index < column_ids.size() && !column_ids[column_index].IsVirtualColumn();
+}
+
 optional<GetBinding> Resolve(ColumnBinding binding, Analyses &analyses, const Projections &projections) {
-	if (IsVirtualColumn(binding.column_index)) {
-		return nullopt;
-	}
 	if (const auto it = analyses.find(binding.table_index); it != analyses.end()) {
-		return {{it->second, binding.column_index, nullptr}};
+		if (!IsRealGetColumn(it->second.get, binding.column_index)) {
+			return nullopt;
+		}
+		return {{it->second, binding.column_index, nullptr, binding.column_index}};
 	}
 
 	const auto projection_it = projections.find(binding.table_index);
@@ -106,11 +114,11 @@ optional<GetBinding> Resolve(ColumnBinding binding, Analyses &analyses, const Pr
 		return nullopt;
 	}
 	const ColumnBinding get_binding = inner->Cast<BoundColumnRefExpression>().Binding();
-	if (IsVirtualColumn(get_binding.column_index)) {
-		return nullopt;
-	}
 	if (const auto it = analyses.find(get_binding.table_index); it != analyses.end()) {
-		return {{it->second, get_binding.column_index, &projection}};
+		if (!IsRealGetColumn(it->second.get, get_binding.column_index)) {
+			return nullopt;
+		}
+		return {{it->second, get_binding.column_index, &projection, binding.column_index}};
 	}
 	return nullopt;
 }
@@ -236,7 +244,7 @@ unique_ptr<Expression> CastReplace::VisitReplace(BoundColumnRefExpression &expr,
 		return std::move(*ptr);
 	}
 
-	const auto &[analysis, column_index, projection] = *binding;
+	const auto &[analysis, column_index, projection, projection_column_index] = *binding;
 	if (CanPushdownColumn(analysis, column_index)) {
 		const LogicalType return_type = analysis.get.returned_types[analysis.StorageIndex(column_index)];
 		expr.SetReturnType(return_type);
@@ -244,7 +252,7 @@ unique_ptr<Expression> CastReplace::VisitReplace(BoundColumnRefExpression &expr,
 		// LogicalProjection::ResolveTypes, so we need to check whether types in
 		// projection have been resolved, and updated them only if needed.
 		if (projection != nullptr && !projection->types.empty()) {
-			projection->types[column_index] = return_type;
+			projection->types[projection_column_index] = return_type;
 		}
 	}
 
@@ -265,7 +273,7 @@ unique_ptr<Expression> CastReplace::VisitReplace(BoundFunctionExpression &expr, 
 		return nullptr;
 	}
 
-	const auto &[analysis, column_index, projection] = *binding;
+	const auto &[analysis, column_index, projection, projection_column_index] = *binding;
 	if (!CanPushdownColumn(analysis, column_index)) {
 		return std::move(*ptr);
 	}
@@ -274,7 +282,7 @@ unique_ptr<Expression> CastReplace::VisitReplace(BoundFunctionExpression &expr, 
 	bound_col_base->SetReturnType(return_type);
 	// Same as in CastReplace::VisitReplace(BoundColumnRefExpression)
 	if (projection != nullptr && !projection->types.empty()) {
-		projection->types[column_index] = return_type;
+		projection->types[projection_column_index] = return_type;
 	}
 	return std::move(bound_col_base);
 }

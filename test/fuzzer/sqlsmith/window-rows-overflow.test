@@ -15,7 +15,7 @@ query I
 SELECT nth_value(1929, 42) OVER (
 	PARTITION BY (
 		"usmallint" > "smallint"
-	), 747 ROWS BETWEEN COALESCE("bigint", 0) PRECEDING AND CURRENT ROW
+	), 747 ROWS BETWEEN GREATEST(COALESCE("bigint", 0), 0) PRECEDING AND CURRENT ROW
 )
 FROM all_types;
 ----
@@ -27,7 +27,7 @@ query I
 SELECT nth_value(1929, 42) OVER (
 	PARTITION BY (
 		"usmallint" > "smallint"
-	), 747 ROWS BETWEEN 1 PRECEDING AND COALESCE("bigint", 0) PRECEDING
+	), 747 ROWS BETWEEN 1 PRECEDING AND GREATEST(COALESCE("bigint", 0), 0) PRECEDING
 )
 FROM all_types;
 ----
@@ -39,7 +39,7 @@ query I
 SELECT nth_value(1929, 42) OVER (
 	PARTITION BY (
 		"usmallint" > "smallint"
-	), 747 ROWS BETWEEN COALESCE("bigint", 0) FOLLOWING AND 1 FOLLOWING
+	), 747 ROWS BETWEEN GREATEST(COALESCE("bigint", 0), 0) FOLLOWING AND 1 FOLLOWING
 )
 FROM all_types;
 ----
@@ -51,7 +51,7 @@ query I
 SELECT nth_value(1929, 42) OVER (
 	PARTITION BY (
 		"usmallint" > "smallint"
-	), 747 ROWS BETWEEN CURRENT ROW AND COALESCE("bigint", 0) FOLLOWING
+	), 747 ROWS BETWEEN CURRENT ROW AND GREATEST(COALESCE("bigint", 0), 0) FOLLOWING
 )
 FROM all_types;
 ----

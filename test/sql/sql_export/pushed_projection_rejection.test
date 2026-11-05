@@ -1,0 +1,44 @@
+# name: test/sql/sql_export/pushed_projection_rejection.test
+# description: Reject scans that consumed projection expressions without their SQL provenance
+# group: [sql_export]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES ('abc'), ('x'), (NULL)) t(s)) TO '{TEST_DIR}/pushed_projection.parquet';
+
+# Retaining scan invocation arguments across serialization requires the v2 format.
+statement ok
+SET storage_compatibility_version='v2.0.0';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement error
+EXPLAIN (SQL) SELECT strlen(s) FROM read_parquet('{TEST_DIR}/pushed_projection.parquet');
+----
+EXPLAIN (SQL) cannot render table function
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+query I rowsort
+SELECT strlen(s) FROM read_parquet('{TEST_DIR}/pushed_projection.parquet');
+----
+1
+3
+NULL
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query T rowsort
+SELECT s FROM read_parquet('{TEST_DIR}/pushed_projection.parquet');
+----
+NULL
+abc
+x
+
+endloop

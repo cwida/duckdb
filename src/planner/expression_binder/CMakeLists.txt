@@ -9,6 +9,7 @@ add_library_unity(
   group_binder.cpp
   having_binder.cpp
   lateral_binder.cpp
+  match_recognize_binder.cpp
   qualify_binder.cpp
   scope_resolution.cpp
   index_binder.cpp

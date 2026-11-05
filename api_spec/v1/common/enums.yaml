@@ -157,6 +157,7 @@ enums:
       ERROR_SEQUENCE: {value: 41}
       ERROR_DATA_CORRUPTION: {value: 43}
       INVALID_CONFIGURATION: {value: 42}
+      ERROR_RESOURCE_IN_USE: {value: 44}
   cast_mode:
     lifecycle:
       - ["stable", "v1.1.0", "2024-09-08"]

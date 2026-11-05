@@ -15,9 +15,9 @@
     },
     {
         "name": "index_key",
-        "parameters": "path, name, [key_column_1, key_column_2, ...]",
-        "description": "Generate index keys for a named index on a table (specified by a path struct with required 'table' and optional 'catalog'/'schema' fields) from key column arguments. Currently only supports ART indexes.",
-        "example": "index_key({'schema': 'main', 'table': 'tbl3'}, 'tbl3_idx', key1, key2, key3)",
+        "parameters": "path,...",
+        "description": "Generate index keys from key column arguments. The path struct requires a 'table' field, optional 'catalog'/'schema' fields, and either an 'index' field naming a user-defined index, or a 'constraint' field ('primary', 'unique' or 'foreign') selecting a constraint index. A 'columns' list selects the constraint by its key columns; it is only required when the table has multiple constraints of the given type. Currently only supports ART indexes.",
+        "example": "index_key({'schema': 'main', 'table': 'tbl3', 'index': 'tbl3_idx'}, key1, key2, key3)",
         "type": "scalar_function",
         "struct": "IndexKeyFun"
     }

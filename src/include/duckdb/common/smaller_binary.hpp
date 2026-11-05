@@ -96,6 +96,10 @@
 #define DUCKDB_SB_FEATURE_aggregate_executor_sel_flags DUCKDB_SB_DEFAULT // group: vector_specialization
 #endif
 
+#ifndef DUCKDB_SB_FEATURE_scalar_executor_constant
+#define DUCKDB_SB_FEATURE_scalar_executor_constant DUCKDB_SB_DEFAULT // group: vector_specialization
+#endif
+
 // --- row_layout_specialization: bool-template specializations in the row-layout operations -----
 
 #ifndef DUCKDB_SB_FEATURE_tuple_data_heap_sizes

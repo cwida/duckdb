@@ -1,0 +1,53 @@
+# name: test/sql/sql_export/named_scalar_arguments.test
+# description: Named scalar arguments preserve nested values, NULLs and duplicates
+# group: [sql_export]
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+PRAGMA disable_optimizer;
+
+query T rowsort
+SELECT struct_insert(s, "named column" := j, "constant field" := 7, "list field" := l, "nested field" := n) FROM (VALUES ({'a': 1, 'MiXeD': [2]}, 2, [2, NULL]::INTEGER[], {'items': [2, NULL]::INTEGER[]}), ({'a': 1, 'MiXeD': [2]}, 2, [2, NULL]::INTEGER[], {'items': [2, NULL]::INTEGER[]}), ({'a': NULL, 'MiXeD': NULL::INTEGER[]}, NULL, NULL::INTEGER[], {'items': NULL::INTEGER[]})) src(s, j, l, n);
+----
+{'a': 1, 'MiXeD': [2], 'named column': 2, 'constant field': 7, 'list field': [2, NULL], 'nested field': {'items': [2, NULL]}}
+{'a': 1, 'MiXeD': [2], 'named column': 2, 'constant field': 7, 'list field': [2, NULL], 'nested field': {'items': [2, NULL]}}
+{'a': NULL, 'MiXeD': NULL, 'named column': NULL, 'constant field': 7, 'list field': NULL, 'nested field': {'items': NULL}}
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT struct_insert(s, "named column" := j, "constant field" := 7, "list field" := l, "nested field" := n) FROM (VALUES ({'a': 1, 'MiXeD': [2]}, 2, [2, NULL]::INTEGER[], {'items': [2, NULL]::INTEGER[]}), ({'a': 1, 'MiXeD': [2]}, 2, [2, NULL]::INTEGER[], {'items': [2, NULL]::INTEGER[]}), ({'a': NULL, 'MiXeD': NULL::INTEGER[]}, NULL, NULL::INTEGER[], {'items': NULL::INTEGER[]})) src(s, j, l, n);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?struct_insert"?[(].*"named column" := .*
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+PRAGMA disable_optimizer;
+
+query TTTT rowsort
+SELECT struct_pack("named field" := 1, null_field := NULL::INTEGER), row(1, NULL::INTEGER), struct_update({'old': 1}, old := 2, "new field" := NULL::INTEGER), write_log('ignored', disable_logging := true, return_value := 42);
+----
+{'named field': 1, 'null_field': NULL}	(1, NULL)	{'old': 2, 'new field': NULL}	42
+
+endloop
+
+query TT
+EXPLAIN (SQL) SELECT struct_pack("named field" := 1, null_field := NULL::INTEGER), row(1, NULL::INTEGER), struct_update({'old': 1}, old := 2, "new field" := NULL::INTEGER), write_log('ignored', disable_logging := true, return_value := 42);
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?struct_pack"?[(].*"named field" := .*
+
+statement ok
+PRAGMA enable_optimizer;
+
+statement error
+EXPLAIN (SQL) SELECT struct_insert({'a':1}, "A" := 2);
+----
+<REGEX>:Binder Error:.*Duplicate struct entry name.*

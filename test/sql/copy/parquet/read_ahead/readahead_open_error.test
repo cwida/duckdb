@@ -1,0 +1,77 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_open_error.test
+# description: A failed async file open must fail the query, never hang or quiet-finish it
+# group: [read_ahead]
+
+require parquet
+
+statement ok
+SET threads=4
+
+loop i 0 20
+
+statement ok
+COPY (SELECT range AS b FROM range(1000)) TO '{TEST_DIR}/oe_{i}.parquet' (FORMAT parquet)
+
+endloop
+
+# not-parquet bytes; the name sorts mid-list so binding still succeeds on the first file
+statement ok
+COPY (SELECT 'garbage' AS g) TO '{TEST_DIR}/oe_1x.parquet' (FORMAT csv)
+
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=1
+
+# default depth: the failing open runs detached on the async pool
+loop x 0 5
+
+statement error
+SELECT sum(b) FROM read_parquet('{TEST_DIR}/oe_*.parquet')
+----
+<REGEX>:.*Invalid Input Error.*
+
+# zero-column jobs never wait on job I/O: the produce-side error check is the only error surface
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/oe_*.parquet')
+----
+<REGEX>:.*Invalid Input Error.*
+
+endloop
+
+# explicit depth: production is slot-serialized but opens still run detached
+statement ok
+SET read_ahead_depth=1
+
+loop x 0 5
+
+statement error
+SELECT sum(b) FROM read_parquet('{TEST_DIR}/oe_*.parquet')
+----
+<REGEX>:.*Invalid Input Error.*
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/oe_*.parquet')
+----
+<REGEX>:.*Invalid Input Error.*
+
+endloop
+
+# single consumer: the failing open lands while the only thread waits inside its claim on the front file
+statement ok
+SET threads=1
+
+loop x 0 5
+
+statement error
+SELECT sum(b) FROM read_parquet('{TEST_DIR}/oe_*.parquet')
+----
+<REGEX>:.*Invalid Input Error.*
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/oe_*.parquet')
+----
+<REGEX>:.*Invalid Input Error.*
+
+endloop
+
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=0

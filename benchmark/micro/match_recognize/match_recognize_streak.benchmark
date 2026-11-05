@@ -1,0 +1,21 @@
+# name: benchmark/micro/match_recognize/match_recognize_streak.benchmark
+# description: The longest run of increasing readings per sensor
+# group: [match_recognize]
+
+name MatchRecognize Streak
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE readings AS
+    SELECT (i // 1000)::INTEGER AS sensor, i::INTEGER AS i, (hash(i) % 1000)::INTEGER AS v
+    FROM range(0, 10000000) t(i);
+
+run
+SELECT max(len) FROM readings MATCH_RECOGNIZE(
+    PARTITION BY sensor ORDER BY i
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A B*)
+    DEFINE B AS B.v > PREV(B.v)
+);

@@ -1,5 +1,6 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
 
@@ -48,6 +49,16 @@ struct JSONTableInOutGlobalState : GlobalTableFunctionState {
 
 	static constexpr idx_t JSON_COLUMN_OFFSET = 0;
 	static constexpr idx_t ROOT_COLUMN_OFFSET = 1;
+
+	//! Progress when used as a source (i.e. with a single input row) - the rows that will be produced, and the rows
+	//! that were produced
+	atomic<idx_t> total_rows {0};
+	atomic<idx_t> produced_rows {0};
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
+	}
 };
 
 static unique_ptr<GlobalTableFunctionState> JSONTableInOutInitGlobal(ClientContext &, TableFunctionInitInput &input) {
@@ -146,9 +157,9 @@ struct JSONTableInOutRecursionNode {
 };
 
 struct JSONTableInOutLocalState : LocalTableFunctionState {
-	explicit JSONTableInOutLocalState(ClientContext &context)
-	    : json_allocator(BufferAllocator::Get(context)), alc(json_allocator.GetYYAlc()), len(DConstants::INVALID_INDEX),
-	      doc(nullptr), initialized(false), total_count(0) {
+	JSONTableInOutLocalState(ClientContext &context, JSONTableInOutGlobalState &gstate)
+	    : gstate(gstate), json_allocator(BufferAllocator::Get(context)), alc(json_allocator.GetYYAlc()),
+	      len(DConstants::INVALID_INDEX), doc(nullptr), initialized(false), total_count(0) {
 	}
 
 	string GetPath() const {
@@ -169,21 +180,39 @@ struct JSONTableInOutLocalState : LocalTableFunctionState {
 		recursion_nodes.emplace_back(str, val);
 	}
 
+	JSONTableInOutGlobalState &gstate;
 	JSONAllocator json_allocator;
 	yyjson_alc *alc;
+	//! The rows the current input row is estimated to produce, and the rows it produced so far
+	idx_t estimated_rows = 0;
+	idx_t produced_rows = 0;
 
 	string path;
 	idx_t len;
 	yyjson_doc *doc;
 	bool initialized;
+	//! The input row currently being processed, and its document (for the "json" virtual column)
+	idx_t input_row = 0;
+	string json_doc;
 
 	idx_t total_count;
 	vector<JSONTableInOutRecursionNode> recursion_nodes;
 };
 
 static unique_ptr<LocalTableFunctionState> JSONTableInOutInitLocal(ExecutionContext &context, TableFunctionInitInput &,
-                                                                   GlobalTableFunctionState *) {
-	return make_uniq<JSONTableInOutLocalState>(context.client);
+                                                                   GlobalTableFunctionState *global_state) {
+	return make_uniq<JSONTableInOutLocalState>(context.client, global_state->Cast<JSONTableInOutGlobalState>());
+}
+
+static double JSONTableInOutProgress(ClientContext &, const FunctionData *,
+                                     const GlobalTableFunctionState *global_state) {
+	auto &gstate = global_state->Cast<JSONTableInOutGlobalState>();
+	auto total_rows = gstate.total_rows.load(std::memory_order_relaxed);
+	if (total_rows == 0) {
+		return 0;
+	}
+	auto produced_rows = MinValue<idx_t>(gstate.produced_rows.load(std::memory_order_relaxed), total_rows);
+	return 100.0 * static_cast<double>(produced_rows) / static_cast<double>(total_rows);
 }
 
 template <class T>
@@ -286,11 +315,11 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 	// Parse path, default to root if not given
 	Value path_value("$");
 	if (input.data.size() > 1) {
-		const auto &path_vector = input.data[1];
-		if (ConstantVector::IsNull(path_vector)) {
+		const auto path_values = input.data[1].Values<string_t>();
+		if (!path_values[lstate.input_row].IsValid()) {
 			return;
 		}
-		path_value = ConstantVector::GetData<string_t>(path_vector)[0];
+		path_value = path_values[lstate.input_row].GetValue();
 	}
 
 	if (JSONReadFunctionData::CheckPath(path_value, lstate.path, lstate.len) == JSONCommon::JSONPathType::WILDCARD) {
@@ -302,11 +331,15 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 	}
 
 	// Parse document and get the value at the supplied path
-	const auto &input_vector = input.data[0];
-	if (ConstantVector::IsNull(input_vector)) {
+	const auto input_values = input.data[0].Values<string_t>();
+	if (!input_values[lstate.input_row].IsValid()) {
 		return;
 	}
-	const auto &input_data = ConstantVector::GetData<string_t>(input_vector)[0];
+	const auto input_data = input_values[lstate.input_row].GetValue();
+	if (lstate.gstate.json_column_index.IsValid()) {
+		// Copy the document only when the "json" virtual column is selected
+		lstate.json_doc = input_data.GetString();
+	}
 	lstate.doc = JSONCommon::ReadDocument(input_data, JSONCommon::READ_FLAG, lstate.alc);
 	const auto root = JSONCommon::GetUnsafe(lstate.doc->root, lstate.path.c_str(), lstate.len);
 
@@ -315,6 +348,14 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 	}
 
 	const auto is_container = unsafe_yyjson_is_arr(root) || unsafe_yyjson_is_obj(root);
+	// json_each produces a row per element of the root, json_tree a row per value (the value count is an upper bound)
+	if (TYPE == JSONTableInOutType::TREE) {
+		lstate.estimated_rows = yyjson_doc_get_val_count(lstate.doc);
+	} else {
+		lstate.estimated_rows = is_container ? unsafe_yyjson_get_len(root) : 1;
+	}
+	lstate.produced_rows = 0;
+	lstate.gstate.total_rows.fetch_add(lstate.estimated_rows, std::memory_order_relaxed);
 	if (!is_container || TYPE == JSONTableInOutType::TREE) {
 		result.AddRow<TYPE>(lstate, nullptr, root);
 	}
@@ -349,6 +390,9 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 
 	JSONTableInOutResult result(gstate, output);
 	if (!lstate.initialized) {
+		if (lstate.input_row >= input.size()) {
+			return OperatorResultType::NEED_MORE_INPUT;
+		}
 		InitializeLocalState<TYPE>(lstate, input, result);
 		lstate.initialized = true;
 	}
@@ -384,11 +428,15 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 		}
 	}
 	output.SetChildCardinality(result.count);
+	lstate.produced_rows += result.count;
+	gstate.produced_rows.fetch_add(result.count, std::memory_order_relaxed);
 
 	// Set constant virtual columns ("json", "root", and "empty")
 	if (gstate.json_column_index.IsValid()) {
 		auto &json_vector = output.data[gstate.json_column_index.GetIndex()];
-		json_vector.Reference(input.data[0]);
+		json_vector.SetVectorType(VectorType::CONSTANT_VECTOR);
+		ConstantVector::GetData<string_t>(json_vector)[0] = string_t(lstate.json_doc.c_str(), lstate.json_doc.size());
+		FlatVector::SetSize(json_vector, count_t(result.count));
 	}
 	if (gstate.root_column_index.IsValid()) {
 		auto &root_vector = output.data[gstate.root_column_index.GetIndex()];
@@ -403,8 +451,22 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 
 	if (output.size() == 0) {
 		D_ASSERT(recursion_nodes.empty());
+		// the input row is done - correct the estimate to the rows that were actually produced
+		if (lstate.estimated_rows > lstate.produced_rows) {
+			gstate.total_rows.fetch_sub(lstate.estimated_rows - lstate.produced_rows, std::memory_order_relaxed);
+		} else {
+			gstate.total_rows.fetch_add(lstate.produced_rows - lstate.estimated_rows, std::memory_order_relaxed);
+		}
+		lstate.estimated_rows = 0;
+		lstate.produced_rows = 0;
 		lstate.json_allocator.Reset();
 		lstate.initialized = false;
+		lstate.input_row++;
+		if (lstate.input_row < input.size()) {
+			// start on the next input row with the next output chunk
+			return OperatorResultType::HAVE_MORE_OUTPUT;
+		}
+		lstate.input_row = 0;
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
 	return OperatorResultType::HAVE_MORE_OUTPUT;
@@ -423,12 +485,15 @@ virtual_column_map_t GetJSONTableInOutVirtualColumns(ClientContext &, optional_p
 
 template <JSONTableInOutType TYPE>
 TableFunction GetJSONTableInOutFunction(const LogicalType &input_type, const bool &has_path_param) {
-	vector<LogicalType> arguments = {input_type};
+	FunctionSignature signature;
+	signature.AddPositionalOnly("json", input_type);
 	if (has_path_param) {
-		arguments.push_back(LogicalType::VARCHAR);
+		signature.AddPositionalOnly("path", LogicalType::VARCHAR);
 	}
-	TableFunction function(arguments, nullptr, JSONTableInOutBind, JSONTableInOutInitGlobal, JSONTableInOutInitLocal);
+	TableFunction function(std::move(signature), nullptr, JSONTableInOutBind, JSONTableInOutInitGlobal,
+	                       JSONTableInOutInitLocal);
 	function.in_out_function = JSONTableInOutFunction<TYPE>;
+	function.table_scan_progress = JSONTableInOutProgress;
 	function.get_virtual_columns = GetJSONTableInOutVirtualColumns;
 	function.projection_pushdown = true;
 	return function;

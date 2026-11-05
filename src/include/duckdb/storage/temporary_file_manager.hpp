@@ -88,7 +88,8 @@ public:
 struct TemporaryFileIndex {
 public:
 	TemporaryFileIndex();
-	TemporaryFileIndex(TemporaryFileIdentifier identifier, idx_t block_index, idx_t block_header_size);
+	TemporaryFileIndex(TemporaryFileIdentifier identifier, idx_t block_index, idx_t block_header_size,
+	                   FileBufferType buffer_type);
 
 public:
 	//! Whether this temporary file index is valid (fields have been set)
@@ -101,6 +102,8 @@ public:
 	optional_idx block_index;
 	//! The block header size
 	optional_idx block_header_size;
+	//! The buffer type
+	FileBufferType buffer_type = FileBufferType::MANAGED_BUFFER;
 };
 
 //===--------------------------------------------------------------------===//
@@ -109,7 +112,7 @@ public:
 struct BlockIndexManager {
 public:
 	BlockIndexManager();
-	explicit BlockIndexManager(TemporaryFileManager &manager);
+	explicit BlockIndexManager(TemporaryFileManager &manager, bool encrypted = false);
 
 public:
 	//! Obtains a new block index from the index manager
@@ -137,6 +140,8 @@ private:
 	set<idx_t> indexes_in_use;
 	//! The TemporaryFileManager that "owns" this BlockIndexManager
 	optional_ptr<TemporaryFileManager> manager;
+	//! Whether the tracked file is encrypted
+	bool encrypted;
 };
 
 //===--------------------------------------------------------------------===//
@@ -160,15 +165,15 @@ public:
 
 public:
 	//! Try to get an index of where to write in this file. Returns an invalid index if full
-	TemporaryFileIndex TryGetBlockIndex(idx_t block_header_size);
+	TemporaryFileIndex TryGetBlockIndex(idx_t block_header_size, FileBufferType buffer_type);
 	//! Remove block index from this TemporaryFileHandle
 	void EraseBlockIndex(block_id_t block_index);
 
 	//! Read/Write temporary buffers at given positions in this file (potentially compressed)
 	unique_ptr<FileBuffer> ReadTemporaryBuffer(QueryContext context, const TemporaryFileIndex &index_in_file,
-	                                           unique_ptr<FileBuffer> reusable_buffer) const;
+	                                           unique_ptr<FileBuffer> buffer);
 	void WriteTemporaryBuffer(QueryContext context, FileBuffer &buffer, idx_t block_index,
-	                          AllocatedData &compressed_buffer) const;
+	                          AllocatedData &compressed_buffer);
 
 	//! Deletes the file if there are no more blocks
 	bool DeleteIfEmpty();
@@ -179,6 +184,8 @@ public:
 private:
 	//! Create temporary file if it did not exist yet
 	void CreateFileIfNotExists(TemporaryFileLock &);
+	//! Select buffered I/O when the buffer, size or offset is not sector-aligned
+	FileHandle &GetIOHandle(data_ptr_t buffer, idx_t size, idx_t offset);
 	//! Remove block index from this file
 	void RemoveTempBlockIndex(TemporaryFileLock &, idx_t index);
 	//! Get the position of a block in the file
@@ -194,6 +201,8 @@ private:
 	//! File path/handle
 	const string path;
 	unique_ptr<FileHandle> handle;
+	//! Opened lazily under file_lock for unaligned I/O
+	unique_ptr<FileHandle> buffered_handle;
 	//! Lock for concurrent access and block index manager
 	mutex file_lock;
 	BlockIndexManager index_manager;

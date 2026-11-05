@@ -19,9 +19,9 @@ select mod(42, 0)
 ----
 <REGEX>:.*Division by zero.*
 
-# unless null_on_division_by_zero is set
+# unless error_on_division_by_zero is disabled
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 query I
 select mod(42, 0)
@@ -29,7 +29,7 @@ select mod(42, 0)
 NULL
 
 statement ok
-SET null_on_division_by_zero=false;
+SET error_on_division_by_zero=true;
 
 query R
 select mod(a, 2) from modme

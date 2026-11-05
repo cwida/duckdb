@@ -1,0 +1,225 @@
+# name: test/sql/types/variant/variant_struct_field_subquery.test
+# description: A field path into a VARIANT nested in a STRUCT, read through a subquery or view
+# group: [variant]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	(9, {'x': {'a': 1}::VARIANT}),
+	(10, {'x': {'a': 2, 'b': 'two'}::VARIANT})
+) v(id, nested);
+
+statement ok
+CREATE VIEW s AS SELECT * FROM t;
+
+# -----------------------------------------------------------------------------
+# Direct on the table
+#
+
+query I
+SELECT nested.x.a FROM t WHERE id = 9;
+----
+1
+
+# -----------------------------------------------------------------------------
+# Through a subquery
+#
+
+query I
+SELECT nested.x.a FROM (SELECT * FROM t) WHERE id = 9;
+----
+1
+
+query I
+SELECT nested.x.a FROM (SELECT * FROM t WHERE id < 30) WHERE id = 9;
+----
+1
+
+query II
+SELECT nested.x.a, nested.x.b FROM (SELECT * FROM t WHERE id < 30) ORDER BY id;
+----
+1	NULL
+2	two
+
+# -----------------------------------------------------------------------------
+# Through a view
+#
+
+query I
+SELECT nested.x.a FROM s WHERE id = 9;
+----
+1
+
+# -----------------------------------------------------------------------------
+# Variant field in the WHERE clause
+#
+
+query I
+SELECT id FROM (SELECT * FROM t WHERE id < 30) WHERE nested.x.a = 1;
+----
+9
+
+query I
+SELECT id FROM s WHERE nested.x.b = 'two';
+----
+10
+
+# Repeated projections and aliases must preserve mixed struct/variant paths.
+query II
+SELECT renamed.x.a::INTEGER, renamed.x.b::VARCHAR
+FROM (SELECT id, nested AS renamed FROM (SELECT * FROM s)) ORDER BY id;
+----
+1	NULL
+2	two
+
+# A whole VARIANT and its fields share the same struct prefix, in either order.
+query III
+SELECT nested.x, nested.x.a, nested.x.b FROM s ORDER BY id;
+----
+{'a': 1}	1	NULL
+{'a': 2, 'b': two}	2	two
+
+query III
+SELECT nested.x.a, nested.x.b, nested.x FROM s ORDER BY id;
+----
+1	NULL	{'a': 1}
+2	two	{'a': 2, 'b': two}
+
+# Keep the full struct when it is referenced alongside an extracted field.
+query II
+SELECT nested, nested.x.a FROM s ORDER BY id;
+----
+{'x': {'a': 1}}	1
+{'x': {'a': 2, 'b': two}}	2
+
+statement ok
+CREATE TABLE nested_variant (
+	id INTEGER,
+	nested STRUCT(unused VARCHAR, inner_struct STRUCT(tag INTEGER, payload VARIANT))
+);
+
+statement ok
+INSERT INTO nested_variant VALUES
+	(1, {'unused': 'ignore', 'inner_struct': {'tag': 101, 'payload': {'obj': {'a': 11, 'b': 'eleven'}, 'items': [31, 32], 'a.b': 41}::VARIANT}}),
+	(2, {'unused': 'ignore', 'inner_struct': {'tag': 102, 'payload': {'obj': {'a': 22}, 'items': [42], 'a.b': 52}::VARIANT}}),
+	(3, {'unused': 'ignore', 'inner_struct': {'tag': 103, 'payload': {'obj': {'a': NULL}}::VARIANT}}),
+	(4, {'unused': 'ignore', 'inner_struct': {'tag': 104, 'payload': NULL}}),
+	(5, {'unused': 'ignore', 'inner_struct': NULL}),
+	(6, NULL),
+	(7, {'unused': 'ignore', 'inner_struct': {'tag': 107, 'payload': 123::VARIANT}});
+
+# Multiple numeric and named steps, a pure struct sibling, and NULL at each level.
+query IIII
+SELECT id, nested.inner_struct.tag, nested.inner_struct.payload.obj.a::INTEGER,
+       nested.inner_struct.payload.obj.b::VARCHAR
+FROM (SELECT * FROM nested_variant) ORDER BY id;
+----
+1	101	11	eleven
+2	102	22	NULL
+3	103	NULL	NULL
+4	104	NULL	NULL
+5	NULL	NULL	NULL
+6	NULL	NULL	NULL
+7	107	NULL	NULL
+
+# A quoted key is one path component; array indexing remains a residual extract.
+query III
+SELECT id, nested.inner_struct.payload['a.b']::INTEGER, nested.inner_struct.payload.items[2]::INTEGER
+FROM (SELECT * FROM nested_variant) ORDER BY id;
+----
+1	41	32
+2	52	NULL
+3	NULL	NULL
+4	NULL	NULL
+5	NULL	NULL
+6	NULL	NULL
+7	NULL	NULL
+
+# Filtering one VARIANT field must not discard a different projected field.
+query II
+SELECT id, nested.inner_struct.payload.obj.b::VARCHAR
+FROM (SELECT * FROM nested_variant)
+WHERE nested.inner_struct.payload.obj.a::INTEGER = 11;
+----
+1	eleven
+
+query I
+SELECT count(*) FROM (SELECT * FROM nested_variant) WHERE nested.inner_struct.payload.obj.a IS NULL;
+----
+5
+
+# Unnamed struct steps use numeric indexes before entering the VARIANT.
+statement ok
+CREATE TABLE unnamed_variant AS SELECT id, row(999, nested) AS u FROM nested_variant;
+
+query II
+SELECT id, u[2].inner_struct.payload.obj.a::INTEGER
+FROM (SELECT * FROM unnamed_variant) ORDER BY id;
+----
+1	11
+2	22
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+
+# Casts retain their error semantics through a projection.
+query I
+SELECT TRY_CAST(nested.inner_struct.payload.obj.b AS INTEGER)
+FROM (SELECT * FROM nested_variant) ORDER BY id;
+----
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+
+statement error
+SELECT nested.inner_struct.payload.obj.b::INTEGER FROM (SELECT * FROM nested_variant) WHERE id = 1;
+----
+Conversion Error
+
+# Casts on the same extracted path can have different result types.
+query II
+SELECT nested.inner_struct.payload.obj.a::INTEGER, nested.inner_struct.payload.obj.a::VARCHAR
+FROM (SELECT * FROM nested_variant) WHERE id = 1;
+----
+11	11
+
+# A cast inside the path can reorder fields and must retain errors in siblings.
+query I
+SELECT (nested.inner_struct.payload.obj::STRUCT(b VARCHAR, a VARCHAR)).a
+FROM (SELECT * FROM nested_variant) WHERE id = 1;
+----
+11
+
+statement error
+SELECT (nested.inner_struct.payload.obj::STRUCT(a INTEGER, b INTEGER)).a
+FROM (SELECT * FROM nested_variant) WHERE id = 1;
+----
+Conversion Error
+
+# A materialized producer and two readers exercise column pruning at CTE boundaries.
+query II
+WITH c AS MATERIALIZED (SELECT * FROM nested_variant)
+SELECT l.nested.inner_struct.payload.obj.a::INTEGER, r.nested.inner_struct.payload.obj.b::VARCHAR
+FROM c l JOIN c r USING (id) WHERE l.id = 1;
+----
+11	eleven
+
+# Pure struct paths must still reach the scan through a projection.
+statement ok
+SET explain_output = 'physical_only';
+
+query II
+EXPLAIN SELECT nested.inner_struct.tag FROM (SELECT * FROM nested_variant);
+----
+physical_plan	<REGEX>:.*Projections:[\s│]*nested\.inner_struct\.tag.*
+
+# Extracting the whole VARIANT is also a pure struct path.
+query II
+EXPLAIN SELECT nested.inner_struct.payload FROM (SELECT * FROM nested_variant);
+----
+physical_plan	<REGEX>:.*Projections:[\s│]*nested\.inner_struct\.payload.*

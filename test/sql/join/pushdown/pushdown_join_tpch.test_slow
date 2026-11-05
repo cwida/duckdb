@@ -11,8 +11,8 @@ CALL dbgen(sf=1);
 query II
 SELECT l_orderkey, l_comment FROM lineitem WHERE l_orderkey=(SELECT MAX(l_orderkey) FROM lineitem) ORDER BY ALL
 ----
-6000000	pecial excuses nag evenly f
-6000000	riously pe
+6000000	carefully 
+6000000	ooze furiously about the pe
 
 # multiple joins
 query III
@@ -21,7 +21,7 @@ from lineitem
 where l_linenumber=(select max(l_linenumber) from lineitem) AND
       l_orderkey=(SELECT MAX(l_orderkey) FROM lineitem WHERE l_linenumber=7);
 ----
-5999968	7	. express requests are
+5999968	7	slyly final instructio
 
 # involving separate tables
 query I

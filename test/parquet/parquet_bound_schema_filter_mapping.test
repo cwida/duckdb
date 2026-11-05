@@ -1,0 +1,76 @@
+# name: test/parquet/parquet_bound_schema_filter_mapping.test
+# description: Narrowing conversion precedes filters in split Parquet scans
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1::INTEGER k, 1::INTEGER p, 10::INTEGER id) TO '{TEST_DIR}/bound_left_a.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 1::BIGINT k, 1.4::DOUBLE p, 20::BIGINT id) TO '{TEST_DIR}/bound_left_b.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 1::INTEGER k, 1.4::DOUBLE p, 30::INTEGER id) TO '{TEST_DIR}/bound_right_a.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 1::BIGINT k, 1::INTEGER p, 40::BIGINT id) TO '{TEST_DIR}/bound_right_b.parquet' (FORMAT parquet)
+
+# Trustworthy unsplit native mapping: p in the left scan is INTEGER.
+query I rowsort
+SELECT id FROM read_parquet(['{TEST_DIR}/bound_left_a.parquet','{TEST_DIR}/bound_left_b.parquet'], hive_partitioning=false) WHERE p=1
+----
+10
+20
+
+# A task starting at the second file must convert p=1.4 to INTEGER before testing p=1.
+query II
+SELECT id, p FROM read_parquet('{TEST_DIR}/bound_left_b.parquet', bound_schema={'k':'INTEGER','p':'INTEGER','id':'INTEGER'}, hive_partitioning=false) WHERE p=1
+----
+20	1
+
+statement ok
+CREATE VIEW bound_l AS
+SELECT * FROM read_parquet('{TEST_DIR}/bound_left_a.parquet', bound_schema={'k':'INTEGER','p':'INTEGER','id':'INTEGER'}, hive_partitioning=false)
+UNION ALL
+SELECT * FROM read_parquet('{TEST_DIR}/bound_left_b.parquet', bound_schema={'k':'INTEGER','p':'INTEGER','id':'INTEGER'}, hive_partitioning=false)
+
+statement ok
+CREATE VIEW bound_r AS
+SELECT * FROM read_parquet('{TEST_DIR}/bound_right_a.parquet', bound_schema={'k':'INTEGER','p':'DOUBLE','id':'INTEGER'}, hive_partitioning=false)
+UNION ALL
+SELECT * FROM read_parquet('{TEST_DIR}/bound_right_b.parquet', bound_schema={'k':'INTEGER','p':'DOUBLE','id':'INTEGER'}, hive_partitioning=false)
+
+query I rowsort
+SELECT id FROM bound_l WHERE p=1
+----
+10
+20
+
+query IIIR rowsort
+SELECT l.id, r.id, l.p, r.p
+FROM read_parquet(['{TEST_DIR}/bound_left_a.parquet','{TEST_DIR}/bound_left_b.parquet'], hive_partitioning=false) l
+JOIN read_parquet(['{TEST_DIR}/bound_right_a.parquet','{TEST_DIR}/bound_right_b.parquet'], hive_partitioning=false) r ON l.k=r.k
+WHERE l.p=1 AND r.p>1.2
+----
+10	30	1	1.4
+20	30	1	1.4
+
+query IIIR rowsort
+SELECT l.id, r.id, l.p, r.p FROM bound_l l JOIN bound_r r ON l.k=r.k WHERE l.p=1 AND r.p>1.2
+----
+10	30	1	1.4
+20	30	1	1.4
+
+# These views only name the split scans within this test. Their definitions use
+# a new reader option and are not intended for reopening with older binders.
+statement ok
+DROP VIEW bound_l
+
+statement ok
+DROP VIEW bound_r
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name IN ('bound_l', 'bound_r')
+----
+0
