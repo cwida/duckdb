@@ -18,9 +18,11 @@
 
 namespace duckdb {
 
+class InterruptState;
 class Pipeline;
 class RecursiveCTEPipelineSchedulePlan;
 struct RecursiveExecutorPool;
+enum class RecursiveEpochResult : uint8_t;
 
 class MetaPipeline;
 
@@ -188,7 +190,11 @@ public:
 	vector<const_reference<PhysicalOperator>> GetSources() const override;
 
 private:
-	void ExecuteBranchPipelines(ExecutionContext &context, idx_t branch_idx) const;
+	//! Drives one wave of a branch. BLOCKED means the wave suspended on blocked inner work: the
+	//! source must return SourceResultType::BLOCKED and will be re-entered through the given
+	//! interrupt state once the blocking work completes. The wave resumes where it stopped.
+	RecursiveEpochResult ExecuteBranchPipelines(ExecutionContext &context, idx_t branch_idx,
+	                                            const InterruptState &interrupt_state) const;
 
 private:
 	//! Recursive scans of each branch plan, rebound to the current wave before execution

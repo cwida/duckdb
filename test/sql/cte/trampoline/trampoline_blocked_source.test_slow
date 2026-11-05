@@ -1,18 +1,19 @@
-# name: test/sql/cte/recursive_inline_blocked_source.test_slow
-# description: Inline recursive execution services executor tasks while a source blocks
-# group: [cte]
+# name: test/sql/cte/trampoline/trampoline_blocked_source.test_slow
+# description: Trampoline waves and recursive epochs suspend around a blocked source
+# group: [trampoline]
 
 # With threads == external_threads there are zero internal worker threads. An
 # async-yielding source (dbgen schedules its continuation as an executor task and returns
 # BLOCKED after every generation step; its ~1.6 s per-invocation text-pool setup is
 # scale-independent, which makes this a slow test - dsdgen is cheaper but does not
-# block in this shape) can then only make progress
-# on the coordinating thread. The inline wait must pump executor tasks like the event
-# path does; a bare condition-variable wait deadlocks both queries below.
+# block in this shape) can then only make progress on the coordinating thread. The
+# trampoline source suspends its wave and returns BLOCKED up the stack, so the regular
+# executor flow services the continuation and re-enters the operator where it stopped;
+# a wave driver that waits inside the operator instead deadlocks both queries below.
+# The recursive query pins the same suspension at threads == external_threads == 2;
+# recursive_inline_blocked_source.test keeps the single-thread gate.
 # max_execution_time bounds partial regressions, a full reintroduction of the deadlock is
-# only caught by the runner timeout. The finish-event BLOCKED arm shares the same wait but
-# is not pinnable from SQL: no in-tree operator returns a blocked operator finalize, and
-# the only blocked sink finalize (COPY TO FILE) cannot appear inside a recursive body.
+# only caught by the runner timeout.
 
 require tpch
 

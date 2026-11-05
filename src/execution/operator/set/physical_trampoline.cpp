@@ -1,6 +1,7 @@
 #include "duckdb/execution/operator/set/physical_trampoline.hpp"
 
 #include "duckdb/common/vector/vector_iterator.hpp"
+#include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
 #include "duckdb/execution/operator/set/recursive_cte_scheduling.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
@@ -233,6 +234,15 @@ public:
 	//! Round-robin cursor over the branches
 	idx_t next_branch = 1;
 	bool initialized = false;
+	//! Branch of the in-flight wave, 0 when none: a source re-entered after a BLOCKED
+	//! suspension resumes this wave instead of picking a new one
+	idx_t executing_branch = 0;
+	//! Progress of the in-flight wave across BLOCKED suspensions of the source
+	RecursiveCTEEpochProgress wave_progress;
+	//! Route-arbitration decisions of the wave prologue, consumed by the epilogue
+	bool wave_measure_route = false;
+	bool wave_probe_valid = true;
+	std::chrono::steady_clock::time_point wave_route_start;
 	//! Per branch, whether its invariant builds are materialized and retained
 	vector<bool> invariant_materialized;
 	//! Per branch, the measured arbitration of its source-parallelism route
@@ -248,7 +258,8 @@ public:
 	bool NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollection> &wave);
 	bool StartRound();
 	unique_ptr<ColumnDataCollection> FilterSeenRows(idx_t target, ColumnDataCollection &rows);
-	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, TrampolineGlobalSourceState &source_state);
+	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, TrampolineGlobalSourceState &source_state,
+	                         const InterruptState &interrupt_state);
 };
 
 void TrampolineState::CombineLocal(TrampolineLocalSinkState &local_state) {
@@ -543,7 +554,8 @@ bool TrampolineState::StartRound() {
 }
 
 SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, DataChunk &chunk,
-                                          TrampolineGlobalSourceState &source_state) {
+                                          TrampolineGlobalSourceState &source_state,
+                                          const InterruptState &interrupt_state) {
 	if (!initialized) {
 		// the seed pipeline has finished sinking; its routed rows form the first waves
 		CloseExecution();
@@ -566,45 +578,53 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		initialized = true;
 	}
 	while (chunk.size() == 0) {
-		if (emit_active) {
-			emit_table->Scan(emit_scan, chunk);
-			if (chunk.size() != 0) {
-				source_state.emitted_rows.fetch_add(chunk.size(), std::memory_order_relaxed);
-				break;
+		if (executing_branch == 0) {
+			if (emit_active) {
+				emit_table->Scan(emit_scan, chunk);
+				if (chunk.size() != 0) {
+					source_state.emitted_rows.fetch_add(chunk.size(), std::memory_order_relaxed);
+					break;
+				}
+				emit_active = false;
+				Recycle(std::move(emit_table));
 			}
-			emit_active = false;
-			Recycle(std::move(emit_table));
-		}
-		if (emit_backlog && emit_backlog->Count() > 0) {
-			// pending output stays consumable without completing further branch work: a
-			// nonterminating next invocation must not block an already emitted prefix, so
-			// batching happens only within one invocation's emissions
-			Recycle(std::move(emit_table));
-			emit_table = std::move(emit_backlog);
-			emit_table->InitializeScan(emit_scan);
-			emit_active = true;
-			continue;
-		}
-		idx_t branch_idx;
-		unique_ptr<ColumnDataCollection> wave;
-		if (!NextWave(branch_idx, wave)) {
-			if (op.RequiresRounds() && StartRound()) {
+			if (emit_backlog && emit_backlog->Count() > 0) {
+				// pending output stays consumable without completing further branch work: a
+				// nonterminating next invocation must not block an already emitted prefix, so
+				// batching happens only within one invocation's emissions
+				Recycle(std::move(emit_table));
+				emit_table = std::move(emit_backlog);
+				emit_table->InitializeScan(emit_scan);
+				emit_active = true;
 				continue;
 			}
-			source_state.finished.store(true, std::memory_order_relaxed);
-			return SourceResultType::FINISHED;
-		}
-		context.InterruptCheck();
-		current_input = std::move(wave);
-		for (auto &scan_ref : op.branch_recursive_scans[branch_idx - 1]) {
-			scan_ref.get().collection = *current_input;
-		}
-		if (op.frontier_scans_present) {
-			for (auto &scan_ref : op.branch_frontier_scans[branch_idx - 1]) {
-				scan_ref.get().collection = *frontier_current;
+			idx_t branch_idx;
+			unique_ptr<ColumnDataCollection> wave;
+			if (!NextWave(branch_idx, wave)) {
+				if (op.RequiresRounds() && StartRound()) {
+					continue;
+				}
+				source_state.finished.store(true, std::memory_order_relaxed);
+				return SourceResultType::FINISHED;
 			}
+			context.InterruptCheck();
+			current_input = std::move(wave);
+			for (auto &scan_ref : op.branch_recursive_scans[branch_idx - 1]) {
+				scan_ref.get().collection = *current_input;
+			}
+			if (op.frontier_scans_present) {
+				for (auto &scan_ref : op.branch_frontier_scans[branch_idx - 1]) {
+					scan_ref.get().collection = *frontier_current;
+				}
+			}
+			executing_branch = branch_idx;
 		}
-		op.ExecuteBranchPipelines(execution_context, branch_idx);
+		if (op.ExecuteBranchPipelines(execution_context, executing_branch, interrupt_state) ==
+		    RecursiveEpochResult::BLOCKED) {
+			// the wave waits for blocked inner work; the interrupt state re-enters this source
+			return SourceResultType::BLOCKED;
+		}
+		executing_branch = 0;
 		Recycle(std::move(current_input));
 		CloseExecution();
 	}
@@ -645,7 +665,8 @@ unique_ptr<GlobalSourceState> PhysicalTrampoline::GetGlobalSourceState(ClientCon
 SourceResultType PhysicalTrampoline::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                      OperatorSourceInput &input) const {
 	auto &gstate = sink_state->Cast<TrampolineState>();
-	return gstate.GetData(context, chunk, input.global_state.Cast<TrampolineGlobalSourceState>());
+	return gstate.GetData(context, chunk, input.global_state.Cast<TrampolineGlobalSourceState>(),
+	                      input.interrupt_state);
 }
 
 vector<const_reference<PhysicalOperator>> PhysicalTrampoline::GetSources() const {
@@ -711,146 +732,196 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 }
 
 //===--------------------------------------------------------------------===//
-// Branch execution: single-threaded inline execution with cached executors
+// Branch execution: one resumable wave over the shared recursive scheduling
 //===--------------------------------------------------------------------===//
-void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t branch_idx) const {
+RecursiveEpochResult PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t branch_idx,
+                                                                const InterruptState &interrupt_state) const {
 	D_ASSERT(branch_idx >= 1 && branch_idx <= BranchCount());
 	auto &meta_pipeline = *branch_meta_pipelines[branch_idx - 1];
 	auto &executor = meta_pipeline.GetExecutor();
 	auto &gstate = sink_state->Cast<TrampolineState>();
 	auto &scheduler = gstate.scheduler;
+	auto &progress = gstate.wave_progress;
 
 	auto &branch = branch_pipelines[branch_idx - 1];
 	const auto allow_reuse = Settings::Get<EnableCachingOperatorsSetting>(context.client);
-	if (!allow_reuse) {
-		scheduler.ClearExecutors();
-	}
-	if (!scheduler.HasExecutorEntries()) {
-		for (auto &branch_entry : branch_pipelines) {
-			for (auto &pipeline : branch_entry.pipelines) {
-				scheduler.PrepareExecutorEntry(*pipeline);
-			}
-		}
-	}
-
-	// once the invariant builds of this branch are materialized, later waves skip them
+	// once the invariant builds of this branch are materialized, later waves skip them;
+	// the materialized flag only changes in the epilogue, so the plan choice is stable
+	// across BLOCKED suspensions of this wave
 	const auto can_cache_invariant = allow_reuse && !branch.invariant_meta_pipelines.empty();
 	const bool materialized = gstate.invariant_materialized[branch_idx - 1];
 	const auto use_active_plan = can_cache_invariant && materialized && branch.active_plan;
 	auto &plan = use_active_plan ? *branch.active_plan : *branch.plan;
-
-	// one wave is executed by as many workers as its rows and chunks support; branches with
-	// independent source work (table scans) parallelize that work regardless of the wave size,
-	// while pure frontier work must be large enough to amortize the parallel event setup
-	const auto configured_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context.client).NumberOfThreads());
-	idx_t frontier_workers = 1;
-	idx_t input_rows = 0;
-	if (gstate.current_input) {
-		const auto scan_count = MaxValue<idx_t>(branch_recursive_scans[branch_idx - 1].size(), 1);
-		input_rows = gstate.current_input->Count() * scan_count;
-		auto chunk_units = gstate.current_input->ChunkCount() * scan_count;
-		// a frontier-reading branch scans the whole round snapshot regardless of its own wave
-		// size, so that work participates in worker sizing as well
-		const auto frontier_scan_count = branch_frontier_scans[branch_idx - 1].size();
-		if (frontier_scan_count > 0 && gstate.frontier_current) {
-			input_rows += gstate.frontier_current->Count() * frontier_scan_count;
-			chunk_units += gstate.frontier_current->ChunkCount() * frontier_scan_count;
-		}
-		const auto row_limit =
-		    input_rows / TRAMPOLINE_ROWS_PER_THREAD + (input_rows % TRAMPOLINE_ROWS_PER_THREAD != 0 ? 1 : 0);
-		const auto work_units = MaxValue<idx_t>(chunk_units, 1);
-		frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
-	}
-	// Independent sources parallelize on their own work estimate: a branch body scanning a large
-	// base table (or draining a large window/range-join materialization) keeps full source
-	// parallelism regardless of its wave size, but a small independent source must not drag a
-	// cheap wave through the parallel event machinery, so it only joins a wave that is already
-	// worth parallelizing.
-	idx_t source_task_workers = frontier_workers;
-	bool parallel_source_pays = false;
-	if ((plan.has_source_tasks || plan.has_parallel_source) &&
-	    plan.max_independent_source_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS) {
-		// overflow-safe ceiling division: estimates may legitimately saturate at the maximum idx_t
-		const auto source_row_limit = plan.max_independent_source_rows / TRAMPOLINE_ROWS_PER_THREAD +
-		                              (plan.max_independent_source_rows % TRAMPOLINE_ROWS_PER_THREAD != 0 ? 1 : 0);
-		source_task_workers = MaxValue<idx_t>(MinValue(source_row_limit, configured_threads), 1);
-		parallel_source_pays = source_task_workers > 1;
-	}
-	// The estimate is output cardinality, not source work, and mispredicts in both directions.
-	// Measured arbitration overrides it: a wave whose wall time contradicts its route triggers
-	// one probe wave on the other route, and the faster of two comparable waves pins the
-	// branch's source routing for the rest of the invocation.
-	const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
-	auto &route = gstate.source_routes[branch_idx - 1];
-	// waves running the full plan carry the one-time invariant builds, which would contaminate
-	// a probe's reference measurement, so arbitration starts once the retained builds stand
-	const auto arbitrate = has_independent_source && configured_threads > 1 && !RequiresRounds() &&
-	                       (branch.invariant_meta_pipelines.empty() || materialized);
-	bool source_parallel = parallel_source_pays;
-	if (arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::ESTIMATE) {
-		source_parallel = route.parallel;
-		if (source_parallel) {
-			// a pinned or probing parallel route restores estimate-independent source sizing,
-			// also over frontier-sized workers of multi-row waves
-			source_task_workers = MaxValue(source_task_workers, configured_threads);
-		} else {
-			// a pinned or probing inline route must not leak estimate-sized source workers
-			// into a wave that parallelizes on the frontier criterion
-			source_task_workers = frontier_workers;
-		}
-	}
-	const auto go_parallel = source_parallel || (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
-	const auto workers = go_parallel ? MaxValue(frontier_workers, source_task_workers) : idx_t(1);
-	// a wave that ends up on a different route than the probe intended cannot conclude anything
-	const auto probe_valid = route.mode != TrampolineBranchSourceRoute::Mode::PROBE || go_parallel == route.parallel;
-	const auto measure_route = arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::PINNED;
-
-	// reset every sink that belongs to the executed plan; the trampoline keeps its routed
-	// state, and materialized invariant builds keep theirs
-	auto &sink_resets = use_active_plan ? branch.active_sink_resets : branch.sink_resets;
-	for (auto &sink_reset : sink_resets) {
-		const auto worker_bound = sink_reset.invariant_build ? configured_threads : workers;
-		sink_reset.pipeline->ResetSinkForReschedule(worker_bound, sink_reset.single_producer);
-	}
-	// preserve-build flags live in the (re)created sink states, so set them after the resets
-	if (!branch.invariant_meta_pipelines.empty()) {
-		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
-	}
-
-	// Invalidate global operator state from the coordinating thread while nothing executes:
-	// reusable state is reset in place, everything else is destroyed. Both schedules recreate
-	// missing state after a stage's dependencies finished, because state construction may
-	// consume dependency-produced sink state (shared lifecycle contract).
-	for (auto &op_ref : plan.invalidate_operators) {
-		Pipeline::InvalidateOperatorStateForReschedule(context.client, op_ref.get());
-	}
-
 	const auto collect_metrics = gstate.metrics.Enabled();
-	if (collect_metrics && materialized && can_cache_invariant) {
-		RecordInvariantRetentionReuse(gstate.metrics, branch.invariant_meta_pipelines);
-	}
-	const auto epoch_task_start = collect_metrics ? gstate.metrics.TaskCount() : 0;
-	const auto epoch_start =
-	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+
 	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
-	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, go_parallel};
-	const auto route_start = measure_route ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-	if (go_parallel) {
-		scheduling_context.completion_signal = make_shared_ptr<RecursiveInterruptSignalState>();
-		vector<shared_ptr<Event>> events;
-		ScheduleRecursivePlan(plan, scheduling_context, events,
-		                      RecursiveCTEParallelism(frontier_workers, source_task_workers));
-		WaitForRecursiveEvents(executor, events, scheduling_context.completion_signal.get());
-	} else {
-		// single-threaded wave: run the shared inline plan executor, which creates missing
-		// operator state per ready stage and skips the finish events of flagged trivial stages
-		ExecuteRecursiveInlinePlan(scheduling_context, plan);
+	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr,
+	                                               !progress.inline_execution};
+
+	if (!progress.active) {
+		// Wave prologue: mutates shared sink and operator state and takes the sizing and routing
+		// decisions, so it must run exactly once per wave, before any branch work is scheduled.
+		if (!allow_reuse) {
+			scheduler.ClearExecutors();
+		}
+		if (!scheduler.HasExecutorEntries()) {
+			for (auto &branch_entry : branch_pipelines) {
+				for (auto &pipeline : branch_entry.pipelines) {
+					scheduler.PrepareExecutorEntry(*pipeline);
+				}
+			}
+		}
+
+		// one wave is executed by as many workers as its rows and chunks support; branches with
+		// independent source work (table scans) parallelize that work regardless of the wave size,
+		// while pure frontier work must be large enough to amortize the parallel event setup
+		const auto configured_threads =
+		    NumericCast<idx_t>(TaskScheduler::GetScheduler(context.client).NumberOfThreads());
+		idx_t frontier_workers = 1;
+		idx_t input_rows = 0;
+		if (gstate.current_input) {
+			const auto scan_count = MaxValue<idx_t>(branch_recursive_scans[branch_idx - 1].size(), 1);
+			input_rows = gstate.current_input->Count() * scan_count;
+			auto chunk_units = gstate.current_input->ChunkCount() * scan_count;
+			// a frontier-reading branch scans the whole round snapshot regardless of its own wave
+			// size, so that work participates in worker sizing as well
+			const auto frontier_scan_count = branch_frontier_scans[branch_idx - 1].size();
+			if (frontier_scan_count > 0 && gstate.frontier_current) {
+				input_rows += gstate.frontier_current->Count() * frontier_scan_count;
+				chunk_units += gstate.frontier_current->ChunkCount() * frontier_scan_count;
+			}
+			const auto row_limit =
+			    input_rows / TRAMPOLINE_ROWS_PER_THREAD + (input_rows % TRAMPOLINE_ROWS_PER_THREAD != 0 ? 1 : 0);
+			const auto work_units = MaxValue<idx_t>(chunk_units, 1);
+			frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
+		}
+		// Independent sources parallelize on their own work estimate: a branch body scanning a large
+		// base table (or draining a large window/range-join materialization) keeps full source
+		// parallelism regardless of its wave size, but a small independent source must not drag a
+		// cheap wave through the parallel event machinery, so it only joins a wave that is already
+		// worth parallelizing.
+		idx_t source_task_workers = frontier_workers;
+		bool parallel_source_pays = false;
+		if ((plan.has_source_tasks || plan.has_parallel_source) &&
+		    plan.max_independent_source_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS) {
+			// overflow-safe ceiling division: estimates may legitimately saturate at the maximum idx_t
+			const auto source_row_limit = plan.max_independent_source_rows / TRAMPOLINE_ROWS_PER_THREAD +
+			                              (plan.max_independent_source_rows % TRAMPOLINE_ROWS_PER_THREAD != 0 ? 1 : 0);
+			source_task_workers = MaxValue<idx_t>(MinValue(source_row_limit, configured_threads), 1);
+			parallel_source_pays = source_task_workers > 1;
+		}
+		// The estimate is output cardinality, not source work, and mispredicts in both directions.
+		// Measured arbitration overrides it: a wave whose wall time contradicts its route triggers
+		// one probe wave on the other route, and the faster of two comparable waves pins the
+		// branch's source routing for the rest of the invocation.
+		const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
+		auto &route = gstate.source_routes[branch_idx - 1];
+		// waves running the full plan carry the one-time invariant builds, which would contaminate
+		// a probe's reference measurement, so arbitration starts once the retained builds stand
+		const auto arbitrate = has_independent_source && configured_threads > 1 && !RequiresRounds() &&
+		                       (branch.invariant_meta_pipelines.empty() || materialized);
+		bool source_parallel = parallel_source_pays;
+		if (arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::ESTIMATE) {
+			source_parallel = route.parallel;
+			if (source_parallel) {
+				// a pinned or probing parallel route restores estimate-independent source sizing,
+				// also over frontier-sized workers of multi-row waves
+				source_task_workers = MaxValue(source_task_workers, configured_threads);
+			} else {
+				// a pinned or probing inline route must not leak estimate-sized source workers
+				// into a wave that parallelizes on the frontier criterion
+				source_task_workers = frontier_workers;
+			}
+		}
+		const auto go_parallel =
+		    source_parallel || (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
+		const auto workers = go_parallel ? MaxValue(frontier_workers, source_task_workers) : idx_t(1);
+		// a wave that ends up on a different route than the probe intended cannot conclude anything
+		gstate.wave_probe_valid =
+		    route.mode != TrampolineBranchSourceRoute::Mode::PROBE || go_parallel == route.parallel;
+		gstate.wave_measure_route = arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::PINNED;
+
+		// reset every sink that belongs to the executed plan; the trampoline keeps its routed
+		// state, and materialized invariant builds keep theirs
+		auto &sink_resets = use_active_plan ? branch.active_sink_resets : branch.sink_resets;
+		for (auto &sink_reset : sink_resets) {
+			const auto worker_bound = sink_reset.invariant_build ? configured_threads : workers;
+			sink_reset.pipeline->ResetSinkForReschedule(worker_bound, sink_reset.single_producer);
+		}
+		// preserve-build flags live in the (re)created sink states, so set them after the resets
+		if (!branch.invariant_meta_pipelines.empty()) {
+			ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
+		}
+
+		// Invalidate global operator state from the coordinating thread while nothing executes:
+		// reusable state is reset in place, everything else is destroyed. Both schedules recreate
+		// missing state after a stage's dependencies finished, because state construction may
+		// consume dependency-produced sink state (shared lifecycle contract).
+		for (auto &op_ref : plan.invalidate_operators) {
+			Pipeline::InvalidateOperatorStateForReschedule(context.client, op_ref.get());
+		}
+
+		if (collect_metrics && materialized && can_cache_invariant) {
+			RecordInvariantRetentionReuse(gstate.metrics, branch.invariant_meta_pipelines);
+		}
+		if (collect_metrics) {
+			progress.epoch_task_start = gstate.metrics.TaskCount();
+			if (gstate.current_input) {
+				const auto &wave = *gstate.current_input;
+				progress.frontier_rows = wave.Count();
+				progress.frontier_chunks = wave.ChunkCount();
+				progress.frontier_storage_bytes = wave.SizeInBytes();
+				progress.frontier_allocation_bytes = wave.AllocationSize();
+			}
+		}
+		progress.max_worker_count = workers;
+		progress.scheduler_input_rows = input_rows;
+		progress.epoch_start =
+		    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+		gstate.wave_route_start =
+		    gstate.wave_measure_route ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+		progress.inline_execution = !go_parallel;
+		progress.active = true;
+		scheduling_context.scan_sources_use_source_workers = go_parallel;
+
+		if (progress.inline_execution) {
+			// single-threaded wave: drive the shared inline plan executor, which creates missing
+			// operator state per ready stage and skips the finish events of flagged trivial stages
+			for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
+				pipeline.get().ResetSource(true);
+			}
+			scheduler.InitializeInlinePlan(plan);
+		} else {
+			// The wake event is a parent of every scheduled event and fires the source's interrupt
+			// callback once the whole schedule has finished.
+			auto wake = make_shared_ptr<RecursiveCTEWakeEvent>(executor, interrupt_state);
+			ScheduleRecursivePlan(plan, scheduling_context, progress.events,
+			                      RecursiveCTEParallelism(frontier_workers, source_task_workers), *wake);
+			progress.wake_event = std::move(wake);
+		}
+	} else if (executor.HasError()) {
+		// resumed while the executor is failing: surface the error instead of driving the wave
+		executor.ThrowException();
 	}
-	if (measure_route) {
-		const auto route_ns = NumericCast<idx_t>(
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - route_start)
-		        .count());
-		route.Observe(go_parallel, probe_valid, gstate.current_input ? gstate.current_input->Count() : 0, route_ns);
+
+	bool complete;
+	if (progress.inline_execution) {
+		complete = DriveRecursiveInlinePlan(scheduling_context, progress, plan, interrupt_state);
+	} else {
+		complete = !progress.wake_event->Cast<RecursiveCTEWakeEvent>().Arm();
+	}
+	if (!complete) {
+		return RecursiveEpochResult::BLOCKED;
+	}
+
+	// Wave epilogue
+	if (gstate.wave_measure_route) {
+		const auto route_ns = NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                                             std::chrono::steady_clock::now() - gstate.wave_route_start)
+		                                             .count());
+		auto &route = gstate.source_routes[branch_idx - 1];
+		route.Observe(!progress.inline_execution, gstate.wave_probe_valid,
+		              gstate.current_input ? gstate.current_input->Count() : 0, route_ns);
 	}
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
@@ -861,13 +932,18 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	}
 	if (collect_metrics && gstate.current_input) {
 		const auto epoch_end = std::chrono::steady_clock::now();
-		const auto elapsed_us =
-		    NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
-		const auto &wave = *gstate.current_input;
-		gstate.metrics.RecordEpoch(workers, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
-		gstate.epoch_metrics->Record(wave.Count(), workers, gstate.metrics.TaskCount() - epoch_task_start, elapsed_us,
-		                             wave.SizeInBytes(), wave.AllocationSize());
+		const auto elapsed_us = NumericCast<idx_t>(
+		    std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - progress.epoch_start).count());
+		gstate.metrics.RecordEpoch(progress.max_worker_count, elapsed_us, progress.frontier_rows,
+		                           progress.frontier_chunks, progress.scheduler_input_rows);
+		gstate.epoch_metrics->Record(progress.frontier_rows, progress.max_worker_count,
+		                             gstate.metrics.TaskCount() - progress.epoch_task_start, elapsed_us,
+		                             progress.frontier_storage_bytes, progress.frontier_allocation_bytes);
 	}
+	progress.Reset();
+	gstate.wave_measure_route = false;
+	gstate.wave_probe_valid = true;
+	return RecursiveEpochResult::COMPLETE;
 }
 
 //===--------------------------------------------------------------------===//
