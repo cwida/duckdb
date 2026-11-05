@@ -17,7 +17,6 @@
 #include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
-#include "duckdb/parallel/pipeline_complete_event.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
 #include "duckdb/parallel/pipeline_finish_event.hpp"
 #include "duckdb/parallel/pipeline_prepare_finish_event.hpp"
@@ -539,49 +538,6 @@ static idx_t GetRecursivePipelineMaxThreads(Pipeline &pipeline, idx_t worker_lim
 	return MinValue(max_threads, worker_limit);
 }
 
-static bool PumpRecursiveExecutor(Executor &executor);
-
-static constexpr std::chrono::milliseconds RECURSIVE_BOUNDED_WAIT {Executor::WAIT_TIME};
-
-bool RecursiveInterruptSignalState::AwaitFor(std::chrono::milliseconds timeout) {
-	annotated_unique_lock<annotated_mutex> guard(lock);
-	cv.wait_for(guard, timeout, [&]() { return done; });
-	if (!done) {
-		return false;
-	}
-	done = false;
-	return true;
-}
-
-void RecursiveInterruptSignalState::AwaitWithExecutorProgress(Executor &executor) {
-	// A completion callback notifies this signal directly and wakes the wait immediately.
-	// The timeout bounds the remaining wake source: another thread enqueueing an executor
-	// task instead of signalling, which the next pump iteration picks up.
-	while (true) {
-		PumpRecursiveExecutor(executor);
-		if (AwaitFor(RECURSIVE_BOUNDED_WAIT)) {
-			return;
-		}
-	}
-}
-
-void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor, Executor &executor) {
-	auto signal_state = make_shared_ptr<RecursiveInterruptSignalState>();
-	pipeline_executor.SetInterruptState(InterruptState(weak_ptr<InterruptDoneSignalState>(signal_state)));
-	while (true) {
-		auto result = pipeline_executor.Execute();
-		switch (result) {
-		case PipelineExecuteResult::FINISHED:
-			return;
-		case PipelineExecuteResult::NOT_FINISHED:
-			throw InternalException("Execute without limit should not return NOT_FINISHED");
-		case PipelineExecuteResult::INTERRUPTED:
-			signal_state->AwaitWithExecutorProgress(executor);
-			break;
-		}
-	}
-}
-
 template <bool COLLECT_METRICS>
 struct RecursiveCTETaskMetrics {
 	RecursiveCTETaskMetrics(RecursiveSchedulingContext &, RecursiveCTEPipelineMetricType) {
@@ -606,22 +562,11 @@ public:
 	                 RecursiveSchedulingContext &context_p, RecursiveCTEPipelineMetricType metric_type_p)
 	    : ExecutorTask(pipeline_p.executor, std::move(event_p)), RecursiveCTETaskMetrics<COLLECT_METRICS>(
 	                                                                 context_p, metric_type_p),
-	      pipeline(pipeline_p), pipeline_executor(executor_p), completion_signal(context_p.completion_signal) {
+	      pipeline(pipeline_p), pipeline_executor(executor_p) {
 	}
 
 	Pipeline &pipeline;
 	PipelineExecutor &pipeline_executor;
-	//! Wakes the coordinating thread's event wait when this task finishes or is requeued
-	shared_ptr<RecursiveInterruptSignalState> completion_signal;
-
-	void Reschedule() override {
-		// a blocked task's continuation requeues through the executor's own condition
-		// variable; forward the wakeup so the waiter can run the task itself
-		ExecutorTask::Reschedule();
-		if (completion_signal) {
-			completion_signal->Signal();
-		}
-	}
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
 		pipeline_executor.SetTaskForInterrupts(shared_from_this());
@@ -649,9 +594,6 @@ public:
 		}
 
 		event->FinishTask();
-		if (completion_signal) {
-			completion_signal->Signal();
-		}
 		return TaskExecutionResult::TASK_FINISHED;
 	}
 
@@ -731,89 +673,6 @@ public:
 			}
 		}
 		SetTasks(std::move(tasks));
-	}
-};
-
-//! Finish-stage events always run their finalize work through a single task of their own.
-//! The recursive event waiter sleeps on the completion signal, so these wrappers forward
-//! the event's completion to it. The finalize semantics are the wrapped events' own. A
-//! blocked finish task's reschedule still wakes only the executor's condition variable
-//! and is covered by the waiter's bounded timeout.
-template <class EVENT>
-class RecursiveSignallingEvent : public EVENT {
-public:
-	RecursiveSignallingEvent(shared_ptr<Pipeline> pipeline_p, shared_ptr<RecursiveInterruptSignalState> signal_p)
-	    : EVENT(std::move(pipeline_p)), completion_signal(std::move(signal_p)) {
-	}
-
-	void FinalizeFinish() override {
-		// runs after Finish() stored the finished flag and completed the dependents, so a
-		// woken waiter observes the completion instead of consuming the signal early and
-		// sleeping the full bound
-		EVENT::FinalizeFinish();
-		if (completion_signal) {
-			completion_signal->Signal();
-		}
-	}
-
-private:
-	shared_ptr<RecursiveInterruptSignalState> completion_signal;
-};
-
-//! Inline finish event for the single-thread recursive fast path.
-//! PipelineFinishEvent is correct for the general scheduler, but it is intentionally scheduler-centric:
-//! it expects finish work to go back through the task/event machinery. In the single-thread recursive
-//! path that would mostly bounce control back into the scheduler just to run the finish work on the
-//! current thread. This event preserves the same finalize contract, including BLOCKED handling, while
-//! keeping the finish step inline with the cached execute/prepare stages.
-class RecursiveCTEFinishEvent : public BasePipelineEvent {
-public:
-	explicit RecursiveCTEFinishEvent(shared_ptr<Pipeline> pipeline_p) : BasePipelineEvent(std::move(pipeline_p)) {
-	}
-
-	void Schedule() override {
-		// This event is only used by the single-thread inline recursive fast path.
-		// Blocking here is safe because the caller runs it synchronously and explicitly waits for
-		// completion, and the wait keeps the executor making progress.
-		D_ASSERT(total_tasks == 0);
-		total_tasks = 1;
-
-		auto signal_state = make_shared_ptr<RecursiveInterruptSignalState>();
-		InterruptState interrupt_state {weak_ptr<InterruptDoneSignalState>(signal_state)};
-		auto sink = pipeline->GetSink();
-		auto &operators = pipeline->GetIntermediateOperators();
-		idx_t operator_idx = 0;
-
-		while (true) {
-			bool blocked = false;
-			for (; operator_idx < operators.size(); operator_idx++) {
-				auto &op = operators[operator_idx].get();
-				if (!op.RequiresOperatorFinalize()) {
-					continue;
-				}
-				OperatorFinalizeInput op_finalize_input {*op.op_state, interrupt_state};
-				auto op_state = op.OperatorFinalize(*pipeline, *this, executor.context, op_finalize_input);
-				if (op_state == OperatorFinalResultType::BLOCKED) {
-					signal_state->AwaitWithExecutorProgress(executor);
-					blocked = true;
-					break;
-				}
-			}
-			if (blocked) {
-				continue;
-			}
-
-			OperatorSinkFinalizeInput finalize_input {*sink->sink_state, interrupt_state};
-			auto sink_state = sink->Finalize(*pipeline, *this, executor.context, finalize_input);
-			if (sink_state == SinkFinalizeType::BLOCKED) {
-				signal_state->AwaitWithExecutorProgress(executor);
-				continue;
-			}
-
-			sink->sink_state->state = sink_state;
-			FinishTask();
-			return;
-		}
 	}
 };
 
@@ -1228,87 +1087,9 @@ void RecordInvariantRetentionReuse(RecursiveCTEMetrics &metrics,
 	}
 }
 
-//! Runs pending executor tasks; returns whether any ran. An executor error takes precedence
-//! over any other outcome, and an idle iteration enforces interrupts and the query deadline,
-//! which no task-side InterruptCheck call site can reach while nothing executes.
-static bool PumpRecursiveExecutor(Executor &executor) {
-	// Only drain the recursive executor here. Re-entering the outer query executor while waiting for
-	// recursive work can run unrelated tasks and used to break recursive completion tracking.
-	const auto did_work = executor.WorkOnTasks();
-	if (executor.HasError()) {
-		executor.ThrowException();
-	}
-	if (!did_work) {
-		executor.context.BlockingInterruptCheck();
-	}
-	return did_work;
-}
-
-void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events,
-                            optional_ptr<RecursiveInterruptSignalState> completion_signal) {
-	while (true) {
-		const auto did_work = PumpRecursiveExecutor(executor);
-		bool finished = true;
-		for (auto &event : events) {
-			if (!event->IsFinished()) {
-				finished = false;
-				break;
-			}
-		}
-		if (finished) {
-			break;
-		}
-		if (did_work) {
-			continue;
-		}
-		if (completion_signal) {
-			// woken promptly by recursive task completions and reschedules and by stage-event
-			// completions; the bounded timeout covers the residue, which is blocked
-			// finish/finalize task reschedules and events inserted mid-graph
-			completion_signal->AwaitFor(RECURSIVE_BOUNDED_WAIT);
-		} else {
-			executor.WaitForTask();
-		}
-		if (executor.HasError()) {
-			executor.ThrowException();
-		}
-	}
-}
-
-void WaitForRecursiveEvent(Executor &executor, Event &event,
-                           optional_ptr<RecursiveInterruptSignalState> completion_signal) {
-	while (!event.IsFinished()) {
-		const auto did_work = PumpRecursiveExecutor(executor);
-		if (did_work || event.IsFinished()) {
-			continue;
-		}
-		if (completion_signal) {
-			completion_signal->AwaitFor(RECURSIVE_BOUNDED_WAIT);
-		} else {
-			executor.WaitForTask();
-		}
-		if (executor.HasError()) {
-			executor.ThrowException();
-		}
-	}
-}
-
-void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
-                                         idx_t worker_limit, idx_t max_threads,
-                                         RecursiveCTEPipelineMetricType metric_type) {
-	auto event_context = context;
-	if (!event_context.completion_signal) {
-		event_context.completion_signal = make_shared_ptr<RecursiveInterruptSignalState>();
-	}
-	auto event = make_shared_ptr<RecursiveCTEPipelineEvent>(pipeline.shared_from_this(), event_context, worker_limit,
-	                                                        metric_type);
-	event->SchedulePrepared(max_threads);
-	WaitForRecursiveEvent(event_context.executor, *event, event_context.completion_signal.get());
-}
-
 void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
                            vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism,
-                           optional_ptr<Event> wake_event) {
+                           Event &wake_event) {
 	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
 		pipeline.get().ResetSource(true);
 	}
@@ -1328,12 +1109,10 @@ void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const R
 			break;
 		}
 		case PipelineScheduleStageType::PREPARE_FINISH:
-			events.push_back(make_shared_ptr<RecursiveSignallingEvent<PipelinePrepareFinishEvent>>(
-			    std::move(pipeline), context.completion_signal));
+			events.push_back(make_shared_ptr<PipelinePrepareFinishEvent>(std::move(pipeline)));
 			break;
 		case PipelineScheduleStageType::FINISH:
-			events.push_back(make_shared_ptr<RecursiveSignallingEvent<PipelineFinishEvent>>(std::move(pipeline),
-			                                                                                context.completion_signal));
+			events.push_back(make_shared_ptr<PipelineFinishEvent>(std::move(pipeline)));
 			break;
 		default:
 			throw InternalException("Unsupported recursive schedule stage");
@@ -1348,10 +1127,8 @@ void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const R
 
 	// The wake event depends on every event of the schedule. Its edges must be wired before any
 	// event can run: AddDependency is not safe against a concurrently finishing event.
-	if (wake_event) {
-		for (auto &event : events) {
-			wake_event->AddDependency(*event);
-		}
+	for (auto &event : events) {
+		wake_event.AddDependency(*event);
 	}
 
 	for (idx_t stage_idx = 0; stage_idx < plan.stages.size(); stage_idx++) {
@@ -1366,99 +1143,6 @@ void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const R
 		if (!event->HasTasks() && !event->IsFinished() && event->AutoFinishWithoutTasks()) {
 			event->Finish();
 		}
-	}
-}
-
-void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor) {
-	auto finish_event = make_shared_ptr<RecursiveCTEFinishEvent>(pipeline.shared_from_this());
-	auto complete_event = make_shared_ptr<PipelineCompleteEvent>(executor, false);
-	complete_event->AddDependency(*finish_event);
-	finish_event->Schedule();
-	if (!complete_event->IsFinished()) {
-		WaitForRecursiveEvent(executor, *complete_event);
-	}
-}
-
-template <bool COLLECT_METRICS>
-static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext context,
-                                               const RecursiveCTEPipelineSchedulePlan &plan) {
-	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
-		pipeline.get().ResetSource(true);
-	}
-
-	context.scheduler.InitializeInlinePlan(plan);
-
-	for (idx_t ready_idx = 0; ready_idx < context.scheduler.ReadyStageCount(); ready_idx++) {
-		auto stage_idx = context.scheduler.ReadyStage(ready_idx);
-		auto &stage = plan.stages[stage_idx];
-		auto &pipeline = stage.pipeline.get();
-		switch (stage.type) {
-		case PipelineScheduleStageType::EXECUTE: {
-			// Stages become ready in dependency order, so missing operator state is created here
-			// through the same initialization path the ordinary scheduler and the event schedule
-			// use; state shared with an earlier stage is already initialized and kept.
-			pipeline.InitializeOperatorState();
-			pipeline.ResetSourceForReschedule();
-			// Invariant builds have independent source work even when the recursive frontier is tiny.
-			const auto worker_limit = stage.is_invariant_build
-			                              ? TaskScheduler::GetScheduler(context.executor.context).NumberOfThreads()
-			                              : idx_t(1);
-			const auto max_threads = GetRecursivePipelineMaxThreads(pipeline, worker_limit);
-			if (max_threads > 1) {
-				ExecuteRecursivePipelineEventInline(pipeline, context, worker_limit, max_threads, stage.metric_type);
-				break;
-			}
-			D_ASSERT(max_threads == 1);
-			AdjustRecursiveSinkWorkers(pipeline, max_threads);
-			context.scheduler.PrepareExecutors(pipeline, max_threads);
-			auto &executors = context.scheduler.GetExecutors(pipeline);
-			D_ASSERT(executors.size() >= max_threads);
-			executors[0]->PrepareForExecution();
-			if constexpr (COLLECT_METRICS) {
-				context.metrics->RecordTasks(1);
-			}
-			const auto execute_start =
-			    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-			ExecuteRecursivePipelineInline(*executors[0], context.executor);
-			if constexpr (COLLECT_METRICS) {
-				const auto execute_end = std::chrono::steady_clock::now();
-				context.epoch_metrics->RecordPipelineExecution(
-				    stage.metric_type,
-				    NumericCast<idx_t>(
-				        std::chrono::duration_cast<std::chrono::nanoseconds>(execute_end - execute_start).count()));
-			}
-			break;
-		}
-		case PipelineScheduleStageType::PREPARE_FINISH:
-			pipeline.PrepareFinalize();
-			break;
-		case PipelineScheduleStageType::FINISH:
-			if (stage.trivial_finish) {
-				// the sink has no finalize work and no operator on this pipeline requires
-				// finalization, so the finish event machinery is skipped
-				pipeline.GetSink()->sink_state->state = SinkFinalizeType::READY;
-				break;
-			}
-			ExecuteRecursivePipelineFinishInline(pipeline, context.executor);
-			break;
-		default:
-			throw InternalException("Unsupported recursive inline stage");
-		}
-
-		context.scheduler.CompleteInlineStage(plan, stage_idx);
-	}
-
-	if (context.scheduler.ReadyStageCount() != plan.stages.size()) {
-		throw InternalException("Recursive inline plan did not schedule every stage");
-	}
-}
-
-void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context,
-                                const RecursiveCTEPipelineSchedulePlan &plan) {
-	if (context.metrics) {
-		ExecuteRecursiveInlinePlanInternal<true>(context, plan);
-	} else {
-		ExecuteRecursiveInlinePlanInternal<false>(context, plan);
 	}
 }
 

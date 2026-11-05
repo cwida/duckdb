@@ -290,19 +290,6 @@ struct RecursiveCTEParallelism {
 	idx_t source_task_worker_count;
 };
 
-//! Signal state whose wait keeps the recursive executor making progress. A blocked source may
-//! have scheduled its continuation as an executor task; with zero internal workers
-//! (threads == external_threads) that task can only ever run on the waiting thread, so a bare
-//! condition-variable wait deadlocks. The recursive waits pump executor tasks while still
-//! waking immediately when the signal fires. Recursive task completions signal it as well, so
-//! the event waiter does not sleep a full bounded timeout behind a task finishing elsewhere.
-struct RecursiveInterruptSignalState : public InterruptDoneSignalState {
-	//! Wait for the signal with a bounded timeout; true when the signal fired
-	bool AwaitFor(std::chrono::milliseconds timeout);
-	//! Wait for the signal while running pending executor tasks and enforcing interrupts
-	void AwaitWithExecutorProgress(Executor &executor);
-};
-
 //! What the shared event-based scheduling of recursive plans needs from its operator:
 //! the executor, the cached-executor state, and optional metrics
 struct RecursiveSchedulingContext {
@@ -323,8 +310,6 @@ struct RecursiveSchedulingContext {
 	//! Give stages with independent parallel sources the source-task worker count;
 	//! off by default so recursive CTE scheduling is unchanged
 	bool scan_sources_use_source_workers = false;
-	//! Signalled by recursive task completions; the event waiter waits on it when set
-	shared_ptr<RecursiveInterruptSignalState> completion_signal;
 };
 
 //! Wakes the recursive source that returned BLOCKED up the stack: fires the outer task's
@@ -402,15 +387,6 @@ unique_ptr<RecursiveCTEPipelineSchedulePlan>
 BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
                                    const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
                                    const PhysicalOperator &recursive_sink);
-//! The executor is pumped while the pipeline is blocked, so a blocked source's continuation
-//! task can run even when no internal worker threads exist
-void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor, Executor &executor);
-void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor);
-//! Run a schedule plan single-threaded with the shared operator-state lifecycle: missing state is
-//! created per ready stage, after its dependencies finished. Stages flagged trivial_finish skip the
-//! finish event machinery and mark the sink READY.
-void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context,
-                                const RecursiveCTEPipelineSchedulePlan &plan);
 //! Drives the cached inline dependency plan with the shared operator-state lifecycle, resuming
 //! from the suspended position in the epoch progress. The scheduler's inline plan must have been
 //! initialized once per epoch, before the first drive. Returns false when a stage suspended on
@@ -434,19 +410,12 @@ FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta
 void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
                                            bool preserve_build);
 bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
-//! Schedules the per-epoch event graph. When a wake event is given, it is wired as a parent of
-//! every scheduled event before any of them can run, so its FinalizeFinish observes the whole
-//! schedule's completion and re-enters the suspended source through the interrupt callback.
+//! Schedules the per-epoch event graph. The wake event is wired as a parent of every scheduled
+//! event before any of them can run, so its FinalizeFinish observes the whole schedule's
+//! completion and re-enters the suspended source through the interrupt callback.
 void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
                            vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism,
-                           optional_ptr<Event> wake_event = nullptr);
-void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
-                                         idx_t worker_limit, idx_t max_threads,
-                                         RecursiveCTEPipelineMetricType metric_type);
-void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events,
-                            optional_ptr<RecursiveInterruptSignalState> completion_signal = nullptr);
-void WaitForRecursiveEvent(Executor &executor, Event &event,
-                           optional_ptr<RecursiveInterruptSignalState> completion_signal = nullptr);
+                           Event &wake_event);
 //! Conservative upper bound on the workers the schedule can assign to one producer pipeline
 idx_t GetRecursiveProducerWorkerBound(Pipeline &pipeline, idx_t worker_limit);
 void GatherColumnDataScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &delim_scans);

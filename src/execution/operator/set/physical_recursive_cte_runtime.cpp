@@ -270,7 +270,7 @@ RecursiveEpochResult PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionCo
 			// The wake event is a parent of every scheduled event and fires the source's interrupt
 			// callback once the whole schedule has finished.
 			auto wake = make_shared_ptr<RecursiveCTEWakeEvent>(executor, interrupt_state);
-			ScheduleRecursivePlan(*schedule_plan, scheduling_context, progress.events, parallelism, wake.get());
+			ScheduleRecursivePlan(*schedule_plan, scheduling_context, progress.events, parallelism, *wake);
 			progress.wake_event = std::move(wake);
 		}
 	} else if (executor.HasError()) {
