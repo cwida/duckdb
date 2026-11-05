@@ -49,16 +49,27 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyExternalResource
 	return std::move(result);
 }
 
-// SHOW [ALL] EXTERNAL RESOURCES is the query `SELECT * FROM duckdb_external_resources(discover := <all>)`, so it
-// can be used wherever a query can, such as a subquery.
-unique_ptr<QueryNode> PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transformer,
-                                                                            const ShowType &show_rule,
-                                                                            const bool &has_result) {
+//! A named argument of a table function call: the name goes on the argument and, for the binder, on the expression.
+static void AddNamedArgument(vector<FunctionArgument> &children, const string &name,
+                             unique_ptr<ParsedExpression> value) {
+	value->SetAlias(Identifier(name));
+	children.emplace_back(Identifier(name), std::move(value));
+}
+
+// SHOW [ALL] EXTERNAL RESOURCES [WITH TYPE t] is the query
+// `SELECT * FROM duckdb_external_resources(discover := <all>, type := t)`, so it can be used wherever a query can,
+// such as a subquery.
+unique_ptr<QueryNode>
+PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transformer, const ShowType &show_rule,
+                                                      const bool &has_result,
+                                                      optional<Identifier> show_external_resources_type) {
 	vector<FunctionArgument> children;
 	if (has_result) {
-		auto discover = ConstantExpression::Boolean(true);
-		discover->SetAlias("discover");
-		children.emplace_back(Identifier("discover"), std::move(discover));
+		AddNamedArgument(children, "discover", ConstantExpression::Boolean(true));
+	}
+	if (show_external_resources_type) {
+		auto type = ConstantExpression::String(show_external_resources_type->GetIdentifierName());
+		AddNamedArgument(children, "type", std::move(type));
 	}
 	auto table_function = make_uniq<TableFunctionRef>();
 	table_function->function = make_uniq<FunctionExpression>("duckdb_external_resources", std::move(children));
