@@ -107,6 +107,8 @@ private:
 	unique_ptr<RegisteredStateManager> registered_state;
 	unique_ptr<FileOpener> file_opener;
 	unique_ptr<FileSystem> client_file_system;
+	//! The buffer manager wrapper of the client
+	unique_ptr<BufferManager> client_buffer_manager;
 };
 
 } // namespace duckdb
