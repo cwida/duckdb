@@ -323,17 +323,6 @@ void ParsedExpressionIterator::EnumerateQueryNodeChildren(
 	}
 }
 
-void ParsedExpressionIterator::EnumerateTableRefs(QueryNode &node, const std::function<void(TableRef &ref)> &callback) {
-	std::function<void(const ParsedExpression &)> visit_expression = [&](const ParsedExpression &expression) {
-		if (expression.GetExpressionClass() == ExpressionClass::SUBQUERY) {
-			EnumerateTableRefs(*expression.Cast<SubqueryExpression>().Subquery()->node, callback);
-		}
-		EnumerateChildren(expression, visit_expression);
-	};
-	EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &expression) { visit_expression(*expression); }, callback);
-}
-
 void ParsedExpressionIterator::VisitExpressionClass(
     const ParsedExpression &expr, ExpressionClass expr_class,
     const std::function<void(const ParsedExpression &child)> &callback) {

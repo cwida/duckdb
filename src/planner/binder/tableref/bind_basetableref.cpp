@@ -246,8 +246,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 				                      ref.Table());
 			}
 			throw BinderException(error_context,
-			                      "Circular reference to CTE %s, use WITH RECURSIVE to "
-			                      "use recursive CTEs.",
+			                      "Circular reference to CTE %s, recursive CTEs must use WITH RECURSIVE and have the "
+			                      "form <non-recursive term> UNION [ALL] <recursive term>",
 			                      ref.Table());
 		}
 		// could not find an alternative: bind again to get the error

@@ -1,38 +1,22 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
-#include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
-#include "duckdb/parser/parsed_expression_iterator.hpp"
-#include "duckdb/parser/tableref/basetableref.hpp"
 
 namespace duckdb {
-
-//! A recursive CTE that is not a UNION cannot reference itself
-static void VerifyNoSelfReference(QueryNode &node, const Identifier &name) {
-	ParsedExpressionIterator::EnumerateTableRefs(node, [&](TableRef &ref) {
-		if (ref.type != TableReferenceType::BASE_TABLE) {
-			return;
-		}
-		auto &table_ref = ref.Cast<BaseTableRef>();
-		if (table_ref.GetQualifiedName().Path().size() == 1 && table_ref.Table() == name) {
-			throw BinderException(
-			    ref, "Recursive CTE %s must have the form <non-recursive term> UNION [ALL] <recursive term>", name);
-		}
-	});
-}
-
 unique_ptr<QueryNode> PEGTransformerFactory::ToRecursiveCTE(unique_ptr<QueryNode> node, const Identifier &name,
                                                             vector<Identifier> &aliases,
                                                             vector<unique_ptr<ParsedExpression>> &key_targets) {
-	if (node->type != QueryNodeType::SET_OPERATION_NODE ||
-	    node->Cast<SetOperationNode>().setop_type != SetOperationType::UNION) {
-		VerifyNoSelfReference(*node, name);
+	if (node->type != QueryNodeType::SET_OPERATION_NODE) {
 		return node;
 	}
 
 	auto &set_node = node->Cast<SetOperationNode>();
+
+	if (set_node.setop_type != SetOperationType::UNION) {
+		return node;
+	}
 
 	if (set_node.children.size() < 2) {
 		throw ParserException("Expected at least two children to set operation node in recursive CTE");

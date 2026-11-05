@@ -218,8 +218,19 @@ Identifier LogicalPlanSQLExportContext::NextRelationAlias(const Identifier &pref
 	}
 }
 
+static void VisitRelationReferences(QueryNode &query, const std::function<void(TableRef &)> &callback) {
+	std::function<void(const ParsedExpression &)> visit_expression = [&](const ParsedExpression &expression) {
+		if (expression.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			VisitRelationReferences(*expression.Cast<SubqueryExpression>().Subquery()->node, callback);
+		}
+		ParsedExpressionIterator::EnumerateChildren(expression, visit_expression);
+	};
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    query, [&](unique_ptr<ParsedExpression> &expression) { visit_expression(*expression); }, callback);
+}
+
 void LogicalPlanSQLExportContext::ReserveRelationNames(QueryNode &query) {
-	ParsedExpressionIterator::EnumerateTableRefs(query, [&](TableRef &ref) {
+	VisitRelationReferences(query, [&](TableRef &ref) {
 		if (ref.type == TableReferenceType::BASE_TABLE) {
 			relation_aliases.insert(ref.Cast<BaseTableRef>().Table());
 		}
@@ -229,7 +240,7 @@ void LogicalPlanSQLExportContext::ReserveRelationNames(QueryNode &query) {
 optional<Identifier>
 LogicalPlanSQLExportContext::FindCapturedSourceReference(QueryNode &query, const identifier_set_t &source_names) const {
 	optional<Identifier> captured;
-	ParsedExpressionIterator::EnumerateTableRefs(query, [&](TableRef &ref) {
+	VisitRelationReferences(query, [&](TableRef &ref) {
 		if (captured || ref.type != TableReferenceType::BASE_TABLE) {
 			return;
 		}

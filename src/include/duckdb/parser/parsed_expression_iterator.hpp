@@ -31,9 +31,6 @@ public:
 	                           const std::function<void(unique_ptr<ParsedExpression> &child)> &expr_callback,
 	                           const std::function<void(TableRef &ref)> &ref_callback = DefaultRefCallback);
 
-	//! Enumerate all table references in the query node, including those inside subquery expressions
-	static void EnumerateTableRefs(QueryNode &node, const std::function<void(TableRef &ref)> &callback);
-
 	static void
 	EnumerateQueryNodeModifiers(QueryNode &node,
 	                            const std::function<void(unique_ptr<ParsedExpression> &child)> &expr_callback);
