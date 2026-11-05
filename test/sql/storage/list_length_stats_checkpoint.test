@@ -107,7 +107,7 @@ SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT st
 ----
 1	1	1
 
-# every segment stores the list length stats of exactly its own rows
+# a column with many offset segments and NULL lists keeps exact stats across restarts
 statement ok
 CREATE TABLE segments AS SELECT CASE WHEN i % 5 = 0 THEN NULL WHEN i < 60000 THEN [1, 2, 3] ELSE range(i % 7 + 10) END AS l FROM range(120000) t(i);
 
@@ -116,17 +116,19 @@ CHECKPOINT;
 
 restart
 
-# the first segment only holds lists of length 3
 query III
-SELECT stats.min_list_length, stats.max_list_length, stats.total_list_length > 0 FROM pragma_storage_info('segments') WHERE stats.total_list_length IS NOT NULL ORDER BY segment_id LIMIT 1
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(list_reverse(l))) FROM segments) FROM (SELECT stats(l) s FROM segments LIMIT 1)
 ----
-3	3	true
+3	16	true
 
-# the segments add up to the whole column
-query II
-SELECT sum(stats.total_list_length::BIGINT) = (SELECT sum(len(list_reverse(l))) FROM segments), count(*) > 1 FROM pragma_storage_info('segments') WHERE stats.total_list_length IS NOT NULL
-----
-true	true
+# the stats survive another checkpoint of the same data
+statement ok
+INSERT INTO segments VALUES ([1, 2, 3, 4]);
+
+statement ok
+CHECKPOINT;
+
+restart
 
 query III
 SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(list_reverse(l))) FROM segments) FROM (SELECT stats(l) s FROM segments LIMIT 1)

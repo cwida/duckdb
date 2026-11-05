@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/storage/table/persistent_table_data.hpp"
 #include "duckdb/storage/statistics/segment_statistics.hpp"
@@ -395,12 +396,15 @@ public:
 	void DeserializeField(Deserializer &deserializer, field_id_t field_idx, const char *field_name,
 	                      const LogicalType &type);
 	bool HasUpdates() const;
+	void DeserializeListLengthData(Deserializer &deserializer);
 
 public:
 	LogicalType logical_type;
 	vector<DataPointer> pointers;
 	vector<PersistentColumnData> child_columns;
 	bool has_updates = false;
+	//! The list length statistics of the column, unknown if they were not stored (only for LIST columns)
+	ListStatsData list_length_data = ListStatsData {false, false, false, 0, 0, 0};
 
 	//! Extra persistent data for specific column types
 	unique_ptr<ExtraPersistentColumnData> extra_data;

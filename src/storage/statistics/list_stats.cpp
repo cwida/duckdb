@@ -14,6 +14,18 @@ bool ListStatsData::HasMinListLength() const {
 	return has_min_list_length && min_list_length != NumericLimits<uint64_t>::Maximum();
 }
 
+optional_idx ListStatsData::MinLength() const {
+	return HasMinListLength() ? optional_idx(min_list_length) : optional_idx();
+}
+
+optional_idx ListStatsData::MaxLength() const {
+	return has_max_list_length ? optional_idx(max_list_length) : optional_idx();
+}
+
+optional_idx ListStatsData::TotalLength() const {
+	return has_total_list_length ? optional_idx(total_list_length) : optional_idx();
+}
+
 void ListStats::Construct(BaseStatistics &stats) {
 	stats.child_stats = unsafe_unique_array<BaseStatistics>(new BaseStatistics[1]);
 	BaseStatistics::Construct(stats.child_stats[0], ListType::GetChildType(stats.GetType()));

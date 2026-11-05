@@ -342,7 +342,6 @@ void ColumnDataCheckpointer::WriteToDisk() { // Analyze the candidate functions 
 		for (idx_t i = 0; i < checkpoint_states.size(); i++) {
 			auto &function = analyze_result[i].function;
 			auto &compression_state = compression_states[i];
-			checkpoint_states[i].get().ObserveScan(scan_vector);
 			function->compress(*compression_state, scan_vector);
 		}
 	});

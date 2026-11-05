@@ -21,9 +21,6 @@ unique_ptr<BaseStatistics> ColumnCheckpointState::GetStatistics() {
 	return std::move(global_stats);
 }
 
-void ColumnCheckpointState::ObserveScan(const Vector &scan_vector) {
-}
-
 shared_ptr<ColumnData> ColumnCheckpointState::CreateEmptyColumnData() {
 	throw InternalException("CreateEmptyColumnData not implemented for this column checkpoint state");
 }

@@ -36,6 +36,10 @@ struct ListStatsData {
 
 public:
 	bool HasMinListLength() const;
+	//! The minimum, maximum and total list length, which are invalid if they are unknown
+	optional_idx MinLength() const;
+	optional_idx MaxLength() const;
+	optional_idx TotalLength() const;
 };
 
 struct ListStats {

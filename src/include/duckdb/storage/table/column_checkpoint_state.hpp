@@ -35,10 +35,6 @@ protected:
 	PartialBlockManager &partial_block_manager;
 	shared_ptr<ColumnData> result_column;
 
-	ColumnData &GetOriginalColumn() {
-		return original_column_mutable;
-	}
-
 private:
 	ColumnData &original_column_mutable;
 
@@ -48,8 +44,6 @@ public:
 	virtual shared_ptr<ColumnData> GetFinalResult();
 
 	virtual unique_ptr<BaseStatistics> GetStatistics();
-	//! Called with every vector of the column that is scanned for compression
-	virtual void ObserveScan(const Vector &scan_vector);
 
 	virtual void FlushSegmentInternal(unique_ptr<ColumnSegment> segment, idx_t segment_size);
 	virtual void FlushSegment(unique_ptr<ColumnSegment> segment, BufferHandle handle, idx_t segment_size);
