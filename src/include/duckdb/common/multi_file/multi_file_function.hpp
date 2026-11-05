@@ -1196,21 +1196,30 @@ public:
 			// multiple files, but no union_by_name: no luck!
 			return nullptr;
 		}
-		auto result = bind_data.initial_reader->GetStatistics(context, col_name);
-		if (result && !bind_data.file_options.bound_schema.empty() &&
-		    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
-			// Check the whole root before interpreting an extracted child's positional statistics.
-			return nullptr;
-		}
-		if (result && multiple_files) {
-			for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
-				auto &union_reader = *bind_data.union_readers[i];
-				auto stats = union_reader.GetStatistics(context, col_name);
-				if (!stats || result->GetType() != stats->GetType()) {
-					return nullptr;
-				}
-				result->Merge(*stats);
+		unique_ptr<BaseStatistics> result;
+		try {
+			result = bind_data.initial_reader->GetStatistics(context, col_name);
+			if (result && !bind_data.file_options.bound_schema.empty() &&
+			    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
+				// Check the whole root before interpreting an extracted child's positional statistics.
+				return nullptr;
 			}
+			if (result && multiple_files) {
+				for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
+					auto &union_reader = *bind_data.union_readers[i];
+					auto stats = union_reader.GetStatistics(context, col_name);
+					if (!stats || result->GetType() != stats->GetType()) {
+						return nullptr;
+					}
+					result->Merge(*stats);
+				}
+			}
+		} catch (std::exception &ex) {
+			// undecodable statistics of one of multiple files just mean there are none - the data may still read fine
+			if (!multiple_files || ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+				throw;
+			}
+			return nullptr;
 		}
 		if (!result || !column_index.IsPushdownExtract()) {
 			return result;
