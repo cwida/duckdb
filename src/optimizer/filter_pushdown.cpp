@@ -332,34 +332,8 @@ void FilterPushdown::RewriteChild(LogicalOperator &op, idx_t child_idx) {
 	}
 	auto child_bindings_before = op.children[child_idx]->GetColumnBindings();
 	op.children[child_idx] = Rewrite(std::move(op.children[child_idx]));
-	RemapProjectionMap(op, child_idx, child_bindings_before);
-}
-
-void FilterPushdown::RemapProjectionMap(LogicalOperator &op, idx_t child_idx,
-                                        const vector<ColumnBinding> &child_bindings_before) {
-	auto projection_map = LogicalOperatorVisitor::GetProjectionMap(op, child_idx);
-	if (!projection_map || projection_map->empty()) {
-		return;
-	}
-	auto child_bindings_after = op.children[child_idx]->GetColumnBindings();
-	if (child_bindings_before == child_bindings_after) {
-		return;
-	}
-	// a MARK join turned into a SEMI or ANTI join drops its marker, which nothing above reads
-	vector<ProjectionIndex> new_projection_map;
-	new_projection_map.reserve(projection_map->size());
-	for (auto projection_index : *projection_map) {
-		auto &binding = child_bindings_before[projection_index.GetIndex()];
-		auto entry = std::find(child_bindings_after.begin(), child_bindings_after.end(), binding);
-		if (entry == child_bindings_after.end()) {
-			continue;
-		}
-		new_projection_map.emplace_back(NumericCast<idx_t>(entry - child_bindings_after.begin()));
-	}
-	if (new_projection_map.empty()) {
-		throw InternalException("Filter pushdown removed every column selected by a projection map");
-	}
-	*projection_map = std::move(new_projection_map);
+	LogicalOperatorVisitor::RemapProjectionMap(*projection_map, child_bindings_before,
+	                                           op.children[child_idx]->GetColumnBindings());
 }
 
 void FilterPushdown::Filter::ExtractBindings() {

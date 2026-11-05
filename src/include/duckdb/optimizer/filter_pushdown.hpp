@@ -131,9 +131,6 @@ private:
 	unique_ptr<LogicalOperator> FinishPushdown(unique_ptr<LogicalOperator> op);
 	//! Rewrite a child of op with this pushdown, keeping op's projection map of that child on its new layout
 	void RewriteChild(LogicalOperator &op, idx_t child_idx);
-	//! Remap op's projection map of a child whose layout was child_bindings_before to the child's current layout
-	static void RemapProjectionMap(LogicalOperator &op, idx_t child_idx,
-	                               const vector<ColumnBinding> &child_bindings_before);
 	//! Adds a filter to the set of filters. Returns FilterResult::UNSATISFIABLE if the subtree should be stripped, or
 	//! FilterResult::SUCCESS otherwise
 
