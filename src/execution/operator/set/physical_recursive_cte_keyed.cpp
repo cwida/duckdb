@@ -181,7 +181,7 @@ void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const 
 		const auto slot_offset = value_offsets[agg_idx];
 		const auto slot_width = GetTypeIdSize(value_types[agg_idx]);
 		UnifiedVectorFormat source_format;
-		source.ToUnifiedFormat(values.size(), source_format);
+		source.ToUnifiedFormat(source_format);
 		if (value_types[agg_idx] == PhysicalType::VARCHAR) {
 			const auto source_data = source_format.data;
 			for (idx_t row_idx = 0; row_idx < count; row_idx++) {
@@ -310,7 +310,7 @@ void RecursiveCTEFinalizedValues::Gather(const Vector &addresses, const Selectio
 		}
 		FlatVector::SetSize(target, count);
 	}
-	values.SetCardinality(count);
+	values.CheckCardinality(count);
 }
 
 void RecursiveCTEFinalizedValues::MaybeCompact(GroupedAggregateHashTable &target) {
