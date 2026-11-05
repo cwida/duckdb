@@ -372,7 +372,9 @@ AggregateFunction GetApproximateQuantileAggregateFunction(const LogicalType &typ
 		return AggregateFunction::UnaryAggregate<ApproxQuantileState, dtime_t, dtime_t, ApproxQuantileScalarOperation>(
 		    type, type);
 	}
-	if (type.id() == LogicalTypeId::TIMESTAMP || type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+	if (type.id() == LogicalTypeId::TIMESTAMP || type.id() == LogicalTypeId::TIMESTAMP_TZ ||
+	    type.id() == LogicalTypeId::TIMESTAMP_NS || type.id() == LogicalTypeId::TIMESTAMP_TZ_NS) {
+		// every timestamp precision stores an int64 with the same two infinities, which the coding keeps infinite
 		return AggregateFunction::UnaryAggregate<ApproxQuantileState, timestamp_t, timestamp_t,
 		                                         ApproxQuantileScalarOperation>(type, type);
 	}
