@@ -35,9 +35,10 @@ ScanVectorType StandardColumnData::GetVectorScanType(ColumnScanState &state, idx
 	return validity->GetVectorScanType(state.child_states[0], scan_count, result);
 }
 
-void StandardColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void StandardColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                            idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 }
 
 void StandardColumnData::InitializeScan(ColumnScanState &state) {
@@ -125,6 +126,7 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 void StandardColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnData::InitializeAppend(state);
 	ColumnAppendState child_append;
+	child_append.transient = state.transient;
 	validity->InitializeAppend(child_append);
 	state.child_appends.push_back(std::move(child_append));
 }

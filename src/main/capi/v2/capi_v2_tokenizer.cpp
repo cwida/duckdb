@@ -69,16 +69,16 @@ auto Convert(TokenIteratorWrapperV2 *ptr) -> duckdb_v2_token_iterator_handle {
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_tokenize_sql(duckdb_v2_connection_handle conn, const duckdb_v2_str *sql,
+DUCKDB_V2_ERROR duckdb_v2_tokenize_sql(duckdb_v2_connection_handle conn, const char *sql, idx_t sql_length,
                                        duckdb_v2_token_iterator_handle *out_iterator,
                                        duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(out_iterator);
 	*out_iterator = nullptr;
 	DUCKDB_CHECK_ARG(conn);
-	DUCKDB_CHECK_ARG(sql);
+	DUCKDB_CHECK_STR_ARG(sql, sql_length);
 	return WithErrorHandler(err, [&]() {
 		auto *connection = Convert(conn);
-		duckdb::string input(Convert(sql));
+		duckdb::string input(Convert(sql, sql_length));
 		duckdb::vector<duckdb::MatcherToken> raw_tokens;
 		CleanExitTokenizerBehavior behavior(input, raw_tokens);
 		auto grammar = duckdb::CompiledGrammar::Get(*connection->context);

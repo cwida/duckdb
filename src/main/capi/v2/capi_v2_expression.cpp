@@ -174,16 +174,18 @@ DUCKDB_V2_ERROR duckdb_v2_expression_column_ref_get_index(duckdb_v2_expression_h
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_expression_function_get_name(duckdb_v2_expression_handle expression,
-                                                       duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_expression_function_get_name(duckdb_v2_expression_handle expression, const char **name,
+                                                       idx_t *name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(expression);
 	DUCKDB_CHECK_ARG(name);
-	*name = duckdb_v2_identifier_t {nullptr, 0};
+	DUCKDB_CHECK_ARG(name_length);
+	*name = nullptr;
+	*name_length = 0;
 	return WithErrorHandler(err, [&]() {
 		const auto &function =
 		    CV2ExpressionRequireFunction(*Convert(expression), "duckdb_v2_expression_function_get_name");
 		// Borrowed from the bound function's own name, which lives as long as the node.
-		*name = Convert(function.GetName());
+		SetStringOut(name, name_length, function.GetName());
 	});
 }
 

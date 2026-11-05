@@ -40,6 +40,7 @@ class UpdateSegment;
 struct DataTableInfo;
 struct PrefetchState;
 struct RowGroupWriteInfo;
+struct ScanFilter;
 struct TransactionData;
 struct PersistentColumnData;
 class ValidityColumnData;
@@ -83,8 +84,14 @@ public:
 	LogicalType type;
 
 public:
-	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter,
-	                                           optional_ptr<SegmentNode<ColumnSegment>> &checked_segment);
+	//! Checks the filter against the zonemap from the scan position, and sets checked_end to the row of the row group
+	//! up to which the result holds, so that the scan can skip ahead to it when the filter is rejected
+	virtual FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                           optional_idx &checked_end);
+	//! Checks the filter against the zonemap from any row of the row group, reporting checked_end as CheckZonemap
+	//! does, so that the prefetch of a scan can leave out the vectors the filter rejects
+	virtual FilterPropagateResult CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+	                                             optional_idx &checked_end);
 
 	BlockManager &GetBlockManager() const {
 		return block_manager;
@@ -139,8 +146,9 @@ public:
 	//! Whether or not we can scan an entire vector
 	virtual ScanVectorType GetVectorScanType(ColumnScanState &state, idx_t scan_count, Vector &result);
 
-	//! Initialize prefetch state with required I/O data for the next N rows
-	virtual void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows);
+	//! Initialize prefetch state with the I/O data required to scan the rows in [start_row, end_row)
+	virtual void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                                idx_t end_row);
 	//! Initialize a scan of the column
 	virtual void InitializeScan(ColumnScanState &state);
 	//! Initialize a scan starting at the specified offset
@@ -225,8 +233,6 @@ public:
 
 	FilterPropagateResult CheckZonemap(optional_ptr<ClientContext> context, const StorageIndex &index,
 	                                   TableFilter &filter);
-	//! End of the last vector in [start_row, end_row) that the segment zonemaps do not reject for the filter
-	idx_t ZonemapScanEnd(optional_ptr<ClientContext> context, idx_t start_row, idx_t end_row, TableFilter &filter);
 
 	static shared_ptr<ColumnData> CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
 	                                           const LogicalType &type,
@@ -267,12 +273,11 @@ protected:
 	idx_t GetVectorCount(idx_t vector_index) const;
 
 	static bool IsDirectNullCheckFilter(const TableFilter &filter);
-	//! Checks the filter against the statistics of one segment
+	//! Checks the filter against the statistics of one segment and of the updates of the column
 	FilterPropagateResult CheckSegmentStatistics(optional_ptr<ClientContext> context,
 	                                             SegmentNode<ColumnSegment> &segment, ExpressionFilter &expr_filter);
-	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, TableFilter &filter,
-	                                           optional_ptr<SegmentNode<ColumnSegment>> &checked_segment,
-	                                           ColumnData &validity_column);
+	FilterPropagateResult CheckValidityZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                           optional_idx &checked_end, ColumnData &validity_column);
 
 private:
 	void UpdateCompressionFunction(SegmentLock &l, const CompressionFunction &function);
@@ -317,6 +322,7 @@ enum class ExtraPersistentColumnDataType : uint8_t {
 	INVALID = 0,
 	VARIANT = 1,
 	GEOMETRY = 2,
+	LIST = 3,
 };
 
 class ExtraPersistentColumnData {
@@ -342,6 +348,10 @@ public:
 
 	void Serialize(Serializer &serializer) const;
 	static unique_ptr<ExtraPersistentColumnData> Deserialize(Deserializer &deserializer);
+	//! Whether the extra data can be written for the storage version of the serializer
+	virtual bool IsSupported(const Serializer &serializer) const {
+		return true;
+	}
 
 protected:
 	explicit ExtraPersistentColumnData(ExtraPersistentColumnDataType type_p) : type(type_p) {
