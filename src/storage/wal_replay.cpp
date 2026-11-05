@@ -796,7 +796,7 @@ void WriteAheadLogDeserializer::ReplayEntry(WALType entry_type) {
 		ReplayDropTrigger();
 		break;
 	default:
-		throw InternalException("Invalid WAL entry type!");
+		throw SerializationException("Invalid WAL entry type %d - corrupt WAL?", static_cast<int>(entry_type));
 	}
 }
 
