@@ -19,7 +19,6 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
@@ -808,21 +807,6 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			auto &get = op.Cast<LogicalColumnDataGet>();
 			RemoveColumnsFromLogicalColumnDataGet(get);
 		}
-		return;
-	}
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		auto &distinct = op.Cast<LogicalDistinct>();
-		if (distinct.distinct_type == DistinctType::DISTINCT_ON) {
-			// distinct type references columns that need to be distinct on, so no
-			// need to implicitly reference everything.
-			break;
-		}
-		// Preserve all DISTINCT inputs without affecting sibling branches.
-		const auto previous_everything_referenced = everything_referenced;
-		everything_referenced = true;
-		LogicalOperatorVisitor::VisitOperatorExpressions(op);
-		VisitPrunableChildren(op);
-		everything_referenced = previous_everything_referenced;
 		return;
 	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {

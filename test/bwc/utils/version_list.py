@@ -2,7 +2,6 @@ import re
 import subprocess
 from collections import OrderedDict
 
-
 SEMVER_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
