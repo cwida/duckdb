@@ -71,7 +71,8 @@ RecursiveCTEKeyedProperties RecursiveCTEKeyedProperties::Derive(const PhysicalRe
 			break;
 		}
 	}
-	result.materialize_finalized_values = true;
+	// Key-only recursion has no payload values to materialize and must not reserve an empty region.
+	result.materialize_finalized_values = !op.aggregate_types.empty();
 	for (auto &aggregate_type : op.aggregate_types) {
 		const auto physical_type = aggregate_type.InternalType();
 		if (!TypeIsConstantSize(physical_type) && physical_type != PhysicalType::VARCHAR) {

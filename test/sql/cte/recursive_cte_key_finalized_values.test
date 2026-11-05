@@ -117,6 +117,32 @@ SELECT count(*), count(DISTINCT v) FROM t;
 ----
 7	1
 
+# Key-only recursion has no payload aggregates, reserves no finalized-value region, and must still run
+# with assertions enabled.
+
+query I
+WITH RECURSIVE t(k) USING KEY (k) AS (
+	SELECT i FROM range(5) r(i)
+	UNION
+	SELECT (k + 1) % 7 FROM t
+)
+SELECT count(*) FROM t;
+----
+7
+
+# A collated KEY column carries a hidden representative aggregate, so the key's display value flows
+# through a finalized VARCHAR slot.
+
+query TI
+WITH RECURSIVE t(k, v) USING KEY (k, max(v)) AS (
+	SELECT 'aa' COLLATE NOCASE AS k, 1 AS v
+	UNION
+	SELECT 'AA', v + 1 FROM t WHERE v < 4
+)
+SELECT upper(k), v FROM t;
+----
+AA	4
+
 # Byte-equal refreshes across arena compaction: half the keys toggle between two long strings each
 # iteration until replaced bytes outweigh the live ones and the arena compacts, the other half refresh
 # with identical bytes and keep their stored string. Compaction migrates both halves, so the recurring
@@ -136,6 +162,21 @@ WITH RECURSIVE t(k, v, iter) USING KEY (k, last(v), max(iter)) AS (
 SELECT count(*), count(DISTINCT v), min(length(v)), max(length(v)) FROM t;
 ----
 1200	2	400	400
+
+# Long strings through min and max: both directions of the comparison survive the finalized region.
+
+query III
+WITH RECURSIVE t(k, lo, hi) USING KEY (k, min(lo), max(hi)) AS (
+	SELECT i % 50, repeat('m', 60) || lpad(i::VARCHAR, 6, '0'), repeat('m', 60) || lpad(i::VARCHAR, 6, '0')
+	FROM range(500) r(i)
+	UNION
+	SELECT k, repeat('a', 60) || lpad(k::VARCHAR, 6, '0'), repeat('z', 60) || lpad(k::VARCHAR, 6, '0')
+	FROM t WHERE lo NOT LIKE 'a%'
+)
+SELECT count(*), count_if(lo LIKE 'a%' AND length(lo) = 66), count_if(hi LIKE 'z%' AND length(hi) = 66)
+FROM t;
+----
+50	50	50
 
 # The finalized strings allocate through the buffer allocator, so they stay inside the memory limit's
 # accounting while the recursion runs.
