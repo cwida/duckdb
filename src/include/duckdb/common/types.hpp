@@ -41,6 +41,9 @@ struct VectorStructType;
 template <class T>
 struct VectorListType;
 
+template <class T>
+struct VectorArrayType;
+
 //! Marker type selecting the VARIANT specialization of VectorIterator (see variant_iterator.hpp)
 struct VectorVariantType;
 
