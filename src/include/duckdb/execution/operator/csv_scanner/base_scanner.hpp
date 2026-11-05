@@ -389,8 +389,8 @@ protected:
 
 	//! Scans unquoted fields and quoted values in their canonical form, and preserves the states when handing back
 	//! to Process. Returns true when the result is full. Repeated SetQuoted calls may be skipped because the setter
-	//! is idempotent. MULTI_BYTE_DELIMITER is the dialect's, so one byte delimiters pay nothing for the other case
-	template <class T, bool MULTI_BYTE_DELIMITER>
+	//! is idempotent. MULTI_BYTE_DELIMITER and COMMENT are the dialect's, so dialects without them pay nothing for them
+	template <class T, bool MULTI_BYTE_DELIMITER, bool COMMENT>
 	bool ProcessBlocks(T &result, const idx_t to_pos) {
 		const auto buffer = buffer_handle_ptr;
 		// the first byte not consumed, and the first byte after the last structural or special byte
@@ -411,7 +411,7 @@ protected:
 				}
 				candidates &= candidates - 1;
 				const auto byte = static_cast<uint8_t>(buffer[at]);
-				if (comment) {
+				if (COMMENT && comment) {
 					const idx_t row_end_bytes = RowEndBytes(byte, at, limit);
 					if (row_end_bytes == 0) {
 						if (byte == '\n' || byte == '\r') {
@@ -515,7 +515,7 @@ protected:
 					last = at + 1;
 					continue;
 				}
-				if (block_comment != '\0' && byte == block_comment) {
+				if (COMMENT && byte == block_comment) {
 					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::COMMENT);
 					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
 					states.states[0] = before;
@@ -564,7 +564,7 @@ protected:
 			}
 			pos = limit;
 		}
-		if (comment) {
+		if (COMMENT && comment) {
 			return HandOverComment(pos, last, comment_before);
 		}
 		return quoted ? HandOverQuoted(pos, last) : HandOver(pos, last);
@@ -594,8 +594,11 @@ protected:
 		skipper.SetBuffer(*cur_buffer_handle);
 		while (iterator.pos.buffer_pos < to_pos) {
 			if (T::BLOCK_SCAN && block_scan && BlockScanPossible(result)) {
-				const bool full = block_multi_byte_delimiter ? ProcessBlocks<T, true>(result, to_pos)
-				                                             : ProcessBlocks<T, false>(result, to_pos);
+				const bool full = block_comment != '\0'
+				                      ? (block_multi_byte_delimiter ? ProcessBlocks<T, true, true>(result, to_pos)
+				                                                    : ProcessBlocks<T, false, true>(result, to_pos))
+				                      : (block_multi_byte_delimiter ? ProcessBlocks<T, true, false>(result, to_pos)
+				                                                    : ProcessBlocks<T, false, false>(result, to_pos));
 				if (full) {
 					bytes_read = iterator.pos.buffer_pos - start_pos;
 					return;
