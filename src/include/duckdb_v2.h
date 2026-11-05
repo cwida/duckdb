@@ -15142,6 +15142,22 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle 
                                                          duckdb_v2_error_info_handle *err);
 #endif
 
+/*!
+ * Returns the GEOMETRY storage bytes without conversion. A NULL value or a value with a different type id returns
+ * ERROR_INPUT_INVALID.
+ *
+ * history:
+ * - stable: v2.0.0
+ *
+ * @param value The value to read.
+ * @param out Receives the geometry in DuckDB's internal binary format. The bytes are borrowed and valid until the value
+ * handle is destroyed.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_geometry(duckdb_v2_value_handle value, duckdb_v2_str *out,
+                                                          duckdb_v2_error_info_handle *err);
+
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
  * Returns the value as a byte string: a BLOB, or the storage bytes of a BIT or BIGNUM.
@@ -15760,6 +15776,25 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_ha
                                                             duckdb_v2_value_handle *out_value,
                                                             duckdb_v2_error_info_handle *err);
 #endif
+
+/*!
+ * Creates a GEOMETRY value by copying storage bytes without validation. The returned value is caller-owned; destroy it
+ * via value_destroy.
+ *
+ * history:
+ * - stable: v2.0.0
+ *
+ * @param factory The factory to create with.
+ * @param in_value The geometry in DuckDB's internal binary format, not UTF-8 text. Must be non-null; ptr may be null
+ * only when len is 0.
+ * @param out_value Receives the new GEOMETRY value.
+ * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+ * @return DUCKDB_V2_ERROR
+ */
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_geometry(duckdb_v2_factory_handle factory,
+                                                             const duckdb_v2_str *in_value,
+                                                             duckdb_v2_value_handle *out_value,
+                                                             duckdb_v2_error_info_handle *err);
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!

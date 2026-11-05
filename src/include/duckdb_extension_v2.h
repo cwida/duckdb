@@ -78,6 +78,11 @@
 //===--------------------------------------------------------------------===//
 typedef struct {
 	// capigen:begin appended
+	DUCKDB_V2_ERROR(*duckdb_v2_value_create_geometry)
+	(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value, duckdb_v2_value_handle *out_value,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_value_get_geometry)
+	(duckdb_v2_value_handle value, duckdb_v2_str *out, duckdb_v2_error_info_handle *err);
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 	DUCKDB_V2_ERROR(*duckdb_v2_arena_allocate)
 	(duckdb_v2_arena_handle arena, idx_t byte_len, uint8_t **out_ptr, duckdb_v2_error_info_handle *err);
@@ -1557,6 +1562,8 @@ typedef struct {
 // The vtable (duckdb_ext_api) is not used - skip these macro redirections.
 #ifndef DUCKDB_BUILD_STATIC_EXTENSION
 // capigen:begin appended
+#define duckdb_v2_value_create_geometry duckdb_ext_api.duckdb_v2_value_create_geometry
+#define duckdb_v2_value_get_geometry    duckdb_ext_api.duckdb_v2_value_get_geometry
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_arena_allocate duckdb_ext_api.duckdb_v2_arena_allocate
 #endif

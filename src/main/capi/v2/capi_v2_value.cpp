@@ -285,6 +285,15 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle value, duckdb
 	});
 }
 
+DUCKDB_V2_ERROR duckdb_v2_value_get_geometry(duckdb_v2_value_handle value, duckdb_v2_str *out,
+                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(out);
+	return WithErrorHandler(err, [&]() {
+		RequireTypedValue(value, duckdb::LogicalTypeId::GEOMETRY);
+		*out = Convert(duckdb::StringValue::Get(*Convert(value)));
+	});
+}
+
 DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, duckdb_v2_str *out,
                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(value);
@@ -559,6 +568,17 @@ DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_handle factory,
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
 	return WithErrorHandler(err, [&]() { *out_value = Emit(duckdb::Value(Convert(in_value))); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_value_create_geometry(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,
+                                                duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(factory);
+	DUCKDB_CHECK_ARG(out_value);
+	*out_value = nullptr;
+	return WithErrorHandler(err, [&]() {
+		*out_value = Emit(duckdb::Value::GEOMETRY(duckdb::const_data_ptr_cast(std::string(Convert(in_value)).c_str()),
+		                                          in_value->len));
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_value_create_blob(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,

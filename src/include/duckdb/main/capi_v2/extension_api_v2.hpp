@@ -7,6 +7,11 @@
 //===--------------------------------------------------------------------===//
 typedef struct {
 	// v2.0.0
+	DUCKDB_V2_ERROR(*duckdb_v2_value_create_geometry)
+	(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value, duckdb_v2_value_handle *out_value,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_value_get_geometry)
+	(duckdb_v2_value_handle value, duckdb_v2_str *out, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_arena_allocate)
 	(duckdb_v2_arena_handle arena, idx_t byte_len, uint8_t **out_ptr, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_bignum_decode)
@@ -1481,6 +1486,8 @@ typedef struct {
 //===--------------------------------------------------------------------===//
 inline duckdb_ext_api_v2 CreateAPIv2(void) {
 	duckdb_ext_api_v2 result;
+	result.duckdb_v2_value_create_geometry = duckdb_v2_value_create_geometry;
+	result.duckdb_v2_value_get_geometry = duckdb_v2_value_get_geometry;
 	result.duckdb_v2_arena_allocate = duckdb_v2_arena_allocate;
 	result.duckdb_v2_bignum_decode = duckdb_v2_bignum_decode;
 	result.duckdb_v2_bignum_encode = duckdb_v2_bignum_encode;

@@ -392,6 +392,31 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
+  value_get_geometry:
+    lifecycle:
+      - [ "stable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Returns the GEOMETRY storage bytes without conversion.
+      A NULL value or a value with a different type id returns ERROR_INPUT_INVALID.
+    role: getter
+    belongs_to: value
+    parameters:
+      value:
+        type: value
+        description: The value to read.
+      out:
+        type: str
+        indirection: 1
+        kind: OUT
+        description: Receives the geometry in DuckDB's internal binary format. The bytes are borrowed and valid until the value handle is destroyed.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+
   value_get_blob:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-04" ]
@@ -1283,6 +1308,36 @@ functions:
         indirection: 1
         kind: OUT
         description: Receives the new VARCHAR value.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
+    return_type: ERROR
+
+  value_create_geometry:
+    lifecycle:
+      - [ "stable", "v2.0.0", "2026-08-04" ]
+    description: |
+      Creates a GEOMETRY value by copying storage bytes without validation.
+      The returned value is caller-owned; destroy it via value_destroy.
+    role: constructor
+    belongs_to: value
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create with.
+      in_value:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The geometry in DuckDB's internal binary format, not UTF-8 text. Must be non-null; ptr may be null only when len is 0.
+      out_value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the new GEOMETRY value.
       err:
         type: error_info
         indirection: 1
