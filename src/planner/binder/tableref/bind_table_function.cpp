@@ -24,13 +24,40 @@ namespace duckdb {
 
 enum class TableFunctionBindType { STANDARD_TABLE_FUNCTION, TABLE_IN_OUT_FUNCTION, TABLE_PARAMETER_FUNCTION };
 
+//! Recognize named arguments before deciding whether a call has a table input.
+static bool NamedArgumentShaped(const FunctionArgument &argument) {
+	if (argument.HasName()) {
+		return true;
+	}
+	auto &expression = argument.GetExpression();
+	if (expression.GetExpressionType() == ExpressionType::SUBQUERY) {
+		return false;
+	}
+	if (expression.GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+		auto &comparison = expression.Cast<ComparisonExpression>();
+		return comparison.Left().GetExpressionType() == ExpressionType::COLUMN_REF &&
+		       !comparison.Left().Cast<ColumnRefExpression>().IsQualified();
+	}
+	return !expression.GetAlias().empty();
+}
+
+//! True when a real table input remains once the named arguments are set aside.
+static bool HasTableInputBesidesNamedArguments(const vector<FunctionArgument> &arguments) {
+	for (auto &argument : arguments) {
+		if (!NamedArgumentShaped(argument) && !argument.GetExpression().IsScalar()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static TableFunctionBindType GetTableFunctionBindType(TableFunctionCatalogEntry &table_function,
-                                                      vector<unique_ptr<ParsedExpression>> &expressions) {
+                                                      const vector<FunctionArgument> &arguments) {
 	// first check if all expressions are scalar
 	// if they are we always bind as a standard table function
 	bool all_scalar = true;
-	for (auto &expr : expressions) {
-		if (!expr->IsScalar()) {
+	for (auto &argument : arguments) {
+		if (!argument.GetExpression().IsScalar()) {
 			all_scalar = false;
 			break;
 		}
@@ -94,24 +121,23 @@ void Binder::BindTableInTableOutFunction(vector<unique_ptr<ParsedExpression>> &e
 	MoveCorrelatedExpressions(*binder);
 }
 
-bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_function,
-                                         vector<unique_ptr<ParsedExpression>> &expressions,
+bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_function, vector<FunctionArgument> &arguments,
                                          vector<unique_ptr<Expression>> &positional_arguments,
                                          vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
                                          BoundStatement &subquery, bool &table_in_out, ErrorData &error) {
-	auto bind_type = GetTableFunctionBindType(table_function, expressions);
-	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION) {
-		// bind table in-out function - its arguments are the columns of the subquery, so there is nothing to fold
-		BindTableInTableOutFunction(expressions, subquery);
-		table_in_out = true;
-		return true;
+	auto bind_type = GetTableFunctionBindType(table_function, arguments);
+	// Named arguments alone do not make an otherwise scalar call table-in-out.
+	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION && !HasTableInputBesidesNamedArguments(arguments)) {
+		bind_type = TableFunctionBindType::STANDARD_TABLE_FUNCTION;
 	}
+	vector<unique_ptr<ParsedExpression>> input_expressions;
 	bool seen_subquery = false;
-	for (auto &child : expressions) {
-		Identifier parameter_name;
+	for (auto &argument : arguments) {
+		auto &child = argument.GetExpressionMutable();
+		Identifier parameter_name = argument.GetName();
 
-		// hack to make named parameters work
-		if (child->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
+		// Explicit argument names take precedence over the legacy name = expression form.
+		if (parameter_name.empty() && child->GetExpressionType() == ExpressionType::COMPARE_EQUAL) {
 			// comparison, check if the LHS is a columnref
 			auto &comp = child->Cast<ComparisonExpression>();
 			if (comp.Left().GetExpressionType() == ExpressionType::COLUMN_REF) {
@@ -121,11 +147,21 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 					child = std::move(comp.RightMutable());
 				}
 			}
-		} else if (!child->GetAlias().empty()) {
+		} else if (parameter_name.empty() && !child->GetAlias().empty() &&
+		           !(bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION &&
+		             child->GetExpressionType() == ExpressionType::SUBQUERY)) {
 			// <name> => <expression> will set the alias of <expression> to <name>
 			parameter_name = child->GetAlias();
 		}
-		if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION &&
+		if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION && parameter_name.empty()) {
+			if (!named_arguments.empty()) {
+				error = ErrorData("Unnamed parameters cannot come after named parameters");
+				return false;
+			}
+			input_expressions.push_back(std::move(child));
+			continue;
+		}
+		if (bind_type == TableFunctionBindType::TABLE_PARAMETER_FUNCTION && parameter_name.empty() &&
 		    child->GetExpressionType() == ExpressionType::SUBQUERY) {
 			D_ASSERT(table_function.functions.Size() == 1);
 			const auto &fun = *table_function.functions.GetFunctionByOffset(0);
@@ -149,7 +185,11 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		}
 
 		TableFunctionBinder binder(*this, context, table_function.name.GetIdentifierName());
+		// a NULL argument keeps the NULL type, so that it can still match any overload
+		auto prev_can_contain_nulls = CanContainNulls();
+		SetCanContainNulls(true);
 		auto expr = binder.Bind(child);
+		SetCanContainNulls(prev_can_contain_nulls);
 		if (expr->HasParameter()) {
 			throw ParameterNotResolvedException();
 		}
@@ -170,6 +210,12 @@ bool Binder::BindTableFunctionParameters(TableFunctionCatalogEntry &table_functi
 		} else {
 			named_arguments.emplace_back(parameter_name, std::move(expr));
 		}
+	}
+	if (bind_type == TableFunctionBindType::TABLE_IN_OUT_FUNCTION) {
+		// Positional arguments vary with each input row. Named options remain scalar
+		// bind-time arguments and must not become extra columns in that input table.
+		BindTableInTableOutFunction(input_expressions, subquery);
+		table_in_out = true;
 	}
 	return true;
 }
@@ -239,7 +285,7 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 	auto constexpr ordinality_name = "ordinality";
 	string ordinality_column_name = ordinality_name;
 	optional_idx ordinality_column_id;
-	// the function binder has placed them already, but not for a table in-out call or a direct bind
+	// the function binder has placed them already, but a direct bind may not have done so
 	table_function.GetSignature().FillNamedDefaults(context, named_parameters);
 	table_function.SetCallArguments(parameters, named_parameters);
 	if (table_function.bind || table_function.bind_replace || table_function.bind_operator) {
@@ -467,32 +513,18 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	bool table_in_out = false;
 	ErrorData error;
 
-	vector<unique_ptr<ParsedExpression>> children;
-	for (auto &child : fexpr.GetArgumentsMutable()) {
-		children.push_back(std::move(child.GetExpressionMutable()));
-	}
-
-	if (!BindTableFunctionParameters(function, children, positional_arguments, named_arguments, subquery, table_in_out,
-	                                 error)) {
+	if (!BindTableFunctionParameters(function, fexpr.GetArgumentsMutable(), positional_arguments, named_arguments,
+	                                 subquery, table_in_out, error)) {
 		error.AddQueryLocation(ref);
 		error.Throw();
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
-	unique_ptr<ResolvedTableFunction> resolved;
-	if (table_in_out) {
-		// the arguments are the columns of the subquery
-		auto selection = FunctionBinder::SelectFunction(context, function.functions, subquery.types);
-		if (selection.IsSuccess()) {
-			auto definition = selection.GetBinding().GetFunction<TableFunction>();
-			resolved = make_uniq<ResolvedTableFunction>(BoundTableFunction(definition));
-		} else {
-			error = selection.GetError();
-		}
-	} else {
-		FunctionBinder function_binder(*this);
-		resolved = function_binder.BindTableFunction(function.functions, positional_arguments, named_arguments, error);
-	}
+	FunctionBinder function_binder(*this);
+	auto resolved =
+	    table_in_out
+	        ? function_binder.BindTableInOutFunction(function.functions, subquery.types, named_arguments, error)
+	        : function_binder.BindTableFunction(function.functions, positional_arguments, named_arguments, error);
 	if (!resolved) {
 		error.AddQueryLocation(ref);
 		error.Throw();

@@ -140,12 +140,12 @@ DUCKDB_V2_ERROR duckdb_v2_pragma_function_create(duckdb_v2_factory_handle factor
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_pragma_function_set_name(duckdb_v2_pragma_function_handle function,
-                                                   const duckdb_v2_identifier_t *name,
-                                                   duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_pragma_function_set_name(duckdb_v2_pragma_function_handle function, const char *name,
+                                                   idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_pragma_function_get_docs(duckdb_v2_pragma_function_handle function,
@@ -189,11 +189,11 @@ DUCKDB_V2_ERROR duckdb_v2_pragma_function_set_exec_callback(duckdb_v2_pragma_fun
 }
 
 DUCKDB_V2_ERROR duckdb_v2_pragma_function_query_set_query(duckdb_v2_pragma_function_query_info_handle info,
-                                                          const duckdb_v2_str *query,
+                                                          const char *query, idx_t query_length,
                                                           duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(query);
-	return WithErrorHandler(err, [&]() { Convert(info)->out_query = duckdb::string(Convert(query)); });
+	DUCKDB_CHECK_STR_ARG(query, query_length);
+	return WithErrorHandler(err, [&]() { Convert(info)->out_query = duckdb::string(Convert(query, query_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_connection_register_pragma_function(duckdb_v2_connection_handle conn,

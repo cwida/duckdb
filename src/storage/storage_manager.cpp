@@ -271,10 +271,6 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 		return false;
 	}
 	// start the checkpoint process around the WAL
-	if (GetWALSize() == 0) {
-		// no WAL - we don't need to do anything here
-		return false;
-	}
 	// verify the main WAL is the active WAL currently
 	if (wal->GetPath() != wal_path) {
 		throw InternalException("Current WAL path \"%s\" does not match base WAL path \"%s\" in WALStartCheckpoint",
@@ -564,9 +560,8 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		unique_ptr<MetricsTimer> timer = nullptr;
 
 		// Start timing the storage load step.
-		auto client_context = context.GetClientContext();
-		if (client_context) {
-			auto profiler = client_context->client_data->profiler;
+		auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachLoadStorageLatency>());
 		}
 
@@ -580,8 +575,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		}
 
 		// Start timing the WAL replay step.
-		if (client_context) {
-			auto profiler = client_context->client_data->profiler;
+		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachReplayWALLatency>());
 		}
 
@@ -796,10 +790,10 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		try {
 			// Start timing the checkpoint.
-			auto client_context = context.GetClientContext();
+			auto profiler = Context::TryGetQueryProfiler(context.GetServices());
 			MetricsTimer timer;
-			if (client_context) {
-				timer = client_context->client_data->profiler->StartTimer<MetricStorageCheckpointLatency>();
+			if (profiler) {
+				timer = profiler->StartTimer<MetricStorageCheckpointLatency>();
 			}
 
 			// Write the checkpoint.

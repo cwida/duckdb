@@ -34,8 +34,9 @@ GeoColumnData::GeoColumnData(BlockManager &block_manager, DataTableInfo &info, i
 // Scan
 //----------------------------------------------------------------------------------------------------------------------
 
-void GeoColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	return base_column->InitializePrefetch(prefetch_state, scan_state, rows);
+void GeoColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                       idx_t end_row) {
+	return base_column->InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
 }
 
 void GeoColumnData::InitializeChildScanStates(ColumnScanState &state) {

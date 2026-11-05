@@ -52,6 +52,8 @@ unique_ptr<Expression> CreateInt96AsStructExpression(ClientContext &context) {
 	args.push_back(std::move(ref));
 	ScalarFunction func("__internal_int96_as_struct", vector<LogicalType> {LogicalType::BLOB}, Int96StructType(),
 	                    Int96AsStructFunction);
+	// a day or a time outside its range is an error of the file, not an internal one
+	func.SetFallible();
 	return func.Bind(context, std::move(args));
 }
 

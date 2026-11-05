@@ -2,6 +2,14 @@
 #include "test_helpers.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/planner/planner.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/operator/logical_expression_get.hpp"
+#include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/filter_info.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
@@ -23,7 +31,11 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/storage/statistics/node_statistics.hpp"
+
 #include <cmath>
+#include <limits>
 
 using namespace duckdb;
 
@@ -1029,4 +1041,431 @@ TEST_CASE("Shared key filters restrict domains only with supported input statist
 			}
 		}
 	}
+}
+
+TEST_CASE("Large cardinality estimates saturate and preserve integer bounds", "[optimizer][relation_statistics]") {
+	auto maximum = NumericLimits<idx_t>::Maximum();
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(0) == 0);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(-1) == 0);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(std::numeric_limits<double>::quiet_NaN()) == 0);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(std::numeric_limits<double>::infinity()) == maximum);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(static_cast<double>(maximum)) == maximum);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(20.4) == 20);
+
+	vector<DistinctCount> domains {{maximum, DistinctCountSource::EXACT}, {maximum, DistinctCountSource::EXACT}};
+	REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, maximum) == maximum);
+	REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, maximum - 1) == maximum - 1);
+	REQUIRE(RelationStatisticsHelper::EstimateCurrentDomain(domains[0], maximum, maximum - 1).distinct_count ==
+	        maximum - 1);
+}
+
+struct CardinalityProviderData : public TableFunctionData {
+	NodeStatistics statistics {0, 0};
+	shared_ptr<idx_t> calls = make_shared_ptr<idx_t>(0);
+	shared_ptr<idx_t> column_calls = make_shared_ptr<idx_t>(0);
+};
+
+static unique_ptr<LogicalGet> CreateCardinalityProvider(optional_idx estimate, optional_idx maximum) {
+	auto data = make_uniq<CardinalityProviderData>();
+	data->statistics.has_estimated_cardinality = estimate.IsValid();
+	data->statistics.has_max_cardinality = maximum.IsValid();
+	if (estimate.IsValid()) {
+		data->statistics.estimated_cardinality = estimate.GetIndex();
+	}
+	if (maximum.IsValid()) {
+		data->statistics.max_cardinality = maximum.GetIndex();
+	}
+	TableFunction function("cardinality_provider", {}, nullptr);
+	function.cardinality = [](ClientContext &, auto bind_data) -> unique_ptr<NodeStatistics> {
+		auto &data = bind_data->template Cast<CardinalityProviderData>();
+		(*data.calls)++;
+		return make_uniq<NodeStatistics>(data.statistics);
+	};
+	auto get = make_uniq<LogicalGet>(TableIndex(10), BoundTableFunction(function), std::move(data),
+	                                 vector<LogicalType> {LogicalType::INTEGER}, vector<Identifier> {"i"});
+	get->AddColumnId(0);
+	return get;
+}
+
+TEST_CASE("Scan filters acquire hidden input columns once and apply conjunction rows once",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto scan = CreateCardinalityProvider(100, 1000);
+	scan->returned_types.push_back(LogicalType::INTEGER);
+	scan->names.emplace_back("hidden");
+	scan->AddColumnId(1);
+	scan->projection_ids = {ProjectionIndex(0)};
+	auto &data = scan->bind_data->Cast<CardinalityProviderData>();
+	scan->function.statistics = [](ClientContext &, auto bind_data, column_t) -> unique_ptr<BaseStatistics> {
+		auto &data = bind_data->template Cast<CardinalityProviderData>();
+		(*data.column_calls)++;
+		auto result = BaseStatistics::CreateUnknown(LogicalType::INTEGER);
+		result.SetDistinctCount(10);
+		return result.ToUnique();
+	};
+	scan->table_filters.PushFilter(
+	    ProjectionIndex(1), ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_EQUAL, Value::INTEGER(1)));
+	scan->table_filters.PushFilter(ProjectionIndex(0), ExpressionFilter::CreateComparisonFilter(
+	                                                       ExpressionType::COMPARE_GREATERTHAN, Value::INTEGER(1)));
+	RelationStatsExtractor extractor(*connection.context);
+	auto result = extractor.Extract(*scan);
+	REQUIRE(result);
+	REQUIRE(result->columns.size() == 1);
+	REQUIRE(result->cardinality == 10);
+	REQUIRE(result->row_retention == Approx(0.1));
+	REQUIRE(result->columns[0].current_domain.distinct_count ==
+	        RelationStatisticsHelper::EstimateCurrentDomain(DistinctCount(10, DistinctCountSource::HLL), 100, 10)
+	            .distinct_count);
+	REQUIRE(extractor.Extract(*scan));
+	REQUIRE(*data.column_calls == 2);
+	REQUIRE(*data.calls == 1);
+}
+
+static unique_ptr<LogicalOperator> PlanStatisticsQuery(Connection &connection, const string &query) {
+	Parser parser(*connection.context);
+	parser.ParseQuery(query);
+	Planner planner(*connection.context);
+	planner.CreatePlan(std::move(parser.statements[0]));
+	planner.plan->ResolveOperatorTypes();
+	return std::move(planner.plan);
+}
+
+static void SetStatisticsTestCardinalities(LogicalOperator &op) {
+	op.SetEstimatedCardinality(0);
+	for (auto &child : op.children) {
+		SetStatisticsTestCardinalities(*child);
+	}
+}
+
+static void CreateStatisticsJoinTables(Connection &connection) {
+	REQUIRE_NO_FAIL(
+	    connection.Query("CREATE TABLE stats_a AS SELECT i::INTEGER x, (i % 10)::INTEGER k FROM range(1000) t(i)"));
+	REQUIRE_NO_FAIL(
+	    connection.Query("CREATE TABLE stats_b AS SELECT i::INTEGER y, (i % 10)::INTEGER k FROM range(1000) t(i)"));
+	REQUIRE_NO_FAIL(
+	    connection.Query("CREATE TABLE stats_c AS SELECT i::INTEGER z, (i % 10)::INTEGER k FROM range(100) t(i)"));
+	REQUIRE_NO_FAIL(connection.Query("SET disabled_optimizers='join_order'"));
+}
+
+TEST_CASE("UNION grouping estimates ignore cached arm cardinalities", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto input = make_uniq<LogicalSetOperation>(TableIndex(30), 1, make_uniq<LogicalDummyScan>(TableIndex(10)),
+	                                            make_uniq<LogicalDummyScan>(TableIndex(20)),
+	                                            LogicalOperatorType::LOGICAL_UNION, true);
+	LogicalAggregate aggregate(TableIndex(40), TableIndex(50), {});
+	aggregate.groups.push_back(
+	    make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, ColumnBinding(TableIndex(30), ProjectionIndex(0))));
+	aggregate.grouping_sets.push_back({ProjectionIndex(0)});
+	aggregate.children.push_back(std::move(input));
+
+	auto bindings = aggregate.GetColumnBindings();
+	for (auto cached_cardinality : {idx_t(0), idx_t(1000)}) {
+		for (auto &arm : aggregate.children[0]->children) {
+			arm->SetEstimatedCardinality(cached_cardinality);
+		}
+		RelationStatsExtractor extractor(*connection.context);
+		auto stats = extractor.Extract(aggregate);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == 2);
+		REQUIRE(stats->MatchesBindings(bindings));
+		REQUIRE(extractor.ExtractedOperatorCount() == 4);
+		for (auto &arm : aggregate.children[0]->children) {
+			REQUIRE(arm->has_estimated_cardinality);
+			REQUIRE(arm->estimated_cardinality == cached_cardinality);
+		}
+		REQUIRE_FALSE(aggregate.has_estimated_cardinality);
+		REQUIRE_FALSE(aggregate.children[0]->has_estimated_cardinality);
+	}
+}
+
+TEST_CASE("UNION grouping refinement shares the CTE extraction snapshot", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	vector<vector<unique_ptr<Expression>>> rows;
+	for (idx_t row = 0; row < 3; row++) {
+		vector<unique_ptr<Expression>> values;
+		values.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(1)));
+		rows.push_back(std::move(values));
+	}
+	auto input =
+	    make_uniq<LogicalExpressionGet>(TableIndex(10), vector<LogicalType> {LogicalType::INTEGER}, std::move(rows));
+	vector<unique_ptr<Expression>> expressions;
+	expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(10)));
+	expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(20)));
+	auto definition = make_uniq<LogicalProjection>(TableIndex(20), std::move(expressions));
+	definition->children.push_back(std::move(input));
+
+	auto cte_index = TableIndex(30);
+	auto first = make_uniq<LogicalCTERef>(TableIndex(40), cte_index,
+	                                      vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+	                                      vector<Identifier> {"a", "b"});
+	auto second = make_uniq<LogicalCTERef>(TableIndex(50), cte_index,
+	                                       vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+	                                       vector<Identifier> {"c", "d"});
+	auto union_op = make_uniq<LogicalSetOperation>(TableIndex(60), 2, std::move(first), std::move(second),
+	                                               LogicalOperatorType::LOGICAL_UNION, true);
+	LogicalAggregate aggregate(TableIndex(70), TableIndex(80), {});
+	for (idx_t column = 0; column < 2; column++) {
+		aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(
+		    LogicalType::INTEGER, ColumnBinding(TableIndex(60), ProjectionIndex(column))));
+	}
+	aggregate.grouping_sets.push_back({ProjectionIndex(0), ProjectionIndex(1)});
+	aggregate.children.push_back(std::move(union_op));
+
+	idx_t cte_lookups = 0;
+	RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		REQUIRE(index == cte_index);
+		cte_lookups++;
+		return *definition;
+	});
+	auto stats = extractor.Extract(aggregate);
+	REQUIRE(stats);
+	// Each arm has three rows but only one pair of keys, rather than the UNION's four domain combinations.
+	REQUIRE(stats->cardinality == 2);
+	REQUIRE(stats->MatchesBindings(aggregate.GetColumnBindings()));
+	REQUIRE(cte_lookups == 2);
+	REQUIRE(extractor.ExtractedOperatorCount() == 6);
+	REQUIRE(extractor.Extract(aggregate) == stats);
+	REQUIRE(cte_lookups == 2);
+	REQUIRE(extractor.ExtractedOperatorCount() == 6);
+}
+
+TEST_CASE("Standalone join statistics share estimation without mutating the plan", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	CreateStatisticsJoinTables(connection);
+	connection.BeginTransaction();
+	for (auto query : {"SELECT a.x,b.y FROM stats_a a JOIN stats_b b USING(k)",
+	                   "SELECT a.x,b.y FROM stats_a a JOIN stats_b b ON a.k<b.k",
+	                   "SELECT a.x,b.y FROM stats_a a JOIN stats_b b ON a.k<=b.k",
+	                   "SELECT a.x,b.y FROM stats_a a,stats_b b WHERE a.k=b.k",
+	                   "SELECT a.x,b.y,c.z FROM stats_a a JOIN stats_b b USING(k) JOIN stats_c c USING(k)",
+	                   "SELECT a.x,b.y,c.z FROM stats_a a,stats_b b,stats_c c WHERE a.k=b.k AND b.k=c.k AND a.k=c.k",
+	                   "SELECT a.x,b.y FROM (SELECT * FROM stats_a WHERE x<100) a JOIN stats_b b USING(k)",
+	                   "SELECT x,y,count(*) FROM (SELECT a.x,b.y FROM stats_a a JOIN stats_b b USING(k) UNION ALL "
+	                   "SELECT a.x,b.y FROM stats_a a JOIN stats_b b USING(k)) u GROUP BY x,y"}) {
+		CAPTURE(query);
+		auto plan = PlanStatisticsQuery(connection, query);
+		auto reference_plan = PlanStatisticsQuery(connection, query);
+		RelationStats reference_stats;
+		JoinOrderOptimizer reference_optimizer(*connection.context);
+		reference_plan = reference_optimizer.Optimize(std::move(reference_plan), reference_stats);
+		REQUIRE(reference_stats.stats_initialized);
+
+		SetStatisticsTestCardinalities(*plan);
+		auto bindings = plan->GetColumnBindings();
+		MemoryStream before;
+		BinarySerializer::Serialize(*plan, before);
+		RelationStatsExtractor extractor(*connection.context);
+		auto stats = extractor.Extract(*plan);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == reference_stats.cardinality);
+		REQUIRE(stats->cardinality > 10000);
+		REQUIRE(stats->MatchesBindings(bindings));
+		MemoryStream after;
+		BinarySerializer::Serialize(*plan, after);
+		REQUIRE(before.GetPosition() == after.GetPosition());
+		REQUIRE(memcmp(before.GetData(), after.GetData(), before.GetPosition()) == 0);
+	}
+	connection.Rollback();
+}
+
+TEST_CASE("Standalone join estimates preserve positive fractional cardinalities", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	connection.BeginTransaction();
+	for (auto query : {"SELECT * FROM range(1) a(i) JOIN range(1) b(i) ON a.i<b.i",
+	                   "SELECT * FROM (SELECT * FROM range(1000) LIMIT 1) a "
+	                   "JOIN (SELECT * FROM range(1000) LIMIT 1) b USING(range)"}) {
+		CAPTURE(query);
+		auto plan = PlanStatisticsQuery(connection, query);
+		auto reference_plan = PlanStatisticsQuery(connection, query);
+		RelationStats reference_stats;
+		JoinOrderOptimizer optimizer(*connection.context);
+		reference_plan = optimizer.Optimize(std::move(reference_plan), reference_stats);
+		REQUIRE(reference_stats.stats_initialized);
+		REQUIRE(reference_stats.cardinality == 1);
+		RelationStatsExtractor extractor(*connection.context);
+		auto stats = extractor.Extract(*plan);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == reference_stats.cardinality);
+	}
+	connection.Rollback();
+}
+
+TEST_CASE("Standalone join estimates preserve empty inputs", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	CreateStatisticsJoinTables(connection);
+	connection.BeginTransaction();
+	vector<pair<string, idx_t>> queries {
+	    {"SELECT a.x,b.y FROM (SELECT * FROM stats_a LIMIT 0) a CROSS JOIN stats_b b", 0},
+	    {"SELECT a.x,b.y FROM stats_a a CROSS JOIN (SELECT * FROM stats_b LIMIT 0) b", 0},
+	    {"SELECT a.x,b.y FROM (SELECT * FROM stats_a LIMIT 0) a JOIN stats_b b USING(k)", 0},
+	    {"SELECT b.y FROM (SELECT * FROM stats_a LIMIT 0) a CROSS JOIN stats_b b GROUP BY b.y", 0},
+	    {"SELECT a.x FROM stats_a a SEMI JOIN "
+	     "(SELECT b.k FROM (SELECT * FROM stats_c LIMIT 0) c CROSS JOIN stats_b b GROUP BY b.k) q USING(k)",
+	     0},
+	    {"SELECT a.x FROM stats_a a ANTI JOIN "
+	     "(SELECT b.k FROM (SELECT * FROM stats_c LIMIT 0) c CROSS JOIN stats_b b GROUP BY b.k) q USING(k)",
+	     1000}};
+	for (bool empty_first : {false, true}) {
+		string query = "SELECT 1 FROM ";
+		const string empty = "(SELECT * FROM range(1) LIMIT 0) e";
+		if (empty_first) {
+			query += empty + " CROSS JOIN ";
+		}
+		for (idx_t i = 0; i < 18; i++) {
+			if (i > 0) {
+				query += " CROSS JOIN ";
+			}
+			query += "range(1000000000000000000) r" + to_string(i);
+		}
+		if (!empty_first) {
+			query += " CROSS JOIN " + empty;
+		}
+		queries.emplace_back(std::move(query), 0);
+	}
+	for (auto &query : queries) {
+		CAPTURE(query.first);
+		auto plan = PlanStatisticsQuery(connection, query.first);
+		SetStatisticsTestCardinalities(*plan);
+		MemoryStream before;
+		BinarySerializer::Serialize(*plan, before);
+		RelationStatsExtractor extractor(*connection.context);
+		auto stats = extractor.Extract(*plan);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == query.second);
+		MemoryStream after;
+		BinarySerializer::Serialize(*plan, after);
+		REQUIRE(before.GetPosition() == after.GetPosition());
+		REQUIRE(memcmp(before.GetData(), after.GetData(), before.GetPosition()) == 0);
+	}
+	connection.Rollback();
+}
+
+TEST_CASE("Standalone join preparation declines unavailable predicate bindings", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	for (auto depth : {idx_t(0), idx_t(1)}) {
+		LogicalComparisonJoin join(JoinType::INNER);
+		join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
+		join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(20)));
+		auto left_binding = ColumnBinding(TableIndex(depth == 0 ? 30 : 10), ProjectionIndex(0));
+		join.conditions.emplace_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left_binding, depth),
+		                             make_uniq<BoundColumnRefExpression>(
+		                                 LogicalType::INTEGER, ColumnBinding(TableIndex(20), ProjectionIndex(0))),
+		                             ExpressionType::COMPARE_EQUAL);
+		RelationStatsExtractor extractor(*connection.context);
+		auto stats = extractor.Extract(join);
+		REQUIRE(stats);
+		REQUIRE(stats->cardinality == 1);
+		REQUIRE(stats->MatchesBindings(join.GetColumnBindings()));
+	}
+}
+
+TEST_CASE("Repeated relation outputs share a normalized binding", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	LogicalComparisonJoin join(JoinType::SINGLE);
+	join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
+	join.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(20)));
+	join.left_projection_map = {ProjectionIndex(0), ProjectionIndex(0)};
+	join.ResolveOperatorTypes();
+	auto bindings = join.GetColumnBindings();
+	REQUIRE(bindings.size() == 3);
+	REQUIRE(bindings[0] == bindings[1]);
+
+	RelationStatsExtractor extractor(*connection.context);
+	auto stats = extractor.Extract(join);
+	REQUIRE(stats);
+	REQUIRE(stats->MatchesBindings(bindings));
+	RelationManager normal(*connection.context);
+	REQUIRE(normal.AddRelation(join, nullptr, *stats));
+	RelationManager standalone(*connection.context);
+	vector<reference<LogicalOperator>> filters;
+	REQUIRE(standalone.ExtractJoinRelationsForEstimation(extractor, join, filters));
+	for (auto &manager : {reference<RelationManager>(normal), reference<RelationManager>(standalone)}) {
+		ColumnBinding normalized;
+		REQUIRE(manager.get().TryNormalizeBinding(bindings[0], normalized));
+		REQUIRE(normalized == ColumnBinding(TableIndex(0), ProjectionIndex(0)));
+		REQUIRE(manager.get().TryNormalizeBinding(bindings[2], normalized));
+		REQUIRE(normalized == ColumnBinding(TableIndex(0), ProjectionIndex(2)));
+		REQUIRE(manager.get().GetRelationStats()[0].MatchesBindings(bindings));
+	}
+}
+
+TEST_CASE("Standalone joins inside CTE definitions retain the caller snapshot", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	CreateStatisticsJoinTables(connection);
+	connection.BeginTransaction();
+	auto definition = PlanStatisticsQuery(connection, "SELECT a.x,b.y FROM stats_a a JOIN stats_b b USING(k)");
+	SetStatisticsTestCardinalities(*definition);
+	auto cte_index = TableIndex(10000);
+	auto first = make_uniq<LogicalCTERef>(TableIndex(10001), cte_index,
+	                                      vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+	                                      vector<Identifier> {"x", "y"});
+	auto second = make_uniq<LogicalCTERef>(TableIndex(10002), cte_index,
+	                                       vector<LogicalType> {LogicalType::INTEGER, LogicalType::INTEGER},
+	                                       vector<Identifier> {"x", "y"});
+	LogicalSetOperation union_op(TableIndex(10003), 2, std::move(first), std::move(second),
+	                             LogicalOperatorType::LOGICAL_UNION, true);
+	idx_t lookups = 0;
+	RelationStatsExtractor extractor(*connection.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		REQUIRE(index == cte_index);
+		lookups++;
+		return *definition;
+	});
+	MemoryStream before;
+	BinarySerializer::Serialize(*definition, before);
+	auto stats = extractor.Extract(union_op);
+	REQUIRE(stats);
+	REQUIRE(stats->cardinality > 100000);
+	auto definition_stats = extractor.Extract(*definition);
+	REQUIRE(definition_stats);
+	REQUIRE(stats->cardinality == 2 * definition_stats->cardinality);
+	REQUIRE(lookups == 2);
+	MemoryStream after;
+	BinarySerializer::Serialize(*definition, after);
+	REQUIRE(before.GetPosition() == after.GetPosition());
+	REQUIRE(memcmp(before.GetData(), after.GetData(), before.GetPosition()) == 0);
+	connection.Rollback();
+}
+
+TEST_CASE("Standalone joins retain projected and repeated output bindings", "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	CreateStatisticsJoinTables(connection);
+	connection.BeginTransaction();
+	auto plan = PlanStatisticsQuery(connection, "SELECT * FROM stats_a a JOIN stats_b b ON a.k=b.k");
+	auto &join = plan->children[0]->Cast<LogicalComparisonJoin>();
+	RelationStatsExtractor original(*connection.context);
+	auto full = original.Extract(join);
+	REQUIRE(full);
+	join.left_projection_map = {ProjectionIndex(0)};
+	join.right_projection_map = {ProjectionIndex(0), ProjectionIndex(0)};
+	join.ResolveOperatorTypes();
+	SetStatisticsTestCardinalities(join);
+	MemoryStream before;
+	BinarySerializer::Serialize(join, before);
+	RelationStatsExtractor projected(*connection.context);
+	auto stats = projected.Extract(join);
+	REQUIRE(stats);
+	REQUIRE(stats->cardinality == full->cardinality);
+	REQUIRE(stats->MatchesBindings(join.GetColumnBindings()));
+	REQUIRE(stats->columns.size() == 3);
+	REQUIRE(stats->columns[1].binding == stats->columns[2].binding);
+	for (auto &column : stats->columns) {
+		auto source = full->GetColumnStats(column.binding);
+		REQUIRE(source);
+		REQUIRE(column.current_domain.distinct_count == source->current_domain.distinct_count);
+	}
+	MemoryStream after;
+	BinarySerializer::Serialize(join, after);
+	REQUIRE(before.GetPosition() == after.GetPosition());
+	REQUIRE(memcmp(before.GetData(), after.GetData(), before.GetPosition()) == 0);
+	connection.Rollback();
 }

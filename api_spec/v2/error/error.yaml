@@ -30,8 +30,8 @@ functions:
     description: |
       Retrieves the error text associated with an error info handle.
 
-      Returns a borrowed pointer to the info's null-terminated error text.
-      The pointer is owned by DuckDB and is valid until the info is destroyed 
+      Returns a borrowed view of the info's error text.
+      The text is owned by DuckDB and is valid until the info is destroyed 
       or a new text is set; callers must not free it, and must not read it once 
       the info has been destroyed.
     role: getter
@@ -41,10 +41,16 @@ functions:
         type: error_info
         description: "The error info handle to query."
       out_text:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: "Receives a borrowed view of the text. Owned by DuckDB; valid until the info handle is destroyed."
+        description: "Receives a borrowed pointer to the text. Owned by DuckDB; valid until the info handle is destroyed."
+      out_text_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_text` in bytes. `*out_text` is not guaranteed to be null-terminated.
     return_type: ERROR
 
   error_info_get_raw_text:
@@ -59,7 +65,7 @@ functions:
       reconstructed and the body cannot be derived from error_info_get_text.
       Unprefixed does not mean plain — the body keeps whatever form it was
       rendered in (a LINE/caret block by default, JSON under errors_as_json).
-      `{NULL, 0}` when there is no text. The pointer is owned by DuckDB and
+      NULL with a zero length when there is no text. The text is owned by DuckDB and
       valid until the info handle is destroyed.
     role: getter
     belongs_to: error_info
@@ -68,10 +74,16 @@ functions:
         type: error_info
         description: "The error info handle to query."
       out_raw_text:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: "Receives a borrowed view of the raw text. Owned by DuckDB; valid until the info handle is destroyed."
+        description: "Receives a borrowed pointer to the raw text. Owned by DuckDB; valid until the info handle is destroyed."
+      out_raw_text_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_raw_text` in bytes. `*out_raw_text` is not guaranteed to be null-terminated.
     return_type: ERROR
 
   error_info_set_code:
@@ -111,11 +123,14 @@ functions:
         type: error_info
         description: "The error info handle to set. On success, updated with the provided text."
       text:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The error text to set in the info."
+      text_length:
+        type: idx
+        description: The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this is 0.
     return_type: ERROR
 
   error_info_destroy:

@@ -88,15 +88,29 @@ functions:
         type: environment
         description: "The environment."
       option_names:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
+        kind: IN
         description: "Optional. An array of option_count option names (canonical or alias). Pass NULL when option_count is 0."
-      option_values:
-        type: str
+      option_names_lengths:
+        type: idx
         indirection: 1
         const: true
+        kind: IN
+        description: Byte lengths of the entries in `option_names`; element i is the length of `option_names[i]`. May be NULL only when `option_names` is NULL.
+      option_values:
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
         description: "Optional. An array of option_count values, parallel to option_names, in the textual form SQL `SET` accepts. Pass NULL when option_count is 0."
+      option_values_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `option_values`; element i is the length of `option_values[i]`. May be NULL only when `option_values` is NULL.
       option_count:
         type: idx
         description: "The number of startup options."
@@ -168,17 +182,23 @@ functions:
         type: instance
         description: "The instance handle."
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "Optional. The name to attach under; null or an empty view for the name derived from the path. Borrowed and copied."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       path:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "Path to the database file, or `:memory:` / an empty view for an in-memory database."
+      path_length:
+        type: idx
+        description: The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this is 0.
       options:
         type: attach_options
         description: "Optional attach options created from `instance`, or null to attach with defaults under the derived name."
@@ -212,11 +232,14 @@ functions:
         type: instance
         description: "The instance handle."
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The name the database is attached under. Borrowed."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -246,11 +269,14 @@ functions:
         type: instance
         description: "The instance handle."
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The name the database is attached under. Borrowed."
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -305,17 +331,23 @@ functions:
         type: attach_options
         description: "The attach options."
       key:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The option name, e.g. READ_ONLY."
+      key_length:
+        type: idx
+        description: The length of `key` in bytes. `key` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       setting:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: "The option value, in the textual form a quoted SQL literal would carry."
+      setting_length:
+        type: idx
+        description: The length of `setting` in bytes. `setting` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -345,11 +377,16 @@ functions:
     role: getter
     parameters:
       out_version:
-        type: str
-        indirection: 1
-        const: false
-        kind: OUT
+        type: char
+        indirection: 2
+        const: true
+        kind: OUT_BORROW
         description: "The version string."
+      out_version_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_version` in bytes. `*out_version` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
