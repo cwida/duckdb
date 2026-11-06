@@ -400,6 +400,9 @@ AggregateFunction GetFirstAggregateTemplated(const LogicalType &type) {
 	                      AggregateFunction::StateFinalize<FirstState<T>, T, FirstFunction<LAST, SKIP_NULLS>>,
 	                      FunctionNullHandling::DEFAULT_NULL_HANDLING, FirstFunctionClusterUpdate<T, LAST, SKIP_NULLS>);
 	AggregateFunction::WireStructStateType<FirstState<T>>(result);
+	// The finalizer copies state.value when the state is set and holds a valid value
+	result.SetStateProjection(AggregateStateProjection::ValueIfSetAndValid(
+	    offsetof(FirstState<T>, value), offsetof(FirstState<T>, is_set), offsetof(FirstState<T>, value_is_valid)));
 	return result;
 }
 
