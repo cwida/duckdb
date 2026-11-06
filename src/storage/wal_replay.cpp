@@ -962,7 +962,7 @@ void WriteAheadLogDeserializer::ReplayAlter() {
 		throw DataCorruptionException("Corrupt WAL file: alter entry does not carry alter information");
 	}
 	auto &alter_info = info->Cast<AlterInfo>();
-	// IsAddUniqueConstraint() below dereferences the constraint of an ADD_CONSTRAINT entry: it must be present
+	// IsAddUniqueConstraint() below dereferences the constraint of an ADD_CONSTRAINT entry, so it must be present
 	if (alter_info.type == AlterType::ALTER_TABLE) {
 		auto &table_info = alter_info.Cast<AlterTableInfo>();
 		if (table_info.alter_table_type == AlterTableType::ADD_CONSTRAINT) {

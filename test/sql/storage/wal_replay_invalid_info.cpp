@@ -4,6 +4,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/enums/wal_type.hpp"
+#include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/transaction_info.hpp"
 #include "test_helpers.hpp"
 
@@ -19,9 +20,10 @@ static void AppendWALEntry(FileSystem &fs, const string &path, MemoryStream &pay
 	handle->Write(QueryContext(), payload.GetData(), size);
 }
 
-TEST_CASE("Test WAL alter entry carrying non-alter information", "[storage][.]") {
+//! Replay a WAL whose only new entry is an ALTER_INFO with the given info, expecting the given error
+static void TestReplayInvalidAlterInfo(const string &name, unique_ptr<ParseInfo> info, const string &expected_error) {
 	auto config = GetTestConfig();
-	auto storage_database = TestCreatePath("wal_alter_wrong_info");
+	auto storage_database = TestCreatePath(name);
 	auto storage_wal = storage_database + ".wal";
 
 	LocalFileSystem lfs;
@@ -35,13 +37,12 @@ TEST_CASE("Test WAL alter entry carrying non-alter information", "[storage][.]")
 	}
 	REQUIRE(lfs.FileExists(storage_wal));
 
-	// an ALTER_INFO entry whose info is a TransactionInfo, followed by a flush
+	// the ALTER_INFO entry, followed by a flush
 	{
 		MemoryStream alter_entry;
 		BinarySerializer serializer(alter_entry);
 		serializer.Begin();
 		serializer.WriteProperty(100, "wal_type", WALType::ALTER_INFO);
-		unique_ptr<ParseInfo> info = make_uniq<TransactionInfo>(TransactionType::BEGIN_TRANSACTION);
 		serializer.WriteProperty(101, "info", info);
 		serializer.End();
 		AppendWALEntry(lfs, storage_wal, alter_entry);
@@ -54,7 +55,18 @@ TEST_CASE("Test WAL alter entry carrying non-alter information", "[storage][.]")
 		serializer.End();
 		AppendWALEntry(lfs, storage_wal, flush_entry);
 	}
-	REQUIRE_THROWS_WITH(DuckDB(storage_database, config.get()),
-	                    Catch::Contains("alter entry does not carry alter information"));
+	REQUIRE_THROWS_WITH(DuckDB(storage_database, config.get()), Catch::Contains(expected_error));
 	DeleteDatabase(storage_database);
+}
+
+TEST_CASE("Test WAL alter entry carrying non-alter information", "[storage][.]") {
+	TestReplayInvalidAlterInfo("wal_alter_wrong_info", make_uniq<TransactionInfo>(TransactionType::BEGIN_TRANSACTION),
+	                           "alter entry does not carry alter information");
+}
+
+TEST_CASE("Test WAL add constraint entry without a constraint", "[storage][.]") {
+	AlterEntryData data(QualifiedName(Identifier(""), Identifier("main"), Identifier("t")),
+	                    OnEntryNotFound::THROW_EXCEPTION);
+	TestReplayInvalidAlterInfo("wal_add_constraint_without_constraint", make_uniq<AddConstraintInfo>(data, nullptr),
+	                           "add constraint entry is missing its constraint");
 }
