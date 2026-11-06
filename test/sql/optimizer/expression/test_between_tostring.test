@@ -158,13 +158,14 @@ SELECT n FROM range(10) t(n) WHERE abs(n) BETWEEN 1 AND 3 OR abs(n) > 3 AND abs(
 6
 7
 
-# a BETWEEN the user writes prints unchanged, NOT BETWEEN included
+# a BETWEEN the user writes prints unchanged, NOT BETWEEN included; the bounds are columns so that the prepared
+# statement verifier, which turns constants into parameters, does not change the column names
 
 query T
-SELECT column_name FROM (DESCRIBE SELECT n BETWEEN 1 AND 8, n NOT BETWEEN 1 AND 8 FROM range(10) t(n));
+SELECT column_name FROM (DESCRIBE SELECT n BETWEEN lo AND hi, n NOT BETWEEN lo AND hi FROM (SELECT range, 1, 8 FROM range(10)) t(n, lo, hi));
 ----
-(n BETWEEN 1 AND 8)
-(NOT (n BETWEEN 1 AND 8))
+(n BETWEEN lo AND hi)
+(NOT (n BETWEEN lo AND hi))
 
 query II
 EXPLAIN SELECT abs(n) BETWEEN 1 AND 8 FROM range(10) t(n);
