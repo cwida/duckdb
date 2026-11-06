@@ -66,6 +66,12 @@
       "paths": [
         "test/sql/transactions/test_parser_error_transaction_invalidation.test"
       ]
+    },
+    {
+      "reason": "Statement wrapping adds a binder level, shifting the exact depth boundary",
+      "paths": [
+        "test/sql/cte/cte_chain_depth_boundary.test"
+      ]
     }
   ]
 }

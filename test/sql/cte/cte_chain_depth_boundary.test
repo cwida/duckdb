@@ -1,0 +1,38 @@
+# name: test/sql/cte/cte_chain_depth_boundary.test
+# description: Exact depth boundaries of lazily bound CTE chains
+# group: [cte]
+
+# these cases sit at or near max_expression_depth by construction: configs that wrap every
+# statement (PREPARE, EXPLAIN) add a binder level, and the SQL round-trip re-renders derived
+# tables at roughly twice the parsed depth - they are skipped in those configs
+
+statement ok
+SET max_expression_depth=60
+
+
+# the flat chain boundary is unchanged: 57 chained definitions fit the limit of 60
+query I
+WITH c0 AS (SELECT 1 AS x), c1 AS (SELECT x+1 AS x FROM c0), c2 AS (SELECT x+1 AS x FROM c1), c3 AS (SELECT x+1 AS x FROM c2), c4 AS (SELECT x+1 AS x FROM c3), c5 AS (SELECT x+1 AS x FROM c4), c6 AS (SELECT x+1 AS x FROM c5), c7 AS (SELECT x+1 AS x FROM c6), c8 AS (SELECT x+1 AS x FROM c7), c9 AS (SELECT x+1 AS x FROM c8), c10 AS (SELECT x+1 AS x FROM c9), c11 AS (SELECT x+1 AS x FROM c10), c12 AS (SELECT x+1 AS x FROM c11), c13 AS (SELECT x+1 AS x FROM c12), c14 AS (SELECT x+1 AS x FROM c13), c15 AS (SELECT x+1 AS x FROM c14), c16 AS (SELECT x+1 AS x FROM c15), c17 AS (SELECT x+1 AS x FROM c16), c18 AS (SELECT x+1 AS x FROM c17), c19 AS (SELECT x+1 AS x FROM c18), c20 AS (SELECT x+1 AS x FROM c19), c21 AS (SELECT x+1 AS x FROM c20), c22 AS (SELECT x+1 AS x FROM c21), c23 AS (SELECT x+1 AS x FROM c22), c24 AS (SELECT x+1 AS x FROM c23), c25 AS (SELECT x+1 AS x FROM c24), c26 AS (SELECT x+1 AS x FROM c25), c27 AS (SELECT x+1 AS x FROM c26), c28 AS (SELECT x+1 AS x FROM c27), c29 AS (SELECT x+1 AS x FROM c28), c30 AS (SELECT x+1 AS x FROM c29), c31 AS (SELECT x+1 AS x FROM c30), c32 AS (SELECT x+1 AS x FROM c31), c33 AS (SELECT x+1 AS x FROM c32), c34 AS (SELECT x+1 AS x FROM c33), c35 AS (SELECT x+1 AS x FROM c34), c36 AS (SELECT x+1 AS x FROM c35), c37 AS (SELECT x+1 AS x FROM c36), c38 AS (SELECT x+1 AS x FROM c37), c39 AS (SELECT x+1 AS x FROM c38), c40 AS (SELECT x+1 AS x FROM c39), c41 AS (SELECT x+1 AS x FROM c40), c42 AS (SELECT x+1 AS x FROM c41), c43 AS (SELECT x+1 AS x FROM c42), c44 AS (SELECT x+1 AS x FROM c43), c45 AS (SELECT x+1 AS x FROM c44), c46 AS (SELECT x+1 AS x FROM c45), c47 AS (SELECT x+1 AS x FROM c46), c48 AS (SELECT x+1 AS x FROM c47), c49 AS (SELECT x+1 AS x FROM c48), c50 AS (SELECT x+1 AS x FROM c49), c51 AS (SELECT x+1 AS x FROM c50), c52 AS (SELECT x+1 AS x FROM c51), c53 AS (SELECT x+1 AS x FROM c52), c54 AS (SELECT x+1 AS x FROM c53), c55 AS (SELECT x+1 AS x FROM c54), c56 AS (SELECT x+1 AS x FROM c55), c57 AS (SELECT x+1 AS x FROM c56) SELECT x FROM c57
+----
+58
+
+# a deep definition and a deep reference site share one native recursion, so they sum:
+# both sides fit the limit individually, binding the CTE from the deep reference does not
+statement error
+WITH c AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT 1 AS x))))))))))))))))))))))))))))))))))))))))) SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c))))))))))))))))))))))))))))))))))))))));
+----
+<REGEX>:.*Max expression depth limit of 60 exceeded.*max_expression_depth.*
+
+# the first reference binds the CTE: a shallow reference earlier in the FROM list binds it
+# outside the deep scope and the already-bound CTE plans
+query I
+WITH c AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT 1 AS x))))))))))))))))))))))))))))))))))))))))) SELECT t1.x FROM c t1, (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c))))))))))))))))))))))))))))))))))))))))) t2;
+----
+1
+
+# at the boundary, sibling CTE scopes inside a deep definition are charged once, not stacked:
+# the inner list of two unused CTEs binds its scopes at the same recursion depth
+query I
+WITH c0 AS (WITH a AS (SELECT 1), b AS (SELECT 1) SELECT 1 AS x), c1 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c0)))), c2 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c1)))), c3 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c2)))), c4 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c3)))), c5 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c4)))), c6 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c5)))), c7 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c6)))), c8 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c7)))), c9 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c8)))), c10 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c9)))), c11 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c10)))), c12 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c11)))), c13 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c12)))), c14 AS (SELECT x FROM (SELECT x FROM (SELECT x FROM (SELECT x FROM c13)))) SELECT x FROM c14
+----
+1

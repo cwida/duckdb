@@ -133,6 +133,12 @@
       "paths": [
         "test/sql/aggregate/aggregates/sum_no_overflow_fallible.test"
       ]
+    },
+    {
+      "reason": "Statement wrapping adds a binder level, shifting the exact depth boundary",
+      "paths": [
+        "test/sql/cte/cte_chain_depth_boundary.test"
+      ]
     }
   ]
 }
