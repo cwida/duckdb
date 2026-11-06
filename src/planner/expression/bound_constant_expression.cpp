@@ -32,28 +32,23 @@ string BoundConstantExpression::ToString() const {
 
 //! Two constants are the same expression if their values have the same representation. VARIANT values compare by
 //! meaning - 1::TINYINT and 1::INTEGER are equal - but as constants they are different: variant_typeof tells them
-//! apart, and they hash differently. Vectors compare a VARIANT as the STRUCT it is stored as.
+//! apart, and they hash differently. Vectors compare a VARIANT as the STRUCT it is stored as. INTERVALs that are
+//! only not distinct after normalization (e.g. INTERVAL 1 MONTH vs INTERVAL 30 DAY) can have different effects in
+//! expressions - DATE '2008-05-17' + INTERVAL 1 MONTH is 2008-06-17, but + INTERVAL 30 DAY is 2008-06-16 - so
+//! they compare by their raw (months, days, micros) fields, not by normalized equality.
 static bool SameRepresentation(const Value &left, const Value &right) {
+	if (left.type().id() == LogicalTypeId::INTERVAL) {
+		if (left.IsNull() || right.IsNull()) {
+			return left.IsNull() == right.IsNull();
+		}
+		return left.GetValueUnsafe<interval_t>().SameFields(right.GetValueUnsafe<interval_t>());
+	}
 	if (!TypeVisitor::Contains(left.type(), LogicalTypeId::VARIANT)) {
 		return !ValueOperations::DistinctFrom(left, right);
 	}
 	Vector left_vector(left, count_t(1));
 	Vector right_vector(right, count_t(1));
 	return VectorOperations::NotDistinctFrom(left_vector, right_vector, nullptr, 1, nullptr, nullptr) == 1;
-}
-
-//! INTERVALs that are only equal after normalization (e.g. INTERVAL 1 MONTH vs INTERVAL 30 DAY) can have different
-//! effects in expressions: DATE '2008-05-17' + INTERVAL 1 MONTH is 2008-06-17, but DATE '2008-05-17' + INTERVAL 30 DAY
-//! is 2008-06-16. So for expression deduplication INTERVALs compare by their raw (months, days, micros) fields, not by
-//! normalized equality.
-static bool IntervalSameRepresentation(const Value &left, const Value &right) {
-	if (left.IsNull() || right.IsNull()) {
-		return left.IsNull() == right.IsNull();
-	}
-	auto left_interval = left.GetValueUnsafe<interval_t>();
-	auto right_interval = right.GetValueUnsafe<interval_t>();
-	return left_interval.months == right_interval.months && left_interval.days == right_interval.days &&
-	       left_interval.micros == right_interval.micros;
 }
 
 bool BoundConstantExpression::Equals(const BaseExpression &other_p) const {
@@ -63,9 +58,6 @@ bool BoundConstantExpression::Equals(const BaseExpression &other_p) const {
 	auto &other = other_p.Cast<BoundConstantExpression>();
 	if (value.type() != other.value.type()) {
 		return false;
-	}
-	if (value.type().id() == LogicalTypeId::INTERVAL) {
-		return IntervalSameRepresentation(value, other.value);
 	}
 	return SameRepresentation(value, other.value);
 }
