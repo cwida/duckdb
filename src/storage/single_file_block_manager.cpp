@@ -401,8 +401,8 @@ SingleFileBlockManager::SingleFileBlockManager(AttachedDatabase &db_p, const str
                                                const StorageManagerOptions &options)
     : BlockManager(BufferManager::GetBufferManager(db_p), options.block_alloc_size, options.block_header_size),
       db(db_p), path(path_p), header_buffer(BlockAllocator::Get(db_p), FileBufferType::MANAGED_BUFFER,
-                                            Storage::FILE_HEADER_SIZE - options.block_header_size.GetIndex(),
-                                            options.block_header_size.GetIndex()),
+	                                        Storage::FILE_HEADER_SIZE - options.block_header_size.GetIndex(),
+	                                        options.block_header_size.GetIndex()),
       iteration_count(0), options(options) {
 }
 
@@ -610,6 +610,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	h1.block_alloc_size = GetBlockAllocSize();
 	h1.vector_size = STANDARD_VECTOR_SIZE;
 	h1.storage_compatibility = options.storage_version;
+	header_buffer.Clear();
 	SerializeHeaderStructure<DatabaseHeader>(h1, header_buffer.GetDataMutable());
 	ChecksumAndWrite(context, header_buffer, Storage::FILE_HEADER_SIZE);
 
@@ -623,6 +624,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	h2.block_alloc_size = GetBlockAllocSize();
 	h2.vector_size = STANDARD_VECTOR_SIZE;
 	h2.storage_compatibility = options.storage_version;
+	header_buffer.Clear();
 	SerializeHeaderStructure<DatabaseHeader>(h2, header_buffer.GetDataMutable());
 	ChecksumAndWrite(context, header_buffer, Storage::FILE_HEADER_SIZE * 2ULL);
 
