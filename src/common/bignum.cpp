@@ -335,9 +335,89 @@ string ProduceOverUnderFlowError(bool is_result_negative, idx_t actual_start, id
 	return error.str();
 }
 
+//! Operands of at most this many magnitude bytes are added in registers
+static constexpr uint32_t SMALL_ADD_MAX_BYTES = 2 * BignumLimb::BYTES;
+
+//! Writes a positive zero as a BIGNUM blob into the heap
+static string_t WriteZero(StringHeap &heap) {
+	auto target = heap.EmptyString(1 + Bignum::BIGNUM_HEADER_SIZE);
+	auto ptr = target.GetDataWriteable();
+	Bignum::SetHeader(ptr, 1, false);
+	ptr[Bignum::BIGNUM_HEADER_SIZE] = 0;
+	target.Finalize();
+	return target;
+}
+
+//! Adds two values of at most SMALL_ADD_MAX_BYTES magnitude bytes each: both magnitudes fit two limbs, so the sum is
+//! computed in registers and encoded once, trimmed, without the general path's scratch result and trim pass
+static string_t AddSmall(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs,
+                         bool rhs_negative) {
+	D_ASSERT(lhs.size <= SMALL_ADD_MAX_BYTES && rhs.size <= SMALL_ADD_MAX_BYTES);
+	const uint64_t a_lo = LoadAbsoluteLimb(lhs, lhs.size);
+	const uint64_t a_hi = LoadAbsoluteLimb(lhs, static_cast<int64_t>(lhs.size) - 8);
+	const uint64_t b_lo = LoadAbsoluteLimb(rhs, rhs.size);
+	const uint64_t b_hi = LoadAbsoluteLimb(rhs, static_cast<int64_t>(rhs.size) - 8);
+
+	bool is_negative = lhs.is_negative;
+	uint64_t lo;
+	uint64_t hi;
+	// the sum of two 128-bit magnitudes needs a 129th bit
+	uint64_t top = 0;
+	if (lhs.is_negative == rhs_negative) {
+		lo = a_lo + b_lo;
+		const uint64_t carry = lo < a_lo;
+		hi = a_hi + b_hi;
+		top = hi < a_hi;
+		hi += carry;
+		top |= hi < carry;
+	} else {
+		if (a_hi == b_hi && a_lo == b_lo) {
+			return WriteZero(heap);
+		}
+		const bool lhs_bigger = a_hi > b_hi || (a_hi == b_hi && a_lo > b_lo);
+		const uint64_t big_lo = lhs_bigger ? a_lo : b_lo;
+		const uint64_t big_hi = lhs_bigger ? a_hi : b_hi;
+		const uint64_t small_lo = lhs_bigger ? b_lo : a_lo;
+		const uint64_t small_hi = lhs_bigger ? b_hi : a_hi;
+		lo = big_lo - small_lo;
+		hi = big_hi - small_hi - (big_lo < small_lo);
+		is_negative = lhs_bigger ? lhs.is_negative : rhs_negative;
+	}
+
+	// encode the magnitude in as many bytes as it needs, complemented for a negative result
+	idx_t byte_count;
+	if (top) {
+		byte_count = 2 * BignumLimb::BYTES + 1;
+	} else if (hi) {
+		byte_count = BignumLimb::BYTES + BignumLimb::ByteCount(hi);
+	} else {
+		byte_count = BignumLimb::ByteCount(lo);
+	}
+	auto target = heap.EmptyString(byte_count + Bignum::BIGNUM_HEADER_SIZE);
+	auto ptr = target.GetDataWriteable();
+	Bignum::SetHeader(ptr, byte_count, is_negative);
+	auto out = reinterpret_cast<data_ptr_t>(ptr + Bignum::BIGNUM_HEADER_SIZE);
+	const uint64_t flip = is_negative ? ~uint64_t(0) : 0;
+	if (byte_count > BignumLimb::BYTES) {
+		if (top) {
+			*out++ = static_cast<data_t>(top ^ flip);
+		}
+		const idx_t hi_bytes = MinValue<idx_t>(byte_count, 2 * BignumLimb::BYTES) - BignumLimb::BYTES;
+		BignumLimb::StoreBEPartial(out, hi_bytes, hi ^ flip);
+		BignumLimb::StoreBE(out + hi_bytes, lo ^ flip);
+	} else {
+		BignumLimb::StoreBEPartial(out, byte_count, lo ^ flip);
+	}
+	target.Finalize();
+	return target;
+}
+
 string_t BignumIntermediate::Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs,
                                  bool negate_rhs) {
 	const bool rhs_negative = rhs.is_negative != negate_rhs;
+	if (lhs.size <= SMALL_ADD_MAX_BYTES && rhs.size <= SMALL_ADD_MAX_BYTES) {
+		return AddSmall(heap, lhs, rhs, rhs_negative);
+	}
 	const bool same_sign = lhs.is_negative == rhs_negative;
 	const uint32_t actual_size = lhs.size - lhs.GetStartDataPos();
 	const uint32_t actual_rhs_size = rhs.size - rhs.GetStartDataPos();

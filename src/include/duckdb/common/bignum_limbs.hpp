@@ -21,7 +21,8 @@ namespace duckdb {
 struct BignumLimb {
 	static constexpr idx_t BYTES = sizeof(uint64_t);
 
-	static inline uint64_t ToHostOrder(uint64_t value) {
+	template <class T>
+	static inline T ToHostOrder(T value) {
 #if DUCKDB_IS_BIG_ENDIAN
 		return value;
 #else
@@ -44,17 +45,50 @@ struct BignumLimb {
 
 	//! Loads the count (1..8) big-endian bytes at ptr as an integer, i.e. a partial limb at the most significant end
 	static inline uint64_t LoadBEPartial(const_data_ptr_t ptr, idx_t count) {
-		D_ASSERT(count <= BYTES);
+		D_ASSERT(count >= 1 && count <= BYTES);
+		if (count == BYTES) {
+			return LoadBE(ptr);
+		}
+		// fixed-size loads keep this free of variable-length memcpy calls
 		uint64_t value = 0;
-		memcpy(reinterpret_cast<data_ptr_t>(&value) + BYTES - count, ptr, count);
-		return ToHostOrder(value);
+		if (count & 4) {
+			uint32_t part;
+			memcpy(&part, ptr, sizeof(part));
+			value = ToHostOrder(part);
+			ptr += sizeof(part);
+		}
+		if (count & 2) {
+			uint16_t part;
+			memcpy(&part, ptr, sizeof(part));
+			value = (value << 16) | ToHostOrder(part);
+			ptr += sizeof(part);
+		}
+		if (count & 1) {
+			value = (value << 8) | *ptr;
+		}
+		return value;
 	}
 
 	//! Stores the low count (1..8) bytes of an integer as big-endian bytes at ptr
 	static inline void StoreBEPartial(data_ptr_t ptr, idx_t count, uint64_t value) {
-		D_ASSERT(count <= BYTES);
-		value = ToHostOrder(value);
-		memcpy(ptr, reinterpret_cast<const_data_ptr_t>(&value) + BYTES - count, count);
+		D_ASSERT(count >= 1 && count <= BYTES);
+		if (count == BYTES) {
+			StoreBE(ptr, value);
+			return;
+		}
+		if (count & 4) {
+			const uint32_t part = ToHostOrder(static_cast<uint32_t>(value >> (8 * (count - 4))));
+			memcpy(ptr, &part, sizeof(part));
+			ptr += sizeof(part);
+		}
+		if (count & 2) {
+			const uint16_t part = ToHostOrder(static_cast<uint16_t>(value >> (8 * (count & 1))));
+			memcpy(ptr, &part, sizeof(part));
+			ptr += sizeof(part);
+		}
+		if (count & 1) {
+			*ptr = static_cast<data_t>(value);
+		}
 	}
 
 	//! The number of leading zero bits of a non-zero limb
