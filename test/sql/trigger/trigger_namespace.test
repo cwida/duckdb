@@ -1,0 +1,88 @@
+# name: test/sql/trigger/trigger_namespace.test
+# description: A trigger body binds unqualified names in the namespace of its base table
+# group: [trigger]
+
+statement ok
+CREATE TABLE log(x INT);
+
+statement ok
+CREATE SCHEMA s2;
+
+statement ok
+CREATE TABLE s2.log(x INT);
+
+statement ok
+CREATE TABLE s2.t(a INT);
+
+# the body names "log" without a schema: it belongs to s2, the schema of the table the trigger is attached to,
+# not to the session's current schema
+statement ok
+CREATE TRIGGER s2_tr AFTER INSERT ON s2.t FOR EACH STATEMENT INSERT INTO log VALUES (1);
+
+statement ok
+INSERT INTO s2.t VALUES (1);
+
+query I
+SELECT count(*) FROM s2.log;
+----
+1
+
+query I
+SELECT count(*) FROM main.log;
+----
+0
+
+# an explicitly qualified reference in the body is unaffected
+statement ok
+CREATE TRIGGER explicit_tr AFTER INSERT ON s2.t FOR EACH STATEMENT INSERT INTO main.log VALUES (2);
+
+statement ok
+INSERT INTO s2.t VALUES (2);
+
+query I
+SELECT count(*) FROM main.log;
+----
+1
+
+query I
+SELECT count(*) FROM s2.log;
+----
+2
+
+# a trigger on a table in the current schema still binds as before
+statement ok
+CREATE TABLE t(a INT);
+
+statement ok
+CREATE TRIGGER main_tr AFTER INSERT ON t FOR EACH STATEMENT INSERT INTO log VALUES (3);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query I
+SELECT count(*) FROM main.log;
+----
+2
+
+# other objects in the table's schema, such as a view referenced without a schema, resolve there as well
+statement ok
+CREATE TABLE s2.t2(a INT);
+
+statement ok
+CREATE VIEW s2.v AS SELECT 1 AS one;
+
+statement ok
+CREATE TRIGGER view_tr AFTER INSERT ON s2.t2 FOR EACH STATEMENT INSERT INTO log SELECT one FROM v;
+
+statement ok
+INSERT INTO s2.t2 VALUES (1);
+
+query I
+SELECT count(*) FROM s2.log;
+----
+3
+
+query I
+SELECT count(*) FROM main.log;
+----
+2

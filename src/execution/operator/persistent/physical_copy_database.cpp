@@ -11,6 +11,7 @@
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
+#include "duckdb/parser/parsed_data/create_trigger_info.hpp"
 #include "duckdb/execution/index/unbound_index.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
@@ -59,6 +60,16 @@ SourceResultType PhysicalCopyDatabase::GetDataInternal(ExecutionContext &context
 		}
 		case CatalogType::INDEX_ENTRY: {
 			// Skip for now.
+			break;
+		}
+		case CatalogType::TRIGGER_ENTRY: {
+			// the trigger lives on its table, which was created earlier in this same loop
+			auto &trigger_info = create_info->Cast<CreateTriggerInfo>();
+			// the schema path of the trigger is the (possibly nested) path of its base table
+			auto table_name = QualifiedName::FromCatalogSchema(
+			    catalog.GetName(), trigger_info.GetQualifiedName().SchemaPath(), trigger_info.base_table->Table());
+			auto &table_entry = catalog.GetEntry<TableCatalogEntry>(context.client, table_name);
+			table_entry.CreateTrigger(catalog.GetCatalogTransaction(context.client), trigger_info);
 			break;
 		}
 		default:

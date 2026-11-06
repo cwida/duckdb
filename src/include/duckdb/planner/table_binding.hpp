@@ -185,6 +185,10 @@ struct CTEBindState {
 	QueryNode &cte_def;
 	const vector<Identifier> &aliases;
 	idx_t active_binder_count;
+	//! Namespace that a trigger body binds unqualified names in - the catalog and schema path of its base table.
+	//! Empty for regular CTEs, which keep binding in the enclosing session namespace.
+	Identifier trigger_binding_catalog;
+	vector<Identifier> trigger_binding_schema_path;
 	shared_ptr<Binder> query_binder;
 	BoundStatement query;
 	vector<Identifier> names;

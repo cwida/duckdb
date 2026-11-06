@@ -797,6 +797,8 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 	validation_binder->global_binder_state->trigger_expanded_tables.insert(table);
 	validation_binder->global_binder_state->trigger_creation_table = &table;
 	validation_binder->global_binder_state->trigger_creation_name = create_trigger_info.GetTriggerName();
+	// the body resolves unqualified names in the namespace of its base table, both here and when it fires
+	validation_binder->SetSearchPath(catalog, table.ParentSchema().GetSchemaPath());
 	// Track every catalog entry resolved while binding the trigger body as a dependency, so an ALTER that could
 	// invalidate the body is blocked, and DROP of a table/view/function referenced by the body is blocked too -
 	// except for the trigger's own base table, which can never outlive it regardless of what the body reads.

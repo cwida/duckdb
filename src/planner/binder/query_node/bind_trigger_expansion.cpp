@@ -324,6 +324,11 @@ static vector<pair<column_t, Identifier>> ReferencedVirtualColumns(vector<unique
 	return result;
 }
 
+static void SetTriggerBodyNamespace(CommonTableExpressionInfo &cte, const CatalogEntry &table) {
+	cte.trigger_binding_catalog = table.ParentCatalog().GetName();
+	cte.trigger_binding_schema_path = table.ParentSchema().GetSchemaPath();
+}
+
 static void AddAfterTriggerCTEs(SelectNode &outer, const vector<const_reference<TriggerCatalogEntry>> &after_triggers,
                                 const Identifier &base_cte_name, const string &uuid_suffix,
                                 const identifier_set_t &injected_names, const TableCatalogEntry &table,
@@ -341,6 +346,7 @@ static void AddAfterTriggerCTEs(SelectNode &outer, const vector<const_reference<
 		trig_cte->query_node = trigger.trigger_action->Copy();
 		trig_cte->materialized = CTEMaterialize::CTE_MATERIALIZE_DEFAULT;
 		trig_cte->is_trigger_generated = true;
+		SetTriggerBodyNamespace(*trig_cte, table);
 
 		// Scoped to this body so sibling triggers can't see the alias.
 		auto &body_map = trig_cte->query_node->cte_map.map;
@@ -387,6 +393,7 @@ static unique_ptr<SelectNode> BuildTriggerChain(const QueryNode &node, const Tab
 		trig_cte->query_node = before_triggers[i].get().trigger_action->Copy();
 		trig_cte->materialized = CTEMaterialize::CTE_MATERIALIZE_DEFAULT;
 		trig_cte->is_trigger_generated = true;
+		SetTriggerBodyNamespace(*trig_cte, table);
 		outer->cte_map.map[body_cte_name] = std::move(trig_cte);
 	}
 
@@ -671,7 +678,9 @@ BoundStatement Binder::ExpandRowTriggers(QueryNode &node, vector<unique_ptr<Pars
 	for (idx_t i = 0; i < triggers.size(); i++) {
 		auto &trigger = triggers[i].get();
 
-		auto child_binder = Binder::CreateBinder(context, this);
+		// the body binds unqualified names in the namespace of the table that owns the trigger
+		auto child_binder =
+		    CreateBinderWithSearchPath(table.ParentCatalog().GetName(), table.ParentSchema().GetSchemaPath());
 		auto body_copy = trigger.trigger_action->Copy();
 		auto bound_body = child_binder->Bind(*body_copy);
 

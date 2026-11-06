@@ -31,6 +31,8 @@ unique_ptr<CommonTableExpressionInfo> CommonTableExpressionInfo::Copy() const {
 	}
 	result->materialized = materialized;
 	result->is_trigger_generated = is_trigger_generated;
+	result->trigger_binding_catalog = trigger_binding_catalog;
+	result->trigger_binding_schema_path = trigger_binding_schema_path;
 	return result;
 }
 

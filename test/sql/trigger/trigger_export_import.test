@@ -1,0 +1,95 @@
+# name: test/sql/trigger/trigger_export_import.test
+# description: Test that EXPORT DATABASE and IMPORT DATABASE round-trip triggers
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+CREATE TABLE t(a INT);
+
+statement ok
+CREATE TABLE log(x INT);
+
+statement ok
+CREATE TRIGGER row_tr AFTER INSERT ON t FOR EACH ROW INSERT INTO log VALUES (new.a);
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/trigger_export'
+
+statement ok
+DROP TABLE t CASCADE
+
+statement ok
+DROP TABLE log CASCADE
+
+# the exported DDL is bare-named and parses
+statement ok
+IMPORT DATABASE '{TEST_DIR}/trigger_export'
+
+query TT
+SELECT trigger_name, table_name FROM duckdb_triggers() WHERE trigger_name = 'row_tr';
+----
+row_tr	t
+
+statement ok
+INSERT INTO t VALUES (7);
+
+query I
+SELECT count(*) FROM log;
+----
+1
+
+# --- a trigger in a non-default schema keeps its namespace across the round trip ---
+
+statement ok
+DROP TABLE t CASCADE
+
+statement ok
+DROP TABLE log
+
+statement ok
+CREATE TABLE audit(x INT);
+
+statement ok
+CREATE SCHEMA s3;
+
+statement ok
+CREATE TABLE s3.t(a INT);
+
+statement ok
+CREATE TABLE s3.audit(x INT);
+
+# the body names "audit" unqualified: it refers to s3.audit, the schema of the base table
+statement ok
+CREATE TRIGGER s3_tr AFTER INSERT ON s3.t FOR EACH STATEMENT INSERT INTO audit VALUES (1);
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/trigger_export_schema'
+
+statement ok
+DROP SCHEMA s3 CASCADE
+
+statement ok
+DROP TABLE audit
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/trigger_export_schema'
+
+query TTT
+SELECT schema_name, trigger_name, table_name FROM duckdb_triggers() WHERE trigger_name = 's3_tr';
+----
+s3	s3_tr	t
+
+statement ok
+INSERT INTO s3.t VALUES (1);
+
+query I
+SELECT count(*) > 0 FROM s3.audit;
+----
+true
+
+# nothing was ever written to the same-named table in the current schema
+query I
+SELECT count(*) FROM main.audit;
+----
+0
