@@ -1267,6 +1267,9 @@
     "methods": {
       "Verify": []
     },
+    "finalize_deserialization": [
+      "deserializer.CheckAllowed(result.kind);"
+    ],
     "pointer_type": "none"
   },
   {
