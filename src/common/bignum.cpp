@@ -565,21 +565,187 @@ string_t WriteMagnitude(StringHeap &heap, const bignum_magnitude_t &digits, bool
 	return target;
 }
 
-//! Schoolbook multiplication: result = lhs * rhs
-void MultiplyMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &lhs, const bignum_magnitude_t &rhs,
-                        bignum_magnitude_t &result) {
-	result.assign(lhs.size() + rhs.size(), 0);
-	for (idx_t i = 0; i < lhs.size(); i++) {
-		AccountWork(state, rhs.size());
+//! Below this many digits in the shorter operand, magnitudes are multiplied with the schoolbook algorithm
+constexpr idx_t KARATSUBA_THRESHOLD = 16;
+
+//! out[0..a_size] = a * digit
+inline void MultiplyByDigit(BignumArithmeticState &state, const bignum_digit_t *a, idx_t a_size, bignum_digit_t digit,
+                            bignum_digit_t *out) {
+	AccountWork(state, a_size);
+	bignum_twodigit_t carry = 0;
+	for (idx_t j = 0; j < a_size; j++) {
+		const bignum_twodigit_t product = static_cast<bignum_twodigit_t>(digit) * a[j] + carry;
+		out[j] = static_cast<bignum_digit_t>(product);
+		carry = product >> DIGIT_BITS;
+	}
+	out[a_size] = static_cast<bignum_digit_t>(carry);
+}
+
+//! Schoolbook multiplication: out[0..a_size + b_size) = a * b for two non-empty operands, with the shorter one in the
+//! outer loop; the first row of partial products is written, the others are added
+void SchoolbookMultiply(BignumArithmeticState &state, const bignum_digit_t *a, idx_t a_size, const bignum_digit_t *b,
+                        idx_t b_size, bignum_digit_t *out) {
+	if (a_size < b_size) {
+		std::swap(a, b);
+		std::swap(a_size, b_size);
+	}
+	D_ASSERT(b_size >= 1);
+	MultiplyByDigit(state, a, a_size, b[0], out);
+	for (idx_t i = 1; i < b_size; i++) {
+		AccountWork(state, a_size);
 		bignum_twodigit_t carry = 0;
-		const bignum_twodigit_t lhs_digit = lhs[i];
-		for (idx_t j = 0; j < rhs.size(); j++) {
+		const bignum_twodigit_t b_digit = b[i];
+		for (idx_t j = 0; j < a_size; j++) {
 			// (BASE - 1)^2 + 2 * (BASE - 1) = BASE^2 - 1, so this cannot overflow
-			const bignum_twodigit_t product = lhs_digit * rhs[j] + result[i + j] + carry;
-			result[i + j] = static_cast<bignum_digit_t>(product);
+			const bignum_twodigit_t product = b_digit * a[j] + out[i + j] + carry;
+			out[i + j] = static_cast<bignum_digit_t>(product);
 			carry = product >> DIGIT_BITS;
 		}
-		result[i + rhs.size()] = static_cast<bignum_digit_t>(carry);
+		out[i + a_size] = static_cast<bignum_digit_t>(carry);
+	}
+}
+
+//! out[0..a_size) = a + b, where a_size >= b_size; the carry out of the top digit is returned
+bignum_digit_t AddDigits(BignumArithmeticState &state, const bignum_digit_t *a, idx_t a_size, const bignum_digit_t *b,
+                         idx_t b_size, bignum_digit_t *out) {
+	D_ASSERT(a_size >= b_size);
+	AccountWork(state, a_size);
+	bignum_twodigit_t carry = 0;
+	idx_t i = 0;
+	for (; i < b_size; i++) {
+		const bignum_twodigit_t sum = static_cast<bignum_twodigit_t>(a[i]) + b[i] + carry;
+		out[i] = static_cast<bignum_digit_t>(sum);
+		carry = sum >> DIGIT_BITS;
+	}
+	for (; i < a_size; i++) {
+		const bignum_twodigit_t sum = static_cast<bignum_twodigit_t>(a[i]) + carry;
+		out[i] = static_cast<bignum_digit_t>(sum);
+		carry = sum >> DIGIT_BITS;
+	}
+	return static_cast<bignum_digit_t>(carry);
+}
+
+//! out += addend, where the sum fits in out_size digits
+void AddInPlace(BignumArithmeticState &state, bignum_digit_t *out, idx_t out_size, const bignum_digit_t *addend,
+                idx_t addend_size) {
+	D_ASSERT(addend_size <= out_size);
+	AccountWork(state, addend_size);
+	bignum_twodigit_t carry = 0;
+	idx_t i = 0;
+	for (; i < addend_size; i++) {
+		const bignum_twodigit_t sum = static_cast<bignum_twodigit_t>(out[i]) + addend[i] + carry;
+		out[i] = static_cast<bignum_digit_t>(sum);
+		carry = sum >> DIGIT_BITS;
+	}
+	for (; carry; i++) {
+		D_ASSERT(i < out_size);
+		out[i]++;
+		carry = out[i] == 0 ? 1 : 0;
+	}
+}
+
+//! out -= subtrahend, where out >= subtrahend
+void SubtractInPlace(BignumArithmeticState &state, bignum_digit_t *out, idx_t out_size,
+                     const bignum_digit_t *subtrahend, idx_t subtrahend_size) {
+	D_ASSERT(subtrahend_size <= out_size);
+	AccountWork(state, subtrahend_size);
+	bignum_digit_t borrow = 0;
+	idx_t i = 0;
+	for (; i < subtrahend_size; i++) {
+		const bignum_digit_t difference = out[i] - subtrahend[i];
+		// at most one of the two steps underflows: the difference is non-zero when the first one did
+		const bignum_digit_t next_borrow = (out[i] < subtrahend[i] || difference < borrow) ? 1 : 0;
+		out[i] = difference - borrow;
+		borrow = next_borrow;
+	}
+	for (; borrow; i++) {
+		D_ASSERT(i < out_size);
+		borrow = out[i] == 0 ? 1 : 0;
+		out[i]--;
+	}
+}
+
+//! The scratch digits MultiplyDigits needs for operands of up to digit_count digits
+idx_t KaratsubaScratchSize(idx_t digit_count) {
+	idx_t total = 0;
+	while (digit_count >= KARATSUBA_THRESHOLD) {
+		// a balanced split sums halves of at most half digits (with their carry digit) and multiplies the sums
+		const idx_t half = (digit_count + 1) / 2 + 1;
+		total += 4 * half;
+		digit_count = half;
+	}
+	return total;
+}
+
+//! out[0..a_size + b_size) = a * b: Karatsuba multiplication down to KARATSUBA_THRESHOLD digits, schoolbook below
+//! scratch holds KaratsubaScratchSize(max(a_size, b_size)) digits and may alias neither operand nor out
+void MultiplyDigits(BignumArithmeticState &state, const bignum_digit_t *a, idx_t a_size, const bignum_digit_t *b,
+                    idx_t b_size, bignum_digit_t *out, bignum_digit_t *scratch) {
+	if (a_size < b_size) {
+		std::swap(a, b);
+		std::swap(a_size, b_size);
+	}
+	if (b_size < KARATSUBA_THRESHOLD) {
+		SchoolbookMultiply(state, a, a_size, b, b_size, out);
+		return;
+	}
+	if (2 * b_size <= a_size) {
+		// unbalanced: multiply b with b_size digit chunks of a and add up the partial products
+		std::fill(out, out + a_size + b_size, 0);
+		auto part = scratch;
+		for (idx_t offset = 0; offset < a_size; offset += b_size) {
+			const idx_t chunk_size = MinValue<idx_t>(b_size, a_size - offset);
+			MultiplyDigits(state, a + offset, chunk_size, b, b_size, part, scratch + 2 * b_size);
+			AddInPlace(state, out + offset, a_size + b_size - offset, part, chunk_size + b_size);
+		}
+		return;
+	}
+	// a = a1 * BASE^m + a0 and b = b1 * BASE^m + b0, where b1 is not empty because 2 * b_size > a_size
+	const idx_t m = a_size / 2;
+	const idx_t a1_size = a_size - m;
+	const idx_t b1_size = b_size - m;
+	// z0 = a0 * b0 and z2 = a1 * b1 fill the low and the high digits of the result
+	MultiplyDigits(state, a, m, b, m, out, scratch);
+	MultiplyDigits(state, a + m, a1_size, b + m, b1_size, out + 2 * m, scratch);
+	// a_sum = a0 + a1 and b_sum = b0 + b1, each followed by its carry digit when there is one
+	auto a_sum = scratch;
+	idx_t a_sum_size = a1_size;
+	a_sum[a_sum_size] = AddDigits(state, a + m, a1_size, a, m, a_sum);
+	a_sum_size += a_sum[a_sum_size] ? 1 : 0;
+	auto b_sum = a_sum + a1_size + 1;
+	idx_t b_sum_size = MaxValue<idx_t>(m, b1_size);
+	b_sum[b_sum_size] =
+	    b1_size >= m ? AddDigits(state, b + m, b1_size, b, m, b_sum) : AddDigits(state, b, m, b + m, b1_size, b_sum);
+	b_sum_size += b_sum[b_sum_size] ? 1 : 0;
+	// z1 = (a0 + a1) * (b0 + b1) - z0 - z2 = a0 * b1 + a1 * b0 goes in at digit m
+	auto z1 = b_sum + MaxValue<idx_t>(m, b1_size) + 1;
+	idx_t z1_size = a_sum_size + b_sum_size;
+	MultiplyDigits(state, a_sum, a_sum_size, b_sum, b_sum_size, z1, z1 + z1_size);
+	SubtractInPlace(state, z1, z1_size, out, 2 * m);
+	SubtractInPlace(state, z1, z1_size, out + 2 * m, a1_size + b1_size);
+	while (z1_size > 0 && z1[z1_size - 1] == 0) {
+		z1_size--;
+	}
+	AddInPlace(state, out + m, a_size + b_size - m, z1, z1_size);
+}
+
+//! result = lhs * rhs, for two non-empty magnitudes
+void MultiplyMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &lhs, const bignum_magnitude_t &rhs,
+                        bignum_magnitude_t &result) {
+	result.resize(lhs.size() + rhs.size());
+	if (rhs.size() == 1) {
+		MultiplyByDigit(state, lhs.data(), lhs.size(), rhs[0], result.data());
+	} else if (lhs.size() == 1) {
+		MultiplyByDigit(state, rhs.data(), rhs.size(), lhs[0], result.data());
+	} else if (MinValue<idx_t>(lhs.size(), rhs.size()) < KARATSUBA_THRESHOLD) {
+		SchoolbookMultiply(state, lhs.data(), lhs.size(), rhs.data(), rhs.size(), result.data());
+	} else {
+		auto &scratch = state.karatsuba_scratch;
+		const idx_t scratch_size = KaratsubaScratchSize(MaxValue<idx_t>(lhs.size(), rhs.size()));
+		if (scratch.size() < scratch_size) {
+			scratch.resize(scratch_size);
+		}
+		MultiplyDigits(state, lhs.data(), lhs.size(), rhs.data(), rhs.size(), result.data(), scratch.data());
 	}
 	TrimMagnitude(result);
 }

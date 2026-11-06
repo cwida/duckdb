@@ -58,6 +58,8 @@ struct BignumArithmeticState {
 	unsafe_vector<bignum_digit_t> lhs_digits;
 	unsafe_vector<bignum_digit_t> rhs_digits;
 	unsafe_vector<bignum_digit_t> result_digits;
+	//! Scratch digits of the Karatsuba multiplication, sized once per vector for the largest product so far
+	unsafe_vector<bignum_digit_t> karatsuba_scratch;
 	unsafe_vector<bignum_digit_t> remainder_digits;
 	unsafe_vector<bignum_digit_t> normalized_dividend;
 	unsafe_vector<bignum_digit_t> normalized_divisor;
