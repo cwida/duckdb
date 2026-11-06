@@ -61,7 +61,7 @@ Parser Error: syntax error at or near ","
 statement error
 SELECT users..id FROM users;
 ----
-Parser Error: syntax error at or near ".."
+Parser Error: syntax error at or near "."
 
 statement error
 SELECT * FROM tbl WHERE x = (SELECT 1 FROM (SELECT 2)
