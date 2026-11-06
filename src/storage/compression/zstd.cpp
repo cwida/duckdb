@@ -42,9 +42,9 @@ static int32_t GetCompressionLevel() {
 	return duckdb_zstd::ZSTD_defaultCLevel();
 }
 
-static constexpr idx_t ZSTD_VECTOR_SIZE = STANDARD_VECTOR_SIZE > 2048 ? STANDARD_VECTOR_SIZE : 2048;
-
 namespace duckdb {
+
+static constexpr idx_t ZSTD_VECTOR_SIZE = STANDARD_VECTOR_SIZE > 2048 ? STANDARD_VECTOR_SIZE : 2048;
 
 static idx_t GetWritableSpace(const CompressionInfo &info) {
 	return info.GetBlockSize() - sizeof(block_id_t);
