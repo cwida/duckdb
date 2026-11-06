@@ -76,6 +76,23 @@ struct Settings {
 		return StringUtil::ToDouble(OP::DefaultValue);
 	}
 
+	template <class OP, class SOURCE>
+	static typename std::enable_if<
+	    std::is_same<typename OP::RETURN_TYPE, vector<typename OP::RETURN_TYPE::value_type>>::value,
+	    typename OP::RETURN_TYPE>::type
+	Get(const SOURCE &source) {
+		using ELEMENT_TYPE = typename OP::RETURN_TYPE::value_type;
+		Value result;
+		if (!TryGetSettingInternal(source, OP::SettingIndex, result) || result.IsNull()) {
+			result = ParseListDefault(OP::DefaultValue, OP::InputType);
+		}
+		typename OP::RETURN_TYPE entries;
+		for (auto &child : ListValue::GetChildren(result)) {
+			entries.push_back(child.GetValue<ELEMENT_TYPE>());
+		}
+		return entries;
+	}
+
 	template <class SOURCE>
 	static void Set(SOURCE &source, idx_t setting_index, SetScope scope, Value target_value) {
 		SetSettingInternal(source, setting_index, scope, std::move(target_value));
@@ -87,6 +104,8 @@ struct Settings {
 	}
 
 private:
+	static Value ParseListDefault(const char *default_value, const char *input_type);
+
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result);
@@ -2585,9 +2604,10 @@ struct TrackedMetricsSetting {
 	static constexpr const char *InputType = "VARCHAR[]";
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
-	static void SetLocal(ClientContext &context, const Value &parameter);
-	static void ResetLocal(ClientContext &context);
-	static Value GetSetting(const ClientContext &context);
+	static constexpr const char *DefaultValue = "['*']";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct UsernameSetting {

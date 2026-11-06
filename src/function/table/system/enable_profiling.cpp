@@ -59,7 +59,7 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 		if (metrics_value.type().id() == LogicalTypeId::VARCHAR) {
 			metrics_value = Value::LIST(LogicalType::VARCHAR, {metrics_value});
 		}
-		TrackedMetricsSetting::SetLocal(context, metrics_value);
+		Settings::Set<TrackedMetricsSetting>(context, SetScope::SESSION, std::move(metrics_value));
 	}
 }
 

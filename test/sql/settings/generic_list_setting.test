@@ -1,0 +1,37 @@
+# name: test/sql/settings/generic_list_setting.test
+# description: Test generic settings with a list type (tracked_metrics)
+# group: [settings]
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[*]
+
+statement ok
+SET tracked_metrics=['query.*', 'optimizer.*']
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[query.*, optimizer.*]
+
+statement ok
+SET tracked_metrics=[]
+
+query I
+SELECT len(current_setting('tracked_metrics'))
+----
+0
+
+statement ok
+RESET tracked_metrics
+
+query I
+SELECT current_setting('tracked_metrics')
+----
+[*]
+
+statement error
+SET tracked_metrics=NULL
+----
+tracked_metrics setting cannot be NULL

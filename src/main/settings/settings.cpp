@@ -5,6 +5,10 @@
 
 namespace duckdb {
 
+Value Settings::ParseListDefault(const char *default_value, const char *input_type) {
+	return Value(default_value).DefaultCastAs(DBConfig::ParseLogicalType(input_type));
+}
+
 bool Settings::TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result) {
 	return context.TryGetCurrentUserSetting(setting_index, result);
 }
