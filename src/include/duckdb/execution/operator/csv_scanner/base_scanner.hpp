@@ -15,6 +15,13 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_byte_skipper.hpp"
 
+// the block scan loop's speed depends on where its code starts within a 64 byte line, so the function is aligned
+#if defined(__GNUC__)
+#define DUCKDB_BLOCK_SCAN_ALIGNED __attribute__((aligned(64)))
+#else
+#define DUCKDB_BLOCK_SCAN_ALIGNED
+#endif
+
 namespace duckdb {
 
 class CSVFileScan;
@@ -223,9 +230,13 @@ protected:
 	//! Whether ProcessBlocks may drive this state machine, and the bytes it stops at
 	const bool block_scan;
 	const uint8_t block_delimiter;
+	const string block_delimiter_bytes;
+	const bool block_multi_byte_delimiter;
 	const uint8_t block_quote;
 	const bool block_crlf;
+	const bool block_cr;
 	const bool block_escape_is_quote;
+	const uint8_t block_comment;
 
 	//! Whether the state machine can hand the current byte to ProcessBlocks
 	template <class T>
@@ -289,6 +300,17 @@ protected:
 		states.states[0] = previous;
 	}
 
+	//! Leaves the block scan inside a comment at `at`, `before` is the state before the comment byte at `last - 1`
+	bool HandOverComment(const idx_t at, const idx_t last, const CSVState before) {
+		const auto previous = at == last ? before : CSVState::COMMENT;
+		D_ASSERT(ReplayStates(last, at).states[0] == previous);
+		D_ASSERT(ReplayStates(last, at).states[1] == CSVState::COMMENT);
+		states.states[0] = previous;
+		states.states[1] = CSVState::COMMENT;
+		iterator.pos.buffer_pos = at;
+		return false;
+	}
+
 	//! Leaves the block scan inside a quoted value at `at`
 	bool HandOverQuoted(const idx_t at, const idx_t last) {
 		SetQuotedStatesBefore(at, last);
@@ -301,7 +323,37 @@ protected:
 		if (block_crlf) {
 			return byte == '\r' && at + 1 < limit && buffer_handle_ptr[at + 1] == '\n' ? 2 : 0;
 		}
+		if (block_cr) {
+			return byte == '\r' ? 1 : 0;
+		}
 		return byte == '\n' ? 1 : 0;
+	}
+
+	//! The bytes of the whole multi byte delimiter when it starts at `at` and ends before `limit`, 0 when only part of
+	//! it is there. No loop here, a loop would be vectorized into the block scan and slow it down for every dialect
+	idx_t DelimiterBytes(const idx_t at, const idx_t limit) const {
+		const idx_t size = block_delimiter_bytes.size();
+		if (at + size > limit || memcmp(buffer_handle_ptr + at + 1, block_delimiter_bytes.data() + 1, size - 1) != 0) {
+			return 0;
+		}
+		return size;
+	}
+
+	//! The state before the last byte of a multi byte delimiter
+	CSVState DelimiterPenultimateState() const {
+		switch (block_delimiter_bytes.size()) {
+		case 2:
+			return CSVState::DELIMITER_FIRST_BYTE;
+		case 3:
+			return CSVState::DELIMITER_SECOND_BYTE;
+		default:
+			return CSVState::DELIMITER_THIRD_BYTE;
+		}
+	}
+
+	//! Clears the candidate bits of the bytes [from, to) of the block starting at `pos`, fewer than 64 of them
+	static void ClearCandidates(uint64_t &candidates, const idx_t pos, const idx_t from, const idx_t to) {
+		candidates &= ~(((uint64_t(1) << (to - from)) - 1) << (from - pos));
 	}
 
 	//! The delimiter at `at`, `before` is the state before it
@@ -338,16 +390,40 @@ protected:
 		return false;
 	}
 
+	//! The row end at `at` closes a comment, as the byte loop's record separator case does. Returns true when the
+	//! result is full
+	template <class T>
+	bool BlockCommentEnd(T &result, const idx_t at, const bool crlf, uint64_t &candidates, const idx_t pos) {
+		states.states[0] = CSVState::COMMENT;
+		states.states[1] = crlf ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR;
+		iterator.pos.buffer_pos = at;
+		const bool full = T::UnsetComment(result, at);
+		lines_read++;
+		if (full) {
+			iterator.pos.buffer_pos = at + 1;
+			return true;
+		}
+		if (crlf) {
+			states.states[0] = CSVState::CARRIAGE_RETURN;
+			states.states[1] = CSVState::RECORD_SEPARATOR;
+			candidates &= ~(uint64_t(1) << (at + 1 - pos));
+		}
+		return false;
+	}
+
 	//! Scans unquoted fields and quoted values in their canonical form, and preserves the states when handing back
 	//! to Process. Returns true when the result is full. Repeated SetQuoted calls may be skipped because the setter
-	//! is idempotent.
-	template <class T>
-	bool ProcessBlocks(T &result, const idx_t to_pos) {
+	//! is idempotent. MULTI_BYTE_DELIMITER and COMMENT are the dialect's, so dialects without them pay nothing for them
+	template <class T, bool MULTI_BYTE_DELIMITER, bool COMMENT>
+	DUCKDB_BLOCK_SCAN_ALIGNED bool ProcessBlocks(T &result, const idx_t to_pos) {
 		const auto buffer = buffer_handle_ptr;
 		// the first byte not consumed, and the first byte after the last structural or special byte
 		idx_t pos = iterator.pos.buffer_pos;
 		idx_t last = pos;
 		bool quoted = false;
+		// inside a comment only a row end matters, `comment_before` is the state before the comment byte
+		bool comment = false;
+		CSVState comment_before = CSVState::NOT_SET;
 		uint64_t candidates;
 		idx_t block_end;
 		while (pos < to_pos && skipper.BlockCandidates(pos, candidates, block_end)) {
@@ -359,6 +435,24 @@ protected:
 				}
 				candidates &= candidates - 1;
 				const auto byte = static_cast<uint8_t>(buffer[at]);
+				if (COMMENT && comment) {
+					const idx_t row_end_bytes = RowEndBytes(byte, at, limit);
+					if (row_end_bytes == 0) {
+						if (byte == '\n' || byte == '\r') {
+							return HandOverComment(at, last, comment_before);
+						}
+						continue;
+					}
+					D_ASSERT(ReplayStates(last, at + 1).states[0] == CSVState::COMMENT);
+					D_ASSERT(ReplayStates(last, at + 1).states[1] ==
+					         (row_end_bytes == 2 ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR));
+					if (BlockCommentEnd(result, at, row_end_bytes == 2, candidates, pos)) {
+						return true;
+					}
+					comment = false;
+					last = at + row_end_bytes;
+					continue;
+				}
 				if (quoted) {
 					if (byte == '\n' || byte == '\r') {
 						// QUOTED and QUOTED_NEW_LINE alternate on newline bytes inside the quotes
@@ -384,8 +478,11 @@ protected:
 					}
 					const auto next = static_cast<uint8_t>(buffer[at + 1]);
 					const bool escape_pair = block_escape_is_quote && next == block_quote;
+					const idx_t delimiter_bytes = next != block_delimiter ? 0
+					                              : MULTI_BYTE_DELIMITER  ? DelimiterBytes(at + 1, limit)
+					                                                      : 1;
 					const idx_t row_end_bytes = RowEndBytes(next, at + 1, limit);
-					if (!escape_pair && next != block_delimiter && row_end_bytes == 0) {
+					if (!escape_pair && delimiter_bytes == 0 && row_end_bytes == 0) {
 						return HandOverQuoted(at, last);
 					}
 					SetQuotedStatesBefore(at, last);
@@ -406,9 +503,13 @@ protected:
 						continue;
 					}
 					quoted = false;
-					if (next == block_delimiter) {
-						BlockDelimiter(result, at + 1, CSVState::UNQUOTED);
-						last = at + 2;
+					if (delimiter_bytes != 0) {
+						if (MULTI_BYTE_DELIMITER) {
+							ClearCandidates(candidates, pos, at + 2, at + 1 + delimiter_bytes);
+						}
+						BlockDelimiter(result, at + delimiter_bytes,
+						               MULTI_BYTE_DELIMITER ? DelimiterPenultimateState() : CSVState::UNQUOTED);
+						last = at + 1 + delimiter_bytes;
 						continue;
 					}
 					if (BlockRowEnd(result, at + 1, CSVState::UNQUOTED, row_end_bytes == 2, candidates, pos)) {
@@ -419,9 +520,34 @@ protected:
 				}
 				const auto before = StateAfterData(states.states[1], last, at);
 				if (byte == block_delimiter) {
+					if (MULTI_BYTE_DELIMITER) {
+						const idx_t delimiter_bytes = DelimiterBytes(at, limit);
+						if (delimiter_bytes == 0) {
+							// part of a multi byte delimiter, the byte loop walks the delimiter byte states
+							return HandOver(at, last);
+						}
+						D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[1] == CSVState::DELIMITER);
+						D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[0] == DelimiterPenultimateState());
+						ClearCandidates(candidates, pos, at + 1, at + delimiter_bytes);
+						BlockDelimiter(result, at + delimiter_bytes - 1, DelimiterPenultimateState());
+						last = at + delimiter_bytes;
+						continue;
+					}
 					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::DELIMITER);
 					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
 					BlockDelimiter(result, at, before);
+					last = at + 1;
+					continue;
+				}
+				if (COMMENT && byte == block_comment) {
+					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::COMMENT);
+					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
+					states.states[0] = before;
+					states.states[1] = CSVState::COMMENT;
+					iterator.pos.buffer_pos = at;
+					T::SetComment(result, at);
+					comment = true;
+					comment_before = before;
 					last = at + 1;
 					continue;
 				}
@@ -462,6 +588,9 @@ protected:
 			}
 			pos = limit;
 		}
+		if (COMMENT && comment) {
+			return HandOverComment(pos, last, comment_before);
+		}
 		return quoted ? HandOverQuoted(pos, last) : HandOver(pos, last);
 	}
 
@@ -489,7 +618,12 @@ protected:
 		skipper.SetBuffer(*cur_buffer_handle);
 		while (iterator.pos.buffer_pos < to_pos) {
 			if (T::BLOCK_SCAN && block_scan && BlockScanPossible(result)) {
-				if (ProcessBlocks(result, to_pos)) {
+				const bool full = block_comment != '\0'
+				                      ? (block_multi_byte_delimiter ? ProcessBlocks<T, true, true>(result, to_pos)
+				                                                    : ProcessBlocks<T, false, true>(result, to_pos))
+				                      : (block_multi_byte_delimiter ? ProcessBlocks<T, true, false>(result, to_pos)
+				                                                    : ProcessBlocks<T, false, false>(result, to_pos));
+				if (full) {
 					bytes_read = iterator.pos.buffer_pos - start_pos;
 					return;
 				}
@@ -649,3 +783,5 @@ protected:
 };
 
 } // namespace duckdb
+
+#undef DUCKDB_BLOCK_SCAN_ALIGNED

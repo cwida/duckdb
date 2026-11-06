@@ -3,6 +3,14 @@
   "initial_db": "{TEST_DIR}/{BASE_TEST_NAME}__test__config__force_storage_mmap.db",
   "skip_compiled": "true",
   "inherit_skip_tests": "test/configs/force_storage.json",
+  "skip_tests": [
+    {
+      "reason": "Memory-mapped reads do not count toward io.total_bytes_read.",
+      "paths": [
+        "test/sql/optimizer/test_rowid_vector_pruning_prefetch.test"
+      ]
+    }
+  ],
   "attach_options": [
     {
       "name": "io_mode",

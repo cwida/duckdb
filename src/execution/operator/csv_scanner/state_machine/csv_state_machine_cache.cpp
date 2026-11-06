@@ -16,18 +16,38 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 	const auto new_line = options.new_line.GetValue();
 	const auto quote = static_cast<uint8_t>(options.quote.GetValue());
 	const auto escape = static_cast<uint8_t>(options.escape.GetValue());
-	if (delimiter.size() != 1 || options.comment != '\0' || (escape != '\0' && escape != quote)) {
+	const auto comment = static_cast<uint8_t>(options.comment.GetValue());
+	if (delimiter.empty() || delimiter.size() > 4 || (escape != '\0' && escape != quote)) {
 		return false;
 	}
-	if (new_line != NewLineIdentifier::SINGLE_N && new_line != NewLineIdentifier::CARRY_ON) {
+	if (comment != '\0' &&
+	    (comment == static_cast<uint8_t>(delimiter[0]) || comment == quote || comment == '\n' || comment == '\r')) {
+		return false;
+	}
+	if (new_line != NewLineIdentifier::SINGLE_N && new_line != NewLineIdentifier::CARRY_ON &&
+	    new_line != NewLineIdentifier::SINGLE_R) {
 		return false;
 	}
 	const auto delimiter_byte = static_cast<uint8_t>(delimiter[0]);
+	// a multi byte delimiter walks through the delimiter byte states, the block scan checks the whole delimiter at once
+	const CSVState delimiter_byte_states[] = {CSVState::DELIMITER_FIRST_BYTE, CSVState::DELIMITER_SECOND_BYTE,
+	                                          CSVState::DELIMITER_THIRD_BYTE, CSVState::DELIMITER};
+	const auto first_byte_state = delimiter.size() == 1 ? CSVState::DELIMITER : CSVState::DELIMITER_FIRST_BYTE;
+	for (idx_t i = 1; i < delimiter.size(); i++) {
+		const auto from = static_cast<uint8_t>(delimiter_byte_states[i - 1]);
+		const auto to = i + 1 == delimiter.size() ? CSVState::DELIMITER : delimiter_byte_states[i];
+		if (transition_array[static_cast<uint8_t>(delimiter[i])][from] != to) {
+			return false;
+		}
+	}
+	if (transition_array[delimiter_byte][static_cast<uint8_t>(CSVState::UNQUOTED)] != first_byte_state) {
+		return false;
+	}
 	const CSVState from_states[] = {CSVState::STANDARD, CSVState::DELIMITER, CSVState::RECORD_SEPARATOR,
 	                                CSVState::EMPTY_SPACE, CSVState::NOT_SET};
 	for (const auto from : from_states) {
 		const auto from_idx = static_cast<uint8_t>(from);
-		if (transition_array[delimiter_byte][from_idx] != CSVState::DELIMITER) {
+		if (transition_array[delimiter_byte][from_idx] != first_byte_state) {
 			return false;
 		}
 		if (new_line == NewLineIdentifier::SINGLE_N && transition_array['\n'][from_idx] != CSVState::RECORD_SEPARATOR) {
@@ -36,9 +56,16 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 		if (new_line == NewLineIdentifier::CARRY_ON && transition_array['\r'][from_idx] != CSVState::CARRIAGE_RETURN) {
 			return false;
 		}
+		if (new_line == NewLineIdentifier::SINGLE_R && transition_array['\r'][from_idx] != CSVState::RECORD_SEPARATOR) {
+			return false;
+		}
+		if (comment != '\0' && transition_array[comment][from_idx] != CSVState::COMMENT) {
+			return false;
+		}
 		const bool after_separator = from != CSVState::STANDARD && from != CSVState::EMPTY_SPACE;
 		for (uint32_t byte = 0; byte < StateMachine::NUM_TRANSITIONS; byte++) {
-			if (byte == delimiter_byte || byte == '\n' || byte == '\r' || (quote != '\0' && byte == quote)) {
+			if (byte == delimiter_byte || byte == '\n' || byte == '\r' || (quote != '\0' && byte == quote) ||
+			    (comment != '\0' && byte == comment)) {
 				continue;
 			}
 			const auto expected = byte == ' ' && after_separator ? CSVState::EMPTY_SPACE : CSVState::STANDARD;
@@ -50,6 +77,21 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 	if (new_line == NewLineIdentifier::CARRY_ON &&
 	    transition_array['\n'][static_cast<uint8_t>(CSVState::CARRIAGE_RETURN)] != CSVState::RECORD_SEPARATOR) {
 		return false;
+	}
+	if (comment != '\0') {
+		const auto in_comment = static_cast<uint8_t>(CSVState::COMMENT);
+		if (transition_array['\n'][in_comment] != CSVState::RECORD_SEPARATOR) {
+			return false;
+		}
+		if (transition_array['\r'][in_comment] !=
+		    (new_line == NewLineIdentifier::CARRY_ON ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR)) {
+			return false;
+		}
+		for (uint32_t byte = 0; byte < StateMachine::NUM_TRANSITIONS; byte++) {
+			if (byte != '\n' && byte != '\r' && transition_array[byte][in_comment] != CSVState::COMMENT) {
+				return false;
+			}
+		}
 	}
 	if (quote == '\0') {
 		return true;
@@ -90,13 +132,13 @@ static bool BlockScanEligible(const StateMachine &transition_array, const CSVSta
 			return false;
 		}
 	}
-	if (transition_array[delimiter_byte][unquoted] != CSVState::DELIMITER) {
-		return false;
-	}
 	if (new_line == NewLineIdentifier::SINGLE_N && transition_array['\n'][unquoted] != CSVState::RECORD_SEPARATOR) {
 		return false;
 	}
 	if (new_line == NewLineIdentifier::CARRY_ON && transition_array['\r'][unquoted] != CSVState::CARRIAGE_RETURN) {
+		return false;
+	}
+	if (new_line == NewLineIdentifier::SINGLE_R && transition_array['\r'][unquoted] != CSVState::RECORD_SEPARATOR) {
 		return false;
 	}
 	return escape != quote || transition_array[quote][unquoted] == CSVState::QUOTED;

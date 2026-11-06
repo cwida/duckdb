@@ -1,0 +1,12 @@
+# name: benchmark/csv/lineitem_q6.benchmark
+# description: TPC-H Q6 over lineitem written as CSV, four of the sixteen columns projected
+# group: [csv]
+
+template benchmark/csv/lineitem_csv.benchmark.in
+name=Lineitem Q6
+variant=plain
+copy_options=FORMAT CSV, DELIMITER '|', HEADER false
+newline=\n
+query_start=SELECT sum(l_extendedprice * l_discount) AS revenue FROM
+query_end= WHERE l_shipdate BETWEEN DATE '1994-01-01' AND DATE '1994-12-31' AND l_discount BETWEEN 0.05 AND 0.07 AND l_quantity < 24;
+result=123141078.2283
