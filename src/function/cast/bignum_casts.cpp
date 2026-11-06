@@ -194,6 +194,14 @@ struct VarcharToBignumOperator {
 	}
 };
 
+bool Bignum::BignumToVarcharCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	D_ASSERT(result.GetType().InternalType() == PhysicalType::VARCHAR);
+	BignumCastScratch scratch;
+	UnaryExecutor::Execute<bignum_t, string_t>(
+	    source, result, count, [&](bignum_t input) { return Bignum::BignumToVarchar(input, result, scratch); });
+	return true;
+}
+
 bool Bignum::VarcharToBignumCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	VarcharToBignumCastData data(result, parameters);
 	UnaryExecutor::GenericExecute<string_t, bignum_t, VarcharToBignumOperator>(source, result, count, data);
@@ -357,7 +365,7 @@ BoundCastInfo DefaultCasts::BignumCastSwitch(BindCastInput &input, const Logical
 		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uhugeint_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::VARCHAR:
-		return BoundCastInfo(&VectorCastHelpers::StringCast<bignum_t, BignumCastToVarchar>);
+		return BoundCastInfo(&Bignum::BignumToVarcharCast);
 	case LogicalTypeId::DOUBLE:
 		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, double, BignumToDoubleErrorCast>);
 	default:

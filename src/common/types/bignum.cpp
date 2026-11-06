@@ -5,6 +5,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/bit_utils.hpp"
+#include "duckdb/common/types/cast_helpers.hpp"
 #include <cmath>
 #include <cstring>
 
@@ -112,8 +113,6 @@ static bool ShouldRoundDecimalDigits(const char *data, idx_t decimal_start, idx_
 	return decimal_start < decimal_end && data[decimal_start] >= '5';
 }
 
-//! The decimal conversions use 64-bit limbs that hold BIGNUM_CAST_DECIMAL_SHIFT digits
-static constexpr idx_t BIGNUM_CAST_DECIMAL_SHIFT = 19;
 //! 10^0 .. 10^19
 static constexpr uint64_t BIGNUM_CAST_POWERS_OF_TEN[] = {1ULL,
                                                          10ULL,
@@ -164,13 +163,13 @@ static inline uint64_t BignumCastMultiplyAdd(uint64_t a, uint64_t b, uint64_t ad
 //! Converts decimal digits to base 2^64 limbs, least significant first, without a zero top limb
 static void BignumCastDecimalToBinary(const char *digits, idx_t count, unsafe_vector<uint64_t> &limbs) {
 	limbs.clear();
-	// the first chunk takes the digits that remain after cutting BIGNUM_CAST_DECIMAL_SHIFT digits at a time from
+	// the first chunk takes the digits that remain after cutting Bignum::DECIMAL_SHIFT digits at a time from
 	// the end
-	idx_t chunk_size = count % BIGNUM_CAST_DECIMAL_SHIFT;
+	idx_t chunk_size = count % Bignum::DECIMAL_SHIFT;
 	if (chunk_size == 0) {
-		chunk_size = BIGNUM_CAST_DECIMAL_SHIFT;
+		chunk_size = Bignum::DECIMAL_SHIFT;
 	}
-	for (idx_t pos = 0; pos < count; pos += chunk_size, chunk_size = BIGNUM_CAST_DECIMAL_SHIFT) {
+	for (idx_t pos = 0; pos < count; pos += chunk_size, chunk_size = Bignum::DECIMAL_SHIFT) {
 		uint64_t chunk = 0;
 		for (idx_t i = pos; i < pos + chunk_size; i++) {
 			chunk = chunk * 10 + static_cast<uint64_t>(digits[i] - '0');
@@ -386,82 +385,113 @@ string Bignum::FromByteArray(uint8_t *data, idx_t size, bool is_negative) {
 	return result;
 }
 
-//! Below this number of limbs, numbers are multiplied with the schoolbook algorithm
-static constexpr idx_t KARATSUBA_THRESHOLD = 48;
+//! Below this number of decimal limbs, numbers are multiplied with the schoolbook algorithm
+static constexpr idx_t KARATSUBA_THRESHOLD = 16;
 //! Below this number of binary limbs, numbers are converted to decimal with the schoolbook algorithm
 static constexpr idx_t CONVERSION_THRESHOLD = 64;
 
-static void TrimLimbs(vector<digit_t> &limbs) {
+//! Divides the 128-bit value (high, low), where high < 10^19, by 10^19; the quotient fits 64 bits.
+//! Möller and Granlund, "Improved division by invariant integers", Algorithm 4, with the precomputed reciprocal of
+//! the (normalized) divisor 10^19.
+static inline uint64_t BignumCastDivRemDecimalBase(uint64_t high, uint64_t low, uint64_t &remainder) {
+	D_ASSERT(high < Bignum::DECIMAL_BASE);
+	//! floor((2^128 - 1) / 10^19) - 2^64
+	constexpr uint64_t RECIPROCAL = 0xd83c94fb6d2ac34aULL;
+	uint64_t q1;
+	uint64_t q0 = BignumCastMultiplyAdd(RECIPROCAL, high, 0, q1);
+	// (q1, q0) += (high, low)
+	q0 += low;
+	q1 += high + (q0 < low ? 1 : 0);
+	q1 += 1;
+	uint64_t r = low - q1 * Bignum::DECIMAL_BASE;
+	if (r > q0) {
+		q1--;
+		r += Bignum::DECIMAL_BASE;
+	}
+	if (r >= Bignum::DECIMAL_BASE) {
+		q1++;
+		r -= Bignum::DECIMAL_BASE;
+	}
+	remainder = r;
+	return q1;
+}
+
+static void TrimLimbs(unsafe_vector<uint64_t> &limbs) {
 	while (!limbs.empty() && limbs.back() == 0) {
 		limbs.pop_back();
 	}
 }
 
 // Adds the decimal limbs of b, shifted by "shift" limbs, to a
-static void AddDecimalLimbs(vector<digit_t> &a, const digit_t *b, idx_t b_size, idx_t shift) {
+static void AddDecimalLimbs(unsafe_vector<uint64_t> &a, const uint64_t *b, idx_t b_size, idx_t shift) {
 	while (b_size > 0 && b[b_size - 1] == 0) {
 		b_size--;
 	}
 	if (a.size() < shift + b_size) {
 		a.resize(shift + b_size, 0);
 	}
-	digit_t carry = 0;
+	uint64_t carry = 0;
 	idx_t i = 0;
 	for (; i < b_size; i++) {
-		digit_t sum = a[shift + i] + b[i] + carry;
-		carry = sum >= Bignum::DECIMAL_BASE;
-		a[shift + i] = carry ? sum - Bignum::DECIMAL_BASE : sum;
+		// a + b + carry can exceed 2^64, so compare against the complement instead
+		const uint64_t x = a[shift + i];
+		const uint64_t y = b[i] + carry;
+		carry = x >= Bignum::DECIMAL_BASE - y ? 1 : 0;
+		a[shift + i] = carry ? x - (Bignum::DECIMAL_BASE - y) : x + y;
 	}
 	for (idx_t idx = shift + i; carry; idx++) {
 		if (idx == a.size()) {
 			a.push_back(0);
 		}
-		digit_t sum = a[idx] + carry;
-		carry = sum >= Bignum::DECIMAL_BASE;
+		const uint64_t sum = a[idx] + carry;
+		carry = sum >= Bignum::DECIMAL_BASE ? 1 : 0;
 		a[idx] = carry ? sum - Bignum::DECIMAL_BASE : sum;
 	}
 }
 
 // Subtracts the decimal limbs of b from a, where a >= b
-static void SubtractDecimalLimbs(vector<digit_t> &a, const vector<digit_t> &b) {
-	digit_t borrow = 0;
+static void SubtractDecimalLimbs(unsafe_vector<uint64_t> &a, const unsafe_vector<uint64_t> &b) {
+	uint64_t borrow = 0;
 	idx_t i = 0;
 	for (; i < b.size(); i++) {
 		if (i >= a.size()) {
 			D_ASSERT(b[i] == 0);
 			continue;
 		}
-		digit_t subtrahend = b[i] + borrow;
-		borrow = a[i] < subtrahend;
-		a[i] = borrow ? a[i] + Bignum::DECIMAL_BASE - subtrahend : a[i] - subtrahend;
+		const uint64_t subtrahend = b[i] + borrow;
+		borrow = a[i] < subtrahend ? 1 : 0;
+		a[i] = borrow ? a[i] + (Bignum::DECIMAL_BASE - subtrahend) : a[i] - subtrahend;
 	}
 	for (; borrow; i++) {
 		D_ASSERT(i < a.size());
-		borrow = a[i] == 0;
+		borrow = a[i] == 0 ? 1 : 0;
 		a[i] = borrow ? Bignum::DECIMAL_BASE - 1 : a[i] - 1;
 	}
 }
 
 // Multiplies two numbers in decimal limbs using Karatsuba multiplication
-static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, const digit_t *b, idx_t b_size) {
+static unsafe_vector<uint64_t> MultiplyDecimalLimbs(const uint64_t *a, idx_t a_size, const uint64_t *b, idx_t b_size) {
 	if (a_size < b_size) {
 		std::swap(a, b);
 		std::swap(a_size, b_size);
 	}
-	vector<digit_t> result;
+	unsafe_vector<uint64_t> result;
 	if (b_size == 0) {
 		return result;
 	}
 	result.resize(a_size + b_size, 0);
 	if (b_size < KARATSUBA_THRESHOLD) {
 		for (idx_t i = 0; i < b_size; i++) {
-			twodigit_t carry = 0;
+			uint64_t carry = 0;
 			for (idx_t j = 0; j < a_size; j++) {
-				twodigit_t current = UnsafeNumericCast<twodigit_t>(b[i]) * a[j] + result[i + j] + carry;
-				carry = current / Bignum::DECIMAL_BASE;
-				result[i + j] = static_cast<digit_t>(current - carry * Bignum::DECIMAL_BASE);
+				// (high, low) = b[i] * a[j] + result[i + j] + carry, below 10^38 + 2 * 10^19, so high < 10^19
+				uint64_t high;
+				uint64_t low = BignumCastMultiplyAdd(b[i], a[j], result[i + j], high);
+				low += carry;
+				high += low < carry ? 1 : 0;
+				carry = BignumCastDivRemDecimalBase(high, low, result[i + j]);
 			}
-			result[i + a_size] = static_cast<digit_t>(carry);
+			result[i + a_size] = carry;
 		}
 		TrimLimbs(result);
 		return result;
@@ -479,9 +509,9 @@ static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, cons
 	idx_t m = a_size / 2;
 	auto z0 = MultiplyDecimalLimbs(a, m, b, m);
 	auto z2 = MultiplyDecimalLimbs(a + m, a_size - m, b + m, b_size - m);
-	vector<digit_t> a_sum(a, a + m);
+	unsafe_vector<uint64_t> a_sum(a, a + m);
 	AddDecimalLimbs(a_sum, a + m, a_size - m, 0);
-	vector<digit_t> b_sum(b, b + m);
+	unsafe_vector<uint64_t> b_sum(b, b + m);
 	AddDecimalLimbs(b_sum, b + m, b_size - m, 0);
 	// z1 = (a0 + a1) * (b0 + b1) - z0 - z2
 	auto z1 = MultiplyDecimalLimbs(a_sum.data(), a_sum.size(), b_sum.data(), b_sum.size());
@@ -494,36 +524,42 @@ static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, cons
 	return result;
 }
 
-// Converts binary limbs (base 2^32) to decimal limbs (base 10^9), both little-endian
-// powers[k] holds 2^(32 * 2^k) in decimal limbs
-static vector<digit_t> BinaryToDecimalLimbs(const digit_t *binary, idx_t size, vector<vector<digit_t>> &powers) {
-	vector<digit_t> digits;
+// Converts binary limbs (base 2^64) to decimal limbs (base 10^19), both little-endian
+// powers[k] holds 2^(64 * 2^k) in decimal limbs
+static void BinaryToDecimalLimbs(const uint64_t *binary, idx_t size, vector<unsafe_vector<uint64_t>> &powers,
+                                 unsafe_vector<uint64_t> &digits) {
+	digits.clear();
 	if (size <= CONVERSION_THRESHOLD) {
 		// typos:ignore-next-line
 		// Following CPython and Knuth (TAOCP, Volume 2 (3rd edn), section 4.4, Method 1b).
 		for (idx_t i = size; i > 0; i--) {
-			digit_t hi = binary[i - 1];
+			uint64_t hi = binary[i - 1];
 			for (idx_t j = 0; j < digits.size(); j++) {
-				twodigit_t tmp = UnsafeNumericCast<twodigit_t>(digits[j]) << Bignum::DIGIT_BITS | hi;
-				hi = static_cast<digit_t>(tmp / UnsafeNumericCast<twodigit_t>(Bignum::DECIMAL_BASE));
-				digits[j] = static_cast<digit_t>(tmp - UnsafeNumericCast<twodigit_t>(Bignum::DECIMAL_BASE * hi));
+				// digits[j] * 2^64 + hi, divided by 10^19
+				hi = BignumCastDivRemDecimalBase(digits[j], hi, digits[j]);
 			}
 			while (hi) {
 				digits.push_back(hi % Bignum::DECIMAL_BASE);
 				hi /= Bignum::DECIMAL_BASE;
 			}
 		}
-		return digits;
+		return;
 	}
-	// split the number into high * 2^(32 * m) + low, where m is a power of two
+	// split the number into high * 2^(64 * m) + low, where m is a power of two
 	idx_t k = 0;
 	idx_t m = 1;
 	while (2 * m < size) {
 		m *= 2;
 		k++;
 	}
-	auto low = BinaryToDecimalLimbs(binary, m, powers);
-	auto high = BinaryToDecimalLimbs(binary + m, size - m, powers);
+	unsafe_vector<uint64_t> low;
+	unsafe_vector<uint64_t> high;
+	BinaryToDecimalLimbs(binary, m, powers, low);
+	BinaryToDecimalLimbs(binary + m, size - m, powers, high);
+	if (powers.empty()) {
+		// 2^64 in decimal limbs
+		powers.push_back({8446744073709551616ULL, 1ULL});
+	}
 	while (powers.size() <= k) {
 		auto &last = powers.back();
 		powers.push_back(MultiplyDecimalLimbs(last.data(), last.size(), last.data(), last.size()));
@@ -532,56 +568,87 @@ static vector<digit_t> BinaryToDecimalLimbs(const digit_t *binary, idx_t size, v
 	digits = MultiplyDecimalLimbs(high.data(), high.size(), power.data(), power.size());
 	AddDecimalLimbs(digits, low.data(), low.size(), 0);
 	TrimLimbs(digits);
-	return digits;
+}
+
+//! Loads the magnitude of a BIGNUM blob into base 2^64 limbs, least significant first
+static void BignumCastLoadMagnitude(const bignum_t &blob, bool &is_negative, unsafe_vector<uint64_t> &limbs) {
+	const idx_t blob_size = blob.data.GetSize();
+	if (blob_size < Bignum::BIGNUM_HEADER_SIZE + 1) {
+		throw InvalidInputException("Invalid blob size.");
+	}
+	const char *data = blob.data.GetData();
+	is_negative = (data[0] & 0x80) == 0;
+	const idx_t data_bytes = blob_size - Bignum::BIGNUM_HEADER_SIZE;
+	const idx_t limb_count = (data_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+	limbs.resize(limb_count);
+	const char *end = data + blob_size;
+	for (idx_t i = 0; i + 1 < limb_count; i++, end -= sizeof(uint64_t)) {
+		limbs[i] = Bignum::BignumCastLoadLimb(end, is_negative);
+	}
+	limbs[limb_count - 1] =
+	    Bignum::BignumCastLoadLeadingBytes(end, data_bytes - (limb_count - 1) * sizeof(uint64_t), is_negative);
+	TrimLimbs(limbs);
+}
+
+//! The number of decimal digits of a magnitude in base 10^19 limbs (one for zero)
+static idx_t BignumCastDecimalLength(const unsafe_vector<uint64_t> &digits) {
+	if (digits.empty()) {
+		return 1;
+	}
+	idx_t top_digits = 1;
+	while (top_digits < Bignum::DECIMAL_SHIFT && digits.back() >= BIGNUM_CAST_POWERS_OF_TEN[top_digits]) {
+		top_digits++;
+	}
+	return (digits.size() - 1) * Bignum::DECIMAL_SHIFT + top_digits;
+}
+
+//! Writes the decimal representation of a magnitude in base 10^19 limbs, with a sign, ending at "end"
+static void BignumCastWriteDecimal(char *end, const unsafe_vector<uint64_t> &digits, idx_t length, bool is_negative) {
+	char *start = end - length;
+	if (digits.empty()) {
+		*start = '0';
+	} else {
+		for (idx_t i = 0; i + 1 < digits.size(); i++) {
+			// every limb below the top one takes exactly DECIMAL_SHIFT digits
+			end -= Bignum::DECIMAL_SHIFT;
+			char *ptr = NumericHelper::FormatUnsigned<uint64_t>(digits[i], end + Bignum::DECIMAL_SHIFT);
+			while (ptr > end) {
+				*--ptr = '0';
+			}
+		}
+		char *ptr = NumericHelper::FormatUnsigned<uint64_t>(digits.back(), end);
+		D_ASSERT(ptr == start + (is_negative ? 1 : 0));
+		(void)ptr;
+	}
+	if (is_negative) {
+		start[-1] = '-';
+	}
+}
+
+//! Converts a BIGNUM to decimal limbs, returns the length of its decimal representation including the sign
+static idx_t BignumCastToDecimal(const bignum_t &blob, BignumCastScratch &scratch, bool &is_negative) {
+	BignumCastLoadMagnitude(blob, is_negative, scratch.binary);
+	BinaryToDecimalLimbs(scratch.binary.data(), scratch.binary.size(), scratch.powers, scratch.decimal);
+	return BignumCastDecimalLength(scratch.decimal) + (is_negative ? 1 : 0);
 }
 
 string Bignum::BignumToVarchar(const bignum_t &blob) {
-	string decimal_string;
-	vector<uint8_t> byte_array;
+	BignumCastScratch scratch;
 	bool is_negative;
-	GetByteArray(byte_array, is_negative, blob.data);
-	// Rounding byte_array to digit_bytes multiple size, so that we can process every digit_bytes bytes
-	// at a time without if check in the for loop
-	idx_t padding_size = (-byte_array.size()) & (DIGIT_BYTES - 1);
-	byte_array.insert(byte_array.begin(), padding_size, 0);
-	idx_t limb_count = byte_array.size() / DIGIT_BYTES;
-	vector<digit_t> binary(limb_count);
-	for (idx_t i = 0; i < limb_count; i++) {
-		digit_t limb = 0;
-		for (idx_t j = 0; j < DIGIT_BYTES; j++) {
-			limb |= UnsafeNumericCast<digit_t>(byte_array[i * DIGIT_BYTES + j]) << (8 * (DIGIT_BYTES - j - 1));
-		}
-		binary[limb_count - i - 1] = limb;
-	}
-	TrimLimbs(binary);
-	// 2^32 in decimal limbs
-	vector<vector<digit_t>> powers {{294967296, 4}};
-	auto digits = BinaryToDecimalLimbs(binary.data(), binary.size(), powers);
+	const idx_t length = BignumCastToDecimal(blob, scratch, is_negative);
+	string result(length, '\0');
+	BignumCastWriteDecimal(&result[0] + length, scratch.decimal, length - (is_negative ? 1 : 0), is_negative);
+	return result;
+}
 
-	if (digits.empty()) {
-		digits.push_back(0);
-	}
-
-	for (idx_t i = 0; i < digits.size() - 1; i++) {
-		auto remain = digits[i];
-		for (idx_t j = 0; j < DECIMAL_SHIFT; j++) {
-			decimal_string += DigitToChar(static_cast<int>(remain % 10));
-			remain /= 10;
-		}
-	}
-
-	auto remain = digits.back();
-	do {
-		decimal_string += DigitToChar(static_cast<int>(remain % 10));
-		remain /= 10;
-	} while (remain != 0);
-
-	if (is_negative) {
-		decimal_string += '-';
-	}
-	// Reverse the string to get the correct decimal representation
-	std::reverse(decimal_string.begin(), decimal_string.end());
-	return decimal_string;
+string_t Bignum::BignumToVarchar(const bignum_t &blob, Vector &result, BignumCastScratch &scratch) {
+	bool is_negative;
+	const idx_t length = BignumCastToDecimal(blob, scratch, is_negative);
+	auto target = StringVector::EmptyString(result, length);
+	BignumCastWriteDecimal(target.GetDataWriteable() + length, scratch.decimal, length - (is_negative ? 1 : 0),
+	                       is_negative);
+	target.Finalize();
+	return target;
 }
 
 string Bignum::VarcharToBignum(const string_t &value) {

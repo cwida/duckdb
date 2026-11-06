@@ -41,10 +41,10 @@ public:
 	DUCKDB_API static constexpr uint32_t MAX_DATA_SIZE = 8388607;
 	//! Header size of a Bignum is always 3 bytes.
 	DUCKDB_API static constexpr uint8_t BIGNUM_HEADER_SIZE = 3;
-	//! Max(e such that 10**e fits in a digit_t)
-	DUCKDB_API static constexpr uint8_t DECIMAL_SHIFT = 9;
+	//! Max(e such that 10**e fits in a 64-bit limb): the decimal conversions use limbs of DECIMAL_SHIFT digits
+	DUCKDB_API static constexpr uint8_t DECIMAL_SHIFT = 19;
 	//! 10 ** DECIMAL_SHIFT
-	DUCKDB_API static constexpr digit_t DECIMAL_BASE = 1000000000;
+	DUCKDB_API static constexpr uint64_t DECIMAL_BASE = 10000000000000000000ULL;
 	//! Bytes of a digit_t
 	DUCKDB_API static constexpr uint8_t DIGIT_BYTES = sizeof(digit_t);
 	//! Bits of a digit_t
@@ -89,6 +89,10 @@ public:
 	DUCKDB_API static string FromByteArray(uint8_t *data, idx_t size, bool is_negative);
 	//! Function to convert BIGNUM blob to a VARCHAR
 	DUCKDB_API static string BignumToVarchar(const bignum_t &blob);
+	//! Writes the decimal representation of a BIGNUM into the string heap of the result vector
+	DUCKDB_API static string_t BignumToVarchar(const bignum_t &blob, Vector &result, BignumCastScratch &scratch);
+	//! The BIGNUM -> VARCHAR cast function
+	DUCKDB_API static bool BignumToVarcharCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	//! Function to convert Varchar to BIGNUM blob
 	DUCKDB_API static string VarcharToBignum(const string_t &value);
 	//! ----------------------------------- Double Cast ----------------------------------- //
