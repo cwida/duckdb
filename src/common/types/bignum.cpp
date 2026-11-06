@@ -5,6 +5,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include <cmath>
+#include <cstring>
 
 namespace duckdb {
 
@@ -519,29 +520,59 @@ string Bignum::VarcharToBignum(const string_t &value) {
 	return EncodeVarcharBignum(value, start_pos, end_pos, is_negative, is_zero, should_round_up);
 }
 
+//! Returns 2^exponent as a double, for 0 <= exponent <= 1023
+static inline double BignumCastPowerOfTwo(idx_t exponent) {
+	D_ASSERT(exponent <= 1023);
+	const uint64_t bits = static_cast<uint64_t>(exponent + 1023) << 52;
+	double result;
+	memcpy(&result, &bits, sizeof(result));
+	return result;
+}
+
 bool Bignum::BignumToDouble(const bignum_t &blob, double &result, bool &strict) {
 	result = 0;
-
-	if (blob.data.GetSize() < 4) {
+	const idx_t blob_size = blob.data.GetSize();
+	if (blob_size < BIGNUM_HEADER_SIZE + 1) {
 		throw InvalidInputException("Invalid blob size.");
 	}
-	auto blob_ptr = blob.data.GetData();
+	const char *data = blob.data.GetData();
+	const char *end = data + blob_size;
+	const bool is_negative = (data[0] & 0x80) == 0;
+	idx_t data_byte_size = blob_size - BIGNUM_HEADER_SIZE;
 
-	// Determine if the number is negative
-	bool is_negative = (blob_ptr[0] & 0x80) == 0;
-	idx_t byte_pos = 0;
-	for (idx_t i = blob.data.GetSize() - 1; i > 2; i--) {
-		if (is_negative) {
-			result += static_cast<uint8_t>(~blob_ptr[i]) * pow(256, static_cast<double>(byte_pos));
-		} else {
-			result += static_cast<uint8_t>(blob_ptr[i]) * pow(256, static_cast<double>(byte_pos));
+	double magnitude;
+	if (data_byte_size <= sizeof(uint64_t)) {
+		// the conversion of a 64-bit integer rounds correctly
+		magnitude = static_cast<double>(BignumCastLoadLeadingBytes(end, data_byte_size, is_negative));
+	} else {
+		// a well-formed BIGNUM has no leading zero bytes (0xFF under the complement of a negative value), tolerate them
+		const char zero = is_negative ? static_cast<char>(0xFF) : 0;
+		const char *first = data + BIGNUM_HEADER_SIZE;
+		while (data_byte_size > sizeof(uint64_t) && *first == zero) {
+			first++;
+			data_byte_size--;
 		}
-		byte_pos++;
+		// 2^1024 and above do not fit a double, that is at least 129 bytes
+		constexpr idx_t MAX_DOUBLE_BYTES = 1024 / 8;
+		if (data_byte_size > MAX_DOUBLE_BYTES) {
+			return false;
+		}
+		// round the top 64 bits of the magnitude; the lower bytes only matter when they break a tie, which the sticky
+		// bit folded into the lowest of the 64 bits takes care of (the top bits hold at least 57 significant bits, so
+		// the sticky bit is always among the bits that the conversion to a 53-bit mantissa discards)
+		uint64_t top = BignumCastLoadLimb(first + sizeof(uint64_t), is_negative);
+		const idx_t remaining_bytes = data_byte_size - sizeof(uint64_t);
+		const char *rest = first + sizeof(uint64_t);
+		for (idx_t i = 0; i < remaining_bytes; i++) {
+			if (rest[i] != zero) {
+				top |= 1;
+				break;
+			}
+		}
+		// scaling by a power of two is exact, unless the value exceeds the range of a double
+		magnitude = static_cast<double>(top) * BignumCastPowerOfTwo(8 * remaining_bytes);
 	}
-
-	if (is_negative) {
-		result *= -1;
-	}
+	result = is_negative ? -magnitude : magnitude;
 	// the value does not fit in a double
 	return std::isfinite(result);
 }
