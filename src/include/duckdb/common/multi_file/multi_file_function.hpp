@@ -1204,7 +1204,16 @@ public:
 			return nullptr;
 		}
 		auto get_statistics = [&](BaseUnionData &reader) {
-			auto stats = reader.GetStatistics(context, col_name);
+			unique_ptr<BaseStatistics> stats;
+			try {
+				stats = reader.GetStatistics(context, col_name);
+			} catch (std::exception &ex) {
+				// statistics that cannot be decoded just mean there are none - the data itself may still read fine
+				if (ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+					throw;
+				}
+				return unique_ptr<BaseStatistics>();
+			}
 			if (stats && (stats->GetType() != bind_data.types[primary_index] ||
 			              (!bind_data.file_options.bound_schema.empty() &&
 			               !bind_data.MatchesPhysicalColumn(primary_index, col_name, stats->GetType())))) {

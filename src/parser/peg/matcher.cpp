@@ -57,7 +57,7 @@ SuggestionType Matcher::AddLabelledSuggestion(MatchState &state) const {
 		return AddSuggestionInternal(state);
 	}
 	context.active_label = label;
-	if (context.memoizable_suggestions) {
+	if (context.memoizable_suggestions && !context.expand_labels) {
 		// only the label is reported, so the rule is not walked; labelled rules never match empty input
 		state.AddSuggestion(MatcherSuggestion(SuggestionState::SUGGEST_VARIABLE));
 		context.active_label = nullptr;
