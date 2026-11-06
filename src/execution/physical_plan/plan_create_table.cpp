@@ -38,8 +38,9 @@ PhysicalOperator &DuckCatalog::PlanCreateTableAs(ClientContext &context, Physica
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCreateTable &op) {
 	const auto &create_info = op.info->base->Cast<CreateTableInfo>();
 	auto &catalog = op.info->schema.catalog;
-	auto existing_entry = catalog.GetEntry(context, CatalogType::TABLE_ENTRY, create_info.GetQualifiedName().Schema(),
-	                                       create_info.GetTableName(), OnEntryNotFound::RETURN_NULL);
+	// probe the bound schema entry directly: re-resolving by name can hit a sibling schema with the same leaf name
+	auto existing_entry = op.info->schema.GetEntry(catalog.GetCatalogTransaction(context), CatalogType::TABLE_ENTRY,
+	                                               create_info.GetTableName());
 	bool replace = op.info->Base().on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT;
 	if ((!existing_entry || replace) && !op.children.empty()) {
 		auto &plan = CreatePlan(*op.children[0]);

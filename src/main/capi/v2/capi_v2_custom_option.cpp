@@ -156,11 +156,12 @@ DUCKDB_V2_ERROR duckdb_v2_custom_option_create(duckdb_v2_factory_handle factory,
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_custom_option_set_name(duckdb_v2_custom_option_handle option,
-                                                 const duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_custom_option_set_name(duckdb_v2_custom_option_handle option, const char *name,
+                                                 idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(option)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(option)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_custom_option_set_type(duckdb_v2_custom_option_handle option,
@@ -181,12 +182,12 @@ DUCKDB_V2_ERROR duckdb_v2_custom_option_set_default_value(duckdb_v2_custom_optio
 	return WithErrorHandler(err, [&]() { Convert(option)->default_value = *Convert(value); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_custom_option_set_description(duckdb_v2_custom_option_handle option,
-                                                        const duckdb_v2_str *description,
-                                                        duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_custom_option_set_description(duckdb_v2_custom_option_handle option, const char *description,
+                                                        idx_t description_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
-	DUCKDB_CHECK_ARG(description);
-	return WithErrorHandler(err, [&]() { Convert(option)->description = duckdb::string(Convert(description)); });
+	DUCKDB_CHECK_STR_ARG(description, description_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(option)->description = duckdb::string(Convert(description, description_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_custom_option_set_default_scope(duckdb_v2_custom_option_handle option,

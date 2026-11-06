@@ -27,7 +27,23 @@ CREATE EXTERNAL RESOURCE 'nobody:provides:this' AS r;
 statement error
 REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS r FROM MAP {'id': 'x'};
 ----
-<REGEX>:.*provided by the aws extension.*INSTALL aws; LOAD aws;.*
+<REGEX>:.*provided by the aws extension.*INSTALL AND LOAD aws;.*
+
+# Discovery of a type does the same lookup, so a type restriction can load the provider.
+statement error
+SELECT * FROM duckdb_external_resources(discover := true, type := 'nobody:provides:this');
+----
+<REGEX>:.*unknown resource type "nobody:provides:this".*
+
+statement error
+SELECT * FROM duckdb_external_resources(discover := true, type := 'aws:cloudformation:quack-on-ec2');
+----
+<REGEX>:.*provided by the aws extension.*INSTALL AND LOAD aws;.*
+
+# Listing the registry under a type looks nothing up: nothing is registered under it, so nothing is listed.
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(type := 'aws:cloudformation:quack-on-ec2');
+----
 
 # Nothing was registered along the way.
 query I
@@ -54,9 +70,19 @@ REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS r FROM MAP {'id'
 ----
 <REGEX>:.*Extension Autoloading Error.*automatically install the required extension 'aws.*
 
+statement error
+SELECT * FROM duckdb_external_resources(discover := true, type := 'aws:cloudformation:quack-on-ec2');
+----
+<REGEX>:.*Extension Autoloading Error.*automatically install the required extension 'aws.*
+
 # A type no extension provides does not try to autoload anything.
 statement error
 REGISTER EXTERNAL RESOURCE 'nobody:provides:this' AS r FROM MAP {'id': 'x'};
+----
+<REGEX>:.*unknown resource type "nobody:provides:this".*
+
+statement error
+SELECT * FROM duckdb_external_resources(discover := true, type := 'nobody:provides:this');
 ----
 <REGEX>:.*unknown resource type "nobody:provides:this".*
 

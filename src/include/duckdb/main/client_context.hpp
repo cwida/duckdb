@@ -44,6 +44,7 @@ class CatalogSearchPath;
 class ColumnDataCollection;
 class DatabaseInstance;
 class FileOpener;
+class Context;
 class LogicalOperator;
 class PreparedStatement;
 class PreparedStatementData;
@@ -129,12 +130,8 @@ public:
 	shared_ptr<ClientContext> base_context;
 	//! The number of internal connections between this client and its base client (0 for a base client)
 	idx_t internal_depth = 0;
-	//! Set of optional states (e.g. Caches) that can be held by the ClientContext
-	unique_ptr<RegisteredStateManager> registered_state;
-	//! The logger to be used by this ClientContext
-	shared_ptr<Logger> logger;
-	//! The client configuration
-	ClientConfig config;
+	//! The services of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
+	shared_ptr<Context> services;
 	//! The set of client-specific data
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
@@ -312,6 +309,11 @@ public:
 		return log_config;
 	}
 
+	//! Returns the services (client configuration, logging, metrics, file system) owned by this context
+	Context &Services() const {
+		return *services;
+	}
+
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
 	//! Whether the statement that runs now is the last of the active query. A statement that expands into several
@@ -439,8 +441,9 @@ private:
 	//! Whether this query or, for an internal connection, the base client's query has a deadline
 	bool HasQueryDeadline() const;
 	bool QueryDeadlinePassed() const;
-	//! Ends the statement that finished: releases its executor and plan and notifies registered state
-	void EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
+	//! Ends the statement that finished: releases its executor and plan and notifies every registered state, also
+	//! when one of them fails. Returns the first failure
+	ErrorData EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
 	void NotifyStatementBeginInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);

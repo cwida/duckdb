@@ -13,14 +13,14 @@ idx_t RowNumberColumnData::GetRowNumberBase(ColumnScanState &state) {
 	return state.parent->row_number_base.GetIndex();
 }
 
-FilterPropagateResult RowNumberColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                        optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
+FilterPropagateResult RowNumberColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                        optional_idx &checked_end) {
 	// row_number columns don't have zonemaps - we cannot prune based on row number
-	checked_segment = nullptr;
 	return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 }
 
-void RowNumberColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
+void RowNumberColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state,
+                                             idx_t start_row, idx_t end_row) {
 }
 
 void RowNumberColumnData::InitializeScan(ColumnScanState &state) {

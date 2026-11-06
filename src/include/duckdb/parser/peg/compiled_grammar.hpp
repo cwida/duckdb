@@ -44,6 +44,10 @@ public:
 	static shared_ptr<CompiledGrammar> Create();
 	//! Get the (cached) grammar for the selected extensions without changing the client configuration.
 	static shared_ptr<CompiledGrammar> Create(const ClientContext &context, const vector<string> &active_extensions);
+	//! Get the (cached) grammar for the given extension selection, without changing the client
+	//! configuration (the base grammar when the selection is empty).
+	static shared_ptr<CompiledGrammar> ComposeSessionGrammar(ClientContext &context,
+	                                                         const vector<string> &extension_names);
 
 private:
 	MatcherAllocator allocator;

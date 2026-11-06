@@ -63,10 +63,16 @@ void VariantEncodeNumber(SINK &sink, const VariantNumberKey &key) {
 	};
 
 	// adjusted exponent (order-preserving signed encoding) orders magnitude
-	data_t exp_buffer[sizeof(int64_t)];
-	Radix::EncodeData<int64_t>(exp_buffer, key.adjusted_exponent);
-	for (idx_t i = 0; i < sizeof(int64_t); i++) {
-		emit(exp_buffer[i]);
+	// common exponents use a single byte in 1..254; 0x00 / 0xFF escape to the full 8 bytes (keeps keys short)
+	if (key.adjusted_exponent >= -127 && key.adjusted_exponent <= 126) {
+		emit(static_cast<data_t>(key.adjusted_exponent + 128));
+	} else {
+		data_t exp_buffer[sizeof(int64_t)];
+		Radix::EncodeData<int64_t>(exp_buffer, key.adjusted_exponent);
+		emit(key.adjusted_exponent < 0 ? 0x00 : 0xFF);
+		for (idx_t i = 0; i < sizeof(int64_t); i++) {
+			emit(exp_buffer[i]);
+		}
 	}
 	// significant digits (1..10 so the 0x00 terminator is smaller than any digit -> prefix sorts first)
 	auto digits = key.GetDigits();

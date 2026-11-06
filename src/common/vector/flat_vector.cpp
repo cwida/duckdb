@@ -129,6 +129,25 @@ buffer_ptr<VectorBuffer> StandardVectorBuffer::ConstantSliceInternal(const Logic
 	return result;
 }
 
+buffer_ptr<VectorBuffer> StandardVectorBuffer::ConstantReferenceInternal(const LogicalType &type, idx_t index,
+                                                                         count_t count) const {
+	// copy the entry, which for a string or a list shares the heap or the child of this buffer through CreateBuffer
+	auto stored_allocator = GetAllocator();
+	auto &allocator = stored_allocator ? *stored_allocator : Allocator::DefaultAllocator();
+	auto new_data = allocator.Allocate(type_size);
+	const auto is_valid = validity.RowIsValid(index);
+	if (is_valid) {
+		memcpy(new_data.get(), data_ptr + index * type_size, type_size);
+	}
+	auto result = CreateBuffer(std::move(new_data), count_t(1ULL));
+	if (!is_valid) {
+		result->GetValidityMask().SetInvalid(0);
+	}
+	result->SetVectorType(VectorType::CONSTANT_VECTOR);
+	result->SetVectorSize(count);
+	return result;
+}
+
 buffer_ptr<VectorBuffer> StandardVectorBuffer::SliceInternal(const LogicalType &type, const SelectionVector &sel,
                                                              idx_t count) {
 	if (!sel.IsSet()) {

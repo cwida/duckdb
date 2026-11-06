@@ -279,6 +279,7 @@ unique_ptr<BaseStatistics> ListValueStats(ClientContext &context, FunctionStatis
 	auto &child_stats = input.child_stats;
 	auto &expr = input.expr;
 	auto list_stats = ListStats::CreateEmpty(expr.GetReturnType());
+	ListStats::SetLengthBounds(list_stats, child_stats.size(), child_stats.size());
 	auto &list_child_stats = ListStats::GetChildStats(list_stats);
 	for (idx_t i = 0; i < child_stats.size(); i++) {
 		list_child_stats.Merge(child_stats[i]);

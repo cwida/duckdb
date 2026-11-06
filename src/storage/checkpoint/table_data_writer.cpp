@@ -21,8 +21,8 @@
 
 namespace duckdb {
 
-TableDataWriter::TableDataWriter(TableCatalogEntry &table_p, QueryContext context)
-    : table(table_p.Cast<DuckTableEntry>()), context(context.GetClientContext()) {
+TableDataWriter::TableDataWriter(TableCatalogEntry &table_p, Context &services_p)
+    : table(table_p.Cast<DuckTableEntry>()), services(services_p) {
 	D_ASSERT(table_p.IsDuckTable());
 
 	auto storage_compatibility = StorageCompatibility::FromDatabase(table_p.ParentCatalog().GetAttached());
@@ -54,19 +54,16 @@ DatabaseInstance &TableDataWriter::GetDatabase() {
 }
 
 unique_ptr<TaskExecutor> TableDataWriter::CreateTaskExecutor() {
-	if (context) {
-		return make_uniq<TaskExecutor>(*context);
-	}
-	return make_uniq<TaskExecutor>(TaskScheduler::GetScheduler(GetDatabase()));
+	return make_uniq<TaskExecutor>(services);
 }
 
-optional_ptr<ClientContext> TableDataWriter::TryGetClientContext() const {
-	return context;
+Context &TableDataWriter::GetServices() const {
+	return services;
 }
 
 SingleFileTableDataWriter::SingleFileTableDataWriter(SingleFileCheckpointWriter &checkpoint_manager,
                                                      TableCatalogEntry &table, MetadataWriter &table_data_writer)
-    : TableDataWriter(table, checkpoint_manager.GetClientContext()), checkpoint_manager(checkpoint_manager),
+    : TableDataWriter(table, checkpoint_manager.GetServices()), checkpoint_manager(checkpoint_manager),
       table_data_writer(table_data_writer) {
 }
 
