@@ -560,7 +560,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		unique_ptr<MetricsTimer> timer = nullptr;
 
 		// Start timing the storage load step.
-		auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+		auto profiler = Context::TryGetQueryProfiler(context.GetContext());
 		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachLoadStorageLatency>());
 		}
@@ -754,15 +754,17 @@ bool SingleFileStorageManager::IsCheckpointClean(MetaBlockPointer checkpoint_id)
 	return block_manager->IsRootBlock(checkpoint_id);
 }
 
-unique_ptr<CheckpointWriter> SingleFileStorageManager::CreateCheckpointWriter(QueryContext context,
-                                                                              CheckpointOptions options) {
+unique_ptr<CheckpointWriter>
+SingleFileStorageManager::CreateCheckpointWriter(QueryContext context, CheckpointOptions options,
+                                                 optional_ptr<ClientContext> client_context) {
 	if (InMemory()) {
-		return make_uniq<InMemoryCheckpointer>(context, db, *block_manager, *this, options);
+		return make_uniq<InMemoryCheckpointer>(context, db, *block_manager, *this, options, client_context);
 	}
-	return make_uniq<SingleFileCheckpointWriter>(context, db, *block_manager, options);
+	return make_uniq<SingleFileCheckpointWriter>(context, db, *block_manager, options, client_context);
 }
 
-void SingleFileStorageManager::CreateCheckpoint(QueryContext context, CheckpointOptions options) {
+void SingleFileStorageManager::CreateCheckpoint(QueryContext context, CheckpointOptions options,
+                                                optional_ptr<ClientContext> client_context) {
 	if (read_only || !load_complete) {
 		return;
 	}
@@ -790,14 +792,14 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		try {
 			// Start timing the checkpoint.
-			auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+			auto profiler = Context::TryGetQueryProfiler(context.GetContext());
 			MetricsTimer timer;
 			if (profiler) {
 				timer = profiler->StartTimer<MetricStorageCheckpointLatency>();
 			}
 
 			// Write the checkpoint.
-			auto checkpointer = CreateCheckpointWriter(context, options);
+			auto checkpointer = CreateCheckpointWriter(context, options, client_context);
 			checkpointer->CreateCheckpoint();
 			timer.EndTimer();
 

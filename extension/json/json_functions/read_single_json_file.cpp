@@ -349,8 +349,9 @@ TableFunction JSONFunctions::GetJSONTableFunction(Identifier name, shared_ptr<JS
 	settings.claim_batch = ReadSingleJSONFileClaimBatch;
 	settings.finish_batch = ReadSingleJSONFileFinishBatch;
 	settings.reports_bytes_scanned = true;
-	return TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
-	                                                     std::move(settings));
+	auto result = TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
+	                                                            std::move(settings));
+	return result;
 }
 
 static TableFunctionSet CreateJSONFunctionSet(Identifier name, shared_ptr<JSONScanInfo> function_info) {

@@ -332,6 +332,8 @@ bool ArrowTableFunction::ArrowPushdownType(const FunctionData &bind_data, idx_t 
 
 void ArrowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction arrow("arrow_scan", {}, ArrowScanFunction, ArrowScanBind, ArrowScanInitGlobal, ArrowScanInitLocal);
+	// pulls from an external producer whose streams may be one-shot
+	arrow.stability = FunctionStability::VOLATILE;
 	arrow.cardinality = ArrowScanCardinality;
 	arrow.get_partition_data = ArrowGetPartitionData;
 	arrow.projection_pushdown = true;
@@ -343,6 +345,7 @@ void ArrowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 
 	TableFunction arrow_dumb("arrow_scan_dumb", {}, ArrowScanFunction, ArrowScanBindDumb, ArrowScanInitGlobal,
 	                         ArrowScanInitLocal);
+	arrow_dumb.stability = FunctionStability::VOLATILE;
 	arrow_dumb.cardinality = ArrowScanCardinality;
 	arrow_dumb.get_partition_data = ArrowGetPartitionData;
 	arrow_dumb.projection_pushdown = false;

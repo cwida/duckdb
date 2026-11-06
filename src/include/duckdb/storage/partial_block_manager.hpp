@@ -36,7 +36,7 @@ public:
 
 public:
 	//! Use the default packing threshold unless supplied; it must not exceed the block size.
-	PartialBlockManager(Context &services, BlockManager &block_manager, PartialBlockType partial_block_type,
+	PartialBlockManager(Context &context, BlockManager &block_manager, PartialBlockType partial_block_type,
 	                    optional_idx max_partial_block_size = optional_idx(),
 	                    uint32_t max_use_count = DEFAULT_MAX_USE_COUNT);
 	//! Discard pending blocks without flushing or finalizing their packables.
@@ -84,8 +84,8 @@ private:
 	void RetainOrFlush(unique_ptr<PartialBlock> partial_block);
 
 private:
-	//! The services in which we use the partial block manager (owned by the checkpoint writer)
-	Context &services;
+	//! The context in which we use the partial block manager (owned by the checkpoint writer)
+	Context &context;
 	BlockManager &block_manager;
 	PartialBlockType partial_block_type;
 	mutex partial_block_lock;

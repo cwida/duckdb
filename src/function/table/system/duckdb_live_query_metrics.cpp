@@ -61,8 +61,11 @@ static void DuckDBLiveQueryMetricsFunction(ClientContext &context, TableFunction
 }
 
 void DuckDBLiveQueryMetricsFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_live_query_metrics", {}, DuckDBLiveQueryMetricsFunction,
-	                              DuckDBLiveQueryMetricsBind, DuckDBLiveQueryMetricsInit));
+	TableFunction live_metrics_fun("duckdb_live_query_metrics", {}, DuckDBLiveQueryMetricsFunction,
+	                               DuckDBLiveQueryMetricsBind, DuckDBLiveQueryMetricsInit);
+	// reads live metrics of the executing queries
+	live_metrics_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(live_metrics_fun));
 }
 
 } // namespace duckdb

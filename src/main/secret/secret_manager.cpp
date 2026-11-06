@@ -647,11 +647,11 @@ void SecretManager::InitializeSecrets(CatalogTransaction transaction) {
 		// storage is registered yet and the next secret statement retries and throws the same error
 		if (config.allow_persistent_secrets) {
 			LoadSecretStorageInternal(
-			    make_uniq<LocalFileSecretStorage>(*this, *transaction.db, LOCAL_FILE_STORAGE_NAME, config.secret_path));
+			    make_uniq<LocalFileSecretStorage>(*this, transaction.db, LOCAL_FILE_STORAGE_NAME, config.secret_path));
 		}
 
 		// load the tmp storage
-		LoadSecretStorageInternal(make_uniq<TemporarySecretStorage>(TEMPORARY_STORAGE_NAME, *transaction.db));
+		LoadSecretStorageInternal(make_uniq<TemporarySecretStorage>(TEMPORARY_STORAGE_NAME, transaction.db));
 
 		// load the connection-scoped storage: secrets created `IN connection_storage` are visible only to the
 		// connection that created them, and are dropped automatically when that connection closes.
