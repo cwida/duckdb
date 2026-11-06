@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/file_system.hpp"
 
 #include "duckdb/common/checksum.hpp"
@@ -103,7 +104,7 @@ FileSystem::~FileSystem() {
 }
 
 FileSystem &FileSystem::GetFileSystem(ClientContext &context) {
-	return context.services->GetFileSystem();
+	return context.GetContext().GetFileSystem();
 }
 
 bool PathMatched(const string &path, const string &sub_path) {
@@ -845,7 +846,7 @@ static optional_ptr<QueryProfiler> GetTrackingProfiler(bool track_io, const Quer
 	if (!track_io || !context.Valid()) {
 		return nullptr;
 	}
-	return context.GetServices()->TryGetQueryProfiler();
+	return context.GetContext()->TryGetQueryProfiler();
 }
 
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
@@ -1003,9 +1004,9 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 		return;
 	}
 
-	auto context = opener.TryGetClientContext();
-	if (context && Logger::Get(*context).ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
-		logger = context->services->GetLoggerPtr();
+	auto &context = opener.TryGetContext();
+	if (context.IsClient() && context.GetLogger().ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
+		logger = context.GetLoggerPtr();
 		return;
 	}
 

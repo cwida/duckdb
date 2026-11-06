@@ -64,7 +64,7 @@ public:
 
 void SQLExportValuesNext(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto counter =
-	    state.GetContext().Services().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
+	    state.GetContext().GetContext().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t i = 0; i < args.size(); i++) {
 		writer.WriteValue(++counter->value);
@@ -73,7 +73,7 @@ void SQLExportValuesNext(DataChunk &args, ExpressionState &state, Vector &result
 
 void SQLExportValuesPeek(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto counter =
-	    state.GetContext().Services().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
+	    state.GetContext().GetContext().GetRegisteredState().Get<SQLExportValuesCounter>("sql_export_values_counter");
 	auto writer = FlatVector::Writer<int64_t>(result, args.size());
 	for (idx_t i = 0; i < args.size(); i++) {
 		writer.WriteValue(counter->value);
@@ -160,7 +160,7 @@ TEST_CASE("Owned chunk export preserves observable execution groups",
 			Connection connection(db);
 			REQUIRE_NO_FAIL(connection.Query("SET threads=1; CREATE TABLE chunk_export_input(x BIGINT)"));
 			auto counter = make_shared_ptr<SQLExportValuesCounter>();
-			connection.context->Services().GetRegisteredState().Insert("sql_export_values_counter", counter);
+			connection.context->GetContext().GetRegisteredState().Insert("sql_export_values_counter", counter);
 			ExtensionLoader loader(*db.instance, "chunk_export_counter");
 			ScalarFunction next("sql_export_values_next", {}, LogicalType::BIGINT, SQLExportValuesNext);
 			next.SetVolatile();
@@ -313,7 +313,7 @@ TEST_CASE("Owned chunk SQL export requires an explicit consumer evaluation contr
 		Connection connection(db);
 		REQUIRE_NO_FAIL(connection.Query("SET threads=1"));
 		auto counter = make_shared_ptr<SQLExportValuesCounter>();
-		connection.context->Services().GetRegisteredState().Insert("sql_export_values_counter", counter);
+		connection.context->GetContext().GetRegisteredState().Insert("sql_export_values_counter", counter);
 		ExtensionLoader loader(*db.instance, "opaque_chunk_export_counter");
 		ScalarFunction next("sql_export_values_next", {}, LogicalType::BIGINT, SQLExportValuesNext);
 		next.SetVolatile();

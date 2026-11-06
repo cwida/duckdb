@@ -7,7 +7,7 @@ index 94caff5..38f009f 100644
  	if (azure_context_caching && client_context) {
  		string key_path = GetContextKeyPath(opener, path, parsed_url);
 -		auto &registered_state = client_context->registered_state;
-+		auto &registered_state = client_context->Services().GetRegisteredState();
++		auto &registered_state = client_context->GetContext().GetRegisteredState();
  
  		// Ok, now use account in key, or otherwise skip the cache
  		if (!key_path.empty()) {
@@ -30,7 +30,7 @@ index c65942f..d4a7eff 100644
  
  shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(ClientContext &context) {
 -	return context.registered_state->GetOrCreate<AzureHTTPState>("azure_http_state");
-+	return context.Services().GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
++	return context.GetContext().GetRegisteredState().GetOrCreate<AzureHTTPState>("azure_http_state");
  }
  
  shared_ptr<AzureHTTPState> AzureHTTPState::TryGetState(optional_ptr<FileOpener> opener) {
@@ -43,7 +43,7 @@ index 06d7b1e..a137518 100644
  	if (http_logging_enabled) {
  		auto client_context = FileOpener::TryGetClientContext(opener);
 -		if (client_context && client_context->logger) {
-+		if (client_context && client_context->Services().GetLoggerPtr()) {
++		if (client_context && client_context->GetContext().GetLoggerPtr()) {
  			// Read redaction config options
  			std::unordered_set<std::string> redact_query_params;
  			std::unordered_set<std::string> redact_headers;
@@ -52,7 +52,7 @@ index 06d7b1e..a137518 100644
  
  			options.PerRetryPolicies.emplace_back(new HttpLoggingPolicy(
 -			    client_context->logger, std::move(redact_query_params), std::move(redact_headers)));
-+			    client_context->Services().GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
++			    client_context->GetContext().GetLoggerPtr(), std::move(redact_query_params), std::move(redact_headers)));
  		}
  	}
  	return options;
