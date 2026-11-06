@@ -52,6 +52,24 @@ TEST_CASE("Total list length statistics do not wrap on overflow", "[statistics]"
 		REQUIRE(ListStats::TotalListLength(left).GetIndex() == max_total);
 	}
 
+	SECTION("Merge with an unknown total keeps the total unknown") {
+		auto left = ListStats::CreateEmpty(list_type);
+		auto right = ListStats::CreateEmpty(list_type);
+		ListStats::MergeInLengths(left, 2, 4, 100);
+		ListStats::MergeInLengths(right, 3, 7, 11);
+		ListStats::ResetTotalListLength(right);
+		ListStats::Merge(left, right);
+		REQUIRE(!ListStats::TotalListLength(left).IsValid());
+		REQUIRE(ListStats::MinListLength(left).GetIndex() == 2);
+		REQUIRE(ListStats::MaxListLength(left).GetIndex() == 7);
+
+		// merging a known total into an unknown one stays unknown
+		auto known = ListStats::CreateEmpty(list_type);
+		ListStats::MergeInLengths(known, 1, 9, 5);
+		ListStats::Merge(left, known);
+		REQUIRE(!ListStats::TotalListLength(left).IsValid());
+	}
+
 	SECTION("Merge invalidates the total on overflow and keeps the bounds") {
 		auto left = ListStats::CreateEmpty(list_type);
 		auto right = ListStats::CreateEmpty(list_type);
