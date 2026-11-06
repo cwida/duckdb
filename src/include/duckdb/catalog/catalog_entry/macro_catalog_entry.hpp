@@ -29,6 +29,8 @@ public:
 public:
 	unique_ptr<CreateInfo> GetInfo() const override;
 
+	unique_ptr<CatalogEntry> AlterEntry(CatalogTransaction transaction, AlterInfo &info) override;
+
 	//! The index of the member a parameter type list names, invalid when none matches
 	optional_idx FindMember(const vector<LogicalType> &signature) const;
 	string ToSQL() const override;

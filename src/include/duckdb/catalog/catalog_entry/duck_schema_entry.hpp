@@ -75,9 +75,6 @@ public:
 	void Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(CatalogType type, VisibilityBound bound, const std::function<void(CatalogEntry &)> &callback);
 	void DropEntry(ClientContext &context, DropInfo &info) override;
-	//! Drop the one member a parameter type list names. Returns false when it is the last member, so
-	//! the caller drops the whole entry instead
-	bool DropMacroFunctionMember(CatalogTransaction transaction, DropInfo &info, MacroCatalogEntry &existing);
 	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) override;
 	CatalogSet::EntryLookup LookupEntryDetailed(CatalogTransaction transaction,
 	                                            const EntryLookupInfo &lookup_info) override;
