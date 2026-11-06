@@ -8,6 +8,8 @@ require no_alternative_verify
 
 require 64bit
 
+require vector_size 2048
+
 load {TEST_DIR}/commit_out_of_memory_reverts_index_insert.db
 
 statement ok
