@@ -10,6 +10,7 @@ add_library_unity(
   test_checked_integer.cpp
   test_checksum.cpp
   test_dictionary_hash_cache.cpp
+  test_vector_hash.cpp
   test_column_data_allocator.cpp
   test_column_data_compact.cpp
   test_file_buffer_handle_group.cpp
@@ -25,6 +26,7 @@ add_library_unity(
   test_http_retry_budget.cpp
   test_httplib_header_length.cpp
   test_httplib_sigpipe.cpp
+  test_list_stats.cpp
   test_literal.cpp
   test_lru_cache.cpp
   test_minmax_n_heap.cpp

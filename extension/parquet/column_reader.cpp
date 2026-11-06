@@ -603,7 +603,7 @@ void ColumnReader::ResetPage() {
 void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	D_ASSERT(page_hdr.type == PageType::DATA_PAGE_V2);
 
-	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size) + 1);
+	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size));
 	const auto page_body_size = GetPageBodySize(page_hdr);
 	bool uncompressed = false;
 	if (page_hdr.data_page_header_v2.__isset.is_compressed && !page_hdr.data_page_header_v2.is_compressed) {
@@ -702,16 +702,20 @@ uint32_t ColumnReader::GetPageBodySize(const PageHeader &page_hdr) const {
 	return page_body_size;
 }
 
-void ColumnReader::AllocateBlock(idx_t size) {
+void ColumnReader::AllocateBlock(idx_t payload_size) {
+	const auto allocation_size = payload_size + 1;
 	if (!block) {
-		block = make_shared_ptr<ResizeableBuffer>(GetAllocator(), size);
+		block = make_shared_ptr<ResizeableBuffer>(GetAllocator(), allocation_size);
 	} else {
-		block->resize(GetAllocator(), size);
+		block->resize(GetAllocator(), allocation_size);
 	}
+	// Keep a zeroed guard byte for decoder lookahead, but exclude it from the payload.
+	block->ptr[payload_size] = 0;
+	block->len = payload_size;
 }
 
 void ColumnReader::PreparePage(PageHeader &page_hdr) {
-	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size) + 1);
+	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size));
 	const auto compressed_page_size = GetPageBodySize(page_hdr);
 
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {

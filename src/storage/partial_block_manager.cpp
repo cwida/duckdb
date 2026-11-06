@@ -242,10 +242,10 @@ void PartialBlock::Clear() {
 // PartialBlockManager
 //===--------------------------------------------------------------------===//
 
-PartialBlockManager::PartialBlockManager(QueryContext context, BlockManager &block_manager,
+PartialBlockManager::PartialBlockManager(Context &context_p, BlockManager &block_manager,
                                          PartialBlockType partial_block_type, optional_idx max_partial_block_size_p,
                                          uint32_t max_use_count)
-    : context(context.GetClientContext()), block_manager(block_manager), partial_block_type(partial_block_type),
+    : context(context_p), block_manager(block_manager), partial_block_type(partial_block_type),
       max_use_count(max_use_count) {
 	if (max_partial_block_size_p.IsValid()) {
 		max_partial_block_size = NumericCast<uint32_t>(max_partial_block_size_p.GetIndex());
@@ -302,7 +302,7 @@ void PartialBlockManager::ClearBlocks() {
 
 void PartialBlockManager::FlushPartialBlocks() {
 	for (auto &e : partially_filled_blocks) {
-		e.second->Flush(context, partial_block_type);
+		e.second->Flush(GetQueryContext(), partial_block_type);
 	}
 	partially_filled_blocks.clear();
 }
@@ -365,18 +365,18 @@ void PartialBlockManager::RetainOrFlush(unique_ptr<PartialBlock> partial_block) 
 	auto available_space = partial_block->AvailableSpace();
 
 	if (partial_block->UseCount() >= max_use_count) {
-		partial_block->Flush(context, partial_block_type);
+		partial_block->Flush(GetQueryContext(), partial_block_type);
 		return;
 	}
 	if (available_space < min_reusable_space) {
-		partial_block->Flush(context, partial_block_type);
+		partial_block->Flush(GetQueryContext(), partial_block_type);
 		return;
 	}
 
 	partially_filled_blocks.insert(make_pair(partial_block->AvailableSpace(), std::move(partial_block)));
 
 	if (auto pruned_block = PruneFreeList()) {
-		pruned_block->Flush(context, partial_block_type);
+		pruned_block->Flush(GetQueryContext(), partial_block_type);
 	}
 }
 
@@ -416,8 +416,8 @@ BlockManager &PartialBlockManager::GetBlockManager() const {
 	return block_manager;
 }
 
-optional_ptr<ClientContext> PartialBlockManager::GetClientContext() const {
-	return context;
+QueryContext PartialBlockManager::GetQueryContext() const {
+	return QueryContext(context);
 }
 
 } // namespace duckdb

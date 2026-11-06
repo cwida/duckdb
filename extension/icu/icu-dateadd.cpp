@@ -126,9 +126,36 @@ timestamp_tz_t ICUCalendarAdd::Operation(interval_t interval, timestamp_tz_t tim
 }
 
 template <>
+timestamp_tz_ns_t ICUCalendarAdd::Operation(timestamp_tz_ns_t ns, interval_t interval, TZCalendar &calendar) {
+	if (!ns.IsFinite()) {
+		return ns;
+	}
+	timestamp_tz_t us;
+	int64_t nanos;
+	const auto precision = ns.PRECISION / us.PRECISION;
+	Timestamp::SplitTime(ns.value, precision, us.value, nanos);
+	us = Operation<timestamp_tz_t, interval_t, timestamp_tz_t>(us, interval, calendar);
+	if (!Timestamp::TryCombineUnits(us.value, nanos, precision, ns.value)) {
+		throw OutOfRangeException("Cannot add interval to timestamp_tz_ns");
+	}
+	return ns;
+}
+
+template <>
+timestamp_tz_ns_t ICUCalendarAdd::Operation(interval_t interval, timestamp_tz_ns_t timestamp, TZCalendar &calendar) {
+	return Operation<timestamp_tz_ns_t, interval_t, timestamp_tz_ns_t>(timestamp, interval, calendar);
+}
+
+template <>
 timestamp_tz_t ICUCalendarSub::Operation(timestamp_tz_t timestamp, interval_t interval, TZCalendar &calendar) {
 	const auto negated = Interval::Invert(interval);
 	return ICUCalendarAdd::template Operation<timestamp_tz_t, interval_t, timestamp_tz_t>(timestamp, negated, calendar);
+}
+
+template <>
+timestamp_tz_ns_t ICUCalendarSub::Operation(timestamp_tz_ns_t ns, interval_t interval, TZCalendar &calendar) {
+	const auto negated = Interval::Invert(interval);
+	return ICUCalendarAdd::template Operation<timestamp_tz_ns_t, interval_t, timestamp_tz_ns_t>(ns, negated, calendar);
 }
 
 template <>
@@ -249,24 +276,33 @@ struct ICUDateAdd : public ICUDateFunc {
 		                      ICUBindIntervalMonths);
 	}
 
-	template <typename TA, typename TB, typename OP>
-	static ScalarFunction GetDateAddFunction(const LogicalTypeId &left_type, const LogicalTypeId &right_type) {
-		return GetBinaryDateFunction<TA, TB, timestamp_tz_t, OP>(left_type, right_type, LogicalType::TIMESTAMP_TZ);
+	template <typename TA, typename TB, typename TR, typename OP>
+	static ScalarFunction GetDateAddFunction(const LogicalTypeId &left_type, const LogicalTypeId &right_type,
+	                                         const LogicalTypeId &result_type) {
+		return GetBinaryDateFunction<TA, TB, TR, OP>(left_type, right_type, result_type);
 	}
 
-	static void AddDateAddOperators(const Identifier &name, ExtensionLoader &loader) {
+	template <typename T>
+	static void AddDateAddFunctions(ScalarFunctionSet &set, const LogicalTypeId &type) {
 		//	temporal + interval
-		ScalarFunctionSet set {name};
-		auto tstz_interval_fun = GetDateAddFunction<timestamp_tz_t, interval_t, ICUCalendarAdd>(
-		    LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL);
+		auto tstz_interval_fun =
+		    GetDateAddFunction<T, interval_t, T, ICUCalendarAdd>(type, LogicalType::INTERVAL, type);
 		tstz_interval_fun.GetSignature().GetParameter(0).SetName("left");
 		tstz_interval_fun.GetSignature().GetParameter(1).SetName("right");
 		set.AddFunction(tstz_interval_fun);
-		auto interval_tstz_fun = GetDateAddFunction<interval_t, timestamp_tz_t, ICUCalendarAdd>(
-		    LogicalType::INTERVAL, LogicalType::TIMESTAMP_TZ);
+
+		//	interval + temporal
+		auto interval_tstz_fun =
+		    GetDateAddFunction<interval_t, T, T, ICUCalendarAdd>(LogicalType::INTERVAL, type, type);
 		interval_tstz_fun.GetSignature().GetParameter(0).SetName("left");
 		interval_tstz_fun.GetSignature().GetParameter(1).SetName("right");
 		set.AddFunction(interval_tstz_fun);
+	}
+
+	static void AddDateAddOperators(const Identifier &name, ExtensionLoader &loader) {
+		ScalarFunctionSet set {name};
+		AddDateAddFunctions<timestamp_tz_t>(set, LogicalType::TIMESTAMP_TZ);
+		AddDateAddFunctions<timestamp_tz_ns_t>(set, LogicalType::TIMESTAMP_TZ_NS);
 		// throws for dates that overflow the timestamp range
 		set.SetFallible();
 		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
@@ -283,14 +319,20 @@ struct ICUDateAdd : public ICUDateFunc {
 		return GetBinaryDateFunction<TA, TB, interval_t, OP>(left_type, right_type, LogicalType::INTERVAL);
 	}
 
-	static void AddDateSubOperators(const Identifier &name, ExtensionLoader &loader) {
+	template <typename T>
+	static void AddDateSubFunction(ScalarFunctionSet &set, const LogicalTypeId &type) {
 		//	temporal - interval
-		ScalarFunctionSet set {name};
-		auto tstz_interval_fun = GetDateAddFunction<timestamp_tz_t, interval_t, ICUCalendarSub>(
-		    LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL);
+		auto tstz_interval_fun =
+		    GetDateAddFunction<T, interval_t, T, ICUCalendarSub>(type, LogicalType::INTERVAL, type);
 		tstz_interval_fun.GetSignature().GetParameter(0).SetName("left");
 		tstz_interval_fun.GetSignature().GetParameter(1).SetName("right");
 		set.AddFunction(tstz_interval_fun);
+	}
+
+	static void AddDateSubOperators(const Identifier &name, ExtensionLoader &loader) {
+		ScalarFunctionSet set {name};
+		AddDateSubFunction<timestamp_tz_t>(set, LogicalType::TIMESTAMP_TZ);
+		AddDateSubFunction<timestamp_tz_ns_t>(set, LogicalType::TIMESTAMP_TZ_NS);
 
 		//	temporal - temporal
 		auto tstz_tstz_fun = GetBinaryAgeFunction<timestamp_tz_t, timestamp_tz_t, ICUCalendarSub>(

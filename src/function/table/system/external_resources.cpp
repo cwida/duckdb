@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
@@ -78,6 +79,10 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "
 	                   "attached_db_type, handle FROM " +
 	                   RegistryScan(params.type));
+	if (!params.type.empty()) {
+		// An unknown type autoloads the extension known to provide it, like an unknown function does
+		ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), params.type);
+	}
 	bool matched = false;
 	for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
 		if (!MatchesType(params.type, type.name)) {
@@ -109,6 +114,13 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	// opaque type) has nothing to discover, like a type without a list callback. A type neither knows is most
 	// likely a typo, or a missing extension.
 	if (!matched && !params.type.empty() && !RegistryHasType(context, params.type)) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(params.type);
+		if (!extension.empty()) {
+			throw InvalidInputException(
+			    "duckdb_external_resources: unknown resource type \"%s\": it is provided by the "
+			    "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			    params.type, extension, extension);
+		}
 		throw InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", params.type);
 	}
 	Parser parser(context);
@@ -192,6 +204,8 @@ void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 	fn.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 		options.Add("discover", LogicalType::BOOLEAN).Add("type", LogicalType::VARCHAR);
 	});
+	// reads the live external resource registry, and discovery reaches out to external systems
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -279,6 +293,8 @@ void RegisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("attached_db_type", LogicalType::VARCHAR)
 		    .Add("deleter_function", LogicalType::VARCHAR);
 	});
+	// writes the external resource registry per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -330,9 +346,12 @@ static void DeregisterExternalResourceFunction(ClientContext &context, TableFunc
 }
 
 void DeregisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction(
+	TableFunction deregister_fun(
 	    "deregister_external_resource", FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR),
-	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit));
+	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit);
+	// writes the external resource registry per execution
+	deregister_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(deregister_fun));
 }
 
 } // namespace duckdb

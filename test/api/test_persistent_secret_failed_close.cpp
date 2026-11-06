@@ -12,7 +12,7 @@ using namespace duckdb;
 #ifndef _WIN32
 namespace {
 
-//! Makes closing the file of a persistent secret fail after its content is written
+//! Makes closing the file of a persistent secret fail after its content is written and synced
 class FailingSecretCloseFileSystem : public LocalFileSystem {
 public:
 	bool fail_close = true;
@@ -33,14 +33,13 @@ public:
 		return handle;
 	}
 
-	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override {
-		auto written = LocalFileSystem::Write(handle, buffer, nr_bytes);
+	void FileSync(FileHandle &handle) override {
+		LocalFileSystem::FileSync(handle);
 		if (secret_fd != -1 && IsSecretFile(handle.GetPath())) {
-			// closing the descriptor behind the handle makes the close of the handle fail
+			// closing the descriptor behind the synced handle makes the close of the handle fail
 			close(secret_fd);
 			secret_fd = -1;
 		}
-		return written;
 	}
 
 private:

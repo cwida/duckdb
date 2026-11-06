@@ -23,21 +23,21 @@ namespace test_capi_v2 {
 
 TEST_CASE("V2: UTF-8 validation reports input errors", "[capi_v2][vector_write]") {
 	duckdb_v2_error_info_handle error = nullptr;
-	duckdb_v2_str text_str = {nullptr, 0};
-	REQUIRE(duckdb_v2_validate_utf8(&text_str, &error) == DUCKDB_V2_ERROR_NONE);
+	std::string_view text_str = {nullptr, 0};
+	REQUIRE(duckdb_v2_validate_utf8(text_str.data(), text_str.size(), &error) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(error == nullptr);
-	auto text_str2 = Convert("🦆");
-	REQUIRE(duckdb_v2_validate_utf8(&text_str2, &error) == DUCKDB_V2_ERROR_NONE);
+	std::string_view text_str2 = "🦆";
+	REQUIRE(duckdb_v2_validate_utf8(text_str2.data(), text_str2.size(), &error) == DUCKDB_V2_ERROR_NONE);
 	const std::string embedded_nul("a\0b", 3);
-	auto embedded_nul_str = Convert(embedded_nul);
-	REQUIRE(duckdb_v2_validate_utf8(&embedded_nul_str, &error) == DUCKDB_V2_ERROR_NONE);
-	auto text_str3 = Convert("\xFF");
-	REQUIRE(duckdb_v2_validate_utf8(&text_str3, &error) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	auto embedded_nul_str = std::string_view(embedded_nul);
+	REQUIRE(duckdb_v2_validate_utf8(embedded_nul_str.data(), embedded_nul_str.size(), &error) == DUCKDB_V2_ERROR_NONE);
+	std::string_view text_str3 = "\xFF";
+	REQUIRE(duckdb_v2_validate_utf8(text_str3.data(), text_str3.size(), &error) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(error != nullptr);
 	duckdb_v2_error_info_destroy(&error);
-	duckdb_v2_str text_str4 = {nullptr, 1};
-	REQUIRE(duckdb_v2_validate_utf8(&text_str4, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_validate_utf8(nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_validate_utf8(nullptr, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_validate_utf8(nullptr, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_validate_utf8(nullptr, 0, nullptr) == DUCKDB_V2_ERROR_NONE);
 }
 
 // These tests almost always assume a vector is 2048 rows to write into, so only run them if that is the case
@@ -1044,7 +1044,7 @@ TEST_CASE("V2: LIST<VARCHAR> write", "[capi_v2][vector_write]") {
 	auto *arr = static_cast<const duckdb_v2_varchar_t *>(child_view.data);
 
 	REQUIRE(Convert(arr[0]) == "alpha");
-	REQUIRE(Convert(arr[1]).len == 200);
+	REQUIRE(Convert(arr[1]).size() == 200);
 
 	REQUIRE(duckdb_v2_data_chunk_destroy(&chunk) == DUCKDB_V2_ERROR_NONE);
 }
@@ -1287,8 +1287,8 @@ TEST_CASE("V2: vector_set_value writes FLAT cells with casts and NULLs", "[capi_
 
 	// A NULL value clears the row's validity.
 	duckdb_v2_logical_type_handle bigint_v2 = nullptr;
-	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, 0, &bigint_v2,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, nullptr, 0,
+	                                      &bigint_v2, nullptr);
 	duckdb_v2_value_handle null_value = nullptr;
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, bigint_v2, &null_value, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_logical_type_destroy(&bigint_v2);
