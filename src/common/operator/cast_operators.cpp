@@ -3540,8 +3540,7 @@ static bool TryCastBignumDecimalToNumeric(bignum_t input, DST &result, CastParam
 template <class DST>
 static bool TryCastBignumDecimalToFloatingPoint(bignum_t input, DST &result, CastParameters &parameters,
                                                 uint32_t scale) {
-	auto value = BignumDecimal::ToDouble(input, scale);
-	if (!TryCast::Operation<double, DST>(value, result, false)) {
+	if (!BignumDecimal::TryToFloating(input, scale, result)) {
 		string error = StringUtil::Format("Casting value \"%s\" to type %s failed: value is out of range!",
 		                                  BignumDecimal::ToString(input, scale), GetTypeId<DST>());
 		HandleCastError::AssignError(error, parameters);

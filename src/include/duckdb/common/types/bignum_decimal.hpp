@@ -57,7 +57,11 @@ public:
 	DUCKDB_API static bool TryToHugeint(const bignum_t &value, hugeint_t &result);
 	DUCKDB_API static bool TryToUhugeint(const bignum_t &value, uhugeint_t &result);
 
-	//! Converts an unscaled value with the given scale to a double (correctly rounded through the decimal string)
+	//! Converts an unscaled value with the given scale to a FLOAT or DOUBLE, rounding once (through the decimal
+	//! string), returns false if the value is out of range
+	DUCKDB_API static bool TryToFloating(const bignum_t &value, uint32_t scale, float &result);
+	DUCKDB_API static bool TryToFloating(const bignum_t &value, uint32_t scale, double &result);
+	//! Converts an unscaled value with the given scale to a double, infinite when the value is out of range
 	DUCKDB_API static double ToDouble(const bignum_t &value, uint32_t scale);
 	//! Converts a double to the BIGNUM blob of the unscaled value of a DECIMAL(width, scale), returns false if it does
 	//! not fit
