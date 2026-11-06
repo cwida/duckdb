@@ -89,7 +89,6 @@ public:
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
 
 private:
-	shared_ptr<Context> owned_services;
 	Context &services;
 
 protected:

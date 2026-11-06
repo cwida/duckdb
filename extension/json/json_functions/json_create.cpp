@@ -1572,17 +1572,17 @@ ScalarFunctionSet JSONFunctions::GetRowToJSONFunction() {
 
 struct NestedToJSONCastData : public BoundCastData {
 public:
-	explicit NestedToJSONCastData(optional_ptr<Context> client) : client(client) {
+	explicit NestedToJSONCastData(Context &context_p) : context(context_p) {
 	}
 
 	unique_ptr<BoundCastData> Copy() const override {
-		auto result = make_uniq<NestedToJSONCastData>(client);
+		auto result = make_uniq<NestedToJSONCastData>(context);
 		result->const_struct_names = const_struct_names.Copy();
 		return std::move(result);
 	}
 
 public:
-	optional_ptr<Context> client;
+	Context &context;
 	StructNames const_struct_names;
 };
 
@@ -1594,17 +1594,14 @@ static bool AnyToJSONCast(Vector &source, Vector &result, idx_t count, CastParam
 	const auto &names = cast_data.const_struct_names;
 
 	JSONCopyFormatOptions options;
-	options.context = cast_data.client;
-	if (cast_data.client) {
-		options.geometry_format = ClientGeometryFormat(*cast_data.client);
-	}
+	options.context = cast_data.context;
+	options.geometry_format = ClientGeometryFormat(cast_data.context);
 	ToJSONFunctionInternal(names, source, count, result, alc, options);
 	return true;
 }
 
 static BoundCastInfo AnyToJSONCastBind(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
-	auto cast_data =
-	    make_uniq<NestedToJSONCastData>(input.context ? optional_ptr<Context>(input.context->Services()) : nullptr);
+	auto cast_data = make_uniq<NestedToJSONCastData>(input.GetContext());
 	GetJSONType(cast_data->const_struct_names, source);
 	return BoundCastInfo(AnyToJSONCast, std::move(cast_data), JSONFunctionLocalState::InitCastLocalState);
 }

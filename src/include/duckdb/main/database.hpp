@@ -91,8 +91,8 @@ public:
 
 	DUCKDB_API SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result) const;
 
-	//! Creates database-wide services (settings, logging, metrics, file system)
-	DUCKDB_API shared_ptr<Context> Services();
+	//! The database-wide services (settings, logging, metrics, file system) - owned by the database
+	DUCKDB_API Context &Services();
 
 	DUCKDB_API shared_ptr<EncryptionUtil> GetEncryptionUtil(bool read_only = false);
 	shared_ptr<EncryptionUtil> GetMbedTLSUtil(bool force_mbedtls) const;
@@ -133,6 +133,7 @@ private:
 	unique_ptr<ResultSetManager> result_set_manager;
 	unique_ptr<ParserCache> parser_cache;
 	unique_ptr<OSUtil> os_util;
+	unique_ptr<Context> services;
 
 	duckdb_ext_api_v1 (*create_api_v1)();
 	//! Set in Initialize. Loading a V2 C API extension builds the C API function table and opens a connection, both of

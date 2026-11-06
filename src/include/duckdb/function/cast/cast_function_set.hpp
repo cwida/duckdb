@@ -30,6 +30,10 @@ struct GetCastFunctionInput {
 
 	//! The services of the cast
 	DUCKDB_API Context &GetContext();
+	//! The services of the cast (if any)
+	optional_ptr<Context> TryGetContext() const {
+		return context;
+	}
 
 	//! The client context - only present if the cast is bound for a client
 	optional_ptr<ClientContext> client_context;

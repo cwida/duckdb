@@ -175,15 +175,10 @@ protected:
 	void FillSwitch(const Vector &vector, Vector &result, const SelectionVector &sel, sel_t count);
 
 private:
-	//! Services (owned if the executor was created from a database instance)
-	shared_ptr<Context> owned_context;
 	Context &context;
 	//! The states of the expression executor; this holds any intermediates and temporary states of expressions
 	vector<unique_ptr<ExpressionExecutorState>> states;
 	//! The vector verification (debug setting)
 	DebugVectorVerification debug_vector_verification = DebugVectorVerification::NONE;
-
-private:
-	explicit ExpressionExecutor(shared_ptr<Context> owned_context);
 };
 } // namespace duckdb

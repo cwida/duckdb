@@ -14,8 +14,15 @@
 namespace duckdb {
 
 BindCastInput::BindCastInput(CastFunctionSet &function_set, optional_ptr<BindCastInfo> info,
-                             optional_ptr<ClientContext> context)
-    : function_set(function_set), info(info), context(context) {
+                             GetCastFunctionInput &get_input)
+    : function_set(function_set), info(info), context(get_input.client_context), services(get_input.TryGetContext()) {
+}
+
+Context &BindCastInput::GetContext() {
+	if (!services) {
+		throw InternalException("BindCastInput::GetContext called on the input of a default cast");
+	}
+	return *services;
 }
 
 //! Orders the stabilities from the most to the least stable
@@ -56,7 +63,7 @@ Context &GetCastFunctionInput::GetContext() {
 }
 
 BoundCastInfo BindCastInput::GetCastFunction(const LogicalType &source, const LogicalType &target) {
-	auto input = context ? GetCastFunctionInput(*context) : GetCastFunctionInput::Default();
+	auto input = services ? GetCastFunctionInput(*services) : GetCastFunctionInput::Default();
 	input.query_location = query_location;
 	auto result = function_set.GetCastFunction(source, target, input);
 	stability = LeastStable(stability, result.GetStability());
@@ -109,7 +116,7 @@ BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const 
 		    source.id() == LogicalTypeId::VARIANT || registration_probe->HasRegisteredCast(source, target);
 	}
 	auto bind_cast = [&](BindCastFunction &bind_function) {
-		BindCastInput input(*this, bind_function.info.get(), get_input.client_context);
+		BindCastInput input(*this, bind_function.info.get(), get_input);
 		input.query_location = get_input.query_location;
 		auto result = bind_function.function(input, source, target);
 		result.SetStability(LeastStable(result.GetStability(), input.stability));

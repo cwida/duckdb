@@ -167,8 +167,8 @@ const shared_ptr<QueryProfiler> &Context::GetQueryProfilerPtr() const {
 	return profiler;
 }
 
-shared_ptr<Context> DatabaseInstance::Services() {
-	return make_shared_ptr<Context>(*this);
+Context &DatabaseInstance::Services() {
+	return *services;
 }
 
 } // namespace duckdb

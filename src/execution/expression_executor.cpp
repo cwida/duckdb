@@ -17,11 +17,6 @@
 
 namespace duckdb {
 
-ExpressionExecutor::ExpressionExecutor(shared_ptr<Context> owned_context_p)
-    : owned_context(std::move(owned_context_p)), context(*owned_context) {
-	debug_vector_verification = Settings::Get<DebugVerifyVectorSetting>(context);
-}
-
 ExpressionExecutor::ExpressionExecutor(Context &context_p) : context(context_p) {
 	debug_vector_verification = Settings::Get<DebugVerifyVectorSetting>(context);
 }
