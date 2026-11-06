@@ -92,7 +92,7 @@ public:
 	DUCKDB_API SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result) const;
 
 	//! The database-wide services (settings, logging, metrics, file system) - owned by the database
-	DUCKDB_API Context &Services();
+	DUCKDB_API Context &GetContext();
 
 	DUCKDB_API shared_ptr<EncryptionUtil> GetEncryptionUtil(bool read_only = false);
 	shared_ptr<EncryptionUtil> GetMbedTLSUtil(bool force_mbedtls) const;

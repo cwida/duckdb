@@ -158,7 +158,7 @@ TEST_CASE("Owned chunk export preserves observable execution groups",
 			Connection connection(db);
 			REQUIRE_NO_FAIL(connection.Query("SET threads=1; CREATE TABLE chunk_export_input(x BIGINT)"));
 			auto counter = make_shared_ptr<SQLExportValuesCounter>();
-			connection.context->Services().GetRegisteredState().Insert("sql_export_values_counter", counter);
+			connection.context->GetContext().GetRegisteredState().Insert("sql_export_values_counter", counter);
 			ExtensionLoader loader(*db.instance, "chunk_export_counter");
 			ScalarFunction next("sql_export_values_next", {}, LogicalType::BIGINT, SQLExportValuesNext);
 			next.SetVolatile();
@@ -311,7 +311,7 @@ TEST_CASE("Owned chunk SQL export requires an explicit consumer evaluation contr
 		Connection connection(db);
 		REQUIRE_NO_FAIL(connection.Query("SET threads=1"));
 		auto counter = make_shared_ptr<SQLExportValuesCounter>();
-		connection.context->Services().GetRegisteredState().Insert("sql_export_values_counter", counter);
+		connection.context->GetContext().GetRegisteredState().Insert("sql_export_values_counter", counter);
 		ExtensionLoader loader(*db.instance, "opaque_chunk_export_counter");
 		ScalarFunction next("sql_export_values_next", {}, LogicalType::BIGINT, SQLExportValuesNext);
 		next.SetVolatile();

@@ -19,7 +19,7 @@ ICUDateFunc::BindData::BindData(const string &tz_setting_p, const string &cal_se
 	InitCalendar();
 }
 
-ICUDateFunc::BindData::BindData(ClientContext &context) : BindData(context.Services()) {
+ICUDateFunc::BindData::BindData(ClientContext &context) : BindData(context.GetContext()) {
 }
 
 ICUDateFunc::BindData::BindData(Context &context) : cal_setting("gregorian") {

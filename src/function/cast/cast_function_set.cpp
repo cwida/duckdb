@@ -48,7 +48,7 @@ GetCastFunctionInput::GetCastFunctionInput(Context &context_p)
 }
 
 GetCastFunctionInput::GetCastFunctionInput(ClientContext &context_p)
-    : client_context(context_p), context(context_p.Services()) {
+    : client_context(context_p), context(context_p.GetContext()) {
 }
 
 GetCastFunctionInput GetCastFunctionInput::Default() {

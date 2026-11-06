@@ -45,7 +45,7 @@ void VectorOperations::Cast(Context &context, Vector &source, Vector &result, id
 
 bool VectorOperations::TryCast(ClientContext &context, Vector &source, Vector &result, idx_t count,
                                string *error_message, bool strict, const bool nullify_parent) {
-	return VectorOperations::TryCast(context.Services(), source, result, count, error_message, strict, nullify_parent);
+	return VectorOperations::TryCast(context.GetContext(), source, result, count, error_message, strict, nullify_parent);
 }
 
 void VectorOperations::Cast(ClientContext &context, Vector &source, Vector &result, idx_t count, bool strict) {

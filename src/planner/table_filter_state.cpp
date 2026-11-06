@@ -692,7 +692,7 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 
 unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context, const TableFilter &filter) {
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "TableFilterState::Initialize");
-	return make_uniq<ExpressionFilterState>(context.Services(), *expr_filter.expr);
+	return make_uniq<ExpressionFilterState>(context.GetContext(), *expr_filter.expr);
 }
 
 } // namespace duckdb

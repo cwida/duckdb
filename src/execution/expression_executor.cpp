@@ -38,22 +38,22 @@ ExpressionExecutor::ExpressionExecutor(Context &context, const vector<unique_ptr
 	}
 }
 
-ExpressionExecutor::ExpressionExecutor(ClientContext &context) : ExpressionExecutor(context.Services()) {
+ExpressionExecutor::ExpressionExecutor(ClientContext &context) : ExpressionExecutor(context.GetContext()) {
 }
 
 ExpressionExecutor::ExpressionExecutor(ClientContext &context, const Expression *expression)
-    : ExpressionExecutor(context.Services(), expression) {
+    : ExpressionExecutor(context.GetContext(), expression) {
 }
 
 ExpressionExecutor::ExpressionExecutor(ClientContext &context, const Expression &expression)
-    : ExpressionExecutor(context.Services(), expression) {
+    : ExpressionExecutor(context.GetContext(), expression) {
 }
 
 ExpressionExecutor::ExpressionExecutor(ClientContext &context, const vector<unique_ptr<Expression>> &exprs)
-    : ExpressionExecutor(context.Services(), exprs) {
+    : ExpressionExecutor(context.GetContext(), exprs) {
 }
 
-ExpressionExecutor::ExpressionExecutor(DatabaseInstance &db) : ExpressionExecutor(db.Services()) {
+ExpressionExecutor::ExpressionExecutor(DatabaseInstance &db) : ExpressionExecutor(db.GetContext()) {
 }
 
 ExpressionExecutor::ExpressionExecutor(DatabaseInstance &db, const Expression &expression) : ExpressionExecutor(db) {
@@ -174,7 +174,7 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result, const
 }
 
 Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expression &expr, bool allow_unfoldable) {
-	return EvaluateScalar(context.Services(), expr, allow_unfoldable);
+	return EvaluateScalar(context.GetContext(), expr, allow_unfoldable);
 }
 
 Value ExpressionExecutor::EvaluateScalar(Context &context, const Expression &expr, bool allow_unfoldable) {
@@ -193,7 +193,7 @@ Value ExpressionExecutor::EvaluateScalar(Context &context, const Expression &exp
 }
 
 bool ExpressionExecutor::TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result) {
-	return TryEvaluateScalar(context.Services(), expr, result);
+	return TryEvaluateScalar(context.GetContext(), expr, result);
 }
 
 bool ExpressionExecutor::TryEvaluateScalar(Context &context, const Expression &expr, Value &result) {

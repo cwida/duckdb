@@ -152,7 +152,7 @@ unique_ptr<FunctionLocalState> JSONFunctionLocalState::Init(ExpressionState &sta
 }
 
 unique_ptr<FunctionLocalState> JSONFunctionLocalState::InitCastLocalState(CastLocalStateParameters &parameters) {
-	return parameters.context ? make_uniq<JSONFunctionLocalState>(parameters.context->Services())
+	return parameters.context ? make_uniq<JSONFunctionLocalState>(parameters.context->GetContext())
 	                          : make_uniq<JSONFunctionLocalState>(Allocator::DefaultAllocator());
 }
 
