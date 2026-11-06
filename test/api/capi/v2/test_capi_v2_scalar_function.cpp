@@ -1536,7 +1536,8 @@ struct DigitNullWriterState {
 	idx_t min_count = 0;
 };
 
-// NULL for an odd leading digit, the digit otherwise.
+// NULL for a NULL input or an odd leading digit, the digit otherwise. The dictionary path also runs the function
+// over the storage dictionary's NULL entry, whose payload must not be read.
 void DigitNullWriterExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
                          duckdb_v2_error_info_handle *err) {
 	void *user_data = nullptr;
@@ -1562,7 +1563,14 @@ void DigitNullWriterExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb
 	const auto *src = static_cast<const duckdb_v2_bytes *>(view.data);
 	auto *dst = static_cast<int32_t *>(raw);
 	for (idx_t row = 0; row < count; row++) {
-		auto digit = Convert(src[SelAt(view.sel, row)])[0] - '0';
+		auto idx = SelAt(view.sel, row);
+		if (!RowValid(view, idx)) {
+			if (duckdb_v2_vector_set_null(out, row, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			continue;
+		}
+		auto digit = Convert(src[idx])[0] - '0';
 		if (digit % 2 == 1) {
 			if (duckdb_v2_vector_set_null(out, row, err) != DUCKDB_V2_ERROR_NONE) {
 				return;
