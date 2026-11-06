@@ -1,5 +1,6 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/main/extension/external_extension_provider.hpp"
 #include "duckdb/main/extension/linked_extension_registry.hpp"
 
@@ -35,18 +36,25 @@ void ExtensionHelper::RegisterLinkedExtensions(DBConfig &config) {
 	}
 }
 
+static optional_ptr<const LinkedExtension> FindLinkedExtension(const DBConfig &config, const string &extension) {
+	for (auto &linked : config.linked_extensions) {
+		if (linked.load && StringUtil::CIEquals(linked.name, extension)) {
+			return &linked;
+		}
+	}
+	return nullptr;
+}
+
 //! Loads an extension that was linked into the binary, via the registry the config carries. This is
 //! deliberately not generated code: an extension with its own copy of DuckDB links no generated
 //! loader, so a compile-time list would be invisible to it, while the config is data it can read.
 ExtensionLoadResult ExtensionHelper::LoadExtension(DuckDB &db, const std::string &extension) {
-	auto &config = DBConfig::GetConfig(*db.instance);
-	for (auto &linked : config.linked_extensions) {
-		if (linked.load && StringUtil::CIEquals(linked.name, extension)) {
-			linked.load(db);
-			return ExtensionLoadResult::LOADED_EXTENSION;
-		}
+	auto linked = FindLinkedExtension(DBConfig::GetConfig(*db.instance), extension);
+	if (!linked) {
+		return ExtensionLoadResult::NOT_LOADED;
 	}
-	return ExtensionLoadResult::NOT_LOADED;
+	linked->load(db);
+	return ExtensionLoadResult::LOADED_EXTENSION;
 }
 
 void ExtensionHelper::LoadAllExtensions(DuckDB &db) {
@@ -173,6 +181,15 @@ string ExtensionHelper::AddExtensionInstallHintToErrorMsg(DatabaseInstance &db, 
 	return base_error;
 }
 
+// the bare load of AutoLoadOptions takes the linked shortcut of LoadExternalExtension for exactly these names, so a
+// linked extension never needs the repository
+static bool IsLinkedExtension(DatabaseInstance &db, const string &extension_name) {
+	if (ExtensionHelper::IsFullPath(extension_name)) {
+		return false;
+	}
+	return FindLinkedExtension(DBConfig::GetConfig(db), ExtensionHelper::GetExtensionName(extension_name)) != nullptr;
+}
+
 // autoloading only ever targets core extensions, so it trusts the core keys exclusively
 static ExtensionLoadOptions AutoLoadOptions(const string &extension_name) {
 	ExtensionLoadOptions options(extension_name);
@@ -185,7 +202,8 @@ bool ExtensionHelper::TryAutoLoadExtension(ClientContext &context, const string 
 		return true;
 	}
 	try {
-		if (Settings::Get<AutoinstallKnownExtensionsSetting>(context)) {
+		if (Settings::Get<AutoinstallKnownExtensionsSetting>(context) &&
+		    !IsLinkedExtension(*context.db, extension_name)) {
 			auto autoinstall_repo = GetAutoinstallRepository(*context.db);
 			ExtensionInstallOptions options;
 			options.repository = autoinstall_repo;
@@ -216,7 +234,8 @@ bool ExtensionHelper::TryAutoLoadExtension(DatabaseInstance &instance, const str
 	}
 	try {
 		auto &fs = FileSystem::GetFileSystem(instance);
-		if (Settings::Get<AutoinstallKnownExtensionsSetting>(instance)) {
+		if (Settings::Get<AutoinstallKnownExtensionsSetting>(instance) &&
+		    !IsLinkedExtension(instance, extension_name)) {
 			auto autoinstall_repo = GetAutoinstallRepository(instance);
 			ExtensionInstallOptions options;
 			options.repository = autoinstall_repo;
@@ -386,7 +405,7 @@ void ExtensionHelper::AutoLoadExtension(DatabaseInstance &db, const string &exte
 	try {
 		auto &fs = FileSystem::GetLocal(db);
 #ifndef DUCKDB_WASM
-		if (Settings::Get<AutoinstallKnownExtensionsSetting>(db)) {
+		if (Settings::Get<AutoinstallKnownExtensionsSetting>(db) && !IsLinkedExtension(db, extension_name)) {
 			auto autoinstall_repo = GetAutoinstallRepository(db);
 			ExtensionInstallOptions options;
 			options.repository = autoinstall_repo;
