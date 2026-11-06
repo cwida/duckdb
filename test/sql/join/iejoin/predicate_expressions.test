@@ -9,7 +9,7 @@ statement ok
 SET merge_join_threshold=0
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY;
+SET explain_output = 'PHYSICAL_ONLY';
 
 # Create a range of dates
 statement ok

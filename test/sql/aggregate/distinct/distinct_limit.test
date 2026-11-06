@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 # basic DISTINCT with LIMIT
 query I

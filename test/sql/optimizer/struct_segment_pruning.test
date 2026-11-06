@@ -34,10 +34,10 @@ SELECT count(*) FROM events WHERE payload.meta.ts IS NULL
 2
 
 statement ok
-PRAGMA enable_profiling = 'json'
+SET enable_profiling = 'json'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/struct_segment_pruning_profile.json'
+SET profiling_output = '{TEST_DIR}/struct_segment_pruning_profile.json'
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned']

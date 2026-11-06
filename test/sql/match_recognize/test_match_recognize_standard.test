@@ -6,7 +6,7 @@
 # against Oracle 23ai. The data is theirs too, so the answers can be compared with a real one.
 
 statement ok
-pragma threads=1
+SET threads=1
 
 statement ok
 CREATE TABLE events(seq INTEGER, price INTEGER)

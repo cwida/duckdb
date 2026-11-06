@@ -4,7 +4,7 @@
 
 # Force the physical ASOF operator for NULL-sensitive condition tests
 statement ok
-PRAGMA asof_loop_join_threshold = 0;
+SET asof_loop_join_threshold = 0;
 
 statement ok
 CREATE TABLE null_trades(id INTEGER, symbol VARCHAR, venue INTEGER, ts INTEGER);

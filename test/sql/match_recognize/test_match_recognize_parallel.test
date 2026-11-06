@@ -25,7 +25,7 @@ CREATE TABLE expected AS
 foreach threads 1 2 4 8
 
 statement ok
-PRAGMA threads={threads}
+SET threads={threads}
 
 query IIIII
 SELECT * FROM (
@@ -53,7 +53,7 @@ SELECT count(*) FROM runs MATCH_RECOGNIZE (
 endloop
 
 statement ok
-PRAGMA threads=4
+SET threads=4
 
 # ALL ROWS PER MATCH writes one membership per (row, match), from every thread at once
 query II
@@ -86,4 +86,4 @@ SELECT count(*) FROM runs MATCH_RECOGNIZE (
 576
 
 statement ok
-PRAGMA threads=1
+SET threads=1

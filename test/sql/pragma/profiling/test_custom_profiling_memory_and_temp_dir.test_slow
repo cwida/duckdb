@@ -5,13 +5,13 @@
 require json
 
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 SET tracked_metrics = ['system.peak_buffer_memory', 'system.peak_temp_dir_size'];
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/profiling_output.json';
+SET profiling_output = '{TEST_DIR}/profiling_output.json';
 
 statement ok
 SET memory_limit = '0.7gb';
@@ -37,7 +37,7 @@ true	true	1.0
 
 # disabling should omit them from output
 statement ok
-PRAGMA enable_profiling = 'json';
+SET enable_profiling = 'json';
 
 statement ok
 SET tracked_metrics = [];

@@ -14,7 +14,7 @@ statement ok
 CALL dbgen(sf=0.0001);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # Q 02: join with JoinType::SINGLE (created when pushing down dependent joins) is converted to LEFT
 query II

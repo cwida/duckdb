@@ -67,7 +67,7 @@ SELECT i, datepart('day', i), count(*) FROM iv GROUP BY i, datepart('day', i) OR
 1 day	1	1
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # ----- Collapses (the AGGREGATE must end up with the single base group `x`) ----
 

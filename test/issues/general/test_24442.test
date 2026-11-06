@@ -22,7 +22,7 @@ INSERT INTO peers VALUES
 foreach windowmode "window" "combine" "separate"
 
 statement ok
-PRAGMA debug_window_mode={windowmode}
+SET debug_window_mode={windowmode}
 
 # Reported FILTER and EXCLUDE CURRENT ROW interaction
 query IRR

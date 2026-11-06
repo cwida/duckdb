@@ -248,7 +248,7 @@ SELECT currval('mode_rewrite_order_seq');
 2
 
 statement ok
-PRAGMA explain_output='optimized_only';
+SET explain_output='optimized_only';
 
 # ordinary mode is represented by two visible aggregate stages
 query II

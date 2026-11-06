@@ -9,7 +9,7 @@ statement ok
 INSERT INTO test VALUES ('FLASH'), ('TOAST'), ('BELL');
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query I nosort correct_result
 select contains(word, 'AS') from test;

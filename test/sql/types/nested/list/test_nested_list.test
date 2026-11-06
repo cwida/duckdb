@@ -7,7 +7,7 @@ SET default_null_order='nulls_first';
 
 # otherwise sorting order of lists is undefined
 statement ok
-PRAGMA threads=1
+SET threads=1
 
 # scalar nested lists
 query I

@@ -14,7 +14,7 @@ SET storage_compatibility_version='v1.3.0'
 load {TEST_DIR}/test_null_{compression}.db
 
 statement ok
-PRAGMA force_compression='{compression}'
+SET force_compression='{compression}'
 
 # single NULL value
 statement ok

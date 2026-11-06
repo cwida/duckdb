@@ -6,7 +6,7 @@ statement ok
 CREATE TABLE test(X INTEGER);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 query I nosort casenorm1
 EXPLAIN SELECT CASE WHEN 1=1 THEN X+1 ELSE X+2 END FROM test

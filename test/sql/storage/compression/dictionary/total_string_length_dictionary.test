@@ -9,7 +9,7 @@ require vector_size 2048
 load {TEST_DIR}/total_string_length_dictionary.db readwrite v1.0.0
 
 statement ok
-PRAGMA force_compression='dictionary'
+SET force_compression='dictionary'
 
 statement ok
 CREATE TABLE t (s VARCHAR);

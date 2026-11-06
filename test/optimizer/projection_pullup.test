@@ -21,7 +21,7 @@ statement ok
 CREATE TABLE tbl AS SELECT range a, mod(range,10) b FROM range(10000);
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+SET explain_output = 'OPTIMIZED_ONLY';
 
 # These optimizers introduce projections. I disable them for now
 statement ok

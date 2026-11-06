@@ -29,10 +29,10 @@ SELECT (SELECT count(*) FROM nested_nulls WHERE l IS NULL),
 1	1
 
 statement ok
-PRAGMA enable_profiling = 'json'
+SET enable_profiling = 'json'
 
 statement ok
-PRAGMA profiling_output = '{TEST_DIR}/nested_null_profile.json'
+SET profiling_output = '{TEST_DIR}/nested_null_profile.json'
 
 statement ok
 SET tracked_metrics = ['query.total_rows_scanned']

@@ -58,7 +58,7 @@ CREATE MACRO semi_joins() AS (
 );
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 statement ok
 SET profiling_output='{TEST_DIR}/cte_domain_join_filter.json';
@@ -66,7 +66,7 @@ SET profiling_output='{TEST_DIR}/cte_domain_join_filter.json';
 # One outer key
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(x) FROM nested_walk WHERE id=3;
@@ -84,7 +84,7 @@ SELECT recursive_rows();
 # Sparse multi-row key set
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query III
 SELECT count(*), sum(x), max(x) FROM nested_walk WHERE selected;
@@ -107,7 +107,7 @@ SELECT semi_joins();
 # An unselective source does not introduce a semijoin
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query II
 SELECT count(*),sum(x) FROM nested_walk;
@@ -137,7 +137,7 @@ SELECT i.id,r.x FROM person i, LATERAL (
 ) r;
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query II
 WITH heavy AS MATERIALIZED (SELECT id FROM person, range(500) WHERE selected)
@@ -155,7 +155,7 @@ SELECT recursive_rows(),semi_joins();
 
 # Source eligibility uses standalone estimates of the complete join region.
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query II
 WITH chosen AS MATERIALIZED (
@@ -175,7 +175,7 @@ SELECT recursive_rows(),semi_joins();
 
 # A nonselective join source must retain all recursive partitions.
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query II
 WITH chosen AS MATERIALIZED (
@@ -195,7 +195,7 @@ SELECT recursive_rows(),semi_joins();
 
 # An independently observed materialized result cannot be restricted for just one reader.
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query III
 WITH o AS MATERIALIZED (SELECT id FROM person WHERE selected),
@@ -234,7 +234,7 @@ statement ok
 CREATE VIEW nodes AS SELECT id, selected, struct_pack(k := id) AS node FROM person;
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(q.x)
@@ -259,7 +259,7 @@ SELECT recursive_rows(), semi_joins();
 3	1
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query III
 SELECT count(*), sum(q.x), max(q.x)
@@ -286,7 +286,7 @@ SELECT recursive_rows();
 # A plain selective scan restricts the partitions even without a materialized key domain
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(q.x)
@@ -312,7 +312,7 @@ SELECT recursive_rows(), semi_joins();
 # Transitive restriction through nested lateral joins is deferred to cost-based domain placement
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(q.x) FROM person o, LATERAL (
@@ -340,7 +340,7 @@ SELECT recursive_rows();
 # Only the lateral joined directly with the selective scan is restricted
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query II
 SELECT max(a.x), max(b.y) FROM person o, LATERAL (
@@ -372,7 +372,7 @@ SELECT recursive_rows();
 # Restriction of correlated EXISTS subqueries is deferred to cost-based domain placement
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT count(*) FROM person o WHERE o.id=3 AND EXISTS (
@@ -409,7 +409,7 @@ FROM person o, LATERAL (
 ) q WHERE o.id=$1;
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 EXECUTE walk_sel(3);
@@ -436,7 +436,7 @@ CREATE MACRO big_scans() AS (
 );
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(q.x) FROM big o, LATERAL (
@@ -462,7 +462,7 @@ statement ok
 SET disabled_optimizers='cte_filter_pusher';
 
 statement ok
-PRAGMA enable_profiling='json';
+SET enable_profiling='json';
 
 query I
 SELECT max(x) FROM nested_walk WHERE id=3;

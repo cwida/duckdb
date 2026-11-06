@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # these functions live in the catalog, but cannot be called directly
 statement error
@@ -181,7 +181,7 @@ true	false	true	false
 
 # this should lead to a plan where both all-NULL columns (varchar j and bigint k) are compressed
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY
+SET explain_output = 'PHYSICAL_ONLY'
 
 query II
 explain select * from read_parquet('{TEST_DIR}/cm*.parquet', union_by_name=true) order by i
@@ -196,7 +196,7 @@ statement ok
 call dbgen(sf=0.01)
 
 statement ok
-PRAGMA explain_output = PHYSICAL_ONLY
+SET explain_output = 'PHYSICAL_ONLY'
 
 # tpch q1 should use perfect hash aggregate
 query II
@@ -226,7 +226,7 @@ ORDER BY
 physical_plan	<REGEX>:.*PERFECT_HASH_GROUP_BY.*
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY
+SET explain_output = 'OPTIMIZED_ONLY'
 
 # test that we're compressing lineitem
 query II

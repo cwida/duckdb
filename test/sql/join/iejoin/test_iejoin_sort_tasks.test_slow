@@ -11,7 +11,7 @@ require 64bit
 require ram 8gb
 
 statement ok
-PRAGMA memory_limit='8GB'
+SET memory_limit='8GB'
 
 statement ok
 SET merge_join_threshold=0
