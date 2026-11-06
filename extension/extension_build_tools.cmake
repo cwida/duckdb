@@ -259,6 +259,7 @@ endfunction()
 function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTENSION_VERSION CAPI_VERSION PARAMETERS)
     set(TARGET_NAME ${NAME}_loadable_extension)
     set(PREBUILT_EXTENSION FALSE)
+    string(FIND "${PARAMETERS}" "-host-bound" HOST_BOUND)
     if(TARGET ${NAME}_extension)
         get_property(PREBUILT_EXTENSION TARGET ${NAME}_extension PROPERTY DUCKDB_PREBUILT_EXTENSION)
     endif()
@@ -284,7 +285,7 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
     set_target_properties(${TARGET_NAME} PROPERTIES DEFINE_SYMBOL "")
     set_target_properties(${TARGET_NAME} PROPERTIES OUTPUT_NAME ${NAME})
     set_target_properties(${TARGET_NAME} PROPERTIES PREFIX "")
-    if(NOT EXTENSION_STATIC_BUILD)
+    if(${HOST_BOUND} GREATER -1 OR NOT EXTENSION_STATIC_BUILD)
         set_property(TARGET ${TARGET_NAME} PROPERTY DUCKDB_DYNAMIC_LOADABLE_EXTENSION TRUE)
     endif()
     if(${IGNORE_WARNINGS} GREATER -1)
@@ -303,6 +304,10 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
         set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sSIDE_MODULE=1 -DWASM_LOADABLE_EXTENSIONS")
     elseif(${ABI_TYPE} STREQUAL "C_STRUCT" OR ${ABI_TYPE} STREQUAL "C_STRUCT_UNSTABLE")
         # TODO strip all symbols except the capi init
+    elseif(${HOST_BOUND} GREATER -1)
+        if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang$" AND APPLE)
+            set_target_properties(${TARGET_NAME} PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
+        endif()
     elseif (EXTENSION_STATIC_BUILD)
         if (WIN32)
             target_link_libraries(${TARGET_NAME} duckdb_static ${DUCKDB_EXTRA_LINK_FLAGS})
@@ -418,7 +423,7 @@ function(duckdb_add_test_bundle NAME)
         test/extensions
         "default-version"
         ""
-        "-warnings"
+        "-warnings -host-bound"
         "${DUCKDB_MODULE_BASE_DIR}/extension/test/test_bundle_extension.cpp"
         ${ARG_SOURCES})
     target_compile_definitions(

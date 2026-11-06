@@ -75,7 +75,7 @@ build_loadable_extension_directory(
   extension/test
   "default-version"
   ""
-  "-warnings"
+  "-warnings -host-bound"
   "${PROJECT_SOURCE_DIR}/extension/test/test_extension.cpp"
   $<TARGET_OBJECTS:test_debug_fs_extension>)
 set_target_properties(
@@ -88,16 +88,12 @@ target_include_directories(
           "${PROJECT_SOURCE_DIR}/extension/test"
           "${PROJECT_SOURCE_DIR}/test/sqlite"
           "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
-target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner)
-duckdb_link_extensions(
-  test_loadable_extension
-  httplib
-  loadable_extensions
-  local_extension_repository
-  core_functions
-  parquet
-  json
-  icu)
+target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner
+                      duckdb_re2)
+set_target_properties(shell PROPERTIES ENABLE_EXPORTS ON)
+if(WIN32)
+  target_link_libraries(test_loadable_extension shell)
+endif()
 
 if(${ENABLE_UNITTEST_CPP_TESTS})
   duckdb_add_test_bundle(duckdb_tests SOURCES ${UNITTEST_OBJECT_FILES})
@@ -106,15 +102,11 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
   target_include_directories(
     duckdb_tests_loadable_extension
     PRIVATE "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
-  duckdb_link_extensions(
-    duckdb_tests_loadable_extension
-    httplib
-    loadable_extensions
-    local_extension_repository
-    core_functions
-    parquet
-    json
-    icu)
+  target_link_libraries(duckdb_tests_loadable_extension duckdb_fsst
+                        duckdb_mbedtls)
+  if(WIN32)
+    target_link_libraries(duckdb_tests_loadable_extension shell)
+  endif()
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux"

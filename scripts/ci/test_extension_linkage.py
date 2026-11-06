@@ -57,6 +57,11 @@ class ExtensionLinkageTest(unittest.TestCase):
             tpch_libraries = libraries("tpch_loadable_extension")
             self.assertIn("libtpch_extension.a", tpch_libraries)
             self.assertEqual("libduckdb_static.a" in tpch_libraries, static_build, tpch_libraries)
+            if sys.platform != "win32":
+                for name in ("test_loadable_extension", "duckdb_tests_loadable_extension"):
+                    linked = libraries(name)
+                    for library in ("duckdb_static", "core_functions_extension", "parquet_extension"):
+                        self.assertNotIn(library, linked, f"{name}: {linked}")
             # Static consumers still need the core archive after their extension archives.
             for name, extension in (("duckdb", "tpch"), ("static_link_smoke", "parquet")):
                 linked = libraries(name)
