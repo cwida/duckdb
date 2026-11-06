@@ -29,6 +29,8 @@ public:
 	DUCKDB_API const string &FieldName(idx_t index) const;
 	//! The value of a field by index, which counts as read; nullptr when it is NULL
 	DUCKDB_API optional_ptr<const Value> FieldValue(idx_t index);
+	//! The type of a field's value (of what a VARIANT holds), which does not count as read
+	DUCKDB_API LogicalType FieldType(idx_t index) const;
 
 	//! The dotted path of this struct, and of one of its fields, for error messages
 	DUCKDB_API const string &Path() const;

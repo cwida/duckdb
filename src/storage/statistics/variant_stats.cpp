@@ -473,7 +473,8 @@ child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats, bool exa
 //! What a node of a shredded layout tree (as ToStruct renders it) describes
 enum class VariantStatsNodeKind { LEAF, LIST, OBJECT };
 
-//! A leaf is {type, stats}, a list {child_stats}, anything else the fields of an object
+//! A leaf is {type, stats} with a type name, a list {child_stats}, anything else the fields of an object (whose
+//! fields may be named type and stats as well, holding nodes rather than a name)
 static VariantStatsNodeKind VariantStatsClassifyNode(const StatsStructFields &fields) {
 	if (fields.FieldCount() == 1 && fields.FieldName(0) == "child_stats") {
 		return VariantStatsNodeKind::LIST;
@@ -481,7 +482,9 @@ static VariantStatsNodeKind VariantStatsClassifyNode(const StatsStructFields &fi
 	if (fields.FieldCount() == 2) {
 		auto &first = fields.FieldName(0);
 		auto &second = fields.FieldName(1);
-		if ((first == "type" && second == "stats") || (first == "stats" && second == "type")) {
+		bool type_first = first == "type" && second == "stats";
+		bool stats_first = first == "stats" && second == "type";
+		if ((type_first || stats_first) && fields.FieldType(type_first ? 0 : 1).id() == LogicalTypeId::VARCHAR) {
 			return VariantStatsNodeKind::LEAF;
 		}
 	}

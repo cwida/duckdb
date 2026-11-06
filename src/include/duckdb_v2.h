@@ -4952,9 +4952,12 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_set_can_have_valid(duckdb_v2_stats_
  * `min_string_length`, `max_string_length` and `total_string_length`. A bound holds its bytes as they are: as a VARCHAR
  * for a VARCHAR column, unless a truncated prefix is not valid UTF-8, in which case it is a BLOB; as a BLOB for a BLOB
  * column. (`stats()` instead renders string bounds as text, with `\xNN` escapes for bytes outside printable ASCII);
- * - LIST and ARRAY: `child_stats`, the statistics struct of the elements;
+ * - LIST: `min_list_length`, `max_list_length` and `total_list_length`, and `child_stats`, the statistics struct of the
+ * elements;
+ * - ARRAY: `child_stats`, the statistics struct of the elements;
  * - STRUCT: `child_stats`, a struct with the statistics of each field by name; a MAP is a LIST of `STRUCT(key, value)`
  * entries, so its keys and values are `child_stats.child_stats.key` and `child_stats.child_stats.value`;
+ * - TUPLE: `child_stats`, a TUPLE with the statistics struct of each element in order (`stats()` shows it as an array);
  * - GEOMETRY: `extent`, a struct with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the geometries have
  * those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types the column holds
  * (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...; `stats()` does not show this field); and the
@@ -4989,7 +4992,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_value(duckdb_v2_stats_handle st
  * is not NULL replaces that statistic, a NULL field or an absent one leaves it unchanged. The result statistics of a
  * stats callback start out unknown, so `{'min': 20, 'max': 30, 'has_null': false}` on an INTEGER column reports exactly
  * those bounds and the absence of NULLs; a nested field such as `child_stats.x` or `extent.z_min` narrows that part
- * only, and a `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as a whole.
+ * only, and a `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as a whole. The
+ * `child_stats` of a TUPLE is a TUPLE (`duckdb_v2_value_create_tuple()`) or a LIST with one statistics struct per
+ * element in order, a NULL element leaving that element's statistics unchanged; an error names an element
+ * `child_stats.element1`, `child_stats.element2`, ...
  *
  * The simplest way to build the value is `duckdb_v2_value_create_struct()` over the fields: for the example above the
  * names `min`, `max` and `has_null` with the values of `duckdb_v2_value_create_int()` and

@@ -3,6 +3,7 @@
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/stats_struct_fields.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/vector.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
@@ -131,9 +132,43 @@ child_list_t<Value> StructStats::ToStruct(const BaseStatistics &stats, bool exac
 	return result;
 }
 
+//! The children of a TUPLE's `child_stats` are positional: a TUPLE as ToStruct renders it, or a LIST as stats() does
+static void SetTupleChildrenFromValue(BaseStatistics &stats, const Value &children, StatsStructFields &fields) {
+	auto plain = StatsStructFields::Plain(children);
+	optional_ptr<const vector<Value>> values;
+	switch (plain.type().id()) {
+	case LogicalTypeId::TUPLE:
+		values = StructValue::GetChildren(plain);
+		break;
+	case LogicalTypeId::LIST:
+		values = ListValue::GetChildren(plain);
+		break;
+	default:
+		fields.Throw("child_stats", StringUtil::Format("expected a tuple of statistics, got a value of type %s",
+		                                               plain.type().ToString()));
+	}
+	auto count = StructType::GetChildCount(stats.GetType());
+	if (values->size() != count) {
+		fields.Throw("child_stats",
+		             StringUtil::Format("expected the statistics of %llu elements, got %llu", count, values->size()));
+	}
+	auto path = fields.FieldPath("child_stats");
+	for (idx_t i = 0; i < count; i++) {
+		auto &child = (*values)[i];
+		if (child.IsNull()) {
+			continue;
+		}
+		StructStats::GetChildStats(stats, i).SetFromStruct(child, path + "." + TupleType::GetChildName(i));
+	}
+}
+
 void StructStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
 	auto children = fields.Get("child_stats");
 	if (!children) {
+		return;
+	}
+	if (stats.GetType().id() == LogicalTypeId::TUPLE) {
+		SetTupleChildrenFromValue(stats, *children, fields);
 		return;
 	}
 	StatsStructFields child_fields(*children, fields.FieldPath("child_stats"));

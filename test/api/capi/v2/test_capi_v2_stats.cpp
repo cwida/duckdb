@@ -137,6 +137,24 @@ std::string StatsQueryError(duckdb_v2_connection_handle conn, std::string_view s
 	return message;
 }
 
+// The owned value in the first cell of a query, or null when the query fails or returns no rows.
+duckdb_v2_value_handle StatsQueryValue(duckdb_v2_connection_handle conn, std::string_view sql) {
+	duckdb_v2_result_handle result = nullptr;
+	if (Query(conn, sql, &result) != DUCKDB_V2_ERROR_NONE) {
+		return nullptr;
+	}
+	duckdb_v2_value_handle value = nullptr;
+	if (auto chunk = StepChunk(result)) {
+		duckdb_v2_vector_handle vec = nullptr;
+		if (duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr) == DUCKDB_V2_ERROR_NONE) {
+			duckdb_v2_vector_get_value(vec, 0, &value, nullptr);
+		}
+		duckdb_v2_data_chunk_destroy(&chunk);
+	}
+	duckdb_v2_result_destroy(&result);
+	return value;
+}
+
 // Tables whose column statistics the engine knows from storage: "t" has no NULLs, "tn" has one.
 void StatsCreateTables(duckdb_v2_connection_handle conn) {
 	StatsExec(conn, "CREATE TABLE t AS SELECT range::INTEGER AS i FROM range(3)");
@@ -618,9 +636,10 @@ DUCKDB_V2_ERROR SetStatsStruct(duckdb_v2_factory_handle factory, duckdb_v2_stats
 struct ValueField;
 
 // A value spelled as a tree, the compact way to write a nested statistics struct in a test case; BuildValue turns it
-// into a value with the typed constructors, duckdb_v2_value_create_struct and duckdb_v2_value_create_list.
+// into a value with the typed constructors, duckdb_v2_value_create_struct, duckdb_v2_value_create_tuple and
+// duckdb_v2_value_create_list.
 struct ValueSpec {
-	enum class Kind { NULL_VALUE, BOOL, INT, DOUBLE, TEXT, STRUCT, LIST };
+	enum class Kind { NULL_VALUE, BOOL, INT, DOUBLE, TEXT, STRUCT, TUPLE, LIST };
 	Kind kind = Kind::NULL_VALUE;
 	bool b = false;
 	int32_t i = 0;
@@ -675,6 +694,12 @@ ValueSpec Arr(std::initializer_list<ValueSpec> items) {
 	spec.items.assign(items.begin(), items.end());
 	return spec;
 }
+ValueSpec Tup(std::initializer_list<ValueSpec> items) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::TUPLE;
+	spec.items.assign(items.begin(), items.end());
+	return spec;
+}
 
 // The owned value a spec describes, or null when it cannot be built; a NULL is an INTEGER NULL, a list takes the type
 // of its first item.
@@ -715,6 +740,17 @@ duckdb_v2_value_handle BuildValue(duckdb_v2_factory_handle factory, const ValueS
 		if (ok) {
 			duckdb_v2_value_create_struct(factory, names.ptrs(), names.lengths(), children.data(), children.size(),
 			                              &value, err);
+		}
+		break;
+	}
+	case ValueSpec::Kind::TUPLE: {
+		bool ok = true;
+		for (auto &item : spec.items) {
+			children.push_back(BuildValue(factory, item, err));
+			ok = ok && children.back();
+		}
+		if (ok) {
+			duckdb_v2_value_create_tuple(factory, children.data(), children.size(), &value, err);
 		}
 		break;
 	}
@@ -897,24 +933,29 @@ void DeleteMinMaxGlobal(void *p) {
 	delete static_cast<MinMaxGlobal *>(p);
 }
 
-// Columns: i INTEGER, j INTEGER, s VARCHAR
+// Columns: i INTEGER, j INTEGER, s VARCHAR, t TUPLE(INTEGER, VARCHAR)
 void MinMaxBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle result,
                   duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_logical_type_handle integer = nullptr;
 	duckdb_v2_logical_type_handle varchar = nullptr;
-	if (duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
+	duckdb_v2_logical_type_handle pair = nullptr;
+	std::string_view pair_text = "TUPLE(INTEGER, VARCHAR)";
+	if (duckdb_v2_context_get_factory(context, &factory, err) == DUCKDB_V2_ERROR_NONE &&
 	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
-	                                          &integer, err) != DUCKDB_V2_ERROR_NONE ||
+	                                          &integer, err) == DUCKDB_V2_ERROR_NONE &&
 	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, nullptr, nullptr, nullptr, 0,
-	                                          &varchar, err) != DUCKDB_V2_ERROR_NONE) {
-		return;
+	                                          &varchar, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_factory_create_type_from_text(factory, pair_text.data(), pair_text.size(), &pair, err) ==
+	        DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_table_function_bind_add_result_column(result, "i", 1, integer, err);
+		duckdb_v2_table_function_bind_add_result_column(result, "j", 1, integer, err);
+		duckdb_v2_table_function_bind_add_result_column(result, "s", 1, varchar, err);
+		duckdb_v2_table_function_bind_add_result_column(result, "t", 1, pair, err);
 	}
-	duckdb_v2_table_function_bind_add_result_column(result, "i", 1, integer, err);
-	duckdb_v2_table_function_bind_add_result_column(result, "j", 1, integer, err);
-	duckdb_v2_table_function_bind_add_result_column(result, "s", 1, varchar, err);
 	duckdb_v2_logical_type_destroy(&integer);
 	duckdb_v2_logical_type_destroy(&varchar);
+	duckdb_v2_logical_type_destroy(&pair);
 }
 
 void MinMaxInitGlobalCb(duckdb_v2_table_function_init_global_info_handle info, duckdb_v2_context_handle,
@@ -940,7 +981,7 @@ void MinMaxExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_cont
 	auto &global = *static_cast<MinMaxGlobal *>(global_ptr);
 	idx_t produced = global.produced < 3 ? 1 : 0;
 	global.produced += produced;
-	for (idx_t column = 0; column < 3; column++) {
+	for (idx_t column = 0; column < 4; column++) {
 		duckdb_v2_vector_handle vec = nullptr;
 		if (duckdb_v2_data_chunk_get_vector(chunk, column, &vec, err) != DUCKDB_V2_ERROR_NONE ||
 		    duckdb_v2_vector_set_size(vec, produced, err) != DUCKDB_V2_ERROR_NONE) {
@@ -953,16 +994,29 @@ void MinMaxExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_cont
 				if (duckdb_v2_vector_get_data_mutable(vec, &raw, err) == DUCKDB_V2_ERROR_NONE) {
 					static_cast<int32_t *>(raw)[row] = 7;
 				}
-			} else {
-				// Every row holds 'zebra' - a value after the reported maximum 'pear' - or the five characters a\x41.
-				duckdb_v2_value_handle text_value = nullptr;
-				std::string_view text = mode && mode->backslash ? "a\\x41" : "zebra";
-				if (duckdb_v2_value_create_varchar(factory, text.data(), text.size(), &text_value, err) ==
-				    DUCKDB_V2_ERROR_NONE) {
-					duckdb_v2_vector_set_value(vec, row, text_value, err);
-				}
-				duckdb_v2_value_destroy(&text_value);
+				continue;
 			}
+			// Every row holds 'zebra' - a value after the reported maximum 'pear' - or the five characters a\x41; the
+			// TUPLE column holds (7, <that text>).
+			duckdb_v2_value_handle text_value = nullptr;
+			duckdb_v2_value_handle seven = nullptr;
+			duckdb_v2_value_handle pair = nullptr;
+			std::string_view text = mode && mode->backslash ? "a\\x41" : "zebra";
+			if (duckdb_v2_value_create_varchar(factory, text.data(), text.size(), &text_value, err) !=
+			    DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			if (column == 2) {
+				duckdb_v2_vector_set_value(vec, row, text_value, err);
+			} else if (duckdb_v2_value_create_int(factory, 7, &seven, err) == DUCKDB_V2_ERROR_NONE) {
+				const duckdb_v2_value_handle elements[] = {seven, text_value};
+				if (duckdb_v2_value_create_tuple(factory, elements, 2, &pair, err) == DUCKDB_V2_ERROR_NONE) {
+					duckdb_v2_vector_set_value(vec, row, pair, err);
+				}
+			}
+			duckdb_v2_value_destroy(&pair);
+			duckdb_v2_value_destroy(&seven);
+			duckdb_v2_value_destroy(&text_value);
 		}
 	}
 }
@@ -995,6 +1049,17 @@ void MinMaxStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_co
 		} else {
 			g_mm.set_rc = SetTextBounds(factory, result, "apple", "pear", err);
 		}
+		g_mm.result_text = StatsText(result);
+		return;
+	}
+	if (column == 3) {
+		// The TUPLE column: the statistics of its elements in order, as a TUPLE
+		g_mm.set_rc = SetStatsSpec(
+		    factory, result,
+		    Obj({{"child_stats", Tup({Obj({{"min", Int(20)}, {"max", Int(30)}, {"has_null", Bool(false)}}),
+		                              Obj({{"min", Str("apple")}, {"max", Str("pear")}, {"has_null", Bool(false)}})})},
+		         {"has_null", Bool(false)}}),
+		    err);
 		g_mm.result_text = StatsText(result);
 		return;
 	}
@@ -1130,6 +1195,24 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	// 'banana' lies within the bounds: the scan runs
 	g_mm = MinMaxObserved {};
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE s > 'banana'") == 3);
+	REQUIRE(g_mm.exec_calls > 0);
+
+	// The TUPLE column holds (7, 'zebra'); the statistics of its elements bound them to [20, 30] and ['apple', 'pear'],
+	// so a filter on either element is answered from them.
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE t[1] < 15") == 0);
+	REQUIRE(g_mm.set_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_mm.column_index == 3);
+	REQUIRE(g_mm.result_text == "{'child_stats': ({'min': 20, 'max': 30, 'has_null': false, 'has_no_null': true}, "
+	                            "{'min': apple, 'max': pear, 'has_unicode': true, 'has_null': false, 'has_no_null': "
+	                            "true}), 'has_null': false, 'has_no_null': true}");
+	REQUIRE(g_mm.exec_calls == 0);
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE t[2] > 'tiger'") == 0);
+	REQUIRE(g_mm.exec_calls == 0);
+	// 25 lies within the bounds of the first element: the scan runs
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE t[1] < 25") == 3);
 	REQUIRE(g_mm.exec_calls > 0);
 
 	// A string bound is the bytes it is given: the backslash in a\x41 is a character, not an escape, so the rows that
@@ -1684,6 +1767,33 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	     "{'child_stats': {'child_stats': {'key': {'has_unicode': true, 'has_null': true, 'has_no_null': true}, "
 	     "'value': {'min': 0, 'max': 7, 'has_null': true, 'has_no_null': true}}, 'has_null': true, "
 	     "'has_no_null': true}, 'has_null': true, 'has_no_null': true}"},
+	    // the elements of a TUPLE are positional: a TUPLE of statistics, a NULL element leaving one unchanged
+	    {"TUPLE(INTEGER, VARCHAR)",
+	     Obj({{"child_stats", Tup({Obj({{"min", Int(1)}, {"max", Int(9)}, {"has_null", Bool(false)}}),
+	                               Obj({{"min", Str("d")}, {"max", Str("m")}})})}}),
+	     "{'child_stats': ({'min': 1, 'max': 9, 'has_null': false, 'has_no_null': true}, {'min': d, 'max': m, "
+	     "'has_unicode': true, 'has_null': true, 'has_no_null': true}), 'has_null': true, 'has_no_null': true}"},
+	    {"TUPLE(INTEGER, VARCHAR)", Obj({{"child_stats", Tup({Null(), Obj({{"min", Str("d")}, {"max", Str("m")}})})}}),
+	     "{'child_stats': ({'has_null': true, 'has_no_null': true}, {'min': d, 'max': m, 'has_unicode': true, "
+	     "'has_null': true, 'has_no_null': true}), 'has_null': true, 'has_no_null': true}"},
+	    // a LIST of statistics is positional as well (stats() renders the elements as an array)
+	    {"TUPLE(INTEGER, INTEGER)",
+	     Obj({{"child_stats",
+	           Arr({Obj({{"min", Int(2)}, {"max", Int(3)}}), Obj({{"min", Int(5)}, {"max", Int(6)}})})}}),
+	     "{'child_stats': ({'min': 2, 'max': 3, 'has_null': true, 'has_no_null': true}, {'min': 5, 'max': 6, "
+	     "'has_null': true, 'has_no_null': true}), 'has_null': true, 'has_no_null': true}"},
+	    // a TUPLE inside a STRUCT, and a LIST of single-element TUPLEs
+	    {"STRUCT(a TUPLE(INTEGER, DOUBLE))",
+	     Obj({{"child_stats",
+	           Obj({{"a", Obj({{"child_stats", Tup({Obj({{"min", Int(1)}, {"max", Int(2)}}), Null()})}})}})}}),
+	     "{'child_stats': {'a': {'child_stats': ({'min': 1, 'max': 2, 'has_null': true, 'has_no_null': true}, "
+	     "{'has_null': true, 'has_no_null': true}), 'has_null': true, 'has_no_null': true}}, 'has_null': true, "
+	     "'has_no_null': true}"},
+	    {"TUPLE(INTEGER)[]",
+	     Obj({{"child_stats",
+	           Obj({{"child_stats", Tup({Obj({{"min", Int(4)}, {"max", Int(8)}, {"has_null", Bool(false)}})})}})}}),
+	     "{'child_stats': {'child_stats': ({'min': 4, 'max': 8, 'has_null': false, 'has_no_null': true},), "
+	     "'has_null': true, 'has_no_null': true}, 'has_null': true, 'has_no_null': true}"},
 	    {"GEOMETRY",
 	     Obj({{"extent", Obj({{"x_min", Int(0)},
 	                          {"x_max", Int(10)},
@@ -1711,6 +1821,11 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	     "{'shredding_state': SHREDDED, 'partially_shredded': {'child_stats': {'s': {'type': VARCHAR, 'stats': "
 	     "{'min': a, 'max': c, 'has_unicode': true, 'has_null': true, 'has_no_null': true}}}}, 'has_null': true, "
 	     "'has_no_null': true}"},
+	    // objects whose fields are named type and stats: their values are nodes, not a type name
+	    {"VARIANT", Obj({{"fully_shredded", Obj({{"type", s_leaf}, {"stats", n_leaf}})}}),
+	     "{'shredding_state': SHREDDED, 'fully_shredded': {'stats': {'type': BIGINT, 'stats': {'min': 1, 'max': 9, "
+	     "'has_null': false, 'has_no_null': true}}, 'type': {'type': VARCHAR, 'stats': {'min': a, 'max': c, "
+	     "'has_unicode': true, 'has_null': true, 'has_no_null': true}}}, 'has_null': true, 'has_no_null': true}"},
 	};
 	for (auto &test : cases) {
 		auto stats = StatsOfText(fx.factory, test.type, nullptr);
@@ -1737,6 +1852,15 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	auto again = CopyThroughValue(fx.factory, geometry, "GEOMETRY");
 	REQUIRE(StatsText(again) == unknown_geometry);
 	duckdb_v2_stats_destroy(&again);
+	// Unknown TUPLE statistics round-trip as well
+	auto tuple = StatsOfText(fx.factory, "TUPLE(BIGINT, VARCHAR)", nullptr);
+	auto unknown_tuple = "{'child_stats': ({'has_null': true, 'has_no_null': true}, {'has_unicode': true, 'has_null': "
+	                     "true, 'has_no_null': true}), 'has_null': true, 'has_no_null': true}";
+	REQUIRE(StatsText(tuple) == unknown_tuple);
+	again = CopyThroughValue(fx.factory, tuple, "TUPLE(BIGINT, VARCHAR)");
+	REQUIRE(StatsText(again) == unknown_tuple);
+	duckdb_v2_stats_destroy(&again);
+	duckdb_v2_stats_destroy(&tuple);
 
 	// Malformed parts are refused with a message naming the field, and leave the statistics as they were.
 	struct Malformed {
@@ -1753,6 +1877,14 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	    {"STRUCT(a INTEGER)", Obj({{"child_stats", Obj({{"b", Obj({{"min", Int(1)}})}})}}), "'child_stats.b'"},
 	    {"STRUCT(a INTEGER)", Obj({{"child_stats", Obj({{"a", Obj({{"min", Int(1)}, {"other", Int(2)}})}})}}),
 	     "'child_stats.a.other'"},
+	    // a TUPLE takes one statistics struct per element, by position
+	    {"TUPLE(INTEGER, VARCHAR)", Obj({{"child_stats", Tup({Obj({{"min", Int(1)}})})}}), "'child_stats'"},
+	    {"TUPLE(INTEGER, VARCHAR)", Obj({{"child_stats", Int(5)}}), "'child_stats'"},
+	    {"TUPLE(INTEGER, VARCHAR)", Obj({{"child_stats", Obj({{"element1", Obj({{"min", Int(1)}})}})}}),
+	     "'child_stats'"},
+	    {"TUPLE(INTEGER, VARCHAR)",
+	     Obj({{"child_stats", Tup({Obj({{"min", Int(1)}}), Obj({{"min", Str("a")}, {"other", Int(2)}})})}}),
+	     "'child_stats.element2.other'"},
 	    {"DATE", Obj({{"min", Str("2024-01-01")}, {"max", Int(20241231)}}), "'max'"},
 	    {"GEOMETRY", Obj({{"extent", Obj({{"x_min", Str("left")}})}}), "'extent.x_min'"},
 	    {"GEOMETRY", Obj({{"extent", Obj({{"w_min", Int(1)}})}}), "'extent.w_min'"},
@@ -1787,6 +1919,51 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 		duckdb_v2_stats_destroy(&stats);
 	}
 	duckdb_v2_stats_destroy(&geometry);
+}
+
+TEST_CASE("V2 stats: the output of stats() sets the statistics it shows", "[capi_v2][stats][statistics]") {
+	EnvFixture fx;
+	StatsExec(fx.conn,
+	          "CREATE TABLE pairs AS SELECT row(i, 'x' || i) AS r, {'n': i, 'p': row(i)} AS s FROM range(10) t(i)");
+
+	// stats() renders statistics as a VARIANT, with the elements of a TUPLE's child_stats as an array
+	struct Shown {
+		const char *column;
+		const char *type;
+		const char *expected;
+	};
+	const Shown cases[] = {
+	    {"r", "TUPLE(INTEGER, VARCHAR)",
+	     "{'child_stats': ({'min': 0, 'max': 9, 'has_null': false, 'has_no_null': true}, {'min': x0, 'max': x9, "
+	     "'has_unicode': false, 'min_string_length': 2, 'max_string_length': 2, 'total_string_length': 20, "
+	     "'has_null': false, 'has_no_null': true}), 'has_null': false, 'has_no_null': true}"},
+	    {"s", "STRUCT(n INTEGER, p TUPLE(INTEGER))",
+	     "{'child_stats': {'n': {'min': 0, 'max': 9, 'has_null': false, 'has_no_null': true}, 'p': {'child_stats': "
+	     "({'min': 0, 'max': 9, 'has_null': false, 'has_no_null': true},), 'has_null': false, 'has_no_null': true}}, "
+	     "'has_null': false, 'has_no_null': true}"},
+	};
+	for (auto &test : cases) {
+		auto shown = StatsQueryValue(fx.conn, std::string("SELECT stats(") + test.column + ") FROM pairs LIMIT 1");
+		REQUIRE(shown != nullptr);
+		REQUIRE(TypeIdOf(shown) == DUCKDB_V2_LOGICAL_TYPE_ID_VARIANT);
+		auto stats = StatsOfText(fx.factory, test.type, nullptr);
+		REQUIRE(stats != nullptr);
+		duckdb_v2_error_info_handle err = nullptr;
+		auto rc = duckdb_v2_stats_set_value(stats, shown, &err);
+		std::string message;
+		if (err) {
+			const char *text = nullptr;
+			idx_t text_length = 0;
+			duckdb_v2_error_info_get_text(err, &text, &text_length);
+			message = std::string(text, text_length);
+		}
+		duckdb_v2_error_info_destroy(&err);
+		INFO(test.column << ": " << message);
+		REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(StatsText(stats) == test.expected);
+		duckdb_v2_stats_destroy(&stats);
+		duckdb_v2_value_destroy(&shown);
+	}
 }
 
 } // namespace test_capi_v2

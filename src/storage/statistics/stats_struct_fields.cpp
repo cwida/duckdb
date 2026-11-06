@@ -65,6 +65,10 @@ optional_ptr<const Value> StatsStructFields::FieldValue(idx_t index) {
 	return child;
 }
 
+LogicalType StatsStructFields::FieldType(idx_t index) const {
+	return Plain(StructValue::GetChildren(value)[index]).type();
+}
+
 const string &StatsStructFields::Path() const {
 	return path;
 }
