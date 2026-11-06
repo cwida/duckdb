@@ -203,7 +203,8 @@ if("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang" AND NOT MSVC)
   set(CMAKE_CXX_FLAGS_RELEASE
       "${CMAKE_CXX_FLAGS_RELEASE} -ffunction-sections -fdata-sections")
 elseif(WIN32 AND MSVC)
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Gy")
+  # clang-cl sets MSVC=TRUE and takes this branch, so /Gw is needed here too
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Gy /Gw")
 endif()
 
 option(SHADOW_FORBIDDEN_FUNCTIONS

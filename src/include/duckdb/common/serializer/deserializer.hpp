@@ -9,6 +9,8 @@
 #pragma once
 
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/optional.hpp"
+#include "duckdb/common/serializer/deserialization_policy.hpp"
 #include "duckdb/common/serializer/serialization_data.hpp"
 #include "duckdb/common/serializer/serialization_traits.hpp"
 #include "duckdb/common/identifier.hpp"
@@ -27,6 +29,10 @@ class Deserializer {
 protected:
 	bool deserialize_enum_from_string = false;
 	SerializationData data;
+
+private:
+	//! Without a policy, no identifiers are blocked.
+	optional<DeserializationPolicy> policy;
 
 public:
 	virtual ~Deserializer() {
@@ -56,6 +62,18 @@ public:
 
 public:
 	virtual bool CanDeserializeProperty(const field_id_t field_id, const char *tag) = 0;
+
+	void SetPolicy(const DeserializationPolicy &policy_p) {
+		policy = policy_p;
+	}
+
+	//! Reject identifiers disallowed by the active policy.
+	template <class T>
+	void CheckAllowed(T value) const {
+		if (policy && !policy->IsAllowed(value)) {
+			throw SerializationException("Deserialization of %s is not allowed", EnumUtil::ToString(value));
+		}
+	}
 
 	// Read into an existing value
 	template <typename T>

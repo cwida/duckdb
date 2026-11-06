@@ -134,7 +134,7 @@ void InMemoryTableDataWriter::FinalizeTable(const TableStatistics &global_stats,
 	// nop: no need to write anything
 }
 
-unique_ptr<RowGroupWriter> InMemoryTableDataWriter::GetRowGroupWriter(RowGroup &row_group) {
+unique_ptr<RowGroupWriter> InMemoryTableDataWriter::GetRowGroupWriter() {
 	return make_uniq<InMemoryRowGroupWriter>(*this, table, checkpoint_manager.GetPartialBlockManager(),
 	                                         checkpoint_manager);
 }

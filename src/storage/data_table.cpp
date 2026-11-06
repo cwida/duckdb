@@ -27,6 +27,7 @@
 #include "duckdb/planner/expression_binder/check_binder.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -1587,6 +1588,39 @@ unique_ptr<BlockingSample> DataTable::GetSample() {
 //===--------------------------------------------------------------------===//
 // Checkpoint
 //===--------------------------------------------------------------------===//
+namespace {
+
+class PendingRowGroupCollectionPublication final : public PendingPublication {
+public:
+	PendingRowGroupCollectionPublication(shared_ptr<DataTable> table_p, CollectionCheckpointResult result_p,
+	                                     TableStatistics checkpoint_stats_p)
+	    : table(std::move(table_p)), result(std::move(result_p)), checkpoint_stats(std::move(checkpoint_stats_p)) {
+		D_ASSERT(table);
+	}
+
+	const TableStatistics &GetStatistics() const {
+		return checkpoint_stats;
+	}
+
+	void Publish() override {
+		table->PublishCheckpoint(std::move(result), checkpoint_stats);
+	}
+
+private:
+	//! Keep the collection's owner alive until the prepared state is released.
+	shared_ptr<DataTable> table;
+	CollectionCheckpointResult result;
+	TableStatistics checkpoint_stats;
+};
+
+} // namespace
+
+void DataTable::PublishCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats) {
+	lock_guard<mutex> lock(append_lock);
+	row_groups->InstallCheckpoint(std::move(result), checkpoint_stats);
+	row_groups->SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
+}
+
 void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 	TableStatistics global_stats;
 	CollectionCheckpointSnapshot snapshot;
@@ -1594,21 +1628,29 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 		lock_guard<mutex> lock(append_lock);
 		snapshot = row_groups->SnapshotForCheckpoint(writer);
 	}
+
 	// checkpoint each individual row group
 	auto result = row_groups->Checkpoint(writer, global_stats, snapshot);
-	{
-		lock_guard<mutex> lock(append_lock);
-		row_groups->InstallCheckpoint(std::move(result), global_stats);
-		row_groups->SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
-	}
-	if (writer.GetRebuildIndexes()) {
-		MetricsTimer timer;
-		auto profiler = writer.GetContext().TryGetQueryProfiler();
-		if (profiler) {
-			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
+	auto publication =
+	    make_uniq<PendingRowGroupCollectionPublication>(shared_from_this(), std::move(result), std::move(global_stats));
+	const auto &checkpoint_stats = publication->GetStatistics();
+	if (writer.CanDeferPublication()) {
+		D_ASSERT(!writer.RowIdsChanged() ||
+		         writer.GetCheckpointOptions().type != CheckpointType::CONCURRENT_CHECKPOINT);
+		D_ASSERT(!writer.GetRebuildIndexes());
+		writer.AddPendingPublication(std::move(publication));
+	} else {
+		// we cannot defer the publish of the collection when rebuilding needs it immediately
+		publication->Publish();
+		if (writer.GetRebuildIndexes()) {
+			MetricsTimer timer;
+			auto profiler = writer.GetContext().TryGetQueryProfiler();
+			if (profiler) {
+				timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
+			}
+			RebuildIndexes();
+			timer.EndTimer();
 		}
-		RebuildIndexes();
-		timer.EndTimer();
 	}
 
 	const auto storage_version = serializer.GetOptions().storage_compatibility.storage_version;
@@ -1619,7 +1661,7 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 		index_infos = info->GetIndexes().Checkpoint(*index_writer);
 	}
 
-	writer.FinalizeTable(global_stats, *info, *row_groups, index_infos, serializer);
+	writer.FinalizeTable(checkpoint_stats, *info, *row_groups, index_infos, serializer);
 }
 
 void DataTable::CommitDropColumn(const idx_t column_index, CommitDropState &drop_state) {
