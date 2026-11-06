@@ -1,0 +1,5 @@
+{
+  "description": "Run with DuckDB warnings escalated to errors, so tests cannot rely on deprecated behavior (e.g. PRAGMA enable_verification).",
+  "warnings_as_errors": "true",
+  "skip_compiled": "true"
+}

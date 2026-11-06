@@ -289,6 +289,15 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 	return linked_result;
 }
 
+//! Make any statement that logs a warning fail with that warning as its error
+static void EnableWarningsAsErrors(DuckDB &db) {
+	Connection con(db);
+	auto result = con.Query("SET logging_level='WARNING'; SET enable_logging=true; SET warnings_as_errors=true;");
+	if (result->HasError()) {
+		result->ThrowError("Failed to enable warnings_as_errors: ");
+	}
+}
+
 NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, bool load_extensions) {
 	NewDatabaseConnection result;
 	// a prefixed path (ducklake:...) loads its extension inside the DuckDB constructor, before LoadExtension can run
@@ -308,6 +317,9 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 		auto &test_config = TestConfiguration::Get();
 		for (auto ext : test_config.ExtensionToBeLoadedOnLoad()) {
 			SQLLogicTestRunner::LoadExtension(*result.db, ext);
+		}
+		if (test_config.GetWarningsAsErrors()) {
+			EnableWarningsAsErrors(*result.db);
 		}
 	} catch (std::exception &ex) {
 		config->options.extension_directories = saved_extension_directories;

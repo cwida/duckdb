@@ -50,11 +50,17 @@ static void VerifyFileStoragePath(LogManager &log_manager, const string &storage
 static void EnableLogging(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto bind_data = data.bind_data->Cast<EnableLoggingBindData>();
 
-	DUCKDB_LOG_WARNING(context, "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
-	                            "To continue printing warnings to the console, set storage='shell_log_storage'.\n"
-	                            "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
-
 	auto &log_manager = context.db->GetLogManager();
+
+	// only moving away from the shell's storage stops warnings from being printed in the CLI
+	static constexpr const char *SHELL_LOG_STORAGE = "shell_log_storage";
+	if (StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_STORAGE) &&
+	    !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_STORAGE)) {
+		DUCKDB_LOG_WARNING(context,
+		                   "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
+		                   "To continue printing warnings to the console, set storage='shell_log_storage'.\n"
+		                   "For more info see https://duckdb.org/docs/current/operations_manual/logging/overview.")
+	}
 
 	// a prepared call can run after the storage it was bound against changed
 	VerifyFileStoragePath(log_manager, bind_data.config.storage, bind_data.storage_config);

@@ -89,3 +89,14 @@ def test_changing_logging_settings(shell, tmp_path):
     print(result.stderr)
     result.check_stdout("WARNING:")
     result.check_stdout("The logging settings have been changed")
+
+
+def test_keeping_shell_log_storage_does_not_warn(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CALL enable_logging(level = 'warning');")
+        .statement("CALL enable_logging(level = 'info', storage = 'shell_log_storage');")
+    )
+
+    result = test.run()
+    assert "The logging settings have been changed" not in result.stdout
