@@ -60,7 +60,9 @@ void IsFormatExtensionKnown(const string &format) {
 identifier_map_t<CopyOption> Binder::GetFullCopyOptionsList(const CopyFunction &function, CopyOptionMode mode) {
 	identifier_map_t<CopyOption> copy_options;
 	CopyOptionsInput input(copy_options);
-	function.copy_options(context, input);
+	if (function.copy_options) {
+		function.copy_options(context, input);
+	}
 
 	// first erase all options that don't match this type
 	if (mode != CopyOptionMode::READ_WRITE) {
@@ -805,10 +807,8 @@ void Binder::BindCopyFormat(CopyInfo &info) {
 }
 
 void Binder::BindCopyOptions(CopyInfo &info, const CopyFunction &function) {
-	identifier_map_t<CopyOption> copy_options;
-	if (function.copy_options) {
-		copy_options = GetFullCopyOptionsList(function, CopyOptionMode::READ_WRITE);
-	}
+	// formats without their own option list still take the generic ones, such as PARTITION_BY
+	auto copy_options = GetFullCopyOptionsList(function, CopyOptionMode::READ_WRITE);
 	unique_ptr<ParsedExpression> partition_path;
 	for (auto &[option_name, option_expr] : info.parsed_options) {
 		if (option_name == "partition_path") {
