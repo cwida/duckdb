@@ -119,13 +119,34 @@ struct StrpTimeBindData : public FunctionData {
 };
 
 template <typename T>
-inline T StrpTimeResult(StrpTimeFormat::ParseResult &parsed) {
-	return parsed.ToTimestamp();
+inline bool StrpTimeResult(StrpTimeFormat::ParseResult &parsed, T &result) {
+	if (parsed.is_special) {
+		result = parsed.ToTimestamp();
+		return true;
+	}
+	return parsed.TryToTimestamp(result);
 }
 
 template <>
-inline timestamp_ns_t StrpTimeResult(StrpTimeFormat::ParseResult &parsed) {
-	return parsed.ToTimestampNS();
+inline bool StrpTimeResult(StrpTimeFormat::ParseResult &parsed, timestamp_ns_t &result) {
+	if (parsed.is_special) {
+		result = parsed.ToTimestampNS();
+		return true;
+	}
+	return parsed.TryToTimestampNS(result);
+}
+
+static void SetStrpTimeConversionError(StrpTimeFormat::ParseResult &parsed, const LogicalType &type) {
+	date_t date;
+	if (parsed.TryToDate(date)) {
+		parsed.error_message = "Timestamp out of range for " + type.ToString();
+	} else {
+		// Every year the parse yields is inside the DATE range and every month is 1 to 12, so only the day can be
+		// wrong.
+		parsed.error_message = StringUtil::Format("Day out of range for the month, expected a value between 1 and %d",
+		                                          Date::MonthDays(parsed.data[0], parsed.data[1]));
+	}
+	parsed.error_position = 0;
 }
 
 template <typename T>
@@ -154,13 +175,18 @@ struct StrpTimeFunction {
 			return;
 		}
 		UnaryExecutor::Execute<string_t, T>(args.data[0], result, [&](string_t input) {
-			StrpTimeFormat::ParseResult result;
+			StrpTimeFormat::ParseResult parsed;
+			T value;
 			for (auto &format : info.formats) {
-				if (format.Parse(input, result)) {
-					return StrpTimeResult<T>(result);
+				if (!format.Parse(input, parsed)) {
+					continue;
 				}
+				if (StrpTimeResult<T>(parsed, value)) {
+					return value;
+				}
+				SetStrpTimeConversionError(parsed, result.GetType());
 			}
-			throw InvalidInputException(result.FormatError(input, info.formats[0].format_specifier));
+			throw InvalidInputException(parsed.FormatError(input, info.formats.back().format_specifier));
 		});
 	}
 

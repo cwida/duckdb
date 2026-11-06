@@ -112,10 +112,8 @@ struct ICUDateFunc {
 	static bool TryGetTime(Calendar *calendar, uint64_t micros, timestamp_tz_t &result);
 	//! Gets the timestamp from the calendar, throwing if it is not in range.
 	static timestamp_tz_t GetTime(Calendar *calendar, uint64_t micros = 0);
-	//! Gets the timestamp from the calendar, throwing if it is not in range.
+	//! Gets the timestamp from the calendar, returning false if it is not in range.
 	static bool TryGetTimeNS(Calendar *calendar, uint64_t nanos, timestamp_tz_ns_t &result);
-	//! Gets the timestamp from the calendar, throwing if it is not in range.
-	static timestamp_tz_ns_t GetTimeNS(Calendar *calendar, uint64_t micros = 0);
 	//! Gets the timestamp from the calendar, assuming it is in range.
 	static timestamp_tz_t GetTimeUnsafe(Calendar *calendar, uint64_t micros = 0);
 	//! Sets the calendar to the timestamp, returning the unused µs part

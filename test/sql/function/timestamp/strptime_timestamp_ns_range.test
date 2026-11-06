@@ -6,7 +6,10 @@
 statement error
 SELECT strptime('2262-04-11 23:47:16.854775807', '%Y-%m-%d %H:%M:%S.%n');
 ----
-<REGEX>:Conversion Error.*
+Invalid Input Error: Could not parse string "2262-04-11 23:47:16.854775807" according to format specifier "%Y-%m-%d %H:%M:%S.%n"
+2262-04-11 23:47:16.854775807
+^
+Error: Timestamp out of range for TIMESTAMP_NS
 
 query I
 SELECT try_strptime('2262-04-11 23:47:16.854775807', '%Y-%m-%d %H:%M:%S.%n');
@@ -27,7 +30,10 @@ true
 statement error
 SELECT strptime('1677-09-21 00:12:43.145224193', '%Y-%m-%d %H:%M:%S.%n');
 ----
-<REGEX>:Conversion Error.*
+Invalid Input Error: Could not parse string "1677-09-21 00:12:43.145224193" according to format specifier "%Y-%m-%d %H:%M:%S.%n"
+1677-09-21 00:12:43.145224193
+^
+Error: Timestamp out of range for TIMESTAMP_NS
 
 query I
 SELECT strptime('2020-01-01 10:00:00.123456789', '%Y-%m-%d %H:%M:%S.%n')::VARCHAR;

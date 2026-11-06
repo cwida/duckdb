@@ -179,14 +179,6 @@ bool ICUDateFunc::TryGetTimeNS(Calendar *calendar, uint64_t nanos, timestamp_tz_
 	return true;
 }
 
-timestamp_tz_ns_t ICUDateFunc::GetTimeNS(Calendar *calendar, uint64_t nanos) {
-	timestamp_tz_ns_t result;
-	if (!TryGetTimeNS(calendar, nanos, result)) {
-		throw ConversionException("ICU date overflows timestamp_ns range");
-	}
-	return result;
-}
-
 uint64_t ICUDateFunc::SetTime(Calendar *calendar, timestamp_tz_t date) {
 	int64_t millis = date.value / Interval::MICROS_PER_MSEC;
 	int64_t micros = date.value % Interval::MICROS_PER_MSEC;
