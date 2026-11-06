@@ -72,6 +72,8 @@ void DuckDBLogContextFun::RegisterFunction(BuiltinFunctions &set) {
 	auto fun =
 	    TableFunction("duckdb_log_contexts", {}, DuckDBLogContextFunction, DuckDBLogContextBind, DuckDBLogContextInit);
 	fun.bind_replace = DuckDBLogContextsBindReplace;
+	// the log storage grows while a query executes
+	fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fun);
 }
 

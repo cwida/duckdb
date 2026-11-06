@@ -304,6 +304,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		    .Add("step", LogicalType::UINTEGER);
 	});
 	dbgen_func.call_return_type = StatementReturnType::NOTHING;
+	// creates and fills tables per execution
+	dbgen_func.stability = FunctionStability::VOLATILE;
 	dbgen_func.table_scan_progress = DbgenProgress;
 	loader.RegisterFunction(dbgen_func);
 

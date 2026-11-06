@@ -3,6 +3,7 @@
 #include "duckdb/common/shared_ptr_ipp.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -20,7 +21,6 @@
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
-#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include <utility>
@@ -493,24 +493,40 @@ unordered_set<column_t> TableIndexList::GetIndexedColumns() const {
 	return column_ids;
 }
 
+namespace {
+
+class PendingIndexPublication final : public PendingPublication {
+public:
+	PendingIndexPublication(shared_ptr<IndexEntry> entry_p, unique_ptr<BoundIndex> shadow_index_p)
+	    : entry(std::move(entry_p)), shadow_index(std::move(shadow_index_p)) {
+		D_ASSERT(entry);
+		D_ASSERT(shadow_index);
+	}
+
+	void Publish() override {
+		D_ASSERT(shadow_index);
+		entry->InstallShadow(std::move(shadow_index));
+	}
+
+private:
+	shared_ptr<IndexEntry> entry;
+	unique_ptr<BoundIndex> shadow_index;
+};
+
+} // namespace
+
 vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndexWriter &writer) {
 	annotated_lock_guard lock(index_entries_lock);
 
-	vector<unique_ptr<BoundIndex>> shadows;
 	vector<shared_ptr<const IndexStorageInfo>> infos;
-	shadows.reserve(index_entries.size());
 	infos.reserve(index_entries.size());
 
 	for (const auto &entry : index_entries) {
 		auto checkpoint = entry->Checkpoint(writer);
-		shadows.push_back(std::move(checkpoint.shadow_index));
+		if (checkpoint.shadow_index) {
+			writer.AddPendingPublication(make_uniq<PendingIndexPublication>(entry, std::move(checkpoint.shadow_index)));
+		}
 		infos.push_back(std::move(checkpoint.storage_info));
-	}
-
-	writer.Flush();
-
-	for (idx_t i = 0; i < index_entries.size(); i++) {
-		index_entries[i]->InstallShadow(std::move(shadows[i]));
 	}
 
 	return infos;

@@ -1,0 +1,327 @@
+# name: test/sql/prepared/prepare_list_sort_untyped_parameter.test
+# description: PREPARE with an untyped parameter passed to a function whose parameter type is not complete, such as list_sort's ANY[]
+# group: [prepared]
+
+# a comparison with the sorted element, which took ANY as the common type and folded a cast to it
+statement ok
+PREPARE q1 AS SELECT list_sort($1)[1] > 0;
+
+query I
+EXECUTE q1([3, 1, 2]);
+----
+true
+
+statement ok
+PREPARE q2 AS SELECT list_sort($1)[1] = 0;
+
+query I
+EXECUTE q2([3, 1, 2]);
+----
+false
+
+statement ok
+PREPARE q3 AS SELECT TRY(list_sort($1)[1] > 0);
+
+query I
+EXECUTE q3([3, 1, 2]);
+----
+true
+
+# the shapes of duckdb/duckdb#27938
+statement ok
+PREPARE q4 AS SELECT list_min(list_sort($1));
+
+query I
+EXECUTE q4([3, 1, 2]);
+----
+1
+
+statement ok
+PREPARE q5 AS SELECT 1 > ANY(list_sort($1));
+
+query I
+EXECUTE q5([3, 1, 2]);
+----
+false
+
+statement ok
+PREPARE q6 AS SELECT CASE WHEN false THEN list_sort($1) END;
+
+query I
+EXECUTE q6([3, 1, 2]);
+----
+NULL
+
+statement ok
+PREPARE q7 AS SELECT 1 = ANY(list_sort($1));
+
+query I
+EXECUTE q7([3, 1, 2]);
+----
+true
+
+# the parameter type is resolved at EXECUTE, so each type works
+statement ok
+PREPARE q8 AS SELECT list_sort($1)[1];
+
+query I
+EXECUTE q8([3, 1, 2]);
+----
+1
+
+query I
+EXECUTE q8(['b', 'a']);
+----
+a
+
+query I
+EXECUTE q8([3.5, 1.5]);
+----
+1.5
+
+# the variants of list_sort
+statement ok
+PREPARE q9 AS SELECT list_reverse_sort($1)[1] > 0;
+
+query I
+EXECUTE q9([3, 1, 2]);
+----
+true
+
+statement ok
+PREPARE q10 AS SELECT list_sort($1, 'DESC')[1] > 0;
+
+query I
+EXECUTE q10([3, 1, 2]);
+----
+true
+
+statement ok
+PREPARE q11 AS SELECT list_grade_up($1)[1] > 0;
+
+query I
+EXECUTE q11([3, 1, 2]);
+----
+true
+
+statement ok
+PREPARE q12 AS SELECT list_grade_up($1);
+
+query I
+EXECUTE q12([3, 1, 2]);
+----
+[2, 3, 1]
+
+statement ok
+PREPARE q12b AS SELECT list_grade_up($1, 'DESC');
+
+query I
+EXECUTE q12b([3, 1, 2]);
+----
+[1, 3, 2]
+
+statement ok
+PREPARE q12c AS SELECT list_grade_up($1, 'DESC', 'NULLS FIRST');
+
+query I
+EXECUTE q12c([3, NULL, 2]);
+----
+[2, 1, 3]
+
+statement ok
+PREPARE q9b AS SELECT list_reverse_sort($1, 'NULLS LAST');
+
+query I
+EXECUTE q9b([3, NULL, 2]);
+----
+[3, 2, NULL]
+
+# parameters in every position, the list stays unresolved and the sort orders are read when the statement is executed
+statement ok
+PREPARE q16 AS SELECT list_sort($1, $2, $3), list_grade_up($1, $2, $3), list_reverse_sort($1, $3);
+
+query III
+EXECUTE q16([3, NULL, 1], 'DESC', 'NULLS FIRST');
+----
+[NULL, 3, 1]	[2, 1, 3]	[NULL, 3, 1]
+
+query III
+EXECUTE q16([3, NULL, 1], 'ASC', 'NULLS LAST');
+----
+[1, 3, NULL]	[3, 1, 2]	[3, 1, NULL]
+
+# a function whose own type resolution keeps the parameter UNKNOWN
+statement ok
+PREPARE q15 AS SELECT array_slice($1, 1, 2)[1] > 0;
+
+query I
+EXECUTE q15([3, 1, 2]);
+----
+true
+
+# a lambda function with an ANY[] parameter
+statement ok
+PREPARE q14 AS SELECT list_filter($1, lambda x: x > 1)[1] > 0;
+
+query I
+EXECUTE q14([3, 1, 2]);
+----
+true
+
+# the sorted element in other expressions that took ANY as its type
+statement ok
+PREPARE q17 AS SELECT list_sort($1)[1] + 1, abs(list_sort($1)[1]), list_sort($1)[1] BETWEEN 0 AND 5;
+
+query III
+EXECUTE q17([3, 1, 2]);
+----
+2	1	true
+
+statement ok
+PREPARE q18 AS SELECT CASE WHEN list_sort($1)[1] > 0 THEN 1 END;
+
+query I
+EXECUTE q18([3, 1, 2]);
+----
+1
+
+statement ok
+PREPARE q19 AS SELECT i FROM range(3) t(i) WHERE list_sort($1)[1] > i;
+
+query I
+EXECUTE q19([3, 1, 2]);
+----
+0
+
+# the sorted list passed on to functions with a templated or an ANY[] parameter
+statement ok
+PREPARE q20 AS SELECT list_distinct(list_sort($1))[1] > 0;
+
+query I
+EXECUTE q20([3, 1, 2, 1]);
+----
+true
+
+statement ok
+PREPARE q21 AS SELECT list_transform(list_sort($1), lambda x: x + 1);
+
+query I
+EXECUTE q21([3, 1, 2]);
+----
+[2, 3, 4]
+
+statement ok
+PREPARE q22 AS SELECT list_sum(list_sort($1)), list_aggregate(list_filter($1, lambda x: x > 1), 'min');
+
+query II
+EXECUTE q22([3, 1, 2]);
+----
+6	2
+
+# other functions with an ANY parameter that bound it before the type was known
+statement ok
+PREPARE q23 AS SELECT cardinality($1);
+
+query I
+EXECUTE q23([3, 1, 2]);
+----
+3
+
+query I
+EXECUTE q23(MAP {1: 2});
+----
+1
+
+statement ok
+PREPARE q24 AS SELECT struct_keys($1), struct_update($1, b := 2);
+
+query II
+EXECUTE q24({'a': 1});
+----
+[a]	{'a': 1, 'b': 2}
+
+# a typed parameter and a NULL list still work
+statement ok
+PREPARE q13 AS SELECT list_sort($1::INTEGER[])[1] > 0;
+
+query I
+EXECUTE q13([3, 1, 2]);
+----
+true
+
+query I
+EXECUTE q8(NULL);
+----
+NULL
+
+# a parameter passed to a complete type, the VARCHAR sort order, is cast to it
+statement ok
+PREPARE q25 AS SELECT list_sort([3, 1, 2], $1);
+
+query I
+EXECUTE q25('DESC');
+----
+[3, 2, 1]
+
+# a templated list parameter, T[], left to EXECUTE when the arguments do not determine T
+statement ok
+PREPARE q26 AS SELECT list_sort(list_distinct($1)), list_contains($1, $2);
+
+query II
+EXECUTE q26([3, 1, 2, 1], 2);
+----
+[1, 2, 3]	true
+
+query II
+EXECUTE q26(['b', 'a', 'b'], 'c');
+----
+[a, b]	false
+
+# the other argument determines T, so the parameter takes INTEGER[] when the statement is prepared
+statement ok
+PREPARE q26b AS SELECT list_contains($1, 1);
+
+query I
+EXECUTE q26b([3, 1, 2]);
+----
+true
+
+statement error
+EXECUTE q26b(['b', 'a']);
+----
+Cannot deduce template type
+
+# an aggregate function with an ANY parameter, a list aggregate and a window function, each prepared on its own
+statement ok
+PREPARE q27 AS SELECT count($1);
+
+query I
+EXECUTE q27(3);
+----
+1
+
+statement ok
+PREPARE q27b AS SELECT list($1)[1];
+
+query I
+EXECUTE q27b(3);
+----
+3
+
+query I
+EXECUTE q27b('x');
+----
+x
+
+statement ok
+PREPARE q27c AS SELECT first($1) OVER ();
+
+query I
+EXECUTE q27c(3);
+----
+3
+
+query I
+EXECUTE q27c('x');
+----
+x

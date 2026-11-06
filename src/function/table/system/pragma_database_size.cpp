@@ -101,8 +101,11 @@ void PragmaDatabaseSizeFunction(ClientContext &context, TableFunctionInput &data
 }
 
 void PragmaDatabaseSize::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("pragma_database_size", {}, PragmaDatabaseSizeFunction, PragmaDatabaseSizeBind,
-	                              PragmaDatabaseSizeInit));
+	TableFunction database_size_fun("pragma_database_size", {}, PragmaDatabaseSizeFunction, PragmaDatabaseSizeBind,
+	                                PragmaDatabaseSizeInit);
+	// reads live storage, WAL, and memory statistics
+	database_size_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(database_size_fun));
 }
 
 } // namespace duckdb

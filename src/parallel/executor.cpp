@@ -261,7 +261,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		lock_guard<mutex> elock(executor_lock);
 		physical_plan = &plan;
 
-		this->profiler = context.services->GetQueryProfilerPtr();
+		this->profiler = context.GetContext().GetQueryProfilerPtr();
 		this->producer = scheduler.CreateProducer();
 
 		auto verify_progress = Settings::Get<DebugVerifyProgressSetting>(context);
@@ -671,6 +671,11 @@ idx_t Executor::GetPipelinesProgress(ProgressData &progress) { // LCOV_EXCL_STAR
 	progress.total = 0;
 	idx_t count_invalid = 0;
 	for (auto &pipeline : pipelines) {
+		if (pipeline->GetSource()->type == PhysicalOperatorType::RESULT_COLLECTOR) {
+			// this pipeline only holds the result collector as the root of the plan: it never runs, so including it
+			// would add a row that never completes to the total
+			continue;
+		}
 		ProgressData p;
 		if (!pipeline->GetProgress(p)) {
 			count_invalid++;

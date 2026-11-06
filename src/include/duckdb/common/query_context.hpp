@@ -22,22 +22,27 @@ class QueryContext {
 public:
 	QueryContext() {
 	}
-	DUCKDB_API QueryContext(optional_ptr<ClientContext> context); // NOLINT: allow implicit construction
-	DUCKDB_API QueryContext(ClientContext &context);              // NOLINT: allow implicit construction
-	QueryContext(Context &services_p) : services(&services_p) {   // NOLINT: allow implicit construction
+	DUCKDB_API QueryContext(optional_ptr<ClientContext> client_context); // NOLINT: allow implicit construction
+	DUCKDB_API QueryContext(ClientContext &client_context);              // NOLINT: allow implicit construction
+	QueryContext(Context &context_p) : context(&context_p) {             // NOLINT: allow implicit construction
 	}
 
 public:
 	bool Valid() const {
-		return services != nullptr;
+		return context != nullptr;
 	}
-	//! The execution services (null if the context is not valid)
-	optional_ptr<Context> GetServices() const {
-		return services;
+	//! The context (null if the context is not valid)
+	optional_ptr<Context> GetContext() const {
+		return context;
+	}
+	//! The client the QueryContext was created from (null if it was created from a Context)
+	optional_ptr<ClientContext> GetClientContext() const {
+		return client_context;
 	}
 
 private:
-	optional_ptr<Context> services;
+	optional_ptr<Context> context;
+	optional_ptr<ClientContext> client_context;
 };
 
 } // namespace duckdb
