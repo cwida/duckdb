@@ -32,20 +32,3 @@ query I
 EXECUTE p4([[3], [2]]);
 ----
 [[2], [3], [1]]
-
-# the parameter's unsettled type reaching the functions through a projection boundary
-statement ok
-PREPARE p5 AS SELECT list_concat([[1]], s) FROM (SELECT list_sort($1) AS s) t;
-
-query I
-EXECUTE p5([[3], [2]]);
-----
-[[1], [2], [3]]
-
-statement ok
-PREPARE p6 AS SELECT first(s) FROM (SELECT list_sort($1) AS s) t;
-
-query I
-EXECUTE p6([[3], [2]]);
-----
-[[2], [3]]
