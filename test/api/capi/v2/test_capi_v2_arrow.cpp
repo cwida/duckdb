@@ -739,6 +739,110 @@ void ArrowTopLevelValidityExec(duckdb_v2_scalar_function_exec_info_handle info, 
 	}
 }
 
+struct SlicedBatchObserved {
+	std::vector<int32_t> values;
+	std::vector<bool> valid;
+	DUCKDB_V2_ERROR append_rc = DUCKDB_V2_ERROR_NONE;
+	DUCKDB_V2_ERROR short_column_rc = DUCKDB_V2_ERROR_NONE;
+	std::string short_column_error;
+};
+SlicedBatchObserved arrow_sliced_batch_observed;
+
+void ArrowSlicedBatchReleaseSchema(ArrowSchema *schema) {
+	schema->release = nullptr;
+}
+
+// Imports a hand built record batch of six slots read from slot 2 (offset 2, length 4) in chunks of three rows. Its
+// bitmap marks slots 1 and 2 NULL, its INTEGER column marks slot 4 NULL. Then appends the same batch with length 6,
+// which its column cannot hold from offset 2.
+void ArrowSlicedBatchExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle context,
+                          duckdb_v2_error_info_handle *err) {
+	arrow_sliced_batch_observed = {};
+	duckdb_v2_vector_handle result = nullptr;
+	if (duckdb_v2_scalar_function_exec_get_result(info, &result, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	ArrowSchema column_schema {};
+	column_schema.format = "i";
+	column_schema.name = "i";
+	column_schema.flags = ARROW_FLAG_NULLABLE;
+	column_schema.release = ArrowSlicedBatchReleaseSchema;
+	ArrowSchema *schema_children[1] = {&column_schema};
+	ArrowSchema schema {};
+	schema.format = "+s";
+	schema.name = "";
+	schema.n_children = 1;
+	schema.children = schema_children;
+	schema.release = ArrowSlicedBatchReleaseSchema;
+	duckdb_v2_arrow_importer_handle importer = nullptr;
+	if (duckdb_v2_arrow_importer_create(context, &schema, 3, &importer, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+
+	int32_t values[6] = {1, 2, 3, 4, 5, 6};
+	uint8_t column_bits[1] = {0xEF};
+	uint8_t batch_bits[1] = {0xF9};
+	const void *column_buffers[2] = {column_bits, values};
+	ArrowArray column {};
+	column.length = 6;
+	column.null_count = 1;
+	column.n_buffers = 2;
+	column.buffers = column_buffers;
+	column.release = ArrowTopLevelValidityReleaseArray;
+	ArrowArray *batch_children[1] = {&column};
+	const void *batch_buffers[1] = {batch_bits};
+	ArrowArray batch {};
+	batch.length = 4;
+	batch.offset = 2;
+	batch.null_count = 1;
+	batch.n_buffers = 1;
+	batch.buffers = batch_buffers;
+	batch.n_children = 1;
+	batch.children = batch_children;
+	batch.release = ArrowTopLevelValidityReleaseArray;
+
+	auto &observed = arrow_sliced_batch_observed;
+	observed.append_rc = duckdb_v2_arrow_importer_append(importer, &batch, false, true, err);
+	duckdb_v2_data_chunk_handle imported = nullptr;
+	while (observed.append_rc == DUCKDB_V2_ERROR_NONE &&
+	       duckdb_v2_arrow_importer_next_chunk(importer, &imported, err) == DUCKDB_V2_ERROR_NONE && imported) {
+		duckdb_v2_vector_handle vector = nullptr;
+		duckdb_v2_vector_view view {};
+		idx_t size = 0;
+		if (duckdb_v2_data_chunk_get_vector(imported, 0, &vector, err) == DUCKDB_V2_ERROR_NONE &&
+		    duckdb_v2_vector_get_view(vector, &view, err) == DUCKDB_V2_ERROR_NONE &&
+		    duckdb_v2_data_chunk_get_size(imported, &size, err) == DUCKDB_V2_ERROR_NONE) {
+			for (idx_t i = 0; i < size; i++) {
+				auto idx = SelAt(view.sel, i);
+				observed.valid.push_back(RowValid(view, idx));
+				observed.values.push_back(observed.valid.back() ? reinterpret_cast<const int32_t *>(view.data)[idx]
+				                                                : 0);
+			}
+		}
+		duckdb_v2_data_chunk_destroy(&imported);
+	}
+	// The expected failure goes to a scratch slot, so it does not fail the callback.
+	auto short_batch = batch;
+	short_batch.length = 6;
+	short_batch.null_count = 0;
+	duckdb_v2_error_info_handle short_column_err = nullptr;
+	observed.short_column_rc = duckdb_v2_arrow_importer_append(importer, &short_batch, false, true, &short_column_err);
+	if (short_column_err) {
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(short_column_err, &text, &text_length);
+		observed.short_column_error = std::string(text, text_length);
+		duckdb_v2_error_info_destroy(&short_column_err);
+	}
+	duckdb_v2_arrow_importer_destroy(&importer);
+
+	int32_t one = 1;
+	void *out = nullptr;
+	if (duckdb_v2_vector_get_data_mutable(result, &out, err) == DUCKDB_V2_ERROR_NONE) {
+		std::memcpy(out, &one, sizeof(one));
+	}
+}
+
 } // namespace
 
 // ===========================================================================
@@ -1007,6 +1111,19 @@ TEST_CASE("V2 arrow: a top-level struct array's own validity bitmap is honored",
 		REQUIRE(arrow_toplevel_validity_observed.dict_valid[i] == !expect_null);
 	}
 	REQUIRE(arrow_toplevel_validity_observed.missing_bitmap_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+}
+
+TEST_CASE("V2 arrow: a sliced record batch applies its offset to its bitmap and its columns", "[capi_v2][arrow]") {
+	EnvFixture fx;
+	RegisterArrowProbe(fx, "arrow_sliced_batch_probe", ArrowSlicedBatchExec);
+	RunArrowProbe(fx.conn, "SELECT arrow_sliced_batch_probe(1)");
+
+	auto &observed = arrow_sliced_batch_observed;
+	REQUIRE(observed.append_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(observed.valid == std::vector<bool> {false, true, false, true});
+	REQUIRE(observed.values == std::vector<int32_t> {0, 4, 0, 6});
+	REQUIRE(observed.short_column_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE_THAT(observed.short_column_error, Catch::Contains("shorter than"));
 }
 
 TEST_CASE("V2 arrow: the exporter accepts input without draining first", "[capi_v2][arrow]") {

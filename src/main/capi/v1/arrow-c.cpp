@@ -60,8 +60,8 @@ void ValidateArrowArrayShape(duckdb::ArrowTableSchema &arrow_table, const ArrowA
 		if (!child_array || !child_array->release) {
 			throw duckdb::InvalidInputException("Arrow array child is null or already released");
 		}
-		if (child_array->length != array.length) {
-			throw duckdb::InvalidInputException("Arrow array child length does not match the array length");
+		if (!duckdb::ArrowToDuckDBConversion::ColumnCoversRecordBatch(array, *child_array)) {
+			throw duckdb::InvalidInputException("Arrow array child is shorter than the array's offset and length");
 		}
 	}
 }
@@ -172,34 +172,20 @@ duckdb_error_data duckdb_data_chunk_from_arrow(duckdb_connection connection, str
 	owned_data->arrow_array = *arrow_array;
 	// We set it to nullptr to effectively transfer the ownership
 	arrow_array->release = nullptr;
+	auto &batch = owned_data->arrow_array;
+	duckdb::ValidityMask batch_validity;
+	try {
+		batch_validity = duckdb::ArrowToDuckDBConversion::GetRecordBatchValidity(batch, 0, dchunk->size());
+	} catch (const std::exception &ex) {
+		return duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, ex.what());
+	}
 	for (idx_t i = 0; i < dchunk->ColumnCount(); i++) {
-		auto &parent_array = *arrow_array;
-		auto &array = parent_array.children[i];
 		auto arrow_type = arrow_types.at(i);
-		auto array_physical_type = arrow_type->GetPhysicalType();
 		auto array_state = duckdb::make_uniq<duckdb::ArrowArrayScanState>(*conn->context);
 		array_state->owned_data = owned_data;
 		try {
-			switch (array_physical_type) {
-			case duckdb::ArrowArrayPhysicalType::DICTIONARY_ENCODED:
-				duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(dchunk->data[i], *array, 0, *array_state,
-				                                                               dchunk->size(), *arrow_type);
-				break;
-			case duckdb::ArrowArrayPhysicalType::RUN_END_ENCODED:
-				duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(
-				    dchunk->data[i], *array, 0, *array_state, dchunk->size(), *arrow_type);
-				break;
-			case duckdb::ArrowArrayPhysicalType::DEFAULT:
-				duckdb::ArrowToDuckDBConversion::SetValidityMask(dchunk->data[i], *array, 0, dchunk->size(),
-				                                                 parent_array.offset, -1);
-
-				duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDB(dchunk->data[i], *array, 0, *array_state,
-				                                                     dchunk->size(), *arrow_type);
-				break;
-			default:
-				return duckdb_create_error_data(DUCKDB_ERROR_NOT_IMPLEMENTED,
-				                                "Only Default Physical Types are currently supported");
-			}
+			duckdb::ArrowToDuckDBConversion::RecordBatchColumnToDuckDB(dchunk->data[i], batch, i, 0, *array_state,
+			                                                           dchunk->size(), *arrow_type, batch_validity);
 		} catch (const duckdb::Exception &ex) {
 			return duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, ex.what());
 		} catch (const std::exception &ex) {

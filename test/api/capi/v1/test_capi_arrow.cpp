@@ -1066,11 +1066,11 @@ TEST_CASE("Test C-API Arrow array shape validation", "[capi][arrow]") {
 		duckdb_destroy_error_data(&err);
 	}
 
-	SECTION("child length does not match the array length") {
-		child_array.length = 5;
+	SECTION("child shorter than the array's offset and length") {
 		ArrowArray *arrays[] = {&child_array};
 		ArrowArray array = {};
 		array.length = 1;
+		array.offset = 1;
 		array.n_children = 1;
 		array.children = arrays;
 		array.release = ReleaseUnalignedArray;
@@ -1078,6 +1078,7 @@ TEST_CASE("Test C-API Arrow array shape validation", "[capi][arrow]") {
 		duckdb_data_chunk chunk = nullptr;
 		auto err = duckdb_data_chunk_from_arrow(tester.connection, &array, converted, &chunk);
 		REQUIRE(err != nullptr);
+		REQUIRE_THAT(std::string(duckdb_error_data_message(err)), Catch::Contains("shorter than"));
 		duckdb_destroy_error_data(&err);
 	}
 
