@@ -52,7 +52,6 @@ private:
 	unique_ptr<LogicalOperator> PullupSemiJoin(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in an inner join
 	unique_ptr<LogicalOperator> PullupInnerJoin(unique_ptr<LogicalOperator> op);
-	//! Pullup filter through a distinct
 	//! Pullup the filters on the partitions of a window
 	unique_ptr<LogicalOperator> PullupWindow(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in LogicalIntersect or LogicalExcept op
