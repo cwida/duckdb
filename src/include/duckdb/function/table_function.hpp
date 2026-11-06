@@ -550,6 +550,8 @@ public:
 	table_function_serialize_t serialize;
 	table_function_deserialize_t deserialize;
 	bool verify_serialization = true;
+	//! Filters accepted by pushdown_complex_filter live only in bind data: record them and replay after deserialization
+	bool consumed_filters_in_bind_data = false;
 
 	//! Whether or not the table function supports projection pushdown. If not supported a projection will be added
 	//! that filters out unused columns.

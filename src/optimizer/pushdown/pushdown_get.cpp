@@ -63,7 +63,7 @@ static void RetainConsumedComplexFilters(LogicalGet &get, const vector<const Exp
 	}
 	for (auto &filter : consumed) {
 		if (!CanonicalizeConsumedFilter(get, filter)) {
-			// The accepted filters are not a complete, comparable identity. Refuse to treat the scan as serializable.
+			// The accepted filters cannot be restored, so the scan cannot be serialized or copied.
 			get.function.verify_serialization = false;
 			return;
 		}
@@ -196,7 +196,9 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 		const auto offered_filters = expressions.size();
 		vector<const Expression *> offered_ptrs;
 		vector<unique_ptr<Expression>> offered_copies;
-		if (!get.function.HasSerializationCallbacks()) {
+		const bool record_consumed =
+		    get.function.consumed_filters_in_bind_data && !get.function.HasSerializationCallbacks();
+		if (record_consumed) {
 			offered_ptrs.reserve(expressions.size());
 			offered_copies.reserve(expressions.size());
 			for (auto &expr : expressions) {
@@ -205,7 +207,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 			}
 		}
 		get.function.pushdown_complex_filter(optimizer.context, get, get.bind_data.get(), expressions);
-		if (expressions.size() < offered_filters && !get.function.HasSerializationCallbacks()) {
+		if (record_consumed && expressions.size() < offered_filters) {
 			RetainConsumedComplexFilters(get, offered_ptrs, offered_copies, expressions);
 		}
 

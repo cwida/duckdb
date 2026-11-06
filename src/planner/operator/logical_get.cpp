@@ -346,8 +346,8 @@ static void ReplayConsumedComplexFilters(ClientContext &context, LogicalGet &get
 	if (get.consumed_complex_filters.empty()) {
 		return;
 	}
-	if (!get.function.pushdown_complex_filter) {
-		throw SerializationException("Table function %s has consumed filters but no pushdown callback",
+	if (!get.function.pushdown_complex_filter || !get.function.consumed_filters_in_bind_data) {
+		throw SerializationException("Table function %s cannot restore the filters it accepted",
 		                             get.function.GetName());
 	}
 
@@ -395,6 +395,10 @@ static void ReplayConsumedComplexFilters(ClientContext &context, LogicalGet &get
 void LogicalGet::Serialize(Serializer &serializer) const {
 	if (bind_info) {
 		throw NotImplementedException("Cannot serialize a table function with process-local bind input");
+	}
+	if (function.consumed_filters_in_bind_data && !function.verify_serialization) {
+		throw NotImplementedException(
+		    "Cannot serialize table function %s with filters it accepted that cannot be restored", function.GetName());
 	}
 	LogicalOperator::Serialize(serializer);
 	serializer.WriteProperty(200, "table_index", table_index);

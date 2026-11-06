@@ -869,6 +869,7 @@ public:
 		}
 		if (info.filter_pushdown_cb) {
 			function.pushdown_complex_filter = CV2TableFilterPushdown;
+			function.consumed_filters_in_bind_data = true;
 		}
 		if (info.partition_data_cb) {
 			function.get_partition_data = CV2TableGetPartitionData;

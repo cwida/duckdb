@@ -1363,6 +1363,20 @@ TEST_CASE("V2 table: scans with different claimed filters are not merged", "[cap
 	                     "__common_subplan_"));
 }
 
+TEST_CASE("V2 table: copied scans keep their claimed filters", "[capi_v2][table_function]") {
+	EnvFixture fx;
+	RegisterClaim(fx, "claim_probe", ClaimPushdownCb);
+	ExecSQL(fx.conn, "PRAGMA explain_output='optimized_only'");
+
+	// The window self-join rewrite copies the scan below the window.
+	const char *window_sql =
+	    "SELECT max(c) FROM (SELECT count(*) OVER (PARTITION BY i % 2) c FROM claim_probe(100) WHERE i < 10)";
+	REQUIRE_FALSE(PlanContains(fx.conn, (std::string("EXPLAIN ") + window_sql).c_str(), "WINDOW"));
+	REQUIRE(QueryI64(fx.conn, window_sql) == 6);
+	ExecSQL(fx.conn, "SET debug_verify_serializer=true");
+	REQUIRE(QueryI64(fx.conn, window_sql) == 6);
+}
+
 TEST_CASE("V2 table: filter pushdown errors fail the query", "[capi_v2][table_function]") {
 	EnvFixture fx;
 	RegisterClaim(fx, "claim_fail", FailingPushdownCb);
