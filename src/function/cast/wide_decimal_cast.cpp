@@ -217,9 +217,8 @@ struct WideDecimalToBignum {
 struct WideDecimalToFloating {
 	template <class INPUT_TYPE, class RESULT_TYPE>
 	static RESULT_TYPE Operation(INPUT_TYPE input, ValidityMask &mask, idx_t idx, WideDecimalCastInput &data) {
-		auto value = BignumDecimal::ToDouble(input, data.source_scale);
 		RESULT_TYPE result;
-		if (!TryCast::Operation<double, RESULT_TYPE>(value, result, false)) {
+		if (!BignumDecimal::TryToFloating(input, data.source_scale, result)) {
 			return data.Fail<RESULT_TYPE>(data.OutOfRange(BignumDecimal::ToString(input, data.source_scale)), mask,
 			                              idx);
 		}

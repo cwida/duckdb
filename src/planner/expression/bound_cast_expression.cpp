@@ -441,6 +441,10 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type.id() == LogicalTypeId::DECIMAL && DecimalType::GetWidth(source_type) > Decimal::MAX_WIDTH_INT128) {
 		return true;
 	}
+	// A NUMERIC holds as many digits as a wide decimal, so its values do not necessarily fit in a FLOAT
+	if (source_type.id() == LogicalTypeId::NUMERIC && target_type.id() == LogicalTypeId::FLOAT) {
+		return true;
+	}
 	// Floating point values that are not finite (NaN, inf) cannot be represented as a BIGNUM
 	if (target_type.id() == LogicalTypeId::BIGNUM &&
 	    (source_type.id() == LogicalTypeId::FLOAT || source_type.id() == LogicalTypeId::DOUBLE)) {

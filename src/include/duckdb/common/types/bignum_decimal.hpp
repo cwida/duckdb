@@ -43,8 +43,10 @@ public:
 	DUCKDB_API static bool TryToHugeint(const string_t &value, hugeint_t &result);
 	DUCKDB_API static bool TryToUhugeint(const string_t &value, uhugeint_t &result);
 
-	//! Converts an unscaled value with the given scale to a double (correctly rounded through the decimal string)
-	DUCKDB_API static double ToDouble(const string_t &value, uint32_t scale);
+	//! Converts an unscaled value with the given scale to a FLOAT or DOUBLE, rounding once (through the decimal
+	//! string), returns false if the value is out of range
+	DUCKDB_API static bool TryToFloating(const string_t &value, uint32_t scale, float &result);
+	DUCKDB_API static bool TryToFloating(const string_t &value, uint32_t scale, double &result);
 	//! Converts a double to the unscaled value of a DECIMAL(width, scale), returns false if it does not fit
 	DUCKDB_API static bool TryFromDouble(double value, uint32_t width, uint32_t scale, string &result);
 

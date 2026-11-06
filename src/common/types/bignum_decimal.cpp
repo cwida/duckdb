@@ -394,13 +394,23 @@ bool BignumDecimal::TryToHugeint(const string_t &value, hugeint_t &result) {
 	return Bignum::BignumToInt(bignum_t(value), result, strict);
 }
 
-double BignumDecimal::ToDouble(const string_t &value, uint32_t scale) {
-	auto text = ToString(value, scale);
-	double result;
+template <class T>
+static bool TryToFloatingInternal(const string_t &value, uint32_t scale, T &result) {
+	// the decimal text parses directly into the target type, so the value is rounded once
+	auto text = BignumDecimal::ToString(value, scale);
 	if (!TryCast::Operation(string_t(text), result, false)) {
-		throw InternalException("Could not convert wide decimal '%s' to DOUBLE", text);
+		throw InternalException("Could not convert wide decimal '%s' to a floating point number", text);
 	}
-	return result;
+	// an overflowing text parses to infinity
+	return std::isfinite(result);
+}
+
+bool BignumDecimal::TryToFloating(const string_t &value, uint32_t scale, float &result) {
+	return TryToFloatingInternal(value, scale, result);
+}
+
+bool BignumDecimal::TryToFloating(const string_t &value, uint32_t scale, double &result) {
+	return TryToFloatingInternal(value, scale, result);
 }
 
 string BignumDecimal::FromTwosComplement(const_data_ptr_t data, idx_t size, bool big_endian) {
