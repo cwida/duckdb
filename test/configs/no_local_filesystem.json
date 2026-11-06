@@ -38,6 +38,12 @@
       "paths": [
         "test/sql/optimizer/nested_null_segment_pruning.test"
       ]
+    },
+    {
+      "reason": "Checks that disabled_filesystems is empty on startup, which this configuration sets during on_init",
+      "paths": [
+        "test/sql/settings/test_disabled_file_systems.test"
+      ]
     }
   ]
 }
