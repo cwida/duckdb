@@ -787,6 +787,17 @@ public:
 	idx_t segment_count;
 
 	T decompression_buffer[BITPACKING_METADATA_GROUP_SIZE];
+	//! Scratch space for dense selections, which scan the whole range before gathering the selected rows.
+	unsafe_unique_array<T> select_buffer;
+	idx_t select_buffer_capacity = 0;
+
+	T *GetSelectBuffer(idx_t count) {
+		if (count > select_buffer_capacity) {
+			select_buffer = make_unsafe_uniq_array_uninitialized<T>(count);
+			select_buffer_capacity = count;
+		}
+		return select_buffer.get();
+	}
 
 	//! Group count derived from the segment row count read from disk.
 	idx_t group_count;
@@ -1034,15 +1045,10 @@ unique_ptr<SegmentScanState> BitpackingInitScan(const QueryContext &context, Col
 // Scan base data
 //===--------------------------------------------------------------------===//
 template <class T, class T_S = typename MakeSigned<T>::type, class T_U = typename MakeUnsigned<T>::type>
-void BitpackingScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
-                           idx_t result_offset) {
-	auto &scan_state = state.scan_state->Cast<BitpackingScanState<T>>();
+void BitpackingScanData(BitpackingScanState<T> &scan_state, idx_t scan_count, T *result_data, idx_t result_offset) {
 	if (scan_count == 0) {
 		return;
 	}
-
-	T *result_data = FlatVector::GetDataMutable<T>(result);
-	result.SetVectorType(VectorType::FLAT_VECTOR);
 
 	if (scan_state.IsInitial()) {
 		scan_state.LoadGroup(0);
@@ -1135,6 +1141,15 @@ void BitpackingScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t
 }
 
 template <class T>
+void BitpackingScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
+                           idx_t result_offset) {
+	auto &scan_state = state.scan_state->Cast<BitpackingScanState<T>>();
+	T *result_data = FlatVector::GetDataMutable<T>(result);
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	BitpackingScanData<T>(scan_state, scan_count, result_data, result_offset);
+}
+
+template <class T>
 void BitpackingScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result) {
 	BitpackingScanPartial<T>(segment, state, scan_count, result, 0);
 }
@@ -1149,21 +1164,16 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	T *result_data = FlatVector::GetDataMutable<T>(result) + result_offset;
 
-	// dense selections decode (nearly) every algorithm group anyway: scan the range and gather in place
-	if (sel_count > 0 && sel_count * BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE >= vector_count &&
-	    result_offset + vector_count <= FlatVector::GetCapacity(result)) {
-		// the in-place gather requires sel[i] >= i, which holds for strictly increasing selections
-		bool strictly_increasing = true;
-		for (idx_t i = 1; i < sel_count && strictly_increasing; i++) {
-			strictly_increasing = sel.get_index(i - 1) < sel.get_index(i);
+	// dense selections decode (nearly) every algorithm group anyway: scan the range and gather from it
+	if (sel_count * BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE >= vector_count) {
+		auto scanned = scan_state.GetSelectBuffer(vector_count);
+		BitpackingScanData<T>(scan_state, vector_count, scanned, 0);
+		for (idx_t i = 0; i < sel_count; i++) {
+			const idx_t index = sel.get_index(i);
+			D_ASSERT(index < vector_count);
+			result_data[i] = scanned[index];
 		}
-		if (strictly_increasing && sel.get_index(sel_count - 1) < vector_count) {
-			BitpackingScanPartial<T>(segment, state, vector_count, result, result_offset);
-			for (idx_t i = 0; i < sel_count; i++) {
-				result_data[i] = result_data[sel.get_index(i)];
-			}
-			return;
-		}
+		return;
 	}
 
 	idx_t previous_index = 0;
