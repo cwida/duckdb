@@ -10,8 +10,26 @@
 
 #include "duckdb/storage/table/column_data.hpp"
 #include "duckdb/storage/table/validity_column_data.hpp"
+#include "duckdb/storage/statistics/list_stats.hpp"
 
 namespace duckdb {
+
+//! The list length statistics that are persisted with a list column
+class ListPersistentColumnData final : public ExtraPersistentColumnData {
+public:
+	static constexpr auto TYPE = ExtraPersistentColumnDataType::LIST;
+	ListPersistentColumnData() : ExtraPersistentColumnData(TYPE) {
+	}
+	explicit ListPersistentColumnData(const ListStatsData &length_data_p)
+	    : ExtraPersistentColumnData(TYPE), length_data(length_data_p) {
+	}
+
+	bool IsSupported(const Serializer &serializer) const override;
+	void SerializeFields(Serializer &serializer) const;
+	static unique_ptr<ExtraPersistentColumnData> Deserialize(Deserializer &deserializer);
+
+	ListStatsData length_data = ListStatsData {false, false, false, 0, 0, 0};
+};
 
 //! List column data represents a list
 class ListColumnData : public ColumnData {
@@ -66,6 +84,8 @@ public:
 	                          const ColumnSegmentInfoScanOptions &options) override;
 
 	void SetValidityData(shared_ptr<ValidityColumnData> validity_p);
+	//! The statistics of this column, if they can be resolved
+	optional_ptr<const BaseStatistics> GetColumnStatistics() const;
 	void SetChildData(shared_ptr<ColumnData> child_column_p);
 
 	const BaseStatistics &GetChildStats(const ColumnData &child) const override;

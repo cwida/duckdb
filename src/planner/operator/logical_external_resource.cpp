@@ -11,10 +11,6 @@ idx_t LogicalExternalResource::EstimateCardinality(ClientContext &context) {
 }
 
 void LogicalExternalResource::ResolveTypes() {
-	if (data.operation == ExternalResourceOperation::SHOW) {
-		// SHOW is handled as a table-function scan, not this operator.
-		throw InternalException("LogicalExternalResource does not handle SHOW");
-	}
 	types = {LogicalType::BOOLEAN};
 }
 

@@ -512,6 +512,10 @@ enum class RecursiveCTEPipelineMetricType : uint8_t;
 
 enum class RecursiveCTESourcePhase : uint8_t;
 
+enum class RecursiveCTEStageStep : uint8_t;
+
+enum class RecursiveEpochResult : uint8_t;
+
 enum class RecursiveProbeSidePreference : uint8_t;
 
 enum class RegexMatchOperatorSemantics : uint8_t;
@@ -1420,6 +1424,12 @@ const char* EnumUtil::ToChars<RecursiveCTEPipelineMetricType>(RecursiveCTEPipeli
 
 template<>
 const char* EnumUtil::ToChars<RecursiveCTESourcePhase>(RecursiveCTESourcePhase value);
+
+template<>
+const char* EnumUtil::ToChars<RecursiveCTEStageStep>(RecursiveCTEStageStep value);
+
+template<>
+const char* EnumUtil::ToChars<RecursiveEpochResult>(RecursiveEpochResult value);
 
 template<>
 const char* EnumUtil::ToChars<RecursiveProbeSidePreference>(RecursiveProbeSidePreference value);
@@ -2423,6 +2433,12 @@ RecursiveCTEPipelineMetricType EnumUtil::FromString<RecursiveCTEPipelineMetricTy
 
 template<>
 RecursiveCTESourcePhase EnumUtil::FromString<RecursiveCTESourcePhase>(const char *value);
+
+template<>
+RecursiveCTEStageStep EnumUtil::FromString<RecursiveCTEStageStep>(const char *value);
+
+template<>
+RecursiveEpochResult EnumUtil::FromString<RecursiveEpochResult>(const char *value);
 
 template<>
 RecursiveProbeSidePreference EnumUtil::FromString<RecursiveProbeSidePreference>(const char *value);

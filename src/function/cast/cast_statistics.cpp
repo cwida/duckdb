@@ -224,6 +224,8 @@ static unique_ptr<BaseStatistics> StatisticsPropagateArrayToList(const BaseStati
 
 	auto result = ListStats::CreateEmpty(target);
 	result.CopyBase(input);
+	auto array_size = ArrayType::GetSize(source);
+	ListStats::SetLengthBounds(result, array_size, array_size);
 	ListStats::GetChildStats(result).Copy(ArrayStats::GetChildStats(input));
 	return result.ToUnique();
 }

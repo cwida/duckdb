@@ -61,6 +61,7 @@ class LogicalVacuum;
 
 class ColumnList;
 class ExternalDependency;
+class FunctionArgument;
 class FunctionSignature;
 class TableFunction;
 class BoundTableFunction;
@@ -640,8 +641,7 @@ private:
 
 	unique_ptr<BoundAtClause> BindAtClause(optional_ptr<AtClause> at_clause);
 
-	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function,
-	                                 vector<unique_ptr<ParsedExpression>> &expressions,
+	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function, vector<FunctionArgument> &arguments,
 	                                 vector<unique_ptr<Expression>> &positional_arguments,
 	                                 vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
 	                                 BoundStatement &subquery, bool &table_in_out, ErrorData &error);

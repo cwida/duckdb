@@ -176,6 +176,8 @@ struct MatchContext {
 	//! Ignore rule-level suggestion suppression, so the suggestions a rule adds depend only on its
 	//! position and the packrat cache stays valid while collecting them
 	bool memoizable_suggestions = false;
+	//! With memoizable_suggestions: walk labelled rules instead of summarising them by their label alone
+	bool expand_labels = false;
 	//! With memoizable_suggestions: suggestion walks already done, keyed by matcher and active label
 	std::map<std::pair<const Matcher *, const string *>, SuggestionType> walked_suggestions;
 };
