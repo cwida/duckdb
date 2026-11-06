@@ -323,12 +323,36 @@ idx_t LogicalGet::EstimateSourceCardinality(ClientContext &context) {
 	return 1;
 }
 
+bool LogicalGet::HasColumnStatistics() const {
+	return function.statistics || function.statistics_extended;
+}
+
+unique_ptr<BaseStatistics> LogicalGet::GetColumnStatistics(ClientContext &context, const ColumnIndex &column_index) {
+	auto entry = column_statistics_cache.find(column_index);
+	if (entry == column_statistics_cache.end()) {
+		unique_ptr<BaseStatistics> stats;
+		if (function.statistics_extended) {
+			TableFunctionGetStatisticsInput input(bind_data.get(), column_index);
+			stats = function.statistics_extended(context, input);
+		} else if (function.statistics) {
+			stats = function.statistics(context, bind_data.get(), column_index.GetPrimaryIndex());
+		}
+		entry = column_statistics_cache.emplace(column_index, std::move(stats)).first;
+	}
+	return entry->second ? entry->second->ToUnique() : nullptr;
+}
+
+void LogicalGet::ClearColumnStatisticsCache() {
+	column_statistics_cache.clear();
+}
+
 void LogicalGet::SetScanOrder(unique_ptr<RowGroupOrderOptions> options) {
 	if (!function.set_scan_order) {
 		throw InternalException("LogicalGet::SetScanOrder called but function does not have scan order defined");
 	}
 	row_group_order_options = make_uniq<RowGroupOrderOptions>(*options);
 	function.set_scan_order(std::move(options), bind_data.get());
+	ClearColumnStatisticsCache();
 }
 
 void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
@@ -337,6 +361,7 @@ void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
 	}
 	scan_partition_indices = partition_indices;
 	function.set_partitions_to_scan(std::move(partition_indices), bind_data.get());
+	ClearColumnStatisticsCache();
 }
 
 void LogicalGet::Serialize(Serializer &serializer) const {

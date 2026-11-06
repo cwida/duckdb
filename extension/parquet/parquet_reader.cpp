@@ -703,20 +703,11 @@ static unique_ptr<BaseStatistics> ReadColumnStatistics(const FileMetaData &file_
 	return column_stats;
 }
 
-//! The statistics of a column merged over all row groups, cached with the file metadata
-static unique_ptr<BaseStatistics> ReadCachedColumnStatistics(ParquetFileMetadataCache &metadata,
-                                                             const ParquetColumnSchema &column,
-                                                             const ParquetOptions &parquet_options) {
-	return metadata.GetColumnStatistics(column, parquet_options.can_have_nan, [&]() {
-		return ReadColumnStatistics(metadata.metadata->file_metadata, column, parquet_options);
-	});
-}
-
-static unique_ptr<BaseStatistics> ReadStatisticsInternal(ParquetFileMetadataCache &metadata,
+static unique_ptr<BaseStatistics> ReadStatisticsInternal(const FileMetaData &file_meta_data,
                                                          const ParquetColumnSchema &root_schema,
                                                          const ParquetOptions &parquet_options,
                                                          const idx_t &file_col_idx) {
-	return ReadCachedColumnStatistics(metadata, root_schema.children[file_col_idx], parquet_options);
+	return ReadColumnStatistics(file_meta_data, root_schema.children[file_col_idx], parquet_options);
 }
 
 unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const Identifier &name) {
@@ -733,7 +724,7 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const Identifier &name)
 		return nullptr;
 	}
 
-	return ReadStatisticsInternal(*metadata, *root_schema, parquet_options, file_col_idx);
+	return ReadStatisticsInternal(*GetFileMetadata(), *root_schema, parquet_options, file_col_idx);
 }
 
 unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context, ParquetOptions parquet_options,
@@ -755,7 +746,8 @@ ParquetReader::ReadVirtualColumnStatistics(ClientContext &context, const Parquet
 		return nullptr;
 	}
 	// the row numbers of every row group follow on from those of the row groups before it
-	return ReadCachedColumnStatistics(*metadata, ParquetColumnSchema::FileRowNumber(), parquet_options);
+	return ReadColumnStatistics(metadata->metadata->file_metadata, ParquetColumnSchema::FileRowNumber(),
+	                            parquet_options);
 }
 
 unique_ptr<BaseStatistics> ParquetReader::GetVirtualColumnStatistics(ClientContext &context,
@@ -780,7 +772,8 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(ClientContext &context,
 		return nullptr;
 	}
 
-	return ReadStatisticsInternal(*union_data.metadata, *union_data.root_schema, union_data.options, file_col_idx);
+	return ReadStatisticsInternal(union_data.metadata->metadata->file_metadata, *union_data.root_schema,
+	                              union_data.options, file_col_idx);
 }
 
 static bool IsFullyShredded(const BaseStatistics &variant_stats, const ColumnIndex &column_index) {

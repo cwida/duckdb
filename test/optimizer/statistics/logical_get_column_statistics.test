@@ -1,0 +1,64 @@
+# name: test/optimizer/statistics/logical_get_column_statistics.test
+# description: Column statistics of a scan are reused across optimizers and follow changes to the bind data
+# group: [statistics]
+
+require parquet
+
+require vector_size 64
+
+statement ok
+COPY (SELECT i AS a, i + 100 AS b, {'x': i + 200, 'y': i + 300} AS s FROM range(10) t(i))
+TO '{TEMP_DIR}/get_stats_columns.parquet'
+
+# each column, and each field of a struct, has its own statistics
+query IIII
+SELECT max(a), max(b), max(s.x), max(s.y) FROM '{TEMP_DIR}/get_stats_columns.parquet'
+----
+9	109	209	309
+
+query II
+EXPLAIN SELECT a FROM '{TEMP_DIR}/get_stats_columns.parquet' WHERE b > 200
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT a FROM '{TEMP_DIR}/get_stats_columns.parquet' WHERE s.y > 400
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query I
+SELECT count(*) FROM '{TEMP_DIR}/get_stats_columns.parquet' WHERE s.x > 205
+----
+4
+
+# the statistics are used by the join order optimizer and by the statistics propagator
+query I
+SELECT count(*)
+FROM '{TEMP_DIR}/get_stats_columns.parquet' t1
+JOIN '{TEMP_DIR}/get_stats_columns.parquet' t2 ON t1.a = t2.a
+WHERE t1.b > 105 AND t2.s.x < 208
+----
+2
+
+# files pruned by a hive partition filter no longer contribute to the statistics
+statement ok
+COPY (SELECT i % 2 AS part, (i % 2) * 100 + i // 2 AS x FROM range(20) t(i))
+TO '{TEMP_DIR}/get_stats_hive' (FORMAT parquet, PARTITION_BY part)
+
+query II
+EXPLAIN SELECT x FROM read_parquet('{TEMP_DIR}/get_stats_hive/**/*.parquet', hive_partitioning = true)
+WHERE part = 0 AND x > 50
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/get_stats_hive/**/*.parquet', hive_partitioning = true)
+WHERE part = 1 AND x > 105
+----
+4
+
+query I
+SELECT count(*) FROM read_parquet('{TEMP_DIR}/get_stats_hive/**/*.parquet', hive_partitioning = true)
+WHERE x > 105
+----
+4
