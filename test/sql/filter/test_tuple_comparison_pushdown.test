@@ -32,11 +32,23 @@ SELECT count(*) FROM t WHERE (id, b) = (42, 3);
 ----
 0
 
-# The tuple comparison uses TUPLE(BIGINT, DECIMAL(11,1)), so 2 is compared as 2.0 and does not equal 1.5.
+# A row comparison that needs an alignment cast is unpacked in the aligned type: the binder compares both
+# rows as TUPLE(BIGINT, DECIMAL(11,1)), so b is compared as 2.0 and the per-field comparison carries the cast
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
+----
+physical_plan	<REGEX>:(?s).*Table: .*\.t.*Filters:.*id IS NOT DISTINCT FROM 42.*CAST\(b AS DECIMAL\(11,1\)\) IS NOT DISTINCT FROM 1\.5.*
+
+# 2 is compared as 2.0 against 1.5, so no row matches - and the aligned id comparison still prunes
 query I
 SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
 ----
 0
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 5.*
 
 # nested rows are unpacked recursively, so the pruneable id inside the nested row is pushed down as well
 query II
