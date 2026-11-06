@@ -18,9 +18,6 @@ statement ok
 INSERT INTO one_string VALUES ('ordinary');
 
 statement ok
-PRAGMA disable_verification;
-
-statement ok
 PRAGMA explain_output='optimized_only';
 
 # LIKE retains the default 20% selectivity.

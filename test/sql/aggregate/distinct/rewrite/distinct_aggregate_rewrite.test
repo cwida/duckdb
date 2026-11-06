@@ -349,9 +349,6 @@ NULL	P	3	1	0
 NULL	NULL	6	1	1
 
 statement ok
-PRAGMA disable_verification
-
-statement ok
 CREATE SEQUENCE distinct_rewrite_seq_count START 1;
 
 statement ok

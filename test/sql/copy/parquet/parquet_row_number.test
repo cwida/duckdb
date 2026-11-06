@@ -37,9 +37,6 @@ select sum(row_number_lag), min(row_number_lag), max(row_number_lag)  from (sele
 1000	1	1
 
 
-statement ok
-PRAGMA disable_verification
-
 
 # lets eliminate some row groups using parquet stats and see what happens
 query IIII

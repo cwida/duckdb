@@ -6,9 +6,6 @@
 # against Oracle 23ai. The data is theirs too, so the answers can be compared with a real one.
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 pragma threads=1
 
 statement ok

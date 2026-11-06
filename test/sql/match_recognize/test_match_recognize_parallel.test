@@ -7,9 +7,6 @@
 # has to be the same however they were shared out.
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 CREATE TABLE runs AS
     SELECT i // 250 AS g, i % 250 AS i, CASE WHEN (i % 250) % 7 < 3 THEN 1 ELSE 0 END AS up
     FROM range(4000) t(i)

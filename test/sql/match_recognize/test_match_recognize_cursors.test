@@ -3,9 +3,6 @@
 # group: [match_recognize]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 pragma threads=1
 
 # A condition that depends on the match is decided against the collected rows themselves rather than

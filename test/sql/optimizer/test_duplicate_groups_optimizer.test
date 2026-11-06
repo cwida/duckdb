@@ -67,9 +67,6 @@ select
 statement ok
 pragma explain_output='optimized_only';
 
-statement ok
-pragma disable_verification;
-
 # make sure there is only one group and unused columns/duplicate groups still
 # works.
 # if unused columns/duplicate groups combo breaks, each group will be on a separate line

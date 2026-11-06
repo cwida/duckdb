@@ -97,11 +97,6 @@ SELECT * FROM integers WHERE (COALESCE(i, 4, 17)=3);
 ----
 3
 
-# Verification compares results, which are different for random().
-
-statement ok
-PRAGMA disable_verification
-
 # COALESCE without statistics.
 
 statement ok

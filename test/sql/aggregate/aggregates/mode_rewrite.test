@@ -215,9 +215,6 @@ SELECT mode(value ORDER BY value::INTEGER) FILTER (WHERE keep) FROM mode_rewrite
 <REGEX>:Conversion Error:.*
 
 statement ok
-PRAGMA disable_verification;
-
-statement ok
 CREATE SEQUENCE mode_rewrite_seq START 1;
 
 # volatile arguments are staged before aggregate fan-out

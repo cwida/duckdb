@@ -76,9 +76,6 @@ SELECT COUNT(DISTINCT i), MIN(i), MAX(i), SUM(i) / COUNT(i) FROM (SELECT t::SMAL
 
 # test result ordering of perfect HT
 statement ok
-PRAGMA disable_verification
-
-statement ok
 create table dates as select date '1992-01-01' + concat(i, ' months')::interval as d from range(100) tbl(i);
 
 query II

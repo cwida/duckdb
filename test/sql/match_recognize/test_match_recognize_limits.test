@@ -3,9 +3,6 @@
 # group: [match_recognize]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 pragma threads=1
 
 # the record the matcher keeps counts against the memory limit

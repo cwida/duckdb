@@ -12,9 +12,6 @@ statement ok
 PRAGMA explain_output = OPTIMIZED_ONLY;
 
 statement ok
-PRAGMA disable_verification;
-
-statement ok
 LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
 
 statement ok

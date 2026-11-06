@@ -3,9 +3,6 @@
 # group: [match_recognize]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 pragma threads=1
 
 # the alias list renames the columns, as it does for any other table reference

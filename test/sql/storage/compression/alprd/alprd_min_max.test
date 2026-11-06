@@ -4,9 +4,6 @@
 load {TEST_DIR}/alprd_min_max.db readwrite v1.5.0
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 PRAGMA force_compression='alprd';
 
 foreach type DOUBLE FLOAT

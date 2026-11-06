@@ -160,9 +160,6 @@ SELECT pk FROM tab3 WHERE col0 IN (SELECT col3 FROM tab3 WHERE (col1 > 93.79)) O
 require parquet
 
 #
-statement ok
-pragma disable_verification
-
 # one column without NULL, and two columns (varchar and bigint) that are all NULL
 statement ok
 copy (select hash(range + 1) i, null::varchar j, null::bigint k from range(100)) to '{TEST_DIR}/cm1.parquet'
