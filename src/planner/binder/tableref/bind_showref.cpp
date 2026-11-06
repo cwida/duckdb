@@ -70,10 +70,19 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		// a group or the first value of a column keeps the constraints of that column (DISTINCT plans this way)
 		auto &aggregate = op.Cast<LogicalAggregate>();
+		if (aggregate.grouping_sets.size() > 1) {
+			// ROLLUP, CUBE and GROUPING SETS repeat keys and introduce NULLs
+			break;
+		}
 		optional_ptr<const Expression> source;
 		if (binding.table_index == aggregate.group_index) {
+			if (!aggregate.grouping_sets.empty() &&
+			    aggregate.grouping_sets[0].find(binding.column_index) == aggregate.grouping_sets[0].end()) {
+				break;
+			}
 			source = aggregate.GetExpression(binding);
-		} else if (binding.table_index == aggregate.aggregate_index) {
+		} else if (binding.table_index == aggregate.aggregate_index && !aggregate.groups.empty()) {
+			// without groups first() returns NULL on empty input
 			auto &aggr = aggregate.GetExpression(binding).Cast<BoundAggregateExpression>();
 			if (aggr.Function().GetName() == FirstFun::Name && !aggr.GetFilter() && aggr.GetChildren().size() == 1) {
 				source = *aggr.GetChildren()[0];

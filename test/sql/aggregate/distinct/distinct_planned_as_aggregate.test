@@ -14,6 +14,18 @@ SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC);
 ----
 1
 
+# exporting the plan as SQL keeps the DISTINCT ON, so the order of its input is kept
+statement ok
+SET debug_verify_statement = 'explain_sql';
+
+query I
+SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC);
+----
+1
+
+statement ok
+RESET debug_verify_statement;
+
 query II
 EXPLAIN SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC);
 ----
@@ -51,3 +63,20 @@ DESCRIBE SELECT DISTINCT ON (b) a, b, c FROM t ORDER BY b, a;
 a	INTEGER	NO	PRI	NULL	NULL
 b	INTEGER	NO	NULL	NULL	NULL
 c	VARCHAR	YES	NULL	'x'	NULL
+
+# ROLLUP and GROUPING SETS repeat keys and introduce NULLs, and an ungrouped first() is NULL on empty input
+query IIIIII
+DESCRIBE SELECT a FROM t GROUP BY ROLLUP (a);
+----
+a	INTEGER	YES	NULL	NULL	NULL
+
+query IIIIII
+DESCRIBE SELECT a, b FROM t GROUP BY GROUPING SETS ((a), (a, b));
+----
+a	INTEGER	YES	NULL	NULL	NULL
+b	INTEGER	YES	NULL	NULL	NULL
+
+query IIIIII
+DESCRIBE SELECT first(b) AS b FROM t WHERE false;
+----
+b	INTEGER	YES	NULL	NULL	NULL
