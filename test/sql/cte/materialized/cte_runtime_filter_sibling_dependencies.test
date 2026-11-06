@@ -2,6 +2,9 @@
 # description: Small CTE filter producers finalize independently of sibling builds
 # group: [materialized]
 
+# The bulk loads exceed the non-termination bound at tiny vector sizes
+require vector_size 2048
+
 statement ok
 SET max_execution_time=10000;
 
