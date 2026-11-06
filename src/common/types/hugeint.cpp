@@ -446,26 +446,23 @@ bool Hugeint::TryCast(hugeint_t input, uhugeint_t &result) {
 	return true;
 }
 
-template <>
-bool Hugeint::TryCast(hugeint_t input, float &result) {
-	double dbl_result;
-	Hugeint::TryCast(input, dbl_result);
-	result = (float)dbl_result;
+template <class REAL_T>
+bool CastBigintToFloating(hugeint_t input, REAL_T &result) {
+	const bool negative = input.upper < 0;
+	uhugeint_t magnitude(static_cast<uint64_t>(input.upper), input.lower);
+	if (negative) {
+		magnitude = -magnitude;
+	}
+	Uhugeint::TryCast(magnitude, result);
+	if (negative) {
+		result = -result;
+	}
 	return true;
 }
 
-template <class REAL_T>
-bool CastBigintToFloating(hugeint_t input, REAL_T &result) {
-	switch (input.upper) {
-	case -1:
-		// special case for upper = -1 to avoid rounding issues in small negative numbers
-		result = -REAL_T(NumericLimits<uint64_t>::Maximum() - input.lower) - 1;
-		break;
-	default:
-		result = REAL_T(input.lower) + REAL_T(input.upper) * (REAL_T(NumericLimits<uint64_t>::Maximum()) + 1);
-		break;
-	}
-	return true;
+template <>
+bool Hugeint::TryCast(hugeint_t input, float &result) {
+	return CastBigintToFloating<float>(input, result);
 }
 
 template <>
