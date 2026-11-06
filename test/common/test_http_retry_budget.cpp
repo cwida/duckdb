@@ -53,6 +53,9 @@ TEST_CASE("Retry-After header values parse as seconds or HTTP-dates", "[http]") 
 	REQUIRE_FALSE(HTTPRetryBudget::TryParseRetryAfterMs("", ms));
 	REQUIRE_FALSE(HTTPRetryBudget::TryParseRetryAfterMs("soon", ms));
 	REQUIRE_FALSE(HTTPRetryBudget::TryParseRetryAfterMs("-5", ms));
+	REQUIRE_FALSE(HTTPRetryBudget::TryParseRetryAfterMs("epoch", ms));
+	REQUIRE_FALSE(HTTPRetryBudget::TryParseRetryAfterMs("infinity", ms));
+	REQUIRE_FALSE(HTTPRetryBudget::TryParseRetryAfterMs("-infinity", ms));
 	// A date in the past asks for no delay
 	REQUIRE(HTTPRetryBudget::TryParseRetryAfterMs("Sun, 06 Nov 1994 08:49:37 GMT", ms));
 	REQUIRE(ms == 0);
