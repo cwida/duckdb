@@ -438,11 +438,17 @@ bool Tokenizer::TokenizeInputInternal(TokenizerBehavior &behavior) const {
 				last_pos = i + 1;
 				break;
 			}
-			// '.' starts a number only as a leading decimal (.5); a lone '.' is the qualifier operator (t.a)
+			// '.' starts a number only as a leading decimal (.5); otherwise it is the qualifier (t.a, t.*)
 			if (CharacterIsInitialNumber(c) &&
 			    (c != '.' || (i + 1 < sql.size() && StringUtil::CharacterIsDigit(sql[i + 1])))) {
 				state = TokenizeState::NUMERIC;
 				last_pos = i;
+				break;
+			}
+			if (c == '.') {
+				// emit '.' as it's own token, tokenize what follows independently
+				tokens.emplace_back(string(1, c), last_pos, TokenType::OPERATOR);
+				last_pos = i + 1;
 				break;
 			}
 			if (CharacterIsSpecialStringCharacter(c)) {
