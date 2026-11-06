@@ -4,6 +4,7 @@
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
+#include "duckdb/main/context.hpp"
 #include "include/icu-current.hpp"
 #include "include/icu-casts.hpp"
 
@@ -16,7 +17,7 @@ static timestamp_t GetTransactionTimestamp(ExpressionState &state) {
 static void CurrentTimeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	D_ASSERT(input.ColumnCount() == 0);
 	auto instant = GetTransactionTimestamp(state);
-	ICUDateFunc::BindData data(state.GetClientContext());
+	ICUDateFunc::BindData data(state.GetContext());
 
 	dtime_tz_t result_time(dtime_t(0), 0);
 	ICUToTimeTZ::ToTimeTZ(data.calendar.get(), timestamp_tz_t(instant), result_time);
@@ -28,7 +29,7 @@ static void CurrentDateFunction(DataChunk &input, ExpressionState &state, Vector
 	D_ASSERT(input.ColumnCount() == 0);
 	auto instant = GetTransactionTimestamp(state);
 
-	auto val = Value::DATE(ICUMakeDate::ToDate(state.GetClientContext(), timestamp_tz_t(instant)));
+	auto val = Value::DATE(ICUMakeDate::ToDate(state.GetContext(), timestamp_tz_t(instant)));
 	result.Reference(val, count_t(input.size()));
 }
 

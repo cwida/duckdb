@@ -73,6 +73,12 @@ optional_ptr<QueryProfiler> Context::TryGetQueryProfiler(optional_ptr<Context> s
 	return services->TryGetQueryProfiler();
 }
 
+void Context::InterruptCheck() const {
+	if (context) {
+		context->InterruptCheck();
+	}
+}
+
 bool Context::IsClient() const {
 	return context != nullptr;
 }

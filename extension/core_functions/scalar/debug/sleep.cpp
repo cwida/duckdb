@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "core_functions/scalar/debug_functions.hpp"
 
 #include "duckdb/common/vector_operations/generic_executor.hpp"
@@ -17,7 +18,7 @@ struct NullResultType {
 
 static void SleepFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	input.Flatten();
-	auto &context = state.GetClientContext();
+	auto &context = state.GetContext();
 	GenericExecutor::ExecuteUnary<PrimitiveType<int64_t>, NullResultType>(input.data[0], result,
 	                                                                      [&context](PrimitiveType<int64_t> input) {
 		                                                                      // Sleep for the specified number of

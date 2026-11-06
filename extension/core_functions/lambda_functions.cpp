@@ -1,6 +1,7 @@
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -20,8 +21,8 @@ namespace duckdb {
 //! LambdaExecuteInfo holds information for executing the lambda expression on an input chunk and
 //! a resulting lambda chunk.
 struct LambdaExecuteInfo {
-	LambdaExecuteInfo(ClientContext &context, const Expression &lambda_expr, const DataChunk &args,
-	                  const bool has_index, const Vector &child_vector)
+	LambdaExecuteInfo(Context &context, const Expression &lambda_expr, const DataChunk &args, const bool has_index,
+	                  const Vector &child_vector)
 	    : has_index(has_index) {
 		expr_executor = make_uniq<ExpressionExecutor>(context, lambda_expr);
 
@@ -292,8 +293,7 @@ static void ExecuteLambda(DataChunk &args, ExpressionState &state, Vector &resul
 	info.child_vector->ToUnifiedFormat(child_info.format);
 
 	// get the expression executor
-	LambdaExecuteInfo execute_info(state.GetClientContext(), *info.lambda_expr, args, info.has_index,
-	                               *info.child_vector);
+	LambdaExecuteInfo execute_info(state.GetContext(), *info.lambda_expr, args, info.has_index, *info.child_vector);
 
 	// get list_filter specific info
 	ListFilterInfo list_filter_info;
@@ -327,7 +327,7 @@ static void ExecuteLambda(DataChunk &args, ExpressionState &state, Vector &resul
 		for (idx_t child_idx = 0; child_idx < list_entry.length; child_idx++) {
 			// reached STANDARD_VECTOR_SIZE elements
 			if (elem_cnt == STANDARD_VECTOR_SIZE) {
-				state.GetClientContext().InterruptCheck();
+				state.GetContext().InterruptCheck();
 				execute_info.lambda_chunk.Reset();
 				ExecuteExpression(elem_cnt, child_info, info.column_infos, index_vector, execute_info);
 				auto &lambda_vector = execute_info.lambda_chunk.data[0];

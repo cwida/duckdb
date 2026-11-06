@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/bit_utils.hpp"
@@ -402,13 +403,10 @@ using bignum_magnitude_t = unsafe_vector<digit_t>;
 constexpr idx_t INTERRUPT_CHECK_INTERVAL = idx_t(1) << 20;
 
 void AccountWork(BignumArithmeticState &state, idx_t work) {
-	if (!state.context) {
-		return;
-	}
 	state.work_since_interrupt_check += work;
 	if (state.work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
 		state.work_since_interrupt_check = 0;
-		state.context->InterruptCheck();
+		state.context.InterruptCheck();
 	}
 }
 

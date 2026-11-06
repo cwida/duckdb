@@ -92,9 +92,11 @@ public:
 	//! Execute the expression with index `expr_idx` on the rows in 'sel'; the result holds those 'count' rows
 	DUCKDB_API void ExecuteExpression(idx_t expr_idx, Vector &result, const SelectionVector &sel, idx_t count);
 	//! Evaluate a scalar expression and fold it into a single value
+	DUCKDB_API static Value EvaluateScalar(Context &context, const Expression &expr, bool allow_unfoldable = false);
 	DUCKDB_API static Value EvaluateScalar(ClientContext &context, const Expression &expr,
 	                                       bool allow_unfoldable = false);
 	//! Try to evaluate a scalar expression and fold it into a single value, returns false if an exception is thrown
+	DUCKDB_API static bool TryEvaluateScalar(Context &context, const Expression &expr, Value &result);
 	DUCKDB_API static bool TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result);
 
 	//! Initialize the state of a given expression

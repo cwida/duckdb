@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -16,12 +17,12 @@ namespace duckdb {
 static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expression &expression,
                                                                   bool inside_selectivity_optional);
 
-static void InitializeExecutor(ClientContext &context, const Expression &expression, ExpressionFilterState &state) {
+static void InitializeExecutor(Context &context, const Expression &expression, ExpressionFilterState &state) {
 	state.executor = make_uniq<ExpressionExecutor>(context);
 	state.executor->AddExpression(expression);
 }
 
-ExpressionFilterState::ExpressionFilterState(ClientContext &context, const Expression &expression) {
+ExpressionFilterState::ExpressionFilterState(Context &context, const Expression &expression) {
 	can_throw = expression.CanThrow();
 	fast_executor = TryCreateFastExecutor(expression, false);
 	InitializeExecutor(context, expression, *this);
@@ -691,7 +692,7 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 
 unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context, const TableFilter &filter) {
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "TableFilterState::Initialize");
-	return make_uniq<ExpressionFilterState>(context, *expr_filter.expr);
+	return make_uniq<ExpressionFilterState>(context.Services(), *expr_filter.expr);
 }
 
 } // namespace duckdb

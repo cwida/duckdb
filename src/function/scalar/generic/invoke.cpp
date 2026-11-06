@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/lambda_functions.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -97,7 +98,7 @@ struct LambdaInvokeState final : public FunctionLocalState {
 			input_types.push_back(expr.GetChildren()[i]->GetReturnType());
 		}
 
-		auto executor = make_uniq<ExpressionExecutor>(state.GetClientContext(), *bound_lambda_expr.LambdaExpr());
+		auto executor = make_uniq<ExpressionExecutor>(state.GetContext(), *bound_lambda_expr.LambdaExpr());
 		return make_uniq<LambdaInvokeState>(std::move(executor), input_types, parameter_count);
 	}
 };

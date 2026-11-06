@@ -25,7 +25,7 @@ struct ICUMakeDate : public ICUDateFunc {
 
 	static void AddCasts(ExtensionLoader &loader);
 
-	static date_t ToDate(ClientContext &context, timestamp_tz_t instant);
+	static date_t ToDate(Context &context, timestamp_tz_t instant);
 };
 
 struct ICUToTimeTZ : public ICUDateFunc {

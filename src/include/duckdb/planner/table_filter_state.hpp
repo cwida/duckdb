@@ -51,12 +51,12 @@ public:
 
 struct ExpressionFilterState : public TableFilterState {
 public:
-	ExpressionFilterState(ClientContext &context, const Expression &expression);
+	ExpressionFilterState(Context &context, const Expression &expression);
 	~ExpressionFilterState() override;
 
-	ClientContext &GetContext() {
+	Context &GetContext() {
 		D_ASSERT(executor);
-		return executor->GetClientContext();
+		return executor->GetContext();
 	}
 
 	unique_ptr<ExpressionExecutor> executor;

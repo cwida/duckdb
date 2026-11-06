@@ -125,7 +125,7 @@ void ExpressionExecutor::Execute(DataChunk *input, DataChunk &result) {
 		ExecuteExpression(i, result.data[i]);
 	}
 	result.SetChildCardinality(input ? input->size() : 1);
-	result.Verify(TryGetClientContext());
+	result.Verify(context.GetDatabase());
 }
 
 void ExpressionExecutor::ExecuteExpression(DataChunk &input, Vector &result) {
@@ -179,6 +179,10 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result, const
 }
 
 Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expression &expr, bool allow_unfoldable) {
+	return EvaluateScalar(context.Services(), expr, allow_unfoldable);
+}
+
+Value ExpressionExecutor::EvaluateScalar(Context &context, const Expression &expr, bool allow_unfoldable) {
 	D_ASSERT(allow_unfoldable || expr.IsFoldable());
 	D_ASSERT(expr.IsScalar());
 	// use an ExpressionExecutor to execute the expression
@@ -194,6 +198,10 @@ Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expressio
 }
 
 bool ExpressionExecutor::TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result) {
+	return TryEvaluateScalar(context.Services(), expr, result);
+}
+
+bool ExpressionExecutor::TryEvaluateScalar(Context &context, const Expression &expr, Value &result) {
 	try {
 		result = EvaluateScalar(context, expr);
 		return true;
