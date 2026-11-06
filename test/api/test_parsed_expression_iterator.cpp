@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/parameter_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -80,8 +81,8 @@ TEST_CASE("ParsedExpressionIterator visits every expression of a parsed query", 
 	                               1);
 	RequireWalkFindsEveryParameter(con, "SELECT * FROM (PIVOT (SELECT 7 AS v, 1 AS a) ON (a + $1) IN (2) USING max(v))",
 	                               1);
-	RequireWalkFindsEveryParameter(
-	    con, "SELECT * FROM (UNPIVOT (SELECT 1 AS a, 2 AS b) ON (a + $1) AS x, b INTO NAME k VALUE v)", 1);
+	RequireWalkFindsEveryParameter(con, "SELECT * FROM (PIVOT (SELECT 7 AS v, 1 AS a) ON a IN ($1 + 1) USING max(v))",
+	                               1);
 	RequireWalkFindsEveryParameter(con,
 	                               "SELECT m FROM (SELECT $1 AS x) t MATCH_RECOGNIZE (MEASURES FIRST(x) AS m "
 	                               "ONE ROW PER MATCH PATTERN (A) DEFINE A AS true)",
@@ -99,6 +100,39 @@ TEST_CASE("ParsedExpressionIterator visits every expression of a parsed query", 
 	                               "NEAREST 1 BY DISTANCE abs(t.v - $1)) MATCH_RECOGNIZE (MEASURES FIRST(v) + $2 AS m "
 	                               "ONE ROW PER MATCH PATTERN (A) DEFINE A AS v > $3))",
 	                               3);
+}
+
+static void CollectColumnNames(ParsedExpression &expr, identifier_set_t &found) {
+	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		found.insert(expr.Cast<ColumnRefExpression>().GetColumnName());
+	}
+	ParsedExpressionIterator::EnumerateChildren(expr,
+	                                            [&](ParsedExpression &child) { CollectColumnNames(child, found); });
+}
+
+static identifier_set_t WalkedColumnNames(SelectStatement &statement) {
+	identifier_set_t found;
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    *statement.node, [&](unique_ptr<ParsedExpression> &child) { CollectColumnNames(*child, found); });
+	return found;
+}
+
+TEST_CASE("ParsedExpressionIterator visits UNPIVOT entry expressions but not UNPIVOT column names", "[api][parser]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	// a, c and d are names of source columns; b and e sit inside expressions the binder evaluates
+	for (auto &sql :
+	     {string("SELECT * FROM (UNPIVOT (SELECT 1 AS a, 2 AS b, 3 AS c, 4 AS d, 5 AS e) ON a, (c, d), "
+	             "(b + $1) AS x, COLUMNS(lambda col: col = e) INTO NAME k VALUE v)"),
+	      string("SELECT * FROM (SELECT 1 AS a, 2 AS b, 3 AS c, 4 AS d, 5 AS e) UNPIVOT (v FOR k IN (a, (c, "
+	             "d), (b + $1) AS x, COLUMNS(lambda col: col = e), 2000))")}) {
+		RequireWalkFindsEveryParameter(con, sql, 1);
+		auto statement = ParseSelect(con, sql);
+		CHECK(WalkedColumnNames(*statement) == identifier_set_t {Identifier("b"), Identifier("col"), Identifier("e")});
+		auto reparsed = ParseSelect(con, statement->ToString());
+		CHECK(WalkedColumnNames(*reparsed) == identifier_set_t {Identifier("b"), Identifier("col"), Identifier("e")});
+	}
 }
 
 TEST_CASE("ParsedExpressionIterator reports the table references inside a MATCH_RECOGNIZE input", "[api][parser]") {
@@ -136,4 +170,34 @@ TEST_CASE("ParsedExpressionIterator visits the duplicate eliminated columns of a
 	ParsedExpressionIterator::EnumerateTableRefChildren(
 	    join, [&](unique_ptr<ParsedExpression> &child) { CollectParameters(*child, found_in_join); });
 	REQUIRE(found_in_join == identifier_set_t {Identifier("1"), Identifier("2")});
+}
+
+static bool ParsedSelectsEqual(Connection &con, const string &left, const string &right) {
+	INFO(left);
+	INFO(right);
+	auto left_statement = ParseSelect(con, left);
+	auto right_statement = ParseSelect(con, right);
+	REQUIRE(left_statement->Equals(*left_statement->Copy()));
+	return left_statement->Equals(*right_statement);
+}
+
+TEST_CASE("Table references that differ only in an iterated expression are not equal", "[api][parser]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	CHECK(!ParsedSelectsEqual(con, "SELECT * FROM (PIVOT (SELECT 2 AS c, 7 AS v) ON c IN (1 + 1) USING max(v))",
+	                          "SELECT * FROM (PIVOT (SELECT 2 AS c, 7 AS v) ON c IN (1 + 2) USING max(v))"));
+	CHECK(!ParsedSelectsEqual(con, "SELECT * FROM (UNPIVOT (SELECT 1 AS a) ON (a + 1) AS x INTO NAME n VALUE v)",
+	                          "SELECT * FROM (UNPIVOT (SELECT 1 AS a) ON (a + 2) AS x INTO NAME n VALUE v)"));
+	CHECK(ParsedSelectsEqual(con, "SELECT * FROM (PIVOT (SELECT 2 AS c, 7 AS v) ON c IN (1 + 1) USING max(v))",
+	                         "SELECT * FROM (PIVOT (SELECT 2 AS c, 7 AS v) ON c IN (1 + 1) USING max(v))"));
+
+	JoinRef join(JoinRefType::REGULAR);
+	join.left = make_uniq<BaseTableRef>();
+	join.right = make_uniq<BaseTableRef>();
+	join.duplicate_eliminated_columns.push_back(MakeParameter("1"));
+	auto other = join.Copy();
+	REQUIRE(join.Equals(*other));
+	other->Cast<JoinRef>().duplicate_eliminated_columns[0] = MakeParameter("2");
+	CHECK(!join.Equals(*other));
 }

@@ -25,6 +25,10 @@ struct PivotColumnEntry {
 	bool Equals(const PivotColumnEntry &other) const;
 	PivotColumnEntry Copy() const;
 
+	//! Whether an UNPIVOT entry expression is a list of source column names (unqualified columns, constants, or a row
+	//! of them) rather than an expression to unpivot; appends the names when it is
+	static bool TryExtractUnpivotColumnList(const ParsedExpression &expr, vector<Identifier> &column_names);
+
 	void Serialize(Serializer &serializer) const;
 	static PivotColumnEntry Deserialize(Deserializer &source);
 };

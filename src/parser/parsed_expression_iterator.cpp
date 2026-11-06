@@ -112,10 +112,17 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 			for (auto &expr : pivot.pivot_expressions) {
 				expr_callback(expr);
 			}
+			const bool is_unpivot = !pivot.unpivot_names.empty();
 			for (auto &entry : pivot.entries) {
-				if (entry.expr) {
-					expr_callback(entry.expr);
+				if (!entry.expr) {
+					continue;
 				}
+				vector<Identifier> column_names;
+				if (is_unpivot && PivotColumnEntry::TryExtractUnpivotColumnList(*entry.expr, column_names)) {
+					// the binder reads this entry as source column names, which a rewrite would change
+					continue;
+				}
+				expr_callback(entry.expr);
 			}
 		}
 		break;
