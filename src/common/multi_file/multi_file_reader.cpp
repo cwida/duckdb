@@ -489,7 +489,7 @@ void MultiFileOptions::ValidateBoundSchema() const {
 	}
 }
 
-bool MultiFileReader::ParseCopyOption(ClientContext &context, const Identifier &key, const vector<Value> &values,
+bool MultiFileReader::ParseCopyOption(Context &context, const Identifier &key, const vector<Value> &values,
                                       MultiFileOptions &options) {
 	if (key != "file_row_number") {
 		return false;
@@ -544,9 +544,9 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		}
 		options.allow_empty = BooleanValue::Get(val);
 	} else if (key == "column_statistics") {
-		options.SetColumnStatistics(context, key, val);
+		options.SetColumnStatistics(context.GetContext(), key, val);
 	} else if (key == "maximum_sample_files") {
-		options.SetMaximumSampleFiles(context, key, val);
+		options.SetMaximumSampleFiles(context.GetContext(), key, val);
 	} else if (key == "maximum_files_for_stats") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -1422,7 +1422,7 @@ LogicalType MultiFileOptions::GetHiveLogicalType(const string &hive_partition_co
 	return LogicalType::VARCHAR;
 }
 
-void MultiFileOptions::SetMaximumSampleFiles(ClientContext &context, const Identifier &key, const Value &val) {
+void MultiFileOptions::SetMaximumSampleFiles(Context &context, const Identifier &key, const Value &val) {
 	if (val.IsNull()) {
 		throw BinderException("Cannot use NULL as argument to key %s", key);
 	}
@@ -1433,7 +1433,7 @@ void MultiFileOptions::SetMaximumSampleFiles(ClientContext &context, const Ident
 	}
 }
 
-bool MultiFileOptions::TrySetMaximumSampleFiles(ClientContext &context, const Value &val) {
+bool MultiFileOptions::TrySetMaximumSampleFiles(Context &context, const Value &val) {
 	if (val.IsNull()) {
 		return false;
 	}
@@ -1449,7 +1449,7 @@ bool MultiFileOptions::TrySetMaximumSampleFiles(ClientContext &context, const Va
 	return true;
 }
 
-void MultiFileOptions::SetColumnStatistics(ClientContext &context, const Identifier &key, const Value &val) {
+void MultiFileOptions::SetColumnStatistics(Context &context, const Identifier &key, const Value &val) {
 	if (val.IsNull()) {
 		column_statistics = Value();
 		return;
@@ -1513,8 +1513,7 @@ static vector<string> ParseColumnStatisticsKey(const string &key) {
 }
 
 // Apply the statistics given for one (possibly nested) column to the statistics object of that column.
-static void ApplyColumnStatistics(ClientContext &context, BaseStatistics &result, const Value &given,
-                                  const string &key) {
+static void ApplyColumnStatistics(Context &context, BaseStatistics &result, const Value &given, const string &key) {
 	Value min, max;
 	optional<idx_t> count, null_count, distinct_count;
 	for (auto &stat : MapValue::GetChildren(given)) {
@@ -1607,7 +1606,7 @@ static optional_ptr<BaseStatistics> DescendColumnStatistics(BaseStatistics &stat
 	}
 }
 
-void MultiFileOptions::VerifyColumnStatistics(ClientContext &context, const vector<Identifier> &names,
+void MultiFileOptions::VerifyColumnStatistics(Context &context, const vector<Identifier> &names,
                                               const vector<LogicalType> &types) const {
 	if (column_statistics.IsNull()) {
 		return;
@@ -1641,7 +1640,7 @@ void MultiFileOptions::VerifyColumnStatistics(ClientContext &context, const vect
 	}
 }
 
-unique_ptr<BaseStatistics> MultiFileOptions::GetColumnStatistics(ClientContext &context, const Identifier &column_name,
+unique_ptr<BaseStatistics> MultiFileOptions::GetColumnStatistics(Context &context, const Identifier &column_name,
                                                                  const LogicalType &type) const {
 	if (column_statistics.IsNull()) {
 		return nullptr;

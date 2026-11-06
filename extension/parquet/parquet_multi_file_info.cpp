@@ -100,7 +100,7 @@ void ParquetMultiFileInfo::BindReader(ClientContext &context, vector<LogicalType
 	    context, return_types, names, *bind_data.file_list, bind_data, *parquet_bind.options, bind_data.file_options);
 }
 
-static bool GetBooleanArgument(ClientContext &context, const Identifier &key, const vector<Value> &option_values) {
+static bool GetBooleanArgument(Context &context, const Identifier &key, const vector<Value> &option_values) {
 	if (option_values.empty()) {
 		return true;
 	}
@@ -314,7 +314,7 @@ bool ParquetMultiFileInfo::ParseCopyOption(ClientContext &context, const Identif
 		return true;
 	}
 	if (key == "binary_as_string") {
-		options.binary_as_string = GetBooleanArgument(context, key, values);
+		options.binary_as_string = GetBooleanArgument(context.GetContext(), key, values);
 		return true;
 	}
 	if (key == "debug_use_openssl") {
@@ -331,7 +331,7 @@ bool ParquetMultiFileInfo::ParseCopyOption(ClientContext &context, const Identif
 		if (values.size() != 1) {
 			throw BinderException("Parquet can_have_nan cannot be empty!");
 		}
-		options.can_have_nan = GetBooleanArgument(context, key, values);
+		options.can_have_nan = GetBooleanArgument(context.GetContext(), key, values);
 		return true;
 	}
 	if (key == "prefetch_strategy") {

@@ -1,3 +1,4 @@
+#include "duckdb/main/client_context.hpp"
 #include "json_common.hpp"
 #include "json_functions.hpp"
 #include "duckdb/common/atomic.hpp"
@@ -309,7 +310,7 @@ struct JSONTableInOutResult {
 };
 
 template <JSONTableInOutType TYPE>
-static void InitializeLocalState(ClientContext &context, JSONTableInOutLocalState &lstate, DataChunk &input,
+static void InitializeLocalState(Context &context, JSONTableInOutLocalState &lstate, DataChunk &input,
                                  JSONTableInOutResult &result) {
 	lstate.total_count = 0;
 
@@ -395,7 +396,7 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &context, Tabl
 		if (lstate.input_row >= input.size()) {
 			return OperatorResultType::NEED_MORE_INPUT;
 		}
-		InitializeLocalState<TYPE>(context.client, lstate, input, result);
+		InitializeLocalState<TYPE>(context.client.GetContext(), lstate, input, result);
 		lstate.initialized = true;
 	}
 

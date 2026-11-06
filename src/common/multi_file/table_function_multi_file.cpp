@@ -484,7 +484,7 @@ bool TableFunctionMultiFileWrapper::ParseOption(ClientContext &context, const Id
 	if (!settings.sample_files_parameter.empty() && key == settings.sample_files_parameter) {
 		// this parameter of the wrapped function also sets how many files are sampled to determine the schema - a
 		// value we cannot use is left to the function to report, in its own words, when it binds
-		file_options.TrySetMaximumSampleFiles(context, val);
+		file_options.TrySetMaximumSampleFiles(context.GetContext(), val);
 	}
 	return true;
 }

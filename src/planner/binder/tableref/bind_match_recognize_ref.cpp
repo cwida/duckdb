@@ -203,7 +203,7 @@ static bool HasExclusion(const ParsedExpression &expr) {
 
 //! PREV and NEXT walk the ordered partition rather than the match, so a measure's are computed per
 //! input row below the pattern window and read back from above it
-static void HoistMeasureNavigation(ClientContext &context, unique_ptr<ParsedExpression> &expr,
+static void HoistMeasureNavigation(Context &context, unique_ptr<ParsedExpression> &expr,
                                    const WindowExpression &pattern_window,
                                    const case_insensitive_map_t<vector<string>> &symbols,
                                    const case_insensitive_map_t<string> &universal,
@@ -1022,7 +1022,7 @@ BoundStatement Binder::Bind(MatchRecognizeRef &ref) {
 	// PREV() and NEXT() in MEASURES walk the matcher's input, so they are computed down here too
 	vector<unique_ptr<ParsedExpression>> measure_navigation;
 	for (auto &expr : ref.config->measures_expression_list) {
-		HoistMeasureNavigation(context, expr, *window_template, measure_symbols, input_refs.universal,
+		HoistMeasureNavigation(context.GetContext(), expr, *window_template, measure_symbols, input_refs.universal,
 		                       measure_navigation, names);
 	}
 	if (!measure_navigation.empty()) {

@@ -149,7 +149,7 @@ public:
 
 public:
 	//! The registry is guarded by CopyToFileGlobalState::lock.
-	PendingFileState ReserveFile(ClientContext &context, string output_path,
+	PendingFileState ReserveFile(Context &context, string output_path,
 	                             optional_ptr<const vector<Value>> partition_values);
 	void PublishCreatedPath(PendingFileState &pending_file_state, string output_path);
 
@@ -1928,7 +1928,7 @@ bool CopyDirectoryManager::EnsureDirectory(FileSystem &fs, const string &dir_pat
 	return created;
 }
 
-PendingFileState CopyOutputFileRegistry::ReserveFile(ClientContext &context, string output_path,
+PendingFileState CopyOutputFileRegistry::ReserveFile(Context &context, string output_path,
                                                      optional_ptr<const vector<Value>> partition_values) {
 	PendingFileState result;
 	result.output_path = std::move(output_path);
@@ -4570,7 +4570,7 @@ PendingFileState CopyToFileGlobalState::PrepareFileStateLocked(string output_pat
 	if (output_path.empty()) {
 		output_path = op.filename_pattern.CreateFilename(fs, op.file_path, op.file_extension, last_file_offset++);
 	}
-	auto result = output_files.ReserveFile(context, std::move(output_path), partition_values);
+	auto result = output_files.ReserveFile(context.GetContext(), std::move(output_path), partition_values);
 	output_files.PublishCreatedPath(result, result.output_path);
 	return result;
 }
@@ -4620,7 +4620,8 @@ CopyToFileGlobalState::CreatePartitionFileStateOpenLocked(FileStateHandle &file_
 		return PendingFileStateOpen();
 	}
 	PendingFileStateOpen result;
-	result.pending_file_state = output_files.ReserveFile(context, std::move(output_path), partition_values);
+	result.pending_file_state =
+	    output_files.ReserveFile(context.GetContext(), std::move(output_path), partition_values);
 	result.open_job = make_shared_ptr<FileStateOpenJob>();
 	file_state.open_job = result.open_job;
 	return result;
@@ -4885,7 +4886,7 @@ void PhysicalCopyToFile::ReturnColumnTypes(DataChunk &chunk, const vector<Identi
 	}
 }
 
-void PhysicalCopyToFile::ReturnStatistics(ClientContext &context, DataChunk &chunk, CopyToFileInfo &info) {
+void PhysicalCopyToFile::ReturnStatistics(Context &context, DataChunk &chunk, CopyToFileInfo &info) {
 	auto &file_stats = *info.file_stats;
 
 	// filename VARCHAR
@@ -5307,7 +5308,7 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 			if (use_tmp_file) {
 				file_entry.file_path = GetNonTmpFile(context.client, file_entry.file_path);
 			}
-			ReturnStatistics(context.client, chunk, file_entry);
+			ReturnStatistics(context.client.GetContext(), chunk, file_entry);
 		}
 		if (return_column_types) {
 			if (gstate.output_files.WrittenFileCount() == 0) {

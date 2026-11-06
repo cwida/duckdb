@@ -24,7 +24,7 @@ Value ConvertVectorToValue(vector<Value> set) {
 	return Value::LIST(std::move(set));
 }
 
-idx_t ParseBytesArg(ClientContext &context, const Identifier &name, const Value &arg) {
+idx_t ParseBytesArg(Context &context, const Identifier &name, const Value &arg) {
 	if (arg.IsNull()) {
 		throw BinderException("NULL is not supported as a valid option for COPY option \"%s\"",
 		                      StringUtil::Upper(name.GetIdentifierName()));

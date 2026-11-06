@@ -328,7 +328,8 @@ static unique_ptr<FunctionData> ParquetWriteBind(ClientContext &context, CopyFun
 		} else if (option_name == "write_bloom_filter") {
 			bind_data->enable_bloom_filters = BooleanValue::Get(option_values[0].CastAs(context, LogicalType::BOOLEAN));
 		} else if (option_name == "bloom_filter_fallback_max_bytes") {
-			bind_data->bloom_filter_fallback_max_bytes = ParseBytesArg(context, option_name, option_values[0]);
+			bind_data->bloom_filter_fallback_max_bytes =
+			    ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "write_page_index") {
 			bind_data->write_page_index = BooleanValue::Get(option_values[0].CastAs(context, LogicalType::BOOLEAN));
 		} else if (option_name == "bloom_filter_false_positive_ratio") {

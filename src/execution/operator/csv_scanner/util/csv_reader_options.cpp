@@ -43,9 +43,9 @@ CSVReaderOptions::CSVReaderOptions(const CSVOption<char> single_byte_delimiter,
 		dialect_options.state_machine_options.delimiter = multi_byte_delimiter;
 	}
 }
-static bool ParseBoolean(ClientContext &context, const Value &value, const Identifier &loption);
+static bool ParseBoolean(Context &context, const Value &value, const Identifier &loption);
 
-static bool ParseBoolean(ClientContext &context, const vector<Value> &set, const Identifier &loption) {
+static bool ParseBoolean(Context &context, const vector<Value> &set, const Identifier &loption) {
 	if (set.empty()) {
 		// no option specified: default to true
 		return true;
@@ -56,7 +56,7 @@ static bool ParseBoolean(ClientContext &context, const vector<Value> &set, const
 	return ParseBoolean(context, set[0], loption);
 }
 
-static bool ParseBoolean(ClientContext &context, const Value &value, const Identifier &loption) {
+static bool ParseBoolean(Context &context, const Value &value, const Identifier &loption) {
 	if (value.IsNull()) {
 		throw BinderException("%s expects a non-null boolean value (e.g. TRUE or 1)", loption);
 	}
@@ -252,7 +252,7 @@ void CSVReaderOptions::SetDateFormat(LogicalTypeId type, const string &format, b
 	}
 }
 
-void CSVReaderOptions::SetReadOption(ClientContext &context, const Identifier &loption, const Value &value,
+void CSVReaderOptions::SetReadOption(Context &context, const Identifier &loption, const Value &value,
                                      const vector<Identifier> &expected_names) {
 	if (SetBaseOption(context, loption, value)) {
 		return;
@@ -386,7 +386,7 @@ void CSVReaderOptions::SetReadOption(ClientContext &context, const Identifier &l
 	}
 }
 
-void CSVReaderOptions::SetWriteOption(ClientContext &context, const Identifier &loption, const Value &value) {
+void CSVReaderOptions::SetWriteOption(Context &context, const Identifier &loption, const Value &value) {
 	if (loption == "new_line") {
 		// Steal this from SetBaseOption so we can write different newlines (e.g., format JSON ARRAY)
 		write_newline = ParseString(value, loption);
@@ -418,7 +418,7 @@ void CSVReaderOptions::SetWriteOption(ClientContext &context, const Identifier &
 	}
 }
 
-bool CSVReaderOptions::SetBaseOption(ClientContext &context, const Identifier &loption, const Value &value,
+bool CSVReaderOptions::SetBaseOption(Context &context, const Identifier &loption, const Value &value,
                                      bool write_option) {
 	if (loption.StartsWith("delim") || loption.StartsWith("sep")) {
 		SetDelimiter(ParseString(value, loption));
@@ -850,7 +850,7 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 	} else if (key == "normalize_names") {
 		normalize_names = GetBooleanValue(key, val);
 	} else {
-		SetReadOption(context, key, val, name_list);
+		SetReadOption(context.GetContext(), key, val, name_list);
 	}
 }
 //! This function is used to remember options set by the sniffer, for use in ReadCSVRelation

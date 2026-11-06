@@ -18,7 +18,7 @@ const LogicalType &PerfectHashJoinExecutor::GetKeyType() const {
 //===--------------------------------------------------------------------===//
 // Initialize
 //===--------------------------------------------------------------------===//
-bool ExtractNumericValue(ClientContext &context, const Value &val, hugeint_t &result) {
+bool ExtractNumericValue(Context &context, const Value &val, hugeint_t &result) {
 	if (!val.type().IsIntegral()) {
 		switch (val.type().InternalType()) {
 		case PhysicalType::INT8:
@@ -70,7 +70,7 @@ bool ExtractNumericValue(ClientContext &context, const Value &val, hugeint_t &re
 	return true;
 }
 
-bool PerfectHashJoinExecutor::CanDoPerfectHashJoin(ClientContext &context, const PhysicalHashJoin &op, const Value &min,
+bool PerfectHashJoinExecutor::CanDoPerfectHashJoin(Context &context, const PhysicalHashJoin &op, const Value &min,
                                                    const Value &max) {
 	// TODO: Add support for residual predicates
 	if (op.predicate) {

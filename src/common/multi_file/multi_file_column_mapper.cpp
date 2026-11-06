@@ -970,7 +970,7 @@ static bool MappedCastIsInvertible(const MultiFileIndexMapping &mapping, const L
 	return true;
 }
 
-static bool TryCastConstant(ClientContext &context, Value &constant, const MultiFileIndexMapping &mapping,
+static bool TryCastConstant(Context &context, Value &constant, const MultiFileIndexMapping &mapping,
                             const LogicalType &target_type) {
 	// this filter replaces the global one, so both casts must preserve which rows match
 	if (!BoundCastExpression::CastIsInvertible(constant.type(), target_type) ||
@@ -1032,7 +1032,7 @@ static RewrittenMappedExpression RewriteMappedValueExpression(const Expression &
 	}
 }
 
-static unique_ptr<Expression> RewriteDynamicFilterExpression(ClientContext &context,
+static unique_ptr<Expression> RewriteDynamicFilterExpression(Context &context,
                                                              const shared_ptr<DynamicFilterData> &filter_data,
                                                              const MultiFileIndexMapping &mapping,
                                                              const LogicalType &target_type) {
@@ -1048,7 +1048,7 @@ static unique_ptr<Expression> RewriteDynamicFilterExpression(ClientContext &cont
 	                                         make_uniq<BoundConstantExpression>(std::move(new_constant)));
 }
 
-static unique_ptr<Expression> TryCastFilterExpression(ClientContext &context, const Expression &expr,
+static unique_ptr<Expression> TryCastFilterExpression(Context &context, const Expression &expr,
                                                       const MultiFileIndexMapping &mapping,
                                                       const LogicalType &target_type) {
 	switch (expr.GetExpressionClass()) {
@@ -1159,7 +1159,7 @@ static unique_ptr<Expression> TryCastFilterExpression(ClientContext &context, co
 	}
 }
 
-static unique_ptr<TableFilter> TryCastTableFilter(ClientContext &context, const TableFilter &global_filter,
+static unique_ptr<TableFilter> TryCastTableFilter(Context &context, const TableFilter &global_filter,
                                                   MultiFileIndexMapping &mapping, const LogicalType &target_type) {
 	auto filter_expression = GetFilterExpression(global_filter);
 	auto rewritten_expr = TryCastFilterExpression(context, *filter_expression, mapping, target_type);
@@ -1220,7 +1220,7 @@ MultiFileColumnMapper::CreateFilters(map<MultiFileGlobalIndex, reference<TableFi
 			break;
 		case FilterConversionType::CAST_FILTER:
 			// types are different - try to convert
-			local_filter = TryCastTableFilter(context, global_filter, map_entry.mapping, local_type);
+			local_filter = TryCastTableFilter(context.GetContext(), global_filter, map_entry.mapping, local_type);
 			break;
 		default:
 			// we need to execute the filter globally
