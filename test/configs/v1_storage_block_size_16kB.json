@@ -75,7 +75,8 @@
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/sql_export/secure_view_sql_export.test",
         "test/sql/sql_export/secure_view_predicates.test",
-        "test/sql/optimizer/secure_view_fallible_functions.test"
+        "test/sql/optimizer/secure_view_fallible_functions.test",
+        "test/optimizer/unused_columns/count_star_over_union_secure_view.test"
       ]
     },
     {
