@@ -5,6 +5,9 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/bit_utils.hpp"
 
+#include <cmath>
+#include <cstring>
+
 namespace duckdb {
 
 template <class T>
@@ -188,6 +191,17 @@ bool TryCastToBignum::Operation(string_t input_value, bignum_t &result_value, Ve
 	return true;
 }
 
+//! Writes the n (1 <= n <= 8) least significant bytes of value as a big-endian magnitude, complemented for a
+//! negative value
+static inline void BignumCastStoreLeadingBytes(char *destination, uint64_t value, idx_t n, bool is_negative) {
+	D_ASSERT(n >= 1 && n <= sizeof(uint64_t));
+	if (is_negative) {
+		value = ~value;
+	}
+	value = Bignum::BignumCastBigEndianToHost(value);
+	memcpy(destination, reinterpret_cast<const char *>(&value) + (sizeof(uint64_t) - n), n);
+}
+
 template <class T>
 static bool DoubleToBignum(T double_value, bignum_t &result_value, Vector &result) {
 	// Check if we can cast it
@@ -198,35 +212,43 @@ static bool DoubleToBignum(T double_value, bignum_t &result_value, Vector &resul
 	// Determine if the number is negative
 	bool is_negative = double_value < 0;
 	// Determine the number of data bytes
-	double abs_value = std::abs(double_value);
+	double abs_value = std::abs(static_cast<double>(double_value));
 
 	if (abs_value == 0) {
 		// Return Value 0
 		result_value = Bignum::InitializeBignumZero(result);
 		return true;
 	}
-	vector<char> value;
-	while (abs_value > 0) {
-		double quotient = abs_value / 256;
-		double truncated = floor(quotient);
-		uint8_t byte = static_cast<uint8_t>(abs_value - truncated * 256);
-		abs_value = truncated;
-		if (is_negative) {
-			value.push_back(static_cast<char>(~byte));
+	// abs_value = fraction * 2^exponent with 0.5 <= fraction < 1, i.e. mantissa * 2^(exponent - 53) with an integer
+	// mantissa of exactly 53 bits
+	int exponent;
+	const double fraction = std::frexp(abs_value, &exponent);
+	uint64_t top = 0;
+	idx_t top_bytes = 1;
+	idx_t zero_bytes = 0;
+	if (exponent > 0) {
+		constexpr int MANTISSA_BITS = 53;
+		const auto mantissa = static_cast<uint64_t>(std::ldexp(fraction, MANTISSA_BITS));
+		if (exponent <= MANTISSA_BITS) {
+			// the fraction is dropped, this leaves "exponent" bits
+			top = mantissa >> (MANTISSA_BITS - exponent);
+			top_bytes = (static_cast<idx_t>(exponent) + 7) / 8;
 		} else {
-			value.push_back(static_cast<char>(byte));
+			// the mantissa is followed by (exponent - 53) zero bits: whole zero bytes, and a shift of the mantissa
+			const int shift = exponent - MANTISSA_BITS;
+			zero_bytes = static_cast<idx_t>(shift) / 8;
+			top = mantissa << (shift % 8);
+			top_bytes = (static_cast<idx_t>(exponent) + 7) / 8 - zero_bytes;
 		}
 	}
-	uint32_t data_byte_size = static_cast<uint32_t>(value.size());
-	uint32_t blob_size = data_byte_size + Bignum::BIGNUM_HEADER_SIZE;
+	// a magnitude below one has an integer part of zero, which keeps the sign of the input as before
+	const idx_t data_byte_size = top_bytes + zero_bytes;
+	const idx_t blob_size = data_byte_size + Bignum::BIGNUM_HEADER_SIZE;
 	result_value.data = StringVector::EmptyString(result, blob_size);
 	auto writable_blob = result_value.data.GetDataWriteable();
 	Bignum::SetHeader(writable_blob, data_byte_size, is_negative);
-	// Add data bytes to the blob, starting off after header bytes
-	idx_t blob_string_idx = value.size() - 1;
-	for (idx_t i = Bignum::BIGNUM_HEADER_SIZE; i < blob_size; i++) {
-		writable_blob[i] = value[blob_string_idx--];
-	}
+	BignumCastStoreLeadingBytes(writable_blob + Bignum::BIGNUM_HEADER_SIZE, top, top_bytes, is_negative);
+	memset(writable_blob + Bignum::BIGNUM_HEADER_SIZE + top_bytes, is_negative ? 0xFF : 0x00, zero_bytes);
 	result_value.data.Finalize();
 	return true;
 }
