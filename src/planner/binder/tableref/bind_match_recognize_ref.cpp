@@ -4,6 +4,7 @@
 #include "duckdb/function/window/match_recognize_functions.hpp"
 #include "duckdb/function/window/window_match_recognize.hpp"
 
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 
 #include "duckdb/parser/expression/case_expression.hpp"

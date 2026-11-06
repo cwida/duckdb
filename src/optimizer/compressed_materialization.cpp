@@ -8,6 +8,7 @@
 #include "duckdb/function/scalar/operators.hpp"
 #include "duckdb/function/scalar/variant_functions.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/topn_optimizer.hpp"
