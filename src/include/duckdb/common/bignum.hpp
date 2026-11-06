@@ -92,10 +92,12 @@ struct BignumIntermediate {
 	//! In case we have unnecessary extra 0's or 1's in our bignum we trim them
 	static idx_t Trim(data_ptr_t data, uint32_t &size, bool is_negative);
 	void Trim();
-	//! Add a BignumIntermediate to another BignumIntermediate, equivalent of a +=
-	void AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs);
-	//! Adds two BignumIntermediates and returns a string_t result, equivalent of a +
-	static string_t Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs);
+	//! Add a BignumIntermediate to another BignumIntermediate, equivalent of a += (or a -= with negate_rhs)
+	void AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs, bool negate_rhs = false);
+	//! Adds two BignumIntermediates and returns a string_t result, equivalent of a + (or a - with negate_rhs: the
+	//! right operand takes part with its sign flipped, without being modified or copied)
+	static string_t Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs,
+	                    bool negate_rhs = false);
 	//! Multiplies two BignumIntermediates and returns a string_t result, equivalent of a *
 	static string_t Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
 	                         const BignumIntermediate &rhs);

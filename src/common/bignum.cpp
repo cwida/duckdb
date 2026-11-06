@@ -1,4 +1,5 @@
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/bignum_limbs.hpp"
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/bswap.hpp"
@@ -71,12 +72,56 @@ uint8_t BignumIntermediate::GetAbsoluteByte(int64_t index) const {
 	return is_negative ? static_cast<uint8_t>(~data[index]) : static_cast<uint8_t>(data[index]);
 }
 
-AbsoluteNumberComparison BignumIntermediate::IsAbsoluteBigger(const BignumIntermediate &rhs) const {
-	idx_t actual_start_pos = GetStartDataPos();
-	idx_t actual_size = size - actual_start_pos;
+//! Loads the 8 magnitude bytes ending just before end_idx as one limb; bytes before the start of the value read as
+//! zero, bytes of a negative value are complemented so the limb holds the absolute value
+static inline uint64_t LoadAbsoluteLimb(const BignumIntermediate &value, int64_t end_idx) {
+	if (end_idx <= 0) {
+		return 0;
+	}
+	if (end_idx >= 8) {
+		const uint64_t limb = BignumLimb::LoadBE(value.data + end_idx - 8);
+		return value.is_negative ? ~limb : limb;
+	}
+	// a partial limb at the most significant end of the value: only the low end_idx bytes are real
+	const uint64_t limb = BignumLimb::LoadBEPartial(value.data, static_cast<idx_t>(end_idx));
+	const uint64_t mask = (uint64_t(1) << (8 * end_idx)) - 1;
+	return value.is_negative ? (~limb & mask) : limb;
+}
 
-	idx_t rhs_actual_start_pos = rhs.GetStartDataPos();
-	idx_t rhs_actual_size = rhs.size - rhs_actual_start_pos;
+//! Stores the low min(end_idx, 8) bytes of a limb as big-endian bytes ending just before end_idx
+static inline void StoreLimb(data_ptr_t result, int64_t end_idx, uint64_t limb) {
+	if (end_idx >= 8) {
+		BignumLimb::StoreBE(result + end_idx - 8, limb);
+		return;
+	}
+	BignumLimb::StoreBEPartial(result, static_cast<idx_t>(end_idx), limb);
+}
+
+//! The number of leading bytes of data[0, count) equal to the fill byte (0x00 or 0xFF), eight bytes at a time
+static idx_t CountLeadingFillBytes(const_data_ptr_t data, idx_t count, bool fill_is_ones) {
+	const uint8_t fill_byte = fill_is_ones ? 0xFF : 0x00;
+	if (count == 0 || data[0] != fill_byte) {
+		// the common case: a trimmed value has no leading fill bytes at all
+		return 0;
+	}
+	const uint64_t fill = fill_is_ones ? ~uint64_t(0) : 0;
+	idx_t pos = 0;
+	for (; pos + 8 <= count; pos += 8) {
+		const uint64_t limb = BignumLimb::LoadBE(data + pos);
+		if (limb != fill) {
+			// the first byte that differs is the most significant differing byte of the limb
+			return pos + BignumLimb::LeadingZeros(limb ^ fill) / 8;
+		}
+	}
+	while (pos < count && data[pos] == fill_byte) {
+		pos++;
+	}
+	return pos;
+}
+
+AbsoluteNumberComparison BignumIntermediate::IsAbsoluteBigger(const BignumIntermediate &rhs) const {
+	const int64_t actual_size = size - GetStartDataPos();
+	const int64_t rhs_actual_size = rhs.size - rhs.GetStartDataPos();
 
 	// we have opposing signs, gotta do a bunch of checks to figure out who is the biggest
 	// check sizes
@@ -85,20 +130,18 @@ AbsoluteNumberComparison BignumIntermediate::IsAbsoluteBigger(const BignumInterm
 	}
 	if (actual_size < rhs_actual_size) {
 		return SMALLER;
-	} else {
-		// they have the same size then
-		idx_t target_idx = actual_start_pos;
-		idx_t source_idx = rhs_actual_start_pos;
-		while (target_idx < size) {
-			auto data_byte = GetAbsoluteByte(static_cast<int64_t>(target_idx));
-			auto rhs_byte = rhs.GetAbsoluteByte(static_cast<int64_t>(source_idx));
-			if (data_byte > rhs_byte) {
-				return GREATER;
-			} else if (data_byte < rhs_byte) {
-				return SMALLER;
-			}
-			target_idx++;
-			source_idx++;
+	}
+	// same magnitude length: compare limbs from the most significant end; both values are right-aligned, so the limb
+	// ending `end` bytes after the start of the magnitude covers the same digits in both (bytes before the magnitude
+	// read as zero in LoadAbsoluteLimb, so the first, partial limb needs no special casing)
+	const int64_t lhs_pad = size - actual_size;
+	const int64_t rhs_pad = rhs.size - rhs_actual_size;
+	const int64_t top_limb_bytes = actual_size % 8 == 0 ? 8 : actual_size % 8;
+	for (int64_t end = top_limb_bytes; end <= actual_size; end += 8) {
+		const uint64_t lhs_limb = LoadAbsoluteLimb(*this, lhs_pad + end);
+		const uint64_t rhs_limb = LoadAbsoluteLimb(rhs, rhs_pad + end);
+		if (lhs_limb != rhs_limb) {
+			return lhs_limb > rhs_limb ? GREATER : SMALLER;
 		}
 	}
 	// If we got here, the values are equal.
@@ -121,16 +164,7 @@ void BignumIntermediate::Initialize(ArenaAllocator &allocator) {
 }
 
 uint32_t BignumIntermediate::GetStartDataPos(data_ptr_t data, idx_t size, bool is_negative) {
-	uint8_t non_initialized = is_negative ? 0xFF : 0x00;
-	uint32_t actual_start = 0;
-	for (idx_t i = 0; i < size; ++i) {
-		if (data[i] == non_initialized) {
-			actual_start++;
-		} else {
-			break;
-		}
-	}
-	return actual_start;
+	return static_cast<uint32_t>(CountLeadingFillBytes(data, size, is_negative));
 }
 
 uint32_t BignumIntermediate::GetStartDataPos() const {
@@ -180,16 +214,9 @@ bool BignumIntermediate::OverOrUnderflow(data_ptr_t data, idx_t size, bool is_ne
 	if (size <= Bignum::MAX_DATA_SIZE) {
 		return false;
 	}
-	// variable that stores a fully unset byte can safely be ignored
-	uint8_t byte_to_compare = is_negative ? 0xFF : 0x00;
-	// we will basically check if any byte has any set bit up to Bignum::MAX_DATA_SIZE, if so, that's an under/overflow
-	idx_t data_pos = 0;
-	for (idx_t i = size; i > Bignum::MAX_DATA_SIZE; i--) {
-		if (data[data_pos++] != byte_to_compare) {
-			return true;
-		}
-	}
-	return false;
+	// the bytes above the maximum size must all be fill bytes, otherwise a bit is set that cannot be represented
+	const idx_t excess = size - Bignum::MAX_DATA_SIZE;
+	return CountLeadingFillBytes(data, excess, is_negative) < excess;
 }
 
 bool BignumIntermediate::OverOrUnderflow() const {
@@ -217,40 +244,13 @@ bignum_t BignumIntermediate::ToBignum(ArenaAllocator &allocator) const {
 	return result;
 }
 
-//! Loads the 8 magnitude bytes ending just before end_idx as one little-endian limb; bytes before the start of the
-//! value read as zero, bytes of a negative value are complemented so the limb holds the absolute value
-static inline uint64_t LoadAbsoluteLimb(const BignumIntermediate &value, int64_t end_idx) {
-	if (end_idx <= 0) {
-		return 0;
-	}
-	uint64_t limb;
-	if (end_idx >= 8) {
-		memcpy(&limb, value.data + end_idx - 8, sizeof(limb));
-		limb = BSwap(limb);
-		return value.is_negative ? ~limb : limb;
-	}
-	// a partial limb at the most significant end of the value: only the low end_idx bytes are real
-	limb = 0;
-	memcpy(reinterpret_cast<uint8_t *>(&limb) + 8 - end_idx, value.data, static_cast<size_t>(end_idx));
-	limb = BSwap(limb);
-	const uint64_t mask = (uint64_t(1) << (8 * end_idx)) - 1;
-	return value.is_negative ? (~limb & mask) : limb;
-}
-
-//! Stores the low min(end_idx, 8) bytes of a limb as big-endian bytes ending just before end_idx
-static inline void StoreLimb(data_ptr_t result, int64_t end_idx, uint64_t limb) {
-	limb = BSwap(limb);
-	if (end_idx >= 8) {
-		memcpy(result + end_idx - 8, &limb, sizeof(limb));
-		return;
-	}
-	memcpy(result, reinterpret_cast<uint8_t *>(&limb) + 8 - end_idx, static_cast<size_t>(end_idx));
-}
-
-void BignumAddition(data_ptr_t result, int64_t result_end, bool is_target_absolute_bigger,
-                    const BignumIntermediate &lhs, const BignumIntermediate &rhs) {
-	const bool is_result_negative = is_target_absolute_bigger ? lhs.is_negative : rhs.is_negative;
-	const bool same_sign = lhs.is_negative == rhs.is_negative;
+//! result = |lhs| +- |rhs| as a magnitude of result_end bytes, written in the encoding of the result sign.
+//! rhs_negative is the sign rhs takes part with (it differs from rhs.is_negative when rhs is subtracted); the
+//! magnitude bytes of rhs are still decoded with the sign they are stored with
+static void BignumAddition(data_ptr_t result, int64_t result_end, bool is_target_absolute_bigger,
+                           const BignumIntermediate &lhs, const BignumIntermediate &rhs, bool rhs_negative) {
+	const bool is_result_negative = is_target_absolute_bigger ? lhs.is_negative : rhs_negative;
+	const bool same_sign = lhs.is_negative == rhs_negative;
 	// the operands are right-aligned with the result: the byte ending at result index e ends at e - offset in them
 	const int64_t lhs_offset = result_end - static_cast<int64_t>(lhs.size);
 	const int64_t rhs_offset = result_end - static_cast<int64_t>(rhs.size);
@@ -278,32 +278,35 @@ void BignumAddition(data_ptr_t result, int64_t result_end, bool is_target_absolu
 		}
 		StoreLimb(result, end, sum ^ flip);
 	}
+}
 
-	if (is_result_negative != lhs.is_negative) {
-		// If we are flipping the sign we must be sure that we are flipping all extra bits from our target
-		for (int64_t i = 0; i < result_end - rhs.size; ++i) {
-			result[i] = is_result_negative ? 0xFF : 0x00;
-		}
+//! Writes the bitwise complement of count bytes, eight at a time
+static void ComplementBytes(data_ptr_t target, const_data_ptr_t source, idx_t count) {
+	idx_t pos = 0;
+	for (; pos + 8 <= count; pos += 8) {
+		uint64_t limb;
+		memcpy(&limb, source + pos, sizeof(limb));
+		limb = ~limb;
+		memcpy(target + pos, &limb, sizeof(limb));
+	}
+	for (; pos < count; pos++) {
+		target[pos] = static_cast<data_t>(~source[pos]);
 	}
 }
 
 string_t BignumIntermediate::Negate(StringHeap &heap) const {
 	auto target = heap.EmptyString(size + Bignum::BIGNUM_HEADER_SIZE);
 	auto ptr = target.GetDataWriteable();
+	auto target_data = reinterpret_cast<data_ptr_t>(ptr + Bignum::BIGNUM_HEADER_SIZE);
 
 	if (!is_negative && size == 1 && data[0] == 0x00) {
 		// If we have a zero, we just do a copy
 		Bignum::SetHeader(ptr, size, is_negative);
-		for (idx_t i = 0; i < size; ++i) {
-			ptr[i + Bignum::BIGNUM_HEADER_SIZE] = static_cast<char>(data[i]);
-		}
+		memcpy(target_data, data, size);
 	} else {
-		// Otherwise, we set the header with a flip on the signal
+		// Otherwise, we set the header with a flip on the signal and flip all the data bits
 		Bignum::SetHeader(ptr, size, !is_negative);
-		for (idx_t i = 0; i < size; ++i) {
-			// And flip all the data bits
-			ptr[i + Bignum::BIGNUM_HEADER_SIZE] = static_cast<char>(~data[i]);
-		}
+		ComplementBytes(target_data, data, size);
 	}
 	target.Finalize();
 	return target;
@@ -315,9 +318,7 @@ void BignumIntermediate::NegateInPlace() {
 		return;
 	}
 	is_negative = !is_negative;
-	for (size_t i = 0; i < size; i++) {
-		data[i] = static_cast<data_t>(~data[i]); // flip each byte of the pointer
-	}
+	ComplementBytes(data, data, size);
 }
 
 string ProduceOverUnderFlowError(bool is_result_negative, idx_t actual_start, idx_t data_size) {
@@ -334,8 +335,10 @@ string ProduceOverUnderFlowError(bool is_result_negative, idx_t actual_start, id
 	return error.str();
 }
 
-string_t BignumIntermediate::Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs) {
-	const bool same_sign = lhs.is_negative == rhs.is_negative;
+string_t BignumIntermediate::Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs,
+                                 bool negate_rhs) {
+	const bool rhs_negative = rhs.is_negative != negate_rhs;
+	const bool same_sign = lhs.is_negative == rhs_negative;
 	const uint32_t actual_size = lhs.size - lhs.GetStartDataPos();
 	const uint32_t actual_rhs_size = rhs.size - rhs.GetStartDataPos();
 	uint32_t result_size = actual_size;
@@ -347,7 +350,7 @@ string_t BignumIntermediate::Add(StringHeap &heap, const BignumIntermediate &lhs
 		result_size++;
 	}
 	result_size += Bignum::BIGNUM_HEADER_SIZE;
-	if (lhs.is_negative != rhs.is_negative) {
+	if (!same_sign) {
 		auto is_absolute_bigger = lhs.IsAbsoluteBigger(rhs);
 		if (is_absolute_bigger == EQUAL) {
 			// We set this value to 0
@@ -368,8 +371,8 @@ string_t BignumIntermediate::Add(StringHeap &heap, const BignumIntermediate &lhs
 
 	auto target_data = target.GetDataWriteable();
 	BignumAddition(reinterpret_cast<data_ptr_t>(target_data + Bignum::BIGNUM_HEADER_SIZE), result_size_data,
-	               is_target_absolute_bigger, lhs, rhs);
-	bool is_result_negative = is_target_absolute_bigger ? lhs.is_negative : rhs.is_negative;
+	               is_target_absolute_bigger, lhs, rhs, rhs_negative);
+	bool is_result_negative = is_target_absolute_bigger ? lhs.is_negative : rhs_negative;
 	if (OverOrUnderflow(reinterpret_cast<data_ptr_t>(target_data + Bignum::BIGNUM_HEADER_SIZE), result_size_data,
 	                    is_result_negative)) {
 		auto actual_start = GetStartDataPos(reinterpret_cast<data_ptr_t>(target_data + Bignum::BIGNUM_HEADER_SIZE),
@@ -381,8 +384,10 @@ string_t BignumIntermediate::Add(StringHeap &heap, const BignumIntermediate &lhs
 	target.SetSizeAndFinalize(result_size_data + Bignum::BIGNUM_HEADER_SIZE, result_size);
 	return target;
 }
-void BignumIntermediate::AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs) {
-	const bool same_sign = is_negative == rhs.is_negative;
+
+void BignumIntermediate::AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs, bool negate_rhs) {
+	const bool rhs_negative = rhs.is_negative != negate_rhs;
+	const bool same_sign = is_negative == rhs_negative;
 	idx_t actual_size = size - GetStartDataPos();
 	idx_t actual_rhs_size = rhs.size - rhs.GetStartDataPos();
 	if (actual_size < actual_rhs_size || (same_sign && (IsMSBSet() || (rhs.IsMSBSet() && size == rhs.size)))) {
@@ -391,7 +396,7 @@ void BignumIntermediate::AddInPlace(ArenaAllocator &allocator, const BignumInter
 		Reallocate(allocator, min_size);
 	}
 	bool is_target_absolute_bigger = true;
-	if (rhs.is_negative != is_negative) {
+	if (!same_sign) {
 		auto is_absolute_bigger = IsAbsoluteBigger(rhs);
 		if (is_absolute_bigger == EQUAL) {
 			// We set this value to 0
@@ -403,8 +408,8 @@ void BignumIntermediate::AddInPlace(ArenaAllocator &allocator, const BignumInter
 		}
 	}
 
-	bool is_result_negative = is_target_absolute_bigger ? is_negative : rhs.is_negative;
-	BignumAddition(data, size, is_target_absolute_bigger, *this, rhs);
+	bool is_result_negative = is_target_absolute_bigger ? is_negative : rhs_negative;
+	BignumAddition(data, size, is_target_absolute_bigger, *this, rhs, rhs_negative);
 	if (is_result_negative != is_negative) {
 		is_negative = is_result_negative;
 	}
