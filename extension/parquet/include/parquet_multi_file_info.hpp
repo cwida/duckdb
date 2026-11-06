@@ -123,6 +123,8 @@ public:
 	static TableFunction GetMultiFileFunction(Identifier name);
 	//! Persist the expanded file list, so a plan copy does not bind the original glob again
 	static void SetSerializationCallbacks(TableFunction &function);
+	//! Remember the metadata of the files a scan was bound on, for binding copies of it in the same query
+	static void AddBoundMetadata(ClientContext &context, const MultiFileBindData &bind_data);
 	//! Push strlen/octet_length on a column into the multi-file parquet reader of a single file
 	static bool ProjectionExpressionPushdown(ClientContext &context,
 	                                         const TableFunctionProjectionExpressionInput &input);

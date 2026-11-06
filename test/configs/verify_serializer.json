@@ -17,6 +17,16 @@
       ]
     },
     {
+      "reason": "The Top-N dynamic filter is not serialized, so a verified plan reads row groups the filter prunes",
+      "paths": [
+        "test/sql/copy/parquet/parquet_nan_setting.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
+        "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test"
+      ]
+    },
+    {
       "reason": "Extension optimizer pass breaks logical plan serialization",
       "paths": [
         "test/extension/test_extensible_filter.test"

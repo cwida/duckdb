@@ -136,7 +136,10 @@ FROM '{TEST_DIR}/bytes_scanned_glob.json';
 ----
 true
 
-# a file scanned twice counts twice
+# a file scanned twice counts twice - keep the two identical scans apart
+statement ok
+SET disabled_optimizers = 'scalar_aggregate_merge,common_subplan';
+
 statement ok
 PRAGMA enable_profiling = 'json';
 
@@ -151,6 +154,9 @@ SELECT (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.parquet') + (SELECT sum(i
 
 statement ok
 PRAGMA disable_profiling;
+
+statement ok
+RESET disabled_optimizers;
 
 query I
 SELECT query.total_bytes_scanned = 2 * (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i')

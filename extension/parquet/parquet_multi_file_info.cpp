@@ -278,9 +278,11 @@ void ParquetScanFunction::AddNamedParameters(TableFunction &table_function) {
 //! they construct, which carries none of our info
 static unique_ptr<FunctionData> ParquetMultiFileBind(ClientContext &context, TableFunctionBindInput &input,
                                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
-	return TableFunctionMultiFileWrapper::MultiFileBindWith(context, input, return_types, names,
-	                                                        ParquetScanFunction::GetSingleFileFunction(),
-	                                                        ParquetScanFunction::GetMultiFileSettings());
+	auto result = TableFunctionMultiFileWrapper::MultiFileBindWith(context, input, return_types, names,
+	                                                               ParquetScanFunction::GetSingleFileFunction(),
+	                                                               ParquetScanFunction::GetMultiFileSettings());
+	ParquetScanFunction::AddBoundMetadata(context, result->Cast<MultiFileBindData>());
+	return result;
 }
 
 TableFunction ParquetScanFunction::GetMultiFileFunction(Identifier name) {
