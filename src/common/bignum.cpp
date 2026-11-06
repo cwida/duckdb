@@ -1,6 +1,7 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/bit_utils.hpp"
+#include "duckdb/common/bswap.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/to_string.hpp"
@@ -216,42 +217,66 @@ bignum_t BignumIntermediate::ToBignum(ArenaAllocator &allocator) const {
 	return result;
 }
 
+//! Loads the 8 magnitude bytes ending just before end_idx as one little-endian limb; bytes before the start of the
+//! value read as zero, bytes of a negative value are complemented so the limb holds the absolute value
+static inline uint64_t LoadAbsoluteLimb(const BignumIntermediate &value, int64_t end_idx) {
+	if (end_idx <= 0) {
+		return 0;
+	}
+	uint64_t limb;
+	if (end_idx >= 8) {
+		memcpy(&limb, value.data + end_idx - 8, sizeof(limb));
+		limb = BSwap(limb);
+		return value.is_negative ? ~limb : limb;
+	}
+	// a partial limb at the most significant end of the value: only the low end_idx bytes are real
+	limb = 0;
+	memcpy(reinterpret_cast<uint8_t *>(&limb) + 8 - end_idx, value.data, static_cast<size_t>(end_idx));
+	limb = BSwap(limb);
+	const uint64_t mask = (uint64_t(1) << (8 * end_idx)) - 1;
+	return value.is_negative ? (~limb & mask) : limb;
+}
+
+//! Stores the low min(end_idx, 8) bytes of a limb as big-endian bytes ending just before end_idx
+static inline void StoreLimb(data_ptr_t result, int64_t end_idx, uint64_t limb) {
+	limb = BSwap(limb);
+	if (end_idx >= 8) {
+		memcpy(result + end_idx - 8, &limb, sizeof(limb));
+		return;
+	}
+	memcpy(result, reinterpret_cast<uint8_t *>(&limb) + 8 - end_idx, static_cast<size_t>(end_idx));
+}
+
 void BignumAddition(data_ptr_t result, int64_t result_end, bool is_target_absolute_bigger,
                     const BignumIntermediate &lhs, const BignumIntermediate &rhs) {
-	bool is_result_negative = is_target_absolute_bigger ? lhs.is_negative : rhs.is_negative;
+	const bool is_result_negative = is_target_absolute_bigger ? lhs.is_negative : rhs.is_negative;
+	const bool same_sign = lhs.is_negative == rhs.is_negative;
+	// the operands are right-aligned with the result: the byte ending at result index e ends at e - offset in them
+	const int64_t lhs_offset = result_end - static_cast<int64_t>(lhs.size);
+	const int64_t rhs_offset = result_end - static_cast<int64_t>(rhs.size);
+	const uint64_t flip = is_result_negative ? ~uint64_t(0) : 0;
 
-	int64_t i_target = lhs.size - 1;   // last byte index in target
-	int64_t i_source = rhs.size - 1;   // last byte index in source
-	int64_t i_result = result_end - 1; // last byte index in result
-
-	// Carry for addition
-	uint16_t carry = 0;
-	uint16_t borrow = 0;
-	// Add bytes from right to left
-	while (i_result >= 0) {
-		// If the numbers are negative, we bit flip them
-		uint8_t target_byte = lhs.GetAbsoluteByte(i_target);
-		uint8_t source_byte = rhs.GetAbsoluteByte(i_source);
-		// Add bytes and carry
-		uint16_t sum;
-		if (lhs.is_negative == rhs.is_negative) {
-			sum = static_cast<uint16_t>(target_byte) + static_cast<uint16_t>(source_byte) + carry;
-			carry = (sum >> 8) & 0xFF;
+	uint64_t carry = 0;
+	// walk the magnitudes from the least significant end, 8 bytes at a time
+	for (int64_t end = result_end; end > 0; end -= 8) {
+		const uint64_t a = LoadAbsoluteLimb(lhs, end - lhs_offset);
+		const uint64_t b = LoadAbsoluteLimb(rhs, end - rhs_offset);
+		uint64_t sum;
+		if (same_sign) {
+			sum = a + b;
+			const uint64_t c1 = sum < a;
+			sum += carry;
+			carry = c1 | (sum < carry);
 		} else {
-			if (is_target_absolute_bigger) {
-				sum = static_cast<uint16_t>(target_byte) - static_cast<uint16_t>(source_byte) - borrow;
-				borrow = sum > static_cast<uint16_t>(target_byte) ? 1 : 0;
-			} else {
-				sum = static_cast<uint16_t>(source_byte) - static_cast<uint16_t>(target_byte) - borrow;
-				borrow = sum > static_cast<uint16_t>(source_byte) ? 1 : 0;
-			}
+			const uint64_t big = is_target_absolute_bigger ? a : b;
+			const uint64_t small = is_target_absolute_bigger ? b : a;
+			sum = big - small;
+			const uint64_t b1 = big < small;
+			const uint64_t b2 = sum < carry;
+			sum -= carry;
+			carry = b1 | b2;
 		}
-		uint8_t result_byte = static_cast<uint8_t>(sum & 0xFF);
-		// If the result is not positive, we must flip the bits again
-		result[i_result] = is_result_negative ? static_cast<uint8_t>(~result_byte) : result_byte;
-		i_target--;
-		i_source--;
-		i_result--;
+		StoreLimb(result, end, sum ^ flip);
 	}
 
 	if (is_result_negative != lhs.is_negative) {
