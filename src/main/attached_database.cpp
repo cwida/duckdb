@@ -271,7 +271,7 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		close_action = DatabaseCloseAction::CHECKPOINT;
 	} else if (checkpoint_on_detach == CheckpointOnDetach::DISABLED) {
 		close_action = DatabaseCloseAction::SKIP_CHECKPOINT;
-	} else if (!DBConfig::GetConfig(context).options.checkpoint_on_shutdown) {
+	} else if (!Settings::Get<CheckpointOnShutdownSetting>(context)) {
 		close_action = DatabaseCloseAction::SKIP_CHECKPOINT;
 	}
 
@@ -412,7 +412,7 @@ void AttachedDatabase::Close(const DatabaseCloseAction action) {
 				should_checkpoint = true;
 			} else if (action == DatabaseCloseAction::TRY_CHECKPOINT) {
 				auto &config = DBConfig::GetConfig(db);
-				should_checkpoint = config.options.checkpoint_on_shutdown;
+				should_checkpoint = Settings::Get<CheckpointOnShutdownSetting>(config);
 			}
 			if (should_checkpoint) {
 				CheckpointOptions options;

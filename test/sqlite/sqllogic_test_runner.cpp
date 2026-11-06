@@ -349,9 +349,8 @@ unique_ptr<Connection> SQLLogicTestRunner::ConnectToDatabase(DuckDB &db_ref) {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 	result->Query("SET pivot_filter_threshold=0");
 #endif
-	auto &client_config = ClientConfig::GetConfig(*result->context);
-	client_config.enable_progress_bar = true;
-	client_config.print_progress_bar = false;
+	Settings::Set<EnableProgressBarSetting>(*result->context, SetScope::SESSION, Value::BOOLEAN(true));
+	Settings::Set<EnableProgressBarPrintSetting>(*result->context, SetScope::SESSION, Value::BOOLEAN(false));
 	// Set the local extension repo for autoinstalling extensions
 	if (!local_extension_repo.empty()) {
 		auto res1 = result->Query("SET autoinstall_extension_repository='" + local_extension_repo + "'");

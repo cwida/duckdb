@@ -1098,47 +1098,21 @@ Value EnableProfilingSetting::GetSetting(const ClientContext &context) {
 //===----------------------------------------------------------------------===//
 // Enable Progress Bar Print
 //===----------------------------------------------------------------------===//
-void EnableProgressBarPrintSetting::SetLocal(ClientContext &context, const Value &input) {
+void EnableProgressBarPrintSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("enable_progress_bar_print setting cannot be NULL");
 	}
-	if (input.type().id() != LogicalTypeId::BOOLEAN) {
-		throw InvalidInputException("enable_progress_bar_print setting must be a boolean value");
-	}
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	config.print_progress_bar = input.GetValue<bool>();
-}
-
-void EnableProgressBarPrintSetting::ResetLocal(ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	config.print_progress_bar = ClientConfig().print_progress_bar;
-}
-
-Value EnableProgressBarPrintSetting::GetSetting(const ClientContext &context) {
-	return Value::BOOLEAN(ClientConfig::GetConfig(context).print_progress_bar);
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(*info.context));
 }
 
 //===----------------------------------------------------------------------===//
 // Enable Progress Bar
 //===----------------------------------------------------------------------===//
-bool EnableProgressBarSetting::OnLocalSet(ClientContext &context, const Value &input) {
+void EnableProgressBarSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("enable_progress_bar setting cannot be NULL");
 	}
-	if (input.type().id() != LogicalTypeId::BOOLEAN) {
-		throw InvalidInputException("enable_progress_bar setting must be a boolean value");
-	}
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	return true;
-}
-
-bool EnableProgressBarSetting::OnLocalReset(ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	return true;
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(*info.context));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1597,29 +1571,20 @@ Value ProfilingCoverageSetting::GetSetting(const ClientContext &context) {
 //===----------------------------------------------------------------------===//
 // Progress Bar Time
 //===----------------------------------------------------------------------===//
-void ProgressBarTimeSetting::SetLocal(ClientContext &context, const Value &input) {
+void ProgressBarTimeSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	auto &context = *info.context;
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
+	if (info.is_reset) {
+		ClientConfig::GetConfig(context).user_settings.ClearSetting(EnableProgressBarSetting::SettingIndex);
+		return;
+	}
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", ProgressBarTimeSetting::Name);
 	}
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	auto wait_time = input.GetValue<int32_t>();
-	if (wait_time < 0) {
+	if (input.GetValue<int32_t>() < 0) {
 		throw InvalidInputException("%s setting cannot be negative", ProgressBarTimeSetting::Name);
 	}
-	config.wait_time = wait_time;
-	config.enable_progress_bar = true;
-}
-
-void ProgressBarTimeSetting::ResetLocal(ClientContext &context) {
-	auto &config = ClientConfig::GetConfig(context);
-	ProgressBar::SystemOverrideCheck(config);
-	config.wait_time = ClientConfig().wait_time;
-	config.enable_progress_bar = ClientConfig().enable_progress_bar;
-}
-
-Value ProgressBarTimeSetting::GetSetting(const ClientContext &context) {
-	return Value::BIGINT(ClientConfig::GetConfig(context).wait_time);
+	Settings::Set<EnableProgressBarSetting>(context, SetScope::SESSION, Value::BOOLEAN(true));
 }
 
 //===----------------------------------------------------------------------===//

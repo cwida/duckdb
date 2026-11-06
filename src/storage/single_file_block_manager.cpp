@@ -1487,7 +1487,7 @@ void SingleFileBlockManager::TrimFreeBlockRange(block_id_t start, block_id_t end
 }
 
 void SingleFileBlockManager::TrimFreeBlocks(const set<block_id_t> &blocks) {
-	if (!DBConfig::Get(db).options.trim_free_blocks) {
+	if (!Settings::Get<TrimFreeBlocksSetting>(DBConfig::Get(db))) {
 		return;
 	}
 	lock_guard<mutex> lock(single_file_block_lock);

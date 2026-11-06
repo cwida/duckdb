@@ -434,7 +434,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 	}
 	options.io_mode = resolved_io_mode;
 	options.mmap_reserve_size = storage_options.mmap_reserve_size;
-	options.debug_initialize = config.options.debug_initialize;
+	options.debug_initialize = Settings::Get<DebugInitializeSetting>(config);
 	options.storage_version = storage_options.storage_version;
 
 	if (storage_options.encryption) {
@@ -789,7 +789,8 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	auto &config = DBConfig::Get(db);
 	// We only need to checkpoint if there is anything in the WAL.
 	auto wal_size = GetWALSize();
-	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
+	if (wal_size > 0 || Settings::Get<DebugForceCheckpointSetting>(config) ||
+	    options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		try {
 			// Start timing the checkpoint.
 			auto profiler = Context::TryGetQueryProfiler(context.GetContext());
