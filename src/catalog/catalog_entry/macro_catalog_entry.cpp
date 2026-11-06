@@ -134,8 +134,10 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 		}
 	}
 	new_info.dependencies = std::move(derived_dependencies);
-	// the derived list replaces the entry's registered dependencies during the alter
+	// the derived list replaces the entry's registered dependencies during the alter. The containing
+	// schema is registered separately from the entry's own list at CREATE, so re-add it here
 	info.new_dependencies = make_uniq<LogicalDependencyList>(new_info.dependencies);
+	info.new_dependencies->AddDependency(schema);
 	auto function = MacroCatalogEntry::Create(ParentCatalog(), schema, new_info);
 	function->internal = internal;
 	return std::move(function);

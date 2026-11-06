@@ -89,3 +89,31 @@ statement error
 SELECT alt(1);
 ----
 <REGEX>:.*(Catalog Error|not exist).*
+
+# the replacement keeps its dependency on the containing schema
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE MACRO s.sf(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement ok
+DROP MACRO s.sf(INTEGER);
+
+statement error
+DROP SCHEMA s;
+----
+<REGEX>:.*depend.*
+
+query I
+SELECT s.sf('a') = 'a';
+----
+true
+
+statement ok
+DROP SCHEMA s CASCADE;
+
+statement error
+SELECT s.sf('a');
+----
+<REGEX>:.*(Catalog Error|not exist).*
