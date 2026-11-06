@@ -354,6 +354,13 @@ void DuckTransaction::Cleanup(VisibilityBound lowest_visibility_bound) {
 	undo_buffer.Cleanup(lowest_visibility_bound);
 }
 
+unique_ptr<StorageLockKey> DuckTransaction::GetCheckpointLockForStatement() {
+	if (checkpoint_lock) {
+		return nullptr;
+	}
+	return GetTransactionManager().SharedCheckpointLock();
+}
+
 void DuckTransaction::SetModifications(DatabaseModificationType type) {
 	if (!checkpoint_lock) {
 		bool require_write_lock = false;
