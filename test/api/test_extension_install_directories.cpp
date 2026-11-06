@@ -41,12 +41,12 @@ static void RequireInstalledFileCount(Connection &con, const string &directory, 
 	REQUIRE(CHECK_COLUMN(result, 0, {Value::BIGINT(count)}));
 }
 
-TEST_CASE("Test that autoinstall finds an extension in a later extension directory", "[api]") {
+TEST_CASE("Autoinstall finds a later extension directory", "[api]") {
 	if (!CanInstallDemoExtension()) {
 		return;
 	}
-	auto first = TestCreatePath("autoinstall_first_directory");
-	auto second = TestCreatePath("autoinstall_second_directory");
+	auto first = TestCreatePath("ext_a1");
+	auto second = TestCreatePath("ext_a2");
 	InstallDemoExtensionInto(second);
 
 	// the autoinstall repository is unreachable, so autoloading succeeds only if the install finds the copy
@@ -77,14 +77,14 @@ TEST_CASE("Test that autoinstall finds an extension in a later extension directo
 	}
 }
 
-TEST_CASE("Test that an invalid copy in a later extension directory is installed but does not load", "[api]") {
+TEST_CASE("Invalid later copy installs but does not load", "[api]") {
 	if (!CanInstallDemoExtension()) {
 		return;
 	}
 	auto repository = TestCreatePath("invalid_copy_repository");
 	InstallDemoExtensionInto(repository);
-	auto first = TestCreatePath("invalid_copy_first_directory");
-	auto second = TestCreatePath("invalid_copy_second_directory");
+	auto first = TestCreatePath("ext_b1");
+	auto second = TestCreatePath("ext_b2");
 
 	DBConfig config;
 	SetExtensionDirectories(config, {first, second});
