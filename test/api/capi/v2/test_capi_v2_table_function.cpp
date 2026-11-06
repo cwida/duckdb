@@ -1276,6 +1276,18 @@ void RegisterClaim(EnvFixture &fx, const char *name, duckdb_v2_table_function_fi
 	duckdb_v2_logical_type_destroy(&bigint);
 }
 
+// True when any VARCHAR cell of an EXPLAIN result contains needle.
+bool PlanContains(duckdb_v2_connection_handle conn, const char *sql, const char *needle) {
+	bool found = false;
+	ForEachCell(conn, sql, [&](const duckdb_v2_vector_view &view, idx_t row) {
+		auto bytes = static_cast<const duckdb_v2_bytes *>(view.data)[row];
+		if (Convert(Convert(bytes)).find(needle) != std::string::npos) {
+			found = true;
+		}
+	});
+	return found;
+}
+
 } // namespace
 
 TEST_CASE("V2 table: projection pushdown narrows the output chunk", "[capi_v2][table_function]") {
@@ -1322,12 +1334,33 @@ TEST_CASE("V2 table: scans with different claimed filters are not merged", "[cap
 	EnvFixture fx;
 	RegisterClaim(fx, "claim_probe", ClaimPushdownCb);
 	using Cells = std::vector<int64_t>;
+	ExecSQL(fx.conn, "SET debug_verify_serializer=true");
+	ExecSQL(fx.conn, "PRAGMA explain_output='optimized_only'");
 
 	// Each scan keeps its own claimed bound (plus the two rows past it).
 	REQUIRE(QueryCells(fx.conn, "SELECT (SELECT count(*) FROM claim_probe(100) WHERE i < 10), "
 	                            "(SELECT count(*) FROM claim_probe(100) WHERE i < 20)") == Cells {12, 22});
+	REQUIRE_FALSE(PlanContains(fx.conn,
+	                           "EXPLAIN SELECT (SELECT count(*) FROM claim_probe(100) WHERE i < 10), "
+	                           "(SELECT count(*) FROM claim_probe(100) WHERE i < 20)",
+	                           "__common_subplan_"));
 	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM (SELECT i FROM claim_probe(100) WHERE i < 10 UNION ALL "
 	                          "SELECT i FROM claim_probe(100) WHERE i < 20)") == 34);
+
+	// The same accepted predicate is still one scan.
+	REQUIRE(QueryCells(fx.conn, "SELECT (SELECT count(*) FROM claim_probe(100) WHERE i < 10), "
+	                            "(SELECT count(*) FROM claim_probe(100) WHERE i < 10)") == Cells {12, 12});
+	REQUIRE(PlanContains(fx.conn,
+	                     "EXPLAIN SELECT (SELECT count(*) FROM claim_probe(100) WHERE i < 10), "
+	                     "(SELECT count(*) FROM claim_probe(100) WHERE i < 10)",
+	                     "__common_subplan_"));
+	// A predicate the callback does not accept stays in the plan and can still be shared.
+	REQUIRE(QueryCells(fx.conn, "SELECT (SELECT count(*) FROM claim_probe(100) WHERE i % 2 = 0), "
+	                            "(SELECT count(*) FROM claim_probe(100) WHERE i % 2 = 0)") == Cells {50, 50});
+	REQUIRE(PlanContains(fx.conn,
+	                     "EXPLAIN SELECT (SELECT count(*) FROM claim_probe(100) WHERE i % 2 = 0), "
+	                     "(SELECT count(*) FROM claim_probe(100) WHERE i % 2 = 0)",
+	                     "__common_subplan_"));
 }
 
 TEST_CASE("V2 table: filter pushdown errors fail the query", "[capi_v2][table_function]") {
