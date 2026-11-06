@@ -59,7 +59,8 @@ public:
 	TrampolineLocalSinkState(ClientContext &context, const PhysicalTrampoline &op) : op(op) {
 		const auto target_count = op.BranchCount() + 1;
 		staged.resize(target_count);
-		appends.resize(target_count);
+		// in-place construction: MSVC's vector::resize would require a copyable element type here
+		appends = vector<ColumnDataAppendState>(target_count);
 		for (idx_t target = 0; target < target_count; target++) {
 			selections.emplace_back(STANDARD_VECTOR_SIZE);
 		}
