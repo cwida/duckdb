@@ -680,10 +680,14 @@ static bool TransformObjectInternal(yyjson_val *objects[], yyjson_alc *alc, Vect
 	auto &child_vs = StructVector::GetEntries(result);
 	vector<string> child_names;
 	vector<Vector *> child_vectors;
+	vector<shared_ptr<const JSONKeyTree>> child_key_trees;
 
 	const auto child_count = column_index ? column_index->ChildIndexCount() : child_vs.size();
 	child_names.reserve(child_count);
 	child_vectors.reserve(child_count);
+	if (key_tree) {
+		child_key_trees.reserve(child_count);
+	}
 
 	unordered_set<idx_t> projected_indices;
 	for (idx_t child_i = 0; child_i < child_count; child_i++) {
@@ -693,6 +697,7 @@ static bool TransformObjectInternal(yyjson_val *objects[], yyjson_alc *alc, Vect
 		// The field name may have been renamed to resolve a case-insensitive duplicate, so prefer the JSON key
 		if (key_tree) {
 			child_names.emplace_back(key_tree->keys[actual_i]);
+			child_key_trees.push_back(key_tree->children[actual_i]);
 		} else {
 			child_names.emplace_back(StructType::GetChildName(result.GetType(), actual_i));
 		}
@@ -708,7 +713,7 @@ static bool TransformObjectInternal(yyjson_val *objects[], yyjson_alc *alc, Vect
 	auto child_indices = column_index ? &column_index->GetChildIndexes() : nullptr;
 	const auto error_unknown_key = child_count == child_vs.size(); // Nothing projected out, error if unknown
 	return JSONTransform::TransformObject(objects, alc, count, child_names, child_vectors, options, child_indices,
-	                                      error_unknown_key, key_tree ? &key_tree->children : nullptr);
+	                                      error_unknown_key, key_tree ? &child_key_trees : nullptr);
 }
 
 static bool TransformArrayToList(yyjson_val *arrays[], yyjson_alc *alc, Vector &result, const idx_t count,

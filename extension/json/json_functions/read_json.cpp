@@ -12,13 +12,17 @@ namespace duckdb {
 //! Deduplicate a name against the ones we already have: drop it if "ignore_errors", otherwise rename it with an
 //! incrementing suffix until it no longer collides. Returns whether the name should be kept.
 static bool ResolveDuplicateName(identifier_map_t<idx_t> &name_collision_count, Identifier &name,
-                                 const bool ignore_errors) {
+                                 const bool ignore_errors, const bool rename_duplicates = true) {
 	if (name_collision_count.find(name) == name_collision_count.end()) {
 		name_collision_count[name] = 0;
 		return true;
 	}
 	if (ignore_errors) {
 		return false;
+	}
+	if (!rename_duplicates) {
+		throw NotImplementedException("Duplicate name %s in struct auto-detected in JSON, try ignore_errors=true",
+		                              name);
 	}
 	while (name_collision_count.find(name) != name_collision_count.end()) {
 		name_collision_count[name] += 1;
@@ -28,25 +32,28 @@ static bool ResolveDuplicateName(identifier_map_t<idx_t> &name_collision_count, 
 	return true;
 }
 
-static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, const bool ignore_errors) {
+static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, const bool ignore_errors,
+                                                    const bool rename_duplicates = true) {
 	switch (type.id()) {
 	case LogicalTypeId::STRUCT: {
 		identifier_map_t<idx_t> name_collision_count;
 		child_list_t<LogicalType> child_types;
 		for (auto &child_type : StructType::GetChildTypes(type)) {
 			auto child_name = child_type.first;
-			if (!ResolveDuplicateName(name_collision_count, child_name, ignore_errors)) {
+			if (!ResolveDuplicateName(name_collision_count, child_name, ignore_errors, rename_duplicates)) {
 				continue;
 			}
-			child_types.emplace_back(child_name, RemoveDuplicateStructKeys(child_type.second, ignore_errors));
+			child_types.emplace_back(child_name,
+			                         RemoveDuplicateStructKeys(child_type.second, ignore_errors, rename_duplicates));
 		}
 		return LogicalType::STRUCT(child_types);
 	}
 	case LogicalTypeId::MAP:
-		return LogicalType::MAP(RemoveDuplicateStructKeys(MapType::KeyType(type), ignore_errors),
-		                        RemoveDuplicateStructKeys(MapType::ValueType(type), ignore_errors));
+		return LogicalType::MAP(RemoveDuplicateStructKeys(MapType::KeyType(type), ignore_errors, false),
+		                        RemoveDuplicateStructKeys(MapType::ValueType(type), ignore_errors, false));
 	case LogicalTypeId::LIST:
-		return LogicalType::LIST(RemoveDuplicateStructKeys(ListType::GetChildType(type), ignore_errors));
+		return LogicalType::LIST(
+		    RemoveDuplicateStructKeys(ListType::GetChildType(type), ignore_errors, rename_duplicates));
 	default:
 		return type;
 	}
