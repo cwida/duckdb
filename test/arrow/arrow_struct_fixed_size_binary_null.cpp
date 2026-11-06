@@ -167,9 +167,9 @@ bool QueryMatches(ArrowSchema &col_schema, ArrowArray &col_array, const string &
 // The 16 bytes of the two non-NULL uuid values. A NULL row still occupies width bytes of the data buffer, and
 // holds a placeholder there.
 static const uint8_t UUID_A_BYTES[16] = {0x6f, 0x96, 0x19, 0xff, 0x8b, 0x86, 0xd0, 0x11,
-	                                     0xb4, 0x2d, 0x00, 0xc0, 0x4f, 0xc9, 0x64, 0xff};
+                                         0xb4, 0x2d, 0x00, 0xc0, 0x4f, 0xc9, 0x64, 0xff};
 static const uint8_t UUID_C_BYTES[16] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-	                                     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+                                         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
 
 std::vector<uint8_t> Uuid(const uint8_t (&bytes)[16]) {
 	return std::vector<uint8_t>(bytes, bytes + 16);
@@ -186,16 +186,15 @@ TEST_CASE("Arrow scan of a NULL STRUCT row over a FIXED_SIZE_BINARY child with N
 	// Row 0 is the NULL struct, row 2 has a NULL uuid of its own. The NULL bitmap of the uuid child is what
 	// makes the conversion re-set the child validity, discarding the NULL inherited from the struct.
 	StringChild names("name", {"", "a", "b", "c"}, {});
-	FixedSizeBinaryChild uuids("uuid", 16,
-	                           {Placeholder(16), Uuid(UUID_A_BYTES), Placeholder(16), Uuid(UUID_C_BYTES)}, {2});
+	FixedSizeBinaryChild uuids("uuid", 16, {Placeholder(16), Uuid(UUID_A_BYTES), Placeholder(16), Uuid(UUID_C_BYTES)},
+	                           {2});
 	StructColumn<StringChild, FixedSizeBinaryChild> structs(names, uuids, 4, {0});
 
 	// The NULL struct reads as NULL in both children, and every other row keeps its own values.
-	REQUIRE(
-	    QueryMatches(structs.schema, structs.array,
-	                 "SELECT COALESCE(c.name, '-') || '|' || COALESCE(hex(c.uuid), '-') FROM arrow_view",
-	                 "SELECT * FROM (VALUES ('-|-'), ('a|6F9619FF8B86D011B42D00C04FC964FF'), ('b|-'), "
-	                 "('c|0123456789ABCDEF0123456789ABCDEF')) t(a)"));
+	REQUIRE(QueryMatches(structs.schema, structs.array,
+	                     "SELECT COALESCE(c.name, '-') || '|' || COALESCE(hex(c.uuid), '-') FROM arrow_view",
+	                     "SELECT * FROM (VALUES ('-|-'), ('a|6F9619FF8B86D011B42D00C04FC964FF'), ('b|-'), "
+	                     "('c|0123456789ABCDEF0123456789ABCDEF')) t(a)"));
 	REQUIRE(QueryMatches(structs.schema, structs.array, "SELECT count(*) FROM arrow_view WHERE c IS NULL",
 	                     "SELECT 1::BIGINT"));
 	REQUIRE(QueryMatches(structs.schema, structs.array, "SELECT count(*) FROM arrow_view WHERE c.uuid IS NULL",
