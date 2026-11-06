@@ -3,6 +3,8 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/table/list_column_data.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/storage_info.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -50,14 +52,15 @@ void ListColumnData::SetDataType(ColumnDataType data_type) {
 	validity->SetDataType(data_type);
 }
 
-FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+FilterPropagateResult ListColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                   optional_idx &checked_end) {
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
 }
 
-void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	ColumnData::InitializePrefetch(prefetch_state, scan_state, rows);
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                        idx_t end_row) {
+	ColumnData::InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 
 	// we can't know how many rows we need to prefetch for the child of this list without looking at the actual data
 	// we make an estimation by looking at how many rows the child column has versus this column
@@ -66,7 +69,15 @@ void ListColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnSca
 	if (child_column->count > this->count && this->count > 0) {
 		rows_per_list = child_column->count / this->count;
 	}
-	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], rows * rows_per_list);
+	// the child rows of the range are estimated from the child row the list scan is at, which last_offset holds
+	D_ASSERT(start_row >= scan_state.offset_in_column);
+	const idx_t child_start = scan_state.last_offset + (start_row - scan_state.offset_in_column) * rows_per_list;
+	if (child_start >= child_column->GetMaxEntry()) {
+		// no child rows remain
+		return;
+	}
+	const idx_t child_end = scan_state.last_offset + (end_row - scan_state.offset_in_column) * rows_per_list;
+	child_column->InitializePrefetch(prefetch_state, scan_state.child_states[1], child_start, child_end);
 }
 
 void ListColumnData::InitializeScan(ColumnScanState &state) {
@@ -110,6 +121,9 @@ void ListColumnData::InitializeScanWithOffset(ColumnScanState &state, idx_t row_
 	auto child_offset = FetchListOffset(row_idx - 1);
 	if (child_offset < child_column->GetMaxEntry()) {
 		child_column->InitializeScanWithOffset(state.child_states[1], child_offset);
+	} else {
+		// no child rows remain, start the child scan over so that it does not keep the position of an earlier scan
+		child_column->InitializeScan(state.child_states[1]);
 	}
 	state.last_offset = child_offset;
 }
@@ -201,11 +215,13 @@ void ListColumnData::InitializeAppend(ColumnAppendState &state) {
 
 	// initialize the validity append
 	ColumnAppendState validity_append_state;
+	validity_append_state.transient = state.transient;
 	validity->InitializeAppend(validity_append_state);
 	state.child_appends.push_back(std::move(validity_append_state));
 
 	// initialize the child column append
 	ColumnAppendState child_append_state;
+	child_append_state.transient = state.transient;
 	child_column->InitializeAppend(child_append_state);
 	state.child_appends.push_back(std::move(child_append_state));
 }
@@ -217,6 +233,9 @@ void ListColumnData::Append(ColumnAppendState &state, const Vector &vector, idx_
 	auto input_offsets = vector.Values<list_entry_t>();
 	auto start_offset = child_column->GetMaxEntry();
 	idx_t child_count = 0;
+	idx_t min_length = NumericLimits<idx_t>::Maximum();
+	idx_t max_length = 0;
+	bool has_valid_list = false;
 
 	ValidityMask append_mask(count);
 	auto append_offsets = unique_ptr<uint64_t[]>(new uint64_t[count]);
@@ -229,11 +248,17 @@ void ListColumnData::Append(ColumnAppendState &state, const Vector &vector, idx_
 			continue;
 		}
 		auto &input_list = list_entry.GetValue();
+		has_valid_list = true;
+		min_length = MinValue<idx_t>(min_length, input_list.length);
+		max_length = MaxValue<idx_t>(max_length, input_list.length);
 		if (input_list.offset != child_count) {
 			child_contiguous = false;
 		}
 		append_offsets[i] = start_offset + child_count + input_list.length;
 		child_count += input_list.length;
+	}
+	if (has_valid_list) {
+		ListStats::MergeInLengths(*state.append_stats, min_length, max_length, child_count);
 	}
 	auto &list_child = ListVector::GetChild(vector);
 	Vector child_vector(Vector::Ref(list_child));
@@ -287,10 +312,6 @@ void ListColumnData::RevertAppend(row_t new_count) {
 	auto column_count = GetMaxEntry();
 	auto list_offset = column_count > 0 ? FetchListOffset(column_count - 1) : 0;
 	child_column->RevertAppend(UnsafeNumericCast<row_t>(list_offset));
-}
-
-idx_t ListColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("List Fetch");
 }
 
 void ListColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
@@ -413,6 +434,8 @@ struct ListColumnCheckpointState : public ColumnCheckpointState {
 
 	unique_ptr<ColumnCheckpointState> validity_state;
 	unique_ptr<ColumnCheckpointState> child_state;
+	//! The list length statistics of the column
+	ListStatsData length_data = ListStatsData {false, false, false, 0, 0, 0};
 
 public:
 	shared_ptr<ColumnData> CreateEmptyColumnData() override {
@@ -435,11 +458,19 @@ public:
 		auto stats = global_stats->Copy();
 		stats.Merge(*validity_state->GetStatistics());
 		ListStats::SetChildStats(stats, child_state->GetStatistics());
+		ListStats::SetLengthData(stats, length_data);
 		return stats.ToUnique();
+	}
+
+	void FlushSegmentInternal(unique_ptr<ColumnSegment> segment, idx_t segment_size) override {
+		// the list length stats are stored with the column and not with the segments of the offsets
+		ListStats::SetLengthBounds(segment->GetStatsMutable(), optional_idx(), optional_idx());
+		ColumnCheckpointState::FlushSegmentInternal(std::move(segment), segment_size);
 	}
 
 	PersistentColumnData ToPersistentData() override {
 		auto data = ColumnCheckpointState::ToPersistentData();
+		data.extra_data = make_uniq<ListPersistentColumnData>(length_data);
 		data.child_columns.push_back(validity_state->ToPersistentData());
 		data.child_columns.push_back(child_state->ToPersistentData());
 		return data;
@@ -461,6 +492,7 @@ unique_ptr<ColumnCheckpointState> ListColumnData::Checkpoint(const RowGroup &row
 	auto &checkpoint_state = base_state->Cast<ListColumnCheckpointState>();
 	checkpoint_state.validity_state = std::move(validity_state);
 	checkpoint_state.child_state = std::move(child_state);
+	checkpoint_state.length_data = ListStats::GetLengthData(old_stats);
 	return base_state;
 }
 
@@ -472,8 +504,52 @@ bool ListColumnData::HasAnyChanges() const {
 	return ColumnData::HasAnyChanges() || validity->HasAnyChanges() || child_column->HasAnyChanges();
 }
 
+optional_ptr<const BaseStatistics> ListColumnData::GetColumnStatistics() const {
+	if (stats) {
+		return stats->statistics;
+	}
+	if (!HasParent()) {
+		return nullptr;
+	}
+	// the statistics of the children of these columns are not tracked in their parent
+	auto parent_type = Parent().GetType().id();
+	if (parent_type == LogicalTypeId::VARIANT || parent_type == LogicalTypeId::GEOMETRY) {
+		return nullptr;
+	}
+	return GetStatisticsRef();
+}
+
+bool ListPersistentColumnData::IsSupported(const Serializer &serializer) const {
+	return serializer.ShouldSerialize(StorageVersion::V2_1_0);
+}
+
+void ListPersistentColumnData::SerializeFields(Serializer &serializer) const {
+	serializer.WritePropertyWithDefault(101, "min_list_length", length_data.MinLength());
+	serializer.WritePropertyWithDefault(102, "max_list_length", length_data.MaxLength());
+	serializer.WritePropertyWithDefault(103, "total_list_length", length_data.TotalLength());
+}
+
+unique_ptr<ExtraPersistentColumnData> ListPersistentColumnData::Deserialize(Deserializer &deserializer) {
+	auto min_length = deserializer.ReadPropertyWithDefault<optional_idx>(101, "min_list_length");
+	auto max_length = deserializer.ReadPropertyWithDefault<optional_idx>(102, "max_list_length");
+	auto total_length = deserializer.ReadPropertyWithDefault<optional_idx>(103, "total_list_length");
+	auto result = make_uniq<ListPersistentColumnData>();
+	auto &data = result->length_data;
+	data.has_min_list_length = min_length.IsValid();
+	data.min_list_length = min_length.IsValid() ? min_length.GetIndex() : 0;
+	data.has_max_list_length = max_length.IsValid();
+	data.max_list_length = max_length.IsValid() ? max_length.GetIndex() : 0;
+	data.has_total_list_length = total_length.IsValid();
+	data.total_list_length = total_length.IsValid() ? total_length.GetIndex() : 0;
+	return std::move(result);
+}
+
 PersistentColumnData ListColumnData::Serialize() {
 	auto persistent_data = ColumnData::Serialize();
+	auto column_stats = GetColumnStatistics();
+	if (column_stats) {
+		persistent_data.extra_data = make_uniq<ListPersistentColumnData>(ListStats::GetLengthData(*column_stats));
+	}
 	persistent_data.child_columns.push_back(validity->Serialize());
 	persistent_data.child_columns.push_back(child_column->Serialize());
 	return persistent_data;
@@ -481,6 +557,11 @@ PersistentColumnData ListColumnData::Serialize() {
 
 void ListColumnData::InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) {
 	ColumnData::InitializeColumn(column_data, target_stats);
+	if (column_data.extra_data && column_data.extra_data->GetType() == ExtraPersistentColumnDataType::LIST) {
+		ListStats::SetLengthData(target_stats, column_data.extra_data->Cast<ListPersistentColumnData>().length_data);
+	} else {
+		ListStats::SetLengthBounds(target_stats, optional_idx(), optional_idx());
+	}
 	validity->InitializeColumn(column_data.child_columns[0], target_stats);
 	auto &child_stats = ListStats::GetChildStats(target_stats);
 	child_column->InitializeColumn(column_data.child_columns[1], child_stats);

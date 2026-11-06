@@ -19,6 +19,7 @@ set(TEST_API_OBJECTS
     test_scalar_function_decimal_return.cpp
     test_aggregate_state_bind_data.cpp
     test_config.cpp
+    test_context.cpp
     test_connect_prepare.cpp
     test_remote_pushdown_macro_arguments.cpp
     test_remote_pushdown_merge.cpp
@@ -73,6 +74,7 @@ set(TEST_API_OBJECTS
     test_dialect_extension.cpp
     test_query_node_copy.cpp
     test_grammar_extension.cpp
+    test_parser_query_completeness.cpp
     test_passthrough_dialect.cpp
     test_passthrough_token_matcher.cpp
     test_progress_bar.cpp
@@ -90,6 +92,7 @@ set(TEST_API_OBJECTS
     test_buffer_pool_eviction.cpp
     test_block_allocator_tls.cpp
     test_rollback_delete_checkpoint_flag.cpp
+    test_constant_vector_reference.cpp
     test_group_commit_bound.cpp
     test_data_table_scan_without_row_groups.cpp)
 

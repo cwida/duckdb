@@ -25,14 +25,13 @@ static LogLevel ConvertLogLevel(DUCKDB_V2_LOG_LEVEL level) {
 	}
 }
 
-static void WriteLog(Logger &logger, DUCKDB_V2_LOG_LEVEL level, const duckdb_v2_str *log_type,
-                     const duckdb_v2_str *message) {
+static void WriteLog(Logger &logger, DUCKDB_V2_LOG_LEVEL level, std::string_view log_type, std::string_view message) {
 	const auto log_level = ConvertLogLevel(level);
 	// ShouldLog/WriteLog take a C string, so the borrowed view has to be materialized.
-	const string type(Convert(log_type));
+	const string type(log_type);
 	const auto *type_name = type.empty() ? DefaultLogType::NAME : type.c_str();
 	if (logger.ShouldLog(type_name, log_level)) {
-		logger.WriteLog(type_name, log_level, string(Convert(message)));
+		logger.WriteLog(type_name, log_level, string(message));
 	}
 }
 
@@ -45,27 +44,32 @@ static void WriteLog(Logger &logger, DUCKDB_V2_LOG_LEVEL level, const duckdb_v2_
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_context_log(duckdb_v2_context_handle ctx, DUCKDB_V2_LOG_LEVEL level,
-                                      const duckdb_v2_str *log_type, const duckdb_v2_str *message,
+DUCKDB_V2_ERROR duckdb_v2_context_log(duckdb_v2_context_handle ctx, DUCKDB_V2_LOG_LEVEL level, const char *log_type,
+                                      idx_t log_type_length, const char *message, idx_t message_length,
                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(ctx);
-	return WithErrorHandler(err,
-	                        [&]() { WriteLog(duckdb::Logger::Get(Convert(ctx)->context), level, log_type, message); });
+	return WithErrorHandler(err, [&]() {
+		WriteLog(duckdb::Logger::Get(Convert(ctx)->context), level, Convert(log_type, log_type_length),
+		         Convert(message, message_length));
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_instance_log(duckdb_v2_instance_handle instance, DUCKDB_V2_LOG_LEVEL level,
-                                       const duckdb_v2_str *log_type, const duckdb_v2_str *message,
-                                       duckdb_v2_error_info_handle *err) {
+                                       const char *log_type, idx_t log_type_length, const char *message,
+                                       idx_t message_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(instance);
 	return WithErrorHandler(err, [&]() {
-		WriteLog(duckdb::Logger::Get(*Convert(instance)->GetDatabase().instance), level, log_type, message);
+		WriteLog(duckdb::Logger::Get(*Convert(instance)->GetDatabase().instance), level,
+		         Convert(log_type, log_type_length), Convert(message, message_length));
 	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_connection_log(duckdb_v2_connection_handle conn, DUCKDB_V2_LOG_LEVEL level,
-                                         const duckdb_v2_str *log_type, const duckdb_v2_str *message,
-                                         duckdb_v2_error_info_handle *err) {
+                                         const char *log_type, idx_t log_type_length, const char *message,
+                                         idx_t message_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(conn);
-	return WithErrorHandler(
-	    err, [&]() { WriteLog(duckdb::Logger::Get(*Convert(conn)->context), level, log_type, message); });
+	return WithErrorHandler(err, [&]() {
+		WriteLog(duckdb::Logger::Get(*Convert(conn)->context), level, Convert(log_type, log_type_length),
+		         Convert(message, message_length));
+	});
 }

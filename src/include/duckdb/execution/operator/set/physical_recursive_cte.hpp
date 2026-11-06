@@ -27,6 +27,10 @@ struct RecursiveCTEPipelineSchedulePlan;
 class PhysicalColumnDataScan;
 class Pipeline;
 class PipelineExecutor;
+class InterruptState;
+
+//! Result of driving one recursive epoch
+enum class RecursiveEpochResult : uint8_t { COMPLETE, BLOCKED };
 
 class RecursiveCTEPartialKeySpec {
 public:
@@ -176,7 +180,11 @@ public:
 	vector<const_reference<PhysicalOperator>> GetSources() const override;
 
 private:
-	void ExecuteRecursivePipelines(ExecutionContext &context) const;
+	//! Drives one recursive epoch. BLOCKED means the epoch suspended on blocked inner work: the
+	//! caller must return SourceResultType::BLOCKED and will be re-entered through the given
+	//! interrupt state once the blocking work completes. The epoch resumes where it stopped.
+	RecursiveEpochResult ExecuteRecursivePipelines(ExecutionContext &context,
+	                                               const InterruptState &interrupt_state) const;
 	idx_t NextMetricsInvocation() const;
 
 private:

@@ -18,7 +18,7 @@ namespace duckdb {
 //! The durable external-resource verbs. CREATE provisions and registers a resource under a local name;
 //! REGISTER registers an already-provisioned resource from a handle value; DESTROY tears one down and
 //! deregisters it; SHOW lists the registered resources.
-enum class ExternalResourceOperation : uint8_t { CREATE, REGISTER, DESTROY, SHOW };
+enum class ExternalResourceOperation : uint8_t { CREATE, REGISTER, DESTROY };
 
 class ExternalResourceStatement : public SQLStatement {
 public:
@@ -36,8 +36,6 @@ public:
 	case_insensitive_map_t<unique_ptr<ParsedExpression>> options;
 	//! The `FROM <value>` handle expression. Set for REGISTER.
 	unique_ptr<ParsedExpression> handle;
-	//! Whether `SHOW ALL` was used (include discovered resources, not just locally registered).
-	bool all = false;
 
 protected:
 	ExternalResourceStatement(const ExternalResourceStatement &other);

@@ -159,3 +159,38 @@ EXPLAIN WITH RECURSIVE vals(i) AS (
 SELECT i FROM vals;
 ----
 physical_plan	<REGEX>:(?s).*REC_CTE.*CTE Name: vals.*~1,001 rows.*CROSS_PRODUCT.*REC_CTE_SCAN.*~1 row.*
+
+# Partial ranges retain the default selectivity, including combined endpoints.
+query II
+EXPLAIN SELECT repeated FROM current_domain_values WHERE 90 <= k AND k < 100;
+----
+physical_plan	<REGEX>:(?s).*SEQ_SCAN.*Filters:.*k >= 90.*k < 100.*~200 rows.*
+
+query I
+SELECT sum(repeated) FROM current_domain_values WHERE 90 <= k AND k < 100;
+----
+945
+
+query II
+EXPLAIN SELECT repeated FROM current_domain_values WHERE k <= 0;
+----
+physical_plan	<REGEX>:(?s).*SEQ_SCAN.*Filters: k <= 0.*~200 rows.*
+
+# A filter above a materialized CTE uses the CTE's domain for equality selectivity.
+statement ok
+SET disabled_optimizers='cte_filter_pusher';
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT k FROM current_domain_values)
+SELECT * FROM c WHERE k = 10;
+----
+physical_plan	<REGEX>:(?s).*FILTER.*~1 row.*CTE_SCAN.*
+
+query I
+WITH c AS MATERIALIZED (SELECT k FROM current_domain_values)
+SELECT * FROM c WHERE k = 10;
+----
+10
+
+statement ok
+RESET disabled_optimizers;

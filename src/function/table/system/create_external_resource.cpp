@@ -176,8 +176,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(bind_data.type_name);
 		if (!extension.empty()) {
 			throw InvalidInputException("create_external_resource: unknown resource type \"%s\": it is provided by the "
-			                            "%s extension, which could not be autoloaded. Try: INSTALL %s; LOAD %s;",
-			                            bind_data.type_name, extension, extension, extension);
+			                            "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			                            bind_data.type_name, extension, extension);
 		}
 		throw InvalidInputException("create_external_resource: unknown resource type \"%s\"", bind_data.type_name);
 	}

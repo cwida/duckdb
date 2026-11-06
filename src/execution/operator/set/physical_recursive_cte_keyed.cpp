@@ -900,19 +900,21 @@ idx_t RecursiveCTEKeyedState::RecurringStateChunks() const {
 }
 
 SourceResultType RecursiveCTEKeyedState::GetData(ExecutionContext &context, DataChunk &chunk,
-                                                 RecursiveCTEGlobalSourceState &source) {
+                                                 RecursiveCTEGlobalSourceState &source,
+                                                 const InterruptState &interrupt_state) {
 	if (source_phase == RecursiveCTESourcePhase::INITIAL) {
 		source_phase = RecursiveCTESourcePhase::RECURSING_KEY;
 	}
 	if (metrics.Enabled()) {
-		return GetUsingKeyDataInternal<true>(context, chunk, source);
+		return GetUsingKeyDataInternal<true>(context, chunk, source, interrupt_state);
 	}
-	return GetUsingKeyDataInternal<false>(context, chunk, source);
+	return GetUsingKeyDataInternal<false>(context, chunk, source, interrupt_state);
 }
 
 template <bool COLLECT_METRICS>
 SourceResultType RecursiveCTEKeyedState::GetUsingKeyDataInternal(ExecutionContext &context, DataChunk &chunk,
-                                                                 RecursiveCTEGlobalSourceState &source) {
+                                                                 RecursiveCTEGlobalSourceState &source,
+                                                                 const InterruptState &interrupt_state) {
 	while (true) {
 		switch (source_phase) {
 		case RecursiveCTESourcePhase::RECURSING_KEY: {
@@ -940,12 +942,21 @@ SourceResultType RecursiveCTEKeyedState::GetUsingKeyDataInternal(ExecutionContex
 				}
 			}
 
-			op.ExecuteRecursivePipelines(context);
+			source_phase = RecursiveCTESourcePhase::EXECUTING_RECURSION;
+			break;
+		}
+		case RecursiveCTESourcePhase::EXECUTING_RECURSION: {
+			if (op.ExecuteRecursivePipelines(context, interrupt_state) == RecursiveEpochResult::BLOCKED) {
+				// the epoch waits for blocked inner work; the interrupt state re-enters this source
+				return SourceResultType::BLOCKED;
+			}
 			const auto next_count = op.UnionAll() ? intermediate_table.Count() : op.working_table->Count();
 			if (next_count == 0) {
 				ht->InitializeScan(ht_scan_state);
 				source.StartFinalDrain(ht->Count());
 				source_phase = RecursiveCTESourcePhase::DRAINING_FINAL_KEY_STATE;
+			} else {
+				source_phase = RecursiveCTESourcePhase::RECURSING_KEY;
 			}
 			break;
 		}
