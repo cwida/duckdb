@@ -553,17 +553,20 @@ bool ConvertFloatingToBigint(REAL_T value, hugeint_t &result) {
 	if (!Value::IsFinite<REAL_T>(value)) {
 		return false;
 	}
-	if (value <= -170141183460469231731687303715884105728.0 || value >= 170141183460469231731687303715884105727.0) {
+	if (value < -170141183460469231731687303715884105728.0 || value >= 170141183460469231731687303715884105728.0) {
 		return false;
 	}
-	bool negative = value < 0;
+	static constexpr REAL_T TWO_TO_THE_64 = REAL_T(18446744073709551616.0);
+	const bool negative = value < 0;
 	if (negative) {
 		value = -value;
 	}
-	result.lower = (uint64_t)fmod(value, REAL_T(NumericLimits<uint64_t>::Maximum()));
-	result.upper = (int64_t)(value / REAL_T(NumericLimits<uint64_t>::Maximum()));
+	// The magnitude of the minimum has an upper word of 2**63; it wraps to INT64_MIN, which HugeintNegate keeps.
+	const auto upper = static_cast<uint64_t>(value / TWO_TO_THE_64);
+	const auto lower = static_cast<uint64_t>(std::fmod(value, TWO_TO_THE_64));
+	result = hugeint_t(static_cast<int64_t>(upper), lower);
 	if (negative) {
-		Hugeint::NegateInPlace(result);
+		result = HugeintNegate(result);
 	}
 	return true;
 }
