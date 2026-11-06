@@ -82,8 +82,9 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, data_ptr_t dataptr) {
 
 			auto &alter_info = parse_info->Cast<AlterInfo>();
 			if (alter_info.type == AlterType::ALTER_MACRO) {
-				const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
-				if (log.GetDatabase().GetStorageManager().GetStorageVersion() < since) {
+				auto &storage_manager = log.GetDatabase().GetStorageManager();
+				if (storage_manager.HasStorageVersion() &&
+				    StorageManager::IsPriorToVersion(StorageVersion::V2_1_0, storage_manager.GetStorageVersion())) {
 					// releases that do not know the ALTER_MACRO record treat it as a torn WAL tail and
 					// silently truncate everything after it: keep files pinned to such versions readable
 					// by writing the member drop as the replacement it used to be

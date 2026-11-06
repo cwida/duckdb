@@ -73,7 +73,8 @@ SELECT alt(DATE '2024-01-01');
 ----
 <REGEX>:.*(No function matches|Binder Error).*
 
-# the oid survives the WAL replay together with the member removal
+# this database predates the ALTER_MACRO record's storage version, so the WAL carried the member
+# drop as the legacy drop+create: the member removal survives the replay either way
 query I
 SELECT count(DISTINCT function_oid) FROM duckdb_functions() WHERE function_name = 'alt';
 ----
@@ -84,6 +85,12 @@ statement ok
 DROP MACRO alt(INTEGER);
 
 restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
 
 statement error
 SELECT alt(1);
@@ -156,7 +163,7 @@ DROP MACRO ww(INTEGER);
 statement error con2
 DROP MACRO ww(VARCHAR);
 ----
-<REGEX>:.*(conflict|lock|transaction|exist).*
+<REGEX>:.*write-write conflict on alter.*
 
 statement ok con1
 COMMIT;
@@ -165,8 +172,7 @@ statement ok con1
 DROP MACRO ww;
 
 # a database pinned to a storage version that predates the ALTER_MACRO record gets the member
-# drop written to its WAL as the legacy drop+create, which such releases replay correctly:
-# the replacement comes out of the replay as a fresh entry, visible as a changed oid
+# drop written to its WAL as the legacy drop+create, which such releases replay correctly
 statement ok
 ATTACH '{TEST_DIR}/alter_old_pin.db' AS odb (STORAGE_VERSION 'v1.4.0');
 
@@ -177,12 +183,15 @@ statement ok
 CHECKPOINT odb;
 
 statement ok
-CREATE TABLE odb.oid_old AS SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'om' AND database_name = 'odb';
-
-statement ok
 DROP MACRO odb.om(VARCHAR);
 
 restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
 
 statement ok
 ATTACH '{TEST_DIR}/alter_old_pin.db' AS odb;
@@ -197,8 +206,46 @@ SELECT odb.om('a');
 ----
 <REGEX>:.*(No function matches|Binder Error|does not support).*
 
-query I
-SELECT (SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'om' AND database_name = 'odb')
-    <> (SELECT function_oid FROM odb.oid_old);
+# a v2.1.0 database carries the member drop as the ALTER_MACRO record: the replay goes through
+# MacroCatalogEntry::AlterEntry, keeps the oid, and re-derives the dependency list
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_new_pin.db' AS ndb (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+CREATE TABLE ndb.nsrc(i INTEGER);
+
+statement ok
+CREATE MACRO ndb.nm(x INTEGER) AS (SELECT count(*) FROM ndb.nsrc), (x VARCHAR) AS x, (x DATE) AS 42;
+
+statement ok
+CHECKPOINT ndb;
+
+statement ok
+DROP MACRO ndb.nm(VARCHAR);
+
+restart
+
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+ATTACH '{TEST_DIR}/alter_new_pin.db' AS ndb;
+
+query TT
+SELECT ndb.nm(1), ndb.nm(DATE '2024-01-01');
 ----
-true
+0	42
+
+statement error
+SELECT ndb.nm('a');
+----
+<REGEX>:.*(No function matches|Binder Error|does not support).*
+
+# the re-derived dependency list still protects the surviving member's reference
+statement error
+DROP TABLE ndb.nsrc;
+----
+<REGEX>:.*depend.*
