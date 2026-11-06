@@ -457,6 +457,16 @@ static void DirectConversion(Vector &vector, ArrowArray &array, idx_t chunk_offs
 	SetVectorData(vector, data_ptr, size);
 }
 
+// Arrow bounds a time to [0, a day) but producers do not enforce it; a TIME holds 00:00:00 to 24:00:00 inclusive.
+template <class T>
+static int64_t ArrowTimeWithinDay(T raw, int64_t units_per_day, int64_t conversion) {
+	if (raw < 0 || static_cast<int64_t>(raw) > units_per_day) {
+		throw ConversionException("Invalid TIME value %d in Arrow array - TIME values must be within a day",
+		                          static_cast<int64_t>(raw));
+	}
+	return static_cast<int64_t>(raw) * conversion;
+}
+
 template <class T>
 static void TimeConversion(Vector &vector, ArrowArray &array, idx_t chunk_offset, int64_t nested_offset,
                            int64_t parent_offset, idx_t size, int64_t conversion) {
@@ -464,13 +474,10 @@ static void TimeConversion(Vector &vector, ArrowArray &array, idx_t chunk_offset
 	auto &validity_mask = FlatVector::ValidityMutable(vector);
 	ArrowAlignedBufferData<T> src_ptr(array, 1, GetEffectiveOffset(array, parent_offset, chunk_offset, nested_offset),
 	                                  size);
+	const auto units_per_day = Interval::MICROS_PER_DAY / conversion;
 	if (validity_mask.CannotHaveNull()) {
 		for (idx_t row = 0; row < size; row++) {
-			int64_t result;
-			if (!TryMultiplyOperator::Operation(static_cast<int64_t>(src_ptr[row]), conversion, result)) {
-				throw ConversionException("Could not convert Time to Microsecond");
-			}
-			tgt_writer.WriteValue(dtime_t(result));
+			tgt_writer.WriteValue(dtime_t(ArrowTimeWithinDay(src_ptr[row], units_per_day, conversion)));
 		}
 	} else {
 		for (idx_t row = 0; row < size; row++) {
@@ -478,11 +485,7 @@ static void TimeConversion(Vector &vector, ArrowArray &array, idx_t chunk_offset
 				tgt_writer.WriteNull();
 				continue;
 			}
-			int64_t result;
-			if (!TryMultiplyOperator::Operation(static_cast<int64_t>(src_ptr[row]), conversion, result)) {
-				throw ConversionException("Could not convert Time to Microsecond");
-			}
-			tgt_writer.WriteValue(dtime_t(result));
+			tgt_writer.WriteValue(dtime_t(ArrowTimeWithinDay(src_ptr[row], units_per_day, conversion)));
 		}
 	}
 }
@@ -494,22 +497,17 @@ static void TimeNSConversion(Vector &vector, ArrowArray &array, idx_t chunk_offs
 	auto &validity_mask = FlatVector::ValidityMutable(vector);
 	ArrowAlignedBufferData<T> src_ptr(array, 1, GetEffectiveOffset(array, parent_offset, chunk_offset, nested_offset),
 	                                  size);
+	const auto units_per_day = Interval::NANOS_PER_DAY / conversion;
 	if (validity_mask.CannotHaveNull()) {
 		for (idx_t row = 0; row < size; row++) {
-			// dtime_ns_t.micros actually holds nanos (!)
-			if (!TryMultiplyOperator::Operation(static_cast<int64_t>(src_ptr[row]), conversion, tgt_ptr[row].value)) {
-				throw ConversionException("Could not convert TimeNS to Nanoseconds");
-			}
+			tgt_ptr[row].value = ArrowTimeWithinDay(src_ptr[row], units_per_day, conversion);
 		}
 	} else {
 		for (idx_t row = 0; row < size; row++) {
 			if (!validity_mask.RowIsValid(row)) {
 				continue;
 			}
-			// dtime_ns_t.micros actually holds nanos (!)
-			if (!TryMultiplyOperator::Operation(static_cast<int64_t>(src_ptr[row]), conversion, tgt_ptr[row].value)) {
-				throw ConversionException("Could not convert TimeNS to Nanoseconds");
-			}
+			tgt_ptr[row].value = ArrowTimeWithinDay(src_ptr[row], units_per_day, conversion);
 		}
 	}
 }
