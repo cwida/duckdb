@@ -12,13 +12,15 @@ except:
 
 
 def generate_header(f):
-    f.write('''# name: test/parquet/test_parquet_reader.test
+    f.write(
+        '''# name: test/parquet/test_parquet_reader.test
 # description: Test Parquet Reader with files on data/parquet-testing
 # group: [parquet]
 
 require parquet
 
-''')
+'''
+    )
 
 
 def get_files():
