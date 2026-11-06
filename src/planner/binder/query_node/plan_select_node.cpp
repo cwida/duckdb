@@ -51,6 +51,10 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 			// states that own memory (e.g. the BIGNUM sum of a wide decimal) have no exportable layout
 			return false;
 		}
+		if (aggr->Cast<BoundAggregateExpression>().IsDistinct()) {
+			// the exported state of a DISTINCT aggregate cannot be re-bound: EXPORT_STATE rejects DISTINCT
+			return false;
+		}
 	}
 
 	// we transform a query like "SELECT grp, SUM(col) FROM tbl GROUP BY grp" into

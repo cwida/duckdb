@@ -79,14 +79,14 @@ private:
 	bool started = false;
 };
 
-AsyncTaskQueue::AsyncTaskQueue(Context &services_p, idx_t max_active_tasks_p) : services(services_p) {
-	auto &scheduler = services.GetTaskScheduler();
+AsyncTaskQueue::AsyncTaskQueue(Context &context_p, idx_t max_active_tasks_p) : context(context_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_tasks = max_active_tasks_p > 0 ? max_active_tasks_p : MaxValue<idx_t>(async_threads, 1);
 	if (async_threads == 0) {
 		return;
 	}
-	executor = make_uniq<TaskExecutor>(services, TaskSchedulerType::ASYNC);
+	executor = make_uniq<TaskExecutor>(context, TaskSchedulerType::ASYNC);
 }
 
 AsyncTaskQueue::~AsyncTaskQueue() {
@@ -366,12 +366,12 @@ void AsyncTaskQueue::VerifyOpen() const {
 //===--------------------------------------------------------------------===//
 // ManagedAsyncTaskQueue
 //===--------------------------------------------------------------------===//
-ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(Context &services_p, idx_t max_active_tasks)
-    : services(services_p), memory_governor(services_p) {
-	auto &scheduler = services.GetTaskScheduler();
+ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(Context &context_p, idx_t max_active_tasks)
+    : context(context_p), memory_governor(context_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_drain_tasks = max_active_tasks > 0 ? max_active_tasks : MaxValue<idx_t>(async_threads, 1);
-	task_queue = make_uniq<AsyncTaskQueue>(services, max_active_drain_tasks);
+	task_queue = make_uniq<AsyncTaskQueue>(context, max_active_drain_tasks);
 }
 
 ManagedAsyncTaskQueue::~ManagedAsyncTaskQueue() {

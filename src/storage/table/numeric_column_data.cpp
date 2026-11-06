@@ -243,7 +243,7 @@ FilterPropagateResult NumericColumnData::CheckZonemap(ColumnScanState &state, co
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "NumericColumnData::CheckZonemap");
 	bool is_dynamic = ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME);
 	state.segment_checked = !is_dynamic;
-	auto context = Context::TryGetClientContext(state.context.GetServices());
+	auto context = state.context.GetClientContext();
 	if (IsDirectNullCheckFilter(filter.filter) && !state.child_states.empty() && state.child_states[0].current) {
 		// NULL checks are judged on the validity segment, whose statistics do not depend on the representation
 		auto &checked_segment = *state.child_states[0].current;
@@ -272,8 +272,7 @@ FilterPropagateResult NumericColumnData::CheckZonemapAt(ColumnScanState &state, 
 	auto segment = segments.GetSegment(row);
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter.filter, "NumericColumnData::CheckZonemapAt");
 	checked_end = segment->GetRowStart() + segment->GetNode().count;
-	return CheckCanonicalStatistics(column, Context::TryGetClientContext(state.context.GetServices()), *segment,
-	                                expr_filter);
+	return CheckCanonicalStatistics(column, state.context.GetClientContext(), *segment, expr_filter);
 }
 
 //----------------------------------------------------------------------------------------------------------------------

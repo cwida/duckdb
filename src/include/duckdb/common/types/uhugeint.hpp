@@ -184,6 +184,8 @@ template <>
 DUCKDB_API bool Uhugeint::TryCast(uhugeint_t input, float &result);
 template <>
 DUCKDB_API bool Uhugeint::TryCast(uhugeint_t input, double &result);
+template <>
+DUCKDB_API bool Uhugeint::TryCast(uhugeint_t input, long double &result);
 
 template <>
 bool Uhugeint::TryConvert(int8_t value, uhugeint_t &result);

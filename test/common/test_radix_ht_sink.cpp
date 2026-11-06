@@ -179,7 +179,7 @@ TEST_CASE("Increasing the reservation preserves an underfull aggregate table", "
 	auto &global = fixture.Global();
 	const auto old_count = local.ht->Count();
 	// Simulate a reservation reduction while the pointer table still has spare capacity.
-	global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->Services(),
+	global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->GetContext(),
 	                                                                    local.ht->GetSizeInBytes());
 	const auto old_limit = global.GetThreadLimit();
 	REQUIRE(local.ht->GetSizeInBytes() > old_limit);
@@ -213,7 +213,7 @@ TEST_CASE("Arena pressure requests enough reservation to keep aggregate states r
 		REQUIRE(arena_size * 5 > total_size * 4);
 		REQUIRE(ht.Count() + STANDARD_VECTOR_SIZE < ht.ResizeThreshold());
 		global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
-		    fixture.con.context->Services(), 3 * global.number_of_threads * total_size / 2);
+		    fixture.con.context->GetContext(), 3 * global.number_of_threads * total_size / 2);
 		const auto old_limit = global.GetThreadLimit();
 		REQUIRE(total_size <= old_limit);
 		REQUIRE(global.StatePressureExceeded(ht));
@@ -268,7 +268,7 @@ TEST_CASE("A reduced reservation does not prevent external aggregation", "[radix
 	const auto radix_bits = global.config.GetRadixBits();
 	const auto minimum_reservation = global.minimum_reservation.load();
 	REQUIRE(radix_bits > 1);
-	global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->Services(), 1);
+	global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->GetContext(), 1);
 	global.config.SetRadixBits(1);
 	REQUIRE(global.config.GetRadixBits() == radix_bits);
 	REQUIRE_FALSE(global.external);
@@ -560,7 +560,7 @@ TEST_CASE("Failed adaptive growth preserves rows and falls back to the existing 
 	// Leave policy headroom even when tiny vectors require more tuple metadata.
 	const auto reservation = 5 * (local.ht->GetSizeInBytes() + 4 * 1024 * 1024);
 	global.temporary_memory_state->SetMinimumReservation(reservation);
-	global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->Services(), reservation);
+	global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->GetContext(), reservation);
 	REQUIRE(local.ht->GetAdaptivityState().HLLEnabled());
 	const auto old_capacity = local.ht->Capacity();
 	const auto old_materialized = local.ht->GetMaterializedCount();
@@ -589,7 +589,7 @@ TEST_CASE("Aggregate append pins are released before spilling", "[radix_ht_sink]
 		CAPTURE(acquire);
 		RadixSinkFixture fixture("128MB");
 		fixture.Global().temporary_memory_state->SetMinimumReservation(64 * 1024 * 1024);
-		fixture.Global().temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->Services(),
+		fixture.Global().temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->GetContext(),
 		                                                                              64 * 1024 * 1024);
 		fixture.Global().config.SetRadixBits(3);
 		fixture.Keys(0, group_count, 192000 / group_count);
@@ -639,7 +639,7 @@ TEST_CASE("Abandoned aggregate blocks can be evicted before the next sink call",
 		const auto group_count = MinValue<idx_t>(direct ? 64 : 16, STANDARD_VECTOR_SIZE);
 		RadixSinkFixture fixture("128MB");
 		fixture.Global().temporary_memory_state->SetMinimumReservation(64 * 1024 * 1024);
-		fixture.Global().temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->Services(),
+		fixture.Global().temporary_memory_state->SetRemainingSizeAndUpdateReservation(fixture.con.context->GetContext(),
 		                                                                              64 * 1024 * 1024);
 		fixture.Global().config.SetRadixBits(3);
 		fixture.Keys(0, group_count, 192000 / group_count);

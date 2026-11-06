@@ -15,6 +15,7 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cte.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
+#include "duckdb/planner/operator/logical_empty_result.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -232,7 +233,8 @@ unique_ptr<LogicalOperator> TopNWindowElimination::Optimize(unique_ptr<LogicalOp
 
 unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<LogicalOperator> op,
                                                                     ColumnBindingReplacer &replacer) {
-	if (!CanOptimize(*op).IsValid()) {
+	const auto limit = CanOptimize(*op);
+	if (!limit.IsValid()) {
 		// Traverse through query plan to find grouped top-n pattern
 		if (op->children.size() > 1) {
 			// If an operator has multiple children, we do not want them to overwrite each other's stop operator.
@@ -254,7 +256,10 @@ unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<L
 		}
 
 		return op;
+	} else if (limit.GetIndex() == 0) {
+		return make_uniq<LogicalEmptyResult>(std::move(op));
 	}
+
 	// We have made sure that this is an operator sequence of filter -> N optional projections -> window
 	auto &filter = op->Cast<LogicalFilter>();
 	reference<LogicalOperator> child = *filter.children[0];
@@ -581,11 +586,11 @@ optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 	}
 
 	const auto bigint_value = filter_value.GetValue().GetValue<int64_t>();
-	optional_idx can_optimize;
+	optional_idx can_optimize(0);
 	switch (comparison) {
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 		if (bigint_value < 1) {
-			return cant_optimize;
+			break;
 		}
 		if (bigint_value >= MIN_MAX_N_MAX_VALUE) {
 			// The rewrite passes the limit as the n value to the min/max/arg_min/arg_max "n" aggregates, which
@@ -596,7 +601,7 @@ optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		break;
 	case ExpressionType::COMPARE_LESSTHAN:
 		if (bigint_value < 2) {
-			return cant_optimize;
+			break;
 		}
 		if (bigint_value - 1 >= MIN_MAX_N_MAX_VALUE) {
 			return cant_optimize;
@@ -605,6 +610,9 @@ optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		break;
 	case ExpressionType::COMPARE_EQUAL:
 		//	TODO: Handle other values
+		if (bigint_value < 1) {
+			break;
+		}
 		if (bigint_value != 1) {
 			return cant_optimize;
 		}
@@ -959,6 +967,8 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 	}
 
 	reference<LogicalOperator> op = *window.children[0];
+	// Only a single cast per column can be re-applied, so a cast chain over several projections is not recreatable
+	vector<bool> column_is_cast(projections.size(), false);
 
 	// Traverse projections to a single table scan
 	while (!op.get().children.empty()) {
@@ -978,6 +988,12 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 					// The projected value is derived through a value-transforming expression that the rowid semi-join
 					// cannot reconstruct. Fall back to carrying the computed value through the aggregate instead.
 					return false;
+				}
+				if (BoundCastExpression::IsCast(*projection.expressions[projection_idx])) {
+					if (column_is_cast[i]) {
+						return false;
+					}
+					column_is_cast[i] = true;
 				}
 				if (!ExtractSingleBinding(&projection.expressions[projection_idx], projections[i])) {
 					return false;

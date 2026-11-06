@@ -239,13 +239,13 @@ ORDER BY g NULLS FIRST;
 0	1	1
 0	2	1
 
-# DISTINCT aggregate state export is finalized over the deduplicated rows
-query II
+# DISTINCT aggregate state export is rejected: the exported state would be the plain aggregate's state
+statement error
 SELECT finalize(sum(DISTINCT x) EXPORT_STATE),
        finalize(count(DISTINCT x) EXPORT_STATE)
 FROM distinct_rewrite_nulls;
 ----
-9	2
+EXPORT_STATE is not supported for DISTINCT aggregates
 
 statement ok
 CREATE TABLE part(p_partkey BIGINT NOT NULL, p_brand VARCHAR NOT NULL, p_type VARCHAR NOT NULL,
@@ -329,24 +329,14 @@ NULL	M	2	1	1	0
 NULL	P	3	2	1	0
 NULL	NULL	6	3	1	1
 
-# state-export distinct aggregates also go through the grouping-set expansion
-query TTIII
+# state-export distinct aggregates are rejected before the grouping-set expansion
+statement error
 SELECT course, type, finalize(sum(DISTINCT value) EXPORT_STATE), GROUPING(course), GROUPING(type)
 FROM distinct_rewrite_grouping_sets
 GROUP BY CUBE(course, type)
 ORDER BY GROUPING(course), GROUPING(type), course, type NULLS FIRST;
 ----
-CS	B	1	0	0
-CS	P	3	0	0
-Math	NULL	3	0	0
-Math	M	2	0	0
-CS	NULL	3	0	1
-Math	NULL	5	0	1
-NULL	NULL	3	1	0
-NULL	B	1	1	0
-NULL	M	2	1	0
-NULL	P	3	1	0
-NULL	NULL	6	1	1
+EXPORT_STATE is not supported for DISTINCT aggregates
 
 statement ok
 PRAGMA disable_verification
