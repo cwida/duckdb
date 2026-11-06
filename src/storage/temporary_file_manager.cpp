@@ -893,7 +893,7 @@ void TemporaryDirectoryHandle::ClaimOwner() {
 		try {
 			marker->Close();
 		} catch (...) {
-			// the marker is not claimed, and a failed removal must not replace the close error
+			// a failed removal must not replace the close error
 			try {
 				fs.TryRemoveFile(marker_path);
 			} catch (...) { // NOLINT
