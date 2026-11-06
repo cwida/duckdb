@@ -12,6 +12,7 @@
 #include "duckdb/function/combine_types_rule.hpp"
 
 namespace duckdb {
+class Context;
 struct MapCastInfo;
 struct MapCastNode;
 struct DBConfig;
@@ -21,13 +22,24 @@ typedef BoundCastInfo (*bind_cast_function_t)(BindCastInput &input, const Logica
 typedef int64_t (*implicit_cast_cost_t)(const LogicalType &from, const LogicalType &to);
 
 struct GetCastFunctionInput {
-	explicit GetCastFunctionInput(optional_ptr<ClientContext> context = nullptr) : context(context) {
-	}
-	explicit GetCastFunctionInput(ClientContext &context) : context(&context) {
-	}
+	DUCKDB_API explicit GetCastFunctionInput(Context &context);
+	DUCKDB_API explicit GetCastFunctionInput(ClientContext &context);
 
-	optional_ptr<ClientContext> context;
+	//! Input for the default casts: there are no services, so GetContext() must not be called
+	DUCKDB_API static GetCastFunctionInput Default();
+
+	//! The services of the cast
+	DUCKDB_API Context &GetContext();
+
+	//! The client context - only present if the cast is bound for a client
+	optional_ptr<ClientContext> client_context;
 	QueryLocation query_location;
+
+private:
+	GetCastFunctionInput() = default;
+
+private:
+	optional_ptr<Context> context;
 };
 
 struct BindCastFunction {

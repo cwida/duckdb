@@ -84,7 +84,7 @@ static void LevenshteinFunction(DataChunk &args, ExpressionState &state, Vector 
 	const auto &tgt_vec = args.data[1];
 
 	// the client context only serves interrupt checks, and index keys are computed without one
-	optional_ptr<ClientContext> context = state.HasContext() ? &state.GetContext() : nullptr;
+	optional_ptr<ClientContext> context = state.HasClientContext() ? &state.GetClientContext() : nullptr;
 	BinaryExecutor::Execute<string_t, string_t, int64_t>(str_vec, tgt_vec, result, [&](string_t str, string_t tgt) {
 		return LevenshteinScalarFunction(context, str, tgt);
 	});

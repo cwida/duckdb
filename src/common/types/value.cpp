@@ -2167,7 +2167,7 @@ optional<Value> Value::TryCastAs(ClientContext &context, const LogicalType &targ
 
 optional<Value> Value::DefaultTryCastAs(const LogicalType &target_type, string *error_message, bool strict) const {
 	CastFunctionSet set;
-	GetCastFunctionInput get_input;
+	auto get_input = GetCastFunctionInput::Default();
 	return TryCastAs(set, get_input, target_type, error_message, strict);
 }
 
@@ -2191,7 +2191,7 @@ Value Value::CastAs(ClientContext &context, const LogicalType &target_type, bool
 
 Value Value::DefaultCastAs(const LogicalType &target_type, bool strict) const {
 	CastFunctionSet set;
-	GetCastFunctionInput get_input;
+	auto get_input = GetCastFunctionInput::Default();
 	return CastAs(set, get_input, target_type, strict);
 }
 
@@ -2705,7 +2705,7 @@ bool Value::ValuesAreEqual(ClientContext &context, const Value &result_value, co
 }
 bool Value::DefaultValuesAreEqual(const Value &result_value, const Value &value) {
 	CastFunctionSet set;
-	GetCastFunctionInput get_input;
+	auto get_input = GetCastFunctionInput::Default();
 	return Value::ValuesAreEqual(set, get_input, result_value, value);
 }
 

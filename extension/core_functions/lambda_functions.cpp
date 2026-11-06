@@ -292,7 +292,8 @@ static void ExecuteLambda(DataChunk &args, ExpressionState &state, Vector &resul
 	info.child_vector->ToUnifiedFormat(child_info.format);
 
 	// get the expression executor
-	LambdaExecuteInfo execute_info(state.GetContext(), *info.lambda_expr, args, info.has_index, *info.child_vector);
+	LambdaExecuteInfo execute_info(state.GetClientContext(), *info.lambda_expr, args, info.has_index,
+	                               *info.child_vector);
 
 	// get list_filter specific info
 	ListFilterInfo list_filter_info;
@@ -326,7 +327,7 @@ static void ExecuteLambda(DataChunk &args, ExpressionState &state, Vector &resul
 		for (idx_t child_idx = 0; child_idx < list_entry.length; child_idx++) {
 			// reached STANDARD_VECTOR_SIZE elements
 			if (elem_cnt == STANDARD_VECTOR_SIZE) {
-				state.GetContext().InterruptCheck();
+				state.GetClientContext().InterruptCheck();
 				execute_info.lambda_chunk.Reset();
 				ExecuteExpression(elem_cnt, child_info, info.column_infos, index_vector, execute_info);
 				auto &lambda_vector = execute_info.lambda_chunk.data[0];

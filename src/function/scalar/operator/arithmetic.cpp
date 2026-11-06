@@ -488,7 +488,7 @@ static void BignumSubtract(DataChunk &args, ExpressionState &state, Vector &resu
 
 //! The client context (if any) lets long BIGNUM multiplications and divisions check for interrupts
 static optional_ptr<ClientContext> GetBignumArithmeticContext(ExpressionState &state) {
-	return state.HasContext() ? &state.GetContext() : nullptr;
+	return state.HasClientContext() ? &state.GetClientContext() : nullptr;
 }
 
 static void BignumMultiply(DataChunk &args, ExpressionState &state, Vector &result) {

@@ -301,7 +301,7 @@ void LambdaFunctions::ListReduceFunction(DataChunk &args, ExpressionState &state
 		return;
 	}
 
-	ReduceExecuteInfo execute_info(info, state.GetContext());
+	ReduceExecuteInfo execute_info(info, state.GetClientContext());
 
 	// Since the left slice references the result chunk, we need to create two result chunks.
 	// This means there is always an empty result chunk for the next iteration,
@@ -316,7 +316,7 @@ void LambdaFunctions::ListReduceFunction(DataChunk &args, ExpressionState &state
 	idx_t loops = 0;
 	bool end = false;
 	while (!end) {
-		state.GetContext().InterruptCheck();
+		state.GetClientContext().InterruptCheck();
 		auto &result_chunk = loops % 2 ? odd_result_chunk : even_result_chunk;
 		auto &spare_result_chunk = loops % 2 ? even_result_chunk : odd_result_chunk;
 

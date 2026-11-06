@@ -146,7 +146,7 @@ JSONFunctionLocalState::JSONFunctionLocalState(ClientContext &context)
 
 unique_ptr<FunctionLocalState> JSONFunctionLocalState::Init(ExpressionState &state, const BoundFunctionExpression &expr,
                                                             FunctionData *bind_data) {
-	return make_uniq<JSONFunctionLocalState>(state.GetContext());
+	return make_uniq<JSONFunctionLocalState>(state.GetClientContext());
 }
 
 unique_ptr<FunctionLocalState> JSONFunctionLocalState::InitCastLocalState(CastLocalStateParameters &parameters) {

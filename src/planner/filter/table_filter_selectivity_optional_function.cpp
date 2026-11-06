@@ -126,7 +126,7 @@ static unique_ptr<FunctionLocalState> SelectivityOptionalFilterInitLocalState(Ex
 	if (!data.child_filter_expr) {
 		return nullptr;
 	}
-	return make_uniq<SelectivityOptionalFilterLocalState>(state.GetContext(), *data.child_filter_expr,
+	return make_uniq<SelectivityOptionalFilterLocalState>(state.GetClientContext(), *data.child_filter_expr,
 	                                                      data.n_vectors_to_check, data.selectivity_threshold);
 }
 

@@ -10,13 +10,13 @@
 namespace duckdb {
 
 static timestamp_t GetTransactionTimestamp(ExpressionState &state) {
-	return MetaTransaction::Get(state.GetContext()).start_timestamp;
+	return MetaTransaction::Get(state.GetClientContext()).start_timestamp;
 }
 
 static void CurrentTimeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	D_ASSERT(input.ColumnCount() == 0);
 	auto instant = GetTransactionTimestamp(state);
-	ICUDateFunc::BindData data(state.GetContext());
+	ICUDateFunc::BindData data(state.GetClientContext());
 
 	dtime_tz_t result_time(dtime_t(0), 0);
 	ICUToTimeTZ::ToTimeTZ(data.calendar.get(), timestamp_tz_t(instant), result_time);
@@ -28,7 +28,7 @@ static void CurrentDateFunction(DataChunk &input, ExpressionState &state, Vector
 	D_ASSERT(input.ColumnCount() == 0);
 	auto instant = GetTransactionTimestamp(state);
 
-	auto val = Value::DATE(ICUMakeDate::ToDate(state.GetContext(), timestamp_tz_t(instant)));
+	auto val = Value::DATE(ICUMakeDate::ToDate(state.GetClientContext(), timestamp_tz_t(instant)));
 	result.Reference(val, count_t(input.size()));
 }
 

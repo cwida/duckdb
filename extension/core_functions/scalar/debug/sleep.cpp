@@ -17,7 +17,7 @@ struct NullResultType {
 
 static void SleepFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	input.Flatten();
-	auto &context = state.GetContext();
+	auto &context = state.GetClientContext();
 	GenericExecutor::ExecuteUnary<PrimitiveType<int64_t>, NullResultType>(input.data[0], result,
 	                                                                      [&context](PrimitiveType<int64_t> input) {
 		                                                                      // Sleep for the specified number of

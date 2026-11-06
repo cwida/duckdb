@@ -56,7 +56,7 @@ public:
 
 	ClientContext &GetContext() {
 		D_ASSERT(executor);
-		return executor->GetContext();
+		return executor->GetClientContext();
 	}
 
 	unique_ptr<ExpressionExecutor> executor;

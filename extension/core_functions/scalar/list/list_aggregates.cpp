@@ -110,7 +110,7 @@ struct ListAggregatesLocalState : public FunctionLocalState {
 
 unique_ptr<FunctionLocalState> ListAggregatesInitLocalState(ExpressionState &state, const BoundFunctionExpression &expr,
                                                             FunctionData *bind_data) {
-	return make_uniq<ListAggregatesLocalState>(state.GetContext(), bind_data);
+	return make_uniq<ListAggregatesLocalState>(state.GetClientContext(), bind_data);
 }
 
 struct StateVector {

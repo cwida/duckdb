@@ -12,9 +12,7 @@ namespace duckdb {
 struct ConjunctionState : public ExpressionState {
 	ConjunctionState(const Expression &expr, ExpressionExecutorState &root) : ExpressionState(expr, root) {
 		adaptive_filter = make_uniq<AdaptiveFilter>(expr);
-		if (HasContext()) {
-			adaptive_filter->SetLogger(GetContext().services->GetLoggerPtr());
-		}
+		adaptive_filter->SetLogger(GetContext().GetLoggerPtr());
 	}
 	unique_ptr<AdaptiveFilter> adaptive_filter;
 };

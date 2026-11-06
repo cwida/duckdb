@@ -1087,7 +1087,7 @@ static void ObjectFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	const auto &info = func_expr.BindInfo()->Cast<JSONCreateFunctionData>();
 	auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
 	auto alc = lstate.json_allocator->GetYYAlc();
-	auto options = ClientFormatOptions(state.GetContext());
+	auto options = ClientFormatOptions(state.GetClientContext());
 
 	// Initialize values
 	const idx_t count = args.size();
@@ -1117,7 +1117,7 @@ static void ArrayFunction(DataChunk &args, ExpressionState &state, Vector &resul
 	const auto &info = func_expr.BindInfo()->Cast<JSONCreateFunctionData>();
 	auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
 	auto alc = lstate.json_allocator->GetYYAlc();
-	auto options = ClientFormatOptions(state.GetContext());
+	auto options = ClientFormatOptions(state.GetClientContext());
 
 	// Initialize arrays
 	const idx_t count = args.size();
@@ -1176,7 +1176,7 @@ static void ToJSONFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	const auto &info = func_expr.BindInfo()->Cast<JSONCreateFunctionData>();
 	auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
 	auto alc = lstate.json_allocator->GetYYAlc();
-	auto options = ClientFormatOptions(state.GetContext());
+	auto options = ClientFormatOptions(state.GetClientContext());
 
 	ToJSONFunctionInternal(info.const_struct_names, args.data[0], args.size(), result, alc, options);
 }
@@ -1186,7 +1186,7 @@ static void JSONCopyToJSONFunction(DataChunk &args, ExpressionState &state, Vect
 	auto &info = func_expr.BindInfo()->Cast<JSONCopyToJSONFunctionData>();
 	auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
 	auto alc = lstate.json_allocator->GetYYAlc();
-	auto options = info.GetFormatOptions(state.GetContext());
+	auto options = info.GetFormatOptions(state.GetClientContext());
 
 	ToJSONFunctionInternal(info.const_struct_names, args.data[0], args.size(), result, alc, options);
 }
@@ -1234,7 +1234,7 @@ static void JSONCopyToGeoJSONFunction(DataChunk &args, ExpressionState &state, V
 	auto &info = func_expr.BindInfo()->Cast<JSONCopyToGeoJSONFunctionData>();
 	auto &lstate = JSONFunctionLocalState::ResetAndGet(state);
 	auto alc = lstate.json_allocator->GetYYAlc();
-	auto options = info.formats->GetFormatOptions(state.GetContext());
+	auto options = info.formats->GetFormatOptions(state.GetClientContext());
 	options.geometry_format = JSONGeometryFormat::GEOJSON;
 
 	const auto count = args.size();
