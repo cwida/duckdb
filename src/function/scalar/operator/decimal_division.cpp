@@ -40,9 +40,63 @@ struct DecimalDivBindData : public FunctionData {
 //   hugeint_t -- otherwise
 //===--------------------------------------------------------------------===//
 
+template <class T>
+static constexpr uint8_t DecimalTierWidth() {
+	if constexpr (std::is_same_v<T, int16_t>) {
+		return Decimal::MAX_WIDTH_INT16;
+	} else if constexpr (std::is_same_v<T, int32_t>) {
+		return Decimal::MAX_WIDTH_INT32;
+	} else if constexpr (std::is_same_v<T, int64_t>) {
+		return Decimal::MAX_WIDTH_INT64;
+	} else {
+		return Decimal::MAX_WIDTH_DECIMAL;
+	}
+}
+
+template <class SOURCE_TYPE, class INPUT_TYPE>
+static void WidenDecimal(Vector &input, Vector &widened, idx_t count) {
+	if constexpr (sizeof(SOURCE_TYPE) < sizeof(INPUT_TYPE)) {
+		auto widen = [](SOURCE_TYPE value) {
+			return INPUT_TYPE(value);
+		};
+		UnaryExecutor::Execute<SOURCE_TYPE, INPUT_TYPE>(input, widened, count, widen);
+	} else {
+		throw InternalException("decimal_division: argument is wider than the compute tier");
+	}
+}
+
+//! Bring an argument to the physical type of the wider argument; a decimal keeps its integer value at the same scale
+template <class INPUT_TYPE>
+static Vector &GetDecimalInput(Vector &input, idx_t count, unique_ptr<Vector> &widened) {
+	auto source_physical = input.GetType().InternalType();
+	if (source_physical == GetTypeId<INPUT_TYPE>()) {
+		return input;
+	}
+	auto scale = DecimalType::GetScale(input.GetType());
+	widened = make_uniq<Vector>(LogicalType::DECIMAL(DecimalTierWidth<INPUT_TYPE>(), scale), count);
+	switch (source_physical) {
+	case PhysicalType::INT16:
+		WidenDecimal<int16_t, INPUT_TYPE>(input, *widened, count);
+		break;
+	case PhysicalType::INT32:
+		WidenDecimal<int32_t, INPUT_TYPE>(input, *widened, count);
+		break;
+	case PhysicalType::INT64:
+		WidenDecimal<int64_t, INPUT_TYPE>(input, *widened, count);
+		break;
+	default:
+		throw InternalException("decimal_division: unexpected argument physical type");
+	}
+	return *widened;
+}
+
 template <class INPUT_TYPE, class RESULT_TYPE, class COMPUTE_TYPE>
 static void DecimalDivExecute(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &bind_data = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<DecimalDivBindData>();
+	unique_ptr<Vector> lhs_widened;
+	unique_ptr<Vector> rhs_widened;
+	auto &lhs = GetDecimalInput<INPUT_TYPE>(args.data[0], args.size(), lhs_widened);
+	auto &rhs = GetDecimalInput<INPUT_TYPE>(args.data[1], args.size(), rhs_widened);
 
 	bool scale_divisor = bind_data.scale_exp < 0;
 	uint8_t abs_exp = UnsafeNumericCast<uint8_t>(AbsValue(bind_data.scale_exp));
@@ -56,7 +110,7 @@ static void DecimalDivExecute(DataChunk &args, ExpressionState &state, Vector &r
 	auto result_width = DecimalType::GetWidth(result.GetType());
 
 	BinaryExecutor::Execute<INPUT_TYPE, INPUT_TYPE, RESULT_TYPE>(
-	    args.data[0], args.data[1], result, args.size(), [&](INPUT_TYPE a, INPUT_TYPE b) -> RESULT_TYPE {
+	    lhs, rhs, result, args.size(), [&](INPUT_TYPE a, INPUT_TYPE b) -> RESULT_TYPE {
 		    if (b == INPUT_TYPE(0)) {
 			    throw InvalidInputException("decimal_division: division by zero");
 		    }
@@ -160,6 +214,8 @@ static scalar_function_t GetDecimalDivExecuteFunction(PhysicalType result_physic
 // Bind function
 //===--------------------------------------------------------------------===//
 
+static void SelectDecimalDivFunction(BoundScalarFunction &bound_function);
+
 // Result width and scale for e1 / e2 (SQL Server semantics):
 //   result_scale = max(6, s1 + p2 + 1)
 //   result_width = p1 - s1 + s2 + result_scale
@@ -173,6 +229,9 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 	if (!lhs_type.GetDecimalProperties(p1, s1) || !rhs_type.GetDecimalProperties(p2, s2)) {
 		throw InvalidInputException("decimal_division: both arguments must be DECIMAL");
 	}
+	// an integer argument is an implicit DECIMAL(p, 0): bind on its canonical DECIMAL type
+	auto lhs_decimal_type = lhs_type.id() == LogicalTypeId::DECIMAL ? lhs_type : LogicalType::DECIMAL(p1, s1);
+	auto rhs_decimal_type = rhs_type.id() == LogicalTypeId::DECIMAL ? rhs_type : LogicalType::DECIMAL(p2, s2);
 
 	uint8_t result_scale;
 	if (input.GetArgumentCount() == 3) {
@@ -209,50 +268,22 @@ static void DecimalDivisionResolveTypes(ResolveScalarFunctionTypesInput &input) 
 		    result_width, Decimal::MAX_WIDTH_DECIMAL);
 	}
 
-	PhysicalType result_physical;
-	if (result_width <= Decimal::MAX_WIDTH_INT16) {
-		result_physical = PhysicalType::INT16;
-	} else if (result_width <= Decimal::MAX_WIDTH_INT32) {
-		result_physical = PhysicalType::INT32;
-	} else if (result_width <= Decimal::MAX_WIDTH_INT64) {
-		result_physical = PhysicalType::INT64;
-	} else {
-		result_physical = PhysicalType::INT128;
-	}
-
 	bound_function.SetReturnType(LogicalType::DECIMAL(result_width, result_scale));
+	// keep the argument types: a narrower argument is widened at execution, so binding again yields the same types
+	bound_function.GetArguments()[0] = lhs_decimal_type;
+	bound_function.GetArguments()[1] = rhs_decimal_type;
+	SelectDecimalDivFunction(bound_function);
+}
 
-	auto lhs_physical = lhs_type.InternalType();
-	auto rhs_physical = rhs_type.InternalType();
-	auto wider = MaxValue<PhysicalType>(lhs_physical, rhs_physical);
-
-	int32_t scale_exp = s2 + result_scale - s1;
-	int32_t abs_scale_exp = scale_exp < 0 ? -scale_exp : scale_exp;
-
-	uint8_t input_max_width;
-	switch (wider) {
-	case PhysicalType::INT16:
-		input_max_width = Decimal::MAX_WIDTH_INT16;
-		break;
-	case PhysicalType::INT32:
-		input_max_width = Decimal::MAX_WIDTH_INT32;
-		break;
-	case PhysicalType::INT64:
-		input_max_width = Decimal::MAX_WIDTH_INT64;
-		break;
-	case PhysicalType::INT128:
-		input_max_width = Decimal::MAX_WIDTH_DECIMAL;
-		break;
-	default:
-		throw InternalException("decimal_division: unexpected physical type");
-	}
-
-	// For same-tier inputs, preserve the original argument type so bind is idempotent
-	// during plan deserialization (bind is re-called with the stored argument types, and
-	// changing p changes the result-width formula).
-	// For cross-tier inputs, promote the narrower argument to the wider physical tier.
-	bound_function.GetArguments()[0] = (lhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s1) : lhs_type;
-	bound_function.GetArguments()[1] = (rhs_physical != wider) ? LogicalType::DECIMAL(input_max_width, s2) : rhs_type;
+//! Pick the execute function from the resolved argument and return types
+static void SelectDecimalDivFunction(BoundScalarFunction &bound_function) {
+	auto &arguments = bound_function.GetArguments();
+	const auto result_physical = bound_function.GetReturnType().InternalType();
+	const auto wider = MaxValue<PhysicalType>(arguments[0].InternalType(), arguments[1].InternalType());
+	const int32_t scale_exp = int32_t(DecimalType::GetScale(arguments[1])) +
+	                          int32_t(DecimalType::GetScale(bound_function.GetReturnType())) -
+	                          int32_t(DecimalType::GetScale(arguments[0]));
+	const int32_t abs_scale_exp = scale_exp < 0 ? -scale_exp : scale_exp;
 
 	switch (wider) {
 	case PhysicalType::INT16:
@@ -287,7 +318,7 @@ static unique_ptr<FunctionData> DecimalDivisionBind(BindScalarFunctionInput &inp
 	auto lhs_scale = DecimalType::GetScale(bound_function.GetArguments()[0]);
 	auto rhs_scale = DecimalType::GetScale(bound_function.GetArguments()[1]);
 	auto result_scale = DecimalType::GetScale(bound_function.GetReturnType());
-	return make_uniq<DecimalDivBindData>(rhs_scale + result_scale - lhs_scale);
+	return make_uniq<DecimalDivBindData>(int32_t(rhs_scale) + int32_t(result_scale) - int32_t(lhs_scale));
 }
 
 //===--------------------------------------------------------------------===//
