@@ -117,3 +117,88 @@ statement error
 SELECT s.sf('a');
 ----
 <REGEX>:.*(Catalog Error|not exist).*
+
+# a table macro member drop replays from the WAL too
+statement ok
+CREATE MACRO tm(x INTEGER) AS TABLE (SELECT x AS v), (x VARCHAR) AS TABLE (SELECT concat(x, '?') AS v);
+
+statement ok
+DROP MACRO TABLE tm(VARCHAR);
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+query I
+SELECT v FROM tm(7);
+----
+7
+
+statement error
+SELECT v FROM tm('a');
+----
+<REGEX>:.*(No function matches|Binder Error|does not support).*
+
+# two connections racing member drops of the same entry conflict on the alter path
+statement ok con1
+CREATE MACRO ww(x INTEGER) AS 1, (x VARCHAR) AS 2, (x DATE) AS 3;
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+DROP MACRO ww(INTEGER);
+
+statement error con2
+DROP MACRO ww(VARCHAR);
+----
+<REGEX>:.*(conflict|lock|transaction|exist).*
+
+statement ok con1
+COMMIT;
+
+statement ok con1
+DROP MACRO ww;
+
+# a database pinned to a storage version that predates the ALTER_MACRO record gets the member
+# drop written to its WAL as the legacy drop+create, which such releases replay correctly:
+# the replacement comes out of the replay as a fresh entry, visible as a changed oid
+statement ok
+ATTACH '{TEST_DIR}/alter_old_pin.db' AS odb (STORAGE_VERSION 'v1.4.0');
+
+statement ok
+CREATE MACRO odb.om(x INTEGER) AS x + 1, (x VARCHAR) AS x;
+
+statement ok
+CHECKPOINT odb;
+
+statement ok
+CREATE TABLE odb.oid_old AS SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'om' AND database_name = 'odb';
+
+statement ok
+DROP MACRO odb.om(VARCHAR);
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/alter_old_pin.db' AS odb;
+
+query I
+SELECT odb.om(1);
+----
+2
+
+statement error
+SELECT odb.om('a');
+----
+<REGEX>:.*(No function matches|Binder Error|does not support).*
+
+query I
+SELECT (SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'om' AND database_name = 'odb')
+    <> (SELECT function_oid FROM odb.oid_old);
+----
+true

@@ -4,6 +4,10 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
+#include "duckdb/common/storage_compatibility.hpp"
+#include "duckdb/parser/parsed_data/alter_info.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
@@ -77,6 +81,22 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, data_ptr_t dataptr) {
 			deserializer.End();
 
 			auto &alter_info = parse_info->Cast<AlterInfo>();
+			if (alter_info.type == AlterType::ALTER_MACRO) {
+				const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
+				if (log.GetDatabase().GetStorageManager().GetStorageVersion() < since) {
+					// releases that do not know the ALTER_MACRO record treat it as a torn WAL tail and
+					// silently truncate everything after it: keep files pinned to such versions readable
+					// by writing the member drop as the replacement it used to be
+					if (parent.type == CatalogType::TABLE_MACRO_ENTRY) {
+						log.WriteDropTableMacro(parent.Cast<TableMacroCatalogEntry>());
+						log.WriteCreateTableMacro(parent.Cast<TableMacroCatalogEntry>());
+					} else {
+						log.WriteDropMacro(parent.Cast<ScalarMacroCatalogEntry>());
+						log.WriteCreateMacro(parent.Cast<ScalarMacroCatalogEntry>());
+					}
+					break;
+				}
+			}
 			log.WriteAlter(entry, alter_info);
 		} else {
 			switch (parent.type) {
