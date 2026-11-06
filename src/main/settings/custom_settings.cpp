@@ -838,6 +838,24 @@ Value ForceVariantShredding::GetSetting(const ClientContext &context) {
 //===----------------------------------------------------------------------===//
 // Extension Directory
 //===----------------------------------------------------------------------===//
+//! A relative directory is resolved against the working directory when it is set, not when it is used
+static string ResolveExtensionDirectory(optional_ptr<DatabaseInstance> db, DBConfig &config, const string &directory) {
+	if (db) {
+		return ExtensionHelper::ResolveRelativePath(FileSystem::GetFileSystem(*db), directory);
+	}
+	if (config.file_system) {
+		return ExtensionHelper::ResolveRelativePath(*config.file_system, directory);
+	}
+	return ExtensionHelper::ResolveRelativePath(*FileSystem::CreateLocal(), directory);
+}
+
+void ExtensionDirectorySetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	if (input.IsNull()) {
+		return;
+	}
+	input = Value(ResolveExtensionDirectory(info.db, info.config, StringValue::Get(input)));
+}
+
 void ExtensionDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", ExtensionDirectoriesSetting::Name);
@@ -846,7 +864,8 @@ void ExtensionDirectoriesSetting::SetGlobal(DatabaseInstance *db, DBConfig &conf
 
 	auto &list = ListValue::GetChildren(input);
 	for (auto &val : list) {
-		config.options.extension_directories.emplace_back(val.GetValue<string>());
+		config.options.extension_directories.emplace_back(
+		    ResolveExtensionDirectory(db, config, val.GetValue<string>()));
 	}
 }
 

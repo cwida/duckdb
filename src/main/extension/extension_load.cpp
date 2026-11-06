@@ -612,9 +612,8 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		    filename);
 	}
 	// the macOS hardened runtime rejects relative paths in dlopen, and a bare file name is searched on the library path
-	// prefix the working directory without normalizing: '..' components and symbolic links are left to the OS
-	if (direct_load && !fs.IsPathAbsolute(filename) && !FileSystem::IsRemoteFile(filename)) {
-		filename = FileSystem::GetWorkingDirectory() + fs.PathSeparator(filename) + filename;
+	if (direct_load) {
+		filename = ResolveRelativePath(fs, filename);
 	}
 	if (!fs.FileExists(filename)) {
 		string message;

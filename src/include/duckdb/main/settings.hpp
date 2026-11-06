@@ -1506,6 +1506,7 @@ struct ExtensionDirectorySetting {
 	static constexpr const char *DefaultValue = "";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
 struct ExtensionRepositoryDirectorySetting {

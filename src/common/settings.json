@@ -898,7 +898,10 @@
         "type": "VARCHAR",
         "scope": "global",
         "default_value": "",
-        "is_deprecated": true
+        "is_deprecated": true,
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "extension_repository_directory",
