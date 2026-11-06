@@ -46,8 +46,8 @@ SELECT 10::BIGNUM - 1.5::FLOAT, typeof(10::BIGNUM - 1.5::FLOAT)
 ----
 8.5	DOUBLE
 
-# an explicit cast still truncates
+# an explicit cast rounds to nearest
 query I
 SELECT 2.7::FLOAT::BIGNUM
 ----
-2
+3

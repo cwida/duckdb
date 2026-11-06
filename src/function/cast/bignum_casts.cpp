@@ -195,6 +195,8 @@ static bool DoubleToBignum(T double_value, bignum_t &result_value, Vector &resul
 		// We can't cast inf -inf nan
 		return false;
 	}
+	// Round half to even like the casts to BIGINT and HUGEINT; the byte loop below is only exact for whole numbers.
+	double_value = std::nearbyint(double_value);
 	// Determine if the number is negative
 	bool is_negative = double_value < 0;
 	// Determine the number of data bytes
