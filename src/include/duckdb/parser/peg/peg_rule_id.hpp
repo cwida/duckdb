@@ -270,6 +270,7 @@ enum class PEGRuleId : uint32_t {
 	DefArgStringLiteral,
 	NoneLiteral,
 	CreateMacroStmt,
+	MacroName,
 	ReturnsType,
 	MacroOrFunction,
 	MacroKeyword,

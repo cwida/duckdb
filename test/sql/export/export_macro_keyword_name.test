@@ -1,0 +1,26 @@
+# name: test/sql/export/export_macro_keyword_name.test
+# description: EXPORT DATABASE writes a macro named by a type_function keyword so that IMPORT DATABASE reads it back
+# group: [export]
+
+statement ok
+CREATE MACRO semi(x) AS x + 1
+
+statement ok
+CREATE MACRO anti(n) AS TABLE SELECT range AS i FROM range(n)
+
+statement ok
+EXPORT DATABASE '__TEST_DIR__/export_macro_keyword_name'
+
+statement ok
+DROP MACRO semi
+
+statement ok
+DROP MACRO TABLE anti
+
+statement ok
+IMPORT DATABASE '__TEST_DIR__/export_macro_keyword_name'
+
+query II
+SELECT semi(1), (SELECT count(*) FROM anti(3))
+----
+2	3

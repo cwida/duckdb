@@ -1,0 +1,206 @@
+# name: test/sql/catalog/function/test_macro_keyword_name.test
+# description: A macro name that is a keyword follows the keyword rules of a function call in CREATE, the call and DROP
+# group: [function]
+
+query II
+SELECT keyword_name, keyword_category FROM duckdb_keywords()
+WHERE keyword_name IN ('abort', 'anti', 'freeze', 'select', 'semi', 'time', 'verbose')
+ORDER BY ALL
+----
+abort	unreserved
+anti	type_function
+freeze	type_function
+select	reserved
+semi	type_function
+time	column_name
+verbose	type_function
+
+# type_function keywords are accepted bare as a function name
+
+statement ok
+CREATE MACRO semi(x) AS x + 1
+
+statement ok
+CREATE FUNCTION anti(x) AS x + 2
+
+query II
+SELECT semi(1), anti(1)
+----
+2	3
+
+statement ok
+CREATE MACRO IF NOT EXISTS semi(x) AS x + 100
+
+query I
+SELECT semi(1)
+----
+2
+
+statement ok
+CREATE OR REPLACE MACRO semi(x) AS x + 10, (x, y) AS x + y
+
+query II
+SELECT semi(1), semi(1, 2)
+----
+11	3
+
+statement ok
+CREATE TEMP MACRO verbose(x) AS x * 2
+
+query II
+SELECT verbose(21), temp.main.verbose(1)
+----
+42	2
+
+statement ok
+CREATE MACRO freeze(n) AS TABLE SELECT range AS i FROM range(n)
+
+query I
+SELECT count(*) FROM freeze(3)
+----
+3
+
+query II
+SELECT function_name, function_type FROM duckdb_functions()
+WHERE function_name IN ('anti', 'freeze', 'semi', 'verbose')
+ORDER BY ALL
+----
+anti	macro
+freeze	table_macro
+semi	macro
+semi	macro
+verbose	macro
+
+statement ok
+DROP MACRO semi
+
+statement ok
+DROP FUNCTION anti
+
+statement ok
+DROP MACRO verbose
+
+statement ok
+DROP MACRO TABLE freeze
+
+statement ok
+DROP MACRO IF EXISTS semi
+
+statement ok
+DROP MACRO TABLE IF EXISTS freeze
+
+statement error
+SELECT semi(1)
+----
+<REGEX>:Catalog Error:.*semi does not exist.*
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('anti', 'freeze', 'semi', 'verbose')
+----
+0
+
+# the keyword names of the reported case are used as bare join and set words elsewhere in the same statement
+
+statement ok
+CREATE MACRO semi(x) AS x + 1
+
+query I
+SELECT semi(a.i) FROM range(3) a(i) SEMI JOIN range(2) b(i) USING (i) ORDER BY ALL
+----
+1
+2
+
+statement ok
+DROP MACRO semi
+
+# an unreserved keyword
+
+statement ok
+CREATE MACRO abort(x) AS x - 1
+
+query I
+SELECT abort(1)
+----
+0
+
+statement ok
+DROP MACRO abort
+
+# a column_name keyword starts a type or a special form when followed by a parenthesis, so the macro is called with
+# its schema, as in PostgreSQL
+
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE MACRO s.time(x) AS x + 1
+
+query I
+SELECT s.time(1)
+----
+2
+
+statement error
+SELECT time(1)
+----
+syntax error
+
+query II
+SELECT time '12:00:00', CAST('12:00:00' AS time)
+----
+12:00:00	12:00:00
+
+statement ok
+DROP MACRO s.time
+
+# date is not a keyword
+
+statement ok
+CREATE MACRO date(x) AS x + 1
+
+statement ok
+DROP MACRO date
+
+# a reserved keyword needs quotes or a schema
+
+statement error
+CREATE MACRO select(x) AS x
+----
+syntax error at or near "select"
+
+statement error
+CREATE FUNCTION select(x) AS x
+----
+syntax error at or near "select"
+
+statement ok
+CREATE MACRO s.select(x) AS x + 3
+
+query II
+SELECT s."select"(1), s.select(1)
+----
+4	4
+
+statement error
+SELECT select(1)
+----
+syntax error at or near "select"
+
+statement error
+DROP MACRO select
+----
+syntax error at or near "select"
+
+statement ok
+DROP MACRO s.select
+
+statement ok
+CREATE MACRO "select"(x) AS x + 4
+
+query I
+SELECT "select"(1)
+----
+5
+
+statement ok
+DROP MACRO "select"

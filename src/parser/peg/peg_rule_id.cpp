@@ -269,6 +269,7 @@ static const char *const PEG_RULE_NAMES[] = {
     "DefArgStringLiteral",
     "NoneLiteral",
     "CreateMacroStmt",
+    "MacroName",
     "ReturnsType",
     "MacroOrFunction",
     "MacroKeyword",

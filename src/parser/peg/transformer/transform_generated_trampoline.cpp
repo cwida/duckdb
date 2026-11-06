@@ -1296,7 +1296,7 @@ static const TransformChildPlan FRAME_CHILDREN_97[] = {{PEGRuleId::MacroDefiniti
                                                         false,
                                                         {0, TRANSFORM_PATH_END, 0},
                                                         {0, TRANSFORM_PATH_END, 0}},
-                                                       {PEGRuleId::QualifiedName,
+                                                       {PEGRuleId::MacroName,
                                                         TransformChildKind::REQUIRED,
                                                         2,
                                                         2,
@@ -7406,6 +7406,8 @@ static const TransformFrameOps GENERATED_FRAME_OPS[] = {
      &PEGTransformerFactory::FinalizeNoneLiteralTrampoline, &FRAME_PLAN_12},
     {"CreateMacroStmt", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeCreateMacroStmtTrampoline, &FRAME_PLAN_104},
+    {"MacroName", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
+     &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_1},
     {"ReturnsType", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_105},
     {"MacroOrFunction", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
@@ -11310,13 +11312,13 @@ PEGTransformerFactory::FinalizeCreateMacroStmtTrampoline(PEGTransformer &transfo
 	if (process.child_results[1]) {
 		if_not_exists = process.TakeResult<bool>(1);
 	}
-	auto qualified_name = process.TakeResult<QualifiedName>(2);
+	auto macro_name = process.TakeResult<QualifiedName>(2);
 	vector<unique_ptr<MacroFunction>> macro_definition;
 	macro_definition.reserve(dynamic_child_count);
 	for (idx_t i = 3; i < 3 + dynamic_child_count; i++) {
 		macro_definition.push_back(process.TakeResult<unique_ptr<MacroFunction>>(i));
 	}
-	auto result = TransformCreateMacroStmt(transformer, macro_or_function, if_not_exists, qualified_name,
+	auto result = TransformCreateMacroStmt(transformer, macro_or_function, if_not_exists, macro_name,
 	                                       std::move(macro_definition));
 	return transformer.MakeResult<unique_ptr<CreateStatement>>(std::move(result));
 }

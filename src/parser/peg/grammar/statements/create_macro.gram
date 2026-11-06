@@ -1,4 +1,5 @@
-CreateMacroStmt <- MacroOrFunction IfNotExists? QualifiedName List(MacroDefinition)
+CreateMacroStmt <- MacroOrFunction IfNotExists? MacroName List(MacroDefinition)
+MacroName <- QualifiedName / FunctionNameAsQualifiedName
 
 ReturnsType <- 'RETURNS' Type
 
