@@ -59,34 +59,62 @@ public:
 	idx_t RegionWidth() const {
 		return region_width;
 	}
-	//! Records the trailing region offset of the persistent hash table's layout
+	//! Whether any aggregate's finalized value projects from its state instead of occupying a region slot
+	bool HasProjectedColumns() const {
+		return !projected_columns.empty();
+	}
+	//! The aggregate columns whose finalized values project from the state
+	const vector<idx_t> &ProjectedPayloadColumns() const {
+		return projected_columns;
+	}
+	//! Records the trailing region offset and the aggregate state offsets of the persistent hash table's layout
 	void BindLayout(const TupleDataLayout &layout);
-	//! Writes finalized values (aggregate order) at addresses[sel[i]] from values row sel[i]
+	//! Writes finalized values (aggregate order) at addresses[sel[i]] from values row sel[i]; projected columns
+	//! need no write, their state already holds the value
 	void Scatter(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values);
-	//! Writes candidate rows standing in for finalized values of new groups, mapping each aggregate to its
-	//! first input column; valid under the single-value-identity proof of the candidate-reuse paths
+	//! Writes candidate rows standing in for finalized values of new groups, mapping each materialized aggregate
+	//! to its first input column; valid under the single-value-identity proof of the candidate-reuse paths
 	void ScatterCandidates(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &payload);
 	//! Reads finalized values (aggregate order) from addresses[sel[i]] into values row i
 	void Gather(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values);
+	//! Reads only the projected columns, used to capture their old values before the states update
+	void GatherProjected(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values);
+	//! Assembles the old finalized values of touched rows: materialized columns from the rows, whose region
+	//! stays at the previous commit's values until this chunk's scatter, projected columns from the values
+	//! captured at snapshot time behind the address column of previous_scan_rows
+	void AssembleOldPayloads(const Vector &addresses, idx_t count, DataChunk &previous_scan_rows, DataChunk &target);
 	//! Reclaims replaced string bytes once they outweigh the live ones; the caller guarantees no readers
 	void MaybeCompact(GroupedAggregateHashTable &target);
 
 private:
 	void ScatterColumns(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values,
 	                    const vector<idx_t> &source_columns);
+	void GatherColumns(const Vector &addresses, const SelectionVector &sel, idx_t count, DataChunk &values,
+	                   bool include_projected, bool include_materialized);
 	string_t CopyStringToArena(string_t value);
 
 private:
 	bool enabled = false;
 	idx_t region_width = 0;
 	idx_t region_offset = 0;
-	//! Offset of each aggregate's value slot relative to the region start; validity bytes precede the slots
+	//! Offset of each materialized aggregate's value slot relative to the region start; validity bytes precede
+	//! the slots. Projected aggregates hold DConstants::INVALID_INDEX.
 	vector<idx_t> value_offsets;
+	//! Index of each materialized aggregate's validity byte in the region; projected aggregates hold
+	//! DConstants::INVALID_INDEX
+	vector<idx_t> validity_indexes;
 	vector<PhysicalType> value_types;
+	//! Per aggregate, how its value projects from the state; mode NONE means a region slot
+	vector<AggregateStateProjection> projections;
+	//! Aggregate columns with a projection, in aggregate order
+	vector<idx_t> projected_columns;
+	//! Offset of each aggregate's state within a row, recorded from the bound layout
+	vector<idx_t> state_offsets;
 	//! The identity mapping, for scattering finalized chunks in aggregate order
 	vector<idx_t> identity_source_columns;
 	//! Per aggregate, the column of its first input in the evaluated payload chunk
 	vector<idx_t> candidate_source_columns;
+	bool has_materialized_varchar = false;
 	//! Shared-ownership storage for non-inlined finalized strings; emitted vectors hold references to it
 	buffer_ptr<AuxiliaryDataSet> string_arena;
 	//! The heap inside string_arena's holder; only the single-threaded commit writes to it
