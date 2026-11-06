@@ -68,6 +68,8 @@ public:
 	}
 	//! Registers a process-local service for communication between extensions loaded into this database.
 	DUCKDB_API void RegisterService(const string &name, void *service);
+	//! Registers an owned process-local service.
+	DUCKDB_API void RegisterService(const string &name, void *service, void (*delete_callback)(void *));
 	//! Returns a previously registered extension service, or nullptr when it is unavailable.
 	DUCKDB_API void *GetService(const string &name) const;
 

@@ -209,6 +209,12 @@ static void RegisterBundle(void *data, const duckdb_test::TestBundle *bundle) {
 	registry.bundles.push_back({bundle->name, bundle});
 }
 
+static void DeleteTestRegistry(void *service_ptr) {
+	auto service = static_cast<duckdb_test::TestRegistry *>(service_ptr);
+	delete static_cast<TestRegistryState *>(service->data);
+	delete service;
+}
+
 static vector<RegisteredBundle> GetRegisteredBundles(TestRegistryState &registry) {
 	lock_guard<mutex> guard(registry.lock);
 	return registry.bundles;
@@ -1021,7 +1027,7 @@ static void TestRunFunction(ClientContext &, TableFunctionInput &input, DataChun
 void LoadTestExtension(ExtensionLoader &loader) {
 	auto registry = new TestRegistryState();
 	auto service = new duckdb_test::TestRegistry {registry, RegisterBundle};
-	loader.RegisterService(duckdb_test::SERVICE_NAME, service);
+	loader.RegisterService(duckdb_test::SERVICE_NAME, service, DeleteTestRegistry);
 
 	TableFunction scan("test_scan",
 	                   {LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR),
