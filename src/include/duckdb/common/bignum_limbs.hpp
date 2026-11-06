@@ -16,22 +16,51 @@
 
 namespace duckdb {
 
-//! The multiplication and division kernels handle a BIGNUM magnitude as base 2^64 digits with 128-bit products.
-//! MSVC has no 128-bit integer type, so it keeps base 2^32 digits with 64-bit products.
-#if defined(_MSC_VER) && !defined(__clang__)
-using bignum_digit_t = uint32_t;
-using bignum_twodigit_t = uint64_t;
-#else
-using bignum_digit_t = uint64_t;
-__extension__ typedef unsigned __int128 bignum_twodigit_t;
-#endif
-
 //! Helpers that treat the big-endian magnitude bytes of a BIGNUM blob as 64-bit limbs. The blob format itself is
 //! untouched: limbs are loaded with memcpy (the string_t payload is unaligned) and byte swapped on little-endian hosts.
 struct BignumLimb {
+	//! Bytes of a limb
 	static constexpr idx_t BYTES = sizeof(uint64_t);
+
+	//! The multiplication, division and decimal conversion kernels handle a magnitude as base 2^64 digits with 128-bit
+	//! products where the compiler has a 128-bit integer type. MSVC and 32-bit targets have none and keep base 2^32
+	//! digits with 64-bit products.
+#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+	using digit_t = uint64_t;
+	__extension__ typedef unsigned __int128 twodigit_t;
+
+	//! Returns the low 64 bits of a * b + add, and its high 64 bits in "high"; never overflows 128 bits
+	static inline uint64_t MultiplyAdd(uint64_t a, uint64_t b, uint64_t add, uint64_t &high) {
+		const twodigit_t product = static_cast<twodigit_t>(a) * b + add;
+		high = static_cast<uint64_t>(product >> 64);
+		return static_cast<uint64_t>(product);
+	}
+#else
+	using digit_t = uint32_t;
+	using twodigit_t = uint64_t;
+
+	//! Returns the low 64 bits of a * b + add, and its high 64 bits in "high"; never overflows 128 bits
+	static inline uint64_t MultiplyAdd(uint64_t a, uint64_t b, uint64_t add, uint64_t &high) {
+		// portable 32-bit split
+		const uint64_t a_low = a & 0xFFFFFFFFULL;
+		const uint64_t a_high = a >> 32;
+		const uint64_t b_low = b & 0xFFFFFFFFULL;
+		const uint64_t b_high = b >> 32;
+		const uint64_t p0 = a_low * b_low;
+		const uint64_t p1 = a_low * b_high;
+		const uint64_t p2 = a_high * b_low;
+		const uint64_t p3 = a_high * b_high;
+		const uint64_t middle = (p0 >> 32) + (p1 & 0xFFFFFFFFULL) + (p2 & 0xFFFFFFFFULL);
+		uint64_t low = (p0 & 0xFFFFFFFFULL) | (middle << 32);
+		high = p3 + (p1 >> 32) + (p2 >> 32) + (middle >> 32);
+		low += add;
+		high += low < add ? 1 : 0;
+		return low;
+	}
+#endif
+
 	//! Bytes and bits of a multiplication / division digit
-	static constexpr idx_t DIGIT_BYTES = sizeof(bignum_digit_t);
+	static constexpr idx_t DIGIT_BYTES = sizeof(digit_t);
 	static constexpr idx_t DIGIT_BITS = DIGIT_BYTES * 8;
 
 	template <class T>
@@ -104,6 +133,32 @@ struct BignumLimb {
 		}
 	}
 
+	//! Loads 8 magnitude bytes as a limb of the absolute value: the complement of a negative value is undone
+	static inline uint64_t LoadMagnitude(const_data_ptr_t ptr, bool is_negative) {
+		const uint64_t limb = LoadBE(ptr);
+		return is_negative ? ~limb : limb;
+	}
+
+	//! Loads the count (1..8) most significant magnitude bytes of a value as a partial limb of the absolute value
+	static inline uint64_t LoadMagnitudePartial(const_data_ptr_t ptr, idx_t count, bool is_negative) {
+		const uint64_t limb = LoadBEPartial(ptr, count);
+		if (!is_negative) {
+			return limb;
+		}
+		return ~limb & (~uint64_t(0) >> (64 - 8 * count));
+	}
+
+	//! Stores a limb of the absolute value as 8 magnitude bytes, complemented for a negative value
+	static inline void StoreMagnitude(data_ptr_t ptr, uint64_t value, bool is_negative) {
+		StoreBE(ptr, is_negative ? ~value : value);
+	}
+
+	//! Stores the low count (1..8) bytes of a limb of the absolute value as magnitude bytes, complemented for a
+	//! negative value
+	static inline void StoreMagnitudePartial(data_ptr_t ptr, idx_t count, uint64_t value, bool is_negative) {
+		StoreBEPartial(ptr, count, is_negative ? ~value : value);
+	}
+
 	//! Loads the 8 magnitude bytes ending just before end_idx as one limb holding the absolute value: bytes before
 	//! the start of the value read as zero, bytes of a negative value are complemented
 	static inline uint64_t LoadAbsolute(const_data_ptr_t data, bool is_negative, int64_t end_idx) {
@@ -111,13 +166,10 @@ struct BignumLimb {
 			return 0;
 		}
 		if (end_idx >= static_cast<int64_t>(BYTES)) {
-			const uint64_t limb = LoadBE(data + end_idx - BYTES);
-			return is_negative ? ~limb : limb;
+			return LoadMagnitude(data + end_idx - BYTES, is_negative);
 		}
 		// a partial limb at the most significant end of the value: only the low end_idx bytes are real
-		const uint64_t limb = LoadBEPartial(data, static_cast<idx_t>(end_idx));
-		const uint64_t mask = (uint64_t(1) << (8 * end_idx)) - 1;
-		return is_negative ? (~limb & mask) : limb;
+		return LoadMagnitudePartial(data, static_cast<idx_t>(end_idx), is_negative);
 	}
 
 	//! The number of leading zero bits of a non-zero limb
@@ -151,14 +203,17 @@ struct BignumLimb {
 	//! for a negative value
 	static inline void StoreMagnitude(data_ptr_t out, idx_t byte_count, uint64_t hi, uint64_t lo, bool is_negative) {
 		D_ASSERT(byte_count >= 1 && byte_count <= 2 * BYTES);
-		const uint64_t flip = is_negative ? ~uint64_t(0) : 0;
 		if (byte_count > BYTES) {
-			StoreBEPartial(out, byte_count - BYTES, hi ^ flip);
-			StoreBE(out + byte_count - BYTES, lo ^ flip);
+			StoreMagnitudePartial(out, byte_count - BYTES, hi, is_negative);
+			StoreMagnitude(out + byte_count - BYTES, lo, is_negative);
 		} else {
-			StoreBEPartial(out, byte_count, lo ^ flip);
+			StoreMagnitudePartial(out, byte_count, lo, is_negative);
 		}
 	}
 };
+
+//! Base 2^64 (or 2^32, see BignumLimb) digits of the BIGNUM multiplication and division kernels
+using bignum_digit_t = BignumLimb::digit_t;
+using bignum_twodigit_t = BignumLimb::twodigit_t;
 
 } // namespace duckdb

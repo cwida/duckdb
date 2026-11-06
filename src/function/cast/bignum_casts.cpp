@@ -253,7 +253,8 @@ static bool DoubleToBignum(T double_value, bignum_t &result_value, Vector &resul
 	result_value.data = StringVector::EmptyString(result, blob_size);
 	auto writable_blob = result_value.data.GetDataWriteable();
 	Bignum::SetHeader(writable_blob, data_byte_size, is_negative);
-	Bignum::BignumCastStoreLeadingBytes(writable_blob + Bignum::BIGNUM_HEADER_SIZE, top, top_bytes, is_negative);
+	BignumLimb::StoreMagnitudePartial(data_ptr_cast(writable_blob + Bignum::BIGNUM_HEADER_SIZE), top_bytes, top,
+	                                  is_negative);
 	memset(writable_blob + Bignum::BIGNUM_HEADER_SIZE + top_bytes, is_negative ? 0xFF : 0x00, zero_bytes);
 	result_value.data.Finalize();
 	return true;

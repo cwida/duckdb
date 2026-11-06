@@ -47,10 +47,6 @@ enum AbsoluteNumberComparison : uint8_t {
 	SMALLER = 2,
 };
 
-//! Base 2^32 digits, used by the decimal string conversions (the arithmetic kernels use bignum_digit_t)
-using digit_t = uint32_t;
-using twodigit_t = uint64_t;
-
 //! Per-vector scratch digit buffers and interrupt-check state for BIGNUM multiplication and division
 struct BignumArithmeticState {
 	explicit BignumArithmeticState(optional_ptr<ClientContext> context = nullptr) : context(context) {

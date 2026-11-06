@@ -551,15 +551,14 @@ string_t WriteMagnitude(StringHeap &heap, const bignum_magnitude_t &digits, bool
 	auto target_data = target.GetDataWriteable();
 	Bignum::SetHeader(target_data, byte_count, is_negative);
 	auto result = reinterpret_cast<data_ptr_t>(target_data + Bignum::BIGNUM_HEADER_SIZE);
-	const uint64_t flip = is_negative ? ~uint64_t(0) : 0;
 	// the most significant digit only gets the bytes it needs, the others are written in full
 	idx_t digit_idx = digits.size() - 1;
 	const idx_t top_bytes = byte_count - digit_idx * DIGIT_BYTES;
-	BignumLimb::StoreBEPartial(result, top_bytes, digits[digit_idx] ^ flip);
+	BignumLimb::StoreMagnitudePartial(result, top_bytes, digits[digit_idx], is_negative);
 	result += top_bytes;
 	while (digit_idx > 0) {
 		digit_idx--;
-		BignumLimb::StoreBEPartial(result, DIGIT_BYTES, digits[digit_idx] ^ flip);
+		BignumLimb::StoreMagnitudePartial(result, DIGIT_BYTES, digits[digit_idx], is_negative);
 		result += DIGIT_BYTES;
 	}
 	target.Finalize();

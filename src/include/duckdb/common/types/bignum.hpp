@@ -15,7 +15,7 @@
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/bignum.hpp"
-#include "duckdb/common/bswap.hpp"
+#include "duckdb/common/bignum_limbs.hpp"
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
@@ -45,10 +45,6 @@ public:
 	DUCKDB_API static constexpr uint8_t DECIMAL_SHIFT = 19;
 	//! 10 ** DECIMAL_SHIFT
 	DUCKDB_API static constexpr uint64_t DECIMAL_BASE = 10000000000000000000ULL;
-	//! Bytes of a digit_t
-	DUCKDB_API static constexpr uint8_t DIGIT_BYTES = sizeof(digit_t);
-	//! Bits of a digit_t
-	DUCKDB_API static constexpr uint8_t DIGIT_BITS = DIGIT_BYTES * 8;
 	//! Verifies if a Bignum is valid. i.e., if it has 3 header bytes. The header correctly represents the number of
 	//! data bytes, and the data bytes has no leading zero bytes.
 	DUCKDB_API static void Verify(const bignum_t &input);
@@ -105,17 +101,16 @@ public:
 		if (blob_size < BIGNUM_HEADER_SIZE + 1) {
 			ThrowInvalidBlobSize(blob_size);
 		}
-		const char *data = blob.data.GetData();
-		const char *end = data + blob_size;
+		auto data = const_data_ptr_cast(blob.data.GetData());
 		const bool is_negative = (data[0] & 0x80) == 0;
+		auto magnitude = data + BIGNUM_HEADER_SIZE;
 		idx_t data_byte_size = blob_size - BIGNUM_HEADER_SIZE;
-		if (data_byte_size > 2 * sizeof(uint64_t)) {
+		if (data_byte_size > 2 * BignumLimb::BYTES) {
 			// a well-formed BIGNUM carries no leading zero bytes, so this never fits a 128-bit integer; we tolerate
 			// leading zero bytes anyway (0xFF under the complement of a negative value)
-			const char zero = is_negative ? static_cast<char>(0xFF) : 0;
-			for (const char *first = data + BIGNUM_HEADER_SIZE; data_byte_size > 2 * sizeof(uint64_t);
-			     data_byte_size--, first++) {
-				if (*first != zero) {
+			const data_t zero = is_negative ? 0xFF : 0;
+			for (; data_byte_size > 2 * BignumLimb::BYTES; data_byte_size--, magnitude++) {
+				if (*magnitude != zero) {
 					return false;
 				}
 			}
@@ -123,11 +118,11 @@ public:
 		// load the magnitude as two 64-bit limbs
 		uint64_t upper = 0;
 		uint64_t lower;
-		if (data_byte_size > sizeof(uint64_t)) {
-			upper = BignumCastLoadLeadingBytes(end - sizeof(uint64_t), data_byte_size - sizeof(uint64_t), is_negative);
-			lower = BignumCastLoadLimb(end, is_negative);
+		if (data_byte_size > BignumLimb::BYTES) {
+			upper = BignumLimb::LoadMagnitudePartial(magnitude, data_byte_size - BignumLimb::BYTES, is_negative);
+			lower = BignumLimb::LoadMagnitude(magnitude + data_byte_size - BignumLimb::BYTES, is_negative);
 		} else {
-			lower = BignumCastLoadLeadingBytes(end, data_byte_size, is_negative);
+			lower = BignumLimb::LoadMagnitudePartial(magnitude, data_byte_size, is_negative);
 		}
 		return BignumCastFromMagnitude<T>(upper, lower, is_negative, result);
 	}
@@ -163,73 +158,6 @@ public:
 		}
 		result = static_cast<T>(lower);
 		return true;
-	}
-
-	//! Byte order conversion for the big-endian magnitude bytes of a BIGNUM
-	static inline uint64_t BignumCastBigEndianToHost(uint64_t value) {
-#if DUCKDB_IS_BIG_ENDIAN
-		return value;
-#else
-		return BSwap(value);
-#endif
-	}
-	static inline uint32_t BignumCastBigEndianToHost(uint32_t value) {
-#if DUCKDB_IS_BIG_ENDIAN
-		return value;
-#else
-		return BSwap(value);
-#endif
-	}
-
-	//! Loads the eight big-endian magnitude bytes that end at "end", undoing the complement of a negative value
-	static inline uint64_t BignumCastLoadLimb(const char *end, bool is_negative) {
-		uint64_t value;
-		memcpy(&value, end - sizeof(uint64_t), sizeof(uint64_t));
-		value = BignumCastBigEndianToHost(value);
-		return is_negative ? ~value : value;
-	}
-
-	//! Loads the n (1 <= n <= 8) most significant magnitude bytes, which end at "end", of a BIGNUM blob. The three
-	//! header bytes precede them, so a four byte load (n <= 4) or an eight byte load (n >= 5) ending at "end" stays
-	//! within the blob; the bytes that do not belong to the magnitude are masked off.
-	static inline uint64_t BignumCastLoadLeadingBytes(const char *end, idx_t n, bool is_negative) {
-		D_ASSERT(n >= 1 && n <= sizeof(uint64_t));
-		if (n <= sizeof(uint32_t)) {
-			uint32_t value;
-			memcpy(&value, end - sizeof(uint32_t), sizeof(uint32_t));
-			value = BignumCastBigEndianToHost(value);
-			if (is_negative) {
-				value = ~value;
-			}
-			return value & (NumericLimits<uint32_t>::Maximum() >> (32 - 8 * n));
-		}
-		uint64_t value;
-		memcpy(&value, end - sizeof(uint64_t), sizeof(uint64_t));
-		value = BignumCastBigEndianToHost(value);
-		if (is_negative) {
-			value = ~value;
-		}
-		return value & (NumericLimits<uint64_t>::Maximum() >> (64 - 8 * n));
-	}
-
-	//! Writes the n (1 <= n <= 8) least significant bytes of value as a big-endian magnitude, complemented for a
-	//! negative value
-	static inline void BignumCastStoreLeadingBytes(char *destination, uint64_t value, idx_t n, bool is_negative) {
-		D_ASSERT(n >= 1 && n <= sizeof(uint64_t));
-		if (is_negative) {
-			value = ~value;
-		}
-		value = BignumCastBigEndianToHost(value);
-		memcpy(destination, reinterpret_cast<const char *>(&value) + (sizeof(uint64_t) - n), n);
-	}
-
-	//! Writes a 64-bit limb as eight big-endian magnitude bytes ending at "end", complemented for a negative value
-	static inline void BignumCastStoreLimb(char *end, uint64_t value, bool is_negative) {
-		if (is_negative) {
-			value = ~value;
-		}
-		value = BignumCastBigEndianToHost(value);
-		memcpy(end - sizeof(uint64_t), &value, sizeof(uint64_t));
 	}
 };
 

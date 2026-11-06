@@ -4,7 +4,6 @@
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/typedefs.hpp"
-#include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
 #include <cmath>
 #include <cstring>
@@ -135,31 +134,6 @@ static constexpr uint64_t BIGNUM_CAST_POWERS_OF_TEN[] = {1ULL,
                                                          1000000000000000000ULL,
                                                          10000000000000000000ULL};
 
-//! Returns the low 64 bits of a * b + add, and its high 64 bits in "high"; never overflows 128 bits
-static inline uint64_t BignumCastMultiplyAdd(uint64_t a, uint64_t b, uint64_t add, uint64_t &high) {
-#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
-	const auto product = static_cast<__uint128_t>(a) * b + add;
-	high = static_cast<uint64_t>(product >> 64);
-	return static_cast<uint64_t>(product);
-#else
-	// portable 32-bit split
-	const uint64_t a_low = a & 0xFFFFFFFFULL;
-	const uint64_t a_high = a >> 32;
-	const uint64_t b_low = b & 0xFFFFFFFFULL;
-	const uint64_t b_high = b >> 32;
-	const uint64_t p0 = a_low * b_low;
-	const uint64_t p1 = a_low * b_high;
-	const uint64_t p2 = a_high * b_low;
-	const uint64_t p3 = a_high * b_high;
-	const uint64_t middle = (p0 >> 32) + (p1 & 0xFFFFFFFFULL) + (p2 & 0xFFFFFFFFULL);
-	uint64_t low = (p0 & 0xFFFFFFFFULL) | (middle << 32);
-	high = p3 + (p1 >> 32) + (p2 >> 32) + (middle >> 32);
-	low += add;
-	high += low < add ? 1 : 0;
-	return low;
-#endif
-}
-
 //! Parses eight decimal digits at once (Lemire, "Fast parsing of eight digits")
 static inline uint64_t BignumCastParseEightDigits(const char *digits) {
 	uint64_t value;
@@ -202,7 +176,7 @@ static void BignumCastDecimalToBinary(const char *digits, idx_t count, unsafe_ve
 		const uint64_t multiplier = BIGNUM_CAST_POWERS_OF_TEN[chunk_size];
 		uint64_t carry = chunk;
 		for (auto &limb : limbs) {
-			limb = BignumCastMultiplyAdd(limb, multiplier, carry, carry);
+			limb = BignumLimb::MultiplyAdd(limb, multiplier, carry, carry);
 		}
 		if (carry) {
 			limbs.push_back(carry);
@@ -226,23 +200,22 @@ static idx_t BignumCastMagnitudeBytes(const unsafe_vector<uint64_t> &limbs) {
 		return 1;
 	}
 	D_ASSERT(limbs.back() != 0);
-	const idx_t top_bits = 64 - static_cast<idx_t>(CountZeros<uint64_t>::Leading(limbs.back()));
-	return (limbs.size() - 1) * sizeof(uint64_t) + (top_bits + 7) / 8;
+	return (limbs.size() - 1) * BignumLimb::BYTES + BignumLimb::ByteCount(limbs.back());
 }
 
 //! Writes the header and the big-endian magnitude bytes of a BIGNUM blob from base 2^64 limbs
 static void BignumCastWriteBlob(char *blob, const unsafe_vector<uint64_t> &limbs, idx_t data_bytes, bool is_negative) {
 	Bignum::SetHeader(blob, data_bytes, is_negative);
-	char *data = blob + Bignum::BIGNUM_HEADER_SIZE;
+	auto data = data_ptr_cast(blob + Bignum::BIGNUM_HEADER_SIZE);
 	if (limbs.empty()) {
-		data[0] = is_negative ? static_cast<char>(0xFF) : 0;
+		data[0] = is_negative ? 0xFF : 0;
 		return;
 	}
-	const idx_t top_bytes = data_bytes - (limbs.size() - 1) * sizeof(uint64_t);
-	Bignum::BignumCastStoreLeadingBytes(data, limbs.back(), top_bytes, is_negative);
-	char *end = data + data_bytes;
-	for (idx_t i = 0; i + 1 < limbs.size(); i++, end -= sizeof(uint64_t)) {
-		Bignum::BignumCastStoreLimb(end, limbs[i], is_negative);
+	const idx_t top_bytes = data_bytes - (limbs.size() - 1) * BignumLimb::BYTES;
+	BignumLimb::StoreMagnitudePartial(data, top_bytes, limbs.back(), is_negative);
+	auto end = data + data_bytes;
+	for (idx_t i = 0; i + 1 < limbs.size(); i++, end -= BignumLimb::BYTES) {
+		BignumLimb::StoreMagnitude(end - BignumLimb::BYTES, limbs[i], is_negative);
 	}
 }
 
@@ -422,7 +395,7 @@ static inline uint64_t BignumCastDivRemDecimalBase(uint64_t high, uint64_t low, 
 	//! floor((2^128 - 1) / 10^19) - 2^64
 	constexpr uint64_t RECIPROCAL = 0xd83c94fb6d2ac34aULL;
 	uint64_t q1;
-	uint64_t q0 = BignumCastMultiplyAdd(RECIPROCAL, high, 0, q1);
+	uint64_t q0 = BignumLimb::MultiplyAdd(RECIPROCAL, high, 0, q1);
 	// (q1, q0) += (high, low)
 	q0 += low;
 	q1 += high + (q0 < low ? 1 : 0);
@@ -510,7 +483,7 @@ static unsafe_vector<uint64_t> MultiplyDecimalLimbs(const uint64_t *a, idx_t a_s
 			for (idx_t j = 0; j < a_size; j++) {
 				// (high, low) = b[i] * a[j] + result[i + j] + carry, below 10^38 + 2 * 10^19, so high < 10^19
 				uint64_t high;
-				uint64_t low = BignumCastMultiplyAdd(b[i], a[j], result[i + j], high);
+				uint64_t low = BignumLimb::MultiplyAdd(b[i], a[j], result[i + j], high);
 				low += carry;
 				high += low < carry ? 1 : 0;
 				carry = BignumCastDivRemDecimalBase(high, low, result[i + j]);
@@ -600,17 +573,17 @@ static void BignumCastLoadMagnitude(const bignum_t &blob, bool &is_negative, uns
 	if (blob_size < Bignum::BIGNUM_HEADER_SIZE + 1) {
 		throw InvalidInputException("Invalid blob size.");
 	}
-	const char *data = blob.data.GetData();
+	auto data = const_data_ptr_cast(blob.data.GetData());
 	is_negative = (data[0] & 0x80) == 0;
 	const idx_t data_bytes = blob_size - Bignum::BIGNUM_HEADER_SIZE;
-	const idx_t limb_count = (data_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+	const idx_t limb_count = (data_bytes + BignumLimb::BYTES - 1) / BignumLimb::BYTES;
 	limbs.resize(limb_count);
-	const char *end = data + blob_size;
-	for (idx_t i = 0; i + 1 < limb_count; i++, end -= sizeof(uint64_t)) {
-		limbs[i] = Bignum::BignumCastLoadLimb(end, is_negative);
+	auto end = data + blob_size;
+	for (idx_t i = 0; i + 1 < limb_count; i++, end -= BignumLimb::BYTES) {
+		limbs[i] = BignumLimb::LoadMagnitude(end - BignumLimb::BYTES, is_negative);
 	}
-	limbs[limb_count - 1] =
-	    Bignum::BignumCastLoadLeadingBytes(end, data_bytes - (limb_count - 1) * sizeof(uint64_t), is_negative);
+	limbs[limb_count - 1] = BignumLimb::LoadMagnitudePartial(
+	    data + Bignum::BIGNUM_HEADER_SIZE, data_bytes - (limb_count - 1) * BignumLimb::BYTES, is_negative);
 	TrimLimbs(limbs);
 }
 
@@ -699,20 +672,19 @@ bool Bignum::BignumToDouble(const bignum_t &blob, double &result, bool &strict) 
 	if (blob_size < BIGNUM_HEADER_SIZE + 1) {
 		throw InvalidInputException("Invalid blob size.");
 	}
-	const char *data = blob.data.GetData();
-	const char *end = data + blob_size;
+	auto data = const_data_ptr_cast(blob.data.GetData());
 	const bool is_negative = (data[0] & 0x80) == 0;
 	idx_t data_byte_size = blob_size - BIGNUM_HEADER_SIZE;
+	auto first = data + BIGNUM_HEADER_SIZE;
 
 	double magnitude;
-	if (data_byte_size <= sizeof(uint64_t)) {
+	if (data_byte_size <= BignumLimb::BYTES) {
 		// the conversion of a 64-bit integer rounds correctly
-		magnitude = static_cast<double>(BignumCastLoadLeadingBytes(end, data_byte_size, is_negative));
+		magnitude = static_cast<double>(BignumLimb::LoadMagnitudePartial(first, data_byte_size, is_negative));
 	} else {
 		// a well-formed BIGNUM has no leading zero bytes (0xFF under the complement of a negative value), tolerate them
-		const char zero = is_negative ? static_cast<char>(0xFF) : 0;
-		const char *first = data + BIGNUM_HEADER_SIZE;
-		while (data_byte_size > sizeof(uint64_t) && *first == zero) {
+		const data_t zero = is_negative ? 0xFF : 0;
+		while (data_byte_size > BignumLimb::BYTES && *first == zero) {
 			first++;
 			data_byte_size--;
 		}
@@ -724,9 +696,9 @@ bool Bignum::BignumToDouble(const bignum_t &blob, double &result, bool &strict) 
 		// round the top 64 bits of the magnitude; the lower bytes only matter when they break a tie, which the sticky
 		// bit folded into the lowest of the 64 bits takes care of (the top bits hold at least 57 significant bits, so
 		// the sticky bit is always among the bits that the conversion to a 53-bit mantissa discards)
-		uint64_t top = BignumCastLoadLimb(first + sizeof(uint64_t), is_negative);
-		const idx_t remaining_bytes = data_byte_size - sizeof(uint64_t);
-		const char *rest = first + sizeof(uint64_t);
+		uint64_t top = BignumLimb::LoadMagnitude(first, is_negative);
+		const idx_t remaining_bytes = data_byte_size - BignumLimb::BYTES;
+		auto rest = first + BignumLimb::BYTES;
 		for (idx_t i = 0; i < remaining_bytes; i++) {
 			if (rest[i] != zero) {
 				top |= 1;
