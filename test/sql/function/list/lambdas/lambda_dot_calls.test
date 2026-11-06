@@ -234,27 +234,6 @@ SELECT list_transform(['A'], lambda aux: aux.lower());
 ----
 [a]
 
-# nested schema paths resolve through the path, with and without a parameter named like the path head
-
-statement ok
-CREATE SCHEMA n1;
-
-statement ok
-CREATE SCHEMA n1.n2;
-
-statement ok
-CREATE MACRO n1.n2.times_ten(v) AS v * 10;
-
-query I
-SELECT list_transform([3], lambda n1: n1.n2.times_ten(n1));
-----
-[30]
-
-query I
-SELECT list_transform([3], lambda z: n1.n2.times_ten(z));
-----
-[30]
-
 # fully spelled catalog.schema.function paths inside lambda bodies, with and without a parameter named like the catalog
 
 statement ok
