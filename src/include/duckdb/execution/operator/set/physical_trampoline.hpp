@@ -20,7 +20,7 @@ namespace duckdb {
 
 class InterruptState;
 class Pipeline;
-class RecursiveCTEPipelineSchedulePlan;
+struct RecursiveCTEPipelineSchedulePlan;
 struct RecursiveExecutorPool;
 enum class RecursiveEpochResult : uint8_t;
 

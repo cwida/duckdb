@@ -22,7 +22,7 @@ namespace duckdb {
 static constexpr const idx_t TRAMPOLINE_ROWS_PER_THREAD = STANDARD_VECTOR_SIZE / 2;
 // Pure frontier work (no independent source tasks) must amortize the event-graph setup of a
 // parallel wave; below this input size the inline path wins for cheap branch plans
-static constexpr const idx_t TRAMPOLINE_PARALLEL_MIN_ROWS = 16 * STANDARD_VECTOR_SIZE;
+static constexpr const idx_t TRAMPOLINE_PARALLEL_MIN_ROWS = idx_t(16) * STANDARD_VECTOR_SIZE;
 // A parallel wave at or below this wall time cannot have gained over inline execution (it is
 // within the parallel event machinery's own setup cost), so it warrants one inline probe
 static constexpr const idx_t TRAMPOLINE_ROUTE_FAST_WAVE_NS = 2000000;
@@ -409,7 +409,7 @@ void TrampolineLocalSinkState::AppendTee(ClientContext &context, DataChunk &rout
 	tee_chunk.Reference(routed);
 	tee_chunk.data[op.selector_idx].Reference(Value::Numeric(tee_chunk.data[op.selector_idx].GetType(), 0),
 	                                          count_t(routed.size()));
-	tee_chunk.SetCardinality(routed.size());
+	tee_chunk.CheckCardinality(routed.size());
 	Staged(context, 0).Append(appends[0], tee_chunk);
 }
 
