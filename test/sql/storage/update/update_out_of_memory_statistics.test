@@ -17,7 +17,7 @@ SET force_compression='uncompressed'
 
 # a later UPDATE of the NULL rows publishes the statistics of the column, with nothing of the failed UPDATE
 statement ok
-CREATE TABLE t1 AS SELECT CASE WHEN range%2=0 THEN NULL ELSE range END i FROM range(512)
+CREATE TABLE t1 AS SELECT CASE WHEN range%2=0 THEN NULL ELSE range END i FROM range(2048)
 
 statement ok
 CHECKPOINT
@@ -45,21 +45,21 @@ UPDATE t1 SET i=i WHERE i IS NULL
 query II
 SELECT count(i), sum(i) FROM t1
 ----
-256	65536
+1024	1048576
 
 query III
 SELECT min(i), max(i), count(*) FROM t1
 ----
-1	511	512
+1	2047	2048
 
 query I
-SELECT count(*) FROM t1 WHERE i > 511
+SELECT count(*) FROM t1 WHERE i > 2047
 ----
 0
 
 # as does a later UPDATE that writes the current values
 statement ok
-CREATE TABLE t2 AS SELECT range i FROM range(512)
+CREATE TABLE t2 AS SELECT range i FROM range(2048)
 
 statement ok
 CHECKPOINT
@@ -87,4 +87,4 @@ UPDATE t2 SET i=i WHERE i=3
 query III
 SELECT min(i), max(i), count(*) FROM t2
 ----
-0	511	512
+0	2047	2048

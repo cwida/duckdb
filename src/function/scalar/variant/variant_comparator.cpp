@@ -63,14 +63,21 @@ void VariantEncodeNumber(SINK &sink, const VariantNumberKey &key) {
 	};
 
 	// adjusted exponent (order-preserving signed encoding) orders magnitude
-	data_t exp_buffer[sizeof(int64_t)];
-	Radix::EncodeData<int64_t>(exp_buffer, key.adjusted_exponent);
-	for (idx_t i = 0; i < sizeof(int64_t); i++) {
-		emit(exp_buffer[i]);
+	// common exponents use a single byte in 1..254; 0x00 / 0xFF escape to the full 8 bytes (keeps keys short)
+	if (key.adjusted_exponent >= -127 && key.adjusted_exponent <= 126) {
+		emit(static_cast<data_t>(key.adjusted_exponent + 128));
+	} else {
+		data_t exp_buffer[sizeof(int64_t)];
+		Radix::EncodeData<int64_t>(exp_buffer, key.adjusted_exponent);
+		emit(key.adjusted_exponent < 0 ? 0x00 : 0xFF);
+		for (idx_t i = 0; i < sizeof(int64_t); i++) {
+			emit(exp_buffer[i]);
+		}
 	}
 	// significant digits (1..10 so the 0x00 terminator is smaller than any digit -> prefix sorts first)
-	for (auto c : key.digits) {
-		emit(static_cast<data_t>((c - '0') + 1));
+	auto digits = key.GetDigits();
+	for (idx_t i = 0; i < key.digit_count; i++) {
+		emit(static_cast<data_t>((digits[i] - '0') + 1));
 	}
 	emit(0); // terminator
 }
@@ -217,7 +224,7 @@ void CreateVariantComparator(const Vector &input, idx_t count, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto writer = FlatVector::Writer<string_t>(result, count);
 
-	//! reused growable buffer - the key is encoded once and then copied into the result vector
+	//! reused growable buffer, so encoding a chunk does not allocate once per value
 	string buffer;
 	for (idx_t r = 0; r < count; r++) {
 		auto root = variant[r];

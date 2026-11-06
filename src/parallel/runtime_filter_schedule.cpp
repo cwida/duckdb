@@ -96,7 +96,11 @@ static PipelineSchedule RuntimeFilterDependencyCheck(const PipelineSchedule &sch
 	return result;
 }
 
-void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
+// The dependency check above refuses edges that would cycle through streaming EOF waits. Edges that pass it can
+// still gate a buffered exchange consumer through producer backpressure, which is not a cycle in the augmented
+// graph; the exchange liveness analysis in ResolveExternalInputs handles those. Both edge-adding call paths go
+// through this one function, so the analysis always sees the edge set the executor runs.
+static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clear_filters, bool add_edges) {
 	reference_map_t<PhysicalComparisonJoin, vector<idx_t>> publications;
 	vector<reference<PhysicalComparisonJoin>> producers;
 	for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
@@ -117,10 +121,15 @@ void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 		return;
 	}
 
-	auto dependency_check = RuntimeFilterDependencyCheck(schedule);
-	auto join_build_stages = CollectJoinBuildStages(schedule);
+	// The clear-only path never adds edges, so the admission state is not needed there.
+	PipelineSchedule dependency_check;
+	vector<bool> join_build_stages;
+	if (add_edges) {
+		dependency_check = RuntimeFilterDependencyCheck(schedule);
+		join_build_stages = CollectJoinBuildStages(schedule);
+	}
 	reference_map_t<DynamicTableFilterSet, vector<idx_t>> sources;
-	for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
+	for (idx_t stage_idx = 0; add_edges && stage_idx < schedule.stages.size(); stage_idx++) {
 		auto &stage = schedule.stages[stage_idx];
 		auto &pipeline = *stage.pipeline;
 		auto source = pipeline.GetSource();
@@ -149,8 +158,13 @@ void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 		auto build_estimate = producer.children[1].get().estimated_cardinality;
 		auto probe_estimate = producer.children[0].get().estimated_cardinality;
 		for (auto &target : producer.filter_pushdown->probe_info) {
-			// Clear previous executions before any scan can take its filter snapshot.
-			target.dynamic_filters->ClearFilters(producer);
+			if (clear_filters) {
+				// Clear previous executions before any scan can take its filter snapshot.
+				target.dynamic_filters->ClearFilters(producer);
+			}
+			if (!add_edges) {
+				continue;
+			}
 			auto source = sources.find(*target.dynamic_filters);
 			if (publication.size() != 1 || source == sources.end() ||
 			    build_estimate >= MaxValue(probe_estimate, target.estimated_scan_cardinality)) {
@@ -163,6 +177,24 @@ void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 			}
 		}
 	}
+}
+
+void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
+	// Executor entry point when no resolved schedule was handed over: adds the ordering edges and clears stale
+	// filters before any scan snapshot (clearing is idempotent and sink initialization clears again).
+	ScheduleRuntimeFiltersInternal(schedule, true, true);
+}
+
+void ClearRuntimeFilters(PipelineSchedule &schedule) {
+	// Executor entry point for a schedule reused from ResolveExternalInputs: the ordering edges are already in
+	// the graph the analysis validated, so only the stale filters need clearing.
+	ScheduleRuntimeFiltersInternal(schedule, true, false);
+}
+
+void AddRuntimeFilterScheduleDependencies(PipelineSchedule &schedule) {
+	// Pure edge addition for the schedules ResolveExternalInputs analyzes: no filter clearing, which belongs to
+	// the executor pass on the final schedule.
+	ScheduleRuntimeFiltersInternal(schedule, false, true);
 }
 
 } // namespace duckdb

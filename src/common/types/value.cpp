@@ -625,15 +625,15 @@ bool Value::StringIsValid(const char *str, idx_t length) {
 	return utf_type != UnicodeType::INVALID;
 }
 
-Value Value::DECIMAL(int16_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int16_t value, uint32_t width, uint32_t scale) {
 	return Value::DECIMAL(int64_t(value), width, scale);
 }
 
-Value Value::DECIMAL(int32_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int32_t value, uint32_t width, uint32_t scale) {
 	return Value::DECIMAL(int64_t(value), width, scale);
 }
 
-Value Value::DECIMAL(int64_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 	auto decimal_type = LogicalType::DECIMAL(width, scale);
 	Value result(decimal_type);
 	switch (decimal_type.InternalType()) {
@@ -655,7 +655,7 @@ Value Value::DECIMAL(int64_t value, uint8_t width, uint8_t scale) {
 	return result;
 }
 
-Value Value::DECIMAL(hugeint_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT64 && width <= Decimal::MAX_WIDTH_INT128);
 	Value result(LogicalType::DECIMAL(width, scale));
 	result.value_.hugeint = value;

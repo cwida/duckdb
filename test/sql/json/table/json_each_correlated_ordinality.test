@@ -1,0 +1,261 @@
+# name: test/sql/json/table/json_each_correlated_ordinality.test
+# description: WITH ORDINALITY on correlated json_each/json_tree
+# group: [table]
+
+# control without JSON: a correlated scalar-parameter in-out function keeps its numbering
+query III
+SELECT o.k, r.v, r.n
+FROM (VALUES (2), (3)) o(k), LATERAL range(o.k) WITH ORDINALITY r(v, n)
+ORDER BY ALL;
+----
+2	0	1
+2	1	2
+3	0	1
+3	1	2
+3	2	3
+
+# a TABLE parameter's rows form one invocation: the numbering continues across them
+query II
+SELECT s.v, s.ordinality
+FROM (VALUES (1)) o(k),
+     LATERAL summary((SELECT unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN [2, 3] END) AS v)) WITH ORDINALITY s
+ORDER BY ALL;
+----
+2	1
+3	2
+
+query II
+SELECT s.v, s.ordinality
+FROM summary((SELECT unnest([2, 3]) AS v)) WITH ORDINALITY s
+ORDER BY ALL;
+----
+2	1
+3	2
+
+require json
+
+# the ordinality column is produced by the operator, not by json_each
+query III
+SELECT o.k, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1)) o(k), LATERAL json_each(('[' || o.k || ', 2]')::JSON) WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	1	1
+1	2	2
+
+# numbering restarts per outer row
+statement ok
+CREATE TABLE docs AS
+SELECT * FROM (VALUES (1, '[10, 20, 30]'), (2, '[40]')) t(id, j);
+
+query III
+SELECT o.id, q.value::VARCHAR, q.ordinality::INTEGER
+FROM docs o, LATERAL json_each(o.j::JSON) WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	10	1
+1	20	2
+1	30	3
+2	40	1
+
+# filters on the ordinality column
+query II
+SELECT o.id, q.value::VARCHAR
+FROM docs o, LATERAL json_each(o.j::JSON) WITH ORDINALITY q
+WHERE q.ordinality = 2
+ORDER BY ALL;
+----
+1	20
+
+# selecting only the ordinality column (prunes every json column)
+query II
+SELECT o.id, q.ordinality::INTEGER
+FROM docs o, LATERAL json_each(o.j::JSON) WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	1
+1	2
+1	3
+2	1
+
+# count-only query: every column including ordinality is pruned from the select list
+query II
+SELECT o.id, count(*)
+FROM docs o, LATERAL json_each(o.j::JSON) WITH ORDINALITY q
+GROUP BY o.id
+ORDER BY o.id;
+----
+1	3
+2	1
+
+# two-argument form with a JSON path argument
+query IIII
+SELECT q.ordinality::INTEGER, q.value::INTEGER, q.root, q.json::VARCHAR
+FROM (VALUES ('{"a": [10, 20]}')) d(j),
+     LATERAL json_each(d.j::JSON, '$.a') WITH ORDINALITY q
+ORDER BY q.ordinality;
+----
+1	10	$.a	{"a": [10, 20]}
+2	20	$.a	{"a": [10, 20]}
+
+# NULL and duplicate outer values
+query III
+SELECT o.id, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1, '[7]'), (2, NULL), (3, '[7]')) o(id, j),
+     LATERAL json_each(o.j::JSON) WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	7	1
+3	7	1
+
+# json_tree over a nested document
+query III
+SELECT o.id, q.fullkey, q.ordinality::INTEGER
+FROM (VALUES (1, '{"a": [1, 2]}')) o(id, j),
+     LATERAL json_tree(o.j::JSON) WITH ORDINALITY q
+ORDER BY q.ordinality;
+----
+1	$	1
+1	$.a	2
+1	$.a[0]	3
+1	$.a[1]	4
+
+# a correlation that folds away during binding keeps operator ordinality
+query III
+SELECT o.k, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1), (2)) o(k),
+     LATERAL json_each((CASE WHEN typeof(o.k) = 'INTEGER' THEN '[8,9]' ELSE '[]' END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	8	1
+1	9	2
+2	8	1
+2	9	2
+
+# the json virtual column in a folded correlation references the input document
+query IIII
+SELECT o.k, q.json::VARCHAR, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1), (2)) o(k),
+     LATERAL json_each((CASE WHEN typeof(o.k) = 'INTEGER' THEN '[8,9]' ELSE '[]' END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	[8,9]	8	1
+1	[8,9]	9	2
+2	[8,9]	8	1
+2	[8,9]	9	2
+
+# a folded unnest feeds the function a multi-row input chunk: every row must be processed
+query III
+SELECT q.json::VARCHAR, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1)) o(k),
+     LATERAL json_each(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['[1,2]', '[3]'] END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+[1,2]	1	1
+[1,2]	2	2
+[3]	3	1
+
+# a NULL document in the multi-row chunk is skipped
+query II
+SELECT q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1)) o(k),
+     LATERAL json_each(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['[1]', NULL, '[2,3]'] END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	1
+2	1
+3	2
+
+# json_tree over a multi-row input chunk
+query I
+SELECT q.fullkey
+FROM (VALUES (1)) o(k),
+     LATERAL json_tree(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['[1]', '{"a":2}'] END)::JSON) q
+ORDER BY ALL;
+----
+$
+$
+$.a
+$[0]
+
+# a path argument over a multi-row input chunk
+query I
+SELECT q.value::VARCHAR
+FROM (VALUES (1)) o(k),
+     LATERAL json_each(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['{"a":[1]}', '{"a":[2]}'] END)::JSON, '$.a') q
+ORDER BY ALL;
+----
+1
+2
+
+# a NULL path argument produces no rows
+query III
+SELECT o.id, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1, '[7]')) o(id, j), LATERAL json_each(o.j::JSON, NULL) WITH ORDINALITY q
+ORDER BY ALL;
+----
+
+# a virtual column selected next to the ordinality column
+query III
+SELECT o.id, q.json::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1, '[5]')) o(id, j), LATERAL json_each(o.j::JSON) WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	[5]	1
+
+# numbering continues across output chunks and restarts for the next document
+query IIIII
+WITH docs(id, j) AS (VALUES (1, to_json(range(4097))), (2, to_json(range(3))))
+SELECT d.id, count(*), min(e.ordinality), max(e.ordinality),
+       bool_and(e.ordinality = e.value::BIGINT + 1)
+FROM docs d, LATERAL json_each(d.j) WITH ORDINALITY e
+GROUP BY d.id ORDER BY d.id;
+----
+1	4097	1	4097	true
+2	3	1	3	true
+
+# nested correlated calls, repeated through a prepared statement
+statement ok
+PREPARE nested_ord AS
+SELECT a.ordinality, b.ordinality, b.value::INTEGER
+FROM (VALUES ('[[10,20],[30]]')) d(j),
+     LATERAL json_each(d.j) WITH ORDINALITY a,
+     LATERAL json_each(a.value) WITH ORDINALITY b
+ORDER BY a.ordinality, b.ordinality;
+
+query III
+EXECUTE nested_ord;
+----
+1	1	10
+1	2	20
+2	1	30
+
+query III
+EXECUTE nested_ord;
+----
+1	1	10
+1	2	20
+2	1	30
+
+# LEFT LATERAL pads unmatched outer rows
+query II
+SELECT o.id, q.ordinality::INTEGER
+FROM (VALUES (1, '[]'), (2, '[7]')) o(id, j)
+LEFT JOIN LATERAL json_each(o.j::JSON) WITH ORDINALITY q ON true
+ORDER BY ALL;
+----
+1	NULL
+2	1
+
+# uncorrelated json_each keeps the window-managed numbering
+query II
+SELECT value::VARCHAR, ordinality::INTEGER
+FROM json_each('[5, 6]'::JSON) WITH ORDINALITY
+ORDER BY ALL;
+----
+5	1
+6	2

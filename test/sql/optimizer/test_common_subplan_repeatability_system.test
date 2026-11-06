@@ -1,0 +1,95 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_system.test
+# description: Preserve common subplan sharing for repeatable table functions
+# group: [optimizer]
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE repeatable_schema(i INTEGER, s VARCHAR);
+
+# Static keyword list.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM duckdb_keywords() INTERSECT ALL SELECT * FROM duckdb_keywords();
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# Static optimizer list.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM duckdb_optimizers() INTERSECT ALL SELECT * FROM duckdb_optimizers();
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# Build version.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_version() INTERSECT ALL SELECT * FROM pragma_version();
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_version() INTERSECT ALL SELECT * FROM pragma_version());
+----
+1
+
+# Build platform.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_platform() INTERSECT ALL SELECT * FROM pragma_platform();
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_platform() INTERSECT ALL SELECT * FROM pragma_platform());
+----
+1
+
+# Generated test vectors.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM test_vector_types(7) INTERSECT ALL SELECT * FROM test_vector_types(7);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+# Bound native table definition.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_table_info('repeatable_schema') INTERSECT ALL SELECT * FROM pragma_table_info('repeatable_schema');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_table_info('repeatable_schema') INTERSECT ALL SELECT * FROM pragma_table_info('repeatable_schema'));
+----
+2
+
+# Bound native table description.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_show('repeatable_schema') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_show('repeatable_schema') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema'));
+----
+2
+
+# Views are rebound during execution, so their bound definition must not be shared.
+statement ok
+CREATE VIEW repeatable_schema_view AS SELECT i, s FROM repeatable_schema;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_table_info('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_table_info('repeatable_schema_view');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_table_info('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_table_info('repeatable_schema_view'));
+----
+2
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_show('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema_view');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_show('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema_view'));
+----
+2

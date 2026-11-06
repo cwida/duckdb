@@ -395,9 +395,10 @@ TEST_CASE("Transaction secrets are isolated and cleaned up", "[secret]") {
 
 	owner.Commit();
 	owner.BeginTransaction();
-	owner_transaction = CatalogTransaction::GetSystemCatalogTransaction(*owner.context);
-	REQUIRE(!secret_manager.GetSecretByName(owner_transaction, "transaction_secret"));
-	owner_match = secret_manager.LookupSecret(owner_transaction, "s3://bucket/data.parquet", "transaction_secret_type");
+	auto owner_transaction_after_commit = CatalogTransaction::GetSystemCatalogTransaction(*owner.context);
+	REQUIRE(!secret_manager.GetSecretByName(owner_transaction_after_commit, "transaction_secret"));
+	owner_match = secret_manager.LookupSecret(owner_transaction_after_commit, "s3://bucket/data.parquet",
+	                                          "transaction_secret_type");
 	REQUIRE(owner_match.HasMatch());
 	REQUIRE(owner_match.GetSecret().GetName() == "global_secret");
 
@@ -405,8 +406,8 @@ TEST_CASE("Transaction secrets are isolated and cleaned up", "[secret]") {
 	REQUIRE(secret_manager.CreateSecret(*owner.context, rollback_input));
 	owner.Rollback();
 	owner.BeginTransaction();
-	owner_transaction = CatalogTransaction::GetSystemCatalogTransaction(*owner.context);
-	REQUIRE(!secret_manager.GetSecretByName(owner_transaction, "rollback_secret"));
+	auto owner_transaction_after_rollback = CatalogTransaction::GetSystemCatalogTransaction(*owner.context);
+	REQUIRE(!secret_manager.GetSecretByName(owner_transaction_after_rollback, "rollback_secret"));
 	owner.Rollback();
 }
 

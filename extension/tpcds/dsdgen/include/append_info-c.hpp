@@ -61,7 +61,7 @@ struct tpcds_append_information {
 	duckdb::DataChunk chunk;
 	duckdb::vector<duckdb::LogicalType> types;
 	duckdb::vector<TPCDSAppendType> append_types;
-	duckdb::vector<uint8_t> decimal_scales;
+	duckdb::vector<uint32_t> decimal_scales;
 	duckdb::idx_t row = 0;
 	duckdb::idx_t active_row = duckdb::DConstants::INVALID_INDEX;
 	duckdb::idx_t active_col = 0;
@@ -82,7 +82,7 @@ struct tpcds_append_information {
 	void Close();
 	duckdb::Vector &NextColumn();
 	TPCDSAppendType ActiveAppendType() const;
-	uint8_t ActiveDecimalScale() const;
+	uint32_t ActiveDecimalScale() const;
 	void AppendNull();
 	void AppendVarchar(const char *value);
 	void AppendKey(int64_t value);
