@@ -202,18 +202,32 @@ bool ExtensionHelper::TryAutoLoadExtension(ClientContext &context, const string 
 		return true;
 	}
 	try {
-		if (Settings::Get<AutoinstallKnownExtensionsSetting>(context) &&
-		    !IsLinkedExtension(*context.db, extension_name)) {
-			auto autoinstall_repo = GetAutoinstallRepository(*context.db);
-			ExtensionInstallOptions options;
-			options.repository = autoinstall_repo;
-			ExtensionHelper::InstallExtension(context, extension_name, options);
-		}
+		AutoInstallExtension(context, extension_name);
 		ExtensionHelper::LoadExternalExtension(context, AutoLoadOptions(extension_name));
 		return true;
 	} catch (...) {
 		return false;
 	}
+}
+
+void ExtensionHelper::AutoInstallExtension(ClientContext &context, const string &extension_name) {
+	if (!Settings::Get<AutoinstallKnownExtensionsSetting>(context) || IsLinkedExtension(*context.db, extension_name)) {
+		return;
+	}
+	auto autoinstall_repo = GetAutoinstallRepository(*context.db);
+	ExtensionInstallOptions options;
+	options.repository = autoinstall_repo;
+	ExtensionHelper::InstallExtension(context, extension_name, options);
+}
+
+void ExtensionHelper::AutoInstallExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name) {
+	if (!Settings::Get<AutoinstallKnownExtensionsSetting>(db) || IsLinkedExtension(db, extension_name)) {
+		return;
+	}
+	auto autoinstall_repo = GetAutoinstallRepository(db);
+	ExtensionInstallOptions options;
+	options.repository = autoinstall_repo;
+	ExtensionHelper::InstallExtension(db, fs, extension_name, options);
 }
 
 ExtensionRepository ExtensionHelper::GetAutoinstallRepository(DatabaseInstance &db) {
@@ -234,13 +248,7 @@ bool ExtensionHelper::TryAutoLoadExtension(DatabaseInstance &instance, const str
 	}
 	try {
 		auto &fs = FileSystem::GetFileSystem(instance);
-		if (Settings::Get<AutoinstallKnownExtensionsSetting>(instance) &&
-		    !IsLinkedExtension(instance, extension_name)) {
-			auto autoinstall_repo = GetAutoinstallRepository(instance);
-			ExtensionInstallOptions options;
-			options.repository = autoinstall_repo;
-			ExtensionHelper::InstallExtension(instance, fs, extension_name, options);
-		}
+		AutoInstallExtension(instance, fs, extension_name);
 		if (Settings::Get<AutoloadKnownExtensionsSetting>(instance)) {
 			ExtensionHelper::LoadExternalExtension(instance, fs, AutoLoadOptions(extension_name));
 			return true;
@@ -405,12 +413,7 @@ void ExtensionHelper::AutoLoadExtension(DatabaseInstance &db, const string &exte
 	try {
 		auto &fs = FileSystem::GetLocal(db);
 #ifndef DUCKDB_WASM
-		if (Settings::Get<AutoinstallKnownExtensionsSetting>(db) && !IsLinkedExtension(db, extension_name)) {
-			auto autoinstall_repo = GetAutoinstallRepository(db);
-			ExtensionInstallOptions options;
-			options.repository = autoinstall_repo;
-			ExtensionHelper::InstallExtension(db, fs, extension_name, options);
-		}
+		AutoInstallExtension(db, fs, extension_name);
 #endif
 		ExtensionHelper::LoadExternalExtension(db, fs, AutoLoadOptions(extension_name));
 		DUCKDB_LOG_INFO(db, "Loaded extension '%s'", extension_name);

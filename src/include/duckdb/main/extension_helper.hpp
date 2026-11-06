@@ -127,6 +127,10 @@ public:
 	//! Where automatic installs go: autoinstall_extension_repository, else custom_extension_repository, else
 	//! DBConfigOptions::default_autoinstall_repository, else the core repository
 	DUCKDB_API static ExtensionRepository GetAutoinstallRepository(DatabaseInstance &db);
+	//! Install an extension from the autoinstall repository when autoinstall_known_extensions is set, unless the
+	//! extension is linked into the binary
+	static void AutoInstallExtension(ClientContext &context, const string &extension_name);
+	static void AutoInstallExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name);
 
 	//! Autoload an extension, only if available locally
 	DUCKDB_API static bool TryAutoLoadAvailableExtension(DatabaseInstance &instance,
