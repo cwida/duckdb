@@ -79,6 +79,12 @@
       ]
     },
     {
+      "reason": "Trampoline CTEs require storage version v2.0.0 or higher.",
+      "paths": [
+        "test/sql/cte/trampoline/trampoline_view_catalog.test"
+      ]
+    },
+    {
       "reason": "Stored aggregate-state and TUPLE columns require v2.0.0 storage.",
       "paths": [
         "test/sql/sql_export/empty_aggregate_state.test",

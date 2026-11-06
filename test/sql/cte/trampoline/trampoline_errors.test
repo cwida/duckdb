@@ -233,3 +233,18 @@ WITH RECURSIVE t("Branch Col", n) USING TRAMPOLINE ("BRANCH COL") AS (
 SELECT "Branch Col", n FROM t;
 ----
 0	3
+
+# trampoline CTEs cannot be stored in pre-v2.0.0 storage formats
+statement ok
+ATTACH '{TEST_DIR}/trampoline_old_storage.db' AS old_db (STORAGE_VERSION 'v1.0.0');
+
+statement error
+CREATE VIEW old_db.v AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+) SELECT n FROM t;
+----
+<REGEX>:.*Trampoline CTEs require storage version v2\.0\.0 or higher.*
+
+statement ok
+DETACH old_db;

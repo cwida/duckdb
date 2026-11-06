@@ -42,6 +42,10 @@ CTEMaterialize CommonTableExpressionInfo::GetMaterializedForSerialization(Serial
 }
 
 unique_ptr<SelectStatement> CommonTableExpressionInfo::GetQueryForSerialization(Serializer &serializer) const {
+	if (query_node && query_node->type == QueryNodeType::TRAMPOLINE_CTE_NODE) {
+		throw SerializationException("Trampoline CTEs require storage version v2.0.0 or higher and cannot be "
+		                             "serialized to older storage formats");
+	}
 	if (!query_node ||
 	    (query_node->type != QueryNodeType::SELECT_NODE && query_node->type != QueryNodeType::SET_OPERATION_NODE &&
 	     query_node->type != QueryNodeType::RECURSIVE_CTE_NODE)) {
