@@ -23,7 +23,6 @@ Exit code is non-zero if any non-skipped test mismatches (or errors).
 Requires a platform where library interposition works against a locally built
 duckdb binary: macOS (DYLD_INSERT_LIBRARIES) or Linux/glibc (LD_PRELOAD).
 """
-
 import argparse
 import glob
 import json

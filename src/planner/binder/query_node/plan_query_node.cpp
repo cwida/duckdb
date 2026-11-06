@@ -3,6 +3,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
@@ -69,15 +70,12 @@ unique_ptr<LogicalOperator> Binder::PlanDistinct(BoundDistinctModifier &distinct
 	// the result of the DISTINCT has the table index of the input so that the remainder of the plan remains valid
 	auto child_index = GenerateTableIndex();
 	auto result_index = RenameResultIndex(*root, child_index);
-	// sorts between the DISTINCT and the renamed operator reference the old index
+	// sorts and limits between the DISTINCT and the renamed operator reference the old index
 	for (reference<LogicalOperator> current(*root); current.get().type == LogicalOperatorType::LOGICAL_ORDER_BY ||
 	                                                current.get().type == LogicalOperatorType::LOGICAL_LIMIT;
 	     current = *current.get().children[0]) {
-		if (current.get().type == LogicalOperatorType::LOGICAL_ORDER_BY) {
-			for (auto &order : current.get().Cast<LogicalOrder>().orders) {
-				ReplaceTableIndex(order.expression, result_index, child_index);
-			}
-		}
+		LogicalOperatorVisitor::EnumerateExpressions(
+		    current.get(), [&](unique_ptr<Expression> *expr) { ReplaceTableIndex(*expr, result_index, child_index); });
 	}
 	if (IsBindingTrySubquery()) {
 		auto &try_indexes = GetTrySubqueryPlanIndexesMutable();
@@ -139,7 +137,16 @@ unique_ptr<LogicalOperator> Binder::PlanDistinct(BoundDistinctModifier &distinct
 	}
 
 	auto aggregate = make_uniq<LogicalAggregate>(group_index, aggregate_index, std::move(aggregates));
+	// a single grouping set over all groups, as for GROUP BY, so statistics use the distinct counts of the groups
+	GroupingSet all_groups;
+	for (idx_t i = 0; i < groups.size(); i++) {
+		all_groups.insert(ProjectionIndex(i));
+	}
+	aggregate->grouping_sets.push_back(std::move(all_groups));
 	aggregate->groups = std::move(groups);
+	// without an ORDER BY, DISTINCT ON takes the first row of every group in input order
+	aggregate->preserve_input_order =
+	    distinct.distinct_type == DistinctType::DISTINCT_ON && !first_order && !aggregate->expressions.empty();
 	aggregate->AddChild(std::move(root));
 
 	auto projection = make_uniq<LogicalProjection>(result_index, std::move(projections));
