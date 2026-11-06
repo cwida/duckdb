@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -394,6 +395,72 @@ void ArgProbeExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_con
 	}
 }
 
+// The resolve types callback of pick_type sets the return type listed for the type of the first argument, and leaves
+// the declared ANY for an argument type without an entry.
+std::vector<std::pair<DUCKDB_V2_LOGICAL_TYPE_ID, duckdb_v2_logical_type_handle>> pick_return_types;
+
+void PickReturnTypeResolveTypes(duckdb_v2_function_bind_info_handle info,
+                                duckdb_v2_scalar_function_resolve_types_info_handle result, duckdb_v2_context_handle,
+                                duckdb_v2_error_info_handle *err) {
+	const auto arg_type = GetArgTypeId(info, err);
+	for (auto &entry : pick_return_types) {
+		if (entry.first == arg_type) {
+			duckdb_v2_scalar_function_resolve_types_set_return_type(result, entry.second, err);
+			return;
+		}
+	}
+}
+
+void EchoArgTypeResolveTypes(duckdb_v2_function_bind_info_handle info,
+                             duckdb_v2_scalar_function_resolve_types_info_handle result, duckdb_v2_context_handle,
+                             duckdb_v2_error_info_handle *err) {
+	duckdb_v2_logical_type_handle type = nullptr;
+	if (duckdb_v2_function_bind_get_arg_type(info, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_scalar_function_resolve_types_set_return_type(result, type, err);
+	duckdb_v2_logical_type_destroy(&type);
+}
+
+void CopyIntegerExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                     duckdb_v2_error_info_handle *err) {
+	duckdb_v2_vector_handle input = nullptr;
+	duckdb_v2_vector_handle out = nullptr;
+	idx_t count = 0;
+	if (duckdb_v2_scalar_function_exec_get_arg(info, 0, &input, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &out, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_vector_view view {};
+	void *raw = nullptr;
+	if (duckdb_v2_vector_get_view(input, &view, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(out, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	const auto *in_data = static_cast<const int32_t *>(view.data);
+	auto *out_data = static_cast<int32_t *>(raw);
+	for (idx_t i = 0; i < count; i++) {
+		out_data[i] = in_data[SelAt(view.sel, i)];
+	}
+}
+
+// Registers name(x ANY) -> ANY with the given resolve types callback.
+void RegisterAnyToAny(duckdb_v2_connection_handle conn, duckdb_v2_factory_handle factory, std::string_view name,
+                      duckdb_v2_scalar_function_resolve_types_callback_fn resolve_types) {
+	auto any = MakeType(factory, DUCKDB_V2_LOGICAL_TYPE_ID_ANY);
+	auto function = MakeScalar(conn, name);
+	auto sig = SigOf(function);
+	SigParam(sig, "x", any);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, any, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_resolve_types_callback(function, resolve_types, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, CopyIntegerExec, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&any);
+}
+
 } // namespace
 
 // ===========================================================================
@@ -656,6 +723,82 @@ TEST_CASE("V2 scalar: resolve types sees the uncast argument types, bind the cas
 	// Scalar functions set the bind data through their own bind info, in the bind callback only.
 	REQUIRE(phase_probe.resolve_set_bind_data_rc != DUCKDB_V2_ERROR_NONE);
 	REQUIRE(phase_probe.bind_shared_set_bind_data_rc != DUCKDB_V2_ERROR_NONE);
+}
+
+// The return type after resolve types is concrete, or the call fails to bind.
+TEST_CASE("V2 scalar: a resolve types callback that leaves the return type incomplete fails the bind",
+          "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	auto any = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_ANY);
+	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	RegisterAnyToAny(fx.conn, fx.factory, "pick_type", PickReturnTypeResolveTypes);
+	pick_return_types = {{DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, integer}, {DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, any}};
+	const std::string unresolved =
+	    "The resolve types callback of scalar function \"pick_type\" did not set a concrete return type (it is ANY).";
+
+	REQUIRE(QueryI32(fx.conn, "SELECT pick_type(7)") == 7);
+
+	std::string message;
+	// The callback sets nothing: the declared ANY is left.
+	for (auto sql :
+	     {"SELECT pick_type(s) FROM (VALUES ('a'), ('b')) t(s)", "SELECT pick_type('a')",
+	      "SELECT pick_type(NULL::VARCHAR)", "SELECT 1 + pick_type('a')",
+	      "SELECT 1 FROM (VALUES ('a')) t(s) WHERE pick_type(s) IS NULL", "CREATE VIEW v AS SELECT pick_type('a')"}) {
+		INFO(sql);
+		REQUIRE(QueryBindError(fx.conn, sql, message) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(message.find(unresolved) != std::string::npos);
+	}
+	// The callback tries to set ANY itself: the setter refuses it, and the callback reports that.
+	REQUIRE(QueryBindError(fx.conn, "SELECT pick_type(i) FROM range(3) t(i)", message) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("Return type must be a fully defined concrete type") != std::string::npos);
+
+	// An untyped NULL folds the call to NULL without asking the callback.
+	REQUIRE(RunSql(fx.conn, "SELECT pick_type(NULL)") == DUCKDB_V2_ERROR_NONE);
+
+	// A prepared parameter, also nested in the argument, puts the check off to the execution that gives it a value.
+	auto seven = MakeInt32Value(fx.factory, 7);
+	auto text = MakeVarcharValue(fx.factory, "a");
+	int32_t out = 0;
+	auto prepared = PrepareOne(fx.conn, "SELECT pick_type(?)");
+	REQUIRE(ExecutePrepared(prepared, seven, message, &out) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(out == 7);
+	REQUIRE(ExecutePrepared(prepared, text, message) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find(unresolved) != std::string::npos);
+	out = 0;
+	REQUIRE(ExecutePrepared(prepared, seven, message, &out) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(out == 7);
+	duckdb_v2_prepared_statement_destroy(&prepared);
+	prepared = PrepareOne(fx.conn, "SELECT pick_type({'a': ?})");
+	REQUIRE(ExecutePrepared(prepared, seven, message) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find(unresolved) != std::string::npos);
+	duckdb_v2_prepared_statement_destroy(&prepared);
+
+	// The failed binds left the database usable.
+	REQUIRE(QueryI32(fx.conn, "SELECT pick_type(i::INTEGER) FROM range(5, 6) t(i)") == 5);
+
+	pick_return_types.clear();
+	duckdb_v2_value_destroy(&seven);
+	duckdb_v2_value_destroy(&text);
+	duckdb_v2_logical_type_destroy(&any);
+	duckdb_v2_logical_type_destroy(&integer);
+}
+
+// A callback that sets the type of its argument sees UNKNOWN for a prepared parameter, and the bind waits for the
+// value.
+TEST_CASE("V2 scalar: a resolve types callback may return the type of a prepared parameter",
+          "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	RegisterAnyToAny(fx.conn, fx.factory, "echo_type", EchoArgTypeResolveTypes);
+
+	auto seven = MakeInt32Value(fx.factory, 7);
+	std::string message;
+	int32_t out = 0;
+	auto prepared = PrepareOne(fx.conn, "SELECT echo_type(?)");
+	REQUIRE(ExecutePrepared(prepared, seven, message, &out) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(out == 7);
+	duckdb_v2_prepared_statement_destroy(&prepared);
+	duckdb_v2_value_destroy(&seven);
 }
 
 // ===========================================================================

@@ -1,6 +1,7 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 #include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
@@ -161,6 +162,7 @@ static auto CV2ScalarResolveTypes(ResolveScalarFunctionTypesInput &input) -> voi
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
+	bind_info.VerifyReturnTypeResolved("resolve types", "scalar");
 }
 
 static auto CV2ScalarBind(BindScalarFunctionInput &input) -> unique_ptr<FunctionData> {
@@ -464,6 +466,9 @@ duckdb_v2_scalar_function_resolve_types_set_return_type(duckdb_v2_scalar_functio
 	DUCKDB_CHECK_ARG(return_type);
 	return WithErrorHandler(err, [&]() {
 		auto type = Convert(return_type);
+		if (duckdb::TypeVisitor::Contains(*type, duckdb::LogicalTypeId::ANY)) {
+			throw duckdb::InvalidInputException("Return type must be a fully defined concrete type");
+		}
 		Convert(info)->bound_function.SetReturnType(*type);
 	});
 }

@@ -91,6 +91,8 @@ public:
 	const Identifier &GetArgName(idx_t index) const;
 	//! Looks up an argument by a name a caller can pass it by, so positional-only parameters are skipped
 	optional_idx FindArg(const Identifier &name) const;
+	//! Throws when the callback left an incomplete return type; defers the bind while an argument type is unknown
+	void VerifyReturnTypeResolved(const char *callback, const char *family) const;
 
 public:
 	void *in_user_data;
