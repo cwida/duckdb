@@ -401,7 +401,7 @@ statement ok
 CREATE SCHEMA dep_s2;
 
 statement ok
-USE dep_s1;
+SET schema = 'dep_s1';
 
 statement ok
 CREATE TABLE dep_src(i INTEGER);
@@ -410,7 +410,7 @@ statement ok
 CREATE MACRO dep_path_holder(x INTEGER) AS TABLE (SELECT i FROM dep_src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
 
 statement ok
-USE dep_s2;
+SET schema = 'dep_s2';
 
 statement ok
 DROP MACRO TABLE dep_s1.dep_path_holder(VARCHAR);
@@ -421,7 +421,7 @@ DROP TABLE dep_s1.dep_src;
 <REGEX>:.*depend.*
 
 statement ok
-USE memory.main;
+RESET schema;
 
 statement ok
 DROP SCHEMA dep_s1 CASCADE;
@@ -444,7 +444,7 @@ statement ok
 CREATE TABLE amb_s2.src(i INTEGER);
 
 statement ok
-USE amb_s2;
+SET schema = 'amb_s2';
 
 statement ok
 CREATE MACRO amb_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
@@ -459,7 +459,7 @@ DROP TABLE amb_s2.src;
 <REGEX>:.*depend.*
 
 statement ok
-USE memory.main;
+RESET schema;
 
 statement ok
 DROP SCHEMA amb_s2 CASCADE;
@@ -482,7 +482,7 @@ statement ok
 CREATE TABLE sh_s2.src(i INTEGER);
 
 statement ok
-USE sh_s2;
+SET schema = 'sh_s2';
 
 statement ok
 CREATE MACRO sh_s1.holder(x INTEGER) AS TABLE (SELECT i FROM src), (x VARCHAR) AS TABLE (SELECT i FROM sh_s2.src);
@@ -497,7 +497,7 @@ DROP TABLE sh_s2.src;
 <REGEX>:.*depend.*
 
 statement ok
-USE memory.main;
+RESET schema;
 
 statement ok
 DROP SCHEMA sh_s2 CASCADE;
