@@ -395,12 +395,12 @@ public:
 
 	uint32_t read_virt(uint8_t *buf, uint32_t len) override {
 		const auto remaining = read_buffer_size - read_buffer_offset;
-		if (len > remaining) {
-			return remaining;
+		const auto read_size = MinValue(len, remaining);
+		if (read_size > 0) {
+			memcpy(buf, read_buffer + read_buffer_offset, read_size);
+			read_buffer_offset += read_size;
 		}
-		memcpy(buf, read_buffer + read_buffer_offset, len);
-		read_buffer_offset += len;
-		return len;
+		return read_size;
 	}
 
 private:
