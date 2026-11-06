@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/vector.hpp"
+#include "duckdb/common/identifier.hpp"
 #include "duckdb/common/enums/cte_materialize.hpp"
 
 namespace duckdb {

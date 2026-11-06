@@ -53,8 +53,15 @@ string CreateTriggerInfo::ToString() const {
 	ss << " ON ";
 	// the trigger is qualified with the (possibly nested) schema path of its base table, and the export has already
 	// dropped the catalog from it - the database the statement is run against implies the catalog
-	QualifiedName base_name(GetQualifiedName().Parent().Path(), base_table->Table());
-	ss << base_name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+	auto base_path = GetQualifiedName().Parent().Path();
+	if (base_path.empty()) {
+		// the statement has not been bound yet, so nothing has resolved where the base table lives - print it as
+		// written, which is what the catalog qualification of the trigger name is derived from later on
+		ss << base_table->ToString();
+	} else {
+		QualifiedName base_name(std::move(base_path), base_table->Table());
+		ss << base_name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+	}
 	if (!referencing_new_table.empty() || !referencing_old_table.empty()) {
 		ss << " REFERENCING";
 		if (!referencing_new_table.empty()) {

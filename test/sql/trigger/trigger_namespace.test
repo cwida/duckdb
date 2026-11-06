@@ -2,6 +2,9 @@
 # description: A trigger body binds unqualified names in the namespace of its base table
 # group: [trigger]
 
+# CREATE TRIGGER requires storage version v2.0.0
+require noforcestorage
+
 statement ok
 CREATE TABLE log(x INT);
 
