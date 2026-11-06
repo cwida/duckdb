@@ -10,7 +10,7 @@ SELECT 42;
 
 # test all special unicode spaces
 # see https://jkorpela.fi/chars/spaces.html for a list
-foreach unicode_space                       ​   　   ﻿  
+foreach unicode_space                       ​   　   ﻿   ⁠
 
 query I
 SELECT{unicode_space}42;
@@ -47,6 +47,119 @@ query I
 SELECT a{unicode_space} FROM (SELECT 42) t(a);
 ----
 42
+
+# unicode space in a literal after a block comment holding an apostrophe
+query I
+SELECT /* it's */ length('a{unicode_space}b');
+----
+3
+
+# unicode space between tokens after a block comment holding an apostrophe
+query I
+SELECT /* it's */{unicode_space}42;
+----
+42
+
+# unicode space inside a block comment is not modified
+query I
+SELECT unicode(right(current_query(), 3)) > 127 /*{unicode_space}*/
+----
+true
+
+# unicode space inside a nested block comment is not modified
+query I
+SELECT unicode(right(current_query(), 6)) > 127 /* /*{unicode_space}*/ */
+----
+true
+
+# block comments nest: the apostrophe after the inner comment is still inside the outer one
+query I
+SELECT /* /* inner */ it's */ length('a{unicode_space}b');
+----
+3
+
+# unicode space in a backtick quoted identifier is not modified
+query I
+SELECT length(column_name) FROM (DESCRIBE SELECT 1 AS `a{unicode_space}b`);
+----
+3
+
+# unicode space in a literal after a backtick quoted identifier holding an apostrophe
+query II
+SELECT 1 AS `it's`, length('a{unicode_space}b');
+----
+1	3
+
+# unicode space in a literal after an escape string with a backslash escaped quote
+query II
+SELECT E'it\'s', length('a{unicode_space}b');
+----
+it's	3
+
+# unicode space in an escape string is not modified
+query I
+SELECT length(E'a{unicode_space}b');
+----
+3
+
+# dollars inside an identifier do not open a dollar quoted string
+query II
+SELECT 1 AS a$b$,{unicode_space}2;
+----
+1	2
+
+# unicode space after a named parameter
+statement ok
+PREPARE named_param AS SELECT $x{unicode_space}+ 1;
+
+query I
+EXECUTE named_param(x := 41);
+----
+42
+
+statement ok
+DEALLOCATE named_param;
+
+# unicode space in a double quoted identifier is not modified
+query I
+SELECT length(column_name) FROM (DESCRIBE SELECT 1 AS "a{unicode_space}b");
+----
+3
+
+# unicode space in dollar quoted strings is not modified
+query II
+SELECT length($$a{unicode_space}b$$), length($tag$a{unicode_space}b$tag$);
+----
+3	3
+
+# unicode space in a literal after other apostrophes outside literals
+query II
+SELECT 'it''s', length('a{unicode_space}b');
+----
+it's	3
+
+query II
+SELECT 1 AS "it's", length('a{unicode_space}b');
+----
+1	3
+
+query II
+SELECT 1 -- it's
+, length('a{unicode_space}b');
+----
+1	3
+
+# unicode space as the last character of the query
+query I
+SELECT CASE WHEN true THEN 42 END{unicode_space}
+----
+42
+
+# unicode space in an unterminated block comment
+statement error
+SELECT 42 /*{unicode_space}
+----
+unterminated /* comment
 
 endloop
 

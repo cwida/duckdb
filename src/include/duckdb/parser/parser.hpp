@@ -106,6 +106,8 @@ public:
 	ColumnList ParseColumnList(const string &column_list);
 	ColumnDefinition ParseColumnDefinition(const string &column_definition);
 
+	//! Rewrite the Unicode spaces between tokens, not those in literals, quoted identifiers or comments, into ASCII
+	//! spaces of the same byte length; returns false, leaving `new_query` untouched, when none is rewritten
 	static bool StripUnicodeSpaces(const string &query_str, string &new_query);
 
 	//! Normalize a query string before parsing: validate UTF-8 (throws on invalid), then strip
