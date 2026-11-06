@@ -134,11 +134,6 @@ SELECT list_transform([1], lambda z: s1.plus_one(z));
 ----
 [2]
 
-query I
-SELECT list_transform([1], lambda z: memory.s1.plus_one(z));
-----
-[2]
-
 # a lambda parameter shadowing a schema still dot-calls functions on the search path
 
 query I
@@ -260,10 +255,23 @@ SELECT list_transform([3], lambda z: n1.n2.times_ten(z));
 ----
 [30]
 
+# fully spelled catalog.schema.function paths inside lambda bodies, with and without a parameter named like the catalog
+
+statement ok
+CREATE SCHEMA aux.s2;
+
+statement ok
+CREATE MACRO aux.s2.plus_two(v) AS v + 2;
+
 query I
-SELECT list_transform([3], lambda n1: memory.n1.n2.times_ten(n1));
+SELECT list_transform([1], lambda z: aux.s2.plus_two(z));
 ----
-[30]
+[3]
+
+query I
+SELECT list_transform([1], lambda aux: aux.s2.plus_two(aux));
+----
+[3]
 
 # dot calls on struct fields of a lambda parameter work without a name collision
 
