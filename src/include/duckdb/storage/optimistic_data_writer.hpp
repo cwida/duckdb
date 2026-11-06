@@ -35,7 +35,7 @@ enum class OptimisticWritePartialManagers { PER_COLUMN, GLOBAL };
 class OptimisticDataWriter {
 public:
 	OptimisticDataWriter(ClientContext &context, DataTable &table);
-	OptimisticDataWriter(Context &services, DataTable &table);
+	OptimisticDataWriter(Context &context, DataTable &table);
 	OptimisticDataWriter(DataTable &table, OptimisticDataWriter &parent);
 	~OptimisticDataWriter();
 
@@ -59,8 +59,8 @@ public:
 	bool CanWriteToDisk() const;
 
 	//! Return the runtime services.
-	Context &GetServices() {
-		return services;
+	Context &GetContext() {
+		return context;
 	}
 
 private:
@@ -72,7 +72,7 @@ private:
 
 private:
 	//! The services in which we're writing the data.
-	Context &services;
+	Context &context;
 	//! The table.
 	DataTable &table;
 	//! The partial block manager, if any.

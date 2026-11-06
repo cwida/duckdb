@@ -1,0 +1,204 @@
+# name: test/sql/subquery/scalar/test_correlated_aggregate_correlation_key.test
+# description: Scalar subquery correlating on an aggregate that only references outer columns
+# group: [scalar]
+
+statement ok
+CREATE TABLE t(v BIGINT);
+
+statement ok
+INSERT INTO t VALUES (1), (2), (NULL);
+
+statement ok
+CREATE TABLE s(w BIGINT);
+
+statement ok
+INSERT INTO s VALUES (1);
+
+# an aggregate whose arguments are all outer references belongs to the enclosing query block,
+# so its result column becomes the correlation key of the inner subquery
+
+# original reproducer
+query I
+SELECT (
+  SELECT r.ret FROM (
+    SELECT CAST((SELECT count(p)) AS BIGINT) AS ret
+    FROM (SELECT caller.v AS p) AS sc0
+  ) AS r
+)
+FROM (SELECT 7 AS v) AS caller(v);
+----
+1
+
+# reduced minimal case
+query I
+SELECT (SELECT (SELECT count(p)) FROM (SELECT caller.v AS p) sc0) FROM (SELECT 7 AS v) caller(v);
+----
+1
+
+# count over a NULL outer value is 0
+query I
+SELECT (SELECT (SELECT count(p)) FROM (SELECT caller.v AS p) sc0) FROM (SELECT NULL::BIGINT AS v) caller(v);
+----
+0
+
+# one result per outer row
+query II
+SELECT v, (SELECT (SELECT count(p)) FROM (SELECT t.v AS p) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	1
+2	1
+NULL	0
+
+# empty inner groups recover count 0 and the recovered value feeds the correlation key
+query II
+SELECT v, (SELECT (SELECT count(p)) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	1
+2	0
+NULL	0
+
+# original reproducer shape over recovered empty groups
+query II
+SELECT v, (
+  SELECT r.ret FROM (
+    SELECT CAST((SELECT count(p)) AS BIGINT) AS ret
+    FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) AS sc0
+  ) AS r
+)
+FROM t ORDER BY v NULLS LAST;
+----
+1	1
+2	0
+NULL	0
+
+# count with FILTER keeps the special NULL handling
+query I
+SELECT (SELECT (SELECT count(p) FILTER (p > 5)) FROM (SELECT caller.v AS p) sc0) FROM (VALUES (3), (7)) caller(v) ORDER BY v;
+----
+0
+1
+
+# argument-free count(*) binds the inner subquery itself
+query I
+SELECT (SELECT (SELECT count(*)) FROM (SELECT caller.v AS p) sc0) FROM (SELECT 7 AS v) caller(v);
+----
+1
+
+# two claimed aggregates in one item
+query II
+SELECT v, (SELECT (SELECT count(p) + count(p + 1)) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	2
+2	0
+NULL	0
+
+# aggregates without special NULL handling take the same route
+query II
+SELECT (SELECT (SELECT sum(p)) FROM (SELECT caller.v AS p) sc0),
+       (SELECT (SELECT min(p)) FROM (SELECT caller.v AS p) sc0)
+FROM (SELECT 7 AS v) caller(v);
+----
+7	7
+
+# a grouped middle level keeps the aggregate in the inner block
+query I
+SELECT (SELECT (SELECT count(p)) FROM (SELECT caller.v AS p) sc0 GROUP BY p) FROM (SELECT 7 AS v) caller(v);
+----
+1
+
+# the single-level spelling stays a plain correlated aggregate
+query I
+SELECT (SELECT count(p) FROM (SELECT caller.v AS p) sc0) FROM (SELECT 7 AS v) caller(v);
+----
+1
+
+# LATERAL embedding of the nested shape
+query II
+SELECT * FROM (SELECT 7 AS v) caller(v), LATERAL (SELECT (SELECT count(p)) FROM (SELECT caller.v AS p) sc0) l(c);
+----
+7	1
+
+# three correlation levels
+query I
+SELECT (SELECT (SELECT (SELECT count(p)) FROM (SELECT m.w AS p) sc1) FROM (SELECT caller.v AS w) m(w)) FROM (SELECT 7 AS v) caller(v);
+----
+1
+
+# an extra scalar wrapper around the claimed aggregate
+query II
+SELECT v, (SELECT (SELECT (SELECT count(p))) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	1
+2	0
+NULL	0
+
+# the claimed aggregate inside the IN subquery (MARK join on the claimed count)
+query II
+SELECT v, (SELECT v IN (SELECT count(p)) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	true
+2	false
+NULL	NULL
+
+# the claimed aggregate below EXISTS
+query II
+SELECT v, (SELECT EXISTS(SELECT 1 WHERE (SELECT count(p)) > 0) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	true
+2	false
+NULL	false
+
+# the same count consumed directly and as the correlation key
+query II
+SELECT v, (SELECT count(p) + (SELECT count(p)) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	2
+2	0
+NULL	0
+
+# the recovered count as a comparison operand
+query II
+SELECT v, (SELECT (SELECT count(p)) = 0 FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	false
+2	true
+NULL	true
+
+# a materialized CTE as the inner producer
+query II
+SELECT v, (WITH sc0 AS MATERIALIZED (SELECT s.w AS p FROM s WHERE s.w = t.v) SELECT (SELECT count(p)) FROM sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	1
+2	0
+NULL	0
+
+# a volatile expression disables duplicate elimination and takes the row-identity route
+query II
+SELECT v, (SELECT (SELECT count(p) + CASE WHEN random() >= 0 THEN 0 ELSE 0 END) FROM (SELECT s.w AS p FROM s WHERE s.w = t.v) sc0) FROM t ORDER BY v NULLS LAST;
+----
+1	1
+2	0
+NULL	0
+
+statement ok
+CREATE TABLE t2(v BIGINT);
+
+statement ok
+INSERT INTO t2 VALUES (1), (1), (2), (NULL);
+
+statement ok
+CREATE TABLE s2(w BIGINT);
+
+statement ok
+INSERT INTO s2 VALUES (1), (1);
+
+# duplicate outer keys and duplicate inner rows
+query II
+SELECT v, (SELECT (SELECT count(p)) FROM (SELECT s2.w AS p FROM s2 WHERE s2.w = t2.v) sc0) FROM t2 ORDER BY v NULLS LAST;
+----
+1	2
+1	2
+2	0
+NULL	0
+
+# plan pins live in test_correlated_aggregate_correlation_key_plan.test

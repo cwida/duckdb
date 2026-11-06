@@ -1,0 +1,68 @@
+# name: test/sql/json/test_json_deserialize_pointer.test
+# description: Serialized SQL cannot introduce process-local pointers
+# group: [json]
+
+require json
+
+statement ok
+CREATE MACRO pointer_sql(representation) AS
+    '{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT",' ||
+    CASE representation
+        WHEN 'literal' THEN '"literal":{"kind":"POINTER","text":"0x2a"}'
+        ELSE '"value":{"type":{"id":"POINTER"},"is_null":false,"value":42}'
+    END ||
+    '}],"aggregate_handling":"STANDARD_HANDLING"}}]}';
+
+# Both constant representations are rejected by the scalar and table functions
+foreach representation literal value
+
+statement error
+SELECT json_deserialize_sql(pointer_sql('{representation}'));
+----
+Deserialization of POINTER is not allowed
+
+statement error
+SELECT * FROM json_execute_serialized_sql(pointer_sql('{representation}'));
+----
+Deserialization of POINTER is not allowed
+
+endloop
+
+# The pragma uses the same restriction
+statement error
+PRAGMA json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","literal":{"kind":"POINTER","text":"0x2a"}}],"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Deserialization of POINTER is not allowed
+
+statement error
+PRAGMA json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","value":{"type":{"id":"POINTER"},"is_null":false,"value":42}}],"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Deserialization of POINTER is not allowed
+
+# Nested literals and legacy values must also be rejected
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"OPERATOR","type":"OPERATOR_IS_NULL","children":[{"class":"CONSTANT","type":"VALUE_CONSTANT","literal":{"kind":"POINTER","text":"0x2a"}}]}],"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Deserialization of POINTER is not allowed
+
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","value":{"type":{"id":"LIST","type_info":{"type":"LIST_TYPE_INFO","child_type":{"id":"ANY"}}},"is_null":false,"value":{"children":[{"type":{"id":"POINTER"},"is_null":false,"value":42}]}}}],"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Deserialization of POINTER is not allowed
+
+# Reject pointer types even when the value is NULL or the container is empty
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","value":{"type":{"id":"POINTER"},"is_null":true}}],"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Deserialization of POINTER is not allowed
+
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","value":{"type":{"id":"LIST","type_info":{"type":"LIST_TYPE_INFO","child_type":{"id":"POINTER"}}},"is_null":false,"value":{"children":[]}}}],"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Deserialization of POINTER is not allowed
+
+# Ordinary constants and strings that mention pointers are unaffected
+query IT
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 42, ''POINTER 0x2a'''));
+----
+42	POINTER 0x2a

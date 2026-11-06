@@ -127,6 +127,12 @@
         "test/sql/attach/attach_to_external_resource.test",
         "test/sql/attach/external_resource_attach_failure.test"
       ]
+    },
+    {
+      "reason": "Creates VARIANT columns, which this config's v1.4.0 storage version does not support",
+      "paths": [
+        "test/sql/unnest/unnest_constant_reference_types.test"
+      ]
     }
   ]
 }

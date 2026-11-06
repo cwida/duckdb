@@ -22,12 +22,13 @@ SELECT sum(s::INT) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM (VALUES 
 2
 
 # histogram's bound bin cast throws at runtime and must stay a regular error in the wrapper
+# the bins cast binds (DATE promotes to the TIMESTAMP argument type) and only fails for this value
 
 statement error
-SELECT histogram(l, b) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
-FROM (VALUES ([1], [1]), ([2], [1])) t(l, b);
+SELECT histogram(ts, b) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES (TIMESTAMP '2020-01-01', [DATE '5874897-12-31']), (TIMESTAMP '2020-06-01', [DATE '5874897-12-31'])) t(ts, b);
 ----
-Unimplemented type for cast
+can't be cast to the destination type
 
 # infallible aggregates without throwing children stay eligible for dictionary execution
 
@@ -112,10 +113,10 @@ SELECT list(i ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) F
 # the bound bin cast of an ordered histogram throws at runtime and must stay a regular error
 
 statement error
-SELECT histogram(d, ['not a date'] ORDER BY d) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
-FROM (SELECT ('2020-01-0' || (range+1))::DATE AS d FROM range(5)) t;
+SELECT histogram(ts, [DATE '5874897-12-31'] ORDER BY ts) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (SELECT TIMESTAMP '2020-01-01' + INTERVAL (range) DAY AS ts FROM range(5)) t;
 ----
-invalid date field format
+can't be cast to the destination type
 
 statement ok
 RESET debug_verify_vector;

@@ -32,13 +32,17 @@ struct BoundBetweenExpression {
 	static unique_ptr<Expression> &LowerBoundMutable(BoundFunctionExpression &between_expr);
 	static unique_ptr<Expression> &UpperBoundMutable(BoundFunctionExpression &between_expr);
 
+	static ExpressionType LowerComparisonType(bool lower_inclusive) {
+		return lower_inclusive ? ExpressionType::COMPARE_GREATERTHANOREQUALTO : ExpressionType::COMPARE_GREATERTHAN;
+	}
+	static ExpressionType UpperComparisonType(bool upper_inclusive) {
+		return upper_inclusive ? ExpressionType::COMPARE_LESSTHANOREQUALTO : ExpressionType::COMPARE_LESSTHAN;
+	}
 	static ExpressionType LowerComparisonType(const BoundFunctionExpression &between_expr) {
-		return LowerInclusive(between_expr) ? ExpressionType::COMPARE_GREATERTHANOREQUALTO
-		                                    : ExpressionType::COMPARE_GREATERTHAN;
+		return LowerComparisonType(LowerInclusive(between_expr));
 	}
 	static ExpressionType UpperComparisonType(const BoundFunctionExpression &between_expr) {
-		return UpperInclusive(between_expr) ? ExpressionType::COMPARE_LESSTHANOREQUALTO
-		                                    : ExpressionType::COMPARE_LESSTHAN;
+		return UpperComparisonType(UpperInclusive(between_expr));
 	}
 };
 } // namespace duckdb

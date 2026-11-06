@@ -1,0 +1,92 @@
+# name: test/sql/function/string/nfc_normalize.test
+# description: Hangul syllable composition in nfc_normalize, COLLATE NFC and strip_accents
+# group: [string]
+
+# U+11A7, chr(4519), is the Hangul TBase, which is not a trailing consonant, so it never composes onto an LV syllable.
+query IIII
+SELECT hex(nfc_normalize(chr(4352) || chr(4469) || chr(4519))),
+       hex(nfc_normalize(chr(44592) || chr(4519))),
+       hex(nfc_normalize(chr(44032) || chr(4519) || chr(4520))),
+       hex(nfc_normalize(chr(4352) || chr(4449) || chr(4519) || chr(4520)))
+----
+EAB8B0E186A7	EAB8B0E186A7	EAB080E186A7E186A8	EAB080E186A7E186A8
+
+query IIII
+SELECT hex(nfc_normalize(chr(44033) || chr(4519))),
+       hex(nfc_normalize(chr(44032) || chr(4519) || chr(4519))),
+       hex(nfc_normalize(chr(55176) || chr(4519))),
+       hex(nfc_normalize(chr(51424) || chr(4519)))
+----
+EAB081E186A7	EAB080E186A7E186A7	ED9E88E186A7	ECA3A0E186A7
+
+query IIII
+SELECT hex(nfc_normalize(chr(4519))),
+       hex(nfc_normalize('a' || chr(4519))),
+       hex(nfc_normalize(chr(233) || chr(4519))),
+       hex(nfc_normalize('e' || chr(769) || chr(4519)))
+----
+E186A7	61E186A7	C3A9E186A7	C3A9E186A7
+
+# U+11A8 to U+11C2 compose onto an LV syllable; U+11A6 and U+11C3 lie outside that range.
+query IIIIII
+SELECT hex(nfc_normalize(chr(4352) || chr(4449))),
+       hex(nfc_normalize(chr(44032) || chr(4520))),
+       hex(nfc_normalize(chr(44032) || chr(4546))),
+       hex(nfc_normalize(chr(55176) || chr(4546))),
+       hex(nfc_normalize(chr(44032) || chr(4547))),
+       hex(nfc_normalize(chr(44032) || chr(4518)))
+----
+EAB080	EAB081	EAB09B	ED9EA3	EAB080E18783	EAB080E186A6
+
+statement ok
+CREATE TABLE hangul (id INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO hangul VALUES
+    (1, chr(44032) || chr(4519)),
+    (2, chr(44032)),
+    (3, NULL),
+    (4, chr(4352) || chr(4449) || chr(4519)),
+    (5, chr(44032) || chr(4519) || chr(4520)),
+    (6, chr(44033))
+
+query II
+SELECT id, hex(nfc_normalize(s)) FROM hangul ORDER BY id
+----
+1	EAB080E186A7
+2	EAB080
+3	NULL
+4	EAB080E186A7
+5	EAB080E186A7E186A8
+6	EAB081
+
+query I
+SELECT id FROM hangul WHERE s COLLATE NFC = chr(44032) ORDER BY id
+----
+2
+
+query I
+SELECT id FROM hangul WHERE s COLLATE NOCASE.NFC = chr(44032) ORDER BY id
+----
+2
+
+query I
+SELECT count(*) AS n FROM hangul WHERE s IS NOT NULL GROUP BY s COLLATE NFC ORDER BY n
+----
+1
+1
+1
+2
+
+# strip_accents composes through the same step and keeps U+11A7, which is a letter and not a mark.
+query III
+SELECT hex(strip_accents(chr(44032) || chr(4519))),
+       hex(strip_accents(chr(44032) || chr(769) || chr(4519))),
+       hex(strip_accents(chr(44032) || chr(4520)))
+----
+EAB080E186A7	EAB080E186A7	EAB081
+
+query I
+SELECT id FROM hangul WHERE s COLLATE NOACCENT = chr(44032) ORDER BY id
+----
+2

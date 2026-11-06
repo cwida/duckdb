@@ -42,6 +42,7 @@ public:
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
 	//	Returns the <= index for TopN, if any
+	//	Note that it can return 0 if the filter removes all rows!
 	static optional_idx CanOptimize(LogicalOperator &op);
 
 private:
