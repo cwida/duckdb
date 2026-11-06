@@ -8,6 +8,7 @@
 #include "json_functions.hpp"
 #include "json_serializer.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/literal.hpp"
 
 namespace duckdb {
 
@@ -194,6 +195,10 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 		throw ParserException("Error parsing json: no statements");
 	}
 
+	DeserializationPolicy policy;
+	policy.Disallow(LogicalTypeId::POINTER);
+	policy.Disallow(LiteralKind::POINTER);
+
 	vector<unique_ptr<SelectStatement>> result;
 
 	idx_t idx;
@@ -201,6 +206,7 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 	yyjson_val *stmt_json;
 	yyjson_arr_foreach(statements, idx, max, stmt_json) {
 		JsonDeserializer deserializer(stmt_json, doc);
+		deserializer.SetPolicy(policy);
 		auto stmt = SelectStatement::Deserialize(deserializer);
 		if (!stmt->node) {
 			throw ParserException("Error parsing json: no select node found in json");
