@@ -148,20 +148,6 @@ public:
 		}
 	}
 
-	void Resize(BufferManager &buffer_manager, const idx_t new_size) {
-		if (allocated_data.get()) {
-			ReleaseAll();
-		}
-		// Unpinned reuse is overwritten anyway; allocate fresh instead of reloading a spilled block.
-		if (PrepareResize(new_size) || (new_size > 0 && block_handle && !handle.IsValid())) {
-			handle.Destroy();
-			block_handle.reset(); // release before allocating, so old and new aren't counted at once
-			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);
-			block_handle = handle.GetBlockHandle();
-			ptr = handle.GetDataMutable();
-		}
-	}
-
 	//! Managed-block registration costs more than a smaller buffer can repay in evictability.
 	static constexpr idx_t EVICTABLE_SIZE_THRESHOLD = 131072;
 
@@ -218,6 +204,21 @@ public:
 	}
 
 private:
+	//! Private so every caller goes through the size threshold instead of registering a managed block directly.
+	void Resize(BufferManager &buffer_manager, const idx_t new_size) {
+		if (allocated_data.get()) {
+			ReleaseAll();
+		}
+		// Unpinned reuse is overwritten anyway; allocate fresh instead of reloading a spilled block.
+		if (PrepareResize(new_size) || (new_size > 0 && block_handle && !handle.IsValid())) {
+			handle.Destroy();
+			block_handle.reset(); // release before allocating, so old and new aren't counted at once
+			handle = buffer_manager.Allocate(MemoryTag::PARQUET_READER, alloc_len, false);
+			block_handle = handle.GetBlockHandle();
+			ptr = handle.GetDataMutable();
+		}
+	}
+
 	//! A shared buffer can switch backing modes when the page encoding changes.
 	void ReleaseAll() {
 		handle.Destroy();

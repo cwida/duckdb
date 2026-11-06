@@ -32,7 +32,7 @@ public:
 	void Read(uint8_t *defines, idx_t read_count, Vector &result, idx_t result_offset);
 	void Skip(uint8_t *defines, idx_t skip_count);
 
-	//! BACKING is Allocator for single-call scratch or BufferManager for buffers that must stay evictable
+	//! BACKING is Allocator for single-call scratch or ResizeableBuffer::SizedBacking for buffers that must stay evictable
 	template <class BACKING>
 	static void ReadDbpData(BACKING &backing, ResizeableBuffer &buffer, ResizeableBuffer &result_buffer,
 	                        idx_t &value_count);
