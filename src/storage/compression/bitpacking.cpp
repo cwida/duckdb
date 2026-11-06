@@ -1157,6 +1157,46 @@ void BitpackingScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_c
 //===--------------------------------------------------------------------===//
 // Select
 //===--------------------------------------------------------------------===//
+template <class T>
+static bool BitpackingSelectIsDense(BitpackingScanState<T> &scan_state, idx_t vector_count, const SelectionVector &sel,
+                                    idx_t sel_count) {
+	static constexpr idx_t GROUP_SIZE = BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
+	// load the group the selection starts in, so that its mode is known
+	if (scan_state.IsInitial()) {
+		scan_state.LoadGroup(0);
+	} else if (scan_state.HasCurrentGroup() && scan_state.GetCurrentGroup().AtEnd() &&
+	           scan_state.GetCurrentGroup().index + 1 < scan_state.group_count) {
+		scan_state.LoadGroup(scan_state.GetCurrentGroup().index + 1);
+	}
+	idx_t base = 0;
+	if (scan_state.HasCurrentGroup()) {
+		auto &current = scan_state.GetCurrentGroup();
+		if (!current.AtEnd() && (current.metadata.mode == BitpackingMode::CONSTANT ||
+		                         current.metadata.mode == BitpackingMode::CONSTANT_DELTA)) {
+			// constant modes compute selected rows directly
+			return false;
+		}
+		base = current.offset % GROUP_SIZE;
+	}
+	const idx_t total_groups = (base + vector_count + GROUP_SIZE - 1) / GROUP_SIZE;
+	const idx_t dense_threshold = (total_groups + 1) / 2;
+	if (sel_count < dense_threshold) {
+		return false;
+	}
+	idx_t touched_groups = 0;
+	idx_t last_group = DConstants::INVALID_INDEX;
+	for (idx_t i = 0; i < sel_count; i++) {
+		const idx_t group = (base + sel.get_index(i)) / GROUP_SIZE;
+		if (group != last_group) {
+			last_group = group;
+			if (++touched_groups >= dense_threshold) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 template <class T, class T_U = typename MakeUnsigned<T>::type>
 void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
                       const SelectionVector &sel, idx_t sel_count, idx_t result_offset, ScanVectorType scan_type) {
@@ -1164,8 +1204,8 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	T *result_data = FlatVector::GetDataMutable<T>(result) + result_offset;
 
-	// dense selections decode (nearly) every algorithm group anyway: scan the range and gather from it
-	if (sel_count * BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE >= vector_count) {
+	// selections touching most algorithm groups decode them anyway: scan the range and gather from it
+	if (BitpackingSelectIsDense(scan_state, vector_count, sel, sel_count)) {
 		auto scanned = scan_state.GetSelectBuffer(vector_count);
 		BitpackingScanData<T>(scan_state, vector_count, scanned, 0);
 		for (idx_t i = 0; i < sel_count; i++) {
@@ -1199,7 +1239,7 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 				// stop at the target's algorithm group: the prefix sum below covers the rows before the target
 				const idx_t target_in_algorithm_group =
 				    (current.offset + (target - pos)) % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
-				skip_target = MaxValue<idx_t>(pos, target - target_in_algorithm_group);
+				skip_target = target - MinValue<idx_t>(target_in_algorithm_group, target - pos);
 			}
 		}
 		scan_state.Skip(skip_target - pos);
