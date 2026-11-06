@@ -25,6 +25,11 @@ IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<Ta
     : ExpressionBinder(binder, context), table(table), info(info) {
 }
 
+static bool IndexKeyRequiresRebind(Binder &binder, const Expression &expr) {
+	// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+	return binder.GetStatementProperties().always_require_rebind || expr.RequiresRebind();
+}
+
 unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index) {
 	auto &index_type_name = unbound_index.GetIndexType();
 	// Do we know the type of this index now?
@@ -40,12 +45,22 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	auto &parsed_expressions = unbound_index.GetParsedExpressions();
 
 	// bind the parsed expressions to create unbound expressions
+	auto &properties = binder.GetStatementProperties();
+	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
 	for (auto &expr : parsed_expressions) {
 		auto copy = expr->Copy();
+		properties.always_require_rebind = false;
 		unbound_expressions.push_back(Bind(copy));
+		// Stored keys must satisfy the same requirements as newly created keys.
+		if (IndexKeyRequiresRebind(binder, *unbound_expressions.back())) {
+			throw DataCorruptionException(
+			    "Index %s contains expressions with side effects or dependencies on session settings",
+			    create_info.GetIndexName());
+		}
 	}
+	properties.always_require_rebind = statement_requires_rebind;
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
 	                       create_info.GetIndexName(), create_info.column_ids, unbound_expressions, storage_info,
@@ -125,8 +140,7 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	for (auto &expr : create_index_info->expressions) {
 		properties.always_require_rebind = false;
 		expressions.push_back(Bind(expr));
-		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
-		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
+		if (IndexKeyRequiresRebind(binder, *expressions.back())) {
 			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
 			                      "settings such as TimeZone.");
 		}
