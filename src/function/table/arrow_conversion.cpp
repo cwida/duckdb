@@ -354,8 +354,7 @@ static void ArrowToDuckDBArray(Vector &vector, ArrowArray &array, idx_t chunk_of
 	auto &child_array = *array.children[0];
 	auto &child_type = array_info.GetChild();
 	bool run_end_encoded = child_type.GetPhysicalType() == ArrowArrayPhysicalType::RUN_END_ENCODED;
-	if (child_count == 0 && child_offset == 0 && !run_end_encoded) {
-		D_ASSERT(!child_array.dictionary);
+	if (child_count == 0 && child_offset == 0 && !run_end_encoded && !child_array.dictionary) {
 		ArrowToDuckDBConversion::ColumnArrowToDuckDB(child_vector, child_array, chunk_offset, child_state, child_count,
 		                                             child_type, -1);
 	} else {
@@ -1479,25 +1478,26 @@ static bool CanContainNull(const ArrowArray &array, const ValidityMask *parent_m
 	return parent_mask->CanHaveNull();
 }
 
-// Arrow's null type converts to a constant vector, and FlatVector::SetNull needs flat vectors along its recursion
-// into STRUCT and ARRAY children, which never reaches LIST contents.
-static void FlattenForSetNull(Vector &vector) {
+// Vector::Reserve stops at a parent that has room for the sentinel row, while its zero copy children may not have it.
+static void ReserveSentinelRow(Vector &vector, idx_t count) {
+	// dictionary encoded values and Arrow's null type convert to vectors that are not flat and cannot grow
 	if (vector.GetVectorType() != VectorType::FLAT_VECTOR) {
 		vector.Flatten();
-		return;
 	}
+	// children first: a parent that grows reserves its children, and a dictionary vector child cannot grow
 	switch (vector.GetType().InternalType()) {
 	case PhysicalType::STRUCT:
 		for (auto &entry : StructVector::GetEntries(vector)) {
-			FlattenForSetNull(entry);
+			ReserveSentinelRow(entry, count);
 		}
 		break;
 	case PhysicalType::ARRAY:
-		FlattenForSetNull(ArrayVector::GetChildMutable(vector));
+		ReserveSentinelRow(ArrayVector::GetChildMutable(vector), count * ArrayType::GetSize(vector.GetType()));
 		break;
 	default:
 		break;
 	}
+	vector.Reserve(count);
 }
 
 void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, ArrowArray &array, idx_t chunk_offset,
@@ -1536,14 +1536,9 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, Arro
 		default:
 			throw NotImplementedException("ArrowArrayPhysicalType not recognized");
 		};
-		// the dictionary buffer holds dict_length entries plus one trailing NULL sentinel slot.
-		// the inner ColumnArrowToDuckDB call may have replaced the buffer via FlatVector::SetData
-		// (e.g. DirectConversion's zero-copy path), shrinking capacity from dict_length+1 to
-		// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
-		base_vector->Reserve(dict_length + 1);
+		ReserveSentinelRow(*base_vector, dict_length + 1);
 		FlatVector::SetSize(*base_vector, count_t(dict_length + 1));
 		// nested children of the sentinel slot hold uninitialized data unless they are marked NULL as well
-		FlattenForSetNull(*base_vector);
 		FlatVector::SetNull(*base_vector, dict_length, true);
 		array_state.AddDictionary(std::move(base_vector), array.dictionary);
 	}
