@@ -76,12 +76,18 @@ TEST_CASE("A failed close of a temporary directory marker is reported", "[api]")
 	config.file_system = std::move(fs);
 	DuckDB db(nullptr, &config);
 	Connection con(db);
+	auto temp_directory = TestCreatePath("failed_marker_close.tmp");
 	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
-	REQUIRE_NO_FAIL(con.Query("SET temp_directory='" + TestCreatePath("failed_marker_close.tmp") + "'"));
+	REQUIRE_NO_FAIL(con.Query("SET temp_directory='" + temp_directory + "'"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE t AS SELECT i, repeat('y', 80000) AS s FROM range(400) r(i)"));
 	auto result = con.Query("SET memory_limit='10MB'");
 	REQUIRE(result->HasError());
 	REQUIRE(StringUtil::Contains(result->GetError(), "Could not close file"));
 	REQUIRE(marker_fs.marker_opens == 1);
+
+	// the marker whose close failed is removed
+	vector<string> files;
+	marker_fs.ListFiles(temp_directory, [&](const string &name, bool) { files.push_back(name); });
+	REQUIRE(files.empty());
 }
 #endif

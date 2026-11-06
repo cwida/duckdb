@@ -889,7 +889,16 @@ void TemporaryDirectoryHandle::ClaimOwner() {
 			}
 			continue;
 		}
-		marker->Close();
+		try {
+			marker->Close();
+		} catch (...) {
+			// the marker is not claimed, and a failed removal must not replace the close error
+			try {
+				fs.TryRemoveFile(marker_path);
+			} catch (...) { // NOLINT
+			}
+			throw;
+		}
 		break;
 	}
 	file_prefix = TemporaryFilePrefix(owner);
