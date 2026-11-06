@@ -28,7 +28,7 @@ void ArrowTableFunction::PopulateArrowTableSchema(ClientContext &context, ArrowT
 		if (!schema.release) {
 			throw InvalidInputException("arrow_scan: released schema passed");
 		}
-		auto name = string(schema.name);
+		auto name = ArrowType::GetFieldName(schema);
 		if (name.empty()) {
 			name = string("v") + to_string(col_idx);
 		}
@@ -87,8 +87,9 @@ unique_ptr<ArrowArrayStreamWrapper> ProduceArrowScan(const ArrowScanFunctionData
 		if (col_idx != COLUMN_IDENTIFIER_ROW_ID) {
 			auto &schema = *function.schema_root.arrow_schema.children[col_idx];
 			arrow_types.at(col_idx)->ThrowIfInvalid();
-			parameters.projected_columns.projection_map[idx] = schema.name;
-			parameters.projected_columns.columns.emplace_back(schema.name);
+			auto name = ArrowType::GetFieldName(schema);
+			parameters.projected_columns.projection_map[idx] = name;
+			parameters.projected_columns.columns.emplace_back(std::move(name));
 			parameters.projected_columns.filter_to_col[idx] = col_idx;
 		}
 	}
