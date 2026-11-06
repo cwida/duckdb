@@ -36,13 +36,14 @@ struct ExpressionProbe {
 
 ExpressionProbe expression_probe;
 
-void ProbeFail(const char *what, duckdb_v2_error_info_handle *err) {
+void ProbeFail(std::string_view what, duckdb_v2_error_info_handle *err) {
 	if (expression_probe.failure.empty()) {
 		expression_probe.failure = what;
 		if (err && *err) {
-			duckdb_v2_str text = {nullptr, 0};
-			duckdb_v2_error_info_get_text(*err, &text);
-			expression_probe.failure += ": " + Convert(text);
+			const char *text = nullptr;
+			idx_t text_length = 0;
+			duckdb_v2_error_info_get_text(*err, &text, &text_length);
+			expression_probe.failure += ": " + std::string(text, text_length);
 		}
 	}
 }
@@ -201,12 +202,13 @@ std::string ProbeRender(duckdb_v2_table_function_filter_pushdown_info_handle inf
 		return text + "(" + children + ")";
 	}
 	if (ProbeIsFunction(type)) {
-		duckdb_v2_identifier_t name = {nullptr, 0};
-		if (duckdb_v2_expression_function_get_name(expr, &name, err) != DUCKDB_V2_ERROR_NONE) {
+		const char *name = nullptr;
+		idx_t name_length = 0;
+		if (duckdb_v2_expression_function_get_name(expr, &name, &name_length, err) != DUCKDB_V2_ERROR_NONE) {
 			ok = false;
 			return "";
 		}
-		return Convert(name) + "(" + children + ")";
+		return std::string(name, name_length) + "(" + children + ")";
 	}
 	std::string rendered = ProbeTag(type);
 	if (child_count > 0) {
@@ -237,8 +239,9 @@ void ProbeMisuse(duckdb_v2_table_function_filter_pushdown_info_handle info, duck
 	count_failure(duckdb_v2_expression_constant_get_value(root, &value, &err), &err);
 	idx_t index = 0;
 	count_failure(duckdb_v2_expression_column_ref_get_index(root, &index, &err), &err);
-	duckdb_v2_identifier_t name = {nullptr, 0};
-	count_failure(duckdb_v2_expression_function_get_name(constant, &name, &err), &err);
+	const char *name = nullptr;
+	idx_t name_length = 0;
+	count_failure(duckdb_v2_expression_function_get_name(constant, &name, &name_length, &err), &err);
 	duckdb_v2_qname_handle qname = nullptr;
 	count_failure(duckdb_v2_expression_function_get_qname(constant, &qname, &err), &err);
 	DUCKDB_V2_CAST_MODE mode = DUCKDB_V2_CAST_MODE_NORMAL;
@@ -318,12 +321,12 @@ void ProbeBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_b
 	               {"c", DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT}};
 	for (auto &column : columns) {
 		duckdb_v2_logical_type_handle type = nullptr;
-		if (duckdb_v2_factory_create_type_from_id(factory, column.id, nullptr, nullptr, 0, &type, err) !=
+		if (duckdb_v2_factory_create_type_from_id(factory, column.id, nullptr, nullptr, nullptr, 0, &type, err) !=
 		    DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
-		duckdb_v2_identifier_t name_str = {column.name, std::strlen(column.name)};
-		auto rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, type, err);
+		std::string_view name_str = {column.name, std::strlen(column.name)};
+		auto rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), type, err);
 		duckdb_v2_logical_type_destroy(&type);
 		if (rc != DUCKDB_V2_ERROR_NONE) {
 			return;
@@ -386,8 +389,8 @@ void ProbeExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_conte
 void RegisterProbe(duckdb_v2_connection_handle conn) {
 	duckdb_v2_table_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_table_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name = Convert("expr_probe");
-	REQUIRE(duckdb_v2_table_function_set_name(function, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name = "expr_probe";
+	REQUIRE(duckdb_v2_table_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, ProbeBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_init_global_callback(function, ProbeInitGlobalCb, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
@@ -399,7 +402,7 @@ void RegisterProbe(duckdb_v2_connection_handle conn) {
 }
 
 // Runs a single-BIGINT-cell query against the probe and returns the rendered predicates it saw.
-std::vector<std::string> Probe(duckdb_v2_connection_handle conn, const char *sql, int64_t expected) {
+std::vector<std::string> Probe(duckdb_v2_connection_handle conn, std::string_view sql, int64_t expected) {
 	expression_probe.Reset();
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
@@ -492,7 +495,8 @@ TEST_CASE("V2 expression: null arguments", "[capi_v2][expression]") {
 	idx_t count = 0;
 	duckdb_v2_expression_handle child = nullptr;
 	duckdb_v2_value_handle value = nullptr;
-	duckdb_v2_identifier_t name = {nullptr, 0};
+	const char *name = nullptr;
+	idx_t name_length = 0;
 	DUCKDB_V2_CAST_MODE mode = DUCKDB_V2_CAST_MODE_NORMAL;
 
 	REQUIRE(duckdb_v2_expression_get_type(nullptr, &type, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -501,7 +505,8 @@ TEST_CASE("V2 expression: null arguments", "[capi_v2][expression]") {
 	REQUIRE(duckdb_v2_expression_get_child(nullptr, 0, &child, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_expression_constant_get_value(nullptr, &value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_expression_column_ref_get_index(nullptr, &count, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_expression_function_get_name(nullptr, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_expression_function_get_name(nullptr, &name, &name_length, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_qname_handle qname = nullptr;
 	REQUIRE(duckdb_v2_expression_function_get_qname(nullptr, &qname, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_expression_cast_get_mode(nullptr, &mode, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

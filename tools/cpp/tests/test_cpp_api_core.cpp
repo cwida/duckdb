@@ -134,9 +134,10 @@ TEST_CASE("Stable C++API: LibraryVersion reports the engine version", "[cpp_api]
 	REQUIRE_FALSE(version.empty());
 
 	// The engine agrees; the C entry point reports the same text as a borrowed view.
-	duckdb_v2_str raw = {nullptr, 0};
-	REQUIRE(duckdb_v2_library_version(&raw, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(version == std::string(raw.ptr, raw.len));
+	const char *raw = nullptr;
+	idx_t raw_length = 0;
+	REQUIRE(duckdb_v2_library_version(&raw, &raw_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(version == std::string(raw, raw_length));
 }
 
 TEST_CASE("Stable C++API: Exception carries the code and message body", "[cpp_api]") {

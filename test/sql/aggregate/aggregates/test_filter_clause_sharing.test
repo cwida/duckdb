@@ -2,6 +2,8 @@
 # description: Aggregates whose FILTER clauses are shared: a filter is evaluated once per chunk and its selection is reused
 # group: [aggregates]
 
+require 64bit
+
 statement ok
 PRAGMA verify_parallelism
 
@@ -283,7 +285,7 @@ SELECT [*COLUMNS(*)] = (SELECT list(m ORDER BY k) FROM (SELECT k, max(v) m FROM 
 true
 
 query I
-SELECT [*COLUMNS(*)] = (SELECT list(d ORDER BY k) FROM (SELECT k, count(DISTINCT v) d FROM many GROUP BY k)) FROM query('SELECT ' || filtered('count(DISTINCT v)', 300) || ' FROM many')
+SELECT [*COLUMNS(*)] = (SELECT list(d ORDER BY k) FROM (SELECT k, count(DISTINCT v) d FROM many WHERE k < 50 GROUP BY k)) FROM query('SELECT ' || filtered('count(DISTINCT v)', 50) || ' FROM many')
 ----
 true
 

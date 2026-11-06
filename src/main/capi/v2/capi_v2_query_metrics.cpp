@@ -133,12 +133,14 @@ DUCKDB_V2_ERROR duckdb_v2_query_metrics_get_root(duckdb_v2_query_metrics_handle 
 	return WithErrorHandler(err, [&]() { *node = Convert(&Convert(metrics)->root); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_name(duckdb_v2_query_metrics_node_handle node, duckdb_v2_str *name,
-                                                      duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_name(duckdb_v2_query_metrics_node_handle node, const char **name,
+                                                      idx_t *name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(node);
 	DUCKDB_CHECK_ARG(name);
-	*name = duckdb_v2_str {nullptr, 0};
-	return WithErrorHandler(err, [&]() { *name = Convert(Convert(node)->name); });
+	DUCKDB_CHECK_ARG(name_length);
+	*name = nullptr;
+	*name_length = 0;
+	return WithErrorHandler(err, [&]() { SetStringOut(name, name_length, Convert(node)->name); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_child_count(duckdb_v2_query_metrics_node_handle node, idx_t *count,
@@ -166,12 +168,15 @@ DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_count(duckdb_v2_query_me
 }
 
 DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_name(duckdb_v2_query_metrics_node_handle node, idx_t index,
-                                                             duckdb_v2_str *name, duckdb_v2_error_info_handle *err) {
+                                                             const char **name, idx_t *name_length,
+                                                             duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(node);
 	DUCKDB_CHECK_ARG(name);
-	*name = duckdb_v2_str {nullptr, 0};
-	return WithErrorHandler(err,
-	                        [&]() { *name = Convert(GetCheckedQueryMetric(*Convert(node), index, __func__).first); });
+	DUCKDB_CHECK_ARG(name_length);
+	*name = nullptr;
+	*name_length = 0;
+	return WithErrorHandler(
+	    err, [&]() { SetStringOut(name, name_length, GetCheckedQueryMetric(*Convert(node), index, __func__).first); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_value(duckdb_v2_query_metrics_node_handle node, idx_t index,
@@ -186,17 +191,17 @@ DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_value(duckdb_v2_query_me
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric(duckdb_v2_query_metrics_node_handle node,
-                                                        const duckdb_v2_str *name, duckdb_v2_value_handle *value,
-                                                        bool *present, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric(duckdb_v2_query_metrics_node_handle node, const char *name,
+                                                        idx_t name_length, duckdb_v2_value_handle *value, bool *present,
+                                                        duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(node);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(value);
 	DUCKDB_CHECK_ARG(present);
 	*value = nullptr;
 	*present = false;
 	return WithErrorHandler(err, [&]() {
-		std::string_view key(name->ptr, name->len);
+		auto key = Convert(name, name_length);
 		for (auto &metric : Convert(node)->metrics) {
 			if (metric.first == key) {
 				*value = Convert(new duckdb::Value(metric.second));

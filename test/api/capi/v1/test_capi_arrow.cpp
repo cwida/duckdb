@@ -337,6 +337,84 @@ TEST_CASE("Test arrow in C API", "[capi][arrow]") {
 
 namespace {
 
+struct ArrowScanStream {
+	static constexpr idx_t ROWS = 3;
+
+	int32_t values[ROWS] = {1, 2, 3};
+	const void *child_buffers[2] = {nullptr, values};
+	const void *parent_buffers[1] = {nullptr};
+	ArrowSchema child_schema = {};
+	ArrowSchema *schema_children[1] = {&child_schema};
+	ArrowArray child_array = {};
+	ArrowArray *array_children[1] = {&child_array};
+	bool emitted = false;
+	ArrowArrayStream stream = {};
+
+	ArrowScanStream() {
+		stream.get_schema = GetSchema;
+		stream.get_next = GetNext;
+		stream.get_last_error = GetLastError;
+		stream.release = ReleaseStream;
+		stream.private_data = this;
+	}
+
+	static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
+		auto &self = *static_cast<ArrowScanStream *>(stream->private_data);
+		self.child_schema = {};
+		self.child_schema.format = "i";
+		self.child_schema.name = "value";
+		self.child_schema.flags = ARROW_FLAG_NULLABLE;
+		self.child_schema.release = ReleaseSchema;
+
+		*out = {};
+		out->format = "+s";
+		out->n_children = 1;
+		out->children = self.schema_children;
+		out->release = ReleaseSchema;
+		return 0;
+	}
+
+	static int GetNext(ArrowArrayStream *stream, ArrowArray *out) {
+		auto &self = *static_cast<ArrowScanStream *>(stream->private_data);
+		*out = {};
+		if (self.emitted) {
+			return 0;
+		}
+
+		self.child_array = {};
+		self.child_array.length = ROWS;
+		self.child_array.n_buffers = 2;
+		self.child_array.buffers = self.child_buffers;
+		self.child_array.release = ReleaseArray;
+
+		out->length = ROWS;
+		out->n_buffers = 1;
+		out->buffers = self.parent_buffers;
+		out->n_children = 1;
+		out->children = self.array_children;
+		out->release = ReleaseArray;
+		self.emitted = true;
+		return 0;
+	}
+
+	static const char *GetLastError(ArrowArrayStream *stream) {
+		return nullptr;
+	}
+
+	static void ReleaseSchema(ArrowSchema *schema) {
+		schema->release = nullptr;
+	}
+
+	static void ReleaseArray(ArrowArray *array) {
+		array->release = nullptr;
+	}
+
+	static void ReleaseStream(ArrowArrayStream *stream) {
+		stream->release = nullptr;
+		stream->private_data = nullptr;
+	}
+};
+
 // A two-column Arrow struct array (a = 1..4, b = 10..40) whose release callback poisons the buffers, so a read after
 // release shows up as wrong values instead of silently reading freed memory. With nested_b, column b is wrapped in a
 // struct, STRUCT(v BIGINT).
@@ -393,6 +471,56 @@ struct PoisoningArrowArray {
 };
 
 } // namespace
+
+TEST_CASE("duckdb_arrow_scan creates a temporary view in a file-backed database", "[capi][arrow]") {
+	auto path = TestCreatePath("capi_arrow_scan_temporary.db");
+	DeleteDatabase(path);
+
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(path.c_str()));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE destination(value INTEGER)"));
+	REQUIRE_NO_FAIL(tester.Query("BEGIN TRANSACTION"));
+
+	ArrowScanStream arrow_stream;
+	REQUIRE(duckdb_arrow_scan(tester.connection, "arrow_input",
+	                          reinterpret_cast<duckdb_arrow_stream>(&arrow_stream.stream)) == DuckDBSuccess);
+
+	{
+		auto result = tester.Query("SELECT temporary FROM duckdb_views() WHERE view_name = 'arrow_input'");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->row_count() == 1);
+		REQUIRE(result->Fetch<bool>(0, 0));
+	}
+
+	duckdb_connection second_connection = nullptr;
+	REQUIRE(duckdb_connect(tester.database, &second_connection) == DuckDBSuccess);
+	duckdb_result second_result;
+	REQUIRE(duckdb_query(second_connection, "SELECT count(*) FROM duckdb_views() WHERE view_name = 'arrow_input'",
+	                     &second_result) == DuckDBSuccess);
+	REQUIRE(duckdb_value_int64(&second_result, 0, 0) == 0);
+	duckdb_destroy_result(&second_result);
+	duckdb_disconnect(&second_connection);
+
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO destination SELECT value FROM arrow_input"));
+	REQUIRE_NO_FAIL(tester.Query("DROP VIEW arrow_input"));
+	arrow_stream.stream.release(&arrow_stream.stream);
+	REQUIRE(arrow_stream.stream.release == nullptr);
+	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
+
+	tester.Cleanup();
+	REQUIRE(tester.OpenDatabase(path.c_str()));
+	{
+		auto result = tester.Query("SELECT value FROM destination ORDER BY value");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->row_count() == ArrowScanStream::ROWS);
+		for (idx_t row = 0; row < ArrowScanStream::ROWS; row++) {
+			REQUIRE(result->Fetch<int32_t>(0, row) == NumericCast<int32_t>(row + 1));
+		}
+	}
+
+	tester.Cleanup();
+	DeleteDatabase(path);
+}
 
 TEST_CASE("Test C-API Arrow conversion functions", "[capi][arrow]") {
 	CAPITester tester;
