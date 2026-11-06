@@ -1,0 +1,350 @@
+# name: test/sql/types/timestamp/timestamp_ns_interval_add.test
+# description: Test TIMESTAMP_NS +/- INTERVAL arithmetic
+# group: [timestamp]
+
+# Quick syntax check
+query I
+SELECT '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS + INTERVAL 1 DAY;
+----
+2021-12-02 13:54:48.123456789
+
+# The result keeps the nanosecond precision
+query III
+SELECT typeof('2021-12-01'::TIMESTAMP_NS + INTERVAL 1 DAY),
+	typeof(INTERVAL 1 DAY + '2021-12-01'::TIMESTAMP_NS),
+	typeof('2021-12-01'::TIMESTAMP_NS - INTERVAL 1 DAY);
+----
+TIMESTAMP_NS	TIMESTAMP_NS	TIMESTAMP_NS
+
+# Various intervals
+statement ok
+CREATE TABLE intervals AS SELECT iv FROM (VALUES
+	(INTERVAL 1 year),
+	(INTERVAL (-1) year),
+	(INTERVAL 1 month),
+	(INTERVAL (-1) month),
+	(INTERVAL 13 month),
+	(INTERVAL (-15) month),
+	(INTERVAL 1 day),
+	(INTERVAL (-1) day),
+	(INTERVAL 32 day),
+	(INTERVAL (-40) day),
+	(INTERVAL 1 hour),
+	(INTERVAL (-1) hour),
+	(INTERVAL 11 hour),
+	(INTERVAL (-14) hour),
+	(INTERVAL 1 minute),
+	(INTERVAL (-1) minute),
+	(INTERVAL 6 minute),
+	(INTERVAL (-72) minute),
+	(INTERVAL 1 second),
+	(INTERVAL (-1) second),
+	(INTERVAL 23 second),
+	(INTERVAL (-118) second),
+	(INTERVAL 1 millisecond),
+	(INTERVAL (-1) millisecond),
+	(INTERVAL 910 millisecond),
+	(INTERVAL (-150) millisecond),
+	(INTERVAL 1 microsecond),
+	(INTERVAL (-1) microsecond),
+	(INTERVAL 612 microsecond),
+	(INTERVAL (-485) microsecond)
+) tbl(iv);
+
+# timestamp + interval
+query II
+SELECT iv, '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS + iv FROM intervals;
+----
+1 year	2022-12-01 13:54:48.123456789
+-1 year	2020-12-01 13:54:48.123456789
+1 month	2022-01-01 13:54:48.123456789
+-1 month	2021-11-01 13:54:48.123456789
+1 year 1 month	2023-01-01 13:54:48.123456789
+-1 year -3 months	2020-09-01 13:54:48.123456789
+1 day	2021-12-02 13:54:48.123456789
+-1 day	2021-11-30 13:54:48.123456789
+32 days	2022-01-02 13:54:48.123456789
+-40 days	2021-10-22 13:54:48.123456789
+01:00:00	2021-12-01 14:54:48.123456789
+-01:00:00	2021-12-01 12:54:48.123456789
+11:00:00	2021-12-02 00:54:48.123456789
+-14:00:00	2021-11-30 23:54:48.123456789
+00:01:00	2021-12-01 13:55:48.123456789
+-00:01:00	2021-12-01 13:53:48.123456789
+00:06:00	2021-12-01 14:00:48.123456789
+-01:12:00	2021-12-01 12:42:48.123456789
+00:00:01	2021-12-01 13:54:49.123456789
+-00:00:01	2021-12-01 13:54:47.123456789
+00:00:23	2021-12-01 13:55:11.123456789
+-00:01:58	2021-12-01 13:52:50.123456789
+00:00:00.001	2021-12-01 13:54:48.124456789
+-00:00:00.001	2021-12-01 13:54:48.122456789
+00:00:00.91	2021-12-01 13:54:49.033456789
+-00:00:00.15	2021-12-01 13:54:47.973456789
+00:00:00.000001	2021-12-01 13:54:48.123457789
+-00:00:00.000001	2021-12-01 13:54:48.123455789
+00:00:00.000612	2021-12-01 13:54:48.124068789
+-00:00:00.000485	2021-12-01 13:54:48.122971789
+
+# interval + timestamp is commutative
+query II
+SELECT iv, iv + '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS FROM intervals
+WHERE iv + '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS IS DISTINCT FROM '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS + iv;
+----
+
+# timestamp - interval
+query II
+SELECT iv, '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS - iv FROM intervals;
+----
+1 year	2020-12-01 13:54:48.123456789
+-1 year	2022-12-01 13:54:48.123456789
+1 month	2021-11-01 13:54:48.123456789
+-1 month	2022-01-01 13:54:48.123456789
+1 year 1 month	2020-11-01 13:54:48.123456789
+-1 year -3 months	2023-03-01 13:54:48.123456789
+1 day	2021-11-30 13:54:48.123456789
+-1 day	2021-12-02 13:54:48.123456789
+32 days	2021-10-30 13:54:48.123456789
+-40 days	2022-01-10 13:54:48.123456789
+01:00:00	2021-12-01 12:54:48.123456789
+-01:00:00	2021-12-01 14:54:48.123456789
+11:00:00	2021-12-01 02:54:48.123456789
+-14:00:00	2021-12-02 03:54:48.123456789
+00:01:00	2021-12-01 13:53:48.123456789
+-00:01:00	2021-12-01 13:55:48.123456789
+00:06:00	2021-12-01 13:48:48.123456789
+-01:12:00	2021-12-01 15:06:48.123456789
+00:00:01	2021-12-01 13:54:47.123456789
+-00:00:01	2021-12-01 13:54:49.123456789
+00:00:23	2021-12-01 13:54:25.123456789
+-00:01:58	2021-12-01 13:56:46.123456789
+00:00:00.001	2021-12-01 13:54:48.122456789
+-00:00:00.001	2021-12-01 13:54:48.124456789
+00:00:00.91	2021-12-01 13:54:47.213456789
+-00:00:00.15	2021-12-01 13:54:48.273456789
+00:00:00.000001	2021-12-01 13:54:48.123455789
+-00:00:00.000001	2021-12-01 13:54:48.123457789
+00:00:00.000612	2021-12-01 13:54:48.122844789
+-00:00:00.000485	2021-12-01 13:54:48.123941789
+
+# subtracting an interval is adding its negation
+query II
+SELECT iv, '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS - iv FROM intervals
+WHERE '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS - iv IS DISTINCT FROM '2021-12-01 13:54:48.123456789'::TIMESTAMP_NS + (-iv);
+----
+
+# Before the epoch
+query II
+SELECT iv, '1962-07-31 12:20:48.123456789'::TIMESTAMP_NS + iv FROM intervals;
+----
+1 year	1963-07-31 12:20:48.123456789
+-1 year	1961-07-31 12:20:48.123456789
+1 month	1962-08-31 12:20:48.123456789
+-1 month	1962-06-30 12:20:48.123456789
+1 year 1 month	1963-08-31 12:20:48.123456789
+-1 year -3 months	1961-04-30 12:20:48.123456789
+1 day	1962-08-01 12:20:48.123456789
+-1 day	1962-07-30 12:20:48.123456789
+32 days	1962-09-01 12:20:48.123456789
+-40 days	1962-06-21 12:20:48.123456789
+01:00:00	1962-07-31 13:20:48.123456789
+-01:00:00	1962-07-31 11:20:48.123456789
+11:00:00	1962-07-31 23:20:48.123456789
+-14:00:00	1962-07-30 22:20:48.123456789
+00:01:00	1962-07-31 12:21:48.123456789
+-00:01:00	1962-07-31 12:19:48.123456789
+00:06:00	1962-07-31 12:26:48.123456789
+-01:12:00	1962-07-31 11:08:48.123456789
+00:00:01	1962-07-31 12:20:49.123456789
+-00:00:01	1962-07-31 12:20:47.123456789
+00:00:23	1962-07-31 12:21:11.123456789
+-00:01:58	1962-07-31 12:18:50.123456789
+00:00:00.001	1962-07-31 12:20:48.124456789
+-00:00:00.001	1962-07-31 12:20:48.122456789
+00:00:00.91	1962-07-31 12:20:49.033456789
+-00:00:00.15	1962-07-31 12:20:47.973456789
+00:00:00.000001	1962-07-31 12:20:48.123457789
+-00:00:00.000001	1962-07-31 12:20:48.123455789
+00:00:00.000612	1962-07-31 12:20:48.124068789
+-00:00:00.000485	1962-07-31 12:20:48.122971789
+
+# The nanoseconds survive borrowing from the microseconds
+query II
+SELECT '1962-07-31 12:20:48.000000001'::TIMESTAMP_NS + INTERVAL '-1 microsecond',
+	'1962-07-31 12:20:48.000000001'::TIMESTAMP_NS - INTERVAL '1 microsecond';
+----
+1962-07-31 12:20:47.999999001	1962-07-31 12:20:47.999999001
+
+# ms overflow
+query I
+SELECT '1999-12-31 16:00:00.000000001'::TIMESTAMP_NS + INTERVAL 2400 hours;
+----
+2000-04-09 16:00:00.000000001
+
+query I
+SELECT '2000-04-09 16:00:00.000000001'::TIMESTAMP_NS - INTERVAL 2400 hours;
+----
+1999-12-31 16:00:00.000000001
+
+# Month arithmetic clamps the day
+query II
+SELECT '2000-01-31 01:02:03.123456789'::TIMESTAMP_NS + INTERVAL 1 month,
+	'2000-03-31 01:02:03.123456789'::TIMESTAMP_NS - INTERVAL 1 month;
+----
+2000-02-29 01:02:03.123456789	2000-02-29 01:02:03.123456789
+
+# Months before days
+query II
+SELECT '2000-01-31 01:02:03.123456789'::TIMESTAMP_NS + INTERVAL '-1 month 400 day',
+	'2000-01-31 01:02:03.123456789'::TIMESTAMP_NS - INTERVAL '1 month -400 day';
+----
+2001-02-03 01:02:03.123456789	2001-02-03 01:02:03.123456789
+
+# Non-constant arguments
+query I
+SELECT make_timestamp_ns(1638366888123456789 + i * 1000000000) + INTERVAL 1 MONTH FROM range(3) t(i);
+----
+2022-01-01 13:54:48.123456789
+2022-01-01 13:54:49.123456789
+2022-01-01 13:54:50.123456789
+
+query I
+SELECT INTERVAL (-1) MICROSECOND + make_timestamp_ns(-234000000000000000 + i) FROM range(-1, 2) t(i);
+----
+1962-08-02 15:59:59.999998999
+1962-08-02 15:59:59.999999
+1962-08-02 15:59:59.999999001
+
+query I
+SELECT make_timestamp_ns(-234000000000000000 + i) - INTERVAL 1 MICROSECOND FROM range(-1, 2) t(i);
+----
+1962-08-02 15:59:59.999998999
+1962-08-02 15:59:59.999999
+1962-08-02 15:59:59.999999001
+
+# NULLs
+query IIIIII
+SELECT NULL::TIMESTAMP_NS + INTERVAL 1 day, INTERVAL 1 day + NULL::TIMESTAMP_NS, NULL::TIMESTAMP_NS - INTERVAL 1 day,
+	'2021-12-01'::TIMESTAMP_NS + NULL::INTERVAL, NULL::INTERVAL + '2021-12-01'::TIMESTAMP_NS, '2021-12-01'::TIMESTAMP_NS - NULL::INTERVAL;
+----
+NULL	NULL	NULL	NULL	NULL	NULL
+
+# Infinities
+query III
+SELECT 'infinity'::TIMESTAMP_NS + INTERVAL '1 microsecond',
+	INTERVAL '1 microsecond' + 'infinity'::TIMESTAMP_NS,
+	'infinity'::TIMESTAMP_NS - INTERVAL '1 day';
+----
+infinity	infinity	infinity
+
+query III
+SELECT '-infinity'::TIMESTAMP_NS + INTERVAL '1 microsecond',
+	INTERVAL '1 microsecond' + '-infinity'::TIMESTAMP_NS,
+	'-infinity'::TIMESTAMP_NS - INTERVAL '1 day';
+----
+-infinity	-infinity	-infinity
+
+#
+# Limits testing
+#
+
+# The largest finite value is INT64_MAX - 1 (INT64_MAX is infinity),
+# and the smallest is INT64_MIN (INT64_MIN + 1 is -infinity)
+query II
+SELECT make_timestamp_ns(9223372036854775806), make_timestamp_ns(-9223372036854775807::BIGINT - 1);
+----
+2262-04-11 23:47:16.854775806	1677-09-21 00:12:43.145224192
+
+# Backward from the maximum
+query II
+SELECT make_timestamp_ns(9223372036854775806) + INTERVAL (-1) microsecond,
+	make_timestamp_ns(9223372036854775806) - INTERVAL 1 microsecond;
+----
+2262-04-11 23:47:16.854774806	2262-04-11 23:47:16.854774806
+
+query II
+SELECT make_timestamp_ns(9223372036854775806) + INTERVAL (-1) month,
+	make_timestamp_ns(9223372036854775806) - INTERVAL 1 month;
+----
+2262-03-11 23:47:16.854775806	2262-03-11 23:47:16.854775806
+
+# Forward from the maximum
+statement error
+SELECT make_timestamp_ns(9223372036854775806) + INTERVAL 1 microsecond;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT INTERVAL 1 microsecond + make_timestamp_ns(9223372036854775806);
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT make_timestamp_ns(9223372036854775806) + INTERVAL 1 day;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT make_timestamp_ns(9223372036854775806) - INTERVAL (-1) microsecond;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+# Forward from the minimum
+query II
+SELECT make_timestamp_ns(-9223372036854775807::BIGINT - 1) + INTERVAL 1 microsecond,
+	make_timestamp_ns(-9223372036854775807::BIGINT - 1) - INTERVAL (-1) microsecond;
+----
+1677-09-21 00:12:43.145225192	1677-09-21 00:12:43.145225192
+
+query II
+SELECT make_timestamp_ns(-9223372036854775807::BIGINT - 1) + INTERVAL 1 month,
+	make_timestamp_ns(-9223372036854775807::BIGINT - 1) - INTERVAL (-1) month;
+----
+1677-10-21 00:12:43.145224192	1677-10-21 00:12:43.145224192
+
+# Backward from the minimum
+statement error
+SELECT make_timestamp_ns(-9223372036854775807::BIGINT - 1) + INTERVAL (-1) microsecond;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT INTERVAL (-1) microsecond + make_timestamp_ns(-9223372036854775807::BIGINT - 1);
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT make_timestamp_ns(-9223372036854775807::BIGINT - 1) + INTERVAL (-1) month;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT make_timestamp_ns(-9223372036854775807::BIGINT - 1) - INTERVAL 1 microsecond;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT make_timestamp_ns(-9223372036854775807::BIGINT - 1) - INTERVAL 1 month;
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+# Intervals that overflow the microsecond timestamp range
+statement error
+SELECT '2000-01-01'::TIMESTAMP_NS + INTERVAL '9223372036854775807 microseconds';
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT '2000-01-01'::TIMESTAMP_NS + INTERVAL '-9223372036854775807 microseconds';
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT '2000-01-01'::TIMESTAMP_NS - INTERVAL '9223372036854775807 microseconds';
+----
+Out of Range Error: Cannot add interval to timestamp_ns
+
+statement error
+SELECT TIMESTAMP_NS '2024-01-01 12:00:00' - INTERVAL '-4611686018427387904 microseconds -4611686018427387904 microseconds';
+----
+Interval micros value out of range
