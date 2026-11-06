@@ -29,7 +29,8 @@ void DeltaLengthByteArrayDecoder::InitializePage() {
 	auto &block = *reader.block;
 	auto &buffer_manager = reader.reader.buffer_manager;
 	// Resize (inside ReadDbpData) must run unpinned so an evicted buffer is reallocated instead of reloaded
-	DeltaByteArrayDecoder::ReadDbpData(buffer_manager, block, length_buffer, byte_array_count);
+	ResizeableBuffer::SizedBacking backing {reader.GetAllocator(), buffer_manager};
+	DeltaByteArrayDecoder::ReadDbpData(backing, block, length_buffer, byte_array_count);
 	ResizeableBuffer::PinGuard pin_guard(length_buffer, buffer_manager);
 
 	// Verify that the sum of DBP string lengths match up with the available string data

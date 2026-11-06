@@ -162,6 +162,27 @@ public:
 		}
 	}
 
+	//! Managed-block registration costs more than a smaller buffer can repay in evictability.
+	static constexpr idx_t EVICTABLE_SIZE_THRESHOLD = 131072;
+
+	struct SizedBacking {
+		Allocator &allocator;
+		BufferManager &buffer_manager;
+	};
+
+	void Resize(SizedBacking &backing, const idx_t new_size) {
+		if (new_size < EVICTABLE_SIZE_THRESHOLD) {
+			Resize(backing.allocator, new_size);
+		} else {
+			Resize(backing.buffer_manager, new_size);
+		}
+	}
+
+	void Resize(Allocator &allocator, BufferManager &buffer_manager, const idx_t new_size) {
+		SizedBacking backing {allocator, buffer_manager};
+		Resize(backing, new_size);
+	}
+
 	void Pin(BufferManager &buffer_manager) {
 		if (block_handle && !handle.IsValid()) {
 			handle = buffer_manager.Pin(block_handle);

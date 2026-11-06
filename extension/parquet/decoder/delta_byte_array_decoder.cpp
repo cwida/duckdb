@@ -41,8 +41,9 @@ void DeltaByteArrayDecoder::ReadDbpData(BACKING &backing, ResizeableBuffer &buff
 	buffer.Inc(decoder->BytesConsumed());
 }
 
-template void DeltaByteArrayDecoder::ReadDbpData<BufferManager>(BufferManager &, ResizeableBuffer &,
-                                                                ResizeableBuffer &, idx_t &);
+template void DeltaByteArrayDecoder::ReadDbpData<ResizeableBuffer::SizedBacking>(ResizeableBuffer::SizedBacking &,
+                                                                                 ResizeableBuffer &,
+                                                                                 ResizeableBuffer &, idx_t &);
 
 void DeltaByteArrayDecoder::InitializePage() {
 	auto &block = *reader.block;
@@ -67,7 +68,7 @@ void DeltaByteArrayDecoder::InitializePage() {
 	plain_data = make_shared_ptr<ResizeableBuffer>();
 
 	if (prefix_count == 0) {
-		plain_data->Resize(buffer_manager, 0);
+		plain_data->Resize(allocator, buffer_manager, 0);
 		return;
 	}
 
@@ -103,11 +104,7 @@ void DeltaByteArrayDecoder::InitializePage() {
 		}
 	}
 
-	if (total_size < ColumnReader::EVICTABLE_PAGE_SIZE_THRESHOLD) {
-		plain_data->Resize(allocator, total_size);
-	} else {
-		plain_data->Resize(buffer_manager, total_size);
-	}
+	plain_data->Resize(allocator, buffer_manager, total_size);
 	unsafe_vector<uint8_t> prev_value(max_len);
 	idx_t prev_len = 0;
 

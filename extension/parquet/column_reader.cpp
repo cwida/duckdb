@@ -712,11 +712,7 @@ void ColumnReader::AllocateBlock(idx_t payload_size) {
 	if (!block) {
 		block = make_shared_ptr<ResizeableBuffer>();
 	}
-	if (allocation_size < EVICTABLE_PAGE_SIZE_THRESHOLD) {
-		block->Resize(GetAllocator(), allocation_size);
-	} else {
-		block->Resize(GetBufferManager(), allocation_size);
-	}
+	block->Resize(GetAllocator(), GetBufferManager(), allocation_size);
 	// Keep a zeroed guard byte for decoder lookahead, but exclude it from the payload.
 	*block->GetPtrAt(payload_size) = 0;
 	block->Truncate(payload_size);
