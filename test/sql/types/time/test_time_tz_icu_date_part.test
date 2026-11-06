@@ -1,0 +1,201 @@
+# name: test/sql/types/time/test_time_tz_icu_date_part.test
+# description: With ICU, a VARCHAR to TIMETZ cast of a text with a date part agrees with the cast through TIMESTAMPTZ
+# group: [time]
+
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone = 'Asia/Kolkata';
+
+query III
+SELECT '2024-01-01 12:00:00+01'::TIMETZ, '2024-01-01 12:00:00+01'::TIMESTAMPTZ::TIMETZ, '12:00:00+01'::TIMETZ;
+----
+16:30:00+05:30	16:30:00+05:30	12:00:00+01
+
+query II
+SELECT i, CAST(s AS TIMETZ) FROM (VALUES
+	(1, '2024-01-01 12:00:00Z'),
+	(2, '2024-01-01 12:00:00-03:30'),
+	(3, '2024-01-01T12:00:00+01'),
+	(4, '2024-01-01 12:00:00.123456+01'),
+	(5, '2024-01-01 12:00:00'),
+	(6, '2024-01-01'),
+	(7, '2024-01-01 23:00:00+00'),
+	(8, 'epoch'),
+	(9, '2024-01-01 12:00:00 UTC'),
+	(10, '2024-07-01 12:00:00 Europe/London'),
+	(11, '12:00:00+01'),
+	(12, '12:00:00-03:30'),
+	(13, '12:00:00'),
+	(14, ' 2024-01-01 12:00:00+01 '),
+	(15, '2024-01-01 12:00:00 EST')
+) v(i, s) ORDER BY i
+----
+1	17:30:00+05:30
+2	21:00:00+05:30
+3	16:30:00+05:30
+4	16:30:00.123456+05:30
+5	12:00:00+05:30
+6	00:00:00+05:30
+7	04:30:00+05:30
+8	05:30:00+05:30
+9	17:30:00+05:30
+10	16:30:00+05:30
+11	12:00:00+01
+12	12:00:00-03:30
+13	12:00:00+05:30
+14	16:30:00+05:30
+15	22:30:00+05:30
+
+statement ok
+CREATE TABLE date_part_texts AS SELECT * FROM (VALUES
+	('2024-01-01 12:00:00+01'),
+	('2024-01-01 12:00:00Z'),
+	('2024-01-01 12:00:00-03:30'),
+	('2024-01-01 12:00:00'),
+	('2024-01-01 23:59:59.999999-15:59'),
+	('2024-01-01'),
+	('epoch'),
+	('2024-07-01 12:00:00 Europe/London'),
+	('2024-03-31 02:30:00'),
+	('2024-10-27 02:30:00'),
+	('2024-07-01 12:00:00+01'),
+	('0001-01-01 (BC) 12:00:00+00'),
+	('2024-07-01 12:00:00'),
+	('infinity'),
+	(NULL)
+) v(s);
+
+query I
+SELECT s FROM date_part_texts
+WHERE TRY_CAST(s AS TIMETZ)::VARCHAR IS DISTINCT FROM TRY_CAST(TRY_CAST(s AS TIMESTAMPTZ) AS TIMETZ)::VARCHAR
+----
+
+query II
+SELECT i, TRY_CAST(s AS TIMETZ) FROM (VALUES
+	(1, '2024-13-01 12:00:00'),
+	(2, '2024-01-01 25:00:00'),
+	(3, 'infinity'),
+	(4, '-infinity'),
+	(5, '2024-01-01 12:00:00 Foo/Bar'),
+	(6, '2024-01-01 12:00:00+01 xyz'),
+	(7, 'xyz'),
+	(8, '12:00:00+01 xyz'),
+	(9, NULL)
+) v(i, s) ORDER BY i
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+statement error
+SELECT CAST('2024-13-01 12:00:00' AS TIMETZ)
+----
+Conversion Error: time field value out of range: "2024-13-01 12:00:00"
+
+statement error
+SELECT CAST('infinity' AS TIMETZ)
+----
+Conversion Error: time field value out of range: "infinity"
+
+statement error
+SELECT CAST('2024-01-01 12:00:00 Foo/Bar' AS TIMETZ)
+----
+Unknown TimeZone 'Foo/Bar'
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, '2024-01-01 12:00:00+01'), (2, '2024-01-01 12:00:00'), (3, '12:00:00+01')) v(i, t))
+TO '{TEST_DIR}/timetz_date_part.csv' (HEADER false);
+
+query II
+SELECT i, t FROM read_csv('{TEST_DIR}/timetz_date_part.csv', columns = {'i': 'INTEGER', 't': 'TIMETZ'}) ORDER BY i
+----
+1	16:30:00+05:30
+2	12:00:00+05:30
+3	12:00:00+01
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query II
+SELECT i, CAST(s AS TIMETZ) FROM (VALUES
+	(1, '2024-07-01 12:00:00+01'),
+	(2, '2024-01-15 12:00:00+01'),
+	(3, '2024-07-01 12:00:00'),
+	(4, '2024-01-15 12:00:00'),
+	(5, '2024-07-01 12:00:00Z'),
+	(6, '2024-01-15 12:00:00-05')
+) v(i, s) ORDER BY i
+----
+1	13:00:00+02
+2	12:00:00+01
+3	12:00:00+02
+4	12:00:00+01
+5	14:00:00+02
+6	18:00:00+01
+
+query I
+SELECT s FROM date_part_texts
+WHERE TRY_CAST(s AS TIMETZ)::VARCHAR IS DISTINCT FROM TRY_CAST(TRY_CAST(s AS TIMESTAMPTZ) AS TIMETZ)::VARCHAR
+----
+
+# a BC instant in one row does not make the next row's local date BC
+query II
+SELECT i, CASE WHEN s LIKE '0001%' THEN (t::VARCHAR = s::TIMESTAMPTZ::TIMETZ::VARCHAR)::VARCHAR ELSE t::VARCHAR END
+FROM (SELECT i, s, CAST(s AS TIMETZ) AS t FROM (VALUES
+	(1, '0001-01-01 (BC) 12:00:00+00'),
+	(2, '2024-07-01 12:00:00'),
+	(3, '0001-01-01 (BC) 12:00:00+00'),
+	(4, '2024-07-01 12:00:00 Europe/London')
+) v(i, s)) ORDER BY i
+----
+1	true
+2	12:00:00+02
+3	true
+4	13:00:00+02
+
+# a plain time read after a summer and a winter date in one column still takes the offset of the plain form
+query II
+SELECT i, CASE WHEN s LIKE '2024%' THEN t::VARCHAR ELSE (t = '12:00:00'::TIMETZ)::VARCHAR END
+FROM (SELECT i, s, CAST(s AS TIMETZ) AS t FROM (VALUES
+	(1, '2024-07-01 12:00:00'),
+	(2, '12:00:00'),
+	(3, '2024-01-15 12:00:00'),
+	(4, '12:00:00')
+) v(i, s)) ORDER BY i
+----
+1	12:00:00+02
+2	true
+3	12:00:00+01
+4	true
+
+statement ok
+SET TimeZone = 'GMT+18:00';
+
+statement error
+SELECT '2024-01-01 12:00:00+01'::TIMETZ
+----
+Conversion Error: Time zone offset 18:00:00 is out of range
+
+query I
+SELECT '2024-01-01 12:00:00+01'::TIMESTAMPTZ
+----
+2024-01-02 05:00:00+18
+
+statement ok
+SET TimeZone = 'UTC';
+
+query IIII
+SELECT '2024-01-01 12:00:00+01'::TIMETZ, '2024-01-01 12:00:00+01'::TIMESTAMPTZ::TIMETZ, '12:00:00+01'::TIMETZ,
+	'2024-01-01 12:00:00'::TIMETZ;
+----
+11:00:00+00	11:00:00+00	12:00:00+01	12:00:00+00
