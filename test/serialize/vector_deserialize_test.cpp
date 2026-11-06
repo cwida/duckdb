@@ -195,7 +195,7 @@ TEST_CASE("GetValue on a UNION vector with an out-of-range stored tag", "[serial
 	REQUIRE_NOTHROW(valid->GetValue(0));
 	// a stored tag beyond the member count must be rejected, not index past the children array
 	auto invalid = DeserializeVectorReturn(type, 1, write_union(5));
-	REQUIRE_THROWS_AS(invalid->GetValue(0), DataCorruptionException);
+	REQUIRE_THROWS_WITH(invalid->GetValue(0), Catch::Contains("Union tag (5) is out of bounds"));
 }
 
 } // namespace duckdb

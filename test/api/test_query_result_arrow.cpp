@@ -733,8 +733,9 @@ TEST_CASE("A taken Arrow collection leaves the result and outlives it", "[api][q
 
 	SECTION("exports of a taken collection outlive the container") {
 		auto taken = result->TakeCollection<ArrowFormat>();
-		REQUIRE_THROWS_AS(result->Collection<ArrowFormat>(), InvalidInputException);
-		REQUIRE_THROWS_AS(result->Fetch<ArrowFormat>(), InvalidInputException);
+		auto unavailable = Catch::Contains("no longer holds a collection");
+		REQUIRE_THROWS_WITH(result->Collection<ArrowFormat>(), unavailable);
+		REQUIRE_THROWS_WITH(result->Fetch<ArrowFormat>(), unavailable);
 		result.reset();
 		REQUIRE(taken->size() == 3);
 		REQUIRE(TotalRows(*taken) == 3000);
@@ -840,9 +841,9 @@ TEST_CASE("The chunk accessors reject an Arrow result", "[api][query_result_arro
 	auto result = con.Query("SELECT i FROM range(1000) t(i)", make_shared_ptr<ArrowFormat>(1024));
 	REQUIRE_NO_FAIL(*result);
 
-	REQUIRE_THROWS_AS(result->FetchRaw(), InvalidInputException);
-	REQUIRE_THROWS_AS(result->Collection(), InvalidInputException);
-	REQUIRE_THROWS_AS(result->Fetch(), InvalidInputException);
+	REQUIRE_THROWS_WITH(result->FetchRaw(), Catch::Contains("asked for the"));
+	REQUIRE_THROWS_WITH(result->Collection(), Catch::Contains("asked for the"));
+	REQUIRE_THROWS_WITH(result->Fetch(), Catch::Contains("asked for the"));
 	// The rows are still there, in the format that was asked for
 	REQUIRE(result->RowCount() == 1000);
 	REQUIRE(TotalRows(result->Collection<ArrowFormat>()) == 1000);

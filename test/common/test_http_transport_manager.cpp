@@ -480,12 +480,12 @@ TEST_CASE("HTTP transport manager capacity and provider contracts", "[http_trans
 		auto &manager = first.instance->config.GetHTTPTransportManager();
 		first.instance->config.SetHTTPUtil(provider);
 
-		CHECK_THROWS_AS(manager.CreateSession(*second.instance, "https://example.com/"), InvalidInputException);
-		CHECK_THROWS_AS(manager.CreateSession(*second_connection.context, "https://example.com/"),
-		                InvalidInputException);
+		auto wrong_database = Catch::Contains("belongs to a different database");
+		CHECK_THROWS_WITH(manager.CreateSession(*second.instance, "https://example.com/"), wrong_database);
+		CHECK_THROWS_WITH(manager.CreateSession(*second_connection.context, "https://example.com/"), wrong_database);
 		DatabaseFileOpener second_opener(*second.instance);
 		FileOpenerInfo info {"https://example.com/"};
-		CHECK_THROWS_AS(manager.CreateSession(second_opener, info), InvalidInputException);
+		CHECK_THROWS_WITH(manager.CreateSession(second_opener, info), wrong_database);
 
 		auto session = manager.CreateSession(*first.instance, "https://example.com/");
 		CHECK(&session.Parameters().http_util == provider.get());
@@ -991,8 +991,8 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 			std::atomic<bool> invoked {false};
 			auto callback = [&]() {
 				if (!invoked.exchange(true)) {
-					CHECK_THROWS_AS(RunManagedRequest(session, session.Parameters(), "https://nested.example.com/"),
-					                InvalidInputException);
+					CHECK_THROWS_WITH(RunManagedRequest(session, session.Parameters(), "https://nested.example.com/"),
+					                  Catch::Contains("Nested HTTP client acquisition"));
 				}
 			};
 			switch (callback_index) {
@@ -1042,10 +1042,11 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		    std::launch::async, [&]() { return RunManagedRequest(session, *third_params, "https://example.com/"); });
 		REQUIRE(WaitForAdmissionWaiters(*manager, 2));
 		HTTPTransportManagerTestHelper::Close(*manager);
-		CHECK_THROWS_AS(manager->CreateSession(nullptr, nullptr), InvalidInputException);
-		CHECK_THROWS_AS(HTTPTransportManagerTestHelper::SetHTTPUtil(*manager, provider), InvalidInputException);
-		CHECK_THROWS_AS(first_waiter.get(), InvalidInputException);
-		CHECK_THROWS_AS(second_waiter.get(), InvalidInputException);
+		auto closed = Catch::Contains("HTTP transport manager is closed");
+		CHECK_THROWS_WITH(manager->CreateSession(nullptr, nullptr), closed);
+		CHECK_THROWS_WITH(HTTPTransportManagerTestHelper::SetHTTPUtil(*manager, provider), closed);
+		CHECK_THROWS_WITH(first_waiter.get(), closed);
+		CHECK_THROWS_WITH(second_waiter.get(), closed);
 		CHECK(HTTPTransportManagerTestHelper::AdmissionWaiters(*manager) == 0);
 		AllowMockRequests(*provider->state, 1);
 		REQUIRE(first.get());
@@ -1060,8 +1061,8 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		auto second_manager = HTTPTransportManagerTestHelper::Create(second_provider, 1);
 		auto first_session = first_manager->CreateSession(nullptr, nullptr);
 		auto second_session = second_manager->CreateSession(nullptr, nullptr);
-		CHECK_THROWS_AS(RunManagedRequest(first_session, second_session.Parameters(), "https://example.com/"),
-		                InvalidInputException);
+		CHECK_THROWS_WITH(RunManagedRequest(first_session, second_session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("HTTP parameters do not belong to this transport session"));
 	}
 
 	SECTION("client-free requests still validate shutdown admission") {
@@ -1069,8 +1070,8 @@ TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_man
 		auto manager = HTTPTransportManagerTestHelper::Create(provider, 1);
 		auto session = manager->CreateSession(nullptr, nullptr);
 		HTTPTransportManagerTestHelper::Close(*manager);
-		CHECK_THROWS_AS(RunManagedRequest(session, session.Parameters(), "https://example.com/"),
-		                InvalidInputException);
+		CHECK_THROWS_WITH(RunManagedRequest(session, session.Parameters(), "https://example.com/"),
+		                  Catch::Contains("HTTP transport manager is closed"));
 	}
 }
 
