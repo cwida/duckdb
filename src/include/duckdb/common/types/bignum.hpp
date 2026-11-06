@@ -15,6 +15,7 @@
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/bswap.hpp"
 
 namespace duckdb {
 
@@ -77,50 +78,156 @@ public:
 	//! ----------------------------------- Double Cast ----------------------------------- //
 	DUCKDB_API static bool BignumToDouble(const bignum_t &blob, double &result, bool &strict);
 	[[noreturn]] DUCKDB_API static void ThrowInvalidBlobSize(idx_t size);
+	//! Converts a BIGNUM into an integer type, returns false if the value is out of range
 	template <class T>
 	static bool BignumToInt(const bignum_t &blob, T &result, bool &strict) {
-		if (blob.data.GetSize() < BIGNUM_HEADER_SIZE + 1) {
-			ThrowInvalidBlobSize(blob.data.GetSize());
+		const idx_t blob_size = blob.data.GetSize();
+		if (blob_size < BIGNUM_HEADER_SIZE + 1) {
+			ThrowInvalidBlobSize(blob_size);
 		}
-		auto data_byte_size = blob.data.GetSize() - BIGNUM_HEADER_SIZE;
-		auto data = blob.data.GetData();
-		bool is_negative = (data[0] & 0x80) == 0;
-
-		uhugeint_t abs_value = 0;
-		for (idx_t i = 0; i < data_byte_size; ++i) {
-			uint8_t byte = static_cast<uint8_t>(data[Bignum::BIGNUM_HEADER_SIZE + i]);
-			if (is_negative) {
-				byte = static_cast<uint8_t>(~byte);
+		const char *data = blob.data.GetData();
+		const char *end = data + blob_size;
+		const bool is_negative = (data[0] & 0x80) == 0;
+		idx_t data_byte_size = blob_size - BIGNUM_HEADER_SIZE;
+		if (data_byte_size > 2 * sizeof(uint64_t)) {
+			// a well-formed BIGNUM carries no leading zero bytes, so this never fits a 128-bit integer; we tolerate
+			// leading zero bytes anyway (0xFF under the complement of a negative value)
+			const char zero = is_negative ? static_cast<char>(0xFF) : 0;
+			for (const char *first = data + BIGNUM_HEADER_SIZE; data_byte_size > 2 * sizeof(uint64_t);
+			     data_byte_size--, first++) {
+				if (*first != zero) {
+					return false;
+				}
 			}
-			if (abs_value > (NumericLimits<uhugeint_t>::Maximum() >> 8)) {
-				// the absolute value does not fit in 128 bits
-				return false;
-			}
-			abs_value = (abs_value << 8) | byte;
 		}
+		// load the magnitude as two 64-bit limbs
+		uint64_t upper = 0;
+		uint64_t lower;
+		if (data_byte_size > sizeof(uint64_t)) {
+			upper = BignumCastLoadLeadingBytes(end - sizeof(uint64_t), data_byte_size - sizeof(uint64_t), is_negative);
+			lower = BignumCastLoadLimb(end, is_negative);
+		} else {
+			lower = BignumCastLoadLeadingBytes(end, data_byte_size, is_negative);
+		}
+		return BignumCastFromMagnitude<T>(upper, lower, is_negative, result);
+	}
 
-		const auto max_value = static_cast<uhugeint_t>(NumericLimits<T>::Maximum());
-		if (!is_negative || abs_value == 0) {
-			if (abs_value > max_value) {
-				return false;
-			}
-			result = static_cast<T>(abs_value);
+	//! Converts a 128-bit magnitude and a sign into an integer type, returns false if the value is out of range
+	template <class T>
+	static bool BignumCastFromMagnitude(uint64_t upper, uint64_t lower, bool is_negative, T &result) {
+		if (upper == 0 && lower == 0) {
+			result = 0;
 			return true;
 		}
-		if (!NumericLimits<T>::IsSigned()) {
+		if (upper != 0) {
 			return false;
 		}
-		if (abs_value > max_value + 1) {
-			return false;
-		}
-		if (abs_value == max_value + 1) {
-			result = NumericLimits<T>::Minimum();
+		if (is_negative) {
+			if (!NumericLimits<T>::IsSigned()) {
+				return false;
+			}
+			// the magnitude may be one larger than the maximum
+			const uint64_t limit = static_cast<uint64_t>(NumericLimits<T>::Maximum()) + 1;
+			if (lower > limit) {
+				return false;
+			}
+			if (lower == limit) {
+				result = NumericLimits<T>::Minimum();
+				return true;
+			}
+			result = static_cast<T>(-static_cast<int64_t>(lower));
 			return true;
 		}
-		result = static_cast<T>(-static_cast<hugeint_t>(abs_value));
+		if (lower > static_cast<uint64_t>(NumericLimits<T>::Maximum())) {
+			return false;
+		}
+		result = static_cast<T>(lower);
 		return true;
 	}
+
+	//! Byte order conversion for the big-endian magnitude bytes of a BIGNUM
+	static inline uint64_t BignumCastBigEndianToHost(uint64_t value) {
+#if DUCKDB_IS_BIG_ENDIAN
+		return value;
+#else
+		return BSwap(value);
+#endif
+	}
+	static inline uint32_t BignumCastBigEndianToHost(uint32_t value) {
+#if DUCKDB_IS_BIG_ENDIAN
+		return value;
+#else
+		return BSwap(value);
+#endif
+	}
+
+	//! Loads the eight big-endian magnitude bytes that end at "end", undoing the complement of a negative value
+	static inline uint64_t BignumCastLoadLimb(const char *end, bool is_negative) {
+		uint64_t value;
+		memcpy(&value, end - sizeof(uint64_t), sizeof(uint64_t));
+		value = BignumCastBigEndianToHost(value);
+		return is_negative ? ~value : value;
+	}
+
+	//! Loads the n (1 <= n <= 8) most significant magnitude bytes, which end at "end", of a BIGNUM blob. The three
+	//! header bytes precede them, so a four byte load (n <= 4) or an eight byte load (n >= 5) ending at "end" stays
+	//! within the blob; the bytes that do not belong to the magnitude are masked off.
+	static inline uint64_t BignumCastLoadLeadingBytes(const char *end, idx_t n, bool is_negative) {
+		D_ASSERT(n >= 1 && n <= sizeof(uint64_t));
+		if (n <= sizeof(uint32_t)) {
+			uint32_t value;
+			memcpy(&value, end - sizeof(uint32_t), sizeof(uint32_t));
+			value = BignumCastBigEndianToHost(value);
+			if (is_negative) {
+				value = ~value;
+			}
+			return value & (NumericLimits<uint32_t>::Maximum() >> (32 - 8 * n));
+		}
+		uint64_t value;
+		memcpy(&value, end - sizeof(uint64_t), sizeof(uint64_t));
+		value = BignumCastBigEndianToHost(value);
+		if (is_negative) {
+			value = ~value;
+		}
+		return value & (NumericLimits<uint64_t>::Maximum() >> (64 - 8 * n));
+	}
 };
+
+template <>
+inline bool Bignum::BignumCastFromMagnitude(uint64_t upper, uint64_t lower, bool is_negative, hugeint_t &result) {
+	constexpr uint64_t SIGN_BIT = static_cast<uint64_t>(1) << 63;
+	if (upper == 0 && lower == 0) {
+		result = hugeint_t(0);
+		return true;
+	}
+	if (is_negative) {
+		if (upper > SIGN_BIT || (upper == SIGN_BIT && lower != 0)) {
+			return false;
+		}
+		if (upper == SIGN_BIT) {
+			result = NumericLimits<hugeint_t>::Minimum();
+			return true;
+		}
+		// two's complement of the magnitude
+		result.lower = ~lower + 1;
+		result.upper = static_cast<int64_t>(~upper + (lower == 0 ? 1 : 0));
+		return true;
+	}
+	if (upper >= SIGN_BIT) {
+		return false;
+	}
+	result = hugeint_t(static_cast<int64_t>(upper), lower);
+	return true;
+}
+
+template <>
+inline bool Bignum::BignumCastFromMagnitude(uint64_t upper, uint64_t lower, bool is_negative, uhugeint_t &result) {
+	if (is_negative && (upper != 0 || lower != 0)) {
+		return false;
+	}
+	result = uhugeint_t(upper, lower);
+	return true;
+}
 
 //! ----------------------------------- (u)Integral Cast ----------------------------------- //
 struct IntCastToBignum {
