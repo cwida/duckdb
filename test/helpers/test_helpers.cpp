@@ -579,6 +579,10 @@ static string MaterializeLocalTestPath() {
 }
 // -----------------------------------------------------------------------------
 
+string TestBuildDirectory() {
+	return string(DUCKDB_BUILD_DIRECTORY);
+}
+
 string TestDirectoryPath() {
 	// A remote root is a pure string -- the test owns materialization there. Otherwise it IS the local tree.
 	if (primary_root.IsRemote()) {

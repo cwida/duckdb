@@ -59,6 +59,8 @@ void SetDeleteTestPath(bool delete_path);
 bool DeleteTestPath();
 void ClearTestDirectory();
 string TestGetCurrentDirectory();
+//! The build directory this test binary was built in, where the test extensions are
+string TestBuildDirectory();
 string TestDirectoryPath();
 string TestCreatePath(string suffix);
 
