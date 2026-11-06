@@ -1,4 +1,3 @@
-#include "duckdb.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -281,7 +280,7 @@ public:
 
 		if (buffer_collection.CanFlush()) {
 			auto &buffer_state = buffer_collection.GetCurrentBufferState();
-			FlushPage(buffer_collection.BufferHandleMutable(), current_block_id);
+			FlushPage(buffer_collection.BufferHandleMutable(), current_block_id, buffer_state.offset);
 			buffer_state.flags.Clear();
 			buffer_state.full = false;
 			buffer_state.offset = 0;
@@ -467,10 +466,14 @@ public:
 		return new_id;
 	}
 
-	void FlushPage(BufferHandle &buffer, block_id_t block_id) {
+	void FlushPage(BufferHandle &buffer, block_id_t block_id, idx_t used_size) {
 		if (block_id == INVALID_BLOCK) {
 			return;
 		}
+
+		auto &file_buffer = buffer.GetFileBuffer();
+		D_ASSERT(used_size <= file_buffer.Size());
+		memset(file_buffer.GetDataMutable() + used_size, 0, file_buffer.Size() - used_size);
 
 		// Write the current page to disk
 		auto &block_manager = partial_block_manager.GetBlockManager();
@@ -533,7 +536,7 @@ public:
 			return;
 		}
 		auto &buffer_handle = *buffer_handle_ptr;
-		FlushPage(buffer_handle, vector_state.starting_page);
+		FlushPage(buffer_handle, vector_state.starting_page, buffer_state.offset);
 		buffer_state.offset = 0;
 		buffer_state.full = false;
 	}
@@ -576,7 +579,7 @@ public:
 					throw InternalException("(ZSTDCompressionState::FlushSegment) Both extra pages were dirty (needed "
 					                        "to be flushed), this should be impossible");
 				}
-				FlushPage(buffer_handle, buffer_collection.block_id);
+				FlushPage(buffer_handle, buffer_collection.block_id, buffer_state.offset);
 				buffer_state.full = false;
 				buffer_state.offset = 0;
 				buffer_state.flags.Clear();
@@ -1107,9 +1110,9 @@ CompressionFunction ZSTDFun::GetFunction(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::VARCHAR);
 	auto zstd =
 	    CompressionFunction(CompressionType::COMPRESSION_ZSTD, data_type, ZSTDStorage::StringInitAnalyze,
-	                        ZSTDStorage::StringAnalyze, ZSTDStorage::StringFinalAnalyze, ZSTDStorage::InitCompression,
-	                        ZSTDStorage::Compress, ZSTDStorage::FinalizeCompress, ZSTDStorage::StringInitScan,
-	                        ZSTDStorage::StringScan, ZSTDStorage::StringScanPartial, ZSTDStorage::StringSkip);
+		                    ZSTDStorage::StringAnalyze, ZSTDStorage::StringFinalAnalyze, ZSTDStorage::InitCompression,
+		                    ZSTDStorage::Compress, ZSTDStorage::FinalizeCompress, ZSTDStorage::StringInitScan,
+		                    ZSTDStorage::StringScan, ZSTDStorage::StringScanPartial, ZSTDStorage::StringSkip);
 	zstd.init_segment = ZSTDStorage::StringInitSegment;
 	zstd.serialize_state = ZSTDStorage::SerializeState;
 	zstd.deserialize_state = ZSTDStorage::DeserializeState;
