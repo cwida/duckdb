@@ -7,6 +7,7 @@
 #include "test_helpers.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <sstream>
 
@@ -105,6 +106,11 @@ public:
 			    result.hasExpandedExpression() ? result.getExpandedExpression() : result.getExpression();
 			failure.message = result.getMessage();
 			capture.failures.push_back(std::move(failure));
+			if (result.getResultType() == Catch::ResultWas::FatalErrorCondition) {
+				std::fprintf(stderr, "DuckDB test process received a fatal signal while running cpp:%s:%s\n%s\n",
+				             DUCKDB_TEST_BUNDLE_NAME, capture.test_name.c_str(), result.getMessage().c_str());
+				std::fflush(stderr);
+			}
 		}
 		return true;
 	}

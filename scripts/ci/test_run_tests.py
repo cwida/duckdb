@@ -2132,6 +2132,38 @@ test cases: 1 | 1 failed
         )
         self.assertEqual(reproduce_batch, batch)
 
+    def test_protocol_crash_preserves_stacktrace_and_test_name(self):
+        batch = [
+            "sql:test/sql/first.test",
+            "sql:test/sql/crash.test",
+        ]
+        stderr = """
+DuckDB test process received SIGSEGV - Segmentation violation signal while running sql:test/sql/crash.test
+
+/duckdb/build/release/duckdb(duckdb::CrashHere()+0x12) [0x1234]
+/duckdb/build/release/extension/test/test.duckdb_extension(duckdb::Execute()+0x34) [0x5678]
+"""
+        lines, reproduce_batch = run_tests.summarize_failure_output(
+            "test_run process exited with return code -11 before returning 2 result(s)",
+            "",
+            stderr,
+            batch,
+            returncode=-11,
+        )
+        self.assertEqual(
+            strip_ansi_lines(lines)[1:],
+            [
+                "error: FAIL sql:test/sql/crash.test",
+                "",
+                "DuckDB test process received SIGSEGV - Segmentation violation signal while running "
+                "sql:test/sql/crash.test",
+                "",
+                "/duckdb/build/release/duckdb(duckdb::CrashHere()+0x12) [0x1234]",
+                "/duckdb/build/release/extension/test/test.duckdb_extension(duckdb::Execute()+0x34) [0x5678]",
+            ],
+        )
+        self.assertEqual(reproduce_batch, ["sql:test/sql/crash.test"])
+
     def test_signal_only_failure_prefers_returncode_over_unrelated_stdout(self):
         batch = ["test/sql/crash.test"]
         lines, reproduce_batch = run_tests.summarize_failure_output(

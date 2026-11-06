@@ -1,3 +1,4 @@
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -14,7 +15,23 @@
 #include "test_reporter.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define DUCKDB_TEST_ADDRESS_SANITIZER
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#define DUCKDB_TEST_ADDRESS_SANITIZER
+#endif
+
+#if (defined(__GLIBC__) || defined(__APPLE__)) && !defined(DUCKDB_TEST_ADDRESS_SANITIZER)
+#define DUCKDB_TEST_CRASH_STACKTRACE
+#include <signal.h>
+#endif
 
 namespace duckdb {
 
@@ -86,6 +103,88 @@ struct SQLTestReporter : public TestReporter {
 
 	string test_name;
 };
+
+#ifdef DUCKDB_TEST_CRASH_STACKTRACE
+struct TestSignalDefinition {
+	int signal;
+	const char *name;
+};
+
+static TestSignalDefinition TEST_SIGNALS[] = {
+    {SIGILL, "SIGILL - Illegal instruction signal"},
+    {SIGFPE, "SIGFPE - Floating point error signal"},
+    {SIGSEGV, "SIGSEGV - Segmentation violation signal"},
+#ifdef SIGBUS
+    {SIGBUS, "SIGBUS - Bus error signal"},
+#endif
+    {SIGABRT, "SIGABRT - Abort signal"},
+};
+static struct sigaction previous_signal_actions[sizeof(TEST_SIGNALS) / sizeof(TEST_SIGNALS[0])];
+static const char *active_test_id;
+#ifdef __GLIBC__
+static char test_signal_stack[64 * 1024];
+static stack_t previous_signal_stack;
+#endif
+
+static void RestoreTestSignalHandlers() {
+	for (idx_t index = 0; index < sizeof(TEST_SIGNALS) / sizeof(TEST_SIGNALS[0]); index++) {
+		sigaction(TEST_SIGNALS[index].signal, &previous_signal_actions[index], nullptr);
+	}
+#ifdef __GLIBC__
+	sigaltstack(&previous_signal_stack, nullptr);
+#endif
+}
+
+static void HandleTestSignal(int signal) {
+	const char *signal_name = "unknown fatal signal";
+	for (auto &definition : TEST_SIGNALS) {
+		if (definition.signal == signal) {
+			signal_name = definition.name;
+			break;
+		}
+	}
+	RestoreTestSignalHandlers();
+	auto message = "DuckDB test process received " + string(signal_name) + " while running " + active_test_id;
+	auto output = Exception::FormatStackTrace(message);
+	output += "\n";
+	std::fwrite(output.data(), 1, output.size(), stderr);
+	std::fflush(stderr);
+	raise(signal);
+}
+
+class TestCrashHandler {
+public:
+	explicit TestCrashHandler(const string &test_id) {
+		active_test_id = test_id.c_str();
+#ifdef __GLIBC__
+		stack_t signal_stack;
+		signal_stack.ss_sp = test_signal_stack;
+		signal_stack.ss_size = sizeof(test_signal_stack);
+		signal_stack.ss_flags = 0;
+		sigaltstack(&signal_stack, &previous_signal_stack);
+#endif
+		struct sigaction action;
+		memset(&action, 0, sizeof(action));
+		action.sa_handler = HandleTestSignal;
+		action.sa_flags = SA_ONSTACK;
+		sigemptyset(&action.sa_mask);
+		for (idx_t index = 0; index < sizeof(TEST_SIGNALS) / sizeof(TEST_SIGNALS[0]); index++) {
+			sigaction(TEST_SIGNALS[index].signal, &action, &previous_signal_actions[index]);
+		}
+	}
+
+	~TestCrashHandler() {
+		RestoreTestSignalHandlers();
+		active_test_id = nullptr;
+	}
+};
+#else
+class TestCrashHandler {
+public:
+	explicit TestCrashHandler(const string &) {
+	}
+};
+#endif
 
 static TestRegistryState &GetTestRegistry(ClientContext &context) {
 	auto service =
@@ -755,6 +854,7 @@ static void InitializeSQLTestEnvironment() {
 static TestResult RunSQLTest(const TestDescription &test) {
 	SQLTestReporter reporter(test.name);
 	TestReporterScope reporter_scope(reporter);
+	TestCrashHandler crash_handler(test.test_id);
 	auto start = std::chrono::steady_clock::now();
 	TestResult result;
 	result.test_id = test.test_id;

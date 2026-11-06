@@ -99,6 +99,10 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
   duckdb_add_test_bundle(duckdb_tests SOURCES ${UNITTEST_OBJECT_FILES})
   target_compile_definitions(duckdb_tests_loadable_extension
                              PRIVATE DUCKDB_TEST_BUNDLE_DEBUG_FS)
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MUSL_ENABLED) OR APPLE)
+    target_compile_definitions(duckdb_tests_loadable_extension
+                               PRIVATE DUCKDB_UNITTEST_CRASH_STACKTRACE)
+  endif()
   target_include_directories(
     duckdb_tests_loadable_extension
     PRIVATE "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")

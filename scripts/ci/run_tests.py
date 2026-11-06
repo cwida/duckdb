@@ -788,6 +788,8 @@ SANITIZER_OR_ASSERT_PATTERN = re.compile(
     r"(AddressSanitizer|LeakSanitizer|ThreadSanitizer|UndefinedBehaviorSanitizer|runtime error:|assert)",
     flags=re.IGNORECASE,
 )
+TEST_CRASH_PATTERN = re.compile(r"^DuckDB test process received\b")
+TEST_CRASH_TEST_PATTERN = re.compile(r"\bwhile running ((?:sql|cpp):.+)$")
 
 
 def find_failing_test(stderr_lines: list[str], batch):
@@ -1183,7 +1185,7 @@ def parse_stderr_failure_info(stderr_lines: list[str], batch):
 
 def extract_interesting_failure_block(lines: list[str]):
     for idx, line in enumerate(lines):
-        if not SANITIZER_PATTERN.search(line):
+        if not SANITIZER_PATTERN.search(line) and not TEST_CRASH_PATTERN.search(line):
             continue
         block = [next_line.strip() for next_line in lines[idx:]]
         while block and not block[-1]:
@@ -1218,6 +1220,14 @@ def format_signal_summary(returncode: int | None):
         signal_name = f"SIG{signal_number}"
     description = signal.strsignal(signal_number) or "terminated by signal"
     return f"{signal_name} - {description}"
+
+
+def find_crashed_test(stderr_lines: list[str]):
+    for line in stderr_lines:
+        match = TEST_CRASH_TEST_PATTERN.search(line.strip())
+        if match:
+            return match.group(1)
+    return None
 
 
 def retarget_failing_test(new_test_name: str | None, test_name: str | None, line_number: int | None):
@@ -1267,7 +1277,11 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
     if stdout_info.fatal_error_lines and stdout_info.last_started_test:
         test_name, line_number = retarget_failing_test(stdout_info.last_started_test, test_name, line_number)
     if test_name is None and returncode is not None and returncode < 0:
-        test_name = stdout_info.last_unfinished_test or infer_timed_out_test_from_stdout(stdout_lines, batch)
+        test_name = (
+            find_crashed_test(stderr_lines)
+            or stdout_info.last_unfinished_test
+            or infer_timed_out_test_from_stdout(stdout_lines, batch)
+        )
     reproduce_batch = [test_name] if test_name else list(batch)
 
     if stderr_info.wrong_result_line is not None:
