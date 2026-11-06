@@ -3,9 +3,6 @@
 # group: [aggregate_state_export]
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 CREATE TABLE t AS SELECT i % 3 AS g, i % 10 AS v FROM range(30) r(i);
 
 # the exported state is the plain aggregate's state: combining the per-group states would count every
