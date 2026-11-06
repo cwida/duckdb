@@ -60,19 +60,32 @@ void MatchAndReplaceUserSetVariables(DialectOptions &original, DialectOptions &s
 		                "Timestamp Format", error);
 	}
 }
-// Set the CSV Options in the reference
-void CSVSniffer::SetResultOptions() const {
-	bool found_date = false;
-	bool found_timestamp = false;
-	for (auto &type : detected_types) {
-		if (type == LogicalType::DATE) {
-			found_date = true;
-		} else if (type == LogicalType::TIMESTAMP) {
-			found_timestamp = true;
+bool CSVSniffer::SniffedType(const LogicalTypeId type) const {
+	for (auto &detected_type : detected_types) {
+		if (detected_type.id() == type) {
+			return true;
 		}
 	}
+	return false;
+}
+
+DialectOptions CSVSniffer::ScanDialectOptions() const {
+	auto result = options.dialect_options;
+	auto &sniffed = best_candidate->GetStateMachine().dialect_options;
+	for (auto type : {LogicalTypeId::DATE, LogicalTypeId::TIMESTAMP}) {
+		auto &format = result.date_format[type];
+		if (!format.IsSetByUser() && SniffedType(type)) {
+			format.Set(sniffed.date_format.at(type).GetValue(), false);
+		}
+	}
+	return result;
+}
+
+// Set the CSV Options in the reference
+void CSVSniffer::SetResultOptions() const {
 	MatchAndReplaceUserSetVariables(options.dialect_options, best_candidate->GetStateMachine().dialect_options,
-	                                options.sniffer_user_mismatch_error, found_date, found_timestamp);
+	                                options.sniffer_user_mismatch_error, SniffedType(LogicalTypeId::DATE),
+	                                SniffedType(LogicalTypeId::TIMESTAMP));
 	options.dialect_options.num_cols = best_candidate->GetStateMachine().dialect_options.num_cols;
 	options.dialect_options.rows_until_header = best_candidate->GetStateMachine().dialect_options.rows_until_header;
 }
@@ -135,7 +148,8 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 	}
 
 	auto names = DetectHeaderInternal(buffer_manager->context, potential_header, *state_machine, set_columns,
-	                                  best_sql_types_candidates_per_column_idx, options, file_options, *error_handler);
+	                                  best_sql_types_candidates_per_column_idx, options, options.dialect_options,
+	                                  file_options, *error_handler);
 
 	for (idx_t column_idx = 0; column_idx < best_sql_types_candidates_per_column_idx.size(); column_idx++) {
 		LogicalType d_type = best_sql_types_candidates_per_column_idx[column_idx].back();

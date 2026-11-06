@@ -53,7 +53,7 @@ bool CSVSniffer::TryCastVector(Vector &parse_chunk_col, idx_t size, const Logica
 					value_ptr = strip_thousands.c_str();
 					value_size = strip_thousands.size();
 				}
-				if (!CSVSniffer::CanYouCastBignum(value_ptr, value_size)) {
+				if (!CSVSniffer::CanYouCastBignum(value_ptr, value_size, true)) {
 					return false;
 				}
 			}
