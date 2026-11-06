@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <new>
 
 using namespace duckdb_shell;
 
@@ -28,6 +29,10 @@ int wmain(int argc, wchar_t **wargv) {
 		rc = RunShell(argc, argv);
 	} catch (const ShellExitException &ex) {
 		rc = ex.exit_code;
+	} catch (const std::bad_alloc &) {
+		// the message of any other exception is built on the heap, which has nothing left here
+		rc = 1;
+		fprintf(stderr, "Exited due to error: Out of Memory Error: Allocation failure\n");
 	} catch (std::exception &ex) {
 		rc = 1;
 		ErrorData error(ex);
@@ -45,6 +50,9 @@ int wmain(int argc, wchar_t **wargv) {
 			delete shell_state;
 		}
 		shell_state = nullptr;
+	} catch (const std::bad_alloc &) {
+		rc = 1;
+		fprintf(stderr, "Error during clean-up due to error: Out of Memory Error: Allocation failure\n");
 	} catch (std::exception &ex) {
 		rc = 1;
 		ErrorData error(ex);
