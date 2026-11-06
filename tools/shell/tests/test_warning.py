@@ -99,4 +99,15 @@ def test_keeping_shell_log_storage_does_not_warn(shell):
     )
 
     result = test.run()
-    assert "The logging settings have been changed" not in result.stdout
+    result.check_not_exist("The logging settings have been changed")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["CALL enable_logging(level = 'error');", "CALL enable_logging('QueryLog');"],
+)
+def test_dropping_warnings_from_shell_log_storage_warns(shell, statement):
+    test = ShellTest(shell).statement(statement)
+
+    result = test.run()
+    result.check_stdout("The logging settings have been changed")

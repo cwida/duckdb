@@ -52,10 +52,12 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 
 	auto &log_manager = context.db->GetLogManager();
 
-	// only moving away from the shell's storage stops warnings from being printed in the CLI
+	// warnings stop being printed in the CLI when they no longer reach the shell's storage
 	static constexpr const char *SHELL_LOG_STORAGE = "shell_log_storage";
+	const bool leaves_shell_storage = !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_STORAGE);
+	const bool drops_warnings = bind_data.config.level > LogLevel::LOG_WARNING || !bind_data.log_types_to_set.empty();
 	if (StringUtil::CIEquals(log_manager.GetConfig().storage, SHELL_LOG_STORAGE) &&
-	    !StringUtil::CIEquals(bind_data.config.storage, SHELL_LOG_STORAGE)) {
+	    (leaves_shell_storage || drops_warnings)) {
 		DUCKDB_LOG_WARNING(context,
 		                   "The logging settings have been changed so you may lose warnings printed in the CLI.\n"
 		                   "To continue printing warnings to the console, set storage='shell_log_storage'.\n"

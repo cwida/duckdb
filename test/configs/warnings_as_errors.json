@@ -99,20 +99,6 @@
       ]
     },
     {
-      "reason": "Table macros take table and column names as bare identifiers, which warn as a deprecated identifier conversion; quoting them changes the result",
-      "paths": [
-        "test/sql/aggregate/aggregates/arg_min_max_n_tpch.test",
-        "test/sql/aggregate/aggregates/histogram_table_function.test",
-        "test/sql/aggregate/aggregates/max_n_all_types_grouped.test",
-        "test/sql/catalog/function/default_table_macro_shadowing.test",
-        "test/sql/catalog/function/macro_query_table.test",
-        "test/sql/catalog/function/query_function.test",
-        "test/sql/function/list/aggregates/histogram_decimal.test",
-        "test/sql/optimizer/topn_window_set_elimination.test",
-        "test/sql/sql_export/call_values.test"
-      ]
-    },
-    {
       "reason": "Expects the error that follows a deprecated identifier conversion",
       "paths": [
         "test/sql/copy/csv/read_csv_subquery.test",
