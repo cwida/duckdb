@@ -94,6 +94,7 @@
       "reason": "Reads views stored by an older version with the deprecated lambda arrow syntax",
       "paths": [
         "test/sql/attach/attach_lambda_view.test",
+        "test/sql/function/list/lambdas/test_lambda_storage.test",
         "test/sql/storage/bc/test_slice_bounds_v1_5.test"
       ]
     },
@@ -139,24 +140,7 @@
         "test/sql/function/list/lambdas/arrow/test_lambda_arrow_storage_deprecated.test",
         "test/sql/function/list/lambdas/arrow/transform_deprecated.test",
         "test/sql/function/list/lambdas/arrow/transform_with_index_deprecated.test",
-        "test/sql/function/list/lambdas/arrow/warn_deprecated_arrow.test",
-        "test/sql/function/list/lambdas/expression_iterator_cases.test",
-        "test/sql/function/list/lambdas/filter.test",
-        "test/sql/function/list/lambdas/incorrect.test",
-        "test/sql/function/list/lambdas/lambda_scope.test",
-        "test/sql/function/list/lambdas/lambdas_and_functions.test",
-        "test/sql/function/list/lambdas/lambdas_and_group_by.test",
-        "test/sql/function/list/lambdas/lambdas_and_macros.test",
-        "test/sql/function/list/lambdas/list_comprehension.test",
-        "test/sql/function/list/lambdas/reduce.test",
-        "test/sql/function/list/lambdas/reduce_initial.test",
-        "test/sql/function/list/lambdas/rhs_parameters.test",
-        "test/sql/function/list/lambdas/storage.test",
-        "test/sql/function/list/lambdas/table_functions.test",
-        "test/sql/function/list/lambdas/test_lambda_storage.test",
-        "test/sql/function/list/lambdas/transform.test",
-        "test/sql/function/list/lambdas/transform_with_index.test",
-        "test/sql/function/list/lambdas/vector_types.test"
+        "test/sql/function/list/lambdas/arrow/warn_deprecated_arrow.test"
       ]
     },
     {
@@ -174,15 +158,6 @@
         "test/sql/pragma/profiling/test_custom_profiling_optimizer_settings.test",
         "test/sql/pragma/profiling/test_default_profiling_settings.test",
         "test/sql/pragma/profiling/test_duckdb_profiling_settings_function.test"
-      ]
-    },
-    {
-      "reason": "Applies OFFSET to an input without a guaranteed order",
-      "paths": [
-        "test/issues/rigger/assertion_scale.test",
-        "test/sql/aggregate/distinct/distinct_limit.test",
-        "test/sql/cte/materialized/cte_gated_buffered_consumer_27925.test",
-        "test/sql/limit/test_preserve_insertion_order.test"
       ]
     }
   ]

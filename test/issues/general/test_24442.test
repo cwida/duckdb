@@ -19,7 +19,7 @@ INSERT INTO peers VALUES
 	(4, 2, 20, true),
 	(5, 3, 30, true)
 
-foreach windowmode "window" "combine" "separate"
+foreach windowmode 'window' 'combine' 'separate'
 
 statement ok
 SET debug_window_mode={windowmode}
