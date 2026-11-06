@@ -72,20 +72,9 @@ uint8_t BignumIntermediate::GetAbsoluteByte(int64_t index) const {
 	return is_negative ? static_cast<uint8_t>(~data[index]) : static_cast<uint8_t>(data[index]);
 }
 
-//! Loads the 8 magnitude bytes ending just before end_idx as one limb; bytes before the start of the value read as
-//! zero, bytes of a negative value are complemented so the limb holds the absolute value
+//! The absolute-value limb ending just before end_idx of a value, see BignumLimb::LoadAbsolute
 static inline uint64_t LoadAbsoluteLimb(const BignumIntermediate &value, int64_t end_idx) {
-	if (end_idx <= 0) {
-		return 0;
-	}
-	if (end_idx >= 8) {
-		const uint64_t limb = BignumLimb::LoadBE(value.data + end_idx - 8);
-		return value.is_negative ? ~limb : limb;
-	}
-	// a partial limb at the most significant end of the value: only the low end_idx bytes are real
-	const uint64_t limb = BignumLimb::LoadBEPartial(value.data, static_cast<idx_t>(end_idx));
-	const uint64_t mask = (uint64_t(1) << (8 * end_idx)) - 1;
-	return value.is_negative ? (~limb & mask) : limb;
+	return BignumLimb::LoadAbsolute(value.data, value.is_negative, end_idx);
 }
 
 //! Stores the low min(end_idx, 8) bytes of a limb as big-endian bytes ending just before end_idx
@@ -385,28 +374,17 @@ static string_t AddSmall(StringHeap &heap, const BignumIntermediate &lhs, const 
 	}
 
 	// encode the magnitude in as many bytes as it needs, complemented for a negative result
-	idx_t byte_count;
-	if (top) {
-		byte_count = 2 * BignumLimb::BYTES + 1;
-	} else if (hi) {
-		byte_count = BignumLimb::BYTES + BignumLimb::ByteCount(hi);
-	} else {
-		byte_count = BignumLimb::ByteCount(lo);
-	}
+	const idx_t byte_count = top ? 2 * BignumLimb::BYTES + 1 : BignumLimb::ByteCount(hi, lo);
 	auto target = heap.EmptyString(byte_count + Bignum::BIGNUM_HEADER_SIZE);
 	auto ptr = target.GetDataWriteable();
 	Bignum::SetHeader(ptr, byte_count, is_negative);
 	auto out = reinterpret_cast<data_ptr_t>(ptr + Bignum::BIGNUM_HEADER_SIZE);
-	const uint64_t flip = is_negative ? ~uint64_t(0) : 0;
-	if (byte_count > BignumLimb::BYTES) {
-		if (top) {
-			*out++ = static_cast<data_t>(top ^ flip);
-		}
-		const idx_t hi_bytes = MinValue<idx_t>(byte_count, 2 * BignumLimb::BYTES) - BignumLimb::BYTES;
-		BignumLimb::StoreBEPartial(out, hi_bytes, hi ^ flip);
-		BignumLimb::StoreBE(out + hi_bytes, lo ^ flip);
+	if (top) {
+		// the 129th bit is the most significant byte, the two limbs follow in full
+		*out++ = static_cast<data_t>(is_negative ? ~top : top);
+		BignumLimb::StoreMagnitude(out, 2 * BignumLimb::BYTES, hi, lo, is_negative);
 	} else {
-		BignumLimb::StoreBEPartial(out, byte_count, lo ^ flip);
+		BignumLimb::StoreMagnitude(out, byte_count, hi, lo, is_negative);
 	}
 	target.Finalize();
 	return target;

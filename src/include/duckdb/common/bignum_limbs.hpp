@@ -91,6 +91,22 @@ struct BignumLimb {
 		}
 	}
 
+	//! Loads the 8 magnitude bytes ending just before end_idx as one limb holding the absolute value: bytes before
+	//! the start of the value read as zero, bytes of a negative value are complemented
+	static inline uint64_t LoadAbsolute(const_data_ptr_t data, bool is_negative, int64_t end_idx) {
+		if (end_idx <= 0) {
+			return 0;
+		}
+		if (end_idx >= static_cast<int64_t>(BYTES)) {
+			const uint64_t limb = LoadBE(data + end_idx - BYTES);
+			return is_negative ? ~limb : limb;
+		}
+		// a partial limb at the most significant end of the value: only the low end_idx bytes are real
+		const uint64_t limb = LoadBEPartial(data, static_cast<idx_t>(end_idx));
+		const uint64_t mask = (uint64_t(1) << (8 * end_idx)) - 1;
+		return is_negative ? (~limb & mask) : limb;
+	}
+
 	//! The number of leading zero bits of a non-zero limb
 	static inline idx_t LeadingZeros(uint64_t value) {
 		D_ASSERT(value != 0);
@@ -107,6 +123,24 @@ struct BignumLimb {
 			return 1;
 		}
 		return (64 - LeadingZeros(magnitude) + 7) / 8;
+	}
+
+	//! The number of bytes needed to hold a two-limb magnitude, at least one
+	static inline idx_t ByteCount(uint64_t hi, uint64_t lo) {
+		return hi ? BYTES + ByteCount(hi) : ByteCount(lo);
+	}
+
+	//! Writes a two-limb magnitude as byte_count (1..16, see ByteCount) big-endian BIGNUM data bytes, complemented
+	//! for a negative value
+	static inline void StoreMagnitude(data_ptr_t out, idx_t byte_count, uint64_t hi, uint64_t lo, bool is_negative) {
+		D_ASSERT(byte_count >= 1 && byte_count <= 2 * BYTES);
+		const uint64_t flip = is_negative ? ~uint64_t(0) : 0;
+		if (byte_count > BYTES) {
+			StoreBEPartial(out, byte_count - BYTES, hi ^ flip);
+			StoreBE(out + byte_count - BYTES, lo ^ flip);
+		} else {
+			StoreBEPartial(out, byte_count, lo ^ flip);
+		}
 	}
 };
 
