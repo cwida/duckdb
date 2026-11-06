@@ -295,14 +295,6 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_crlf.csv', delim=
 13	17
 14	18
 
-# file_crlf, rejects
-query IIIIII
-CREATE OR REPLACE TEMP TABLE t_rej_file_crlf AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_crlf.csv', delim='||', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_file_crlf', rejects_scan='scan_rej_file_crlf'); SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(replace(csv_line, chr(10), '<LF>'), chr(13), '<CR>') FROM rej_file_crlf ORDER BY ALL
-----
-8	103	112	3	MISSING COLUMNS	<LF>8||b||x
-9	112	122	4	CAST	<LF>9||b||x||y||extra
-9	112	124	5	TOO MANY COLUMNS	<LF>9||b||x||y||extra
-
 # file_3, strict
 statement error
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_3.csv', delim='<|>', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
@@ -684,3 +676,16 @@ CREATE OR REPLACE TEMP TABLE t_rej_file_cent AS SELECT * FROM read_csv('{DATA_DI
 5	54	63	4	CAST	5¢b¢x¢11zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
 6	116	125	4	CAST	6¢b¢x¢y¢extra
 6	116	127	5	TOO MANY COLUMNS	6¢b¢x¢y¢extra
+
+# The rejects of the CRLF file depend on the vector size: the line start recorded after a CRLF row end points at the
+# LF byte, except for the first row of a chunk, which starts after it (main does the same), so a chunk boundary inside
+# the file moves line_byte_position and csv_line of that row.
+require vector_size 2048
+
+# file_crlf, rejects
+query IIIIII
+CREATE OR REPLACE TEMP TABLE t_rej_file_crlf AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_multibyte_crlf.csv', delim='||', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_file_crlf', rejects_scan='scan_rej_file_crlf'); SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(replace(csv_line, chr(10), '<LF>'), chr(13), '<CR>') FROM rej_file_crlf ORDER BY ALL
+----
+8	103	112	3	MISSING COLUMNS	<LF>8||b||x
+9	112	122	4	CAST	<LF>9||b||x||y||extra
+9	112	124	5	TOO MANY COLUMNS	<LF>9||b||x||y||extra

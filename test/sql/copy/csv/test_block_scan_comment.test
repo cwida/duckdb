@@ -253,22 +253,6 @@ SELECT a, d FROM read_csv('{DATA_DIR}/csv/block_scan_comment_crlf.csv', delim=',
 11	15
 13	16
 
-# file_crlf, rejects
-query IIIIII
-CREATE OR REPLACE TEMP TABLE t_rej_file_crlf AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_comment_crlf.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_file_crlf', rejects_scan='scan_rej_file_crlf'); SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(replace(csv_line, chr(10), '<LF>'), chr(13), '<CR>') FROM rej_file_crlf ORDER BY ALL
-----
-6	125	129	2	MISSING COLUMNS	<LF>4,#x,y,10
-6	125	129	3	MISSING COLUMNS	<LF>4,#x,y,10
-7	136	141	2	MISSING COLUMNS	<LF>5,a#b,x,11
-7	136	141	3	MISSING COLUMNS	<LF>5,a#b,x,11
-8	148	155	2	MISSING COLUMNS	<LF>6,"c"#x,y,12
-8	148	155	3	MISSING COLUMNS	<LF>6,"c"#x,y,12
-10	165	172	3	MISSING COLUMNS	<LF>7,b,x
-11	172	179	4	CAST	<LF>8,b,x,y,extra
-11	172	180	5	TOO MANY COLUMNS	<LF>8,b,x,y,extra
-17	281	321	2	MISSING COLUMNS	<LF>12,ppppppppppppppppppppppppppppppppppp#tail
-17	281	321	3	MISSING COLUMNS	<LF>12,ppppppppppppppppppppppppppppppppppp#tail
-
 # file_cr, strict
 statement error
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_comment_cr.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'})
@@ -532,3 +516,24 @@ query I
 SELECT count(*) FROM read_csv('{DATA_DIR}/csv/block_scan_comment.csv', comment='#', header=false, ignore_errors=true)
 ----
 7
+
+# The rejects of the CRLF file depend on the vector size: the line start recorded after a CRLF row end points at the
+# LF byte, except for the first row of a chunk, which starts after it (main does the same), so a chunk boundary inside
+# the file moves line_byte_position and csv_line of that row.
+require vector_size 2048
+
+# file_crlf, rejects
+query IIIIII
+CREATE OR REPLACE TEMP TABLE t_rej_file_crlf AS SELECT * FROM read_csv('{DATA_DIR}/csv/block_scan_comment_crlf.csv', delim=',', quote='"', escape='"', comment='#', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR','d':'INTEGER'}, store_rejects=true, rejects_table='rej_file_crlf', rejects_scan='scan_rej_file_crlf'); SELECT line, line_byte_position, byte_position, column_idx, error_type, replace(replace(csv_line, chr(10), '<LF>'), chr(13), '<CR>') FROM rej_file_crlf ORDER BY ALL
+----
+6	125	129	2	MISSING COLUMNS	<LF>4,#x,y,10
+6	125	129	3	MISSING COLUMNS	<LF>4,#x,y,10
+7	136	141	2	MISSING COLUMNS	<LF>5,a#b,x,11
+7	136	141	3	MISSING COLUMNS	<LF>5,a#b,x,11
+8	148	155	2	MISSING COLUMNS	<LF>6,"c"#x,y,12
+8	148	155	3	MISSING COLUMNS	<LF>6,"c"#x,y,12
+10	165	172	3	MISSING COLUMNS	<LF>7,b,x
+11	172	179	4	CAST	<LF>8,b,x,y,extra
+11	172	180	5	TOO MANY COLUMNS	<LF>8,b,x,y,extra
+17	281	321	2	MISSING COLUMNS	<LF>12,ppppppppppppppppppppppppppppppppppp#tail
+17	281	321	3	MISSING COLUMNS	<LF>12,ppppppppppppppppppppppppppppppppppp#tail
