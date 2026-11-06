@@ -1,0 +1,20 @@
+# name: test/sql/storage/corrupt/index_corrupt_expression.test
+# description: Persisted index expressions cannot depend on session state
+# group: [corrupt]
+
+# Created with CREATE TABLE integers(i INTEGER) and
+# CREATE INDEX i_index ON integers(i, (i || char_length('my_var'))).
+# char_length was replaced with getvariable in the stored SQL and AST, with the block checksum updated.
+unzip data/storage/corrupt/index_corrupt_expression.db.gz {TEST_DIR}/index_corrupt_expression.db
+
+statement ok
+ATTACH '{TEST_DIR}/index_corrupt_expression.db' AS db2
+
+statement ok
+SET VARIABLE my_var = 'secret'
+
+# Indexes are bound lazily when the table is modified.
+statement error
+INSERT INTO db2.integers VALUES (1)
+----
+Data Corruption Error: Index "i_index" contains expressions with side effects or dependencies on session settings
