@@ -34,3 +34,9 @@ query I
 select sum(a) from t;
 ----
 1111100000000000000000000000000000000000000000000000000000000000000000000
+
+# an explicit cast rounds to nearest
+query I
+SELECT 2.7::FLOAT::BIGNUM
+----
+3
