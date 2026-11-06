@@ -283,6 +283,9 @@ static void RunTests(void *, const char *const *test_names, uint64_t test_count,
 		session->run();
 		run_output = stream_capture.output.str();
 	}
+	std::fflush(stdout);
+	std::fputc('\n', stdout);
+	std::fflush(stdout);
 	current_run = nullptr;
 
 	for (auto &captured : run_context.results) {
