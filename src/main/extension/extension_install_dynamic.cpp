@@ -415,6 +415,32 @@ static void ThrowErrorOnMismatchingExtensionOrigin(FileSystem &fs, const string 
 	}
 }
 
+//! User-provided repositories install into a per-repository subfolder to avoid on-disk name collisions between
+//! repositories. Core and community extensions keep the flat top-level layout for backwards compatibility
+static string RepositoryInstallDirectory(FileSystem &fs, const string &extension_directory,
+                                         optional_ptr<ExtensionRepository> repository) {
+	if (repository && repository->type == ExtensionRepositoryType::USER_PROVIDED) {
+		return fs.JoinPath(fs.JoinPath(extension_directory, "repositories"), repository->name);
+	}
+	return extension_directory;
+}
+
+//! The loader uses the copy in the first extension directory that holds one, so that is the installed copy
+static string FindInstalledExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name,
+                                     optional_ptr<ExtensionRepository> repository) {
+	for (auto &extension_directory : ExtensionHelper::GetExtensionDirectoryPath(db, fs)) {
+		auto directory = RepositoryInstallDirectory(fs, extension_directory, repository);
+		if (!fs.DirectoryExists(directory)) {
+			continue;
+		}
+		auto path = fs.JoinPath(directory, extension_name + ".duckdb_extension");
+		if (fs.FileExists(path)) {
+			return path;
+		}
+	}
+	return string();
+}
+
 unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, FileSystem &fs,
                                                           const string &local_path, const string &extension,
                                                           ExtensionInstallOptions &options,
@@ -432,37 +458,39 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 		options.repository = resolved_repository;
 	}
 
-	// User-provided repositories install into a per-repository subfolder to avoid on-disk name collisions between
-	// repositories. Core and community extensions keep the flat top-level layout for backwards compatibility
-	string install_path = local_path;
-	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED) {
-		// installing native code from a user-provided repository trusts that repository's signing keys, so it requires
-		// the same explicit opt-in as adding one. Without this, pointing extension_repository_directory at an
-		// attacker-controlled directory and installing from it would bypass the opt-in entirely
-		if (ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
-			throw PermissionException("Installing extensions from a user-provided repository requires "
-			                          "allow_extension_repositories='allowed'");
+	// installing native code from a user-provided repository trusts that repository's signing keys, so it requires
+	// the same explicit opt-in as adding one. Without this, pointing extension_repository_directory at an
+	// attacker-controlled directory and installing from it would bypass the opt-in entirely
+	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED &&
+	    ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
+		throw PermissionException("Installing extensions from a user-provided repository requires "
+		                          "allow_extension_repositories='allowed'");
+	}
+
+	if (!options.force_install) {
+		auto installed_extension_path = FindInstalledExtension(db, fs, extension_name, options.repository);
+		if (!installed_extension_path.empty()) {
+			// File exists: throw error if origin mismatches
+			if (options.throw_on_origin_mismatch && !Settings::Get<AllowExtensionsMetadataMismatchSetting>(db) &&
+			    fs.FileExists(installed_extension_path + ".info")) {
+				ThrowErrorOnMismatchingExtensionOrigin(fs, installed_extension_path, extension_name, extension,
+				                                       options.repository);
+			}
+
+			// File exists, but that's okay, install is now a NOP
+			return nullptr;
 		}
-		install_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), options.repository->name);
+	}
+
+	ExtensionHelper::CreateExtensionDirectory(fs, local_path);
+	string install_path = RepositoryInstallDirectory(fs, local_path, options.repository);
+	if (install_path != local_path) {
 		FileSystem::GetLocal(db).CreateDirectoriesRecursive(install_path);
 	}
 
 	string local_extension_path = fs.JoinPath(install_path, extension_name + ".duckdb_extension");
 	string temp_path =
 	    local_extension_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID()) + ".duckdb_extension";
-
-	if (fs.FileExists(local_extension_path) && !options.force_install) {
-		// File exists: throw error if origin mismatches
-		if (options.throw_on_origin_mismatch && !Settings::Get<AllowExtensionsMetadataMismatchSetting>(db) &&
-		    fs.FileExists(local_extension_path + ".info")) {
-			ThrowErrorOnMismatchingExtensionOrigin(fs, local_extension_path, extension_name, extension,
-			                                       options.repository);
-		}
-
-		// File exists, but that's okay, install is now a NOP
-		return nullptr;
-	}
-
 	fs.TryRemoveFile(temp_path);
 
 	// Install extension from local, direct url

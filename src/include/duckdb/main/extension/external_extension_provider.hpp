@@ -29,6 +29,8 @@ public:
 	virtual string GetName() const;
 	//! Whether this provider can install and load external extensions at all
 	virtual bool SupportsExternalExtensions() const;
+	//! Install into local_path, the first extension directory. It may not exist yet: an install that finds the
+	//! extension in any extension directory is a no op and creates nothing
 	virtual unique_ptr<ExtensionInstallInfo> Install(DatabaseInstance &db, FileSystem &fs, const string &local_path,
 	                                                 const string &extension, ExtensionInstallOptions &options,
 	                                                 optional_ptr<ClientContext> context);
