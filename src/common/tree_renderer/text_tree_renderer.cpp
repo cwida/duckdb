@@ -1421,12 +1421,12 @@ void TextTreeRenderer::ToStreamInternal(RenderTree &root, BaseTreeRenderer &ss) 
 	ss.max_render_width = MaxValue<idx_t>(ss.max_render_width, max_width);
 }
 
-void TextTreeRenderer::Configure(const unordered_map<string, Value> &settings) {
+void TextTreeRenderer::Configure(Context &context, const unordered_map<string, Value> &settings) {
 	for (auto &entry : settings) {
 		auto name = StringUtil::Lower(entry.first);
 		auto &value = entry.second;
 		if (name == "max_extra_lines") {
-			config.max_extra_lines = value.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
+			config.max_extra_lines = value.CastAs(context, LogicalType::UBIGINT).GetValue<idx_t>();
 		} else if (name == "thousand_separator") {
 			auto separator = value.ToString();
 			if (separator.size() > 1) {
@@ -1442,7 +1442,7 @@ void TextTreeRenderer::Configure(const unordered_map<string, Value> &settings) {
 			}
 			config.decimal_separator = separator[0];
 		} else if (name == "expand_all") {
-			config.expand_all = value.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>();
+			config.expand_all = value.CastAs(context, LogicalType::BOOLEAN).GetValue<bool>();
 		} else if (name == "operator_casing") {
 			auto casing = StringUtil::Lower(value.ToString());
 			if (casing == "upper") {

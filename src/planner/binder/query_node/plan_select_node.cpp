@@ -81,7 +81,7 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 	for (idx_t aggr_idx = 0; aggr_idx < statement.aggregates.size(); aggr_idx++) {
 		auto &aggr = statement.aggregates[aggr_idx];
 		auto aggr_expr = unique_ptr_cast<Expression, BoundAggregateExpression>(std::move(aggr));
-		aggr = ExportAggregateFunction::Bind(std::move(aggr_expr));
+		aggr = ExportAggregateFunction::Bind(context.GetContext(), std::move(aggr_expr));
 
 		// create a reference to the exported aggregate state
 		auto aggr_state_ref = make_uniq<BoundColumnRefExpression>(

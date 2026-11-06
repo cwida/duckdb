@@ -575,7 +575,7 @@ void CombineAggrFinalize(Vector &state, AggregateFinalizeInputData &aggr_input_d
 
 // stores the function name and signature (with any constant parameters) into the extension type info, so that the
 // aggregate can be re-bound later (e.g. by FINALIZE/COMBINE)
-void EncodeStateParameters(ExtensionTypeInfo &ext_info, const BoundAggregateFunction &bound_function,
+void EncodeStateParameters(Context &context, ExtensionTypeInfo &ext_info, const BoundAggregateFunction &bound_function,
                            const AggregateStateLayout &layout) {
 	ext_info.properties.emplace("function_name", bound_function.GetName());
 	auto &call_arguments = bound_function.GetArguments();
@@ -596,7 +596,7 @@ void EncodeStateParameters(ExtensionTypeInfo &ext_info, const BoundAggregateFunc
 			if (constant_entry == layout.constant_parameters.end()) {
 				children.emplace_back("value", Value(LogicalType::VARIANT()));
 			} else {
-				children.emplace_back("value", constant_entry->second.DefaultCastAs(LogicalType::VARIANT()));
+				children.emplace_back("value", constant_entry->second.CastAs(context, LogicalType::VARIANT()));
 			}
 			arguments.push_back(Value::STRUCT(std::move(children)));
 		}
@@ -619,22 +619,22 @@ string OrderModifierToString(OrderType order_type, OrderByNullType null_order) {
 // constructs the AGGREGATE_STATE type for the given bound aggregate function
 // the state layout (a struct) is aliased to AGGREGATE_STATE, with the function name and signature stored in the
 // extension type info so that the aggregate can be re-bound later (e.g. by FINALIZE/COMBINE)
-LogicalType CreateAggregateStateType(const BoundAggregateFunction &bound_function,
+LogicalType CreateAggregateStateType(Context &context, const BoundAggregateFunction &bound_function,
                                      optional_ptr<FunctionData> bind_data) {
 	auto layout = bound_function.GetStateType(bind_data);
 	auto ext_info = make_uniq<ExtensionTypeInfo>();
-	EncodeStateParameters(*ext_info, bound_function, layout);
+	EncodeStateParameters(context, *ext_info, bound_function, layout);
 	return layout.type.WithAlias("AGGREGATE_STATE").WithExtensionInfo(std::move(ext_info));
 }
 
 // constructs the AGGREGATE_STATE type for an ordered aggregate - the state is the buffer of values
 // (LIST<buffered_struct>), with the inner signature and the ORDER BY spec stored in the extension info
-LogicalType CreateSortedAggregateStateType(const BoundAggregateFunction &inner_function,
+LogicalType CreateSortedAggregateStateType(Context &context, const BoundAggregateFunction &inner_function,
                                            optional_ptr<FunctionData> inner_bind_data, const LogicalType &buffer_struct,
                                            const vector<SortedAggregateStateOrder> &orders) {
 	LogicalType state_layout = LogicalType::LIST(buffer_struct);
 	auto ext_info = make_uniq<ExtensionTypeInfo>();
-	EncodeStateParameters(*ext_info, inner_function, inner_function.GetStateType(inner_bind_data));
+	EncodeStateParameters(context, *ext_info, inner_function, inner_function.GetStateType(inner_bind_data));
 	// per key: the buffered column it sorts on and the modifier string (the argument count is re-derived on re-bind)
 	vector<Value> order_values;
 	for (auto &order : orders) {
@@ -827,14 +827,14 @@ unique_ptr<FunctionData> BindToAggregateState(INPUT &input) {
 			throw BinderException("to_aggregate_state: an ordered aggregate state must have at least one ORDER BY key");
 		}
 		bound_function.GetArguments()[0] = LogicalType::LIST(buffer_struct);
-		bound_function.SetReturnType(
-		    CreateSortedAggregateStateType(aggr, bind_data->bind_data.get(), buffer_struct, orders));
+		bound_function.SetReturnType(CreateSortedAggregateStateType(context.GetContext(), aggr,
+		                                                            bind_data->bind_data.get(), buffer_struct, orders));
 		return std::move(bind_data);
 	}
 
 	auto state_layout = aggr.GetStateType(bind_data->bind_data.get()).type;
 	bound_function.GetArguments()[0] = state_layout;
-	bound_function.SetReturnType(CreateAggregateStateType(aggr, bind_data->bind_data.get()));
+	bound_function.SetReturnType(CreateAggregateStateType(context.GetContext(), aggr, bind_data->bind_data.get()));
 	return std::move(bind_data);
 }
 
@@ -941,7 +941,7 @@ void ExportAggregateFunction::SetStateExport(BoundAggregateExpression &aggregate
 }
 
 unique_ptr<BoundAggregateExpression>
-ExportAggregateFunction::Bind(unique_ptr<BoundAggregateExpression> child_aggregate) {
+ExportAggregateFunction::Bind(Context &context, unique_ptr<BoundAggregateExpression> child_aggregate) {
 	auto &bound_function = child_aggregate->Function();
 	if (!bound_function.HasStateCombineCallback()) {
 		throw BinderException("Cannot use EXPORT_STATE for non-combinable function %s", bound_function.GetName());
@@ -968,11 +968,13 @@ ExportAggregateFunction::Bind(unique_ptr<BoundAggregateExpression> child_aggrega
 		vector<SortedAggregateStateOrder> orders;
 		idx_t argument_count; // re-derived from the inner aggregate on re-bind
 		FunctionBinder::GetSortedAggregateStateLayout(*child_aggregate, buffer_struct, orders, argument_count);
-		SetStateExport(*child_aggregate, CreateSortedAggregateStateType(
-		                                     bound_function, child_aggregate->BindInfo().get(), buffer_struct, orders));
+		SetStateExport(*child_aggregate,
+		               CreateSortedAggregateStateType(context, bound_function, child_aggregate->BindInfo().get(),
+		                                              buffer_struct, orders));
 		return child_aggregate;
 	}
-	SetStateExport(*child_aggregate, CreateAggregateStateType(bound_function, child_aggregate->BindInfo().get()));
+	SetStateExport(*child_aggregate,
+	               CreateAggregateStateType(context, bound_function, child_aggregate->BindInfo().get()));
 	return child_aggregate;
 }
 

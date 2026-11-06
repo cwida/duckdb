@@ -469,7 +469,7 @@ static optional<ColumnBinding> PromoteReusableAggregate(Optimizer &optimizer, un
 		}
 		auto aggregate_copy =
 		    unique_ptr_cast<Expression, BoundAggregateExpression>(inner_aggregate->expressions[aggregate_idx]->Copy());
-		auto exported = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+		auto exported = ExportAggregateFunction::Bind(optimizer.context.GetContext(), std::move(aggregate_copy));
 		if (exported->GetReturnType() != state_type) {
 			return nullopt;
 		}
@@ -560,8 +560,8 @@ bool AggregateReuseOptimizer::TryReuseSemiAggregate(unique_ptr<LogicalOperator> 
 		return false;
 	}
 	auto &outer_aggregate = aggregate.expressions[0]->Cast<BoundAggregateExpression>();
-	auto exported_outer =
-	    ExportAggregateFunction::Bind(unique_ptr_cast<Expression, BoundAggregateExpression>(outer_aggregate.Copy()));
+	auto exported_outer = ExportAggregateFunction::Bind(
+	    optimizer.context.GetContext(), unique_ptr_cast<Expression, BoundAggregateExpression>(outer_aggregate.Copy()));
 	auto state_type = exported_outer->GetReturnType();
 	if (!state_type.IsAggregateState()) {
 		return false;

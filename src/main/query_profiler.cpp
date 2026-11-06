@@ -1164,7 +1164,7 @@ void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
 
 void QueryProfiler::Render(const ProfilingNode &node, BaseTreeRenderer &ss) const {
 	TextTreeRenderer renderer;
-	renderer.Configure(ClientConfig::GetConfig(context).profiling_renderer_settings);
+	renderer.Configure(context.GetContext(), ClientConfig::GetConfig(context).profiling_renderer_settings);
 	renderer.Render(node, ss);
 }
 

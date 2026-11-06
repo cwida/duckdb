@@ -97,7 +97,7 @@ unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, co
 	}
 	auto renderer = CreateRenderer(name);
 	if (renderer) {
-		renderer->Configure(ClientConfig::GetConfig(context).profiling_renderer_settings);
+		renderer->Configure(context.GetContext(), ClientConfig::GetConfig(context).profiling_renderer_settings);
 	}
 	return renderer;
 }

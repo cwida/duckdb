@@ -2,6 +2,9 @@
 #include "test_helpers.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/function/cast/vector_cast_helpers.hpp"
+#include "duckdb/main/config.hpp"
 
 using namespace duckdb;
 
@@ -285,4 +288,50 @@ TEST_CASE("Test appender during stack unwinding", "[api]") {
 		{ throw std::runtime_error("Hello"); }
 	} catch (...) {
 	}
+}
+
+struct AppenderOffsetCast {
+	template <class SRC, class DST>
+	static DST Operation(SRC input) {
+		return static_cast<DST>(input + 1);
+	}
+};
+
+static bool AppenderBigintToTinyintCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	return VectorCastHelpers::TemplatedCastLoop<int64_t, int8_t, AppenderOffsetCast>(source, result, count,
+	                                                                                 parameters);
+}
+
+TEST_CASE("Test appender casts use the registered cast functions", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &casts = DBConfig::GetConfig(*con.context).GetCastFunctions();
+	casts.RegisterCastFunction(LogicalType::BIGINT, LogicalType::TINYINT, BoundCastInfo(AppenderBigintToTinyintCast));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE tinyints(i TINYINT)"));
+
+	DataChunk chunk;
+	chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::BIGINT});
+	for (idx_t i = 0; i < 3; i++) {
+		chunk.SetValue(0, i, Value::BIGINT(NumericCast<int64_t>(i)));
+	}
+	chunk.SetCardinality(3);
+
+	SECTION("Appender") {
+		Appender appender(con, "tinyints");
+		appender.AppendDataChunk(chunk);
+		appender.Close();
+	}
+	SECTION("Query appender") {
+		QueryAppender appender(con, "INSERT INTO tinyints SELECT * FROM appended_data", {LogicalType::TINYINT});
+		appender.AppendDataChunk(chunk);
+		appender.Close();
+	}
+	auto result = con.Query("SELECT i FROM tinyints ORDER BY i");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 3}));
+
+	Appender appender(con, "tinyints");
+	DataChunk target;
+	target.Initialize(Allocator::DefaultAllocator(), {LogicalType::TINYINT});
+	appender.Append(target, Value::BIGINT(41), 0, 0);
+	REQUIRE(target.GetValue(0, 0) == Value::TINYINT(42));
 }

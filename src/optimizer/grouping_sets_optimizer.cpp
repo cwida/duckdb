@@ -288,7 +288,8 @@ bool GroupingSetsOptimizer::TryRewriteGroupingSets(unique_ptr<LogicalOperator> &
 			// bind the aggregates
 			for (auto &expr : aggr.expressions) {
 				auto aggregate_copy = unique_ptr_cast<Expression, BoundAggregateExpression>(expr->Copy());
-				auto export_aggregate = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+				auto export_aggregate =
+				    ExportAggregateFunction::Bind(optimizer.context.GetContext(), std::move(aggregate_copy));
 				if (!export_aggregate->GetReturnType().IsAggregateState()) {
 					return false;
 				}

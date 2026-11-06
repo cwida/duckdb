@@ -322,7 +322,8 @@ void duckdb::BaseAppender::Append(DataChunk &target, const Value &value, idx_t c
 		target.data[col].SetValue(row, value);
 	} else {
 		string error_msg;
-		auto new_value = value.DefaultTryCastAs(target.GetTypes()[col], &error_msg);
+		auto client_context = LockContext();
+		auto new_value = value.TryCastAs(client_context->GetContext(), target.GetTypes()[col], &error_msg);
 		if (new_value) {
 			target.data[col].SetValue(row, *new_value);
 		} else {
@@ -372,14 +373,19 @@ void BaseAppender::AppendDataChunk(DataChunk &chunk_p) {
 	cast_chunk.Initialize(allocator, appender_types, MaxValue<idx_t>(size, STANDARD_VECTOR_SIZE));
 	cast_chunk.SetChildCardinality(size);
 
+	shared_ptr<ClientContext> client_context;
 	for (idx_t i = 0; i < count; i++) {
 		if (chunk_p.data[i].GetType() == appender_types[i]) {
 			cast_chunk.data[i].Reference(chunk_p.data[i]);
 			continue;
 		}
 
+		if (!client_context) {
+			client_context = LockContext();
+		}
 		string error_msg;
-		auto success = VectorOperations::DefaultTryCast(chunk_p.data[i], cast_chunk.data[i], size, &error_msg);
+		auto success = VectorOperations::TryCast(client_context->GetContext(), chunk_p.data[i], cast_chunk.data[i],
+		                                         size, &error_msg);
 		if (!success) {
 			throw InvalidInputException("type mismatch in AppendDataChunk, expected %s, got %s for column %d",
 			                            appender_types[i].ToString(), chunk_p.data[i].GetType().ToString(), i);
@@ -613,6 +619,14 @@ string Appender::ConstructQuery(TableDescription &description_p, const Identifie
 	return query;
 }
 
+shared_ptr<ClientContext> Appender::LockContext() {
+	auto context_ref = context.lock();
+	if (!context_ref) {
+		throw InvalidInputException("Appender: Attempting to append data to a closed connection");
+	}
+	return context_ref;
+}
+
 void Appender::FlushInternal(ColumnDataCollection &collection) {
 	auto context_ref = context.lock();
 	if (!context_ref) {
@@ -719,6 +733,14 @@ QueryAppender::QueryAppender(Connection &con, string query_p, vector<LogicalType
 QueryAppender::~QueryAppender() {
 }
 
+shared_ptr<ClientContext> QueryAppender::LockContext() {
+	auto context_ref = context.lock();
+	if (!context_ref) {
+		throw InvalidInputException("Attempting to append query appender data on a closed connection");
+	}
+	return context_ref;
+}
+
 void QueryAppender::FlushInternal(ColumnDataCollection &collection) {
 	auto context_ref = context.lock();
 	if (!context_ref) {
@@ -743,6 +765,10 @@ InternalAppender::InternalAppender(ClientContext &context_p, TableCatalogEntry &
 
 InternalAppender::~InternalAppender() {
 	Destructor();
+}
+
+shared_ptr<ClientContext> InternalAppender::LockContext() {
+	return context.shared_from_this();
 }
 
 void InternalAppender::FlushInternal(ColumnDataCollection &collection) {

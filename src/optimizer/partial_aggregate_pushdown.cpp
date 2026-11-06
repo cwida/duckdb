@@ -478,7 +478,7 @@ static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &agg
 
 	for (idx_t i = 0; i < aggr.expressions.size(); i++) {
 		auto aggregate_copy = unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[i]->Copy());
-		auto lower_aggregate = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+		auto lower_aggregate = ExportAggregateFunction::Bind(context.GetContext(), std::move(aggregate_copy));
 		auto lower_type = lower_aggregate->GetReturnType();
 		if (!lower_type.IsAggregateState()) {
 			return false;
@@ -785,7 +785,7 @@ static bool DEBuildLowerSides(Optimizer &optimizer, const LogicalAggregate &aggr
 	for (auto &de : aggregates) {
 		auto aggregate_copy =
 		    unique_ptr_cast<Expression, BoundAggregateExpression>(aggr.expressions[de.aggregate_pos]->Copy());
-		auto partial = ExportAggregateFunction::Bind(std::move(aggregate_copy));
+		auto partial = ExportAggregateFunction::Bind(optimizer.context.GetContext(), std::move(aggregate_copy));
 		if (!partial->GetReturnType().IsAggregateState()) {
 			return false;
 		}
