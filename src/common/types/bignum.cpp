@@ -160,6 +160,33 @@ static inline uint64_t BignumCastMultiplyAdd(uint64_t a, uint64_t b, uint64_t ad
 #endif
 }
 
+//! Parses eight decimal digits at once (Lemire, "Fast parsing of eight digits")
+static inline uint64_t BignumCastParseEightDigits(const char *digits) {
+	uint64_t value;
+	memcpy(&value, digits, sizeof(value));
+	// the ASCII offset of every digit, then two digits per 16-bit lane, then four, then eight
+	value -= 0x3030303030303030ULL;
+	value = (value * 10) + (value >> 8);
+	return (((value & 0x000000FF000000FFULL) * (100 + (1000000ULL << 32))) +
+	        (((value >> 16) & 0x000000FF000000FFULL) * (1 + (10000ULL << 32)))) >>
+	       32;
+}
+
+//! Parses count (1 <= count <= 19) decimal digits into an integer
+static inline uint64_t BignumCastParseDigits(const char *digits, idx_t count) {
+	uint64_t value = 0;
+	idx_t i = 0;
+#if !DUCKDB_IS_BIG_ENDIAN
+	for (; i + 8 <= count; i += 8) {
+		value = value * 100000000ULL + BignumCastParseEightDigits(digits + i);
+	}
+#endif
+	for (; i < count; i++) {
+		value = value * 10 + static_cast<uint64_t>(digits[i] - '0');
+	}
+	return value;
+}
+
 //! Converts decimal digits to base 2^64 limbs, least significant first, without a zero top limb
 static void BignumCastDecimalToBinary(const char *digits, idx_t count, unsafe_vector<uint64_t> &limbs) {
 	limbs.clear();
@@ -170,10 +197,7 @@ static void BignumCastDecimalToBinary(const char *digits, idx_t count, unsafe_ve
 		chunk_size = Bignum::DECIMAL_SHIFT;
 	}
 	for (idx_t pos = 0; pos < count; pos += chunk_size, chunk_size = Bignum::DECIMAL_SHIFT) {
-		uint64_t chunk = 0;
-		for (idx_t i = pos; i < pos + chunk_size; i++) {
-			chunk = chunk * 10 + static_cast<uint64_t>(digits[i] - '0');
-		}
+		const uint64_t chunk = BignumCastParseDigits(digits + pos, chunk_size);
 		// limbs = limbs * 10^chunk_size + chunk
 		const uint64_t multiplier = BIGNUM_CAST_POWERS_OF_TEN[chunk_size];
 		uint64_t carry = chunk;
