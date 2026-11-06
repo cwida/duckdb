@@ -919,6 +919,10 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 	reference_map_t<LogicalOperator, vector<idx_t>> operator_predicates;
 	reference_map_t<LogicalOperator, vector<JoinCondition>> operator_conditions;
 	expression_set_t filter_set;
+	// two equal volatile filters are two evaluations, so neither is a duplicate of the other
+	auto is_new_filter = [&](const Expression &expr) {
+		return expr.IsVolatile() || filter_set.insert(expr).second;
+	};
 	auto normalize_conditions = [&](LogicalComparisonJoin &join, const column_binding_set_t &semantic_left_bindings,
 	                                const column_binding_set_t &semantic_right_bindings) {
 		vector<JoinCondition> result;
@@ -1085,8 +1089,7 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 						is_residual = true;
 					}
 
-					if (filter_set.find(*expr) == filter_set.end()) {
-						filter_set.insert(*expr);
+					if (is_new_filter(*expr)) {
 						unordered_set<RelationIndex> bindings;
 						ExtractBindings(*expr, bindings);
 						auto &set = set_manager.GetJoinRelation(bindings);
@@ -1110,8 +1113,7 @@ JoinOrderExtraction RelationManager::ExtractEdges(LogicalOperator &op,
 					// in this case we do not create a FilterInfo for it. (duckdb-internal/#1493)
 					continue;
 				}
-				if (filter_set.find(*expression) == filter_set.end()) {
-					filter_set.insert(*expression);
+				if (is_new_filter(*expression)) {
 					auto &set = set_manager.GetJoinRelation(bindings);
 					auto filter_info = make_uniq<FilterInfo>(expression->Copy(), set, filters_and_bindings.size());
 					filter_info->from_logical_filter = true;
