@@ -1,0 +1,146 @@
+# name: test/sql/index/art/scan/test_art_scan_residual_filters.test
+# description: Test ART index scans with filters that the index does not cover.
+# group: [scan]
+
+statement ok
+CREATE TABLE tbl AS
+SELECT range AS i, range % 7 AS j, CASE WHEN range % 3 = 0 THEN NULL ELSE range END AS k, 's' || range AS s
+FROM range(500000);
+
+statement ok
+CREATE INDEX idx_i ON tbl(i);
+
+# Additional predicates on the indexed column.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i > 100 AND i < 110 AND i <> 105;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i > 100 AND i < 110 AND i <> 105 ORDER BY i;
+----
+101
+102
+103
+104
+106
+107
+108
+109
+
+query I
+SELECT i FROM tbl WHERE i = 100 AND i <> 100;
+----
+
+# The lower bound alone matches too many rows for an index scan.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i > 499990 AND i < 499995 AND i <> 499992;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i > 499990 AND i < 499995 AND i <> 499992 ORDER BY i;
+----
+499991
+499993
+499994
+
+# Filters on other columns.
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i = 100 AND j = 2;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT i, j FROM tbl WHERE i = 100 AND j = 2;
+----
+100	2
+
+query I
+SELECT i FROM tbl WHERE i = 100 AND j = 3;
+----
+
+query II
+EXPLAIN ANALYZE SELECT s FROM tbl WHERE i >= 100 AND i <= 110 AND j = 0;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT s FROM tbl WHERE i >= 100 AND i <= 110 AND j = 0;
+----
+s105
+
+query I
+SELECT s FROM tbl WHERE i BETWEEN 100 AND 110 AND s LIKE '%7';
+----
+s107
+
+# NULLs in the filtered columns.
+
+query I
+SELECT i FROM tbl WHERE i BETWEEN 100 AND 105 AND k IS NOT NULL ORDER BY i;
+----
+100
+101
+103
+104
+
+query I
+SELECT i FROM tbl WHERE i BETWEEN 100 AND 105 AND k IS NULL ORDER BY i;
+----
+102
+105
+
+query I
+SELECT i FROM tbl WHERE i BETWEEN 100 AND 105 AND k > 101 ORDER BY i;
+----
+103
+104
+
+# Deleted rows.
+
+statement ok
+DELETE FROM tbl WHERE i = 103;
+
+query I
+SELECT i FROM tbl WHERE i > 100 AND i < 110 AND i <> 105 AND j <> 0 ORDER BY i;
+----
+101
+102
+104
+106
+107
+108
+109
+
+# Transaction-local rows.
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO tbl VALUES (101, 3, 101, 'local'), (600000, 2, NULL, 'x'), (600001, 3, 600001, 'y');
+
+query II
+SELECT i, s FROM tbl WHERE i > 100 AND i < 103 AND j = 3 ORDER BY s;
+----
+101	local
+101	s101
+
+query I
+SELECT i FROM tbl WHERE i > 500000 AND j = 3 AND k IS NOT NULL;
+----
+600001
+
+statement ok
+ROLLBACK;
+
+# Too many matching rows for an index scan.
+
+query I
+SELECT count(*) FROM tbl WHERE i > 100 AND i <> 200 AND j = 1;
+----
+71414

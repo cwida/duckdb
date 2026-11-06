@@ -249,6 +249,16 @@ static bool TryMatchComparison(const Expression &expr, const Expression &filter_
 	return !constant_value.IsNull();
 }
 
+static void CollectConjunctionChildren(const Expression &expr, vector<reference<const Expression>> &result) {
+	if (expr.GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
+		result.push_back(expr);
+		return;
+	}
+	for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+		CollectConjunctionChildren(*child, result);
+	}
+}
+
 static bool IsLowerBound(const ExpressionType comparison_type) {
 	return comparison_type == ExpressionType::COMPARE_GREATERTHAN ||
 	       comparison_type == ExpressionType::COMPARE_GREATERTHANOREQUALTO;
@@ -285,36 +295,24 @@ unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const 
 		    upper_inclusive ? ExpressionType::COMPARE_LESSTHANOREQUALTO : ExpressionType::COMPARE_LESSTHAN;
 	} else {
 		// A rewritten BETWEEN arrives as (lower bound) AND (upper bound).
-		// The index scan result is not filtered again, so the comparisons must cover the filter exactly.
+		// The scan may return a superset of the matching rows: the caller filters the fetched rows again.
 		vector<reference<const Expression>> comparisons;
-		if (filter_expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
-			for (auto &child : filter_expr.Cast<BoundConjunctionExpression>().GetChildren()) {
-				comparisons.push_back(*child);
-			}
-		} else {
-			comparisons.push_back(filter_expr);
-		}
-		if (comparisons.size() > 2) {
-			return nullptr;
-		}
+		CollectConjunctionChildren(filter_expr, comparisons);
 		for (auto &comparison : comparisons) {
 			ExpressionType comparison_type;
 			Value constant_value;
 			if (!TryMatchComparison(expr, comparison.get(), comparison_type, constant_value)) {
-				return nullptr;
+				continue;
 			}
 			if (comparison_type == ExpressionType::COMPARE_EQUAL) {
-				if (comparisons.size() != 1) {
-					return nullptr;
-				}
 				return InitializeScanSinglePredicate(constant_value, ExpressionType::COMPARE_EQUAL);
 			}
 			auto is_lower = IsLowerBound(comparison_type);
 			auto &bound_value = is_lower ? low_value : high_value;
 			auto &bound_comparison_type = is_lower ? low_comparison_type : high_comparison_type;
 			if (!bound_value.IsNull()) {
-				// Two bounds on the same side.
-				return nullptr;
+				// Keep the first bound on each side.
+				continue;
 			}
 			bound_value = constant_value;
 			bound_comparison_type = comparison_type;
