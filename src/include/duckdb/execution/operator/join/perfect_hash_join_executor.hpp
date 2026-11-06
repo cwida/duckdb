@@ -35,7 +35,7 @@ public:
 	PerfectHashJoinExecutor(const PhysicalHashJoin &join, JoinHashTable &ht);
 
 public:
-	bool CanDoPerfectHashJoin(Context &context, const PhysicalHashJoin &op, const Value &min, const Value &max);
+	bool CanDoPerfectHashJoin(const PhysicalHashJoin &op, const Value &min, const Value &max);
 
 	const LogicalType &GetKeyType() const;
 	bool BuildPerfectHashTable();

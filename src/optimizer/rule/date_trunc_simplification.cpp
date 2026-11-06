@@ -1,4 +1,3 @@
-#include "duckdb/main/client_context.hpp"
 #include "duckdb/optimizer/rule/date_trunc_simplification.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -48,11 +47,11 @@ static bool TruncatesYearsTowardsZero(const BoundConstantExpression &date_part) 
 	       part == DatePartSpecifier::MILLENNIUM;
 }
 
-static bool IsAfterFirstYear(Context &context, const Value &value) {
+static bool IsAfterFirstYear(const Value &value) {
 	if (value.IsNull()) {
 		return true;
 	}
-	auto date_value = value.TryCastAs(context, LogicalType::DATE);
+	auto date_value = value.DefaultTryCastAs(LogicalType::DATE);
 	if (!date_value || date_value->IsNull()) {
 		return false;
 	}
@@ -98,7 +97,7 @@ unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, v
 
 	// Truncating to decades, centuries or millennia does not round years before the common era towards the past
 	// (e.g. 150 BC truncates to 100 BC), so the rewrite below is only valid for constants after that
-	if (TruncatesYearsTowardsZero(date_part) && !IsAfterFirstYear(GetContext().GetContext(), rhs.GetValue())) {
+	if (TruncatesYearsTowardsZero(date_part) && !IsAfterFirstYear(rhs.GetValue())) {
 		return nullptr;
 	}
 

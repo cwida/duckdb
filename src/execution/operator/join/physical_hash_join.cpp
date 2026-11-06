@@ -278,8 +278,7 @@ JoinFilterGlobalState::~JoinFilterGlobalState() {
 JoinFilterLocalState::~JoinFilterLocalState() {
 }
 
-static bool CanUsePerfectHashJoin(Context &context, const PhysicalHashJoin &op,
-                                  PerfectHashJoinExecutor &perfect_join_executor) {
+static bool CanUsePerfectHashJoin(const PhysicalHashJoin &op, PerfectHashJoinExecutor &perfect_join_executor) {
 	if (op.conditions.size() != 1 || !op.conditions[0].GetRightStats()) {
 		return false;
 	}
@@ -287,7 +286,7 @@ static bool CanUsePerfectHashJoin(Context &context, const PhysicalHashJoin &op,
 	if (!TypeIsIntegral(right_stats.GetType().InternalType()) || !NumericStats::HasMinMax(right_stats)) {
 		return false;
 	}
-	return perfect_join_executor.CanDoPerfectHashJoin(context, op, NumericStats::Min(right_stats),
+	return perfect_join_executor.CanDoPerfectHashJoin(op, NumericStats::Min(right_stats),
 	                                                  NumericStats::Max(right_stats));
 }
 
@@ -469,7 +468,7 @@ public:
 	//! the perfect-hash candidate, filter-pushdown participation, and the sink bloom filter.
 	void InitializePerExecutionState(ClientContext &context, shared_ptr<BloomFilter> recycled_filter = nullptr) {
 		perfect_join_executor = make_uniq<PerfectHashJoinExecutor>(op, *hash_table);
-		can_use_perfect_hash = CanUsePerfectHashJoin(context.GetContext(), op, *perfect_join_executor);
+		can_use_perfect_hash = CanUsePerfectHashJoin(op, *perfect_join_executor);
 		external = Settings::Get<DebugForceExternalSetting>(context);
 		skip_filter_pushdown = false;
 		global_filter_state.reset();
@@ -1799,10 +1798,10 @@ static void CreateDynamicMinMaxFilter(const PhysicalComparisonJoin &op, const Jo
 	}
 }
 
-static unique_ptr<Expression> CreateComparisonExpressionFilter(Context &context, ExpressionType comparison_type,
+static unique_ptr<Expression> CreateComparisonExpressionFilter(ExpressionType comparison_type,
                                                                unique_ptr<Expression> input, const Value &constant,
                                                                const LogicalType &comparison_logical_type) {
-	auto constant_value = constant.TryCastAs(context, comparison_logical_type);
+	auto constant_value = constant.DefaultTryCastAs(comparison_logical_type);
 	if (!constant_value) {
 		return nullptr;
 	}
@@ -1810,10 +1809,10 @@ static unique_ptr<Expression> CreateComparisonExpressionFilter(Context &context,
 	                                         make_uniq<BoundConstantExpression>(std::move(*constant_value)));
 }
 
-static unique_ptr<Expression> CreateComparisonExpressionFilter(Context &context, ExpressionType comparison_type,
-                                                               const Value &constant, const LogicalType &column_type) {
+static unique_ptr<Expression> CreateComparisonExpressionFilter(ExpressionType comparison_type, const Value &constant,
+                                                               const LogicalType &column_type) {
 	auto column = make_uniq<BoundReferenceExpression>(column_type, 0ULL);
-	return CreateComparisonExpressionFilter(context, comparison_type, std::move(column), constant, column_type);
+	return CreateComparisonExpressionFilter(comparison_type, std::move(column), constant, column_type);
 }
 
 static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
@@ -1821,8 +1820,7 @@ static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
     const Value &constant, const LogicalType &comparison_logical_type, bool reconstruct_expression, bool retain_nulls) {
 	if (!reconstruct_expression) {
 		D_ASSERT(!retain_nulls);
-		return CreateComparisonExpressionFilter(context.GetContext(), comparison_type, constant,
-		                                        comparison_logical_type);
+		return CreateComparisonExpressionFilter(comparison_type, constant, comparison_logical_type);
 	}
 	auto input = CreateRuntimeFilterInputExpression(context, column, comparison_logical_type);
 	auto input_type = input.expression->GetReturnType();
@@ -1830,8 +1828,8 @@ static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
 	if (input.preserves_cast_errors || retain_nulls) {
 		null_check_input = input.expression->Copy();
 	}
-	auto filter_expr = CreateComparisonExpressionFilter(context.GetContext(), comparison_type,
-	                                                    std::move(input.expression), constant, input_type);
+	auto filter_expr =
+	    CreateComparisonExpressionFilter(comparison_type, std::move(input.expression), constant, input_type);
 	if (!filter_expr) {
 		return nullptr;
 	}
@@ -1871,7 +1869,7 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 
 	value_set_t unique_ht_values;
 	for (idx_t k = 0; k < key_count; k++) {
-		auto value = build_vector.GetValue(k).TryCastAs(context, filter_input_type);
+		auto value = build_vector.GetValue(k).DefaultTryCastAs(filter_input_type);
 		if (!value) {
 			return false;
 		}
@@ -1969,8 +1967,8 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 
 			// Cast to storage type, skip if fails
 			if (pushdown_column.storage_type.IsValid() && !reconstruct_filter_expression) {
-				auto cast_min = min_val.TryCastAs(context, pushdown_column.storage_type);
-				auto cast_max = max_val.TryCastAs(context, pushdown_column.storage_type);
+				auto cast_min = min_val.DefaultTryCastAs(pushdown_column.storage_type);
+				auto cast_max = max_val.DefaultTryCastAs(pushdown_column.storage_type);
 				if (!cast_min || !cast_max) {
 					continue;
 				}
@@ -2169,7 +2167,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	}
 
 	// check for possible perfect hash table
-	auto use_perfect_hash = sink.perfect_join_executor->CanDoPerfectHashJoin(context.GetContext(), *this, min, max);
+	auto use_perfect_hash = sink.perfect_join_executor->CanDoPerfectHashJoin(*this, min, max);
 	// PHJ's FullScanHashTable reads payload at native width; if any slot was narrowed it would crash. Runtime
 	// min/max from filter pushdown can re-enable PHJ here, so re-check after dict-surviving may have narrowed.
 	if (use_perfect_hash && sink.DictSurvivingActive()) {
