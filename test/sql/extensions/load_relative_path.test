@@ -1,0 +1,30 @@
+# name: test/sql/extensions/load_relative_path.test
+# description: LOAD resolves a relative extension path against the working directory before handing it to dlopen
+# group: [extensions]
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+require notmingw
+
+# {TEMP_DIR} is relative to the working directory of the test runner, {BUILD_DIRECTORY} is absolute.
+# SQL cannot write files ending in .duckdb_extension, so the extension goes through a gzip file the runner unpacks.
+statement ok
+COPY (SELECT content FROM read_blob('{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension')) TO '{TEMP_DIR}/loadable_extension_demo.gz' (FORMAT BLOB, COMPRESSION gzip);
+
+unzip {TEMP_DIR}/loadable_extension_demo.gz {TEMP_DIR}/loadable_extension_demo.duckdb_extension
+
+statement ok
+LOAD '{TEMP_DIR}/loadable_extension_demo.duckdb_extension';
+
+query I
+SELECT test_alias_hello();
+----
+Hello Alias!
+
+# a missing extension is reported by its absolute path, not by the relative path as written
+statement error
+LOAD '{TEMP_DIR}/does_not_exist.duckdb_extension';
+----
+<REGEX>:.*Extension "(/|[A-Za-z]:[\\/]).*does_not_exist\.duckdb_extension" not found.*

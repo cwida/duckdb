@@ -611,9 +611,10 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		    "files is not possible, error while loading from '%s', consider 'INSTALL <path>; LOAD <name>;'",
 		    filename);
 	}
-	// dlopen treats relative paths as library search names, so always load from an absolute path
-	if (direct_load && !fs.IsPathAbsolute(filename)) {
-		filename = fs.JoinPath(FileSystem::GetWorkingDirectory(), filename);
+	// the macOS hardened runtime rejects relative paths in dlopen, and a bare file name is searched on the library path
+	// prefix the working directory without normalizing: '..' components and symbolic links are left to the OS
+	if (direct_load && !fs.IsPathAbsolute(filename) && !FileSystem::IsRemoteFile(filename)) {
+		filename = FileSystem::GetWorkingDirectory() + fs.PathSeparator(filename) + filename;
 	}
 	if (!fs.FileExists(filename)) {
 		string message;
