@@ -1,5 +1,6 @@
 #include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/transaction/transaction.hpp"
 
@@ -24,6 +25,14 @@ ClientContext &CatalogTransaction::GetContext() {
 
 CatalogTransaction CatalogTransaction::GetSystemCatalogTransaction(ClientContext &context) {
 	return CatalogTransaction(Catalog::GetSystemCatalog(context), context);
+}
+
+CatalogTransaction CatalogTransaction::GetSystemCatalogTransaction(Context &context) {
+	auto client_context = context.TryGetClientContext();
+	if (client_context) {
+		return GetSystemCatalogTransaction(*client_context);
+	}
+	return GetSystemTransaction(context.GetDatabase());
 }
 
 CatalogTransaction CatalogTransaction::GetSystemTransaction(DatabaseInstance &db) {

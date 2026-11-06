@@ -113,7 +113,7 @@ public:
 
 	bool IsGeometryColumn(const string &column_name) const;
 
-	static bool IsGeoParquetConversionEnabled(const Context &services);
+	static bool IsGeoParquetConversionEnabled(const Context &context);
 
 private:
 	mutex write_lock;

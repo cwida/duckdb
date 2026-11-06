@@ -1153,11 +1153,11 @@ public:
 TEST_CASE("V2: a cancel requested while a statement is submitted cancels it", "[capi_v2][query_result]") {
 	EnvFixture fx;
 	auto &con = *reinterpret_cast<duckdb::Connection *>(fx.conn);
-	con.context->Services().GetRegisteredState().Insert("cancel_while_planning",
-	                                                    duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
+	con.context->GetContext().GetRegisteredState().Insert("cancel_while_planning",
+	                                                      duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(fx.conn, "SELECT 42", &result) == DUCKDB_V2_ERROR_NONE);
-	con.context->Services().GetRegisteredState().Remove("cancel_while_planning");
+	con.context->GetContext().GetRegisteredState().Remove("cancel_while_planning");
 
 	duckdb_v2_data_chunk_handle chunk = nullptr;
 	auto status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
