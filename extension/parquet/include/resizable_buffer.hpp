@@ -133,10 +133,6 @@ public:
 		Resize(allocator, new_size);
 	}
 
-	ResizeableBuffer(BufferManager &buffer_manager, const idx_t new_size) {
-		Resize(buffer_manager, new_size);
-	}
-
 	void Resize(Allocator &allocator, const idx_t new_size) {
 		if (block_handle) {
 			ReleaseAll();
