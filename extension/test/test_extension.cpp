@@ -934,6 +934,7 @@ void LoadTestExtension(ExtensionLoader &loader) {
 	                  {LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR),
 	                   LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR)},
 	                  TestRunFunction, TestRunBind, TestRunInit);
+	run.global_initialization = TableFunctionInitialization::INITIALIZE_ON_SCHEDULE;
 	loader.RegisterFunction(std::move(run));
 }
 
