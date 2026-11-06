@@ -401,8 +401,8 @@ SingleFileBlockManager::SingleFileBlockManager(AttachedDatabase &db_p, const str
                                                const StorageManagerOptions &options)
     : BlockManager(BufferManager::GetBufferManager(db_p), options.block_alloc_size, options.block_header_size),
       db(db_p), path(path_p), header_buffer(BlockAllocator::Get(db_p), FileBufferType::MANAGED_BUFFER,
-	                                        Storage::FILE_HEADER_SIZE - options.block_header_size.GetIndex(),
-	                                        options.block_header_size.GetIndex()),
+                                            Storage::FILE_HEADER_SIZE - options.block_header_size.GetIndex(),
+                                            options.block_header_size.GetIndex()),
       iteration_count(0), options(options) {
 }
 
