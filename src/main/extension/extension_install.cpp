@@ -153,20 +153,23 @@ string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs)
 	D_ASSERT(!extension_directories.empty());
 
 	string extension_directory = extension_directories[0]; // Use first/primary directory
-	{
-		if (!fs.DirectoryExists(extension_directory)) {
-			string home_directory = fs.GetHomeDirectory();
-			if (extension_directory.rfind(home_directory, 0) == 0 && !fs.DirectoryExists(home_directory)) {
-				throw IOException("Can't find the home directory at '%s'\nSpecify a home directory using the SET "
-				                  "home_directory='/path/to/dir' option.",
-				                  home_directory);
-			}
-			fs.CreateDirectoriesRecursive(extension_directory);
-		}
-	}
+	CreateExtensionDirectory(fs, extension_directory);
 	D_ASSERT(fs.DirectoryExists(extension_directory));
 
 	return extension_directory;
+}
+
+void ExtensionHelper::CreateExtensionDirectory(FileSystem &fs, const string &extension_directory) {
+	if (fs.DirectoryExists(extension_directory)) {
+		return;
+	}
+	string home_directory = fs.GetHomeDirectory();
+	if (extension_directory.rfind(home_directory, 0) == 0 && !fs.DirectoryExists(home_directory)) {
+		throw IOException("Can't find the home directory at '%s'\nSpecify a home directory using the SET "
+		                  "home_directory='/path/to/dir' option.",
+		                  home_directory);
+	}
+	fs.CreateDirectoriesRecursive(extension_directory);
 }
 
 string ExtensionHelper::ExtensionDirectory(ClientContext &context) {
@@ -202,7 +205,8 @@ unique_ptr<ExtensionInstallInfo> ExtensionHelper::InstallExtension(DatabaseInsta
 	// Install is currently a no-op
 	return nullptr;
 #endif
-	string local_path = ExtensionDirectory(db, fs);
+	// the install creates the directory only when it writes to it, an installed copy elsewhere makes it a no op
+	string local_path = GetExtensionDirectoryPath(db, fs)[0];
 	return InstallExtensionInternal(db, fs, local_path, extension, options);
 }
 
@@ -214,7 +218,7 @@ unique_ptr<ExtensionInstallInfo> ExtensionHelper::InstallExtension(ClientContext
 #endif
 	auto &db = DatabaseInstance::GetDatabase(context);
 	auto &fs = FileSystem::GetFileSystem(context);
-	string local_path = ExtensionDirectory(context);
+	string local_path = GetExtensionDirectoryPath(db, fs)[0];
 	return InstallExtensionInternal(db, fs, local_path, extension, options, context);
 }
 

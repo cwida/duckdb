@@ -140,6 +140,8 @@ public:
 	//! Get the extension directory base on the current config
 	static string ExtensionDirectory(ClientContext &context);
 	static string ExtensionDirectory(DatabaseInstance &db, FileSystem &fs);
+	//! Create an extension directory unless it exists, throws instead of creating a missing home directory
+	static void CreateExtensionDirectory(FileSystem &fs, const string &extension_directory);
 
 	// Get all extension directory paths
 	static vector<string> GetExtensionDirectoryPath(ClientContext &context);
