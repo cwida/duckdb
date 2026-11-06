@@ -882,7 +882,7 @@ void TemporaryDirectoryHandle::ClaimOwner() {
 		unique_ptr<FileHandle> marker;
 		try {
 			marker = fs.OpenFile(marker_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW |
-			                                       FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE);
+			                                      FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE);
 		} catch (std::exception &) {
 			// taken, by a live instance or by one that died holding it - either way not ours
 			if (!fs.FileExists(marker_path)) {
