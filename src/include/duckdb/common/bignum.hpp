@@ -14,6 +14,7 @@
 #include "duckdb/common/optional_ptr.hpp"
 #include <stdint.h>
 #include "duckdb/common/types/string_type.hpp"
+#include "duckdb/common/bignum_limbs.hpp"
 
 namespace duckdb {
 class StringHeap;
@@ -46,7 +47,7 @@ enum AbsoluteNumberComparison : uint8_t {
 	SMALLER = 2,
 };
 
-//! A bignum magnitude is handled as base 2^32 digits
+//! Base 2^32 digits, used by the decimal string conversions (the arithmetic kernels use bignum_digit_t)
 using digit_t = uint32_t;
 using twodigit_t = uint64_t;
 
@@ -58,12 +59,12 @@ struct BignumArithmeticState {
 	optional_ptr<ClientContext> context;
 	//! Digit operations performed since the last interrupt check
 	idx_t work_since_interrupt_check = 0;
-	unsafe_vector<digit_t> lhs_digits;
-	unsafe_vector<digit_t> rhs_digits;
-	unsafe_vector<digit_t> result_digits;
-	unsafe_vector<digit_t> remainder_digits;
-	unsafe_vector<digit_t> normalized_dividend;
-	unsafe_vector<digit_t> normalized_divisor;
+	unsafe_vector<bignum_digit_t> lhs_digits;
+	unsafe_vector<bignum_digit_t> rhs_digits;
+	unsafe_vector<bignum_digit_t> result_digits;
+	unsafe_vector<bignum_digit_t> remainder_digits;
+	unsafe_vector<bignum_digit_t> normalized_dividend;
+	unsafe_vector<bignum_digit_t> normalized_divisor;
 };
 
 struct BignumIntermediate {

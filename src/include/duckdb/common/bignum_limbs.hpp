@@ -16,10 +16,23 @@
 
 namespace duckdb {
 
+//! The multiplication and division kernels handle a BIGNUM magnitude as base 2^64 digits with 128-bit products.
+//! MSVC has no 128-bit integer type, so it keeps base 2^32 digits with 64-bit products.
+#if defined(_MSC_VER) && !defined(__clang__)
+using bignum_digit_t = uint32_t;
+using bignum_twodigit_t = uint64_t;
+#else
+using bignum_digit_t = uint64_t;
+__extension__ typedef unsigned __int128 bignum_twodigit_t;
+#endif
+
 //! Helpers that treat the big-endian magnitude bytes of a BIGNUM blob as 64-bit limbs. The blob format itself is
 //! untouched: limbs are loaded with memcpy (the string_t payload is unaligned) and byte swapped on little-endian hosts.
 struct BignumLimb {
 	static constexpr idx_t BYTES = sizeof(uint64_t);
+	//! Bytes and bits of a multiplication / division digit
+	static constexpr idx_t DIGIT_BYTES = sizeof(bignum_digit_t);
+	static constexpr idx_t DIGIT_BITS = DIGIT_BYTES * 8;
 
 	template <class T>
 	static inline T ToHostOrder(T value) {
@@ -115,6 +128,10 @@ struct BignumLimb {
 #else
 		return CountZeros<uint64_t>::Leading(value);
 #endif
+	}
+	static inline idx_t LeadingZeros(uint32_t value) {
+		D_ASSERT(value != 0);
+		return CountZeros<uint32_t>::Leading(value);
 	}
 
 	//! The number of bytes needed to hold a magnitude, at least one
