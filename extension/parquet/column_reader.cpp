@@ -708,8 +708,6 @@ uint32_t ColumnReader::GetPageBodySize(const PageHeader &page_hdr) const {
 }
 
 void ColumnReader::AllocateBlock(idx_t payload_size) {
-	//! Managed-block registration costs more than a small page can repay; only large pages are worth evicting.
-	static constexpr idx_t EVICTABLE_PAGE_SIZE_THRESHOLD = 131072;
 	const auto allocation_size = payload_size + 1;
 	if (!block) {
 		block = make_shared_ptr<ResizeableBuffer>();

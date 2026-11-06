@@ -11,7 +11,7 @@ statement ok
 CREATE TABLE source AS
 SELECT
     i AS id,
-    (i % 20)::VARCHAR AS low_card,       -- forces DICTIONARY encoding (20 distinct values)
+    (i % 2000)::VARCHAR AS low_card,     -- DICTIONARY encoding; 2000 distinct keeps the RLE index pages above the evictable-page threshold
     md5(i::VARCHAR) || md5((i+1)::VARCHAR) AS high_card,  -- 64-byte unique strings, not inlined
     i::DOUBLE / 3 AS val
 FROM range(800000) t(i);
@@ -27,7 +27,8 @@ COPY source TO '{TEST_DIR}/pin_unpin_eviction_v1.parquet' (FORMAT PARQUET, PARQU
 statement ok
 CREATE TABLE expected AS
 SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
-       min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
+       min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
+       sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
 FROM source;
 
 # would itself compete for the memory budgets below
@@ -47,7 +48,8 @@ SET threads = 4;
 statement ok
 CREATE TABLE actual AS
 SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
-       min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
+       min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
+       sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
 FROM '{TEST_DIR}/pin_unpin_eviction.parquet';
 
 # epsilon, not exact equality: summing doubles in a different order can differ in the last ULP
@@ -57,6 +59,9 @@ SELECT (SELECT cnt FROM actual) = (SELECT cnt FROM expected)
    AND (SELECT str_len_sum FROM actual) = (SELECT str_len_sum FROM expected)
    AND (SELECT str_min FROM actual) = (SELECT str_min FROM expected)
    AND (SELECT str_max FROM actual) = (SELECT str_max FROM expected)
+   AND (SELECT lc_len_sum FROM actual) = (SELECT lc_len_sum FROM expected)
+   AND (SELECT lc_min FROM actual) = (SELECT lc_min FROM expected)
+   AND (SELECT lc_max FROM actual) = (SELECT lc_max FROM expected)
    AND abs((SELECT val_sum FROM actual) - (SELECT val_sum FROM expected)) < 0.01;
 ----
 true
@@ -77,9 +82,11 @@ foreach file pin_unpin_eviction pin_unpin_eviction_v1
 query I
 SELECT a.cnt = e.cnt AND a.id_sum = e.id_sum AND a.str_len_sum = e.str_len_sum
    AND a.str_min = e.str_min AND a.str_max = e.str_max AND abs(a.val_sum - e.val_sum) < 0.01
+   AND a.lc_len_sum = e.lc_len_sum AND a.lc_min = e.lc_min AND a.lc_max = e.lc_max
 FROM (
     SELECT count(*) AS cnt, sum(id) AS id_sum, sum(length(high_card)) AS str_len_sum,
-           min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum
+           min(high_card) AS str_min, max(high_card) AS str_max, sum(val) AS val_sum,
+           sum(length(low_card)) AS lc_len_sum, min(low_card) AS lc_min, max(low_card) AS lc_max
     FROM '{TEST_DIR}/${file}.parquet'
 ) AS a, expected AS e;
 ----

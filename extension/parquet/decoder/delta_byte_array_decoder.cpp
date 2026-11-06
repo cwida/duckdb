@@ -103,7 +103,11 @@ void DeltaByteArrayDecoder::InitializePage() {
 		}
 	}
 
-	plain_data->Resize(buffer_manager, total_size);
+	if (total_size < ColumnReader::EVICTABLE_PAGE_SIZE_THRESHOLD) {
+		plain_data->Resize(allocator, total_size);
+	} else {
+		plain_data->Resize(buffer_manager, total_size);
+	}
 	unsafe_vector<uint8_t> prev_value(max_len);
 	idx_t prev_len = 0;
 

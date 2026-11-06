@@ -110,6 +110,9 @@ public:
 	virtual ~ColumnReader();
 
 public:
+	//! Managed-block registration costs more than a smaller page can repay in evictability.
+	static constexpr idx_t EVICTABLE_PAGE_SIZE_THRESHOLD = 131072;
+
 	static unique_ptr<ColumnReader> CreateReader(const ParquetReader &reader, const ParquetColumnSchema &schema);
 	virtual void InitializeRead(idx_t row_group_index, idx_t row_group_num_rows,
 	                            const duckdb_parquet::ColumnChunkList &columns, TProtocol &protocol_p);
