@@ -1,0 +1,91 @@
+# name: test/sql/catalog/function/drop_function_signature_alter.test
+# description: A member drop is an alter internally: oid preserved, WAL replay, rollback
+# group: [function]
+
+load {TEST_DIR}/drop_function_signature_alter.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+CREATE MACRO alt(x INTEGER) AS x + 1, (x VARCHAR) AS concat(x, '!'), (x DATE) AS year(x);
+
+# a member drop preserves the entry's oid: the altered entry is the same logical object
+statement ok
+CREATE TABLE oid_before AS SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'alt';
+
+query I
+SELECT count(*) FROM oid_before;
+----
+1
+
+statement ok
+DROP MACRO alt(VARCHAR);
+
+query I
+SELECT (SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'alt')
+     = (SELECT function_oid FROM oid_before);
+----
+true
+
+# the member drop rolls back like any alter
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO alt(INTEGER);
+
+statement error
+SELECT alt(1);
+----
+<REGEX>:.*(no overload|No function matches|Binder Error).*
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT alt(1);
+----
+2
+
+# the member drop replays from the WAL as an alter
+statement ok
+DROP MACRO alt(DATE);
+
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+query I
+SELECT alt(1);
+----
+2
+
+statement error
+SELECT alt(DATE '2024-01-01');
+----
+<REGEX>:.*(No function matches|Binder Error).*
+
+# the oid survives the WAL replay together with the member removal
+query I
+SELECT count(DISTINCT function_oid) FROM duckdb_functions() WHERE function_name = 'alt';
+----
+1
+
+# dropping the last member falls through to a real entry drop, replayed from the WAL too
+statement ok
+DROP MACRO alt(INTEGER);
+
+restart
+
+statement error
+SELECT alt(1);
+----
+<REGEX>:.*(Catalog Error|not exist).*
