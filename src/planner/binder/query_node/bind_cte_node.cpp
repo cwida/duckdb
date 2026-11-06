@@ -50,6 +50,8 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 			++dml_cte_count;
 		}
 		bound_ctes.push_back(current_binder.get().PrepareCTE(cte.first, *cte.second));
+		// sibling CTEs are prepared iteratively - their binders nest lexically, not through native recursion
+		bound_ctes.back().child_binder->recursion_depth = recursion_depth;
 		if (current_binder.get().IsBindingTrySubquery()) {
 			// the child binder binds the same query node, so TRY lowering follows it
 			bound_ctes.back().child_binder->SetBindingTrySubquery();
@@ -124,10 +126,12 @@ bool CTEBindState::IsBound() const {
 	return query_binder.get() != nullptr;
 }
 
-void CTEBindState::Bind(CTEBinding &binding) {
+void CTEBindState::Bind(CTEBinding &binding, Binder &referencing_binder) {
 	// we are lazily binding the CTE
 	// we need to bind it as if we were binding it during PrepareCTE
 	query_binder = Binder::CreateBinder(parent_binder.context, parent_binder);
+	// carry the reference site's recursion depth so that lazy CTE binds count against max_expression_depth
+	query_binder->InheritBinderDepth(referencing_binder);
 	query_binder->SetCanContainNulls(true);
 
 	// we clear any expression binders that were added in the mean-time, to ensure we are not binding to any newly added
@@ -193,7 +197,7 @@ BoundStatement Binder::FinishCTE(BoundCTEData &bound_cte, BoundStatement child) 
 			// Side-effecting CTEs always execute even if not referenced - force bind now
 			auto dummy_binding =
 			    make_uniq<CTEBinding>(BindingAlias(bound_cte.ctename), bound_cte.cte_bind_state, bound_cte.setop_index);
-			bound_cte.cte_bind_state->Bind(*dummy_binding);
+			bound_cte.cte_bind_state->Bind(*dummy_binding, *this);
 		} else {
 			// CTE without side effects was not referenced - just ignore it
 			MoveCorrelatedExpressions(*bound_cte.child_binder);

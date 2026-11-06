@@ -974,7 +974,7 @@ unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, uniqu
 	if (expr.RethrowsTryErrors()) {
 		result_expression = CreateTryErrorRethrow(*this, std::move(result_expression));
 	}
-	IncreaseDepth();
+	IncreasePlanDepth();
 	return result_expression;
 }
 

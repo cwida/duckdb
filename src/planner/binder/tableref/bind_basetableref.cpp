@@ -153,7 +153,7 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
 	auto ctebinding = GetCTEBinding(binding_alias);
 	if (ctebinding && ctebinding->CanBeReferenced()) {
-		ctebinding->Reference();
+		ctebinding->Reference(*this);
 
 		// There is a CTE binding in the BindContext.
 		// This can only be the case if there is a recursive CTE,

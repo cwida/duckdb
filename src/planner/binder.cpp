@@ -38,18 +38,31 @@
 
 namespace duckdb {
 
-idx_t Binder::GetBinderDepth() const {
-	return depth;
-}
-
-void Binder::IncreaseDepth() {
-	depth++;
+void Binder::CheckDepthLimit() const {
 	auto max_expression_depth = Settings::Get<MaxExpressionDepthSetting>(context);
-	if (depth > max_expression_depth) {
+	if (MaxValue<idx_t>(depth, recursion_depth) > max_expression_depth) {
 		throw BinderException("Max expression depth limit of %lld exceeded. Use \"SET max_expression_depth TO x\" to "
 		                      "increase the maximum expression depth.",
 		                      max_expression_depth);
 	}
+}
+
+void Binder::IncreaseDepth() {
+	depth++;
+	recursion_depth++;
+	CheckDepthLimit();
+}
+
+void Binder::IncreasePlanDepth() {
+	// planned subqueries are charged cumulatively, but planning them is iterative, not native recursion
+	depth++;
+	CheckDepthLimit();
+}
+
+void Binder::InheritBinderDepth(const Binder &other) {
+	// a lazily bound CTE continues the native bind recursion one level below the reference site
+	recursion_depth = MaxValue<idx_t>(recursion_depth, other.recursion_depth + 1);
+	CheckDepthLimit();
 }
 
 shared_ptr<Binder> Binder::CreateBinder(ClientContext &context, optional_ptr<Binder> parent, BinderType binder_type) {
@@ -59,7 +72,8 @@ shared_ptr<Binder> Binder::CreateBinder(ClientContext &context, optional_ptr<Bin
 Binder::Binder(ClientContext &context, shared_ptr<Binder> parent_p, BinderType binder_type)
     : context(context), bind_context(*this), parent(std::move(parent_p)), binder_type(binder_type),
       global_binder_state(parent ? parent->global_binder_state : make_shared_ptr<GlobalBinderState>()),
-      entry_retriever(context), depth(parent ? parent->GetBinderDepth() : 1) {
+      entry_retriever(context), depth(parent ? parent->depth : 1),
+      recursion_depth(parent ? parent->recursion_depth : 1) {
 	IncreaseDepth();
 	if (parent) {
 		entry_retriever.Inherit(parent->entry_retriever);

@@ -351,6 +351,8 @@ public:
 
 	//! Find all candidate common table expression by name; returns empty vector if none exists
 	optional_ptr<CTEBinding> GetCTEBinding(const BindingAlias &name);
+	//! Raise the native recursion depth to at least that of the given binder
+	void InheritBinderDepth(const Binder &other);
 
 	//! Add the view to the set of currently bound views - used for detecting recursive view definitions
 	void AddBoundView(ViewCatalogEntry &view);
@@ -486,12 +488,16 @@ private:
 	idx_t unnamed_subquery_index = 1;
 	//! Binder depth
 	idx_t depth;
+	//! Binder depth along the native bind recursion, excluding iteratively prepared sibling CTE scopes
+	idx_t recursion_depth;
 
 private:
-	//! Determine the depth of the binder
-	idx_t GetBinderDepth() const;
+	//! Check both depth counters against max_expression_depth
+	void CheckDepthLimit() const;
 	//! Increase the depth of the binder
 	void IncreaseDepth();
+	//! Increase only the cumulative depth, for iteratively planned subqueries
+	void IncreasePlanDepth();
 	//! Bind the expressions of generated columns to check for errors
 	void BindGeneratedColumns(BoundCreateTableInfo &info);
 	//! Bind the default values of the columns of a table

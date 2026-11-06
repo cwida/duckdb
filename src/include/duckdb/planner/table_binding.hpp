@@ -192,7 +192,7 @@ struct CTEBindState {
 
 public:
 	bool IsBound() const;
-	void Bind(CTEBinding &binding);
+	void Bind(CTEBinding &binding, Binder &referencing_binder);
 };
 
 struct CTEBinding : public Binding {
@@ -206,7 +206,7 @@ public:
 public:
 	bool CanBeReferenced() const;
 	bool IsReferenced() const;
-	void Reference();
+	void Reference(Binder &referencing_binder);
 
 private:
 	CTEType cte_type;
