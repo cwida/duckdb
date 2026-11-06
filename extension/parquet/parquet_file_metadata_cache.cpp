@@ -89,7 +89,7 @@ bool ParquetFileMetadataCache::IsValid(CachingFileHandle &new_handle) const {
 
 ParquetCacheValidity ParquetFileMetadataCache::IsValid(const OpenFileInfo &info, ClientContext &context) const {
 	CacheValidationMode validation_mode =
-	    ExternalFileCacheUtil::GetCacheValidationMode(info, context.services.get(), *context.db);
+	    ExternalFileCacheUtil::GetCacheValidationMode(info, &context.GetContext(), *context.db);
 	if (validation_mode == CacheValidationMode::NO_VALIDATION) {
 		return ParquetCacheValidity::VALID;
 	}

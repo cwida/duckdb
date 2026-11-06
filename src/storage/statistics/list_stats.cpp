@@ -1,3 +1,4 @@
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
@@ -111,7 +112,12 @@ void ListStats::MergeInLengths(BaseStatistics &stats, idx_t min_length, idx_t ma
 	auto &data = GetDataUnsafe(stats);
 	data.min_list_length = MinValue<uint64_t>(data.min_list_length, min_length);
 	data.max_list_length = MaxValue<uint64_t>(data.max_list_length, max_length);
-	data.total_list_length += total_length;
+	if (!TryAddOperator::Operation<uint64_t, uint64_t, uint64_t>(data.total_list_length, total_length,
+	                                                             data.total_list_length)) {
+		// the sum of the lengths overflows - the total is no longer known
+		data.has_total_list_length = false;
+		data.total_list_length = 0;
+	}
 }
 
 ListStatsData ListStats::GetLengthData(const BaseStatistics &stats) {
@@ -165,7 +171,12 @@ void ListStats::Merge(BaseStatistics &stats, const BaseStatistics &other, StatsM
 		list_data.has_total_list_length = false;
 	} else {
 		list_data.has_total_list_length = list_data.has_total_list_length && other_data.has_total_list_length;
-		list_data.total_list_length += other_data.total_list_length;
+		if (!TryAddOperator::Operation<uint64_t, uint64_t, uint64_t>(
+		        list_data.total_list_length, other_data.total_list_length, list_data.total_list_length)) {
+			// the sum of the totals overflows - the total is no longer known
+			list_data.has_total_list_length = false;
+			list_data.total_list_length = 0;
+		}
 	}
 
 	auto &child_stats = ListStats::GetChildStats(stats);
