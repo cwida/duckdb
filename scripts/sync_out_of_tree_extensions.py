@@ -578,11 +578,25 @@ def merge_vcpkg_manifests(synced_extension_names, external_dir, repo_root, outpu
     # Deduplicate (preserve order, string deps after dict deps)
     seen = set()
     final_deps = []
+    merged_dict_deps = {}
     for dep in dependencies_dict:
         key = dep['name']
-        if key not in seen:
-            final_deps.append(dep)
+        if key not in merged_dict_deps:
+            merged = dict(dep)
+            merged_dict_deps[key] = merged
+            final_deps.append(merged)
             seen.add(key)
+            continue
+        # Merge duplicates: union the features, keep default features if any entry wants them
+        merged = merged_dict_deps[key]
+        features = merged.get('features', [])
+        for feature in dep.get('features', []):
+            if feature not in features:
+                features = features + [feature]
+        if features:
+            merged['features'] = features
+        if dep.get('default-features', True):
+            merged.pop('default-features', None)
     for dep in dependencies_str:
         if dep not in seen:
             final_deps.append(dep)
