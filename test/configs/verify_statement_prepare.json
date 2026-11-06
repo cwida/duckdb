@@ -22,6 +22,13 @@
       ]
     },
     {
+      "reason": "A parameter in the MATCH_RECOGNIZE input defers binding to EXECUTE, where a navigation offset turned into a parameter is refused",
+      "paths": [
+        "test/sql/match_recognize/test_match_recognize_aggregates.test",
+        "test/sql/match_recognize/test_match_recognize_navigation.test"
+      ]
+    },
+    {
       "reason": "Different error message",
       "paths": [
         "test/sql/cast/cast_error_location.test",

@@ -72,6 +72,7 @@ set(TEST_API_OBJECTS
     test_pending_with_parameters.cpp
     test_parse_statement_iterator.cpp
     test_dialect_extension.cpp
+    test_parsed_expression_iterator.cpp
     test_query_node_copy.cpp
     test_grammar_extension.cpp
     test_parser_query_completeness.cpp

@@ -94,6 +94,12 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 		if (j_ref.condition) {
 			expr_callback(j_ref.condition);
 		}
+		for (auto &column : j_ref.duplicate_eliminated_columns) {
+			expr_callback(column);
+		}
+		if (j_ref.ranking_expression) {
+			expr_callback(j_ref.ranking_expression);
+		}
 		break;
 	}
 	case TableReferenceType::PIVOT: {
@@ -101,6 +107,16 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 		EnumerateTableRefChildren(*p_ref.source, expr_callback, ref_callback);
 		for (auto &aggr : p_ref.aggregates) {
 			expr_callback(aggr);
+		}
+		for (auto &pivot : p_ref.pivots) {
+			for (auto &expr : pivot.pivot_expressions) {
+				expr_callback(expr);
+			}
+			for (auto &entry : pivot.entries) {
+				if (entry.expr) {
+					expr_callback(entry.expr);
+				}
+			}
 		}
 		break;
 	}
@@ -132,7 +148,7 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 			expr_callback(mr_ref.config->pattern);
 		}
 		if (mr_ref.input) {
-			ref_callback(*mr_ref.input);
+			EnumerateTableRefChildren(*mr_ref.input, expr_callback, ref_callback);
 		}
 		break;
 	}
@@ -143,7 +159,13 @@ void ParsedExpressionIterator::EnumerateTableRefChildren(
 		}
 		break;
 	}
-	case TableReferenceType::BASE_TABLE:
+	case TableReferenceType::BASE_TABLE: {
+		auto &base_ref = ref.Cast<BaseTableRef>();
+		if (base_ref.at_clause) {
+			expr_callback(base_ref.at_clause->ExpressionMutable());
+		}
+		break;
+	}
 	case TableReferenceType::EMPTY_FROM:
 	case TableReferenceType::COLUMN_DATA:
 	case TableReferenceType::DELIM_GET:
@@ -165,6 +187,7 @@ void ParsedExpressionIterator::EnumerateQueryNodeChildren(
 		auto &rcte_node = node.Cast<RecursiveCTENode>();
 		EnumerateQueryNodeChildren(*rcte_node.left, expr_callback, ref_callback);
 		EnumerateQueryNodeChildren(*rcte_node.right, expr_callback, ref_callback);
+		// USING KEY binds against the CTE's columns alone, so no outer name or parameter can reach key_targets
 		break;
 	}
 	case QueryNodeType::SELECT_NODE: {
