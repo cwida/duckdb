@@ -4,6 +4,7 @@
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/bit_utils.hpp"
 #include <cmath>
 #include <cstring>
 
@@ -111,31 +112,157 @@ static bool ShouldRoundDecimalDigits(const char *data, idx_t decimal_start, idx_
 	return decimal_start < decimal_end && data[decimal_start] >= '5';
 }
 
-static void IncrementDecimalString(string &digits) {
-	int carry = 1;
-	for (int64_t i = static_cast<int64_t>(digits.size()) - 1; i >= 0 && carry; i--) {
-		auto digit = static_cast<int>(digits[static_cast<idx_t>(i)] - '0') + carry;
-		digits[static_cast<idx_t>(i)] = static_cast<char>('0' + (digit % 10));
-		carry = digit / 10;
+//! The decimal conversions use 64-bit limbs that hold BIGNUM_CAST_DECIMAL_SHIFT digits
+static constexpr idx_t BIGNUM_CAST_DECIMAL_SHIFT = 19;
+//! 10^0 .. 10^19
+static constexpr uint64_t BIGNUM_CAST_POWERS_OF_TEN[] = {1ULL,
+                                                         10ULL,
+                                                         100ULL,
+                                                         1000ULL,
+                                                         10000ULL,
+                                                         100000ULL,
+                                                         1000000ULL,
+                                                         10000000ULL,
+                                                         100000000ULL,
+                                                         1000000000ULL,
+                                                         10000000000ULL,
+                                                         100000000000ULL,
+                                                         1000000000000ULL,
+                                                         10000000000000ULL,
+                                                         100000000000000ULL,
+                                                         1000000000000000ULL,
+                                                         10000000000000000ULL,
+                                                         100000000000000000ULL,
+                                                         1000000000000000000ULL,
+                                                         10000000000000000000ULL};
+
+//! Returns the low 64 bits of a * b + add, and its high 64 bits in "high"; never overflows 128 bits
+static inline uint64_t BignumCastMultiplyAdd(uint64_t a, uint64_t b, uint64_t add, uint64_t &high) {
+#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__)
+	const auto product = static_cast<__uint128_t>(a) * b + add;
+	high = static_cast<uint64_t>(product >> 64);
+	return static_cast<uint64_t>(product);
+#else
+	// portable 32-bit split
+	const uint64_t a_low = a & 0xFFFFFFFFULL;
+	const uint64_t a_high = a >> 32;
+	const uint64_t b_low = b & 0xFFFFFFFFULL;
+	const uint64_t b_high = b >> 32;
+	const uint64_t p0 = a_low * b_low;
+	const uint64_t p1 = a_low * b_high;
+	const uint64_t p2 = a_high * b_low;
+	const uint64_t p3 = a_high * b_high;
+	const uint64_t middle = (p0 >> 32) + (p1 & 0xFFFFFFFFULL) + (p2 & 0xFFFFFFFFULL);
+	uint64_t low = (p0 & 0xFFFFFFFFULL) | (middle << 32);
+	high = p3 + (p1 >> 32) + (p2 >> 32) + (middle >> 32);
+	low += add;
+	high += low < add ? 1 : 0;
+	return low;
+#endif
+}
+
+//! Converts decimal digits to base 2^64 limbs, least significant first, without a zero top limb
+static void BignumCastDecimalToBinary(const char *digits, idx_t count, unsafe_vector<uint64_t> &limbs) {
+	limbs.clear();
+	// the first chunk takes the digits that remain after cutting BIGNUM_CAST_DECIMAL_SHIFT digits at a time from
+	// the end
+	idx_t chunk_size = count % BIGNUM_CAST_DECIMAL_SHIFT;
+	if (chunk_size == 0) {
+		chunk_size = BIGNUM_CAST_DECIMAL_SHIFT;
 	}
-	if (carry) {
-		digits = "1" + digits;
+	for (idx_t pos = 0; pos < count; pos += chunk_size, chunk_size = BIGNUM_CAST_DECIMAL_SHIFT) {
+		uint64_t chunk = 0;
+		for (idx_t i = pos; i < pos + chunk_size; i++) {
+			chunk = chunk * 10 + static_cast<uint64_t>(digits[i] - '0');
+		}
+		// limbs = limbs * 10^chunk_size + chunk
+		const uint64_t multiplier = BIGNUM_CAST_POWERS_OF_TEN[chunk_size];
+		uint64_t carry = chunk;
+		for (auto &limb : limbs) {
+			limb = BignumCastMultiplyAdd(limb, multiplier, carry, carry);
+		}
+		if (carry) {
+			limbs.push_back(carry);
+		}
+	}
+}
+
+//! Adds one to a magnitude in base 2^64 limbs
+static void BignumCastIncrement(unsafe_vector<uint64_t> &limbs) {
+	for (auto &limb : limbs) {
+		if (++limb != 0) {
+			return;
+		}
+	}
+	limbs.push_back(1);
+}
+
+//! The number of magnitude bytes of a magnitude in base 2^64 limbs (one for zero)
+static idx_t BignumCastMagnitudeBytes(const unsafe_vector<uint64_t> &limbs) {
+	if (limbs.empty()) {
+		return 1;
+	}
+	D_ASSERT(limbs.back() != 0);
+	const idx_t top_bits = 64 - static_cast<idx_t>(CountZeros<uint64_t>::Leading(limbs.back()));
+	return (limbs.size() - 1) * sizeof(uint64_t) + (top_bits + 7) / 8;
+}
+
+//! Writes the header and the big-endian magnitude bytes of a BIGNUM blob from base 2^64 limbs
+static void BignumCastWriteBlob(char *blob, const unsafe_vector<uint64_t> &limbs, idx_t data_bytes, bool is_negative) {
+	Bignum::SetHeader(blob, data_bytes, is_negative);
+	char *data = blob + Bignum::BIGNUM_HEADER_SIZE;
+	if (limbs.empty()) {
+		data[0] = is_negative ? static_cast<char>(0xFF) : 0;
+		return;
+	}
+	const idx_t top_bytes = data_bytes - (limbs.size() - 1) * sizeof(uint64_t);
+	Bignum::BignumCastStoreLeadingBytes(data, limbs.back(), top_bytes, is_negative);
+	char *end = data + data_bytes;
+	for (idx_t i = 0; i + 1 < limbs.size(); i++, end -= sizeof(uint64_t)) {
+		Bignum::BignumCastStoreLimb(end, limbs[i], is_negative);
+	}
+}
+
+//! Converts the integer digits of a VARCHAR into base 2^64 limbs, rounded up if requested
+static void BignumCastVarcharToLimbs(const string_t &value, idx_t start_pos, idx_t end_pos, bool should_round_up,
+                                     unsafe_vector<uint64_t> &limbs) {
+	BignumCastDecimalToBinary(value.GetData() + start_pos, end_pos - start_pos, limbs);
+	if (should_round_up) {
+		BignumCastIncrement(limbs);
 	}
 }
 
 string Bignum::EncodeVarcharBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative,
                                    bool is_zero, bool should_round_up) {
-	if (start_pos == end_pos && !should_round_up) {
-		is_zero = true;
+	if (is_zero || (start_pos == end_pos && !should_round_up)) {
+		return InitializeBignumZero();
 	}
-	if (should_round_up) {
-		string integer_digits(value.GetData() + start_pos, end_pos - start_pos);
-		IncrementDecimalString(integer_digits);
-		is_zero = false;
-		string_t rounded_digits(integer_digits);
-		return EncodeBignum(rounded_digits, 0, integer_digits.size(), is_negative, is_zero);
+	unsafe_vector<uint64_t> limbs;
+	BignumCastVarcharToLimbs(value, start_pos, end_pos, should_round_up, limbs);
+	const idx_t data_bytes = BignumCastMagnitudeBytes(limbs);
+	string result(BIGNUM_HEADER_SIZE + data_bytes, '\0');
+	BignumCastWriteBlob(&result[0], limbs, data_bytes, is_negative);
+	return result;
+}
+
+bool Bignum::TryVarcharToBignum(const string_t &value, bignum_t &result_value, Vector &result,
+                                BignumCastScratch &scratch) {
+	idx_t start_pos, end_pos;
+	bool is_negative, is_zero, should_round_up;
+	if (!VarcharFormatting(value, start_pos, end_pos, is_negative, is_zero, should_round_up)) {
+		return false;
 	}
-	return EncodeBignum(value, start_pos, end_pos, is_negative, is_zero);
+	if (is_zero || (start_pos == end_pos && !should_round_up)) {
+		result_value = InitializeBignumZero(result);
+		return true;
+	}
+	auto &limbs = scratch.binary;
+	BignumCastVarcharToLimbs(value, start_pos, end_pos, should_round_up, limbs);
+	const idx_t data_bytes = BignumCastMagnitudeBytes(limbs);
+	result_value = bignum_t(StringVector::EmptyString(result, BIGNUM_HEADER_SIZE + data_bytes));
+	BignumCastWriteBlob(result_value.data.GetDataWriteable(), limbs, data_bytes, is_negative);
+	result_value.data.Finalize();
+	return true;
 }
 
 bool Bignum::VarcharFormatting(const string_t &value, idx_t &start_pos, idx_t &end_pos, bool &is_negative,
@@ -220,61 +347,7 @@ bool Bignum::VarcharFormatting(const string_t &value, idx_t &start_pos, idx_t &e
 }
 
 string Bignum::EncodeBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative, bool is_zero) {
-	if (is_zero) {
-		// Return Value 0
-		return InitializeBignumZero();
-	}
-	auto int_value_char = value.GetData();
-	idx_t actual_size = end_pos - start_pos;
-
-	// convert the decimal digits to base 2**32 digits (least significant first), DECIMAL_SHIFT digits at a time
-	vector<digit_t> digits;
-	digits.reserve(actual_size / DECIMAL_SHIFT + 1);
-	idx_t chunk_size = actual_size % DECIMAL_SHIFT;
-	if (chunk_size == 0) {
-		chunk_size = DECIMAL_SHIFT;
-	}
-	digit_t chunk_base = 1;
-	for (idx_t i = 0; i < chunk_size; i++) {
-		chunk_base *= 10;
-	}
-	for (idx_t pos = start_pos; pos < end_pos; pos += chunk_size, chunk_size = DECIMAL_SHIFT) {
-		digit_t carry = 0;
-		for (idx_t i = pos; i < pos + chunk_size; i++) {
-			carry = carry * 10 + static_cast<digit_t>(int_value_char[i] - '0');
-		}
-		// digits = digits * 10**chunk_size + chunk
-		for (auto &digit : digits) {
-			twodigit_t tmp = static_cast<twodigit_t>(digit) * chunk_base + carry;
-			digit = static_cast<digit_t>(tmp);
-			carry = static_cast<digit_t>(tmp >> DIGIT_BITS);
-		}
-		if (carry) {
-			digits.push_back(carry);
-		}
-		chunk_base = DECIMAL_BASE;
-	}
-
-	// we initialize result with space for our header
-	string result(BIGNUM_HEADER_SIZE, '0');
-	result.reserve(BIGNUM_HEADER_SIZE + digits.size() * DIGIT_BYTES);
-	// write the bytes least significant first, these are reversed afterwards
-	for (idx_t digit_idx = 0; digit_idx < digits.size(); digit_idx++) {
-		auto digit = digits[digit_idx];
-		for (idx_t byte_idx = 0; byte_idx < DIGIT_BYTES; byte_idx++) {
-			if (digit_idx + 1 == digits.size() && digit == 0) {
-				// skip leading zero bytes of the most significant digit
-				break;
-			}
-			auto byte = static_cast<uint8_t>(digit & 0xFF);
-			result.push_back(static_cast<char>(is_negative ? ~byte : byte));
-			digit >>= 8;
-		}
-	}
-	std::reverse(result.begin() + BIGNUM_HEADER_SIZE, result.end());
-	// Set header after we know the size of the bignum
-	SetHeader(&result[0], result.size() - BIGNUM_HEADER_SIZE, is_negative);
-	return result;
+	return EncodeVarcharBignum(value, start_pos, end_pos, is_negative, is_zero, false);
 }
 
 void Bignum::GetByteArray(vector<uint8_t> &byte_array, bool &is_negative, const string_t &blob) {

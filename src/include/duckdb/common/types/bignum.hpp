@@ -16,11 +16,22 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/bswap.hpp"
+#include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 
 struct BoundCastInfo;
 struct CastParameters;
+
+//! Scratch space of the VARCHAR <-> BIGNUM conversions, reused across the values of a vector
+struct BignumCastScratch {
+	//! Base 2^64 limbs of a magnitude, least significant first
+	unsafe_vector<uint64_t> binary;
+	//! Base 10^19 limbs of a magnitude, least significant first
+	unsafe_vector<uint64_t> decimal;
+	//! powers[k] holds 2^(64 * 2^k) in base 10^19 limbs, for the divide and conquer conversion of large values
+	vector<unsafe_vector<uint64_t>> powers;
+};
 
 //! The Bignum class is a static class that holds helper functions for the Bignum type.
 class Bignum {
@@ -63,6 +74,11 @@ public:
 	//! Encodes a VARCHAR into a BIGNUM blob, applying decimal rounding if requested.
 	DUCKDB_API static string EncodeVarcharBignum(const string_t &value, idx_t start_pos, idx_t end_pos,
 	                                             bool is_negative, bool is_zero, bool should_round_up);
+	//! Converts a VARCHAR into a BIGNUM allocated in the result vector, returns false if the VARCHAR is invalid
+	DUCKDB_API static bool TryVarcharToBignum(const string_t &value, bignum_t &result_value, Vector &result,
+	                                          BignumCastScratch &scratch);
+	//! The VARCHAR -> BIGNUM cast function
+	DUCKDB_API static bool VarcharToBignumCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters);
 	//! Converts a char to a Digit
 	DUCKDB_API static int CharToDigit(char c);
 	//! Converts a Digit to a char
@@ -190,6 +206,26 @@ public:
 			value = ~value;
 		}
 		return value & (NumericLimits<uint64_t>::Maximum() >> (64 - 8 * n));
+	}
+
+	//! Writes the n (1 <= n <= 8) least significant bytes of value as a big-endian magnitude, complemented for a
+	//! negative value
+	static inline void BignumCastStoreLeadingBytes(char *destination, uint64_t value, idx_t n, bool is_negative) {
+		D_ASSERT(n >= 1 && n <= sizeof(uint64_t));
+		if (is_negative) {
+			value = ~value;
+		}
+		value = BignumCastBigEndianToHost(value);
+		memcpy(destination, reinterpret_cast<const char *>(&value) + (sizeof(uint64_t) - n), n);
+	}
+
+	//! Writes a 64-bit limb as eight big-endian magnitude bytes ending at "end", complemented for a negative value
+	static inline void BignumCastStoreLimb(char *end, uint64_t value, bool is_negative) {
+		if (is_negative) {
+			value = ~value;
+		}
+		value = BignumCastBigEndianToHost(value);
+		memcpy(end - sizeof(uint64_t), &value, sizeof(uint64_t));
 	}
 };
 

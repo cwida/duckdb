@@ -169,37 +169,35 @@ bignum_t HugeintCastToBignum::Operation(hugeint_t int_value, StringHeap &heap) {
 template <>
 bool TryCastToBignum::Operation(string_t input_value, bignum_t &result_value, Vector &result,
                                 CastParameters &parameters) {
-	idx_t start_pos, end_pos;
-	bool is_negative, is_zero;
-	bool should_round_up;
-	if (!Bignum::VarcharFormatting(input_value, start_pos, end_pos, is_negative, is_zero, should_round_up)) {
-		return false;
-	}
-
-	auto blob_string =
-	    Bignum::EncodeVarcharBignum(input_value, start_pos, end_pos, is_negative, is_zero, should_round_up);
-
-	uint32_t blob_size = static_cast<uint32_t>(blob_string.size());
-	result_value = bignum_t(StringVector::EmptyString(result, blob_size));
-	auto writable_blob = result_value.data.GetDataWriteable();
-
-	// Write string_blob into blob
-	for (idx_t i = 0; i < blob_string.size(); i++) {
-		writable_blob[i] = blob_string[i];
-	}
-	result_value.data.Finalize();
-	return true;
+	BignumCastScratch scratch;
+	return Bignum::TryVarcharToBignum(input_value, result_value, result, scratch);
 }
 
-//! Writes the n (1 <= n <= 8) least significant bytes of value as a big-endian magnitude, complemented for a
-//! negative value
-static inline void BignumCastStoreLeadingBytes(char *destination, uint64_t value, idx_t n, bool is_negative) {
-	D_ASSERT(n >= 1 && n <= sizeof(uint64_t));
-	if (is_negative) {
-		value = ~value;
+struct VarcharToBignumCastData {
+	VarcharToBignumCastData(Vector &result, CastParameters &parameters) : vector_cast_data(result, parameters) {
 	}
-	value = Bignum::BignumCastBigEndianToHost(value);
-	memcpy(destination, reinterpret_cast<const char *>(&value) + (sizeof(uint64_t) - n), n);
+
+	VectorTryCastData vector_cast_data;
+	BignumCastScratch scratch;
+};
+
+struct VarcharToBignumOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input, ValidityMask &mask, idx_t idx, VarcharToBignumCastData &data) {
+		RESULT_TYPE output;
+		if (DUCKDB_LIKELY(Bignum::TryVarcharToBignum(input, output, data.vector_cast_data.result, data.scratch))) {
+			return output;
+		}
+		return HandleVectorCastError::Operation<RESULT_TYPE>(
+		    CastExceptionText<INPUT_TYPE>(input, data.vector_cast_data.result.GetType()), mask, idx,
+		    data.vector_cast_data);
+	}
+};
+
+bool Bignum::VarcharToBignumCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	VarcharToBignumCastData data(result, parameters);
+	UnaryExecutor::GenericExecute<string_t, bignum_t, VarcharToBignumOperator>(source, result, count, data);
+	return data.vector_cast_data.all_converted;
 }
 
 template <class T>
@@ -247,7 +245,7 @@ static bool DoubleToBignum(T double_value, bignum_t &result_value, Vector &resul
 	result_value.data = StringVector::EmptyString(result, blob_size);
 	auto writable_blob = result_value.data.GetDataWriteable();
 	Bignum::SetHeader(writable_blob, data_byte_size, is_negative);
-	BignumCastStoreLeadingBytes(writable_blob + Bignum::BIGNUM_HEADER_SIZE, top, top_bytes, is_negative);
+	Bignum::BignumCastStoreLeadingBytes(writable_blob + Bignum::BIGNUM_HEADER_SIZE, top, top_bytes, is_negative);
 	memset(writable_blob + Bignum::BIGNUM_HEADER_SIZE + top_bytes, is_negative ? 0xFF : 0x00, zero_bytes);
 	result_value.data.Finalize();
 	return true;
