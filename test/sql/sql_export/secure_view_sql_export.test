@@ -164,7 +164,7 @@ CREATE SECURE VIEW retained_secure_values AS SELECT nextval('retained_secure_seq
 UNION ALL SELECT nextval('retained_secure_sequence');
 
 query I
-SELECT count(*) FROM retained_secure_values;
+SELECT count(x) FROM retained_secure_values;
 ----
 2
 

@@ -1,0 +1,27 @@
+# name: test/optimizer/unused_columns/count_star_over_union_secure_view.test
+# description: A count(*) over a secure view of a UNION ALL evaluates no column of the union
+# group: [unused_columns]
+
+statement ok
+CREATE TABLE t(a VARCHAR, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES ('x', 1), ('y', NULL), ('z', 3);
+
+statement ok
+CREATE SECURE VIEW union_view AS SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3;
+
+query I
+SELECT count(*) FROM union_view;
+----
+4
+
+query I
+SELECT count(b) FROM union_view;
+----
+3
+
+statement error
+SELECT count(cast_col) FROM union_view;
+----
+Conversion Error

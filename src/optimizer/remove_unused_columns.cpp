@@ -56,6 +56,26 @@ static void GatherCTEScans(const TableIndex cte_index, const LogicalOperator &op
 	}
 }
 
+// A union or CTE needs one column even when none is read; a NULL of the input's column 0 type evaluates nothing.
+static void ProjectUnreadColumn(unique_ptr<LogicalOperator> &input, Binder &binder) {
+	input->ResolveOperatorTypes();
+	auto constant = make_uniq<BoundConstantExpression>(Value(input->types[0]));
+	if (input->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		auto &expressions = input->Cast<LogicalProjection>().expressions;
+		expressions.clear();
+		expressions.push_back(std::move(constant));
+		return;
+	}
+	vector<unique_ptr<Expression>> expressions;
+	expressions.push_back(std::move(constant));
+	auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
+	if (input->has_estimated_cardinality) {
+		projection->SetEstimatedCardinality(input->estimated_cardinality);
+	}
+	projection->children.push_back(std::move(input));
+	input = std::move(projection);
+}
+
 RemoveUnusedColumns::RemoveUnusedColumns(Optimizer &optimizer)
     : optimizer(optimizer), binder(optimizer.binder), context(optimizer.context), everything_referenced(true),
       root(*this) {
@@ -651,9 +671,6 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 					entries.push_back(column_idx);
 				}
 			}
-			if (entries.empty()) {
-				entries.emplace_back(0);
-			}
 			for (auto &child : op.children) {
 				auto bindings = child->GetColumnBindings();
 				RemoveUnusedColumns remove(*this, false);
@@ -687,19 +704,19 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				return;
 			}
 			if (entries.empty()) {
-				// no columns referenced: this happens in the case of a COUNT(*)
-				// extract the first column
-				entries.push_back(0);
+				op.children[0]->ResolveOperatorTypes();
 				auto binding = ColumnBinding(setop.table_index, ProjectionIndex(0));
-				RecordSecureViewReplacement(binding, binding);
+				RecordSecureViewReplacement(binding, binding,
+				                            make_uniq<BoundConstantExpression>(Value(op.children[0]->types[0])));
 			}
 			ApplySecureViewReplacements();
 			for (idx_t child_idx = 0; child_idx < op.children.size(); child_idx++) {
 				RemoveUnusedColumns remove(*this, true);
 				auto &child = op.children[child_idx];
 
-				if (entries.size() < setop.column_count) {
-					// columns were cleared
+				if (entries.empty()) {
+					ProjectUnreadColumn(child, binder);
+				} else {
 					// push a projection under this child that references the required columns of the union
 					child->ResolveOperatorTypes();
 					auto bindings = child->GetColumnBindings();
@@ -721,7 +738,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				// now visit the child
 				remove.VisitOperator(op.children[child_idx]);
 			}
-			setop.column_count = entries.size();
+			setop.column_count = MaxValue<idx_t>(entries.size(), 1);
 			return;
 		}
 		for (auto &child : op.children) {
@@ -904,10 +921,6 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			remove.VisitOperator(cte.children[0]);
 			return;
 		}
-		if (referenced_columns_in_rhs.empty()) {
-			// If we have no columns selected just select the first column.
-			referenced_columns_in_rhs.emplace(0);
-		}
 		if (analyze) {
 			auto bindings = cte.children[0]->GetColumnBindings();
 			RemoveUnusedColumns lhs_child_analyzer(*this, false);
@@ -923,21 +936,28 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 
 		{
 			RemoveUnusedColumns lhs_child_optimizer(*this, true);
-			// Construct a projection on top of the left-hand side of the CTE
-			// that only projects the columns that are referenced in the right-hand side of the CTE
-			cte.children[0]->ResolveOperatorTypes();
-			auto bindings = cte.children[0]->GetColumnBindings();
-			vector<unique_ptr<Expression>> expressions;
-			for (idx_t i = 0; i < bindings.size(); i++) {
-				if (referenced_columns_in_rhs.find(ProjectionIndex(i)) != referenced_columns_in_rhs.end()) {
-					expressions.push_back(make_uniq<BoundColumnRefExpression>(cte.children[0]->types[i], bindings[i]));
+			if (referenced_columns_in_rhs.empty()) {
+				ProjectUnreadColumn(cte.children[0], binder);
+				referenced_columns_in_rhs.emplace(0);
+				cte.column_count = 1;
+			} else {
+				// Construct a projection on top of the left-hand side of the CTE
+				// that only projects the columns that are referenced in the right-hand side of the CTE
+				cte.children[0]->ResolveOperatorTypes();
+				auto bindings = cte.children[0]->GetColumnBindings();
+				vector<unique_ptr<Expression>> expressions;
+				for (idx_t i = 0; i < bindings.size(); i++) {
+					if (referenced_columns_in_rhs.find(ProjectionIndex(i)) != referenced_columns_in_rhs.end()) {
+						expressions.push_back(
+						    make_uniq<BoundColumnRefExpression>(cte.children[0]->types[i], bindings[i]));
+					}
 				}
-			}
 
-			cte.column_count = expressions.size();
-			auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
-			projection->children.push_back(std::move(cte.children[0]));
-			cte.children[0] = std::move(projection);
+				cte.column_count = expressions.size();
+				auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
+				projection->children.push_back(std::move(cte.children[0]));
+				cte.children[0] = std::move(projection);
+			}
 
 			lhs_child_optimizer.VisitOperator(cte.children[0]);
 
