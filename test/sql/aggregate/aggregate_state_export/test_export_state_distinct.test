@@ -1,0 +1,90 @@
+# name: test/sql/aggregate/aggregate_state_export/test_export_state_distinct.test
+# description: EXPORT_STATE on a DISTINCT aggregate is rejected (issue #28452)
+# group: [aggregate_state_export]
+
+statement ok
+CREATE TABLE t AS SELECT i % 3 AS g, i % 10 AS v FROM range(30) r(i);
+
+# the exported state is the plain aggregate's state: combining the per-group states would count every
+# distinct value once per group (30 instead of 10), so the export is rejected at bind time
+statement error
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, count(DISTINCT v) EXPORT_STATE AS s FROM t GROUP BY g);
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+statement error
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, sum(DISTINCT v) EXPORT_STATE AS s FROM t GROUP BY g);
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+# also rejected without a GROUP BY, even though a single state would finalize correctly
+statement error
+SELECT finalize(count(DISTINCT v) EXPORT_STATE) FROM t;
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+statement error
+SELECT count(DISTINCT v) EXPORT_STATE FROM t;
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+# DISTINCT combined with FILTER / ORDER BY
+statement error
+SELECT g, count(DISTINCT v) FILTER (WHERE v > 2) EXPORT_STATE FROM t GROUP BY g;
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+statement error
+SELECT g, string_agg(DISTINCT v ORDER BY v) EXPORT_STATE FROM t GROUP BY g;
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+statement error
+SELECT g, string_agg(DISTINCT v ORDER BY v) FILTER (WHERE v > 2) EXPORT_STATE FROM t GROUP BY g;
+----
+EXPORT_STATE is not supported for DISTINCT aggregates
+
+# DISTINCT aggregates in the same query as a non-distinct EXPORT_STATE are still fine
+query II
+SELECT count(DISTINCT v), finalize(count(v) EXPORT_STATE) FROM t;
+----
+10	30
+
+# non-distinct EXPORT_STATE keeps working, and combining partial states gives the full result
+query I
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, count(v) EXPORT_STATE AS s FROM t GROUP BY g);
+----
+30
+
+query I
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, sum(v) EXPORT_STATE AS s FROM t GROUP BY g);
+----
+135
+
+# non-distinct EXPORT_STATE with FILTER
+query I
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, count(v) FILTER (WHERE v > 2) EXPORT_STATE AS s FROM t GROUP BY g);
+----
+21
+
+query I
+SELECT finalize(count(v) FILTER (WHERE v > 2) EXPORT_STATE) FROM t;
+----
+21
+
+# non-distinct EXPORT_STATE with ORDER BY
+query I
+SELECT finalize(string_agg(v ORDER BY v) EXPORT_STATE) FROM (SELECT v FROM t WHERE g = 0);
+----
+0,1,2,3,4,5,6,7,8,9
+
+query I
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, string_agg(v ORDER BY v) EXPORT_STATE AS s FROM t WHERE v < 3 GROUP BY g);
+----
+0,0,0,1,1,1,2,2,2
+
+# non-distinct EXPORT_STATE with FILTER and ORDER BY
+query I
+SELECT finalize(combine_aggr(s)) FROM (SELECT g, string_agg(v ORDER BY v) FILTER (WHERE v < 2) EXPORT_STATE AS s FROM t GROUP BY g);
+----
+0,0,0,1,1,1
