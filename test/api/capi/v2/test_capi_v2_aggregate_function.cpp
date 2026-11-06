@@ -874,4 +874,78 @@ TEST_CASE("V2 aggregate: named-only arguments reach update", "[capi_v2][aggregat
 	duckdb_v2_result_destroy(&result);
 }
 
+namespace {
+
+// Like SumFinalize, but an odd sum finalizes to NULL, written through vector_set_null.
+void OddNullFinalize(duckdb_v2_aggregate_function_finalize_info_handle info, duckdb_v2_error_info_handle *err) {
+	void **states = nullptr;
+	idx_t count = 0;
+	idx_t offset = 0;
+	duckdb_v2_vector_handle result = nullptr;
+	void *raw = nullptr;
+	if (duckdb_v2_aggregate_function_finalize_get_states(info, &states, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_aggregate_function_finalize_get_state_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_aggregate_function_finalize_get_result(info, &result, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_aggregate_function_finalize_get_result_offset(info, &offset, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(result, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto *out_data = static_cast<int64_t *>(raw);
+	for (idx_t i = 0; i < count; i++) {
+		auto sum = *static_cast<const int64_t *>(states[i]);
+		if (sum % 2 != 0) {
+			if (duckdb_v2_vector_set_null(result, offset + i, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			continue;
+		}
+		out_data[offset + i] = sum;
+	}
+}
+
+std::string AggQueryText(duckdb_v2_connection_handle conn, std::string_view sql) {
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
+	auto chunk = StepChunk(result);
+	REQUIRE(chunk != nullptr);
+	duckdb_v2_vector_handle vec = nullptr;
+	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
+	duckdb_v2_vector_view view {};
+	duckdb_v2_vector_get_view(vec, &view, nullptr);
+	auto out = std::string(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)]));
+	duckdb_v2_data_chunk_destroy(&chunk);
+	duckdb_v2_result_destroy(&result);
+	return out;
+}
+
+} // namespace
+
+TEST_CASE("V2 aggregate: every finalized row accepts a NULL write", "[capi_v2][aggregate_function]") {
+	EnvFixture fx;
+	RegisterSumAggregate(fx, "odd_null_sum", OddNullFinalize);
+
+	REQUIRE(AggQueryText(fx.conn, "SELECT coalesce(odd_null_sum(x)::VARCHAR, 'NULL') FROM (VALUES (1), (2)) t(x)") ==
+	        "NULL");
+	REQUIRE(AggQueryText(fx.conn,
+	                     "SELECT string_agg(coalesce(v::VARCHAR, 'NULL'), ',' ORDER BY g) FROM (SELECT g, "
+	                     "odd_null_sum(g::INTEGER) AS v FROM (SELECT i % 4 AS g FROM range(4) t(i)) GROUP BY g)") ==
+	        "0,NULL,2,NULL");
+	REQUIRE(AggQueryText(fx.conn, "SELECT string_agg(coalesce(v::VARCHAR, 'NULL'), ',' ORDER BY i) FROM (SELECT i, "
+	                              "odd_null_sum(i::INTEGER) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND CURRENT ROW) "
+	                              "AS v FROM range(4) t(i))") == "0,NULL,2,NULL");
+	// Without ORDER BY the running sum streams, finalizing one row at a time at increasing offsets.
+	REQUIRE(AggQueryText(fx.conn, "SELECT string_agg(coalesce(v::VARCHAR, 'NULL'), ',' ORDER BY i) FROM (SELECT i, "
+	                              "odd_null_sum(i::INTEGER) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
+	                              "AS v FROM range(4) t(i))") == "0,NULL,NULL,6");
+	// An ORDER BY argument finalizes each group at its own offset.
+	REQUIRE(AggQueryText(fx.conn, "SELECT string_agg(coalesce(v::VARCHAR, 'NULL'), ',' ORDER BY g) FROM (SELECT g, "
+	                              "odd_null_sum(g::INTEGER ORDER BY i) AS v FROM (SELECT i, i % 4 AS g FROM range(4) "
+	                              "t(i)) GROUP BY g)") == "0,NULL,2,NULL");
+	// A whole partition frame over 3000 partitions.
+	REQUIRE(AggQueryText(fx.conn,
+	                     "SELECT count(v) || '/' || count(*) FROM (SELECT odd_null_sum(CASE WHEN i < 3000 "
+	                     "THEN i ELSE 0 END::INTEGER) OVER (PARTITION BY i % 3000) AS v FROM range(6000) t(i))") ==
+	        "3000/6000");
+}
+
 } // namespace test_capi_v2
