@@ -1,0 +1,297 @@
+# name: test/sql/json/table/read_json_candidate_types_every_value.test
+# description: The type detected for a JSON string column reads every sampled value, also when the values that rule out a candidate come in a later vector or another file
+# group: [table]
+
+require json
+
+# times, then dates: no candidate reads both
+statement ok
+copy (select case when i < 2048 then '10:00:00' else '2024-01-01' end as v from range(4096) t(i)) to '{TEMP_DIR}/time_date.json'
+
+query III
+select typeof(v), count(*), count(v) from read_json('{TEMP_DIR}/time_date.json', sample_size=-1) group by all
+----
+VARCHAR	4096	4096
+
+# the same values in one vector
+statement ok
+copy (select case when i % 2 = 0 then '10:00:00' else '2024-01-01' end as v from range(10) t(i)) to '{TEMP_DIR}/time_date_one_vector.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/time_date_one_vector.json')
+----
+VARCHAR
+
+# times, then timestamps
+statement ok
+copy (select case when i < 2048 then '10:00:00' else '2024-01-01 10:00:00' end as v from range(4096) t(i)) to '{TEMP_DIR}/time_timestamp.json'
+
+query III
+select typeof(v), count(*), count(v) from read_json('{TEMP_DIR}/time_timestamp.json', sample_size=-1) group by all
+----
+VARCHAR	4096	4096
+
+# dates under a detected format, then timestamps that no date format reads and whose formats do not read the dates
+statement ok
+copy (select case when i < 2048 then '01-02-2024' else '2024-01-01 10:00:00' end as v from range(4096) t(i)) to '{TEMP_DIR}/date_format_timestamp.json'
+
+query III
+select typeof(v), count(*), count(v) from read_json('{TEMP_DIR}/date_format_timestamp.json', sample_size=-1) group by all
+----
+VARCHAR	4096	4096
+
+query II
+select typeof(v), count(v) from read_json('{TEMP_DIR}/date_format_timestamp.json', sample_size=-1, ignore_errors=true) group by all
+----
+VARCHAR	4096
+
+# ISO dates, then ISO timestamps: the TIMESTAMP cast reads both
+statement ok
+copy (select case when i < 2048 then '2024-01-01' else '2024-01-01 10:00:00' end as v from range(4096) t(i)) to '{TEMP_DIR}/date_timestamp.json'
+
+query IIII
+select typeof(v), count(v), min(v), max(v) from read_json('{TEMP_DIR}/date_timestamp.json', sample_size=-1) group by all
+----
+TIMESTAMP	4096	2024-01-01 00:00:00	2024-01-01 10:00:00
+
+# day first dates, then dates that only the month first timestampformat of the user reads
+statement ok
+copy (select case when i < 2048 then '13-02-2024' else '12-31-2024' end as v from range(4096) t(i)) to '{TEMP_DIR}/day_month_user_timestamp_format.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/day_month_user_timestamp_format.json', sample_size=-1, timestampformat='%m-%d-%Y')
+----
+VARCHAR
+
+# times, then dates under a detected format
+statement ok
+copy (select case when i < 2048 then '10:00:00' else '13-02-2024' end as v from range(4096) t(i)) to '{TEMP_DIR}/time_date_format.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/time_date_format.json', sample_size=-1)
+----
+VARCHAR
+
+# times, then dates under the dateformat of the user
+statement ok
+copy (select case when i < 2048 then '10:00:00' else '13/02/2024' end as v from range(4096) t(i)) to '{TEMP_DIR}/time_user_date_format.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/time_user_date_format.json', sample_size=-1, dateformat='%d/%m/%Y')
+----
+VARCHAR
+
+# times, then dates that only the timestampformat of the user reads
+statement ok
+copy (select case when i < 2048 then '10:00:00' else '12/31/2024' end as v from range(4096) t(i)) to '{TEMP_DIR}/time_user_timestamp_format.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/time_user_timestamp_format.json', sample_size=-1, timestampformat='%m/%d/%Y')
+----
+VARCHAR
+
+# dates, then integers, with strings read as integers
+statement ok
+copy (select case when i < 2048 then '2024-01-01' else '123' end as v from range(4096) t(i)) to '{TEMP_DIR}/date_integer.json'
+
+query III
+select typeof(v), count(*), count(v) from read_json('{TEMP_DIR}/date_integer.json', sample_size=-1, convert_strings_to_integers=true) group by all
+----
+VARCHAR	4096	4096
+
+# integers, then UUIDs
+statement ok
+copy (select case when i < 2048 then '123' else 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' end as v from range(4096) t(i)) to '{TEMP_DIR}/integer_uuid.json'
+
+query III
+select typeof(v), count(*), count(v) from read_json('{TEMP_DIR}/integer_uuid.json', sample_size=-1, convert_strings_to_integers=true) group by all
+----
+VARCHAR	4096	4096
+
+# integers as text, then decimals as text
+statement ok
+copy (select case when i < 2048 then '1' else '1.5' end as v from range(4096) t(i)) to '{TEMP_DIR}/integer_decimal_text.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/integer_decimal_text.json', sample_size=-1, convert_strings_to_integers=true)
+----
+VARCHAR
+
+# JSON integers, then JSON decimals, merge per value as before
+statement ok
+copy (select case when i < 2048 then 1 else 1.5 end as v from range(4096) t(i)) to '{TEMP_DIR}/integer_decimal.json'
+
+query II
+select typeof(v), sum(v) from read_json('{TEMP_DIR}/integer_decimal.json', sample_size=-1) group by all
+----
+DOUBLE	5120.0
+
+# times, then text
+statement ok
+copy (select case when i < 2048 then '10:00:00' else 'abc' end as v from range(4096) t(i)) to '{TEMP_DIR}/time_text.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/time_text.json', sample_size=-1)
+----
+VARCHAR
+
+# JSON booleans, then text
+statement ok
+copy (select case when i < 2048 then true::JSON else '"abc"'::JSON end as v from range(4096) t(i)) to '{TEMP_DIR}/boolean_text.json'
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/boolean_text.json', sample_size=-1)
+----
+JSON
+
+# a candidate that read every earlier value still wins over the ones a later vector rules out
+statement ok
+copy (select case when i < 2048 then 'epoch' else '2024-01-01 10:00:00' end as v from range(4096) t(i)) to '{TEMP_DIR}/special_timestamp.json'
+
+query III
+select typeof(v), min(v), max(v) from read_json('{TEMP_DIR}/special_timestamp.json', sample_size=-1) group by all
+----
+TIMESTAMP	1970-01-01 00:00:00	2024-01-01 10:00:00
+
+# the sample decides: UUIDs beyond the sample are an error for the integers, or NULL with ignore_errors
+query I
+select typeof(v) from read_json('{TEMP_DIR}/integer_uuid.json', sample_size=2048, convert_strings_to_integers=true) limit 1
+----
+BIGINT
+
+statement error
+select max(v) from read_json('{TEMP_DIR}/integer_uuid.json', sample_size=2048, convert_strings_to_integers=true)
+----
+Try increasing 'sample_size'
+
+query III
+select count(*), count(v), sum(v) from read_json('{TEMP_DIR}/integer_uuid.json', sample_size=2048, convert_strings_to_integers=true, ignore_errors=true)
+----
+4096	2048	251904
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/integer_uuid.json', sample_size=2049, convert_strings_to_integers=true)
+----
+VARCHAR
+
+query I
+select typeof(v) from read_json('{TEMP_DIR}/time_date.json', sample_size=2048) limit 1
+----
+TIME
+
+query I
+select distinct typeof(v) from read_json('{TEMP_DIR}/time_date.json', sample_size=2049)
+----
+VARCHAR
+
+# nested: a struct field, a list element and a map value
+statement ok
+copy (select {'a': case when i < 2048 then '10:00:00' else '2024-01-01' end} as s, [case when i < 2048 then '10:00:00' else '2024-01-01' end] as l, {'k': case when i < 2048 then '10:00:00' else '2024-01-01' end} as m from range(4096) t(i)) to '{TEMP_DIR}/nested.json'
+
+query III
+select distinct typeof(s), typeof(l), typeof(m) from read_json('{TEMP_DIR}/nested.json', sample_size=-1)
+----
+STRUCT(a VARCHAR)	VARCHAR[]	STRUCT(k VARCHAR)
+
+query I
+select distinct typeof(m) from read_json('{TEMP_DIR}/nested.json', sample_size=-1, map_inference_threshold=1)
+----
+MAP(VARCHAR, VARCHAR)
+
+query I
+select count(*) from read_json('{TEMP_DIR}/nested.json', sample_size=-1) where s.a = l[1] and l[1] = m.k
+----
+4096
+
+# a merge of samples gives the type a single sample of the same values gives
+statement ok
+copy (select 'epoch' as v from range(10)) to '{TEMP_DIR}/special.json'
+
+statement ok
+copy (select '2024-01-01 10:00:00' as v from range(10)) to '{TEMP_DIR}/timestamp.json'
+
+statement ok
+copy (select '10:00:00' as v from range(10)) to '{TEMP_DIR}/time.json'
+
+statement ok
+copy (select '2024-01-01' as v from range(10)) to '{TEMP_DIR}/date.json'
+
+query I
+select distinct typeof(v) from read_json(['{TEMP_DIR}/special.json', '{TEMP_DIR}/timestamp.json'])
+----
+TIMESTAMP
+
+query I
+select distinct typeof(v) from read_json(['{TEMP_DIR}/timestamp.json', '{TEMP_DIR}/special.json'], union_by_name=true)
+----
+TIMESTAMP
+
+query I
+select distinct typeof(v) from read_json(['{TEMP_DIR}/time.json', '{TEMP_DIR}/date.json'])
+----
+VARCHAR
+
+query I
+select distinct typeof(v) from read_json(['{TEMP_DIR}/date.json', '{TEMP_DIR}/time.json'], union_by_name=true)
+----
+VARCHAR
+
+statement ok
+copy (select 'infinity' as v from range(10)) to '{TEMP_DIR}/infinity.json'
+
+statement ok
+copy (select '2024-01-01T00:00:00Z' as v from range(10)) to '{TEMP_DIR}/offset.json'
+
+query I
+select distinct typeof(v) from read_json(['{TEMP_DIR}/offset.json', '{TEMP_DIR}/infinity.json'])
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+select distinct typeof(v) from read_json(['{TEMP_DIR}/infinity.json', '{TEMP_DIR}/offset.json'], union_by_name=true)
+----
+TIMESTAMP WITH TIME ZONE
+
+# the values of the keys of a map merge the same way, also within one vector
+statement ok
+copy (select [1] as l, {'a': 'epoch', 'b': '2024-01-01 10:00:00'} as m from range(10)) to '{TEMP_DIR}/map_keys.json'
+
+query II
+select distinct typeof(m), m from read_json('{TEMP_DIR}/map_keys.json', map_inference_threshold=1)
+----
+MAP(VARCHAR, TIMESTAMP)	{a='1970-01-01 00:00:00', b='2024-01-01 10:00:00'}
+
+# keys whose values a candidate reads only through different formats
+statement ok
+copy (select [1] as l, {'a': '01-02-2024 10:00:00 AM', 'b': '2024-01-01T00:00:00Z'} as m from range(10)) to '{TEMP_DIR}/map_keys_formats.json'
+
+query II
+select distinct typeof(m), m from read_json('{TEMP_DIR}/map_keys_formats.json', map_inference_threshold=1)
+----
+MAP(VARCHAR, VARCHAR)	{a='01-02-2024 10:00:00 AM', b='2024-01-01T00:00:00Z'}
+
+statement ok
+copy (select [1] as l, {'a': '10:00:00', 'b': '2024-01-01'} as m from range(10)) to '{TEMP_DIR}/map_keys_none.json'
+
+query I
+select distinct typeof(m) from read_json('{TEMP_DIR}/map_keys_none.json', map_inference_threshold=1)
+----
+MAP(VARCHAR, VARCHAR)
+
+# offset timestamps around a vector of NULLs stay TIMESTAMPTZ
+statement ok
+copy (select case when i < 2048 or i >= 4096 then '2024-01-01T00:00:00Z' end as v from range(6144) t(i)) to '{TEMP_DIR}/offset_null_offset.json'
+
+query II
+select typeof(v), count(v) from read_json('{TEMP_DIR}/offset_null_offset.json', sample_size=-1) group by all
+----
+TIMESTAMP WITH TIME ZONE	4096
+
+# specials, then offset timestamps, stay TIMESTAMPTZ
+statement ok
+copy (select case when i < 2048 then 'infinity' else '2024-01-01T00:00:00Z' end as v from range(4096) t(i)) to '{TEMP_DIR}/special_offset.json'
+
+query III
+select typeof(v), count(v), max(v) from read_json('{TEMP_DIR}/special_offset.json', sample_size=-1) group by all
+----
+TIMESTAMP WITH TIME ZONE	4096	infinity

@@ -136,10 +136,10 @@ void JSONStructureNode::InitializeCandidateTypes(const idx_t max_depth, const bo
 	}
 	auto &description = descriptions[0];
 	if (description.type == LogicalTypeId::VARCHAR && !initialized) {
-		// We loop through the candidate types and format templates from back to front.
+		// The candidate types are listed from least to most preferred, the format templates in the order tried.
 		// TIMESTAMP_TZ is only a candidate when the user did not pass timestamp_format=; never infer that
 		// from the date-format map (auto-detect can also converge on a single format).
-		// Trial order puts TIMESTAMP_TZ before TIMESTAMP so back-to-front tries TZ first (issue #14919).
+		// TIMESTAMP_TZ is preferred over TIMESTAMP (issue #14919).
 		if (convert_strings_to_integers) {
 			if (user_specified_timestamp_format) {
 				description.candidate_types = {LogicalTypeId::UUID, LogicalTypeId::BIGINT, LogicalTypeId::TIMESTAMP,
@@ -385,6 +385,26 @@ static void UpdateTimestampOffsetState(JSONStructureDescription &description, co
 	}
 }
 
+bool JSONStructureNode::CandidateReadsVector(const LogicalTypeId type, const idx_t vec_count, Vector &string_vector,
+                                             MutableDateFormatMap &date_format_map,
+                                             const bool user_specified_timestamp_format) {
+	auto &description = descriptions[0];
+	if (type == LogicalTypeId::TIMESTAMP_TZ) {
+		// Defense in depth: InitializeCandidateTypes already omits TZ when the user set timestamp_format=.
+		// A vector of NULLs or specials keeps TZ, PreferredCandidateType asks for an offset instead
+		if (user_specified_timestamp_format ||
+		    description.timestamp_offset_state == TimestampOffsetState::WITHOUT_OFFSET) {
+			return false;
+		}
+	} else if (date_format_map.HasFormats(type)) {
+		Vector result_vector(type, vec_count);
+		return EliminateCandidateFormats(vec_count, string_vector, result_vector, date_format_map);
+	}
+	Vector result_vector(type, vec_count);
+	string error_message;
+	return VectorOperations::DefaultTryCast(string_vector, result_vector, vec_count, &error_message, true);
+}
+
 void JSONStructureNode::EliminateCandidateTypes(const idx_t vec_count, Vector &string_vector,
                                                 MutableDateFormatMap &date_format_map,
                                                 const bool user_specified_timestamp_format) {
@@ -401,45 +421,14 @@ void JSONStructureNode::EliminateCandidateTypes(const idx_t vec_count, Vector &s
 		}
 	}
 
-	while (true) {
-		if (candidate_types.empty()) {
-			return;
-		}
-		const auto type = candidate_types.back();
-		Vector result_vector(type, vec_count);
-		if (type == LogicalTypeId::TIMESTAMP_TZ) {
-			// Defense in depth: InitializeCandidateTypes already omits TZ when the user set timestamp_format=.
-			if (user_specified_timestamp_format) {
-				candidate_types.pop_back();
-				continue;
-			}
-			// Only accept TIMESTAMPTZ when every non-null value seen so far carries an offset/Z.
-			// UNKNOWN (e.g., null-only vectors) and WITHOUT_OFFSET drop TZ and try TIMESTAMP (etc.).
-			if (description.timestamp_offset_state != TimestampOffsetState::WITH_OFFSET) {
-				candidate_types.pop_back();
-				continue;
-			}
-			string error_message;
-			if (!VectorOperations::DefaultTryCast(string_vector, result_vector, vec_count, &error_message, true)) {
-				candidate_types.pop_back();
-			} else {
-				return;
-			}
-		} else if (date_format_map.HasFormats(type)) {
-			if (EliminateCandidateFormats(vec_count, string_vector, result_vector, date_format_map)) {
-				return;
-			} else {
-				candidate_types.pop_back();
-			}
-		} else {
-			string error_message;
-			if (!VectorOperations::DefaultTryCast(string_vector, result_vector, vec_count, &error_message, true)) {
-				candidate_types.pop_back();
-			} else {
-				return;
-			}
-		}
-	}
+	// No candidate is sure to read what another one read, so each is tried on every vector
+	candidate_types.erase(std::remove_if(candidate_types.begin(), candidate_types.end(),
+	                                     [&](const LogicalTypeId type) {
+		                                     return !CandidateReadsVector(type, vec_count, string_vector,
+		                                                                  date_format_map,
+		                                                                  user_specified_timestamp_format);
+	                                     }),
+	                      candidate_types.end());
 }
 
 template <class OP, class T>
@@ -728,13 +717,16 @@ static void MergeNodeVal(JSONStructureNode &merged, const JSONStructureDescripti
 	if (!merged.initialized) {
 		merged_desc.candidate_types = child_desc.candidate_types;
 		merged_desc.format_candidates = child_desc.format_candidates;
-	} else if (merged_desc.candidate_types.empty() != child_desc.candidate_types.empty() // both empty or neither empty
-	           || (!merged_desc.candidate_types.empty() &&
-	               merged_desc.candidate_types.back() != child_desc.candidate_types.back())) { // non-empty: check type
-		merged_desc.candidate_types.clear(); // Not the same, default to VARCHAR
-	} else if (!merged_desc.candidate_types.empty() &&
-	           !IntersectFormatCandidates(merged_desc, child_desc, merged_desc.candidate_types.back())) {
-		merged_desc.candidate_types.clear(); // No format parses the values of both, default to VARCHAR
+	} else {
+		auto &candidate_types = merged_desc.candidate_types;
+		const auto &child_types = child_desc.candidate_types;
+		candidate_types.erase(std::remove_if(candidate_types.begin(), candidate_types.end(),
+		                                     [&](const LogicalTypeId type) {
+			                                     return std::find(child_types.begin(), child_types.end(), type) ==
+			                                                child_types.end() ||
+			                                            !IntersectFormatCandidates(merged_desc, child_desc, type);
+		                                     }),
+		                      candidate_types.end());
 	}
 
 	merged.initialized = true;
@@ -952,13 +944,18 @@ static LogicalType StructureToTypeObject(ClientContext &context, const JSONStruc
 	return LogicalType::STRUCT(child_types);
 }
 
+LogicalTypeId JSONStructureDescription::PreferredCandidateType() const {
+	for (auto it = candidate_types.rbegin(); it != candidate_types.rend(); ++it) {
+		if (*it != LogicalTypeId::TIMESTAMP_TZ || timestamp_offset_state == TimestampOffsetState::WITH_OFFSET) {
+			return *it;
+		}
+	}
+	return LogicalTypeId::VARCHAR;
+}
+
 static LogicalType StructureToTypeString(const JSONStructureNode &node) {
 	D_ASSERT(node.descriptions.size() == 1 && node.descriptions[0].type == LogicalTypeId::VARCHAR);
-	auto &desc = node.descriptions[0];
-	if (desc.candidate_types.empty()) {
-		return LogicalTypeId::VARCHAR;
-	}
-	return desc.candidate_types.back();
+	return node.descriptions[0].PreferredCandidateType();
 }
 
 JSONColumnFormats JSONStructure::StructureToFormats(const JSONStructureNode &node, const LogicalType &type) {
@@ -970,8 +967,7 @@ JSONColumnFormats JSONStructure::StructureToFormats(const JSONStructureNode &nod
 	switch (type.id()) {
 	case LogicalTypeId::DATE:
 	case LogicalTypeId::TIMESTAMP: {
-		if (desc.type != LogicalTypeId::VARCHAR || desc.candidate_types.empty() ||
-		    desc.candidate_types.back() != type.id()) {
+		if (desc.type != LogicalTypeId::VARCHAR || desc.PreferredCandidateType() != type.id()) {
 			break;
 		}
 		// The last format that read every sampled value is preferred, the order the formats are tried in, and the

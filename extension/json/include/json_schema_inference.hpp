@@ -69,6 +69,8 @@ private:
 	                                MutableDateFormatMap &date_format_map, bool user_specified_timestamp_format);
 	void EliminateCandidateTypes(idx_t vec_count, Vector &string_vector, MutableDateFormatMap &date_format_map,
 	                             bool user_specified_timestamp_format);
+	bool CandidateReadsVector(LogicalTypeId type, idx_t vec_count, Vector &string_vector,
+	                          MutableDateFormatMap &date_format_map, bool user_specified_timestamp_format);
 	bool EliminateCandidateFormats(idx_t vec_count, Vector &string_vector, const Vector &result_vector,
 	                               MutableDateFormatMap &date_format_map);
 
@@ -97,6 +99,8 @@ public:
 	JSONStructureNode &GetOrCreateChild(const char *key_ptr, size_t key_size);
 	JSONStructureNode &GetOrCreateChild(yyjson_val *key, yyjson_val *val, bool ignore_errors, bool detect_geojson,
 	                                    const idx_t depth);
+	//! The most preferred candidate, TIMESTAMP_TZ only when every timestamp of the sample had an offset, or VARCHAR
+	LogicalTypeId PreferredCandidateType() const;
 
 public:
 	//! Type of this description
@@ -106,7 +110,7 @@ public:
 	json_key_optional_case_map_t<idx_t> key_map;
 	vector<JSONStructureNode> children;
 
-	//! Candidate types (if auto-detecting and type == LogicalTypeId::VARCHAR)
+	//! Candidate types that read every sampled value (if auto-detecting and type == VARCHAR), most preferred last
 	vector<LogicalTypeId> candidate_types;
 	//! Per candidate type with formats, what reads every sampled value; a type without an entry has not been tried,
 	//! so all of its candidates remain
