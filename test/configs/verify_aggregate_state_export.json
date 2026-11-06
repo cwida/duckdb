@@ -34,6 +34,7 @@
         "test/optimizer/statistics/statistics_join_aggregate_bounds.test",
         "test/optimizer/test_aggregate_function_rewrite.test",
         "test/optimizer/joins/unnest_list_aggregate_estimate.test",
+        "test/sql/function/list/list_concat_prepared_projection.test",
         "test/optimizer/ordered_aggregate.test",
         "test/sql/copy/parquet/parquet_encryption.test",
         "test/sql/copy/parquet/parquet_glob_cache.test",
