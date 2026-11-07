@@ -294,8 +294,7 @@ unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const 
 		high_comparison_type =
 		    upper_inclusive ? ExpressionType::COMPARE_LESSTHANOREQUALTO : ExpressionType::COMPARE_LESSTHAN;
 	} else {
-		// A rewritten BETWEEN arrives as (lower bound) AND (upper bound).
-		// The scan may return a superset of the matching rows: the caller filters the fetched rows again.
+		// Use the conjuncts that form a key range, the caller applies the remaining ones to the fetched rows.
 		vector<reference<const Expression>> comparisons;
 		CollectConjunctionChildren(filter_expr, comparisons);
 		for (auto &comparison : comparisons) {
