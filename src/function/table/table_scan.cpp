@@ -1022,8 +1022,8 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 
 	auto &filter_set = *input.filters;
 
-	// FIXME: We scan one ART with the filter on its column and apply the other filters to the fetched rows.
-	// For multiple filters, i.e., a = 11 AND b = 24, we could also
+	// Scan one ART with the filter on its column. The index scan applies all filters to the fetched rows.
+	// FIXME: For multiple filters, i.e., a = 11 AND b = 24, we could also
 	// 1. Scan the ARTs for a = 11 and b = 24, and intersect the row IDs.
 	// 2. (Reorder and) scan a single ART with a compound key of (a, b).
 	if (!filter_set.HasFilters()) {
