@@ -47,6 +47,15 @@ static bool TruncatesYearsTowardsZero(const BoundConstantExpression &date_part) 
 	       part == DatePartSpecifier::MILLENNIUM;
 }
 
+static bool IsSubDayDatePart(const BoundConstantExpression &date_part) {
+	DatePartSpecifier part;
+	if (!TryGetDatePartSpecifier(StringValue::Get(date_part.GetValue()), part)) {
+		return false;
+	}
+	return part == DatePartSpecifier::MICROSECONDS || part == DatePartSpecifier::MILLISECONDS ||
+	       part == DatePartSpecifier::SECOND || part == DatePartSpecifier::MINUTE || part == DatePartSpecifier::HOUR;
+}
+
 static bool IsAfterFirstYear(const Value &value) {
 	if (value.IsNull()) {
 		return true;
@@ -73,6 +82,9 @@ unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, v
 	}
 
 	auto &column_part = bindings[3].get().Cast<BoundColumnRefExpression>();
+	if (column_part.GetReturnType().id() == LogicalTypeId::DATE && IsSubDayDatePart(date_part)) {
+		return nullptr;
+	}
 	auto &rhs = bindings[4].get().Cast<BoundConstantExpression>();
 
 	// Determine whether or not the column name is on the lhs or rhs.
