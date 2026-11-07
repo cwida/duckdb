@@ -292,6 +292,63 @@ void RemoveDirectoryIfPresent(FileSystem &fs, const string &path) {
 #ifndef DUCKDB_NO_THREADS
 namespace {
 
+class GatedCopyFileSystem : public ExistenceCountingFileSystem {
+public:
+	explicit GatedCopyFileSystem(bool fail_open_p) : fail_open(fail_open_p) {
+	}
+
+	bool CanHandleFile(const string &path) override {
+		return StringUtil::StartsWith(path, "s3://gated-copy-test/");
+	}
+
+	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener> opener) override {
+		{
+			unique_lock<mutex> guard(gate_lock);
+			open_started = true;
+			gate_cv.notify_all();
+			gate_cv.wait(guard, [&]() { return open_released; });
+		}
+		if (fail_open) {
+			throw IOException("Injected COPY open failure");
+		}
+		return ExistenceCountingFileSystem::OpenFile(path, flags, opener);
+	}
+
+	bool WaitForOpen() {
+		unique_lock<mutex> guard(gate_lock);
+		return gate_cv.wait_for(guard, std::chrono::seconds(5), [&]() { return open_started; });
+	}
+
+	void ReleaseOpen() {
+		{
+			lock_guard<mutex> guard(gate_lock);
+			open_released = true;
+		}
+		gate_cv.notify_all();
+	}
+
+private:
+	mutex gate_lock;
+	std::condition_variable gate_cv;
+	bool open_started = false;
+	bool open_released = false;
+	const bool fail_open;
+};
+
+struct GatedCopyOpenGuard {
+	explicit GatedCopyOpenGuard(GatedCopyFileSystem &fs_p) : fs(fs_p) {
+	}
+	~GatedCopyOpenGuard() {
+		fs.ReleaseOpen();
+		if (sink.valid()) {
+			sink.wait();
+		}
+	}
+
+	GatedCopyFileSystem &fs;
+	std::future<SinkResultType> sink;
+};
+
 struct BackpressureCopyInfo : LifecycleCopyInfo {
 	std::condition_variable cv;
 	bool flush_started = false;
@@ -379,6 +436,93 @@ struct BackpressureFlushGuard {
 };
 
 } // namespace
+
+TEST_CASE("COPY waits for an async file open without losing completion or interruption", "[api][copy]") {
+	enum class Outcome : uint8_t { SUCCESS, OPEN_FAILURE, INTERRUPT, DEADLINE };
+	for (auto outcome : {Outcome::SUCCESS, Outcome::OPEN_FAILURE, Outcome::INTERRUPT, Outcome::DEADLINE}) {
+		INFO("gated open outcome " << static_cast<uint32_t>(outcome));
+		DuckDB db(nullptr);
+		Connection connection(db);
+		REQUIRE_NO_FAIL(connection.Query("SET threads=1"));
+		REQUIRE_NO_FAIL(connection.Query("SET async_threads=1"));
+		auto &fs = FileSystem::GetFileSystem(*connection.context);
+		auto gated_fs = make_uniq<GatedCopyFileSystem>(outcome == Outcome::OPEN_FAILURE);
+		auto &gate = *gated_fs;
+		fs.RegisterSubSystem(std::move(gated_fs));
+
+		auto info = make_shared_ptr<LifecycleCopyInfo>();
+		auto function = CreateLifecycleCopyFunction("copy_gated_open", info, true);
+		auto &context = *connection.context;
+		PhysicalPlan plan(Allocator::Get(context));
+		auto &copy = plan.Make<PhysicalCopyToFile>(vector<LogicalType> {LogicalType::BIGINT}, function,
+		                                           make_uniq<LifecycleCopyBindData>(info), 0)
+		                 .Cast<PhysicalCopyToFile>();
+		copy.expected_types = {LogicalType::BIGINT};
+		copy.names = {Identifier("i")};
+		copy.file_path = "s3://gated-copy-test/output.test";
+		copy.file_extension = "test";
+		copy.per_thread_output = false;
+		copy.partition_output = false;
+		copy.use_tmp_file = false;
+		copy.overwrite_mode = CopyOverwriteMode::COPY_OVERWRITE;
+		copy.return_type = CopyFunctionReturnType::CHANGED_ROWS;
+		copy.write_empty_file = true;
+		copy.batch_size = STANDARD_VECTOR_SIZE;
+		GatedCopyOpenGuard open_guard(gate);
+		copy.sink_state = copy.GetGlobalSinkState(context);
+		REQUIRE(gate.WaitForOpen());
+
+		ThreadContext thread(context);
+		ExecutionContext execution_context(context, thread, nullptr);
+		auto local = copy.GetLocalSinkState(execution_context);
+		auto task = make_shared_ptr<BackpressureTask>();
+		InterruptState interrupt(task);
+		OperatorSinkInput input {*copy.sink_state, *local, interrupt};
+		DataChunk chunk;
+		chunk.Initialize(context, copy.expected_types);
+		{
+			auto values = FlatVector::Writer<int64_t>(chunk.data[0], STANDARD_VECTOR_SIZE);
+			for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
+				values.WriteValue(NumericCast<int64_t>(i));
+			}
+		}
+		REQUIRE(chunk.size() == STANDARD_VECTOR_SIZE);
+		GatedCopyOpenGuard sink_guard(gate);
+		if (outcome == Outcome::DEADLINE) {
+			const auto deadline = std::chrono::duration_cast<std::chrono::milliseconds>(
+			                          std::chrono::steady_clock::now().time_since_epoch())
+			                          .count() +
+			                      1000;
+			context.query_deadline = NumericCast<idx_t>(deadline);
+		}
+		auto sink_started = make_shared_ptr<std::promise<void>>();
+		auto started = sink_started->get_future();
+		sink_guard.sink = std::async(std::launch::async, [&, sink_started]() {
+			sink_started->set_value();
+			return copy.Sink(execution_context, chunk, input);
+		});
+		REQUIRE(started.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+		REQUIRE(sink_guard.sink.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout);
+		if (outcome == Outcome::INTERRUPT) {
+			connection.Interrupt();
+		} else if (outcome != Outcome::DEADLINE) {
+			gate.ReleaseOpen();
+		}
+		const auto wait_timeout = outcome == Outcome::DEADLINE ? std::chrono::seconds(2) : std::chrono::seconds(5);
+		REQUIRE(sink_guard.sink.wait_for(wait_timeout) == std::future_status::ready);
+		if (outcome == Outcome::SUCCESS) {
+			REQUIRE(sink_guard.sink.get() == SinkResultType::NEED_MORE_INPUT);
+			REQUIRE(info->initialized_paths.size() == 1);
+		} else if (outcome == Outcome::OPEN_FAILURE) {
+			REQUIRE_THROWS_AS(sink_guard.sink.get(), IOException);
+		} else {
+			REQUIRE_THROWS_AS(sink_guard.sink.get(), InterruptException);
+		}
+		context.ClearInterrupt();
+		context.query_deadline.SetInvalid();
+		gate.ReleaseOpen();
+	}
+}
 
 TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producers", "[api][copy]") {
 	DuckDB db(nullptr);
