@@ -28,6 +28,26 @@ query I
 SELECT i FROM tbl WHERE i = 5 AND i > 10;
 ----
 
+# An expression index where FilterCombiner folds the range into COMPARE_BETWEEN inside a conjunction.
+
+statement ok
+CREATE INDEX idx_expr ON tbl((i + 1));
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i + 1 > 499991 AND i + 1 < 499996 AND i + 1 <> 499993;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i + 1 > 499991 AND i + 1 < 499996 AND i + 1 <> 499993 ORDER BY i;
+----
+499991
+499993
+499994
+
+statement ok
+DROP INDEX idx_expr;
+
 # A point lookup with a filter on a column that is not projected.
 
 query II
@@ -44,6 +64,12 @@ SELECT i FROM tbl WHERE i = 101 AND j = 3;
 
 query I
 SELECT i FROM tbl WHERE i = 100 AND j <> 2;
+----
+
+# A barrier filter on an earlier column runs after the other table filters.
+
+query I
+SELECT i FROM tbl WHERE i = 101 AND s = 'str0' AND __internal_barrier(CASE WHEN j = 3 THEN error('unreachable') ELSE true END);
 ----
 
 # A range with a filter on a column that is not projected.

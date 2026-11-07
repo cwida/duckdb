@@ -12,6 +12,7 @@
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/execution/adaptive_filter.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/iterator.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -229,14 +230,17 @@ public:
 
 	//! The index scan can return a superset of the matching rows, so apply all table filters to the fetched rows.
 	static void FilterFetchedRows(ScanFilterInfo &filter_info, DataChunk &chunk) {
-		if (!filter_info.GetTableFilters() || chunk.size() == 0) {
+		if (!filter_info.HasFilters() || chunk.size() == 0) {
 			return;
 		}
 		const auto count = chunk.size();
 		SelectionVector sel;
 		sel.Initialize(nullptr);
 		idx_t approved_tuple_count = count;
-		for (auto &filter : filter_info.GetFilterList()) {
+		auto &filter_list = filter_info.GetFilterList();
+		const auto &permutation = filter_info.GetAdaptiveFilter()->GetPermutation();
+		for (idx_t i = 0; i < filter_list.size(); i++) {
+			auto &filter = filter_list[permutation[i]];
 			ColumnSegment::FilterSelection(sel, chunk.data[filter.scan_column_index], *filter.filter_state, count,
 			                               approved_tuple_count);
 			if (approved_tuple_count == 0) {

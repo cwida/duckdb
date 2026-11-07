@@ -269,54 +269,51 @@ unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const 
 	ExpressionType low_comparison_type = ExpressionType::INVALID;
 	ExpressionType high_comparison_type = ExpressionType::INVALID;
 
-	if (filter_expr.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
-		auto &between = filter_expr.Cast<BoundFunctionExpression>();
-		auto &input = BoundBetweenExpression::Input(between);
-		if (!input.Equals(expr)) {
-			// The expression does not match the index expression.
-			return nullptr;
-		}
-		auto &lower_bound = BoundBetweenExpression::LowerBound(between);
-		auto &upper_bound = BoundBetweenExpression::UpperBound(between);
-
-		if (lower_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT ||
-		    upper_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
-			// Not a constant expression.
-			return nullptr;
-		}
-
-		auto lower_inclusive = BoundBetweenExpression::LowerInclusive(between);
-		auto upper_inclusive = BoundBetweenExpression::UpperInclusive(between);
-		low_value = lower_bound.Cast<BoundConstantExpression>().GetValue();
-		low_comparison_type =
-		    lower_inclusive ? ExpressionType::COMPARE_GREATERTHANOREQUALTO : ExpressionType::COMPARE_GREATERTHAN;
-		high_value = (upper_bound.Cast<BoundConstantExpression>()).GetValue();
-		high_comparison_type =
-		    upper_inclusive ? ExpressionType::COMPARE_LESSTHANOREQUALTO : ExpressionType::COMPARE_LESSTHAN;
-	} else {
-		// Use the conjuncts that form a key range, the caller applies the remaining ones to the fetched rows.
-		vector<reference<const Expression>> comparisons;
-		CollectConjunctionChildren(filter_expr, comparisons);
-		for (auto &comparison : comparisons) {
-			ExpressionType comparison_type;
-			Value constant_value;
-			if (!TryMatchComparison(expr, comparison.get(), comparison_type, constant_value)) {
+	// Use the conjuncts that form a key range, the caller applies the remaining ones to the fetched rows.
+	vector<reference<const Expression>> comparisons;
+	CollectConjunctionChildren(filter_expr, comparisons);
+	for (auto &comparison_ref : comparisons) {
+		auto &comparison = comparison_ref.get();
+		if (comparison.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
+			auto &between = comparison.Cast<BoundFunctionExpression>();
+			if (!BoundBetweenExpression::Input(between).Equals(expr)) {
 				continue;
 			}
-			if (comparison_type == ExpressionType::COMPARE_EQUAL) {
-				return InitializeScanSinglePredicate(constant_value, ExpressionType::COMPARE_EQUAL);
-			}
-			auto is_lower = IsLowerBound(comparison_type);
-			auto &bound_value = is_lower ? low_value : high_value;
-			auto &bound_comparison_type = is_lower ? low_comparison_type : high_comparison_type;
-			if (!bound_value.IsNull()) {
-				// Keep the first bound on each side.
+			auto &lower_bound = BoundBetweenExpression::LowerBound(between);
+			auto &upper_bound = BoundBetweenExpression::UpperBound(between);
+			if (lower_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT ||
+			    upper_bound.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 				continue;
 			}
-			bound_value = constant_value;
-			bound_comparison_type = comparison_type;
+			if (low_value.IsNull()) {
+				low_value = lower_bound.Cast<BoundConstantExpression>().GetValue();
+				low_comparison_type = BoundBetweenExpression::LowerComparisonType(between);
+			}
+			if (high_value.IsNull()) {
+				high_value = upper_bound.Cast<BoundConstantExpression>().GetValue();
+				high_comparison_type = BoundBetweenExpression::UpperComparisonType(between);
+			}
+			continue;
 		}
+		ExpressionType comparison_type;
+		Value constant_value;
+		if (!TryMatchComparison(expr, comparison, comparison_type, constant_value)) {
+			continue;
+		}
+		if (comparison_type == ExpressionType::COMPARE_EQUAL) {
+			return InitializeScanSinglePredicate(constant_value, ExpressionType::COMPARE_EQUAL);
+		}
+		auto is_lower = IsLowerBound(comparison_type);
+		auto &bound_value = is_lower ? low_value : high_value;
+		auto &bound_comparison_type = is_lower ? low_comparison_type : high_comparison_type;
+		if (!bound_value.IsNull()) {
+			// Keep the first bound on each side.
+			continue;
+		}
+		bound_value = constant_value;
+		bound_comparison_type = comparison_type;
 	}
+
 	// We cannot use an index scan.
 	if (low_value.IsNull() && high_value.IsNull()) {
 		return nullptr;
