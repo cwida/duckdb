@@ -2,6 +2,9 @@
 # description: A wide DECIMAL cast to FLOAT or DOUBLE rounds once, to the nearest value
 # group: [decimal]
 
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
 # Results are compared as text, because the test runner accepts a DOUBLE or FLOAT result within a tolerance.
 
 # 1152921573326323713 lies just above the midpoint of two floats: rounding through a DOUBLE first lands on the
