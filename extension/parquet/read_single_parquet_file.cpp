@@ -165,7 +165,7 @@ static shared_ptr<ParquetFileMetadataCache> FindBoundMetadata(ClientContext &con
 		return nullptr;
 	}
 	auto state =
-	    context.Services().GetRegisteredState().Get<ParquetBoundMetadataState>(ParquetBoundMetadataState::NAME);
+	    context.GetContext().GetRegisteredState().Get<ParquetBoundMetadataState>(ParquetBoundMetadataState::NAME);
 	if (!state) {
 		return nullptr;
 	}
@@ -181,8 +181,8 @@ static void AddBoundMetadata(ClientContext &context, const FunctionData &file_bi
 	if (!data.metadata || !CanShareBoundMetadata(data.file, data.options)) {
 		return;
 	}
-	auto state =
-	    context.Services().GetRegisteredState().GetOrCreate<ParquetBoundMetadataState>(ParquetBoundMetadataState::NAME);
+	auto state = context.GetContext().GetRegisteredState().GetOrCreate<ParquetBoundMetadataState>(
+	    ParquetBoundMetadataState::NAME);
 	state->Add(data.file.path, data.metadata);
 }
 
