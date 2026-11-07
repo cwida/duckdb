@@ -269,7 +269,8 @@ InstallFromHttpUrl(DatabaseInstance &db, const string &url, const string &extens
 	unique_ptr<ExtensionInstallInfo> install_info;
 	{
 		auto &fs = FileSystem::GetLocal(db);
-		if (fs.FileExists(local_extension_path + ".info")) {
+		// the etag in an info file stands for the binary beside it, so an info file left without one is not used
+		if (fs.FileExists(local_extension_path) && fs.FileExists(local_extension_path + ".info")) {
 			try {
 				install_info =
 				    ExtensionInstallInfo::TryReadInfoFile(fs, local_extension_path + ".info", extension_name);
@@ -415,32 +416,6 @@ static void ThrowErrorOnMismatchingExtensionOrigin(FileSystem &fs, const string 
 	}
 }
 
-//! User-provided repositories install into a per-repository subfolder to avoid on-disk name collisions between
-//! repositories. Core and community extensions keep the flat top-level layout for backwards compatibility
-static string RepositoryInstallDirectory(FileSystem &fs, const string &extension_directory,
-                                         optional_ptr<ExtensionRepository> repository) {
-	if (repository && repository->type == ExtensionRepositoryType::USER_PROVIDED) {
-		return fs.JoinPath(fs.JoinPath(extension_directory, "repositories"), repository->name);
-	}
-	return extension_directory;
-}
-
-//! The loader uses the copy in the first extension directory that holds one, so that is the installed copy
-static string FindInstalledExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name,
-                                     optional_ptr<ExtensionRepository> repository) {
-	for (auto &extension_directory : ExtensionHelper::GetExtensionDirectoryPath(db, fs)) {
-		auto directory = RepositoryInstallDirectory(fs, extension_directory, repository);
-		if (!fs.DirectoryExists(directory)) {
-			continue;
-		}
-		auto path = fs.JoinPath(directory, extension_name + ".duckdb_extension");
-		if (fs.FileExists(path)) {
-			return path;
-		}
-	}
-	return string();
-}
-
 unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, FileSystem &fs,
                                                           const string &local_path, const string &extension,
                                                           ExtensionInstallOptions &options,
@@ -461,14 +436,18 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 	// installing native code from a user-provided repository trusts that repository's signing keys, so it requires
 	// the same explicit opt-in as adding one. Without this, pointing extension_repository_directory at an
 	// attacker-controlled directory and installing from it would bypass the opt-in entirely
-	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED &&
-	    ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
-		throw PermissionException("Installing extensions from a user-provided repository requires "
-		                          "allow_extension_repositories='allowed'");
+	string user_repository_name;
+	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED) {
+		if (ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
+			throw PermissionException("Installing extensions from a user-provided repository requires "
+			                          "allow_extension_repositories='allowed'");
+		}
+		user_repository_name = options.repository->name;
 	}
 
 	if (!options.force_install) {
-		auto installed_extension_path = FindInstalledExtension(db, fs, extension_name, options.repository);
+		auto installed_extension_path =
+		    ExtensionHelper::FindInstalledExtension(db, fs, extension_name, user_repository_name);
 		if (!installed_extension_path.empty()) {
 			// File exists: throw error if origin mismatches
 			if (options.throw_on_origin_mismatch && !Settings::Get<AllowExtensionsMetadataMismatchSetting>(db) &&
@@ -483,7 +462,7 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 	}
 
 	ExtensionHelper::CreateExtensionDirectory(fs, local_path);
-	string install_path = RepositoryInstallDirectory(fs, local_path, options.repository);
+	string install_path = ExtensionHelper::RepositoryInstallDirectory(fs, local_path, user_repository_name);
 	if (install_path != local_path) {
 		FileSystem::GetLocal(db).CreateDirectoriesRecursive(install_path);
 	}

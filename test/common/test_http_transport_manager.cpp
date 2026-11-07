@@ -1192,6 +1192,26 @@ TEST_CASE("Core extension downloads use managed HTTP transports", "[http_transpo
 		CHECK(provider->state->high_water == 1);
 	}
 
+	SECTION("an info file without its binary sends no etag") {
+		auto provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::SHARED);
+		provider->state->response_body = extension_body;
+		db.instance->config.SetHTTPUtil(provider);
+		ExtensionInstallOptions options;
+		options.force_install = true;
+		options.use_etags = true;
+		REQUIRE(ExtensionHelper::InstallExtension(*connection.context, extension_url, options));
+		auto &local_fs = FileSystem::GetLocal(*db.instance);
+		auto installed_path = local_fs.JoinPath(ExtensionHelper::GetExtensionDirectoryPath(*db.instance, local_fs)[0],
+		                                        extension_filename);
+		REQUIRE(local_fs.FileExists(installed_path + ".info"));
+		local_fs.RemoveFile(installed_path);
+
+		auto info = ExtensionHelper::InstallExtension(*connection.context, extension_url, options);
+		REQUIRE(info);
+		CHECK(provider->state->observed_if_none_match.empty());
+		CHECK(local_fs.FileExists(installed_path));
+	}
+
 	SECTION("transport failures invalidate shared clients") {
 		auto provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::SHARED);
 		provider->state->response_body = extension_body;

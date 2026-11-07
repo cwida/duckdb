@@ -3,6 +3,11 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "test_helpers.hpp"
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 using namespace duckdb;
 
 static string DemoExtensionPath() {
@@ -113,3 +118,118 @@ TEST_CASE("Invalid later copy installs but does not load", "[api]") {
 	REQUIRE_NO_FAIL(con.Query("LOAD loadable_extension_demo"));
 	REQUIRE(db.instance->ExtensionIsLoaded("loadable_extension_demo"));
 }
+
+TEST_CASE("Only the file the loader looks for is an installed copy", "[api]") {
+	if (!CanInstallDemoExtension()) {
+		return;
+	}
+	auto first = TestCreatePath("ext_d1");
+	auto second = TestCreatePath("ext_d2");
+	InstallDemoExtensionInto(second);
+
+	DBConfig config;
+	SetExtensionDirectories(config, {first, second});
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	// a stray file and a directory in the first directory that both carry the extension's name
+	auto &fs = FileSystem::GetFileSystem(*db.instance);
+	auto first_path = ExtensionHelper::GetExtensionDirectoryPath(*db.instance, fs)[0];
+	fs.CreateDirectoriesRecursive(fs.JoinPath(first_path, "loadable_extension_demo.duckdb_extension"));
+	auto handle = fs.OpenFile(fs.JoinPath(first_path, "loadable_extension_demo.old.duckdb_extension"),
+	                          FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW |
+	                              FileFlags::FILE_FLAGS_ENABLE_EXTENSION_INSTALL);
+	string contents = "not an extension";
+	handle->Write((void *)contents.data(), contents.size());
+	handle->Close();
+
+	auto listed = con.Query("SELECT install_mode, install_path LIKE '%ext_d2%' FROM duckdb_extensions() WHERE "
+	                        "extension_name = 'loadable_extension_demo'");
+	REQUIRE(CHECK_COLUMN(listed, 0, {"CUSTOM_PATH"}));
+	REQUIRE(CHECK_COLUMN(listed, 1, {true}));
+	auto updated = con.Query("UPDATE EXTENSIONS");
+	REQUIRE(CHECK_COLUMN(updated, 0, {"loadable_extension_demo"}));
+	REQUIRE(CHECK_COLUMN(updated, 2, {"NOT_A_REPOSITORY"}));
+	REQUIRE_NO_FAIL(con.Query("LOAD loadable_extension_demo"));
+}
+
+#ifndef _WIN32
+struct RestrictedDirectory {
+	RestrictedDirectory(string path_p, mode_t mode) : path(std::move(path_p)) {
+		chmod(path.c_str(), mode);
+	}
+	~RestrictedDirectory() {
+		chmod(path.c_str(), 0755);
+	}
+	string path;
+};
+
+TEST_CASE("Update writes the first extension directory and not a read only later one", "[api]") {
+	// root writes into a read only directory anyway
+	if (!CanInstallDemoExtension() || geteuid() == 0) {
+		return;
+	}
+	auto repository = TestCreatePath("update_ro_repository");
+	InstallDemoExtensionInto(repository);
+	auto first = TestCreatePath("ext_c1");
+	auto second = TestCreatePath("ext_c2");
+	{
+		DBConfig config;
+		SetExtensionDirectories(config, {second});
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("INSTALL loadable_extension_demo FROM '" + repository + "'"));
+	}
+
+	DBConfig config;
+	SetExtensionDirectories(config, {first, second});
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto &fs = FileSystem::GetFileSystem(*db.instance);
+	RestrictedDirectory read_only(ExtensionHelper::GetExtensionDirectoryPath(*db.instance, fs)[1], 0555);
+	REQUIRE(access(read_only.path.c_str(), W_OK) != 0);
+
+	auto result = con.Query("UPDATE EXTENSIONS");
+	REQUIRE(CHECK_COLUMN(result, 0, {"loadable_extension_demo"}));
+	REQUIRE(CHECK_COLUMN(result, 2, {"NO_UPDATE_AVAILABLE"}));
+	RequireInstalledFileCount(con, first, 2);
+	RequireInstalledFileCount(con, second, 2);
+	REQUIRE_NO_FAIL(con.Query("LOAD loadable_extension_demo"));
+}
+
+TEST_CASE("An extension directory that cannot be listed still holds the installed copy", "[api]") {
+	// root lists a directory without read permission anyway
+	if (!CanInstallDemoExtension() || geteuid() == 0) {
+		return;
+	}
+	auto repository = TestCreatePath("unlisted_repository");
+	InstallDemoExtensionInto(repository);
+	auto first = TestCreatePath("ext_e1");
+	auto second = TestCreatePath("ext_e2");
+	InstallDemoExtensionInto(first);
+	{
+		DBConfig config;
+		SetExtensionDirectories(config, {second});
+		DuckDB db(nullptr, &config);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("INSTALL loadable_extension_demo FROM '" + repository + "'"));
+	}
+
+	DBConfig config;
+	SetExtensionDirectories(config, {first, second});
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto &fs = FileSystem::GetFileSystem(*db.instance);
+	RestrictedDirectory unlisted(ExtensionHelper::GetExtensionDirectoryPath(*db.instance, fs)[0], 0300);
+	REQUIRE(access(unlisted.path.c_str(), R_OK) != 0);
+
+	// the name comes from the second directory, the copy is the loader's in the first
+	auto listed = con.Query("SELECT install_mode, install_path LIKE '%ext_e1%' FROM duckdb_extensions() WHERE "
+	                        "extension_name = 'loadable_extension_demo'");
+	REQUIRE(CHECK_COLUMN(listed, 0, {"CUSTOM_PATH"}));
+	REQUIRE(CHECK_COLUMN(listed, 1, {true}));
+	auto updated = con.Query("UPDATE EXTENSIONS");
+	REQUIRE(CHECK_COLUMN(updated, 0, {"loadable_extension_demo"}));
+	REQUIRE(CHECK_COLUMN(updated, 2, {"NOT_A_REPOSITORY"}));
+}
+#endif
