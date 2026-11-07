@@ -5,7 +5,7 @@
 namespace duckdb {
 
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExternalResource &op) {
-	return Make<PhysicalExternalResource>(std::move(op.data), op.estimated_cardinality);
+	return Make<PhysicalExternalResource>(std::move(op.data), op.types, op.estimated_cardinality);
 }
 
 } // namespace duckdb

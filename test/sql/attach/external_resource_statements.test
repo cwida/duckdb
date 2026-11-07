@@ -9,8 +9,10 @@ CREATE EXTERNAL RESOURCE 'aws:ec2:quack' AS x (SPOT, REGION 'eu-west-1');
 <REGEX>:.*unknown resource type.*
 
 # REGISTER records the handle under the name without looking the type up; the type is resolved on use.
-statement ok
+query TTTT
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM {'id': 'i-123'};
+----
+registered	x	aws:ec2:quack	{id=i-123}
 
 query TTT
 SELECT name, type, handle FROM duckdb_external_resources();

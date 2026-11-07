@@ -36,11 +36,25 @@ REGISTER EXTERNAL RESOURCE 'later@rr' AS r3 FROM NULL;
 ----
 <REGEX>:.*handle must not be NULL.*
 
-# A name is claimed once.
-statement error
+# REGISTER reports what it did: an identical record is a no-op, a different handle under the same name is a second
+# record. REGISTER never arbitrates between them; a use of the name does, and fails while it is ambiguous.
+query TTTT
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r1 FROM MAP {'id': 'a'};
+----
+pre-existing	r1	later@rr	{id=a}
+
+query TTTT
 REGISTER EXTERNAL RESOURCE 'later@rr' AS r1 FROM MAP {'id': 'other'};
 ----
-<REGEX>:.*"r1" is already registered.*
+registered	r1	later@rr	{id=other}
+
+statement error
+ATTACH TO EXTERNAL RESOURCE r1 AS r1;
+----
+<REGEX>:.*external resource "r1" has 2 registrations: 'later@rr' \{id=a\}, 'later@rr' \{id=other\}.*
+
+statement ok
+CALL deregister_external_resource('r1', handle := MAP {'id': 'other'});
 
 # Using a record resolves its type, and that is where an unknown type is reported. The record stays.
 statement error
@@ -91,9 +105,11 @@ status	r1
 statement ok
 DETACH r1;
 
-# DESTROY derives the deleter from the type, since the record carries none.
-statement ok
+# DESTROY derives the deleter from the type, since the record carries none, and reports the record it removed.
+query TTTT
 DESTROY EXTERNAL RESOURCE r1;
+----
+destroyed	r1	later@rr	{id=a}
 
 query TT
 SELECT operation, resource_name FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';

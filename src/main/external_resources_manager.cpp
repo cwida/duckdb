@@ -111,10 +111,63 @@ void ExternalResourcesManager::Add(ExternalResource instance) {
 	instances.push_back(std::move(instance));
 }
 
+static bool SameRecord(const ExternalResource &a, const ExternalResource &b) {
+	return a.name == b.name && a.type == b.type && Value::NotDistinctFrom(a.handle, b.handle);
+}
+
+bool ExternalResourcesManager::Record(ExternalResource instance) {
+	if (instance.name.empty()) {
+		throw InvalidInputException("an external resource instance must have a name");
+	}
+	if (instance.type.empty()) {
+		throw InvalidInputException("external resource \"%s\": a type is required", instance.name);
+	}
+	lock_guard<mutex> guard(lock);
+	for (auto &existing : instances) {
+		if (SameRecord(existing, instance)) {
+			return false;
+		}
+	}
+	instances.push_back(std::move(instance));
+	return true;
+}
+
+//! The index of the single record with the given name; -1 if none. Several records under the name are an
+//! error naming them: the user has to say which one is meant (deregister_external_resource by handle).
+static int64_t FindUnique(const vector<ExternalResource> &instances, const string &name) {
+	int64_t found = -1;
+	vector<string> candidates;
+	for (idx_t i = 0; i < instances.size(); i++) {
+		if (instances[i].name != name) {
+			continue;
+		}
+		found = static_cast<int64_t>(i);
+		candidates.push_back(StringUtil::Format("'%s' %s", instances[i].type, instances[i].handle.ToString()));
+	}
+	if (candidates.size() > 1) {
+		throw InvalidInputException(
+		    "external resource \"%s\" has %llu registrations: %s. Deregister the ones not meant "
+		    "with deregister_external_resource(%s, handle := <handle>)",
+		    name, candidates.size(), StringUtil::Join(candidates, ", "), Value(name).ToSQLString());
+	}
+	return found;
+}
+
 unique_ptr<ExternalResource> ExternalResourcesManager::Remove(const string &name) {
 	lock_guard<mutex> guard(lock);
+	auto index = FindUnique(instances, name);
+	if (index < 0) {
+		return nullptr;
+	}
+	auto result = make_uniq<ExternalResource>(std::move(instances[static_cast<idx_t>(index)]));
+	instances.erase(instances.begin() + index);
+	return result;
+}
+
+unique_ptr<ExternalResource> ExternalResourcesManager::Remove(const string &name, const Value &handle) {
+	lock_guard<mutex> guard(lock);
 	for (idx_t i = 0; i < instances.size(); i++) {
-		if (instances[i].name == name) {
+		if (instances[i].name == name && Value::NotDistinctFrom(instances[i].handle, handle)) {
 			auto result = make_uniq<ExternalResource>(std::move(instances[i]));
 			instances.erase(instances.begin() + static_cast<int64_t>(i));
 			return result;
@@ -125,12 +178,11 @@ unique_ptr<ExternalResource> ExternalResourcesManager::Remove(const string &name
 
 unique_ptr<ExternalResource> ExternalResourcesManager::Lookup(const string &name) const {
 	lock_guard<mutex> guard(lock);
-	for (auto &instance : instances) {
-		if (instance.name == name) {
-			return make_uniq<ExternalResource>(instance);
-		}
+	auto index = FindUnique(instances, name);
+	if (index < 0) {
+		return nullptr;
 	}
-	return nullptr;
+	return make_uniq<ExternalResource>(instances[static_cast<idx_t>(index)]);
 }
 
 vector<ExternalResource> ExternalResourcesManager::List() const {

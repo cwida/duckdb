@@ -77,7 +77,9 @@ private:
 
 //! In-memory, instance-scoped manager of external resource instances (shared across connections). The
 //! external resources themselves are durable, but this manager is not: it is the instance's local view of
-//! what it manages, rebuilt across restarts via REGISTER. A name is claimed by its first registration.
+//! what it manages, rebuilt across restarts via REGISTER. CREATE claims a name (Add); REGISTER records what it
+//! is given (Record), so two records may share a name - a stale saved listing never fails to load - and a use
+//! of the name (Lookup / Remove) then fails until the records not meant are deregistered by handle.
 //! Deliberately not transactional: the resource exists out in the world whether or not the transaction that
 //! registered it commits, so dropping the record on rollback would strand it with nothing left to reap it.
 class ExternalResourcesManager {
@@ -87,9 +89,16 @@ public:
 
 	//! Register an instance. Throws if the name is already registered.
 	void Add(ExternalResource instance);
-	//! Remove the instance with the given name. Returns it if present, nullptr otherwise.
+	//! Record an instance: a no-op for an identical (name, type, handle) record, returning false; otherwise it is
+	//! added, also under a name other records use, and true is returned.
+	bool Record(ExternalResource instance);
+	//! Remove the instance with the given name. Returns it if present, nullptr otherwise; throws if several
+	//! records share the name.
 	unique_ptr<ExternalResource> Remove(const string &name);
-	//! The registered instance with the given name, or nullptr if none.
+	//! Remove the record with the given name and handle. Returns it if present, nullptr otherwise.
+	unique_ptr<ExternalResource> Remove(const string &name, const Value &handle);
+	//! The registered instance with the given name, or nullptr if none. Throws if several records share the
+	//! name: a use needs exactly one.
 	unique_ptr<ExternalResource> Lookup(const string &name) const;
 	//! Snapshot of all registered instances, in registration order.
 	vector<ExternalResource> List() const;

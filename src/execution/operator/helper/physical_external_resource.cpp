@@ -10,20 +10,27 @@
 
 namespace duckdb {
 
+//! What a statement did to a record, reported in its `status` column.
+static constexpr const char *STATUS_CREATED = "created";
+static constexpr const char *STATUS_REGISTERED = "registered";
+static constexpr const char *STATUS_PRE_EXISTING = "pre-existing";
+static constexpr const char *STATUS_DESTROYED = "destroyed";
+
 //! REGISTER records (name, type, handle) and nothing else: no type lookup, no status call, no autoload. The
 //! type is resolved, and the handle checked, when the registration is used (ATTACH / CONNECT / DESTROY), so a
-//! registration works before the providing extension is available. Add() rejects a duplicate name.
-static void RecordExternalResource(ClientContext &client, const BoundExternalResource &data) {
+//! registration works before the providing extension is available. An identical record is a no-op.
+static const char *RecordExternalResource(ClientContext &client, const string &name, const string &type,
+                                          const Value &handle) {
 	ExternalResource resource;
-	resource.name = data.name;
-	resource.type = data.type;
-	resource.handle = data.handle;
-	resource.deleter_payload = data.handle;
-	ExternalResourcesManager::Get(client).Add(std::move(resource));
+	resource.name = name;
+	resource.type = type;
+	resource.handle = handle;
+	resource.deleter_payload = handle;
+	return ExternalResourcesManager::Get(client).Record(std::move(resource)) ? STATUS_REGISTERED : STATUS_PRE_EXISTING;
 }
 
 //! Provision it (CREATE), then record it under its name.
-static void CreateExternalResource(ClientContext &client, const BoundExternalResource &data) {
+static ExternalResource CreateExternalResource(ClientContext &client, const BoundExternalResource &data) {
 	auto &manager = ExternalResourcesManager::Get(client);
 	// Reject a duplicate name before provisioning, so a name clash does not spin up (and tear down) a
 	// resource needlessly. Add() below re-checks under its lock for the rare concurrent race.
@@ -42,7 +49,7 @@ static void CreateExternalResource(ClientContext &client, const BoundExternalRes
 	resource.deleter_payload = launched.deleter_payload;
 
 	try {
-		manager.Add(std::move(resource));
+		manager.Add(resource);
 	} catch (...) {
 		// Registration failed (e.g. duplicate name): the resource was provisioned but nothing owns it,
 		// so tear it down best-effort. The registration error takes precedence.
@@ -51,6 +58,7 @@ static void CreateExternalResource(ClientContext &client, const BoundExternalRes
 		    .TryDelete();
 		throw;
 	}
+	return resource;
 }
 
 //! The deleter of a registration that recorded none: the type's destroy function, qualified against the type's
@@ -76,7 +84,7 @@ static string DeriveDeleterFunction(ClientContext &client, const ExternalResourc
 
 //! Tear down and deregister a registered resource. Teardown-first: on a failed teardown the resource
 //! stays registered so DESTROY can be retried.
-static void DestroyExternalResource(ClientContext &client, const BoundExternalResource &data) {
+static ExternalResource DestroyExternalResource(ClientContext &client, const BoundExternalResource &data) {
 	auto &manager = ExternalResourcesManager::Get(client);
 	auto instance = manager.Lookup(data.name);
 	if (!instance) {
@@ -90,27 +98,41 @@ static void DestroyExternalResource(ClientContext &client, const BoundExternalRe
 	// that may itself be refused. A stranded resource costs money; a dangling attachment costs nothing.
 	auto &db = DatabaseInstance::GetDatabase(client);
 	ResourceDeleter(db, deleter_function, instance->deleter_payload, instance->type, instance->name).Delete();
-	manager.Remove(data.name);
+	manager.Remove(data.name, instance->handle);
 	// Then clean up after it: the borrowing attachments now point at nothing, so detach them best-effort.
 	// Runs only after a successful teardown, so the scan never sits in front of the remote call.
 	DatabaseManager::Get(client).DetachResourceBorrowers(client, instance->name);
+	return *instance;
 }
 
 SourceResultType PhysicalExternalResource::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                            OperatorSourceInput &input) const {
+	// One row: status, name, type, handle.
+	string status;
+	ExternalResource record;
 	switch (data.operation) {
 	case ExternalResourceOperation::CREATE:
-		CreateExternalResource(context.client, data);
+		record = CreateExternalResource(context.client, data);
+		status = STATUS_CREATED;
 		break;
 	case ExternalResourceOperation::REGISTER:
-		RecordExternalResource(context.client, data);
+		status = RecordExternalResource(context.client, data.name, data.type, data.handle);
+		record.name = data.name;
+		record.type = data.type;
+		record.handle = data.handle;
 		break;
 	case ExternalResourceOperation::DESTROY:
-		DestroyExternalResource(context.client, data);
+		record = DestroyExternalResource(context.client, data);
+		status = STATUS_DESTROYED;
 		break;
 	default:
 		throw InternalException("Unsupported operation in PhysicalExternalResource");
 	}
+	chunk.data[0].Append(Value(status));
+	chunk.data[1].Append(Value(record.name));
+	chunk.data[2].Append(Value(record.type));
+	chunk.data[3].Append(record.handle);
+	chunk.CheckCardinality(1);
 	return SourceResultType::FINISHED;
 }
 

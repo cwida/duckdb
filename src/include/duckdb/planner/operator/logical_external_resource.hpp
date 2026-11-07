@@ -31,7 +31,8 @@ struct BoundExternalResource {
 	static BoundExternalResource Deserialize(Deserializer &deserializer);
 };
 
-//! LogicalExternalResource represents CREATE / REGISTER / DESTROY EXTERNAL RESOURCE.
+//! LogicalExternalResource represents CREATE / REGISTER / DESTROY EXTERNAL RESOURCE, returning (status, name,
+//! type, handle).
 class LogicalExternalResource : public LogicalOperator {
 public:
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_EXTERNAL_RESOURCE;
@@ -43,6 +44,7 @@ public:
 
 public:
 	idx_t EstimateCardinality(ClientContext &context) override;
+	vector<ColumnBinding> GetColumnBindings() override;
 
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);

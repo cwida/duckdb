@@ -20,10 +20,16 @@ void Binder::BindExternalResourceParams(case_insensitive_map_t<unique_ptr<Parsed
 	}
 }
 
+//! The result columns of CREATE / REGISTER / DESTROY: what happened, and the record it happened to.
+static void SetRecordResult(BoundStatement &result) {
+	result.types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)};
+	result.names = {"status", "name", "type", "handle"};
+}
+
 BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	BoundStatement result;
-	result.types = {LogicalType::BOOLEAN};
-	result.names = {"Success"};
+	SetRecordResult(result);
 
 	BoundExternalResource data;
 	data.operation = stmt.operation;
@@ -51,7 +57,7 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	result.plan = make_uniq<LogicalExternalResource>(std::move(data));
 
 	auto &properties = GetStatementProperties();
-	properties.return_type = StatementReturnType::NOTHING;
+	properties.return_type = StatementReturnType::QUERY_RESULT;
 	return result;
 }
 

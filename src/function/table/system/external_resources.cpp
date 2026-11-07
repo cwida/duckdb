@@ -301,14 +301,16 @@ void RegisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 }
 
 //===--------------------------------------------------------------------===//
-// deregister_external_resource(name)
+// deregister_external_resource(name [, handle := MAP])
 //
 // Registry write: forget a locally registered resource (ExternalResourcesManager::Remove). Does NOT tear
-// the resource down — that is destroy_external_resource's job. Throws if `name` is not registered.
+// the resource down — that is destroy_external_resource's job. Throws if `name` is not registered. When
+// several records share the name, `handle` says which one.
 //===--------------------------------------------------------------------===//
 
 struct DeregisterExternalResourceBindData : public TableFunctionData {
 	string name;
+	Value handle;
 };
 
 struct DeregisterExternalResourceState : public GlobalTableFunctionState {
@@ -323,6 +325,11 @@ static unique_ptr<FunctionData> DeregisterExternalResourceBind(ClientContext &co
 		throw InvalidInputException("deregister_external_resource: the name must not be NULL or empty");
 	}
 	result->name = StringValue::Get(input.inputs[0]);
+	for (auto &np : input.named_parameters) {
+		if (StringUtil::Lower(np.first.GetIdentifierName()) == "handle") {
+			result->handle = np.second;
+		}
+	}
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 	return std::move(result);
@@ -339,9 +346,15 @@ static void DeregisterExternalResourceFunction(ClientContext &context, TableFunc
 		return;
 	}
 	auto &bind_data = data_p.bind_data->Cast<DeregisterExternalResourceBindData>();
-	auto removed = ExternalResourcesManager::Get(context).Remove(bind_data.name);
+	auto &manager = ExternalResourcesManager::Get(context);
+	auto removed = bind_data.handle.IsNull() ? manager.Remove(bind_data.name)
+	                                         : manager.Remove(bind_data.name, bind_data.handle);
 	if (!removed) {
-		throw InvalidInputException("deregister_external_resource: \"%s\" is not registered", bind_data.name);
+		if (bind_data.handle.IsNull()) {
+			throw InvalidInputException("deregister_external_resource: \"%s\" is not registered", bind_data.name);
+		}
+		throw InvalidInputException("deregister_external_resource: \"%s\" is not registered with handle %s",
+		                            bind_data.name, bind_data.handle.ToString());
 	}
 	output.data[0].Append(Value::BOOLEAN(true));
 	state.done = true;
@@ -351,6 +364,9 @@ void DeregisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction deregister_fun(
 	    "deregister_external_resource", FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR),
 	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit);
+	deregister_fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("handle", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	});
 	// writes the external resource registry per execution
 	deregister_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(std::move(deregister_fun));
