@@ -393,7 +393,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		if (!filled) {
 			// This parameter cannot be filled by the call, so this function cannot be a match.
-			mismatch(FunctionMismatch::MissingParameter {i, param.GetName()});
+			mismatch(FunctionMismatch::MissingParameter {i, param.IsNamed() ? param.GetName() : Identifier()});
 		}
 	}
 
