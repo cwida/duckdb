@@ -626,8 +626,7 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateComparisonExecutor(const Bo
 
 static unique_ptr<ExpressionFilterExecutor> TryCreateFunctionExecutor(const BoundFunctionExpression &func,
                                                                       bool inside_selectivity_optional) {
-	if (!inside_selectivity_optional && func.GetChildren().size() == 2 &&
-	    BoundComparisonExpression::IsComparison(func.GetExpressionType())) {
+	if (func.GetChildren().size() == 2 && BoundComparisonExpression::IsComparison(func.GetExpressionType())) {
 		return TryCreateComparisonExecutor(func);
 	}
 	if (!IsColumnReferenceFunction(func)) {

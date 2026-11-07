@@ -2054,7 +2054,7 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 
 				if (!pushed_in_filter) {
 					CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val,
-					                           max_val, condition_type, reconstruct_filter_expression, false);
+					                           max_val, condition_type, reconstruct_filter_expression, true);
 				}
 				if (allow_bloom_filters && can_emit_runtime_filters && ht && gstate &&
 				    CanUseBloomFilter(info, context, op, cmp, ht)) {
