@@ -1062,4 +1062,22 @@ TEST_CASE("A zero-row query finishes with the lifetime still undecided and then 
 	REQUIRE(handle->RowCount() == 0);
 }
 
+TEST_CASE("BoxRenderer renders the TINYINT column header as int1, not int8", "[api][query_result_format]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// int8 is the PG-compatibility alias for BIGINT, so the TINYINT column header must not reuse that
+	// label (see issue #28374). The short-alias convention the other integer types follow (int16 /
+	// int32 / int64 / int128, uint8) gives TINYINT the label "int1".
+	auto result = con.Query("SELECT cast(1 as tinyint), cast(2 as bigint)");
+	REQUIRE(!result->HasError());
+	BoxRendererConfig config;
+	ClientBoxRendererContext render_context(*con.context);
+	auto box = result->ToBox(render_context, config);
+	// TINYINT renders as int1; the BIGINT control column still renders as int64.
+	REQUIRE(StringUtil::Contains(box, "int1"));
+	REQUIRE(StringUtil::Contains(box, "int64"));
+	// The bare "int8" label (BIGINT's PG alias) must not leak into the rendered header.
+	REQUIRE(!StringUtil::Contains(box, "int8"));
+}
+
 #endif

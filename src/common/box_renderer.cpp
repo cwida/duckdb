@@ -514,7 +514,7 @@ string BoxRendererImplementation::RenderType(const LogicalType &type) {
 	}
 	switch (type.id()) {
 	case LogicalTypeId::TINYINT:
-		return "int8";
+		return "int1";
 	case LogicalTypeId::SMALLINT:
 		return "int16";
 	case LogicalTypeId::INTEGER:
