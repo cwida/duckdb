@@ -171,6 +171,9 @@ static bool RequiresCatalogAndSchemaNamePrefix(const Identifier &catalog_name, c
 }
 
 string FunctionParameter::ToString() const {
+	if (!named) {
+		return type.ToString();
+	}
 	if (kind == FunctionParameterKind::VAR_POSITIONAL) {
 		return StringUtil::Format("*%s %s", SQLIdentifier(name), type.ToString());
 	}
@@ -215,12 +218,17 @@ string FunctionSignature::ToString() const {
 	vector<string> params;
 	params.reserve(parameters.size());
 	// A keyword-only parameter that no "*args" precedes closes the positional parameters by itself, which Python
-	// spells as a bare "*" in that position; a "/" likewise closes the positional-only parameters
+	// spells as a bare "*" in that position; a "/" likewise closes the positional-only parameters. It says that the
+	// names before it cannot be used, so it is left out when none of them is shown (see FunctionParameter::Unnamed)
 	const auto positional_only_count = GetPositionalOnlyParameterCount();
+	bool close_positional_only = false;
+	for (idx_t i = 0; i < positional_only_count; i++) {
+		close_positional_only = close_positional_only || parameters[i].IsNamed();
+	}
 	auto needs_separator = !GetArgs();
 	for (idx_t i = 0; i < parameters.size(); i++) {
 		auto &param = parameters[i];
-		if (i == positional_only_count && positional_only_count > 0) {
+		if (i == positional_only_count && close_positional_only) {
 			params.push_back("/");
 		}
 		if (needs_separator && param.GetKind() == FunctionParameterKind::KEYWORD_ONLY) {
@@ -229,7 +237,7 @@ string FunctionSignature::ToString() const {
 		}
 		params.push_back(param.ToString());
 	}
-	if (positional_only_count > 0 && positional_only_count == parameters.size()) {
+	if (close_positional_only && positional_only_count == parameters.size()) {
 		params.push_back("/");
 	}
 	auto head = StringUtil::Format("(%s)", StringUtil::Join(params, ", "));
