@@ -17,7 +17,7 @@ namespace duckdb {
 
 struct CatalogTransaction;
 class SecretManager;
-class ClientContext;
+class Context;
 class HTTPUtil;
 class Value;
 class Logger;
@@ -45,13 +45,13 @@ public:
 
 	virtual SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result, FileOpenerInfo &info);
 	virtual SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result) = 0;
-	virtual optional_ptr<ClientContext> TryGetClientContext() = 0;
+	virtual Context &TryGetContext() = 0;
 	virtual optional_ptr<DatabaseInstance> TryGetDatabase() = 0;
 	virtual HTTPUtil &GetHTTPUtil() = 0;
 
 	DUCKDB_API virtual Logger &GetLogger() const = 0;
 	DUCKDB_API static unique_ptr<CatalogTransaction> TryGetCatalogTransaction(optional_ptr<FileOpener> opener);
-	DUCKDB_API static optional_ptr<ClientContext> TryGetClientContext(optional_ptr<FileOpener> opener);
+	DUCKDB_API static optional_ptr<Context> TryGetContext(optional_ptr<FileOpener> opener);
 	DUCKDB_API static optional_ptr<DatabaseInstance> TryGetDatabase(optional_ptr<FileOpener> opener);
 	DUCKDB_API static optional_ptr<SecretManager> TryGetSecretManager(optional_ptr<FileOpener> opener);
 	DUCKDB_API static SettingLookupResult TryGetCurrentSetting(optional_ptr<FileOpener> opener, const Identifier &key,

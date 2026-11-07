@@ -41,7 +41,7 @@ using namespace duckdb_yyjson; // NOLINT
 unique_ptr<GeoParquetFileMetadata> GeoParquetFileMetadata::TryRead(const duckdb_parquet::FileMetaData &file_meta_data,
                                                                    ClientContext &context) {
 	// Conversion not enabled, or spatial is not loaded!
-	if (!IsGeoParquetConversionEnabled(context.Services())) {
+	if (!IsGeoParquetConversionEnabled(context.GetContext())) {
 		return nullptr;
 	}
 
@@ -355,9 +355,9 @@ bool GeoParquetFileMetadata::IsGeometryColumn(const string &column_name) const {
 	return geometry_columns.find(column_name) != geometry_columns.end();
 }
 
-bool GeoParquetFileMetadata::IsGeoParquetConversionEnabled(const Context &services) {
+bool GeoParquetFileMetadata::IsGeoParquetConversionEnabled(const Context &context) {
 	bool geoparquet_enabled = false;
-	services.TryGetCurrentSetting("enable_geoparquet_conversion", geoparquet_enabled);
+	context.TryGetCurrentSetting("enable_geoparquet_conversion", geoparquet_enabled);
 	return geoparquet_enabled;
 }
 

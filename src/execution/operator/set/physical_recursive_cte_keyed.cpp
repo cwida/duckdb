@@ -1,7 +1,10 @@
 #include "duckdb/execution/operator/set/physical_recursive_cte_keyed_state.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte_delta.hpp"
 
+#include "duckdb/common/types/string_heap.hpp"
+#include "duckdb/common/types/vector_buffer.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -68,7 +71,320 @@ RecursiveCTEKeyedProperties RecursiveCTEKeyedProperties::Derive(const PhysicalRe
 			break;
 		}
 	}
+	// Key-only recursion has no payload values to materialize and must not reserve an empty region.
+	result.materialize_finalized_values = !op.aggregate_types.empty();
+	for (auto &aggregate_type : op.aggregate_types) {
+		const auto physical_type = aggregate_type.InternalType();
+		if (!TypeIsConstantSize(physical_type) && physical_type != PhysicalType::VARCHAR) {
+			result.materialize_finalized_values = false;
+			break;
+		}
+	}
+	// The candidate-reuse paths skip the commit finalization, so the candidates themselves must be scatterable
+	// into the finalized values through each aggregate's first input.
+	if (result.materialize_finalized_values && result.can_reuse_new_group_candidates) {
+		for (auto &payload_aggregate : op.payload_aggregates) {
+			if (payload_aggregate->Cast<BoundAggregateExpression>().GetChildren().empty()) {
+				result.materialize_finalized_values = false;
+				break;
+			}
+		}
+	}
 	return result;
+}
+
+//===--------------------------------------------------------------------===//
+// Finalized Values
+//===--------------------------------------------------------------------===//
+static idx_t FinalizedValueSlotWidth(const LogicalType &type) {
+	return GetTypeIdSize(type.InternalType());
+}
+
+RecursiveCTEFinalizedValues::RecursiveCTEFinalizedValues(ClientContext &context, const PhysicalRecursiveCTE &op) {
+	enabled = op.UsingKey() && op.keyed.materialize_finalized_values;
+	if (!enabled) {
+		return;
+	}
+	// One validity byte per aggregate, then the value slots in aggregate order.
+	idx_t offset = op.aggregate_types.size();
+	value_types.reserve(op.aggregate_types.size());
+	value_offsets.reserve(op.aggregate_types.size());
+	identity_source_columns.reserve(op.aggregate_types.size());
+	for (auto &aggregate_type : op.aggregate_types) {
+		identity_source_columns.push_back(value_types.size());
+		value_types.push_back(aggregate_type.InternalType());
+		value_offsets.push_back(offset);
+		offset += FinalizedValueSlotWidth(aggregate_type);
+	}
+	region_width = offset;
+	// The scratch tables size their trailing region through RegionWidthFor, so the layouts must agree.
+	D_ASSERT(region_width == RegionWidthFor(op));
+	// The buffer allocator keeps the finalized strings inside the memory accounting, like the states they mirror.
+	auto heap_holder = make_uniq<StringHeapHolder>(BufferAllocator::Get(context));
+	string_heap = heap_holder->heap;
+	string_arena = make_buffer<AuxiliaryDataSet>();
+	string_arena->data.push_back(std::move(heap_holder));
+	idx_t child_offset = 0;
+	for (auto &payload_aggregate : op.payload_aggregates) {
+		auto &children = payload_aggregate->Cast<BoundAggregateExpression>().GetChildren();
+		if (children.empty()) {
+			candidate_source_columns.clear();
+			break;
+		}
+		candidate_source_columns.push_back(child_offset);
+		child_offset += children.size();
+	}
+}
+
+idx_t RecursiveCTEFinalizedValues::RegionWidthFor(const PhysicalRecursiveCTE &op) {
+	if (!op.UsingKey() || !op.keyed.materialize_finalized_values) {
+		return 0;
+	}
+	idx_t width = op.aggregate_types.size();
+	for (auto &aggregate_type : op.aggregate_types) {
+		width += FinalizedValueSlotWidth(aggregate_type);
+	}
+	return width;
+}
+
+void RecursiveCTEFinalizedValues::BindLayout(const TupleDataLayout &layout) {
+	D_ASSERT(enabled && layout.GetTrailingRegionWidth() >= region_width);
+	region_offset = layout.GetTrailingRegionOffset();
+}
+
+string_t RecursiveCTEFinalizedValues::CopyStringToArena(string_t value) {
+	D_ASSERT(!value.IsInlined());
+	string_live_bytes += value.GetSize();
+	return string_heap->AddBlob(value);
+}
+
+template <idx_t WIDTH>
+static void ScatterFixedSlots(const data_ptr_t *address_data, const SelectionVector &sel, idx_t count,
+                              const UnifiedVectorFormat &source_format, idx_t region_offset, idx_t slot_offset,
+                              idx_t agg_idx) {
+	const auto source_data = source_format.data;
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		const auto value_idx = sel.get_index(row_idx);
+		const auto region = address_data[value_idx] + region_offset;
+		const auto source_idx = source_format.sel->get_index(value_idx);
+		if (!source_format.validity.RowIsValid(source_idx)) {
+			region[agg_idx] = 0;
+			continue;
+		}
+		memcpy(region + slot_offset, source_data + source_idx * WIDTH, WIDTH);
+		region[agg_idx] = 1;
+	}
+}
+
+void RecursiveCTEFinalizedValues::ScatterColumns(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                                 DataChunk &values, const vector<idx_t> &source_columns) {
+	if (count == 0) {
+		return;
+	}
+	D_ASSERT(addresses.GetVectorType() == VectorType::FLAT_VECTOR);
+	auto address_data = FlatVector::GetData<data_ptr_t>(addresses);
+	for (idx_t agg_idx = 0; agg_idx < value_types.size(); agg_idx++) {
+		auto &source = values.data[source_columns[agg_idx]];
+		const auto slot_offset = value_offsets[agg_idx];
+		const auto slot_width = GetTypeIdSize(value_types[agg_idx]);
+		UnifiedVectorFormat source_format;
+		source.ToUnifiedFormat(source_format);
+		if (value_types[agg_idx] == PhysicalType::VARCHAR) {
+			const auto source_data = source_format.data;
+			for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+				const auto value_idx = sel.get_index(row_idx);
+				const auto region = address_data[value_idx] + region_offset;
+				const auto source_idx = source_format.sel->get_index(value_idx);
+				const auto slot_valid = region[agg_idx] != 0;
+				if (!source_format.validity.RowIsValid(source_idx)) {
+					if (slot_valid) {
+						// Account for the string bytes this slot stops referencing.
+						const auto previous = Load<string_t>(region + slot_offset);
+						if (!previous.IsInlined()) {
+							const auto previous_size = previous.GetSize();
+							string_garbage_bytes += previous_size;
+							string_live_bytes -= MinValue<idx_t>(string_live_bytes, previous_size);
+						}
+					}
+					region[agg_idx] = 0;
+					continue;
+				}
+				auto value = reinterpret_cast<const string_t *>(source_data)[source_idx];
+				if (slot_valid) {
+					const auto previous = Load<string_t>(region + slot_offset);
+					// A byte-equal refresh keeps the stored string, so unchanged values near a fixpoint cause
+					// no arena growth and no garbage; compaction still migrates these slots like any other.
+					if (previous == value) {
+						continue;
+					}
+					if (!previous.IsInlined()) {
+						const auto previous_size = previous.GetSize();
+						string_garbage_bytes += previous_size;
+						string_live_bytes -= MinValue<idx_t>(string_live_bytes, previous_size);
+					}
+				}
+				if (!value.IsInlined()) {
+					value = CopyStringToArena(value);
+				}
+				Store<string_t>(value, region + slot_offset);
+				region[agg_idx] = 1;
+			}
+			continue;
+		}
+		switch (slot_width) {
+		case 1:
+			ScatterFixedSlots<1>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			break;
+		case 2:
+			ScatterFixedSlots<2>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			break;
+		case 4:
+			ScatterFixedSlots<4>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			break;
+		case 8:
+			ScatterFixedSlots<8>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			break;
+		case 16:
+			ScatterFixedSlots<16>(address_data, sel, count, source_format, region_offset, slot_offset, agg_idx);
+			break;
+		default:
+			throw InternalException("Unsupported finalized value slot width");
+		}
+	}
+}
+
+void RecursiveCTEFinalizedValues::Scatter(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                          DataChunk &values) {
+	D_ASSERT(enabled && values.ColumnCount() == value_types.size());
+	ScatterColumns(addresses, sel, count, values, identity_source_columns);
+}
+
+void RecursiveCTEFinalizedValues::ScatterCandidates(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                                    DataChunk &payload) {
+	D_ASSERT(enabled && !candidate_source_columns.empty());
+	ScatterColumns(addresses, sel, count, payload, candidate_source_columns);
+}
+
+template <idx_t WIDTH>
+static void GatherFixedSlots(const data_ptr_t *address_data, const SelectionVector &sel, idx_t count,
+                             data_ptr_t target_data, ValidityMask &target_validity, idx_t region_offset,
+                             idx_t slot_offset, idx_t agg_idx) {
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		const auto region = address_data[sel.get_index(row_idx)] + region_offset;
+		if (region[agg_idx] == 0) {
+			target_validity.SetInvalid(row_idx);
+			continue;
+		}
+		memcpy(target_data + row_idx * WIDTH, region + slot_offset, WIDTH);
+	}
+}
+
+void RecursiveCTEFinalizedValues::Gather(const Vector &addresses, const SelectionVector &sel, idx_t count,
+                                         DataChunk &values) {
+	D_ASSERT(enabled && values.ColumnCount() == value_types.size());
+	D_ASSERT(addresses.GetVectorType() == VectorType::FLAT_VECTOR);
+	auto address_data = FlatVector::GetData<data_ptr_t>(addresses);
+	for (idx_t agg_idx = 0; agg_idx < value_types.size(); agg_idx++) {
+		auto &target = values.data[agg_idx];
+		target.SetVectorType(VectorType::FLAT_VECTOR);
+		auto &target_validity = FlatVector::ValidityMutable(target);
+		const auto slot_offset = value_offsets[agg_idx];
+		const auto slot_width = GetTypeIdSize(value_types[agg_idx]);
+		const auto target_data = FlatVector::GetDataMutable(target);
+		if (value_types[agg_idx] == PhysicalType::VARCHAR) {
+			bool references_arena = false;
+			for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+				const auto region = address_data[sel.get_index(row_idx)] + region_offset;
+				if (region[agg_idx] == 0) {
+					target_validity.SetInvalid(row_idx);
+					continue;
+				}
+				const auto value = Load<string_t>(region + slot_offset);
+				reinterpret_cast<string_t *>(target_data)[row_idx] = value;
+				references_arena = references_arena || !value.IsInlined();
+			}
+			FlatVector::SetSize(target, count);
+			// The emitted strings point into the shared heap, so the vector takes a reference that outlives
+			// any compaction swap.
+			if (references_arena) {
+				StringVector::AddAuxiliaryData(target, make_uniq<AuxiliaryDataSetHolder>(string_arena));
+			}
+			continue;
+		}
+		switch (slot_width) {
+		case 1:
+			GatherFixedSlots<1>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
+			                    agg_idx);
+			break;
+		case 2:
+			GatherFixedSlots<2>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
+			                    agg_idx);
+			break;
+		case 4:
+			GatherFixedSlots<4>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
+			                    agg_idx);
+			break;
+		case 8:
+			GatherFixedSlots<8>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
+			                    agg_idx);
+			break;
+		case 16:
+			GatherFixedSlots<16>(address_data, sel, count, target_data, target_validity, region_offset, slot_offset,
+			                     agg_idx);
+			break;
+		default:
+			throw InternalException("Unsupported finalized value slot width");
+		}
+		FlatVector::SetSize(target, count);
+	}
+	values.CheckCardinality(count);
+}
+
+void RecursiveCTEFinalizedValues::MaybeCompact(GroupedAggregateHashTable &target) {
+	if (!enabled || string_garbage_bytes <= string_live_bytes || string_garbage_bytes < 262144) {
+		return;
+	}
+	auto fresh_holder = make_uniq<StringHeapHolder>(string_heap->GetAllocator().GetUnderlyingAllocator());
+	auto &fresh_heap = fresh_holder->heap;
+	idx_t live_bytes = 0;
+	AggregateHTScanState scan_state;
+	// The scan reads the group columns without the trailing hash column.
+	auto key_types = target.GetLayout().GetTypes();
+	key_types.pop_back();
+	DataChunk keys;
+	keys.Initialize(Allocator::DefaultAllocator(), key_types);
+	target.InitializeScan(scan_state);
+	while (target.ScanGroups(scan_state, keys)) {
+		const auto row_count = keys.size();
+		if (row_count == 0) {
+			continue;
+		}
+		auto row_locations = FlatVector::GetData<data_ptr_t>(scan_state.scan_states.chunk_state.row_locations);
+		for (idx_t agg_idx = 0; agg_idx < value_types.size(); agg_idx++) {
+			if (value_types[agg_idx] != PhysicalType::VARCHAR) {
+				continue;
+			}
+			const auto slot_offset = value_offsets[agg_idx];
+			for (idx_t row_idx = 0; row_idx < row_count; row_idx++) {
+				const auto region = row_locations[row_idx] + region_offset;
+				if (region[agg_idx] == 0) {
+					continue;
+				}
+				auto value = Load<string_t>(region + slot_offset);
+				if (value.IsInlined()) {
+					continue;
+				}
+				// Every live slot migrates, including the byte-equal refreshes that kept their old pointer.
+				Store<string_t>(fresh_heap.AddBlob(value), region + slot_offset);
+				live_bytes += value.GetSize();
+			}
+		}
+	}
+	string_heap = fresh_holder->heap;
+	string_arena = make_buffer<AuxiliaryDataSet>();
+	string_arena->data.push_back(std::move(fresh_holder));
+	string_live_bytes = live_bytes;
+	string_garbage_bytes = 0;
 }
 
 RecursiveCTEKeyedCandidateExtractor::RecursiveCTEKeyedCandidateExtractor(ClientContext &context,
@@ -120,9 +436,9 @@ void RecursiveCTEKeyedCandidateExtractor::EvaluatePayload(DataChunk &source, Dat
 // Sink
 //===--------------------------------------------------------------------===//
 RecursiveCTEKeyedState::RecursiveCTEKeyedState(ClientContext &context, const PhysicalRecursiveCTE &op)
-    : RecursiveCTEState(context, op), extractor(context, op), new_group_addresses(LogicalType::POINTER),
-      new_groups(STANDARD_VECTOR_SIZE), intermediate_table(context, op.internal_types),
-      preaggregation_hashes(LogicalType::HASH, nullptr, 0) {
+    : RecursiveCTEState(context, op), finalized(context, op), extractor(context, op),
+      new_group_addresses(LogicalType::POINTER), new_groups(STANDARD_VECTOR_SIZE),
+      intermediate_table(context, op.internal_types), preaggregation_hashes(LogicalType::HASH, nullptr, 0) {
 	for (idx_t i = 0; i < op.payload_aggregates.size(); i++) {
 		D_ASSERT(op.payload_aggregates[i]->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
 		auto &bound_aggr_expr = op.payload_aggregates[i]->Cast<BoundAggregateExpression>();
@@ -139,15 +455,18 @@ RecursiveCTEKeyedState::RecursiveCTEKeyedState(ClientContext &context, const Phy
 	}
 
 	ht = CreateUsingKeyHashTable();
+	if (finalized.Enabled()) {
+		finalized.BindLayout(ht->GetLayout());
+	}
+	if (!op.UnionAll()) {
+		key_delta = make_uniq<RecursiveCTEKeyDeltaState>(context, op, finalized.Enabled());
+	}
 	for (auto &spec : op.partial_key_index_specs) {
 		partial_key_indexes.push_back(
 		    make_uniq<RecursiveCTEPartialKeyIndex>(Allocator::Get(context), op.hash_key_types, spec.Indices()));
 	}
 	if (op.keyed.can_preaggregate) {
 		preaggregation_hashes.Initialize();
-	}
-	if (!op.UnionAll()) {
-		key_delta = make_uniq<RecursiveCTEKeyDeltaState>(context, op);
 	}
 	distinct_rows.Initialize(Allocator::DefaultAllocator(), op.hash_key_types);
 	update_rows.Initialize(Allocator::DefaultAllocator(), op.internal_types);
@@ -163,7 +482,9 @@ RecursiveCTEKeyedState::~RecursiveCTEKeyedState() {
 
 unique_ptr<GroupedAggregateHashTable> RecursiveCTEKeyedState::CreateUsingKeyHashTable() const {
 	return make_uniq<GroupedAggregateHashTable>(context, BufferAllocator::Get(context), op.hash_key_types,
-	                                            op.aggregate_types, payload_aggregate_objects);
+	                                            op.aggregate_types, payload_aggregate_objects,
+	                                            GroupedAggregateHashTable::InitialCapacity(), 0,
+	                                            TupleDataValidityType::CAN_HAVE_NULL_VALUES, finalized.RegionWidth());
 }
 
 const RecursiveCTEPartialKeyIndex &RecursiveCTEKeyedState::GetPartialKeyIndex(const vector<idx_t> &key_indices) const {
@@ -246,7 +567,23 @@ void RecursiveCTEKeyedState::AssembleStateRows(DataChunk &keys, DataChunk &aggre
 
 void RecursiveCTEKeyedState::FinalizeStateRows(RowOperationsState &row_state, Vector &addresses, DataChunk &keys,
                                                DataChunk &aggregates, DataChunk &result) {
+	if (finalized.Enabled()) {
+		ReadStateRows(addresses, keys, aggregates, result);
+		return;
+	}
+	FinalizeStateRowsFromStates(row_state, addresses, keys, aggregates, result);
+}
+
+void RecursiveCTEKeyedState::FinalizeStateRowsFromStates(RowOperationsState &row_state, Vector &addresses,
+                                                         DataChunk &keys, DataChunk &aggregates, DataChunk &result) {
 	FinalizeAggregateRows(row_state, addresses, aggregates, keys.size());
+	AssembleStateRows(keys, aggregates, result);
+}
+
+void RecursiveCTEKeyedState::ReadStateRows(const Vector &addresses, DataChunk &keys, DataChunk &aggregates,
+                                           DataChunk &result) {
+	aggregates.Reset();
+	finalized.Gather(addresses, *FlatVector::IncrementalSelectionVector(), keys.size(), aggregates);
 	AssembleStateRows(keys, aggregates, result);
 }
 
@@ -310,8 +647,11 @@ public:
 	}
 
 	unique_ptr<GroupedAggregateHashTable> Preaggregate(ColumnDataCollection &candidates) {
-		auto result = make_uniq<GroupedAggregateHashTable>(context, BufferAllocator::Get(context), op.hash_key_types,
-		                                                   op.aggregate_types, aggregates);
+		// The scratch layout must match the persistent table's for Combine, so it carries the region bytes.
+		auto result = make_uniq<GroupedAggregateHashTable>(
+		    context, BufferAllocator::Get(context), op.hash_key_types, op.aggregate_types, aggregates,
+		    GroupedAggregateHashTable::InitialCapacity(), 0, TupleDataValidityType::CAN_HAVE_NULL_VALUES,
+		    RecursiveCTEFinalizedValues::RegionWidthFor(op));
 		ColumnDataScanState scan_state;
 		candidates.InitializeScan(scan_state);
 		while (candidates.Scan(scan_state, input)) {
@@ -842,6 +1182,8 @@ void RecursiveCTEKeyedState::CommitUsingKeyUpdates() {
 	} else {
 		CommitUsingKeyUpdatesInternal<false>();
 	}
+	// No readers exist between the commit and the next iteration, so replaced strings can be reclaimed here.
+	finalized.MaybeCompact(*ht);
 }
 
 SinkResultType RecursiveCTEKeyedState::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) {
@@ -963,11 +1305,18 @@ SourceResultType RecursiveCTEKeyedState::GetUsingKeyDataInternal(ExecutionContex
 		case RecursiveCTESourcePhase::DRAINING_FINAL_KEY_STATE: {
 			const auto drain_start =
 			    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-			while (ht->Scan(ht_scan_state, source_distinct_rows, source_aggregate_rows)) {
+			while (finalized.Enabled() ? ht->ScanGroups(ht_scan_state, source_distinct_rows)
+			                           : ht->Scan(ht_scan_state, source_distinct_rows, source_aggregate_rows)) {
 				if (source_distinct_rows.size() == 0) {
 					continue;
 				}
-				AssembleStateRows(source_distinct_rows, source_aggregate_rows, chunk);
+				if (finalized.Enabled()) {
+					// The last commit left the finalized values current, so the drain is a plain read.
+					ReadStateRows(ht_scan_state.scan_states.chunk_state.row_locations, source_distinct_rows,
+					              source_aggregate_rows, chunk);
+				} else {
+					AssembleStateRows(source_distinct_rows, source_aggregate_rows, chunk);
+				}
 				source.AddEmittedRows(chunk.size());
 				if constexpr (COLLECT_METRICS) {
 					metrics.RecordFinalStateRows(chunk.size());
@@ -1010,13 +1359,16 @@ public:
 class RecursiveCTEStateScanLocalState : public LocalSourceState {
 public:
 	RecursiveCTEStateScanLocalState(ClientContext &context, const PhysicalRecursiveCTE &op)
-	    : found_groups(STANDARD_VECTOR_SIZE), arena(Allocator::Get(context)), row_state(arena) {
+	    : scan_addresses(LogicalType::POINTER), found_groups(STANDARD_VECTOR_SIZE), arena(Allocator::Get(context)),
+	      row_state(arena) {
 		distinct_rows.Initialize(Allocator::Get(context), op.hash_key_types);
 		aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	}
 
 	DataChunk distinct_rows;
 	DataChunk aggregate_rows;
+	//! Row addresses of the scanned groups, copied out of the shared scan state under its lock
+	Vector scan_addresses;
 	AggregateHTLookupState lookup_state;
 	SelectionVector found_groups;
 	ArenaAllocator arena;
@@ -1069,6 +1421,7 @@ SourceResultType PhysicalRecursiveCTEStateScan::GetDataFromState(DataChunk &chun
                                                                  RecursiveCTEKeyedState &recursive_state) const {
 	auto &gstate = input.global_state.Cast<RecursiveCTEStateScanGlobalState>();
 	auto &lstate = input.local_state.Cast<RecursiveCTEStateScanLocalState>();
+	const auto read_finalized = recursive_state.UsesFinalizedValues();
 	while (true) {
 		{
 			lock_guard<mutex> guard(gstate.lock);
@@ -1081,9 +1434,24 @@ SourceResultType PhysicalRecursiveCTEStateScan::GetDataFromState(DataChunk &chun
 				return SourceResultType::FINISHED;
 			}
 			gstate.scanned_groups.fetch_add(lstate.distinct_rows.size(), std::memory_order_relaxed);
+			if (read_finalized && lstate.distinct_rows.size() > 0) {
+				// The shared scan state owns the row addresses, so copy them out while still under the lock.
+				auto &row_locations = gstate.scan_state.scan_states.chunk_state.row_locations;
+				lstate.scan_addresses.SetVectorType(VectorType::FLAT_VECTOR);
+				memcpy(data_ptr_cast(FlatVector::GetDataMutable<data_ptr_t>(lstate.scan_addresses)),
+				       const_data_ptr_cast(FlatVector::GetData<data_ptr_t>(row_locations)),
+				       lstate.distinct_rows.size() * sizeof(data_ptr_t));
+			}
 		}
 		if (lstate.distinct_rows.size() == 0) {
 			continue;
+		}
+		if (read_finalized) {
+			recursive_state.ReadStateRows(lstate.scan_addresses, lstate.distinct_rows, lstate.aggregate_rows, chunk);
+			if (recursive_state.GetMetrics().Enabled()) {
+				recursive_state.GetMetrics().RecordRecurringScanRows(chunk.size());
+			}
+			return SourceResultType::HAVE_MORE_OUTPUT;
 		}
 		const auto group_count = lstate.distinct_rows.size();
 		const auto found_count =

@@ -406,7 +406,7 @@ TEST_CASE("A named secret of another type fails the read, and a reader of severa
 	f.con.BeginTransaction();
 	RequireThrowsWith([&]() { f.OpenKey(CredentialsFixture::File("mem://bucket/table/a.bin", other)); },
 	                  "is of type \"file_credentials_test_other\", which this read does not take");
-	ClientContextFileOpener opener(f.Context());
+	ClientContextFileOpener opener(f.Context().GetContext());
 	FileOpenerInfo info(CredentialsFixture::File("mem://bucket/table/a.bin", other));
 	const char *with_other[] = {TEST_TYPE, "FILE_CREDENTIALS_TEST_OTHER"};
 	KeyValueSecretReader reader(opener, &info, with_other, 2);

@@ -26,22 +26,22 @@ ColumnDataAllocator::ColumnDataAllocator(BufferManager &buffer_manager, ColumnDa
 
 ColumnDataAllocator::ColumnDataAllocator(ClientContext &context, ColumnDataAllocatorType allocator_type,
                                          ColumnDataCollectionLifetime lifetime)
-    : ColumnDataAllocator(context.Services(), allocator_type, lifetime) {
+    : ColumnDataAllocator(context.GetContext(), allocator_type, lifetime) {
 }
 
-ColumnDataAllocator::ColumnDataAllocator(Context &services, ColumnDataAllocatorType allocator_type,
+ColumnDataAllocator::ColumnDataAllocator(Context &context, ColumnDataAllocatorType allocator_type,
                                          ColumnDataCollectionLifetime lifetime)
     : type(allocator_type) {
 	switch (type) {
 	case ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR:
 	case ColumnDataAllocatorType::HYBRID:
-		alloc.buffer_manager = &services.GetBufferManager();
+		alloc.buffer_manager = &context.GetBufferManager();
 		if (lifetime == ColumnDataCollectionLifetime::THROW_ERROR_AFTER_DATABASE_CLOSES) {
-			managed_result_set = ResultSetManager::Get(services.GetDatabase()).Add(*this);
+			managed_result_set = ResultSetManager::Get(context.GetDatabase()).Add(*this);
 		}
 		break;
 	case ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR:
-		alloc.allocator = &Allocator::Get(services.GetDatabase());
+		alloc.allocator = &Allocator::Get(context.GetDatabase());
 		break;
 	default:
 		throw InternalException("Unrecognized column data allocator type");

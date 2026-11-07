@@ -1,0 +1,89 @@
+# name: test/sql/error/error_location_copied_query.test
+# description: An error raised on a join or pivot reference points at it when a copy of the query is bound
+# group: [error]
+
+statement ok
+CREATE TABLE t (a INTEGER, b INTEGER)
+
+statement ok
+CREATE TABLE x (q INTEGER)
+
+# the query as parsed is the reference for each caret of a join below
+statement error
+SELECT * FROM t NATURAL JOIN x
+----
+LINE 1: SELECT * FROM t NATURAL JOIN x
+                        ^^^^^^^^^^^^^^
+
+# COPY TO binds a copy of its query
+statement error
+COPY (SELECT * FROM t NATURAL JOIN x)
+TO '{TEST_DIR}/error_location_copied_query.csv'
+----
+LINE 1: COPY (SELECT * FROM t NATURAL JOIN x)
+                              ^^^^^^^^^^^^^^
+
+# CREATE VIEW binds a copy of its query
+statement error
+CREATE VIEW v AS SELECT * FROM t NATURAL JOIN x
+----
+LINE 1: CREATE VIEW v AS SELECT * FROM t NATURAL JOIN x
+                                         ^^^^^^^^^^^^^^
+
+# a base table reference in a copied query is the reference case
+statement error
+CREATE VIEW v AS SELECT * FROM missing_table
+----
+LINE 1: CREATE VIEW v AS SELECT * FROM missing_table
+                                       ^^^^^^^^^^^^^
+
+# the query as parsed is the reference for each caret of a pivot below
+statement error
+SELECT * FROM t PIVOT (sum(b) FOR a IN (1, 1))
+----
+LINE 1: SELECT * FROM t PIVOT (sum(b) FOR a IN (1, 1))
+                               ^^^^^^^^^^^^^^^^^^^^^^
+
+statement error
+COPY (SELECT * FROM t PIVOT (sum(b) FOR a IN (1, 1)))
+TO '{TEST_DIR}/error_location_copied_query.csv'
+----
+LINE 1: COPY (SELECT * FROM t PIVOT (sum(b) FOR a IN (1, 1)))
+                                     ^^^^^^^^^^^^^^^^^^^^^^
+
+statement error
+CREATE VIEW v AS SELECT * FROM t PIVOT (sum(b) FOR a IN (1, 1))
+----
+LINE 1: CREATE VIEW v AS SELECT * FROM t PIVOT (sum(b) FOR a IN (1, 1))
+                                                ^^^^^^^^^^^^^^^^^^^^^^
+
+statement error
+SELECT * FROM t UNPIVOT (val FOR n IN (missing_column))
+----
+LINE 1: SELECT * FROM t UNPIVOT (val FOR n IN (missing_column))
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+statement error
+CREATE VIEW v AS SELECT * FROM t UNPIVOT (val FOR n IN (missing_column))
+----
+LINE 1: CREATE VIEW v AS SELECT * FROM t UNPIVOT (val FOR n IN (missing_column))
+                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+# a PIVOT statement without an IN list binds a copy of its source to find the pivot values
+statement error
+PIVOT (SELECT * FROM t NATURAL JOIN x) ON a USING sum(b)
+----
+LINE 1: PIVOT (SELECT * FROM t NATURAL JOIN x) ON a USING sum(b)
+                               ^^^^^^^^^^^^^^
+
+# an ORDER BY on an expression over a set operation binds a copy of the set operation
+statement error
+(SELECT * FROM t NATURAL JOIN x UNION SELECT 1, 2) ORDER BY a + 1
+----
+LINE 1: (SELECT * FROM t NATURAL JOIN x UNION SELECT 1, 2) ORDER BY a + 1
+                         ^^^^^^^^^^^^^^
+
+statement error
+FROM v
+----
+Table with name v does not exist

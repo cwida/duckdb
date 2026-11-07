@@ -1,0 +1,32 @@
+# name: test/sql/types/time/time_cast_trailing_text_icu.test
+# description: With ICU, a VARCHAR to TIMETZ cast without an offset takes the session time zone, so trailing space must not read as an offset
+# group: [time]
+
+require icu
+
+statement ok
+SET TimeZone = 'Asia/Kolkata'
+
+query II
+SELECT i, TRY_CAST(s AS TIMETZ) FROM (VALUES
+	(1, '12:00:00'),
+	(2, '12:00:00 '),
+	(3, '12:00:00+01 '),
+	(4, '12:00:00Z'),
+	(5, '12:00:00+05:30xyz'),
+	(6, '12:00:00+05:30:15.5'),
+	(7, '12:00:00 xyz')
+) v(i, s) ORDER BY i
+----
+1	12:00:00+05:30
+2	12:00:00+05:30
+3	12:00:00+01
+4	12:00:00+00
+5	NULL
+6	NULL
+7	NULL
+
+statement error
+SELECT CAST('12:00:00+05:30xyz' AS TIMETZ)
+----
+<REGEX>:Conversion Error:.*time field value out of range.*

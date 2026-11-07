@@ -1485,6 +1485,10 @@ date_t StrpTimeFormat::ParseResult::ToDate() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToDate(date_t &result) {
+	if (is_special) {
+		result = special;
+		return true;
+	}
 	return Date::TryFromDate(data[0], data[1], data[2], result);
 }
 
@@ -1528,6 +1532,10 @@ timestamp_t StrpTimeFormat::ParseResult::ToTimestamp() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToTimestamp(timestamp_t &result) {
+	if (is_special) {
+		result = ToTimestamp();
+		return true;
+	}
 	date_t date;
 	if (!TryToDate(date)) {
 		return false;
@@ -1562,6 +1570,10 @@ timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
 }
 
 bool StrpTimeFormat::ParseResult::TryToTimestampNS(timestamp_ns_t &result) {
+	if (is_special) {
+		result = ToTimestampNS();
+		return true;
+	}
 	date_t date;
 	if (!TryToDate(date)) {
 		return false;

@@ -108,3 +108,28 @@ query II
 SELECT s.min_list_length, s.max_list_length FROM (SELECT stats([1, 2, 3]::INT[3]::INT[]) s)
 ----
 3	3
+
+# totals merge correctly across multiple row groups
+statement ok
+CREATE TABLE multi_rg(l INT[]);
+
+statement ok
+INSERT INTO multi_rg SELECT range(i % 7) FROM range(250000) t(i);
+
+statement ok
+INSERT INTO multi_rg SELECT range(i % 11) FROM range(50000) t(i);
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM multi_rg) FROM (SELECT stats(l) s FROM multi_rg LIMIT 1)
+----
+0	10	true
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM multi_rg) FROM (SELECT stats(l) s FROM multi_rg LIMIT 1)
+----
+0	10	true
