@@ -60,6 +60,8 @@ enum class AggregateRewriteSourceType : uint8_t;
 
 enum class AggregateStateExportMode : uint8_t;
 
+enum class AggregateStateProjectionMode : uint8_t;
+
 enum class AggregateType : uint8_t;
 
 enum class AllowParserOverride : uint8_t;
@@ -746,6 +748,9 @@ const char* EnumUtil::ToChars<AggregateRewriteSourceType>(AggregateRewriteSource
 
 template<>
 const char* EnumUtil::ToChars<AggregateStateExportMode>(AggregateStateExportMode value);
+
+template<>
+const char* EnumUtil::ToChars<AggregateStateProjectionMode>(AggregateStateProjectionMode value);
 
 template<>
 const char* EnumUtil::ToChars<AggregateType>(AggregateType value);
@@ -1755,6 +1760,9 @@ AggregateRewriteSourceType EnumUtil::FromString<AggregateRewriteSourceType>(cons
 
 template<>
 AggregateStateExportMode EnumUtil::FromString<AggregateStateExportMode>(const char *value);
+
+template<>
+AggregateStateProjectionMode EnumUtil::FromString<AggregateStateProjectionMode>(const char *value);
 
 template<>
 AggregateType EnumUtil::FromString<AggregateType>(const char *value);

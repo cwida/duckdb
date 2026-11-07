@@ -514,6 +514,26 @@ AggregateStateExportMode EnumUtil::FromString<AggregateStateExportMode>(const ch
 	return static_cast<AggregateStateExportMode>(StringUtil::StringToEnum(GetAggregateStateExportModeValues(), 2, "AggregateStateExportMode", value));
 }
 
+const StringUtil::EnumStringLiteral *GetAggregateStateProjectionModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(AggregateStateProjectionMode::NONE), "NONE" },
+		{ static_cast<uint32_t>(AggregateStateProjectionMode::VALUE), "VALUE" },
+		{ static_cast<uint32_t>(AggregateStateProjectionMode::VALUE_IF_SET), "VALUE_IF_SET" },
+		{ static_cast<uint32_t>(AggregateStateProjectionMode::VALUE_IF_SET_AND_VALID), "VALUE_IF_SET_AND_VALID" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<AggregateStateProjectionMode>(AggregateStateProjectionMode value) {
+	return StringUtil::EnumToString(GetAggregateStateProjectionModeValues(), 4, "AggregateStateProjectionMode", static_cast<uint32_t>(value));
+}
+
+template<>
+AggregateStateProjectionMode EnumUtil::FromString<AggregateStateProjectionMode>(const char *value) {
+	return static_cast<AggregateStateProjectionMode>(StringUtil::StringToEnum(GetAggregateStateProjectionModeValues(), 4, "AggregateStateProjectionMode", value));
+}
+
 const StringUtil::EnumStringLiteral *GetAggregateTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(AggregateType::NON_DISTINCT), "NON_DISTINCT" },

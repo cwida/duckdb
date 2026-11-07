@@ -197,21 +197,24 @@ enum class AggregateDestructorType {
 	LEGACY
 };
 
+//! How a finalized value derives from the aggregate state in an AggregateStateProjection
+enum class AggregateStateProjectionMode : uint8_t {
+	//! The finalizer is not a plain state-field copy
+	NONE,
+	//! target = value at value_offset; always valid
+	VALUE,
+	//! valid iff the bool at set_offset, then target = value at value_offset
+	VALUE_IF_SET,
+	//! valid iff the bool at set_offset and the bool at valid_offset, then target = value at value_offset
+	VALUE_IF_SET_AND_VALID
+};
+
 //! Describes a finalizer that only copies a state field: the result is the value at value_offset, valid when the
 //! listed flag bytes allow it. Declared at registration by implementations whose Finalize does nothing else, so a
 //! reader of a frozen state may load the finalized value directly instead of invoking the callback. Replacing the
 //! finalize callback clears the declaration.
 struct AggregateStateProjection {
-	enum class Mode : uint8_t {
-		//! The finalizer is not a plain state-field copy
-		NONE,
-		//! target = value at value_offset; always valid
-		VALUE,
-		//! valid iff the bool at set_offset, then target = value at value_offset
-		VALUE_IF_SET,
-		//! valid iff the bool at set_offset and the bool at valid_offset, then target = value at value_offset
-		VALUE_IF_SET_AND_VALID
-	};
+	using Mode = AggregateStateProjectionMode;
 
 	Mode mode = Mode::NONE;
 	uint16_t value_offset = 0;
