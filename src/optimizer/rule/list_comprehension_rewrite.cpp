@@ -21,7 +21,12 @@ namespace {
 
 bool IsTargetListFunction(ClientContext &context, const BoundFunctionExpression &expr, const string &target_name) {
 	if (expr.Function().GetName() == target_name) {
-		D_ASSERT(!expr.GetChildren().empty() && expr.GetChildren()[0]->GetReturnType().id() == LogicalTypeId::LIST);
+		// The NULL-list bind path (ListLambdaPrepareBind) leaves child[0] as SQLNULL with no LIST
+		// cast, so the first child is not necessarily a LIST expression. Treat it as a non-match
+		// rather than asserting (see #28443).
+		if (expr.GetChildren().empty() || expr.GetChildren()[0]->GetReturnType().id() != LogicalTypeId::LIST) {
+			return false;
+		}
 		return true;
 	}
 

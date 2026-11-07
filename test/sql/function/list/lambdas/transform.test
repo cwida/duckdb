@@ -318,3 +318,24 @@ query I
 SELECT list_transform([[2, 3], [4]], lambda x: list_transform(x, lambda y: x || [y]))
 ----
 [[[2, 3, 2], [2, 3, 3]], [[4, 4]]]
+
+# Regression test for #28443: list_transform(NULL, lambda) where the lambda
+# references a column was hitting a D_ASSERT in the list comprehension rewrite
+# rule (IsTargetListFunction assumed child[0] is always LIST, but the NULL-list
+# bind path leaves it as SQLNULL). Must return NULL, not assert.
+query I
+SELECT list_transform(NULL, lambda x: x = n) FROM lists
+----
+NULL
+NULL
+NULL
+NULL
+
+# Same for list_filter, the other target of the rewrite rule.
+query I
+SELECT list_filter(NULL, lambda x: x = n) FROM lists
+----
+NULL
+NULL
+NULL
+NULL
