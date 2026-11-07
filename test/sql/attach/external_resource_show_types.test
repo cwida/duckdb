@@ -1,0 +1,115 @@
+# name: test/sql/attach/external_resource_show_types.test
+# description: SHOW EXTERNAL RESOURCE TYPES is a query over duckdb_external_resource_types, so it works as a subquery
+# group: [attach]
+
+# The registry starts empty: the statement parses and returns no rows.
+query TTTTTTTT
+SHOW EXTERNAL RESOURCE TYPES;
+----
+
+statement ok
+CALL register_external_resource_type('a@st', kind := 'catalog', create_function := 'a_create',
+    status_function := 'a_status', destroy_function := 'a_destroy', resolve_function := 'a_resolve',
+    list_function := 'a_list');
+
+statement ok
+CALL register_external_resource_type('b@st', kind := 'storage', create_function := 'b_create');
+
+# Same columns as the table function.
+query TTTTTTTT rowsort
+SHOW EXTERNAL RESOURCE TYPES;
+----
+a@st	catalog	a_create	a_status	a_destroy	a_resolve	a_list	user
+b@st	storage	b_create	NULL	NULL	NULL	NULL	user
+
+query TTTTTTTT rowsort
+SELECT * FROM duckdb_external_resource_types();
+----
+a@st	catalog	a_create	a_status	a_destroy	a_resolve	a_list	user
+b@st	storage	b_create	NULL	NULL	NULL	NULL	user
+
+# As a subquery, projected and filtered.
+query TT rowsort
+SELECT name, kind FROM (SHOW EXTERNAL RESOURCE TYPES);
+----
+a@st	catalog
+b@st	storage
+
+query T
+SELECT name FROM (SHOW EXTERNAL RESOURCE TYPES) WHERE list_function IS NOT NULL;
+----
+a@st
+
+# FROM-first, with a WHERE on the result.
+query T
+FROM (SHOW EXTERNAL RESOURCE TYPES) SELECT create_function WHERE kind = 'storage';
+----
+b_create
+
+# As a CTE, joined against the resource listing.
+statement ok
+CALL register_external_resource('b@st', 'mine', MAP {'id': 'local-1'});
+
+query TT
+WITH t AS (SHOW EXTERNAL RESOURCE TYPES)
+SELECT t.name, r.name FROM t JOIN (SHOW EXTERNAL RESOURCES) r ON r.type = t.name;
+----
+b@st	mine
+
+# In a set operation and with ORDER BY / LIMIT around it.
+query I
+SELECT count(*) FROM ((SHOW EXTERNAL RESOURCE TYPES) UNION ALL (SHOW EXTERNAL RESOURCE TYPES));
+----
+4
+
+query T
+SELECT name FROM (SHOW EXTERNAL RESOURCE TYPES) ORDER BY name DESC LIMIT 1;
+----
+b@st
+
+# Also as a bare parenthesized statement.
+query I
+SELECT count(*) FROM ((SHOW EXTERNAL RESOURCE TYPES));
+----
+2
+
+# It is a SHOW form, not a DESCRIBE form, and it does not take ALL or a type filter.
+statement error
+DESCRIBE EXTERNAL RESOURCE TYPES;
+----
+<REGEX>:Parser Error.*
+
+statement error
+SHOW ALL EXTERNAL RESOURCE TYPES;
+----
+<REGEX>:Parser Error.*
+
+statement error
+SHOW EXTERNAL RESOURCE TYPES WITH TYPE 'a@st';
+----
+<REGEX>:Parser Error.*
+
+# Neighbouring forms are unaffected.
+statement error
+SHOW EXTERNAL RESOURCE;
+----
+<REGEX>:Parser Error.*
+
+statement error
+SHOW EXTERNAL RESOURCE TYPE;
+----
+<REGEX>:Parser Error.*
+
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES;
+----
+mine	b@st	true	NULL	NULL	NULL	NULL	{id=local-1}
+
+statement ok
+SHOW ALL TABLES;
+
+statement ok
+SHOW ALL;
+
+statement ok
+SHOW TABLES;
