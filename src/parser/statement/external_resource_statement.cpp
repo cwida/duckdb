@@ -15,6 +15,9 @@ ExternalResourceStatement::ExternalResourceStatement(const ExternalResourceState
 	if (other.handle) {
 		handle = other.handle->Copy();
 	}
+	if (other.source) {
+		source = other.source->Copy();
+	}
 	for (auto &entry : other.options) {
 		options[entry.first] = entry.second->Copy();
 	}
@@ -42,6 +45,10 @@ string ExternalResourceStatement::ToString() const {
 		}
 		break;
 	case ExternalResourceOperation::REGISTER:
+		if (source) {
+			result = "REGISTER EXTERNAL RESOURCES FROM " + source->ToString();
+			break;
+		}
 		result = "REGISTER EXTERNAL RESOURCE " + SQLString(type);
 		if (!name.GetIdentifierName().empty()) {
 			result += " AS " + SQLIdentifier(name);

@@ -12,6 +12,7 @@
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/parser/sql_statement.hpp"
+#include "duckdb/parser/tableref.hpp"
 
 namespace duckdb {
 
@@ -36,6 +37,8 @@ public:
 	case_insensitive_map_t<unique_ptr<ParsedExpression>> options;
 	//! The `FROM <value>` handle expression. Set for REGISTER.
 	unique_ptr<ParsedExpression> handle;
+	//! REGISTER EXTERNAL RESOURCES FROM <source>: the rows (type, handle, name) to register. Set for the plural form.
+	unique_ptr<TableRef> source;
 
 protected:
 	ExternalResourceStatement(const ExternalResourceStatement &other);

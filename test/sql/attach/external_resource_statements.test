@@ -42,6 +42,20 @@ SHOW EXTERNAL RESOURCES;
 statement ok
 SHOW ALL EXTERNAL RESOURCES;
 
+# The plural form takes a table reference and returns the same (status, name, type, handle) row per source row.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'aws:ec2:quack' AS type, MAP {'id': 'i-9'} AS handle, 'nine' AS name);
+----
+registered	nine	aws:ec2:quack	{id=i-9}
+
+statement ok
+CALL deregister_external_resource('nine');
+
+statement error
+REGISTER EXTERNAL RESOURCES FROM;
+----
+<REGEX>:.*(syntax error|Parser).*
+
 # The grammar requires the pieces: DESTROY needs a name, REGISTER needs a handle. These are parser errors.
 statement error
 DESTROY EXTERNAL RESOURCE;

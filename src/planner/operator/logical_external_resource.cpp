@@ -10,7 +10,8 @@ idx_t LogicalExternalResource::EstimateCardinality(ClientContext &context) {
 	return 1;
 }
 
-//! Every form returns (status, name, type, handle).
+//! Every form returns (status, name, type, handle): one row for the single forms, one per source row for
+//! REGISTER ... FROM <source>.
 vector<ColumnBinding> LogicalExternalResource::GetColumnBindings() {
 	vector<ColumnBinding> result;
 	TableIndex table_index(0);

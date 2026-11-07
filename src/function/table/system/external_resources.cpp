@@ -347,8 +347,8 @@ static void DeregisterExternalResourceFunction(ClientContext &context, TableFunc
 	}
 	auto &bind_data = data_p.bind_data->Cast<DeregisterExternalResourceBindData>();
 	auto &manager = ExternalResourcesManager::Get(context);
-	auto removed = bind_data.handle.IsNull() ? manager.Remove(bind_data.name)
-	                                         : manager.Remove(bind_data.name, bind_data.handle);
+	auto removed =
+	    bind_data.handle.IsNull() ? manager.Remove(bind_data.name) : manager.Remove(bind_data.name, bind_data.handle);
 	if (!removed) {
 		if (bind_data.handle.IsNull()) {
 			throw InvalidInputException("deregister_external_resource: \"%s\" is not registered", bind_data.name);

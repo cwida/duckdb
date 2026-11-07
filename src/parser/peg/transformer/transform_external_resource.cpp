@@ -42,6 +42,13 @@ PEGTransformerFactory::TransformRegisterExternalResourceStmt(PEGTransformer &tra
 	return std::move(result);
 }
 
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformRegisterExternalResourcesStmt(PEGTransformer &transformer,
+                                                                                       unique_ptr<TableRef> table_ref) {
+	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::REGISTER);
+	result->source = std::move(table_ref);
+	return std::move(result);
+}
+
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
                                                                                      const Identifier &col_id) {
 	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::DESTROY);

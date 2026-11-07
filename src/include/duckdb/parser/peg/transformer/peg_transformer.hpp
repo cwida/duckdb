@@ -2085,6 +2085,8 @@ public:
 	static arena_ptr<TransformResultValue>
 	FinalizeRegisterExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
+	FinalizeRegisterExternalResourcesStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
 	FinalizeDestroyExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeAttachToExternalResourceTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
@@ -3929,6 +3931,8 @@ public:
 	                                                                      const string &string_literal,
 	                                                                      const optional<Identifier> &attach_alias,
 	                                                                      unique_ptr<ParsedExpression> expression);
+	static unique_ptr<SQLStatement> TransformRegisterExternalResourcesStmt(PEGTransformer &transformer,
+	                                                                       unique_ptr<TableRef> table_ref);
 	static unique_ptr<SQLStatement> TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
 	                                                                     const Identifier &col_id);
 	static unique_ptr<SQLStatement> TransformAttachToExternalResource(

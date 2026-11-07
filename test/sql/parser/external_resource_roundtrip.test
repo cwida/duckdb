@@ -103,6 +103,28 @@ REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM 'plain-handle'
 ----
 <REGEX>:.*can't be cast to the destination type MAP\(VARCHAR, VARCHAR\).*
 
+# --- REGISTER ... FROM <source>: the source is a table reference, printed by its own ToString; the local names
+# come from its name column ----------------------------------------------------------------------------------
+
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'aws:ec2:quack' AS type, MAP {'id': 'i-1'} AS handle, 'rt one' AS name)
+----
+registered	rt one	aws:ec2:quack	{id=i-1}
+
+statement ok
+CREATE OR REPLACE TABLE "weird source" AS SELECT 'aws:ec2:quack' AS type, MAP {'id': 'i-2'} AS handle, 'select' AS name
+
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM "weird source"
+----
+registered	select	aws:ec2:quack	{id=i-2}
+
+statement ok
+CALL deregister_external_resource('rt one')
+
+statement ok
+CALL deregister_external_resource('select')
+
 # --- SHOW: no identifiers, but both forms must still copy and reparse ----------------------------------
 
 statement ok

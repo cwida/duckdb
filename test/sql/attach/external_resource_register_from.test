@@ -1,0 +1,213 @@
+# name: test/sql/attach/external_resource_register_from.test
+# description: REGISTER EXTERNAL RESOURCES FROM <source> records every (type, handle, name) row of a table or query
+# group: [attach]
+
+statement ok
+CREATE TABLE src (type VARCHAR, handle MAP(VARCHAR, VARCHAR), name VARCHAR);
+
+statement ok
+INSERT INTO src VALUES
+    ('a@rf', MAP {'id': 'a1'}, 'one'),
+    ('a@rf', MAP {'id': 'a2', 'region': 'eu'}, 'two'),
+    ('b@rf', MAP {'arn': 'arn:x:y'}, 'three');
+
+# One (status, name, type, handle) row per source row, in source order.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM src;
+----
+registered	one	a@rf	{id=a1}
+registered	two	a@rf	{id=a2, region=eu}
+registered	three	b@rf	{arn='arn:x:y'}
+
+query TTT rowsort
+SELECT name, type, handle FROM duckdb_external_resources();
+----
+one	a@rf	{id=a1}
+three	b@rf	{arn='arn:x:y'}
+two	a@rf	{id=a2, region=eu}
+
+# Replaying the same rows records nothing: an identical (name, type, handle) is already there.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM src;
+----
+pre-existing	one	a@rf	{id=a1}
+pre-existing	two	a@rf	{id=a2, region=eu}
+pre-existing	three	b@rf	{arn='arn:x:y'}
+
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+3
+
+# A new name for a handle another name already points at is a second alias, and records.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'a@rf' AS type, MAP {'id': 'a1'} AS handle, 'one_alias' AS name);
+----
+registered	one_alias	a@rf	{id=a1}
+
+# A name already registered with a different handle records too: REGISTER never arbitrates, a use of the name
+# does. Until the record not meant is deregistered, the name is ambiguous and cannot be used.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'a@rf' AS type, MAP {'id': 'other'} AS handle, 'one' AS name);
+----
+registered	one	a@rf	{id=other}
+
+query TT rowsort
+SELECT name, handle FROM duckdb_external_resources() WHERE name = 'one';
+----
+one	{id=a1}
+one	{id=other}
+
+statement error
+DESTROY EXTERNAL RESOURCE one;
+----
+<REGEX>:.*external resource "one" has 2 registrations: 'a@rf' \{id=a1\}, 'a@rf' \{id=other\}. Deregister the ones not meant with deregister_external_resource\('one', handle := <handle>\).*
+
+statement error
+ATTACH TO EXTERNAL RESOURCE one AS one_db;
+----
+<REGEX>:.*external resource "one" has 2 registrations.*
+
+statement error
+CALL deregister_external_resource('one');
+----
+<REGEX>:.*external resource "one" has 2 registrations.*
+
+# The handle says which one; a handle nothing matches is an error of its own.
+statement error
+CALL deregister_external_resource('one', handle := MAP {'id': 'nope'});
+----
+<REGEX>:.*"one" is not registered with handle \{id=nope\}.*
+
+statement ok
+CALL deregister_external_resource('one', handle := MAP {'id': 'other'});
+
+query TT
+SELECT name, handle FROM duckdb_external_resources() WHERE name = 'one';
+----
+one	{id=a1}
+
+# Within one batch the same rules apply: identical duplicates collapse to one record.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (VALUES
+    ('a@rf', MAP {'id': 'd1'}, 'dup'),
+    ('a@rf', MAP {'id': 'd1'}, 'dup')) t(type, handle, name);
+----
+registered	dup	a@rf	{id=d1}
+pre-existing	dup	a@rf	{id=d1}
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'dup';
+----
+1
+
+# NULL or empty type, handle and name are errors that name the row, and the batch records nothing.
+statement error
+REGISTER EXTERNAL RESOURCES FROM (SELECT NULL AS type, MAP {'id': 'n'} AS handle, 'n' AS name);
+----
+<REGEX>:.*row 1 has no type.*
+
+statement error
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'a@rf' AS type, NULL AS handle, 'n' AS name);
+----
+<REGEX>:.*row 1 \(type 'a@rf'\) has a NULL handle.*
+
+statement error
+REGISTER EXTERNAL RESOURCES FROM (VALUES ('a@rf', MAP {'id': 'ok'}, 'fine'), ('a@rf', MAP {'id': 'n'}, NULL)) t(type, handle, name);
+----
+<REGEX>:.*row 2 \('a@rf' \{id=n\}\) has no name.*
+
+query I
+SELECT count(*) FROM (SHOW EXTERNAL RESOURCES) WHERE name = 'fine';
+----
+0
+
+# The source needs the three columns; the error says so and carries the binder's reason.
+statement error
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'a@rf' AS type, MAP {'id': 'x'} AS handle);
+----
+<REGEX>:.*the source needs the columns type, handle and name.*name.*
+
+# Other columns are ignored, so a saved listing feeds back in unchanged: SHOW EXTERNAL RESOURCES has eight columns.
+statement ok
+CREATE TABLE saved AS FROM (SHOW EXTERNAL RESOURCES);
+
+query I
+SELECT count(*) FROM saved;
+----
+5
+
+query TTTT rowsort
+REGISTER EXTERNAL RESOURCES FROM saved;
+----
+pre-existing	dup	a@rf	{id=d1}
+pre-existing	one	a@rf	{id=a1}
+pre-existing	one_alias	a@rf	{id=a1}
+pre-existing	three	b@rf	{arn='arn:x:y'}
+pre-existing	two	a@rf	{id=a2, region=eu}
+
+# The key columns are normalized on the way in: a STRUCT handle becomes the registry's MAP.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'a@rf' AS type, {'id': 's1'} AS handle, 'structy' AS name);
+----
+registered	structy	a@rf	{id=s1}
+
+# An empty source is fine.
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (FROM src WHERE false);
+----
+
+# Discovered resources: a listing's provider names become the local names, and the second run records nothing.
+statement ok
+CREATE MACRO list_c(opts) AS TABLE
+    FROM (VALUES
+        (MAP {'id': 'c1'}, 'bucket-one', 'ref-1', 'ready'),
+        (MAP {'id': 'c2'}, 'bucket-two', 'ref-2', 'ready')) t(handle, name, reference, state);
+
+statement ok
+CALL register_external_resource_type('c@rf', kind := 'catalog', create_function := 'noop_create', list_function := 'list_c');
+
+query TTTT rowsort
+REGISTER EXTERNAL RESOURCES FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'c@rf');
+----
+registered	bucket-one	c@rf	{id=c1}
+registered	bucket-two	c@rf	{id=c2}
+
+query TTTT rowsort
+REGISTER EXTERNAL RESOURCES FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'c@rf');
+----
+pre-existing	bucket-one	c@rf	{id=c1}
+pre-existing	bucket-two	c@rf	{id=c2}
+
+# Now everything of that type is managed.
+query TT rowsort
+SELECT name, managed FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'c@rf');
+----
+bucket-one	true
+bucket-two	true
+
+# Renaming in the query gives the local names a prefix.
+statement ok
+CALL deregister_external_resource('bucket-one');
+
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT type, handle, 'prod_' || name AS name FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'c@rf') WHERE NOT managed);
+----
+registered	prod_bucket-one	c@rf	{id=c1}
+
+query T rowsort
+SELECT name FROM duckdb_external_resources() WHERE type = 'c@rf';
+----
+bucket-two
+prod_bucket-one
+
+# The grammar needs a source.
+statement error
+REGISTER EXTERNAL RESOURCES;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+statement error
+REGISTER EXTERNAL RESOURCES FROM;
+----
+<REGEX>:.*(syntax error|Parser).*

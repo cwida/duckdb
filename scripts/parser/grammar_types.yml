@@ -118,6 +118,7 @@ SQLStatement:
     - ExternalResourceStatement
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
+    - RegisterExternalResourcesStmt
     - DestroyExternalResourceStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt

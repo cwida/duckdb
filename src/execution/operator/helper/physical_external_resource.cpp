@@ -1,5 +1,6 @@
 #include "duckdb/execution/operator/helper/physical_external_resource.hpp"
 
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/operator/helper/launch_external_resource.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
@@ -105,8 +106,114 @@ static ExternalResource DestroyExternalResource(ClientContext &client, const Bou
 	return *instance;
 }
 
+//===--------------------------------------------------------------------===//
+// REGISTER EXTERNAL RESOURCES FROM <source>
+//===--------------------------------------------------------------------===//
+class RegisterExternalResourcesSinkState : public GlobalSinkState {
+public:
+	RegisterExternalResourcesSinkState(ClientContext &context, const vector<LogicalType> &types)
+	    : rows(context, types) {
+	}
+
+	//! The source rows: type, handle, name.
+	ColumnDataCollection rows;
+};
+
+class RegisterExternalResourcesSourceState : public GlobalSourceState {
+public:
+	bool done = false;
+	//! One (status, name, type, handle) row per source row.
+	unique_ptr<ColumnDataCollection> result;
+	ColumnDataScanState scan;
+};
+
+unique_ptr<GlobalSinkState> PhysicalExternalResource::GetGlobalSinkState(ClientContext &context) const {
+	return make_uniq<RegisterExternalResourcesSinkState>(context, children[0].get().GetTypes());
+}
+
+SinkResultType PhysicalExternalResource::Sink(ExecutionContext &context, DataChunk &chunk,
+                                              OperatorSinkInput &input) const {
+	input.global_state.Cast<RegisterExternalResourcesSinkState>().rows.Append(chunk);
+	return SinkResultType::NEED_MORE_INPUT;
+}
+
+unique_ptr<GlobalSourceState> PhysicalExternalResource::GetGlobalSourceState(ClientContext &context) const {
+	return make_uniq<RegisterExternalResourcesSourceState>();
+}
+
+//! Register the rows: every row is checked before any is recorded, so a malformed row registers nothing. Then
+//! each row is recorded (an identical record is left in place) and returned with what happened to it.
+static void RegisterExternalResourcesFromRows(ClientContext &client, ColumnDataCollection &rows,
+                                              ColumnDataCollection &result) {
+	D_ASSERT(rows.ColumnCount() == 3);
+	const idx_t type_column = 0, handle_column = 1, name_column = 2;
+
+	auto describe = [](const string &type, const Value &handle) {
+		return StringUtil::Format("'%s' %s", type, handle.ToString());
+	};
+	DataChunk chunk;
+	rows.InitializeScanChunk(chunk);
+	ColumnDataScanState scan;
+	rows.InitializeScan(scan);
+	idx_t row_number = 0;
+	while (rows.Scan(scan, chunk)) {
+		for (idx_t i = 0; i < chunk.size(); i++) {
+			row_number++;
+			auto type = chunk.GetValue(type_column, i);
+			auto handle = chunk.GetValue(handle_column, i);
+			auto name = chunk.GetValue(name_column, i);
+			if (type.IsNull() || StringValue::Get(type).empty()) {
+				throw InvalidInputException("REGISTER EXTERNAL RESOURCES: row %llu has no type. Nothing was registered",
+				                            row_number);
+			}
+			if (handle.IsNull()) {
+				throw InvalidInputException(
+				    "REGISTER EXTERNAL RESOURCES: row %llu (type '%s') has a NULL handle. Nothing was registered",
+				    row_number, StringValue::Get(type));
+			}
+			if (name.IsNull() || StringValue::Get(name).empty()) {
+				throw InvalidInputException(
+				    "REGISTER EXTERNAL RESOURCES: row %llu (%s) has no name. Nothing was registered", row_number,
+				    describe(StringValue::Get(type), handle));
+			}
+		}
+	}
+
+	DataChunk output;
+	output.Initialize(Allocator::Get(client), result.Types());
+	rows.InitializeScan(scan);
+	while (rows.Scan(scan, chunk)) {
+		for (idx_t i = 0; i < chunk.size(); i++) {
+			auto name = chunk.GetValue(name_column, i);
+			auto type = chunk.GetValue(type_column, i);
+			auto handle = chunk.GetValue(handle_column, i);
+			auto recorded = RecordExternalResource(client, StringValue::Get(name), StringValue::Get(type), handle);
+			output.data[0].Append(Value(recorded));
+			output.data[1].Append(name);
+			output.data[2].Append(type);
+			output.data[3].Append(handle);
+		}
+		output.CheckCardinality(chunk.size());
+		result.Append(output);
+		output.Reset();
+	}
+}
+
 SourceResultType PhysicalExternalResource::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                            OperatorSourceInput &input) const {
+	if (!children.empty()) {
+		auto &gsource = input.global_state.Cast<RegisterExternalResourcesSourceState>();
+		if (!gsource.done) {
+			auto &gsink = sink_state->Cast<RegisterExternalResourcesSinkState>();
+			gsource.result = make_uniq<ColumnDataCollection>(context.client, types);
+			RegisterExternalResourcesFromRows(context.client, gsink.rows, *gsource.result);
+			gsource.result->InitializeScan(gsource.scan);
+			gsource.done = true;
+		}
+		gsource.result->Scan(gsource.scan, chunk);
+		return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
+	}
+
 	// One row: status, name, type, handle.
 	string status;
 	ExternalResource record;
