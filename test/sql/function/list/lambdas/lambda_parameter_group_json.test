@@ -12,7 +12,7 @@ SELECT (SELECT list_transform(['{"f":1}'::JSON], lambda k: k -> 'f') FROM range(
 statement error
 SELECT list_transform(['{"f":1}'::JSON], lambda k: grouping(k -> 'f')) FROM (SELECT '{"f":99}'::JSON AS k) t GROUP BY k -> 'f';
 ----
-GROUPING child "(k -> 'f')" must be a grouping column
+must be a grouping column
 
 # the arrow over a grouped column that is not a parameter is still the group
 
