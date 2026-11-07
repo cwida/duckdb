@@ -19,7 +19,7 @@ statement ok
 RESET allowed_directories
 
 statement ok
-SET allowed_directories=['{DATA_DIR}/csv/glob', '{DATA_DIR}/csv/glob/1', '{DATA_DIR}/parquet-testing/glob', '{DATA_DIR}/json', '{TEMP_DIR}']
+SET allowed_directories=['{DATA_DIR}/csv/glob', '{DATA_DIR}/csv/glob/1', '{DATA_DIR}/parquet-testing/glob', '{DATA_DIR}/json', '{TEMP_DIR}', 'https://example.com/allowed/']
 
 statement ok
 SET enable_external_access=false
@@ -100,6 +100,22 @@ Permission Error
 
 statement error
 SELECT * FROM '{DATA_DIR}/csv/glob/a1/../../all_quotes.csv'
+----
+Permission Error
+
+# remote paths are not normalized, so they cannot use dot segments (also percent-encoded) either
+statement error
+SELECT * FROM read_csv('https://example.com/allowed/../secret.csv')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_csv('https://example.com/allowed/%2e%2e/secret.csv')
+----
+Permission Error
+
+statement error
+SELECT * FROM read_csv('https://example.com/allowed/.%2E/secret.csv')
 ----
 Permission Error
 
