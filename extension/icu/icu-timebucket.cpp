@@ -507,9 +507,9 @@ struct ICUTimeBucket : public ICUDateFunc {
 				throw NotImplementedException("Bucket type not implemented for ICU TIME_BUCKET");
 			}
 		} else {
-			TernaryExecutor::Execute<interval_t, timestamp_tz_t, interval_t, timestamp_tz_t>(
-			    bucket_width_arg, ts_arg, offset_arg, result,
-			    [&](interval_t bucket_width, timestamp_tz_t ts, interval_t offset) {
+			TernaryExecutor::Execute<interval_t, TB, interval_t, timestamp_tz_t>(
+			    bucket_width_arg, ts_arg, offset_arg, result, [&](interval_t bucket_width, TB tb, interval_t offset) {
+				    const auto ts = TruncCast<TB, timestamp_tz_t>(tb);
 				    return OffsetTernaryOperator::Operation(bucket_width, ts, offset, calendar);
 			    });
 		}
