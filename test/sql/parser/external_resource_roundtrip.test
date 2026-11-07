@@ -83,17 +83,21 @@ CREATE EXTERNAL RESOURCE 'aws:ec2:it''s quacky' AS x
 
 # --- REGISTER: name plus an arbitrary handle expression ------------------------------------------------
 
-statement error
+# REGISTER records the handle without looking the type up, so an unknown type succeeds; the record is
+# dropped again so the next mode of the loop can register the same name.
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM {'id': 'i-123'}
-----
-<REGEX>:.*unknown resource type.*
 
-statement error
+statement ok
+CALL deregister_external_resource('x')
+
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS "weird name" FROM {'id': 'i-123', 'tags': ['a','b']}
-----
-<REGEX>:.*unknown resource type.*
 
-# a scalar handle reaches the cast rather than the type lookup - still a full ToString round-trip
+statement ok
+CALL deregister_external_resource('weird name')
+
+# a scalar handle fails the cast to the registry's MAP shape - still a full ToString round-trip
 statement error
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM 'plain-handle'
 ----

@@ -63,6 +63,9 @@ public:
 	//! Lookup that, for a type not registered yet, first autoloads the extension known to provide it (see
 	//! EXTENSION_EXTERNAL_RESOURCE_TYPES in extension_entries.hpp)
 	static unique_ptr<ExternalResourceType> LookupOrAutoload(DatabaseInstance &db, const string &name);
+	//! LookupOrAutoload that throws for an unknown type, naming the extension known to provide it (if any);
+	//! `caller` prefixes the message.
+	static unique_ptr<ExternalResourceType> Require(DatabaseInstance &db, const string &name, const string &caller);
 	//! The extension known to provide the type, or empty if none
 	static string ProvidingExtension(const string &name);
 

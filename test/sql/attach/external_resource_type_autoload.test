@@ -12,22 +12,45 @@ SET autoload_known_extensions = false;
 statement ok
 SET autoinstall_known_extensions = false;
 
+# REGISTER records the handle without looking the type up; the lookup happens when the record is used.
+statement ok
+REGISTER EXTERNAL RESOURCE 'nobody:provides:this' AS r FROM MAP {'id': 'x'};
+
 # A type no extension is known to provide.
 statement error
-REGISTER EXTERNAL RESOURCE 'nobody:provides:this' AS r FROM MAP {'id': 'x'};
+ATTACH TO EXTERNAL RESOURCE r AS r_db;
 ----
 <REGEX>:.*unknown resource type "nobody:provides:this".*
 
 statement error
-CREATE EXTERNAL RESOURCE 'nobody:provides:this' AS r;
+DESTROY EXTERNAL RESOURCE r;
 ----
 <REGEX>:.*unknown resource type "nobody:provides:this".*
+
+statement error
+CREATE EXTERNAL RESOURCE 'nobody:provides:this' AS r2;
+----
+<REGEX>:.*unknown resource type "nobody:provides:this".*
+
+statement ok
+CALL deregister_external_resource('r');
 
 # A type an extension is known to provide (extension_entries.hpp): the error says which one.
-statement error
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS r FROM MAP {'id': 'x'};
+
+statement error
+ATTACH TO EXTERNAL RESOURCE r AS r_db;
 ----
 <REGEX>:.*provided by the aws extension.*INSTALL AND LOAD aws;.*
+
+statement error
+DESTROY EXTERNAL RESOURCE r;
+----
+<REGEX>:.*provided by the aws extension.*INSTALL AND LOAD aws;.*
+
+statement ok
+CALL deregister_external_resource('r');
 
 # Discovery of a type does the same lookup, so a type restriction can load the provider.
 statement error
@@ -65,10 +88,17 @@ SET autoload_known_extensions = true;
 statement ok
 SET autoinstall_known_extensions = true;
 
-statement error
+# REGISTER itself never autoloads: it records, and the attempt happens when the record is used.
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:cloudformation:quack-on-ec2' AS r FROM MAP {'id': 'x'};
+
+statement error
+ATTACH TO EXTERNAL RESOURCE r AS r_db;
 ----
 <REGEX>:.*Extension Autoloading Error.*automatically install the required extension 'aws.*
+
+statement ok
+CALL deregister_external_resource('r');
 
 statement error
 SELECT * FROM duckdb_external_resources(discover := true, type := 'aws:cloudformation:quack-on-ec2');
@@ -76,10 +106,16 @@ SELECT * FROM duckdb_external_resources(discover := true, type := 'aws:cloudform
 <REGEX>:.*Extension Autoloading Error.*automatically install the required extension 'aws.*
 
 # A type no extension provides does not try to autoload anything.
-statement error
+statement ok
 REGISTER EXTERNAL RESOURCE 'nobody:provides:this' AS r FROM MAP {'id': 'x'};
+
+statement error
+ATTACH TO EXTERNAL RESOURCE r AS r_db;
 ----
 <REGEX>:.*unknown resource type "nobody:provides:this".*
+
+statement ok
+CALL deregister_external_resource('r');
 
 statement error
 SELECT * FROM duckdb_external_resources(discover := true, type := 'nobody:provides:this');

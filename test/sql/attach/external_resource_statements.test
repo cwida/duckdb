@@ -2,16 +2,28 @@
 # description: CREATE/REGISTER/DESTROY/SHOW EXTERNAL RESOURCE — parse + bind behavior (no recipe needed)
 # group: [attach]
 
-# CREATE / REGISTER of an unregistered type parse and bind, then fail at provisioning with a clear error.
+# CREATE of an unregistered type parses and binds, then fails at provisioning with a clear error.
 statement error
 CREATE EXTERNAL RESOURCE 'aws:ec2:quack' AS x (SPOT, REGION 'eu-west-1');
 ----
 <REGEX>:.*unknown resource type.*
 
-statement error
+# REGISTER records the handle under the name without looking the type up; the type is resolved on use.
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM {'id': 'i-123'};
+
+query TTT
+SELECT name, type, handle FROM duckdb_external_resources();
+----
+x	aws:ec2:quack	{id=i-123}
+
+statement error
+DESTROY EXTERNAL RESOURCE x;
 ----
 <REGEX>:.*unknown resource type.*
+
+statement ok
+CALL deregister_external_resource('x');
 
 # DESTROY of an unregistered name errors.
 statement error

@@ -170,17 +170,8 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	auto &bind_data = data_p.bind_data->Cast<CreateExternalResourceBindData>();
 
 	// An unknown type autoloads the extension known to provide it, like an unknown function or file format does
-	auto type =
-	    ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), bind_data.type_name);
-	if (!type) {
-		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(bind_data.type_name);
-		if (!extension.empty()) {
-			throw InvalidInputException("create_external_resource: unknown resource type \"%s\": it is provided by the "
-			                            "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
-			                            bind_data.type_name, extension, extension);
-		}
-		throw InvalidInputException("create_external_resource: unknown resource type \"%s\"", bind_data.type_name);
-	}
+	auto type = ExternalResourceTypeRegistry::Require(DatabaseInstance::GetDatabase(context), bind_data.type_name,
+	                                                  "create_external_resource");
 	// Separate internal connection: the current connection's context lock is held here.
 	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
 	auto &con = *callback_con;

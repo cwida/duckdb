@@ -43,6 +43,8 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 			if (data.handle.IsNull()) {
 				throw BinderException("REGISTER EXTERNAL RESOURCE: the handle must not be NULL");
 			}
+			// The handle is recorded as-is, so it is normalized to the registry's MAP shape here.
+			data.handle = data.handle.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 		}
 	}
 

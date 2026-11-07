@@ -122,14 +122,18 @@ create	ok
 status	ok
 destroy	ok
 
-# Only ever reap what we created. REGISTER names a resource the caller merely takes over a handle to, so
-# when the same no-uri failure hits, the resource must be left alone -- destroying it would tear down
-# something provisioned elsewhere. Contrast with the CREATE case above, which does reap.
+# Only ever reap what we created. REGISTER records a handle the caller merely takes over, and the status
+# check runs when the record is attached; when the same no-uri failure hits there, the resource must be
+# left alone -- destroying it would tear down something provisioned elsewhere. Contrast with the CREATE
+# case above, which does reap.
 statement ok
 CALL truncate_duckdb_logs();
 
-statement error
+statement ok
 REGISTER EXTERNAL RESOURCE 'nouri@local' AS adopted FROM MAP {'id': 'q1'};
+
+statement error
+ATTACH TO EXTERNAL RESOURCE adopted AS adopted_db;
 ----
 <REGEX>:.*returned a NULL uri.*
 
@@ -137,6 +141,9 @@ query I
 SELECT count(*) FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';
 ----
 0
+
+statement ok
+CALL deregister_external_resource('adopted');
 
 # ATTACH OR REPLACE over a resource-owning attachment detaches the original, reaping its resource. The
 # teardown is eager -- it happens inside the transaction, not at commit -- and ROLLBACK does not bring
