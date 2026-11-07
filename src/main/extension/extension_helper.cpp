@@ -253,7 +253,7 @@ static ExtensionUpdateResult UpdateExtensionInternal(ClientContext &context, Dat
 	ExtensionUpdateResult result;
 	result.extension_name = extension_name;
 
-	if (!fs.FileExists(full_extension_path)) {
+	if (full_extension_path.empty() || !fs.FileExists(full_extension_path)) {
 		result.tag = ExtensionUpdateResultTag::NOT_INSTALLED;
 		return result;
 	}
@@ -335,33 +335,21 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 	DatabaseInstance &db = DatabaseInstance::GetDatabase(context);
 
 #ifndef WASM_LOADABLE_EXTENSIONS
-	identifier_set_t seen_extensions;
-
-	// scan the install directory for installed extensions
-	auto ext_directory = ExtensionHelper::ExtensionDirectory(db, fs);
-	fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-		if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
-			return;
-		}
-
-		auto extension_file_name = StringUtil::GetFileName(path);
-		auto extension_name = StringUtil::Split(extension_file_name, ".")[0];
-
-		seen_extensions.insert(Identifier(extension_name));
-
-		result.push_back(UpdateExtensionInternal(context, db, fs, fs.JoinPath(ext_directory, path), extension_name));
-	});
+	for (auto &extension_path : ExtensionHelper::GetInstalledExtensionPaths(db, fs)) {
+		result.push_back(UpdateExtensionInternal(context, db, fs, extension_path, fs.ExtractBaseName(extension_path)));
+	}
 #endif
 
 	return result;
 }
 
 ExtensionUpdateResult ExtensionHelper::UpdateExtension(ClientContext &context, const string &extension_name) {
+#ifdef WASM_LOADABLE_EXTENSIONS
+	throw PermissionException("ExtensionDirectory functionality is not supported in duckdb-wasm");
+#endif
 	auto &fs = FileSystem::GetFileSystem(context);
 	DatabaseInstance &db = DatabaseInstance::GetDatabase(context);
-	auto ext_directory = ExtensionHelper::ExtensionDirectory(db, fs);
-
-	auto full_extension_path = fs.JoinPath(ext_directory, extension_name + ".duckdb_extension");
+	auto full_extension_path = ExtensionHelper::FindInstalledExtension(db, fs, extension_name, string());
 
 	auto update_result = UpdateExtensionInternal(context, db, fs, full_extension_path, extension_name);
 

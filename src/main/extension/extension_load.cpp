@@ -551,54 +551,12 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		filename = address;
 #else
 
-		// Local function to process local path
-		auto ComputeLocalExtensionPath = [&](const string &base_path, const string &extension_name) -> string {
-			// convert random separators to platform-canonic
-			string local_path = fs.ConvertSeparators(base_path);
-			// expand ~ in extension directory
-			local_path = fs.ExpandPath(local_path);
-			auto path_components = PathComponents();
-			for (auto &path_ele : path_components) {
-				local_path = fs.JoinPath(local_path, path_ele);
-			}
-			if (expect_user_repo) {
-				local_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), repository_name);
-			}
-			return fs.JoinPath(local_path, extension_name + ".duckdb_extension");
-		};
-
-		// Collect all directories to search for extensions
-		vector<string> search_directories;
-		auto custom_extension_directory = Settings::Get<ExtensionDirectorySetting>(db);
-		if (!custom_extension_directory.empty()) {
-			search_directories.push_back(custom_extension_directory);
-		}
-
-		// Add all configured extension directories
-		for (auto &dir : db.config.GetExtensionDirectories()) {
-			search_directories.push_back(std::move(dir));
-		}
-
-		// Add default extension directory if no custom directories configured
-		if (search_directories.empty()) {
-			for (const auto &path : ExtensionHelper::DefaultExtensionFolders(fs)) {
-				search_directories.push_back(path);
-			}
-		}
-
-		// Try each directory in sequence until extension is found
-		bool found = false;
-		for (const auto &directory : search_directories) {
-			filename = ComputeLocalExtensionPath(directory, extension_name);
-			if (fs.FileExists(filename)) {
-				found = true;
-				break;
-			}
-		}
-
+		auto user_repository_name = expect_user_repo ? repository_name : string();
+		filename = FindInstalledExtension(db, fs, extension_name, user_repository_name);
 		// If not found in any directory, use the first directory for error reporting
-		if (!found) {
-			filename = ComputeLocalExtensionPath(search_directories[0], extension_name);
+		if (filename.empty()) {
+			auto directory = RepositoryInstallDirectory(fs, GetExtensionDirectoryPath(db, fs)[0], user_repository_name);
+			filename = fs.JoinPath(directory, extension_name + ".duckdb_extension");
 		}
 #endif
 	} else {

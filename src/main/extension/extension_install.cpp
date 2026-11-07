@@ -8,6 +8,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/extension/external_extension_provider.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -141,6 +142,51 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 bool ExtensionHelper::IsInstalledExtensionFile(const string &path) {
 	// an install writes <name>.duckdb_extension.tmp-<uuid>.duckdb_extension before it moves the file in place
 	return StringUtil::EndsWith(path, ".duckdb_extension") && !StringUtil::Contains(path, ".duckdb_extension.tmp-");
+}
+
+string ExtensionHelper::RepositoryInstallDirectory(FileSystem &fs, const string &extension_directory,
+                                                   const string &user_repository_name) {
+	if (user_repository_name.empty()) {
+		return extension_directory;
+	}
+	return fs.JoinPath(fs.JoinPath(extension_directory, "repositories"), user_repository_name);
+}
+
+string ExtensionHelper::FindInstalledExtension(DatabaseInstance &db, FileSystem &fs, const string &extension_name,
+                                               const string &user_repository_name) {
+	for (auto &extension_directory : GetExtensionDirectoryPath(db, fs)) {
+		auto directory = RepositoryInstallDirectory(fs, extension_directory, user_repository_name);
+		if (!fs.DirectoryExists(directory)) {
+			continue;
+		}
+		auto path = fs.JoinPath(directory, extension_name + ".duckdb_extension");
+		if (fs.FileExists(path)) {
+			return path;
+		}
+	}
+	return string();
+}
+
+vector<string> ExtensionHelper::GetInstalledExtensionPaths(DatabaseInstance &db, FileSystem &fs) {
+	vector<string> extension_names;
+	unordered_set<string> seen_extensions;
+	for (auto &extension_directory : GetExtensionDirectoryPath(db, fs)) {
+		fs.ListFiles(extension_directory, [&](const string &path, bool is_directory) {
+			auto extension_name = fs.ExtractBaseName(path);
+			if (IsInstalledExtensionFile(path) && seen_extensions.insert(extension_name).second) {
+				extension_names.push_back(std::move(extension_name));
+			}
+		});
+	}
+	// a listing only yields names; the copy is the one the loader finds, also in an earlier directory it cannot list
+	vector<string> result;
+	for (auto &extension_name : extension_names) {
+		auto path = FindInstalledExtension(db, fs, extension_name, string());
+		if (!path.empty()) {
+			result.push_back(std::move(path));
+		}
+	}
+	return result;
 }
 
 string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs) {
