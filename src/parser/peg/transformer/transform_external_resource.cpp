@@ -80,4 +80,17 @@ PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transforme
 	return std::move(select_node);
 }
 
+// SHOW EXTERNAL RESOURCE TYPES -> SELECT * FROM duckdb_external_resource_types()
+unique_ptr<QueryNode> PEGTransformerFactory::TransformShowExternalResourceTypes(PEGTransformer &transformer,
+                                                                                const ShowType &show_rule) {
+	auto table_function = make_uniq<TableFunctionRef>();
+	table_function->function =
+	    make_uniq<FunctionExpression>("duckdb_external_resource_types", vector<FunctionArgument>());
+
+	auto select_node = make_uniq<SelectNode>();
+	select_node->select_list.push_back(make_uniq<StarExpression>());
+	select_node->from_table = std::move(table_function);
+	return std::move(select_node);
+}
+
 } // namespace duckdb
