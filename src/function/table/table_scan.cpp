@@ -230,7 +230,8 @@ public:
 
 	//! The index scan can return a superset of the matching rows, so apply all table filters to the fetched rows.
 	static void FilterFetchedRows(ScanFilterInfo &filter_info, DataChunk &chunk) {
-		if (!filter_info.HasFilters() || chunk.size() == 0) {
+		auto adaptive_filter = filter_info.GetAdaptiveFilter();
+		if (!adaptive_filter || chunk.size() == 0) {
 			return;
 		}
 		const auto count = chunk.size();
@@ -238,7 +239,7 @@ public:
 		sel.Initialize(nullptr);
 		idx_t approved_tuple_count = count;
 		auto &filter_list = filter_info.GetFilterList();
-		const auto &permutation = filter_info.GetAdaptiveFilter()->GetPermutation();
+		const auto &permutation = adaptive_filter->GetPermutation();
 		for (idx_t i = 0; i < filter_list.size(); i++) {
 			auto &filter = filter_list[permutation[i]];
 			ColumnSegment::FilterSelection(sel, chunk.data[filter.scan_column_index], *filter.filter_state, count,
