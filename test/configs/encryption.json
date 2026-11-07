@@ -25,7 +25,8 @@
         "test/sql/types/decimal/wide_decimal_literals.test",
         "test/sql/types/decimal/wide_decimal_statistics.test",
         "test/sql/types/decimal/wide_decimal_unbounded_statistics.test",
-        "test/sql/types/decimal/wide_decimal_unbounded_width.test"
+        "test/sql/types/decimal/wide_decimal_unbounded_width.test",
+        "test/sql/types/decimal/wide_decimal_to_float_rounding.test"
       ]
     },
     {
