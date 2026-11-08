@@ -14,8 +14,8 @@ AlterMacroInfo::AlterMacroInfo(AlterMacroType alter_macro_type)
 
 AlterMacroInfo::AlterMacroInfo(AlterMacroType alter_macro_type, const AlterEntryData &data,
                                CatalogType entry_catalog_type)
-    : AlterInfo(AlterType::ALTER_MACRO, data.qualified_name, data.if_not_found),
-      alter_macro_type(alter_macro_type), entry_catalog_type(entry_catalog_type) {
+    : AlterInfo(AlterType::ALTER_MACRO, data.qualified_name, data.if_not_found), alter_macro_type(alter_macro_type),
+      entry_catalog_type(entry_catalog_type) {
 }
 
 AlterMacroInfo::~AlterMacroInfo() {

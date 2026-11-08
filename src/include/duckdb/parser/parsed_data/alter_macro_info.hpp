@@ -41,8 +41,7 @@ protected:
 // RemoveMacroOverloadInfo
 //===--------------------------------------------------------------------===//
 struct RemoveMacroOverloadInfo : public AlterMacroInfo {
-	RemoveMacroOverloadInfo(const AlterEntryData &data, CatalogType entry_catalog_type,
-	                        vector<LogicalType> signature);
+	RemoveMacroOverloadInfo(const AlterEntryData &data, CatalogType entry_catalog_type, vector<LogicalType> signature);
 	~RemoveMacroOverloadInfo() override;
 
 	//! The parameter types identifying the overload to remove
