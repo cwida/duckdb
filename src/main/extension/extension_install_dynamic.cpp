@@ -436,12 +436,11 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 	// repositories. Core and community extensions keep the flat top-level layout for backwards compatibility
 	string install_path = local_path;
 	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED) {
-		// installing native code from a user-provided repository trusts that repository's signing keys, so it requires
-		// the same explicit opt-in as adding one. Without this, pointing extension_repository_directory at an
-		// attacker-controlled directory and installing from it would bypass the opt-in entirely
-		if (ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
-			throw PermissionException("Installing extensions from a user-provided repository requires "
-			                          "allow_extension_repositories='allowed'");
+		// the opt-in gates adding a repository, i.e. trusting a new signing key. An existing repository stays trusted
+		// while 'undecided', as it does for LOAD, and is distrusted only once repositories are 'forbidden'
+		if (ExtensionRepositoryManager::GetAccess(db) == ExtensionRepositoryAccess::FORBIDDEN) {
+			throw PermissionException("Installing extensions from a user-provided repository has been forbidden "
+			                          "through configuration");
 		}
 		install_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), options.repository->name);
 		FileSystem::GetLocal(db).CreateDirectoriesRecursive(install_path);
