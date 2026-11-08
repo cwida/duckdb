@@ -1,0 +1,139 @@
+# name: test/sql/topn/test_top_n_large_limit.test_slow
+# description: TopN with limits above the small-heap threshold (bulk selection of the retained entries)
+# group: [topn]
+
+statement ok
+SET threads=4;
+
+# k is a permutation of 0..999999, so the selected sets are known
+statement ok
+CREATE TABLE t AS SELECT i, (i * 7919 % 1000000)::BIGINT AS k FROM range(1000000) r(i);
+
+query IIII
+SELECT count(*), min(k), max(k), sum(k) FROM (SELECT k FROM t ORDER BY k LIMIT 150000)
+----
+150000	0	149999	11249925000
+
+query IIII
+SELECT count(*), min(k), max(k), sum(k) FROM (SELECT k FROM t ORDER BY k DESC LIMIT 150000 OFFSET 1000)
+----
+150000	849000	998999	138599925000
+
+# the heap size equals the limit plus the offset
+query I
+SELECT k FROM t ORDER BY k LIMIT 5 OFFSET 100
+----
+100
+101
+102
+103
+104
+
+query I
+SELECT k FROM t ORDER BY k DESC LIMIT 3 OFFSET 200
+----
+999799
+999798
+999797
+
+query I
+SELECT k FROM t ORDER BY k LIMIT 3 OFFSET 98
+----
+98
+99
+100
+
+# ordered output of a large heap
+query II
+SELECT min(k), max(k) FROM (SELECT k FROM t ORDER BY k LIMIT 200000 OFFSET 199990)
+----
+199990	399989
+
+query II
+SELECT k, i FROM t ORDER BY k LIMIT 3 OFFSET 199997
+----
+199997	746963
+199998	764642
+199999	782321
+
+# ties at the boundary: any 500 of the rows with g = 2 qualify
+query IIII
+SELECT count(*), sum(g), max(g), count(DISTINCT k) FROM (SELECT k % 1000 AS g, k FROM t ORDER BY g LIMIT 2500)
+----
+2500	2000	2	2500
+
+# NULLs sort first
+query III
+SELECT count(*), count(kn), max(kn) FROM (
+	SELECT CASE WHEN k % 7 = 0 THEN NULL ELSE k END AS kn FROM t ORDER BY kn NULLS FIRST LIMIT 200000
+)
+----
+200000	57142	66665
+
+# VARCHAR sort keys
+query III
+SELECT count(*), min(s), max(s) FROM (SELECT lpad(k::VARCHAR, 7, '0') AS s FROM t ORDER BY s LIMIT 120000)
+----
+120000	0000000	0119999
+
+# multiple order columns with mixed directions
+query III
+SELECT count(*), sum(k), sum(g) FROM (SELECT k % 1000 AS g, k FROM t ORDER BY g, k DESC LIMIT 1500)
+----
+1500	874250500	500
+
+# a limit larger than the input
+query II
+SELECT count(*), sum(k) FROM (SELECT k FROM t ORDER BY k LIMIT 2000000)
+----
+1000000	499999500000
+
+# single-threaded
+statement ok
+SET threads=1;
+
+query IIII
+SELECT count(*), min(k), max(k), sum(k) FROM (SELECT k FROM t ORDER BY k LIMIT 150000)
+----
+150000	0	149999	11249925000
+
+query I
+SELECT k FROM t ORDER BY k DESC LIMIT 3 OFFSET 200
+----
+999799
+999798
+999797
+
+# ascending input ordered descending: every row beats the boundary of the full heap (bulk insertion)
+statement ok
+CREATE TABLE asc_input AS SELECT i AS k, i % 7 AS g FROM range(2000000) r(i);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query IIII
+SELECT count(*), min(k), max(k), sum(k) FROM (SELECT k FROM asc_input ORDER BY k DESC LIMIT 1000)
+----
+1000	1999000	1999999	1999499500
+
+query IIII
+SELECT count(*), min(k), max(k), sum(k) FROM (SELECT k FROM asc_input ORDER BY k DESC LIMIT 5000 OFFSET 17)
+----
+5000	1994983	1999982	9987412500
+
+query I
+SELECT k FROM asc_input ORDER BY k DESC LIMIT 3 OFFSET 4000
+----
+1995999
+1995998
+1995997
+
+# ties at the boundary while inserting in bulk
+query III
+SELECT count(*), min(g), count(DISTINCT k) FROM (SELECT g, k FROM asc_input ORDER BY g DESC LIMIT 3000)
+----
+3000	6	3000
+
+endloop

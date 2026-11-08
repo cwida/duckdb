@@ -2,6 +2,7 @@
 #include "duckdb/common/atomic.hpp"
 
 #include "duckdb/common/assert.hpp"
+#include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/arena_containers/arena_vector.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -119,6 +120,10 @@ public:
 	SelectionVector true_sel;
 	SelectionVector false_sel;
 	SelectionVector new_remaining_sel;
+	//! Rows of the current chunk that sort below the boundary of a full heap
+	SelectionVector candidate_sel;
+	//! Whether a buffered heap has selected its top entries at least once (see IsFull)
+	bool has_boundary = false;
 
 public:
 	void Sink(DataChunk &input, optional_ptr<TopNBoundaryValue> boundary_value = nullptr);
@@ -134,6 +139,11 @@ public:
 	void AddLargeHeap(DataChunk &input, const Vector &sort_keys_vec);
 
 public:
+	static constexpr idx_t SMALL_HEAP_THRESHOLD = 100;
+	//! Above this many entries, maintaining the heap for every accepted entry (log2 of the heap size cache-unfriendly
+	//! steps) dominates, so candidates are collected and the top entries are selected in bulk (see IsBuffered)
+	static constexpr idx_t BUFFERED_HEAP_THRESHOLD = 8ULL * STANDARD_VECTOR_SIZE;
+
 	idx_t ReduceThreshold() const {
 		return MaxValue<idx_t>(STANDARD_VECTOR_SIZE * 5ULL, 2ULL * heap_size);
 	}
@@ -142,17 +152,35 @@ public:
 		return MinValue<idx_t>(STANDARD_VECTOR_SIZE * 100ULL, ReduceThreshold()) + STANDARD_VECTOR_SIZE;
 	}
 
+	//! Large heaps collect candidates in an unordered buffer and select the top entries in bulk, which is cheaper
+	//! than maintaining a binary heap for every accepted entry. Their boundary is only refreshed by a selection, so it
+	//! can trail the exact one by up to "heap_size" accepted entries.
+	bool IsBuffered() const {
+		return heap_size > BUFFERED_HEAP_THRESHOLD;
+	}
+
+	//! Whether the heap holds "heap_size" entries, so that only entries below the boundary can still be added
+	bool IsFull() const {
+		return IsBuffered() ? has_boundary : heap.size() >= heap_size;
+	}
+
+	//! The largest retained sort key (only valid if the heap is full)
+	const string_t &Boundary() const {
+		D_ASSERT(IsFull());
+		return IsBuffered() ? heap[heap_size - 1].sort_key : heap.front().sort_key;
+	}
+
 private:
 	inline bool EntryShouldBeAdded(const string_t &sort_key) {
 		if (heap_size == 0) {
 			// the heap has no capacity (LIMIT 0) - no entry can ever be added
 			return false;
 		}
-		if (heap.size() < heap_size) {
+		if (!IsFull()) {
 			// heap is not full yet - the entry can be added
 			return true;
 		}
-		if (sort_key < heap.front().sort_key) {
+		if (sort_key < Boundary()) {
 			// sort key is smaller than current max value
 			return true;
 		}
@@ -160,8 +188,23 @@ private:
 		return false;
 	}
 
+	//! Keeps only the "heap_size" smallest entries of the buffer, the largest of which ends up at heap_size - 1
+	void SelectTopEntries() {
+		D_ASSERT(IsBuffered() && heap.size() >= heap_size);
+		std::nth_element(heap.begin(), heap.begin() + NumericCast<int64_t>(heap_size - 1), heap.end());
+		heap.resize(heap_size);
+		has_boundary = true;
+	}
+
 	inline void AddEntryToHeap(const TopNEntry &entry) {
 		D_ASSERT(heap_size > 0);
+		if (IsBuffered()) {
+			heap.push_back(entry);
+			if (heap.size() == (has_boundary ? 2 * heap_size : heap_size)) {
+				SelectTopEntries();
+			}
+			return;
+		}
 		if (heap.size() >= heap_size) {
 			D_ASSERT(!heap.empty());
 			std::pop_heap(heap.begin(), heap.end());
@@ -181,7 +224,7 @@ TopNHeap::TopNHeap(ClientContext &context, Allocator &allocator, const vector<Lo
       heap(arena_allocator), payload_types(payload_types_p), orders(orders_p), limit(limit), offset(offset),
       heap_size(limit + offset), executor(context), sort_key_heap(allocator), matching_sel(STANDARD_VECTOR_SIZE),
       final_sel(STANDARD_VECTOR_SIZE), true_sel(STANDARD_VECTOR_SIZE), false_sel(STANDARD_VECTOR_SIZE),
-      new_remaining_sel(STANDARD_VECTOR_SIZE) {
+      new_remaining_sel(STANDARD_VECTOR_SIZE), candidate_sel(STANDARD_VECTOR_SIZE) {
 	// initialize the executor and the sort_chunk
 	vector<LogicalType> sort_types;
 	for (auto &order : orders) {
@@ -256,7 +299,38 @@ void TopNHeap::AddLargeHeap(DataChunk &input, const Vector &sort_keys_vec) {
 	auto sort_key_values = FlatVector::GetData<string_t>(sort_keys_vec);
 	idx_t base_index = heap_data.size();
 	idx_t match_count = 0;
-	for (idx_t r = 0; r < input.size(); r++) {
+
+	// Rows that sort below the boundary of a full heap are the only ones that can be added
+	const SelectionVector *rows = FlatVector::IncrementalSelectionVector();
+	idx_t row_count = input.size();
+	if (!IsBuffered() && IsFull()) {
+		const auto &boundary = Boundary();
+		idx_t candidate_count = 0;
+		for (idx_t r = 0; r < input.size(); r++) {
+			if (sort_key_values[r] < boundary) {
+				candidate_sel.set_index(candidate_count++, r);
+			}
+		}
+		// Replacing the top of the heap costs about log2(heap_size) comparisons per entry, while inserting all
+		// candidates at once and selecting the top entries again costs a few comparisons per heap entry
+		if (candidate_count * (64 - CountZeros<uint64_t>::Leading(heap_size)) > 3 * heap_size) {
+			for (; match_count < candidate_count; match_count++) {
+				const auto r = candidate_sel.get_index(match_count);
+				heap.push_back({sort_key_heap.AddBlob(sort_key_values[r]), base_index + match_count});
+				matching_sel.set_index(match_count, r);
+			}
+			std::nth_element(heap.begin(), heap.begin() + NumericCast<int64_t>(heap_size - 1), heap.end());
+			heap.resize(heap_size);
+			std::make_heap(heap.begin(), heap.end());
+			heap_data.Append(input, matching_sel, match_count, VectorAppendMode::ALLOW_RESIZE);
+			return;
+		}
+		rows = &candidate_sel;
+		row_count = candidate_count;
+	}
+
+	for (idx_t i = 0; i < row_count; i++) {
+		const auto r = rows->get_index(i);
 		auto &sort_key = sort_key_values[r];
 		if (!EntryShouldBeAdded(sort_key)) {
 			continue;
@@ -275,6 +349,15 @@ void TopNHeap::AddLargeHeap(DataChunk &input, const Vector &sort_keys_vec) {
 
 	// copy over the input rows to the payload chunk
 	heap_data.Append(input, matching_sel, match_count, VectorAppendMode::ALLOW_RESIZE);
+}
+
+//! Whether the regular comparisons, under which a NULL never qualifies, select the same rows as the NULL-aware ones:
+//! this holds for a non-NULL boundary unless NULLs sort first and the input contains NULLs
+static bool CanCompareWithoutNulls(const BoundOrderByNode &order, const Vector &input, const Vector &boundary) {
+	if (ConstantVector::IsNull(boundary) || input.GetType().IsNested()) {
+		return false;
+	}
+	return order.null_order == OrderByNullType::NULLS_LAST || !input.Validity().CanHaveNull();
 }
 
 bool TopNHeap::CheckBoundaryValues(DataChunk &sort_chunk, DataChunk &payload, TopNBoundaryValue &global_boundary) {
@@ -307,8 +390,18 @@ bool TopNHeap::CheckBoundaryValues(DataChunk &sort_chunk, DataChunk &payload, To
 			compare_chunk.data[i].Reference(sort_chunk.data[i]);
 		}
 		bool is_last = i + 1 == orders.size();
+		const auto compare_without_nulls =
+		    CanCompareWithoutNulls(orders[i], compare_chunk.data[i], boundary_values.data[i]);
 		idx_t true_count;
-		if (orders[i].null_order == OrderByNullType::NULLS_LAST) {
+		if (compare_without_nulls) {
+			if (orders[i].type == OrderType::ASCENDING) {
+				true_count = VectorOperations::LessThan(compare_chunk.data[i], boundary_values.data[i], &remaining_sel,
+				                                        remaining_count, &true_sel, &false_sel);
+			} else {
+				true_count = VectorOperations::GreaterThan(compare_chunk.data[i], boundary_values.data[i],
+				                                           &remaining_sel, remaining_count, &true_sel, &false_sel);
+			}
+		} else if (orders[i].null_order == OrderByNullType::NULLS_LAST) {
 			if (orders[i].type == OrderType::ASCENDING) {
 				true_count = VectorOperations::DistinctLessThan(compare_chunk.data[i], boundary_values.data[i],
 				                                                &remaining_sel, remaining_count, &true_sel, &false_sel);
@@ -338,8 +431,14 @@ bool TopNHeap::CheckBoundaryValues(DataChunk &sort_chunk, DataChunk &payload, To
 		if (!is_last && false_count > 0) {
 			// check what we should continue to check
 			compare_chunk.data[i].Slice(sort_chunk.data[i], false_sel, false_count);
-			remaining_count = VectorOperations::NotDistinctFrom(compare_chunk.data[i], boundary_values.data[i],
-			                                                    &false_sel, false_count, &new_remaining_sel, nullptr);
+			if (compare_without_nulls) {
+				remaining_count = VectorOperations::Equals(compare_chunk.data[i], boundary_values.data[i], &false_sel,
+				                                           false_count, &new_remaining_sel, nullptr);
+			} else {
+				remaining_count =
+				    VectorOperations::NotDistinctFrom(compare_chunk.data[i], boundary_values.data[i], &false_sel,
+				                                      false_count, &new_remaining_sel, nullptr);
+			}
 			remaining_sel.Initialize(new_remaining_sel);
 		} else {
 			break;
@@ -356,8 +455,6 @@ bool TopNHeap::CheckBoundaryValues(DataChunk &sort_chunk, DataChunk &payload, To
 }
 
 void TopNHeap::Sink(DataChunk &input, optional_ptr<TopNBoundaryValue> global_boundary) {
-	static constexpr idx_t SMALL_HEAP_THRESHOLD = 100;
-
 	if (heap_size == 0) {
 		// LIMIT 0 without OFFSET - the heap can never hold any entry, so there is nothing to do
 		return;
@@ -388,8 +485,8 @@ void TopNHeap::Sink(DataChunk &input, optional_ptr<TopNBoundaryValue> global_bou
 
 	// if we modified the heap we might be able to update the global boundary
 	// note that the global boundary only applies to FULL heaps
-	if (!heap.empty() && heap.size() >= heap_size && global_boundary) {
-		global_boundary->UpdateValue(heap.front().sort_key);
+	if (global_boundary && IsFull()) {
+		global_boundary->UpdateValue(Boundary());
 	}
 }
 
@@ -426,6 +523,9 @@ void TopNHeap::Combine(TopNHeap &other) {
 }
 
 void TopNHeap::Finalize() {
+	if (IsBuffered() && heap.size() > heap_size) {
+		SelectTopEntries();
+	}
 	std::sort(heap.begin(), heap.end());
 }
 
@@ -433,6 +533,10 @@ void TopNHeap::Reduce() {
 	if (heap_data.size() < ReduceThreshold()) {
 		// only reduce when we pass the reduce threshold
 		return;
+	}
+	if (IsBuffered() && heap.size() > heap_size) {
+		// drop the buffered entries that can no longer be part of the result before compacting
+		SelectTopEntries();
 	}
 	// we have too many values in the heap - reduce them
 	StringHeap new_sort_heap(allocator);
