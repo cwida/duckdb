@@ -167,6 +167,14 @@ static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &cont
 			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(false));
 		case ExpressionType::COMPARE_NOTEQUAL:
 			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(true));
+		default:
+			break;
+		}
+		if (child->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			// folding to a constant drops the child, which could throw or have side effects
+			return nullptr;
+		}
+		switch (expr.GetExpressionType()) {
 		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
 			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
 		case ExpressionType::COMPARE_DISTINCT_FROM:

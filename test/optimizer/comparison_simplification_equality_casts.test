@@ -60,6 +60,23 @@ FROM t;
 ----
 1	0
 
+# DISTINCT FROM a constant that can never match is only folded if the cast child can be dropped
+query II
+SELECT
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IS DISTINCT FROM 'abc'),
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IS NOT DISTINCT FROM 'abc')
+FROM t;
+----
+6	0
+
+statement ok
+CREATE TABLE s AS SELECT 'x' AS s;
+
+statement error
+SELECT s::INTEGER::VARCHAR IS DISTINCT FROM 'abc' FROM s;
+----
+<REGEX>:Conversion Error.*
+
 # a comparison that can never match is still NULL for NULL rows
 query III
 SELECT a, a::VARCHAR = 'abc', a::VARCHAR != 'abc' FROM t ORDER BY a NULLS LAST;
