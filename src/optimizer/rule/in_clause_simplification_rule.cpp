@@ -23,14 +23,12 @@ static unique_ptr<Expression> SimplifyEqualityCast(ClientContext &context, Bound
                                                    BoundFunctionExpression &cast_expression, bool &changes_made) {
 	auto source_type = BoundCastExpression::SourceType(cast_expression);
 	auto &children = expr.GetChildrenMutable();
+	vector<unique_ptr<Expression>> new_children;
+	new_children.push_back(nullptr);
 	for (idx_t i = 1; i < children.size(); i++) {
 		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 			return nullptr;
 		}
-	}
-	vector<unique_ptr<Expression>> new_children;
-	new_children.push_back(nullptr);
-	for (idx_t i = 1; i < children.size(); i++) {
 		auto &constant_value = children[i]->Cast<BoundConstantExpression>().GetValue();
 		if (constant_value.IsNull()) {
 			new_children.push_back(make_uniq<BoundConstantExpression>(Value(source_type)));
