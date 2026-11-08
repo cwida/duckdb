@@ -1072,54 +1072,22 @@ static bool BloomFilterExcludes(const Value &constant, ParquetBloomFilter &bloom
 	return hash && !bloom_filter.FilterCheck(*hash);
 }
 
-static bool IsNaN(const Value &value) {
-	switch (value.type().id()) {
-	case LogicalTypeId::FLOAT:
-		return Value::IsNan(value.GetValue<float>());
-	case LogicalTypeId::DOUBLE:
-		return Value::IsNan(value.GetValue<double>());
-	default:
-		return false;
-	}
-}
-
-enum class BloomFilterConstantMapping { MAPPED, NO_MATCH, UNKNOWN };
-
-//! Maps a constant compared with the (cast) column to the stored value that can match it
-static BloomFilterConstantMapping MapBloomFilterConstant(const Expression &column, Value &constant) {
+static bool BloomFilterExcludes(const Expression &column, const Value &constant, ParquetBloomFilter &bloom_filter,
+                                const ParquetColumnSchema &schema, ParquetBloomFilterHashStrategy hash_strategy) {
 	if (!BoundCastExpression::IsCast(column)) {
-		return BloomFilterConstantMapping::MAPPED;
-	}
-	// NaN equals stored NaNs of any bit pattern, so no single stored value (and hash) stands for it
-	if (IsNaN(constant)) {
-		return BloomFilterConstantMapping::UNKNOWN;
+		return BloomFilterExcludes(constant, bloom_filter, schema, hash_strategy);
 	}
 	auto &cast = column.Cast<BoundFunctionExpression>();
-	auto &child = BoundCastExpression::Child(cast);
 	// the cast is left-invertible: if a stored value casts to the constant, it is the constant cast back
-	auto stored = constant.DefaultTryCastAs(child.GetReturnType(), nullptr, true);
+	auto stored = constant.DefaultTryCastAs(BoundCastExpression::Child(cast).GetReturnType(), nullptr, true);
 	if (!stored) {
-		return BloomFilterConstantMapping::NO_MATCH;
+		return true;
 	}
 	auto roundtrip = stored->DefaultTryCastAs(cast.GetReturnType(), nullptr, true);
 	if (!roundtrip || !Value::NotDistinctFrom(*roundtrip, constant)) {
-		return BloomFilterConstantMapping::NO_MATCH;
-	}
-	constant = std::move(*stored);
-	return MapBloomFilterConstant(child, constant);
-}
-
-static bool BloomFilterExcludes(const Expression &column, const Value &constant, ParquetBloomFilter &bloom_filter,
-                                const ParquetColumnSchema &schema, ParquetBloomFilterHashStrategy hash_strategy) {
-	auto stored = constant;
-	switch (MapBloomFilterConstant(column, stored)) {
-	case BloomFilterConstantMapping::NO_MATCH:
 		return true;
-	case BloomFilterConstantMapping::UNKNOWN:
-		return false;
-	default:
-		return BloomFilterExcludes(stored, bloom_filter, schema, hash_strategy);
 	}
+	return BloomFilterExcludes(*stored, bloom_filter, schema, hash_strategy);
 }
 
 static bool ApplyBloomFilter(const Expression &expr, ParquetBloomFilter &bloom_filter,

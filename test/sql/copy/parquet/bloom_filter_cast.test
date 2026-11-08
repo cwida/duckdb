@@ -62,6 +62,20 @@ SELECT (SELECT count(*) FROM '{TEST_DIR}/bloom_cast.parquet' WHERE i IN (24, 500
 ----
 true
 
+# NaN: a stored FLOAT NaN matches it, no integer does
+statement ok
+COPY (FROM numbers UNION ALL SELECT 0, 'nan'::FLOAT) TO '{TEST_DIR}/bloom_cast_nan.parquet' (FORMAT parquet)
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_cast_nan.parquet' WHERE f = 'nan'::DOUBLE
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_cast_nan.parquet' WHERE i::DOUBLE = 'nan'::DOUBLE
+----
+0
+
 # files whose column is read as a wider type
 statement ok
 COPY (SELECT i::BIGINT AS i, f::DOUBLE AS f FROM numbers) TO '{TEST_DIR}/bloom_cast_wide.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
