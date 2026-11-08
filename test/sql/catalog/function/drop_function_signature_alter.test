@@ -51,7 +51,8 @@ SELECT alt(1);
 ----
 2
 
-# the member drop replays from the WAL as an alter
+# the member drop replays from the WAL: a default database predates the ALTER_MACRO record's
+# storage version, so this replays the legacy drop+create (the ALTER_MACRO replay is pinned below)
 statement ok
 DROP MACRO alt(DATE);
 
