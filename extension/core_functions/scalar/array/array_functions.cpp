@@ -65,8 +65,8 @@ static void ArrayGenericBinaryResolveTypes(ResolveScalarFunctionTypesInput &inpu
 
 //! Copies the elements of an array that can not be read in place into the buffer - throws if any of them are NULL
 template <class TYPE>
-static const TYPE *CopyArrayElements(typename VectorIterator<VectorArrayType<TYPE>>::ValueEntry array,
-                                     vector<TYPE> &buffer, const char *side, const Identifier &func_name) {
+static const TYPE *CopyArrayElements(typename VectorIterator<VectorArrayType<TYPE>>::ValueEntry array, TYPE *buffer,
+                                     const char *side, const Identifier &func_name) {
 	for (idx_t i = 0; i < array.GetArraySize(); i++) {
 		auto entry = array.GetChildValue(i);
 		if (!entry.IsValid()) {
@@ -74,7 +74,7 @@ static const TYPE *CopyArrayElements(typename VectorIterator<VectorArrayType<TYP
 		}
 		buffer[i] = entry.GetValue();
 	}
-	return buffer.data();
+	return buffer;
 }
 
 //------------------------------------------------------------------------------
@@ -116,17 +116,14 @@ static void ArrayFixedCombine(DataChunk &args, ExpressionState &state, Vector &r
 	auto lhs_arrays = args.data[0].Values<VectorArrayType<TYPE>>();
 	auto rhs_arrays = args.data[1].Values<VectorArrayType<TYPE>>();
 
-	const auto lhs_all_data = lhs_arrays.TryGetAllData();
-	const auto rhs_all_data = rhs_arrays.TryGetAllData();
-	if (lhs_all_data && rhs_all_data) {
+	if (lhs_arrays.CanReadAllInPlace() && rhs_arrays.CanReadAllInPlace()) {
 		// nothing is NULL - read all arrays in place without checking each row
 		for (idx_t i = 0; i < count; i++) {
-			OP::Operation(lhs_all_data + lhs_arrays.GetChildOffset(i), rhs_all_data + rhs_arrays.GetChildOffset(i),
-			              res_data + i * N, N);
+			OP::Operation(lhs_arrays[i].GetDataUnsafe(), rhs_arrays[i].GetDataUnsafe(), res_data + i * N, N);
 		}
 	} else {
-		vector<TYPE> lhs_buffer(N);
-		vector<TYPE> rhs_buffer(N);
+		TYPE lhs_buffer[N];
+		TYPE rhs_buffer[N];
 		for (idx_t i = 0; i < count; i++) {
 			const auto lhs = lhs_arrays[i];
 			const auto rhs = rhs_arrays[i];
@@ -172,13 +169,10 @@ static void ArrayGenericFold(DataChunk &args, ExpressionState &state, Vector &re
 	auto lhs_arrays = args.data[0].Values<VectorArrayType<TYPE>>();
 	auto rhs_arrays = args.data[1].Values<VectorArrayType<TYPE>>();
 
-	const auto lhs_all_data = lhs_arrays.TryGetAllData();
-	const auto rhs_all_data = rhs_arrays.TryGetAllData();
-	if (lhs_all_data && rhs_all_data) {
+	if (lhs_arrays.CanReadAllInPlace() && rhs_arrays.CanReadAllInPlace()) {
 		// nothing is NULL - read all arrays in place without checking each row
 		for (idx_t i = 0; i < count; i++) {
-			res_data[i] = OP::Operation(lhs_all_data + lhs_arrays.GetChildOffset(i),
-			                            rhs_all_data + rhs_arrays.GetChildOffset(i), array_size);
+			res_data[i] = OP::Operation(lhs_arrays[i].GetDataUnsafe(), rhs_arrays[i].GetDataUnsafe(), array_size);
 		}
 	} else {
 		vector<TYPE> lhs_buffer(array_size);
@@ -193,11 +187,11 @@ static void ArrayGenericFold(DataChunk &args, ExpressionState &state, Vector &re
 
 			auto lhs_data = lhs.TryGetData();
 			if (!lhs_data) {
-				lhs_data = CopyArrayElements(lhs, lhs_buffer, "left", func_name);
+				lhs_data = CopyArrayElements(lhs, lhs_buffer.data(), "left", func_name);
 			}
 			auto rhs_data = rhs.TryGetData();
 			if (!rhs_data) {
-				rhs_data = CopyArrayElements(rhs, rhs_buffer, "right", func_name);
+				rhs_data = CopyArrayElements(rhs, rhs_buffer.data(), "right", func_name);
 			}
 			res_data[i] = OP::Operation(lhs_data, rhs_data, array_size);
 		}

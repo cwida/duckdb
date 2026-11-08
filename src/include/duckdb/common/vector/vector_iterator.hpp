@@ -58,7 +58,6 @@ public:
 	explicit VectorIterator(const Vector &vector) : count(vector.size()) {
 		vector.ToUnifiedFormat(format);
 		data = UnifiedVectorFormat::GetData<T>(format);
-		contiguous_data = format.sel->IsSet() ? nullptr : data;
 	}
 
 public:
@@ -187,21 +186,19 @@ public:
 	}
 	//! Returns the values in [offset, offset + length) if they are contiguous and all valid, or nullptr otherwise
 	const T *TryGetContiguousData(idx_t offset, idx_t length) const {
-		if (!contiguous_data || !format.validity.CheckAllValid(offset + length, offset)) {
+		if (format.sel->IsSet() || !format.validity.CheckAllValid(offset + length, offset)) {
 			return nullptr;
 		}
-		return contiguous_data + offset;
+		return data + offset;
 	}
 	//! Returns all values if they are contiguous and none of them can be NULL, or nullptr otherwise
 	const T *TryGetContiguousData() const {
-		return format.validity.CanHaveNull() ? nullptr : contiguous_data;
+		return format.sel->IsSet() || format.validity.CanHaveNull() ? nullptr : data;
 	}
 
 private:
 	UnifiedVectorFormat format;
 	const T *data;
-	//! The data if row i is stored at data[i], nullptr otherwise
-	const T *contiguous_data;
 	idx_t count;
 };
 
@@ -532,6 +529,7 @@ public:
 	    : child_iter(VectorIteratorGetArrayChild(vector)), array_size(ArrayType::GetSize(vector.GetType())),
 	      count(vector.size()) {
 		vector.ToUnifiedFormat(format);
+		all_data = format.validity.CanHaveNull() ? nullptr : child_iter.TryGetContiguousData();
 	}
 
 public:
@@ -563,13 +561,18 @@ public:
 		const T *TryGetData() const {
 			return parent.child_iter.TryGetContiguousData(GetOffset(), parent.array_size);
 		}
+		//! Returns the elements of this array without any checks - requires CanReadAllInPlace().
+		const T *GetDataUnsafe() const {
+			D_ASSERT(parent.CanReadAllInPlace());
+			return parent.all_data + GetOffset();
+		}
 
 	private:
 		idx_t GetSelIndex() const {
 			return parent.format.sel->get_index(index);
 		}
 		idx_t GetOffset() const {
-			return parent.GetChildOffset(index);
+			return GetSelIndex() * parent.array_size;
 		}
 
 	private:
@@ -627,13 +630,9 @@ public:
 	bool CanHaveNull() const {
 		return format.validity.CanHaveNull();
 	}
-	//! Returns the elements of all arrays if they are contiguous and no array or element can be NULL, or nullptr
-	//! otherwise. The elements of array i then start at GetChildOffset(i).
-	const T *TryGetAllData() const {
-		return CanHaveNull() ? nullptr : child_iter.TryGetContiguousData();
-	}
-	idx_t GetChildOffset(idx_t i) const {
-		return format.sel->get_index(i) * array_size;
+	//! Whether no array or element can be NULL and every array can be read with ValueEntry::GetDataUnsafe().
+	bool CanReadAllInPlace() const {
+		return all_data;
 	}
 
 private:
@@ -641,6 +640,8 @@ private:
 	ChildIteratorType child_iter;
 	idx_t array_size;
 	idx_t count;
+	//! The child data if no array or element can be NULL and the child is contiguous, nullptr otherwise
+	const T *all_data;
 };
 
 template <class T>
