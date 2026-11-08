@@ -91,7 +91,8 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	auto &cast_type = cast_expression.GetReturnType();
 	if (BoundCastExpression::IsLosslessIntegralToFloatingCast(target_type, cast_type) ||
 	    (target_type.id() == LogicalTypeId::DECIMAL && cast_type.id() == LogicalTypeId::DECIMAL)) {
-		return BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value).has_value();
+		auto roundtrip = cast_constant.TryCastAs(context, cast_type, nullptr, true);
+		return roundtrip && *roundtrip == constant_value;
 	}
 	if (target_type.id() != LogicalTypeId::DATE || cast_expression.GetReturnType().id() != LogicalTypeId::TIMESTAMP) {
 		return false;
@@ -138,25 +139,19 @@ static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &cont
 	auto source_constant = BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value);
 	auto &child = BoundCastExpression::ChildMutable(cast_expression);
 	if (!source_constant) {
-		switch (expr.GetExpressionType()) {
+		auto comparison_type = expr.GetExpressionType();
+		switch (comparison_type) {
 		case ExpressionType::COMPARE_EQUAL:
-			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(false));
 		case ExpressionType::COMPARE_NOTEQUAL:
-			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(true));
+			return ExpressionRewriter::ConstantOrNull(
+			    context, std::move(child), Value::BOOLEAN(comparison_type == ExpressionType::COMPARE_NOTEQUAL));
 		default:
-			break;
-		}
-		if (child->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 			// folding to a constant drops the child, which could throw or have side effects
-			return nullptr;
-		}
-		switch (expr.GetExpressionType()) {
-		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-		case ExpressionType::COMPARE_DISTINCT_FROM:
-			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-		default:
-			throw InternalException("SimplifyEqualityCastComparison: unexpected comparison type");
+			if (child->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+				return nullptr;
+			}
+			return make_uniq<BoundConstantExpression>(
+			    Value::BOOLEAN(comparison_type == ExpressionType::COMPARE_DISTINCT_FROM));
 		}
 	}
 	ReplaceCastWithChild(expr, cast_expression, std::move(*source_constant), column_ref_left);

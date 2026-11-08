@@ -108,6 +108,26 @@ SELECT a, a::VARCHAR IN ('05', 'abc'), a::VARCHAR IN ('abc', NULL) FROM t ORDER 
 10	false	NULL
 NULL	NULL	NULL
 
+# the IN probe does not have to be a column reference
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (a + 1)::VARCHAR IN ('6', '11');
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query III
+SELECT
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IN ('6', '11', 'abc')),
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IN ('abc', '06')),
+	count(*) FILTER (WHERE (a + 1)::VARCHAR NOT IN ('6', 'abc'))
+FROM t;
+----
+2	0	4
+
+statement error
+SELECT s::INTEGER::VARCHAR IN ('abc', '06') FROM s;
+----
+<REGEX>:Conversion Error.*
+
 # range comparisons compare the strings
 query II
 SELECT count(*) FILTER (WHERE a::VARCHAR < '3'), count(*) FILTER (WHERE a::VARCHAR > '1')

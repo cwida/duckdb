@@ -61,6 +61,10 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		// a TRY_CAST turns failing values into NULL, which is lost when the cast is removed
 		return nullptr;
 	}
+	auto target_type = BoundCastExpression::SourceType(cast_expression);
+	if (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
+		return SimplifyEqualityCast(GetContext(), expr, cast_expression, target_type, changes_made);
+	}
 	if (BoundCastExpression::Child(cast_expression).GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return nullptr;
 	}
@@ -68,10 +72,6 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 	//! and apply a cast to the constant expressions. We can only do this
 	//! if the semantics do not change, which only happens when BOTH casts
 	//! are invertible.
-	auto target_type = BoundCastExpression::SourceType(cast_expression);
-	if (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
-		return SimplifyEqualityCast(GetContext(), expr, cast_expression, target_type, changes_made);
-	}
 	if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType())) {
 		return nullptr;
 	}
