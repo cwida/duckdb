@@ -93,6 +93,8 @@ void PragmaMetadataInfo::RegisterFunction(BuiltinFunctions &set) {
 	metadata_info.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("database", LogicalType::VARCHAR),
 	                                        PragmaMetadataInfoFunction, PragmaMetadataInfoBind,
 	                                        PragmaMetadataInfoInit));
+	// reads live block usage of the database file, which concurrent checkpoints change
+	metadata_info.ApplyToFunctions([](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(metadata_info);
 }
 

@@ -967,6 +967,8 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 	}
 
 	reference<LogicalOperator> op = *window.children[0];
+	// Only a single cast per column can be re-applied, so a cast chain over several projections is not recreatable
+	vector<bool> column_is_cast(projections.size(), false);
 
 	// Traverse projections to a single table scan
 	while (!op.get().children.empty()) {
@@ -986,6 +988,12 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 					// The projected value is derived through a value-transforming expression that the rowid semi-join
 					// cannot reconstruct. Fall back to carrying the computed value through the aggregate instead.
 					return false;
+				}
+				if (BoundCastExpression::IsCast(*projection.expressions[projection_idx])) {
+					if (column_is_cast[i]) {
+						return false;
+					}
+					column_is_cast[i] = true;
 				}
 				if (!ExtractSingleBinding(&projection.expressions[projection_idx], projections[i])) {
 					return false;

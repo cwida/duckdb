@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/file_system.hpp"
 
 #include "duckdb/common/checksum.hpp"
@@ -103,7 +104,7 @@ FileSystem::~FileSystem() {
 }
 
 FileSystem &FileSystem::GetFileSystem(ClientContext &context) {
-	return context.services->GetFileSystem();
+	return context.GetContext().GetFileSystem();
 }
 
 bool PathMatched(const string &path, const string &sub_path) {
@@ -746,6 +747,10 @@ void FileSystem::SetDisabledFileSystems(const vector<string> &names) {
 	throw NotImplementedException("%s: Can't disable file systems on a non-virtual file system", GetName());
 }
 
+vector<string> FileSystem::GetDisabledFileSystems() {
+	return vector<string>();
+}
+
 bool FileSystem::SubSystemIsDisabled(const string &name) {
 	throw NotImplementedException("%s: Non-virtual file system does not have subsystems", GetName());
 }
@@ -845,7 +850,7 @@ static optional_ptr<QueryProfiler> GetTrackingProfiler(bool track_io, const Quer
 	if (!track_io || !context.Valid()) {
 		return nullptr;
 	}
-	return context.GetServices()->TryGetQueryProfiler();
+	return context.GetContext()->TryGetQueryProfiler();
 }
 
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
@@ -1003,9 +1008,9 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 		return;
 	}
 
-	auto context = opener.TryGetClientContext();
-	if (context && Logger::Get(*context).ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
-		logger = context->services->GetLoggerPtr();
+	auto &context = opener.TryGetContext();
+	if (context.IsClient() && context.GetLogger().ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
+		logger = context.GetLoggerPtr();
 		return;
 	}
 

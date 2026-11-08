@@ -35,7 +35,7 @@ struct ManagedAsyncMemoryConfig {
 //! queued and in-flight backlog through the same memory logic.
 class ManagedAsyncMemoryGovernor {
 public:
-	explicit ManagedAsyncMemoryGovernor(Context &services);
+	explicit ManagedAsyncMemoryGovernor(Context &context);
 	~ManagedAsyncMemoryGovernor();
 
 	ManagedAsyncMemoryGovernor(const ManagedAsyncMemoryGovernor &) = delete;
@@ -51,7 +51,7 @@ public:
 	void Release();
 
 private:
-	Context &services;
+	Context &context;
 	//! Temporary memory reservation state used to limit queued async data. Absent when draining synchronously.
 	unique_ptr<TemporaryMemoryState> memory_state;
 	//! Serializes concurrent reservation updates and releases from multiple producers.

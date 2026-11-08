@@ -130,8 +130,8 @@ public:
 	shared_ptr<ClientContext> base_context;
 	//! The number of internal connections between this client and its base client (0 for a base client)
 	idx_t internal_depth = 0;
-	//! The services of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
-	shared_ptr<Context> services;
+	//! The context of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
+	shared_ptr<Context> context;
 	//! The set of client-specific data
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
@@ -305,9 +305,9 @@ public:
 		return log_config;
 	}
 
-	//! Returns the services (client configuration, logging, metrics, file system) owned by this context
-	Context &Services() const {
-		return *services;
+	//! The Context (client configuration, logging, metrics, file system) owned by this client context
+	Context &GetContext() const {
+		return *context;
 	}
 
 	//! Returns the current query string (if any)

@@ -65,12 +65,15 @@ index 4dc2987..d4af493 100644
  
  S3AuthParams S3AuthResolver::Resolve(S3KeyValueReader &secret_reader, const string &file_path,
 diff --git a/test/unittest/http/browser_adapter_test.cpp b/test/unittest/http/browser_adapter_test.cpp
-index 855e498..4b8b2b9 100644
+index 855e498..a1064e5 100644
 --- a/test/unittest/http/browser_adapter_test.cpp
 +++ b/test/unittest/http/browser_adapter_test.cpp
-@@ -81,7 +81,7 @@ TEST_CASE("HTTPFS owns browser parameters and preserves its provider", "[httpfs]
+@@ -79,9 +79,9 @@ TEST_CASE("HTTPFS owns browser parameters and preserves its provider", "[httpfs]
+ 		HTTPTestHelper::RequireQueryOk(
+ 		    con, "CREATE SECRET browser_headers (TYPE HTTP, EXTRA_HTTP_HEADERS MAP {'X-Secret': 'secret'})");
  		HTTPTestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
- 		ClientContextFileOpener opener(*con.context);
+-		ClientContextFileOpener opener(*con.context);
++		ClientContextFileOpener opener(con.context->GetContext());
  		FileOpenerInfo info;
 -		info.file_path = server.HTTPPath();
 +		info.file.path = server.HTTPPath();
