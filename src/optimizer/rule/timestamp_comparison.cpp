@@ -13,6 +13,7 @@
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 
 namespace duckdb {
 
@@ -90,11 +91,9 @@ unique_ptr<Expression> TimeStampComparison::Apply(LogicalOperator &op, vector<re
 		auto original_val = result.GetValue<duckdb::date_t>();
 		auto no_seconds = dtime_t(0);
 
-		// original date as timestamp with no seconds
-		auto original_val_ts = DateToTimestampValue(original_val, no_seconds);
-		auto original_val_for_comparison = make_uniq<BoundConstantExpression>(original_val_ts);
-
 		if (!original_val.IsFinite()) {
+			auto original_val_for_comparison =
+			    make_uniq<BoundConstantExpression>(DateToTimestampValue(original_val, no_seconds));
 			auto column_copy = cast_columnref->Copy();
 			auto eq_expr = BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, std::move(column_copy),
 			                                                 std::move(original_val_for_comparison));
@@ -102,22 +101,16 @@ unique_ptr<Expression> TimeStampComparison::Apply(LogicalOperator &op, vector<re
 			return std::move(new_expr);
 		}
 
-		// add one day and validate the new date
-		// code is inspired by AddOperator::Operation(date_t left, int32_t right). The function wasn't used directly
-		// since it throws errors that I cannot catch here.
-
-		auto date_t_copy = result.GetValue<duckdb::date_t>();
-		date_t date_t_result;
-		// attempt to add 1 day
-		if (!TryAddOperator::Operation<date_t, int32_t, date_t>(date_t_copy, 1, date_t_result)) {
-			// don't rewrite the expression and let the expression executor handle the invalid date
+		// the range [date, date + 1 day) must be representable as timestamps, otherwise keep the cast comparison
+		date_t next_day;
+		timestamp_t lower_bound, upper_bound;
+		if (!TryAddOperator::Operation<date_t, int32_t, date_t>(original_val, 1, next_day) ||
+		    !Timestamp::TryFromDatetime(original_val, no_seconds, lower_bound) ||
+		    !Timestamp::TryFromDatetime(next_day, no_seconds, upper_bound)) {
 			return nullptr;
 		}
-
-		auto result_as_val = Value::DATE(date_t_result);
-		auto original_val_plus_on_date_ts = Value::TIMESTAMP(result_as_val.GetValue<timestamp_t>());
-
-		auto val_for_comparison = make_uniq<BoundConstantExpression>(original_val_plus_on_date_ts);
+		auto original_val_for_comparison = make_uniq<BoundConstantExpression>(Value::TIMESTAMP(lower_bound));
+		auto val_for_comparison = make_uniq<BoundConstantExpression>(Value::TIMESTAMP(upper_bound));
 
 		auto left_copy = cast_columnref->Copy();
 		auto right_copy = cast_columnref->Copy();
