@@ -732,6 +732,9 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 	const auto new_info = GetLookupProperties(new_obj);
 
 	vector<DependencyInfo> dependencies;
+	// a macro overload removal is a DROP statement: report every blocking dependent like a drop does
+	const bool removes_macro_overload = alter_info.type == AlterType::ALTER_MACRO;
+	catalog_entry_set_t blocking_dependents;
 	// Other entries that depend on us
 	ScanDependents(transaction, old_info, [&](DependencyEntry &dep) {
 		// It makes no sense to have a schema depend on anything
@@ -775,6 +778,13 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 			// or the table is being renamed (its stored identity is keyed on the table's name)
 			disallow_alter = false;
 		}
+		if (disallow_alter && removes_macro_overload) {
+			auto entry = LookupEntry(transaction, dep);
+			if (entry) {
+				blocking_dependents.insert(*entry);
+			}
+			return;
+		}
 		if (disallow_alter) {
 			throw DependencyException("Cannot alter entry %s because there are entries that "
 			                          "depend on it.",
@@ -785,6 +795,11 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 		dep_info.subject.entry = new_info;
 		dependencies.emplace_back(dep_info);
 	});
+	if (!blocking_dependents.empty()) {
+		auto subject_info = old_info;
+		throw DependencyException(
+		    DropErrorToString(old_obj.name, CollectDependents(transaction, blocking_dependents, subject_info)));
+	}
 
 	// Keep old dependencies
 	bool has_new_dependencies = alter_info.new_dependencies.get();

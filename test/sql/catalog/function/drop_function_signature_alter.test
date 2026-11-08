@@ -250,3 +250,41 @@ statement error
 DROP TABLE ndb.nsrc;
 ----
 <REGEX>:.*depend.*
+
+# a dependency-blocked member drop names every blocking dependent, like a drop does
+statement ok
+SET enable_view_dependencies = true;
+
+statement ok
+CREATE MACRO blk(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement ok
+CREATE VIEW blk_v1 AS SELECT blk(1) AS a;
+
+statement ok
+CREATE VIEW blk_v2 AS SELECT blk('b') AS b;
+
+statement error
+DROP MACRO blk(INTEGER);
+----
+<REGEX>:.*Cannot drop entry "blk" because there are entries that depend on it\.\n(view "blk_v1" depends on macro function "blk"\.\nview "blk_v2" depends on macro function "blk"\.|view "blk_v2" depends on macro function "blk"\.\nview "blk_v1" depends on macro function "blk"\.)\nUse DROP\.\.\.CASCADE to drop all dependents\.\nDependencies block dropping a single overload of "blk".*
+
+# the blocked alter changed nothing
+query II
+SELECT blk(1), blk('b');
+----
+1	b
+
+statement ok
+DROP VIEW blk_v1;
+
+statement ok
+DROP VIEW blk_v2;
+
+statement ok
+DROP MACRO blk(INTEGER);
+
+query I
+SELECT blk('b');
+----
+b
