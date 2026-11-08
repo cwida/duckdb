@@ -133,7 +133,7 @@ void RowIdColumnData::Filter(TransactionData transaction, idx_t vector_index, Co
 	}
 
 	// Now apply the filter
-	ColumnSegment::FilterSelection(sel, result, filter_state, count, count);
+	ColumnSegment::FilterSelection(sel, result, filter_state, max_count, count);
 }
 
 void RowIdColumnData::Select(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
