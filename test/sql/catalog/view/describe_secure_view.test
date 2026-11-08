@@ -1,0 +1,32 @@
+# name: test/sql/catalog/view/describe_secure_view.test
+# description: DESCRIBE does not reveal the constraints of the tables a secure view reads from
+# group: [view]
+
+statement ok
+CREATE TABLE forwarded(i INTEGER PRIMARY KEY, j INTEGER DEFAULT 42);
+
+statement ok
+CREATE VIEW plain_forwarded AS SELECT i, j FROM forwarded WHERE i <> 0;
+
+statement ok
+CREATE SECURE VIEW secure_forwarded AS SELECT i, j FROM forwarded WHERE i <> 0;
+
+# a plain view is traced through to the table
+query IIII
+SELECT column_name, "null", "key", "default" FROM (DESCRIBE SELECT i, j FROM plain_forwarded);
+----
+i	NO	PRI	NULL
+j	YES	NULL	42
+
+# a secure view hides the constraints of the tables it reads from
+query IIII
+SELECT column_name, "null", "key", "default" FROM (DESCRIBE SELECT i, j FROM secure_forwarded);
+----
+i	YES	NULL	NULL
+j	YES	NULL	NULL
+
+query IIII
+SELECT column_name, "null", "key", "default" FROM (DESCRIBE secure_forwarded);
+----
+i	YES	NULL	NULL
+j	YES	NULL	NULL

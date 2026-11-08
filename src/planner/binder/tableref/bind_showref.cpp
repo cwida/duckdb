@@ -7,6 +7,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -18,6 +19,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/enums/show_behavior.hpp"
+#include "duckdb/common/algorithm.hpp"
 
 namespace duckdb {
 
@@ -26,14 +28,43 @@ struct BaseTableColumnInfo {
 	optional_ptr<const ColumnDefinition> column = nullptr;
 };
 
+static bool ForwardsChildColumns(LogicalOperator &op, idx_t child_idx) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+	case LogicalOperatorType::LOGICAL_DEPENDENT_JOIN:
+		// the right side of a SINGLE join is a scalar subquery result, which is NULL when the subquery finds no row
+		return child_idx == 0 || op.Cast<LogicalJoin>().join_type != JoinType::SINGLE;
+	default:
+		return true;
+	}
+}
+
 BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding binding) {
 	BaseTableColumnInfo result;
+	if (op.type == LogicalOperatorType::LOGICAL_SECURE_VIEW) {
+		// a secure view hides the tables it reads from
+		return result;
+	}
+	auto table_indices = op.GetTableIndex();
+	if (std::find(table_indices.begin(), table_indices.end(), binding.table_index) == table_indices.end()) {
+		// the operator forwards its children's columns - search in children directly
+		for (idx_t child_idx = 0; child_idx < op.children.size(); child_idx++) {
+			if (!ForwardsChildColumns(op, child_idx)) {
+				continue;
+			}
+			result = FindBaseTableColumn(*op.children[child_idx], binding);
+			if (result.table) {
+				return result;
+			}
+		}
+		return result;
+	}
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_GET: {
 		auto &get = op.Cast<LogicalGet>();
-		if (get.table_index != binding.table_index) {
-			return result;
-		}
 		auto table = get.GetTable();
 		if (!table) {
 			break;
@@ -52,9 +83,6 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &projection = op.Cast<LogicalProjection>();
-		if (binding.table_index != projection.table_index) {
-			break;
-		}
 		auto &expr = projection.GetExpression(binding);
 		if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 			// if the projection at this index only has a column reference we can directly trace it to the base table
@@ -63,27 +91,8 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 		}
 		break;
 	}
-	case LogicalOperatorType::LOGICAL_LIMIT:
-	case LogicalOperatorType::LOGICAL_ORDER_BY:
-	case LogicalOperatorType::LOGICAL_TOP_N:
-	case LogicalOperatorType::LOGICAL_SAMPLE:
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-	case LogicalOperatorType::LOGICAL_FILTER:
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-	case LogicalOperatorType::LOGICAL_JOIN:
-	case LogicalOperatorType::LOGICAL_ANY_JOIN:
-	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
-	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
-		// for any "pass-through" operators - search in children directly
-		for (auto &child : op.children) {
-			result = FindBaseTableColumn(*child, binding);
-			if (result.table) {
-				return result;
-			}
-		}
-		break;
 	default:
-		// unsupported operator
+		// the operator produces this column itself and we cannot see through it
 		break;
 	}
 	return result;
