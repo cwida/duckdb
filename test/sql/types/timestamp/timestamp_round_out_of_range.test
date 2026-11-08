@@ -56,3 +56,57 @@ query II
 SELECT CAST(TIMESTAMP_MS '2020-05-17 00:00:00.775' AS VARCHAR), CAST(TIMESTAMP_MS 'infinity' AS VARCHAR)
 ----
 2020-05-17 00:00:00.775	infinity
+
+# #28532 (follow-up): a TIMESTAMP_MS column holding only infinity has a finite statistics minimum
+# (the largest finite timestamp_ms value). Statistics propagation folds the ms -> s cast on that
+# minimum, and without the timestamp_ms_t ConvertToString/StringCast specializations the cast of that
+# out-of-range bound raised an INTERNAL Error and invalidated the database. The cast must instead
+# return infinity (infinity -> infinity), exactly as it does when statistics propagation is disabled.
+statement ok
+CREATE TABLE ts_ms_inf(x TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ts_ms_inf VALUES ('infinity');
+
+# the cast over the all-infinity column returns infinity (previously INTERNAL Error, DB invalidated)
+query I
+SELECT CAST(x AS TIMESTAMP_S) FROM ts_ms_inf;
+----
+infinity
+
+# and it renders correctly as a string
+query I
+SELECT CAST(x AS TIMESTAMP_S)::VARCHAR FROM ts_ms_inf;
+----
+infinity
+
+# the database remains usable
+query I
+SELECT 42;
+----
+42
+
+# -infinity source column casts to -infinity
+statement ok
+CREATE TABLE ts_ms_ninf(x TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ts_ms_ninf VALUES ('-infinity');
+
+query I
+SELECT CAST(x AS TIMESTAMP_S) FROM ts_ms_ninf;
+----
+-infinity
+
+# a mixed finite + infinity column casts both values correctly
+statement ok
+CREATE TABLE ts_ms_mixed(x TIMESTAMP_MS);
+
+statement ok
+INSERT INTO ts_ms_mixed VALUES ('infinity'), (TIMESTAMP_MS '1970-01-01 00:00:00.000');
+
+query I
+SELECT CAST(x AS TIMESTAMP_S) FROM ts_ms_mixed ORDER BY x;
+----
+1970-01-01 00:00:00
+infinity
