@@ -137,8 +137,8 @@ static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &cont
                                                              bool &changes_made) {
 	D_ASSERT(!constant_value.IsNull());
 	auto source_constant = BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value);
-	auto &child = BoundCastExpression::ChildMutable(cast_expression);
 	if (!source_constant) {
+		auto &child = BoundCastExpression::ChildMutable(cast_expression);
 		auto comparison_type = expr.GetExpressionType();
 		switch (comparison_type) {
 		case ExpressionType::COMPARE_EQUAL:
