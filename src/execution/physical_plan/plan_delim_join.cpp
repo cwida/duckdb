@@ -28,11 +28,13 @@ PhysicalOperator &PhysicalPlanGenerator::PlanDelimJoin(LogicalComparisonJoin &op
 	auto &plan = PlanComparisonJoin(op);
 	// this should create a join, not a cross product
 	D_ASSERT(plan.type != PhysicalOperatorType::CROSS_PRODUCT);
+	// a join that does not apply the projection maps itself is returned below a projection
+	auto &join = plan.type == PhysicalOperatorType::PROJECTION ? plan.children[0].get() : plan;
 	// duplicate eliminated join
 	// first gather the scans on the duplicate eliminated data set from the delim side
 	const idx_t delim_idx = op.delim_flipped ? 0 : 1;
 	vector<const_reference<PhysicalOperator>> delim_scans;
-	GatherDelimScans(plan.children[delim_idx], delim_scans, ++this->delim_index);
+	GatherDelimScans(join.children[delim_idx], delim_scans, ++this->delim_index);
 	if (delim_scans.empty()) {
 		// no duplicate eliminated scans in the delim side!
 		// in this case we don't need to create a delim join
@@ -54,12 +56,17 @@ PhysicalOperator &PhysicalPlanGenerator::PlanDelimJoin(LogicalComparisonJoin &op
 	                                delim_scans[0].get().estimated_cardinality);
 
 	// Create the duplicate eliminated join.
-	if (op.delim_flipped) {
-		return Make<PhysicalRightDelimJoin>(*this, op.types, plan, distinct, delim_scans, op.estimated_cardinality,
-		                                    optional_idx(this->delim_index));
+	auto &delim_join = op.delim_flipped
+	                       ? Make<PhysicalRightDelimJoin>(*this, join.GetTypes(), join, distinct, delim_scans,
+	                                                      op.estimated_cardinality, optional_idx(this->delim_index))
+	                       : Make<PhysicalLeftDelimJoin>(*this, join.GetTypes(), join, distinct, delim_scans,
+	                                                     op.estimated_cardinality, optional_idx(this->delim_index));
+	if (&join != &plan) {
+		// keep the projection on top of the delim join
+		plan.children[0] = delim_join;
+		return plan;
 	}
-	return Make<PhysicalLeftDelimJoin>(*this, op.types, plan, distinct, delim_scans, op.estimated_cardinality,
-	                                   optional_idx(this->delim_index));
+	return delim_join;
 }
 
 } // namespace duckdb

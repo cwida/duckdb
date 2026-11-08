@@ -131,21 +131,19 @@ void ColumnBindingResolver::VisitOperator(LogicalOperator &op) {
 	}
 	case LogicalOperatorType::LOGICAL_ANY_JOIN: {
 		// ANY join, this join is different because we evaluate the expression on the bindings of BOTH join sides at
-		// once i.e. we set the bindings first to the bindings of the entire join, and then resolve the expressions of
-		// this operator
+		// once i.e. we set the bindings first to the complete columns of both children, and then resolve the
+		// expressions of this operator (the projection maps only apply to the output of the join)
 		VisitOperatorChildren(op);
-		bindings = op.GetColumnBindings();
-		types = op.types;
 		auto &any_join = op.Cast<LogicalAnyJoin>();
-		if (any_join.join_type == JoinType::SEMI || any_join.join_type == JoinType::ANTI) {
-			auto right_bindings = op.children[1]->GetColumnBindings();
-			bindings.insert(bindings.end(), right_bindings.begin(), right_bindings.end());
-			auto &right_types = op.children[1]->types;
-			types.insert(types.end(), right_types.begin(), right_types.end());
-		}
 		if (any_join.join_type == JoinType::RIGHT_SEMI || any_join.join_type == JoinType::RIGHT_ANTI) {
 			throw InternalException("RIGHT SEMI/ANTI any join not supported yet");
 		}
+		bindings = op.children[0]->GetColumnBindings();
+		types = op.children[0]->types;
+		auto right_bindings = op.children[1]->GetColumnBindings();
+		bindings.insert(bindings.end(), right_bindings.begin(), right_bindings.end());
+		auto &right_types = op.children[1]->types;
+		types.insert(types.end(), right_types.begin(), right_types.end());
 		VisitOperatorExpressions(op);
 
 		//	Restore bindings for the caller

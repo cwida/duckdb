@@ -1,0 +1,119 @@
+# name: test/sql/join/any_join_projection_map.test
+# description: Joins with a projection map whose physical operator emits its complete inputs
+# group: [join]
+
+statement ok
+CREATE TABLE t1(i INTEGER, li INTEGER[]);
+
+statement ok
+INSERT INTO t1 VALUES (1, [1, 2, 3]), (2, [3, 4]), (3, NULL);
+
+statement ok
+CREATE TABLE t2(v INTEGER);
+
+statement ok
+INSERT INTO t2 VALUES (1), (3);
+
+statement ok
+CREATE TABLE t4(v INTEGER);
+
+# the subquery in the first SEMI join adds a mark column to its left side; the flattened plan hides it with a
+# projection map on the second join, whose condition is an arbitrary expression (blockwise NL join)
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY i;
+----
+1
+
+query I
+SELECT i FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t1.i = ANY(t1.li)) AND EXISTS (SELECT 1 FROM t2 AS t3 WHERE t1.i = t3.v OR NULL) ORDER BY i;
+----
+1
+
+# the database stays usable
+query I
+SELECT 42;
+----
+42
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t2 AS t3 ON t1.i + t3.v = 2 ORDER BY i;
+----
+1
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t2 AS t3 ON (t1.i = t3.v) IS TRUE ORDER BY i;
+----
+1
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = (SELECT max(v) FROM t2)) SEMI JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY i;
+----
+3
+
+query I
+SELECT i FROM t1 ANTI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY i;
+----
+3
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) ANTI JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY i;
+----
+
+# comparison joins that are not hash joins
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t2 AS t3 ON t1.i < t3.v ORDER BY i;
+----
+1
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t2 AS t3 ON t1.i <> t3.v ORDER BY i;
+----
+1
+
+# the hidden column must not leak into the output of the other join types
+query III
+SELECT * FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY ALL;
+----
+1	[1, 2, 3]	1
+
+query III
+SELECT * FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) LEFT JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY ALL;
+----
+1	[1, 2, 3]	1
+
+query III
+SELECT * FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) JOIN t2 AS t3 ON t1.i <> t3.v ORDER BY ALL;
+----
+1	[1, 2, 3]	3
+
+query III
+SELECT * FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) RIGHT JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY ALL;
+----
+1	[1, 2, 3]	1
+NULL	NULL	3
+
+query III
+SELECT * FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) FULL JOIN t2 AS t3 ON t1.i = t3.v OR NULL ORDER BY ALL;
+----
+1	[1, 2, 3]	1
+NULL	NULL	3
+
+# an empty right side
+query III
+SELECT * FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) LEFT JOIN t4 AS t3 ON t1.i = t3.v OR NULL ORDER BY ALL;
+----
+1	[1, 2, 3]	NULL
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) ANTI JOIN t4 AS t3 ON t1.i = t3.v OR NULL ORDER BY i;
+----
+1
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 ON (t1.i = ANY(t1.li)) SEMI JOIN t4 AS t3 ON t1.i = t3.v OR NULL ORDER BY i;
+----
+
+query I
+SELECT i FROM t1 SEMI JOIN t2 AS t3 ON t1.i = t3.v OR NULL SEMI JOIN t2 ON (t1.i = ANY(t1.li)) ORDER BY i;
+----
+1

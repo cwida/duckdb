@@ -12,8 +12,10 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAnyJoin &op) {
 	auto &right = CreatePlan(*op.children[1]);
 
 	// Create the blockwise NL join.
-	return Make<PhysicalBlockwiseNLJoin>(op, left, right, std::move(op.condition), op.join_type,
-	                                     op.estimated_cardinality);
+	return PlanJoinWithProjectionMaps(op, [&]() -> PhysicalOperator & {
+		return Make<PhysicalBlockwiseNLJoin>(op, left, right, std::move(op.condition), op.join_type,
+		                                     op.estimated_cardinality);
+	});
 }
 
 } // namespace duckdb

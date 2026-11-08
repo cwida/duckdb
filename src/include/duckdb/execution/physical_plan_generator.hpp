@@ -19,6 +19,8 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
 
+#include <functional>
+
 namespace duckdb {
 class ClientContext;
 class ColumnDataCollection;
@@ -190,6 +192,10 @@ protected:
 	PhysicalOperator &PlanAsOfJoin(LogicalComparisonJoin &op);
 	PhysicalOperator &PlanComparisonJoin(LogicalComparisonJoin &op);
 	PhysicalOperator &PlanDelimJoin(LogicalComparisonJoin &op);
+	//! Plans a join whose physical operator emits the complete columns of its inputs: the join is created without the
+	//! projection maps of the logical join, and a projection on top restores the projected output
+	PhysicalOperator &PlanJoinWithProjectionMaps(LogicalJoin &op,
+	                                             const std::function<PhysicalOperator &()> &create_join);
 	PhysicalOperator &ExtractAggregateExpressions(PhysicalOperator &child, vector<unique_ptr<Expression>> &expressions,
 	                                              vector<unique_ptr<Expression>> &groups,
 	                                              optional_ptr<vector<GroupingSet>> grouping_sets,
