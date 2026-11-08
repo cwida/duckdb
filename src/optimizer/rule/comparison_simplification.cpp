@@ -134,6 +134,62 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	                                           column_ref_left, replacement);
 }
 
+static bool IsEqualityComparisonType(ExpressionType type) {
+	switch (type) {
+	case ExpressionType::COMPARE_EQUAL:
+	case ExpressionType::COMPARE_NOTEQUAL:
+	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+	case ExpressionType::COMPARE_DISTINCT_FROM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+//! Rewrites an (in)equality comparison of CAST(x) with a constant c, for a cast that is invertible for equality:
+//! CAST(x) = c holds for exactly the source value CAST(c), if that value casts back to c, and for no value otherwise
+static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &context, BoundFunctionExpression &expr,
+                                                             BoundFunctionExpression &cast_expression,
+                                                             const Value &constant_value, bool column_ref_left,
+                                                             bool &changes_made) {
+	D_ASSERT(!constant_value.IsNull());
+	auto source_type = BoundCastExpression::SourceType(cast_expression);
+	auto source_constant = constant_value.TryCastAs(context, source_type, nullptr, true);
+	bool can_match = false;
+	if (source_constant) {
+		auto roundtrip = (*source_constant).TryCastAs(context, cast_expression.GetReturnType(), nullptr, true);
+		can_match = roundtrip && Value::NotDistinctFrom(*roundtrip, constant_value);
+	}
+	auto &child = BoundCastExpression::ChildMutable(cast_expression);
+	if (!can_match) {
+		switch (expr.GetExpressionType()) {
+		case ExpressionType::COMPARE_EQUAL:
+			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(false));
+		case ExpressionType::COMPARE_NOTEQUAL:
+			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(true));
+		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
+		case ExpressionType::COMPARE_DISTINCT_FROM:
+			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
+		default:
+			throw InternalException("SimplifyEqualityCastComparison: unexpected comparison type");
+		}
+	}
+	auto child_expression = std::move(child);
+	auto new_constant_expr = make_uniq<BoundConstantExpression>(std::move(*source_constant));
+	auto &left = BoundComparisonExpression::LeftMutable(expr);
+	auto &right = BoundComparisonExpression::RightMutable(expr);
+	if (column_ref_left) {
+		left = std::move(child_expression);
+		right = std::move(new_constant_expr);
+	} else {
+		left = std::move(new_constant_expr);
+		right = std::move(child_expression);
+	}
+	changes_made = true;
+	return nullptr;
+}
+
 static unique_ptr<Expression> CreateNullCheckExpression(ExpressionType expression_type, unique_ptr<Expression> child) {
 	D_ASSERT(expression_type == ExpressionType::OPERATOR_IS_NULL ||
 	         expression_type == ExpressionType::OPERATOR_IS_NOT_NULL);
@@ -242,6 +298,12 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
+		if (!constant_value.IsNull() && IsEqualityComparisonType(expr.GetExpressionType()) &&
+		    (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType()) ||
+		     IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType()))) {
+			return SimplifyEqualityCastComparison(GetContext(), expr, cast_expression, constant_value, column_ref_left,
+			                                      changes_made);
+		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
 		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;

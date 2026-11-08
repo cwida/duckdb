@@ -280,6 +280,17 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 	return true;
 }
 
+bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.IsIntegral()) {
+		if (target_type.id() == LogicalTypeId::VARCHAR) {
+			// a collation can make distinct strings equal
+			return StringType::GetCollation(target_type).empty();
+		}
+		return target_type.IsIntegral() && CastIsInvertible(source_type, target_type);
+	}
+	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
+}
+
 //! The child type of a LIST or ARRAY
 static const LogicalType &ListOrArrayChildType(const LogicalType &type) {
 	return type.id() == LogicalTypeId::ARRAY ? ArrayType::GetChildType(type) : ListType::GetChildType(type);

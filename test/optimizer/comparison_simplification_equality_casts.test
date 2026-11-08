@@ -1,0 +1,157 @@
+# name: test/optimizer/comparison_simplification_equality_casts.test
+# description: (In)equality comparisons of casts that are invertible for equality are applied to the source column
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (5), (10), (-3), (NULL)) v(a);
+
+statement ok
+CREATE TABLE f AS SELECT * FROM (VALUES (0.5::FLOAT), (0.1::FLOAT), ('-0.0'::FLOAT), ('nan'::FLOAT), (NULL::FLOAT)) v(f);
+
+# integer -> VARCHAR: the cast is removed for equality comparisons
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR = '5';
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE '5' = a::VARCHAR;
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR IN ('5', '10');
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+# but not for range comparisons, as the cast does not preserve the order
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR < '3';
+----
+physical_plan	<REGEX>:.*CAST.*
+
+query IIIIII
+SELECT
+	count(*) FILTER (WHERE a::VARCHAR = '5'),
+	count(*) FILTER (WHERE '-3' = a::VARCHAR),
+	count(*) FILTER (WHERE a::VARCHAR = '05'),
+	count(*) FILTER (WHERE a::VARCHAR = ' 5'),
+	count(*) FILTER (WHERE a::VARCHAR = '+5'),
+	count(*) FILTER (WHERE a::VARCHAR = 'abc')
+FROM t;
+----
+1	1	0	0	0	0
+
+query IIII
+SELECT
+	count(*) FILTER (WHERE a::VARCHAR != '5'),
+	count(*) FILTER (WHERE a::VARCHAR != 'abc'),
+	count(*) FILTER (WHERE a::VARCHAR IS DISTINCT FROM '5'),
+	count(*) FILTER (WHERE a::VARCHAR IS DISTINCT FROM 'abc')
+FROM t;
+----
+4	5	5	6
+
+query II
+SELECT
+	count(*) FILTER (WHERE a::VARCHAR IS NOT DISTINCT FROM '10'),
+	count(*) FILTER (WHERE a::VARCHAR IS NOT DISTINCT FROM 'abc')
+FROM t;
+----
+1	0
+
+# a comparison that can never match is still NULL for NULL rows
+query III
+SELECT a, a::VARCHAR = 'abc', a::VARCHAR != 'abc' FROM t ORDER BY a NULLS LAST;
+----
+-3	false	true
+1	false	true
+2	false	true
+5	false	true
+10	false	true
+NULL	NULL	NULL
+
+query IIII
+SELECT
+	count(*) FILTER (WHERE a::VARCHAR IN ('5', '05', 'abc', '10')),
+	count(*) FILTER (WHERE a::VARCHAR IN ('05', 'abc')),
+	count(*) FILTER (WHERE a::VARCHAR IN ('abc', NULL)),
+	count(*) FILTER (WHERE a::VARCHAR NOT IN ('5', 'abc'))
+FROM t;
+----
+2	0	0	4
+
+query III
+SELECT a, a::VARCHAR IN ('05', 'abc'), a::VARCHAR IN ('abc', NULL) FROM t ORDER BY a NULLS LAST;
+----
+-3	false	NULL
+1	false	NULL
+2	false	NULL
+5	false	NULL
+10	false	NULL
+NULL	NULL	NULL
+
+# range comparisons compare the strings
+query II
+SELECT count(*) FILTER (WHERE a::VARCHAR < '3'), count(*) FILTER (WHERE a::VARCHAR > '1')
+FROM t;
+----
+4	3
+
+# a collation can make distinct strings equal, so the cast is kept
+query I
+SELECT count(*) FROM t WHERE a::VARCHAR COLLATE NOCASE = '5';
+----
+1
+
+# integer widening: a constant outside the range of the column can never match
+query IIII
+SELECT
+	count(*) FILTER (WHERE a = 5000000000),
+	count(*) FILTER (WHERE a != 5000000000),
+	count(*) FILTER (WHERE a IN (5, 5000000000)),
+	count(*) FILTER (WHERE a IN (5000000000, -5000000000))
+FROM t;
+----
+0	5	1	0
+
+# FLOAT -> DOUBLE: only constants that are exactly a FLOAT can match
+query II
+EXPLAIN SELECT count(*) FROM f WHERE f::DOUBLE = 0.5::DOUBLE;
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query IIIIII
+SELECT
+	count(*) FILTER (WHERE f::DOUBLE = 0.5::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 0.1::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 0.1::FLOAT::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 0.0::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 'nan'::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 1e300::DOUBLE)
+FROM f;
+----
+1	0	1	1	1	0
+
+query III
+SELECT
+	count(*) FILTER (WHERE f::DOUBLE != 0.1::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE IS DISTINCT FROM 0.1::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE IN (0.1::DOUBLE, 0.5::DOUBLE, 'nan'::DOUBLE))
+FROM f;
+----
+4	5	2
+
+# the rewritten filter can prune row groups of a native table
+statement ok
+CREATE TABLE big AS SELECT range::INTEGER AS a FROM range(1000000);
+
+query I
+SELECT count(*) FROM big WHERE a::VARCHAR = '123456';
+----
+1
+
+query I
+SELECT count(*) FROM big WHERE a::VARCHAR IN ('7', '0007', '999999', 'x');
+----
+2
