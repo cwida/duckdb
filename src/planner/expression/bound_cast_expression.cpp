@@ -280,11 +280,43 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 	return true;
 }
 
+bool BoundCastExpression::IsLosslessIntegralToFloatingCast(const LogicalType &source_type,
+                                                           const LogicalType &target_type) {
+	if (target_type.id() == LogicalTypeId::DOUBLE) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+		case LogicalTypeId::UINTEGER:
+			return true;
+		default:
+			return false;
+		}
+	}
+	if (target_type.id() == LogicalTypeId::FLOAT) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+			return true;
+		default:
+			return false;
+		}
+	}
+	return false;
+}
+
 bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type) {
 	if (source_type.IsIntegral()) {
 		if (target_type.id() == LogicalTypeId::VARCHAR) {
 			// a collation can make distinct strings equal
 			return StringType::GetCollation(target_type).empty();
+		}
+		if (IsLosslessIntegralToFloatingCast(source_type, target_type)) {
+			return true;
 		}
 		return target_type.IsIntegral() && CastIsInvertible(source_type, target_type);
 	}

@@ -29,7 +29,7 @@ static unique_ptr<Expression> SimplifyEqualityCast(ClientContext &context, Bound
 		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 			return nullptr;
 		}
-		auto constant_value = ExpressionExecutor::EvaluateScalar(context, *children[i]);
+		auto &constant_value = children[i]->Cast<BoundConstantExpression>().GetValue();
 		if (constant_value.IsNull()) {
 			new_children.push_back(make_uniq<BoundConstantExpression>(Value(target_type)));
 			continue;

@@ -132,6 +132,21 @@ FROM t;
 ----
 0	5	1	0
 
+# lossless integer -> floating point: only integral constants can match
+query II
+EXPLAIN SELECT count(*) FROM t WHERE a::DOUBLE IN (2.0::DOUBLE, 2.5::DOUBLE);
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query III
+SELECT
+	count(*) FILTER (WHERE a::DOUBLE = 2.0::DOUBLE),
+	count(*) FILTER (WHERE a::DOUBLE = 2.5::DOUBLE),
+	count(*) FILTER (WHERE a::DOUBLE IN (2.0::DOUBLE, 2.5::DOUBLE, 5.0::DOUBLE))
+FROM t;
+----
+1	0	2
+
 # FLOAT -> DOUBLE: only constants that are exactly a FLOAT can match
 query II
 EXPLAIN SELECT count(*) FROM f WHERE f::DOUBLE = 0.5::DOUBLE;

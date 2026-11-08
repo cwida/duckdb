@@ -77,34 +77,6 @@ static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFun
 	return true;
 }
 
-static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
-	if (target_type.id() == LogicalTypeId::DOUBLE) {
-		switch (source_type.id()) {
-		case LogicalTypeId::TINYINT:
-		case LogicalTypeId::SMALLINT:
-		case LogicalTypeId::INTEGER:
-		case LogicalTypeId::UTINYINT:
-		case LogicalTypeId::USMALLINT:
-		case LogicalTypeId::UINTEGER:
-			return true;
-		default:
-			return false;
-		}
-	}
-	if (target_type.id() == LogicalTypeId::FLOAT) {
-		switch (source_type.id()) {
-		case LogicalTypeId::TINYINT:
-		case LogicalTypeId::SMALLINT:
-		case LogicalTypeId::UTINYINT:
-		case LogicalTypeId::USMALLINT:
-			return true;
-		default:
-			return false;
-		}
-	}
-	return false;
-}
-
 static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpression &expr,
                                      BoundFunctionExpression &cast_expression, const Value &constant_value,
                                      Value &cast_constant, const LogicalType &target_type, bool column_ref_left,
@@ -117,7 +89,7 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	}
 	// The constant must round-trip exactly; the column side is checked by the caller.
 	auto &cast_type = cast_expression.GetReturnType();
-	if (IsLosslessIntegralToFloatingCast(target_type, cast_type) ||
+	if (BoundCastExpression::IsLosslessIntegralToFloatingCast(target_type, cast_type) ||
 	    (target_type.id() == LogicalTypeId::DECIMAL && cast_type.id() == LogicalTypeId::DECIMAL)) {
 		return BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value).has_value();
 	}
@@ -126,6 +98,22 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	}
 	return DateTimestampComparisonIsInvertible(context, expr, cast_expression, constant_value, cast_constant,
 	                                           column_ref_left, replacement);
+}
+
+//! Replaces CAST(x) <op> c with x <op> source_constant, keeping the side the cast was on
+static void ReplaceCastWithChild(BoundFunctionExpression &expr, BoundFunctionExpression &cast_expression,
+                                 Value source_constant, bool column_ref_left) {
+	auto child_expression = std::move(BoundCastExpression::ChildMutable(cast_expression));
+	auto new_constant_expr = make_uniq<BoundConstantExpression>(std::move(source_constant));
+	auto &left = BoundComparisonExpression::LeftMutable(expr);
+	auto &right = BoundComparisonExpression::RightMutable(expr);
+	if (column_ref_left) {
+		left = std::move(child_expression);
+		right = std::move(new_constant_expr);
+	} else {
+		left = std::move(new_constant_expr);
+		right = std::move(child_expression);
+	}
 }
 
 static bool IsEqualityComparisonType(ExpressionType type) {
@@ -171,17 +159,7 @@ static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &cont
 			throw InternalException("SimplifyEqualityCastComparison: unexpected comparison type");
 		}
 	}
-	auto child_expression = std::move(child);
-	auto new_constant_expr = make_uniq<BoundConstantExpression>(std::move(*source_constant));
-	auto &left = BoundComparisonExpression::LeftMutable(expr);
-	auto &right = BoundComparisonExpression::RightMutable(expr);
-	if (column_ref_left) {
-		left = std::move(child_expression);
-		right = std::move(new_constant_expr);
-	} else {
-		left = std::move(new_constant_expr);
-		right = std::move(child_expression);
-	}
+	ReplaceCastWithChild(expr, cast_expression, std::move(*source_constant), column_ref_left);
 	changes_made = true;
 	return nullptr;
 }
@@ -295,13 +273,12 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
 		if (!constant_value.IsNull() && IsEqualityComparisonType(expr.GetExpressionType()) &&
-		    (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType()) ||
-		     IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType()))) {
+		    BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
 			return SimplifyEqualityCastComparison(GetContext(), expr, cast_expression, constant_value, column_ref_left,
 			                                      changes_made);
 		}
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
-		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
+		    !BoundCastExpression::IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;
 		}
 
@@ -324,15 +301,7 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		}
 
 		//! We can cast, now we change our column_ref_expression from an operator cast to a column reference
-		auto child_expression = std::move(BoundCastExpression::ChildMutable(cast_expression));
-		auto new_constant_expr = make_uniq<BoundConstantExpression>(cast_constant);
-		if (column_ref_left) {
-			left = std::move(child_expression);
-			right = std::move(new_constant_expr);
-		} else {
-			left = std::move(new_constant_expr);
-			right = std::move(child_expression);
-		}
+		ReplaceCastWithChild(expr, cast_expression, std::move(cast_constant), column_ref_left);
 		changes_made = true;
 	}
 	return nullptr;
