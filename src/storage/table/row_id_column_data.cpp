@@ -132,8 +132,8 @@ void RowIdColumnData::Filter(TransactionData transaction, idx_t vector_index, Co
 		return;
 	}
 
-	// Now apply the filter
-	ColumnSegment::FilterSelection(sel, result, filter_state, count, count);
+	// the selection indexes the whole vector, so the filter needs max_count as its scan count
+	ColumnSegment::FilterSelection(sel, result, filter_state, max_count, count);
 }
 
 void RowIdColumnData::Select(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
