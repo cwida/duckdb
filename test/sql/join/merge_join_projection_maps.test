@@ -1,0 +1,221 @@
+# name: test/sql/join/merge_join_projection_maps.test
+# description: The piecewise merge join has to apply the projection maps of the logical comparison join
+# group: [join]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE t0(c0 INTEGER);
+
+statement ok
+INSERT INTO t0 SELECT range FROM range(5);
+
+# an uncorrelated subquery in the ON clause of an outer join is materialised as an extra column of that join,
+# and the planner prunes it again above the range join that sits on top of it
+
+query II
+explain
+SELECT count(*) FROM t0 AS x1 LEFT JOIN t0 AS x2 ON (1 IN (SELECT 1)) JOIN t0 AS x3 ON (x1.c0 < x3.c0);
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query I
+SELECT count(*) FROM t0 AS x1 LEFT JOIN t0 AS x2 ON (1 IN (SELECT 1)) JOIN t0 AS x3 ON (x1.c0 < x3.c0);
+----
+50
+
+# the same query without the subquery: identical result, and no column to prune
+
+query I
+SELECT count(*) FROM t0 AS x1 LEFT JOIN t0 AS x2 ON (true) JOIN t0 AS x3 ON (x1.c0 < x3.c0);
+----
+50
+
+query II
+explain
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) JOIN t0 AS x3 ON (x2.c0 < x3.c0) ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) JOIN t0 AS x3 ON (x2.c0 < x3.c0) ORDER BY ALL;
+----
+3	0	1
+3	0	2
+3	0	3
+3	0	4
+3	1	2
+3	1	3
+3	1	4
+3	2	3
+3	2	4
+3	3	4
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON (3 = x1.c0) JOIN t0 AS x3 ON (x2.c0 < x3.c0) ORDER BY ALL;
+----
+3	0	1
+3	0	2
+3	0	3
+3	0	4
+3	1	2
+3	1	3
+3	1	4
+3	2	3
+3	2	4
+3	3	4
+
+# LEFT JOIN on top of the pruned column: unmatched rows of the left side are padded with NULLs for the
+# right side, which also has to respect the projection maps
+
+query II
+explain
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 LEFT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) LEFT JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 LEFT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) LEFT JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+0	NULL	1
+0	NULL	2
+0	NULL	3
+0	NULL	4
+1	NULL	2
+1	NULL	3
+1	NULL	4
+2	NULL	3
+2	NULL	4
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+4	NULL	NULL
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 LEFT JOIN t0 AS x2 ON (3 = x1.c0) LEFT JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+0	NULL	1
+0	NULL	2
+0	NULL	3
+0	NULL	4
+1	NULL	2
+1	NULL	3
+1	NULL	4
+2	NULL	3
+2	NULL	4
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+4	NULL	NULL
+
+# FULL/RIGHT OUTER: the source side of the join emits the RHS tuples that found no match, with NULLs for
+# the projected LHS columns
+
+query II
+explain
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 LEFT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) FULL JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 LEFT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) FULL JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+0	NULL	1
+0	NULL	2
+0	NULL	3
+0	NULL	4
+1	NULL	2
+1	NULL	3
+1	NULL	4
+2	NULL	3
+2	NULL	4
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+4	NULL	NULL
+NULL	NULL	0
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 LEFT JOIN t0 AS x2 ON (3 = x1.c0) FULL JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+0	NULL	1
+0	NULL	2
+0	NULL	3
+0	NULL	4
+1	NULL	2
+1	NULL	3
+1	NULL	4
+2	NULL	3
+2	NULL	4
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+4	NULL	NULL
+NULL	NULL	0
+
+query II
+explain
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) RIGHT JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) RIGHT JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+NULL	NULL	0
+NULL	NULL	1
+NULL	NULL	2
+NULL	NULL	3
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON (3 = x1.c0) RIGHT JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+NULL	NULL	0
+NULL	NULL	1
+NULL	NULL	2
+NULL	NULL	3
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON ((SELECT 3) = x1.c0) FULL JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+NULL	NULL	0
+NULL	NULL	1
+NULL	NULL	2
+NULL	NULL	3
+
+query III
+SELECT x1.c0, x2.c0, x3.c0 FROM t0 AS x1 RIGHT JOIN t0 AS x2 ON (3 = x1.c0) FULL JOIN t0 AS x3 ON (x1.c0 < x3.c0) ORDER BY ALL;
+----
+3	0	4
+3	1	4
+3	2	4
+3	3	4
+3	4	4
+NULL	NULL	0
+NULL	NULL	1
+NULL	NULL	2
+NULL	NULL	3

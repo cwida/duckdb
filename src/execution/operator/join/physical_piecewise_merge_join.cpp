@@ -249,6 +249,15 @@ public:
 		rhs_keys.Initialize(client, condition_types);
 		rhs_input.Initialize(client, op.children[1].get().GetTypes());
 
+		// Results are assembled with the full width of both children and then projected,
+		// because the join keys, the tail conditions and the arbitrary predicate all refer to unprojected columns.
+		unprojected.Initialize(client, op.unprojected_types);
+		vector<LogicalType> lhs_projected_types;
+		for (auto &col_idx : op.left_projection_map) {
+			lhs_projected_types.push_back(op.children[0].get().GetTypes()[col_idx]);
+		}
+		lhs_projected.Initialize(client, lhs_projected_types);
+
 		auto &gsink = op.sink_state->Cast<MergeJoinGlobalState>();
 		InitializeRightScanState(gsink);
 
@@ -292,6 +301,11 @@ public:
 	DataChunk rhs_input;
 	ExpressionExecutor rhs_executor;
 
+	//! Full width (unprojected) result, projected into the output chunk by PhysicalRangeJoin::ProjectResult
+	DataChunk unprojected;
+	//! The projected LHS columns, used by the join types that only return the left side
+	DataChunk lhs_projected;
+
 	//! Arbitrary expressions
 	ExpressionExecutor pred_executor;
 	SelectionVector pred_matches;
@@ -318,6 +332,8 @@ public:
 		rhs_chunk_state.ResetForScan();
 		rhs_keys.Reset();
 		rhs_input.Reset();
+		unprojected.Reset();
+		lhs_projected.Reset();
 		lhs_global_table->ResetForReuse(client);
 	}
 
@@ -480,6 +496,9 @@ void PhysicalPiecewiseMergeJoin::ResolveSimpleJoin(ExecutionContext &context, Da
 	// use the sorted payload
 	const auto lhs_not_null = lhs_table.count - lhs_table.has_null;
 	auto &payload = state.lhs_payload;
+	// these join types only return the projected LHS columns
+	state.lhs_projected.ReferenceColumns(payload, left_projection_map);
+	auto &lhs_result = state.lhs_projected;
 
 	// now construct the result based on the join result
 	switch (join_type) {
@@ -498,14 +517,14 @@ void PhysicalPiecewiseMergeJoin::ResolveSimpleJoin(ExecutionContext &context, Da
 			}
 		}
 		// So we make a set of keys that have the validity mask set for the
-		PhysicalJoin::ConstructMarkJoinResult(lhs_keys, payload, chunk, found_match, gstate.table->has_null);
+		PhysicalJoin::ConstructMarkJoinResult(lhs_keys, lhs_result, chunk, found_match, gstate.table->has_null);
 		break;
 	}
 	case JoinType::SEMI:
-		PhysicalJoin::ConstructSemiJoinResult(payload, chunk, found_match);
+		PhysicalJoin::ConstructSemiJoinResult(lhs_result, chunk, found_match);
 		break;
 	case JoinType::ANTI:
-		PhysicalJoin::ConstructAntiJoinResult(payload, chunk, found_match);
+		PhysicalJoin::ConstructAntiJoinResult(lhs_result, chunk, found_match);
 		break;
 	default:
 		throw NotImplementedException("Unimplemented join type for merge join");
@@ -616,6 +635,7 @@ OperatorResultType PhysicalPiecewiseMergeJoin::ResolveComplexJoin(ExecutionConte
                                                                   DataChunk &chunk, OperatorState &state_p) const {
 	auto &state = state_p.Cast<PiecewiseMergeJoinState>();
 	auto &gstate = sink_state->Cast<MergeJoinGlobalState>();
+	auto &unprojected = state.unprojected;
 	const auto left_cols = input.ColumnCount();
 	const auto tail_cols = conditions.size() - 1;
 
@@ -637,7 +657,12 @@ OperatorResultType PhysicalPiecewiseMergeJoin::ResolveComplexJoin(ExecutionConte
 			if (state.left_outer.Enabled()) {
 				// left join: before we move to the next chunk, see if we need to output any vectors that didn't
 				// have a match found
-				state.left_outer.ConstructLeftJoinResult(state.lhs_payload, chunk);
+				unprojected.Reset();
+				state.left_outer.ConstructLeftJoinResult(state.lhs_payload, unprojected);
+				if (unprojected.size() > 0) {
+					chunk.Reset();
+					ProjectResult(unprojected, chunk);
+				}
 				state.left_outer.Reset();
 			}
 			state.first_fetch = true;
@@ -675,12 +700,12 @@ OperatorResultType PhysicalPiecewiseMergeJoin::ResolveComplexJoin(ExecutionConte
 			SliceSortedPayload(state.rhs_input, rhs_table, rhs_iterator, state.rhs_chunk_state, right_info.block_idx,
 			                   right_info.rhs, *state.rhs_scan_state);
 
-			chunk.Reset();
-			for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); ++col_idx) {
+			unprojected.Reset();
+			for (idx_t col_idx = 0; col_idx < unprojected.ColumnCount(); ++col_idx) {
 				if (col_idx < left_cols) {
-					chunk.data[col_idx].Slice(state.lhs_payload.data[col_idx], left_info.lhs, result_count);
+					unprojected.data[col_idx].Slice(state.lhs_payload.data[col_idx], left_info.lhs, result_count);
 				} else {
-					chunk.data[col_idx].Reference(state.rhs_input.data[col_idx - left_cols]);
+					unprojected.data[col_idx].Reference(state.rhs_input.data[col_idx - left_cols]);
 				}
 			}
 
@@ -713,17 +738,17 @@ OperatorResultType PhysicalPiecewiseMergeJoin::ResolveComplexJoin(ExecutionConte
 					result_count = tail_count;
 					if (result_count == 0) {
 						// Need to reset here otherwise we may use the non-flat chunk when constructing LEFT/OUTER
-						chunk.Reset();
+						unprojected.Reset();
 					} else {
-						chunk.Slice(*sel, result_count);
+						unprojected.Slice(*sel, result_count);
 					}
 				}
 			}
 
 			//	Apply any arbitrary predicate
 			if (predicate) {
-				result_count = state.pred_executor.SelectExpression(chunk, state.pred_matches);
-				chunk.Slice(state.pred_matches, result_count);
+				result_count = state.pred_executor.SelectExpression(unprojected, state.pred_matches);
+				unprojected.Slice(state.pred_matches, result_count);
 				for (idx_t i = 0; i < result_count; i++) {
 					state.pred_matches.set_index(i, sel->get_index(state.pred_matches.get_index(i)));
 				}
@@ -742,6 +767,11 @@ OperatorResultType PhysicalPiecewiseMergeJoin::ResolveComplexJoin(ExecutionConte
 					gstate.table->found_match[state.right_base + right_info.rhs[sel->get_index(i)]] = true;
 				}
 			}
+			//	We need all of the data to compute the conditions, but we only return what is in the projection maps
+			chunk.Reset();
+			if (result_count > 0) {
+				ProjectResult(unprojected, chunk);
+			}
 			chunk.Verify(context.client.db);
 		}
 	} while (chunk.size() == 0);
@@ -750,13 +780,15 @@ OperatorResultType PhysicalPiecewiseMergeJoin::ResolveComplexJoin(ExecutionConte
 
 OperatorResultType PhysicalPiecewiseMergeJoin::ExecuteInternal(ExecutionContext &context, DataChunk &input,
                                                                DataChunk &chunk, GlobalOperatorState &gstate_p,
-                                                               OperatorState &state) const {
+                                                               OperatorState &state_p) const {
+	auto &state = state_p.Cast<PiecewiseMergeJoinState>();
 	auto &gstate = sink_state->Cast<MergeJoinGlobalState>();
 
 	if (gstate.Count() == 0) {
 		// empty RHS
 		if (!EmptyResultIfRHSIsEmpty()) {
-			ConstructEmptyJoinResult(join_type, gstate.table->has_null, input, chunk);
+			state.lhs_projected.ReferenceColumns(input, left_projection_map);
+			ConstructEmptyJoinResult(join_type, gstate.table->has_null, state.lhs_projected, chunk);
 			return OperatorResultType::NEED_MORE_INPUT;
 		} else {
 			return OperatorResultType::FINISHED;
@@ -882,14 +914,15 @@ SourceResultType PhysicalPiecewiseMergeJoin::GetDataInternal(ExecutionContext &c
 
 		if (result_count > 0) {
 			// if there were any tuples that didn't find a match, output them
-			const idx_t left_column_count = children[0].get().GetTypes().size();
+			const idx_t left_column_count = left_projection_map.size();
 			for (idx_t col_idx = 0; col_idx < left_column_count; ++col_idx) {
 				ConstantVector::SetNull(result.data[col_idx], count_t(result_count));
 			}
-			const idx_t right_column_count = children[1].get().GetTypes().size();
-			for (idx_t col_idx = 0; col_idx < right_column_count; ++col_idx) {
-				result.data[left_column_count + col_idx].Slice(rhs_chunk.data[col_idx], rsel, result_count);
+			for (idx_t col_idx = 0; col_idx < right_projection_map.size(); ++col_idx) {
+				result.data[left_column_count + col_idx].Slice(rhs_chunk.data[right_projection_map[col_idx]], rsel,
+				                                               result_count);
 			}
+			result.SetChildCardinality(result_count);
 		}
 		gsource.rows_scanned.fetch_add(count, std::memory_order_relaxed);
 		if (result_count > 0) {
