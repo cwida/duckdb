@@ -125,7 +125,7 @@ static LikeString LikeMatchFromRegex(duckdb_re2::RE2 &pattern) {
 			anchored_end = true;
 		}
 	}
-	const auto first_content = [num_subs, produces_content](int idx) {
+	const auto first_content = [produces_content](int idx) {
 		for (int i = 0; i < idx; i++) {
 			if (produces_content[i]) {
 				return false;
