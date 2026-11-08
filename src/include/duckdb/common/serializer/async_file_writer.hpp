@@ -54,7 +54,7 @@ public:
 	DUCKDB_API static const FileOpenFlags DEFAULT_OPEN_FLAGS;
 
 public:
-	DUCKDB_API AsyncFileWriter(Context &services, FileSystem &fs, const string &path,
+	DUCKDB_API AsyncFileWriter(Context &context, FileSystem &fs, const string &path,
 	                           const FileOpenFlags &open_flags = DEFAULT_OPEN_FLAGS);
 	DUCKDB_API ~AsyncFileWriter() override;
 	using WriteStream::Write;
@@ -143,8 +143,7 @@ private:
 	void WaitAllInternal(BatchDrainMode batch_drain_mode);
 
 private:
-	QueryContext context;
-	Context &services;
+	Context &context;
 	FileSystem &fs;
 	string path;
 	unique_ptr<FileHandle> handle;

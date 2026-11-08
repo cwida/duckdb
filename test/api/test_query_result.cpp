@@ -925,13 +925,13 @@ TEST_CASE("A query whose begin failed does not hold the connection", "[api][quer
 	Connection con(db);
 	// The debug build's state checks that every query end follows its own begin, which a begin hook that throws
 	// breaks whichever hook runs first
-	con.context->Services().GetRegisteredState().Remove("debug_client_context_state");
-	con.context->Services().GetRegisteredState().Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
+	con.context->GetContext().GetRegisteredState().Remove("debug_client_context_state");
+	con.context->GetContext().GetRegisteredState().Insert("failing_query_begin", make_shared_ptr<FailingQueryBegin>());
 
 	auto failed = con.Query("SELECT 42");
 	REQUIRE(failed->HasError());
 	REQUIRE(StringUtil::Contains(failed->GetError(), "query begin failed"));
-	con.context->Services().GetRegisteredState().Remove("failing_query_begin");
+	con.context->GetContext().GetRegisteredState().Remove("failing_query_begin");
 
 	auto next = con.Query("SELECT 42");
 	REQUIRE(CHECK_COLUMN(next, 0, {42}));

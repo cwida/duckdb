@@ -7,7 +7,7 @@ index 35ae3c4..9797f02 100644
  	auto &http_util = HTTPUtil::Get(*db);
  	auto params = http_util.InitializeParameters(*db, url);
 -	params->logger = ctx.logger;
-+	params->logger = ctx.Services().GetLoggerPtr();
++	params->logger = ctx.GetContext().GetLoggerPtr();
  
  	HTTPHeaders hdrs(*ctx.db);
  	AuthenticateViaBearerToken(hdrs, token);
@@ -16,7 +16,7 @@ index 35ae3c4..9797f02 100644
  		auto &http_util = HTTPUtil::Get(*db);
  		auto params = http_util.InitializeParameters(*db, url);
 -		params->logger = ctx.logger;
-+		params->logger = ctx.Services().GetLoggerPtr();
++		params->logger = ctx.GetContext().GetLoggerPtr();
  		HTTPHeaders hdrs(*ctx.db);
  		AuthenticateViaBearerToken(hdrs, token);
  		DeleteRequestInfo req(url, hdrs, *params);

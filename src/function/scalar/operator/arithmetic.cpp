@@ -1983,7 +1983,8 @@ hugeint_t InterpolateOperator::Operation(const hugeint_t &lo, const double d, co
 	hugeint_t delta_hugeint = hi;
 	if (Hugeint::TrySubtractInPlace(delta_hugeint, lo)) {
 		const auto delta = Hugeint::Cast<double>(delta_hugeint);
-		return lo + Hugeint::Convert(delta * d);
+		// Rounding delta to double can carry the offset past hi, and past the HUGEINT range when hi is the minimum.
+		return Hugeint::Add(lo, Hugeint::Convert(delta * d));
 	}
 
 	// if delta overflows, we fall back to original subtraction to avoid UB

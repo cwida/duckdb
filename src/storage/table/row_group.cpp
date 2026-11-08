@@ -259,7 +259,7 @@ void RowGroup::InitializeEmpty(const vector<LogicalType> &types, ColumnDataType 
 void ColumnScanState::PushDownCast(const LogicalType &original_type, const LogicalType &cast_type) {
 	D_ASSERT(context.Valid());
 	D_ASSERT(!expression_state);
-	auto &client_context = *Context::TryGetClientContext(context.GetServices());
+	auto &client_context = *context.GetClientContext();
 
 	auto input = make_uniq<BoundReferenceExpression>(original_type, 0ULL);
 	auto cast_expression = BoundCastExpression::AddCastToType(client_context, std::move(input), cast_type);
@@ -384,7 +384,7 @@ void CollectionScanState::Initialize(const QueryContext &context_p, const vector
 
 bool RowGroup::InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset) {
 	auto &filters = state.GetFilterInfo();
-	if (!CheckZonemap(Context::TryGetClientContext(state.context.GetServices()), filters, node.GetRowStart())) {
+	if (!CheckZonemap(state.context.GetClientContext(), filters, node.GetRowStart())) {
 		return false;
 	}
 	if (!RefersToSameObject(node.GetNode(), *this)) {

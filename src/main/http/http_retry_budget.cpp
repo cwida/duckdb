@@ -235,8 +235,11 @@ bool HTTPRetryBudget::TryParseRetryAfterMs(const string &retry_after, uint64_t &
 		delay_ms = seconds > MAX_BACKOFF_MS / 1000 ? MAX_BACKOFF_MS : seconds * 1000;
 		return true;
 	}
+	StrpTimeFormat::ParseResult parsed;
 	timestamp_t target;
-	if (!RetryAfterDateFormat().TryParseTimestamp(value.c_str(), value.size(), target)) {
+	// The timestamp parser accepts the words epoch, infinity and -infinity, which are not HTTP-dates.
+	if (!RetryAfterDateFormat().Parse(value.c_str(), value.size(), parsed) || parsed.is_special ||
+	    !parsed.TryToTimestamp(target)) {
 		return false;
 	}
 	const auto now_ms = Timestamp::GetEpochMs(Timestamp::GetCurrentTimestamp());
