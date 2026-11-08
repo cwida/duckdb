@@ -632,7 +632,7 @@ public:
 	}
 	//! Whether no array or element can be NULL and every array can be read with ValueEntry::GetDataUnsafe().
 	bool CanReadAllInPlace() const {
-		return all_data;
+		return all_data != nullptr;
 	}
 
 private:
