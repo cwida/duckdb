@@ -219,3 +219,56 @@ SELECT count(*) FROM pm_vals WHERE v - 1::{type} = 1::{type};
 1
 
 endloop
+
+# #28541: MoveConstantsRule reads both constants via IntegralValue::Get, which returns a hugeint_t
+# (128-bit signed). A UHUGEINT constant above NumericLimits<hugeint_t>::Maximum() (2^127 - 1) does
+# not fit in that range and would wrap to a negative number, silently producing wrong rewrite results
+# (no error, unlike the UBIGINT case in #28535). The rewrite must be skipped when either constant does
+# not fit in hugeint_t, so the query falls back to the correct un-rewritten evaluation.
+statement ok
+CREATE OR REPLACE TABLE uh_vals(v UHUGEINT);
+
+statement ok
+INSERT INTO uh_vals
+  VALUES (5),
+         (170141183460469231731687303715884105728),          -- hugeint max + 1
+         (340282366920938463463374607431768211454);           -- uhugeint max - 1
+
+# [x + 1 = hugeint_max + 2]: moving 1 gives the constant hugeint_max + 1, which does not fit in
+# hugeint_t. Before the fix this wrapped and matched no row; now the rewrite is skipped and the row is found.
+query I
+SELECT count(*) FROM uh_vals WHERE v + 1 = 170141183460469231731687303715884105729;
+----
+1
+
+# [x + 1 = uhugeint max]: moving 1 gives uhugeint max - 1 (does not fit in hugeint_t), one row satisfies it.
+query I
+SELECT count(*) FROM uh_vals WHERE v + 1 = 340282366920938463463374607431768211455;
+----
+1
+
+# [x + 1 = hugeint_max + 2] as a value-level comparison: the target row evaluates to true, the others false.
+query II
+SELECT v, v + 1 = 170141183460469231731687303715884105729 FROM uh_vals ORDER BY v;
+----
+5	false
+170141183460469231731687303715884105728	true
+340282366920938463463374607431768211454	false
+
+# [x - 1 = uhugeint max - 1]: moving 1 (addition) gives uhugeint max (does not fit in hugeint_t), one row satisfies it.
+query I
+SELECT count(*) FROM uh_vals WHERE v - 1 = 340282366920938463463374607431768211453;
+----
+1
+
+# in-range UHUGEINT constants still get rewritten and give correct results (rewrite is not skipped when
+# both constants fit in hugeint_t)
+query I
+SELECT count(*) FROM uh_vals WHERE v + 5 = 10;
+----
+1
+
+query I
+SELECT count(*) FROM uh_vals WHERE v - 1 = 4;
+----
+1
