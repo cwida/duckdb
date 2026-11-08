@@ -234,6 +234,18 @@ duckdb::string_t StringCast::Operation(timestamp_ns_t input, StringHeap &heap) {
 }
 
 template <>
+duckdb::string_t StringCast::Operation(timestamp_ms_t input, StringHeap &heap) {
+	// Finite ms values scale losslessly to us; infinity is the same sentinel in both types.
+	return StringCast::Operation(timestamp_t(input.IsFinite() ? input.value * 1000 : input.value), heap);
+}
+
+template <>
+duckdb::string_t StringCast::Operation(timestamp_sec_t input, StringHeap &heap) {
+	// Finite sec values scale losslessly to us; infinity is the same sentinel in both types.
+	return StringCast::Operation(timestamp_t(input.IsFinite() ? input.value * 1000000 : input.value), heap);
+}
+
+template <>
 duckdb::string_t StringCast::Operation(duckdb::string_t input, StringHeap &heap) {
 	return heap.AddBlob(input);
 }
