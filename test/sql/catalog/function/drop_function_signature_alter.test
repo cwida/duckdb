@@ -13,9 +13,13 @@ PRAGMA wal_autocheckpoint='1TB';
 statement ok
 CREATE MACRO alt(x INTEGER) AS x + 1, (x VARCHAR) AS concat(x, '!'), (x DATE) AS year(x);
 
-# a member drop preserves the entry's oid: the altered entry is the same logical object
+# a member drop preserves the entry's oid: the altered entry is the same logical object. Oids are
+# reassigned at load, so both reads share one transaction to keep a restart from separating them
 statement ok
-CREATE TABLE oid_before AS SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'alt';
+BEGIN;
+
+statement ok
+CREATE TEMP TABLE oid_before AS SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name = 'alt';
 
 query I
 SELECT count(*) FROM oid_before;
@@ -30,6 +34,9 @@ SELECT (SELECT DISTINCT function_oid FROM duckdb_functions() WHERE function_name
      = (SELECT function_oid FROM oid_before);
 ----
 true
+
+statement ok
+COMMIT;
 
 # the member drop rolls back like any alter
 statement ok

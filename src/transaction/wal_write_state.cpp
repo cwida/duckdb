@@ -5,7 +5,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
-#include "duckdb/common/storage_compatibility.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
