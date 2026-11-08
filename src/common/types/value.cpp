@@ -2083,8 +2083,11 @@ hugeint_t IntegralValue::Get(const Value &value) {
 		return USmallIntValue::Get(value);
 	case PhysicalType::UINT32:
 		return UIntegerValue::Get(value);
-	case PhysicalType::UINT64:
-		return NumericCast<int64_t>(UBigIntValue::Get(value));
+	case PhysicalType::UINT64: {
+		hugeint_t result;
+		Hugeint::TryConvert(UBigIntValue::Get(value), result);
+		return result;
+	}
 	case PhysicalType::UINT128:
 		return static_cast<hugeint_t>(UhugeIntValue::Get(value));
 	default:

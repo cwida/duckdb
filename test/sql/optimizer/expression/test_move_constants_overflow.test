@@ -219,3 +219,37 @@ SELECT count(*) FROM pm_vals WHERE v - 1::{type} = 1::{type};
 1
 
 endloop
+
+# #28535: MoveConstantsRule reads both constants via IntegralValue::Get, whose UINT64 case narrowed
+# through int64_t. Any UBIGINT constant above INT64_MAX raised an INTERNAL Error ("Information loss on
+# integer cast") even though the hugeint result type holds it fine. The rewritten predicates below must
+# return correct counts, not an internal error. (foreach above covers only signed types.)
+statement ok
+CREATE OR REPLACE TABLE ub_vals(v UBIGINT);
+
+statement ok
+INSERT INTO ub_vals VALUES (0), (1), (NULL);
+
+# [x + 1 = 18446744073709551615]: moved constant = max UBIGINT (above INT64_MAX), no x satisfies it
+query I
+SELECT count(*) FROM ub_vals WHERE v + 1 = 18446744073709551615;
+----
+0
+
+# [x + 18446744073709551613 = 18446744073709551614]: both constants above INT64_MAX, x=1 satisfies
+query I
+SELECT count(*) FROM ub_vals WHERE v + 18446744073709551613 = 18446744073709551614;
+----
+1
+
+# [x * 18446744073709551613 = 18446744073709551613]: moved constant above INT64_MAX, x=1 satisfies
+query I
+SELECT count(*) FROM ub_vals WHERE v * 18446744073709551613 = 18446744073709551613;
+----
+1
+
+# [x + 9223372036854775807 = 9223372036854775808]: outer constant just above INT64_MAX, x=1 satisfies
+query I
+SELECT count(*) FROM ub_vals WHERE v + 9223372036854775807 = 9223372036854775808;
+----
+1
