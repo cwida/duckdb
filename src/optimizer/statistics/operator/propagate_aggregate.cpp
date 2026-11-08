@@ -78,7 +78,7 @@ unique_ptr<ValueComparator> GetComparator(const Identifier &fun_name) {
 unique_ptr<ValueComparator> GetComparator(const Identifier &fun_name, const LogicalType &type) {
 	if (type == LogicalType::VARCHAR) {
 		return GetComparator<StringStats>(fun_name);
-	} else if (type.IsNumeric() || type.IsTemporal()) {
+	} else if (type.IsNumeric() || type.IsTemporal() || type.id() == LogicalTypeId::BOOLEAN) {
 		return GetComparator<NumericStats>(fun_name);
 	}
 	return nullptr;
@@ -121,43 +121,123 @@ bool TryGetMinMaxColumnInfo(const Expression &expr, MinMaxColumnInfo &info) {
 	return true;
 }
 
-bool TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &storage_index,
-                          const ValueComparator &comparator, const LogicalType &result_type, Value &result) {
+//! Outcome of reading one partition's statistics for a MIN/MAX aggregate.
+enum class PartitionValueOutcome : uint8_t {
+	//! The statistics are exact and produced a usable min/max value - the only foldable outcome
+	VALUE,
+	//! The partition holds only NULL values, which MIN/MAX ignore entirely - it is neutral
+	ALL_NULL,
+	//! The statistics bound every row of the partition reliably, but are not exact: `result` holds
+	//! the bound. Good enough to vote with, never good enough to fold
+	BOUND,
+	//! No reliable state at all: the statistics do not describe the rows that will be read, or cannot
+	//! be summarized
+	NO_INFO
+};
+
+PartitionValueOutcome TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &storage_index,
+                                           const ValueComparator &comparator, const LogicalType &result_type,
+                                           Value &result) {
 	if (!stats.partition_row_group) {
-		return false;
+		return PartitionValueOutcome::NO_INFO;
 	}
 	auto column_stats = stats.partition_row_group->GetColumnStatistics(storage_index);
 	if (!column_stats) {
-		return false;
+		return PartitionValueOutcome::NO_INFO;
 	}
-	if (!stats.partition_row_group->MinMaxIsExact(storage_index) || stats.partition_row_group->HasPendingWrites()) {
-		return false;
+	if (stats.partition_row_group->HasPendingWrites()) {
+		// rows appended to this partition locally are not covered by the statistics, so they are not
+		// even a bound over the rows that will be read
+		return PartitionValueOutcome::NO_INFO;
 	}
-	if (column_stats->GetStatsType() == StatisticsType::NUMERIC_STATS) {
-		if (!NumericStats::HasMinMax(*column_stats)) {
-			// TODO: This also returns if an entire row group is null. In that case, we could skip/compare null
-			return false;
-		}
+
+	const bool is_numeric = column_stats->GetStatsType() == StatisticsType::NUMERIC_STATS;
+	bool has_min_max;
+	if (is_numeric) {
+		has_min_max = NumericStats::HasMinMax(*column_stats);
 	} else {
 		D_ASSERT(column_stats->GetStatsType() == StatisticsType::STRING_STATS);
-		if (!StringStats::HasMinMax(*column_stats)) {
-			return false;
-		}
-		if (StringStats::GetMinType(*column_stats) != StringStatsType::EXACT_STATS ||
-		    StringStats::GetMaxType(*column_stats) != StringStatsType::EXACT_STATS) {
-			// string stats are not exact - we cannot use the value from the stats
-			return false;
-		}
+		has_min_max = StringStats::HasMinMax(*column_stats);
 	}
+
+	const bool min_max_exact = stats.partition_row_group->MinMaxIsExact(storage_index);
+	if (!has_min_max) {
+		if (!min_max_exact) {
+			// with deleted rows in play the missing min/max says nothing about the surviving rows
+			return PartitionValueOutcome::NO_INFO;
+		}
+		// A partition without min/max holds no non-null values at all. MIN/MAX ignore NULLs, so such
+		// a partition is neutral rather than a reason to abandon the rewrite for the whole table.
+		return column_stats->CanHaveNoNull() ? PartitionValueOutcome::NO_INFO : PartitionValueOutcome::ALL_NULL;
+	}
+
+	// the statistics bound the surviving rows; deleted rows and truncated string statistics make
+	// them a bound instead of an exact value
+	bool value_is_exact = min_max_exact;
+	if (!is_numeric) {
+		value_is_exact = value_is_exact && StringStats::GetMinType(*column_stats) == StringStatsType::EXACT_STATS &&
+		                 StringStats::GetMaxType(*column_stats) == StringStatsType::EXACT_STATS;
+	}
+
 	result = comparator.GetVal(*column_stats);
-	if (result.type() == result_type) {
-		return true;
+	if (result.type() != result_type) {
+		auto cast = result.DefaultTryCastAs(result_type);
+		if (!cast) {
+			// the value cannot be represented in the result type
+			return PartitionValueOutcome::NO_INFO;
+		}
+		result = std::move(*cast);
 	}
-	auto cast = result.DefaultTryCastAs(result_type);
-	if (!cast) {
-		return false;
+	return value_is_exact ? PartitionValueOutcome::VALUE : PartitionValueOutcome::BOUND;
+}
+
+//! Fold the MIN/MAX aggregates over the partition statistics, appending one constant per aggregate to
+//! `types` and `agg_results` in the order of `storage_indexes`. Returns false if some partition's
+//! statistics cannot answer an aggregate.
+bool TryFoldMinMaxAggregates(const vector<PartitionStatistics> &partition_stats,
+                             const vector<StorageIndex> &storage_indexes,
+                             const vector<MinMaxColumnInfo> &min_max_columns,
+                             const vector<unique_ptr<ValueComparator>> &comparators, vector<LogicalType> &types,
+                             vector<unique_ptr<Expression>> &agg_results) {
+	for (idx_t agg_idx = 0; agg_idx < storage_indexes.size(); agg_idx++) {
+		const auto &storage_index = storage_indexes[agg_idx];
+		const auto &result_type = min_max_columns[agg_idx].result_type;
+		auto &comparator = comparators[agg_idx];
+
+		Value agg_result;
+		bool found_value = false;
+		for (const auto &stats : partition_stats) {
+			Value value;
+			switch (TryGetValueFromStats(stats, storage_index, *comparator, result_type, value)) {
+			case PartitionValueOutcome::VALUE:
+				if (!found_value || !comparator->Compare(agg_result, value)) {
+					agg_result = std::move(value);
+					found_value = true;
+				}
+				break;
+			case PartitionValueOutcome::ALL_NULL:
+				// the partition holds no non-null values, so it cannot affect the extremum
+				break;
+			case PartitionValueOutcome::BOUND:
+				// a bound always carries the value that bounds the partition
+				D_ASSERT(!value.IsNull());
+				// a bound is never exact: only an exact value can become a folded constant
+				// TODO: a BOUND partition is meant to be handled by the scan-and-merge path once that
+				// is reachable
+				return false;
+			case PartitionValueOutcome::NO_INFO:
+				// the statistics cannot answer the aggregate
+				return false;
+			}
+		}
+		if (!found_value) {
+			// every partition holds only NULLs - MIN/MAX over no non-null values is NULL
+			agg_result = Value(result_type);
+		}
+		types.push_back(agg_result.type());
+		auto expr = make_uniq<BoundConstantExpression>(agg_result);
+		agg_results.push_back(std::move(expr));
 	}
-	result = std::move(*cast);
 	return true;
 }
 
@@ -493,28 +573,9 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 
 	if (!min_max_columns.empty()) {
 		// Execute min/max aggregates on partition statistics
-		for (idx_t agg_idx = 0; agg_idx < min_max_storage_indexes.size(); agg_idx++) {
-			const auto &storage_index = min_max_storage_indexes[agg_idx];
-			const auto &result_type = min_max_columns[agg_idx].result_type;
-			auto &comparator = comparators[agg_idx];
-
-			Value agg_result;
-			if (!TryGetValueFromStats(partition_stats[0], storage_index, *comparator, result_type, agg_result)) {
-				return;
-			}
-			for (idx_t partition_idx = 1; partition_idx < partition_stats.size(); partition_idx++) {
-				Value rhs;
-				if (!TryGetValueFromStats(partition_stats[partition_idx], storage_index, *comparator, result_type,
-				                          rhs)) {
-					return;
-				}
-				if (!comparator->Compare(agg_result, rhs)) {
-					agg_result = rhs;
-				}
-			}
-			types.push_back(agg_result.type());
-			auto expr = make_uniq<BoundConstantExpression>(agg_result);
-			agg_results.push_back(std::move(expr));
+		if (!TryFoldMinMaxAggregates(partition_stats, min_max_storage_indexes, min_max_columns, comparators, types,
+		                             agg_results)) {
+			return;
 		}
 	}
 	if (!count_star_idxs.empty()) {

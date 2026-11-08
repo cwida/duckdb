@@ -18,6 +18,7 @@
         "test/optimizer/pushdown/filter_cannot_pushdown.test",
         "test/optimizer/eager_aggregate_execution.test",
         "test/optimizer/eager_aggregate_execution_parquet.test",
+        "test/optimizer/eager_aggregate_execution_all_null.test",
         "test/optimizer/partial_aggregate_precomputation.test",
         "test/optimizer/partition_stats_exactness.test",
         "test/optimizer/remove_redundant_order.test",

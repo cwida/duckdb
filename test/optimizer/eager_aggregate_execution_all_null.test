@@ -1,0 +1,213 @@
+# name: test/optimizer/eager_aggregate_execution_all_null.test
+# description: Test that a partition holding only NULL values does not disable eager min/max execution
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# Alternative verify disables eager aggregate execution
+require no_alternative_verify
+
+statement ok
+ATTACH '{TEST_DIR}/eager_agg_null.duckdb' AS db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE db
+
+# MIN/MAX ignore NULLs, so a partition that holds only NULL values cannot affect the result.
+# It must be treated as neutral instead of aborting the rewrite for the whole table.
+statement ok
+CREATE TABLE t_null (i INTEGER)
+
+statement ok
+INSERT INTO t_null SELECT NULL::INTEGER FROM range(2048)
+
+statement ok
+INSERT INTO t_null SELECT * FROM range(2048, 8192)
+
+statement ok
+CREATE TABLE t_null_str (s VARCHAR)
+
+statement ok
+INSERT INTO t_null_str SELECT NULL::VARCHAR FROM range(2048)
+
+statement ok
+INSERT INTO t_null_str SELECT 'a' || i::VARCHAR FROM range(2048, 8192) _(i)
+
+statement ok
+CREATE TABLE t_all_null (i INTEGER)
+
+statement ok
+INSERT INTO t_all_null SELECT NULL::INTEGER FROM range(4096)
+
+# BOOLEAN folds as well: the first row group holds only false, the second only true
+statement ok
+CREATE TABLE t_bool (b BOOLEAN)
+
+statement ok
+INSERT INTO t_bool SELECT false AS b FROM range(2048)
+
+statement ok
+INSERT INTO t_bool SELECT true AS b FROM range(2048)
+
+# Work-around for unsetting version info
+statement ok
+ATTACH '{TEST_DIR}/eager_agg_null_tmp.duckdb' AS tmp
+
+statement ok
+USE tmp
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/eager_agg_null.duckdb' AS db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE db
+
+statement ok
+DETACH tmp
+
+# the premise of this test: the first row group holds no non-null values, the others do
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('t_null') WHERE stats.has_no_null = false
+----
+1
+
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('t_null')
+----
+4
+
+# an all-NULL partition is neutral: the fold still happens, and the extremum is unchanged
+query II
+EXPLAIN SELECT max(i) FROM t_null
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query II
+EXPLAIN SELECT min(i) FROM t_null
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT max(i) FROM t_null
+----
+8191
+
+query I
+SELECT min(i) FROM t_null
+----
+2048
+
+# the all-NULL partition still counts towards count(*)
+query II
+EXPLAIN SELECT max(i), count(*) FROM t_null
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query II
+SELECT max(i), count(*) FROM t_null
+----
+8191	8192
+
+# same for the string statistics branch
+query II
+EXPLAIN SELECT max(s) FROM t_null_str
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query T
+SELECT min(s) FROM t_null_str
+----
+a2048
+
+query T
+SELECT max(s) FROM t_null_str
+----
+a8191
+
+# when every partition is all-NULL the aggregate is NULL, which is also foldable
+query II
+EXPLAIN SELECT max(i) FROM t_all_null
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT max(i) FROM t_all_null
+----
+NULL
+
+query I
+SELECT count(*) FROM t_all_null
+----
+4096
+
+# A row group that is entirely NaN does carry min/max statistics, because DuckDB orders NaN
+# above every other value. It therefore folds through the regular path and yields the same NaN
+# a real scan would - it is not the no-non-null-values case handled above.
+statement ok
+CREATE TABLE t_nan (d DOUBLE)
+
+statement ok
+INSERT INTO t_nan SELECT 'nan'::DOUBLE FROM range(2048)
+
+statement ok
+INSERT INTO t_nan SELECT * FROM (VALUES (1.0), (2.0), (3.0), (4.0)) _(d)
+
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('t_nan') WHERE stats.max = 'nan'::DOUBLE
+----
+1
+
+query II
+EXPLAIN SELECT max(d) FROM t_nan
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT max(d) FROM t_nan
+----
+nan
+
+# A row group with pending writes does not describe all of its rows yet, so the all-NULL
+# treatment must not apply to it. Appending only NULLs inside an open transaction makes the new
+# rows look exactly like the neutral case when judged by statistics alone, so the fold has to be
+# abandoned instead - this is what pins the pending-writes check ahead of the all-NULL check.
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+INSERT INTO t_null SELECT NULL::INTEGER FROM range(2048)
+
+query II
+EXPLAIN SELECT max(i) FROM t_null
+----
+physical_plan	<REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT max(i) FROM t_null
+----
+8191
+
+statement ok
+ROLLBACK
+
+# once the transaction is rolled back the fold is available again
+query II
+EXPLAIN SELECT max(i) FROM t_null
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+# BOOLEAN is orderable and keeps its min/max in the numeric statistics, but it is not covered by
+# LogicalType::IsNumeric(), so min/max over a BOOLEAN column used to always fall back to a scan
+query II
+EXPLAIN SELECT min(b), max(b) FROM t_bool
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query II
+SELECT min(b), max(b) FROM t_bool
+----
+false	true
