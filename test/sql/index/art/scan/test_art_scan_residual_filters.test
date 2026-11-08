@@ -169,3 +169,46 @@ SELECT i, j, s FROM tbl WHERE i BETWEEN 1000 AND 1100 AND j = 2 ORDER BY i, s;
 
 statement ok
 ROLLBACK;
+
+# A batch of fetched rows that the residual filter removes entirely, followed by more batches.
+
+statement ok
+SET index_scan_max_count = 100000;
+
+statement ok
+SET debug_physical_table_scan_execution_strategy = 'SYNCHRONOUS';
+
+statement ok
+CREATE TABLE skipped_batch AS SELECT i, (i >= 2048)::INTEGER AS w, 'str' || i AS s FROM range(10000) t(i);
+
+statement ok
+CREATE INDEX idx_skipped_batch ON skipped_batch(i);
+
+query II
+EXPLAIN ANALYZE SELECT i, w, s FROM skipped_batch WHERE i BETWEEN 0 AND 6143 AND w = 1;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+statement ok
+CREATE TABLE skipped_batch_result AS SELECT i, w, s FROM skipped_batch WHERE i BETWEEN 0 AND 6143 AND w = 1;
+
+query IIII
+SELECT count(*), sum(i), min(s), max(s) FROM skipped_batch_result;
+----
+4096	16775168	str2048	str6143
+
+# All fetched batches are removed, the transaction-local row is scanned afterwards.
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO skipped_batch VALUES (5000, 1, 'local');
+
+query III
+SELECT i, w, s FROM skipped_batch WHERE i BETWEEN 0 AND 6143 AND w = 1 AND s = 'local';
+----
+5000	1	local
+
+statement ok
+ROLLBACK;

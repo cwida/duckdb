@@ -324,6 +324,7 @@ public:
 					}
 
 					// output is empty, loop back, since there might be results to be picked up from LOCAL_STORAGE phase
+					output.Reset();
 					continue;
 				}
 				return;
