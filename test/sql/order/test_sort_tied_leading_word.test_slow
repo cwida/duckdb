@@ -1,0 +1,154 @@
+# name: test/sql/order/test_sort_tied_leading_word.test_slow
+# description: Sorting constant-size keys whose leading 8-byte words tie across large buckets
+# group: [order]
+
+# g has few values and k is a permutation, so every row's sorted position is known arithmetically:
+# position(g, k) = g * 100000 + k
+statement ok
+CREATE TABLE t AS SELECT i, (i % 7)::BIGINT AS g, ((i // 7) * 37 % 100000)::BIGINT AS k FROM range(700000) r(i);
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY g, k) - 1 AS pos FROM t) WHERE pos != g * 100000 + k
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (PARTITION BY g ORDER BY k) - 1 AS pos FROM t) WHERE pos != k
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY g DESC, k DESC) - 1 AS pos FROM t)
+WHERE pos != (6 - g) * 100000 + (99999 - k)
+----
+0
+
+# mixed directions
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY g, k DESC) - 1 AS pos FROM t)
+WHERE pos != g * 100000 + (99999 - k)
+----
+0
+
+# the ORDER BY operator itself (TopN disabled so that LIMIT/OFFSET applies to the fully sorted result)
+statement ok
+SET disabled_optimizers='top_n';
+
+query II
+SELECT g, k FROM t ORDER BY g, k LIMIT 3 OFFSET 345678
+----
+3	45678
+3	45679
+3	45680
+
+query III
+SELECT g, k, i FROM t ORDER BY g DESC, k LIMIT 3 OFFSET 199999
+----
+5	99999	189194
+4	0	4
+4	1	510815
+
+statement ok
+RESET disabled_optimizers;
+
+# NULLs in the tied word: k is NULL for multiples of 10
+statement ok
+CREATE TABLE tn AS SELECT g, CASE WHEN k % 10 = 0 THEN NULL ELSE k END AS k, k AS orig FROM t;
+
+query I
+SELECT count(*) FROM (SELECT g, k, orig, row_number() OVER (PARTITION BY g ORDER BY k NULLS FIRST) - 1 AS pos FROM tn)
+WHERE (k IS NULL AND pos >= 10000) OR (k IS NOT NULL AND pos != 10000 + k - (k // 10 + 1))
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT g, k, orig, row_number() OVER (PARTITION BY g ORDER BY k NULLS LAST) - 1 AS pos FROM tn)
+WHERE (k IS NULL AND pos < 90000) OR (k IS NOT NULL AND pos != k - (k // 10 + 1))
+----
+0
+
+# HUGEINT keys whose high bytes are all equal
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY (g * 1000000 + k)::HUGEINT) - 1 AS pos FROM t)
+WHERE pos != g * 100000 + k
+----
+0
+
+# negative values and a DOUBLE in the tied word
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY g, (k - 50000)::DOUBLE / 3) - 1 AS pos FROM t)
+WHERE pos != g * 100000 + k
+----
+0
+
+# four-word keys: a and b tie across large buckets, c is a permutation
+statement ok
+CREATE TABLE t4 AS SELECT i, (i % 3)::BIGINT AS a, ((i // 3) % 5)::BIGINT AS b, ((i // 15) * 37 % 50000)::BIGINT AS c
+FROM range(750000) r(i);
+
+query I
+SELECT count(*) FROM (SELECT a, b, c, row_number() OVER (ORDER BY a, b, c) - 1 AS pos FROM t4)
+WHERE pos != a * 250000 + b * 50000 + c
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT a, b, c, row_number() OVER (ORDER BY a, b, c, i) - 1 AS pos FROM t4)
+WHERE pos != a * 250000 + b * 50000 + c
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT a, b, c, row_number() OVER (PARTITION BY a ORDER BY b DESC, c) - 1 AS pos FROM t4)
+WHERE pos != (4 - b) * 50000 + c
+----
+0
+
+# all keys equal
+query II
+SELECT count(*), sum(i) FROM (SELECT i FROM t4 ORDER BY a * 0, b * 0)
+----
+750000	281249625000
+
+# the same sorts when the runs are made external
+statement ok
+SET debug_force_external=true;
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY g, k) - 1 AS pos FROM t) WHERE pos != g * 100000 + k
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT a, b, c, row_number() OVER (PARTITION BY a ORDER BY b DESC, c) - 1 AS pos FROM t4)
+WHERE pos != (4 - b) * 50000 + c
+----
+0
+
+statement ok
+SET disabled_optimizers='top_n';
+
+query II
+SELECT g, k FROM t ORDER BY g, k LIMIT 3 OFFSET 345678
+----
+3	45678
+3	45679
+3	45680
+
+# many duplicates whose varying bytes end before the last byte of the final key word
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE d AS SELECT 0::INTEGER AS a, (i % 300)::INTEGER AS b, i FROM range(2000000) r(i);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE pb > b) FROM (SELECT b, lag(b) OVER (ORDER BY a, b) AS pb FROM d)
+----
+2000000	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != b * 6666 + least(b, 200) + i // 300)
+FROM (SELECT b, i, row_number() OVER (ORDER BY a, b, i) AS rn FROM d)
+----
+2000000	0

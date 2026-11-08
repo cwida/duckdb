@@ -1,0 +1,111 @@
+# name: test/sql/order/test_sort_varchar_tied_prefix.test_slow
+# description: Sorting strings with long shared prefixes (repeated radix refinement of tied suffix words)
+# group: [order]
+
+# fixed-width group and item numbers: the position of every row is g * 20000 + k
+statement ok
+CREATE TABLE urls AS
+SELECT i, i % 50 AS g, (i // 50) * 37 % 20000 AS k,
+       'https://www.example.com/catalog/products/' || lpad((i % 50)::VARCHAR, 2, '0') || '/item/' ||
+       lpad(((i // 50) * 37 % 20000)::VARCHAR, 6, '0') || repeat('x', (i % 3)::INTEGER) AS s
+FROM range(1000000) r(i);
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY s) - 1 AS pos FROM urls) WHERE pos != g * 20000 + k
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY s DESC) - 1 AS pos FROM urls)
+WHERE pos != (49 - g) * 20000 + (19999 - k)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT k, row_number() OVER (PARTITION BY g ORDER BY s) - 1 AS pos FROM urls) WHERE pos != k
+----
+0
+
+# with a payload column, through the ORDER BY operator
+statement ok
+SET disabled_optimizers='top_n';
+
+query III
+SELECT g, k, i FROM urls ORDER BY s LIMIT 3 OFFSET 456789
+----
+22	16789	184872
+22	16790	833522
+22	16791	482172
+
+query I
+SELECT s FROM urls ORDER BY s DESC LIMIT 2 OFFSET 20000
+----
+https://www.example.com/catalog/products/48/item/019999xx
+https://www.example.com/catalog/products/48/item/019998x
+
+statement ok
+RESET disabled_optimizers;
+
+# shared prefixes of varying lengths, around and beyond the radix refinement limits;
+# the predecessor in sorted order must never compare greater
+foreach plen 30 120 250 400
+
+statement ok
+CREATE OR REPLACE TABLE p AS
+SELECT i, repeat('p', {plen}) || md5((i % 200000)::VARCHAR) || CASE WHEN i % 5 = 0 THEN '' ELSE repeat('q', (i % 9)::INTEGER) END AS s
+FROM range(600000) r(i);
+
+query III
+SELECT count(*), count(*) FILTER (WHERE prev > s), sum(hash(s)) = (SELECT sum(hash(s)) FROM p)
+FROM (SELECT s, lag(s) OVER (ORDER BY s) AS prev FROM p)
+----
+600000	0	true
+
+query II
+SELECT count(*), count(*) FILTER (WHERE prev < s) FROM (SELECT s, lag(s) OVER (ORDER BY s DESC) AS prev FROM p)
+----
+600000	0
+
+endloop
+
+# heavy duplicates behind the shared prefix
+statement ok
+CREATE OR REPLACE TABLE d AS
+SELECT i, 'customer-account-identifier-' || lpad((hash(i) % 700)::VARCHAR, 3, '0') AS s FROM range(700000) r(i);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE prev > s) FROM (SELECT s, lag(s) OVER (ORDER BY s) AS prev FROM d)
+----
+700000	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE r != (SELECT count(*) FROM d d2 WHERE d2.s < sub.s) + 1)
+FROM (SELECT i, s, rank() OVER (ORDER BY s) AS r FROM d) sub WHERE i % 997 = 0
+----
+703	0
+
+# NULLs and multiple sort columns with a varchar tie-breaker
+statement ok
+CREATE OR REPLACE TABLE m AS
+SELECT i, (i % 3) AS a, CASE WHEN i % 11 = 0 THEN NULL ELSE 'shared/prefix/for/all/rows/' || md5(i::VARCHAR) END AS s
+FROM range(500000) r(i);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE pa > a OR (pa = a AND ps > s) OR (pa = a AND ps IS NULL AND s IS NOT NULL))
+FROM (SELECT a, s, lag(a) OVER w AS pa, lag(s) OVER w AS ps FROM m WINDOW w AS (ORDER BY a, s NULLS LAST))
+----
+500000	0
+
+# the same sorts when the runs are made external
+statement ok
+SET debug_force_external=true;
+
+query I
+SELECT count(*) FROM (SELECT g, k, row_number() OVER (ORDER BY s) - 1 AS pos FROM urls) WHERE pos != g * 20000 + k
+----
+0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE prev > s) FROM (SELECT s, lag(s) OVER (ORDER BY s) AS prev FROM p)
+----
+600000	0
