@@ -68,7 +68,7 @@ public:
 	bool DateIsTruncated(const BoundConstantExpression &date_part, const BoundConstantExpression &rhs);
 	bool IsInfinity(const Value &value);
 	void ReplaceDateTruncWithColumn(unique_ptr<Expression> &column_side, unique_ptr<Expression> &constant_side,
-	                                const BoundColumnRefExpression &column_part);
+	                                const BoundColumnRefExpression &column_part, const LogicalType &return_type);
 
 	unique_ptr<Expression> CastAndEvaluate(unique_ptr<Expression> rhs, const LogicalType &return_type);
 };
