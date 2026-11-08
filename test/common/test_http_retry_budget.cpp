@@ -942,23 +942,30 @@ TEST_CASE("Throttled HTTP retries back off from http_retry_throttled_wait_ms", "
 
 TEST_CASE("HTTP params take the throttled retry settings of the session", "[http]") {
 	DuckDB db(nullptr);
+	auto params = [](Connection &con) {
+		// A provider that replaces the built-in one (httpfs) reads secrets while it initializes the parameters, which
+		// takes a transaction
+		con.BeginTransaction();
+		auto result = HTTPUtil::Get(*con.context->db).InitializeParameters(*con.context, "http://localhost/");
+		con.Commit();
+		return result;
+	};
 	Connection con(db);
-	auto &http_util = HTTPUtil::Get(*db.instance);
-	auto defaults = http_util.InitializeParameters(*con.context, "http://localhost/");
+	auto defaults = params(con);
 	REQUIRE(defaults->retry_quota_throttled);
 	REQUIRE(defaults->retry_throttled_wait_ms == 0);
 	REQUIRE_NO_FAIL(con.Query("SET http_retry_quota_throttled = false"));
 	REQUIRE_NO_FAIL(con.Query("SET http_retry_throttled_wait_ms = 1000"));
-	auto session = http_util.InitializeParameters(*con.context, "http://localhost/");
+	auto session = params(con);
 	REQUIRE_FALSE(session->retry_quota_throttled);
 	REQUIRE(session->retry_throttled_wait_ms == 1000);
 	// A plain SET is the session's own: another connection keeps the defaults
 	Connection other(db);
-	auto other_params = http_util.InitializeParameters(*other.context, "http://localhost/");
+	auto other_params = params(other);
 	REQUIRE(other_params->retry_quota_throttled);
 	REQUIRE(other_params->retry_throttled_wait_ms == 0);
 	// A global value reaches every session that has none of its own
 	REQUIRE_NO_FAIL(other.Query("SET GLOBAL http_retry_quota_throttled = false"));
 	Connection third(db);
-	REQUIRE_FALSE(http_util.InitializeParameters(*third.context, "http://localhost/")->retry_quota_throttled);
+	REQUIRE_FALSE(params(third)->retry_quota_throttled);
 }
