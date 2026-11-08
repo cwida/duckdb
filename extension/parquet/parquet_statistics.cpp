@@ -769,16 +769,23 @@ static bool CastIsLeftInvertible(const LogicalType &source_type, const LogicalTy
 	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
 }
 
+bool ParquetStatisticsUtils::IsBloomFilterCast(const Expression &expr) {
+	if (!BoundCastExpression::IsCast(expr)) {
+		return false;
+	}
+	auto &cast = expr.Cast<BoundFunctionExpression>();
+	auto &child = BoundCastExpression::Child(cast);
+	return !BoundCastExpression::IsTryCast(cast) && child.GetExpressionClass() == ExpressionClass::BOUND_REF &&
+	       child.Cast<BoundReferenceExpression>().Index() == 0 &&
+	       CastIsLeftInvertible(child.GetReturnType(), cast.GetReturnType());
+}
+
 static bool IsBloomFilterColumn(const Expression &expr, ParquetBloomFilterHashStrategy hash_strategy) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_REF) {
 		return expr.Cast<BoundReferenceExpression>().Index() == 0;
 	}
 	if (BoundCastExpression::IsCast(expr)) {
-		auto &cast = expr.Cast<BoundFunctionExpression>();
-		auto &child = BoundCastExpression::Child(cast);
-		return !BoundCastExpression::IsTryCast(cast) && child.GetExpressionClass() == ExpressionClass::BOUND_REF &&
-		       child.Cast<BoundReferenceExpression>().Index() == 0 &&
-		       CastIsLeftInvertible(child.GetReturnType(), cast.GetReturnType());
+		return ParquetStatisticsUtils::IsBloomFilterCast(expr);
 	}
 	if (!UsesNormalizedIntervalHash(hash_strategy) || expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		return false;

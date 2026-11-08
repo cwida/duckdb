@@ -79,8 +79,6 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
-#include "duckdb/planner/expression/bound_reference_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
 
 namespace duckdb {
 
@@ -1788,37 +1786,29 @@ static optional_ptr<ColumnReader> TryGetBloomFilterSource(ColumnReader &column_r
 	return TryGetBloomFilterSource(*expr_reader.child_readers[0]);
 }
 
-static void ReplaceColumnReference(unique_ptr<Expression> &expr, const Expression &column) {
-	if (expr->GetExpressionClass() == ExpressionClass::BOUND_REF) {
-		expr = column.Copy();
-		return;
-	}
-	ExpressionIterator::EnumerateChildren(
-	    *expr, [&](unique_ptr<Expression> &child) { ReplaceColumnReference(child, column); });
-}
-
-//! For a column read as a cast of the file column, the filter applied to that cast of the file column
-static unique_ptr<TableFilter> TryGetCastBloomFilter(ColumnReader &column_reader, const TableFilter &filter,
-                                                     optional_ptr<ColumnReader> &bloom_source) {
+//! For a column read as a cast of the file column whose Bloom filter can be probed, the cast
+static optional_ptr<const Expression> TryGetBloomFilterCast(ColumnReader &column_reader,
+                                                            optional_ptr<ColumnReader> &bloom_source) {
 	if (column_reader.Schema().schema_type != ParquetColumnSchemaType::EXPRESSION) {
 		return nullptr;
 	}
 	auto &expr_reader = column_reader.Cast<ExpressionColumnReader>();
-	if (expr_reader.child_readers.size() != 1 || !expr_reader.expr || !BoundCastExpression::IsCast(*expr_reader.expr)) {
+	if (expr_reader.child_readers.size() != 1 || !expr_reader.expr ||
+	    !ParquetStatisticsUtils::IsBloomFilterCast(*expr_reader.expr)) {
 		return nullptr;
 	}
-	auto &cast_child = BoundCastExpression::Child(expr_reader.expr->Cast<BoundFunctionExpression>());
 	auto &child_reader = *expr_reader.child_readers[0];
-	if (cast_child.GetExpressionClass() != ExpressionClass::BOUND_REF ||
-	    cast_child.Cast<BoundReferenceExpression>().Index() != 0 ||
-	    child_reader.Schema().schema_type != ParquetColumnSchemaType::COLUMN || child_reader.Type().IsNested()) {
+	if (child_reader.Schema().schema_type != ParquetColumnSchemaType::COLUMN || child_reader.Type().IsNested()) {
 		return nullptr;
 	}
-	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ParquetReader::TryGetCastBloomFilter");
-	auto expr = expr_filter.expr->Copy();
-	ReplaceColumnReference(expr, *expr_reader.expr);
 	bloom_source = child_reader;
-	return make_uniq<ExpressionFilter>(std::move(expr));
+	return expr_reader.expr.get();
+}
+
+//! The filter applied to the cast of the file column instead of the column read
+static unique_ptr<TableFilter> CreateCastBloomFilter(const TableFilter &filter, const Expression &cast) {
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ParquetReader::CreateCastBloomFilter");
+	return make_uniq<ExpressionFilter>(expr_filter.ToExpression(cast));
 }
 
 static bool TryGetComparisonBloomFilterLeaf(ColumnReader &column_reader, const Expression &expr,
@@ -1999,13 +1989,13 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 			auto prune_result = CheckRowGroupFilterStatistics(context, state, column_reader, filter);
 			// check the bloom filter if present
 			auto bloom_source = TryGetBloomFilterSource(column_reader);
-			unique_ptr<TableFilter> cast_filter;
+			optional_ptr<const Expression> bloom_cast;
 			if (!bloom_source) {
-				cast_filter = TryGetCastBloomFilter(column_reader, filter, bloom_source);
+				bloom_cast = TryGetBloomFilterCast(column_reader, bloom_source);
 			}
 			if (bloom_source) {
 				optional_ptr<ColumnReader> bloom_reader = bloom_source;
-				optional_ptr<const TableFilter> bloom_filter = cast_filter ? cast_filter.get() : &filter;
+				optional_ptr<const TableFilter> bloom_filter = &filter;
 				unique_ptr<TableFilter> leaf_filter;
 				auto check_bloom_filter = prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE;
 				if (bloom_source->Type().IsNested()) {
@@ -2029,15 +2019,21 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 				    bloom_reader->Schema().schema_type == ParquetColumnSchemaType::COLUMN &&
 				    bloom_reader->ColumnIndex() < group.columns.size() && hash_strategy) {
 					auto &bloom_meta_data = group.columns[bloom_reader->ColumnIndex()].meta_data;
-					if (bloom_meta_data.__isset.bloom_filter_offset && bloom_meta_data.bloom_filter_offset > 0 &&
-					    ParquetStatisticsUtils::HasBloomFilterConstants(*bloom_filter, *hash_strategy)) {
-						TryAttachBloomFilterReadHead(context, state, column_reader, filter,
-						                             bloom_source->Type().IsNested(), bloom_reader->ColumnIndex());
-					}
-					if (ParquetStatisticsUtils::BloomFilterExcludes(
-					        *bloom_filter, group.columns[bloom_reader->ColumnIndex()].meta_data,
-					        *state.thrift_file_proto, allocator, bloom_reader->Schema(), *hash_strategy)) {
-						prune_result = FilterPropagateResult::FILTER_ALWAYS_FALSE;
+					if (bloom_meta_data.__isset.bloom_filter_offset && bloom_meta_data.bloom_filter_offset > 0) {
+						unique_ptr<TableFilter> cast_filter;
+						if (bloom_cast) {
+							cast_filter = CreateCastBloomFilter(filter, *bloom_cast);
+							bloom_filter = cast_filter.get();
+						}
+						if (ParquetStatisticsUtils::HasBloomFilterConstants(*bloom_filter, *hash_strategy)) {
+							TryAttachBloomFilterReadHead(context, state, column_reader, filter,
+							                             bloom_source->Type().IsNested(), bloom_reader->ColumnIndex());
+						}
+						if (ParquetStatisticsUtils::BloomFilterExcludes(*bloom_filter, bloom_meta_data,
+						                                                *state.thrift_file_proto, allocator,
+						                                                bloom_reader->Schema(), *hash_strategy)) {
+							prune_result = FilterPropagateResult::FILTER_ALWAYS_FALSE;
+						}
 					}
 				}
 			}

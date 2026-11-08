@@ -41,6 +41,7 @@ class Statistics;
 
 namespace duckdb {
 class Allocator;
+class Expression;
 class TableFilter;
 enum class LogicalTypeId : uint8_t;
 
@@ -82,6 +83,8 @@ struct ParquetStatisticsUtils {
 	GetBloomFilterHashStrategy(const ParquetColumnSchema &schema,
 	                           ParquetIntervalBloomFilterVersion interval_bloom_filter_version);
 
+	//! Whether a constant compared with this cast of the column can be mapped to a stored value to probe
+	static bool IsBloomFilterCast(const Expression &expr);
 	static bool HasBloomFilterConstants(const TableFilter &filter, ParquetBloomFilterHashStrategy hash_strategy);
 	static bool BloomFilterExcludes(const TableFilter &filter, const duckdb_parquet::ColumnMetaData &column_meta_data,
 	                                duckdb_apache::thrift::protocol::TProtocol &file_proto, Allocator &allocator,
