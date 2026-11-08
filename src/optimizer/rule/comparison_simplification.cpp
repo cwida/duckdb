@@ -81,20 +81,20 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
                                      BoundFunctionExpression &cast_expression, const Value &constant_value,
                                      Value &cast_constant, const LogicalType &target_type, bool column_ref_left,
                                      unique_ptr<Expression> &replacement) {
-	if (cast_constant.IsNull() || BoundCastExpression::CastIsInvertible(cast_expression.GetReturnType(), target_type)) {
+	auto &cast_type = cast_expression.GetReturnType();
+	if (cast_constant.IsNull() || BoundCastExpression::CastIsInvertible(cast_type, target_type)) {
 		return true;
 	}
-	if (cast_expression.GetReturnType().IsIntegral() && target_type.IsIntegral()) {
+	if (cast_type.IsIntegral() && target_type.IsIntegral()) {
 		return true;
 	}
 	// The constant must round-trip exactly; the column side is checked by the caller.
-	auto &cast_type = cast_expression.GetReturnType();
 	if (BoundCastExpression::IsLosslessIntegralToFloatingCast(target_type, cast_type) ||
 	    (target_type.id() == LogicalTypeId::DECIMAL && cast_type.id() == LogicalTypeId::DECIMAL)) {
 		auto roundtrip = cast_constant.TryCastAs(context, cast_type, nullptr, true);
 		return roundtrip && *roundtrip == constant_value;
 	}
-	if (target_type.id() != LogicalTypeId::DATE || cast_expression.GetReturnType().id() != LogicalTypeId::TIMESTAMP) {
+	if (target_type.id() != LogicalTypeId::DATE || cast_type.id() != LogicalTypeId::TIMESTAMP) {
 		return false;
 	}
 	return DateTimestampComparisonIsInvertible(context, expr, cast_expression, constant_value, cast_constant,

@@ -20,8 +20,8 @@ InClauseSimplificationRule::InClauseSimplificationRule(ExpressionRewriter &rewri
 //! Rewrites CAST(x) IN (constants) for a cast that is invertible for equality: each constant c is replaced by the
 //! source value CAST(c) if that value casts back to c, and dropped otherwise, as no source value can match it
 static unique_ptr<Expression> SimplifyEqualityCast(ClientContext &context, BoundOperatorExpression &expr,
-                                                   BoundFunctionExpression &cast_expression,
-                                                   const LogicalType &target_type, bool &changes_made) {
+                                                   BoundFunctionExpression &cast_expression, bool &changes_made) {
+	auto source_type = BoundCastExpression::SourceType(cast_expression);
 	auto &children = expr.GetChildrenMutable();
 	vector<unique_ptr<Expression>> new_children;
 	new_children.push_back(nullptr);
@@ -31,7 +31,7 @@ static unique_ptr<Expression> SimplifyEqualityCast(ClientContext &context, Bound
 		}
 		auto &constant_value = children[i]->Cast<BoundConstantExpression>().GetValue();
 		if (constant_value.IsNull()) {
-			new_children.push_back(make_uniq<BoundConstantExpression>(Value(target_type)));
+			new_children.push_back(make_uniq<BoundConstantExpression>(Value(source_type)));
 			continue;
 		}
 		auto source_constant = BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value);
@@ -63,7 +63,7 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 	}
 	auto target_type = BoundCastExpression::SourceType(cast_expression);
 	if (BoundCastExpression::CastIsInvertibleForEquality(target_type, cast_expression.GetReturnType())) {
-		return SimplifyEqualityCast(GetContext(), expr, cast_expression, target_type, changes_made);
+		return SimplifyEqualityCast(GetContext(), expr, cast_expression, changes_made);
 	}
 	if (BoundCastExpression::Child(cast_expression).GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return nullptr;

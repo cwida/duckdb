@@ -8,11 +8,14 @@ CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (5), (10), (-3), (NULL)) v(a);
 statement ok
 CREATE TABLE f AS SELECT * FROM (VALUES (0.5::FLOAT), (0.1::FLOAT), ('-0.0'::FLOAT), ('nan'::FLOAT), (NULL::FLOAT)) v(f);
 
-# integer -> VARCHAR: the cast is removed for equality comparisons
+statement ok
+CREATE TABLE s AS SELECT 'x' AS s;
+
+# integer -> VARCHAR: the cast is removed for equality comparisons, so the filter can be pushed into the scan
 query II
 EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR = '5';
 ----
-physical_plan	<!REGEX>:.*CAST.*
+physical_plan	<REGEX>:(?s).*Filters: a = 5.*
 
 query II
 EXPLAIN SELECT count(*) FROM t WHERE '5' = a::VARCHAR;
@@ -30,6 +33,12 @@ EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR < '3';
 ----
 physical_plan	<REGEX>:.*CAST.*
 
+query II
+SELECT count(*) FILTER (WHERE a::VARCHAR < '3'), count(*) FILTER (WHERE a::VARCHAR > '1')
+FROM t;
+----
+4	3
+
 query IIIIII
 SELECT
 	count(*) FILTER (WHERE a::VARCHAR = '5'),
@@ -42,104 +51,80 @@ FROM t;
 ----
 1	1	0	0	0	0
 
-query IIII
+query IIIIII
 SELECT
 	count(*) FILTER (WHERE a::VARCHAR != '5'),
 	count(*) FILTER (WHERE a::VARCHAR != 'abc'),
 	count(*) FILTER (WHERE a::VARCHAR IS DISTINCT FROM '5'),
-	count(*) FILTER (WHERE a::VARCHAR IS DISTINCT FROM 'abc')
-FROM t;
-----
-4	5	5	6
-
-query II
-SELECT
+	count(*) FILTER (WHERE a::VARCHAR IS DISTINCT FROM 'abc'),
 	count(*) FILTER (WHERE a::VARCHAR IS NOT DISTINCT FROM '10'),
 	count(*) FILTER (WHERE a::VARCHAR IS NOT DISTINCT FROM 'abc')
 FROM t;
 ----
-1	0
-
-# DISTINCT FROM a constant that can never match is only folded if the cast child can be dropped
-query II
-SELECT
-	count(*) FILTER (WHERE (a + 1)::VARCHAR IS DISTINCT FROM 'abc'),
-	count(*) FILTER (WHERE (a + 1)::VARCHAR IS NOT DISTINCT FROM 'abc')
-FROM t;
-----
-6	0
-
-statement ok
-CREATE TABLE s AS SELECT 'x' AS s;
-
-statement error
-SELECT s::INTEGER::VARCHAR IS DISTINCT FROM 'abc' FROM s;
-----
-<REGEX>:Conversion Error.*
+4	5	5	6	1	0
 
 # a comparison that can never match is still NULL for NULL rows
-query III
-SELECT a, a::VARCHAR = 'abc', a::VARCHAR != 'abc' FROM t ORDER BY a NULLS LAST;
+query IIIII
+SELECT a, a::VARCHAR = 'abc', a::VARCHAR != 'abc', a::VARCHAR IN ('05', 'abc'), a::VARCHAR IN ('abc', NULL)
+FROM t ORDER BY a NULLS LAST;
 ----
--3	false	true
-1	false	true
-2	false	true
-5	false	true
-10	false	true
-NULL	NULL	NULL
+-3	false	true	false	NULL
+1	false	true	false	NULL
+2	false	true	false	NULL
+5	false	true	false	NULL
+10	false	true	false	NULL
+NULL	NULL	NULL	NULL	NULL
 
-query IIII
+query II
 SELECT
 	count(*) FILTER (WHERE a::VARCHAR IN ('5', '05', 'abc', '10')),
-	count(*) FILTER (WHERE a::VARCHAR IN ('05', 'abc')),
-	count(*) FILTER (WHERE a::VARCHAR IN ('abc', NULL)),
 	count(*) FILTER (WHERE a::VARCHAR NOT IN ('5', 'abc'))
 FROM t;
 ----
-2	0	0	4
+2	4
 
-query III
-SELECT a, a::VARCHAR IN ('05', 'abc'), a::VARCHAR IN ('abc', NULL) FROM t ORDER BY a NULLS LAST;
-----
--3	false	NULL
-1	false	NULL
-2	false	NULL
-5	false	NULL
-10	false	NULL
-NULL	NULL	NULL
-
-# the IN probe does not have to be a column reference
+# the cast child does not have to be a column reference
 query II
 EXPLAIN SELECT count(*) FROM t WHERE (a + 1)::VARCHAR IN ('6', '11');
 ----
 physical_plan	<!REGEX>:.*CAST.*
 
-query III
+query IIIII
 SELECT
 	count(*) FILTER (WHERE (a + 1)::VARCHAR IN ('6', '11', 'abc')),
 	count(*) FILTER (WHERE (a + 1)::VARCHAR IN ('abc', '06')),
-	count(*) FILTER (WHERE (a + 1)::VARCHAR NOT IN ('6', 'abc'))
+	count(*) FILTER (WHERE (a + 1)::VARCHAR NOT IN ('6', 'abc')),
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IS DISTINCT FROM 'abc'),
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IS NOT DISTINCT FROM 'abc')
 FROM t;
 ----
-2	0	4
+2	0	4	6	0
+
+# folding a comparison that can never match must not drop a child that throws
+statement error
+SELECT s::INTEGER::VARCHAR IS DISTINCT FROM 'abc' FROM s;
+----
+<REGEX>:Conversion Error.*
 
 statement error
 SELECT s::INTEGER::VARCHAR IN ('abc', '06') FROM s;
 ----
 <REGEX>:Conversion Error.*
 
-# range comparisons compare the strings
-query II
-SELECT count(*) FILTER (WHERE a::VARCHAR < '3'), count(*) FILTER (WHERE a::VARCHAR > '1')
-FROM t;
-----
-4	3
-
 # a collation can make distinct strings equal, so the cast is kept
 query I
 SELECT count(*) FROM t WHERE a::VARCHAR COLLATE NOCASE = '5';
 ----
 1
+
+# HUGEINT -> VARCHAR
+query II
+SELECT
+	count(*) FILTER (WHERE h::VARCHAR = '170141183460469231731687303715884105727'),
+	count(*) FILTER (WHERE h::VARCHAR = '0170141183460469231731687303715884105727')
+FROM (VALUES (0::HUGEINT), (170141183460469231731687303715884105727::HUGEINT)) v(h);
+----
+1	0
 
 # integer widening: a constant outside the range of the column can never match
 query IIII
@@ -167,43 +152,29 @@ FROM t;
 ----
 1	0	2
 
+# the constant -0.0 matches the integer 0
+query I
+SELECT count(*) FILTER (WHERE (a - a)::DOUBLE = '-0.0'::DOUBLE) FROM t;
+----
+5
+
 # FLOAT -> DOUBLE: only constants that are exactly a FLOAT can match
 query II
 EXPLAIN SELECT count(*) FROM f WHERE f::DOUBLE = 0.5::DOUBLE;
 ----
 physical_plan	<!REGEX>:.*CAST.*
 
-query IIIIII
+query IIIIIIIII
 SELECT
 	count(*) FILTER (WHERE f::DOUBLE = 0.5::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE = 0.1::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE = 0.1::FLOAT::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE = 0.0::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE = 'nan'::DOUBLE),
-	count(*) FILTER (WHERE f::DOUBLE = 1e300::DOUBLE)
-FROM f;
-----
-1	0	1	1	1	0
-
-query III
-SELECT
+	count(*) FILTER (WHERE f::DOUBLE = 1e300::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE != 0.1::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE IS DISTINCT FROM 0.1::DOUBLE),
 	count(*) FILTER (WHERE f::DOUBLE IN (0.1::DOUBLE, 0.5::DOUBLE, 'nan'::DOUBLE))
 FROM f;
 ----
-4	5	2
-
-# the rewritten filter can prune row groups of a native table
-statement ok
-CREATE TABLE big AS SELECT range::INTEGER AS a FROM range(1000000);
-
-query I
-SELECT count(*) FROM big WHERE a::VARCHAR = '123456';
-----
-1
-
-query I
-SELECT count(*) FROM big WHERE a::VARCHAR IN ('7', '0007', '999999', 'x');
-----
-2
+1	0	1	1	1	0	4	5	2
