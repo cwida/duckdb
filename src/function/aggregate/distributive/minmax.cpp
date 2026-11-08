@@ -15,6 +15,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/main/settings.hpp"
@@ -363,6 +364,22 @@ static bool MinMaxUsesCollation(ClientContext &context, const LogicalType &input
 	       input_type.id() == LogicalTypeId::VARIANT || varchar_collation || nested_collation;
 }
 
+//! Returns the collated copy of the argument, or nullptr if no collation applies to its type
+static unique_ptr<Expression> GetCollatedMinMaxArgument(ClientContext &context, const Expression &argument) {
+	auto &input_type = argument.GetReturnType();
+	if (!MinMaxUsesCollation(context, input_type)) {
+		return nullptr;
+	}
+	// Probe on a placeholder first, as the argument cannot always be copied (e.g. when it contains a subquery)
+	unique_ptr<Expression> probe = make_uniq<BoundReferenceExpression>(input_type, storage_t(0));
+	if (!ExpressionBinder::PushCollation(context, probe, input_type)) {
+		return nullptr;
+	}
+	auto collated_arg = argument.Copy();
+	ExpressionBinder::PushCollation(context, collated_arg, input_type);
+	return collated_arg;
+}
+
 template <class OP, class OP_STRING, class OP_VECTOR>
 unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 	auto &context = input.GetClientContext();
@@ -370,9 +387,8 @@ unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 	auto &arguments = input.GetArguments();
 	auto input_type = arguments[0]->GetReturnType();
 
-	const auto collation = MinMaxUsesCollation(context, input_type);
-	auto collated_arg = collation ? arguments[0]->Copy() : nullptr;
-	if (collation && ExpressionBinder::PushCollation(context, collated_arg, collated_arg->GetReturnType())) {
+	auto collated_arg = GetCollatedMinMaxArgument(context, *arguments[0]);
+	if (collated_arg) {
 		// If aggr function is min/max and uses collations, replace bound_function with arg_min/arg_max
 		// to make sure the result's correctness.
 		vector<LogicalType> types {arguments[0]->GetReturnType(), collated_arg->GetReturnType()};
@@ -565,24 +581,22 @@ unique_ptr<FunctionData> MinMaxNBind(BindAggregateFunctionInput &input) {
 			throw ParameterNotResolvedException();
 		}
 	}
-	if (MinMaxUsesCollation(context, arguments[0]->GetReturnType())) {
-		auto collated_arg = arguments[0]->Copy();
-		if (ExpressionBinder::PushCollation(context, collated_arg, collated_arg->GetReturnType())) {
-			vector<LogicalType> types {arguments[0]->GetReturnType(), collated_arg->GetReturnType(),
-			                           arguments[1]->GetReturnType()};
-			auto collated_function = GetCollatedMinMaxFunction(context, function.GetName(), types);
+	auto collated_arg = GetCollatedMinMaxArgument(context, *arguments[0]);
+	if (collated_arg) {
+		vector<LogicalType> types {arguments[0]->GetReturnType(), collated_arg->GetReturnType(),
+		                           arguments[1]->GetReturnType()};
+		auto collated_function = GetCollatedMinMaxFunction(context, function.GetName(), types);
 
-			vector<unique_ptr<Expression>> collated_arguments;
-			collated_arguments.reserve(3);
-			collated_arguments.push_back(std::move(arguments[0]));
-			collated_arguments.push_back(std::move(collated_arg));
-			collated_arguments.push_back(std::move(arguments[1]));
-			FunctionBinder function_binder(context);
-			auto expr = function_binder.BindAggregateFunction(collated_function, std::move(collated_arguments));
-			arguments = std::move(expr->GetChildrenMutable());
-			function.ReplaceImplementation(expr->Function());
-			return std::move(expr->BindInfoMutable());
-		}
+		vector<unique_ptr<Expression>> collated_arguments;
+		collated_arguments.reserve(3);
+		collated_arguments.push_back(std::move(arguments[0]));
+		collated_arguments.push_back(std::move(collated_arg));
+		collated_arguments.push_back(std::move(arguments[1]));
+		FunctionBinder function_binder(context);
+		auto expr = function_binder.BindAggregateFunction(collated_function, std::move(collated_arguments));
+		arguments = std::move(expr->GetChildrenMutable());
+		function.ReplaceImplementation(expr->Function());
+		return std::move(expr->BindInfoMutable());
 	}
 
 	const auto val_type = arguments[0]->GetReturnType().InternalType();

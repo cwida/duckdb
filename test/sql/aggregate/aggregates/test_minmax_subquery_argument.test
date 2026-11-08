@@ -1,0 +1,44 @@
+# name: test/sql/aggregate/aggregates/test_minmax_subquery_argument.test
+# description: min/max over nested values computed by a subquery
+# group: [aggregates]
+
+statement ok
+CREATE TABLE a (x INTEGER);
+
+statement ok
+INSERT INTO a VALUES (1), (2);
+
+query I
+SELECT min((SELECT [1])) FROM a;
+----
+[1]
+
+query I
+SELECT max((SELECT {'k': x})) FROM a;
+----
+{'k': 2}
+
+query I
+SELECT min((SELECT [x])) FROM a;
+----
+[1]
+
+query I
+SELECT max((SELECT ['b' || x])) FROM a;
+----
+[b2]
+
+query I
+SELECT max((SELECT [x]), 1) FROM a;
+----
+[[2]]
+
+query I
+SELECT min(CASE WHEN EXISTS (SELECT 1) THEN [x] END) FROM a;
+----
+[1]
+
+query I
+SELECT max((SELECT [x]::INTEGER[1])) FROM a;
+----
+[2]
