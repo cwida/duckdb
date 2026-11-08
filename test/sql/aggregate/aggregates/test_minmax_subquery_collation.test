@@ -1,0 +1,31 @@
+# name: test/sql/aggregate/aggregates/test_minmax_subquery_collation.test
+# description: Test min/max over nested values and collated strings computed by subqueries (Issue #28551)
+# group: [aggregates]
+
+statement ok
+PRAGMA enable_verification
+
+query I
+SELECT min((SELECT [1]));
+----
+[1]
+
+query I
+SELECT min((SELECT 'a' COLLATE NOCASE));
+----
+a
+
+query I
+SELECT min([(SELECT 'a' COLLATE NOCASE)]);
+----
+[a]
+
+query I
+SELECT max((SELECT {'k': x})) FROM (VALUES (1), (2)) t(x);
+----
+{'k': 2}
+
+query I
+SELECT max((SELECT {'k': 'a' COLLATE NOCASE, 'v': x})) FROM (VALUES (1), (2)) t(x);
+----
+{'k': a, 'v': 2}

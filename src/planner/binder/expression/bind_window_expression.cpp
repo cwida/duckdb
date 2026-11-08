@@ -171,8 +171,11 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	const auto save_transport_try_errors = transport_try_errors;
 	transport_try_errors = false;
 	ErrorData error;
+	vector<unique_ptr<ParsedExpression>> parsed_args;
+	parsed_args.reserve(window.GetArguments().size());
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {
+		parsed_args.push_back(child.GetExpression().Copy());
 		bound_args.push_back(BindChild(child.GetExpressionMutable(), depth, error));
 	}
 	vector<unique_ptr<Expression>> bound_partitions;
@@ -270,9 +273,25 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 
 		// bind the aggregate
 		FunctionBinder function_binder(binder);
+		auto rebind_argument = [&](idx_t arg_idx) -> unique_ptr<Expression> {
+			D_ASSERT(arg_idx < parsed_args.size());
+			auto parsed_copy = parsed_args[arg_idx]->Copy();
+			const auto prev_inside_window = this->inside_window;
+			const auto prev_transport_try_errors = this->transport_try_errors;
+			this->inside_window = true;
+			this->transport_try_errors = false;
+			ErrorData rebind_error;
+			auto rebound = BindChild(parsed_copy, depth, rebind_error);
+			this->inside_window = prev_inside_window;
+			this->transport_try_errors = prev_transport_try_errors;
+			if (rebind_error.HasError()) {
+				rebind_error.Throw();
+			}
+			return rebound;
+		};
 		auto window_bound_aggregate = function_binder.BindAggregateFunction(
 		    func, std::move(arguments), error, nullptr,
-		    window.Distinct() ? AggregateType::DISTINCT : AggregateType::NON_DISTINCT);
+		    window.Distinct() ? AggregateType::DISTINCT : AggregateType::NON_DISTINCT, rebind_argument);
 		// No function found, throw an error
 		if (!window_bound_aggregate) {
 			error.AddQueryLocation(window);
