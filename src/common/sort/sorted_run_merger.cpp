@@ -13,9 +13,6 @@
 #include "duckdb/common/types/row/tuple_data_collection.hpp"
 #include "duckdb/parallel/parallel_destroy_task.hpp"
 
-#include "vergesort.h"
-#include "pdqsort.h"
-
 #include <algorithm>
 #include <new>
 #include <type_traits>
@@ -51,6 +48,9 @@ struct SortedRunBoundaryReader {
 	idx_t lower_partition_idx;
 };
 
+//! Longest common key prefix that merging skips
+static constexpr idx_t MAXIMUM_MERGE_PREFIX = 512;
+
 template <class SORT_KEY>
 static idx_t MergePartitionPrefix(const unsafe_array_ptr<const SORT_KEY> &keys,
                                   const unsafe_vector<SortedRunPartitionBoundary> &boundaries) {
@@ -58,8 +58,7 @@ static idx_t MergePartitionPrefix(const unsafe_array_ptr<const SORT_KEY> &keys,
 	if (reference.IsInlined()) {
 		return 0;
 	}
-	static constexpr idx_t MAXIMUM_PREFIX = 512;
-	auto prefix = MinValue<idx_t>(reference.GetHeapSize(), MAXIMUM_PREFIX);
+	auto prefix = MinValue<idx_t>(reference.GetHeapSize(), MAXIMUM_MERGE_PREFIX);
 	idx_t offset = 0;
 	for (const auto &boundary : boundaries) {
 		const auto count = boundary.end - boundary.begin;
@@ -93,6 +92,163 @@ struct MergePrefixLess {
 
 	const idx_t prefix;
 };
+
+//! Merges the consecutive sorted fragments of a partition (ending at the given offsets) pairwise, bottom-up. Unlike
+//! sorting the partition, this stays a merge when there are many short fragments (many threads or many external runs)
+template <class SORT_KEY, class COMPARE>
+static void MergeSortedFragments(SORT_KEY *const keys, unsafe_vector<idx_t> &fragment_ends, const COMPARE &compare,
+                                 SortMergeBuffer &merge_buffer, const idx_t target_fragment_count = 1) {
+	const auto buffer = merge_buffer.Keys<SORT_KEY>();
+	const auto buffer_count = merge_buffer.Count();
+	while (fragment_ends.size() > target_fragment_count) {
+		idx_t merged_count = 0;
+		idx_t begin = 0;
+		for (idx_t i = 0; i < fragment_ends.size(); i += 2) {
+			if (i + 1 == fragment_ends.size()) {
+				fragment_ends[merged_count++] = fragment_ends[i];
+				break;
+			}
+			const auto middle = fragment_ends[i];
+			const auto end = fragment_ends[i + 1];
+			BufferedMerge(keys + begin, keys + middle, keys + end, compare, buffer, buffer_count);
+			fragment_ends[merged_count++] = end;
+			begin = end;
+		}
+		fragment_ends.resize(merged_count);
+	}
+}
+
+//! Partitions with fragments of more runs than this are merged in cache-sized chunks: merging them pairwise takes
+//! several passes over the whole partition, which costs memory bandwidth when every thread is merging at once
+static constexpr idx_t MAX_PAIRWISE_MERGE_FRAGMENTS = 4;
+//! Finding the slices of a chunk takes about #fragments^2 * log(chunk size) comparisons, so beyond this many fragments
+//! the partition is merged pairwise again
+static constexpr idx_t MAX_CHUNKED_MERGE_FRAGMENTS = 64;
+//! Size of the keys of one chunk in bytes
+static constexpr idx_t MERGE_CHUNK_SIZE = 512ULL * 1024ULL;
+
+//! A sorted fragment of a run that is merged in chunks
+template <class ITERATOR>
+struct MergeFragment {
+	MergeFragment(const ITERATOR &keys_p, const idx_t begin, const idx_t end_p)
+	    : keys(keys_p), cursor(begin), end(end_p) {
+	}
+	//! Indexes the keys of the run
+	ITERATOR keys;
+	//! First key of the fragment that has not been merged yet
+	idx_t cursor;
+	//! End of the fragment
+	idx_t end;
+};
+
+template <class SORT_KEY, class ITERATOR>
+static idx_t MergeFragmentsPrefix(const unsafe_vector<MergeFragment<ITERATOR>> &fragments) {
+	const SORT_KEY reference = fragments[0].keys[fragments[0].cursor];
+	if (reference.IsInlined()) {
+		return 0;
+	}
+	auto prefix = MinValue<idx_t>(reference.GetHeapSize(), MAXIMUM_MERGE_PREFIX);
+	for (const auto &fragment : fragments) {
+		for (const auto idx : {fragment.cursor, fragment.end - 1}) {
+			prefix = reference.GetHeapPrefixLength(fragment.keys[idx], prefix);
+			if (prefix == 0) {
+				return 0;
+			}
+		}
+	}
+	return prefix;
+}
+
+//! Computes where the fragments are after the next "count" merged keys, with the K-way Merge Path search that also
+//! computes the partition boundaries
+template <class SORT_KEY, class ITERATOR, class COMPARE>
+static void ComputeChunkEnds(const unsafe_vector<MergeFragment<ITERATOR>> &fragments, idx_t count,
+                             const COMPARE &compare, unsafe_vector<idx_t> &chunk_ends,
+                             unsafe_vector<idx_t> &active_fragments) {
+	active_fragments.clear();
+	for (idx_t fragment_idx = 0; fragment_idx < fragments.size(); fragment_idx++) {
+		chunk_ends[fragment_idx] = fragments[fragment_idx].cursor;
+		if (chunk_ends[fragment_idx] != fragments[fragment_idx].end) {
+			active_fragments.push_back(fragment_idx);
+		}
+	}
+	while (count != 0) {
+		D_ASSERT(!active_fragments.empty());
+		const idx_t k = active_fragments.size();
+		const auto step = AlignValue(count, k) / k;
+		idx_t min_active_idx = 0;
+		auto min_fragment_idx = active_fragments[0];
+		auto min_delta = MinValue(step, fragments[min_fragment_idx].end - chunk_ends[min_fragment_idx]);
+		SORT_KEY min_value = fragments[min_fragment_idx].keys[chunk_ends[min_fragment_idx] + min_delta - 1];
+		for (idx_t active_idx = 1; active_idx < k; active_idx++) {
+			const auto fragment_idx = active_fragments[active_idx];
+			const auto &fragment = fragments[fragment_idx];
+			const auto delta = MinValue(step, fragment.end - chunk_ends[fragment_idx]);
+			const SORT_KEY &value = fragment.keys[chunk_ends[fragment_idx] + delta - 1];
+			if (compare(value, min_value)) {
+				min_active_idx = active_idx;
+				min_fragment_idx = fragment_idx;
+				min_delta = delta;
+				min_value = value;
+			}
+		}
+		chunk_ends[min_fragment_idx] += min_delta;
+		if (chunk_ends[min_fragment_idx] == fragments[min_fragment_idx].end) {
+			active_fragments.erase(active_fragments.begin() + static_cast<int64_t>(min_active_idx));
+		}
+		D_ASSERT(min_delta <= count);
+		count -= min_delta;
+	}
+}
+
+//! Merges the fragments into "out" one chunk at a time: the keys of a chunk are gathered into the chunk buffer, merged
+//! there while they are in cache, and the last merge writes them to the output. Every key is read from its run and
+//! written to the output once
+template <class SORT_KEY, class ITERATOR, class COMPARE>
+static void MergeFragmentsInChunks(SORT_KEY *out, unsafe_vector<MergeFragment<ITERATOR>> &fragments, idx_t total,
+                                   const COMPARE &compare, SORT_KEY *const chunk, const idx_t chunk_capacity,
+                                   SortMergeBuffer &merge_buffer) {
+	unsafe_vector<idx_t> chunk_ends(fragments.size());
+	unsafe_vector<idx_t> active_fragments;
+	unsafe_vector<idx_t> fragment_ends;
+	while (total != 0) {
+		const auto count = MinValue(chunk_capacity, total);
+		if (count == total) {
+			for (idx_t fragment_idx = 0; fragment_idx < fragments.size(); fragment_idx++) {
+				chunk_ends[fragment_idx] = fragments[fragment_idx].end;
+			}
+		} else {
+			ComputeChunkEnds<SORT_KEY>(fragments, count, compare, chunk_ends, active_fragments);
+		}
+
+		idx_t chunk_count = 0;
+		fragment_ends.clear();
+		for (idx_t fragment_idx = 0; fragment_idx < fragments.size(); fragment_idx++) {
+			auto &fragment = fragments[fragment_idx];
+			const auto chunk_end = chunk_ends[fragment_idx];
+			if (fragment.cursor == chunk_end) {
+				continue;
+			}
+			const auto end_it = fragment.keys + static_cast<int64_t>(chunk_end);
+			for (auto it = fragment.keys + static_cast<int64_t>(fragment.cursor); it != end_it; ++it) {
+				chunk[chunk_count++] = *it;
+			}
+			fragment_ends.push_back(chunk_count);
+			fragment.cursor = chunk_end;
+		}
+		D_ASSERT(chunk_count == count);
+
+		MergeSortedFragments(chunk, fragment_ends, compare, merge_buffer, 2);
+		if (fragment_ends.size() == 1) {
+			std::copy(chunk, chunk + count, out);
+		} else {
+			const auto middle = chunk + fragment_ends[0];
+			std::merge(chunk, middle, middle, chunk + count, out, compare);
+		}
+		out += count;
+		total -= count;
+	}
+}
 
 struct SortedRunMergePartition {
 public:
@@ -176,6 +332,8 @@ private:
 
 	//! Merge the partition to obtain the next chunk
 	void MergePartition(SortedRunMergerGlobalState &gstate);
+	//! Allocates the buffer for merging a partition in chunks, unless it cannot be allocated
+	bool TryAllocateMergeChunk(SortedRunMergerGlobalState &gstate, idx_t size);
 	template <class STATE>
 	void MergePartitionSwitch(SortedRunMergerGlobalState &gstate, unsafe_vector<STATE> &states);
 	template <class STATE, SortKeyType SORT_KEY_TYPE>
@@ -209,6 +367,9 @@ private:
 
 	//! Allocation for merging/scanning the partition
 	AllocatedData merged_partition;
+	//! Buffers for merging partitions in chunks (allocated once, reused for every partition)
+	AllocatedData merge_chunk;
+	unique_ptr<SortMergeBuffer> merge_chunk_buffer;
 
 	//! Variables for scanning
 	idx_t merged_partition_count;
@@ -424,6 +585,8 @@ void SortedRunMergerLocalState::Clear() {
 	in_memory_states.clear();
 	external_states.clear();
 	merged_partition.Reset();
+	merge_chunk.Reset();
+	merge_chunk_buffer.reset();
 	sorted_run_scan_state.Clear();
 }
 
@@ -700,6 +863,18 @@ void SortedRunMergerLocalState::AcquirePartitionBoundaries(SortedRunMergerGlobal
 	run_boundaries = current_partition.GetRunBoundaries();
 }
 
+bool SortedRunMergerLocalState::TryAllocateMergeChunk(SortedRunMergerGlobalState &gstate, const idx_t size) {
+	if (merge_chunk.IsSet()) {
+		return true;
+	}
+	try {
+		merge_chunk = BufferAllocator::Get(gstate.context).Allocate(size);
+	} catch (OutOfMemoryException &) {
+		return false; // merge the gathered partition instead
+	}
+	return true;
+}
+
 void SortedRunMergerLocalState::MergePartition(SortedRunMergerGlobalState &gstate) {
 	switch (iterator_state_type) {
 	case BlockIteratorStateType::IN_MEMORY:
@@ -742,40 +917,75 @@ void SortedRunMergerLocalState::TemplatedMergePartition(SortedRunMergerGlobalSta
 	merged_partition_count = 0;
 	merged_partition_index = 0;
 
-	idx_t active_runs = 0;
+	// Collect the fragments of the runs that are actively being merged
+	unsafe_vector<MergeFragment<BLOCK_ITERATOR>> fragments;
+	idx_t total_count = 0;
 	for (idx_t run_idx = 0; run_idx < gstate.num_runs; run_idx++) {
 		auto &state = states[run_idx];
 		state.SetKeepPinned(true);
 
-		// Keep track of how many runs are actively being merged
 		const auto &run_boundary = run_boundaries[run_idx];
 		state.SetPinPayload(true, run_boundary.begin, run_boundary.end);
 		if (run_boundary.begin == run_boundary.end) {
 			continue;
 		}
-		active_runs++;
+		fragments.emplace_back(BLOCK_ITERATOR(state), run_boundary.begin, run_boundary.end);
+		total_count += run_boundary.end - run_boundary.begin;
+	}
 
-		for (auto it = BLOCK_ITERATOR(state, run_boundary.begin); it != BLOCK_ITERATOR(state, run_boundary.end); ++it) {
+	// External runs are read through stateful iterators that fetch a whole chunk of keys (and payload) whenever they
+	// move to another one, so only in-memory runs are merged in chunks
+	if constexpr (std::is_same<STATE, InMemoryBlockIteratorState>::value) {
+		const auto chunk_capacity = MERGE_CHUNK_SIZE / sizeof(SORT_KEY);
+		if (fragments.size() > MAX_PAIRWISE_MERGE_FRAGMENTS && fragments.size() <= MAX_CHUNKED_MERGE_FRAGMENTS &&
+		    total_count > chunk_capacity && !gstate.merger.is_index_sort &&
+		    TryAllocateMergeChunk(gstate, chunk_capacity * sizeof(SORT_KEY))) {
+			if (!merge_chunk_buffer) {
+				merge_chunk_buffer =
+				    make_uniq<SortMergeBuffer>(BufferAllocator::Get(gstate.context), chunk_capacity, sizeof(SORT_KEY));
+			}
+			const auto chunk = reinterpret_cast<SORT_KEY *>(merge_chunk.get());
+			bool merged = false;
+			if constexpr (!SORT_KEY::CONSTANT_SIZE) {
+				const auto prefix = gstate.merger.sort.is_index_sort ? 0 : MergeFragmentsPrefix<SORT_KEY>(fragments);
+				if (prefix != 0) {
+					// Sorted endpoints establish this prefix for every key in each fragment.
+					const MergePrefixLess<SORT_KEY> compare(prefix);
+					MergeFragmentsInChunks(merged_partition_keys, fragments, total_count, compare, chunk,
+					                       chunk_capacity, *merge_chunk_buffer);
+					merged = true;
+				}
+			}
+			if (!merged) {
+				MergeFragmentsInChunks(merged_partition_keys, fragments, total_count, std::less<SORT_KEY>(), chunk,
+				                       chunk_capacity, *merge_chunk_buffer);
+			}
+			merged_partition_count = total_count;
+			return;
+		}
+	}
+
+	// Gather the fragments, keeping track of where each one ends
+	unsafe_vector<idx_t> fragment_ends;
+	for (auto &fragment : fragments) {
+		const auto end_it = fragment.keys + static_cast<int64_t>(fragment.end);
+		for (auto it = fragment.keys + static_cast<int64_t>(fragment.cursor); it != end_it; ++it) {
 			merged_partition_keys[merged_partition_count++] = *it;
 		}
+		fragment_ends.push_back(merged_partition_count);
 	}
 
 	if constexpr (std::is_same<STATE, ExternalBlockIteratorState>::value) {
 		gstate.DestroyPinnedData(partition_idx.GetIndex());
 	}
 
-	if (active_runs == 1 || gstate.merger.is_index_sort) {
-		return; // Only one active run, no need to sort (or index sort, which is approximate sorting)
+	if (fragment_ends.size() <= 1 || gstate.merger.is_index_sort) {
+		return; // At most one active run, no need to merge (or index sort, which is approximate sorting)
 	}
 
-	// Seems counter-intuitive to re-sort instead of merging, but modern sorting algorithms detect and merge
-	static const auto fallback = [](SORT_KEY *begin, SORT_KEY *end) {
-		duckdb_pdqsort::pdqsort_branchless(begin, end);
-	};
-	// the run merges need a scratch buffer of up to half the keys - take it from the buffer allocator so that it is
-	// counted against the memory limit instead of coming from operator new inside std::inplace_merge
+	// Each fragment is sorted, so merging them only needs a scratch buffer of up to half the keys - take it from the
+	// buffer allocator so that it is counted against the memory limit
 	SortMergeBuffer merge_buffer(BufferAllocator::Get(gstate.context), merged_partition_count, sizeof(SORT_KEY));
-	const BufferedMergePolicy<SORT_KEY> merge(merge_buffer);
 	if constexpr (!SORT_KEY::CONSTANT_SIZE) {
 		if (!gstate.merger.sort.is_index_sort) {
 			const auto prefix = MergePartitionPrefix(
@@ -783,17 +993,12 @@ void SortedRunMergerLocalState::TemplatedMergePartition(SortedRunMergerGlobalSta
 			if (prefix != 0) {
 				// Sorted endpoints establish this prefix for every key in each gathered fragment.
 				const MergePrefixLess<SORT_KEY> compare(prefix);
-				const auto prefix_fallback = [&](SORT_KEY *begin, SORT_KEY *end) {
-					duckdb_pdqsort::pdqsort_branchless(begin, end, compare);
-				};
-				duckdb_vergesort::vergesort(merged_partition_keys, merged_partition_keys + merged_partition_count,
-				                            compare, prefix_fallback, merge);
+				MergeSortedFragments(merged_partition_keys, fragment_ends, compare, merge_buffer);
 				return;
 			}
 		}
 	}
-	duckdb_vergesort::vergesort(merged_partition_keys, merged_partition_keys + merged_partition_count,
-	                            std::less<SORT_KEY>(), fallback, merge);
+	MergeSortedFragments(merged_partition_keys, fragment_ends, std::less<SORT_KEY>(), merge_buffer);
 }
 
 void SortedRunMergerLocalState::ScanPartition(SortedRunMergerGlobalState &gstate, DataChunk &chunk) {

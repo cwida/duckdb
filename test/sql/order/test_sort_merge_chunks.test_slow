@@ -1,0 +1,104 @@
+# name: test/sql/order/test_sort_merge_chunks.test_slow
+# description: Merge partitions with fragments of more than four runs, merged in cache-sized chunks
+# group: [order]
+
+# k is a permutation of 0..1999999; d has 2000 rows per value; s has random lengths (inlined and not inlined)
+statement ok
+CREATE TABLE t AS SELECT
+	i,
+	(i * 7919 % 2000000)::BIGINT AS k,
+	CASE WHEN i % 10 = 0 THEN NULL ELSE (i * 7919 % 2000000)::BIGINT END AS kn,
+	(i % 1000)::INTEGER AS d,
+	(hash(i) % 50)::INTEGER AS a,
+	((hash(i + 7) % 1000) / 8.0)::DOUBLE AS b,
+	substr(md5(i::VARCHAR), 1, (4 + i % 20)::INTEGER) AS s
+FROM range(2000000) r(i);
+
+foreach threads 5 8 20
+
+statement ok
+SET threads={threads};
+
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != k) FROM (SELECT k, row_number() OVER (ORDER BY k) AS rn FROM t)
+----
+2000000	0
+
+# ties that span chunk boundaries
+query II
+SELECT count(*), count(*) FILTER (WHERE r - 1 != d * 2000) FROM (SELECT d, rank() OVER (ORDER BY d) AS r FROM t)
+----
+2000000	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE r - 1 != (999 - d) * 2000) FROM (SELECT d, rank() OVER (ORDER BY d DESC) AS r FROM t)
+----
+2000000	0
+
+# NULLs first, then descending
+query IIII
+SELECT count(*), count(DISTINCT i),
+	count(*) FILTER (WHERE (p IS NOT NULL AND kn IS NULL) OR p < kn),
+	count(*) FILTER (WHERE rn <= 200000 AND kn IS NOT NULL)
+FROM (SELECT i, kn, lag(kn) OVER w AS p, row_number() OVER w AS rn FROM t WINDOW w AS (ORDER BY kn DESC NULLS FIRST))
+----
+2000000	2000000	0	0
+
+# variable-size keys
+query III
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE p > s) FROM (
+	SELECT i, s, lag(s) OVER (ORDER BY s) AS p FROM t
+)
+----
+2000000	2000000	0
+
+# multiple columns
+query III
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE pa > a OR (pa = a AND pb < b) OR (pa = a AND pb = b AND ps > s))
+FROM (
+	SELECT i, a, b, s, lag(a) OVER w AS pa, lag(b) OVER w AS pb, lag(s) OVER w AS ps FROM t
+	WINDOW w AS (ORDER BY a, b DESC, s)
+)
+----
+2000000	2000000	0
+
+# the ORDER BY operator (i = k / 7919 mod 2000000; the NULLs of kn are the multiples of 10)
+statement ok
+SET disabled_optimizers='top_n';
+
+query II
+SELECT k, i FROM t ORDER BY k LIMIT 3 OFFSET 1234567
+----
+1234567	1909993
+1234568	1927672
+1234569	1945351
+
+query I
+SELECT k FROM t ORDER BY kn DESC NULLS LAST, k LIMIT 2 OFFSET 1799999
+----
+1
+0
+
+statement ok
+RESET disabled_optimizers;
+
+endloop
+
+# many external runs: every merge partition takes fragments of many runs
+statement ok
+SET threads=8;
+
+statement ok
+SET memory_limit='200MB';
+
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != k) FROM (SELECT k, row_number() OVER (ORDER BY k) AS rn FROM t)
+----
+2000000	0
+
+query III
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE p > s) FROM (
+	SELECT i, s, lag(s) OVER (ORDER BY s) AS p FROM t
+)
+----
+2000000	2000000	0

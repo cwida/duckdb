@@ -1,0 +1,87 @@
+# name: test/sql/order/test_sort_merge_many_runs.test_slow
+# description: Merging many sorted runs per merge partition (many threads, external runs)
+# group: [order]
+
+# k is a permutation of 0..2999999, so every row's sorted position is k
+statement ok
+CREATE TABLE t AS SELECT i, (i * 7919 % 3000000)::BIGINT AS k, (i % 1000)::INTEGER AS d FROM range(3000000) r(i);
+
+statement ok
+SET threads=20;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != k) FROM (SELECT k, row_number() OVER (ORDER BY k) AS rn FROM t)
+----
+3000000	0
+
+# duplicates spread over all runs
+query II
+SELECT count(*), count(*) FILTER (WHERE r - 1 != d * 3000) FROM (SELECT d, rank() OVER (ORDER BY d) AS r FROM t)
+----
+3000000	0
+
+# presorted input: the runs barely overlap
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != i) FROM (SELECT i, row_number() OVER (ORDER BY i) AS rn FROM t)
+----
+3000000	0
+
+# the ORDER BY operator with a payload
+statement ok
+SET disabled_optimizers='top_n';
+
+query III
+SELECT k, d, i FROM t ORDER BY k LIMIT 3 OFFSET 2123456
+----
+2123456	624	2578624
+2123457	303	1596303
+2123458	982	613982
+
+statement ok
+RESET disabled_optimizers;
+
+# strings with a long common prefix (prefix-skipping comparison during the merge)
+statement ok
+CREATE TABLE s AS SELECT i, 'a-rather-long-shared-prefix-for-every-single-key/' || lpad(k::VARCHAR, 7, '0') AS s FROM t;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != k) FROM (
+	SELECT CAST(right(s, 7) AS BIGINT) AS k, row_number() OVER (ORDER BY s) AS rn FROM s
+)
+----
+3000000	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE prev > s) FROM (SELECT s, lag(s) OVER (ORDER BY s) AS prev FROM s)
+----
+3000000	0
+
+# many external runs
+statement ok
+SET threads=8;
+
+statement ok
+SET memory_limit='1GB';
+
+statement ok
+SET debug_force_external=true;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE rn - 1 != k) FROM (SELECT k, row_number() OVER (ORDER BY k) AS rn FROM t)
+----
+3000000	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE prev > s) FROM (SELECT s, lag(s) OVER (ORDER BY s) AS prev FROM s)
+----
+3000000	0
+
+statement ok
+SET disabled_optimizers='top_n';
+
+query III
+SELECT k, d, i FROM t ORDER BY k LIMIT 3 OFFSET 2123456
+----
+2123456	624	2578624
+2123457	303	1596303
+2123458	982	613982
