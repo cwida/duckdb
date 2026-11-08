@@ -23,6 +23,7 @@
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -735,9 +736,49 @@ static bool UsesNormalizedIntervalHash(ParquetBloomFilterHashStrategy hash_strat
 	return hash_strategy == ParquetBloomFilterHashStrategy::NORMALIZED_INTERVAL_V1;
 }
 
+static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
+	switch (source_type.id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+		return target_type.id() == LogicalTypeId::FLOAT || target_type.id() == LogicalTypeId::DOUBLE;
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::UINTEGER:
+		return target_type.id() == LogicalTypeId::DOUBLE;
+	default:
+		return false;
+	}
+}
+
+//! Whether casting the result of a cast back to its source type recovers every source value, so that a constant on the
+//! cast side can be compared with the stored value it was cast from instead
+static bool CastIsLeftInvertible(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.IsIntegral()) {
+		if (target_type.id() == LogicalTypeId::VARCHAR) {
+			return StringType::GetCollation(target_type).empty();
+		}
+		if (target_type.IsIntegral() || target_type.id() == LogicalTypeId::DECIMAL) {
+			return BoundCastExpression::CastIsInvertible(source_type, target_type);
+		}
+		return IsLosslessIntegralToFloatingCast(source_type, target_type);
+	}
+	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL) {
+		return BoundCastExpression::CastIsInvertible(source_type, target_type);
+	}
+	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
+}
+
 static bool IsBloomFilterColumn(const Expression &expr, ParquetBloomFilterHashStrategy hash_strategy) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_REF) {
 		return expr.Cast<BoundReferenceExpression>().Index() == 0;
+	}
+	if (BoundCastExpression::IsCast(expr)) {
+		auto &cast = expr.Cast<BoundFunctionExpression>();
+		auto &child = BoundCastExpression::Child(cast);
+		return !BoundCastExpression::IsTryCast(cast) && child.GetExpressionClass() == ExpressionClass::BOUND_REF &&
+		       child.Cast<BoundReferenceExpression>().Index() == 0 &&
+		       CastIsLeftInvertible(child.GetReturnType(), cast.GetReturnType());
 	}
 	if (!UsesNormalizedIntervalHash(hash_strategy) || expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		return false;
@@ -776,8 +817,9 @@ GetBloomFilterInExpression(const Expression &expr, ParquetBloomFilterHashStrateg
 	return in_expr;
 }
 
-static optional_ptr<const BoundConstantExpression>
-GetBloomFilterConstant(const Expression &expr, ParquetBloomFilterHashStrategy hash_strategy) {
+static optional_ptr<const BoundConstantExpression> GetBloomFilterConstant(const Expression &expr,
+                                                                          ParquetBloomFilterHashStrategy hash_strategy,
+                                                                          optional_ptr<const Expression> &column) {
 	if (!BoundComparisonExpression::IsComparison(expr)) {
 		return nullptr;
 	}
@@ -788,7 +830,6 @@ GetBloomFilterConstant(const Expression &expr, ParquetBloomFilterHashStrategy ha
 	}
 	auto &left = BoundComparisonExpression::Left(comp);
 	auto &right = BoundComparisonExpression::Right(comp);
-	optional_ptr<const Expression> column;
 	optional_ptr<const BoundConstantExpression> constant;
 	if (IsBloomFilterColumn(left, hash_strategy) && right.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		column = left;
@@ -808,7 +849,8 @@ GetBloomFilterConstant(const Expression &expr, ParquetBloomFilterHashStrategy ha
 
 static bool HasFilterConstants(const Expression &expr, ParquetBloomFilterHashStrategy hash_strategy) {
 	if (BoundComparisonExpression::IsComparison(expr)) {
-		return GetBloomFilterConstant(expr, hash_strategy) != nullptr;
+		optional_ptr<const Expression> column;
+		return GetBloomFilterConstant(expr, hash_strategy, column) != nullptr;
 	}
 	if (GetBloomFilterInExpression(expr, hash_strategy)) {
 		return true;
@@ -1030,14 +1072,64 @@ static bool BloomFilterExcludes(const Value &constant, ParquetBloomFilter &bloom
 	return hash && !bloom_filter.FilterCheck(*hash);
 }
 
+static bool IsNaN(const Value &value) {
+	switch (value.type().id()) {
+	case LogicalTypeId::FLOAT:
+		return Value::IsNan(value.GetValue<float>());
+	case LogicalTypeId::DOUBLE:
+		return Value::IsNan(value.GetValue<double>());
+	default:
+		return false;
+	}
+}
+
+enum class BloomFilterConstantMapping { MAPPED, NO_MATCH, UNKNOWN };
+
+//! Maps a constant compared with the (cast) column to the stored value that can match it
+static BloomFilterConstantMapping MapBloomFilterConstant(const Expression &column, Value &constant) {
+	if (!BoundCastExpression::IsCast(column)) {
+		return BloomFilterConstantMapping::MAPPED;
+	}
+	if (IsNaN(constant)) {
+		return BloomFilterConstantMapping::UNKNOWN;
+	}
+	auto &cast = column.Cast<BoundFunctionExpression>();
+	auto &child = BoundCastExpression::Child(cast);
+	// the cast is left-invertible: if a stored value casts to the constant, it is the constant cast back
+	auto stored = constant.DefaultTryCastAs(child.GetReturnType(), nullptr, true);
+	if (!stored) {
+		return BloomFilterConstantMapping::NO_MATCH;
+	}
+	auto roundtrip = stored->DefaultTryCastAs(cast.GetReturnType(), nullptr, true);
+	if (!roundtrip || !Value::NotDistinctFrom(*roundtrip, constant)) {
+		return BloomFilterConstantMapping::NO_MATCH;
+	}
+	constant = std::move(*stored);
+	return MapBloomFilterConstant(child, constant);
+}
+
+static bool BloomFilterExcludes(const Expression &column, const Value &constant, ParquetBloomFilter &bloom_filter,
+                                const ParquetColumnSchema &schema, ParquetBloomFilterHashStrategy hash_strategy) {
+	auto stored = constant;
+	switch (MapBloomFilterConstant(column, stored)) {
+	case BloomFilterConstantMapping::NO_MATCH:
+		return true;
+	case BloomFilterConstantMapping::UNKNOWN:
+		return false;
+	default:
+		return BloomFilterExcludes(stored, bloom_filter, schema, hash_strategy);
+	}
+}
+
 static bool ApplyBloomFilter(const Expression &expr, ParquetBloomFilter &bloom_filter,
                              const ParquetColumnSchema &schema, ParquetBloomFilterHashStrategy hash_strategy) {
 	if (BoundComparisonExpression::IsComparison(expr)) {
-		auto constant = GetBloomFilterConstant(expr, hash_strategy);
+		optional_ptr<const Expression> column;
+		auto constant = GetBloomFilterConstant(expr, hash_strategy, column);
 		if (!constant) {
 			return false;
 		}
-		return BloomFilterExcludes(constant->GetValue(), bloom_filter, schema, hash_strategy);
+		return BloomFilterExcludes(*column, constant->GetValue(), bloom_filter, schema, hash_strategy);
 	}
 	auto in_expr = GetBloomFilterInExpression(expr, hash_strategy);
 	if (in_expr) {
@@ -1048,7 +1140,7 @@ static bool ApplyBloomFilter(const Expression &expr, ParquetBloomFilter &bloom_f
 			if (constant.IsNull()) {
 				continue;
 			}
-			if (!BloomFilterExcludes(constant, bloom_filter, schema, hash_strategy)) {
+			if (!BloomFilterExcludes(*children[0], constant, bloom_filter, schema, hash_strategy)) {
 				return false;
 			}
 		}

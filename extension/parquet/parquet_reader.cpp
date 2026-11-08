@@ -79,6 +79,8 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 
 namespace duckdb {
 
@@ -1786,6 +1788,39 @@ static optional_ptr<ColumnReader> TryGetBloomFilterSource(ColumnReader &column_r
 	return TryGetBloomFilterSource(*expr_reader.child_readers[0]);
 }
 
+static void ReplaceColumnReference(unique_ptr<Expression> &expr, const Expression &column) {
+	if (expr->GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		expr = column.Copy();
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<Expression> &child) { ReplaceColumnReference(child, column); });
+}
+
+//! For a column read as a cast of the file column, the filter applied to that cast of the file column
+static unique_ptr<TableFilter> TryGetCastBloomFilter(ColumnReader &column_reader, const TableFilter &filter,
+                                                     optional_ptr<ColumnReader> &bloom_source) {
+	if (column_reader.Schema().schema_type != ParquetColumnSchemaType::EXPRESSION) {
+		return nullptr;
+	}
+	auto &expr_reader = column_reader.Cast<ExpressionColumnReader>();
+	if (expr_reader.child_readers.size() != 1 || !expr_reader.expr || !BoundCastExpression::IsCast(*expr_reader.expr)) {
+		return nullptr;
+	}
+	auto &cast_child = BoundCastExpression::Child(expr_reader.expr->Cast<BoundFunctionExpression>());
+	auto &child_reader = *expr_reader.child_readers[0];
+	if (cast_child.GetExpressionClass() != ExpressionClass::BOUND_REF ||
+	    cast_child.Cast<BoundReferenceExpression>().Index() != 0 ||
+	    child_reader.Schema().schema_type != ParquetColumnSchemaType::COLUMN || child_reader.Type().IsNested()) {
+		return nullptr;
+	}
+	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ParquetReader::TryGetCastBloomFilter");
+	auto expr = expr_filter.expr->Copy();
+	ReplaceColumnReference(expr, *expr_reader.expr);
+	bloom_source = child_reader;
+	return make_uniq<ExpressionFilter>(std::move(expr));
+}
+
 static bool TryGetComparisonBloomFilterLeaf(ColumnReader &column_reader, const Expression &expr,
                                             optional_ptr<ColumnReader> &leaf_reader,
                                             unique_ptr<TableFilter> &leaf_filter) {
@@ -1964,9 +1999,13 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 			auto prune_result = CheckRowGroupFilterStatistics(context, state, column_reader, filter);
 			// check the bloom filter if present
 			auto bloom_source = TryGetBloomFilterSource(column_reader);
+			unique_ptr<TableFilter> cast_filter;
+			if (!bloom_source) {
+				cast_filter = TryGetCastBloomFilter(column_reader, filter, bloom_source);
+			}
 			if (bloom_source) {
 				optional_ptr<ColumnReader> bloom_reader = bloom_source;
-				optional_ptr<const TableFilter> bloom_filter = &filter;
+				optional_ptr<const TableFilter> bloom_filter = cast_filter ? cast_filter.get() : &filter;
 				unique_ptr<TableFilter> leaf_filter;
 				auto check_bloom_filter = prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE;
 				if (bloom_source->Type().IsNested()) {
