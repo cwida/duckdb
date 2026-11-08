@@ -1090,6 +1090,7 @@ static BloomFilterConstantMapping MapBloomFilterConstant(const Expression &colum
 	if (!BoundCastExpression::IsCast(column)) {
 		return BloomFilterConstantMapping::MAPPED;
 	}
+	// NaN equals stored NaNs of any bit pattern, so no single stored value (and hash) stands for it
 	if (IsNaN(constant)) {
 		return BloomFilterConstantMapping::UNKNOWN;
 	}
