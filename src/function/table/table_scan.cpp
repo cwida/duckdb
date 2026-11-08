@@ -1032,6 +1032,8 @@ unique_ptr<GlobalTableFunctionState> TableScanInitGlobal(ClientContext &context,
 	// FIXME: For multiple filters, i.e., a = 11 AND b = 24, we could also
 	// 1. Scan the ARTs for a = 11 and b = 24, and intersect the row IDs.
 	// 2. (Reorder and) scan a single ART with a compound key of (a, b).
+	// FIXME: We use the first ART within the thresholds, not the most selective one. Each failed probe can scan up
+	// to max_count row IDs before falling back to a table scan.
 	if (!filter_set.HasFilters()) {
 		return DuckTableScanInitGlobal(context, input, storage, bind_data);
 	}
