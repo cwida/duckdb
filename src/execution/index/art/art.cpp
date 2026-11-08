@@ -275,6 +275,12 @@ unique_ptr<IndexScanState> ART::TryInitializeScan(const Expression &expr, const 
 			return nullptr;
 		}
 
+		// A NULL bound matches no rows, a range scan on the other bound would return too many.
+		// if (lower_bound.Cast<BoundConstantExpression>().GetValue().IsNull() ||
+		//     upper_bound.Cast<BoundConstantExpression>().GetValue().IsNull()) {
+		// 	return nullptr;
+		// }
+
 		auto lower_inclusive = BoundBetweenExpression::LowerInclusive(between);
 		auto upper_inclusive = BoundBetweenExpression::UpperInclusive(between);
 		low_value = lower_bound.Cast<BoundConstantExpression>().GetValue();
