@@ -291,6 +291,19 @@ bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_
 	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
 }
 
+optional<Value> BoundCastExpression::TryInvertConstant(ClientContext &context, const BoundFunctionExpression &cast_expr,
+                                                       const Value &constant) {
+	auto source_constant = constant.TryCastAs(context, SourceType(cast_expr), nullptr, true);
+	if (!source_constant) {
+		return nullopt;
+	}
+	auto roundtrip = source_constant->TryCastAs(context, TargetType(cast_expr), nullptr, true);
+	if (!roundtrip || !Value::NotDistinctFrom(*roundtrip, constant)) {
+		return nullopt;
+	}
+	return source_constant;
+}
+
 //! The child type of a LIST or ARRAY
 static const LogicalType &ListOrArrayChildType(const LogicalType &type) {
 	return type.id() == LogicalTypeId::ARRAY ? ArrayType::GetChildType(type) : ListType::GetChildType(type);

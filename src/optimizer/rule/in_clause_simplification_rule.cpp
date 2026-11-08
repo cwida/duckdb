@@ -34,15 +34,10 @@ static unique_ptr<Expression> SimplifyEqualityCast(ClientContext &context, Bound
 			new_children.push_back(make_uniq<BoundConstantExpression>(Value(target_type)));
 			continue;
 		}
-		auto source_constant = constant_value.TryCastAs(context, target_type, nullptr, true);
-		if (!source_constant) {
-			continue;
+		auto source_constant = BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value);
+		if (source_constant) {
+			new_children.push_back(make_uniq<BoundConstantExpression>(std::move(*source_constant)));
 		}
-		auto roundtrip = (*source_constant).TryCastAs(context, cast_expression.GetReturnType(), nullptr, true);
-		if (!roundtrip || !Value::NotDistinctFrom(*roundtrip, constant_value)) {
-			continue;
-		}
-		new_children.push_back(make_uniq<BoundConstantExpression>(std::move(*source_constant)));
 	}
 	auto child = std::move(BoundCastExpression::ChildMutable(cast_expression));
 	if (new_children.size() == 1) {

@@ -115,17 +115,11 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	if (cast_expression.GetReturnType().IsIntegral() && target_type.IsIntegral()) {
 		return true;
 	}
-	// The constant must survive the integral round-trip exactly; the column side is checked by the caller.
-	if (IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
-		string error_message;
-		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
-		return roundtrip && *roundtrip == constant_value;
-	}
-	if (target_type.id() == LogicalTypeId::DECIMAL && cast_expression.GetReturnType().id() == LogicalTypeId::DECIMAL) {
-		// a narrowing decimal cast of the constant is fine if the constant round-trips exactly
-		string error_message;
-		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
-		return roundtrip && *roundtrip == constant_value;
+	// The constant must round-trip exactly; the column side is checked by the caller.
+	auto &cast_type = cast_expression.GetReturnType();
+	if (IsLosslessIntegralToFloatingCast(target_type, cast_type) ||
+	    (target_type.id() == LogicalTypeId::DECIMAL && cast_type.id() == LogicalTypeId::DECIMAL)) {
+		return BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value).has_value();
 	}
 	if (target_type.id() != LogicalTypeId::DATE || cast_expression.GetReturnType().id() != LogicalTypeId::TIMESTAMP) {
 		return false;
@@ -153,15 +147,9 @@ static unique_ptr<Expression> SimplifyEqualityCastComparison(ClientContext &cont
                                                              const Value &constant_value, bool column_ref_left,
                                                              bool &changes_made) {
 	D_ASSERT(!constant_value.IsNull());
-	auto source_type = BoundCastExpression::SourceType(cast_expression);
-	auto source_constant = constant_value.TryCastAs(context, source_type, nullptr, true);
-	bool can_match = false;
-	if (source_constant) {
-		auto roundtrip = (*source_constant).TryCastAs(context, cast_expression.GetReturnType(), nullptr, true);
-		can_match = roundtrip && Value::NotDistinctFrom(*roundtrip, constant_value);
-	}
+	auto source_constant = BoundCastExpression::TryInvertConstant(context, cast_expression, constant_value);
 	auto &child = BoundCastExpression::ChildMutable(cast_expression);
-	if (!can_match) {
+	if (!source_constant) {
 		switch (expr.GetExpressionType()) {
 		case ExpressionType::COMPARE_EQUAL:
 			return ExpressionRewriter::ConstantOrNull(context, std::move(child), Value::BOOLEAN(false));
