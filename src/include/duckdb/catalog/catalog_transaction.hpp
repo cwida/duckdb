@@ -23,7 +23,7 @@ struct CatalogTransaction {
 	CatalogTransaction(Catalog &catalog, ClientContext &context);
 	CatalogTransaction(DatabaseInstance &db, transaction_t transaction_id_p, VisibilityBound visibility_bound_p);
 
-	optional_ptr<DatabaseInstance> db;
+	DatabaseInstance &db;
 	optional_ptr<ClientContext> context;
 	optional_ptr<Transaction> transaction;
 	SnapshotView view;

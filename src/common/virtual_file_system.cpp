@@ -14,6 +14,8 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 struct FileSystemHandle {
@@ -416,6 +418,17 @@ void VirtualFileSystem::SetDisabledFileSystems(const vector<string> &names) {
 	lock_guard<mutex> guard(registry_lock);
 	auto new_registry = file_system_registry->SetDisabledFileSystems(names);
 	file_system_registry.atomic_store(new_registry);
+}
+
+vector<string> VirtualFileSystem::GetDisabledFileSystems() {
+	auto registry = file_system_registry.atomic_load();
+	auto &disabled_file_systems = registry->disabled_file_systems;
+	vector<string> names;
+	for (auto &name : disabled_file_systems) {
+		names.push_back(name);
+	}
+	std::sort(names.begin(), names.end());
+	return names;
 }
 
 unique_ptr<FileSystem> VirtualFileSystem::ExtractSubSystem(const string &name) {
