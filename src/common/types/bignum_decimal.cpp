@@ -178,8 +178,8 @@ bool FitsWidthInternal(const BignumIntermediate &value, uint32_t width) {
 	return value.IsAbsoluteBigger(limit.intermediate) == SMALLER;
 }
 
-//! The BIGNUM blob of a magnitude given as little-endian base 2^32 digits
-string MagnitudeToBlob(const unsafe_vector<digit_t> &digits) {
+//! The BIGNUM blob of a magnitude given as little-endian bignum_digit_t digits
+string MagnitudeToBlob(const unsafe_vector<bignum_digit_t> &digits) {
 	idx_t top = digits.size();
 	while (top > 0 && digits[top - 1] == 0) {
 		top--;
@@ -191,7 +191,7 @@ string MagnitudeToBlob(const unsafe_vector<digit_t> &digits) {
 	for (auto digit = digits[top - 1]; digit != 0; digit >>= 8) {
 		top_bytes++;
 	}
-	const idx_t byte_count = (top - 1) * Bignum::DIGIT_BYTES + top_bytes;
+	const idx_t byte_count = (top - 1) * BignumLimb::DIGIT_BYTES + top_bytes;
 	if (byte_count > Bignum::MAX_DATA_SIZE) {
 		throw OutOfRangeException("A power of %llu bytes does not fit a BIGNUM, which holds at most %llu bytes",
 		                          byte_count, idx_t(Bignum::MAX_DATA_SIZE));
@@ -200,8 +200,8 @@ string MagnitudeToBlob(const unsafe_vector<digit_t> &digits) {
 	for (idx_t i = 0; i < byte_count; i++) {
 		// byte i is the i-th most significant byte
 		const idx_t from_lsb = byte_count - 1 - i;
-		bytes[i] =
-		    static_cast<uint8_t>(digits[from_lsb / Bignum::DIGIT_BYTES] >> (8 * (from_lsb % Bignum::DIGIT_BYTES)));
+		bytes[i] = static_cast<uint8_t>(digits[from_lsb / BignumLimb::DIGIT_BYTES] >>
+		                                (8 * (from_lsb % BignumLimb::DIGIT_BYTES)));
 	}
 	return Bignum::FromByteArray(bytes.data(), byte_count, false);
 }
@@ -209,11 +209,11 @@ string MagnitudeToBlob(const unsafe_vector<digit_t> &digits) {
 //! 10^exponent as a BIGNUM blob, by binary exponentiation
 string ComputePowerOfTen(idx_t exponent, optional_ptr<ClientContext> context) {
 	BignumArithmeticState state(context);
-	unsafe_vector<digit_t> result;
+	unsafe_vector<bignum_digit_t> result;
 	result.push_back(1);
-	unsafe_vector<digit_t> base;
+	unsafe_vector<bignum_digit_t> base;
 	base.push_back(10);
-	unsafe_vector<digit_t> product;
+	unsafe_vector<bignum_digit_t> product;
 	while (exponent > 0) {
 		if (exponent & 1) {
 			BignumIntermediate::MultiplyMagnitudes(state, result, base, product);
