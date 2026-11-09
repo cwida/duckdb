@@ -397,10 +397,11 @@ void FileLogSink::SetPaths(const string &base_path) {
 		tables[LoggingTargetTable::LOG_CONTEXTS].path = fs.JoinPath(base_path, "duckdb_log_contexts.csv");
 		tables[LoggingTargetTable::LOG_ENTRIES].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
 	} else {
+		// the denormalized logs go into a single file: the csv path itself, or a file in the directory
 		if (StringUtil::EndsWith(base_path, ".csv")) {
 			tables[LoggingTargetTable::ALL_LOGS].path = base_path;
 		} else {
-			tables[LoggingTargetTable::LOG_ENTRIES].path = fs.JoinPath(base_path, "duckdb_log_entries.csv");
+			tables[LoggingTargetTable::ALL_LOGS].path = fs.JoinPath(base_path, "duckdb_logs.csv");
 		}
 	}
 }
@@ -408,7 +409,8 @@ void FileLogSink::SetPaths(const string &base_path) {
 void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_map_t<Value> &config) {
 	auto config_copy = config;
 
-	string new_path;
+	// a config without a path keeps the current one
+	string new_path = base_path;
 	bool normalize_contexts_new_value = normalize_contexts;
 	bool normalize_set_explicitly = false;
 	bool require_reinitializing_files = false;
@@ -453,7 +455,8 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 		FlushAllInternal();
 	}
 
-	require_reinitializing_files |= normalize_contexts != normalize_contexts_new_value;
+	bool normalize_changed = normalize_contexts != normalize_contexts_new_value;
+	require_reinitializing_files |= normalize_changed;
 	normalize_contexts = normalize_contexts_new_value;
 
 	// Reset the buffers to ensure they have the correct schema
@@ -466,8 +469,8 @@ void FileLogSink::UpdateConfigInternal(DatabaseInstance &db, case_insensitive_ma
 		}
 	}
 
-	// Apply any path change
-	if (new_path != base_path) {
+	// Apply any path change, the paths of the tables also depend on normalize
+	if (new_path != base_path || (normalize_changed && !new_path.empty())) {
 		base_path = new_path;
 		SetPaths(new_path);
 	}

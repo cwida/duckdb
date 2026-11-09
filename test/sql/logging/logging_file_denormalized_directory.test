@@ -1,0 +1,42 @@
+# name: test/sql/logging/logging_file_denormalized_directory.test
+# description: The file log sink writes the denormalized logs of a directory path into one file
+# group: [logging]
+
+require noforcestorage
+
+# Due to different file locking behaviour, this currently fails on windows
+require notwindows
+
+# a directory path with normalize disabled writes all logs into duckdb_logs.csv
+statement ok
+CALL enable_logging(sink='file', sink_path='{TEMP_DIR}/logging_denormalized_dir', sink_normalize=false)
+
+statement ok
+SELECT write_log('denormalized')
+
+query I
+SELECT count(*) FROM duckdb_logs(denormalized_table=true) WHERE message = 'denormalized'
+----
+1
+
+query I
+SELECT count(*) FROM '{TEMP_DIR}/logging_denormalized_dir/duckdb_logs.csv' WHERE message = 'denormalized'
+----
+1
+
+# turning normalize on for the same directory, without passing the path again, writes the normalized files there
+statement ok
+CALL enable_logging(sink='file', sink_normalize=true)
+
+statement ok
+SELECT write_log('normalized')
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'normalized'
+----
+1
+
+query I
+SELECT count(*) FROM '{TEMP_DIR}/logging_denormalized_dir/duckdb_log_entries.csv' WHERE message = 'normalized'
+----
+1

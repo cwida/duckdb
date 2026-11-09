@@ -1,5 +1,5 @@
 # name: test/sql/logging/enable_logging_file_keeps_path.test
-# description: enable_logging keeps the path of the file log sink after a failed switch, a late prepared call and an uppercase sink name
+# description: enable_logging keeps the path of the file log sink after a failed switch, a late prepared call, an uppercase sink name and a config update
 # group: [logging]
 
 require notwindows
@@ -72,3 +72,23 @@ query I
 SELECT current_setting('logging_sink');
 ----
 file
+
+restart
+
+# updating the config of the file sink without a path keeps its path
+statement ok
+CALL enable_logging(sink = 'file', sink_path = '{TEMP_DIR}/keeps_path_update.csv');
+
+statement ok
+SELECT write_log('before update');
+
+statement ok
+CALL enable_logging(sink = 'file', sink_buffer_size = 100);
+
+statement ok
+SELECT write_log('after update');
+
+query I
+SELECT count(*) FROM duckdb_logs(denormalized_table = true) WHERE message IN ('before update', 'after update');
+----
+2

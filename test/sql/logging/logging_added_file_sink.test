@@ -26,6 +26,18 @@ SELECT count(*) FROM duckdb_logs(sink='file', denormalized_table=true) WHERE mes
 ----
 1
 
+# adding the file sink again updates its config and keeps its path
+statement ok
+CALL add_log_sink('file', buffer_size=100)
+
+statement ok
+SELECT write_log('after update')
+
+query I
+SELECT count(*) FROM duckdb_logs(sink='file', denormalized_table=true) WHERE message IN ('to both', 'after update')
+----
+2
+
 # truncate_duckdb_logs only clears the main log sink
 statement ok
 CALL truncate_duckdb_logs()
@@ -60,7 +72,7 @@ after enable
 
 # a failed enable_logging that moved the added file sink to main puts it back as an added sink
 statement error
-CALL enable_logging(sink='file', sink_config={'path': '{TEST_DIR}/logging_added_file_sink.csv', 'bogus': 1})
+CALL enable_logging(sink='file', sink_config={'bogus': 1})
 ----
 Unrecognized log sink config option
 
