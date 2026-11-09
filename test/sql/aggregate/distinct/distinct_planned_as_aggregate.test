@@ -1,0 +1,82 @@
+# name: test/sql/aggregate/distinct/distinct_planned_as_aggregate.test
+# description: DISTINCT and DISTINCT ON planned as an aggregate keep the behavior of LogicalDistinct
+# group: [distinct]
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE d AS SELECT 0 AS k, range AS v FROM range(2);
+
+# without an ORDER BY, DISTINCT ON takes the first row of every group in input order
+query I
+SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC);
+----
+1
+
+# exporting the plan as SQL keeps the DISTINCT ON, so the order of its input is kept
+statement ok
+SET debug_verify_statement = 'explain_sql';
+
+query I
+SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC);
+----
+1
+
+statement ok
+RESET debug_verify_statement;
+
+query II
+EXPLAIN SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC);
+----
+physical_plan	<REGEX>:.*Order By.*
+
+# with an ORDER BY the first row follows that order instead
+query I
+SELECT DISTINCT ON (k) v FROM (SELECT * FROM d ORDER BY v DESC) ORDER BY k, v;
+----
+0
+
+# plain DISTINCT still discards the order of its input
+query II
+EXPLAIN SELECT DISTINCT k FROM (SELECT * FROM d ORDER BY v DESC);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+statement ok
+RESET threads;
+
+# DESCRIBE traces DISTINCT columns to their base table columns
+statement ok
+CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER NOT NULL, c VARCHAR DEFAULT 'x');
+
+query IIIIII
+DESCRIBE SELECT DISTINCT a, b, c FROM t;
+----
+a	INTEGER	NO	PRI	NULL	NULL
+b	INTEGER	NO	NULL	NULL	NULL
+c	VARCHAR	YES	NULL	'x'	NULL
+
+query IIIIII
+DESCRIBE SELECT DISTINCT ON (b) a, b, c FROM t ORDER BY b, a;
+----
+a	INTEGER	NO	PRI	NULL	NULL
+b	INTEGER	NO	NULL	NULL	NULL
+c	VARCHAR	YES	NULL	'x'	NULL
+
+# ROLLUP and GROUPING SETS repeat keys and introduce NULLs, and an ungrouped first() is NULL on empty input
+query IIIIII
+DESCRIBE SELECT a FROM t GROUP BY ROLLUP (a);
+----
+a	INTEGER	YES	NULL	NULL	NULL
+
+query IIIIII
+DESCRIBE SELECT a, b FROM t GROUP BY GROUPING SETS ((a), (a, b));
+----
+a	INTEGER	YES	NULL	NULL	NULL
+b	INTEGER	YES	NULL	NULL	NULL
+
+query IIIIII
+DESCRIBE SELECT first(b) AS b FROM t WHERE false;
+----
+b	INTEGER	YES	NULL	NULL	NULL

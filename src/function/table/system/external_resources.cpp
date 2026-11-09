@@ -23,9 +23,11 @@ namespace duckdb {
 // `discover := true` also lists what exists externally. The call is then rewritten (bind_replace) into
 // plain SQL: the registry UNION ALL one `SELECT ... FROM <list callback>()` per type with a list callback,
 // each tagged with its type name and anti-joined against the registry, so a resource registered here is
-// shown once, as managed. A `type` restriction leaves out the other types' branches up front, and a
-// `WHERE type = ...` on the result is pushed into the branches by the optimizer, where it folds to a
-// constant and drops the branch - so only the callbacks of the types asked for run.
+// shown once, as managed. A list callback returns one row per resource: handle (MAP), name, reference and
+// state. The name is the provider's own name for the resource (unique within the type), so a discovered
+// row can be referred to by it; a registered row shows its local name instead. A `type` restriction leaves out the
+// other types' branches up front, and a `WHERE type = ...` on the result is pushed into the branches by the optimizer,
+// where it folds to a constant and drops the branch - so only the callbacks of the types asked for run.
 //===--------------------------------------------------------------------===//
 
 struct ExternalResourcesParameters {
@@ -99,16 +101,16 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 			    "external resource discovery for type \"%s\": the list callback \"%s\" does not exist", type.name,
 			    type.list_function);
 		}
-		// The callback returns handle (MAP), reference and state; the rows registered here are left out by handle.
-		// The callback's rows are aliased with its name, so a binder error about a missing column names it.
+		// The callback returns handle (MAP), name, reference and state; the rows registered here are left out by
+		// handle. The callback's rows are aliased with its name, so a binder error about a missing column names it.
 		auto type_literal = Value(type.name).ToSQLString();
 		auto alias = KeywordHelper::WriteQuotedAndEscaped(type.list_function, '"');
 		branches.push_back(StringUtil::Format(
-		    "SELECT NULL::VARCHAR AS name, %s AS type, false AS managed, %s.state::VARCHAR AS state, "
+		    "SELECT %s.name::VARCHAR AS name, %s AS type, false AS managed, %s.state::VARCHAR AS state, "
 		    "%s.reference::VARCHAR AS reference, NULL::VARCHAR AS uri, NULL::VARCHAR AS attached_db_type, "
 		    "%s.handle::MAP(VARCHAR, VARCHAR) AS handle FROM %s(MAP {}::MAP(VARCHAR, VARCHAR)) AS %s "
 		    "ANTI JOIN %s AS registry ON %s.handle = registry.handle",
-		    type_literal, alias, alias, alias, callback, alias, RegistryScan(type.name), alias));
+		    alias, type_literal, alias, alias, alias, callback, alias, RegistryScan(type.name), alias));
 	}
 	// A type nothing provides but the registry knows (its extension is not loaded, or it was registered as an
 	// opaque type) has nothing to discover, like a type without a list callback. A type neither knows is most

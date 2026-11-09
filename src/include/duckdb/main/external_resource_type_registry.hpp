@@ -34,7 +34,8 @@ struct ExternalResourceType {
 	//! Function that reconnects to an existing resource. May be empty.
 	string resolve_function;
 	//! Function that enumerates the resources of this type that exist externally (for discovery /
-	//! `SHOW ALL EXTERNAL RESOURCES`). Returns a table of handles. May be empty.
+	//! `SHOW ALL EXTERNAL RESOURCES`). Returns one row per resource: handle (MAP), name (the provider's own
+	//! name for it, unique within the type), reference and state. May be empty.
 	string list_function;
 	//! Where it came from: "user" (register_external_resource_type) or "extension".
 	string origin;

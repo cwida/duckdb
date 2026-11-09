@@ -241,7 +241,7 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 			if (i_exp.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 				auto &const_exp = i_exp.Cast<BoundConstantExpression>();
 				if (!const_exp.GetValue().IsNull() && const_exp.GetReturnType().IsIntegral()) {
-					const_exp.SetValue(const_exp.GetValue().DefaultCastAs(LogicalType::UINTEGER, true));
+					const_exp.SetValue(const_exp.GetValue().CastAs(context, LogicalType::UINTEGER, true));
 					const_exp.SetReturnType(LogicalType::UINTEGER);
 				}
 			}

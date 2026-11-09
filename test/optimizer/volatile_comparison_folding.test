@@ -1,0 +1,189 @@
+# name: test/optimizer/volatile_comparison_folding.test
+# description: Every comparison of a volatile expression is its own evaluation, which no filter rewrite merges
+# group: [optimizer]
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# Each bound lies at least 12 standard deviations from the expected count and from the count a merged draw gives.
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) WHERE random() < 0.5 AND random() < 0.5
+----
+true
+
+query I
+SELECT count(*) BETWEEN 54000 AND 58500 FROM range(100000) WHERE random() > 0.25 AND random() < 0.75
+----
+true
+
+query I
+SELECT count(*) BETWEEN 11000 AND 14000 FROM range(100000) WHERE random() < 0.5 AND random() < 0.5 AND random() < 0.5
+----
+true
+
+# merged, the two bounds contradict each other and the combiner removes the whole filter input
+query I
+SELECT count(*) BETWEEN 7900 AND 10100 FROM range(100000) WHERE random() < 0.3 AND random() > 0.7
+----
+true
+
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) WHERE floor(random() * 2) = 0 AND floor(random() * 2) = 1
+----
+true
+
+query I
+SELECT count(*) BETWEEN 48000 AND 52000 FROM range(100000) WHERE random() BETWEEN 0.25 AND 0.75
+----
+true
+
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) t(i)
+WHERE (i % 2)::DOUBLE = floor(random() * 2) AND (i % 2)::DOUBLE = 0
+----
+true
+
+query I
+SELECT count(*) BETWEEN 34000 AND 38000 FROM range(100000) WHERE random() < 0.2 OR random() > 0.8
+----
+true
+
+query I
+SELECT count(*) BETWEEN 73000 AND 77000 FROM range(100000) WHERE random() < 0.5 OR random() < 0.5
+----
+true
+
+query I
+SELECT count(*) BETWEEN 73000 AND 77000 FROM range(100000) t(i)
+WHERE (random() < 0.5 AND i >= 0) OR (random() < 0.5 AND i < 100000)
+----
+true
+
+# four independent draws: 0.25 + 0.25 - 0.0625 of the rows; merged into IS NOT DISTINCT FROM, half of them
+query I
+SELECT count(*) BETWEEN 41750 AND 45750 FROM range(100000)
+WHERE CASE WHEN random() < 0.5 THEN 1 END = CASE WHEN random() > 0.5 THEN 1 END
+OR (CASE WHEN random() < 0.5 THEN 1 END IS NULL AND CASE WHEN random() > 0.5 THEN 1 END IS NULL)
+----
+true
+
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) a(x) JOIN range(100000) b(y)
+ON x = y AND random() < 0.5 AND random() < 0.5
+----
+true
+
+query I
+SELECT count(y) BETWEEN 23000 AND 27000 FROM range(100000) a(x) LEFT JOIN range(100000) b(y)
+ON x = y AND random() < 0.5 AND random() < 0.5
+----
+true
+
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM (SELECT i FROM range(100000) t(i) GROUP BY i HAVING random() < 0.5 AND random() < 0.5)
+----
+true
+
+# conditions that reference both inputs stay join conditions
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) a(x) JOIN range(100000) b(y)
+ON x = y AND x + random() < y + 0.5 AND x + random() < y + 0.5
+----
+true
+
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) a(x) SEMI JOIN range(100000) b(y)
+ON x = y AND x + random() < y + 0.5 AND x + random() < y + 0.5
+----
+true
+
+query I
+SELECT count(*) BETWEEN 23000 AND 27000 FROM range(100000) t(i)
+WHERE EXISTS (SELECT 1 FROM range(1) s(j) WHERE j = i - i AND random() < 0.5 AND random() < 0.5)
+----
+true
+
+# a volatile side of an equality joins no equivalence set, so it is neither dropped nor substituted elsewhere
+query I
+SELECT count(*) BETWEEN 48000 AND 52000 FROM range(100000) a(x) JOIN range(100000) b(y)
+ON x = y AND x = y + floor(random() * 2)::BIGINT
+----
+true
+
+query I
+SELECT count(*) BETWEEN 48000 AND 52000 FROM range(100000) a(x) JOIN range(100000) b(y)
+ON floor(random() * 2)::BIGINT + x = y WHERE y % 2 = 0
+----
+true
+
+# Comparisons that always hold: the sequence counts the evaluations, whatever order the conjuncts run in.
+statement ok
+CREATE SEQUENCE seq_two_comparisons;
+
+query I
+SELECT count(*) FROM range(3) WHERE nextval('seq_two_comparisons') > 0 AND nextval('seq_two_comparisons') > 0
+----
+3
+
+query I
+SELECT currval('seq_two_comparisons')
+----
+6
+
+statement ok
+CREATE SEQUENCE seq_range;
+
+query I
+SELECT count(*) FROM range(3) WHERE nextval('seq_range') >= 1 AND nextval('seq_range') <= 1000
+----
+3
+
+query I
+SELECT currval('seq_range')
+----
+6
+
+statement ok
+CREATE SEQUENCE seq_between;
+
+query I
+SELECT count(*) FROM range(3) WHERE nextval('seq_between') BETWEEN 1 AND 1000
+----
+3
+
+query I
+SELECT currval('seq_between')
+----
+3
+
+query II
+EXPLAIN SELECT * FROM range(10) t(i) WHERE i * 3 >= 2 AND i * 3 <= 8
+----
+logical_opt	<REGEX>:.*\(i \* 3\) BETWEEN 2 AND 8.*
+
+query II
+EXPLAIN SELECT * FROM range(10) t(i) WHERE random() >= 0.25 AND random() <= 0.75
+----
+logical_opt	<REGEX>:.*random\(\) >= 0\.25.*random\(\) <= 0\.75.*
+
+query II
+EXPLAIN SELECT * FROM range(10) t(i) WHERE random() >= 0.25 AND random() <= 0.75
+----
+logical_opt	<!REGEX>:.*BETWEEN.*
+
+query II
+EXPLAIN SELECT * FROM range(10) t(i) WHERE (i * 3 > 2 AND i % 2 = 0) OR (i * 3 > 2 AND i % 3 = 0)
+----
+logical_opt	<REGEX>:.*\(\(i % 2\) = 0\) OR \(\(i % 3\) = 0\).*\(i \* 3\) > 2.*
+
+query II
+EXPLAIN SELECT * FROM range(10) t(i) WHERE (random() < 0.5 AND i % 2 = 0) OR (random() < 0.5 AND i % 3 = 0)
+----
+logical_opt	<REGEX>:.*random\(\) < 0\.5.*random\(\) < 0\.5.*
+
+query II
+EXPLAIN SELECT * FROM range(10)
+WHERE CASE WHEN random() < 0.5 THEN 1 END = CASE WHEN random() > 0.5 THEN 1 END
+OR (CASE WHEN random() < 0.5 THEN 1 END IS NULL AND CASE WHEN random() > 0.5 THEN 1 END IS NULL)
+----
+logical_opt	<!REGEX>:.*DISTINCT.*

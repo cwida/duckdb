@@ -1116,7 +1116,7 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		                                       info.on_conflict,
 		                                       info.persist_type};
 
-		result = SecretManager::Get(context).BindCreateSecret(transaction, create_secret_input);
+		result = SecretManager::Get(context).BindCreateSecret(context.GetContext(), transaction, create_secret_input);
 		break;
 	}
 	case CatalogType::TRIGGER_ENTRY: {

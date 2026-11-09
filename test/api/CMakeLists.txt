@@ -73,6 +73,7 @@ set(TEST_API_OBJECTS
     test_parse_statement_iterator.cpp
     test_dialect_extension.cpp
     test_query_node_copy.cpp
+    test_statement_tostring.cpp
     test_grammar_extension.cpp
     test_parser_query_completeness.cpp
     test_passthrough_dialect.cpp
@@ -82,6 +83,7 @@ set(TEST_API_OBJECTS
     test_uuid.cpp
     test_insertion_order_preserving_map.cpp
     test_bignum.cpp
+    test_persistent_secret_write_failure.cpp
     test_threads.cpp
     test_windows_header_compatibility.cpp
     test_windows_unicode_path.cpp
