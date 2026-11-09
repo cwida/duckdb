@@ -9,9 +9,8 @@
 
 namespace duckdb {
 
-WindowFusion::WindowFusion(ClientContext &client, Optimizer &optimizer,
-                           optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats)
-    : client(client), optimizer(optimizer), stats(stats) {
+WindowFusion::WindowFusion(ClientContext &client, optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats)
+    : client(client), stats(stats) {
 	D_ASSERT(stats);
 }
 

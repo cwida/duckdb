@@ -480,7 +480,7 @@ void Optimizer::RunBuiltInOptimizers() {
 
 	// rewrite unique ranking window function + filter on row_number to fused operator
 	RunOptimizer(OptimizerType::WINDOW_FUSION, [&]() {
-		WindowFusion window_fusion(context, *this, &statistics_map);
+		WindowFusion window_fusion(context, &statistics_map);
 		plan = window_fusion.Optimize(std::move(plan));
 	});
 

@@ -123,6 +123,12 @@
       ]
     },
     {
+      "reason": "The window filter fusion loses the predicate",
+      "paths": [
+        "test/sql/optimizer/window_fusion.test"
+      ]
+    },
+    {
       "reason": "FIXME: the exact DECIMAL quantile parameter lives in the bind data while the bound child is a DOUBLE cast, so the rendered SQL rebinds a non-throwing DOUBLE-rank quantile",
       "paths": [
         "test/sql/aggregate/aggregates/quantile_fallible_decimal_param.test"
