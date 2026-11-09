@@ -998,7 +998,7 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 			    function_name);
 		}
 		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
-			// an unresolved parameter cannot take an incomplete type, the statement is bound again at EXECUTE
+			// bind callbacks only see concrete types - an unresolved parameter is bound again at EXECUTE
 			throw ParameterNotResolvedException();
 		}
 		target_type.Verify();
