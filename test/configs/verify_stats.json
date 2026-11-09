@@ -4,6 +4,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "The statistics verification delivers a NUMERIC cast of a HUGEINT or UHUGEINT column as canonical values: numeric_representation() of a result is an implementation detail this test asserts.",
+      "paths": [
+        "test/sql/types/numeric/numeric_to_float_rounding_representation.test"
+      ]
+    },
+    {
       "reason": "FIXME: string length statistics of list elements are too small for ordered exported aggregate states",
       "paths": [
         "test/sql/aggregate/aggregate_state_export/ordered_export_state_layout.test"

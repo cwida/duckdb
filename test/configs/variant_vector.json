@@ -21,6 +21,7 @@
 				"test/sql/types/numeric/numeric_kernel_sizing.test",
 				"test/sql/types/numeric/numeric_no_common_representation.test",
 				"test/sql/types/numeric/numeric_to_float_rounding.test",
+				"test/sql/types/numeric/numeric_to_float_rounding_representation.test",
 				"test/sql/types/numeric/numeric_type_arithmetic.test",
 				"test/sql/types/numeric/numeric_type.test",
 				"test/sql/types/numeric/numeric_variant_arithmetic.test",

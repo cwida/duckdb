@@ -1,0 +1,92 @@
+# name: test/sql/types/numeric/numeric_to_float_rounding_representation.test
+# description: The NUMERIC to FLOAT rounding test reaches every representation: UHUGEINT, HUGEINT, a wide DECIMAL and canonical
+# group: [numeric]
+
+# numeric_to_float_rounding.test asserts the FLOAT and DOUBLE results of these values; this file pins the representation
+# each of them is computed from. With tiny vectors the representation is chosen per vector, and the alternative
+# verification delivers scanned NUMERIC values as canonical blobs
+require vector_size 2048
+
+require no_alternative_verify
+
+statement ok
+CREATE TABLE unsigned AS
+SELECT i, v::UHUGEINT AS u
+FROM (VALUES
+	(1, '340282356779733661637539395458142568447'),
+	(2, '340282356779733661637539395458142568448'),
+	(3, '340282366920938463463374607431768211455'),
+	(4, '170141183460469231731687303715884105727'),
+	(5, NULL),
+	(6, '1')
+) t(i, v);
+
+# a cast of a UHUGEINT column keeps the UHUGEINT representation
+query III
+SELECT i, numeric_representation(u::NUMERIC), TRY_CAST(u::NUMERIC AS FLOAT)::DOUBLE::VARCHAR FROM unsigned ORDER BY i
+----
+1	UHUGEINT	3.4028234663852886e+38
+2	UHUGEINT	NULL
+3	UHUGEINT	NULL
+4	UHUGEINT	1.7014118346046923e+38
+5	UHUGEINT	NULL
+6	UHUGEINT	1.0
+
+# the same values through their text are held as a wide decimal
+query III
+SELECT i, numeric_representation(u::VARCHAR::NUMERIC), TRY_CAST(u::VARCHAR::NUMERIC AS FLOAT)::DOUBLE::VARCHAR
+FROM unsigned ORDER BY i
+----
+1	DECIMAL(39,0)	3.4028234663852886e+38
+2	DECIMAL(39,0)	NULL
+3	DECIMAL(39,0)	NULL
+4	DECIMAL(39,0)	1.7014118346046923e+38
+5	DECIMAL(39,0)	NULL
+6	DECIMAL(39,0)	1.0
+
+query III
+SELECT numeric_representation(n), TRY_CAST(n AS FLOAT), TRY_CAST(n::VARCHAR::NUMERIC AS FLOAT)
+FROM (SELECT ('340282366920938463463374607431768211455'::UHUGEINT - i::UHUGEINT)::NUMERIC AS n FROM range(2) t(i))
+----
+UHUGEINT	NULL	NULL
+UHUGEINT	NULL	NULL
+
+# a cast of a HUGEINT column keeps the HUGEINT representation
+statement ok
+CREATE TABLE signed AS
+SELECT i, v::HUGEINT AS h
+FROM (VALUES
+	(1, '170141183460469231731687303715884105727'),
+	(2, '-170141183460469231731687303715884105728')
+) t(i, v);
+
+query III
+SELECT i, numeric_representation(h::NUMERIC), (h::NUMERIC)::FLOAT::DOUBLE::VARCHAR FROM signed ORDER BY i
+----
+1	HUGEINT	1.7014118346046923e+38
+2	HUGEINT	-1.7014118346046923e+38
+
+# 10^-255 and 10^254 have no common representation, so the table holds canonical values
+statement ok
+CREATE TABLE canonical AS
+SELECT i, v::NUMERIC AS n
+FROM (VALUES
+	(1, '1e-255'),
+	(2, '1e254'),
+	(3, '1152921573326323713'),
+	(4, '-1152921573326323713.25'),
+	(5, '170141234166493240860863363584012320769'),
+	(6, '340282356779733661637539395458142568447'),
+	(7, '340282356779733661637539395458142568448')
+) t(i, v);
+
+query III
+SELECT i, numeric_representation(n), TRY_CAST(n AS FLOAT)::DOUBLE::VARCHAR FROM canonical ORDER BY i
+----
+1	CANONICAL	0.0
+2	CANONICAL	NULL
+3	CANONICAL	1.1529216420458004e+18
+4	CANONICAL	-1.1529216420458004e+18
+5	CANONICAL	1.7014124430769804e+38
+6	CANONICAL	3.4028234663852886e+38
+7	CANONICAL	NULL
