@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/aggregate_function_rewriter.hpp"
+#include "duckdb/common/types/decimal.hpp"
 
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -93,6 +94,11 @@ public:
 	}
 
 	bool ShouldRewrite(const LogicalAggregate &aggr, Expression &expr) override {
+		auto &child_type = expr.Cast<BoundAggregateExpression>().GetChildren()[0]->GetReturnType();
+		if (child_type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(child_type))) {
+			// the wide avg divides its exact sum before the result becomes a DOUBLE, SUM / COUNT would overflow it
+			return false;
+		}
 		if (aggr.groups.empty()) {
 			return true;
 		}

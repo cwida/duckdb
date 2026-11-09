@@ -2,6 +2,7 @@
 #include "core_functions/aggregate/sum_helpers.hpp"
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/time.hpp"
@@ -580,10 +581,22 @@ struct BignumAverageOperation {
 			target = sum / divident;
 			return;
 		}
-		// beyond the range of a long double the sum is scaled through its decimal string
+		// beyond the range of a long double the exact sum is divided by the count first, so that the average of
+		// values near the DOUBLE range stays finite; the remainder adds the fraction of the quotient
 		auto &bind_data = finalize_data.input.bind_data->Cast<AverageDecimalBindData>();
-		auto sum_blob = state.value.ToBignum(finalize_data.input.allocator);
-		target = BignumDecimal::ToDouble(sum_blob, bind_data.decimal_scale) / static_cast<double>(state.count);
+		StringHeap heap;
+		BignumArithmeticState arithmetic_state;
+		const string count_blob = BignumDecimal::FromInteger(uhugeint_t(state.count));
+		const bignum_t count_value {string_t(count_blob)};
+		const BignumIntermediate count(count_value);
+		string_t quotient;
+		string_t remainder;
+		if (!BignumIntermediate::TryDivMod(heap, arithmetic_state, state.value, count, quotient, remainder)) {
+			throw InternalException("avg: division of the wide decimal sum by the count failed");
+		}
+		target =
+		    BignumDecimal::ToDouble(bignum_t(quotient), bind_data.decimal_scale) +
+		    BignumDecimal::ToDouble(bignum_t(remainder), bind_data.decimal_scale) / static_cast<double>(state.count);
 	}
 
 	static bool IgnoreNull() {

@@ -151,3 +151,30 @@ query I
 SELECT avg(x) FROM (VALUES ('12.5'::DECIMAL(255,250)), ('-2.5'), (NULL)) t(x);
 ----
 5.0
+
+# the exact sum is divided by the count before it becomes a DOUBLE, so an average near the DOUBLE range is finite
+query I
+SELECT avg('1e308'::DECIMAL(618,309)) FROM range(2);
+----
+1e+308
+
+query I
+SELECT avg(v) FROM (VALUES ('1e308'::DECIMAL(618,309)), ('1.5e308'::DECIMAL(618,309))) t(v);
+----
+1.25e+308
+
+query I
+SELECT avg(v) FROM (VALUES ('1e308'::DECIMAL(618,309)), ('-1e308'), ('0.5'), ('1.5')) t(v);
+----
+0.5
+
+# a non-integral average of a scale beyond the DOUBLE range
+query I
+SELECT avg(v) FROM (VALUES ('1.5'::DECIMAL(618,309)), ('2.0'), ('2.75')) t(v);
+----
+2.0833333333333335
+
+query I
+SELECT avg(v) FROM (VALUES ('1e-309'::DECIMAL(618,309)), ('2e-309')) t(v);
+----
+1.5e-309
