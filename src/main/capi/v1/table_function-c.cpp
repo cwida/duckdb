@@ -186,6 +186,8 @@ duckdb_table_function duckdb_create_table_function() {
 	                                          duckdb::CTableFunctionInit, duckdb::CTableFunctionLocalInit);
 	function->function_info = duckdb::make_shared_ptr<duckdb::CTableFunctionInfo>();
 	function->cardinality = duckdb::CTableFunctionCardinality;
+	// a function registered through the legacy C API makes no stability promise
+	function->stability = duckdb::FunctionStability::VOLATILE;
 	return reinterpret_cast<duckdb_table_function>(function);
 }
 

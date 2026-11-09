@@ -671,7 +671,8 @@ void DisabledFilesystemsSetting::ResetGlobal(DatabaseInstance *db_p, DBConfig &c
 }
 
 Value DisabledFilesystemsSetting::GetSetting(const ClientContext &context) {
-	return Value("");
+	auto &fs = FileSystem::GetFileSystem(*context.db);
+	return Value(StringUtil::Join(fs.GetDisabledFileSystems(), ","));
 }
 
 //===----------------------------------------------------------------------===//

@@ -69,6 +69,9 @@ struct RecursiveCTEKeyedProperties {
 	bool can_reuse_changed_group_candidates = false;
 	//! Some payload column compares through a SQL-level expression rather than by value
 	bool has_payload_comparisons = false;
+	//! Every aggregate result fits a fixed-width or string slot, so the commit can materialize the finalized values
+	//! per group and reads consume them without invoking aggregate callbacks
+	bool materialize_finalized_values = false;
 
 	static RecursiveCTEKeyedProperties Derive(const PhysicalRecursiveCTE &op);
 };

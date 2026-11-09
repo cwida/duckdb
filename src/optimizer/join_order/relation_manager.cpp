@@ -314,6 +314,14 @@ static bool JoinIsReorderable(LogicalOperator &op) {
 		if (join.HasProjectionMap()) {
 			return false;
 		}
+		// Preserve the input rows on which volatile condition operands are evaluated.
+		for (auto &cond : join.conditions) {
+			bool is_volatile = cond.IsComparison() ? cond.GetLHS().IsVolatile() || cond.GetRHS().IsVolatile()
+			                                       : cond.GetJoinExpression().IsVolatile();
+			if (is_volatile) {
+				return false;
+			}
+		}
 		if ((join.join_type == JoinType::LEFT || join.join_type == JoinType::SEMI ||
 		     join.join_type == JoinType::ANTI) &&
 		    ContainsRecurringCTERef(*join.children[1])) {

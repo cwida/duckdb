@@ -55,7 +55,7 @@ GroupedAggregateHashTable::GroupedAggregateHashTable(ClientContext &context_p, A
                                                      vector<LogicalType> payload_types_p,
                                                      vector<AggregateObject> aggregate_objects_p,
                                                      idx_t initial_capacity, idx_t radix_bits,
-                                                     TupleDataValidityType group_validity)
+                                                     TupleDataValidityType group_validity, idx_t trailing_region_width)
     : BaseAggregateHashTable(context_p, allocator, aggregate_objects_p, std::move(payload_types_p)), context(context_p),
       radix_bits(radix_bits), count(0), capacity(0), aggregate_allocator(make_shared_ptr<ArenaAllocator>(allocator)),
       state(*aggregate_allocator) {
@@ -71,7 +71,8 @@ GroupedAggregateHashTable::GroupedAggregateHashTable(ClientContext &context_p, A
 	group_types_p.emplace_back(LogicalType::HASH);
 
 	auto layout = make_shared_ptr<TupleDataLayout>();
-	layout->Initialize(std::move(group_types_p), std::move(aggregate_objects_p), group_validity);
+	layout->Initialize(std::move(group_types_p), std::move(aggregate_objects_p), group_validity,
+	                   TupleDataNestednessType::TOP_LEVEL_LAYOUT, trailing_region_width);
 	layout_ptr = std::move(layout);
 
 	hash_offset = layout_ptr->GetOffsets()[layout_ptr->ColumnCount() - 1];
@@ -893,6 +894,7 @@ idx_t GroupedAggregateHashTable::FindOrCreateGroupsInternal(DataChunk &groups, V
 			                                *FlatVector::IncrementalSelectionVector(), chunk_size);
 			RowOperations::InitializeStates(*layout_ptr, state.partitioned_append_state.chunk_state.row_locations,
 			                                *FlatVector::IncrementalSelectionVector(), chunk_size);
+			ZeroTrailingRegion(state.partitioned_append_state.chunk_state.row_locations, chunk_size);
 		}
 
 		const auto row_locations =
@@ -963,6 +965,7 @@ idx_t GroupedAggregateHashTable::FindOrCreateGroupsInternal(DataChunk &groups, V
 				data->AppendUnified(*append_state, state.group_chunk, empty_vector, new_entry_count);
 				RowOperations::InitializeStates(*layout_ptr, append_state->chunk_state.row_locations,
 				                                *FlatVector::IncrementalSelectionVector(), new_entry_count);
+				ZeroTrailingRegion(append_state->chunk_state.row_locations, new_entry_count);
 			}
 
 			// Set the entry pointers in the 1st part of the HT now that the data has been appended
@@ -1198,6 +1201,18 @@ struct FlushMoveState {
 	SelectionVector new_groups_sel;
 };
 
+void GroupedAggregateHashTable::ZeroTrailingRegion(Vector &row_locations, idx_t count) const {
+	const auto region_width = layout_ptr->GetTrailingRegionWidth();
+	if (region_width == 0) {
+		return;
+	}
+	const auto region_offset = layout_ptr->GetTrailingRegionOffset();
+	const auto locations = FlatVector::GetData<data_ptr_t>(row_locations);
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		memset(locations[row_idx] + region_offset, 0, region_width);
+	}
+}
+
 void GroupedAggregateHashTable::Combine(GroupedAggregateHashTable &other) {
 	auto other_partitioned_data = other.AcquirePartitionedData();
 	auto other_data = other_partitioned_data->GetUnpartitioned();
@@ -1214,6 +1229,9 @@ void GroupedAggregateHashTable::Combine(TupleDataCollection &other_data, optiona
 	D_ASSERT(other_data.GetLayout().GetAggrWidth() == layout_ptr->GetAggrWidth());
 	D_ASSERT(other_data.GetLayout().GetDataWidth() == layout_ptr->GetDataWidth());
 	D_ASSERT(other_data.GetLayout().GetRowWidth() == layout_ptr->GetRowWidth());
+	// New groups copy whole source rows, so a trailing region arrives as the source left it: owners must only
+	// scatter region values into the table that survives the combine, never into the sources consumed here.
+	D_ASSERT(other_data.GetLayout().GetTrailingRegionWidth() == layout_ptr->GetTrailingRegionWidth());
 
 	if (other_data.Count() == 0) {
 		return;

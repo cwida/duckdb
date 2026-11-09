@@ -1089,25 +1089,29 @@ void MultiFileReader::ReadFilesForStatistics(ClientContext &context, MultiFileLi
 	if (max_files == 0 || !result.union_readers.empty()) {
 		return;
 	}
+	// a single file bound on its own already has its statistics from the initial reader
+	const idx_t min_files = result.initial_reader ? 2 : 1;
 	auto count = files.GetFileCount(max_files + 1);
-	if (count.type != FileExpansionType::ALL_FILES_EXPANDED || count.count < 2 || count.count > max_files) {
+	if (count.type != FileExpansionType::ALL_FILES_EXPANDED || count.count < min_files || count.count > max_files) {
 		return;
 	}
-	// the first file is already open: only the others are read. A file that cannot be read gives no statistics rather
+	// an open first file is reused: only the others are read. A file that cannot be read gives no statistics rather
 	// than failing the bind: the scan reports it
 	auto all_files = files.GetAllFiles();
-	if (!result.initial_reader || result.initial_reader->GetFileName() != all_files[0].path) {
+	if (result.initial_reader && result.initial_reader->GetFileName() != all_files[0].path) {
 		return;
 	}
-	vector<OpenFileInfo> other_files(all_files.begin() + 1, all_files.end());
-	auto readers = UnionByName::ReadUnionData(context, other_files, options, file_options, *this, *result.interface,
+	vector<OpenFileInfo> unread_files(all_files.begin() + (result.initial_reader ? 1 : 0), all_files.end());
+	auto readers = UnionByName::ReadUnionData(context, unread_files, options, file_options, *this, *result.interface,
 	                                          true, TaskSchedulerType::ASYNC);
 	for (auto &reader : readers) {
 		if (!reader) {
 			return;
 		}
 	}
-	readers.insert(readers.begin(), result.initial_reader->GetUnionData(0));
+	if (result.initial_reader) {
+		readers.insert(readers.begin(), result.initial_reader->GetUnionData(0));
+	}
 	std::move(readers.begin(), readers.end(), std::back_inserter(result.union_readers));
 }
 

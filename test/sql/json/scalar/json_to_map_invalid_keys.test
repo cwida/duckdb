@@ -42,9 +42,27 @@ NULL
 statement error
 SELECT json_transform_strict('{"x":2}', '"MAP(INT,INT)"');
 ----
-<REGEX>:.*Conversion Error.*
+<REGEX>:.*(Conversion|Invalid Input) Error.*
 
 query I
 SELECT '{"a":1,"b":2}'::JSON::MAP(VARCHAR, INT);
 ----
 {a=1, b=2}
+
+# TRY_CAST with a key that cannot be converted returns NULL
+query I
+SELECT TRY_CAST('{"a":"x"}'::JSON AS MAP(INT, VARCHAR));
+----
+NULL
+
+query I
+SELECT TRY_CAST(j::JSON AS MAP(INT, VARCHAR)) FROM (VALUES ('{"1":"x"}'), ('{"a":"x"}'), ('{"2":"y"}')) t(j);
+----
+{1=x}
+NULL
+{2=y}
+
+statement error
+SELECT '{"a":"x"}'::JSON::MAP(INT, VARCHAR);
+----
+<REGEX>:.*(Conversion|Invalid Input) Error.*

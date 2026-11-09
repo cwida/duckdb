@@ -1,0 +1,204 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_logging.test
+# description: Repeatability annotations feed recursive invariant build reuse
+# group: [optimizer]
+
+# This file holds the duckdb_logs_parsed assertions. Logging does not survive forced restarts,
+# so restart configs list this file under their logging skip entry.
+
+require parquet
+
+require json
+
+statement ok
+SET enable_caching_operators=true;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CREATE TABLE reader_rows AS SELECT i, i % 3 AS j FROM range(100) t(i);
+
+statement ok
+COPY reader_rows TO '{TEST_DIR}/repeatability_logging_rows.parquet' (FORMAT parquet);
+
+statement ok
+COPY reader_rows TO '{TEST_DIR}/repeatability_logging_rows.csv' (FORMAT csv, HEADER);
+
+# An annotated builtin scan's hash build is retained across iterations instead of being rebuilt.
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, c) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.c
+    FROM r
+    JOIN (
+        SELECT row_number() OVER () AS k, count(*) OVER () AS c
+        FROM repeat_row(1, 'x', num_rows=5)
+    ) build ON build.k = r.i + 1
+    WHERE r.i < 3
+)
+SELECT list(c ORDER BY i) FROM r;
+----
+[0, 5, 5, 5]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+# A reader hash build is retained across iterations only with the multi-file annotation.
+# The build reads real column data so that it cannot be answered from file metadata.
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, total) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.total
+    FROM r
+    JOIN (
+        SELECT i AS k, sum(i) OVER ()::BIGINT AS total
+        FROM read_parquet('{TEST_DIR}/repeatability_logging_rows.parquet')
+    ) build ON build.k = r.i
+    WHERE r.i < 3
+)
+SELECT list(total ORDER BY i) FROM r;
+----
+[0, 4950, 4950, 4950]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, total) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.total
+    FROM r
+    JOIN (
+        SELECT i AS k, sum(i) OVER ()::BIGINT AS total
+        FROM read_csv('{TEST_DIR}/repeatability_logging_rows.csv')
+    ) build ON build.k = r.i
+    WHERE r.i < 3
+)
+SELECT list(total ORDER BY i) FROM r;
+----
+[0, 4950, 4950, 4950]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+statement ok
+COPY (SELECT to_json(reader_rows) AS record FROM reader_rows) TO '{TEST_DIR}/repeatability_logging_rows.json' (FORMAT csv, QUOTE '', HEADER false);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, total) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.total
+    FROM r
+    JOIN (
+        SELECT i AS k, sum(i) OVER ()::BIGINT AS total
+        FROM read_json('{TEST_DIR}/repeatability_logging_rows.json')
+    ) build ON build.k = r.i
+    WHERE r.i < 3
+)
+SELECT list(total ORDER BY i) FROM r;
+----
+[0, 4950, 4950, 4950]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+# rejects_table implies store_rejects (CSVReaderOptions::Verify). Reject recording reflects the executions
+# of the optimized scan, so the hash build is retained like any other CSV build and the reject is written once.
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('2'), ('3'), ('oops')) t(k)) TO '{TEST_DIR}/repeatability_logging_rejects.csv' (FORMAT csv, HEADER);
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i) AS (
+    VALUES (0)
+    UNION ALL
+    SELECT r.i + 1
+    FROM r
+    JOIN (
+        SELECT k FROM read_csv('{TEST_DIR}/repeatability_logging_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, rejects_table='csv_rejects')
+    ) build ON build.k = r.i + 1
+    WHERE r.i < 3
+)
+SELECT list(i ORDER BY i) FROM r;
+----
+[0, 1, 2, 3]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+# The retained build executed the scan once, so its reject row was appended exactly once.
+query I
+SELECT count(*) FROM csv_rejects;
+----
+1
+
+statement ok
+RESET disabled_optimizers;

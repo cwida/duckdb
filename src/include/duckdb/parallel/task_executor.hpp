@@ -65,7 +65,7 @@ protected:
 class TaskExecutor {
 public:
 	explicit TaskExecutor(ClientContext &context, TaskSchedulerType type = TaskSchedulerType::REGULAR);
-	explicit TaskExecutor(Context &services, TaskSchedulerType type = TaskSchedulerType::REGULAR);
+	explicit TaskExecutor(Context &context, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	explicit TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	~TaskExecutor();
 
@@ -125,7 +125,7 @@ private:
 	idx_t completed_tasks DUCKDB_GUARDED_BY(token->producer_lock) = 0;
 	idx_t total_tasks DUCKDB_GUARDED_BY(token->producer_lock) = 0;
 	atomic<bool> cancelled {false};
-	optional_ptr<Context> services;
+	optional_ptr<Context> context;
 };
 
 } // namespace duckdb

@@ -35,8 +35,11 @@ void DuckDBApproxDatabaseCountFunction(ClientContext &context, TableFunctionInpu
 }
 
 void DuckDBApproxDatabaseCountFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_approx_database_count", {}, DuckDBApproxDatabaseCountFunction,
-	                              DuckDBApproxDatabaseCountBind, DuckDBApproxDatabaseCountInit));
+	TableFunction approx_count_fun("duckdb_approx_database_count", {}, DuckDBApproxDatabaseCountFunction,
+	                               DuckDBApproxDatabaseCountBind, DuckDBApproxDatabaseCountInit);
+	// reads an approximate live count of the attached databases
+	approx_count_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(approx_count_fun));
 }
 
 } // namespace duckdb
