@@ -101,6 +101,62 @@ EXPLAIN SELECT a, b, sum(v) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GRO
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
 
+# Decimal arithmetic whose result type holds every result cannot overflow, and a floating-point division yields inf
+# or nan instead of an error under the default IEEE semantics, so these arguments are still pushed below the join.
+statement ok
+CREATE TABLE sales AS SELECT i % 100 AS id, (i % 1000)::DECIMAL(7,2) AS price, (i % 10)::DECIMAL(7,2) AS discount, (i % 5)::INTEGER AS qty FROM range(10000) t(i);
+
+query II
+EXPLAIN SELECT a, b, sum(price - discount) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum((price - discount) / 2) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum(price * qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum((price - discount) / 2) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	172500.0
+0	1	148500.0
+0	2	149000.0
+
+# A floating-point division by zero yields inf or nan under the default IEEE semantics, so it cannot throw either.
+query II
+EXPLAIN SELECT a, b, sum(price / qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Without IEEE semantics the division by zero raises, and so does the integer division.
+statement ok
+SET ieee_floating_point_ops = false
+
+query II
+EXPLAIN SELECT a, b, sum(price / qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+statement ok
+RESET ieee_floating_point_ops
+
+query II
+EXPLAIN SELECT a, b, sum(sales.id // qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# Arithmetic whose result type cannot hold every result may overflow and can still throw.
+query II
+EXPLAIN SELECT a, b, sum(price::DECIMAL(38,2) + discount::DECIMAL(38,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
 # The same results without the optimizer.
 statement ok
 SET disabled_optimizers = 'partial_aggregate_pushdown'
