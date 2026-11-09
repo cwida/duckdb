@@ -103,7 +103,7 @@ static void renderText(size_t &render_pos, char *&buf, size_t &len, size_t pos, 
 			}
 		}
 		if (highlight) {
-			bool is_dot_command = buf[0] == '.';
+			bool is_dot_command = buf[0] == '.' || buf[0] == '!';
 			auto tokens = Highlighting::Tokenize(buf, len, is_dot_command);
 			highlight_buffer = Highlighting::HighlightText(buf, len, start_pos, cpos, tokens);
 			buf = (char *)highlight_buffer.c_str();
@@ -858,7 +858,7 @@ void Linenoise::RefreshMultiLine() {
 
 	vector<highlightToken> tokens;
 	if (Highlighting::IsEnabled()) {
-		bool is_dot_command = buf[0] == '.';
+		bool is_dot_command = buf[0] == '.' || buf[0] == '!';
 		tokens = Highlighting::Tokenize(render_buf, render_len, is_dot_command);
 
 		// add error highlighting

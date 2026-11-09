@@ -4,9 +4,6 @@
 #include "shell_progress_bar.hpp"
 #include "shell_renderer.hpp"
 
-#if !defined(_WIN32) && !defined(WIN32)
-#include <sys/wait.h>
-#endif
 #ifdef HAVE_LINENOISE
 #include "linenoise.h"
 #include "shortcuts.hpp"
@@ -533,24 +530,11 @@ MetadataResult DisplaySchemas(ShellState &state, const vector<string> &args) {
 }
 
 MetadataResult RunShellCommand(ShellState &state, const vector<string> &args) {
-	if (state.safe_mode) {
-		state.Print(PrintOutput::STDERR, ".sh/.system cannot be used in -safe mode\n");
-		return MetadataResult::FAIL;
-	}
 	if (args.size() < 2) {
 		return MetadataResult::PRINT_USAGE;
 	}
-	// the command line is passed on verbatim - quoting, pipes and redirects are handled by the system shell
-	fflush(state.out);
-	fflush(stdout);
-	int status = system(args[1].c_str());
-#if !defined(_WIN32) && !defined(WIN32)
-	if (WIFEXITED(status)) {
-		status = WEXITSTATUS(status);
-	}
-#endif
-	if (status) {
-		state.PrintF(PrintOutput::STDERR, "System command returns %d\n", status);
+	if (state.RunSystemCommand(args[1])) {
+		return MetadataResult::FAIL;
 	}
 	return MetadataResult::SUCCESS;
 }
@@ -1072,14 +1056,16 @@ static const MetadataCommand metadata_commands[] = {
      "By default the schema is pretty-printed using the SQL formatter.\nOptions:\n\t--no-indent\tPrint the schema as "
      "it is stored, without formatting\n\t--no-format\tAlias for --no-indent\n\t--indent\tForce pretty-printing (the "
      "default)\n\t--format\tAlias for --indent"},
-    {"shell", 0, RunShellCommand, "CMD ARGS...", "Run CMD ARGS... in a system shell", 0, "", true},
+    {"shell", 0, RunShellCommand, "CMD ARGS...", "Run CMD ARGS... in a system shell (shorthand: !CMD ARGS...)", 0, "",
+     true},
     {"show", 1, ShowConfiguration, "", "Show the current values for various settings", 0, ""},
 #ifdef HAVE_LINENOISE
     {"singleline", 1, ToggleSingleLine, "", "Sets the render mode to single-line", 0, ""},
 #endif
     {"startup_text", 2, SetStartupText, "none|version|all",
      "Start-up text to display. Set this as the first line in .duckdbrc", 0, ""},
-    {"system", 0, RunShellCommand, "CMD ARGS...", "Run CMD ARGS... in a system shell", 0, "", true},
+    {"system", 0, RunShellCommand, "CMD ARGS...", "Run CMD ARGS... in a system shell (shorthand: !CMD ARGS...)", 0, "",
+     true},
     {"tables", 0, ShowTables, "?TABLE?", "List names of tables matching LIKE pattern TABLE", 2, ""},
     {"thousand_sep", 0, SetThousandSep, "SEP",
      "Sets the thousand separator used when rendering numbers. Only for duckbox mode.", 4, ""},

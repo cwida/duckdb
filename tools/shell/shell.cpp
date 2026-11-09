@@ -73,6 +73,7 @@
 
 #if !defined(_WIN32) && !defined(WIN32)
 #include <signal.h>
+#include <sys/wait.h>
 #if !defined(__RTP__) && !defined(_WRS_KERNEL)
 #include <pwd.h>
 #endif
@@ -497,6 +498,11 @@ int ShellState::RunInitialCommand(const char *sql, bool bail) {
 		if (rc && bail) {
 			return rc == 2 ? false : rc;
 		}
+	} else if (sql[0] == '!') {
+		rc = RunSystemCommand(sql + 1);
+		if (rc && bail) {
+			return rc;
+		}
 	} else {
 		string zErrMsg;
 		BEGIN_TIMER;
@@ -506,6 +512,33 @@ int ShellState::RunInitialCommand(const char *sql, bool bail) {
 			return 1;
 		}
 	}
+	return 0;
+}
+
+int ShellState::RunSystemCommand(const string &command) {
+	if (safe_mode) {
+		Print(PrintOutput::STDERR, "!/.shell/.system cannot be used in -safe mode\n");
+		return 1;
+	}
+	string cmd = command;
+	StringUtil::Trim(cmd);
+	if (cmd.empty()) {
+		PrintDatabaseError("Invalid Command Error: Invalid usage of command '!'\n\nUsage: '!CMD ARGS...'");
+		return 1;
+	}
+	// flush pending output so it is not interleaved with the output of the command
+	fflush(out);
+	fflush(stdout);
+	int status = system(cmd.c_str());
+#if !defined(_WIN32) && !defined(WIN32)
+	if (WIFEXITED(status)) {
+		status = WEXITSTATUS(status);
+	}
+#endif
+	if (status) {
+		PrintF(PrintOutput::STDERR, "System command returns %d\n", status);
+	}
+	// a failing command is reported but, like .shell, does not count as a shell error
 	return 0;
 }
 
@@ -3259,6 +3292,19 @@ int ShellState::ProcessInput(InputMode mode) {
 			}
 			continue;
 		}
+		if (zLine[0] == '!' && nSql == 0) {
+			// "!CMD ARGS..." runs CMD in the system shell
+			if (ShellHasFlag(ShellFlags::SHFLG_Echo)) {
+				printf("%s\n", zLine);
+			}
+			if (mode == InputMode::STANDARD) {
+				ShellAddHistory(zLine);
+			}
+			if (RunSystemCommand(zLine + 1)) {
+				errCnt++;
+			}
+			continue;
+		}
 		nLine = StringLength(zLine);
 		if (nSql + nLine + 2 >= nAlloc) {
 			nAlloc = nSql + nLine + 100;
@@ -3417,7 +3463,7 @@ static char *linenoise_format(const char *zLine) {
 	if (!state.conn) {
 		return nullptr;
 	}
-	if (zLine[0] == '.' || zLine[0] == '#' || zLine[0] == '\3') {
+	if (zLine[0] == '.' || zLine[0] == '#' || zLine[0] == '!' || zLine[0] == '\3') {
 		return nullptr;
 	}
 	try {
@@ -3452,7 +3498,7 @@ static void linenoise_completion(const char *zLine, linenoiseCompletions *lc) {
 			}
 			return;
 		}
-		if (zLine[0] == '#') {
+		if (zLine[0] == '#' || zLine[0] == '!') {
 			return;
 		}
 		auto zSql = StringUtil::Format("CALL sql_auto_complete(%s)", SQLString(zLine));
@@ -4002,6 +4048,11 @@ int RunShell(int argc, const char **argv) {
 				rc = data.DoMetaCommand(cmd);
 				if (rc) {
 					return rc == 2 ? 0 : rc;
+				}
+			} else if (cmd[0] == '!') {
+				rc = data.RunSystemCommand(cmd.substr(1));
+				if (rc) {
+					return rc;
 				}
 			} else {
 				auto success = data.ExecuteSQL(cmd.c_str());

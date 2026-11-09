@@ -350,9 +350,8 @@ int History::Load(const char *filename) {
 	std::string result;
 	while (reader.NextLine()) {
 		auto buf = reader.GetLine();
-		if (result.empty() && buf[0] == '.') {
-			// if the first character is a dot this is a dot command
-			// add the full line to the history
+		if (result.empty() && (buf[0] == '.' || buf[0] == '!')) {
+			// dot command or shell command - add the full line to the history
 			History::Add(buf);
 			continue;
 		}
