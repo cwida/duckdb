@@ -125,6 +125,8 @@ private:
 	unique_ptr<ConnectionManager> connection_manager;
 	unique_ptr<ExtensionManager> extension_manager;
 	ValidChecker db_validity;
+	//! Declared before the file systems: their openers reference it
+	unique_ptr<Context> services;
 	unique_ptr<DatabaseFileSystem> db_file_system;
 	unique_ptr<LocalDatabaseFileSystem> local_db_file_system;
 	unique_ptr<LogManager> log_manager;
@@ -133,7 +135,6 @@ private:
 	unique_ptr<ResultSetManager> result_set_manager;
 	unique_ptr<ParserCache> parser_cache;
 	unique_ptr<OSUtil> os_util;
-	unique_ptr<Context> services;
 
 	duckdb_ext_api_v1 (*create_api_v1)();
 	//! Set in Initialize. Loading a V2 C API extension builds the C API function table and opens a connection, both of
