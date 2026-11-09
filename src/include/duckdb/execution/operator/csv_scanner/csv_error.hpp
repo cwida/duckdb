@@ -62,7 +62,7 @@ public:
 	                          optional_idx byte_position, LogicalTypeId type, const String &current_path);
 	//! Produces error for when the line size exceeds the maximum line size option
 	static CSVError LineSizeError(const CSVReaderOptions &options, LinesPerBoundary error_info, string &csv_row,
-	                              idx_t byte_position, const String &current_path);
+	                              idx_t line_size, idx_t byte_position, const String &current_path);
 	//! Produces error for when the state machine reaches an invalid state
 	static CSVError InvalidState(const CSVReaderOptions &options, idx_t current_column, LinesPerBoundary error_info,
 	                             string &csv_row, idx_t row_byte_position, optional_idx byte_position,

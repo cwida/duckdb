@@ -71,8 +71,8 @@ string_t StringColumnReader::VerifyString(const char *str_data, uint32_t str_len
 		auto target = StringVector::EmptyString(*current_plain_result, str_len);
 		auto output = target.GetDataWriteable();
 		memcpy(output, str_data, str_len);
-		Utf8Proc::MakeValid(output, str_len);
-		target.Finalize();
+		auto valid_length = Utf8Proc::MakeValid(output, str_len);
+		target.SetSizeAndFinalize(NumericCast<uint32_t>(valid_length), str_len);
 		return target;
 	}
 

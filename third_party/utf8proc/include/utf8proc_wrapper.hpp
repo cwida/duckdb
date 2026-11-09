@@ -27,8 +27,8 @@ public:
 	static char* Normalize(const char* s, size_t len);
 	//! Returns whether or not the UTF8 string is valid
 	static bool IsValid(const char *s, size_t len);
-	//! Makes Invalid Unicode valid by replacing invalid parts with a given character
-	static void MakeValid(char *s, size_t len, char special_flag = '?');
+	//! Replaces each maximal invalid subpart in place with special_flag and returns the new, possibly shorter, length
+	[[nodiscard]] static size_t MakeValid(char *s, size_t len, char special_flag = '?');
 	//! Creates a new string with invalid UTF-8 characters removed
 	static std::string RemoveInvalid(const char *s, size_t len);
 	//! Returns the position (in bytes) of the next grapheme cluster

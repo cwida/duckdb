@@ -43,15 +43,13 @@ static inline UnicodeType UTF8ExtraByteLoop(const int first_pos_seq, int utf8cha
 		return UnicodeType::INVALID;
 	}
 	for (size_t j = 0; j < nextra_bytes; j++) {
-		int c = (int)s[i + 1];
+		int c = (int)s[++i];
 		/* now validate the extra bytes */
 		if ((c & 0xC0) != 0x80) {
 			/* extra byte is not in the format 10xxxxxx */
-			// i stays on the last byte of the cut sequence, so a caller resumes at the byte that cut it.
-			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i + 1, UnicodeInvalidReason::BYTE_MISMATCH);
+			AssignInvalidUTF8Reason(invalid_reason, invalid_pos, i, UnicodeInvalidReason::BYTE_MISMATCH);
 			return UnicodeType::INVALID;
 		}
-		i++;
 		utf8char = (utf8char << 6) | (c & 0x3F);
 	}
 	if ((utf8char & mask) == 0) {
@@ -129,39 +127,63 @@ UnicodeType Utf8Proc::Analyze(const char *s, size_t len, UnicodeInvalidReason *i
 	return type;
 }
 
-void Utf8Proc::MakeValid(char *s, size_t len, char special_flag) {
-	D_ASSERT(special_flag <= 127);
-	UnicodeType type = UnicodeType::ASCII;
-	for (size_t i = 0; i < len; i++) {
-		int c = (int)s[i];
-		if ((c & 0x80) == 0) {
-			continue;
+// Length of the well-formed sequence at s[i], or of its maximal subpart (Unicode 3.9, Table 3-7) when ill-formed.
+static size_t NextSequenceLength(const char *s, size_t len, size_t i, bool &valid) {
+	auto lead = static_cast<uint8_t>(s[i]);
+	valid = false;
+	size_t sequence_length;
+	uint8_t second_min = 0x80;
+	uint8_t second_max = 0xBF;
+	if (lead < 0x80) {
+		valid = true;
+		return 1;
+	} else if (lead >= 0xC2 && lead <= 0xDF) {
+		sequence_length = 2;
+	} else if (lead >= 0xE0 && lead <= 0xEF) {
+		sequence_length = 3;
+		// E0 would be overlong and ED a surrogate for the excluded second byte values.
+		second_min = lead == 0xE0 ? 0xA0 : 0x80;
+		second_max = lead == 0xED ? 0x9F : 0xBF;
+	} else if (lead >= 0xF0 && lead <= 0xF4) {
+		sequence_length = 4;
+		// F0 would be overlong and F4 above U+10FFFF for the excluded second byte values.
+		second_min = lead == 0xF0 ? 0x90 : 0x80;
+		second_max = lead == 0xF4 ? 0x8F : 0xBF;
+	} else {
+		return 1;
+	}
+	for (size_t k = 1; k < sequence_length; k++) {
+		if (i + k >= len) {
+			return k;
 		}
-		int first_pos_seq = i;
-		if ((c & 0xE0) == 0xC0) {
-			/* 2 byte sequence */
-			int utf8char = c & 0x1F;
-			type = UTF8ExtraByteLoop<1, 0x000780>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
-		} else if ((c & 0xF0) == 0xE0) {
-			/* 3 byte sequence */
-			int utf8char = c & 0x0F;
-			type = UTF8ExtraByteLoop<2, 0x00F800>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
-		} else if ((c & 0xF8) == 0xF0) {
-			/* 4 byte sequence */
-			int utf8char = c & 0x07;
-			type = UTF8ExtraByteLoop<3, 0x1F0000>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
-		} else {
-			/* invalid UTF-8 start byte */
-			s[i] = special_flag; // Rewrite invalid byte
-		}
-		if (type == UnicodeType::INVALID) {
-			for (size_t j = first_pos_seq; j <= i; j++) {
-				s[j] = special_flag; // Rewrite each byte of the invalid sequence
-			}
-			type = UnicodeType::ASCII;
+		auto next = static_cast<uint8_t>(s[i + k]);
+		auto lower = k == 1 ? second_min : 0x80;
+		auto upper = k == 1 ? second_max : 0xBF;
+		if (next < lower || next > upper) {
+			return k;
 		}
 	}
-	D_ASSERT(Utf8Proc::IsValid(s, len));
+	valid = true;
+	return sequence_length;
+}
+
+size_t Utf8Proc::MakeValid(char *s, size_t len, char special_flag) {
+	D_ASSERT(special_flag <= 127);
+	size_t result_len = 0;
+	for (size_t i = 0; i < len;) {
+		bool valid;
+		auto sequence_length = NextSequenceLength(s, len, i, valid);
+		if (valid) {
+			for (size_t k = 0; k < sequence_length; k++) {
+				s[result_len++] = s[i + k];
+			}
+		} else {
+			s[result_len++] = special_flag;
+		}
+		i += sequence_length;
+	}
+	D_ASSERT(Utf8Proc::IsValid(s, result_len));
+	return result_len;
 }
 
 char *Utf8Proc::Normalize(const char *s, size_t len) {
@@ -176,46 +198,15 @@ bool Utf8Proc::IsValid(const char *s, size_t len) {
 
 std::string Utf8Proc::RemoveInvalid(const char *s, size_t len) {
 	std::string result;
-	result.reserve(len); // Reserve the maximum possible size
-
-	for (size_t i = 0; i < len; i++) {
-		int c = (int)s[i];
-		if ((c & 0x80) == 0) {
-			// ASCII character - always valid
-			result.push_back(s[i]);
-			continue;
+	result.reserve(len);
+	for (size_t i = 0; i < len;) {
+		bool valid;
+		auto sequence_length = NextSequenceLength(s, len, i, valid);
+		if (valid) {
+			result.append(s + i, sequence_length);
 		}
-
-		int first_pos_seq = i;
-		UnicodeType type = UnicodeType::ASCII;
-
-		if ((c & 0xE0) == 0xC0) {
-			/* 2 byte sequence */
-			int utf8char = c & 0x1F;
-			type = UTF8ExtraByteLoop<1, 0x000780>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
-		} else if ((c & 0xF0) == 0xE0) {
-			/* 3 byte sequence */
-			int utf8char = c & 0x0F;
-			type = UTF8ExtraByteLoop<2, 0x00F800>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
-		} else if ((c & 0xF8) == 0xF0) {
-			/* 4 byte sequence */
-			int utf8char = c & 0x07;
-			type = UTF8ExtraByteLoop<3, 0x1F0000>(first_pos_seq, utf8char, i, s, len, nullptr, nullptr);
-		} else {
-			// invalid, do not write to output
-			continue;
-		}
-
-		if (type == UnicodeType::INVALID) {
-			continue;
-		}
-
-		// If we get here, the sequence is valid, so add all bytes of the sequence to result
-		for (size_t j = first_pos_seq; j <= i; j++) {
-			result.push_back(s[j]);
-		}
+		i += sequence_length;
 	}
-
 	D_ASSERT(Utf8Proc::IsValid(result.c_str(), result.size()));
 	return result;
 }

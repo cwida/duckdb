@@ -49,9 +49,10 @@ bool ColumnCountResult::AddRow(ColumnCountResult &result, idx_t buffer_pos) {
 		current_line_position.begin = result.last_position;
 		current_line_position.end = cur_position;
 		bool mock = false;
-		string csv_row = current_line_position.ReconstructCurrentLine(mock, result.buffer_handles, true);
+		idx_t line_size = 0;
+		string csv_row = current_line_position.ReconstructCurrentLine(mock, result.buffer_handles, true, &line_size);
 		auto error = CSVError::LineSizeError(
-		    result.state_machine.options, lines_per_batch, csv_row,
+		    result.state_machine.options, lines_per_batch, csv_row, line_size,
 		    result.last_position.GetGlobalPosition(result.state_machine.options.buffer_size_option.GetValue(), false),
 		    result.state_machine.options.file_path);
 		result.error_handler.Error(error);
@@ -200,9 +201,11 @@ void ColumnCountScanner::FinalizeChunkProcess() {
 					current_line_position.begin = result.last_position;
 					current_line_position.end = cur_position;
 					bool mock = false;
-					string csv_row = current_line_position.ReconstructCurrentLine(mock, result.buffer_handles, true);
+					idx_t line_size = 0;
+					string csv_row =
+					    current_line_position.ReconstructCurrentLine(mock, result.buffer_handles, true, &line_size);
 					auto error =
-					    CSVError::LineSizeError(result.state_machine.options, lines_per_batch, csv_row,
+					    CSVError::LineSizeError(result.state_machine.options, lines_per_batch, csv_row, line_size,
 					                            result.last_position.GetGlobalPosition(
 					                                result.state_machine.options.buffer_size_option.GetValue(), false),
 					                            result.state_machine.options.file_path);

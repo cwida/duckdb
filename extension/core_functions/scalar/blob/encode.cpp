@@ -73,8 +73,8 @@ void BinaryDecodeFunction(DataChunk &args, ExpressionState &state, Vector &resul
 			    auto target = StringVector::EmptyString(result, input_length);
 			    auto output = target.GetDataWriteable();
 			    memcpy(output, input_data, input_length);
-			    Utf8Proc::MakeValid(output, input_length);
-			    target.Finalize();
+			    auto valid_length = Utf8Proc::MakeValid(output, input_length);
+			    target.SetSizeAndFinalize(NumericCast<uint32_t>(valid_length), input_length);
 			    return target;
 		    }
 

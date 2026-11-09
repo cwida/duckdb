@@ -3,15 +3,15 @@
 
 require notwindows
 
-# truncating this file with a line limit of 4 bytes results in incorrect UTF8
+# truncating this file with a line limit of 4 bytes cuts the delimiter short, and its prefix becomes one '.'
 statement ok
 select * from read_csv('data/csv/test/no_newline_unicode.csv', sep='🦆', names=['a','b','c'], types=['date','int','int'], header=false, ignore_errors=true, store_rejects=true, rejects_line_size_limit=4);
 
 query I
 SELECT csv_line FROM reject_errors LIMIT 5
 ----
-0...
-0...
-1...
-1...
-2...
+0.
+0.
+1.
+1.
+2.

@@ -229,10 +229,7 @@ bool StringValueResult::UnsetComment(StringValueResult &result, idx_t buffer_pos
 }
 
 void FullLinePosition::SanitizeError(string &value) {
-	std::vector<char> char_array(value.begin(), value.end());
-	char_array.push_back('\0'); // Null-terminate the character array
-	Utf8Proc::MakeValid(&char_array[0], char_array.size());
-	value = {char_array.begin(), char_array.end() - 1};
+	value.resize(Utf8Proc::MakeValid(&value[0], value.size()));
 }
 
 void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool allocate) {
@@ -716,8 +713,9 @@ bool LineError::HandleErrors(StringValueResult &result) {
 	for (auto &cur_error : current_errors) {
 		LinesPerBoundary lines_per_batch(result.iterator.GetBoundaryIdx(), result.lines_read);
 		bool first_nl = false;
+		idx_t line_size = 0;
 		auto borked_line = result.current_line_position.ReconstructCurrentLine(first_nl, result.buffer_handles,
-		                                                                       result.PrintErrorLine());
+		                                                                       result.PrintErrorLine(), &line_size);
 		CSVError csv_error;
 		auto col_idx = cur_error.col_idx;
 		auto &line_pos = cur_error.error_position;
@@ -795,7 +793,7 @@ bool LineError::HandleErrors(StringValueResult &result) {
 		} break;
 		case MAXIMUM_LINE_SIZE:
 			csv_error = CSVError::LineSizeError(
-			    result.state_machine.options, lines_per_batch, borked_line,
+			    result.state_machine.options, lines_per_batch, borked_line, line_size,
 			    result.current_line_position.begin.GetGlobalPosition(result.requested_size, first_nl), result.path);
 			break;
 		case INVALID_STATE:

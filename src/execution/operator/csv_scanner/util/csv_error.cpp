@@ -298,7 +298,7 @@ CSVError::CSVError(string error_message_p, CSVErrorType type_p, idx_t column_idx
 	if (reader_options.rejects_line_size_limit > 0 && csv_row.size() > reader_options.rejects_line_size_limit) {
 		csv_row.erase(csv_row.begin() + NumericCast<int64_t>(reader_options.rejects_line_size_limit), csv_row.end());
 		// truncating might add invalid UTF8 at the tail end - make it valid again
-		Utf8Proc::MakeValid(csv_row.data(), csv_row.size(), '.');
+		csv_row.resize(Utf8Proc::MakeValid(&csv_row[0], csv_row.size(), '.'));
 	}
 	error << error_message << '\n';
 	error << fixes << '\n';
@@ -363,14 +363,13 @@ CSVError CSVError::CastError(const CSVReaderOptions &options, const string &colu
 }
 
 CSVError CSVError::LineSizeError(const CSVReaderOptions &options, LinesPerBoundary error_info, string &csv_row,
-                                 idx_t byte_position, const String &current_path) {
+                                 idx_t line_size, idx_t byte_position, const String &current_path) {
 	std::ostringstream error;
 	error << "Maximum line size of " << options.maximum_line_size.GetValue() << " bytes exceeded. ";
-	error << "Actual Size:" << csv_row.size() << " bytes." << '\n';
+	error << "Actual Size:" << line_size << " bytes." << '\n';
 
 	std::ostringstream how_to_fix_it;
-	how_to_fix_it << "Possible Solution: Change the maximum length size, e.g., max_line_size=" << csv_row.size() + 2
-	              << "\n";
+	how_to_fix_it << "Possible Solution: Change the maximum length size, e.g., max_line_size=" << line_size + 2 << "\n";
 
 	return CSVError(error.str(), MAXIMUM_LINE_SIZE, 0, csv_row, error_info, byte_position, byte_position, options,
 	                how_to_fix_it.str(), current_path);

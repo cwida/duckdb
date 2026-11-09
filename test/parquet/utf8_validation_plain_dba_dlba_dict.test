@@ -303,30 +303,57 @@ is not valid UTF8
 
 endloop
 
-# a byte that cuts a multi byte sequence short is kept by both repairing modes
+# replace marks a cut prefix with one '?' in every encoding; rows 6 and 7 shrink across the inline string limit
 statement ok
-COPY (SELECT * FROM (VALUES
+CREATE TABLE cut_sequences AS SELECT * FROM (VALUES
     (1, unhex('41C342')),
     (2, unhex('F09F98F09F9880')),
     (3, unhex('E282C3A9')),
     (4, unhex('41E282')),
-    (5, NULL::BLOB)
-) t(i, s)) TO '{TEST_DIR}/cut_sequences.parquet';
+    (5, NULL::BLOB),
+    (6, unhex(repeat('F09F98', 5))),
+    (7, unhex(repeat('41', 11) || 'E282'))
+) t(i, s);
+
+statement ok
+COPY cut_sequences TO '{TEST_DIR}/cut_sequences_plain.parquet' (DICTIONARY_SIZE_LIMIT 0);
+
+statement ok
+COPY cut_sequences TO '{TEST_DIR}/cut_sequences_dlba.parquet' (PARQUET_VERSION v2, DICTIONARY_SIZE_LIMIT 0);
+
+statement ok
+COPY (SELECT cut_sequences.* FROM cut_sequences, range(10)) TO '{TEST_DIR}/cut_sequences_dict.parquet';
 
 query II
-SELECT i, s FROM read_parquet('{TEST_DIR}/cut_sequences.parquet', binary_as_string=true, utf8_validation='replace') ORDER BY i;
+SELECT file_name.replace('{TEST_DIR}/', ''), encodings FROM parquet_metadata('{TEST_DIR}/cut_sequences_*.parquet')
+WHERE path_in_schema = 's' ORDER BY ALL;
+----
+cut_sequences_dict.parquet	PLAIN_DICTIONARY
+cut_sequences_dlba.parquet	DELTA_LENGTH_BYTE_ARRAY
+cut_sequences_plain.parquet	PLAIN
+
+foreach encoding plain dlba dict
+
+query II
+SELECT DISTINCT i, s FROM read_parquet('{TEST_DIR}/cut_sequences_{encoding}.parquet', binary_as_string=true, utf8_validation='replace') ORDER BY i;
 ----
 1	A?B
-2	???😀
-3	??é
-4	A??
+2	?😀
+3	?é
+4	A?
 5	NULL
+6	?????
+7	AAAAAAAAAAA?
 
 query II
-SELECT i, s FROM read_parquet('{TEST_DIR}/cut_sequences.parquet', binary_as_string=true, utf8_validation='ignore') ORDER BY i;
+SELECT DISTINCT i, s FROM read_parquet('{TEST_DIR}/cut_sequences_{encoding}.parquet', binary_as_string=true, utf8_validation='ignore') ORDER BY i;
 ----
 1	AB
 2	😀
 3	é
 4	A
 5	NULL
+6	(empty)
+7	AAAAAAAAAAA
+
+endloop

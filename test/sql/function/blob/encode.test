@@ -55,8 +55,7 @@ SELECT hex(b) FROM invalid_blob;
 ----
 4141414141414141414141414141414141414141C0
 
-# replace marks each byte that belongs to no valid character with one '?' and keeps every other byte;
-# a byte that cuts a sequence short is not part of that sequence and is decoded on its own
+# replace writes one '?' per maximal invalid subpart (Unicode 3.9), as Python's bytes.decode('utf-8', 'replace') does
 statement ok
 CREATE TABLE bad_utf8(id INTEGER, b BLOB);
 
@@ -86,24 +85,40 @@ INSERT INTO bad_utf8 VALUES
 	(22, NULL),
 	(23, ''::BLOB),
 	(24, unhex('41C3A942')),
-	(25, unhex('3FC342'));
+	(25, unhex('3FC342')),
+	(26, unhex('E282F09F9841')),
+	(27, unhex('C3E282F09F98')),
+	(28, unhex('E282E282')),
+	(29, unhex('41F09F')),
+	(30, unhex('E0A041')),
+	(31, unhex('E08041')),
+	(32, unhex('ED9F41')),
+	(33, unhex('EDA041')),
+	(34, unhex('F0908041')),
+	(35, unhex('F08F41')),
+	(36, unhex('F48FBF41')),
+	(37, unhex('F49041')),
+	(38, unhex('F5808080')),
+	(39, unhex('C1BF')),
+	(40, unhex(repeat('F09F98', 5))),
+	(41, unhex(repeat('41', 11) || 'E282'));
 
 query III
 SELECT id, decode(b, 'replace'), decode(b, 'ignore') FROM bad_utf8 ORDER BY id;
 ----
 1	A?B	AB
-2	???😀	😀
+2	?😀	😀
 3	?B	B
 4	?é	é
 5	A?	A
 6	?B	B
-7	??B	B
-8	??é	é
-9	A??	A
-10	???B	B
+7	?B	B
+8	?é	é
+9	A?	A
+10	?B	B
 11	?😀	😀
-12	??€	€
-13	A???	A
+12	?€	€
+13	A?	A
 14	A?B	AB
 15	A?B	AB
 16	??A	A
@@ -111,19 +126,48 @@ SELECT id, decode(b, 'replace'), decode(b, 'ignore') FROM bad_utf8 ORDER BY id;
 18	???A	A
 19	????A	A
 20	A??B??C	ABC
-21	AAAAAAAAAAAAAAAAAAAA??BBBBBBBBBBBBBBBBBBBB	AAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBB
+21	AAAAAAAAAAAAAAAAAAAA?BBBBBBBBBBBBBBBBBBBB	AAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBB
 22	NULL	NULL
 23	(empty)	(empty)
 24	AéB	AéB
 25	??B	?B
+26	??A	A
+27	???	(empty)
+28	??	(empty)
+29	A?	A
+30	?A	A
+31	??A	A
+32	?A	A
+33	??A	A
+34	?A	A
+35	??A	A
+36	?A	A
+37	??A	A
+38	????	(empty)
+39	??	(empty)
+40	?????	(empty)
+41	AAAAAAAAAAA?	AAAAAAAAAAA
 
-# replace keeps the byte length, and on input without a '?' of its own ignore is replace without the marks
+# replace never grows its input, and on input without a '?' of its own ignore is replace without the marks
 query IIII
 SELECT
 	count(*),
-	bool_and(octet_length(encode(decode(b, 'replace'))) = octet_length(b)),
+	bool_and(octet_length(encode(decode(b, 'replace'))) <= octet_length(b)),
 	count(*) FILTER (WHERE NOT contains(decode(b, 'ignore'), '?')),
 	bool_and(replace(decode(b, 'replace'), '?', '') = decode(b, 'ignore')) FILTER (WHERE NOT contains(decode(b, 'ignore'), '?'))
 FROM bad_utf8 WHERE b IS NOT NULL;
 ----
-24	true	23	true
+40	true	39	true
+
+# a value that shrinks to the inline limit or below compares equal to the same text
+query III
+SELECT decode(unhex('41E282'), 'replace') = 'A?', decode(b, 'replace') = '?????', (SELECT decode(b, 'replace') FROM bad_utf8 WHERE id = 41) = repeat('A', 11) || '?'
+FROM bad_utf8 WHERE id = 40;
+----
+true	true	true
+
+# the strict mode still rejects a cut sequence
+statement error
+SELECT decode(b) FROM bad_utf8 WHERE id = 9;
+----
+Failure in decode
