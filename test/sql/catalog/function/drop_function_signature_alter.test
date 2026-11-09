@@ -48,7 +48,7 @@ DROP MACRO alt(INTEGER);
 statement error
 SELECT alt(1);
 ----
-<REGEX>:.*(no overload|No function matches|Binder Error).*
+<REGEX>:.*Macro alt\(\) does not support the supplied arguments.*
 
 statement ok
 ROLLBACK;
@@ -79,7 +79,7 @@ SELECT alt(1);
 statement error
 SELECT alt(DATE '2024-01-01');
 ----
-<REGEX>:.*(No function matches|Binder Error).*
+<REGEX>:.*Macro alt\(\) does not support the supplied arguments.*
 
 # this database predates the ALTER_MACRO record's storage version, so the WAL carried the member
 # drop as the legacy drop+create: the member removal survives the replay either way
@@ -108,7 +108,7 @@ PRAGMA wal_autocheckpoint='1TB';
 statement error
 SELECT alt(1);
 ----
-<REGEX>:.*(Catalog Error|not exist).*
+<REGEX>:.*Scalar Function with name alt does not exist!.*
 
 # the replacement keeps its dependency on the containing schema
 statement ok
@@ -136,7 +136,7 @@ DROP SCHEMA s CASCADE;
 statement error
 SELECT s.sf('a');
 ----
-<REGEX>:.*(Catalog Error|not exist).*
+<REGEX>:.*Scalar Function with name sf does not exist!.*
 
 # a table macro member drop replays from the WAL too
 statement ok
@@ -161,7 +161,7 @@ SELECT v FROM tm(7);
 statement error
 SELECT v FROM tm('a');
 ----
-<REGEX>:.*(No function matches|Binder Error|does not support).*
+<REGEX>:.*Macro tm\(\) does not support the supplied arguments.*
 
 # two connections racing member drops of the same entry conflict on the alter path
 statement ok con1
@@ -217,7 +217,7 @@ SELECT odb.om(1);
 statement error
 SELECT odb.om('a');
 ----
-<REGEX>:.*(No function matches|Binder Error|does not support).*
+<REGEX>:.*Macro om\(\) does not support the supplied arguments.*
 
 # a v2.1.0 database carries the member drop as the ALTER_MACRO record: the replay goes through
 # MacroCatalogEntry::AlterEntry, keeps the oid, and keeps the dependency list
@@ -255,7 +255,7 @@ SELECT ndb.nm(1), ndb.nm(DATE '2024-01-01');
 statement error
 SELECT ndb.nm('a');
 ----
-<REGEX>:.*(No function matches|Binder Error|does not support).*
+<REGEX>:.*Macro nm\(\) does not support the supplied arguments.*
 
 # the kept dependency list still protects the surviving member's reference
 statement error

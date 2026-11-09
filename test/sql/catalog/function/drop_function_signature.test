@@ -258,7 +258,7 @@ DROP MACRO whole;
 statement error
 SELECT whole(1);
 ----
-<REGEX>:.*(Catalog Error|not exist).*
+<REGEX>:.*Scalar Function with name whole does not exist!.*
 
 # built-in macros live in the system catalog, which the generic alter path refuses to alter
 statement error
@@ -266,7 +266,7 @@ DROP MACRO current_role(VARCHAR);
 ----
 <REGEX>:.*Can not comment on System Catalog entries.*
 
-# table functions reject the member path through the macro entry check
+# only macros and functions take a signature, DROP TABLE does not parse one
 statement error
 DROP TABLE wrong_entry(INTEGER);
 ----
@@ -341,18 +341,16 @@ DROP MACRO amb(INTEGER, ANY);
 statement ok
 DROP MACRO amb;
 
-# a member drop replaces the entry like any overload mutation: EXPORT's naive order treats the
-# replacement as newest, so exports taken after mutating a callee entry may need reordering, the
-# same caveat as adding an overload to a called entry
+# a member drop alters the entry in place and keeps its oid, so EXPORT's creation order is unaffected
 
-# a member-granular CASCADE has no well-defined scope and is rejected
+# CASCADE never applies to a signature drop: dependents block it, and only dropping the macro cascades
 statement ok
 CREATE MACRO casc(x INTEGER) AS x, (x VARCHAR) AS x;
 
 statement error
 DROP MACRO casc(INTEGER) CASCADE;
 ----
-<REGEX>:.*Cannot drop an overload.*CASCADE.*
+<REGEX>:.*Cannot drop an overload of "casc" with CASCADE: drop the dependent entries first, or drop the whole macro.*
 
 statement ok
 DROP MACRO casc;
@@ -416,7 +414,7 @@ DROP MACRO TABLE shared;
 statement error
 SELECT v FROM shared(7);
 ----
-<REGEX>:.*(Catalog Error|not exist|does not support).*
+<REGEX>:.*Table Function with name shared does not exist!.*
 
 query T
 SELECT shared();
@@ -498,7 +496,7 @@ DROP MACRO cc(INTEGER);
 statement error con2
 DROP MACRO cc(VARCHAR);
 ----
-<REGEX>:.*(conflict|lock|transaction|exist).*
+<REGEX>:.*Catalog write-write conflict on alter with "cc".*
 
 statement ok con1
 COMMIT;

@@ -447,7 +447,7 @@ DROP MACRO blocked_f(VARCHAR);
 statement error
 DROP MACRO blocked_f(VARCHAR) CASCADE;
 ----
-<REGEX>:.*Cannot drop an overload.*CASCADE.*
+<REGEX>:.*Cannot drop an overload of "blocked_f" with CASCADE: drop the dependent entries first, or drop the whole macro.*
 
 statement ok
 DROP MACRO blocked_g;
