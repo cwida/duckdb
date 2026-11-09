@@ -649,6 +649,7 @@ CompressionFunction ValidityUncompressed::GetFunction(PhysicalType data_type) {
 	                           UncompressedFunctions::EmptySkip, ValidityInitSegment, ValidityInitAppend,
 	                           ValidityAppend, ValidityFinalizeAppend, ValidityRevertAppend);
 	result.select = ValiditySelect;
+	result.zero_initialize_segments = false;
 	return result;
 }
 

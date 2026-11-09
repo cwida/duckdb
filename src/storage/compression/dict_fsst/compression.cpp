@@ -103,6 +103,14 @@ idx_t DictFSSTCompressionState::Finalize() {
 	auto string_lengths_dest = AlignValue<idx_t>(symbol_table_dest + symbol_table_size);
 	auto dictionary_indices_dest = AlignValue<idx_t>(string_lengths_dest + string_lengths_space);
 
+	auto clear_gap = [&](idx_t start, idx_t end) {
+		memset(base_ptr + start, 0, end - start);
+	};
+	clear_gap(0, dictionary_dest);
+	clear_gap(dictionary_dest + dictionary_offset, symbol_table_dest);
+	clear_gap(symbol_table_dest + symbol_table_size, string_lengths_dest);
+	clear_gap(string_lengths_dest + string_lengths_space, dictionary_indices_dest);
+
 	header_ptr->mode = ConvertToMode(append_state);
 	header_ptr->symbol_table_size = NumericCast<uint32_t>(symbol_table_size);
 	header_ptr->dict_size = NumericCast<uint32_t>(dictionary_offset);

@@ -279,12 +279,14 @@ idx_t FixedSizeFinalizeAppend(ColumnSegment &segment, BaseStatistics &stats) {
 //===--------------------------------------------------------------------===//
 template <class T, class APPENDER = StandardFixedSizeAppend>
 CompressionFunction FixedSizeGetFunction(PhysicalType data_type) {
-	return CompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, data_type, FixedSizeInitAnalyze,
-	                           FixedSizeAnalyze, FixedSizeFinalAnalyze<T>, UncompressedFunctions::InitCompression,
-	                           UncompressedFunctions::Compress, UncompressedFunctions::FinalizeCompress,
-	                           FixedSizeInitScan, FixedSizeScan<T>, FixedSizeScanPartial<T>, FixedSizeFetchRow<T>,
-	                           UncompressedFunctions::EmptySkip, nullptr, FixedSizeInitAppend,
-	                           FixedSizeAppend<T, APPENDER>, FixedSizeFinalizeAppend<T>);
+	auto function = CompressionFunction(
+	    CompressionType::COMPRESSION_UNCOMPRESSED, data_type, FixedSizeInitAnalyze, FixedSizeAnalyze,
+	    FixedSizeFinalAnalyze<T>, UncompressedFunctions::InitCompression, UncompressedFunctions::Compress,
+	    UncompressedFunctions::FinalizeCompress, FixedSizeInitScan, FixedSizeScan<T>, FixedSizeScanPartial<T>,
+	    FixedSizeFetchRow<T>, UncompressedFunctions::EmptySkip, nullptr, FixedSizeInitAppend,
+	    FixedSizeAppend<T, APPENDER>, FixedSizeFinalizeAppend<T>);
+	function.zero_initialize_segments = false;
+	return function;
 }
 
 CompressionFunction FixedSizeUncompressed::GetFunction(PhysicalType data_type) {

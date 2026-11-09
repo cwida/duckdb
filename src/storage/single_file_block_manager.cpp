@@ -607,6 +607,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	h1.block_alloc_size = GetBlockAllocSize();
 	h1.vector_size = STANDARD_VECTOR_SIZE;
 	h1.storage_compatibility = options.storage_version;
+	header_buffer.Clear();
 	SerializeHeaderStructure<DatabaseHeader>(h1, header_buffer.GetDataMutable());
 	ChecksumAndWrite(context, header_buffer, Storage::FILE_HEADER_SIZE);
 
@@ -620,6 +621,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	h2.block_alloc_size = GetBlockAllocSize();
 	h2.vector_size = STANDARD_VECTOR_SIZE;
 	h2.storage_compatibility = options.storage_version;
+	header_buffer.Clear();
 	SerializeHeaderStructure<DatabaseHeader>(h2, header_buffer.GetDataMutable());
 	ChecksumAndWrite(context, header_buffer, Storage::FILE_HEADER_SIZE * 2ULL);
 
