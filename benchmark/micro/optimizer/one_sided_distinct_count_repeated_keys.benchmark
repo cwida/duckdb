@@ -9,6 +9,7 @@ subgroup optimizer
 load
 CREATE TABLE f AS SELECT (range % 50)::VARCHAR k, range::VARCHAR j FROM range(100000);
 CREATE TABLE t AS SELECT ((range % 100000) * 10)::VARCHAR j FROM range(300000);
+ANALYZE;
 COPY (SELECT (range % 50)::VARCHAR k FROM range(50000)) TO '${BENCHMARK_DIR}/repeated_keys.parquet' (FORMAT parquet);
 
 run
