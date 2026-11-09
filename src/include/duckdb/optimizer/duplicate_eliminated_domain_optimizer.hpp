@@ -20,6 +20,7 @@ class DuplicateEliminatedDomainOptimizer : public LogicalOperatorVisitor {
 public:
 	explicit DuplicateEliminatedDomainOptimizer(Optimizer &optimizer);
 
+public:
 	void Optimize(unique_ptr<LogicalOperator> &op);
 
 private:
@@ -28,6 +29,7 @@ private:
 	bool TryOptimizeRuntimeDomain(unique_ptr<LogicalOperator> &op, LogicalAggregate &aggregate, idx_t aggregate_side,
 	                              idx_t demand_index);
 
+private:
 	Optimizer &optimizer;
 	BindingReplacementGraph replacements;
 	vector<reference<LogicalMaterializedCTE>> cte_scopes;

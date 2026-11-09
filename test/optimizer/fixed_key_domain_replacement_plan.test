@@ -15,7 +15,7 @@ statement ok
 CREATE VIEW old_keys AS
 SELECT d.k FROM (VALUES (1), (2), (3)) d(k) LEFT JOIN repeated_keys USING(k);
 
-# PR9 retains the duplicate-producing LEFT join. Replacement removes that whole source.
+# Replacement removes the whole duplicate-producing source.
 query II
 EXPLAIN (FORMAT JSON)
 SELECT d.k, a.s

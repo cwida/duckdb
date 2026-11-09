@@ -1,0 +1,40 @@
+# name: test/optimizer/runtime_key_domain_evaluation.test
+# description: Runtime domain sources retain demand evaluation and support columnar inputs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 20000)::INTEGER k, i::BIGINT v FROM range(200000) t(i);
+
+statement ok
+CREATE VIEW fact AS SELECT (k + 20000) % 20000 k, v FROM fact_data;
+
+statement ok
+CREATE TABLE demand AS SELECT (i % 100)::INTEGER k, CASE WHEN i = 2999 THEN 'x' ELSE i::VARCHAR END label FROM range(3000) t(i);
+
+query I
+SELECT count(*) FROM (
+    SELECT d.k, d.n, a.s FROM (SELECT k, label::INTEGER n FROM demand) d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING (k) LIMIT 1
+);
+----
+1
+
+# A columnar input stays columnar when its keys are shared with the aggregate.
+statement ok
+CREATE TABLE described_columns AS SELECT 1 a, 2 b, 3 c;
+
+statement ok
+CREATE TABLE name_values AS
+SELECT CASE i % 4 WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'zz' ELSE 'q' || (i % 997)::VARCHAR END n,
+       i::BIGINT v
+FROM range(50000) t(i);
+
+query TI
+SELECT d.column_name, a.s
+FROM (DESCRIBE described_columns) d
+LEFT JOIN (SELECT lower(upper(n)) n, sum(v) s FROM name_values GROUP BY 1) a ON a.n = d.column_name
+ORDER BY d.column_name;
+----
+a	312475000
+b	312487500
+c	NULL

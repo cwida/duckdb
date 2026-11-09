@@ -120,3 +120,47 @@ WITH result AS MATERIALIZED (
 SELECT * FROM result UNION ALL SELECT * FROM result;
 ----
 physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
+
+statement ok
+CREATE SEQUENCE late_filter_visits;
+
+# Statistics simplify the residual after the domain pass. A new reader must not block that filter.
+query III
+WITH d AS MATERIALIZED (SELECT i::INTEGER k, nextval('late_filter_visits') p FROM range(10) t(i))
+SELECT d.k, d.p, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.k > 7 OR a.s > 1e30
+ORDER BY d.k;
+----
+8	1	45080
+9	2	45090
+
+query I
+SELECT currval('late_filter_visits');
+----
+2
+
+statement ok
+CREATE TABLE late_demand AS
+SELECT i::INTEGER k, CASE WHEN i < 5 THEN 'bad' ELSE i::VARCHAR END label FROM range(10) t(i);
+
+# The same late filter protects a fallible expression in an existing owner.
+query III
+WITH d AS MATERIALIZED (SELECT k, label::INTEGER n FROM late_demand)
+SELECT d.k, d.n, a.s FROM d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.k > 7 OR a.s > 1e30
+ORDER BY d.k;
+----
+8	8	45080
+9	9	45090
+
+# Creating a new owner must not force that expression to run on the excluded rows either.
+query III
+SELECT d.k, d.n, a.s FROM (SELECT k, label::INTEGER n FROM late_demand) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k)
+WHERE d.k > 7 OR a.s > 1e30
+ORDER BY d.k;
+----
+8	8	45080
+9	9	45090

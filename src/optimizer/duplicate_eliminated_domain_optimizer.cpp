@@ -152,7 +152,8 @@ static bool AppendFixedKey(vector<vector<unique_ptr<Expression>>> &rows, const E
 	return true;
 }
 
-//! Only keys are copied. The caller's payload and its evaluation remain in place.
+//! Copy keys already represented by expressions, leaving columnar inputs on the runtime path.
+//! The caller's payload and its evaluation remain in place.
 static bool CopyFixedKeys(LogicalOperator &op, idx_t key, const LogicalType &type,
                           vector<vector<unique_ptr<Expression>>> &rows) {
 	switch (op.type) {
@@ -179,25 +180,6 @@ static bool CopyFixedKeys(LogicalOperator &op, idx_t key, const LogicalType &typ
 		for (auto &row : op.Cast<LogicalExpressionGet>().expressions) {
 			if (!AppendFixedKey(rows, *row[key], type)) {
 				return false;
-			}
-		}
-		return true;
-	}
-	case LogicalOperatorType::LOGICAL_CHUNK_GET: {
-		auto &get = op.Cast<LogicalColumnDataGet>();
-		if (!get.collection) {
-			return false;
-		}
-		ColumnDataScanState scan_state;
-		DataChunk chunk;
-		get.collection->InitializeScan(scan_state, {get.GetColumnIds()[key]});
-		get.collection->InitializeScanChunk(scan_state, chunk);
-		while (get.collection->Scan(scan_state, chunk)) {
-			for (idx_t row = 0; row < chunk.size(); row++) {
-				BoundConstantExpression value(chunk.GetValue(0, row));
-				if (!AppendFixedKey(rows, value, type)) {
-					return false;
-				}
 			}
 		}
 		return true;
@@ -269,11 +251,13 @@ public:
 		join = Find(*aggregate.children[0], *aggregate.groups[0]);
 	}
 
+public:
 	optional_ptr<LogicalComparisonJoin> GetJoin() const {
 		return join;
 	}
 
-	bool CanExpand() const;
+	bool HasSimpleProjections() const;
+	bool CanRemove() const;
 	bool FiltersNullKeys() const {
 		return join->conditions[0].GetComparisonType() == ExpressionType::COMPARE_EQUAL &&
 		       consumer_comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
@@ -283,6 +267,7 @@ public:
 private:
 	optional_ptr<LogicalComparisonJoin> Find(LogicalOperator &input, const Expression &key);
 
+private:
 	LogicalAggregate &aggregate;
 	ExpressionType consumer_comparison;
 	optional_ptr<LogicalComparisonJoin> join;
@@ -316,12 +301,25 @@ optional_ptr<LogicalComparisonJoin> DomainRestriction::Find(LogicalOperator &inp
 	return join;
 }
 
-bool DomainRestriction::CanExpand() const {
+bool DomainRestriction::HasSimpleProjections() const {
 	for (auto &projection : projections) {
 		for (auto &expression : projection.get().expressions) {
 			if (!IsWorkReference(*expression)) {
 				return false;
 			}
+		}
+	}
+	return true;
+}
+
+bool DomainRestriction::CanRemove() const {
+	if (!HasSimpleProjections()) {
+		return false;
+	}
+	// Removing the restriction exposes other groups to these aggregates.
+	for (auto &expression : aggregate.expressions) {
+		if (expression->CanThrow()) {
+			return false;
 		}
 	}
 	return true;
@@ -361,6 +359,7 @@ public:
 	      source_read_write_work(source_read_write_work_p) {
 	}
 
+public:
 	bool IsProfitable(LogicalComparisonJoin &restriction, LogicalOperator &domain);
 	RestrictionAction ChooseRestrictionAction(const DomainRestriction &existing, LogicalDistinct &domain);
 
@@ -371,6 +370,7 @@ private:
 	static double EstimateSemiJoinWork(double input_rows, double output_rows, double key_rows);
 	static double EstimateFixedDomainWork(double key_rows, double distinct_key_rows);
 
+private:
 	RelationStatsExtractor &extractor;
 	LogicalAggregate &aggregate;
 	double key_input_rows;
@@ -470,7 +470,7 @@ RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestricti
 	             EstimateSemiJoinWork(input_rows, static_cast<double>(restricted.cardinality), distinct_key_rows) +
 	             EstimateFixedDomainWork(key_input_rows, distinct_key_rows) + source_read_write_work,
 	         RestrictionAction::REPLACE);
-	if (existing.CanExpand()) {
+	if (existing.CanRemove()) {
 		// Charge the NULL filter without taking credit for rows it removes.
 		consider(EstimateAggregateWork(*input, group_binding) + (existing.FiltersNullKeys() ? input_rows : 0),
 		         RestrictionAction::REMOVE);
@@ -587,6 +587,13 @@ static bool CanChangeRuntimeKeyReaders(LogicalOperator &op, const vector<referen
 	if (ClassifyLogicalOperatorRepeatability(op) != LogicalOperatorRepeatability::REPEATABLE) {
 		return false;
 	}
+	// Reader changes and materialization can expose rows that later filters or limits would skip.
+	bool can_throw = false;
+	LogicalOperatorVisitor::EnumerateExpressions(
+	    op, [&](unique_ptr<Expression> *expression) { can_throw |= (*expression)->CanThrow(); });
+	if (can_throw) {
+		return false;
+	}
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		auto &cte = op.Cast<LogicalCTERef>();
 		auto owner = FindVisibleOwner(cte.cte_index, cte_scopes);
@@ -615,16 +622,16 @@ static bool TryGetRuntimeDomainSource(LogicalOperator &demand, idx_t demand_inde
                                       RuntimeDomainSource &source) {
 	source.key = demand_index;
 	auto shared = FindSharedKey(demand, source.key);
+	unordered_map<TableIndex, bool> checked_owners;
 	if (shared) {
 		auto owner = FindVisibleOwner(shared->cte_index, cte_scopes);
-		// An unfiltered old reader already prevents scalar CTE pushdown; do not invalidate a dependency proof.
-		if (!owner || owner->filter_dependency) {
+		// Statistics can make the original reader filterable after this pass.
+		if (!owner || !CanChangeRuntimeKeyReaders(*shared, cte_scopes, checked_owners)) {
 			return false;
 		}
 		source.input = *owner->children[0];
 		source.owner = owner;
 	} else {
-		unordered_map<TableIndex, bool> checked_owners;
 		if (!CanChangeRuntimeKeyReaders(demand, cte_scopes, checked_owners)) {
 			return false;
 		}
@@ -709,7 +716,7 @@ static RestrictionAction TryOptimizeRuntimeRestriction(DomainCostModel &costs, L
                                                        const vector<reference<LogicalMaterializedCTE>> &cte_scopes) {
 	DomainRestriction existing(aggregate, consumer_comparison);
 	auto restriction = existing.GetJoin();
-	if (!restriction || !existing.CanExpand()) {
+	if (!restriction || !existing.HasSimpleProjections()) {
 		return RestrictionAction::KEEP;
 	}
 	unordered_map<TableIndex, bool> checked_owners;
@@ -919,7 +926,9 @@ void DuplicateEliminatedDomainOptimizer::VisitOperator(unique_ptr<LogicalOperato
 			}
 		}
 	}
-	replacements = replacements.ScopedToBoundary(op->GetColumnBindings());
+	if (!replacements.Empty()) {
+		replacements = replacements.ScopedToBoundary(op->GetColumnBindings());
+	}
 }
 
 } // namespace duckdb

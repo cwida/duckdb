@@ -266,9 +266,7 @@ void Optimizer::RunBuiltInOptimizers() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
 			domain_optimizer.Optimize(plan);
 		});
-	}
 
-	if (!CTEContainsDML(*plan)) {
 		FilterStatisticsOptimizer filter_statistics(*this);
 		filter_statistics.Optimize(plan);
 	}
