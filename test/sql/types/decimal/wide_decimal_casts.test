@@ -219,3 +219,30 @@ query I
 SELECT [d, NULL] FROM minmax ORDER BY d LIMIT 1
 ----
 [-9999999999999999999999999999999999999999.99, NULL]
+
+# a wide decimal beyond the DOUBLE range is out of range, like a BIGNUM, and NULL for TRY_CAST
+statement error
+SELECT CAST(('2' || repeat('0', 308))::DECIMAL(309,0) AS DOUBLE)
+----
+<REGEX>:.*Casting value .* to type DOUBLE failed: value is out of range.*
+
+query II
+SELECT TRY_CAST(('2' || repeat('0', 308))::DECIMAL(309,0) AS DOUBLE), TRY_CAST(('-2' || repeat('0', 308))::DECIMAL(309,0) AS DOUBLE)
+----
+NULL	NULL
+
+query II
+SELECT ('1' || repeat('0', 308))::DECIMAL(309,0)::DOUBLE, TRY_CAST(('1' || repeat('0', 308))::DECIMAL(309,0) AS FLOAT)
+----
+1e+308	NULL
+
+statement error
+SELECT d::DOUBLE FROM (SELECT ('2' || repeat('0', 308))::DECIMAL(309,0) + i AS d FROM range(2) t(i))
+----
+<REGEX>:.*to type DOUBLE failed: value is out of range.*
+
+query I
+SELECT TRY_CAST(d AS DOUBLE) FROM (SELECT ('2' || repeat('0', 308))::DECIMAL(309,0) + i AS d FROM range(2) t(i))
+----
+NULL
+NULL

@@ -436,9 +436,10 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type.id() == LogicalTypeId::BIGNUM) {
 		return true;
 	}
-	// FLOAT is the maximum of DECIMAL and FLOAT, but a decimal wider than 38 digits can exceed its range
-	if (target_type.id() == LogicalTypeId::FLOAT && source_type.id() == LogicalTypeId::DECIMAL &&
-	    Decimal::IsWide(DecimalType::GetWidth(source_type))) {
+	// FLOAT and DOUBLE are the maximum of DECIMAL and FLOAT/DOUBLE, but a decimal wider than 38 digits can exceed
+	// their range, e.g. a DECIMAL(309,0) of 2e308 -> DOUBLE
+	if ((target_type.id() == LogicalTypeId::FLOAT || target_type.id() == LogicalTypeId::DOUBLE) &&
+	    source_type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(source_type))) {
 		return true;
 	}
 	// Floating point values that are not finite (NaN, inf) cannot be represented as a BIGNUM
