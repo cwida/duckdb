@@ -706,6 +706,13 @@ void BlockAllocator::FreeData(const data_ptr_t pointer, const idx_t size) const 
 		return;
 	}
 	D_ASSERT(size == block_size);
+	if (!ThreadHasLocalState()) {
+		// creating the state of a thread that only frees allocates and registers a thread_local destructor, which
+		// glibc aborts on when memory is exhausted: hand the block to the global pool directly
+		AddRetention(1, RetentionTimeMillis());
+		touched->q.enqueue(GetBlockID(pointer));
+		return;
+	}
 	GetBlockAllocatorThreadLocalState(*this).Free(pointer);
 }
 
