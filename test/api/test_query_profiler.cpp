@@ -84,7 +84,7 @@ TEST_CASE("Test parser timing is reported per statement", "[api]") {
 	ClientConfig::GetConfig(*con.context).profiler_save_location =
 	    TestCreatePath("test_query_profiler_parser_output.txt");
 	Settings::Set<TrackedMetricsSetting>(*con.context, SetScope::SESSION,
-	                                    Value::LIST({Value("parser.total_time"), Value("query.sql")}));
+	                                     Value::LIST({Value("parser.total_time"), Value("query.sql")}));
 
 	REQUIRE_NO_FAIL(con.Query("SELECT 7;"));
 	auto single_statement_output = con.GetProfilingInformation(ProfilerPrintFormat::JSON());
@@ -113,7 +113,7 @@ TEST_CASE("Extracting statements does not start the query profiler", "[api]") {
 	ClientConfig::GetConfig(*con.context).profiler_save_location =
 	    TestCreatePath("test_query_profiler_extract_output.txt");
 	Settings::Set<TrackedMetricsSetting>(*con.context, SetScope::SESSION,
-	                                    Value::LIST({Value("parser.total_time"), Value("query.sql")}));
+	                                     Value::LIST({Value("parser.total_time"), Value("query.sql")}));
 
 	auto statements = con.ExtractStatements("SELECT 44;");
 	REQUIRE(statements.size() == 1);
