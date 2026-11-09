@@ -53,8 +53,11 @@ void DuckDBTemporaryFilesFunction(ClientContext &context, TableFunctionInput &da
 }
 
 void DuckDBTemporaryFilesFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_temporary_files", {}, DuckDBTemporaryFilesFunction, DuckDBTemporaryFilesBind,
-	                              DuckDBTemporaryFilesInit));
+	TableFunction temp_files_fun("duckdb_temporary_files", {}, DuckDBTemporaryFilesFunction, DuckDBTemporaryFilesBind,
+	                             DuckDBTemporaryFilesInit);
+	// reads the live temporary file list of the buffer manager
+	temp_files_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(temp_files_fun));
 }
 
 } // namespace duckdb

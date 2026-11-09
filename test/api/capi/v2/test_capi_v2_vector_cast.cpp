@@ -15,8 +15,8 @@ namespace {
 
 // Pads a cell past the inline string length: a build without string inlining reads the pointer of every string, and
 // the API leaves it unset for the strings it inlines. The integer cast skips the leading spaces.
-std::string Pad(const char *text) {
-	return std::string(16, ' ') + text;
+std::string Pad(std::string_view text) {
+	return std::string(16, ' ') + std::string(text);
 }
 
 // A two-column chunk: VARCHAR source, INTEGER target.
@@ -80,9 +80,10 @@ TEST_CASE("V2 vector_cast: a normal cast converts every row or fails", "[capi_v2
 		duckdb_v2_error_info_handle err = nullptr;
 		REQUIRE(duckdb_v2_vector_cast(fx.factory, chunk.source, chunk.target, DUCKDB_V2_CAST_MODE_NORMAL, nullptr,
 		                              nullptr, &err) == DUCKDB_V2_ERROR_TYPE_CONVERSION);
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		REQUIRE(Convert(text).find(Pad("x")) != std::string::npos);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		REQUIRE(std::string(text, text_length).find(Pad("x")) != std::string::npos);
 		duckdb_v2_error_info_destroy(&err);
 	}
 }
@@ -102,9 +103,10 @@ TEST_CASE("V2 vector_cast: a try cast turns failed rows into NULL", "[capi_v2][v
 	DUCKDB_V2_ERROR code = DUCKDB_V2_ERROR_NONE;
 	REQUIRE(duckdb_v2_error_info_get_code(cast_error, &code) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(code == DUCKDB_V2_ERROR_TYPE_CONVERSION);
-	duckdb_v2_str text = {nullptr, 0};
-	REQUIRE(duckdb_v2_error_info_get_text(cast_error, &text) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE_THAT(std::string(text.ptr, text.len), Catch::Matchers::Contains("x"));
+	const char *text = nullptr;
+	idx_t text_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(cast_error, &text, &text_length) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE_THAT(std::string(text, text_length), Catch::Matchers::Contains("x"));
 	duckdb_v2_error_info_destroy(&cast_error);
 
 	// Every row converting is reported as such, with no error.

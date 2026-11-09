@@ -83,7 +83,8 @@
       "paths": [
         "test/sql/sql_export/empty_aggregate_state.test",
         "test/sql/sql_export/mark_condition_shapes.test",
-        "test/sql/types/variant/variant_struct_field_subquery.test"
+        "test/sql/types/variant/variant_struct_field_subquery.test",
+        "test/sql/optimizer/tuple_cast_pushdown.test"
       ]
     }
   ]

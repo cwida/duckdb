@@ -1249,7 +1249,8 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 }
 
 FilterResult FilterCombiner::AddFilter(Expression &expr) {
-	if (expr.HasParameter()) {
+	// every occurrence of a volatile expression is its own evaluation, so it cannot share an equivalence set
+	if (expr.HasParameter() || expr.IsVolatile()) {
 		return FilterResult::UNSUPPORTED;
 	}
 	if (expr.IsFoldable()) {

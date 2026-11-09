@@ -9,14 +9,16 @@ DUCKDB_V2_ERROR duckdb_v2_schema_get_count(duckdb_v2_schema_handle schema, idx_t
 	return WithErrorHandler(err, [&]() { *out_count = Convert(schema)->fields.size(); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_schema_get_field(duckdb_v2_schema_handle schema, idx_t index,
-                                           duckdb_v2_identifier_t *out_name, duckdb_v2_logical_type_handle *out_type,
+DUCKDB_V2_ERROR duckdb_v2_schema_get_field(duckdb_v2_schema_handle schema, idx_t index, const char **out_name,
+                                           idx_t *out_name_length, duckdb_v2_logical_type_handle *out_type,
                                            duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(schema);
 	DUCKDB_CHECK_ARG(out_name);
+	DUCKDB_CHECK_ARG(out_name_length);
 	DUCKDB_CHECK_ARG(out_type);
 	return WithErrorHandler(err, [&]() {
-		*out_name = duckdb_v2_identifier_t {nullptr, 0};
+		*out_name = nullptr;
+		*out_name_length = 0;
 		*out_type = nullptr;
 		auto &wrapper = *Convert(schema);
 		if (index >= wrapper.fields.size()) {
@@ -25,7 +27,7 @@ DUCKDB_V2_ERROR duckdb_v2_schema_get_field(duckdb_v2_schema_handle schema, idx_t
 		auto &field = wrapper.fields[index];
 		// Both borrowed, valid until the schema is destroyed; out_type aliases the
 		// wrapper-owned LogicalType and must not be destroyed by the caller.
-		*out_name = Convert(field.name);
+		SetStringOut(out_name, out_name_length, field.name);
 		*out_type = ConvertBorrowed(field.type);
 	});
 }

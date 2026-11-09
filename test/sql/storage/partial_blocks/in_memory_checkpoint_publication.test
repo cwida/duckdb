@@ -1,0 +1,112 @@
+# name: test/sql/storage/partial_blocks/in_memory_checkpoint_publication.test
+# description: Table-local in-memory publication preserves compression, vacuum-only checkpoints, and remapping.
+# group: [partial_blocks]
+
+foreach compression true false
+
+foreach indexed yes no
+
+foreach checkpoint_mode explicit automatic
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+ATTACH ':memory:' AS m (COMPRESS {compression});
+
+statement ok
+CREATE TABLE m.a(k INTEGER, s VARCHAR);
+
+onlyif indexed=yes
+statement ok
+CREATE UNIQUE INDEX a_idx ON m.a(k);
+
+statement ok
+INSERT INTO m.a SELECT range, 'value-' || range::VARCHAR FROM range(122880);
+
+statement ok
+CHECKPOINT m;
+
+statement ok
+INSERT INTO m.a SELECT range, 'value-' || range::VARCHAR FROM range(122880,123880);
+
+statement ok
+CHECKPOINT m;
+
+statement ok
+CREATE TABLE m.other(k INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO m.other SELECT range, 'other-' || range::VARCHAR FROM range(32);
+
+# Automatic checkpoints on uncompressed memory storage take the VACUUM_ONLY path.
+onlyif checkpoint_mode=automatic
+statement ok
+SET checkpoint_threshold='1B';
+
+statement ok
+DELETE FROM m.a WHERE k < 1000;
+
+onlyif checkpoint_mode=explicit
+statement ok
+CHECKPOINT m;
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+# Memory tables use 122880-row groups and latest storage. Indexed tables remap during the merge.
+query IIT
+SELECT rowid, k, s FROM m.a WHERE k IN (1000,122880,123879) ORDER BY k;
+----
+0	1000	value-1000
+121880	122880	value-122880
+122879	123879	value-123879
+
+query II
+SELECT count(*), sum(k) FROM m.a;
+----
+122880	7672565760
+
+query I
+SELECT count(DISTINCT row_group_id) FROM pragma_storage_info('m.a');
+----
+1
+
+query II
+SELECT count(*), sum(k) FROM m.other;
+----
+32	496
+
+onlyif indexed=yes
+statement error
+INSERT INTO m.a VALUES (122880, 'duplicate');
+----
+Duplicate key
+
+statement ok
+CHECKPOINT m;
+
+query IIT
+SELECT rowid, k, s FROM m.a WHERE k IN (1000,122880,123879) ORDER BY k;
+----
+0	1000	value-1000
+121880	122880	value-122880
+122879	123879	value-123879
+
+# Dropping one table must leave the other table's buffered data readable.
+statement ok
+DROP TABLE m.a;
+
+query II
+SELECT count(*), sum(k) FROM m.other;
+----
+32	496
+
+statement ok
+DETACH m;
+
+endloop
+
+endloop
+
+endloop

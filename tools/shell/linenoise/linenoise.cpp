@@ -296,7 +296,10 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 			}
 			/* Update buffer and return */
 			int nwritten = snprintf(buf, buflen, "%s", accepted_completion.completion.c_str());
-			pos = accepted_completion.cursor_pos;
+			if (nwritten > (int)buflen - 1) {
+				nwritten = (int)buflen - 1;
+			}
+			pos = MinValue<idx_t>(accepted_completion.cursor_pos, nwritten);
 			len = nwritten;
 		}
 	}
@@ -799,7 +802,6 @@ void Linenoise::EditSwapCharacter() {
 	if (pos == 0 || len < 2) {
 		return;
 	}
-	char temp_buffer[128];
 	if (pos + 1 > len) {
 		pos = PrevChar();
 	}
@@ -807,9 +809,9 @@ void Linenoise::EditSwapCharacter() {
 	int next_pos = NextChar();
 	int prev_char_size = pos - prev_pos;
 	int cur_char_size = next_pos - pos;
-	memcpy(temp_buffer, buf + prev_pos, prev_char_size);
+	std::string temp_buffer(buf + prev_pos, prev_char_size);
 	memmove(buf + prev_pos, buf + pos, cur_char_size);
-	memcpy(buf + prev_pos + cur_char_size, temp_buffer, prev_char_size);
+	memcpy(buf + prev_pos + cur_char_size, temp_buffer.c_str(), prev_char_size);
 	pos = next_pos;
 	RefreshLine();
 }
@@ -955,6 +957,10 @@ void Linenoise::AcceptSearch() {
 		auto match = search_matches[search_index];
 		auto history_entry = History::GetEntry(match.history_index);
 		auto history_len = strlen(history_entry);
+		if (history_len >= buflen) {
+			CancelSearch();
+			return;
+		}
 		memcpy(buf, history_entry, history_len);
 		buf[history_len] = '\0';
 		pos = match.match_end;

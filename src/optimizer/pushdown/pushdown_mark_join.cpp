@@ -100,8 +100,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownMarkJoin(unique_ptr<LogicalO
 			}
 		}
 	}
-	op->children[0] = left_pushdown.Rewrite(std::move(op->children[0]));
-	op->children[1] = right_pushdown.Rewrite(std::move(op->children[1]));
+	left_pushdown.RewriteChild(*op, 0);
+	right_pushdown.RewriteChild(*op, 1);
 	if (join.join_type == JoinType::SEMI) {
 		SimplifyNullSafeSemiJoinConditions(GetContext(), comp_join);
 	}

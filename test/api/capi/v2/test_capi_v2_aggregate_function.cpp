@@ -17,16 +17,11 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t AggName(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 // Create an aggregate function on the connection with the given name.
-duckdb_v2_aggregate_function_handle MakeAggregate(duckdb_v2_connection_handle conn, const char *name) {
+duckdb_v2_aggregate_function_handle MakeAggregate(duckdb_v2_connection_handle conn, std::string_view name) {
 	duckdb_v2_aggregate_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_aggregate_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto str = Convert(name);
-	REQUIRE(duckdb_v2_aggregate_function_set_name(function, &str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	return function;
 }
 
@@ -38,15 +33,14 @@ duckdb_v2_function_signature_handle AggSigOf(duckdb_v2_aggregate_function_handle
 	return sig;
 }
 
-void AggSigParam(duckdb_v2_function_signature_handle sig, const char *name, duckdb_v2_logical_type_handle type) {
-	auto name_str = AggName(name);
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, type, nullptr,
+void AggSigParam(duckdb_v2_function_signature_handle sig, std::string_view name, duckdb_v2_logical_type_handle type) {
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name.data(), name.size(), type, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 }
 
 // Run a query and read the BIGINT cell of the first row in column `col`.
-int64_t AggQueryI64(duckdb_v2_connection_handle conn, const char *sql, idx_t col = 0) {
+int64_t AggQueryI64(duckdb_v2_connection_handle conn, std::string_view sql, idx_t col = 0) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -109,8 +103,8 @@ void SumUpdate(duckdb_v2_aggregate_function_update_info_handle info, duckdb_v2_e
 	if (duckdb_v2_aggregate_function_update_get_arg(info, arg_count, &past_the_end, nullptr) !=
 	    DUCKDB_V2_ERROR_INPUT_INVALID) {
 		duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_API);
-		auto text_str = Convert("past-the-end argument vector index was not refused");
-		duckdb_v2_error_info_set_text(*err, &text_str);
+		std::string_view text_str = "past-the-end argument vector index was not refused";
+		duckdb_v2_error_info_set_text(*err, text_str.data(), text_str.size());
 	}
 }
 
@@ -169,7 +163,7 @@ void SumPlusOneFinalize(duckdb_v2_aggregate_function_finalize_info_handle info, 
 
 // Registers a sum aggregate `name`(INTEGER) -> BIGINT with the given finalize callback, and destroys the builder
 // handle.
-void RegisterSumAggregate(EnvFixture &fx, const char *name,
+void RegisterSumAggregate(EnvFixture &fx, std::string_view name,
                           duckdb_v2_aggregate_function_finalize_callback_fn finalize = SumFinalize) {
 	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
@@ -212,8 +206,8 @@ void AggNoopFinalize(duckdb_v2_aggregate_function_finalize_info_handle, duckdb_v
 // Fails the query through the update callback's error slot.
 void FailingUpdate(duckdb_v2_aggregate_function_update_info_handle, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_IO_GENERAL);
-	auto text_str = Convert("aggregate update failed on purpose");
-	duckdb_v2_error_info_set_text(*err, &text_str);
+	std::string_view text_str = "aggregate update failed on purpose";
+	duckdb_v2_error_info_set_text(*err, text_str.data(), text_str.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +246,8 @@ void AggFlowBind(duckdb_v2_function_bind_info_handle info, duckdb_v2_aggregate_f
 	}
 	// Resolve the declared ANY return type to a concrete INTEGER.
 	duckdb_v2_logical_type_handle integer = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                          &integer, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	duckdb_v2_aggregate_function_bind_set_return_type(result, integer, err);
@@ -407,8 +401,8 @@ void AggArgProbeBind(duckdb_v2_function_bind_info_handle info, duckdb_v2_aggrega
 	}
 
 	duckdb_v2_logical_type_handle integer = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                          &integer, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	duckdb_v2_aggregate_function_bind_set_return_type(result, integer, err);
@@ -726,7 +720,7 @@ TEST_CASE("V2 aggregate: null arguments and destroy null-safety", "[capi_v2][agg
 	REQUIRE(duckdb_v2_aggregate_function_create(fx.factory, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	REQUIRE(duckdb_v2_aggregate_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_aggregate_function_set_name(function, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_aggregate_function_set_name(function, nullptr, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_aggregate_function_get_signature(nullptr, &sig, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_connection_register_aggregate_function(fx.conn, nullptr, nullptr) ==
@@ -847,8 +841,8 @@ TEST_CASE("V2 aggregate: named-only arguments reach update", "[capi_v2][aggregat
 	auto function = MakeAggregate(fx.conn, "weighted_sum");
 	auto sig = AggSigOf(function);
 	AggSigParam(sig, "x", integer);
-	auto weight_ident = AggName("weight");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &weight_ident, integer, one,
+	std::string_view weight_ident = "weight";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, weight_ident.data(), weight_ident.size(), integer, one,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_NAMED_ONLY,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, bigint, nullptr) == DUCKDB_V2_ERROR_NONE);
