@@ -222,6 +222,10 @@ public:
 	MultiFileReaderBindData BindFirstReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                        vector<Identifier> &names, MultiFileList &files, MultiFileBindData &result,
 	                                        BaseFileReaderOptions &options, MultiFileOptions &file_options);
+	//! With "maximum_files_for_stats", open every file of a small scan for its row count and column statistics. After
+	//! a custom Bind no file has been opened yet, and all of them are read
+	void ReadFilesForStatistics(ClientContext &context, MultiFileList &files, MultiFileBindData &result,
+	                            BaseFileReaderOptions &options, MultiFileOptions &file_options);
 	//! Bind the schema on the first "maximum_sample_files" files, combining the schemas of the sampled files
 	MultiFileReaderBindData BindSampledReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                          vector<Identifier> &names, MultiFileList &files,

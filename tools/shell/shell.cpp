@@ -2926,158 +2926,16 @@ static bool _all_whitespace(const char *z) {
 	return true;
 }
 
-enum class SQLParseState { SEMICOLON, WHITESPACE, NORMAL };
-
-static const char *skipDollarQuotedString(const char *zSql, const char *delimiterStart, idx_t delimiterLength) {
-	for (; *zSql; zSql++) {
-		if (*zSql == '$') {
-			// found a dollar
-			// move forward and find the next dollar
-			zSql++;
-			auto start = zSql;
-			while (*zSql && *zSql != '$') {
-				zSql++;
-			}
-			if (!zSql[0]) {
-				// reached end of string while looking for the dollar
-				return nullptr;
-			}
-			// check if the dollar quoted string name matches
-			if (delimiterLength == idx_t(zSql - start)) {
-				if (memcmp(start, delimiterStart, delimiterLength) == 0) {
-					return zSql;
-				}
-			}
-			// dollar does not match - reset position to start and keep looking
-			zSql = start - 1;
-		}
-	}
-	// unterminated
-	return nullptr;
-}
-
 bool ShellState::SQLIsComplete(const char *zSql) {
-	auto state = SQLParseState::NORMAL;
-
-	for (; *zSql; zSql++) {
-		SQLParseState next_state;
-		switch (*zSql) {
-		case ';':
-			next_state = SQLParseState::SEMICOLON;
-			break;
-		case ' ':
-		case '\r':
-		case '\t':
-		case '\n':
-		case '\f': { /* White space is ignored */
-			next_state = SQLParseState::WHITESPACE;
-			break;
-		}
-		case '/': { /* C-style comments */
-			if (zSql[1] != '*') {
-				next_state = SQLParseState::NORMAL;
-				break;
-			}
-			zSql += 2;
-			while (zSql[0] && (zSql[0] != '*' || zSql[1] != '/')) {
-				zSql++;
-			}
-			if (zSql[0] == 0) {
-				// unterminated c-style string
-				return false;
-			}
-			zSql++;
-			next_state = SQLParseState::WHITESPACE;
-			break;
-		}
-		case '-': { /* SQL-style comments from "--" to end of line */
-			if (zSql[1] != '-') {
-				next_state = SQLParseState::NORMAL;
-				break;
-			}
-			while (*zSql && *zSql != '\n') {
-				zSql++;
-			}
-			if (*zSql == 0) {
-				// unterminated SQL-style comment - return whether or not we had a semicolon right before it
-				return state == SQLParseState::SEMICOLON;
-			}
-			next_state = SQLParseState::WHITESPACE;
-			break;
-		}
-		case '$': { /* Dollar-quoted strings */
-			// check if this is a dollar-quoted string
-			idx_t next_dollar = 0;
-			for (idx_t idx = 1; zSql[idx]; idx++) {
-				if (zSql[idx] == '$') {
-					// found the next dollar
-					next_dollar = idx;
-					break;
-				}
-				// all characters can be between A-Z, a-z, underscore, or \200 - \377
-				if (zSql[idx] >= 'A' && zSql[idx] <= 'Z') {
-					continue;
-				}
-				if (zSql[idx] >= 'a' && zSql[idx] <= 'z') {
-					continue;
-				}
-				if (zSql[idx] == '_') {
-					continue;
-				}
-				if (zSql[idx] >= '\200' && zSql[idx] <= '\377') {
-					continue;
-				}
-				// the first character CANNOT be a numeric, only subsequent characters
-				if (idx > 1 && zSql[idx] >= '0' && zSql[idx] <= '9') {
-					continue;
-				}
-				// not a dollar quoted string
-				break;
-			}
-			if (next_dollar == 0) {
-				// not a dollar quoted string
-				next_state = SQLParseState::NORMAL;
-				break;
-			}
-			auto start = zSql + 1;
-			zSql += next_dollar;
-			const char *delimiterStart = start;
-			idx_t delimiterLength = zSql - start;
-			zSql++;
-			// skip the dollar quoted string
-			zSql = skipDollarQuotedString(zSql, delimiterStart, delimiterLength);
-			if (!zSql) {
-				// unterminated dollar string
-				return false;
-			}
-			next_state = SQLParseState::WHITESPACE;
-			break;
-		}
-		case '`': /* backtick-quoted identifiers */
-		case '"': /* single- and double-quoted strings */
-		case '\'': {
-			int c = *zSql;
-			zSql++;
-			while (*zSql && *zSql != c) {
-				zSql++;
-			}
-			if (*zSql == 0) {
-				// unterminated single or double quoted string
-				return 0;
-			}
-			next_state = SQLParseState::WHITESPACE;
-			break;
-		}
-		default:
-			next_state = SQLParseState::NORMAL;
-		}
-		// white space is ignored (no change in state)
-		if (next_state != SQLParseState::WHITESPACE) {
-			state = next_state;
-		}
+	// completeness follows the grammar of the open connection, so statements a dialect or grammar
+	// extension adds (including bodies with embedded semicolons) frame exactly as they parse
+	auto &state = ShellState::Get();
+	if (state.conn && state.conn->context) {
+		duckdb::Parser parser(*state.conn->context);
+		return parser.IsQueryComplete(zSql);
 	}
-	// the statement is complete only if we end in a semicolon
-	return state == SQLParseState::SEMICOLON;
+	auto parser = duckdb::Parser::GetBuiltinParser();
+	return parser.IsQueryComplete(zSql);
 }
 
 void ShellState::ShellAddHistory(const char *history) {

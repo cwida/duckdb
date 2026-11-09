@@ -2,6 +2,7 @@
 
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/optimizer/join_order/join_predicate.hpp"
 #include "duckdb/planner/operator/list.hpp"
 
 namespace duckdb {
@@ -44,20 +45,15 @@ static idx_t JoinCardinality(LogicalComparisonJoin &join, const RelationStats &l
 }
 
 static optional_ptr<const RelationColumnStats> GetJoinColumn(const Expression &expression, const RelationStats &stats) {
-	if (expression.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-		return nullptr;
-	}
-	return stats.GetColumnStats(expression.Cast<BoundColumnRefExpression>().Binding());
+	auto binding = JoinOrderUtil::GetEquivalenceBinding(expression);
+	return binding.table_index.IsValid() ? stats.GetColumnStats(binding) : nullptr;
 }
 
-SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(LogicalComparisonJoin &join,
-                                                                                          const RelationStats &left,
-                                                                                          const RelationStats &right) {
-	auto preserve_right = join.join_type == JoinType::RIGHT_SEMI || join.join_type == JoinType::RIGHT_ANTI;
-	auto &preserved = preserve_right ? right : left;
-	auto &rhs = preserve_right ? left : right;
+static vector<SemiAntiJoinDomain> ExtractSemiAntiJoinDomains(LogicalComparisonJoin &join,
+                                                             const RelationStats &preserved, const RelationStats &rhs,
+                                                             bool &has_residual) {
 	vector<SemiAntiJoinDomain> domains;
-	bool has_residual = false;
+	has_residual = false;
 	for (auto &condition : join.conditions) {
 		if (!condition.IsComparison() || (condition.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
 		                                  condition.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
@@ -89,7 +85,8 @@ SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCa
 			has_residual = true;
 			continue;
 		}
-		auto total_domain = SelectTotalDomain({lhs_preserved->total_domain, rhs_column->total_domain});
+		auto total_domain =
+		    RelationStatisticsHelper::SelectTotalDomain({lhs_preserved->total_domain, rhs_column->total_domain});
 		if (!total_domain || total_domain->distinct_count == 0) {
 			has_residual = true;
 			continue;
@@ -97,8 +94,52 @@ SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCa
 		domains.push_back(
 		    {total_domain->distinct_count, rhs_current_domain.GetIndex(), lhs_preserved->binding, rhs_column->binding});
 	}
+	return domains;
+}
+
+SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(LogicalComparisonJoin &join,
+                                                                                          const RelationStats &left,
+                                                                                          const RelationStats &right) {
+	auto preserve_right = join.join_type == JoinType::RIGHT_SEMI || join.join_type == JoinType::RIGHT_ANTI;
+	auto &preserved = preserve_right ? right : left;
+	auto &rhs = preserve_right ? left : right;
+	bool has_residual;
+	auto domains = ExtractSemiAntiJoinDomains(join, preserved, rhs, has_residual);
 	return EstimateSemiAntiJoinCardinality(static_cast<double>(preserved.cardinality), rhs.cardinality,
 	                                       rhs.row_retention, join.join_type, domains, has_residual);
+}
+
+void RelationStatisticsHelper::ApplySemiAntiJoinStats(LogicalComparisonJoin &join, const RelationStats &left,
+                                                      const RelationStats &right, RelationStats &result) {
+	auto preserve_right = join.join_type == JoinType::RIGHT_SEMI || join.join_type == JoinType::RIGHT_ANTI;
+	auto &preserved = preserve_right ? right : left;
+	auto &rhs = preserve_right ? left : right;
+	D_ASSERT(join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI ||
+	         join.join_type == JoinType::RIGHT_SEMI || join.join_type == JoinType::RIGHT_ANTI);
+	D_ASSERT(result.cardinality == preserved.cardinality);
+	bool has_residual;
+	auto domains = ExtractSemiAntiJoinDomains(join, preserved, rhs, has_residual);
+	auto estimate = EstimateSemiAntiJoinCardinality(static_cast<double>(preserved.cardinality), rhs.cardinality,
+	                                                rhs.row_retention, join.join_type, domains, has_residual);
+	result.row_retention = preserved.row_retention;
+	// Keep exact empty-input results and the original integer upper limit across double conversion.
+	auto cardinality = MinValue(preserved.cardinality, CardinalityFromDouble(estimate.cardinality));
+	if (rhs.cardinality == 0 && (join.join_type == JoinType::ANTI || join.join_type == JoinType::RIGHT_ANTI)) {
+		cardinality = preserved.cardinality;
+	}
+	ApplyCardinality(result, cardinality);
+	if (join.join_type == JoinType::SEMI || join.join_type == JoinType::RIGHT_SEMI) {
+		for (auto &domain : domains) {
+			auto column_index = result.FindColumn(domain.preserved_binding);
+			if (!column_index.IsValid()) {
+				continue;
+			}
+			auto &column = result.columns[column_index.GetIndex()];
+			column.current_domain =
+			    DistinctCount(MinValue(column.current_domain.distinct_count, domain.rhs_current_domain),
+			                  DistinctCountSource::CARDINALITY);
+		}
+	}
 }
 
 static optional<RelationStats> ExtractGetWithChildStats(LogicalGet &get, ClientContext &context,
@@ -158,10 +199,7 @@ static optional<RelationStats> ExtractComparisonJoinStats(LogicalComparisonJoin 
 		if (!result) {
 			return {};
 		}
-		result->row_retention = preserved.row_retention;
-		auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(join, child_stats[0], child_stats[1]);
-		auto cardinality = LossyNumericCast<idx_t>(estimate.cardinality);
-		RelationStatisticsHelper::ApplyCardinality(*result, cardinality);
+		RelationStatisticsHelper::ApplySemiAntiJoinStats(join, child_stats[0], child_stats[1], *result);
 		result->Verify(join.GetColumnBindings());
 		return result;
 	}
@@ -340,6 +378,8 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 		}
 		return ExtractFilterStats(op.Cast<LogicalFilter>(), child_stats[0].get());
 	}
+	case LogicalOperatorType::LOGICAL_ORDER_BY:
+		return child_stats.size() == 1 ? ProjectOutputStats(child_stats[0].get(), op) : optional<RelationStats>();
 	case LogicalOperatorType::LOGICAL_UNNEST:
 		return ExtractUnnestStats(op, child_stats[0].get());
 	case LogicalOperatorType::LOGICAL_LIMIT: {

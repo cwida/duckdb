@@ -101,14 +101,14 @@ unique_ptr<LogicalTypeInfo> ArrayTypeInfo::Deserialize(Deserializer &deserialize
 
 void DecimalTypeInfo::Serialize(Serializer &serializer) const {
 	LogicalTypeInfo::Serialize(serializer);
-	serializer.WritePropertyWithDefault<uint8_t>(200, "width", width);
-	serializer.WritePropertyWithDefault<uint8_t>(201, "scale", scale);
+	serializer.WritePropertyWithDefault<uint32_t>(200, "width", width);
+	serializer.WritePropertyWithDefault<uint32_t>(201, "scale", scale);
 }
 
 unique_ptr<LogicalTypeInfo> DecimalTypeInfo::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<DecimalTypeInfo>(new DecimalTypeInfo());
-	deserializer.ReadPropertyWithDefault<uint8_t>(200, "width", result->width);
-	deserializer.ReadPropertyWithDefault<uint8_t>(201, "scale", result->scale);
+	deserializer.ReadPropertyWithDefault<uint32_t>(200, "width", result->width);
+	deserializer.ReadPropertyWithDefault<uint32_t>(201, "scale", result->scale);
 	return std::move(result);
 }
 

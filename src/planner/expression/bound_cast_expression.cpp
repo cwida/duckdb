@@ -173,8 +173,8 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 		return false;
 	}
 	if (source_type.id() == LogicalTypeId::DECIMAL || target_type.id() == LogicalTypeId::DECIMAL) {
-		uint8_t source_width, target_width;
-		uint8_t source_scale, target_scale;
+		uint32_t source_width, target_width;
+		uint32_t source_scale, target_scale;
 		// cast to or from decimal
 		// cast is only invertible if the cast is strictly widening
 		if (!source_type.GetDecimalProperties(source_width, source_scale)) {
@@ -308,8 +308,11 @@ static bool NestedCastCanThrow(const LogicalType &source_type, const LogicalType
 		}
 		return BoundCastExpression::CastCanThrow(ListOrArrayChildType(source_type), ListOrArrayChildType(target_type),
 		                                         false);
+	// TUPLE is an unnamed STRUCT - same physical layout, positional child matching, and the same shared struct
+	// cast operators, so it can throw exactly when a STRUCT of the same children can.
+	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::STRUCT: {
-		if (target_type.id() != LogicalTypeId::STRUCT) {
+		if (target_type.id() != LogicalTypeId::STRUCT && target_type.id() != LogicalTypeId::TUPLE) {
 			return true;
 		}
 		// Pair the fields as the cast executes them: positionally for unnamed structs, by name otherwise.

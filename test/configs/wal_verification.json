@@ -80,6 +80,12 @@
         "test/sql/alter/add_pk/test_add_pk_with_generated_column.test",
         "test/sql/storage/optimistic_write/optimistic_write_alter_type.test_slow"
       ]
+    },
+    {
+      "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
+      ]
     }
   ]
 }

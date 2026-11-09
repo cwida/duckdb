@@ -1,0 +1,125 @@
+# name: test/sql/index/art/storage/test_art_mixed_block_memory_tags.test
+# description: Mixed column and ART blocks use a common persistent memory tag.
+# group: [storage]
+
+require noforcestorage
+
+load {TEST_DIR}/art_mixed_block_memory_tags.db
+
+statement ok
+SET threads=1;
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+SET debug_verify_blocks=true;
+
+statement ok
+CREATE TABLE parent(k BIGINT PRIMARY KEY);
+
+statement ok
+INSERT INTO parent SELECT range FROM range(128);
+
+# The foreign key orders parent before child during checkpointing, so the parent's
+# pending index buffers can share blocks with the child's nonconstant columns.
+statement ok
+CREATE TABLE child(k BIGINT REFERENCES parent(k), payload BIGINT USING COMPRESSION uncompressed);
+
+statement ok
+INSERT INTO child SELECT range % 128, range FROM range(1024);
+
+statement ok
+CHECKPOINT;
+
+# Checkpoint shadows are disk-backed; their cached blocks are not ART working buffers.
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag='ART_INDEX';
+----
+0
+
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag='BASE_TABLE';
+----
+true
+
+# Read column data before binding/loading the index from the shared block.
+restart
+
+query I
+SELECT sum(payload) FROM child;
+----
+523776
+
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag='ART_INDEX';
+----
+0
+
+statement error
+INSERT INTO parent VALUES (42);
+----
+Duplicate key
+
+# Loading the index creates separate ART working buffers.
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag='ART_INDEX';
+----
+true
+
+# Also load the index before scanning the column data.
+restart
+
+statement error
+INSERT INTO parent VALUES (42);
+----
+Duplicate key
+
+# The index can release its cached source after copying it into ART working buffers.
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag='ART_INDEX';
+----
+true
+
+query I
+SELECT sum(payload) FROM child;
+----
+523776
+
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag='BASE_TABLE';
+----
+true
+
+# Releasing the column owner must not reclaim the parent's index allocation.
+statement ok
+SET debug_verify_blocks=true;
+
+statement ok
+DROP TABLE child;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement error
+INSERT INTO parent VALUES (42);
+----
+Duplicate key
+
+query II
+SELECT count(*), sum(k) FROM parent;
+----
+128	8128
+
+statement ok
+DROP TABLE parent;
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag='ART_INDEX';
+----
+0

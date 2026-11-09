@@ -1,3 +1,4 @@
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -62,6 +63,43 @@ static void WriteHugeIntBinBytes(T x, char *&output, idx_t buffer_size) {
 		*output = ((lower >> (offset - 1)) & 0x01) + '0';
 		output++;
 	}
+}
+
+//! A BIGNUM has no fixed width, so a negative value prints as a sign and its magnitude rather than two's complement.
+template <uint8_t BITS_PER_DIGIT>
+static string_t WriteBignumDigits(const bignum_t &input, StringHeap &heap) {
+	constexpr uint8_t DIGITS_PER_BYTE = 8 / BITS_PER_DIGIT;
+	constexpr uint8_t DIGIT_MASK = (1 << BITS_PER_DIGIT) - 1;
+
+	const BignumIntermediate value(input);
+	const idx_t start = value.GetStartDataPos();
+	if (start == value.size) {
+		auto target = heap.EmptyString(1);
+		*target.GetDataWriteable() = '0';
+		target.Finalize();
+		return target;
+	}
+
+	idx_t leading_bits = 32 - CountZeros<uint32_t>::Leading(value.GetAbsoluteByte(NumericCast<int64_t>(start)));
+	idx_t leading_digits = (leading_bits + BITS_PER_DIGIT - 1) / BITS_PER_DIGIT;
+	idx_t result_size = (value.is_negative ? 1 : 0) + leading_digits + (value.size - start - 1) * DIGITS_PER_BYTE;
+
+	auto target = heap.EmptyString(result_size);
+	auto output = target.GetDataWriteable();
+	if (value.is_negative) {
+		*output++ = '-';
+	}
+	for (idx_t i = start; i < value.size; i++) {
+		auto byte = value.GetAbsoluteByte(NumericCast<int64_t>(i));
+		idx_t digits = i == start ? leading_digits : DIGITS_PER_BYTE;
+		for (idx_t d = digits; d >= 1; d--) {
+			auto digit = static_cast<uint8_t>((byte >> ((d - 1) * BITS_PER_DIGIT)) & DIGIT_MASK);
+			*output++ = Blob::HEX_TABLE[digit];
+		}
+	}
+
+	target.Finalize();
+	return target;
 }
 
 struct HexStrOperator {
@@ -164,6 +202,13 @@ struct HexUhugeIntOperator {
 
 		target.Finalize();
 		return target;
+	}
+};
+
+struct HexBignumOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input, StringHeap &heap) {
+		return WriteBignumDigits<4>(input, heap);
 	}
 };
 
@@ -273,6 +318,13 @@ struct BinaryUhugeIntOperator {
 
 		target.Finalize();
 		return target;
+	}
+};
+
+struct BinaryBignumOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input, StringHeap &heap) {
+		return WriteBignumDigits<1>(input, heap);
 	}
 };
 
@@ -389,7 +441,7 @@ ScalarFunctionSet HexFun::GetFunctions() {
 	AddHexParam(string_fun, LogicalType::VARCHAR, "string");
 	to_hex.AddFunction(string_fun);
 
-	ScalarFunction bignum_fun({}, LogicalType::VARCHAR, ToHexFunction<string_t, HexStrOperator>);
+	ScalarFunction bignum_fun({}, LogicalType::VARCHAR, ToHexFunction<bignum_t, HexBignumOperator>);
 	AddHexParam(bignum_fun, LogicalType::BIGNUM, "value");
 	to_hex.AddFunction(bignum_fun);
 
@@ -430,7 +482,7 @@ ScalarFunctionSet BinFun::GetFunctions() {
 	AddHexParam(string_fun, LogicalType::VARCHAR, "string");
 	to_binary.AddFunction(string_fun);
 
-	ScalarFunction bignum_fun({}, LogicalType::VARCHAR, ToBinaryFunction<string_t, BinaryStrOperator>);
+	ScalarFunction bignum_fun({}, LogicalType::VARCHAR, ToBinaryFunction<bignum_t, BinaryBignumOperator>);
 	AddHexParam(bignum_fun, LogicalType::BIGNUM, "value");
 	to_binary.AddFunction(bignum_fun);
 

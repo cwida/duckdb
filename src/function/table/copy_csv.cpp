@@ -250,7 +250,7 @@ static unique_ptr<AsyncFileWriter> OpenCSVFileWriter(ClientContext &context, con
 	if (!fs.IsRemoteFile(file_path) && !fs.FileExists(file_path) && !fs.IsPipe(file_path)) {
 		flags |= FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE;
 	}
-	return make_uniq<AsyncFileWriter>(QueryContext(context), fs, file_path, flags);
+	return make_uniq<AsyncFileWriter>(context.GetContext(), fs, file_path, flags);
 }
 
 struct GlobalWriteCSVData : public GlobalFunctionData {

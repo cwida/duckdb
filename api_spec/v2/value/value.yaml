@@ -381,10 +381,16 @@ functions:
         type: value
         description: The value to read.
       out:
-        type: str
+        type: char
+        indirection: 2
+        const: true
+        kind: OUT_BORROW
+        description: Receives the payload as a UTF-8 string. The returned string is borrowed and valid until the value handle is destroyed.
+      out_length:
+        type: idx
         indirection: 1
         kind: OUT
-        description: Receives the payload as a UTF-8 string. The returned string is borrowed and valid until the value handle is destroyed.
+        description: Receives the length of `*out` in bytes. `*out` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -410,10 +416,16 @@ functions:
         type: value
         description: The value to read.
       out:
-        type: str
+        type: char
+        indirection: 2
+        const: true
+        kind: OUT_BORROW
+        description: Receives the payload as a byte string. The returned string is borrowed and valid until the value handle is destroyed.
+      out_length:
+        type: idx
         indirection: 1
         kind: OUT
-        description: Receives the payload as a byte string. The returned string is borrowed and valid until the value handle is destroyed.
+        description: Receives the length of `*out` in bytes. `*out` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -1273,11 +1285,14 @@ functions:
         type: factory
         description: The factory to create with.
       in_value:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
-        description: The UTF-8 string to wrap. May be null only when len is 0 (empty string).
+        description: The UTF-8 string to wrap.
+      in_value_length:
+        type: idx
+        description: The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only when this is 0.
       out_value:
         type: value
         indirection: 1
@@ -1305,11 +1320,14 @@ functions:
         type: factory
         description: The factory to create with.
       in_value:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
-        description: The byte string to wrap. May be null only when len is 0 (empty string).
+        description: The byte string to wrap.
+      in_value_length:
+        type: idx
+        description: The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only when this is 0.
       out_value:
         type: value
         indirection: 1
@@ -1839,11 +1857,14 @@ functions:
         type: factory
         description: The factory to create with.
       in_value:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The wire bytes, a padding header byte followed by data. Must be at least 1 byte.
+      in_value_length:
+        type: idx
+        description: The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only when this is 0.
       out_value:
         type: value
         indirection: 1
@@ -1874,11 +1895,14 @@ functions:
         type: factory
         description: The factory to create with.
       in_value:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The opaque storage bytes from bignum_encode. Must exceed 3 bytes.
+      in_value_length:
+        type: idx
+        description: The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only when this is 0.
       out_value:
         type: value
         indirection: 1
@@ -1999,11 +2023,17 @@ functions:
         type: factory
         description: The factory to create with.
       names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: An array of field_count field names. Pass NULL when field_count is 0.
+      names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `names`; element i is the length of `names[i]`. May be NULL only when `names` is NULL.
       children:
         type: value
         indirection: 1

@@ -9,6 +9,7 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -154,7 +155,7 @@ static inline bool GetValueNumerical(yyjson_val *val, T &result, JSONTransformOp
 }
 
 template <class T, class OP = TryCastToDecimal>
-static inline bool GetValueDecimal(yyjson_val *val, T &result, uint8_t w, uint8_t s, JSONTransformOptions &options) {
+static inline bool GetValueDecimal(yyjson_val *val, T &result, uint32_t w, uint32_t s, JSONTransformOptions &options) {
 	D_ASSERT(unsafe_yyjson_get_tag(val) != (YYJSON_TYPE_NULL | YYJSON_SUBTYPE_NONE));
 	bool success;
 	switch (unsafe_yyjson_get_tag(val)) {
@@ -251,7 +252,7 @@ static bool TransformNumerical(yyjson_val *vals[], Vector &result, const idx_t c
 }
 
 template <class T>
-static bool TransformDecimal(yyjson_val *vals[], Vector &result, const idx_t count, uint8_t width, uint8_t scale,
+static bool TransformDecimal(yyjson_val *vals[], Vector &result, const idx_t count, uint32_t width, uint32_t scale,
                              JSONTransformOptions &options) {
 	auto data = FlatVector::GetDataMutable<T>(result);
 	auto &validity = FlatVector::ValidityMutable(result);
@@ -319,6 +320,36 @@ static bool TransformFromString(yyjson_val *vals[], Vector &result, const idx_t 
 		options.error_message +=
 		    "\n If this error occurred during read_json, line/object number information is approximate";
 		success = false;
+	}
+	return success;
+}
+
+//! BLOB reads as the existing VARCHAR rendering, except JSON strings go through the VARCHAR -> BLOB cast so their
+//! \xNN escapes decode into bytes. Rendering non-strings through that cast would misread ordinary JSON escapes
+//! (e.g. \n is not a valid BLOB escape), so their rendered text is written directly as bytes instead.
+static bool TransformToBlob(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
+                            JSONTransformOptions &options) {
+	auto data = FlatVector::GetDataMutable<string_t>(result);
+	auto &validity = FlatVector::ValidityMutable(result);
+	JSONRawNumberWriter raw_writer(alc);
+
+	CastParameters parameters(options.strict_cast, &options.error_message);
+	bool success = true;
+	for (idx_t i = 0; i < count; i++) {
+		const auto &val = vals[i];
+		if (!val || unsafe_yyjson_is_null(val)) {
+			validity.SetInvalid(i);
+		} else if (unsafe_yyjson_is_str(val)) {
+			if (!TryCastToBlob::Operation(GetString(val), data[i], result, parameters)) {
+				validity.SetInvalid(i);
+				if (success && options.strict_cast) {
+					options.object_index = i;
+					success = false;
+				}
+			}
+		} else if (!GetValueString(val, alc, data[i], result, options.numbers_as_raw ? &raw_writer : nullptr)) {
+			validity.SetInvalid(i);
+		}
 	}
 	return success;
 }
@@ -953,8 +984,7 @@ static bool TransformObjectToMap(yyjson_val *objects[], yyjson_alc *alc, Vector 
 
 	// Transform keys
 	if (!JSONTransform::Transform(keys, alc, MapVector::GetKeys(result), list_size, options, nullptr)) {
-		throw ConversionException(
-		    StringUtil::Format("%s. Cannot default to NULL, because map keys cannot be NULL", options.error_message));
+		success = false;
 	}
 
 	// Transform values
@@ -1167,8 +1197,9 @@ bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 	case LogicalTypeId::GEOMETRY:
 		return TransformGeometry(vals, result, count, options);
 	case LogicalTypeId::VARCHAR:
-	case LogicalTypeId::BLOB:
 		return TransformToString(vals, alc, result, count, options);
+	case LogicalTypeId::BLOB:
+		return TransformToBlob(vals, alc, result, count, options);
 	case LogicalTypeId::STRUCT:
 		return TransformObjectInternal(vals, alc, result, count, options, column_index);
 	case LogicalTypeId::TUPLE:

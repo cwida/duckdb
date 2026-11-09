@@ -2,6 +2,7 @@
 
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -19,6 +20,17 @@ static constexpr int64_t MILLISECONDS_PER_DAY = 86400000LL;
 static constexpr int64_t MICROSECONDS_PER_DAY = MILLISECONDS_PER_DAY * 1000LL;
 static constexpr int64_t NANOSECONDS_PER_MICRO = 1000LL;
 static constexpr int64_t NANOSECONDS_PER_DAY = MICROSECONDS_PER_DAY * 1000LL;
+
+bool ParquetTimeIsValid(const int64_t &raw, const int64_t day) {
+	return raw >= 0 && raw <= day;
+}
+
+template <typename T>
+static void CheckParquetTime(const T &raw, const int64_t day) {
+	if (!ParquetTimeIsValid(raw, day)) {
+		throw InvalidInputException("Invalid TIME value %d in Parquet file - TIME values must be within a day", raw);
+	}
+}
 
 static inline int64_t ImpalaTimestampToDays(const Int96 &impala_timestamp) {
 	return impala_timestamp.value[2] - JULIAN_TO_UNIX_EPOCH_DAYS;
@@ -44,7 +56,8 @@ static int64_t ImpalaTimestampToNanoseconds(const Int96 &impala_timestamp) {
 	if (days_since_epoch < 0) {
 		//	Don't saturate the minimum value by going past it
 		if (!TryMultiplyOperator::Operation(days_since_epoch + 1, NANOSECONDS_PER_DAY, day_nanoseconds) ||
-		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds - NANOSECONDS_PER_DAY, result)) {
+		    !TrySubtractOperator::Operation(nanoseconds, NANOSECONDS_PER_DAY, nanoseconds) ||
+		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds, result)) {
 			// out of range for TIMESTAMP_NS - saturate to -infinity
 			return timestamp_ns_t::ninfinity().value;
 		}
@@ -70,11 +83,18 @@ timestamp_t ImpalaTimestampToTimestamp(const Int96 &raw_ts) {
 }
 
 date_t ImpalaTimestampToDate(const Int96 &raw_ts) {
-	return date_t(NumericCast<int32_t>(ImpalaTimestampToDays(raw_ts)));
+	auto days_since_epoch = ImpalaTimestampToDays(raw_ts);
+	// the Julian day is unsigned, so the day count can lie outside the finite DATE range
+	if (days_since_epoch <= date_t::ninfinity().days || days_since_epoch >= date_t::infinity().days) {
+		throw InvalidInputException("Int96 timestamp is out of range");
+	}
+	return date_t(static_cast<int32_t>(days_since_epoch));
 }
 
 dtime_ns_t ImpalaTimestampToTimeNs(const Int96 &raw_ts) {
-	return dtime_ns_t(Load<int64_t>(const_data_ptr_cast(raw_ts.value)));
+	auto nanoseconds = Load<int64_t>(const_data_ptr_cast(raw_ts.value));
+	CheckParquetTime(nanoseconds, Interval::NANOS_PER_DAY);
+	return dtime_ns_t(nanoseconds);
 }
 
 Int96 TimestampToImpalaTimestamp(timestamp_t &ts) {
@@ -139,17 +159,6 @@ static T ParquetWrapTime(const T &raw, const T day) {
 	}
 	const auto modulus = raw % day;
 	return modulus + (modulus < 0) * day;
-}
-
-bool ParquetTimeIsValid(const int64_t &raw, const int64_t day) {
-	return raw >= 0 && raw <= day;
-}
-
-template <typename T>
-static void CheckParquetTime(const T &raw, const int64_t day) {
-	if (!ParquetTimeIsValid(raw, day)) {
-		throw InvalidInputException("Invalid TIME value %d in Parquet file - TIME values must be within a day", raw);
-	}
 }
 
 dtime_t ParquetMsIntToTime(const int32_t &raw_millis) {
