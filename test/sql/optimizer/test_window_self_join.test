@@ -484,3 +484,13 @@ ORDER BY i LIMIT 2;
 ----
 0	[2, 0, 3, 1]
 1	[2, 0, 3, 1]
+
+# a filter on two bindings runs statistics propagation first, which turns the DECIMAL sum into sum_no_overflow (HUGEINT)
+statement ok
+CREATE TABLE decimals AS SELECT i % 7 AS k, (i % 50 + 1)::DECIMAL(12,2) AS d FROM range(1000) t(i);
+
+query II
+SELECT (SELECT max(s) FROM (SELECT sum(d) OVER (PARTITION BY k) AS s FROM decimals)),
+       (SELECT count(*) FROM range(10) r(x) WHERE x = 3 OR x IN (SELECT 1));
+----
+3664.00	2
