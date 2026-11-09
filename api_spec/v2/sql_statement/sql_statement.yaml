@@ -1,9 +1,11 @@
 module: sql_statement
 #
 # Turn a SQL string into individual statements. parse_sql parses and nothing
-# more: no binding, no catalog access, no transaction. The connection supplies
-# the parser state — its options and the parser extensions loaded on it — so a
-# statement parsed on one connection should be executed on that connection.
+# more: no binding and no catalog access. The connection supplies the parser
+# state — its options and the parser extensions loaded on it — so a statement
+# parsed on one connection should be executed on that connection. The caller
+# chooses whether a parse error invalidates the connection's active
+# transaction, according to the transaction invalidation policy.
 # Statements are raw parser output; statement-level rewrites (pragma
 # reparsing, statement expansion, transaction wrapping) happen inside
 # statement_execute, so one user statement is always one handle.
@@ -115,17 +117,22 @@ enums:
 functions:
   parse_sql:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Parses a SQL string into an iterator over its statements.
 
-      Parses and nothing more: no binding, no catalog access, no transaction.
-      The connection supplies the parser options and parser extensions, and is
-      not otherwise touched. Statements are raw parser output; statement-level
-      rewrites happen inside statement_execute. The SQL string is copied, so
-      the caller may free it once this call returns. An input with no
-      statements — empty, whitespace, or separators only — yields an iterator
-      that is immediately exhausted.
+      Parses and nothing more: no binding and no catalog access. The connection
+      supplies the parser options and parser extensions. With
+      apply_invalidation_policy, a parse error invalidates the connection's
+      active transaction according to the transaction invalidation policy, like
+      an error from running the statement would; pass that when the statements
+      are parsed to be run. Without it, a parse error leaves the transaction
+      usable, for callers that only inspect the statements, for example with
+      `[[statement_bind]]`.
+      Statements are raw parser output; statement-level rewrites happen inside
+      statement_execute. The SQL string is copied, so the caller may free it
+      once this call returns. An input with no statements — empty, whitespace,
+      or separators only — yields an iterator that is immediately exhausted.
     role: constructor
     belongs_to: statement_iterator
     parameters:
@@ -136,7 +143,14 @@ functions:
         type: char
         indirection: 1
         const: true
-        description: Null-terminated SQL string; may contain any number of statements.
+        kind: IN
+        description: The SQL text, `sql_length` bytes long; may contain any number of statements. Need not be null-terminated. May be NULL only when `sql_length` is 0.
+      sql_length:
+        type: idx
+        description: The length of `sql` in bytes.
+      apply_invalidation_policy:
+        type: bool
+        description: Whether a parse error invalidates the active transaction, according to the transaction invalidation policy.
       out_iterator:
         type: statement_iterator
         indirection: 1
@@ -151,7 +165,7 @@ functions:
 
   statement_iterator_next:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Yields the next statement, or NULL when exhausted.
 
@@ -182,7 +196,7 @@ functions:
 
   statement_bind:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Binds a parsed statement without executing, yielding its schema signature.
 
@@ -235,7 +249,7 @@ functions:
 
   statement_add_collection:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Binds a column data collection to the statement under a name.
 
@@ -262,19 +276,29 @@ functions:
         type: sql_statement
         description: The statement to bind the collection to. Modified in place.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The non-empty name the statement refers to the collection by. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       collection:
         type: column_data_collection
         description: The collection to bind. Borrowed; the caller keeps ownership and must keep it alive.
       column_names:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: Optional. An array of `column_count` names for the collection's columns, in order. Pass NULL for col1..colN.
+      column_names_lengths:
+        type: idx
         indirection: 1
         const: true
-        description: Optional. An array of `column_count` names for the collection's columns, in order. Pass NULL for col1..colN.
+        kind: IN
+        description: Byte lengths of the entries in `column_names`; element i is the length of `column_names[i]`. May be NULL only when `column_names` is NULL.
       column_count:
         type: idx
         description: The number of names in `column_names`. 0 for the default names; otherwise the collection's column count.
@@ -287,7 +311,7 @@ functions:
 
   sql_statement_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Returns the statement's type as classified by the parser.
 
@@ -319,7 +343,7 @@ functions:
 
   sql_statement_get_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Borrows the statement's own SQL text.
 
@@ -337,10 +361,16 @@ functions:
         type: sql_statement
         description: The statement.
       out_text:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the statement text, valid until the statement is destroyed.
+        description: Receives a borrowed pointer to the statement text, valid until the statement is destroyed.
+      out_text_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_text` in bytes. `*out_text` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -350,7 +380,7 @@ functions:
 
   sql_statement_get_parameter_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Returns the number of distinct parameters the statement declares.
 
@@ -377,7 +407,7 @@ functions:
 
   sql_statement_get_parameter_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Borrows the name of one parameter, in binding order.
 
@@ -399,10 +429,16 @@ functions:
         type: idx
         description: Zero-based position in binding order.
       out_name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the parameter name, valid until the statement is destroyed.
+        description: Receives a borrowed pointer to the parameter name, valid until the statement is destroyed.
+      out_name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -412,7 +448,7 @@ functions:
 
   sql_statement_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a statement handle.
 
@@ -431,7 +467,7 @@ functions:
 
   statement_iterator_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a statement iterator handle.
 

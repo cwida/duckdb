@@ -3,7 +3,7 @@ module: connection
 functions:
   connection_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Opens a connection to an instance.
 
@@ -32,7 +32,7 @@ functions:
     return_type: ERROR
   connection_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys the connection.
 
@@ -50,7 +50,7 @@ functions:
     return_type: ERROR
   connection_interrupt:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Interrupts the query currently executing on the connection.
 
@@ -74,7 +74,7 @@ functions:
     return_type: ERROR
   connection_progress_get:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Captures a snapshot of the active query's execution progress.
 

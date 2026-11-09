@@ -32,13 +32,19 @@ PhysicalProjection::PhysicalProjection(PhysicalPlan &physical_plan, vector<Logic
 }
 
 void PhysicalProjection::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// column references only reference their input vector. Only computed columns need a buffer
+	vector<bool> initialize;
+	bool any_computed = false;
 	for (auto &expression : select_list) {
-		if (expression->GetExpressionClass() != ExpressionClass::BOUND_REF) {
-			PhysicalOperator::InitializeOutputChunk(allocator, chunk);
-			return;
-		}
+		const bool computed = expression->GetExpressionClass() != ExpressionClass::BOUND_REF;
+		initialize.push_back(computed);
+		any_computed = any_computed || computed;
 	}
-	chunk.InitializeEmpty(types);
+	if (!any_computed) {
+		chunk.InitializeEmpty(types);
+		return;
+	}
+	chunk.Initialize(allocator, types, initialize);
 }
 
 OperatorResultType PhysicalProjection::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,

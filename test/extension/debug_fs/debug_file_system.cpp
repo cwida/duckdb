@@ -309,6 +309,10 @@ void DebugFileSystem::SetDisabledFileSystems(const vector<string> &names) {
 	inner_fs->SetDisabledFileSystems(names);
 }
 
+vector<string> DebugFileSystem::GetDisabledFileSystems() {
+	return inner_fs->GetDisabledFileSystems();
+}
+
 bool DebugFileSystem::SubSystemIsDisabled(const string &name) {
 	return inner_fs->SubSystemIsDisabled(name);
 }

@@ -10,10 +10,10 @@ loop i 0 8
 foreach t 100 200 300 500 700
 
 statement ok
-SET max_execution_time=${t};
+SET max_execution_time={t};
 
 statement maybe
-COPY (SELECT i, i % 10 g, [i, i] s FROM range(2000000) t(i) ORDER BY i DESC) TO '__TEST_DIR__/interrupt_${i}_${t}' (FORMAT csv, PER_THREAD_OUTPUT true);
+COPY (SELECT i, i % 10 g, [i, i] s FROM range(2000000) t(i) ORDER BY i DESC) TO '{TEST_DIR}/interrupt_{i}_{t}' (FORMAT csv, PER_THREAD_OUTPUT true);
 ----
 INTERRUPT Error
 

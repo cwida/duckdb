@@ -97,8 +97,13 @@ SQLStatement:
     - PragmaFunction
     - PrepareStatement
     - ResetStatement
+    - ResetTarget
+    - ResetTimeZone
+    - ResetVariableOrSetting
     - SelectStatement
     - SetStatement
+    - SetKeywordStatement
+    - VariableAssignment
     - TransactionStatement
     - BeginTransaction
     - CommitTransaction
@@ -114,7 +119,6 @@ SQLStatement:
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
     - DestroyExternalResourceStmt
-    - ShowExternalResourcesStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
     - DropExtensionRepositoryStmt
@@ -151,6 +155,7 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
+    - ShowExternalResources
     - ShowDeprecatedSelect
     - DescribeSelect
     - ShowTables
@@ -427,6 +432,7 @@ Expression:
     - CollateExpressionTail
     - AtTimeZoneExpression
     - AtTimeZoneExpressionTail
+    - UnaryExpression
     - PrefixExpression
     - ConstantLiteral
     - ColumnReference
@@ -480,6 +486,8 @@ Expression:
     - ForExpression
     - CastExpression
     - CaseExpression
+    - SimpleCaseExpression
+    - SearchedCaseExpression
     - CaseElse
     - TypeLiteral
     - DefaultExpression
@@ -780,6 +788,7 @@ GenericCopyOptionList:
     - CopyOptions
     - CopyOptionList
     - SpecializedOptionList
+    - ExportOptions
     - ExplainOptionList
 
 WindowBoundaryExpressionList:
@@ -1226,7 +1235,6 @@ Bool:
     - IfNotExists
     - OrReplace
     - InstallAndLoad
-    - ShowAllModifier
     - FunctionTypeMacro
     - FunctionTypeMacroKeyword
     - FunctionTypeFunction
@@ -1264,6 +1272,7 @@ LogicalType:
   by_value: false
   rules:
     - Type
+    - ReturnsType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
@@ -1686,6 +1695,15 @@ overrides:
   ComparisonExpressionTail:
     type: "ComparisonExpressionTail"
     by_value: true
+  SimpleCaseWhenOperand:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenEquals:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenThen:
+    type: "SimpleCaseCheck"
+    by_value: true
   IsExpressionTail:
     type: "IsExpressionTail"
     by_value: true
@@ -1723,6 +1741,12 @@ overrides:
     type: "ParsedOperator"
     by_value: true
   OtherOperatorTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  AnyAllSubqueryTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  OtherOperatorExpressionTail:
     type: "OtherOperatorTail"
     by_value: true
   AdditiveExpressionTail:
@@ -1771,6 +1795,7 @@ IdentifierType:
     - AnalyzeKeyword
     - ColId
     - ColIdOrString
+    - ShowExternalResourcesType
     - UsingColumnName
     - ColLabelOrString
     - ColLabelIdentifier
@@ -1895,6 +1920,7 @@ expression_depth_nesting_rules:
   - Type
   - NestedType
   - SubqueryReference
+  - CustomPrefixExpression
 
 expression_depth_chain_rules:
   - LambdaArrowExpression
@@ -1955,6 +1981,34 @@ packrat_memoized_rules:
   - SchemaQualification
   - ReservedSchemaQualification
 
+# rule_labels: see Matcher::SetLabel. When a syntax error lists what the parser expected at the failure point,
+# every alternative inside a labelled rule is summarised by the label instead of being spelled out. Only label
+# rules that cannot match empty input and that accept a plain identifier somewhere.
+rule_labels:
+  an expression:
+    - Expression
+    - LambdaArrowExpression
+    - LogicalOrExpression
+    - LogicalAndExpression
+    - LogicalNotExpression
+    - IsExpression
+    - IsDistinctFromExpression
+    - ComparisonExpression
+    - BetweenInLikeExpression
+    - OtherOperatorExpression
+    - InContainsExpression
+    - BitwiseExpression
+    - AdditiveExpression
+    - MultiplicativeExpression
+    - ExponentiationExpression
+    - CollateExpression
+    - AtTimeZoneExpression
+    - PrefixExpression
+    - BaseExpression
+    - SingleExpression
+  a type:
+    - Type
+
 # ---------------------------------------------------------------------------
 # excluded_rules: no transformer stub generated, no semantic value extracted
 # for child references
@@ -1965,6 +2019,8 @@ excluded_rules:
   - ExternalResourceKeyword
   # Syntax only: OVERRIDING {USER|SYSTEM} VALUE is accepted and ignored.
   - OverridingClause
+  # Syntax only: CREATE INDEX CONCURRENTLY is accepted and ignored.
+  - IndexConcurrently
   # Suggestion-only: exists so autocomplete offers the special SHOW forms as keywords; parsing of e.g.
   # "SHOW databases" resolves through ShowSettingName (the identifier), which the transformer special-cases.
   - ShowSpecialForm

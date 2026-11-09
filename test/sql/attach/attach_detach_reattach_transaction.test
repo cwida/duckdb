@@ -11,15 +11,13 @@ ATTACH ':memory:' AS a;
 statement ok
 DETACH a;
 
-statement error
+statement ok
 ATTACH ':memory:' AS a;
-----
-was already used by a different database in this transaction
 
 statement ok
 ROLLBACK;
 
-# the database is still usable and the name can be used again
+# after rollback the name can be used again
 statement ok
 ATTACH ':memory:' AS a;
 

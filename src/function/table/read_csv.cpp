@@ -157,6 +157,12 @@ static bool PushdownProjectionExpression(ClientContext &context, const TableFunc
 	const auto &cast = input.expr.Cast<BoundFunctionExpression>();
 	const auto &target_type = cast.GetReturnType();
 	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
+	// With a custom schema (the 'schema' option, or a MultiFileReader that binds its own schema) the files are mapped
+	// onto that schema, not onto bind_data.columns, so retyping the columns would not reach the column mapping.
+	// See test/optimizer/pushdown/csv_type_pushdown_schema.test
+	if (!bind_data.reader_bind.schema.empty()) {
+		return false;
+	}
 	const idx_t idx = input.get.GetColumnIds()[input.column_index].GetPrimaryIndex();
 	// Hive-partition and filename columns are produced from the file path by
 	// separate finalize expressions, not parsed from the file. Retyping them
@@ -250,7 +256,7 @@ void BuiltinFunctions::RegisterReadFunctions() {
 	CSVCopyFunction::RegisterFunction(*this);
 	ReadCSVTableFunction::RegisterFunction(*this);
 	AddFunction(MultiFileReader::CreateFunctionSet(ReadDuckDBTableFunction::GetFunction()));
-	auto &config = DBConfig::GetConfig(*transaction.db);
+	auto &config = DBConfig::GetConfig(transaction.db);
 	config.replacement_scans.emplace_back(ReadCSVReplacement);
 	config.replacement_scans.emplace_back(ReadDuckDBTableFunction::ReplacementScan);
 }

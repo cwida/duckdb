@@ -1,0 +1,93 @@
+# name: test/parquet/utf8_validation_statistics.test
+# description: Statistics and bloom filters describe the stored bytes, which a repairing utf8_validation changes (duckdblabs/bot-issue-tracker#639)
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT x FROM (VALUES ('a'::BLOB), ('\x80'::BLOB), (encode('é'))) t(x)) TO '{TEST_DIR}/repaired.parquet';
+
+# 'ignore' removes the invalid byte, which leaves an empty string below the stored minimum
+foreach metadata_cache false true
+
+statement ok
+SET parquet_metadata_cache = {metadata_cache};
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/repaired.parquet', binary_as_string = true, utf8_validation = 'ignore');
+----
+(empty)	é	3
+
+query III
+SELECT min(x), max(x), count(*) FROM read_parquet('{TEST_DIR}/repaired.parquet', binary_as_string = true, utf8_validation = 'replace');
+----
+?	é	3
+
+endloop
+
+# filters see the repaired values too
+query III
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired.parquet', binary_as_string = true, utf8_validation = 'ignore') WHERE x = ''),
+	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired.parquet', binary_as_string = true, utf8_validation = 'replace') WHERE x = '?'),
+	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired.parquet', binary_as_string = true, utf8_validation = 'replace') WHERE x < 'a');
+----
+1	1	1
+
+# a value that the bloom filter of the stored bytes does not hold, also in a struct
+statement ok
+COPY (SELECT x, {'s': x} AS st FROM (SELECT ('k' || (i % 50)::VARCHAR)::BLOB AS x FROM range(1000) t(i) UNION ALL SELECT 'zz\x80'::BLOB UNION ALL SELECT '\x80zz'::BLOB)) TO '{TEST_DIR}/repaired_bloom.parquet';
+
+query I
+SELECT bool_and(bloom_filter_offset IS NOT NULL) FROM parquet_metadata('{TEST_DIR}/repaired_bloom.parquet');
+----
+true
+
+# the stored bloom filter excludes every repaired value
+query III
+SELECT (SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/repaired_bloom.parquet', 'x', 'zz'::BLOB)),
+	(SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/repaired_bloom.parquet', 'x', '?zz'::BLOB)),
+	(SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/repaired_bloom.parquet', 'x', 'zz?'::BLOB));
+----
+true	true	true
+
+query IIII
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true, utf8_validation = 'ignore') WHERE x = 'zz'),
+	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true, utf8_validation = 'replace') WHERE x = '?zz'),
+	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true, utf8_validation = 'ignore') WHERE st.s = 'zz'),
+	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true, utf8_validation = 'replace') WHERE st.s = 'zz?');
+----
+2	1	2	1
+
+# blobs are not repaired, and their statistics still prune
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', utf8_validation = 'ignore') WHERE x = 'k1'::BLOB;
+----
+20
+
+statement error
+SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_bloom.parquet', binary_as_string = true) WHERE x = 'k1';
+----
+is not valid UTF8
+
+# page statistics of an existing file hold an invalid minimum, which the repaired values sort below
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'ignore') WHERE X1 = 'TREL';
+----
+1
+
+query I
+SELECT count(*) FROM read_parquet('data/parquet-testing/invalid_utf8_dlba.parquet', utf8_validation = 'replace') WHERE X1 = 'TREL?';
+----
+1
+
+# JSON is validated but not repaired, so it keeps its statistics, while a repaired VARCHAR has no minimum. Without the
+# optimizer no statistics are propagated
+require json
+
+statement ok
+COPY (SELECT ('{"a": ' || i || '}')::JSON AS j, ('k' || i)::BLOB AS x FROM range(1000) t(i)) TO '{TEST_DIR}/repaired_json.parquet';
+
+query II
+SELECT coalesce(stats(j)::VARCHAR LIKE '%''min''%', stats(j) IS NULL), coalesce(stats(x)::VARCHAR LIKE '%''min''%', false) FROM read_parquet('{TEST_DIR}/repaired_json.parquet', binary_as_string = true, utf8_validation = 'ignore') LIMIT 1;
+----
+true	false

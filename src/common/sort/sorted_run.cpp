@@ -229,6 +229,139 @@ struct SkaExtractKey {
 	atomic<ClientInterruptState> &interrupt_state;
 };
 
+template <class SORT_KEY>
+struct SkaExtractSuffixKey : SkaExtractKey<SORT_KEY> {
+	SkaExtractSuffixKey(const SkaExtractKey<SORT_KEY> &extract_key, uint64_t varying_bits_p)
+	    : SkaExtractKey<SORT_KEY>(extract_key), varying_bits(varying_bits_p) {
+		this->ska_sort_width = sizeof(uint64_t);
+		this->requires_next_sort = true;
+	}
+
+	static uint64_t ExtractWord(const SORT_KEY &key, idx_t offset) {
+		D_ASSERT(offset >= sizeof(uint64_t) && offset % sizeof(uint64_t) == 0);
+		if constexpr (SORT_KEY::INLINE_LENGTH > sizeof(uint64_t)) {
+			if (offset == sizeof(uint64_t)) {
+				return key.part1;
+			}
+		}
+		const auto size = key.GetSize();
+		if (offset >= size) {
+			return 0;
+		}
+		const auto ptr = key.GetSuffixData() + (offset - SORT_KEY::INLINE_LENGTH);
+		if (size - offset >= sizeof(uint64_t)) {
+			return BSwapIfLE(Load<uint64_t>(ptr));
+		}
+		uint64_t word = 0;
+		memcpy(&word, ptr, size - offset);
+		return BSwapIfLE(word);
+	}
+
+	static bool PrefixMatches(const SORT_KEY &reference, const SORT_KEY &key, idx_t offset) {
+		if constexpr (SORT_KEY::INLINE_LENGTH > sizeof(uint64_t)) {
+			if (offset > sizeof(uint64_t) && reference.part1 != key.part1) {
+				return false;
+			}
+		}
+		if (offset <= SORT_KEY::INLINE_LENGTH) {
+			return true;
+		}
+		return reference.GetSize() >= offset && key.GetSize() >= offset &&
+		       memcmp(reference.GetSuffixData(), key.GetSuffixData(), offset - SORT_KEY::INLINE_LENGTH) == 0;
+	}
+
+	bool ByteIsSkippable(const idx_t &byte_offset) const {
+		D_ASSERT(byte_offset < sizeof(uint64_t));
+		return ((varying_bits >> ((sizeof(uint64_t) - 1 - byte_offset) * 8)) & 0xff) == 0;
+	}
+
+	uint64_t varying_bits;
+};
+
+template <class SORT_KEY, class ITERATOR, class MERGE>
+static void SortTiedBucket(ClientContext &context, const ITERATOR &begin, const ITERATOR &end,
+                           SkaExtractKey<SORT_KEY> &extract_key, const MERGE &merge) {
+	if constexpr (SORT_KEY::CONSTANT_SIZE) {
+		duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+	} else {
+		context.InterruptCheck();
+		D_ASSERT(end - begin >= 2);
+		using SUFFIX = SkaExtractSuffixKey<SORT_KEY>;
+		constexpr idx_t MIN_RADIX_COUNT = 1024;
+		constexpr idx_t SAMPLE_COUNT = 16;
+		constexpr idx_t MAX_PREFIX_OFFSET = 256;
+		const auto count = NumericCast<idx_t>(end - begin);
+		if (count < MIN_RADIX_COUNT) {
+			duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+			return;
+		}
+
+		SORT_KEY samples[SAMPLE_COUNT];
+		const auto stride = (count - 1) / (SAMPLE_COUNT - 1);
+		for (idx_t i = 0; i < SAMPLE_COUNT; i++) {
+			samples[i] = *(begin + (i == SAMPLE_COUNT - 1 ? count - 1 : i * stride));
+		}
+		uint64_t words[SAMPLE_COUNT];
+		uint64_t varying_bits = 0;
+		idx_t offset = sizeof(uint64_t);
+		while (offset <= MAX_PREFIX_OFFSET) {
+			varying_bits = 0;
+			for (idx_t i = 0; i < SAMPLE_COUNT; i++) {
+				words[i] = SUFFIX::ExtractWord(samples[i], offset);
+				varying_bits |= words[0] ^ words[i];
+			}
+			if (varying_bits != 0) {
+				break;
+			}
+			offset += sizeof(uint64_t);
+		}
+		if (offset > MAX_PREFIX_OFFSET) {
+			duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+			return;
+		}
+		for (const auto word : words) {
+			if (NumericCast<idx_t>(std::count(words, words + SAMPLE_COUNT, word)) >= SAMPLE_COUNT / 4) {
+				duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+				return;
+			}
+		}
+
+		// The probe only selects a candidate; every skipped word must be equal across the whole bucket.
+		idx_t scanned = 0;
+		for (auto it = begin + 1; it != end; ++it) {
+			if (++scanned % STANDARD_VECTOR_SIZE == 0) {
+				context.InterruptCheck();
+			}
+			if (it->part0 != samples[0].part0 || !SUFFIX::PrefixMatches(samples[0], *it, offset)) {
+				duckdb_ska_sort::detail::StdSortFallback(begin, end, extract_key, merge);
+				return;
+			}
+			varying_bits |= words[0] ^ SUFFIX::ExtractWord(*it, offset);
+		}
+		// The common first word can cache the suffix during this synchronous refinement.
+		struct PrefixRestorer {
+			ITERATOR begin;
+			ITERATOR end;
+			uint64_t prefix;
+
+			~PrefixRestorer() {
+				for (auto it = begin; it != end; ++it) {
+					it->part0 = prefix;
+				}
+			}
+		} restore {begin, end, samples[0].part0};
+		scanned = 0;
+		for (auto it = begin; it != end; ++it) {
+			if (++scanned % STANDARD_VECTOR_SIZE == 0) {
+				context.InterruptCheck();
+			}
+			it->part0 = SUFFIX::ExtractWord(*it, offset);
+		}
+		SUFFIX suffix(extract_key, varying_bits);
+		duckdb_ska_sort::ska_sort(begin, end, suffix, merge);
+	}
+}
+
 template <SortKeyType SORT_KEY_TYPE>
 static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data, const bool is_index_sort) {
 	const auto &layout = key_data.GetLayout();
@@ -254,8 +387,14 @@ static void TemplatedSort(ClientContext &context, TupleDataCollection &key_data,
 	// order, so that no merge anywhere in this sort allocates on its own (BufferedMerge never does)
 	SortMergeBuffer merge_buffer(BufferAllocator::Get(context), key_data.Count(), sizeof(SORT_KEY));
 	const BufferedMergePolicy<SORT_KEY> merge(merge_buffer);
-	const auto fallback = [&ska_extract_key, &merge](const BLOCK_ITERATOR &fb_begin, const BLOCK_ITERATOR &fb_end) {
-		duckdb_ska_sort::ska_sort(fb_begin, fb_end, ska_extract_key, merge);
+	const auto sort_ties = [&context](const BLOCK_ITERATOR &b, const BLOCK_ITERATOR &e,
+	                                  SkaExtractKey<SORT_KEY> &extract_key,
+	                                  const BufferedMergePolicy<SORT_KEY> &policy) {
+		SortTiedBucket(context, b, e, extract_key, policy);
+	};
+	const auto fallback = [&ska_extract_key, &merge, &sort_ties](const BLOCK_ITERATOR &fb_begin,
+	                                                             const BLOCK_ITERATOR &fb_end) {
+		duckdb_ska_sort::ska_sort(fb_begin, fb_end, ska_extract_key, merge, sort_ties);
 	};
 	duckdb_vergesort::vergesort(begin, end, std::less<SORT_KEY>(), fallback, merge);
 
@@ -326,7 +465,6 @@ static void TemplatedReorder(ClientContext &context, unique_ptr<TupleDataCollect
 	TupleDataAppendState new_key_data_append_state;
 	if (!SORT_KEY::CONSTANT_SIZE) {
 		new_key_data = key_data->CreateUnique();
-		new_key_data->SetPartitionIndex(0); // We'll need the keys before the payload, this keeps them in memory longer
 		new_key_data->InitializeAppend(new_key_data_append_state, TupleDataPinProperties::UNPIN_AFTER_DONE);
 	}
 
@@ -416,30 +554,60 @@ void SortedRun::Finalize(bool external) {
 	SortSwitch(context, *key_data, is_index_sort);
 
 	if (external) {
-		// Reorder variable-size portion of keys and/or payload data (if necessary)
-		const auto sort_key_type = key_data->GetLayout().GetSortKeyType();
-		if (!SortKeyUtils::IsConstantSize(sort_key_type) || SortKeyUtils::HasPayload(sort_key_type)) {
-			Reorder(context, key_data, payload_data);
-		} else {
-			// This ensures keys are unpinned even if they are constant size and have no payload
-			key_data->Unpin();
-		}
+		ReorderForExternal();
 	}
 
 	finalized = true;
 }
 
-void SortedRun::DestroyData(const idx_t tuple_idx_begin, const idx_t tuple_idx_end) {
-	// We always have full chunks for sorting, so we can just use the vector size
+void SortedRun::MakeExternal() {
+	D_ASSERT(finalized);
+	if (!external) {
+		ReorderForExternal();
+	}
+}
+
+void SortedRun::ReorderForExternal() {
+	D_ASSERT(!external);
+	// Reorder variable-size portion of keys and/or payload data (if necessary)
+	const auto sort_key_type = key_data->GetLayout().GetSortKeyType();
+	if (!SortKeyUtils::IsConstantSize(sort_key_type) || SortKeyUtils::HasPayload(sort_key_type)) {
+		Reorder(context, key_data, payload_data);
+	} else {
+		// This ensures keys are unpinned even if they are constant size and have no payload
+		key_data->Unpin();
+	}
+	external = true;
+}
+
+static void DestroyData(TupleDataCollection &data, const idx_t tuple_idx_begin, const idx_t tuple_idx_end) {
+	if (tuple_idx_begin == tuple_idx_end) {
+		return;
+	}
+	// Only the final chunk of a sorted run can be partial.
 	const auto chunk_idx_start = tuple_idx_begin / STANDARD_VECTOR_SIZE;
-	const auto chunk_idx_end = tuple_idx_end / STANDARD_VECTOR_SIZE;
+	const auto chunk_idx_end = tuple_idx_end == data.Count() ? data.ChunkCount() : tuple_idx_end / STANDARD_VECTOR_SIZE;
 	if (chunk_idx_start == chunk_idx_end) {
 		return;
 	}
-	key_data->DestroyChunks(chunk_idx_start, chunk_idx_end);
-	if (payload_data) {
-		payload_data->DestroyChunks(chunk_idx_start, chunk_idx_end);
+	data.DestroyChunks(chunk_idx_start, chunk_idx_end);
+}
+
+void SortedRun::DestroyKeyData(const idx_t tuple_idx_begin, const idx_t tuple_idx_end) {
+	DestroyData(*key_data, tuple_idx_begin, tuple_idx_end);
+}
+
+void SortedRun::DestroyPayloadData(const idx_t tuple_idx_begin, const idx_t tuple_idx_end) {
+	D_ASSERT(payload_data);
+	if (tuple_idx_begin == tuple_idx_end) {
+		return;
 	}
+	const auto at_end = tuple_idx_end == payload_data->Count();
+	const auto chunk_end = at_end ? payload_data->ChunkCount() : tuple_idx_end / STANDARD_VECTOR_SIZE;
+	// Payload fetching is bounded to the fragment, so fully consumed parts can retire within a chunk.
+	payload_data->DestroyChunks(tuple_idx_begin / STANDARD_VECTOR_SIZE, chunk_end,
+	                            tuple_idx_begin % STANDARD_VECTOR_SIZE,
+	                            at_end ? 0 : tuple_idx_end % STANDARD_VECTOR_SIZE);
 }
 
 idx_t SortedRun::Count() const {

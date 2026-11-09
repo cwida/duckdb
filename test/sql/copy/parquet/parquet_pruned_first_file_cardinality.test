@@ -1,0 +1,43 @@
+# name: test/sql/copy/parquet/parquet_pruned_first_file_cardinality.test
+# description: The cardinality estimate of a multi-file scan survives a filter pruning the first file
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT k, 1 + k % 5 AS region_id FROM range(5000) t(k))
+TO '{TEST_DIR}/pruned_first' (FORMAT parquet, PARTITION_BY (region_id));
+
+# the first file in glob order is kept - the estimate is that file's row count
+query II
+EXPLAIN SELECT * FROM read_parquet('{TEST_DIR}/pruned_first/**/*.parquet', hive_partitioning = true) WHERE region_id = 1
+----
+physical_plan	<REGEX>:.*~1,000 rows.*
+
+# the first file is pruned - the estimate must not fall back to a single row
+query II
+EXPLAIN SELECT * FROM read_parquet('{TEST_DIR}/pruned_first/**/*.parquet', hive_partitioning = true) WHERE region_id = 2
+----
+physical_plan	<REGEX>:.*~1,000 rows.*
+
+query II
+EXPLAIN SELECT * FROM read_parquet('{TEST_DIR}/pruned_first/**/*.parquet', hive_partitioning = true) WHERE region_id IN (2, 5)
+----
+physical_plan	<REGEX>:.*~2,000 rows.*
+
+query II
+EXPLAIN SELECT * FROM read_parquet('{TEST_DIR}/pruned_first/**/*.parquet', hive_partitioning = true) WHERE region_id > 1
+----
+physical_plan	<REGEX>:.*~4,000 rows.*
+
+# an explicit file list whose first entry is pruned
+query II
+EXPLAIN SELECT * FROM read_parquet(['{TEST_DIR}/pruned_first/region_id=5/data_0.parquet', '{TEST_DIR}/pruned_first/region_id=1/data_0.parquet'], hive_partitioning = true) WHERE region_id = 1
+----
+physical_plan	<REGEX>:.*~1,000 rows.*
+
+# the results are unaffected
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/pruned_first/**/*.parquet', hive_partitioning = true) WHERE region_id > 1
+----
+4000

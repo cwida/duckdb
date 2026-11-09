@@ -11,6 +11,7 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/parser/peg/peg_parser.hpp"
+#include "duckdb/parser/peg/peg_rule_id.hpp"
 #include "duckdb/parser/peg/transformer/transform_result.hpp"
 
 #include <functional>
@@ -129,6 +130,8 @@ struct CompiledGrammarRule {
 	arena_ptr<TransformProcess> StartTransform(PEGTransformer &transformer, ParseResult &parse_result) const;
 
 	string name;
+	//! Built-in rules get their generated constant, rules added at runtime get an ID past BUILTIN_COUNT
+	PEGRuleId rule_id = PEGRuleId::INVALID;
 	grammar_transform_process_function_t transform_process;
 	//! See ParsedGrammar::SetTransformProcess
 	bool collapsible;

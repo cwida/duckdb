@@ -5,10 +5,17 @@
 require parquet
 
 # the statistics are used to compress the points during materialization
+# keep the sort below the aggregate, the optimizer would otherwise remove it
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
 statement error
 SELECT st_astext(g) s, count(*) FROM (SELECT g, i FROM 'data/parquet-testing/broken/geoparquet_wrong_geometry_types.parquet' ORDER BY i DESC) GROUP BY ALL ORDER BY 1;
 ----
 Expected only 2D POINT geometries based on the column statistics
+
+statement ok
+SET disabled_optimizers = '';
 
 query II
 SELECT st_astext(g) s, count(*) FROM 'data/parquet-testing/broken/geoparquet_wrong_geometry_types.parquet' GROUP BY ALL ORDER BY 1;

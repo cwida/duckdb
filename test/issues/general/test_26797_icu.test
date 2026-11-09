@@ -1,0 +1,61 @@
+# name: test/issues/general/test_26797_icu.test
+# description: Every finite int64 is a TIMESTAMPTZ that renders and converts between time zones
+# group: [general]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	('int64_min', make_timestamptz(-9223372036854775807 - 1)),
+	('above -infinity', make_timestamptz(-9223372036854775806)),
+	('before the first midnight', make_timestamptz(-9223372022400000001)),
+	('largest', make_timestamptz(9223372036854775806))) v(k, ts);
+
+query IIII
+SELECT k, ts::VARCHAR, ts::TIMESTAMP::VARCHAR, ts::TIMESTAMP::TIMESTAMPTZ = ts FROM t ORDER BY ts;
+----
+int64_min	290309-12-21 (BC) 19:59:05.224192+00	290309-12-21 (BC) 19:59:05.224192	true
+above -infinity	290309-12-21 (BC) 19:59:05.224194+00	290309-12-21 (BC) 19:59:05.224194	true
+before the first midnight	290309-12-21 (BC) 23:59:59.999999+00	290309-12-21 (BC) 23:59:59.999999	true
+largest	294247-01-10 04:00:54.775806+00	294247-01-10 04:00:54.775806	true
+
+query II
+SELECT ts + INTERVAL 1 DAY, ts - INTERVAL 1 HOUR FROM t WHERE k = 'before the first midnight';
+----
+290309-12-22 (BC) 23:59:59.999999+00	290309-12-21 (BC) 22:59:59.999999+00
+
+query I
+SELECT '290309-12-22 (BC) 00:00:00+01'::TIMESTAMPTZ;
+----
+290309-12-21 (BC) 23:00:00+00
+
+statement ok
+SET TimeZone = 'Asia/Tokyo';
+
+query III
+SELECT k, ts::VARCHAR, ts::TIMESTAMP::VARCHAR FROM t WHERE k = 'int64_min';
+----
+int64_min	290309-12-22 (BC) 05:18:04.224192+09:18:59	290309-12-22 (BC) 05:18:04.224192
+
+query I
+SELECT date_trunc('hour', ts) FROM t WHERE k = 'before the first midnight';
+----
+290309-12-22 (BC) 09:00:00+09:18:59
+
+# the local hour of the smallest instant starts before it
+query I
+SELECT TRY(date_trunc('hour', ts)) FROM t WHERE k = 'int64_min';
+----
+NULL
+
+statement ok
+SET TimeZone = 'America/New_York';
+
+# the local time of the smallest instant is below the TIMESTAMP values
+query II
+SELECT ts::VARCHAR, TRY_CAST(ts AS TIMESTAMP) FROM t WHERE k = 'int64_min';
+----
+290309-12-21 (BC) 15:03:03.224192-04:56:02	NULL

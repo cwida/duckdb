@@ -1,0 +1,163 @@
+# name: test/sql/variables/test_variable_assignment.test
+# description: Test variable assignment shorthand ($x := expr)
+# group: [variables]
+
+statement ok
+$x := 5
+
+query I
+SELECT getvariable('x')
+----
+5
+
+query I
+SELECT $x
+----
+5
+
+# reassign
+statement ok
+$x := 6
+
+query I
+SELECT $x
+----
+6
+
+statement ok
+$y := $x * 2
+
+query I
+SELECT $y
+----
+12
+
+# equivalent to SET VARIABLE
+statement ok
+SET VARIABLE x = 1
+
+query I
+SELECT $x
+----
+1
+
+statement ok
+$x := 2
+
+query I
+SELECT $x
+----
+2
+
+# different types
+statement ok
+$animal := 'duck'
+
+statement ok
+$numbers := [1, 2, 3]
+
+statement ok
+$point := {'x': 1, 'y': 2}
+
+statement ok
+$ts := TIMESTAMP '2020-01-01 00:00:00'
+
+query IIII
+SELECT $animal, $numbers, $point, $ts
+----
+duck	[1, 2, 3]	{'x': 1, 'y': 2}	2020-01-01 00:00:00
+
+# expressions and subqueries
+statement ok
+CREATE TABLE tbl AS SELECT range AS i FROM range(10)
+
+statement ok
+$total := (SELECT sum(i) FROM tbl)
+
+query I
+SELECT $total
+----
+45
+
+statement ok
+$greeting := 'hello' || ' ' || 'world'
+
+query I
+SELECT $greeting
+----
+hello world
+
+# quoted identifiers
+statement ok
+$"my var" := 42
+
+query I
+SELECT getvariable('my var')
+----
+42
+
+# RESET still works
+statement ok
+RESET VARIABLE x
+
+statement error
+SELECT $x
+----
+Values were not provided
+
+# the $ is required
+statement error
+x := 5
+----
+syntax error
+
+# only a single value is allowed
+statement error
+$x := 5, 6
+----
+syntax error
+
+statement error
+$x :=
+----
+syntax error
+
+statement error
+$ := 5
+----
+syntax error
+
+statement error
+:= 5
+----
+syntax error
+
+# reserved keywords cannot be variable names
+statement error
+$select := 5
+----
+syntax error
+
+# only := assigns
+statement error
+$x = 5
+----
+syntax error
+
+# named parameters in function calls are unaffected
+statement ok
+PREPARE p AS SELECT $a + $b
+
+query I
+EXECUTE p(a := 1, b := 2)
+----
+3
+
+# multiple assignments in one query string
+statement ok
+$a := 1; $b := 2;
+
+query I
+SELECT $a + $b
+----
+3

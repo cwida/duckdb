@@ -11,7 +11,7 @@ LOAD 'it''s';
 <REGEX>:IO Error.*it's.*
 
 statement error
-EXPORT DATABASE "my db" TO '__TEST_DIR__/tostring_export';
+EXPORT DATABASE "my db" TO '{TEST_DIR}/tostring_export';
 ----
 Binder Error: Catalog "my db" does not exist!
 
@@ -22,7 +22,7 @@ statement ok
 CREATE TABLE "my db".tbl AS SELECT 42 i;
 
 statement ok
-EXPORT DATABASE "my db" TO '__TEST_DIR__/tostring_export_ok';
+EXPORT DATABASE "my db" TO '{TEST_DIR}/tostring_export_ok';
 
 statement ok
-EXPORT DATABASE "my db" TO '__TEST_DIR__/tostring''s_export';
+EXPORT DATABASE "my db" TO '{TEST_DIR}/tostring''s_export';

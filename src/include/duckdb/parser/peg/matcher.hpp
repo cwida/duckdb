@@ -24,12 +24,15 @@
 #include "duckdb/parser/peg/transformer/parse_result.hpp"
 #include "duckdb/storage/arena_allocator.hpp"
 
+#include <map>
+
 namespace duckdb {
 class ClientContext;
 class PEGTransformerFactory;
 class ParseResultAllocator;
 class Matcher;
 class MatcherAllocator;
+struct ListMatchChain;
 class MatchProcess;
 
 enum class SuggestionState : uint8_t {
@@ -146,6 +149,8 @@ struct MatcherSuggestion {
 	AutoCompleteCandidate keyword;
 	SuggestionState type;
 	char extra_char = '\0';
+	//! Label of the enclosing labelled rule (e.g. "an expression"), if the suggestion was added inside one
+	optional_ptr<const string> label;
 };
 
 struct MatchContext {
@@ -166,6 +171,15 @@ struct MatchContext {
 	IdentifierCaseMode identifier_case_mode;
 	ParserPackratCache *packrat_cache;
 	MatchMode mode;
+	//! Label of the labelled rule currently being walked for suggestions, if any
+	optional_ptr<const string> active_label;
+	//! Ignore rule-level suggestion suppression, so the suggestions a rule adds depend only on its
+	//! position and the packrat cache stays valid while collecting them
+	bool memoizable_suggestions = false;
+	//! With memoizable_suggestions: walk labelled rules instead of summarising them by their label alone
+	bool expand_labels = false;
+	//! With memoizable_suggestions: suggestion walks already done, keyed by matcher and active label
+	std::map<std::pair<const Matcher *, const string *>, SuggestionType> walked_suggestions;
 };
 
 struct MatchState {
@@ -186,10 +200,10 @@ struct MatchState {
 	}
 
 	template <class RESULT, class... ARGS>
-	MatcherResult AllocateParseResult(ARGS &&...args);
+	MatcherResult AllocateParseResult(ARGS &&... args);
 
 	template <class PROCESS, class... ARGS>
-	arena_ptr<MatchProcess> Make(ARGS &&...args);
+	arena_ptr<MatchProcess> Make(ARGS &&... args);
 
 	void UpdateMaxTokenIndex() {
 		if (token_iterator.Position() > context.max_token_index) {
@@ -299,13 +313,15 @@ public:
 
 	//! Match and construct the parse result
 	MatcherResult MatchParseResult(MatchState &state) const;
-	//! Create matcher-local state with state.Make<PROCESS>() for either execution driver.
+	//! Create matcher-local state with state.Make<PROCESS>() for incremental execution.
 	virtual arena_ptr<MatchProcess> StartMatch(MatchState &state) const = 0;
 	virtual bool IsAtomic() const {
 		return false;
 	}
 	virtual SuggestionType AddSuggestion(MatchState &state) const;
 	virtual SuggestionType AddSuggestionInternal(MatchState &state) const = 0;
+	//! AddSuggestionInternal, with the matcher's label (if any) applied to the suggestions it adds
+	SuggestionType AddLabelledSuggestion(MatchState &state) const;
 	virtual string ToString() const = 0;
 	void Print() const;
 
@@ -318,6 +334,13 @@ public:
 	void SetRule(const CompiledGrammarRule &rule_p) {
 		rule = rule_p;
 		name = rule_p.name;
+	}
+	//! A short description of what the matcher accepts, used to summarise it in syntax errors
+	void SetLabel(string label_p) {
+		label = std::move(label_p);
+	}
+	const string &GetLabel() const {
+		return label;
 	}
 	optional_ptr<const CompiledGrammarRule> GetRule() const {
 		return rule;
@@ -359,7 +382,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast matcher to type - matcher type mismatch");
+			InternalException::Throw("Failed to cast matcher to type - matcher type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -367,7 +390,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast matcher to type - matcher type mismatch");
+			InternalException::Throw("Failed to cast matcher to type - matcher type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}
@@ -379,6 +402,7 @@ protected:
 	friend class MatcherAllocator;
 	MatcherType type;
 	string name;
+	string label;
 	optional_idx packrat_id;
 	bool packrat_memoized = false;
 	bool collapsible = false;
@@ -420,11 +444,17 @@ public:
 
 class MatcherAllocator {
 public:
+	DUCKDB_API MatcherAllocator();
+	DUCKDB_API MatcherAllocator(MatcherAllocator &&) noexcept;
+	DUCKDB_API MatcherAllocator &operator=(MatcherAllocator &&) noexcept;
+	DUCKDB_API ~MatcherAllocator();
+
 	Matcher &Allocate(unique_ptr<Matcher> matcher);
 	void InitializeListChains();
 
 private:
 	vector<unique_ptr<Matcher>> matchers;
+	vector<unique_ptr<ListMatchChain>> list_chains;
 };
 
 class ParseResultAllocator {
@@ -433,7 +463,7 @@ public:
 	~ParseResultAllocator();
 
 	template <class RESULT, class... ARGS>
-	optional_ptr<ParseResult> Make(ARGS &&...args) {
+	optional_ptr<ParseResult> Make(ARGS &&... args) {
 		static_assert(std::is_base_of<ParseResult, RESULT>::value, "Expected a parse result");
 		auto result = arena.Make<RESULT>(std::forward<ARGS>(args)...);
 		if (ParseResultNeedsDestructor<RESULT>::value) {
@@ -442,6 +472,14 @@ public:
 			pending_destructors.push_back(std::move(owned));
 		}
 		return optional_ptr<ParseResult>(result);
+	}
+
+	//! Uninitialized child storage owned by the result arena.
+	unsafe_array_ptr<reference<ParseResult>> AllocateChildren(idx_t capacity) {
+		arena.AlignNext();
+		return unsafe_array_ptr<reference<ParseResult>>(
+		    reinterpret_cast<reference<ParseResult> *>(arena.Allocate(capacity * sizeof(reference<ParseResult>))),
+		    capacity);
 	}
 
 	//! Copy a collected set of children into the arena, where it lives as long as the results it belongs to
@@ -468,7 +506,7 @@ private:
 };
 
 template <class PROCESS, class... ARGS>
-arena_ptr<MatchProcess> MatchState::Make(ARGS &&...args) {
+arena_ptr<MatchProcess> MatchState::Make(ARGS &&... args) {
 	static_assert(std::is_base_of<MatchProcess, PROCESS>::value, "Expected a matcher process");
 	return arena_ptr<MatchProcess>(context.process_allocator.Make<PROCESS>(std::forward<ARGS>(args)...));
 }
@@ -482,7 +520,7 @@ void ParseResult::SetNameFrom(const Matcher &matcher_p) {
 }
 
 template <class RESULT, class... ARGS>
-MatcherResult MatchState::AllocateParseResult(ARGS &&...args) {
+MatcherResult MatchState::AllocateParseResult(ARGS &&... args) {
 	if (!BuildParseResult()) {
 		return MatcherResult::Success();
 	}

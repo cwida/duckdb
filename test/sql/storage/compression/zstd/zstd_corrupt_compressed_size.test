@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/zstd/zstd_corrupt_compressed_size.test
+# description: Truncated Zstd input must not be followed as a page link
+# group: [zstd]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/zstd_corrupt_compressed_size.db.gz {TEST_DIR}/zstd_corrupt_compressed_size.db
+
+load {TEST_DIR}/zstd_corrupt_compressed_size.db readonly
+
+statement ok
+USE zstd_corrupt_compressed_size;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='ZSTD' LIMIT 1;
+----
+ZSTD
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Data Corruption Error: Corrupted ZSTD vector: compressed data ended before decompression finished
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Data Corruption Error: Corrupted ZSTD vector: compressed data ended before decompression finished

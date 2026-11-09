@@ -17,7 +17,7 @@ handles:
 functions:
   schema_get_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: "Returns the number of fields in a schema."
     role: getter
     belongs_to: schema
@@ -38,7 +38,7 @@ functions:
     return_type: ERROR
   schema_get_field:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the name and type of the field at the given index.
 
@@ -55,10 +55,16 @@ functions:
         type: idx
         description: "Zero-based field index."
       out_name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: "Receives a borrowed view of the field name. Valid until the schema is destroyed."
+        description: "Receives a borrowed pointer to the field name. Valid until the schema is destroyed."
+      out_name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be null-terminated.
       out_type:
         type: logical_type
         indirection: 1
@@ -72,7 +78,7 @@ functions:
     return_type: ERROR
   schema_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a schema handle.
 

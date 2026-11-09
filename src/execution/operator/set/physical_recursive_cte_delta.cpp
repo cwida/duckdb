@@ -3,14 +3,16 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/execution/operator/set/physical_recursive_cte_state.hpp"
+#include "duckdb/execution/operator/set/physical_recursive_cte_keyed_state.hpp"
 #include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 
-static vector<LogicalType> GetPreviousStateTypes(const PhysicalRecursiveCTE &op) {
+static vector<LogicalType> GetPreviousStateTypes(const PhysicalRecursiveCTE &op, bool address_only) {
 	vector<LogicalType> types {LogicalType::POINTER};
-	types.insert(types.end(), op.payload_types.begin(), op.payload_types.end());
+	if (!address_only) {
+		types.insert(types.end(), op.payload_types.begin(), op.payload_types.end());
+	}
 	return types;
 }
 
@@ -78,19 +80,21 @@ bool RecursiveCTEGroupAddressSet::Contains(data_ptr_t address) const {
 	return false;
 }
 
-RecursiveCTEKeyDeltaState::RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op)
-    : previous_rows(context, GetPreviousStateTypes(op)), new_keys(context, op.hash_key_types),
-      matched_addresses(LogicalType::POINTER), finalize_addresses(LogicalType::POINTER),
-      found_groups(STANDARD_VECTOR_SIZE), missing_groups(STANDARD_VECTOR_SIZE), changed_groups(STANDARD_VECTOR_SIZE),
+RecursiveCTEKeyDeltaState::RecursiveCTEKeyDeltaState(ClientContext &context, const PhysicalRecursiveCTE &op,
+                                                     bool address_only_previous)
+    : previous_rows(context, GetPreviousStateTypes(op, address_only_previous)), new_keys(context, op.hash_key_types),
+      pending_finalized(context, op.aggregate_types), matched_addresses(LogicalType::POINTER),
+      finalize_addresses(LogicalType::POINTER), found_groups(STANDARD_VECTOR_SIZE),
+      missing_groups(STANDARD_VECTOR_SIZE), changed_groups(STANDARD_VECTOR_SIZE),
       changed_column_groups(STANDARD_VECTOR_SIZE), equal_groups_a(STANDARD_VECTOR_SIZE),
       equal_groups_b(STANDARD_VECTOR_SIZE), arena(Allocator::Get(context)), row_state(arena) {
 	selected_keys.Initialize(Allocator::Get(context), op.hash_key_types);
 	aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	updated_aggregate_rows.Initialize(Allocator::Get(context), op.aggregate_types);
 	result_rows.Initialize(Allocator::Get(context), op.GetTypes());
-	previous_state_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op));
+	previous_state_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous));
 	changed_rows.Initialize(Allocator::Get(context), op.GetTypes());
-	previous_scan_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op));
+	previous_scan_rows.Initialize(Allocator::Get(context), GetPreviousStateTypes(op, address_only_previous));
 	key_scan_rows.Initialize(Allocator::Get(context), op.hash_key_types);
 	vector<LogicalType> comparison_types;
 	comparison_types.reserve(op.payload_types.size() * 2);
@@ -141,6 +145,40 @@ static idx_t SelectDistinctPayloadRows(const Vector &previous, const Vector &cur
 	                                      &changed, &unchanged);
 }
 
+//! Whether the finalized payload of every row equals the candidate payload that produced it
+static bool FinalizedPayloadsEqualCandidates(RecursiveCTEKeyDeltaState &delta, const PhysicalRecursiveCTE &op,
+                                             DataChunk &finalized, DataChunk &candidates, idx_t count) {
+	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
+		const auto mismatch_count =
+		    VectorOperations::DistinctFrom(finalized.data[payload_idx], candidates.data[op.payload_idx[payload_idx]],
+		                                   nullptr, count, &delta.changed_column_groups, &delta.equal_groups_a);
+		if (mismatch_count != 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Rows whose payload differs from the previous payload in some column; previous_payload_offset selects the
+//! first previous payload column, as the layouts of the previous rows differ between callers
+static idx_t CountChangedPayloadRows(RecursiveCTEKeyDeltaState &delta, const PhysicalRecursiveCTE &op,
+                                     DataChunk &previous, idx_t previous_payload_offset, DataChunk &current,
+                                     idx_t count) {
+	idx_t changed_count = 0;
+	idx_t equal_count = count;
+	optional_ptr<SelectionVector> equal_groups;
+	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size() && equal_count > 0; payload_idx++) {
+		auto &next_equal_groups = payload_idx % 2 == 0 ? delta.equal_groups_a : delta.equal_groups_b;
+		const auto changed_column_count =
+		    SelectDistinctPayloadRows(previous.data[previous_payload_offset + payload_idx], current.data[payload_idx],
+		                              equal_groups, equal_count, delta.changed_column_groups, next_equal_groups);
+		changed_count += changed_column_count;
+		equal_count -= changed_column_count;
+		equal_groups = &next_equal_groups;
+	}
+	return changed_count;
+}
+
 static void CopySelectedAddresses(const Vector &source, const SelectionVector &selection, idx_t count, Vector &target) {
 	source.Flatten();
 	target.SetVectorType(VectorType::FLAT_VECTOR);
@@ -152,26 +190,42 @@ static void CopySelectedAddresses(const Vector &source, const SelectionVector &s
 	FlatVector::SetSize(target, count);
 }
 
-void RecursiveCTEState::AppendPreviousUsingKeyDeltaRows(Vector &addresses, idx_t count) {
+void RecursiveCTEKeyedState::AppendPreviousUsingKeyDeltaRows(Vector &addresses, idx_t count) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	delta.PrepareCollections();
 	delta.previous_state_rows.Reset();
 	delta.previous_state_rows.data[0].Reference(addresses);
-	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
-		delta.previous_state_rows.data[1 + payload_idx].Reference(delta.aggregate_rows.data[payload_idx]);
+	if (!finalized.Enabled()) {
+		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
+			delta.previous_state_rows.data[1 + payload_idx].Reference(delta.aggregate_rows.data[payload_idx]);
+		}
 	}
 	delta.previous_state_rows.CheckCardinality(count);
 	delta.previous_rows.Append(delta.previous_append_state, delta.previous_state_rows);
 }
 
-void RecursiveCTEState::SnapshotExistingUsingKeyDeltaAddresses(Vector &addresses, idx_t count, bool defer_append) {
+void RecursiveCTEKeyedState::SnapshotExistingUsingKeyDeltaAddresses(Vector &addresses, idx_t count, bool defer_append) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	if (count == 0) {
 		return;
 	}
 	CopySelectedAddresses(addresses, *FlatVector::IncrementalSelectionVector(), count, delta.finalize_addresses);
+	if (finalized.Enabled()) {
+		// The rows still hold the finalized values of the previous commit, so the old values stay readable
+		// from the rows until the commit's own scatter and need neither a finalize nor a copy here.
+		if (defer_append) {
+			delta.aggregate_rows.Reset();
+			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), count,
+			                 delta.aggregate_rows);
+			delta.deferred_previous_rows = true;
+			delta.deferred_count = count;
+			return;
+		}
+		AppendPreviousUsingKeyDeltaRows(addresses, count);
+		return;
+	}
 	FinalizeAggregateRows(delta.row_state, delta.finalize_addresses, delta.aggregate_rows, count);
 	if (defer_append) {
 		delta.deferred_previous_rows = true;
@@ -181,22 +235,30 @@ void RecursiveCTEState::SnapshotExistingUsingKeyDeltaAddresses(Vector &addresses
 	AppendPreviousUsingKeyDeltaRows(addresses, count);
 }
 
-void RecursiveCTEState::SnapshotUsingKeyDelta(const Vector &group_addresses, const SelectionVector &new_groups,
-                                              idx_t new_group_count, idx_t row_count, bool allow_candidate_reuse) {
+void RecursiveCTEKeyedState::SnapshotUsingKeyDelta(const Vector &group_addresses, const SelectionVector &new_groups,
+                                                   idx_t new_group_count, idx_t row_count, bool allow_candidate_reuse) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	const auto candidate_count = intermediate_table.Count();
-	const auto skip_new_group_addresses = allow_candidate_reuse && can_reuse_new_group_candidates &&
+	const auto skip_new_group_addresses = allow_candidate_reuse && op.keyed.can_reuse_new_group_candidates &&
 	                                      partial_key_indexes.empty() && new_group_count == candidate_count &&
 	                                      row_count == candidate_count;
+	// When the candidates can stand in for the finalized rows, publish them for every new group here: the
+	// candidate-reuse commits skip the delta finalization that would otherwise write the finalized values.
+	const auto scatter_new_group_candidates =
+	    finalized.Enabled() && allow_candidate_reuse && op.keyed.can_reuse_new_group_candidates;
 	if (skip_new_group_addresses) {
 		D_ASSERT(partial_key_indexes.empty() && new_group_count == row_count);
+		if (scatter_new_group_candidates) {
+			finalized.ScatterCandidates(group_addresses, *FlatVector::IncrementalSelectionVector(), new_group_count,
+			                            payload_rows);
+		}
 		delta.new_count += new_group_count;
 		delta.touched_count += new_group_count;
 		return;
 	}
-	if (allow_candidate_reuse && can_reuse_new_group_candidates) {
-		delta.new_group_addresses.reserve(candidate_count);
+	if (allow_candidate_reuse && op.keyed.can_reuse_new_group_candidates) {
+		delta.ReserveNewGroupAddresses(candidate_count);
 	}
 
 	group_addresses.Flatten();
@@ -204,20 +266,23 @@ void RecursiveCTEState::SnapshotUsingKeyDelta(const Vector &group_addresses, con
 	const auto update_partial_indexes = !partial_key_indexes.empty();
 	auto partial_index_addresses =
 	    update_partial_indexes ? FlatVector::GetDataMutable<data_ptr_t>(new_group_addresses) : nullptr;
-	if (!update_partial_indexes && !delta.new_group_address_set_built && new_group_count == row_count) {
-		delta.new_group_addresses.insert(delta.new_group_addresses.end(), source_addresses,
-		                                 source_addresses + new_group_count);
+	if (!update_partial_indexes && !delta.HasNewGroupAddressSet() && new_group_count == row_count) {
+		if (scatter_new_group_candidates) {
+			finalized.ScatterCandidates(group_addresses, *FlatVector::IncrementalSelectionVector(), new_group_count,
+			                            payload_rows);
+		}
+		delta.AppendNewGroupAddresses(source_addresses, new_group_count);
 		delta.new_count += new_group_count;
 		delta.touched_count += new_group_count;
 		return;
 	}
+	if (scatter_new_group_candidates && new_group_count > 0) {
+		finalized.ScatterCandidates(group_addresses, new_groups, new_group_count, payload_rows);
+	}
 	for (idx_t new_group_idx = 0; new_group_idx < new_group_count; new_group_idx++) {
 		const auto input_idx = new_groups.get_index_unsafe(new_group_idx);
 		const auto address = source_addresses[input_idx];
-		delta.new_group_addresses.push_back(address);
-		if (delta.new_group_address_set_built) {
-			delta.new_group_address_set.Insert(address);
-		}
+		delta.AddNewGroupAddress(address);
 		if (update_partial_indexes) {
 			this->new_groups.set_index(new_group_idx, input_idx);
 			partial_index_addresses[new_group_idx] = address;
@@ -238,17 +303,11 @@ void RecursiveCTEState::SnapshotUsingKeyDelta(const Vector &group_addresses, con
 		D_ASSERT(row_count == 1);
 		matched_addresses[matched_count++] = source_addresses[0];
 	} else {
-		if (!delta.new_group_address_set_built) {
-			delta.new_group_address_set.Reserve(delta.new_group_addresses.size());
-			for (auto address : delta.new_group_addresses) {
-				delta.new_group_address_set.Insert(address);
-			}
-			delta.new_group_address_set_built = true;
-		}
+		delta.EnsureNewGroupAddressSet();
 		delta.touched_addresses.Reserve(delta.touched_count + row_count);
 		for (idx_t row_idx = 0; row_idx < row_count; row_idx++) {
 			const auto address = source_addresses[row_idx];
-			if (!delta.touched_addresses.Insert(address) || delta.new_group_address_set.Contains(address)) {
+			if (!delta.touched_addresses.Insert(address) || delta.ContainsNewGroupAddress(address)) {
 				continue;
 			}
 			matched_addresses[matched_count++] = address;
@@ -257,41 +316,26 @@ void RecursiveCTEState::SnapshotUsingKeyDelta(const Vector &group_addresses, con
 	delta.touched_count += matched_count;
 	FlatVector::SetSize(delta.matched_addresses, matched_count);
 	// Keep prior values vector-local while direct candidate reuse remains possible.
-	const auto defer_append = allow_candidate_reuse && can_reuse_changed_group_candidates &&
+	const auto defer_append = allow_candidate_reuse && op.keyed.can_reuse_changed_group_candidates &&
 	                          row_count == candidate_count && new_group_count == 0 && matched_count == row_count;
 	SnapshotExistingUsingKeyDeltaAddresses(delta.matched_addresses, matched_count, defer_append);
 }
 
-void RecursiveCTEState::ValidateDeferredUsingKeyCandidateReuse(DataChunk &candidates) {
+void RecursiveCTEKeyedState::ValidateDeferredUsingKeyCandidateReuse(DataChunk &candidates) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	D_ASSERT(delta.deferred_previous_rows && delta.deferred_count == candidates.size());
 	FinalizeAggregateRows(delta.row_state, delta.finalize_addresses, delta.updated_aggregate_rows,
 	                      delta.deferred_count);
 
-	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
-		const auto mismatch_count = VectorOperations::DistinctFrom(
-		    delta.updated_aggregate_rows.data[payload_idx], candidates.data[op.payload_idx[payload_idx]], nullptr,
-		    delta.deferred_count, &delta.changed_column_groups, &delta.equal_groups_a);
-		if (mismatch_count != 0) {
-			AppendPreviousUsingKeyDeltaRows(delta.matched_addresses, delta.deferred_count);
-			delta.deferred_previous_rows = false;
-			return;
-		}
+	if (!FinalizedPayloadsEqualCandidates(delta, op, delta.updated_aggregate_rows, candidates, delta.deferred_count)) {
+		AppendPreviousUsingKeyDeltaRows(delta.matched_addresses, delta.deferred_count);
+		delta.deferred_previous_rows = false;
+		return;
 	}
 
-	idx_t changed_count = 0;
-	idx_t equal_count = delta.deferred_count;
-	optional_ptr<SelectionVector> equal_groups;
-	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size() && equal_count > 0; payload_idx++) {
-		auto &next_equal_groups = payload_idx % 2 == 0 ? delta.equal_groups_a : delta.equal_groups_b;
-		const auto changed_column_count = SelectDistinctPayloadRows(
-		    delta.aggregate_rows.data[payload_idx], delta.updated_aggregate_rows.data[payload_idx], equal_groups,
-		    equal_count, delta.changed_column_groups, next_equal_groups);
-		changed_count += changed_column_count;
-		equal_count -= changed_column_count;
-		equal_groups = &next_equal_groups;
-	}
+	const auto changed_count =
+	    CountChangedPayloadRows(delta, op, delta.aggregate_rows, 0, delta.updated_aggregate_rows, delta.deferred_count);
 	if (changed_count != delta.deferred_count) {
 		AppendPreviousUsingKeyDeltaRows(delta.matched_addresses, delta.deferred_count);
 		delta.deferred_previous_rows = false;
@@ -299,9 +343,14 @@ void RecursiveCTEState::ValidateDeferredUsingKeyCandidateReuse(DataChunk &candid
 	}
 	delta.changed_count = changed_count;
 	delta.deferred_candidate_reuse = true;
+	if (finalized.Enabled()) {
+		// The reuse succeeds, so this validation finalize is the one that publishes the new values.
+		finalized.Scatter(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), delta.deferred_count,
+		                  delta.updated_aggregate_rows);
+	}
 }
 
-void RecursiveCTEState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk &keys) {
+void RecursiveCTEKeyedState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk &keys) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	delta.PrepareCollections();
@@ -325,13 +374,7 @@ void RecursiveCTEState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk &keys
 	delta.touched_count += missing_count;
 
 	if (found_count > 0) {
-		if (!delta.new_group_address_set_built) {
-			delta.new_group_address_set.Reserve(delta.new_group_addresses.size());
-			for (auto address : delta.new_group_addresses) {
-				delta.new_group_address_set.Insert(address);
-			}
-			delta.new_group_address_set_built = true;
-		}
+		delta.EnsureNewGroupAddressSet();
 		delta.lookup_state.addresses.Flatten();
 		auto source_addresses = FlatVector::GetData<data_ptr_t>(delta.lookup_state.addresses);
 		auto matched_addresses = FlatVector::GetDataMutable<data_ptr_t>(delta.matched_addresses);
@@ -340,7 +383,7 @@ void RecursiveCTEState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk &keys
 		for (idx_t match_idx = 0; match_idx < found_count; match_idx++) {
 			const auto input_idx = delta.found_groups.get_index_unsafe(match_idx);
 			const auto address = source_addresses[input_idx];
-			if (delta.new_group_address_set.Contains(address) || !delta.touched_addresses.Insert(address)) {
+			if (delta.ContainsNewGroupAddress(address) || !delta.touched_addresses.Insert(address)) {
 				continue;
 			}
 			matched_addresses[matched_count++] = address;
@@ -357,7 +400,7 @@ void RecursiveCTEState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk &keys
 	}
 }
 
-bool RecursiveCTEState::TryReuseChangedGroupCandidates(idx_t candidate_count) {
+bool RecursiveCTEKeyedState::TryReuseChangedGroupCandidates(idx_t candidate_count) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	if (delta.deferred_candidate_reuse) {
@@ -365,8 +408,8 @@ bool RecursiveCTEState::TryReuseChangedGroupCandidates(idx_t candidate_count) {
 		         delta.changed_count == candidate_count);
 		return true;
 	}
-	if (!can_reuse_changed_group_candidates || delta.new_count != 0 || delta.touched_count != candidate_count ||
-	    delta.previous_rows.Count() != candidate_count) {
+	if (!op.keyed.can_reuse_changed_group_candidates || delta.new_count != 0 ||
+	    delta.touched_count != candidate_count || delta.previous_rows.Count() != candidate_count) {
 		return false;
 	}
 
@@ -374,6 +417,13 @@ bool RecursiveCTEState::TryReuseChangedGroupCandidates(idx_t candidate_count) {
 	ColumnDataScanState candidate_scan_state;
 	delta.previous_rows.InitializeScan(previous_scan_state);
 	intermediate_table.InitializeScan(candidate_scan_state);
+	// With materialized values the new finalized rows are buffered until the reuse proof succeeds, so a failed
+	// validation leaves every row's old value in place for the regular delta finalization.
+	const auto buffer_finalized = finalized.Enabled();
+	if (buffer_finalized) {
+		delta.pending_finalized.ResetForReuse();
+		delta.pending_finalized.InitializeAppend(delta.pending_finalized_append_state);
+	}
 	idx_t changed_count = 0;
 	while (delta.previous_rows.Scan(previous_scan_state, delta.previous_scan_rows)) {
 		if (!intermediate_table.Scan(candidate_scan_state, update_rows) ||
@@ -384,27 +434,25 @@ bool RecursiveCTEState::TryReuseChangedGroupCandidates(idx_t candidate_count) {
 		auto &group_addresses = delta.previous_scan_rows.data[0];
 		CopySelectedAddresses(group_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
 		                      delta.finalize_addresses);
+		if (buffer_finalized) {
+			delta.updated_aggregate_rows.Reset();
+			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
+			                 delta.updated_aggregate_rows);
+		}
 		FinalizeAggregateRows(delta.row_state, delta.finalize_addresses, delta.aggregate_rows, row_count);
 
-		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
-			const auto mismatch_count = VectorOperations::DistinctFrom(
-			    delta.aggregate_rows.data[payload_idx], update_rows.data[op.payload_idx[payload_idx]], nullptr,
-			    row_count, &delta.changed_column_groups, &delta.equal_groups_a);
-			if (mismatch_count != 0) {
-				return false;
-			}
+		if (!FinalizedPayloadsEqualCandidates(delta, op, delta.aggregate_rows, update_rows, row_count)) {
+			return false;
 		}
 
-		idx_t equal_count = row_count;
-		optional_ptr<SelectionVector> equal_groups;
-		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size() && equal_count > 0; payload_idx++) {
-			auto &next_equal_groups = payload_idx % 2 == 0 ? delta.equal_groups_a : delta.equal_groups_b;
-			const auto changed_column_count = SelectDistinctPayloadRows(
-			    delta.previous_scan_rows.data[1 + payload_idx], delta.aggregate_rows.data[payload_idx], equal_groups,
-			    equal_count, delta.changed_column_groups, next_equal_groups);
-			changed_count += changed_column_count;
-			equal_count -= changed_column_count;
-			equal_groups = &next_equal_groups;
+		if (buffer_finalized) {
+			changed_count +=
+			    CountChangedPayloadRows(delta, op, delta.updated_aggregate_rows, 0, delta.aggregate_rows, row_count);
+			delta.pending_finalized.Append(delta.pending_finalized_append_state, delta.aggregate_rows);
+		} else {
+			// The previous rows carry the group address in their first column
+			changed_count +=
+			    CountChangedPayloadRows(delta, op, delta.previous_scan_rows, 1, delta.aggregate_rows, row_count);
 		}
 	}
 	if (intermediate_table.Scan(candidate_scan_state, update_rows)) {
@@ -414,10 +462,27 @@ bool RecursiveCTEState::TryReuseChangedGroupCandidates(idx_t candidate_count) {
 		return false;
 	}
 	delta.changed_count = changed_count;
+	if (buffer_finalized) {
+		ColumnDataScanState address_scan_state;
+		ColumnDataScanState finalized_scan_state;
+		delta.previous_rows.InitializeScan(address_scan_state);
+		delta.pending_finalized.InitializeScan(finalized_scan_state);
+		while (delta.previous_rows.Scan(address_scan_state, delta.previous_scan_rows)) {
+			if (!delta.pending_finalized.Scan(finalized_scan_state, delta.aggregate_rows) ||
+			    delta.aggregate_rows.size() != delta.previous_scan_rows.size()) {
+				throw InternalException("USING KEY candidate reuse buffered a mismatched finalized chunk");
+			}
+			const auto row_count = delta.previous_scan_rows.size();
+			CopySelectedAddresses(delta.previous_scan_rows.data[0], *FlatVector::IncrementalSelectionVector(),
+			                      row_count, delta.finalize_addresses);
+			finalized.Scatter(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
+			                  delta.aggregate_rows);
+		}
+	}
 	return true;
 }
 
-idx_t RecursiveCTEState::FinalizeUsingKeyDelta(bool update_partial_indexes, bool collect_metrics) {
+idx_t RecursiveCTEKeyedState::FinalizeUsingKeyDelta(bool update_partial_indexes, bool collect_metrics) {
 	D_ASSERT(key_delta);
 	auto &delta = *key_delta;
 	ColumnDataScanState previous_scan_state;
@@ -431,14 +496,23 @@ idx_t RecursiveCTEState::FinalizeUsingKeyDelta(bool update_partial_indexes, bool
 		                 delta.key_scan_rows);
 		CopySelectedAddresses(group_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
 		                      delta.finalize_addresses);
-		FinalizeStateRows(delta.row_state, delta.finalize_addresses, delta.key_scan_rows, delta.aggregate_rows,
-		                  delta.result_rows);
-		const idx_t previous_payload_offset = 1;
-		if (has_payload_comparison_executors) {
+		// With materialized values the rows still hold the previous commit's finalized values: read the old
+		// values before this chunk's scatter overwrites them.
+		const auto read_old_from_rows = finalized.Enabled();
+		if (read_old_from_rows) {
+			delta.updated_aggregate_rows.Reset();
+			finalized.Gather(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
+			                 delta.updated_aggregate_rows);
+		}
+		FinalizeStateRowsFromStates(delta.row_state, delta.finalize_addresses, delta.key_scan_rows,
+		                            delta.aggregate_rows, delta.result_rows);
+		auto &previous_payloads = read_old_from_rows ? delta.updated_aggregate_rows : delta.previous_scan_rows;
+		const idx_t previous_payload_offset = read_old_from_rows ? 0 : 1;
+		if (op.keyed.has_payload_comparisons) {
 			delta.comparison_rows.Reset();
 			for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
 				delta.comparison_rows.data[payload_idx].Reference(
-				    delta.previous_scan_rows.data[previous_payload_offset + payload_idx]);
+				    previous_payloads.data[previous_payload_offset + payload_idx]);
 				delta.comparison_rows.data[op.payload_idx.size() + payload_idx].Reference(
 				    delta.result_rows.data[op.payload_idx[payload_idx]]);
 			}
@@ -456,7 +530,7 @@ idx_t RecursiveCTEState::FinalizeUsingKeyDelta(bool update_partial_indexes, bool
 				    delta.comparison_rows, delta.changed_column_groups, next_equal_groups, equal_groups, equal_count);
 			} else {
 				changed_column_count =
-				    SelectDistinctPayloadRows(delta.previous_scan_rows.data[previous_payload_offset + payload_idx],
+				    SelectDistinctPayloadRows(previous_payloads.data[previous_payload_offset + payload_idx],
 				                              delta.result_rows.data[op.payload_idx[payload_idx]], equal_groups,
 				                              equal_count, delta.changed_column_groups, next_equal_groups);
 			}
@@ -466,6 +540,11 @@ idx_t RecursiveCTEState::FinalizeUsingKeyDelta(bool update_partial_indexes, bool
 			}
 			equal_count -= changed_column_count;
 			equal_groups = &next_equal_groups;
+		}
+		if (finalized.Enabled()) {
+			// Every touched group's new value is published, whether or not it joins the frontier.
+			finalized.Scatter(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
+			                  delta.aggregate_rows);
 		}
 		if (changed_count > 0) {
 			delta.changed_count += changed_count;
@@ -497,15 +576,18 @@ idx_t RecursiveCTEState::FinalizeUsingKeyDelta(bool update_partial_indexes, bool
 		}
 		CopySelectedAddresses(group_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
 		                      delta.finalize_addresses);
-		FinalizeStateRows(delta.row_state, delta.finalize_addresses, delta.key_scan_rows, delta.aggregate_rows,
-		                  delta.result_rows);
+		FinalizeStateRowsFromStates(delta.row_state, delta.finalize_addresses, delta.key_scan_rows,
+		                            delta.aggregate_rows, delta.result_rows);
+		if (finalized.Enabled()) {
+			finalized.Scatter(delta.finalize_addresses, *FlatVector::IncrementalSelectionVector(), row_count,
+			                  delta.aggregate_rows);
+		}
 		op.working_table->Append(working_append_state, delta.result_rows);
 	};
 
-	for (idx_t offset = 0; offset < delta.new_group_addresses.size(); offset += STANDARD_VECTOR_SIZE) {
-		const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, delta.new_group_addresses.size() - offset);
-		Vector group_addresses(LogicalType::POINTER,
-		                       reinterpret_cast<data_ptr_t>(delta.new_group_addresses.data() + offset), count);
+	for (idx_t offset = 0; offset < delta.NewGroupAddressCount(); offset += STANDARD_VECTOR_SIZE) {
+		const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, delta.NewGroupAddressCount() - offset);
+		auto group_addresses = delta.NewGroupAddressVector(offset, count);
 		finalize_new_groups(group_addresses, count);
 	}
 

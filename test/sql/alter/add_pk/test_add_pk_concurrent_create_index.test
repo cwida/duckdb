@@ -2,7 +2,7 @@
 # description: Adding a constraint must not succeed while another transaction creates an index on the same table
 # group: [add_pk]
 
-load __TEST_DIR__/add_pk_concurrent_create_index.db
+load {TEST_DIR}/add_pk_concurrent_create_index.db
 
 statement ok
 CREATE TABLE t (id BIGINT, c INTEGER);

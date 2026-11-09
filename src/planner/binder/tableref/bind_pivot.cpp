@@ -70,7 +70,7 @@ static void ExtractPivotExpressions(ParsedExpression &root_expr, identifier_set_
 	    root_expr, [&](const ColumnRefExpression &child_colref) {
 		    if (child_colref.IsQualified()) {
 			    if (child_colref.ColumnNames()[0].StartsWith(DummyBinding::DUMMY_NAME) && macro_binding &&
-			        macro_binding->HasMatchingBinding(Identifier(child_colref.GetName()))) {
+			        macro_binding->HasMatchingBinding(Identifier(child_colref.GetColumnName()))) {
 				    throw ParameterNotResolvedException();
 			    }
 			    throw BinderException(child_colref, "PIVOT expression cannot contain qualified columns");

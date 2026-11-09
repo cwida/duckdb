@@ -41,12 +41,22 @@ void BignumIntermediate::Print() const {
 }
 
 BignumIntermediate::BignumIntermediate(const bignum_t &value) {
+	if (value.data.GetSize() < Bignum::BIGNUM_HEADER_SIZE + 1) {
+		throw DataCorruptionException("Invalid BIGNUM blob: size %llu is smaller than the minimum of %llu bytes",
+		                              static_cast<uint64_t>(value.data.GetSize()),
+		                              static_cast<uint64_t>(Bignum::BIGNUM_HEADER_SIZE + 1));
+	}
 	is_negative = (value.data.GetData()[0] & 0x80) == 0;
 	data = reinterpret_cast<data_ptr_t>(value.data.GetDataWriteable() + Bignum::BIGNUM_HEADER_SIZE);
 	size = static_cast<uint32_t>(value.data.GetSize()) - Bignum::BIGNUM_HEADER_SIZE;
 }
 
 BignumIntermediate::BignumIntermediate(uint8_t *value, idx_t ptr_size) {
+	if (ptr_size < Bignum::BIGNUM_HEADER_SIZE + 1) {
+		throw DataCorruptionException("Invalid BIGNUM blob: size %llu is smaller than the minimum of %llu bytes",
+		                              static_cast<uint64_t>(ptr_size),
+		                              static_cast<uint64_t>(Bignum::BIGNUM_HEADER_SIZE + 1));
+	}
 	is_negative = (value[0] & 0x80) == 0;
 	data = value + Bignum::BIGNUM_HEADER_SIZE;
 	size = static_cast<uint32_t>(ptr_size) - Bignum::BIGNUM_HEADER_SIZE;
@@ -185,16 +195,23 @@ bool BignumIntermediate::OverOrUnderflow() const {
 	return OverOrUnderflow(data, size, is_negative);
 }
 
-bignum_t BignumIntermediate::ToBignum(ArenaAllocator &allocator) {
-	// This must be trimmed before transforming
-	Trim();
+bignum_t BignumIntermediate::ToBignum(ArenaAllocator &allocator) const {
+	// The result is trimmed like Trim() would, but the intermediate is only read: aggregate states are exported
+	// while other threads may read them and while later updates still rely on the current representation
+	auto trimmed_start = GetStartDataPos(data, size, is_negative);
+	uint32_t trimmed_size = size - trimmed_start;
+	if (trimmed_size == 0) {
+		// Always keep at least one byte
+		trimmed_start = 0;
+		trimmed_size = 1;
+	}
 	bignum_t result;
-	uint32_t bignum_size = Bignum::BIGNUM_HEADER_SIZE + size;
+	uint32_t bignum_size = Bignum::BIGNUM_HEADER_SIZE + trimmed_size;
 	auto ptr = reinterpret_cast<char *>(allocator.Allocate(bignum_size));
 	// Set Header
-	Bignum::SetHeader(ptr, size, is_negative);
+	Bignum::SetHeader(ptr, trimmed_size, is_negative);
 	// Copy data
-	memcpy(ptr + Bignum::BIGNUM_HEADER_SIZE, data, size);
+	memcpy(ptr + Bignum::BIGNUM_HEADER_SIZE, data + trimmed_start, trimmed_size);
 	result.data = string_t(ptr, bignum_size);
 	return result;
 }

@@ -492,6 +492,27 @@ void RemoveUnusedColumns::VisitSecureView(LogicalSecureView &view) {
 	view.output_expressions = std::move(new_expressions);
 }
 
+static bool IsDuplicateCondition(const vector<JoinCondition> &conditions, const JoinCondition &cond) {
+	// two equal volatile conditions are two evaluations, so neither is a duplicate of the other
+	if (cond.IsComparison() ? (cond.GetLHS().IsVolatile() || cond.GetRHS().IsVolatile())
+	                        : cond.GetJoinExpression().IsVolatile()) {
+		return false;
+	}
+	for (auto &other : conditions) {
+		if (cond.IsComparison() && other.IsComparison()) {
+			if (cond.GetComparisonType() == other.GetComparisonType() && cond.GetLHS().Equals(other.GetLHS()) &&
+			    cond.GetRHS().Equals(other.GetRHS())) {
+				return true;
+			}
+		} else if (!cond.IsComparison() && !other.IsComparison()) {
+			if (cond.GetJoinExpression().Equals(other.GetJoinExpression())) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	const bool analyze = mode == RemoveUnusedColumnsMode::ANALYZE;
 	auto &op = *op_ref;
@@ -568,8 +589,8 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				// removed all expressions from the aggregate: push a COUNT(*)
 				auto count_star_fun = GetBuiltinAggregateFunction(context, CountStarFun::Name, {});
 				FunctionBinder function_binder(context);
-				aggr.expressions.push_back(function_binder.BindAggregateFunction(std::move(count_star_fun), {}, nullptr,
-				                                                                 AggregateType::NON_DISTINCT));
+				aggr.expressions.push_back(
+				    function_binder.BindAggregateFunction(count_star_fun, {}, nullptr, AggregateType::NON_DISTINCT));
 			}
 		}
 
@@ -934,6 +955,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				}
 			}
 
+			cte.column_count = expressions.size();
 			auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
 			projection->children.push_back(std::move(cte.children[0]));
 			cte.children[0] = std::move(projection);
@@ -1009,22 +1031,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		// after removing duplicate columns we may have duplicate join conditions (if the join graph is cyclical)
 		vector<JoinCondition> unique_conditions;
 		for (auto &cond : comp_join.conditions) {
-			bool found = false;
-			for (auto &unique_cond : unique_conditions) {
-				if (cond.IsComparison() && unique_cond.IsComparison()) {
-					if (cond.GetComparisonType() == unique_cond.GetComparisonType() &&
-					    cond.GetLHS().Equals(unique_cond.GetLHS()) && cond.GetRHS().Equals(unique_cond.GetRHS())) {
-						found = true;
-						break;
-					}
-				} else if (!cond.IsComparison() && !unique_cond.IsComparison()) {
-					if (cond.GetJoinExpression().Equals(unique_cond.GetJoinExpression())) {
-						found = true;
-						break;
-					}
-				}
-			}
-			if (!found) {
+			if (!IsDuplicateCondition(unique_conditions, cond)) {
 				unique_conditions.push_back(std::move(cond));
 			}
 		}
@@ -1780,10 +1787,14 @@ void ReferencedColumn::AddPath(const ColumnIndex &path) {
 	}
 
 	//! No parent path exists, but child paths could already be added, remove them if they exist
+	//! A child is only removed if the new path matches it - a path with different type information does not
+	column_index_set new_path_set;
+	new_path_set.emplace(path);
 	auto it = unique_paths.begin();
 	for (; it != unique_paths.end();) {
 		auto &unique_path = *it;
-		if (unique_path.IsChildPathOf(path)) {
+		if (unique_path.IsChildPathOf(path) &&
+		    FindShortestMatchingPath(new_path_set, unique_path).first != new_path_set.end()) {
 			auto current = it;
 			it++;
 			unique_paths.erase(current);
@@ -1840,7 +1851,8 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 }
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
-	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY) {
+	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
 		const auto was_inside_try = inside_try;
 		inside_try = true;
 		LogicalOperatorVisitor::VisitExpression(expression);

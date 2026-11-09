@@ -51,10 +51,9 @@ static bool GetFiniteDomain(const LogicalType &type, int64_t &lo, int64_t &hi, b
 		return true;
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
-		// every non-sentinel int64 is a valid, comparable timestamp (make_timestamp accepts all of them), so the
-		// finite domain is everything except the ±infinity sentinels; that also keeps the never-true sentinels
-		// (hi+1 / lo-1) of the bisection away from INT64_MIN/MAX.  Not all of these values render, though: see
-		// IsRenderableBound.
+		// every non-sentinel int64 is a valid, comparable timestamp (make_timestamp accepts all of them). Search
+		// between the ±infinity sentinels so that hi+1 and lo-1 stay representable. Apply handles the finite
+		// INT64_MIN below -infinity.
 		lo = timestamp_t::ninfinity().value + 1;
 		hi = timestamp_t::infinity().value - 1;
 		has_infinity = true;
@@ -147,23 +146,9 @@ static int64_t LastTruePrefix(PRED pred, int64_t lo, int64_t hi, bool &ok) {
 	return l;
 }
 
-//! Whether a bound with internal representation `bound` can be rendered (Expression::ToString, EXPLAIN).
-//! TIMESTAMP values between INT64_MIN and the first midnight of Timestamp::MIN_YEAR are valid and comparable
-//! (make_timestamp accepts them) but have no date/time form: Timestamp::Convert overflows on them.
-static bool IsRenderableBound(const LogicalType &col_type, int64_t bound) {
-	switch (col_type.id()) {
-	case LogicalTypeId::TIMESTAMP:
-	case LogicalTypeId::TIMESTAMP_TZ:
-		return bound >= Value::MinimumValue(LogicalType::TIMESTAMP).GetValue<timestamp_t>().value;
-	default:
-		return true;
-	}
-}
-
 //! Emit `col >= bound` (lower) or `col <= bound` (upper). On types with ±infinity a bound on the edge of the
 //! finite domain is written as a strict comparison against the adjacent sentinel instead (`col > -infinity`,
-//! `col < infinity`): nothing lies between the two, and the sentinel always renders while the edge of the
-//! TIMESTAMP domain does not. Returns nullptr if the bound cannot be rendered - the caller then keeps f(col).
+//! `col < infinity`), as nothing lies between the two.
 static unique_ptr<Expression> MakeColBound(bool lower, const BoundColumnRefExpression &col, const LogicalType &col_type,
                                            int64_t bound, int64_t dom_edge, bool has_infinity) {
 	if (has_infinity && bound == dom_edge) {
@@ -171,9 +156,6 @@ static unique_ptr<Expression> MakeColBound(bool lower, const BoundColumnRefExpre
 		return BoundComparisonExpression::Create(lower ? ExpressionType::COMPARE_GREATERTHAN
 		                                               : ExpressionType::COMPARE_LESSTHAN,
 		                                         col.Copy(), make_uniq<BoundConstantExpression>(std::move(sentinel)));
-	}
-	if (!IsRenderableBound(col_type, bound)) {
-		return nullptr;
 	}
 	return BoundComparisonExpression::Create(
 	    lower ? ExpressionType::COMPARE_GREATERTHANOREQUALTO : ExpressionType::COMPARE_LESSTHANOREQUALTO, col.Copy(),
@@ -188,7 +170,7 @@ unique_ptr<Expression> MonotonePreimageRule::Apply(LogicalOperator &op, vector<r
 
 	// the matched function must be a monotone, deterministic unary function of a bare column
 	if (func.GetChildren().size() != 1 || !func.Function().HasArgProperties() ||
-	    func.Function().GetStability() != FunctionStability::CONSISTENT) {
+	    func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
 	auto m = func.Function().GetArgProperties(0).monotonicity;
@@ -349,19 +331,32 @@ unique_ptr<Expression> MonotonePreimageRule::Apply(LogicalOperator &op, vector<r
 	if (!need_lower && !need_upper) {
 		return nullptr; // no narrowing
 	}
-	unique_ptr<Expression> lower;
-	unique_ptr<Expression> upper;
-	if (need_lower) {
-		lower = MakeColBound(true, col, col_type, a, dom_lo, has_infinity);
-		if (!lower) {
+	// include the finite value below -infinity when it satisfies the comparison
+	bool below_sentinel_matches = false;
+	if (has_infinity && a == dom_lo) {
+		Value below_sentinel;
+		if (!EvalFunc(context, func, col_type, dom_lo - 2, below_sentinel)) {
 			return nullptr;
 		}
+		auto check = BoundComparisonExpression::Create(cmp, make_uniq<BoundConstantExpression>(below_sentinel),
+		                                               make_uniq<BoundConstantExpression>(c));
+		Value matches;
+		if (!ExpressionExecutor::TryEvaluateScalar(context, *check, matches) || matches.IsNull()) {
+			return nullptr;
+		}
+		below_sentinel_matches = BooleanValue::Get(matches);
+	}
+	unique_ptr<Expression> lower;
+	unique_ptr<Expression> upper;
+	if (need_lower && below_sentinel_matches) {
+		lower =
+		    BoundComparisonExpression::Create(ExpressionType::COMPARE_NOTEQUAL, col.Copy(),
+		                                      make_uniq<BoundConstantExpression>(Value::NegativeInfinity(col_type)));
+	} else if (need_lower) {
+		lower = MakeColBound(true, col, col_type, a, dom_lo, has_infinity);
 	}
 	if (need_upper) {
 		upper = MakeColBound(false, col, col_type, b, dom_hi, has_infinity);
-		if (!upper) {
-			return nullptr;
-		}
 	}
 	if (lower && upper) {
 		return make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(lower),

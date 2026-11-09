@@ -6,6 +6,7 @@
 
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
+#include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/function/table_macro_function.hpp"
@@ -70,21 +71,25 @@ MacroBindResult MacroFunction::BindMacroFunction(
 	// Find argument types and separate positional and default arguments
 	vector<LogicalType> positional_arg_types;
 	InsertionOrderPreservingMap<LogicalType, Identifier, identifier_map_t<idx_t>> named_arg_types;
+	// the speculative binds below may register correlated columns referenced by the arguments: restore the binder's
+	// correlated columns afterwards, binding the expanded macro body re-registers those that are actually used
+	auto saved_correlated_columns = binder.correlated_columns;
 	for (auto &arg : function_expr.GetArgumentsMutable()) {
 		auto arg_copy = arg.GetExpression().Copy();
 		LogicalType arg_type = LogicalType::UNKNOWN;
 		if (requires_bind) {
-			const auto arg_bind_result = expr_binder.BindExpression(arg_copy, depth + 1);
+			// bind at the same scope depth as the macro call: "depth" counts subquery scopes, not expression nesting
+			const auto arg_bind_result = expr_binder.BindExpression(arg_copy, depth);
 			arg_type = arg_bind_result.HasError() ? LogicalType::UNKNOWN : arg_bind_result.expression->GetReturnType();
 		}
-		if (!arg.GetExpression().GetAlias().empty()) {
+		if (arg.HasName()) {
 			// Default argument
-			if (named_arguments.find(arg.GetExpression().GetAlias()) != named_arguments.end()) {
-				return MacroBindResult(StringUtil::Format("Macro %s() has named argument repeated %s", name,
-				                                          arg.GetExpression().GetAlias()));
+			if (named_arguments.find(arg.GetName()) != named_arguments.end()) {
+				return MacroBindResult(
+				    StringUtil::Format("Macro %s() has named argument repeated %s", name, arg.GetName()));
 			}
-			named_arg_types.insert(arg.GetExpression().GetAlias(), std::move(arg_type));
-			named_arguments[arg.GetExpression().GetAlias()] = std::move(arg.GetExpressionMutable());
+			named_arg_types.insert(arg.GetName(), std::move(arg_type));
+			named_arguments[arg.GetName()] = std::move(arg.GetExpressionMutable());
 		} else if (!named_arguments.empty()) {
 			return MacroBindResult(
 			    StringUtil::Format("Macro %s() has positional argument following named argument", name));
@@ -94,6 +99,7 @@ MacroBindResult MacroFunction::BindMacroFunction(
 			positional_arg_types.push_back(std::move(arg_type));
 		}
 	}
+	binder.correlated_columns = std::move(saved_correlated_columns);
 
 	// Check for each macro function if it matches the number of positional arguments
 	auto lowest_cost = NumericLimits<idx_t>::Maximum();
@@ -289,10 +295,20 @@ void MacroFunction::CopyProperties(MacroFunction &other) const {
 		other.default_parameters[kv.first] = kv.second->Copy();
 	}
 	other.types = types;
+	other.return_type = return_type;
 }
 
 vector<unique_ptr<ParsedExpression>>
 MacroFunction::GetPositionalParametersForSerialization(Serializer &serializer) const {
+	// this runs at the start of member serialization: reject a definition the target storage
+	// version cannot represent instead of silently dropping its fields
+	if (!serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
+		if (return_type.id() != LogicalTypeId::UNKNOWN) {
+			throw SerializationException(
+			    "Cannot write a macro with a declared RETURNS type for a storage version below v2.1.0. Re-attach "
+			    "with (STORAGE_VERSION 'v2.1.0') or drop the macro");
+		}
+	}
 	vector<unique_ptr<ParsedExpression>> result;
 	if (serializer.ShouldSerialize(StorageVersion::V1_4_0)) {
 		// We serialize all positional parameters as-is
@@ -347,7 +363,11 @@ string MacroFunction::ToSQL() const {
 		}
 		param_strings.emplace_back(std::move(param_string));
 	}
-	return StringUtil::Format("(%s) AS ", StringUtil::Join(param_strings, ", "));
+	string returns;
+	if (return_type.id() != LogicalTypeId::UNKNOWN) {
+		returns = " RETURNS " + return_type.ToString();
+	}
+	return StringUtil::Format("(%s)%s AS ", StringUtil::Join(param_strings, ", "), returns);
 }
 
 } // namespace duckdb

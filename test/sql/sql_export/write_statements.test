@@ -46,7 +46,7 @@ sql	<REGEX>:(?s)CREATE TABLE IF NOT EXISTS \w+\.main\.ctas_out AS\s+SELECT CAST\
 
 # the exported COPY reconstructs the resolved sink options and the written column names
 query TT
-EXPLAIN (SQL) COPY (SELECT a, b FROM ctas_src) TO '__TEST_DIR__/export_basic.csv' (FORMAT csv, HEADER true);
+EXPLAIN (SQL) COPY (SELECT a, b FROM ctas_src) TO '{TEST_DIR}/export_basic.csv' (FORMAT csv, HEADER true);
 ----
 sql	<REGEX>:(?s)COPY \(\s*SELECT r\d+\.column0 AS a, r\d+\.column1 AS b\s+FROM \w+\.main\.ctas_src AS r\d+\(\s*column0,\s*column1\s*\)\s*\) TO '.*export_basic\.csv'\s*\(\s*FORMAT 'csv',.*"header" TRUE.*\)
 
@@ -54,10 +54,10 @@ statement ok
 COPY (
         SELECT r0.column0 AS a, r0.column1 AS b
         FROM main.ctas_src AS r0(column0, column1)
-    ) TO '__TEST_DIR__/export_basic.csv'(FORMAT 'csv', "use_tmp_file" FALSE, "header" TRUE)
+    ) TO '{TEST_DIR}/export_basic.csv'(FORMAT 'csv', "use_tmp_file" FALSE, "header" TRUE)
 
 query IT
-SELECT * FROM read_csv('__TEST_DIR__/export_basic.csv') ORDER BY ALL;
+SELECT * FROM read_csv('{TEST_DIR}/export_basic.csv') ORDER BY ALL;
 ----
 1	x
 2	y
@@ -65,23 +65,23 @@ SELECT * FROM read_csv('__TEST_DIR__/export_basic.csv') ORDER BY ALL;
 
 # a table-form COPY binds through a generated source query
 query TT
-EXPLAIN (SQL) COPY ctas_src TO '__TEST_DIR__/export_table.csv' (FORMAT csv);
+EXPLAIN (SQL) COPY ctas_src TO '{TEST_DIR}/export_table.csv' (FORMAT csv);
 ----
 sql	<REGEX>:(?s)COPY \(\s*SELECT r\d+\.column0 AS a, r\d+\.column1 AS b\s+FROM \w+\.main\.ctas_src .*\) TO '.*export_table\.csv'\s*\(\s*FORMAT 'csv',.*\)
 
 # PARTITION_BY and the partition flags re-emit from the operator's resolved state
 query TT
-EXPLAIN (SQL) COPY ctas_src TO '__TEST_DIR__/export_part' (FORMAT parquet, PARTITION_BY (a), OVERWRITE true, WRITE_PARTITION_COLUMNS true);
+EXPLAIN (SQL) COPY ctas_src TO '{TEST_DIR}/export_part' (FORMAT parquet, PARTITION_BY (a), OVERWRITE true, WRITE_PARTITION_COLUMNS true);
 ----
 sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_part'\s*\(\s*FORMAT 'parquet',.*"partition_by" 'a'.*\)
 
 query TT
-EXPLAIN (SQL) COPY ctas_src TO '__TEST_DIR__/export_part' (FORMAT parquet, PARTITION_BY (a), OVERWRITE true, WRITE_PARTITION_COLUMNS true);
+EXPLAIN (SQL) COPY ctas_src TO '{TEST_DIR}/export_part' (FORMAT parquet, PARTITION_BY (a), OVERWRITE true, WRITE_PARTITION_COLUMNS true);
 ----
 sql	<REGEX>:(?s).*"write_partition_columns" TRUE.*
 
 query TT
-EXPLAIN (SQL) COPY ctas_src TO '__TEST_DIR__/export_part' (FORMAT parquet, PARTITION_BY (a), OVERWRITE true, WRITE_PARTITION_COLUMNS true);
+EXPLAIN (SQL) COPY ctas_src TO '{TEST_DIR}/export_part' (FORMAT parquet, PARTITION_BY (a), OVERWRITE true, WRITE_PARTITION_COLUMNS true);
 ----
 sql	<REGEX>:(?s).*"overwrite" TRUE.*
 
@@ -89,28 +89,39 @@ statement ok
 COPY (
         SELECT r0.column0 AS a, r0.column1 AS b
         FROM main.ctas_src AS r0(column0, column1)
-    ) TO '__TEST_DIR__/export_part'(FORMAT 'parquet', "partition_by" 'a', "write_partition_columns" TRUE, "overwrite" TRUE)
+    ) TO '{TEST_DIR}/export_part'(FORMAT 'parquet', "partition_by" 'a', "write_partition_columns" TRUE, "overwrite" TRUE)
 
 query I
-SELECT count(*) FROM read_parquet('__TEST_DIR__/export_part/*/*.parquet');
+SELECT count(*) FROM read_parquet('{TEST_DIR}/export_part/*/*.parquet');
 ----
 3
 
 # an ordered write re-emits its ordering as plain written columns
 query TT
-EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '__TEST_DIR__/export_ordered.parquet' (FORMAT parquet, ORDER_BY (b DESC), RETURN_FILES true);
+EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '{TEST_DIR}/export_ordered.parquet' (FORMAT parquet, ORDER_BY (b DESC), RETURN_FILES true);
 ----
 sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_ordered\.parquet'\s*\(\s*FORMAT 'parquet',.*"order_by" 'b DESC NULLS LAST'.*"return_files" TRUE.*\)
 
+# RETURN_COLUMN_TYPES is re-emitted, alone and together with RETURN_STATS (options are emitted in name order)
+query TT
+EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '{TEST_DIR}/export_column_types.csv' (FORMAT csv, RETURN_COLUMN_TYPES true);
+----
+sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_column_types\.csv'\s*\(.*"return_column_types" TRUE.*\)
+
+query TT
+EXPLAIN (SQL) COPY (SELECT * FROM ctas_src) TO '{TEST_DIR}/export_column_types_stats.parquet' (FORMAT parquet, RETURN_STATS true, RETURN_COLUMN_TYPES true);
+----
+sql	<REGEX>:(?s)COPY \(.*\) TO '.*export_column_types_stats\.parquet'\s*\(.*"return_column_types" TRUE.*"return_stats" TRUE.*\)
+
 # a COPY used as a CTE body exports as the statement itself
 query TT
-EXPLAIN (SQL) WITH written AS (COPY ctas_src TO '__TEST_DIR__/export_cte.csv' (FORMAT csv)) SELECT * FROM written;
+EXPLAIN (SQL) WITH written AS (COPY ctas_src TO '{TEST_DIR}/export_cte.csv' (FORMAT csv)) SELECT * FROM written;
 ----
 sql	<REGEX>:(?s)WITH written\(\s*c0\s*\) AS MATERIALIZED \(\s*COPY \(.*\) TO '.*export_cte\.csv'.*\)\s*SELECT .*
 
 # COPY FROM reconstructs through its file scan, which the csv reader does not expose
 statement error
-EXPLAIN (SQL) COPY ctas_src FROM '__TEST_DIR__/export_basic.csv';
+EXPLAIN (SQL) COPY ctas_src FROM '{TEST_DIR}/export_basic.csv';
 ----
 EXPLAIN (SQL) cannot render table function "read_csv"
 
@@ -136,12 +147,12 @@ statement ok
 SET debug_verify_statement='explain_sql_strict';
 
 query I
-WITH written AS (COPY ctas_src TO '__TEST_DIR__/export_cte_verified.csv' (FORMAT csv, HEADER true)) SELECT * FROM written;
+WITH written AS (COPY ctas_src TO '{TEST_DIR}/export_cte_verified.csv' (FORMAT csv, HEADER true)) SELECT * FROM written;
 ----
 3
 
 query IT
-SELECT * FROM read_csv('__TEST_DIR__/export_cte_verified.csv', header=true) ORDER BY ALL;
+SELECT * FROM read_csv('{TEST_DIR}/export_cte_verified.csv', header=true) ORDER BY ALL;
 ----
 1	x
 2	y
@@ -153,67 +164,67 @@ RESET debug_verify_statement;
 # the binder-backfilled batch size re-derives on rebind and does not render,
 # a user override renders under its bindable row-group name
 query TT
-EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '__TEST_DIR__/row_group_default.parquet' (FORMAT PARQUET);
+EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '{TEST_DIR}/row_group_default.parquet' (FORMAT PARQUET);
 ----
 sql	<REGEX>:(?s)COPY\s*\(\s*SELECT\s+CAST\(\s*1\s+AS\s+INTEGER\s*\)\s+AS\s+a\s*\)\s*TO\s*'.*row_group_default\.parquet'\s*\(\s*FORMAT\s*'parquet',\s*"use_tmp_file"\s*FALSE\s*\)
 
 query TT
-EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '__TEST_DIR__/row_group_override.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 999);
+EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '{TEST_DIR}/row_group_override.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 999);
 ----
 sql	<REGEX>:(?s)COPY.*TO.*row_group_override\.parquet.*row_group_size.*999.*
 
 # a legacy-compatible filename pattern renders instead of being dropped, and the
 # generated statement round-trips (the executed text is the export, path root aside)
 query TT
-EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '__TEST_DIR__/pattern_rt' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'custom_{i}');
+EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '{TEST_DIR}/pattern_rt' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'custom_{i}');
 ----
 sql	<REGEX>:(?s)COPY \(\s*SELECT CAST\(\s*1 AS INTEGER\s*\) AS a\s*\) TO '.*pattern_rt'\s*\(\s*FORMAT 'csv',\s*"filename_pattern" 'custom_\{i\}',\s*"per_thread_output" TRUE\s*\)
 
 statement ok
 COPY (
         SELECT CAST(1 AS INTEGER) AS a
-    ) TO '__TEST_DIR__/pattern_rt'(FORMAT 'csv', "filename_pattern" 'custom_{i}', "per_thread_output" TRUE)
+    ) TO '{TEST_DIR}/pattern_rt'(FORMAT 'csv', "filename_pattern" 'custom_{i}', "per_thread_output" TRUE)
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/pattern_rt/custom_0.csv');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/pattern_rt/custom_0.csv');
 ----
 1
 
 # a format fallback renders the selected function's name, not the file extension
 query TT
-EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '__TEST_DIR__/fallback_rt.out' (HEADER true);
+EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '{TEST_DIR}/fallback_rt.out' (HEADER true);
 ----
 sql	<REGEX>:(?s)COPY \(\s*SELECT CAST\(\s*1 AS INTEGER\s*\) AS a\s*\) TO '.*fallback_rt\.out'\s*\(\s*FORMAT 'csv',\s*"header" TRUE,\s*"use_tmp_file" FALSE\s*\)
 
 statement ok
 COPY (
         SELECT CAST(1 AS INTEGER) AS a
-    ) TO '__TEST_DIR__/fallback_rt.out'(FORMAT 'csv', "header" TRUE, "use_tmp_file" FALSE)
+    ) TO '{TEST_DIR}/fallback_rt.out'(FORMAT 'csv', "header" TRUE, "use_tmp_file" FALSE)
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/fallback_rt.out');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fallback_rt.out');
 ----
 1
 
 # an explicitly empty file extension renders when it differs from the function default
 query TT
-EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '__TEST_DIR__/ext_rt' (FORMAT csv, PER_THREAD_OUTPUT true, FILE_EXTENSION '');
+EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '{TEST_DIR}/ext_rt' (FORMAT csv, PER_THREAD_OUTPUT true, FILE_EXTENSION '');
 ----
 sql	<REGEX>:(?s)COPY \(\s*SELECT CAST\(\s*1 AS INTEGER\s*\) AS a\s*\) TO '.*ext_rt'\s*\(\s*FORMAT 'csv',\s*"file_extension" '',\s*"per_thread_output" TRUE\s*\)
 
 statement ok
 COPY (
         SELECT CAST(1 AS INTEGER) AS a
-    ) TO '__TEST_DIR__/ext_rt'(FORMAT 'csv', "file_extension" '', "per_thread_output" TRUE)
+    ) TO '{TEST_DIR}/ext_rt'(FORMAT 'csv', "file_extension" '', "per_thread_output" TRUE)
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/ext_rt/data_0.');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/ext_rt/data_0.');
 ----
 1
 
 # an explicitly empty filename pattern renders and round-trips
 query TT
-EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '__TEST_DIR__/empty_pattern_rt' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN '');
+EXPLAIN (SQL) COPY (SELECT 1 AS a) TO '{TEST_DIR}/empty_pattern_rt' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN '');
 ----
 sql	<REGEX>:(?s)COPY \(\s*SELECT CAST\(\s*1 AS INTEGER\s*\) AS a\s*\) TO '.*empty_pattern_rt'\s*\(\s*FORMAT 'csv',\s*"filename_pattern" '',\s*"per_thread_output" TRUE\s*\)
 

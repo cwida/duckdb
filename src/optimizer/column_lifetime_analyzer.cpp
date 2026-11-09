@@ -73,6 +73,15 @@ void ColumnLifetimeAnalyzer::VisitOperator(LogicalOperator &op) {
 		analyzer.StandardVisitOperator(op);
 		return;
 	}
+	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
+		ColumnLifetimeAnalyzer producer(optimizer, root);
+		for (auto &binding : op.children[0]->GetColumnBindings()) {
+			producer.column_references.insert(binding);
+		}
+		producer.VisitOperator(*op.children[0]);
+		VisitOperator(*op.children[1]);
+		return;
+	}
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
@@ -114,9 +123,8 @@ void ColumnLifetimeAnalyzer::VisitOperator(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_UNION:
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 	case LogicalOperatorType::LOGICAL_INTERSECT:
-	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
-	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
-		// for set operations/materialized CTEs we don't remove anything, just recursively visit the children
+	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
+		// for set operations/recursive CTEs we don't remove anything, just recursively visit the children
 		// FIXME: for UNION we can remove unreferenced columns as long as everything_referenced is false (i.e. we
 		// encounter a UNION node that is not preceded by a DISTINCT)
 		ColumnLifetimeAnalyzer analyzer(optimizer, root, true);
@@ -205,22 +213,27 @@ void ColumnLifetimeAnalyzer::Verify(LogicalOperator &op) {
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-		AddVerificationProjection(op.children[0]);
-		if (op.Cast<LogicalComparisonJoin>().join_type != JoinType::MARK) { // Can't mess up the mark_index
-			AddVerificationProjection(op.children[1]);
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
+		auto &join = op.Cast<LogicalComparisonJoin>();
+		AddVerificationProjection(op.children[0], join.left_projection_map);
+		if (join.join_type != JoinType::MARK) { // Can't mess up the mark_index
+			AddVerificationProjection(op.children[1], join.right_projection_map);
 		}
 		break;
+	}
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
+		AddVerificationProjection(op.children[0], op.Cast<LogicalOrder>().projection_map);
+		break;
 	case LogicalOperatorType::LOGICAL_FILTER:
-		AddVerificationProjection(op.children[0]);
+		AddVerificationProjection(op.children[0], op.Cast<LogicalFilter>().projection_map);
 		break;
 	default:
 		break;
 	}
 }
 
-void ColumnLifetimeAnalyzer::AddVerificationProjection(unique_ptr<LogicalOperator> &child) {
+void ColumnLifetimeAnalyzer::AddVerificationProjection(unique_ptr<LogicalOperator> &child,
+                                                       vector<ProjectionIndex> &projection_map) {
 	child->ResolveOperatorTypes();
 	const auto child_types = child->types;
 	const auto child_bindings = child->GetColumnBindings();
@@ -228,6 +241,11 @@ void ColumnLifetimeAnalyzer::AddVerificationProjection(unique_ptr<LogicalOperato
 
 	// If our child has columns [i, j], we will generate a projection like so [NULL, j, NULL, i, NULL]
 	const auto projection_column_count = column_count * 2 + 1;
+
+	// The parent's projection map indexes positions in the child, remap it to the shuffled layout
+	for (auto &entry : projection_map) {
+		entry = ProjectionIndex(projection_column_count - 2 - entry.GetIndex() * 2);
+	}
 	vector<unique_ptr<Expression>> expressions;
 	expressions.reserve(projection_column_count);
 

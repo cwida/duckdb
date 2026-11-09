@@ -79,7 +79,7 @@ unique_ptr<FunctionLocalState> RandomInitLocalState(ExpressionState &state, cons
                                                     FunctionData *bind_data) {
 	auto &random_engine = RandomEngine::Get(state.GetContext());
 	lock_guard<mutex> guard(random_engine.lock);
-	return make_uniq<RandomLocalState>(random_engine.NextRandomInteger64());
+	return make_uniq<RandomLocalState>(random_engine.NextSeed());
 }
 
 void GenerateUUIDv4Function(DataChunk &args, ExpressionState &state, Vector &result) {

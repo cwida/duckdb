@@ -59,7 +59,7 @@ SQLLogicTestRunner::SQLLogicTestRunner(string dbpath) : dbpath(std::move(dbpath)
 	}
 	}
 
-	auto repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+	auto repo = TestBuildDirectory() + "/repository";
 	auto env_var = std::getenv("LOCAL_EXTENSION_REPO");
 	if (env_var) {
 		local_extension_repo = env_var;
@@ -291,8 +291,16 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 
 NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, bool load_extensions) {
 	NewDatabaseConnection result;
+	// a prefixed path (ducklake:...) loads its extension inside the DuckDB constructor, before LoadExtension can run
+	auto saved_extension_directories = config->options.extension_directories;
+	if (autoloading_mode == TestConfiguration::ExtensionAutoLoadingMode::NONE &&
+	    !ExtensionHelper::ExtractExtensionPrefixFromPath(db_path).empty()) {
+		config->options.extension_directories = {TestConfiguration::Get().GetLocalExtensionRepository()};
+	}
 	try {
 		result.db = make_uniq<DuckDB>(db_path, config.get());
+		config->options.extension_directories = saved_extension_directories;
+		result.db->instance->config.options.extension_directories = saved_extension_directories;
 		LoadStaticExtensions(*result.db);
 		ConfigureDefaultInMemoryTemporaryDirectory(*result.db, db_path);
 
@@ -302,6 +310,7 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 			SQLLogicTestRunner::LoadExtension(*result.db, ext);
 		}
 	} catch (std::exception &ex) {
+		config->options.extension_directories = saved_extension_directories;
 		ErrorData err(ex);
 		SQLLogicTestLogger::LoadDatabaseFail(file_name, db_path, err.Message());
 		TEST_FAIL("");
@@ -426,11 +435,11 @@ string SQLLogicTestRunner::ReplaceKeywords(string input) {
 	}
 	auto &test_config = TestConfiguration::Get();
 	test_config.ProcessPath(input, file_name);
-	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", DUCKDB_BUILD_DIRECTORY);
+	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", TestBuildDirectory());
 	if (StringUtil::Contains(input, "__BUILD_DIRECTORY__")) {
 		Printer::PrintF("Replacing deprecated __BUILD_DIRECTORY__ in test %s - please replace with {BUILD_DIRECTORY}",
 		                file_name);
-		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", DUCKDB_BUILD_DIRECTORY);
+		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", TestBuildDirectory());
 	}
 
 	return input;
@@ -810,6 +819,8 @@ void SQLLogicTestRunner::ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &data
 	}
 	auto normalized_script = StringUtil::Replace(file_name, "\\", "/");
 	auto temp_directory_name = StringUtil::Replace(normalized_script, "/", "_");
+	// an absolute Windows path has a drive colon, which a directory name cannot contain
+	temp_directory_name = StringUtil::Replace(temp_directory_name, ":", "_");
 	auto temp_directory = TestJoinPath(TestDirectoryPath(), "sqllogic_temp_" + temp_directory_name);
 	db_config.SetOption(database.instance.get(), *DBConfig::GetOptionByName("temp_directory"), temp_directory);
 }
@@ -1169,6 +1180,19 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 					var_value = val.ToString();
 				}
 				environment_variables[var_name] = var_value;
+			} else if (token.parameters[0] == "query_timeout") {
+				if (token.parameters.size() != 2) {
+					parser.Fail("set query_timeout requires a single value (seconds, 0 disables)");
+				}
+				auto timeout = Value(token.parameters[1]).DefaultTryCastAs(LogicalType::DOUBLE);
+				static constexpr double MAXIMUM_QUERY_TIMEOUT = 3600;
+				// The explicit range check also rejects NaN and infinity, which the double cast accepts but
+				// which cannot be represented as a condition-variable deadline.
+				if (!timeout || !(timeout->GetValue<double>() >= 0) ||
+				    timeout->GetValue<double>() > MAXIMUM_QUERY_TIMEOUT) {
+					parser.Fail("set query_timeout requires a number of seconds between 0 and 3600 (0 disables)");
+				}
+				query_timeout = timeout->GetValue<double>();
 			} else {
 				parser.Fail("unrecognized set parameter: %s", token.parameters[0]);
 			}
@@ -1270,7 +1294,7 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 			} else {
 				env_actual = std::getenv(env_var.c_str());
 			}
-			string default_local_repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+			string default_local_repo = TestBuildDirectory() + "/repository";
 			if (env_actual == nullptr && env_var == "LOCAL_EXTENSION_REPO" &&
 			    Settings::Get<AutoloadKnownExtensionsSetting>(*config)) {
 				// Overriding LOCAL_EXTENSION_REPO here is a hacky

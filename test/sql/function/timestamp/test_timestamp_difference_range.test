@@ -1,0 +1,70 @@
+# name: test/sql/function/timestamp/test_timestamp_difference_range.test
+# description: The difference of two timestamps far apart fits the result even when their microseconds do not
+# group: [timestamp]
+
+statement ok
+CREATE TABLE ts AS SELECT * FROM (VALUES
+	(TIMESTAMP '290309-12-22 (BC)', TIMESTAMP '294247-01-10 04:00:54.775806'),
+	(TIMESTAMP '290309-12-22 (BC)', TIMESTAMP '2000-01-01'),
+	(TIMESTAMP '294247-01-10 04:00:54.775806', TIMESTAMP '290309-12-22 (BC) 00:00:00.000001'),
+	(TIMESTAMP '2000-01-01', TIMESTAMP '2000-01-02 12:00:00')
+) t(a, b);
+
+query I
+SELECT b - a FROM ts
+----
+213503982 days 04:00:54.775806
+106762948 days
+-213503982 days -04:00:54.775805
+1 day 12:00:00
+
+query I
+SELECT TIMESTAMP '290309-12-22 (BC)' - TIMESTAMP '2000-01-01'
+----
+-106762948 days
+
+# every unit matches the difference computed in HUGEINT
+query II
+SELECT unit, bool_and(date_sub(unit, a, b) = (epoch_us(b)::HUGEINT - epoch_us(a)::HUGEINT) // micros) FROM ts, (VALUES ('millisecond', 1000), ('second', 1000000), ('minute', 60000000), ('hour', 3600000000), ('day', 86400000000), ('week', 604800000000)) u(unit, micros) GROUP BY unit ORDER BY unit
+----
+day	true
+hour	true
+millisecond	true
+minute	true
+second	true
+week	true
+
+query III
+SELECT date_sub('hour', TIMESTAMP '290309-12-22 (BC)', TIMESTAMP '2000-01-01'), date_sub('minute', TIMESTAMP '290309-12-22 (BC)', TIMESTAMP '294247-01-10'), date_sub('millisecond', TIMESTAMP '294247-01-10 04:00:54.775806', TIMESTAMP '290309-12-22 (BC)')
+----
+2562310752	307445734080	-18446744059254775
+
+# the microseconds of such a difference do not fit a BIGINT
+statement error
+SELECT date_sub('microsecond', TIMESTAMP '290309-12-22 (BC)', TIMESTAMP '2000-01-01')
+----
+Out of Range Error
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC'
+
+query III
+SELECT date_sub('millisecond', a::TIMESTAMPTZ, b::TIMESTAMPTZ) = (epoch_us(b)::HUGEINT - epoch_us(a)::HUGEINT) // 1000, date_sub('second', a::TIMESTAMPTZ, b::TIMESTAMPTZ) = (epoch_us(b)::HUGEINT - epoch_us(a)::HUGEINT) // 1000000, date_sub('minute', a::TIMESTAMPTZ, b::TIMESTAMPTZ) = (epoch_us(b)::HUGEINT - epoch_us(a)::HUGEINT) // 60000000 FROM ts
+----
+true	true	true
+true	true	true
+true	true	true
+true	true	true
+
+statement error
+SELECT date_sub('microsecond', TIMESTAMPTZ '290309-12-22 (BC) 00:00:00+00', TIMESTAMPTZ '2000-01-01 00:00:00+00')
+----
+Out of Range Error
+
+# date_diff counts unit boundaries, date_sub whole units
+query IIII
+SELECT date_diff('minute', TIMESTAMPTZ '290309-12-22 (BC) 00:00:30+00', TIMESTAMPTZ '294247-01-10 00:00:20+00'), date_sub('minute', TIMESTAMPTZ '290309-12-22 (BC) 00:00:30+00', TIMESTAMPTZ '294247-01-10 00:00:20+00'), date_diff('second', TIMESTAMPTZ '290309-12-22 (BC) 00:00:00.5+00', TIMESTAMPTZ '294247-01-10 00:00:00.25+00'), date_sub('second', TIMESTAMPTZ '290309-12-22 (BC) 00:00:00.5+00', TIMESTAMPTZ '294247-01-10 00:00:00.25+00')
+----
+307445734080	307445734079	18446744044800	18446744044799

@@ -157,7 +157,10 @@ void AdaptiveFilter::AdaptRuntimeStatistics(double duration) {
 
 			// get swap index and swap likeliness
 			// a <= i <= b
-			auto random_number = generator.NextRandomInteger(1, NumericCast<uint32_t>(right_random_border));
+			if (!generator) {
+				generator = make_uniq<RandomEngine>();
+			}
+			auto random_number = generator->NextRandomInteger(1, NumericCast<uint32_t>(right_random_border));
 
 			swap_idx = random_number / 100;                    // index to be swapped
 			idx_t likeliness = random_number - 100 * swap_idx; // random number between [0, 100)

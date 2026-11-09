@@ -1,0 +1,12 @@
+# name: test/sql/types/geo/geometry_crs_id_overflow.test
+# description: A WKT ID code at the limit of the unsigned integer range does not overflow
+# group: [geo]
+
+statement ok
+SELECT typeof('POINT(0 1)'::GEOMETRY($wkt$GEOGCRS["WGS",ID["EPSG",18446744073709551615]]$wkt$));
+
+statement ok
+SELECT typeof('POINT(0 1)'::GEOMETRY($wkt$GEOGCRS["WGS",ID["EPSG",18446744073709551616]]$wkt$));
+
+statement ok
+SELECT typeof('POINT(0 1)'::GEOMETRY($wkt$GEOGCRS["WGS",ID["EPSG",1e30]]$wkt$));

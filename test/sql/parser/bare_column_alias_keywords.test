@@ -6,22 +6,22 @@
 foreach kw year years month months day days hour hours minute minutes second seconds millisecond milliseconds microsecond microseconds week weeks quarter quarters decade decades century centuries millennium millennia filter over within export_state ignore respect escape varying precision without exclude replace rename
 
 statement error
-SELECT 1 ${kw};
+SELECT 1 {kw};
 ----
 <REGEX>:Parser Error: syntax error.*
 
 statement error
-SELECT 1 ${kw}, 2;
+SELECT 1 {kw}, 2;
 ----
 <REGEX>:Parser Error: syntax error.*
 
 query I
-SELECT 1 AS ${kw};
+SELECT 1 AS {kw};
 ----
 1
 
 query I
-SELECT 1 "${kw}";
+SELECT 1 "{kw}";
 ----
 1
 
@@ -31,7 +31,7 @@ endloop
 foreach kw select from where with order limit at like glob similar asof positional
 
 statement error
-SELECT 1 ${kw};
+SELECT 1 {kw};
 ----
 <REGEX>:Parser Error: syntax error.*
 
@@ -41,7 +41,7 @@ endloop
 foreach kw type name value key data json text version comment first last nulls rows range groups preceding following unbounded current ties others partition percent sample recursive materialized virtual stored cube rollup sets if exists between values row interval time timestamp struct map columns
 
 query I
-SELECT 1 ${kw};
+SELECT 1 {kw};
 ----
 1
 

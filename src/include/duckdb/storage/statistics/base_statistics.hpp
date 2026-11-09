@@ -15,6 +15,7 @@
 
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
+#include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/geometry_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
 #include "duckdb/storage/statistics/stats_merge_type.hpp"
@@ -177,6 +178,8 @@ private:
 		NumericStatsData numeric_data;
 		//! String stats data, for string stats
 		StringStatsData string_data;
+		//! List stats data, for list stats
+		ListStatsData list_data;
 		//! Geometry stats data, for geometry stats
 		GeometryStatsData geometry_data;
 		//! Variant stats data, for variant stats

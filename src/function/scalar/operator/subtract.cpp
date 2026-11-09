@@ -34,13 +34,14 @@ date_t SubtractOperator::Operation(date_t left, int32_t right) {
 	if (!left.IsFinite()) {
 		return left;
 	}
+	// dates below -infinity are out of range, as input and as result
 	int32_t days;
-	if (!TrySubtractOperator::Operation(left.days, right, days)) {
+	if (left < date_t::ninfinity() || !TrySubtractOperator::Operation(left.days, right, days)) {
 		throw OutOfRangeException("Date out of range");
 	}
 
 	date_t result(days);
-	if (!result.IsFinite()) {
+	if (result <= date_t::ninfinity() || result >= date_t::infinity()) {
 		throw OutOfRangeException("Date out of range");
 	}
 	return result;
@@ -69,6 +70,21 @@ timestamp_t SubtractOperator::Operation(date_t left, interval_t right) {
 template <>
 timestamp_t SubtractOperator::Operation(timestamp_t left, interval_t right) {
 	return AddOperator::Operation<timestamp_t, interval_t, timestamp_t>(left, Interval::Invert(right));
+}
+
+template <>
+timestamp_t SubtractOperator::Operation(timestamp_ms_t left, interval_t right) {
+	return AddOperator::Operation<timestamp_ms_t, interval_t, timestamp_t>(left, Interval::Invert(right));
+}
+
+template <>
+timestamp_t SubtractOperator::Operation(timestamp_sec_t left, interval_t right) {
+	return AddOperator::Operation<timestamp_sec_t, interval_t, timestamp_t>(left, Interval::Invert(right));
+}
+
+template <>
+timestamp_ns_t SubtractOperator::Operation(timestamp_ns_t left, interval_t right) {
+	return AddOperator::Operation<timestamp_ns_t, interval_t, timestamp_ns_t>(left, Interval::Invert(right));
 }
 
 template <>

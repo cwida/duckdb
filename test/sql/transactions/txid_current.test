@@ -1,0 +1,92 @@
+# name: test/sql/transactions/txid_current.test
+# description: Transaction IDs are independent of the default catalog
+# group: [transactions]
+
+query II
+SELECT typeof(txid_current()), txid_current() = current_transaction_id();
+----
+UBIGINT	true
+
+statement ok
+BEGIN;
+
+statement ok
+SET VARIABLE current_txid = txid_current();
+
+query I
+SELECT txid_current() = getvariable('current_txid');
+----
+true
+
+statement ok
+PREPARE txid AS SELECT txid_current() = getvariable('current_txid');
+
+query I
+EXECUTE txid;
+----
+true
+
+statement ok
+COMMIT;
+
+# A prepared statement must use the ID of the transaction executing it.
+query I
+EXECUTE txid;
+----
+false
+
+statement ok
+BEGIN;
+
+statement ok
+SET VARIABLE current_txid = txid_current();
+
+query I
+EXECUTE txid;
+----
+true
+
+statement ok
+ROLLBACK;
+
+query I
+EXECUTE txid;
+----
+false
+
+statement ok
+ATTACH ':memory:' AS txid_first;
+
+statement ok
+ATTACH ':memory:' AS txid_second;
+
+statement ok
+USE txid_first;
+
+statement ok
+BEGIN;
+
+statement ok
+SET VARIABLE current_txid = txid_current();
+
+statement ok
+USE txid_second;
+
+# Switching catalogs does not start a new session transaction.
+query II
+SELECT txid_current() = getvariable('current_txid'), txid_current() = current_transaction_id();
+----
+true	true
+
+query I
+EXECUTE txid;
+----
+true
+
+query II
+SELECT count(DISTINCT txid_current()), bool_and(txid_current() = getvariable('current_txid')) FROM range(5000);
+----
+1	true
+
+statement ok
+COMMIT;

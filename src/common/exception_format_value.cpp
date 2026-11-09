@@ -95,7 +95,8 @@ ExceptionFormatValue ExceptionFormatValue::CreateFormatValue(const uhugeint_t &v
 }
 
 //! Whether a placeholder of the format string that receives a quoted identifier is itself wrapped in quotes
-static bool HasDoubleQuotedIdentifier(const string &msg, const std::vector<ExceptionFormatValue> &values) {
+[[maybe_unused]] static bool HasDoubleQuotedIdentifier(const string &msg,
+                                                       const std::vector<ExceptionFormatValue> &values) {
 	idx_t arg_idx = 0;
 	for (idx_t i = 0; i < msg.size(); i++) {
 		if (msg[i] != '%') {

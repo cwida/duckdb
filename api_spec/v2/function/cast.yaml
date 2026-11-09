@@ -76,7 +76,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a new cast function through a factory.
 
@@ -107,7 +107,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_set_source_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the type the cast converts from.
 
@@ -128,7 +128,7 @@ functions:
 
   cast_function_set_target_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the type the cast converts to.
 
@@ -149,7 +149,7 @@ functions:
 
   cast_function_set_implicit_cast_cost:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets what it costs to apply this cast implicitly.
 
@@ -172,7 +172,7 @@ functions:
 
   cast_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets arbitrary user data on the cast function.
 
@@ -196,7 +196,7 @@ functions:
 
   cast_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the exec callback of the cast function.
 
@@ -220,7 +220,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Retrieves the user data set via `[[cast_function_set_user_data]]`.
     parameters:
       info:
@@ -239,7 +239,7 @@ functions:
 
   cast_function_exec_get_row_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Returns how many rows this execution must convert.
 
@@ -263,7 +263,7 @@ functions:
 
   cast_function_exec_get_input:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Retrieves the input vector holding the values to convert.
 
@@ -286,7 +286,7 @@ functions:
 
   cast_function_exec_get_output:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Retrieves the output vector the exec callback must write into.
 
@@ -309,7 +309,7 @@ functions:
 
   cast_function_exec_get_mode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Returns the mode the cast is being executed in.
 
@@ -336,7 +336,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_cast_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the cast function, making it available to CAST and TRY_CAST.
 
@@ -363,7 +363,7 @@ functions:
 
   extension_register_cast_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the cast function, making it available to CAST and TRY_CAST.
 
@@ -392,7 +392,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the cast function, releasing its resources.
 

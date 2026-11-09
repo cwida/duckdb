@@ -21,7 +21,7 @@ COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_attached.db';
 foreach wal_suffix .wal .wal.checkpoint .wal.recovery
 
 statement error
-COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_attached.db${wal_suffix}' (FORMAT csv);
+COPY (SELECT 1 a) TO '{TEST_DIR}/copy_over_attached.db{wal_suffix}' (FORMAT csv);
 ----
 <REGEX>:.*belongs to an attached database.*
 

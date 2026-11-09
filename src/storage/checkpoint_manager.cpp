@@ -24,7 +24,6 @@
 #include "duckdb/execution/index/unbound_index.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/connection.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -32,6 +31,7 @@
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/checkpoint/table_data_reader.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/metadata/metadata_reader.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/index_entry.hpp"
@@ -40,17 +40,13 @@
 #include "duckdb/transaction/transaction_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
+#include "duckdb/main/database.hpp"
 
 namespace duckdb {
 
-ActiveCheckpointWrapper::ActiveCheckpointWrapper(optional_ptr<ClientContext> context, AttachedDatabase &db_p,
-                                                 DuckTransactionManager &transaction_manager_p)
-    : db(db_p), transaction_manager(transaction_manager_p) {
-	if (!context) {
-		return;
-	}
-	checkpoint_connection = make_uniq<Connection>(Connection::CreateInternal(db.GetDatabase()));
-	checkpoint_context = checkpoint_connection->context.get();
+ActiveCheckpointWrapper::ActiveCheckpointWrapper(optional_ptr<ClientContext> checkpoint_context_p,
+                                                 AttachedDatabase &db_p, DuckTransactionManager &transaction_manager_p)
+    : db(db_p), transaction_manager(transaction_manager_p), checkpoint_context(checkpoint_context_p) {
 }
 
 ActiveCheckpointWrapper::~ActiveCheckpointWrapper() {
@@ -96,13 +92,33 @@ void ActiveCheckpointWrapper::Commit() {
 	checkpoint_transaction = nullptr;
 }
 
+CheckpointWriter::CheckpointWriter(AttachedDatabase &db_p, QueryContext query_context,
+                                   optional_ptr<ClientContext> checkpoint_context_p)
+    : db(db_p), owned_context(query_context.Valid() ? nullptr : db_p.GetDatabase().Services()),
+      context(query_context.Valid() ? *query_context.GetContext() : *owned_context),
+      checkpoint_context(checkpoint_context_p) {
+}
+
+CheckpointWriter::~CheckpointWriter() {
+}
+
 void ReorderTableEntries(catalog_entry_vector_t &tables);
 
 SingleFileCheckpointWriter::SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db,
-                                                       BlockManager &block_manager, CheckpointOptions options_p)
-    : CheckpointWriter(db), context(context.GetClientContext()),
-      partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT),
-      index_partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
+                                                       BlockManager &block_manager, CheckpointOptions options_p,
+                                                       optional_ptr<ClientContext> checkpoint_context)
+    : CheckpointWriter(db, context, checkpoint_context),
+      partial_block_manager(GetContext(), block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
+}
+
+SingleFileCheckpointWriter::~SingleFileCheckpointWriter() {
+	// Discard pending packable references before destroying their publication owners.
+	partial_block_manager.ClearBlocks();
+}
+
+void SingleFileCheckpointWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	D_ASSERT(publication);
+	pending_publications.push_back(std::move(publication));
 }
 
 BlockManager &SingleFileCheckpointWriter::GetBlockManager() {
@@ -111,7 +127,7 @@ BlockManager &SingleFileCheckpointWriter::GetBlockManager() {
 }
 
 PartialBlockManager SingleFileCheckpointWriter::CreatePerIndexPartialBlockManager() {
-	return PartialBlockManager(QueryContext(context), GetBlockManager(), PartialBlockType::FULL_CHECKPOINT);
+	return PartialBlockManager(GetContext(), GetBlockManager(), PartialBlockType::FULL_CHECKPOINT);
 }
 
 MetadataWriter &SingleFileCheckpointWriter::GetMetadataWriter() {
@@ -241,9 +257,8 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	// to replay any concurrent commits that have succeeded and ensure these are not lost
 	auto &transaction_manager = db.GetTransactionManager().Cast<DuckTransactionManager>();
 
-	// If there is a context (non shutdown path): this will create a new connection for the checkpoint, then in
-	// WALStartCheckpoint we will create a transaction for the checkpoint.
-	ActiveCheckpointWrapper active_checkpoint(context, db, transaction_manager);
+	// If there is a checkpoint context (non shutdown path), WALStartCheckpoint creates the checkpoint transaction.
+	ActiveCheckpointWrapper active_checkpoint(GetCheckpointContext(), db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
 
 	catalog_entry_vector_t catalog_entries;
@@ -292,6 +307,12 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	});
 	serializer.End();
 
+	partial_block_manager.FlushPartialBlocks();
+	for (auto &pending : pending_publications) {
+		pending->Publish();
+	}
+	pending_publications.clear();
+
 	metadata_writer->Flush();
 	table_metadata_writer->Flush();
 
@@ -308,7 +329,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	header.meta_block = meta_block.block_pointer;
 	header.block_alloc_size = block_manager.GetBlockAllocSize();
 	header.vector_size = STANDARD_VECTOR_SIZE;
-	block_manager.WriteHeader(context, header);
+	block_manager.WriteHeader(QueryContext(GetContext()), header);
 
 	auto debug_verify_blocks = Settings::Get<DebugVerifyBlocksSetting>(db.GetDatabase());
 	if (debug_verify_blocks) {
@@ -324,7 +345,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 			}
 			auto &table = entry.Cast<DuckTableEntry>();
 			auto &storage = table.GetStorage();
-			auto segment_info = storage.GetColumnSegmentInfo(context);
+			auto segment_info = storage.GetColumnSegmentInfo(QueryContext(GetContext()));
 			for (auto &segment : segment_info) {
 				verify_block_usage_count[segment.block_id]++;
 				if (StringUtil::Contains(segment.segment_info, "Overflow String Block Ids: ")) {
@@ -749,7 +770,10 @@ void CheckpointReader::ReadTableData(CatalogTransaction transaction, Deserialize
 	// Read next_row_id as total_rows for backwards compatibility. Older storage versions do not allow for gaps in
 	// row_id numbering, in which case next_row_id = total_rows.
 	auto next_row_id = deserializer.ReadPropertyWithExplicitDefault<idx_t>(105, "next_row_id", total_rows);
-	D_ASSERT(next_row_id >= total_rows);
+	if (next_row_id < total_rows) {
+		throw DataCorruptionException("corrupt database file - next row id %llu is lower than the total row count %llu",
+		                              next_row_id, total_rows);
+	}
 
 	if (!index_storage_infos.empty()) {
 		bound_info.indexes = std::move(index_storage_infos);

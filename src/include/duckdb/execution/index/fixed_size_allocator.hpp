@@ -17,9 +17,10 @@
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
+
+class PartialBlockManager;
 
 //! The FixedSizeAllocator provides pointers to fixed-size memory segments of pre-allocated memory buffers.
 //! The pointers are IndexPointers, and the leftmost byte (metadata) must always be zero.
@@ -102,6 +103,9 @@ public:
 
 	//! Resets the allocator, e.g., during 'DELETE FROM table'
 	void Reset();
+	//! Resets the allocator without freeing the on-disk blocks of its buffers.
+	//! The blocks stay owned by the storage information the allocator was initialized from.
+	void DisownBuffers();
 
 	//! Returns the in-memory size in bytes
 	idx_t GetInMemorySize() const;

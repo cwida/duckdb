@@ -459,37 +459,25 @@ unique_ptr<BoundAggregateExpression> BindListAggregate(ClientContext &context, L
                                                        vector<unique_ptr<Expression>> extra_arguments) {
 	auto &func = GetListAggregateEntry(context, function_name);
 
-	// find a matching aggregate function
-	ErrorData error;
-	vector<LogicalType> types;
-	types.push_back(child_type);
-	// push any extra arguments into the type list
-	for (auto &argument : extra_arguments) {
-		types.push_back(argument->GetReturnType());
-	}
-
-	FunctionBinder function_binder(context);
-	auto best_function_idx = function_binder.BindFunction(func.name, func.functions, types, error);
-	if (!best_function_idx.IsValid()) {
-		throw BinderException("No matching aggregate function\n%s", error.Message());
-	}
-
-	// create the child expression and its type - it refers to the list elements
+	// the child expression refers to the list elements
 	vector<unique_ptr<Expression>> children;
 	children.push_back(make_uniq<BoundReferenceExpression>(child_type, idx_t(0)));
 	for (auto &argument : extra_arguments) {
 		children.push_back(std::move(argument));
 	}
 
-	// found a matching function, bind it as an aggregate
-	const auto &best_function = *func.functions.GetFunctionByOffset(best_function_idx.GetIndex());
-	if (IS_AGGR) {
-		return function_binder.BindAggregateFunction(best_function, std::move(children));
+	FunctionBinder function_binder(context);
+	if (!IS_AGGR) {
+		// the histogram is computed as an unordered map, which takes any type
+		return function_binder.BindAggregateFunction(HistogramFun::GetHistogramUnorderedMap(child_type),
+		                                             std::move(children));
 	}
-	// create the unordered map histogram function
-	D_ASSERT(best_function.GetSignature().GetParameterCount() == 1);
-	auto aggr_function = HistogramFun::GetHistogramUnorderedMap(child_type);
-	return function_binder.BindAggregateFunction(aggr_function, std::move(children));
+	ErrorData error;
+	auto result = function_binder.BindAggregateFunction(func, std::move(children), error);
+	if (!result) {
+		throw BinderException("No matching aggregate function\n%s", error.Message());
+	}
+	return result;
 }
 
 template <bool IS_AGGR = false>

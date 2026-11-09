@@ -143,9 +143,13 @@ void UncompressedStringStorage::StringScanPartial(ColumnSegment &segment, Column
 	auto result_data = FlatVector::GetDataMutable<string_t>(result);
 	auto strings = layout.ValidateRange(start, scan_count);
 
+	const bool copy_strings = state.string_scan_type == StringScanType::COPY_STRINGS;
 	for (idx_t i = 0; i < scan_count; i++) {
 		auto entry = strings.GetEntry(i);
-		result_data[result_offset + i] = FetchStringFromEntry(state.context, segment, result, entry);
+		auto str = FetchStringFromEntry(state.context, segment, result, entry);
+		// overflow strings are already owned by the result
+		result_data[result_offset + i] =
+		    copy_strings && !entry.is_overflow ? StringVector::AddStringOrBlob(result, str) : str;
 	}
 }
 
@@ -169,50 +173,26 @@ void UncompressedStringStorage::Select(ColumnSegment &segment, ColumnScanState &
 	D_ASSERT(sel_count <= vector_count);
 
 	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	const bool copy_strings = state.string_scan_type == StringScanType::COPY_STRINGS;
+	auto write_entry = [&](idx_t i, const StringDictionaryEntry &entry) {
+		auto str = FetchStringFromEntry(state.context, segment, result, entry);
+		result_data[result_offset + i] =
+		    copy_strings && !entry.is_overflow ? StringVector::AddStringOrBlob(result, str) : str;
+	};
+	// a sparse selection validates its own entries rather than every entry in between
+	if (sel_count * 4 < vector_count) {
+		for (idx_t i = 0; i < sel_count; i++) {
+			D_ASSERT(sel.get_index(i) < vector_count);
+			write_entry(i, layout.ValidateAndGetEntry(start + sel.get_index(i)));
+		}
+		return;
+	}
 	auto strings = layout.ValidateRange(start, vector_count);
-
 	for (idx_t i = 0; i < sel_count; i++) {
 		auto selection_index = sel.get_index(i);
 		D_ASSERT(selection_index < vector_count);
-		auto entry = strings.GetEntry(selection_index);
-		result_data[result_offset + i] = FetchStringFromEntry(state.context, segment, result, entry);
+		write_entry(i, strings.GetEntry(selection_index));
 	}
-}
-
-//===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-BufferHandle &ColumnFetchState::GetOrInsertHandle(ColumnSegment &segment) {
-	auto primary_id = segment.GetBlockHandle()->BlockId();
-
-	auto entry = handles.find(primary_id);
-	if (entry == handles.end()) {
-		// not pinned yet: pin it
-		auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-		auto handle = buffer_manager.Pin(context, segment.GetBlockHandle());
-		auto pinned_entry = handles.insert(make_pair(primary_id, std::move(handle)));
-		return pinned_entry.first->second;
-	} else {
-		// already pinned: use the pinned handle
-		return entry->second;
-	}
-}
-
-void UncompressedStringStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id,
-                                               Vector &result, idx_t result_idx) {
-	D_ASSERT(row_id >= 0);
-	auto row_index = NumericCast<idx_t>(row_id);
-	D_ASSERT(row_index < segment.count.load());
-
-	// fetch a single row from the string segment
-	// first pin the main buffer if it is not already pinned
-	auto &handle = state.GetOrInsertHandle(segment);
-	auto layout = StringSegmentLayout::Read(handle, segment);
-
-	auto result_data = FlatVector::GetDataMutable<string_t>(result);
-
-	auto entry = layout.ValidateAndGetEntry(row_index);
-	result_data[result_idx] = FetchStringFromEntry(state.context, segment, result, entry);
 }
 
 //===--------------------------------------------------------------------===//
@@ -305,18 +285,17 @@ void UncompressedStringStorage::VisitBlockIds(const ColumnSegment &segment, Bloc
 //===--------------------------------------------------------------------===//
 CompressionFunction StringUncompressed::GetFunction(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::VARCHAR);
-	return CompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, data_type,
-	                           UncompressedStringStorage::StringInitAnalyze, UncompressedStringStorage::StringAnalyze,
-	                           UncompressedStringStorage::StringFinalAnalyze, UncompressedFunctions::InitCompression,
-	                           UncompressedFunctions::Compress, UncompressedFunctions::FinalizeCompress,
-	                           UncompressedStringStorage::StringInitScan, UncompressedStringStorage::StringScan,
-	                           UncompressedStringStorage::StringScanPartial, UncompressedStringStorage::StringFetchRow,
-	                           UncompressedFunctions::EmptySkip, UncompressedStringStorage::StringInitSegment,
-	                           UncompressedStringStorage::StringInitAppend, UncompressedStringStorage::StringAppend,
-	                           UncompressedStringStorage::FinalizeAppend, UncompressedStringStorage::StringRevertAppend,
-	                           UncompressedStringStorage::SerializeState, UncompressedStringStorage::DeserializeState,
-	                           UncompressedStringStorage::VisitBlockIds, UncompressedStringInitPrefetch,
-	                           UncompressedStringStorage::Select);
+	return CompressionFunction(
+	    CompressionType::COMPRESSION_UNCOMPRESSED, data_type, UncompressedStringStorage::StringInitAnalyze,
+	    UncompressedStringStorage::StringAnalyze, UncompressedStringStorage::StringFinalAnalyze,
+	    UncompressedFunctions::InitCompression, UncompressedFunctions::Compress,
+	    UncompressedFunctions::FinalizeCompress, UncompressedStringStorage::StringInitScan,
+	    UncompressedStringStorage::StringScan, UncompressedStringStorage::StringScanPartial,
+	    UncompressedFunctions::EmptySkip, UncompressedStringStorage::StringInitSegment,
+	    UncompressedStringStorage::StringInitAppend, UncompressedStringStorage::StringAppend,
+	    UncompressedStringStorage::FinalizeAppend, UncompressedStringStorage::StringRevertAppend,
+	    UncompressedStringStorage::SerializeState, UncompressedStringStorage::DeserializeState,
+	    UncompressedStringStorage::VisitBlockIds, UncompressedStringInitPrefetch, UncompressedStringStorage::Select);
 }
 
 //===--------------------------------------------------------------------===//

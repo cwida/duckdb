@@ -1,0 +1,143 @@
+# name: test/sql/window/window_compact_frame_payloads.test
+# description: Holistic window aggregates over constant arguments in moving frames
+# group: [window]
+
+# MODE and the quantile family page their arguments through their own window collection
+# cursors, which must handle the compact representations returned by collection scans
+
+query II
+SELECT i, mode(7::BIGINT) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m
+FROM range(5) t(i)
+----
+0	7
+1	7
+2	7
+3	7
+4	7
+
+query II
+SELECT i, quantile_cont(7::DOUBLE, 0.5) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+FROM range(5) t(i)
+----
+0	7.0
+1	7.0
+2	7.0
+3	7.0
+4	7.0
+
+query II
+SELECT i, quantile_disc(7::BIGINT, 0.5) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS q
+FROM range(5) t(i)
+----
+0	7
+1	7
+2	7
+3	7
+4	7
+
+query II
+SELECT i, median('constant_string_payload_longer_than_twelve') OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m
+FROM range(3) t(i)
+----
+0	constant_string_payload_longer_than_twelve
+1	constant_string_payload_longer_than_twelve
+2	constant_string_payload_longer_than_twelve
+
+# a filter forces the filtered sort tree build over the constant argument
+query II
+SELECT i, quantile_cont(7::DOUBLE, 0.5) FILTER (i % 2 = 0) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+FROM range(5) t(i)
+----
+0	7.0
+1	7.0
+2	7.0
+3	7.0
+4	7.0
+
+# a NULL constant argument exercises the nullable sort tree build
+query II
+SELECT i, quantile_cont(NULL::DOUBLE, 0.5) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+FROM range(3) t(i)
+----
+0	NULL
+1	NULL
+2	NULL
+
+query II
+SELECT i, mode(NULL::VARCHAR) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m
+FROM range(3) t(i)
+----
+0	NULL
+1	NULL
+2	NULL
+
+# the remaining shapes exercise the shared window cursor cell accessors over compact pages
+
+# segment tree aggregate over a constant argument
+query II
+SELECT i, min('constant_string_payload_longer_than_twelve') OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m
+FROM range(3) t(i)
+----
+0	constant_string_payload_longer_than_twelve
+1	constant_string_payload_longer_than_twelve
+2	constant_string_payload_longer_than_twelve
+
+# lead/lag page copies from a constant argument, including the NULL constant
+# the ORDER BY inside the OVER clause keeps these off the streaming window path
+query II
+SELECT i, lag('segment_a') OVER (ORDER BY i) AS l FROM range(3) t(i) ORDER BY i
+----
+0	NULL
+1	segment_a
+2	segment_a
+
+query II
+SELECT i, lead(NULL::BIGINT, 1, 42) OVER (ORDER BY i) AS l FROM range(3) t(i) ORDER BY i
+----
+0	NULL
+1	NULL
+2	42
+
+# bounded RANGE frames read the order collection through the cursor cell accessors
+query II
+SELECT i, sum(i) OVER (ORDER BY 7 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s
+FROM range(3) t(i) ORDER BY i
+----
+0	3
+1	3
+2	3
+
+# distinct window aggregate over a constant argument
+query II
+SELECT i, count(DISTINCT 'segment_a') OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS c
+FROM range(3) t(i)
+----
+0	1
+1	1
+2	1
+
+# the naive aggregator (forced by the debug mode) over a constant argument
+statement ok
+SET debug_window_mode='separate'
+
+query II
+SELECT i, min('constant_string_payload_longer_than_twelve') OVER
+	(ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW) AS m
+FROM range(3) t(i)
+----
+0	constant_string_payload_longer_than_twelve
+1	constant_string_payload_longer_than_twelve
+2	constant_string_payload_longer_than_twelve
+
+statement ok
+RESET debug_window_mode
+
+# a NULL constant argument with IGNORE NULLS runs the validity gather in WindowCollection::Combine
+query II
+SELECT i, first_value(NULL::VARCHAR IGNORE NULLS) OVER
+	(ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS f
+FROM range(3) t(i) ORDER BY i
+----
+0	NULL
+1	NULL
+2	NULL

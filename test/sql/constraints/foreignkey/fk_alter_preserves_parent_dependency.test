@@ -1,0 +1,121 @@
+# name: test/sql/constraints/foreignkey/fk_alter_preserves_parent_dependency.test
+# description: ALTER TABLE on a child table must keep the dependency edge on the FK parent table
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE parent(id INTEGER PRIMARY KEY, val TEXT);
+
+statement ok
+CREATE TABLE child(id INTEGER, pid INTEGER REFERENCES parent(id));
+
+statement ok
+INSERT INTO parent VALUES (1, 'a'), (2, 'b');
+
+statement ok
+INSERT INTO child VALUES (10, 1);
+
+# sanity: without any ALTER the parent cannot be renamed
+statement error
+ALTER TABLE parent RENAME TO parent2
+----
+Dependency Error: Cannot alter entry "parent" because there are entries that depend on it.
+
+# ALTER the child table - this used to drop the dependency edge on the parent
+statement ok
+ALTER TABLE child ADD COLUMN extra INTEGER;
+
+statement error
+ALTER TABLE parent RENAME TO parent2
+----
+Dependency Error: Cannot alter entry "parent" because there are entries that depend on it.
+
+statement ok
+ALTER TABLE child RENAME COLUMN extra TO extra2;
+
+statement error
+ALTER TABLE parent RENAME TO parent2
+----
+Dependency Error: Cannot alter entry "parent" because there are entries that depend on it.
+
+statement ok
+ALTER TABLE child ALTER COLUMN extra2 SET DEFAULT 5;
+
+statement error
+ALTER TABLE parent RENAME TO parent2
+----
+Dependency Error: Cannot alter entry "parent" because there are entries that depend on it.
+
+statement ok
+UPDATE child SET extra2 = 0 WHERE extra2 IS NULL;
+
+statement ok
+ALTER TABLE child ALTER COLUMN extra2 SET NOT NULL;
+
+statement error
+ALTER TABLE parent RENAME TO parent2
+----
+Dependency Error: Cannot alter entry "parent" because there are entries that depend on it.
+
+statement ok
+ALTER TABLE child ALTER COLUMN extra2 DROP DEFAULT;
+
+# inserting still works
+statement ok
+INSERT INTO child VALUES (11, 2, 7);
+
+query I
+SELECT count(*) FROM child;
+----
+2
+
+# self-referencing tables are unaffected
+statement ok
+CREATE TABLE selfref(id INTEGER PRIMARY KEY, pid INTEGER REFERENCES selfref(id));
+
+statement ok
+ALTER TABLE selfref ADD COLUMN x INTEGER;
+
+statement ok
+INSERT INTO selfref VALUES (1, NULL, 9);
+
+statement error
+INSERT INTO selfref VALUES (2, 42, 9);
+----
+Constraint Error
+
+# the dependency edge must also survive a checkpoint and a restart
+statement ok
+ATTACH '{TEST_DIR}/fk_dep.db' AS fkdb
+
+statement ok
+CREATE TABLE fkdb.parent(id INTEGER PRIMARY KEY, val TEXT)
+
+statement ok
+CREATE TABLE fkdb.child(id INTEGER, pid INTEGER REFERENCES parent(id))
+
+statement ok
+ALTER TABLE fkdb.child ADD COLUMN extra INTEGER
+
+statement ok
+CHECKPOINT fkdb
+
+statement ok
+DETACH fkdb
+
+statement ok
+ATTACH '{TEST_DIR}/fk_dep.db' AS fkdb
+
+statement error
+ALTER TABLE fkdb.parent RENAME TO parent2
+----
+Dependency Error: Cannot alter entry "parent" because there are entries that depend on it.
+
+statement ok
+INSERT INTO fkdb.parent VALUES (1, 'a')
+
+statement ok
+INSERT INTO fkdb.child VALUES (10, 1, 5)
+
+statement error
+INSERT INTO fkdb.child VALUES (11, 99, 5)
+----

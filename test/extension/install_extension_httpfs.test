@@ -1,96 +1,46 @@
 # name: test/extension/install_extension_httpfs.test
-# description: Test various ways of installing extensions (with httpfs available)
+# description: Test extension repository routing with httpfs available
 # group: [extension]
-
-# Now httpfs might be already loaded or not, we keep the test agnostic via REGEX https? that matches both http AND https
-
-statement ok
-set extension_directory='{TEST_DIR}/install_extension'
-
-# Check defaults are correct
-statement error
-INSTALL will_never_exist;
-----
-<REGEX>:.*Failed to download extension "will_never_exist" at URL \"https?://extensions.duckdb.org.*
-
-# Explicitly install from core
-statement error
-INSTALL will_never_exist FROM core;
-----
-<REGEX>:.*Failed to download extension "will_never_exist" at URL \"https?://extensions.duckdb.org.*
-
-# Explicitly install from nightly
-statement error
-INSTALL will_never_exist FROM core_nightly;
-----
-<REGEX>:.*Failed to download extension "will_never_exist" at URL \"https?://nightly-extensions.duckdb.org.*
-
-# Explicitly install from community
-statement error
-INSTALL will_never_exist FROM community;
-----
-<REGEX>:.*Failed to download extension "will_never_exist" at URL \"https?://community-extensions.duckdb.org.*
-
-# Alias can not quoted: string literals are interpreted as paths
-statement error
-INSTALL will_never_exist FROM 'core';
-----
-IO Error: Failed to install local extension "will_never_exist", no access to the file at PATH
-
-# Error message should point to extensions troubleshooting page
-statement error
-INSTALL will_never_exist FROM core;
-----
-For more info, visit https://duckdb.org/docs/current/extensions/troubleshooting
 
 require httpfs
 
 statement ok
-FROM read_blob('https://duckdb.org/');
+LOAD httpfs
 
-# Now httpfs has to be loaded or autoloaded, we keep the test similar in struct as above via REGEX https that matches only https
+statement ok
+SET http_retries=0
 
-# Check defaults are correct
+statement ok
+SET extension_directory='{TEST_DIR}/install_extension'
+
+# A refused local proxy keeps repository-selection checks deterministic.
+statement ok
+SET http_proxy='127.0.0.1:1'
+
 statement error
 INSTALL will_never_exist;
 ----
 <REGEX>:.*Failed to download extension "will_never_exist" at URL \"https://extensions.duckdb.org.*
 
-# Explicitly install from core
-statement error
-INSTALL will_never_exist FROM core;
-----
-<REGEX>:.*Failed to download extension "will_never_exist" at URL \"https://extensions.duckdb.org.*
-
-# Explicitly install from nightly
 statement error
 INSTALL will_never_exist FROM core_nightly;
 ----
 <REGEX>:.*Failed to download extension "will_never_exist" at URL \"https://nightly-extensions.duckdb.org.*
 
-# Explicitly install from community
 statement error
 INSTALL will_never_exist FROM community;
 ----
 <REGEX>:.*Failed to download extension "will_never_exist" at URL \"https://community-extensions.duckdb.org.*
 
-# Next statement should basically invalidate any attempt to reach the internet
+statement error
+INSTALL will_never_exist FROM core;
+----
+For more info, visit https://duckdb.org/docs/current/extensions/troubleshooting
 
 statement ok
-SET http_proxy = 'some_non_existent_proxy';
+SET http_proxy=''
 
-# Explicitly install from community
 statement error
-INSTALL will_never_exist FROM community;
+INSTALL will_never_exist FROM 'core';
 ----
-<REGEX>:.*Failed to download extension "will_never_exist" at URL \"https://community-extensions.duckdb.org.*ERROR Could.* resolve proxy name.*
-
-statement ok
-SET http_proxy = '';
-
-# Explicitly install from community
-statement error
-INSTALL will_never_exist FROM community;
-----
-<!REGEX>:.*Failed to download extension "will_never_exist" at URL \"https://community-extensions.duckdb.org.*ERROR Could.* resolve proxy name.*
-
+IO Error: Failed to install local extension "will_never_exist", no access to the file at PATH

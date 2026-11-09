@@ -1,0 +1,50 @@
+# name: test/optimizer/statistics/right_semi_join_filter.test
+# description: The statistics of one side of a RIGHT_SEMI join filter the other side, also below a DISTINCT (duckdblabs/bot-issue-tracker#491)
+# group: [statistics]
+
+statement ok
+CREATE TABLE probe(k INTEGER);
+
+statement ok
+INSERT INTO probe VALUES (5), (7), (NULL), (200000);
+
+statement ok
+CREATE TABLE build AS SELECT i::INTEGER AS k FROM range(100000) r(i) UNION ALL SELECT NULL;
+
+# the smaller probe table becomes the build side, and its keys filter the scan below the DISTINCT
+query II
+EXPLAIN SELECT count(*) FROM probe WHERE k IN (SELECT DISTINCT k FROM build);
+----
+physical_plan	<REGEX>:.*RIGHT_SEMI.*Hash Group By.*Filters: k <= 99999.*Filters: k >= 5.*
+
+query II
+EXPLAIN SELECT count(*) FROM probe WHERE k IN (SELECT k FROM build GROUP BY k);
+----
+physical_plan	<REGEX>:.*RIGHT_SEMI.*Hash Group By.*Filters: k <= 99999.*Filters: k >= 5.*
+
+query I
+SELECT count(*) FROM probe WHERE k IN (SELECT DISTINCT k FROM build);
+----
+2
+
+query I
+SELECT count(*) FROM probe WHERE k IN (SELECT k FROM build GROUP BY k);
+----
+2
+
+query I
+SELECT k FROM probe WHERE EXISTS (SELECT 1 FROM (SELECT DISTINCT k FROM build) b WHERE b.k = probe.k) ORDER BY k;
+----
+5
+7
+
+query I
+SELECT count(*) FROM probe WHERE k NOT IN (SELECT DISTINCT k FROM build WHERE k IS NOT NULL);
+----
+1
+
+query I
+SELECT k FROM (SELECT DISTINCT k FROM build) b WHERE k IN (SELECT k FROM probe) ORDER BY k;
+----
+5
+7

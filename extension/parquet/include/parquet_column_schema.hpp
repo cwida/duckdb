@@ -124,7 +124,7 @@ public:
 
 public:
 	unique_ptr<BaseStatistics> Stats(const FileMetaData &file_meta_data, const ParquetOptions &parquet_options,
-	                                 idx_t row_group_idx_p, const vector<duckdb_parquet::ColumnChunk> &columns) const;
+	                                 idx_t row_group_idx_p, const duckdb_parquet::ColumnChunkList &columns) const;
 	void ValidateColumnMetadata(const duckdb_parquet::ColumnChunk &column, int64_t row_group_num_rows,
 	                            bool validate_row_count, const char *file_name = nullptr) const;
 

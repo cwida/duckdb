@@ -1,0 +1,107 @@
+# name: test/sql/subquery/scalar/pg_grouping_expression_references.test
+# description: Grouping-expression references within subqueries, taken from the PostgreSQL regression tests
+# group: [scalar]
+
+# Ported from src/test/regress/sql/aggregates.sql and groupingsets.sql as of PostgreSQL commit 415100aa
+# ("Support grouping-expression references and GROUPING() in subqueries"). PostgreSQL is released under
+# the PostgreSQL License. tenk1 is reduced to the columns these tests use, and ORDER BY clauses are added
+# where PostgreSQL relies on the plan for its row order.
+
+statement ok
+CREATE TABLE int4_tbl(f1 INTEGER);
+
+statement ok
+INSERT INTO int4_tbl VALUES (0), (123456), (-123456), (2147483647), (-2147483647);
+
+statement ok
+CREATE TABLE int8_tbl(q1 BIGINT, q2 BIGINT);
+
+statement ok
+INSERT INTO int8_tbl VALUES
+  (123, 456),
+  (123, 4567890123456789),
+  (4567890123456789, 123),
+  (4567890123456789, 4567890123456789),
+  (4567890123456789, -4567890123456789);
+
+statement ok
+CREATE TABLE tenk1 AS SELECT i AS unique1, i % 2 AS two, i % 4 AS four FROM range(10000) t(i);
+
+# Test handling of grouping-expression references within sublinks
+query II
+select two + four as g, (select f1 from int4_tbl where f1 = (two + four))
+from tenk1 t1
+group by two + four order by 1;
+----
+0	0
+2	NULL
+4	NULL
+
+# q1 is actually a COALESCE expression here
+query II
+select q1, (select q1) as ss
+from int8_tbl i81 full outer join int8_tbl i82 using (q1)
+group by q1 order by q1;
+----
+123	123
+4567890123456789	4567890123456789
+
+statement ok
+create view gstest1(a,b,v)
+  as values (1,1,10),(1,1,11),(1,2,12),(1,2,13),(1,3,14),
+            (2,3,15),
+            (3,3,16),(3,4,17),
+            (4,1,18),(4,1,19);
+
+statement ok
+create table gstest2 (a integer, b integer, c integer, d integer,
+                      e integer, f integer, g integer, h integer);
+
+statement ok
+insert into gstest2 values
+  (1, 1, 1, 1, 1, 1, 1, 1),
+  (1, 1, 1, 1, 1, 1, 1, 2),
+  (1, 1, 1, 1, 1, 1, 2, 2),
+  (1, 1, 1, 1, 1, 2, 2, 2),
+  (1, 1, 1, 1, 2, 2, 2, 2),
+  (1, 1, 1, 2, 2, 2, 2, 2),
+  (1, 1, 2, 2, 2, 2, 2, 2),
+  (1, 2, 2, 2, 2, 2, 2, 2),
+  (2, 2, 2, 2, 2, 2, 2, 2);
+
+query IIIII
+select a, b, grouping(a, b), sum(t1.v), max(t2.c)
+  from gstest1 t1 full join gstest2 t2 using (a,b)
+ group by grouping sets ((a, b), ())
+ order by 1 nulls last, 2 nulls last;
+----
+1	1	0	147	2
+1	2	0	25	2
+1	3	0	14	NULL
+2	2	0	NULL	2
+2	3	0	15	NULL
+3	3	0	16	NULL
+3	4	0	17	NULL
+4	1	0	37	NULL
+NULL	NULL	3	271	2
+
+# references in subqueries should work too
+query IIIII
+select (select a),
+       (select b),
+       (select grouping(a, b)),
+       (select sum(t1.v)),
+       (select max(t2.c))
+  from gstest1 t1 full join gstest2 t2 using (a,b)
+ group by grouping sets ((a, b), ())
+ order by 1 nulls last, 2 nulls last;
+----
+1	1	0	147	2
+1	2	0	25	2
+1	3	0	14	NULL
+2	2	0	NULL	2
+2	3	0	15	NULL
+3	3	0	16	NULL
+3	4	0	17	NULL
+4	1	0	37	NULL
+NULL	NULL	3	271	2

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/table_column.hpp"
 #include "duckdb/planner/logical_plan_sql_export_context.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/sql_export_helpers.hpp"

@@ -111,6 +111,37 @@ TEST_CASE("Arrow filter pushdown - nested view types disable pushdown", "[arrow]
 	}
 }
 
+TEST_CASE("Arrow filter pushdown - filters kept above the scan next to an IN list", "[arrow]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE(!con.Query("CREATE TABLE src AS SELECT (['TOYOTA', 'HONDA', 'VPG', 'ISUZU', 'SMART', 'LUCID'])[i % 6 + 1] "
+	                   "AS name, (i % 10 = 0)::TINYINT AS flag FROM range(6000) t(i)")
+	             ->HasError());
+	// with a string view column the filters stay above the scan, which also returns the columns they read. The test
+	// factory returns every column and ignores pushed down filters, so each query reads both columns.
+	duckdb::vector<string> queries {
+	    "SELECT name, count(*) FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') "
+	    "GROUP BY 1 ORDER BY 1",
+	    "SELECT name, flag, count(*) FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') "
+	    "GROUP BY ALL ORDER BY ALL",
+	    "SELECT * FROM %s WHERE flag < 1 AND name IN ('VPG', 'ISUZU', 'SMART', 'LUCID', 'LOTUS') ORDER BY ALL LIMIT 3"};
+	// without unused_columns, a scan of every column has an empty projection list
+	for (auto disabled_optimizers : {"", "unused_columns"}) {
+		REQUIRE(!con.Query(StringUtil::Format("SET disabled_optimizers = '%s'", disabled_optimizers))->HasError());
+		for (auto &query : queries) {
+			INFO(query << " without " << disabled_optimizers);
+			auto factory = MakeArrowFactory(con, "SELECT * FROM src", true);
+			con.TableFunction("arrow_scan", {}, {}, ArrowTestHelper::ConstructArrowScan(*factory))
+			    ->CreateView("data", true, true);
+			auto result = con.Query(StringUtil::Format(query, "data"));
+			REQUIRE(!result->HasError());
+			auto expected = con.Query(StringUtil::Format(query, "src"));
+			REQUIRE(!expected->HasError());
+			REQUIRE(result->Equals(*expected));
+		}
+	}
+}
+
 // Hand-built Arrow columns that DuckDB's own Arrow export never produces, scanned through a factory that records
 // the filters the producer receives. The Arrow scan never re-applies a pushed filter, so a filter the producer
 // ignores shows up as extra rows.

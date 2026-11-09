@@ -60,7 +60,7 @@ struct STDDevBaseOperation {
 		} else if (source.count > 0) {
 			uint64_t count;
 			if (!TryAddOperator::Operation(target.count, source.count, count)) {
-				throw OutOfRangeException("Overflow in aggregate state combine");
+				OutOfRangeException::Throw("Overflow in aggregate state combine");
 			}
 			const double target_count = static_cast<double>(target.count);
 			const double source_count = static_cast<double>(source.count);

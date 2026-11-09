@@ -3,12 +3,12 @@
 # group: [attach]
 
 statement error
-ATTACH '__TEST_DIR__/mmap_reserve_range.db' AS x (IO_MODE 'MMAP', MMAP_RESERVE_SIZE '-1');
+ATTACH '{TEST_DIR}/mmap_reserve_range.db' AS x (IO_MODE 'MMAP', MMAP_RESERVE_SIZE '-1');
 ----
 Binder Error: MMAP_RESERVE_SIZE "-1" is out of range
 
 statement error
-ATTACH '__TEST_DIR__/mmap_reserve_range.db' AS x (IO_MODE 'MMAP', MMAP_RESERVE_SIZE 'none');
+ATTACH '{TEST_DIR}/mmap_reserve_range.db' AS x (IO_MODE 'MMAP', MMAP_RESERVE_SIZE 'none');
 ----
 Binder Error: MMAP_RESERVE_SIZE "none" is out of range
 

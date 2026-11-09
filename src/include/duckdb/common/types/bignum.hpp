@@ -76,8 +76,12 @@ public:
 	DUCKDB_API static string VarcharToBignum(const string_t &value);
 	//! ----------------------------------- Double Cast ----------------------------------- //
 	DUCKDB_API static bool BignumToDouble(const bignum_t &blob, double &result, bool &strict);
+	[[noreturn]] DUCKDB_API static void ThrowInvalidBlobSize(idx_t size);
 	template <class T>
 	static bool BignumToInt(const bignum_t &blob, T &result, bool &strict) {
+		if (blob.data.GetSize() < BIGNUM_HEADER_SIZE + 1) {
+			ThrowInvalidBlobSize(blob.data.GetSize());
+		}
 		auto data_byte_size = blob.data.GetSize() - BIGNUM_HEADER_SIZE;
 		auto data = blob.data.GetData();
 		bool is_negative = (data[0] & 0x80) == 0;
@@ -130,14 +134,14 @@ struct IntCastToBignum {
 struct HugeintCastToBignum {
 	template <class SRC>
 	static inline bignum_t Operation(SRC input, StringHeap &heap) {
-		throw InternalException("Unsupported type for cast to BIGNUM");
+		InternalException::Throw("Unsupported type for cast to BIGNUM");
 	}
 };
 
 struct TryCastToBignum {
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, Vector &result_vector, CastParameters &parameters) {
-		throw InternalException("Unsupported type for try cast to BIGNUM");
+		InternalException::Throw("Unsupported type for try cast to BIGNUM");
 	}
 };
 

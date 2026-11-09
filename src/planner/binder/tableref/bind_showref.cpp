@@ -118,7 +118,7 @@ BoundStatement Binder::BindDescribeQuery(ShowRef &ref) {
 			// we can! emit the information from the base table directly
 			PragmaTableInfo::GetColumnInfo(*result.table, *result.column, output);
 			// Override the base column name with the alias if one is specified.
-			if (alias != result.column->Name()) {
+			if (alias.GetIdentifierName() != result.column->Name().GetIdentifierName()) {
 				output.data[0].SetValue(row_index, Value(alias));
 			}
 		} else {

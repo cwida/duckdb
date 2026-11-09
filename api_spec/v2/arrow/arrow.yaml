@@ -88,7 +88,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   arrow_importer_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Resolves an Arrow schema into a reusable importer.
 
@@ -130,7 +130,7 @@ functions:
 
   arrow_importer_get_schema:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the resolved DuckDB schema.
 
@@ -159,7 +159,7 @@ functions:
 
   arrow_importer_append:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Gives the importer one array to convert.
 
@@ -214,7 +214,7 @@ functions:
 
   arrow_importer_next_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Produces the next chunk of the appended array, or NULL once the array is drained.
 
@@ -244,7 +244,7 @@ functions:
 
   arrow_importer_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys an importer.
 
@@ -266,7 +266,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   arrow_exporter_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Creates an exporter for one fixed list of columns.
 
@@ -292,13 +292,19 @@ functions:
         const: true
         description: An array of `count` column types. May be NULL only when `count` is 0.
       names:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: |
           An array of `count` column names, parallel to `types`. Each name must be valid UTF-8.
           May be NULL only when `count` is 0.
+      names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `names`; element i is the length of `names[i]`. May be NULL only when `names` is NULL.
       count:
         type: idx
         description: The number of columns, being the length of both `types` and `names`.
@@ -318,7 +324,7 @@ functions:
 
   arrow_exporter_get_schema:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the Arrow schema of the arrays this exporter produces.
 
@@ -344,7 +350,7 @@ functions:
 
   arrow_exporter_append:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Gives the exporter one chunk to convert.
 
@@ -389,7 +395,7 @@ functions:
 
   arrow_exporter_next_array:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Takes the next completed array, or reports that none is ready.
 
@@ -420,7 +426,7 @@ functions:
 
   arrow_exporter_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys an exporter.
 
@@ -441,7 +447,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   statement_execute_arrow:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Executes a parsed statement. The result produces Arrow arrays.
 
@@ -456,11 +462,17 @@ functions:
         type: sql_statement
         description: The statement to execute. Not consumed.
       parameter_names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: Optional. As in `[[statement_execute]]`.
+      parameter_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `parameter_names`; element i is the length of `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
       parameter_values:
         type: value
         indirection: 1
@@ -485,7 +497,7 @@ functions:
 
   prepared_statement_execute_arrow:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Executes a prepared statement. The result produces Arrow arrays.
 
@@ -497,11 +509,17 @@ functions:
         type: prepared_statement
         description: The prepared statement to execute. Not consumed.
       parameter_names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: Optional. As in `[[prepared_statement_execute]]`.
+      parameter_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `parameter_names`; element i is the length of `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
       parameter_values:
         type: value
         indirection: 1
@@ -526,7 +544,7 @@ functions:
 
   arrow_result_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Destroys the result. Works like `[[result_destroy]]`.
     role: destructor
@@ -540,7 +558,7 @@ functions:
 
   arrow_result_step:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Runs a bounded amount of the query and returns without blocking.
 
@@ -570,7 +588,7 @@ functions:
 
   arrow_result_fetch_array:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Blocks until the next array is ready.
 
@@ -594,7 +612,7 @@ functions:
 
   arrow_result_wait:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Blocks until `[[arrow_result_step]]` can make progress. Works like `[[result_wait]]`.
     role: method
@@ -611,7 +629,7 @@ functions:
 
   arrow_result_drain:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Runs the query to the end and reports the changed-row count. Works like `[[result_drain]]`.
     role: method
@@ -633,7 +651,7 @@ functions:
 
   arrow_result_get_result_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Returns the shape of the result. Works like `[[result_get_result_type]]`.
     role: getter
@@ -655,7 +673,7 @@ functions:
 
   arrow_result_get_statement_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Returns the type of statement that produced the result. Works like `[[result_get_statement_type]]`.
     role: getter
@@ -677,7 +695,7 @@ functions:
 
   arrow_result_get_schema:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Returns the Arrow schema of the result's arrays.
 
@@ -701,7 +719,7 @@ functions:
 
   arrow_result_to_arrow_c_stream:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-30" ]
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
     description: |
       Turns the result into an ArrowArrayStream.
 

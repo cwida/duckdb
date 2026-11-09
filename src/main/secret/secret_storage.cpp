@@ -4,6 +4,7 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/buffered_file_reader.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -130,25 +131,27 @@ SecretMatch SecretStorage::SelectBestMatch(SecretEntry &secret_entry, const stri
 unique_ptr<SecretEntry> CatalogSetSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                              OnCreateConflict on_conflict,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	if (secrets->GetEntry(GetTransactionOrDefault(transaction), secret->GetName())) {
+	lock_guard<mutex> guard(store_lock);
+	auto secret_name = secret->GetName();
+	auto existing = secrets->GetEntry(GetTransactionOrDefault(transaction), secret_name);
+	if (existing) {
 		if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
 			string persist_string = persistent ? "Persistent" : "Temporary";
 			string storage_string = persistent ? " in secret storage '" + storage_name + "'" : "";
-			throw InvalidInputException("%s secret with name %s already exists%s!", persist_string, secret->GetName(),
+			throw InvalidInputException("%s secret with name %s already exists%s!", persist_string, secret_name,
 			                            storage_string);
 		} else if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 			return nullptr;
-		} else if (on_conflict == OnCreateConflict::ALTER_ON_CONFLICT) {
+		} else if (on_conflict != OnCreateConflict::REPLACE_ON_CONFLICT) {
 			throw InternalException("unknown OnCreateConflict found while registering secret");
-		} else if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
-			secrets->DropEntry(GetTransactionOrDefault(transaction), secret->GetName(), true, true);
 		}
 	}
 
-	// Call write function
+	// the secret is written completely before the catalog changes, so a failed write leaves the catalog as it was
 	WriteSecret(*secret, on_conflict);
-
-	auto secret_name = secret->GetName();
+	if (existing) {
+		secrets->DropEntry(GetTransactionOrDefault(transaction), secret_name, true, true);
+	}
 	auto secret_entry = make_uniq<SecretCatalogEntry>(std::move(secret), Catalog::GetSystemCatalog(db));
 	secret_entry->temporary = !persistent;
 	secret_entry->secret->storage_mode = storage_name;
@@ -173,6 +176,7 @@ vector<SecretEntry> CatalogSetSecretStorage::AllSecrets(optional_ptr<CatalogTran
 
 void CatalogSetSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
                                                optional_ptr<CatalogTransaction> transaction) {
+	lock_guard<mutex> guard(store_lock);
 	auto entry = secrets->GetEntry(GetTransactionOrDefault(transaction), Identifier(name));
 	if (!entry) {
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
@@ -219,9 +223,55 @@ unique_ptr<SecretEntry> CatalogSetSecretStorage::GetSecretByName(const string &n
 	return nullptr;
 }
 
+void PersistentSecretFiles::Set(const Identifier &secret_name, const string &path) {
+	lock_guard<mutex> guard(lock);
+	paths[secret_name] = path;
+}
+
+void PersistentSecretFiles::Remove(const Identifier &secret_name) {
+	lock_guard<mutex> guard(lock);
+	paths.erase(secret_name);
+}
+
+string PersistentSecretFiles::Get(const Identifier &secret_name) {
+	lock_guard<mutex> guard(lock);
+	auto entry = paths.find(secret_name);
+	return entry == paths.end() ? string() : entry->second;
+}
+
+bool PersistentSecretFiles::TryGetOtherSecretAt(const string &path, const Identifier &secret_name,
+                                                string &other_secret_name) {
+	lock_guard<mutex> guard(lock);
+	for (auto &entry : paths) {
+		if (entry.second == path && entry.first != secret_name) {
+			other_secret_name = entry.first.GetIdentifierName();
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Reads the name that is stored in a secret file, without loading the secret
+static bool TryReadSecretName(FileSystem &fs, const string &path, string &name) {
+	try {
+		BufferedFileReader reader(fs, path.c_str());
+		if (reader.Finished()) {
+			return false;
+		}
+		BinaryDeserializer deserializer(reader);
+		deserializer.Begin();
+		deserializer.ReadProperty<Identifier>(100, "type");
+		deserializer.ReadProperty<Identifier>(101, "provider");
+		name = deserializer.ReadProperty<Identifier>(102, "name").GetIdentifierName();
+		return true;
+	} catch (std::exception &) {
+		return false;
+	}
+}
+
 LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseInstance &db_p, const string &name_p,
                                                const string &secret_path_p)
-    : CatalogSetSecretStorage(db_p, name_p, LOCAL_FILE_STORAGE_OFFSET),
+    : CatalogSetSecretStorage(db_p, name_p, LOCAL_FILE_STORAGE_OFFSET), files(make_shared_ptr<PersistentSecretFiles>()),
       secret_path(FileSystem::ExpandPath(secret_path_p, nullptr)) {
 	persistent = true;
 
@@ -233,8 +283,15 @@ LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseI
 				string full_path = fs.JoinPath(secret_path, fname);
 
 				if (StringUtil::EndsWith(full_path, ".duckdb_secret")) {
-					string secret_name = fname.substr(0, fname.size() - 14); // size of file ext
+					string file_stem = fname.substr(0, fname.size() - 14); // size of file ext
+					string secret_name = SecretNameFromFileName(file_stem);
+					if (secret_name != file_stem) {
+						// the file is either the escaped file of a secret, or a file written before names were
+						// escaped that is named after a secret that looks escaped: the file tells which
+						TryReadSecretName(fs, full_path, secret_name);
+					}
 					persistent_secrets.insert(Identifier(secret_name));
+					files->Set(Identifier(secret_name), full_path);
 				}
 			});
 		}
@@ -247,7 +304,7 @@ LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseI
 
 	auto &catalog = Catalog::GetSystemCatalog(db);
 	secrets = make_uniq<CatalogSet>(Catalog::GetSystemCatalog(db),
-	                                make_uniq<DefaultSecretGenerator>(catalog, manager, persistent_secrets));
+	                                make_uniq<DefaultSecretGenerator>(catalog, manager, persistent_secrets, files));
 }
 
 void CatalogSetSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) {
@@ -268,7 +325,7 @@ static void WriteSecretFileToDisk(FileSystem &fs, const string &path, const Base
 	auto open_flags = FileFlags::FILE_FLAGS_WRITE;
 	// Ensure we are writing to a private file with 600 permission
 	open_flags |= FileFlags::FILE_FLAGS_PRIVATE;
-	// Ensure we overwrite anything that may have been placed there since our delete above
+	// Create the file, which must not exist yet
 	open_flags |= FileFlags::FILE_FLAGS_FILE_CREATE_NEW;
 
 	auto file_writer = BufferedFileWriter(fs, path, open_flags);
@@ -278,7 +335,56 @@ static void WriteSecretFileToDisk(FileSystem &fs, const string &path, const Base
 	secret.Serialize(serializer);
 	serializer.End();
 
-	file_writer.Flush();
+	// a file system can report a failed write only when the file is synced or closed
+	file_writer.Sync();
+	file_writer.Close();
+}
+
+struct SecretNameEscape {
+	char character;
+	const char *escaped;
+};
+
+static const SecretNameEscape SECRET_NAME_ESCAPES[] = {{'%', "%25"}, {'/', "%2F"},  {'\\', "%5C"},
+                                                       {':', "%3A"}, {'\0', "%00"}, {'.', "%2E"}};
+
+string LocalFileSecretStorage::SecretFileName(const string &secret_name) {
+	string result;
+	for (idx_t i = 0; i < secret_name.size(); i++) {
+		auto c = secret_name[i];
+		bool escaped = false;
+		for (auto &escape : SECRET_NAME_ESCAPES) {
+			// a dot is only escaped at the start of the name, so that the file is never "." or ".." or hidden
+			if (c == escape.character && (c != '.' || i == 0)) {
+				result += escape.escaped;
+				escaped = true;
+				break;
+			}
+		}
+		if (!escaped) {
+			result += c;
+		}
+	}
+	return result + ".duckdb_secret";
+}
+
+string LocalFileSecretStorage::SecretNameFromFileName(const string &file_name) {
+	string result;
+	for (idx_t i = 0; i < file_name.size(); i++) {
+		bool unescaped = false;
+		for (auto &escape : SECRET_NAME_ESCAPES) {
+			if (file_name.compare(i, 3, escape.escaped) == 0) {
+				result += escape.character;
+				i += 2;
+				unescaped = true;
+				break;
+			}
+		}
+		if (!unescaped) {
+			result += file_name[i];
+		}
+	}
+	return result;
 }
 
 void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) {
@@ -299,22 +405,42 @@ void LocalFileSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConfl
 		}
 	}
 
-	string file_path = fs.JoinPath(secret_path, secret.GetName() + ".duckdb_secret");
+	auto &secret_name = secret.GetName();
+	// a replaced secret keeps its file, which can predate escaped names, and a new secret gets its escaped name
+	string file_path = files->Get(secret_name);
+	if (file_path.empty()) {
+		file_path = fs.JoinPath(secret_path, SecretFileName(secret_name.GetIdentifierName()));
+		string other_secret;
+		if (files->TryGetOtherSecretAt(file_path, secret_name, other_secret)) {
+			throw IOException(
+			    "Failed to write the file '%s' of the secret \"%s\": the file belongs to the secret \"%s\"", file_path,
+			    secret_name.GetIdentifierName(), other_secret);
+		}
+	}
 	string temp_path = file_path + ".tmp-" + UUID::ToString(UUID::GenerateRandomUUID());
 
-	// If persistent file already exists remove
-	fs.TryRemoveFile(file_path);
-	// If temporary file already exists remove
-	fs.TryRemoveFile(temp_path);
-
-	WriteSecretFileToDisk(fs, temp_path, secret);
-
-	fs.MoveFile(temp_path, file_path);
+	// the complete file is renamed over the secret's file in one step, so a crash leaves the old file or the new one
+	try {
+		WriteSecretFileToDisk(fs, temp_path, secret);
+		fs.MoveFile(temp_path, file_path);
+	} catch (...) {
+		// the secret is not stored, so the temporary file goes, and its error cannot replace the one being reported
+		try {
+			fs.TryRemoveFile(temp_path);
+		} catch (...) { // NOLINT
+		}
+		throw;
+	}
+	files->Set(secret_name, file_path);
 }
 
 void LocalFileSecretStorage::RemoveSecret(const string &secret, OnEntryNotFound on_entry_not_found) {
 	auto &fs = FileSystem::GetLocal(db);
-	string file = fs.JoinPath(secret_path, secret + ".duckdb_secret");
+	string file = files->Get(Identifier(secret));
+	if (file.empty()) {
+		file = fs.JoinPath(secret_path, SecretFileName(secret));
+	}
+	files->Remove(Identifier(secret));
 	persistent_secrets.erase(Identifier(secret));
 	try {
 		fs.RemoveFile(file);
@@ -395,9 +521,12 @@ optional_ptr<ConnectionSecretState> GetConnectionState(optional_ptr<CatalogTrans
 	}
 	auto &context = transaction->GetContext();
 	if (create) {
-		return context.registered_state->GetOrCreate<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY).get();
+		return context.GetContext()
+		    .GetRegisteredState()
+		    .GetOrCreate<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY)
+		    .get();
 	}
-	return context.registered_state->Get<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY).get();
+	return context.GetContext().GetRegisteredState().Get<ConnectionSecretState>(CONNECTION_SECRET_STATE_KEY).get();
 }
 
 } // namespace

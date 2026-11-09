@@ -171,6 +171,10 @@ static void PrintfFunction(DataChunk &args, ExpressionState &state, Vector &resu
 
 		// finally actually perform the format
 		string dynamic_result = FORMAT_FUN::template OP<CTX>(format_string.c_str(), current_args);
+		if (dynamic_result.size() > string_t::MAX_STRING_SIZE) {
+			throw OutOfRangeException("Format result of size %llu exceeds the maximum string size of %llu",
+			                          dynamic_result.size(), string_t::MAX_STRING_SIZE);
+		}
 		if (!Utf8Proc::IsValid(dynamic_result.c_str(), dynamic_result.size())) {
 			throw InvalidInputException("Invalid UTF8 produced by format string \"%s\" - note that %%c writes a "
 			                            "single byte, use chr(...) to write a Unicode code point",

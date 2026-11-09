@@ -1,0 +1,63 @@
+# name: test/sql/prepared/prepared_time_zone_remote_catalog.test
+# description: With a remote catalog attached, constants folded before binding are folded again when they read TimeZone
+# group: [prepared]
+
+require quack
+
+require httpfs
+
+require icu
+
+statement ok
+CALL quack_serve(token='test_token');
+
+statement ok
+ATTACH 'quack:localhost' AS qk (TOKEN 'test_token');
+
+statement ok
+SET TimeZone = 'UTC';
+
+# hour reads the TimeZone when it is bound
+statement ok
+PREPARE folded_function AS SELECT hour(to_timestamp(1767225600));
+
+# the cast of the literal is folded while binding epoch_us
+statement ok
+PREPARE folded_argument AS SELECT epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00');
+
+# the cast to VARCHAR is not an argument of a function
+statement ok
+PREPARE folded_cast AS SELECT (TIMESTAMPTZ '2026-01-01 00:00:00+00')::VARCHAR;
+
+query I
+EXECUTE folded_function;
+----
+0
+
+query I
+EXECUTE folded_argument;
+----
+1767225600000000
+
+query I
+EXECUTE folded_cast;
+----
+2026-01-01 00:00:00+00
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE folded_function;
+----
+1
+
+query I
+EXECUTE folded_argument;
+----
+1767222000000000
+
+query I
+EXECUTE folded_cast;
+----
+2026-01-01 01:00:00+01

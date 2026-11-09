@@ -107,4 +107,27 @@ JSONFormat EnumUtil::FromString<JSONFormat>(const char *value) {
    throw NotImplementedException(StringUtil::Format("Enum value of type JSONFormat: '%s' not implemented", value));
 }
 
+template<>
+const char* EnumUtil::ToChars<JSONKeyMatch>(JSONKeyMatch value) {
+	switch(value) {
+	case JSONKeyMatch::EXACT:
+		return "EXACT";
+	case JSONKeyMatch::CASE_INSENSITIVE:
+		return "CASE_INSENSITIVE";
+	default:
+		throw NotImplementedException(StringUtil::Format("Enum value of type JSONKeyMatch: '%d' not implemented", value));
+	}
+}
+
+template<>
+JSONKeyMatch EnumUtil::FromString<JSONKeyMatch>(const char *value) {
+    if (StringUtil::Equals(value, "EXACT")) {
+		return JSONKeyMatch::EXACT;
+	}
+    if (StringUtil::Equals(value, "CASE_INSENSITIVE")) {
+		return JSONKeyMatch::CASE_INSENSITIVE;
+	}
+   throw NotImplementedException(StringUtil::Format("Enum value of type JSONKeyMatch: '%s' not implemented", value));
+}
+
 } // namespace duckdb

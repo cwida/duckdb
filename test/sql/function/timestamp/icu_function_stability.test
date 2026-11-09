@@ -1,0 +1,33 @@
+# name: test/sql/function/timestamp/icu_function_stability.test
+# description: ICU functions whose bind reads TimeZone or Calendar are consistent only within a query
+# group: [timestamp]
+
+require icu
+
+statement ok
+LOAD icu;
+
+query III
+SELECT function_name, parameter_types::VARCHAR, stability
+FROM duckdb_functions()
+WHERE function_name IN ('age', 'current_localtimestamp', 'epoch', 'make_timestamptz', 'strftime')
+	AND (list_contains(parameter_types, 'TIMESTAMP WITH TIME ZONE') OR function_name IN ('current_localtimestamp', 'make_timestamptz'))
+ORDER BY ALL;
+----
+age	[TIMESTAMP WITH TIME ZONE, TIMESTAMP WITH TIME ZONE]	CONSISTENT_WITHIN_QUERY
+age	[TIMESTAMP WITH TIME ZONE]	CONSISTENT_WITHIN_QUERY
+current_localtimestamp	[]	CONSISTENT_WITHIN_QUERY
+epoch	[TIMESTAMP WITH TIME ZONE]	CONSISTENT
+make_timestamptz	[BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, DOUBLE, VARCHAR]	CONSISTENT_WITHIN_QUERY
+make_timestamptz	[BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, DOUBLE]	CONSISTENT_WITHIN_QUERY
+make_timestamptz	[BIGINT]	CONSISTENT
+strftime	[TIMESTAMP WITH TIME ZONE, VARCHAR]	CONSISTENT_WITHIN_QUERY
+strftime	[VARCHAR, TIMESTAMP WITH TIME ZONE]	CONSISTENT
+
+# pg_proc reports them as stable, as PostgreSQL does for functions that read TimeZone
+query II
+SELECT DISTINCT proname, provolatile FROM pg_proc WHERE proname IN ('now', 'strftime') ORDER BY ALL;
+----
+now	s
+strftime	i
+strftime	s

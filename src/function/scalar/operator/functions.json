@@ -53,6 +53,13 @@
         "struct": "OperatorModuloFun"
     },
     {
+        "name": "fmod",
+        "parameters": "x,y",
+        "description": "Calculates the modulo value with the sign of y. Always returns a floating point number.",
+        "example": "fmod(-10, 3)",
+        "type": "scalar_function_set"
+    },
+    {
         "name": "__cast",
         "parameters": "value",
         "description": "Casts value to the target type of the expression.",

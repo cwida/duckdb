@@ -1,0 +1,97 @@
+# name: test/sql/storage/ctas_limit0_insert.test
+# description: Rows inserted after CREATE TABLE AS ... LIMIT 0 in one transaction stay visible
+# group: [storage]
+
+statement ok
+ATTACH '{TEST_DIR}/ctas_limit0.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+statement ok
+CREATE TEMP TABLE b AS SELECT range AS id FROM range(5000);
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE TABLE t AS SELECT id FROM b LIMIT 0;
+
+statement ok
+INSERT INTO t SELECT id FROM b;
+
+statement ok
+COMMIT;
+
+query II
+SELECT count(*) AS n, sum(id) AS s FROM t;
+----
+5000	12497500
+
+query I
+SELECT max(id) FROM t;
+----
+4999
+
+query I
+SELECT id FROM t ORDER BY id LIMIT 1;
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE id >= 0;
+----
+5000
+
+query I
+SELECT count(*) FROM t GROUP BY id % 2 ORDER BY 1 LIMIT 1;
+----
+2500
+
+# WHERE false creates the same empty table as LIMIT 0
+statement ok
+BEGIN;
+
+statement ok
+CREATE TABLE u AS SELECT id FROM b WHERE false;
+
+statement ok
+INSERT INTO u SELECT id FROM b;
+
+statement ok
+COMMIT;
+
+query II
+SELECT count(*), sum(id) FROM u;
+----
+5000	12497500
+
+# A small insert still appends into the table created by LIMIT 0
+statement ok
+BEGIN;
+
+statement ok
+CREATE TABLE small AS SELECT id FROM b LIMIT 0;
+
+statement ok
+INSERT INTO small SELECT id FROM b WHERE id < 10;
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM small;
+----
+10
+
+# The same load outside a transaction is unchanged
+statement ok
+CREATE TABLE direct AS SELECT id FROM b LIMIT 0;
+
+statement ok
+INSERT INTO direct SELECT id FROM b;
+
+query II
+SELECT count(*), sum(id) FROM direct;
+----
+5000	12497500

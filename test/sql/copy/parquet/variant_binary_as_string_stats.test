@@ -5,18 +5,18 @@
 require parquet
 
 statement ok
-COPY (SELECT 1::VARIANT AS i) TO '__TEST_DIR__/variant_bas.parquet' (FORMAT parquet);
+COPY (SELECT 1::VARIANT AS i) TO '{TEST_DIR}/variant_bas.parquet' (FORMAT parquet);
 
 query I
-SELECT i::VARCHAR FROM read_parquet('__TEST_DIR__/variant_bas.parquet', binary_as_string=true);
+SELECT i::VARCHAR FROM read_parquet('{TEST_DIR}/variant_bas.parquet', binary_as_string=true);
 ----
 1
 
 statement ok
-COPY (SELECT {'a': 1}::VARIANT AS i UNION ALL SELECT NULL) TO '__TEST_DIR__/variant_bas2.parquet' (FORMAT parquet);
+COPY (SELECT {'a': 1}::VARIANT AS i UNION ALL SELECT NULL) TO '{TEST_DIR}/variant_bas2.parquet' (FORMAT parquet);
 
 query I
-SELECT i::VARCHAR FROM read_parquet('__TEST_DIR__/variant_bas2.parquet', binary_as_string=true) ORDER BY ALL;
+SELECT i::VARCHAR FROM read_parquet('{TEST_DIR}/variant_bas2.parquet', binary_as_string=true) ORDER BY ALL;
 ----
 {'a': 1}
 NULL

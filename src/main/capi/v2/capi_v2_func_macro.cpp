@@ -142,19 +142,19 @@ DUCKDB_V2_ERROR duckdb_v2_macro_function_create(duckdb_v2_factory_handle factory
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_macro_function_set_name(duckdb_v2_macro_function_handle function,
-                                                  const duckdb_v2_identifier_t *name,
-                                                  duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_macro_function_set_name(duckdb_v2_macro_function_handle function, const char *name,
+                                                  idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_macro_function_set_body(duckdb_v2_macro_function_handle function, const duckdb_v2_str *body,
-                                                  duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_macro_function_set_body(duckdb_v2_macro_function_handle function, const char *body,
+                                                  idx_t body_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(body);
-	return WithErrorHandler(err, [&]() { Convert(function)->body = duckdb::string(Convert(body)); });
+	DUCKDB_CHECK_STR_ARG(body, body_length);
+	return WithErrorHandler(err, [&]() { Convert(function)->body = duckdb::string(Convert(body, body_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_macro_function_get_signature(duckdb_v2_macro_function_handle function,

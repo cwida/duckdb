@@ -1,8 +1,8 @@
 diff --git a/src/aws_secret.cpp b/src/aws_secret.cpp
-index ee91597..df70867 100644
+index 2c397b4..77da683 100644
 --- a/src/aws_secret.cpp
 +++ b/src/aws_secret.cpp
-@@ -10,6 +10,7 @@
+@@ -12,6 +12,7 @@
  #include "duckdb/logging/logger.hpp"
  #include "duckdb/main/database.hpp"
  #include "duckdb/main/extension/extension_loader.hpp"
@@ -10,7 +10,7 @@ index ee91597..df70867 100644
  #include "duckdb/main/settings.hpp"
  
  #include <aws/core/Aws.h>
-@@ -127,8 +128,9 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
+@@ -129,8 +130,9 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
  //! Generate a custom credential provider chain for authentication
  class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
  public:
@@ -22,7 +22,7 @@ index ee91597..df70867 100644
  	                                                 const string &external_id = "",
  	                                                 const string &web_identity_token_file = "",
  	                                                 const string &session_name = "") {
-@@ -169,11 +171,12 @@ public:
+@@ -171,11 +173,12 @@ public:
  				// constructed the same way the SDK's DefaultAWSCredentialsProviderChain does it.
  				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
  				using Aws::Auth::GeneralHTTPCredentialsProvider;
@@ -39,7 +39,7 @@ index ee91597..df70867 100644
  				if (!container_provider->IsValid()) {
  					throw InvalidConfigurationException(
  					    "Chain value 'container' requires container credentials to be available: "
-@@ -373,16 +376,16 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
+@@ -376,16 +379,16 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  	for (const auto &item : StringUtil::Split(chain, ';')) {
  		if (item == "container") {
  			using Aws::Auth::GeneralHTTPCredentialsProvider;
@@ -62,7 +62,7 @@ index ee91597..df70867 100644
  			break;
  		}
  	}
-@@ -394,9 +397,9 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
+@@ -397,9 +400,9 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  		if (chain.empty()) {
  			throw InvalidConfigurationException("Invalid RDS secret parameters, 'CHAIN' option must be specified");
  		}
@@ -75,7 +75,7 @@ index ee91597..df70867 100644
  		return CreateRDSSecretWithProvider(provider, input, region);
  	}
  
-@@ -408,8 +411,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
+@@ -411,8 +414,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  	}
  
  	if (!chain.empty()) {
@@ -86,7 +86,7 @@ index ee91597..df70867 100644
  		credentials = provider.GetAWSCredentials();
  	} else {
  		if (input.options.find("profile") != input.options.end()) {
-@@ -428,7 +431,8 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
+@@ -431,7 +434,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
  		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
  		chain = "config";
@@ -96,7 +96,7 @@ index ee91597..df70867 100644
  		credentials = provider.GetAWSCredentials();
  	}
  
-@@ -536,9 +540,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &
+@@ -562,9 +566,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSec
  }
  
  std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
@@ -110,7 +110,7 @@ index ee91597..df70867 100644
  	if (chain.empty()) {
  		if (!profile.empty()) {
  			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
-@@ -546,7 +551,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials,
+@@ -572,7 +577,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials,
  		}
  		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
  	}
@@ -120,10 +120,10 @@ index ee91597..df70867 100644
  	                                                                web_identity_token_file, session_name);
  }
 diff --git a/src/cloudformation_functions.cpp b/src/cloudformation_functions.cpp
-index 2ce6942..b1bbccb 100644
+index d784ac4..71d17dd 100644
 --- a/src/cloudformation_functions.cpp
 +++ b/src/cloudformation_functions.cpp
-@@ -373,7 +373,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
+@@ -382,7 +382,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
  	// for describe_stack, delete_stack and list_stacks. Accepting per-call
  	// credential overrides here and nowhere else meant a stack created under an
  	// assumed role could not be deleted through this extension.
@@ -132,7 +132,7 @@ index 2ce6942..b1bbccb 100644
  	auto client_config = BuildClientConfigWithCa();
  	client_config.region = region.c_str();
  	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
-@@ -530,7 +530,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
+@@ -545,7 +545,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
  		return;
  	}
  
@@ -141,7 +141,7 @@ index 2ce6942..b1bbccb 100644
  	auto cfg = BuildClientConfigWithCa();
  	cfg.region = data.handle.region.c_str();
  	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -639,7 +639,7 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
+@@ -655,7 +655,7 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
  		return;
  	}
  
@@ -150,7 +150,7 @@ index 2ce6942..b1bbccb 100644
  	auto cfg = BuildClientConfigWithCa();
  	cfg.region = data.handle.region.c_str();
  	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -791,7 +791,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
+@@ -808,7 +808,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
  	auto &data = (CloudFormationListStacksBindData &)*data_p.bind_data;
  
  	if (!data.initialized) {
@@ -159,61 +159,15 @@ index 2ce6942..b1bbccb 100644
  		auto cfg = BuildClientConfigWithCa();
  		cfg.region = data.region.c_str();
  		Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -882,8 +882,9 @@ struct CloudFormationDescribeStacksRow {
- };
- 
- // Fetch all stacks in one region (paginated), appending to `out`. Throws on AWS error.
--static void DescribeRegionStacks(const string &region, vector<CloudFormationDescribeStacksRow> &out) {
+@@ -904,7 +904,7 @@ static void DescribeRegionStacks(DatabaseInstance &db, const string &region,
+ 	// Runs as a scheduler task on another thread, where the thread-local binding set by the
+ 	// table function does not reach, so establish one here.
+ 	AwsInstanceBinding aws_binding(db);
 -	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-+static void DescribeRegionStacks(DatabaseInstance &db, const string &region,
-+                                 vector<CloudFormationDescribeStacksRow> &out) {
 +	auto provider = BuildAwsCredentialsProvider(db, "", /*require_credentials=*/true);
  	auto cfg = BuildClientConfigWithCa();
  	cfg.region = region.c_str();
  	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -944,12 +945,13 @@ static void DescribeRegionStacks(const string &region, vector<CloudFormationDesc
- // abort the whole sweep via WorkOnTasks) and replaces its slot with a single 'error' sentinel row, so
- // a dead region is surfaced-but-not-fatal instead of silently vanishing.
- struct DescribeRegionTask : public BaseExecutorTask {
--	DescribeRegionTask(TaskExecutor &executor, string region_p, vector<CloudFormationDescribeStacksRow> &slot_p)
--	    : BaseExecutorTask(executor), region(std::move(region_p)), slot(slot_p) {
-+	DescribeRegionTask(TaskExecutor &executor, DatabaseInstance &db, string region_p,
-+	                   vector<CloudFormationDescribeStacksRow> &slot_p)
-+	    : BaseExecutorTask(executor), db(db), region(std::move(region_p)), slot(slot_p) {
- 	}
- 	void ExecuteTask() override {
- 		try {
--			DescribeRegionStacks(region, slot);
-+			DescribeRegionStacks(db, region, slot);
- 		} catch (const std::exception &e) {
- 			EmitError(e.what());
- 		} catch (...) {
-@@ -965,6 +967,7 @@ struct DescribeRegionTask : public BaseExecutorTask {
- 		err.outputs = Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL
- 		slot.push_back(std::move(err));
- 	}
-+	DatabaseInstance &db;
- 	string region;
- 	vector<CloudFormationDescribeStacksRow> &slot;
- };
-@@ -1047,14 +1050,15 @@ static void CloudFormationDescribeStacksFun(ClientContext &context, TableFunctio
- 	if (!data.initialized) {
- 		if (data.throw_on_region_error) {
- 			// Single explicit region: run inline and let its error propagate.
--			DescribeRegionStacks(data.regions[0], data.rows);
-+			DescribeRegionStacks(*context.db, data.regions[0], data.rows);
- 		} else {
- 			// Parallel fan-out: one task per region into its own slot; a region that errors is skipped. Fixed-size
- 			// `slots` so the vector never reallocates while tasks hold references into it.
- 			vector<vector<CloudFormationDescribeStacksRow>> slots(data.regions.size());
- 			TaskExecutor executor(context);
- 			for (idx_t i = 0; i < data.regions.size(); i++) {
--				executor.ScheduleTask(make_uniq<DescribeRegionTask>(executor, data.regions[i], slots[i]));
-+				executor.ScheduleTask(
-+				    make_uniq<DescribeRegionTask>(executor, *context.db, data.regions[i], slots[i]));
- 			}
- 			executor.WorkOnTasks();
- 			for (auto &slot : slots) {
 diff --git a/src/include/aws_client.hpp b/src/include/aws_client.hpp
 index 0a18d6e..624910f 100644
 --- a/src/include/aws_client.hpp

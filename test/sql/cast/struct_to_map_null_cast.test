@@ -1,0 +1,51 @@
+# name: test/sql/cast/struct_to_map_null_cast.test
+# description: STRUCT -> MAP cast of NULL rows must not force the field-name key cast
+# group: [cast]
+
+# A constant NULL struct casts to a NULL map (already worked: the executor short-circuits).
+query I
+SELECT NULL::STRUCT(k VARCHAR, i BIGINT)::MAP(BIGINT, BIGINT);
+----
+NULL
+
+# Flat all-NULL struct vector (list_extract out of range) must yield NULL, not throw on the key cast.
+query I
+SELECT list_extract([struct_pack(k := k, i := 1)], 5)::MAP(BIGINT, BIGINT)
+FROM (VALUES ('a'),('b')) t(k);
+----
+NULL
+NULL
+
+# Aggregate form: FILTER removes every row, so min() is NULL for the only group.
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1::BIGINT, 'a', 10::BIGINT)) v(i, k, j);
+
+query I
+SELECT min(struct_pack(k := k, i := i)) FILTER (WHERE j < 0)::MAP(BIGINT, BIGINT)
+FROM t GROUP BY i;
+----
+NULL
+
+# Mix of NULL and valid rows: NULL rows stay NULL, valid rows go through the key cast.
+query I
+SELECT (CASE WHEN i % 2 = 0 THEN NULL ELSE {'1': i, '2': i * 10} END)::MAP(INT, INT)
+FROM range(1, 5) t(i) ORDER BY i;
+----
+{1=1, 2=10}
+NULL
+{1=3, 2=30}
+NULL
+
+# Key cast that can never fail (VARCHAR keys): all-NULL input still returns NULL.
+query I
+SELECT list_extract([struct_pack(k := k, i := 1)], 5)::MAP(VARCHAR, BIGINT)
+FROM (VALUES ('a'),('b')) t(k);
+----
+NULL
+NULL
+
+# A non-NULL row whose field-name key genuinely cannot be cast must still throw.
+statement error
+SELECT {'k': 1, 'i': 2}::MAP(BIGINT, BIGINT);
+----
+Conversion Error: Could not convert string 'k' to INT64

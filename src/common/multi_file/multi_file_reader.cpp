@@ -94,11 +94,17 @@ bool MultiFileBindData::MatchesPhysicalColumn(idx_t column_idx, const Identifier
 }
 
 bool MultiFileBindData::HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const {
-	if (physical_columns.size() != names.size() || physical_columns.size() != types.size()) {
+	if (physical_columns.size() > names.size() || names.size() != types.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < physical_columns.size(); i++) {
 		if (!MatchesPhysicalColumn(i, physical_columns[i].name, physical_columns[i].type)) {
+			return false;
+		}
+	}
+	// Appended generated columns have no physical statistics to misinterpret.
+	for (idx_t i = physical_columns.size(); i < names.size(); i++) {
+		if (!IsGeneratedColumn(i)) {
 			return false;
 		}
 	}
@@ -540,6 +546,11 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		options.SetColumnStatistics(key, val);
 	} else if (key == "maximum_sample_files") {
 		options.SetMaximumSampleFiles(key, val);
+	} else if (key == "maximum_files_for_stats") {
+		if (val.IsNull()) {
+			throw InvalidInputException("Cannot use NULL as argument for %s", key);
+		}
+		options.maximum_files_for_stats = val.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	} else if (key == "hive_types_autocast" || key == "hive_type_autocast") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -1067,7 +1078,41 @@ MultiFileReaderBindData MultiFileReader::BindReader(ClientContext &context, vect
 	if (file_options.maximum_sample_files > 1) {
 		return BindSampledReader(context, return_types, names, files, result, options, file_options);
 	}
-	return BindFirstReader(context, return_types, names, files, result, options, file_options);
+	auto bind_data = BindFirstReader(context, return_types, names, files, result, options, file_options);
+	ReadFilesForStatistics(context, files, result, options, file_options);
+	return bind_data;
+}
+
+void MultiFileReader::ReadFilesForStatistics(ClientContext &context, MultiFileList &files, MultiFileBindData &result,
+                                             BaseFileReaderOptions &options, MultiFileOptions &file_options) {
+	auto max_files = file_options.maximum_files_for_stats;
+	if (max_files == 0 || !result.union_readers.empty()) {
+		return;
+	}
+	// a single file bound on its own already has its statistics from the initial reader
+	const idx_t min_files = result.initial_reader ? 2 : 1;
+	auto count = files.GetFileCount(max_files + 1);
+	if (count.type != FileExpansionType::ALL_FILES_EXPANDED || count.count < min_files || count.count > max_files) {
+		return;
+	}
+	// an open first file is reused: only the others are read. A file that cannot be read gives no statistics rather
+	// than failing the bind: the scan reports it
+	auto all_files = files.GetAllFiles();
+	if (result.initial_reader && result.initial_reader->GetFileName() != all_files[0].path) {
+		return;
+	}
+	vector<OpenFileInfo> unread_files(all_files.begin() + (result.initial_reader ? 1 : 0), all_files.end());
+	auto readers = UnionByName::ReadUnionData(context, unread_files, options, file_options, *this, *result.interface,
+	                                          true, TaskSchedulerType::ASYNC);
+	for (auto &reader : readers) {
+		if (!reader) {
+			return;
+		}
+	}
+	if (result.initial_reader) {
+		readers.insert(readers.begin(), result.initial_reader->GetUnionData(0));
+	}
+	std::move(readers.begin(), readers.end(), std::back_inserter(result.union_readers));
 }
 
 MultiFileReaderBindData MultiFileReader::BindFirstReader(ClientContext &context, vector<LogicalType> &return_types,

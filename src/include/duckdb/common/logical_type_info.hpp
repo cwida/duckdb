@@ -18,10 +18,10 @@ namespace duckdb {
 class ParsedExpression;
 
 struct DecimalTypeInfo : public LogicalTypeInfo {
-	DecimalTypeInfo(uint8_t width_p, uint8_t scale_p);
+	DecimalTypeInfo(uint32_t width_p, uint32_t scale_p);
 
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 
 public:
 	void Serialize(Serializer &serializer) const override;
@@ -114,6 +114,9 @@ public:
 	const Vector &GetValuesInsertOrder() const;
 	const idx_t &GetDictSize() const;
 	static PhysicalType DictType(idx_t size);
+	[[noreturn]] static void ThrowDuplicateValue(const string_t &value);
+	[[noreturn]] static void ThrowCorruptedIndex(idx_t index, idx_t size);
+	[[noreturn]] static void ThrowCorruptedCount(idx_t size, idx_t read_count);
 
 	static LogicalType CreateType(const Vector &ordered_data, idx_t size);
 	static unique_ptr<LogicalTypeInfo> CreateTypeInfo(const Vector &ordered_data, idx_t size);

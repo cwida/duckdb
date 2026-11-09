@@ -1,11 +1,8 @@
 #include "duckdb/execution/index/unbound_index.hpp"
 
-#include "duckdb/common/error_data.hpp"
-#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/main/attached_database.hpp"
-#include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/block_manager.hpp"
@@ -61,7 +58,6 @@ void UnboundIndex::ResetStorage() {
 }
 
 IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVersion) {
-	// Persisting this index would lose its buffered operations.
 	if (HasBufferedReplays()) {
 		throw InternalException("Cannot checkpoint index %s: it has buffered WAL operations that were not bound",
 		                        GetIndexName());
@@ -69,38 +65,20 @@ IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVer
 	return {storage_info, nullptr};
 }
 
-void UnboundIndex::ThrowBindFailure(const ErrorData &error, const string &reason) {
-	storage_reclaimed = true;
-	if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
-		error.Throw();
-	}
-	if (db.IsInitialDatabase()) {
-		ValidChecker::Invalidate(db.GetDatabase(), error.RawMessage());
-		throw FatalException("%s of index %s: %s", reason, GetIndexName(), error.RawMessage());
-	}
-	ValidChecker::Invalidate(db, StringUtil::Format("Database %s has been invalidated because binding an index "
-	                                                "failed. Detach and reattach it before using it again. "
-	                                                "Original error: %s",
-	                                                db.GetName(), error.RawMessage()));
-	throw IOException("%s of index %s: %s. Database %s has been invalidated: detach and reattach it to retry.", reason,
-	                  GetIndexName(), error.RawMessage(), db.GetName());
-}
-
 unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types) {
-	if (storage_reclaimed) {
-		throw IOException("Cannot bind index %s: its storage was already reclaimed", GetIndexName());
-	}
 	auto bound_index = binder.BindIndex(*this);
-	storage_reclaimed = true;
+	// The bound index references the blocks of storage_info from here on, but this index keeps owning them until
+	// the buffered rows are replayed, so that a bind that fails during the replay leaves this index intact for a
+	// retry. Destroying the bound index would otherwise free the blocks this index still references.
 	if (HasBufferedReplays()) {
 		try {
 			bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
-		} catch (std::exception &ex) {
-			// The bound index releases the on-disk blocks when it is destroyed: binding cannot be retried.
-			ErrorData error(ex);
-			ThrowBindFailure(error, "Failed to apply the buffered WAL operations");
+		} catch (...) {
+			bound_index->DisownStorage();
+			throw;
 		}
 	}
+	storage_reclaimed = true;
 	return bound_index;
 }
 

@@ -105,6 +105,16 @@ struct ModFun {
 	static constexpr const char *Name = "mod";
 };
 
+struct FmodFun {
+	static constexpr const char *Name = "fmod";
+	static constexpr const char *Parameters = "x,y";
+	static constexpr const char *Description = "Calculates the modulo value with the sign of y. Always returns a floating point number.";
+	static constexpr const char *Example = "fmod(-10, 3)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunctionSet GetFunctions();
+};
+
 struct CastFun {
 	static constexpr const char *Name = "__cast";
 	static constexpr const char *Parameters = "value";

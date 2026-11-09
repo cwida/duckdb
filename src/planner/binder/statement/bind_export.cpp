@@ -157,6 +157,7 @@ BoundStatement Binder::Bind(ExportStatement &stmt) {
 	result.names = {"Success"};
 
 	BindCopyFormat(*stmt.info);
+	stmt.info->format = StringUtil::Lower(stmt.info->format);
 
 	// lookup the format in the catalog
 	auto &copy_function = Catalog::GetEntry<CopyFunctionCatalogEntry>(

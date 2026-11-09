@@ -1,0 +1,18 @@
+# name: test/sql/types/variant/variant_struct_cast_parent_projection.test
+# description: A cast parent must not hide a VARIANT child path when pruning a projection
+# group: [variant]
+
+statement ok
+CREATE TABLE cast_parent AS SELECT {'x': {'a': 1}::VARIANT} AS n;
+
+query II
+SELECT n.x::STRUCT(a BIGINT), n.x.a FROM cast_parent;
+----
+{'a': 1}	1
+
+# The cast parent truncates child_columns at n.x, while unique_paths still contains n.x.a.
+# Projection eligibility must inspect unique_paths to avoid rebuilding a VARIANT step as STRUCT.
+query II
+SELECT n.x::STRUCT(a BIGINT), n.x.a FROM (SELECT * FROM cast_parent);
+----
+{'a': 1}	1

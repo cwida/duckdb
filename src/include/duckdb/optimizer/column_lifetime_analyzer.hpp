@@ -50,6 +50,6 @@ private:
 	static void GenerateProjectionMap(vector<ColumnBinding> bindings, column_binding_set_t &unused_bindings,
 	                                  vector<ProjectionIndex> &map);
 	void Verify(LogicalOperator &op);
-	void AddVerificationProjection(unique_ptr<LogicalOperator> &child);
+	void AddVerificationProjection(unique_ptr<LogicalOperator> &child, vector<ProjectionIndex> &projection_map);
 };
 } // namespace duckdb

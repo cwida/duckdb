@@ -2,7 +2,6 @@
 
 #include "duckdb/common/pair.hpp"
 #include "duckdb/parser/peg/matcher.hpp"
-#include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 #include "duckdb/parser/peg/parsed_grammar.hpp"
 
 namespace duckdb {
@@ -35,6 +34,7 @@ public:
 		return *tokenizer;
 	}
 	optional_ptr<const CompiledGrammarRule> GetRule(const string &rule_name) const;
+	optional_ptr<const CompiledGrammarRule> GetRule(PEGRuleId rule_id) const;
 
 public:
 	static shared_ptr<CompiledGrammar> Get(ClientContext &context);
@@ -44,12 +44,18 @@ public:
 	static shared_ptr<CompiledGrammar> Create();
 	//! Get the (cached) grammar for the selected extensions without changing the client configuration.
 	static shared_ptr<CompiledGrammar> Create(const ClientContext &context, const vector<string> &active_extensions);
+	//! Get the (cached) grammar for the given extension selection, without changing the client
+	//! configuration (the base grammar when the selection is empty).
+	static shared_ptr<CompiledGrammar> ComposeSessionGrammar(ClientContext &context,
+	                                                         const vector<string> &extension_names);
 
 private:
 	MatcherAllocator allocator;
 	unique_ptr<PEGKeywordHelper> keyword_helper;
 	unique_ptr<Tokenizer> tokenizer;
 	case_insensitive_map_t<unique_ptr<CompiledGrammarRule>> rules;
+	//! Rules indexed by PEGRuleId; built-in slots stay empty when the grammar does not define the rule
+	vector<optional_ptr<const CompiledGrammarRule>> rules_by_id;
 	const Matcher &program_matcher;
 	const Matcher &top_level_statement_matcher;
 };

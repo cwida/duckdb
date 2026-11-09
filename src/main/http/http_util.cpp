@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
@@ -190,9 +191,10 @@ unique_ptr<HTTPResponse> HTTPUtil::Request(BaseRequest &request, unique_ptr<HTTP
 		// HTTP requests access an external resource - check this is allowed by the file access settings. This is the
 		// central check for requests that do not go through the file system (e.g. the REST catalog calls of iceberg).
 		auto &config = request.params.db->config;
-		if (!config.CanAccessFile(request.url, FileType::FILE_TYPE_REGULAR)) {
+		auto &access_path = request.params.access_path.empty() ? request.url : request.params.access_path;
+		if (!config.CanAccessFile(access_path, FileType::FILE_TYPE_REGULAR)) {
 			throw PermissionException("Cannot access \"%s\" - file system operations are disabled by configuration",
-			                          request.url);
+			                          access_path);
 		}
 	}
 	auto response = SendRequest(request, client);
@@ -572,25 +574,30 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 		}
 		http_proxy_username = Settings::Get<HTTPProxyUsernameSetting>(*db);
 		http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(*db);
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*db);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*db);
 	}
 
-	auto client_context = FileOpener::TryGetClientContext(opener);
-	if (client_context) {
-		logger = client_context->logger;
+	auto context = FileOpener::TryGetContext(opener);
+	if (context && context->IsClient()) {
+		logger = context->GetLoggerPtr();
+	}
+	if (context) {
+		// A session's own value wins over the database's
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*context);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*context);
 	}
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(DatabaseInstance &db, const string &url) {
 	DatabaseFileOpener opener(db);
-	FileOpenerInfo info;
-	info.file_path = url;
+	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(ClientContext &context, const string &url) {
-	ClientContextFileOpener opener(context);
-	FileOpenerInfo info;
-	info.file_path = url;
+	ClientContextFileOpener opener(context.GetContext());
+	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
 

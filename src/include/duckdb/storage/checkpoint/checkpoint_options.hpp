@@ -30,8 +30,6 @@ struct CheckpointOptions {
 	VisibilityBound visibility_bound;
 	//! The commit lock, when the committing transaction holds it for the whole checkpoint (checkpoint instead of WAL)
 	optional_ptr<unique_lock<mutex>> commit_lock;
-	//! Whether the user requested this checkpoint: it then fails instead of silently skipping.
-	bool explicit_checkpoint = false;
 };
 
 } // namespace duckdb

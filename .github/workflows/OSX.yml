@@ -6,6 +6,8 @@ on:
         type: string
       duckdb_commit:
         type: string
+      is_release_build:
+        type: boolean
       runner_macos_arm64:
         type: string
       skip_tests:
@@ -127,8 +129,8 @@ jobs:
       - name: CLI check
         run: |
           ./build/release/duckdb -c "PRAGMA platform; PRAGMA version;"
-          if [ "${{ github.ref_name }}" == "main" ]; then
-            # Fail on non-zero major version.
+          if [[ "${{ inputs.is_release_build }}" == "true" ]]; then
+            # Fail on a zero major version.
             ./build/release/duckdb -ascii -noheader -c "SELECT library_version FROM pragma_version() WHERE library_version NOT LIKE 'v0%'" | grep '^v';
           fi
 
