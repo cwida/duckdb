@@ -178,8 +178,8 @@ void DictFSSTCompressionState::FlushEncodingBuffer() {
 	auto fsst_encoder = reinterpret_cast<duckdb_fsst_encoder_t *>(encoder);
 	auto res =
 	    duckdb_fsst_compress(fsst_encoder, string_count, fsst_string_sizes.data(), fsst_string_ptrs.data(),
-		                     info.GetBlockSize() - taken_space, (unsigned char *)dictionary_start + dictionary_offset,
-		                     compressed_sizes.data(), compressed_ptrs.data());
+	                         info.GetBlockSize() - taken_space, (unsigned char *)dictionary_start + dictionary_offset,
+	                         compressed_sizes.data(), compressed_ptrs.data());
 	if (res != string_count) {
 		throw FatalException("Somehow we did not have enough room in the segment to store the encoded strings");
 	}
