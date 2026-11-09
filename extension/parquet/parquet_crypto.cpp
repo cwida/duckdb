@@ -284,7 +284,7 @@ public:
 	uint32_t read_virt(uint8_t *buf, uint32_t len) override {
 		const uint32_t result = len;
 
-		// Callers must read the entire module, the destination size must match before decryption.
+		// The page header and encrypted module must agree on the decrypted size before decryption.
 		const auto remaining = transport_remaining - ParquetCrypto::TAG_BYTES + read_buffer_size - read_buffer_offset;
 		if (len != remaining) {
 			throw DataCorruptionException("Encrypted Parquet module size mismatch (expected %u bytes, actual %u bytes)",
