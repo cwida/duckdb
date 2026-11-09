@@ -97,7 +97,6 @@ idx_t DictFSSTCompressionState::Finalize() {
 	auto string_lengths_dest = AlignValue<idx_t>(symbol_table_dest + symbol_table_size);
 	auto dictionary_indices_dest = AlignValue<idx_t>(string_lengths_dest + string_lengths_space);
 
-	// Clear the header (including its padding) and the alignment gaps between the sections
 	auto clear_gap = [&](idx_t start, idx_t end) {
 		memset(base_ptr + start, 0, end - start);
 	};
@@ -179,8 +178,8 @@ void DictFSSTCompressionState::FlushEncodingBuffer() {
 	auto fsst_encoder = reinterpret_cast<duckdb_fsst_encoder_t *>(encoder);
 	auto res =
 	    duckdb_fsst_compress(fsst_encoder, string_count, fsst_string_sizes.data(), fsst_string_ptrs.data(),
-	                         info.GetBlockSize() - taken_space, (unsigned char *)dictionary_start + dictionary_offset,
-	                         compressed_sizes.data(), compressed_ptrs.data());
+		                     info.GetBlockSize() - taken_space, (unsigned char *)dictionary_start + dictionary_offset,
+		                     compressed_sizes.data(), compressed_ptrs.data());
 	if (res != string_count) {
 		throw FatalException("Somehow we did not have enough room in the segment to store the encoded strings");
 	}

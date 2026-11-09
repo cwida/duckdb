@@ -267,7 +267,7 @@ public:
 			for (int64_t i = 0; i < static_cast<int64_t>(compression_buffer_idx); i++) {
 				auto success =
 				    TrySubtractOperator::Operation(static_cast<T_S>(compression_buffer[i]),
-				                                   static_cast<T_S>(compression_buffer[i - 1]), delta_buffer[i]);
+					                               static_cast<T_S>(compression_buffer[i - 1]), delta_buffer[i]);
 				if (!success) {
 					return;
 				}
@@ -777,7 +777,7 @@ public:
 	      reader(CompressionSegmentReader::FromSegment(handle, segment, "bitpacking segment")),
 	      is_bool(segment.GetType().InternalType() == PhysicalType::BOOL), segment_count(segment.count.load()),
 	      group_count(segment_count / BITPACKING_METADATA_GROUP_SIZE +
-	                  (segment_count % BITPACKING_METADATA_GROUP_SIZE != 0)),
+		              (segment_count % BITPACKING_METADATA_GROUP_SIZE != 0)),
 	      metadata_table_start(GetMetadataTableStart(reader, group_count)),
 	      metadata_table(reader.GetArray<bitpacking_metadata_encoded_t>(metadata_table_start, group_count)) {
 		if (metadata_table_start < BitpackingPrimitives::BITPACKING_HEADER_SIZE) {
@@ -1006,7 +1006,7 @@ public:
 				    current_group.offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 				idx_t skipping_this_algorithm_group =
 				    MinValue(skip_count - skipped,
-				             BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE - offset_in_compression_group);
+					         BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE - offset_in_compression_group);
 
 				current_group.UnpackAlgorithmGroups(
 				    unsafe_array_ptr<T>(decompression_buffer, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
@@ -1308,7 +1308,6 @@ CompressionFunction GetBitpackingFunction(PhysicalType data_type) {
 	    BitpackingScan<T>, BitpackingScanPartial<T>, BitpackingSkip<T>);
 	bitpacking.select = BitpackingSelect<T>;
 	bitpacking.get_segment_info = BitpackingGetSegmentInfo<T>;
-	// groups and metadata are written contiguously and the alignment gap is cleared when compacting
 	bitpacking.zero_initialize_segments = false;
 	return bitpacking;
 }

@@ -211,7 +211,6 @@ public:
 		//! We compact the block if the space used is less than a threshold
 		const auto used_space_percentage =
 		    static_cast<float>(metadata_offset + bytes_used_by_metadata) / static_cast<float>(total_segment_size);
-		// The bytes between the data and the metadata are persisted, so they have to be cleared
 		const auto data_end = UsedSpace();
 		if (used_space_percentage < AlpConstants::COMPACT_BLOCK_THRESHOLD) {
 			memset(dataptr + data_end, 0, metadata_offset - data_end);
