@@ -2,6 +2,9 @@
 # description: Comments before a statement are part of its query text
 # group: [parser]
 
+# the in-memory QueryLog does not survive the restarts of the force_restart configs
+require skip_reload
+
 statement ok
 CALL enable_logging(['QueryLog'], storage='memory');
 
