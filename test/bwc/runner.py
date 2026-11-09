@@ -159,7 +159,7 @@ def run_step(cli, report, func_name, *args):
 def same_extension_version(a, b):
     # Builds abbreviate the commit hash to different lengths, e.g. 2669706 and 2669706d33
     shorter, longer = sorted([a.strip(), b.strip()], key=len)
-    return len(shorter) >= 7 and longer.startswith(shorter)
+    return shorter == longer or (len(shorter) >= 7 and longer.startswith(shorter))
 
 
 def get_extensions_versions(clis):
