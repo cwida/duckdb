@@ -16,10 +16,10 @@
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
 #include "duckdb/common/extra_operator_info.hpp"
 
-#include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/table/row_group_order_options.hpp"
 
 namespace duckdb {
+class BaseStatistics;
 class TableCatalogEntry;
 class DynamicTableFilterSet;
 struct LogicalPlanSQLExportField;
@@ -36,6 +36,7 @@ public:
 	LogicalGet(TableIndex table_index, BoundTableFunction function, unique_ptr<FunctionData> bind_data,
 	           vector<LogicalType> returned_types, vector<Identifier> returned_names,
 	           virtual_column_map_t virtual_columns = virtual_column_map_t());
+	~LogicalGet() override;
 
 	//! The table index in the current bind context
 	TableIndex table_index;

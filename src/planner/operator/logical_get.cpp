@@ -7,6 +7,7 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
@@ -73,6 +74,9 @@ LogicalGet::LogicalGet(TableIndex table_index, BoundTableFunction function, uniq
     : LogicalOperator(LogicalOperatorType::LOGICAL_GET), table_index(table_index), function(std::move(function)),
       bind_data(std::move(bind_data)), returned_types(std::move(returned_types)), names(std::move(returned_names)),
       virtual_columns(std::move(virtual_columns_p)), extra_info() {
+}
+
+LogicalGet::~LogicalGet() {
 }
 
 optional_ptr<TableCatalogEntry> LogicalGet::GetTable() const {
