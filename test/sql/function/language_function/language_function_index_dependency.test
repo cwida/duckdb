@@ -65,7 +65,7 @@ CREATE UNIQUE INDEX ix ON t((i + delta()));
 statement error
 DROP FUNCTION delta(INTEGER);
 ----
-<REGEX>:.*index "ix" depends on macro function "delta".*
+<REGEX>:.*Cannot alter entry "delta" because there are entries that depend on it.*
 
 # with several indexes, dropping one still leaves the other blocking
 statement ok

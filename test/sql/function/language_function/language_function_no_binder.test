@@ -64,8 +64,13 @@ SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'two_membe
 ----
 varchar member
 
-statement ok
+statement error
 DROP FUNCTION two_members(VARCHAR);
+----
+<REGEX>:.*Cannot drop the last overload of "two_members": drop the macro itself instead.*
+
+statement ok
+DROP FUNCTION two_members;
 
 query I
 SELECT count(*) FROM duckdb_functions() WHERE function_name = 'two_members';

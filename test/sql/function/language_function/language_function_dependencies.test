@@ -24,12 +24,11 @@ CREATE FUNCTION f(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
 statement ok
 CREATE VIEW v AS SELECT f() AS x;
 
-# a member mutation replaces the entry as a whole: like a macro replacement, a registered
-# dependent blocks it, whichever member the mutation touches
+# a member drop is an alter of the entry: a registered dependent blocks it, whichever member it names
 statement error
 DROP FUNCTION f(INTEGER);
 ----
-<REGEX>:.*view "v" depends on macro function "f".*
+<REGEX>:.*Cannot alter entry "f" because there are entries that depend on it.*
 
 statement error
 CREATE FUNCTION f(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE testlang AS '3';
@@ -73,7 +72,8 @@ SELECT count(*) FROM duckdb_views() WHERE view_name = 'v';
 ----
 0
 
-# dropping the final member by signature is a whole-entry drop and honors dependency semantics
+# the final member cannot be dropped by signature, and CASCADE never applies to a signature drop:
+# dropping the function itself honors dependency semantics
 statement ok
 CREATE FUNCTION g() RETURNS INTEGER LANGUAGE testlang AS '7';
 
@@ -83,10 +83,20 @@ CREATE VIEW vg AS SELECT g() AS x;
 statement error
 DROP FUNCTION g();
 ----
-<REGEX>:.*view "vg" depends on macro function "g".*
+<REGEX>:.*Cannot drop the last overload of "g": drop the macro itself instead.*
+
+statement error
+DROP FUNCTION g() CASCADE;
+----
+<REGEX>:.*Cannot drop an overload of "g" with CASCADE: drop the dependent entries first, or drop the whole macro.*
+
+statement error
+DROP FUNCTION g;
+----
+<REGEX>:.*Cannot drop entry "g" because there are entries that depend on it.*
 
 statement ok
-DROP FUNCTION g() CASCADE;
+DROP FUNCTION g CASCADE;
 
 query I
 SELECT count(*) FROM duckdb_views() WHERE view_name = 'vg';
@@ -123,7 +133,7 @@ statement ok
 BEGIN;
 
 statement ok
-DROP FUNCTION h();
+DROP FUNCTION h;
 
 statement ok
 ROLLBACK;

@@ -134,8 +134,13 @@ SELECT answer();
 43
 
 # dropping the last member drops the whole entry
-statement ok
+statement error
 DROP FUNCTION answer();
+----
+<REGEX>:.*Cannot drop the last overload of "answer": drop the macro itself instead.*
+
+statement ok
+DROP FUNCTION answer;
 
 query I
 SELECT count(*) FROM duckdb_functions() WHERE function_name = 'answer';
