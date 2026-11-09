@@ -17,8 +17,7 @@
 namespace duckdb {
 
 CacheValidationMode ExternalFileCacheUtil::GetCacheValidationMode(const OpenFileInfo &info,
-                                                                  optional_ptr<Context> services,
-                                                                  DatabaseInstance &db) {
+                                                                  optional_ptr<Context> context, DatabaseInstance &db) {
 	// First check if explicitly set in OpenFileInfo options (per-file override).
 	bool validate_cache;
 	if (info.extended_info != nullptr &&
@@ -26,12 +25,12 @@ CacheValidationMode ExternalFileCacheUtil::GetCacheValidationMode(const OpenFile
 		return validate_cache ? CacheValidationMode::VALIDATE_ALL : CacheValidationMode::NO_VALIDATION;
 	}
 
-	// If services are available, check client-local settings first, then fall back to database config.
-	if (services) {
-		return Settings::Get<ValidateExternalFileCacheSetting>(*services);
+	// If context are available, check client-local settings first, then fall back to database config.
+	if (context) {
+		return Settings::Get<ValidateExternalFileCacheSetting>(*context);
 	}
 
-	// No services, fall back to database config.
+	// No context, fall back to database config.
 	return Settings::Get<ValidateExternalFileCacheSetting>(db);
 }
 

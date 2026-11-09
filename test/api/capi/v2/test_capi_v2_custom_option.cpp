@@ -18,10 +18,6 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t OptionIdent(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 // What the update callback saw, carried in the option's user data.
 struct UpdateLog {
 	idx_t calls = 0;
@@ -51,8 +47,8 @@ void ClampUpdate(duckdb_v2_custom_option_update_info_handle info, duckdb_v2_cont
 	}
 	if (number < 0) {
 		duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_INPUT_INVALID);
-		auto text = Convert("cpu_budget cannot be negative");
-		duckdb_v2_error_info_set_text(*err, &text);
+		std::string_view text = "cpu_budget cannot be negative";
+		duckdb_v2_error_info_set_text(*err, text.data(), text.size());
 		return;
 	}
 	if (number > 100) {
@@ -72,12 +68,11 @@ void ClampUpdate(duckdb_v2_custom_option_update_info_handle info, duckdb_v2_cont
 }
 
 // Builds an option with a name and, optionally, a BIGINT type and default value.
-duckdb_v2_custom_option_handle MakeOption(duckdb_v2_factory_handle factory, const char *name, bool typed,
+duckdb_v2_custom_option_handle MakeOption(duckdb_v2_factory_handle factory, std::string_view name, bool typed,
                                           duckdb_v2_value_handle default_value) {
 	duckdb_v2_custom_option_handle option = nullptr;
 	REQUIRE(duckdb_v2_custom_option_create(factory, &option, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = OptionIdent(name);
-	REQUIRE(duckdb_v2_custom_option_set_name(option, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_custom_option_set_name(option, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	if (typed) {
 		auto bigint = MakeType(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 		REQUIRE(duckdb_v2_custom_option_set_type(option, bigint, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -101,11 +96,11 @@ DUCKDB_V2_ERROR RegisterOptionError(duckdb_v2_connection_handle conn, duckdb_v2_
 }
 
 // Reads a BIGINT option through `config`, or -1 when it is NULL.
-int64_t ReadOption(duckdb_v2_config_handle config, const char *name, DUCKDB_V2_SETTING_SCOPE *scope = nullptr) {
-	auto name_str = OptionIdent(name);
+int64_t ReadOption(duckdb_v2_config_handle config, std::string_view name, DUCKDB_V2_SETTING_SCOPE *scope = nullptr) {
 	duckdb_v2_value_handle value = nullptr;
 	DUCKDB_V2_SETTING_SCOPE read_scope = DUCKDB_V2_SETTING_SCOPE_DEFAULT;
-	REQUIRE(duckdb_v2_config_get_option_value(config, &name_str, &value, &read_scope, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_config_get_option_value(config, name.data(), name.size(), &value, &read_scope, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	if (scope) {
 		*scope = read_scope;
 	}
@@ -115,17 +110,16 @@ int64_t ReadOption(duckdb_v2_config_handle config, const char *name, DUCKDB_V2_S
 	return result;
 }
 
-DUCKDB_V2_ERROR WriteOption(duckdb_v2_config_handle config, const char *name, duckdb_v2_value_handle value,
+DUCKDB_V2_ERROR WriteOption(duckdb_v2_config_handle config, std::string_view name, duckdb_v2_value_handle value,
                             DUCKDB_V2_SETTING_SCOPE scope) {
-	auto name_str = OptionIdent(name);
-	return duckdb_v2_config_set_option_value(config, &name_str, value, scope, nullptr);
+	return duckdb_v2_config_set_option_value(config, name.data(), name.size(), value, scope, nullptr);
 }
 
 // The descriptor of an option, owned by the caller.
-duckdb_v2_option_handle Describe(duckdb_v2_config_handle config, const char *name) {
-	auto name_str = OptionIdent(name);
+duckdb_v2_option_handle Describe(duckdb_v2_config_handle config, std::string_view name) {
 	duckdb_v2_option_handle option = nullptr;
-	REQUIRE(duckdb_v2_config_get_option_by_name(config, &name_str, &option, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_config_get_option_by_name(config, name.data(), name.size(), &option, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	return option;
 }
 
@@ -142,8 +136,9 @@ TEST_CASE("V2 custom option: registered options are read and written like any ot
 	auto default_value = MakeInt64Value(fx.factory, 5);
 	auto option = MakeOption(fx.factory, "my_budget", true, default_value);
 	duckdb_v2_value_destroy(&default_value);
-	auto description = Convert("The budget");
-	REQUIRE(duckdb_v2_custom_option_set_description(option, &description, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view description = "The budget";
+	REQUIRE(duckdb_v2_custom_option_set_description(option, description.data(), description.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	RegisterOption(fx.conn, option);
 
 	// The default value, until it is set.
@@ -176,9 +171,10 @@ TEST_CASE("V2 custom option: registered options are read and written like any ot
 
 	// The descriptor reports what was registered.
 	auto descriptor = Describe(fx.config, "my_budget");
-	duckdb_v2_str text = {nullptr, 0};
-	REQUIRE(duckdb_v2_option_get_description(descriptor, &text, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(Convert(text) == "The budget");
+	const char *text = nullptr;
+	idx_t text_length = 0;
+	REQUIRE(duckdb_v2_option_get_description(descriptor, &text, &text_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(text, text_length) == "The budget");
 	REQUIRE(SupportsScope(descriptor, DUCKDB_V2_SETTING_SCOPE_GLOBAL));
 	REQUIRE(SupportsScope(descriptor, DUCKDB_V2_SETTING_SCOPE_SESSION));
 	duckdb_v2_option_destroy(&descriptor);

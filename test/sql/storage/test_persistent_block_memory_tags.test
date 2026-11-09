@@ -1,5 +1,5 @@
 # name: test/sql/storage/test_persistent_block_memory_tags.test
-# description: Blocks of the database file are accounted under the memory tag of their owner
+# description: Persistent table/index blocks share a memory tag; metadata and overflow blocks retain dedicated tags
 # group: [storage]
 
 load {TEST_DIR}/persistent_block_memory_tags.db
@@ -13,11 +13,12 @@ INSERT INTO t SELECT range, repeat('x', 10000) FROM range(10000);
 statement ok
 CHECKPOINT;
 
-# the index and metadata blocks written by the checkpoint stay loaded
-query II
-SELECT tag, memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag IN ('ART_INDEX', 'METADATA') ORDER BY tag;
+# Newly persisted table/index blocks share BASE_TABLE; these indexes have no retained working buffers.
+query TI
+SELECT tag, memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag IN ('ART_INDEX', 'BASE_TABLE', 'METADATA') ORDER BY tag;
 ----
-ART_INDEX	true
+ART_INDEX	false
+BASE_TABLE	true
 METADATA	true
 
 query I
@@ -45,10 +46,12 @@ INSERT INTO t VALUES (42, 'duplicate');
 ----
 Duplicate key
 
-query I
-SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'BASE_TABLE';
+# The index read caches persistent blocks and allocates separate ART working buffers.
+query TI
+SELECT tag, memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag IN ('ART_INDEX', 'BASE_TABLE') ORDER BY tag;
 ----
-0
+ART_INDEX	true
+BASE_TABLE	true
 
 query I
 SELECT sum(strlen(s)) FROM t;

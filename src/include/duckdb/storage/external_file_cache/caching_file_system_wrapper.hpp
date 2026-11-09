@@ -122,6 +122,7 @@ public:
 	                                                     bool write) override;
 
 	DUCKDB_API void SetDisabledFileSystems(const vector<string> &names) override;
+	DUCKDB_API vector<string> GetDisabledFileSystems() override;
 	DUCKDB_API bool SubSystemIsDisabled(const string &name) override;
 	DUCKDB_API bool IsDisabledForPath(const string &path) override;
 

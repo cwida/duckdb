@@ -140,10 +140,10 @@ struct DebugClientContextState : public ClientContextState {
 
 ClientContext::ClientContext(shared_ptr<DatabaseInstance> database)
     : db(std::move(database)), interrupt_state(ClientInterruptState::NOT_INTERRUPTED),
-      services(make_shared_ptr<Context>(*db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
-	services->InitializeClient(*this);
+      context(make_shared_ptr<Context>(*db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
+	context->InitializeClient(*this);
 #ifdef DEBUG
-	services->GetRegisteredState().GetOrCreate<DebugClientContextState>("debug_client_context_state");
+	context->GetRegisteredState().GetOrCreate<DebugClientContextState>("debug_client_context_state");
 #endif
 	ResetLoggerInternal(LoggingContext(LogContextScope::CONNECTION));
 	client_data = make_uniq<ClientData>(*this);
@@ -286,7 +286,7 @@ void ClientContext::VerifyNoOpenResult() {
 }
 
 Logger &ClientContext::GetLogger() const {
-	return services->GetLogger();
+	return context->GetLogger();
 }
 
 connection_t ClientContext::GetConnectionId() const {
@@ -364,7 +364,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
                                                                          const QueryParameters &parameters) {
 	// check if any client context state could request a rebind
 	bool can_request_rebind = false;
-	for (auto &state : services->GetRegisteredState().States()) {
+	for (auto &state : context->GetRegisteredState().States()) {
 		if (state->CanRequestRebind()) {
 			can_request_rebind = true;
 		}
@@ -378,7 +378,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
 			// check if any registered client context state wants to try a rebind
-			for (auto &state : services->GetRegisteredState().States()) {
+			for (auto &state : context->GetRegisteredState().States()) {
 				auto info = state->OnPlanningError(*this, *statement, error);
 				if (info == RebindQueryInfo::ATTEMPT_TO_REBIND) {
 					rebind = true;
@@ -390,7 +390,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		}
 		if (result) {
 			D_ASSERT(!rebind);
-			for (auto &state : services->GetRegisteredState().States()) {
+			for (auto &state : context->GetRegisteredState().States()) {
 				auto info = state->OnFinalizePrepare(*this, *result, PreparedStatementMode::PREPARE_AND_EXECUTE);
 				if (info == RebindQueryInfo::ATTEMPT_TO_REBIND) {
 					rebind = true;

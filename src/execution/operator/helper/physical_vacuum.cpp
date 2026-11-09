@@ -1,10 +1,11 @@
 #include "duckdb/execution/operator/helper/physical_vacuum.hpp"
 
+#include "duckdb/storage/storage_lock.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/distinct_statistics.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 
 namespace duckdb {
 
@@ -14,6 +15,8 @@ PhysicalVacuum::PhysicalVacuum(PhysicalPlan &physical_plan, unique_ptr<VacuumInf
     : PhysicalOperator(physical_plan, PhysicalOperatorType::VACUUM, {LogicalType::BOOLEAN}, estimated_cardinality),
       info(std::move(info_p)), table(table), column_id_map(std::move(column_id_map)) {
 }
+
+namespace {
 
 class VacuumLocalSinkState : public LocalSinkState {
 public:
@@ -32,10 +35,6 @@ public:
 	Vector hashes;
 };
 
-unique_ptr<LocalSinkState> PhysicalVacuum::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<VacuumLocalSinkState>(*info, table);
-}
-
 class VacuumGlobalSinkState : public GlobalSinkState {
 public:
 	explicit VacuumGlobalSinkState(VacuumInfo &info, optional_ptr<TableCatalogEntry> table) {
@@ -52,6 +51,12 @@ public:
 	mutex stats_lock;
 	vector<unique_ptr<DistinctStatistics>> column_distinct_stats;
 };
+
+} // namespace
+
+unique_ptr<LocalSinkState> PhysicalVacuum::GetLocalSinkState(ExecutionContext &context) const {
+	return make_uniq<VacuumLocalSinkState>(*info, table);
+}
 
 unique_ptr<GlobalSinkState> PhysicalVacuum::GetGlobalSinkState(ClientContext &context) const {
 	return make_uniq<VacuumGlobalSinkState>(*info, table);
@@ -96,6 +101,8 @@ SinkFinalizeType PhysicalVacuum::Finalize(Pipeline &pipeline, Event &event, Clie
 	}
 
 	auto tbl = table;
+	// Scan tasks have released their local state; only the live mutations need checkpoint exclusion.
+	auto checkpoint_lock = DuckTransaction::Get(context, tbl->ParentCatalog()).GetCheckpointLockForStatement();
 	for (idx_t col_idx = 0; col_idx < sink.column_distinct_stats.size(); col_idx++) {
 		tbl->GetStorage().SetDistinct(column_id_map.at(col_idx), std::move(sink.column_distinct_stats[col_idx]));
 	}

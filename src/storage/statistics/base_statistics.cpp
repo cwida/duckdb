@@ -187,6 +187,9 @@ void BaseStatistics::ResetAdditiveStatistics() {
 		stats_union.string_data.has_total_string_length = false;
 		break;
 	case StatisticsType::LIST_STATS:
+		ListStats::ResetTotalListLength(*this);
+		child_stats[0].ResetAdditiveStatistics();
+		break;
 	case StatisticsType::ARRAY_STATS:
 		child_stats[0].ResetAdditiveStatistics();
 		break;
@@ -585,6 +588,7 @@ BaseStatistics BaseStatistics::FromConstantType(const Value &input) {
 		auto &child_stats = ListStats::GetChildStats(result);
 		if (!input.IsNull()) {
 			auto &list_children = ListValue::GetChildren(input);
+			ListStats::SetLengthBounds(result, list_children.size(), list_children.size());
 			for (auto &child_element : list_children) {
 				child_stats.Merge(FromConstant(child_element));
 			}

@@ -15,9 +15,9 @@ namespace {
 
 // Parse exactly one statement from sql (raw, unbound). Unique name to avoid a
 // unity-build clash with the same-shaped helper in other test files.
-duckdb_v2_sql_statement_handle PsParseOne(duckdb_v2_connection_handle conn, const char *sql) {
+duckdb_v2_sql_statement_handle PsParseOne(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql.data(), sql.size(), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(stmt != nullptr);
@@ -28,7 +28,7 @@ duckdb_v2_sql_statement_handle PsParseOne(duckdb_v2_connection_handle conn, cons
 // Prepares one statement from sql, destroying the parsed statement afterwards (it is
 // borrowed, never consumed). Returns nullptr when the prepare fails; `out_rc` takes the
 // code so the caller can assert on it.
-duckdb_v2_prepared_statement_handle PsPrepare(duckdb_v2_connection_handle conn, const char *sql,
+duckdb_v2_prepared_statement_handle PsPrepare(duckdb_v2_connection_handle conn, std::string_view sql,
                                               bool require_cacheable = false, DUCKDB_V2_ERROR *out_rc = nullptr) {
 	auto stmt = PsParseOne(conn, sql);
 	duckdb_v2_prepared_statement_handle prepared = nullptr;
@@ -41,7 +41,7 @@ duckdb_v2_prepared_statement_handle PsPrepare(duckdb_v2_connection_handle conn, 
 	return prepared;
 }
 
-bool PsReusesPlan(duckdb_v2_connection_handle conn, const char *sql) {
+bool PsReusesPlan(duckdb_v2_connection_handle conn, std::string_view sql) {
 	auto prepared = PsPrepare(conn, sql);
 	REQUIRE(prepared != nullptr);
 	bool reuses = false;
@@ -84,7 +84,7 @@ std::vector<int64_t> PsExecuteWith(duckdb_v2_factory_handle factory, duckdb_v2_p
 		values.push_back(MakeInt64Value(factory, param));
 	}
 	duckdb_v2_result_handle r = nullptr;
-	auto rc = duckdb_v2_prepared_statement_execute(prepared, nullptr, values.empty() ? nullptr : values.data(),
+	auto rc = duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, values.empty() ? nullptr : values.data(),
 	                                               static_cast<idx_t>(values.size()), &r, nullptr);
 	for (auto &value : values) {
 		duckdb_v2_value_destroy(&value);
@@ -145,7 +145,8 @@ TEST_CASE("V2: prepared_statement_create borrows the statement", "[capi_v2][prep
 	REQUIRE(PsExecuteWith(fx.factory, second, {}) == std::vector<int64_t> {42});
 
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(PsScalarI64(r) == 42);
 	duckdb_v2_result_destroy(&r);
 
@@ -215,7 +216,7 @@ TEST_CASE("V2: a prepared statement that expands runs at each execution", "[capi
 	REQUIRE(prepared != nullptr);
 	for (idx_t columns : {3, 4}) {
 		duckdb_v2_result_handle r = nullptr;
-		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		DUCKDB_V2_STATEMENT_TYPE st = DUCKDB_V2_STATEMENT_TYPE_INVALID;
 		REQUIRE(duckdb_v2_result_get_statement_type(r, &st, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -255,29 +256,32 @@ TEST_CASE("V2: prepared_statement_execute binds named parameters", "[capi_v2][pr
 	duckdb_v2_value_handle vb = MakeInt64Value(fx.factory, 4);
 
 	// Keyed by name, so the array order is irrelevant: the same pairing both ways.
-	duckdb_v2_str names[2] = {Convert("a"), Convert("b")};
+	StrArray names = {std::string_view("a"), std::string_view("b")};
 	duckdb_v2_value_handle values[2] = {va, vb};
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, names, values, 2, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(PsScalarI64(r) == 6);
-	duckdb_v2_result_destroy(&r);
-
-	duckdb_v2_str reversed[2] = {Convert("b"), Convert("a")};
-	duckdb_v2_value_handle reversed_values[2] = {vb, va};
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, reversed, reversed_values, 2, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, names.ptrs(), names.lengths(), values, 2, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(PsScalarI64(r) == 6);
 	duckdb_v2_result_destroy(&r);
 
+	StrArray reversed = {std::string_view("b"), std::string_view("a")};
+	duckdb_v2_value_handle reversed_values[2] = {vb, va};
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, reversed.ptrs(), reversed.lengths(), reversed_values, 2, &r,
+	                                             nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(PsScalarI64(r) == 6);
+	duckdb_v2_result_destroy(&r);
+
 	// Case-insensitive, like every other identifier key.
-	duckdb_v2_str upper[2] = {Convert("A"), Convert("B")};
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, upper, values, 2, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	StrArray upper = {std::string_view("A"), std::string_view("B")};
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, upper.ptrs(), upper.lengths(), values, 2, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(PsScalarI64(r) == 6);
 	duckdb_v2_result_destroy(&r);
 
 	// A key set the statement does not have is a bind error, and the values are not consumed.
-	duckdb_v2_str wrong[2] = {Convert("a"), Convert("c")};
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, wrong, values, 2, &r, nullptr) != DUCKDB_V2_ERROR_NONE);
+	StrArray wrong = {std::string_view("a"), std::string_view("c")};
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, wrong.ptrs(), wrong.lengths(), values, 2, &r, nullptr) !=
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(r == nullptr);
 
 	duckdb_v2_value_destroy(&va);
@@ -295,7 +299,8 @@ TEST_CASE("V2: prepared_statement_execute copies its parameter values", "[capi_v
 	duckdb_v2_value_handle v = MakeInt64Value(fx.factory, 7);
 	duckdb_v2_value_handle values[1] = {v};
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, values, 1, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, values, 1, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&v);
 	REQUIRE(PsScalarI64(r) == 7);
 	duckdb_v2_result_destroy(&r);
@@ -316,7 +321,7 @@ TEST_CASE("V2: a prepared result carries the same rows and schema", "[capi_v2][p
 	REQUIRE(prepared != nullptr);
 
 	duckdb_v2_result_handle prepared_result = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &prepared_result, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &prepared_result, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	// Metadata is available before the first step, as on the stateless path.
 	REQUIRE(ColumnCount(prepared_result) == 2);
@@ -356,7 +361,7 @@ TEST_CASE("V2: a prepared DML reports its changed-row count", "[capi_v2][prepare
 		duckdb_v2_value_handle v = MakeInt64Value(fx.factory, value);
 		duckdb_v2_value_handle values[1] = {v};
 		duckdb_v2_result_handle r = nullptr;
-		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, values, 1, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, values, 1, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		DUCKDB_V2_RESULT_TYPE result_type = DUCKDB_V2_RESULT_TYPE_NOTHING;
 		REQUIRE(duckdb_v2_result_get_result_type(r, &result_type, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -383,7 +388,8 @@ TEST_CASE("V2: a prepared statement re-binds after a catalog change", "[capi_v2]
 	REQUIRE(prepared != nullptr);
 
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(ColumnCount(r) == 1);
 	REQUIRE(DrainRowCount(r) == 4);
 	duckdb_v2_result_destroy(&r);
@@ -391,7 +397,8 @@ TEST_CASE("V2: a prepared statement re-binds after a catalog change", "[capi_v2]
 	// A table scan is re-bound every execution, which is exactly what makes the new
 	// column visible without re-preparing.
 	ExecSQL(fx.conn, "ALTER TABLE t ADD COLUMN y BIGINT DEFAULT 9");
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(ColumnCount(r) == 2);
 	RequireColumn(r, 1, "y", DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	REQUIRE(DrainRowCount(r) == 4);
@@ -412,7 +419,8 @@ TEST_CASE("V2: a result outlives its prepared statement", "[capi_v2][prepared_st
 	REQUIRE(prepared != nullptr);
 
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	// Destroy the prepared statement mid-stream: the result owns its session independently.
 	duckdb_v2_prepared_statement_destroy(&prepared);
 	REQUIRE(PsDrainBigints(r) == std::vector<int64_t> {1, 2, 3, 4});
@@ -489,7 +497,7 @@ TEST_CASE("V2: prepared_statement_execute refuses while a result is live", "[cap
 	REQUIRE(Query(fx.conn, "SELECT i FROM range(100000) t(i)", &live) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_RESOURCE_IN_USE);
 	REQUIRE(r == nullptr);
 
@@ -506,19 +514,20 @@ TEST_CASE("V2: a live prepared result blocks statement_execute", "[capi_v2][prep
 	REQUIRE(prepared != nullptr);
 
 	duckdb_v2_result_handle live = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &live, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &live, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 
 	// The slot the prepared path claims is the one the stateless path checks.
 	auto stmt = PsParseOne(fx.conn, "SELECT 1");
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_RESOURCE_IN_USE);
 	REQUIRE(r == nullptr);
 
 	// Destroying the prepared result frees the connection even undrained.
 	duckdb_v2_result_destroy(&live);
-	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_statement_execute(fx.conn, stmt, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(DrainRowCount(r) == 1);
 	duckdb_v2_result_destroy(&r);
 
@@ -536,7 +545,8 @@ TEST_CASE("V2: a failed prepared execution frees the connection", "[capi_v2][pre
 	duckdb_v2_value_handle v = MakeInt64Value(fx.factory, 1);
 	duckdb_v2_value_handle values[1] = {v};
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, values, 1, &r, nullptr) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, values, 1, &r, nullptr) !=
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(r == nullptr);
 	duckdb_v2_value_destroy(&v);
 
@@ -548,9 +558,9 @@ TEST_CASE("V2: a failed prepared execution frees the connection", "[capi_v2][pre
 	// And so is the prepared statement: a failed execution does not consume it.
 	duckdb_v2_value_handle named = MakeInt64Value(fx.factory, 7);
 	duckdb_v2_value_handle named_values[1] = {named};
-	duckdb_v2_str names[1] = {Convert("a")};
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, names, named_values, 1, &r, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	StrArray names = {std::string_view("a")};
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, names.ptrs(), names.lengths(), named_values, 1, &r,
+	                                             nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(PsScalarI64(r) == 7);
 	duckdb_v2_result_destroy(&r);
 	duckdb_v2_value_destroy(&named);
@@ -574,9 +584,10 @@ TEST_CASE("V2: prepared_statement_create surfaces a catalog error", "[capi_v2][p
 	        DUCKDB_V2_ERROR_DATABASE_CATALOG);
 	REQUIRE(prepared == nullptr);
 	REQUIRE(err != nullptr);
-	duckdb_v2_str msg = {nullptr, 0};
-	REQUIRE(duckdb_v2_error_info_get_text(err, &msg) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(msg.ptr, msg.len).find("no_such_table") != std::string::npos);
+	const char *msg = nullptr;
+	idx_t msg_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(err, &msg, &msg_length) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(msg, msg_length).find("no_such_table") != std::string::npos);
 	duckdb_v2_error_info_destroy(&err);
 
 	// The connection is not left busy by the failure.
@@ -604,17 +615,17 @@ TEST_CASE("V2: prepared_statement functions guard null arguments", "[capi_v2][pr
 	duckdb_v2_sql_statement_destroy(&stmt);
 
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(nullptr, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(r == nullptr);
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, nullptr, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, nullptr, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	// A count without values, and a null value inside the array, are both rejected.
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 1, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 1, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(r == nullptr);
 	duckdb_v2_value_handle null_values[1] = {nullptr};
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, null_values, 1, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, null_values, 1, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(r == nullptr);
 
@@ -683,7 +694,7 @@ TEST_CASE("V2: only a statement written as a SELECT streams", "[capi_v2][prepare
 			auto prepared = PsPrepare(fx.conn, entry.sql);
 			REQUIRE(prepared != nullptr);
 			duckdb_v2_result_handle r = nullptr;
-			REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) ==
+			REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
 			        DUCKDB_V2_ERROR_NONE);
 			REQUIRE(HoldsConnectionAfterFirstChunk(fx.conn, r) == entry.streams);
 			duckdb_v2_result_destroy(&r);
