@@ -99,20 +99,6 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		}
 		// keep the entry's full (possibly nested) schema path so execution navigates the same schema
 		stmt.info->SetQualifiedName(entry->ParentSchema().GetQualifiedName(stmt.info->GetQualifiedName().Name()));
-		if (stmt.info->extra_drop_info &&
-		    stmt.info->extra_drop_info->info_type == ExtraDropInfoType::FUNCTION_SIGNATURE_INFO) {
-			// resolve the signature's type names so they compare against stored overload identity.
-			// They resolve from the resolved entry's own schema first, with the session path behind
-			// it, so a same-named type elsewhere cannot make an overload unreachable or, worse,
-			// name a different member
-			auto &extra = stmt.info->extra_drop_info->Cast<ExtraDropFunctionSignatureInfo>();
-			auto scoped_binder = Binder::CreateBinder(context, this);
-			scoped_binder->EntryRetriever().SetSearchPath(
-			    scoped_binder->GetSearchPath(entry->ParentCatalog(), stmt.info->GetQualifiedName().SchemaPath(), true));
-			for (auto &type : extra.signature) {
-				scoped_binder->BindLogicalType(type);
-			}
-		}
 		properties.RegisterDBModify(entry->ParentCatalog(), context, stmt.info->GetModifications());
 		break;
 	}
