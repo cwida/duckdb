@@ -75,6 +75,17 @@ second	2	45020
 second	2000	NULL
 second	NULL	11
 
+# A grouped reader can demand a NULL key that is absent from its shared source.
+query II
+WITH c AS MATERIALIZED (SELECT * FROM (VALUES (1), (2)) v(k))
+SELECT d.k, a.s FROM (SELECT k FROM c GROUP BY ROLLUP(k)) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON d.k IS NOT DISTINCT FROM a.k
+ORDER BY ALL;
+----
+1	45010
+2	45020
+NULL	11
+
 # Shadowed CTE names use the bound owner identity
 query TII
 WITH d AS MATERIALIZED (SELECT * FROM demand) SELECT d.label,d.k,a.s FROM d LEFT JOIN (SELECT k,sum(v)s FROM

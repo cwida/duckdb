@@ -152,6 +152,56 @@ ON d.k IS NOT DISTINCT FROM a.k;
 NULL	11	0
 NULL	49995011	1
 
+# A demand-side grouping set can add a NULL key that is absent from its input.
+query II
+SELECT d.k, a.s
+FROM (SELECT k FROM (VALUES (1), (2)) v(k) GROUP BY ROLLUP(k)) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a ON d.k IS NOT DISTINCT FROM a.k
+ORDER BY ALL;
+----
+1	45010
+2	45020
+NULL	11
+
+# DISTINCT with a different collation cannot prove coverage of fixed binary keys.
+statement ok
+CREATE TABLE collated_fact AS
+SELECT (['A', 'a', 'B', 'b'])[i % 4 + 1] k FROM range(10000) t(i);
+
+query II
+SELECT count(a.n), sum(a.n)
+FROM (VALUES ('A'), ('a'), ('B'), ('b')) d(k)
+LEFT JOIN (
+    SELECT f.k, count(*) n FROM collated_fact f
+    SEMI JOIN (
+        SELECT DISTINCT k COLLATE nocase AS k FROM (VALUES ('A'), ('a'), ('B'), ('b')) v(k)
+    ) old ON f.k = old.k COLLATE "C" GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+2	5000
+
+# Restricting DISTINCT ON retains the first row chosen from its ordered input.
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE ordered_fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(100000) t(i);
+
+statement ok
+CREATE VIEW ordered_fact AS SELECT (k + 1000) % 1000 k, v FROM ordered_fact_data;
+
+query II
+SELECT d.k, a.v FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT DISTINCT ON(k) k, v FROM (SELECT * FROM ordered_fact ORDER BY v DESC)
+) a USING(k) ORDER BY d.k;
+----
+1	99001
+2	99002
+
+statement ok
+RESET threads;
+
 # Extracting a constant key above DISTINCT leaves the neighboring payload in place.
 statement ok
 CREATE SEQUENCE fixed_payload_visits;

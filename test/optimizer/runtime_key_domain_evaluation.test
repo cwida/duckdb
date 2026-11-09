@@ -46,6 +46,31 @@ SELECT count(*) FROM (
 ----
 1
 
+# A scalar subquery on a later demand row must not be evaluated just to materialize its keys.
+statement ok
+CREATE TABLE scalar_fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(200000) t(i);
+
+statement ok
+CREATE VIEW scalar_fact AS SELECT (k + 1000) % 1000 k, v FROM scalar_fact_data;
+
+statement ok
+CREATE TABLE scalar_demand AS SELECT i::INTEGER id, (i % 2)::INTEGER k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE scalar_payload AS SELECT i::INTEGER id, i::BIGINT p FROM range(10000) t(i)
+UNION ALL SELECT 9999, -1;
+
+query III
+SELECT d.id, d.p, a.s
+FROM (
+    SELECT id, k, (SELECT p FROM scalar_payload WHERE scalar_payload.id = scalar_demand.id) p
+    FROM scalar_demand
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM scalar_fact GROUP BY k) a USING (k)
+LIMIT 1;
+----
+0	0	19900000
+
 statement ok
 RESET threads;
 

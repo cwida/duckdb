@@ -92,12 +92,20 @@ static optional_idx ReferenceIndex(const Expression &expression, LogicalOperator
 }
 
 //! One full grouping set preserves the directly referenced key and its comparison semantics.
-static optional_idx GroupKeyIndex(LogicalAggregate &aggregate, idx_t key, const LogicalType &type) {
+static optional_idx GroupKeyIndex(LogicalAggregate &aggregate, idx_t key) {
 	if (aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].size() != aggregate.groups.size() ||
 	    key >= aggregate.groups.size() || !aggregate.grouping_functions.empty()) {
 		return {};
 	}
-	return ReferenceIndex(*aggregate.groups[key], *aggregate.children[0], type);
+	return ReferenceIndex(*aggregate.groups[key], *aggregate.children[0]);
+}
+
+static optional_idx GroupKeyIndex(LogicalAggregate &aggregate, idx_t key, const LogicalType &type) {
+	auto index = GroupKeyIndex(aggregate, key);
+	if (!index.IsValid() || !aggregate.groups[key]->GetReturnType().EqualsIncludingCollation(type)) {
+		return {};
+	}
+	return index;
 }
 
 static optional_ptr<LogicalAggregate> FindAggregate(LogicalOperator &op, idx_t key) {
@@ -572,10 +580,7 @@ static optional_ptr<LogicalCTERef> FindSharedKey(LogicalOperator &op, idx_t &key
 	}
 	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
 		auto &aggregate = op.Cast<LogicalAggregate>();
-		if (key >= aggregate.groups.size()) {
-			return nullptr;
-		}
-		auto index = GroupKeyIndex(aggregate, key, aggregate.groups[key]->GetReturnType());
+		auto index = GroupKeyIndex(aggregate, key);
 		if (!index.IsValid()) {
 			return nullptr;
 		}
@@ -621,6 +626,11 @@ static bool ReferencesVisibleOwners(LogicalOperator &op, const vector<reference<
 static bool CanChangeRuntimeKeyReaders(LogicalOperator &op, const vector<reference<LogicalMaterializedCTE>> &cte_scopes,
                                        unordered_map<TableIndex, bool> &checked_owners) {
 	if (ClassifyLogicalOperatorRepeatability(op) != LogicalOperatorRepeatability::REPEATABLE) {
+		return false;
+	}
+	// A SINGLE join can throw when additional rows are evaluated.
+	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+	    op.Cast<LogicalComparisonJoin>().join_type == JoinType::SINGLE) {
 		return false;
 	}
 	// Reader changes and materialization can expose rows that later filters or limits would skip.
