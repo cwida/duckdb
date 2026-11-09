@@ -165,6 +165,25 @@ WITH d AS MATERIALIZED (SELECT k,0 other FROM demand) SELECT d.k,a.s FROM d LEFT
 2000	NULL
 NULL	NULL
 
+# DISTINCT with a different collation can discard keys needed by the binary restriction.
+statement ok
+CREATE TABLE collated_fact AS
+SELECT (['A', 'a', 'B', 'b'])[i % 4 + 1] AS k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE collated_keys AS SELECT DISTINCT k FROM collated_fact;
+
+query II
+WITH d AS MATERIALIZED (SELECT DISTINCT k FROM collated_keys)
+SELECT count(a.n), sum(a.n)
+FROM d LEFT JOIN (
+    SELECT f.k, count(*) AS n FROM collated_fact f
+    SEMI JOIN (SELECT DISTINCT k COLLATE nocase AS k FROM d) old ON f.k = old.k COLLATE "C"
+    GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+2	5000
+
 # Empty nested demand remains empty
 query I
 WITH first AS MATERIALIZED (SELECT * FROM demand WHERE k<0), second AS MATERIALIZED (SELECT * FROM first)

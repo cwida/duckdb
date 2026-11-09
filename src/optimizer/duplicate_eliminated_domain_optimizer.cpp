@@ -85,6 +85,23 @@ static optional_idx ReferenceIndex(const Expression &expression, LogicalOperator
 	return AggregateRewriteHelper::GetDirectReferenceIndex(expression, input);
 }
 
+static optional_idx ReferenceIndex(const Expression &expression, LogicalOperator &input, const LogicalType &type) {
+	if (!expression.GetReturnType().EqualsIncludingCollation(type)) {
+		return {};
+	}
+	return ReferenceIndex(expression, input);
+}
+
+//! DISTINCT must group by this key with the same comparison semantics.
+static bool DistinctPreservesKey(LogicalDistinct &distinct, idx_t key, const LogicalType &type) {
+	for (auto &target : distinct.distinct_targets) {
+		if (ReferenceIndex(*target, *distinct.children[0], type) == optional_idx(key)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static optional_ptr<LogicalAggregate> FindAggregate(LogicalOperator &op, idx_t key) {
 	if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
 		for (auto &expression : op.expressions) {
@@ -198,7 +215,7 @@ static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &expression = *op.expressions[key];
-		auto index = ReferenceIndex(expression, *op.children[0]);
+		auto index = ReferenceIndex(expression, *op.children[0], type);
 		if (index.IsValid()) {
 			return CopyExactFixedKeys(*op.children[0], index.GetIndex(), type, rows);
 		}
@@ -207,11 +224,7 @@ static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType
 	}
 	case LogicalOperatorType::LOGICAL_DISTINCT: {
 		auto &distinct = op.Cast<LogicalDistinct>();
-		bool preserves_key = distinct.distinct_type == DistinctType::DISTINCT;
-		for (auto &target : distinct.distinct_targets) {
-			preserves_key |= ReferenceIndex(*target, *op.children[0]) == optional_idx(key);
-		}
-		return preserves_key && CopyExactFixedKeys(*op.children[0], key, type, rows);
+		return DistinctPreservesKey(distinct, key, type) && CopyExactFixedKeys(*op.children[0], key, type, rows);
 	}
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		auto &aggregate = op.Cast<LogicalAggregate>();
@@ -219,7 +232,7 @@ static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType
 		    key >= aggregate.groups.size() || !aggregate.grouping_functions.empty()) {
 			return false;
 		}
-		auto index = ReferenceIndex(*aggregate.groups[key], *op.children[0]);
+		auto index = ReferenceIndex(*aggregate.groups[key], *op.children[0], type);
 		return index.IsValid() && CopyExactFixedKeys(*op.children[0], index.GetIndex(), type, rows);
 	}
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
@@ -662,7 +675,7 @@ static void TraceSharedKeys(LogicalOperator &op, idx_t key, const LogicalType &t
 		switch (current->type) {
 		case LogicalOperatorType::LOGICAL_PROJECTION: {
 			auto &expression = *current->expressions[index.GetIndex()];
-			if (!ReferenceIndex(expression, *current->children[0]).IsValid()) {
+			if (!ReferenceIndex(expression, *current->children[0], type).IsValid()) {
 				return;
 			}
 			binding = expression.Cast<BoundColumnRefExpression>().Binding();
@@ -675,12 +688,7 @@ static void TraceSharedKeys(LogicalOperator &op, idx_t key, const LogicalType &t
 			break;
 		case LogicalOperatorType::LOGICAL_DISTINCT: {
 			auto &distinct = current->Cast<LogicalDistinct>();
-			bool preserves_key = distinct.distinct_type == DistinctType::DISTINCT;
-			for (auto &target : distinct.distinct_targets) {
-				preserves_key |=
-				    ReferenceIndex(*target, *distinct.children[0]) == ReferenceIndex(reference, *distinct.children[0]);
-			}
-			if (!preserves_key) {
+			if (!DistinctPreservesKey(distinct, index.GetIndex(), type)) {
 				return;
 			}
 			break;
@@ -692,7 +700,7 @@ static void TraceSharedKeys(LogicalOperator &op, idx_t key, const LogicalType &t
 				return;
 			}
 			auto &expression = *aggregate.groups[index.GetIndex()];
-			if (!ReferenceIndex(expression, *aggregate.children[0]).IsValid()) {
+			if (!ReferenceIndex(expression, *aggregate.children[0], type).IsValid()) {
 				return;
 			}
 			binding = expression.Cast<BoundColumnRefExpression>().Binding();
