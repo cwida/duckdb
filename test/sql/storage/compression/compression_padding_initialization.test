@@ -337,6 +337,10 @@ SET force_bitpacking_mode='{bitpacking_mode}'
 statement ok
 CREATE TABLE no_zeroing.bitpacking_{bitpacking_mode} AS SELECT CASE WHEN r % 7 = 3 THEN NULL ELSE r * 13 END::INTEGER AS i, CASE WHEN r % 5 = 0 THEN NULL ELSE r % 100 END::SMALLINT AS s FROM range(5000) t(r)
 
+# the forced compression applies when the data is checkpointed
+statement ok
+CHECKPOINT no_zeroing
+
 endloop
 
 statement ok
@@ -347,6 +351,9 @@ SET force_compression='rle'
 
 statement ok
 CREATE TABLE no_zeroing.rle AS SELECT CASE WHEN r % 11 = 0 THEN NULL ELSE r // 10 END::BIGINT AS x FROM range(5000) t(r)
+
+statement ok
+CHECKPOINT no_zeroing
 
 statement ok
 SET force_compression='uncompressed'
