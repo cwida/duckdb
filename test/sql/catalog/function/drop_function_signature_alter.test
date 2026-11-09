@@ -295,3 +295,34 @@ query I
 SELECT blk('b');
 ----
 b
+
+# removing the last overload drops the entry, which blocks on dependents and honors CASCADE like any drop
+statement ok
+CREATE MACRO last_one(x INTEGER) AS x;
+
+statement ok
+CREATE VIEW last_one_v AS SELECT last_one(1) AS a;
+
+statement error
+DROP MACRO last_one(INTEGER);
+----
+<REGEX>:.*Cannot drop entry "last_one" because there are entries that depend on it.*view "last_one_v" depends on macro function "last_one".*
+
+statement ok
+DROP MACRO last_one(INTEGER) CASCADE;
+
+statement error
+SELECT * FROM last_one_v;
+----
+<REGEX>:.*(Catalog Error|does not exist).*
+
+statement error
+SELECT last_one(1);
+----
+<REGEX>:.*(Catalog Error|does not exist).*
+
+# a signature names one entry
+statement error
+DROP MACRO blk, last_one(INTEGER);
+----
+<REGEX>:.*syntax error.*
