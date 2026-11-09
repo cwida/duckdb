@@ -838,6 +838,55 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 	}
 }
 
+//! Block capacities are 32-bit, and in-memory blocks round their capacity up to a power of two
+static constexpr idx_t MAXIMUM_LARGE_LIST_CHILD_SIZE = idx_t(1) << 31;
+
+//! Store a list child longer than a vector, appended into an empty child chain, as a single LARGE_FLAT entry, so
+//! scans read it without copying. Returns false if the child must be appended as a chain of vector-sized entries
+static bool TryAppendLargeListChild(ColumnDataMetaData &meta_data, Vector &source, Vector &child_vector,
+                                    const ConsecutiveChildListInfo &info, idx_t offset, idx_t copy_count) {
+	auto &segment = meta_data.segment;
+	const auto length = info.child_list_info.length;
+	if (meta_data.GetVectorMetaData().child_index.IsValid() || length <= STANDARD_VECTOR_SIZE) {
+		return false;
+	}
+	auto &child_type = child_vector.GetType();
+	const auto internal_type = child_type.InternalType();
+	if (!TypeIsConstantSize(internal_type)) {
+		return false;
+	}
+	const auto type_size = GetTypeIdSize(internal_type);
+	if (ColumnDataCollectionSegment::GetDataSize(type_size, length) + ValidityMask::ValidityMaskSize(length) >
+	    MAXIMUM_LARGE_LIST_CHILD_SIZE) {
+		return false;
+	}
+
+	auto &chunk_state = meta_data.state.current_chunk_state;
+	auto child_index = segment.AllocateLargeVector(type_size, length, meta_data.chunk_data, &chunk_state);
+	meta_data.GetVectorMetaData().child_index = segment.AddChildIndex(child_index);
+	auto &child_vdata = segment.GetVectorData(child_index);
+	auto base_ptr = segment.allocator->GetDataPointer(chunk_state, child_vdata.block_id, child_vdata.offset);
+
+	Vector target(child_type, base_ptr, length);
+	if (info.needs_slicing) {
+		SelectionVector sel(length);
+		ListVector::GetConsecutiveChildSelVector(source, sel, offset, copy_count);
+		VectorOperations::Copy(child_vector, target, sel, length, 0, 0, length);
+	} else {
+		const auto child_offset = info.child_list_info.offset;
+		VectorOperations::Copy(child_vector, target, *FlatVector::IncrementalSelectionVector(), child_offset + length,
+		                       child_offset, 0, length);
+	}
+	auto validity_data = ColumnDataCollectionSegment::GetValidityPointerForWriting(base_ptr, type_size, length);
+	auto &target_validity = FlatVector::Validity(target);
+	if (target_validity.CanHaveNull()) {
+		memcpy(validity_data, target_validity.GetData(), ValidityMask::ValidityMaskSize(length));
+	} else {
+		ValidityMask(validity_data, length).SetAllValid(length);
+	}
+	return true;
+}
+
 template <>
 void ColumnDataCopy<list_entry_t>(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, Vector &source,
                                   idx_t offset, idx_t copy_count) {
@@ -845,45 +894,46 @@ void ColumnDataCopy<list_entry_t>(ColumnDataMetaData &meta_data, const UnifiedVe
 
 	auto &child_vector = ListVector::GetChildMutable(source);
 	auto &child_type = child_vector.GetType();
-
-	if (!meta_data.GetVectorMetaData().child_index.IsValid()) {
-		auto child_index = segment.AllocateVector(child_type, meta_data.chunk_data, meta_data.state);
-		meta_data.GetVectorMetaData().child_index = meta_data.segment.AddChildIndex(child_index);
-	}
-
-	auto &child_function = meta_data.copy_function.child_functions[0];
-	auto child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
+	auto info = ListVector::GetConsecutiveChildListInfo(source, offset, copy_count);
 
 	// figure out the current list size by traversing the set of child entries
 	idx_t current_list_size = 0;
-	auto current_child_index = child_index;
-	while (current_child_index.IsValid()) {
-		auto &child_vdata = segment.GetVectorData(current_child_index);
-		current_list_size += child_vdata.count;
-		current_child_index = child_vdata.next_data;
+	if (meta_data.GetVectorMetaData().child_index.IsValid()) {
+		auto current_child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
+		while (current_child_index.IsValid()) {
+			current_list_size += segment.GetVectorCount(current_child_index);
+			current_child_index = segment.GetVectorData(current_child_index).next_data;
+		}
 	}
 
-	// set the child vector
-	UnifiedVectorFormat child_vector_data;
-	ColumnDataMetaData child_meta_data(child_function, meta_data, child_index);
-	auto info = ListVector::GetConsecutiveChildListInfo(source, offset, copy_count);
+	if (!TryAppendLargeListChild(meta_data, source, child_vector, info, offset, copy_count)) {
+		if (!meta_data.GetVectorMetaData().child_index.IsValid()) {
+			auto child_index = segment.AllocateVector(child_type, meta_data.chunk_data, meta_data.state);
+			meta_data.GetVectorMetaData().child_index = meta_data.segment.AddChildIndex(child_index);
+		}
+		auto &child_function = meta_data.copy_function.child_functions[0];
+		auto child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
 
-	if (info.needs_slicing) {
-		SelectionVector sel(info.child_list_info.length);
-		ListVector::GetConsecutiveChildSelVector(source, sel, offset, copy_count);
+		// set the child vector
+		UnifiedVectorFormat child_vector_data;
+		ColumnDataMetaData child_meta_data(child_function, meta_data, child_index);
+		if (info.needs_slicing) {
+			SelectionVector sel(info.child_list_info.length);
+			ListVector::GetConsecutiveChildSelVector(source, sel, offset, copy_count);
 
-		auto sliced_child_vector = Vector(child_vector, sel, info.child_list_info.length);
-		sliced_child_vector.Flatten();
-		info.child_list_info.offset = 0;
+			auto sliced_child_vector = Vector(child_vector, sel, info.child_list_info.length);
+			sliced_child_vector.Flatten();
+			info.child_list_info.offset = 0;
 
-		sliced_child_vector.ToUnifiedFormat(child_vector_data);
-		child_function.function(child_meta_data, child_vector_data, sliced_child_vector, info.child_list_info.offset,
-		                        info.child_list_info.length);
+			sliced_child_vector.ToUnifiedFormat(child_vector_data);
+			child_function.function(child_meta_data, child_vector_data, sliced_child_vector,
+			                        info.child_list_info.offset, info.child_list_info.length);
 
-	} else {
-		child_vector.ToUnifiedFormat(child_vector_data);
-		child_function.function(child_meta_data, child_vector_data, child_vector, info.child_list_info.offset,
-		                        info.child_list_info.length);
+		} else {
+			child_vector.ToUnifiedFormat(child_vector_data);
+			child_function.function(child_meta_data, child_vector_data, child_vector, info.child_list_info.offset,
+			                        info.child_list_info.length);
+		}
 	}
 
 	// now copy the list entries
