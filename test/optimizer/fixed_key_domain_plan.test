@@ -24,6 +24,21 @@ LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k);
 ----
 physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
+# A constant key above a closed DISTINCT does not require materializing its volatile payload.
+statement ok
+CREATE SEQUENCE domain_probe_visits;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, d.payload, a.s
+FROM (
+    SELECT 1::INTEGER k, nextval('domain_probe_visits') payload
+    FROM (SELECT DISTINCT x FROM (VALUES (10), (20)) t(x)) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
 # A single native AVG has no computed output projection at this stage.
 query II
 EXPLAIN (FORMAT JSON)

@@ -152,6 +152,51 @@ ON d.k IS NOT DISTINCT FROM a.k;
 NULL	11	0
 NULL	49995011	1
 
+# Extracting a constant key above DISTINCT leaves the neighboring payload in place.
+statement ok
+CREATE SEQUENCE fixed_payload_visits;
+
+query III rowsort
+SELECT d.k, d.payload, a.s
+FROM (
+    SELECT 1::INTEGER k, nextval('fixed_payload_visits') payload
+    FROM (SELECT DISTINCT x FROM (VALUES (10), (20)) t(x)) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+1	1	45010
+1	2	45010
+
+query I
+SELECT currval('fixed_payload_visits');
+----
+2
+
+# Global aggregation still demands a key when its input is empty.
+query III
+SELECT d.k, d.n, a.s
+FROM (
+    SELECT 1::INTEGER k, n
+    FROM (SELECT count(*) n FROM (VALUES (10), (20)) t(x) WHERE false) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+1	0	45010
+
+# An empty grouping set can also emit a row from empty input.
+query IIII
+SELECT d.k, d.x, d.n, a.s
+FROM (
+    SELECT 1::INTEGER k, x, n
+    FROM (
+        SELECT x, count(*) n FROM (VALUES (10), (20)) t(x)
+        WHERE false GROUP BY GROUPING SETS ((x), ())
+    ) q
+) d
+LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
+----
+1	NULL	0	45010
+
 # Volatile aggregate arguments must still run on the original input.
 statement ok
 CREATE SEQUENCE visits;

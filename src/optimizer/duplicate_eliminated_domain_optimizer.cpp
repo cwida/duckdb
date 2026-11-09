@@ -146,6 +146,14 @@ static optional_idx FixedRowCount(LogicalOperator &op) {
 			return op.Cast<LogicalExpressionGet>().expressions.size();
 		}
 		return {};
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		// Empty grouping sets can produce a row from empty input.
+		if (aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].empty()) {
+			return {};
+		}
+		return FixedRowCount(*op.children[0]);
+	}
 	case LogicalOperatorType::LOGICAL_PROJECTION:
 	case LogicalOperatorType::LOGICAL_FILTER:
 		return FixedRowCount(*op.children[0]);
