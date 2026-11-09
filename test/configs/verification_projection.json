@@ -47,12 +47,6 @@
         "test/sql/sql_export/composition_q1_plan.test",
         "test/sql/sql_export/dml_statements.test"
       ]
-    },
-    {
-      "reason": "FIXME: INTERNAL binding error for an ANY subquery in the ON clause of a LEFT JOIN with a verification projection",
-      "paths": [
-        "test/sql/subquery/any_all/test_any_left_join_in_on_clause.test"
-      ]
     }
   ]
 }
