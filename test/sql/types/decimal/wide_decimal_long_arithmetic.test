@@ -62,12 +62,12 @@ SELECT typeof(1::DECIMAL(100000,99990)), 1::DECIMAL(100000,99990) = '1'::DECIMAL
 ----
 DECIMAL(100000,99990)	true
 
-# a long conversion checks for interrupts
+# a long conversion checks for interrupts; the materialized CTE keeps the million-digit constant out of the error text
 statement ok
 SET max_execution_time = 1;
 
 statement error
-SELECT length(1::DECIMAL(1000000,999990)::VARCHAR)
+WITH big AS MATERIALIZED (SELECT 1::DECIMAL(1000000,999990) d) SELECT length(d::VARCHAR) FROM big
 ----
 <REGEX>:.*maximum execution time.*
 

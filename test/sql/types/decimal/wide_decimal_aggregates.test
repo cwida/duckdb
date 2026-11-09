@@ -13,13 +13,14 @@ CREATE TABLE t AS SELECT * FROM (VALUES
 	('-0.0000000001')) v(s);
 
 # the same values average to the same DOUBLE in the fixed-size and the bignum tier: both sum exactly and divide once
+# compared within a DOUBLE ulp: the fixed-size tier divides in long double, whose precision is platform dependent
 query I
-SELECT avg(s::DECIMAL(38,10)) = avg(s::DECIMAL(39,10)) FROM t;
+SELECT abs(a38 - a39) <= 1e-15 * abs(a38) FROM (SELECT avg(s::DECIMAL(38,10)) a38, avg(s::DECIMAL(39,10)) a39 FROM t);
 ----
 true
 
 query I
-SELECT avg(s::DECIMAL(38,10))::VARCHAR = avg(s::DECIMAL(255,10))::VARCHAR FROM t;
+SELECT abs(a38 - a255) <= 1e-15 * abs(a38) FROM (SELECT avg(s::DECIMAL(38,10)) a38, avg(s::DECIMAL(255,10)) a255 FROM t);
 ----
 true
 
@@ -38,8 +39,9 @@ SELECT bool_and(a38 = a39) FROM (
 true
 
 query I
-SELECT avg(('100000000000000000000000000.1234567891'::DECIMAL(38,10))) = avg(('100000000000000000000000000.1234567891'::DECIMAL(39,10)))
-FROM range(10);
+SELECT abs(a38 - a39) <= 1e-15 * abs(a38) FROM (
+	SELECT avg('100000000000000000000000000.1234567891'::DECIMAL(38,10)) a38, avg('100000000000000000000000000.1234567891'::DECIMAL(39,10)) a39
+	FROM range(10));
 ----
 true
 

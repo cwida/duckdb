@@ -2,6 +2,9 @@
 # description: max_decimal_width bounds the width of DECIMAL types, casts, literals and arithmetic results
 # group: [settings]
 
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
 query I
 SELECT current_setting('max_decimal_width')
 ----
