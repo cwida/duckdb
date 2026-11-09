@@ -24,6 +24,16 @@ LEFT JOIN (SELECT k, sum(v) s FROM projected_fact GROUP BY k) a USING(k);
 ----
 physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 
+# A restriction join cannot preserve the input order required by DISTINCT ON.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.v FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT DISTINCT ON(k) k, v FROM (SELECT * FROM projected_fact ORDER BY v DESC)
+) a USING(k) ORDER BY d.k;
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
 # A constant key above a closed DISTINCT does not require materializing its volatile payload.
 statement ok
 CREATE SEQUENCE domain_probe_visits;

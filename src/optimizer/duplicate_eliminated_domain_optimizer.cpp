@@ -122,8 +122,9 @@ static optional_ptr<LogicalAggregate> FindAggregate(LogicalOperator &op, idx_t k
 		return nullptr;
 	}
 	auto &aggregate = op.Cast<LogicalAggregate>();
-	if (aggregate.groups.size() != 1 || aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].size() != 1 ||
-	    !aggregate.grouping_sets[0].count(ProjectionIndex(0)) || !aggregate.grouping_functions.empty() ||
+	if (aggregate.preserve_input_order || aggregate.groups.size() != 1 || aggregate.grouping_sets.size() != 1 ||
+	    aggregate.grouping_sets[0].size() != 1 || !aggregate.grouping_sets[0].count(ProjectionIndex(0)) ||
+	    !aggregate.grouping_functions.empty() ||
 	    !ReferenceIndex(*aggregate.groups[0], *aggregate.children[0]).IsValid()) {
 		return nullptr;
 	}

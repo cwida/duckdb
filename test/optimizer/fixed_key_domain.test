@@ -180,7 +180,7 @@ LEFT JOIN (
 ----
 2	5000
 
-# Restricting DISTINCT ON retains the first row chosen from its ordered input.
+# DISTINCT ON retains the first row chosen from its ordered input.
 statement ok
 SET threads=1;
 
