@@ -207,43 +207,47 @@ static bool CastVariantValue(FromVariantConversionData &conversion_data, Vector 
 	return success;
 }
 
+template <class CONVERT>
+static bool CastVariantRows(FromVariantConversionData &conversion_data, Vector &result, const SelectionVector &sel,
+                            idx_t offset, idx_t count, optional_idx row, CONVERT &&convert) {
+	auto &variant = conversion_data.variant;
+	auto &result_validity = FlatVector::ValidityMutable(result);
+	bool all_valid = true;
+	for (idx_t i = 0; i < count; i++) {
+		auto row_index = row.IsValid() ? row.GetIndex() : i;
+		auto result_index = offset + i;
+		if (!variant.RowIsValid(row_index)) {
+			result_validity.SetInvalid(result_index);
+			continue;
+		}
+		if (!result_validity.RowIsValid(result_index)) {
+			continue;
+		}
+		if (!convert(row_index, sel[i], result_index) &&
+		    !CastVariantValue(conversion_data, result, result_index, row_index, sel[i])) {
+			all_valid = false;
+		}
+	}
+	return all_valid;
+}
+
 template <class OP, class T = typename OP::type, class PAYLOAD_CLASS>
 static bool CastVariantToPrimitive(FromVariantConversionData &conversion_data, Vector &result,
                                    const SelectionVector &sel, idx_t offset, idx_t count, optional_idx row,
                                    PAYLOAD_CLASS payload) {
 	auto &variant = conversion_data.variant;
-
 	auto result_data = FlatVector::GetDataMutable<T>(result);
-	auto &result_validity = FlatVector::ValidityMutable(result);
-
-	bool all_valid = true;
-	for (idx_t i = 0; i < count; i++) {
-		auto row_index = row.IsValid() ? row.GetIndex() : i;
-
-		if (!variant.RowIsValid(row_index)) {
-			result_validity.SetInvalid(offset + i);
-			continue;
+	auto convert = [&](idx_t row_index, uint32_t values_index, idx_t result_index) {
+		auto type_id = variant.GetTypeId(row_index, values_index);
+		if (type_id == VariantLogicalType::OBJECT || type_id == VariantLogicalType::ARRAY) {
+			return false;
 		}
-		if (!result_validity.RowIsValid(offset + i)) {
-			continue;
-		}
-
-		auto type_id = variant.GetTypeId(row_index, sel[i]);
-		auto byte_offset = variant.GetByteOffset(row_index, sel[i]);
+		auto byte_offset = variant.GetByteOffset(row_index, values_index);
 		auto &blob = variant.GetData(row_index);
-		auto value_blob_data = const_data_ptr_cast(blob.GetData());
-		bool converted = false;
-		if (type_id != VariantLogicalType::OBJECT && type_id != VariantLogicalType::ARRAY) {
-			if (OP::Convert(type_id, byte_offset, value_blob_data, blob.GetSize(), result_data[i + offset], payload,
-			                conversion_data.error)) {
-				converted = true;
-			}
-		}
-		if (!converted && !CastVariantValue(conversion_data, result, offset + i, row_index, sel[i])) {
-			all_valid = false;
-		}
-	}
-	return all_valid;
+		return OP::Convert(type_id, byte_offset, const_data_ptr_cast(blob.GetData()), blob.GetSize(),
+		                   result_data[result_index], payload, conversion_data.error);
+	};
+	return CastVariantRows(conversion_data, result, sel, offset, count, row, convert);
 }
 
 namespace {
@@ -601,45 +605,32 @@ static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vec
 	auto &result_validity = FlatVector::ValidityMutable(result);
 
 	unique_ptr<VariantVarcharSerializer> serializer;
-	bool all_valid = true;
-	for (idx_t i = 0; i < count; i++) {
-		auto row_index = row.IsValid() ? row.GetIndex() : i;
-		if (!variant.RowIsValid(row_index)) {
-			result_validity.SetInvalid(offset + i);
-			continue;
-		}
-		if (!result_validity.RowIsValid(offset + i)) {
-			continue;
-		}
-		auto values_index = sel[i];
+	auto convert = [&](idx_t row_index, uint32_t values_index, idx_t result_index) {
 		auto type_id = variant.GetTypeId(row_index, values_index);
 		if (type_id == VariantLogicalType::VARIANT_NULL) {
-			result_validity.SetInvalid(offset + i);
-			continue;
+			result_validity.SetInvalid(result_index);
+			return true;
 		}
 		if (type_id == VariantLogicalType::VARCHAR) {
-			result_data[i + offset] =
+			result_data[result_index] =
 			    StringVector::AddStringOrBlob(result, VariantUtils::DecodeStringData(variant, row_index, values_index));
-			continue;
+			return true;
 		}
 		if (!serializer) {
 			serializer = make_uniq<VariantVarcharSerializer>(variant);
 		}
-		if (serializer->Serialize(row_index, values_index)) {
-			auto &serialized = serializer->GetResult();
-			// Let the string heap validate the full size before narrowing it to string_t's length.
-			result_data[i + offset] = StringVector::GetStringHeap(result).AddBlob(serialized.data(), serialized.size());
+		if (!serializer->Serialize(row_index, values_index)) {
+			return false;
+		}
+		auto &serialized = serializer->GetResult();
+		// Let the string heap validate the full size before narrowing it to string_t's length.
+		result_data[result_index] = StringVector::GetStringHeap(result).AddBlob(serialized.data(), serialized.size());
 #ifdef D_ASSERT_IS_ENABLED
-			VerifyVarcharSerialization(conversion_data, result.GetType(), row_index, values_index,
-			                           serializer->GetResult());
+		VerifyVarcharSerialization(conversion_data, result.GetType(), row_index, values_index, serialized);
 #endif
-			continue;
-		}
-		if (!CastVariantValue(conversion_data, result, offset + i, row_index, values_index)) {
-			all_valid = false;
-		}
-	}
-	return all_valid;
+		return true;
+	};
+	return CastVariantRows(conversion_data, result, sel, offset, count, row, convert);
 }
 
 static bool FindValues(UnifiedVariantVectorData &variant, idx_t row_index, SelectionVector &sel,
