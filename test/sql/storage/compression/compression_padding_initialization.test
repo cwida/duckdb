@@ -320,3 +320,62 @@ SELECT count(*) FROM roaring_multi.t
 
 statement ok
 DETACH roaring_multi
+
+# codecs that skip zeroing new segments must still write every byte they persist
+
+statement ok
+ATTACH '{TEST_DIR}/padding_no_zeroing.db' AS no_zeroing (STORAGE_VERSION 'v1.5.0')
+
+statement ok
+SET force_compression='bitpacking'
+
+foreach bitpacking_mode for delta_for constant constant_delta
+
+statement ok
+SET force_bitpacking_mode='{bitpacking_mode}'
+
+statement ok
+CREATE TABLE no_zeroing.bitpacking_{bitpacking_mode} AS SELECT CASE WHEN r % 7 = 3 THEN NULL ELSE r * 13 END::INTEGER AS i, CASE WHEN r % 5 = 0 THEN NULL ELSE r % 100 END::SMALLINT AS s FROM range(5000) t(r)
+
+endloop
+
+statement ok
+RESET force_bitpacking_mode
+
+statement ok
+SET force_compression='rle'
+
+statement ok
+CREATE TABLE no_zeroing.rle AS SELECT CASE WHEN r % 11 = 0 THEN NULL ELSE r // 10 END::BIGINT AS x FROM range(5000) t(r)
+
+statement ok
+SET force_compression='uncompressed'
+
+statement ok
+CREATE TABLE no_zeroing.uncompressed AS SELECT CASE WHEN r % 5 = 0 THEN NULL ELSE r * 7 END::HUGEINT AS x, CASE WHEN r % 3 = 0 THEN NULL ELSE to_seconds(r) END AS y FROM range(5000) t(r)
+
+statement ok
+CHECKPOINT no_zeroing
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('no_zeroing.bitpacking_for') WHERE compression = 'BitPacking'
+----
+true
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('no_zeroing.rle') WHERE compression = 'RLE'
+----
+true
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('no_zeroing.uncompressed') WHERE compression = 'Uncompressed' AND segment_type = 'VALIDITY'
+----
+true
+
+query II
+SELECT count(*), count(i) FROM no_zeroing.bitpacking_for
+----
+5000	4286
+
+statement ok
+DETACH no_zeroing

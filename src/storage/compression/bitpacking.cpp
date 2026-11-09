@@ -1308,6 +1308,8 @@ CompressionFunction GetBitpackingFunction(PhysicalType data_type) {
 	    BitpackingScan<T>, BitpackingScanPartial<T>, BitpackingSkip<T>);
 	bitpacking.select = BitpackingSelect<T>;
 	bitpacking.get_segment_info = BitpackingGetSegmentInfo<T>;
+	// groups and metadata are written contiguously and the alignment gap is cleared when compacting
+	bitpacking.zero_initialize_segments = false;
 	return bitpacking;
 }
 
