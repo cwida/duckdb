@@ -392,6 +392,17 @@ Value AllowedPathsSetting::GetSetting(const ClientContext &context) {
 }
 
 //===----------------------------------------------------------------------===//
+// Buffer Manager Track Eviction Timestamps
+//===----------------------------------------------------------------------===//
+void BufferManagerTrackEvictionTimestampsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	// the buffer pool reads the setting once, when the database starts
+	if (info.db) {
+		throw InvalidInputException("Cannot change %s setting while database is running",
+		                            BufferManagerTrackEvictionTimestampsSetting::Name);
+	}
+}
+
+//===----------------------------------------------------------------------===//
 // Checkpoint Threshold
 //===----------------------------------------------------------------------===//
 void CheckpointThresholdSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
@@ -1095,24 +1106,34 @@ Value EnableProfilingSetting::GetSetting(const ClientContext &context) {
 	return Value(config.profiler_print_format);
 }
 
+//! The progress bar settings are per connection: setting them without a client context (e.g. on a DBConfig) fails
+static ClientContext &GetProgressBarSettingContext(SettingCallbackInfo &info, const char *setting_name) {
+	if (!info.context) {
+		throw InvalidInputException("Could not set option \"%s\" as a global option", setting_name);
+	}
+	return *info.context;
+}
+
 //===----------------------------------------------------------------------===//
 // Enable Progress Bar Print
 //===----------------------------------------------------------------------===//
 void EnableProgressBarPrintSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	auto &context = GetProgressBarSettingContext(info, EnableProgressBarPrintSetting::Name);
 	if (input.IsNull()) {
 		throw InvalidInputException("enable_progress_bar_print setting cannot be NULL");
 	}
-	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(*info.context));
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
 }
 
 //===----------------------------------------------------------------------===//
 // Enable Progress Bar
 //===----------------------------------------------------------------------===//
 void EnableProgressBarSetting::OnSet(SettingCallbackInfo &info, Value &input) {
+	auto &context = GetProgressBarSettingContext(info, EnableProgressBarSetting::Name);
 	if (input.IsNull()) {
 		throw InvalidInputException("enable_progress_bar setting cannot be NULL");
 	}
-	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(*info.context));
+	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1572,7 +1593,7 @@ Value ProfilingCoverageSetting::GetSetting(const ClientContext &context) {
 // Progress Bar Time
 //===----------------------------------------------------------------------===//
 void ProgressBarTimeSetting::OnSet(SettingCallbackInfo &info, Value &input) {
-	auto &context = *info.context;
+	auto &context = GetProgressBarSettingContext(info, ProgressBarTimeSetting::Name);
 	ProgressBar::SystemOverrideCheck(ClientConfig::GetConfig(context));
 	if (info.is_reset) {
 		ClientConfig::GetConfig(context).user_settings.ClearSetting(EnableProgressBarSetting::SettingIndex);

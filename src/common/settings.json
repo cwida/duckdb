@@ -211,8 +211,11 @@
         "name": "buffer_manager_track_eviction_timestamps",
         "description": "Record timestamps of buffer manager unpin() events. Usable by custom eviction policies.",
         "type": "BOOLEAN",
-        "default_scope": "global",
-        "default_value": "false"
+        "scope": "global",
+        "default_value": "false",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "cache_local_files",
@@ -239,7 +242,7 @@
         "name": "checkpoint_on_shutdown",
         "description": "Whether to run a checkpoint on successful shutdown and delete the WAL, to leave only a single database file behind.",
         "type": "BOOLEAN",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "true"
     },
     {
@@ -300,7 +303,7 @@
         "name": "debug_abort_on_wal_failure",
         "description": "Whether or not to abort if a serialization exception is thrown during WAL playback.",
         "type": "BOOLEAN",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "false",
         "is_debug": true
     },
@@ -398,7 +401,7 @@
         "name": "debug_force_checkpoint",
         "description": "Force a checkpoint when CHECKPOINT is called or on shutdown, even if no changes have been made.",
         "type": "BOOLEAN",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "false",
         "is_debug": true
     },
@@ -490,7 +493,7 @@
         "name": "debug_initialize",
         "description": "How to initialize blocks in the storage layer when allocating (NO_INITIALIZE, DEBUG_ZERO_INITIALIZE or DEBUG_ONE_INITIALIZE).",
         "type": "ENUM<DebugInitialize>",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "NO_INITIALIZE",
         "is_debug": true
     },
@@ -1607,7 +1610,7 @@
         "name": "trim_free_blocks",
         "description": "Whether to invoke filesystem trim on free blocks after checkpoint. This reclaims space for sparse files, on platforms that support it.",
         "type": "BOOLEAN",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "false"
     },
     {

@@ -186,6 +186,7 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "allowed_directories",
 	    "default_grammar_extensions", // non-empty values require a registered grammar extension
 	    "allowed_paths",
+	    "buffer_manager_track_eviction_timestamps", // cant change this while db is running
 	    "current_dialect",
 	    "custom_user_agent",
 	    "debug_delta_only_variant_encoding_enabled",
