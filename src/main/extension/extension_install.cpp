@@ -121,6 +121,12 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 		}
 	}
 
+	// Check for user-provided repositories
+	auto user_provided_repos = ExtensionRepositoryManager::GetRepositories(db, fs);
+	for (auto repo : user_provided_repos) {
+		extension_directories.push_back(repo.path);
+	}
+
 	// Process all directories with common path operations
 	auto path_components = PathComponents();
 	for (auto &extension_directory : extension_directories) {
