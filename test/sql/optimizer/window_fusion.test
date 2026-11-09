@@ -3,4 +3,22 @@
 # group: [optimizer]
 
 statement ok
-set debug_window_fusion = true;
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+explain
+SELECT id
+FROM range(100) tbl(id)
+QUALIFY row_number() OVER() = 1
+----
+logical_opt	<!REGEX>:.*FILTER.*
+
+query I
+SELECT id
+FROM range(100) tbl(id)
+QUALIFY row_number() OVER() = 1
+----
+0

@@ -43,7 +43,7 @@ public:
 
 	//	Returns the <= index for TopN, if any
 	//	Note that it can return 0 if the filter removes all rows!
-	static optional_idx CanOptimize(LogicalOperator &op);
+	static optional_idx CanOptimize(LogicalOperator &op, bool is_fusion = false);
 
 private:
 	unique_ptr<LogicalOperator> OptimizeInternal(unique_ptr<LogicalOperator> op, ColumnBindingReplacer &replacer);

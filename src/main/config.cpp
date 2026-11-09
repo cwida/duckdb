@@ -142,7 +142,6 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugVerifyStatsSetting),
     DUCKDB_SETTING_CALLBACK(DebugVerifyVectorSetting),
     DUCKDB_SETTING(DebugWalFsyncSleepMsSetting),
-    DUCKDB_SETTING(DebugWindowFusionSetting),
     DUCKDB_SETTING_CALLBACK(DebugWindowModeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultBlockSizeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultCollationSetting),

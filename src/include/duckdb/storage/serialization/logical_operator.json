@@ -134,14 +134,14 @@
       },
       {
         "id": 202,
-        "name": "window_limit",
+        "name": "partition_limit",
         "type": "optional_idx",
         "default": "optional_idx()"
       }
     ],
     "constructor": [
       "window_index",
-      "window_limit"
+      "partition_limit"
     ]
   },
   {

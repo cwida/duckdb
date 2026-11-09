@@ -5,7 +5,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/function/window_function.hpp"
-#include "duckdb/function/window/window_executor.hpp"
 #include "duckdb/parallel/thread_context.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 
@@ -13,9 +12,9 @@ namespace duckdb {
 
 PhysicalStreamingWindow::PhysicalStreamingWindow(PhysicalPlan &physical_plan, vector<LogicalType> types,
                                                  vector<unique_ptr<Expression>> select_list,
-                                                 idx_t estimated_cardinality, PhysicalOperatorType type)
-    : PhysicalOperator(physical_plan, type, std::move(types), estimated_cardinality),
-      select_list(std::move(select_list)) {
+                                                 idx_t estimated_cardinality, optional_idx partition_limit)
+    : PhysicalOperator(physical_plan, PhysicalOperatorType::STREAMING_WINDOW, std::move(types), estimated_cardinality),
+      select_list(std::move(select_list)), partition_limit(partition_limit) {
 }
 
 class StreamingWindowGlobalState : public GlobalOperatorState {
@@ -153,6 +152,23 @@ public:
 		chunk.Reset();
 	}
 
+	//	Limit a returned data chunk
+	template <typename T>
+	T Limit(DataChunk &output, optional_idx partition_limit, const T result) {
+		if (!partition_limit.IsValid()) {
+			return result;
+		}
+
+		const auto remaining = partition_limit.GetIndex() - emitted_count;
+		if (remaining < output.size()) {
+			output.Flatten();
+			output.SetChildCardinality(MinValue(output.size(), remaining));
+		}
+		emitted_count += output.size();
+
+		return output.size() ? result : T::FINISHED;
+	}
+
 public:
 	//! We can't initialise until we have an input chunk
 	bool initialized;
@@ -170,6 +186,8 @@ public:
 	//! Set when `delayed` has been flushed into the output by reference - we must defer resetting (resizing) it
 	//! until the next call, by which point the referencing output chunk has been consumed.
 	bool flushed_delayed = false;
+	//! The number of rows emitted (for limiting)
+	idx_t emitted_count = 0;
 };
 
 StreamingWindowGlobalState::StreamingWindowGlobalState(ClientContext &client) {
@@ -407,7 +425,7 @@ OperatorResultType PhysicalStreamingWindow::Execute(ExecutionContext &context, D
 		// Without LEAD nothing is ever delayed (the delayed buffer is not even initialized), so emit the input
 		// directly.
 		ExecuteInput(context, delayed, input, output, gstate_p);
-		return OperatorResultType::NEED_MORE_INPUT;
+		return state.Limit(output, partition_limit, OperatorResultType::NEED_MORE_INPUT);
 	}
 	// We can Reset delayed now that no one can be referencing it (the previous output has been consumed).
 	if (state.flushed_delayed) {
@@ -421,14 +439,14 @@ OperatorResultType PhysicalStreamingWindow::Execute(ExecutionContext &context, D
 		//	then just delay more rows, return nothing
 		//	and ask for more data.
 		delayed.Append(input);
-		return OperatorResultType::NEED_MORE_INPUT;
+		return state.Limit(output, partition_limit, OperatorResultType::NEED_MORE_INPUT);
 	} else if (input.size() < delayed.size()) {
 		// If we can't consume all of the delayed values,
 		// we need to split them instead of referencing them all
 		output.SetChildCardinality(input.size());
 		ExecuteShifted(context, delayed, input, output, gstate_p);
 		// We delayed the unused input so ask for more
-		return OperatorResultType::NEED_MORE_INPUT;
+		return state.Limit(output, partition_limit, OperatorResultType::NEED_MORE_INPUT);
 	} else if (delayed.size()) {
 		//	We have enough delayed rows so flush them
 		ExecuteDelayed(context, delayed, input, output, gstate_p);
@@ -436,11 +454,11 @@ OperatorResultType PhysicalStreamingWindow::Execute(ExecutionContext &context, D
 		// output has been consumed), since resizing its buffers now would corrupt the referencing output chunk.
 		state.flushed_delayed = true;
 		// Come back to process the input
-		return OperatorResultType::HAVE_MORE_OUTPUT;
+		return state.Limit(output, partition_limit, OperatorResultType::HAVE_MORE_OUTPUT);
 	} else {
 		//	No delayed rows, so emit what we can and delay the rest.
 		ExecuteInput(context, delayed, input, output, gstate_p);
-		return OperatorResultType::NEED_MORE_INPUT;
+		return state.Limit(output, partition_limit, OperatorResultType::NEED_MORE_INPUT);
 	}
 }
 
@@ -459,7 +477,7 @@ OperatorFinalizeResultType PhysicalStreamingWindow::FinalExecute(ExecutionContex
 			//	More than one output buffer was delayed, so shift in what we can
 			output.SetChildCardinality(STANDARD_VECTOR_SIZE);
 			ExecuteShifted(context, delayed, input, output, gstate_p);
-			return OperatorFinalizeResultType::HAVE_MORE_OUTPUT;
+			return state.Limit(output, partition_limit, OperatorFinalizeResultType::HAVE_MORE_OUTPUT);
 		}
 		ExecuteDelayed(context, delayed, input, output, gstate_p);
 	}

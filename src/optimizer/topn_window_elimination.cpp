@@ -551,7 +551,7 @@ public:
 	}
 };
 
-optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
+optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op, bool is_fusion) {
 	const optional_idx cant_optimize;
 	if (op.type != LogicalOperatorType::LOGICAL_FILTER) {
 		return cant_optimize;
@@ -682,14 +682,15 @@ optional_idx TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 	if (!window_expr.ArgOrders().empty()) {
 		return cant_optimize;
 	}
-	if (window_expr.OrderBy().size() != 1) {
-		return cant_optimize;
-	}
-	if (window_expr.OrderBy()[0].type != OrderType::DESCENDING &&
-	    window_expr.OrderBy()[0].type != OrderType::ASCENDING) {
-		return cant_optimize;
-	}
-	if (window_expr.OrderBy()[0].null_order != OrderByNullType::NULLS_LAST) {
+	if (window_expr.OrderBy().size() == 1) {
+		if (window_expr.OrderBy()[0].type != OrderType::DESCENDING &&
+		    window_expr.OrderBy()[0].type != OrderType::ASCENDING) {
+			return cant_optimize;
+		}
+		if (window_expr.OrderBy()[0].null_order != OrderByNullType::NULLS_LAST) {
+			return cant_optimize;
+		}
+	} else if (!window_expr.OrderBy().empty() || !is_fusion) {
 		return cant_optimize;
 	}
 
