@@ -47,15 +47,11 @@ SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048
 ----
 6144	2048	8191
 
-mode skip "This optimization is currently disabled due to issues with rowgroup reordering"
-
 # Partial precompute: PROJECTION merges precomputed constants with aggregate results
 query II
 EXPLAIN SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048 AND j > 5000
 ----
 physical_plan	<REGEX>:.*COALESCE.*least.*UNGROUPED_AGGREGATE.*
-
-mode unskip
 
 query III
 SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048 AND j > 5000
@@ -116,14 +112,10 @@ analyzed_plan	<REGEX>:.*Type: Index Scan.*
 statement ok
 RESET disabled_optimizers
 
-mode skip "This optimization is currently disabled due to issues with rowgroup reordering"
-
 query II
 EXPLAIN ANALYZE SELECT count(*), min(i), max(i) FROM t WHERE j > 5000
 ----
 analyzed_plan	<REGEX>:.*Type: Sequential Scan.*
-
-mode unskip
 
 query III
 SELECT count(*), min(i), max(i) FROM t WHERE j > 5000
@@ -138,3 +130,188 @@ query II
 EXPLAIN SELECT count(*), min(i), max(i) FROM t WHERE i >= 2048 AND j > 5000 GROUP BY i % 10
 ----
 physical_plan	<REGEX>:.*HASH_GROUP_BY.*
+
+# Inexact statistics: updated/deleted row groups fall back to scanning, exact ones still precompute
+statement ok
+CREATE TABLE t2 AS (SELECT * FROM range(8192) _(i), LATERAL (SELECT (i * 2) AS j));
+
+# Reopen to clear version info so all row group stats start exact
+statement ok
+ATTACH '{TEST_DIR}/tmp_partial2.duckdb' AS tmp2
+
+statement ok
+USE tmp2
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/partial_agg.duckdb' AS db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE db
+
+statement ok
+DETACH tmp2
+
+# Prevent automatic checkpoints: a checkpoint rewrites the row group and re-tightens its statistics
+statement ok
+SET checkpoint_threshold = '1TB'
+
+# An update marks row group 0 as changed: its min/max become inexact, its count stays exact
+statement ok
+UPDATE t2 SET j = 4000 WHERE i = 100
+
+# count(*) alone is still fully precomputed - updates do not change row counts
+query II
+EXPLAIN SELECT count(*) FROM t2
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT count(*) FROM t2
+----
+8192
+
+# min/max must scan the updated row group - partial precompute without any filter
+query II
+EXPLAIN SELECT min(j), max(j) FROM t2
+----
+physical_plan	<REGEX>:.*COALESCE.*least.*UNGROUPED_AGGREGATE.*
+
+query II
+SELECT min(j), max(j) FROM t2
+----
+0	16382
+
+# combined with max, count is scanned along with it and merged back
+query II
+EXPLAIN SELECT count(*), max(j) FROM t2
+----
+physical_plan	<REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query II
+SELECT count(*), max(j) FROM t2
+----
+8192	16382
+
+# Filter + inexact min/max: the updated row group cannot be trusted for the filter
+# verdict at plan time, so it stays in the scan set; the scan-time zonemap then
+# skips it anyway, so no row group is actually read
+query II
+EXPLAIN ANALYZE SELECT min(j), max(j) FROM t2 WHERE i >= 2048
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 0 / 4.*
+
+query II
+SELECT min(j), max(j) FROM t2 WHERE i >= 2048
+----
+4096	16382
+
+# In-process delete keeps per-partition counts exact (see partition_stats_exactness)
+statement ok
+DELETE FROM t2 WHERE i = 100
+
+# count(*) alone is still fully precomputed after delete
+query II
+EXPLAIN SELECT count(*) FROM t2
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT count(*) FROM t2
+----
+8191
+
+query III
+SELECT count(*), min(j), max(j) FROM t2
+----
+8191	0	16382
+
+# Filter prunes row group 0 at plan time; the remaining row groups fully precompute
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t2 WHERE i >= 2048
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 0 / 4.*
+
+query I
+SELECT count(*) FROM t2 WHERE i >= 2048
+----
+6144
+
+# All actions at once: row group 0 scanned (inexact stats), row group 2 scanned
+# (partial filter match), row group 3 pruned, row group 1 precomputed
+query II
+EXPLAIN ANALYZE SELECT count(*), min(j), max(j) FROM t2 WHERE i < 5000
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+query III
+SELECT count(*), min(j), max(j) FROM t2 WHERE i < 5000
+----
+4999	0	9998
+
+# Update and delete hitting different row groups
+statement ok
+CREATE TABLE t3 AS (SELECT * FROM range(8192) _(i), LATERAL (SELECT (i * 2) AS j));
+
+# Reopen to clear version info
+statement ok
+ATTACH '{TEST_DIR}/tmp_partial3.duckdb' AS tmp3
+
+statement ok
+USE tmp3
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/partial_agg.duckdb' AS db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE db
+
+statement ok
+DETACH tmp3
+
+# row group 0: update only; row group 1: delete only
+statement ok
+UPDATE t3 SET j = 4000 WHERE i = 100
+
+statement ok
+DELETE FROM t3 WHERE i = 3000
+
+# count(*) fully precomputes: in-process deletes keep per-partition counts exact
+query II
+EXPLAIN SELECT count(*) FROM t3
+----
+physical_plan	<!REGEX>:.*UNGROUPED_AGGREGATE.*
+
+query I
+SELECT count(*) FROM t3
+----
+8191
+
+# min/max must scan both changed row groups
+query II
+EXPLAIN ANALYZE SELECT min(j), max(j) FROM t3
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+query II
+SELECT min(j), max(j) FROM t3
+----
+0	16382
+
+# all three aggregates with a filter partially matching yet another row group:
+# row groups 0 (update) and 1 (delete) are scanned for min/max, row group 3 is a
+# partial filter match, row group 2 precomputes
+query II
+EXPLAIN ANALYZE SELECT count(*), min(j), max(j) FROM t3 WHERE i < 7000
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 4.*
+
+query III
+SELECT count(*), min(j), max(j) FROM t3 WHERE i < 7000
+----
+6999	0	13998
