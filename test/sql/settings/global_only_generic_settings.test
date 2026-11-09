@@ -5,7 +5,7 @@
 foreach setting checkpoint_on_shutdown trim_free_blocks debug_force_checkpoint debug_abort_on_wal_failure buffer_manager_track_eviction_timestamps
 
 statement error
-SET SESSION ${setting} = false;
+SET SESSION {setting} = false;
 ----
 cannot be set as a session variable - it can only be set globally
 
