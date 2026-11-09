@@ -26,7 +26,6 @@ struct GetVariableBindData : FunctionData {
 
 unique_ptr<FunctionData> GetVariableBind(BindScalarFunctionInput &input) {
 	auto &context = input.GetClientContext();
-	auto &arguments = input.GetArguments();
 	auto &function = input.GetBoundFunction();
 	auto variable_name = input.GetConstant(0);
 	Value value;
