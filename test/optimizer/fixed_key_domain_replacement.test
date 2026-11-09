@@ -89,12 +89,6 @@ SELECT sum(s), sum(n) FROM callback_groups;
 ----
 31	21
 
-# Explicit bounds remain independent of statistics.
-query II
-SELECT bit_length(bitstring_agg(k, 0, 999)), bit_count(bitstring_agg(k, 0, 999)) FROM callback_groups;
-----
-1000	2
-
 # A filtered old source is only a superset of its actual surviving keys.
 query II rowsort
 SELECT d.k, a.s

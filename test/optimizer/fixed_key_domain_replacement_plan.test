@@ -81,6 +81,11 @@ physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
 
 # Only implicit bitstring bounds require the bailout.
 query II
+SELECT bit_length(bitstring_agg(k, 0, 999)), bit_count(bitstring_agg(k, 0, 999)) FROM callback_groups;
+----
+1000	2
+
+query II
 EXPLAIN (FORMAT JSON) SELECT bitstring_agg(k, 0, 999), sum(s) FROM callback_groups;
 ----
 physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
