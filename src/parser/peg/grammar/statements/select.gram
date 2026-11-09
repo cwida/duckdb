@@ -86,7 +86,10 @@ TableFunction <- TableFunctionLateralOpt / TableFunctionAliasColon
 TableFunctionLateralOpt <- Lateral? QualifiedTableFunction TableFunctionArguments WithOrdinality? TableAlias? SampleClause?
 TableFunctionAliasColon <- TableAliasColon QualifiedTableFunction TableFunctionArguments WithOrdinality? SampleClause?
 WithOrdinality <- 'WITH' 'ORDINALITY'
-QualifiedTableFunction <- CatalogQualification? SchemaQualification* TableFunctionName
+QualifiedTableFunction <- CatalogReservedSchemaTableFunctionName / TableFunctionNameAsQualifiedName
+# after a qualification a reserved keyword can name a table function, as in g.describe('a')
+CatalogReservedSchemaTableFunctionName <- CatalogQualification SchemaQualification* ReservedTableFunctionName
+TableFunctionNameAsQualifiedName <- TableFunctionName
 TableFunctionArguments <- Parens(List(FunctionArgument)?)
 FunctionArgument <- NamedFunctionArgument / PositionalFunctionArgument
 NamedFunctionArgument <- TypeFuncName NamedParameterAssignment Expression
