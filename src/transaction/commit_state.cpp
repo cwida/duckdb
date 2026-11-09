@@ -292,10 +292,15 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 		if (new_entry.type == CatalogType::DEPENDENCY_ENTRY) {
 			auto &dep = new_entry.Cast<DependencyEntry>();
 			if (dep.Side() == DependencyEntryType::SUBJECT) {
-				new_entry.set->VerifyExistenceOfDependency(commit_id, new_entry);
+				new_entry.set->VerifyExistenceOfDependency(commit_id, transaction.view.visibility_bound, new_entry);
 			}
 		} else if (new_entry.type == CatalogType::DELETED_ENTRY && old_entry.set) {
 			old_entry.set->CommitDrop(commit_id, transaction.view.visibility_bound, old_entry);
+		} else if ((new_entry.type == CatalogType::MACRO_ENTRY || new_entry.type == CatalogType::TABLE_MACRO_ENTRY) &&
+		           old_entry.type == new_entry.type &&
+		           old_entry.Cast<MacroCatalogEntry>().macros.size() >
+		               new_entry.Cast<MacroCatalogEntry>().macros.size()) {
+			old_entry.set->VerifyCommitDrop(commit_id, transaction.view.visibility_bound, old_entry);
 		}
 		// Grab a write lock on the catalog
 		auto &duck_catalog = catalog.Cast<DuckCatalog>();

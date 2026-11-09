@@ -12,6 +12,7 @@
 #include "duckdb/catalog/catalog_entry/dependency/dependency_subject_entry.hpp"
 #include "duckdb/catalog/catalog_entry/dependency/dependency_dependent_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
+#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/common/queue.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
@@ -537,7 +538,8 @@ string DependencyManager::CollectDependents(CatalogTransaction transaction, cata
 	return result;
 }
 
-void DependencyManager::VerifyExistence(CatalogTransaction transaction, DependencyEntry &object) {
+void DependencyManager::VerifyExistence(CatalogTransaction transaction, CatalogTransaction snapshot_transaction,
+                                        DependencyEntry &object) {
 	auto &subject = object.Subject();
 
 	CatalogEntryInfo info;
@@ -573,6 +575,17 @@ void DependencyManager::VerifyExistence(CatalogTransaction transaction, Dependen
 		throw DependencyException(
 		    "Could not commit creation of dependency, subject %s was dropped and re-created by another transaction",
 		    object.EntryInfo().name);
+	}
+	if (!subject.flags.IsOwnership() && lookup_result.result &&
+	    (type == CatalogType::MACRO_ENTRY || type == CatalogType::TABLE_MACRO_ENTRY)) {
+		auto bound_entry = LookupEntry(snapshot_transaction, info);
+		// An overload removal preserves the oid, but changes the definition a dependency was bound against.
+		if (bound_entry && bound_entry->Cast<MacroCatalogEntry>().macros.size() >
+		                       lookup_result.result->Cast<MacroCatalogEntry>().macros.size()) {
+			throw DependencyException("Could not commit creation of dependency, subject %s had an overload removed "
+			                          "by another transaction",
+			                          object.EntryInfo().name);
+		}
 	}
 }
 
