@@ -147,6 +147,7 @@
         "test/sql/storage/list_length_stats_checkpoint.test",
         "test/sql/optimizer/statistics/list_length_stats_propagation.test",
         "test/sql/storage/total_string_length_repeated_insert.test",
+        "test/sql/storage/total_string_length_multi_row_group.test",
         "test/sql/storage/compression/dictionary/total_string_length_dictionary.test"
       ]
     },
