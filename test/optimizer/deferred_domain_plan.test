@@ -3,6 +3,28 @@
 # group: [optimizer]
 
 statement ok
+CREATE TABLE decimal_average_input AS
+SELECT (i>=9998)::INTEGER k,
+       CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
+FROM range(10000)t(i);
+
+# A decimal average can overflow on a group outside the requested domain.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Floating-point averaging can evaluate the additional group without overflow.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT avg(v::DOUBLE) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+statement ok
 CREATE TABLE fact_data AS SELECT (i%1000)::INTEGER k,(i%13)::INTEGER j,i v FROM range(10000)t(i);
 
 query II

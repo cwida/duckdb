@@ -2,6 +2,25 @@
 # description: Deferred generated domains preserve composite keys, filters and output bags
 # group: [optimizer]
 
+# Widening a decimal average can overflow its accumulator in an unrequested group.
+statement ok
+CREATE TABLE decimal_average_input AS
+SELECT (i>=9998)::INTEGER k,
+       CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
+FROM range(10000)t(i);
+
+query IR
+SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	1.0
+
+query IR
+SELECT d.k,(SELECT avg(v::DOUBLE) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	1.0
+
 statement ok
 CREATE TABLE facts(k INTEGER, j INTEGER, v INTEGER);
 
