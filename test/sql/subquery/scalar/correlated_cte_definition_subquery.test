@@ -1,0 +1,173 @@
+# name: test/sql/subquery/scalar/correlated_cte_definition_subquery.test
+# description: CTE definitions inside correlated subqueries must have their own subqueries decorrelated
+# group: [scalar]
+
+statement ok
+CREATE TABLE integers(i INTEGER)
+
+statement ok
+INSERT INTO integers VALUES (1), (2), (3), (NULL)
+
+# correlated scalar subquery over a materialized CTE: the definition is independent of the
+# correlation, but contains a sibling-correlated scalar subquery of its own
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	2
+2	3
+3	4
+
+# same shape with a default (non-materialized) CTE
+query II
+SELECT i, (WITH c AS (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	2
+2	3
+3	4
+
+# correlation only in the WHERE clause of the CTE consumer
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r FROM c WHERE i1.i IS NOT NULL) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	1
+2	1
+3	1
+
+# LATERAL variant
+query II
+SELECT i, x FROM integers i1, LATERAL (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + 0 * i1.i AS x FROM c) _ ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	1
+2	1
+3	1
+
+# EXISTS takes the full-RHS-decorrelation path (non-SINGLE join)
+query I
+SELECT i FROM integers i1 WHERE EXISTS (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r FROM c WHERE i1.i = 2) ORDER BY i;
+----
+2
+
+# EXISTS inside the CTE definition instead of a scalar subquery
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT EXISTS (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r::INT + 0 * i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	1
+2	1
+3	1
+
+# nested CTE inside the detached definition
+query II
+SELECT i, (WITH c AS MATERIALIZED (WITH d AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r FROM d) SELECT r + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	2
+2	3
+3	4
+
+# multiple definition rows under an aggregate in the consumer
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (VALUES (1), (2)) s(v)) SELECT sum(r) + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	4
+2	5
+3	6
+
+# duplicates and NULLs on the outer side
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + i1.i FROM c) FROM (VALUES (2), (2), (NULL)) i1(i) ORDER BY ALL NULLS FIRST;
+----
+NULL	NULL
+2	3
+2	3
+
+# correlated subquery used in the WHERE clause of the outer query
+query I
+SELECT i FROM integers i1 WHERE (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + 0 * i1.i FROM c) = 1 ORDER BY i;
+----
+1
+2
+3
+
+# VARCHAR values through the same shape
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 'x' AS v) s) SELECT r || i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	x1
+2	x2
+3	x3
+
+# two consumers of the same detached CTE
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT (SELECT r FROM c) + (SELECT max(r) FROM c) + i1.i) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	3
+2	4
+3	5
+
+# a LATERAL (non-SINGLE) dependent join inside the definition
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT w FROM (SELECT 1 AS v) s, LATERAL (SELECT s.v + 1) t(w)) SELECT w + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	3
+2	4
+3	5
+
+# multiple definition columns read through two CTE scans
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS a, 'x' AS b FROM (VALUES (7)) s(v)) SELECT c1.b || (c2.a + i1.i)::VARCHAR FROM c c1 CROSS JOIN c c2) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	x8
+2	x9
+3	x10
+
+# a recursive CTE inside the detached definition
+query II
+SELECT i, (WITH c AS MATERIALIZED (WITH RECURSIVE r(n) AS (SELECT (SELECT v) FROM (VALUES (1)) s(v) UNION ALL SELECT (SELECT n + 1) FROM r WHERE n < 3) SELECT n FROM r) SELECT sum(n) + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	7
+2	8
+3	9
+
+# an empty definition result
+query II
+SELECT i, (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (VALUES (1)) s(v) WHERE v < 0) SELECT count(*) + i1.i FROM c) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	1
+2	2
+3	3
+
+# protection: uncorrelated subquery over the same CTE shape
+query I
+SELECT (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r FROM c);
+----
+1
+
+# protection: CTE below a correlated filter is decorrelated through the pushdown path
+query II
+SELECT i, (SELECT x FROM (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r AS x FROM c) q WHERE x = i1.i OR true) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	1
+1	1
+2	1
+3	1
+
+# protection: independent definition below another operator, correlation in the consumer projection
+query II
+SELECT i, (SELECT x FROM (WITH c AS MATERIALIZED (SELECT (SELECT v) AS r FROM (SELECT 1 AS v) s) SELECT r + i1.i AS x FROM c) q WHERE x > 0) FROM integers i1 ORDER BY i NULLS FIRST;
+----
+NULL	NULL
+1	2
+2	3
+3	4

@@ -71,6 +71,9 @@
       "paths": [
         "test/sql/catalog/view/secure_view.test",
         "test/sql/optimizer/secure_view_explain.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/secure_view_build_side.test_slow",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/secure_view_pushdown.test",
         "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",
         "test/sql/optimizer/secure_view_statistics.test",
@@ -84,7 +87,8 @@
       "paths": [
         "test/sql/sql_export/empty_aggregate_state.test",
         "test/sql/sql_export/mark_condition_shapes.test",
-        "test/sql/types/variant/variant_struct_field_subquery.test"
+        "test/sql/types/variant/variant_struct_field_subquery.test",
+        "test/sql/optimizer/tuple_cast_pushdown.test"
       ]
     }
   ]

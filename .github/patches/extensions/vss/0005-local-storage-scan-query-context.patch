@@ -1,0 +1,27 @@
+diff --git a/src/hnsw/hnsw_index_scan.cpp b/src/hnsw/hnsw_index_scan.cpp
+index ad314b1..c0bcdd9 100644
+--- a/src/hnsw/hnsw_index_scan.cpp
++++ b/src/hnsw/hnsw_index_scan.cpp
+@@ -133,7 +133,8 @@ static unique_ptr<GlobalTableFunctionState> HNSWIndexScanInitGlobal(ClientContex
+ 
+ 	// Initialize the storage scan state
+ 	result->local_storage_state.Initialize(result->column_ids, context, input.filters);
+-	local_storage.InitializeScan(bind_data.table.GetStorage(), result->local_storage_state.local_state, input.filters);
++	local_storage.InitializeScan(context, bind_data.table.GetStorage(), result->local_storage_state.local_state,
++	                             input.filters);
+ 
+ 	// Evaluate pushed-down filters first, then use the qualifying row IDs as the
+ 	// predicate for the HNSW graph search. This returns up to `limit` matching
+diff --git a/src/hnsw/hnsw_optimize_join.cpp b/src/hnsw/hnsw_optimize_join.cpp
+index eff7fe4..172b368 100644
+--- a/src/hnsw/hnsw_optimize_join.cpp
++++ b/src/hnsw/hnsw_optimize_join.cpp
+@@ -107,7 +107,7 @@ unique_ptr<OperatorState> PhysicalHNSWIndexJoin::GetOperatorState(ExecutionConte
+ 
+ 	// Initialize the storage scan state
+ 	result->local_storage_state.Initialize(result->physical_column_ids, nullptr);
+-	local_storage.InitializeScan(table.GetStorage(), result->local_storage_state.local_state, nullptr);
++	local_storage.InitializeScan(context.client, table.GetStorage(), result->local_storage_state.local_state, nullptr);
+ 
+ 	// Initialize the index scan state
+ 	{

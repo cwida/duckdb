@@ -369,7 +369,7 @@ TEST_CASE("Extended directory operations report target ownership", "[file_system
 TEST_CASE("Extended directory operations forward the file opener", "[file_system]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	ClientContextFileOpener opener(*con.context);
+	ClientContextFileOpener opener(con.context->GetContext());
 	auto fs = FileSystem::CreateLocal();
 	auto home_directory = TestCreatePath("extended_directory_opener");
 	if (fs->DirectoryExists(home_directory)) {
@@ -391,7 +391,7 @@ TEST_CASE("Extended directory operations forward the file opener", "[file_system
 TEST_CASE("Recursive directory creation checks access for every ancestor", "[file_system]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	ClientContextFileOpener opener(*con.context);
+	ClientContextFileOpener opener(con.context->GetContext());
 	auto fs = FileSystem::CreateLocal();
 	TestOpenerFileSystem opener_fs(*fs, opener);
 	auto base = TestCreatePath("extended_directory_permissions");

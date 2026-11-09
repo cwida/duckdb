@@ -1,0 +1,69 @@
+# name: test/sql/types/interval/test_interval_no_normalize_dedup.test
+# description: intervals that are only equal after normalization must not be merged as common expressions
+# group: [interval]
+
+# INTERVAL 1 MONTH and INTERVAL 30 DAY compare equal (normalized), but d + INTERVAL 1 MONTH and
+# d + INTERVAL 30 DAY have different results when the month length is not 30 days.
+# Expression deduplication (common subexpressions, duplicate aggregates) must not merge them.
+
+
+statement ok
+CREATE TABLE t AS SELECT DATE '2008-05-17' AS d;
+
+# 30 days vs 1 month
+query TT
+SELECT d + INTERVAL 30 DAY AS plus_30_days, d + INTERVAL 1 MONTH AS plus_1_month FROM t;
+----
+2008-06-16 00:00:00	2008-06-17 00:00:00
+
+query TT
+SELECT d + INTERVAL 1 MONTH AS plus_1_month, d + INTERVAL 30 DAY AS plus_30_days FROM t;
+----
+2008-06-17 00:00:00	2008-06-16 00:00:00
+
+# aggregates: duplicate-aggregate elimination in the binder must not merge them either
+query TT
+SELECT max(d + INTERVAL 30 DAY) AS plus_30_days, max(d + INTERVAL 1 MONTH) AS plus_1_month FROM t;
+----
+2008-06-16 00:00:00	2008-06-17 00:00:00
+
+query TT
+SELECT max(d + INTERVAL 1 MONTH) AS plus_1_month, max(d + INTERVAL 30 DAY) AS plus_30_days FROM t;
+----
+2008-06-17 00:00:00	2008-06-16 00:00:00
+
+# 360 days vs 1 year
+query TT
+SELECT d + INTERVAL 360 DAY AS plus_360_days, d + INTERVAL 1 YEAR AS plus_1_year FROM t;
+----
+2009-05-12 00:00:00	2009-05-17 00:00:00
+
+# 24 hours vs 1 day
+query TT
+SELECT d + INTERVAL 1 DAY AS plus_1_day, d + INTERVAL 24 HOUR AS plus_24_hours FROM t;
+----
+2008-05-18 00:00:00	2008-05-18 00:00:00
+
+# identical raw fields must still be deduplicated: same spelling twice
+query TT
+SELECT d + INTERVAL 30 DAY AS a, d + INTERVAL 30 DAY AS b FROM t;
+----
+2008-06-16 00:00:00	2008-06-16 00:00:00
+
+# ... including via normalized-equal spellings with the same raw fields (0 months 30 days)
+query TT
+SELECT d + INTERVAL 30 DAY AS a, d + INTERVAL '0 months 30 days 00:00:00.000000' AS b FROM t;
+----
+2008-06-16 00:00:00	2008-06-16 00:00:00
+
+# interval literals themselves: normalized equality is preserved
+query I
+SELECT 11 WHERE INTERVAL 30 DAY = INTERVAL '1 month';
+----
+11
+
+# CSE with the same interval constant across subqueries
+query TT
+SELECT (SELECT d + INTERVAL 1 MONTH FROM t), (SELECT d + INTERVAL 30 DAY FROM t);
+----
+2008-06-17 00:00:00	2008-06-16 00:00:00

@@ -83,6 +83,15 @@ public:
 	void PrintRelationStats();
 
 private:
+	struct PendingRelation {
+		LogicalOperator &op;
+		optional_ptr<LogicalOperator> parent;
+		bool optimize_as_leaf;
+	};
+
+	bool ExtractJoinRelation(JoinOrderOptimizer &optimizer, PendingRelation relation,
+	                         vector<reference<LogicalOperator>> &filter_operators,
+	                         vector<PendingRelation> &pending_relations);
 	bool RegisterRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, RelationStats stats);
 	optional_ptr<JoinRelationSet> GetJoinRelations(column_binding_set_t &column_bindings,
 	                                               JoinRelationSetManager &set_manager);

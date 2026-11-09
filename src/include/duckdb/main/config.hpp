@@ -258,6 +258,10 @@ public:
 	shared_ptr<DatabaseFilePathManager> path_manager;
 	//! Database configuration variables as controlled by SET
 	GlobalUserSettings user_settings;
+	//! The grammar extensions sessions parse with when active_grammar_extensions is not set: an
+	//! immutable snapshot replaced on SET GLOBAL and loaded atomically because sessions read it at
+	//! parse time without the config lock (nullptr when unset)
+	shared_ptr<const vector<string>> default_grammar_extensions;
 
 public:
 	DUCKDB_API static DBConfig &GetConfig(ClientContext &context);

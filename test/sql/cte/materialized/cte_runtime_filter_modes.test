@@ -3,9 +3,6 @@
 # group: [materialized]
 
 statement ok
-SET max_execution_time=10000;
-
-statement ok
 SET threads=1;
 
 statement ok
@@ -25,6 +22,10 @@ CREATE TABLE b AS SELECT * FROM (VALUES (1),(3)) t(k);
 
 statement ok
 CREATE TABLE c AS SELECT * FROM (VALUES (3),(5)) t(k);
+
+# Bound CTE execution without timing the fixture loads.
+statement ok
+SET max_execution_time=10000;
 
 # Both consumers stream the same filtered input, including their overlapping key.
 query II
@@ -86,7 +87,13 @@ SELECT (SELECT sum(length(payload)) FROM p JOIN b USING(k)),
 
 # Large source estimates also impose depth-first build ordering in release builds.
 statement ok
+SET max_execution_time=0;
+
+statement ok
 CREATE TABLE large_facts AS SELECT i AS k FROM range(600000) t(i);
+
+statement ok
+SET max_execution_time=10000;
 
 query II
 WITH p AS MATERIALIZED (SELECT * FROM large_facts)

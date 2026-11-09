@@ -19,11 +19,12 @@ FROM lineitem
 ----
 {0=1000048, 1=1000447, 2=999171, 3=1000989, 4=1000498, 5=1000060, 6=2}
 
+# range(date, date, interval) produces TIMESTAMP bins, so the DATE argument promotes
 query I
 SELECT histogram(l_shipdate, range((SELECT MIN(l_shipdate) FROM lineitem), (SELECT MAX(l_shipdate) FROM lineitem), interval '1' year))
 FROM lineitem
 ----
-{1992-01-02=17, 1993-01-02=761193, 1994-01-02=908785, 1995-01-02=909464, 1996-01-02=914963, 1997-01-02=913658, 1998-01-02=911349, infinity=681786}
+{'1992-01-02 00:00:00'=17, '1993-01-02 00:00:00'=761193, '1994-01-02 00:00:00'=908785, '1995-01-02 00:00:00'=909464, '1996-01-02 00:00:00'=914963, '1997-01-02 00:00:00'=913658, '1998-01-02 00:00:00'=911349, infinity=681786}
 
 # grouped histogram
 query II nosort grouped_map

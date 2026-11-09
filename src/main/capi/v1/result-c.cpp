@@ -186,6 +186,10 @@ duckdb_state deprecated_duckdb_translate_column(QueryResult &result, duckdb_colu
 	}
 	// then write the data
 	switch (result.GetTypes()[col].id()) {
+	case LogicalTypeId::SQLNULL:
+		// every value of a SQLNULL column is NULL, which the nullmask already reflects - zero the data
+		memset(column->deprecated_data, 0, type_size * row_count);
+		break;
 	case LogicalTypeId::BOOLEAN:
 		WriteData<bool>(column, collection, column_ids);
 		break;
