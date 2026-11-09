@@ -26,6 +26,7 @@ namespace {
 
 struct LifecycleCopyInfo : CopyFunctionInfo {
 	idx_t fail_finalize_after = DConstants::INVALID_INDEX;
+	atomic<idx_t> open_attempts {0};
 	atomic<idx_t> finalize_attempts {0};
 	mutex lock;
 	vector<string> initialized_paths;
@@ -204,8 +205,9 @@ unique_ptr<LocalFunctionData> LifecycleCopyInitializeLocal(ExecutionContext &, F
 
 unique_ptr<GlobalFunctionData> LifecycleCopyInitializeGlobal(ClientContext &context, FunctionData &bind_data,
                                                              const string &path) {
-	auto state = make_uniq<LifecycleCopyGlobalData>(context, path);
 	auto &info = bind_data.Cast<LifecycleCopyBindData>().GetInfo();
+	info.open_attempts++;
+	auto state = make_uniq<LifecycleCopyGlobalData>(context, path);
 	lock_guard<mutex> guard(info.lock);
 	info.initialized_paths.push_back(path);
 	return std::move(state);
@@ -563,9 +565,10 @@ TEST_CASE("A failed open of the first batch COPY file is reported to every worke
 	chunk.Initialize(context, types);
 	chunk.data[0].Append(Value::BIGINT(1));
 
-	// the worker that opens the file gets the error, and so does a worker that initializes after it
 	REQUIRE_THROWS_AS(copy.Sink(execution, chunk, input), IOException);
+	// a second Sink is a worker that initializes after the failed open, which waits on the same job
 	REQUIRE_THROWS_AS(copy.Sink(execution, chunk, input), IOException);
+	REQUIRE(info->open_attempts == 1);
 	REQUIRE(info->initialized_paths.empty());
 }
 #endif
