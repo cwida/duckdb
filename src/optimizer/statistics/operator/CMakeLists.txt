@@ -12,6 +12,7 @@ add_library_unity(
   propagate_projection.cpp
   propagate_secure_view.cpp
   propagate_set_operation.cpp
+  propagate_unnest.cpp
   propagate_window.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_optimizer_statistics_op>

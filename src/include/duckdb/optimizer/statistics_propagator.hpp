@@ -84,6 +84,7 @@ private:
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalLimit &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalOrder &op, unique_ptr<LogicalOperator> &node_ptr);
 	unique_ptr<NodeStatistics> PropagateStatistics(LogicalWindow &op, unique_ptr<LogicalOperator> &node_ptr);
+	unique_ptr<NodeStatistics> PropagateStatistics(LogicalUnnest &op, unique_ptr<LogicalOperator> &node_ptr);
 
 	unique_ptr<NodeStatistics> PropagateChildren(LogicalOperator &node, unique_ptr<LogicalOperator> &node_ptr);
 
