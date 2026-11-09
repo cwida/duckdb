@@ -22,10 +22,14 @@ NULL	NULL
 1	1
 NULL	NULL
 
-statement error
+# BIGNUM and FLOAT have no implicit cast between them: the comparison is resolved in DOUBLE, so the non-finite
+# values compare without a conversion error
+query I
 SELECT x = 1::BIGNUM FROM f
 ----
-Conversion Error
+false
+true
+false
 
 query II
 SELECT 1.5::DOUBLE::BIGNUM, 2::FLOAT::BIGNUM

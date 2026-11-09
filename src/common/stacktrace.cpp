@@ -104,8 +104,12 @@ string StackTrace::ResolveStacktraceSymbols(const string &pointers) {
 	for (idx_t i = 0; i < frame_count; i++) {
 		callstack[i] = cast_uint64_to_pointer(StringUtil::ToUnsigned(splits[i]));
 	}
-	string result;
 	char **strs = backtrace_symbols(callstack.get(), NumericCast<int>(frame_count));
+	if (!strs) {
+		// backtrace_symbols could not allocate, so the stack trace stays unresolved
+		return string();
+	}
+	string result;
 	for (idx_t i = 0; i < frame_count; i++) {
 		result += CleanupStackTrace(UnmangleSymbol(strs[i]));
 		result += "\n";

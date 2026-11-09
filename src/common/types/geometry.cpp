@@ -1018,6 +1018,9 @@ WKBAnalysis AnalyzeWKB(BlobReader &reader) {
 		const auto meta = reader.Read<uint32_t>(le);
 		const auto type_id = (meta & 0x0000FFFF) % 1000;
 		const auto flag_id = (meta & 0x0000FFFF) / 1000;
+		if (flag_id > 3) {
+			throw InvalidInputException("Unsupported geometry flag %d in WKB", flag_id);
+		}
 
 		// Extended WKB detection
 		const auto has_extz = (meta & 0x80000000) != 0;

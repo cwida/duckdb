@@ -127,7 +127,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (TARGET::TYPE != type) {
-			throw InternalException("Failed to cast buffered data to type - buffered data type mismatch");
+			InternalException::Throw("Failed to cast buffered data to type - buffered data type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -135,7 +135,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (TARGET::TYPE != type) {
-			throw InternalException("Failed to cast buffered data to type - buffered data type mismatch");
+			InternalException::Throw("Failed to cast buffered data to type - buffered data type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

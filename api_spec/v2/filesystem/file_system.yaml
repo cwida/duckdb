@@ -114,7 +114,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   context_get_file_system:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Borrows the file system of a context.
 
@@ -136,7 +136,7 @@ functions:
 
   instance_get_file_system:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Borrows the file system of an instance.
 
@@ -162,7 +162,7 @@ functions:
 
   connection_get_file_system:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Borrows the file system of a connection.
 
@@ -188,7 +188,7 @@ functions:
 
   file_open_options_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a set of open options for a file system.
 
@@ -216,7 +216,7 @@ functions:
 
   file_open_options_set_flag:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Applies one flag to the options.
 
@@ -240,7 +240,7 @@ functions:
 
   file_open_options_set_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Attaches a named value to the options.
 
@@ -273,7 +273,7 @@ functions:
 
   file_open_options_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the options, releasing their resources.
 
@@ -288,7 +288,7 @@ functions:
 
   file_system_open:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Opens a file.
 
@@ -334,7 +334,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   file_system_path_exists:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Reports whether a file exists at the given path.
 
@@ -363,7 +363,7 @@ functions:
 
   file_system_path_is_remote:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Reports whether a path names a remote file, e.g. one under `s3://`, `https://`, `gcs://` or `azure://`.
 
@@ -392,7 +392,7 @@ functions:
 
   file_system_path_expand:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Expands a path as the file system does when opening it: a leading `~` becomes the home directory, as the
       `home_directory` setting configures it.
@@ -424,7 +424,7 @@ functions:
 
   file_system_path_glob:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Finds the files matching a glob pattern, e.g. `*.csv` or `data_?.json` in a directory, handing each matched path to
       `callback`.
@@ -458,7 +458,7 @@ functions:
 
   file_system_path_move:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Moves, or renames, a file from one path to another.
 
@@ -489,7 +489,7 @@ functions:
 
   file_system_path_remove:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Removes the file at a path, if there is one.
 
@@ -521,7 +521,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   file_read:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Reads from the file into a caller-supplied buffer.
 
@@ -555,7 +555,7 @@ functions:
 
   file_write:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Writes a caller-supplied buffer to the file.
 
@@ -590,7 +590,7 @@ functions:
 
   file_read_at:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Reads from a fixed offset, without moving the file's position.
 
@@ -622,7 +622,7 @@ functions:
 
   file_write_at:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Writes at a fixed offset, without moving the file's position.
 
@@ -656,7 +656,7 @@ functions:
 
   file_tell:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Returns the file's current read/write position, as a byte offset from the start of the file.
     parameters:
       file:
@@ -675,7 +675,7 @@ functions:
 
   file_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Returns the total size of the file in bytes.
     parameters:
       file:
@@ -694,7 +694,7 @@ functions:
 
   file_seek:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Moves the file's read/write position.
 
@@ -715,7 +715,7 @@ functions:
 
   file_sync:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Flushes buffered writes to persistent storage.
 
@@ -733,7 +733,7 @@ functions:
 
   file_close:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Closes the file without destroying the handle.
 
@@ -754,7 +754,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   file_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the file, closing it if it is still open.
 

@@ -1,0 +1,25 @@
+# name: benchmark/micro/compression/roaring/roaring_uncompressed_run_read.benchmark
+# description: Scan Roaring validity with one 512-row null run per container
+# group: [roaring]
+
+name Roaring Scan Long Null Runs
+group roaring
+storage persistent v1.5.0
+
+load
+SET force_compression = 'roaring';
+CREATE TABLE tbl AS
+SELECT CASE WHEN i % 2048 >= 256 AND i % 2048 < 768 THEN NULL ELSE 1337::BIGINT END AS a
+FROM range(250_000_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('tbl') WHERE column_name = 'a' AND segment_type = 'VALIDITY';
+----
+Roaring
+
+run
+SELECT count(*) FROM tbl WHERE a IS NOT NULL;
+
+result I
+187499776

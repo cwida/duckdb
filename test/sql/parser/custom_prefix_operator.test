@@ -16,3 +16,133 @@ query I
 SELECT @ -5 + -6;
 ----
 11
+
+# a prefix operator can be the operand of a higher-precedence binary operator
+query I
+SELECT 1 + @ -5;
+----
+6
+
+query I
+SELECT 'a' || @ -1;
+----
+a1
+
+query I
+SELECT 2 ^ @ -3;
+----
+8.0
+
+query I
+SELECT 3 % @ -2;
+----
+1
+
+query I
+SELECT 1 + @ @ -5;
+----
+6
+
+query I
+SELECT 1 + - @ -5;
+----
+-4
+
+# the operand of a prefix operator extends over arithmetic but stops at generic and comparison operators
+query I
+SELECT 1 + @ 5 * 2;
+----
+11
+
+query I
+SELECT 1 + @ -2 - 1;
+----
+4
+
+query I
+SELECT 1 * @ 2 + 3;
+----
+5
+
+query I
+SELECT @ -2 | 1;
+----
+3
+
+query I
+SELECT @ -2 || 'x';
+----
+2x
+
+query I
+SELECT @ -5 << 1;
+----
+10
+
+query I
+SELECT 1 + @ 2 << 1;
+----
+6
+
+query I
+SELECT @ -2 = 2;
+----
+true
+
+query I
+SELECT 1 + @ 5 = 11;
+----
+false
+
+query I
+SELECT 'a' || @ -1 || 'b';
+----
+a1b
+
+# unknown prefix operators are still a binder error
+statement error
+SELECT -@ 5;
+----
+<REGEX>:.*Scalar Function with name -@ does not exist.*
+
+statement error
+SELECT 1 + |/ 4;
+----
+<REGEX>:.*Scalar Function with name \|/ does not exist.*
+
+# operators with comparison precedence cannot be used as prefix operators
+statement error
+SELECT ~~ 'a';
+----
+<REGEX>:Parser Error.*
+
+# star and minus keep their existing meaning
+query I
+SELECT count(*) FROM range(3);
+----
+3
+
+query I
+SELECT typeof(-2147483648);
+----
+BIGINT
+
+query I
+SELECT 1 - -1;
+----
+2
+
+# nested prefix operators count towards the expression depth limit
+statement ok
+SET max_expression_depth TO 20;
+
+statement error
+SELECT @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ @ 1;
+----
+<REGEX>:Parser Error.*Max expression depth limit.*
+
+statement ok
+SELECT @ @ 1;
+
+statement ok
+RESET max_expression_depth;

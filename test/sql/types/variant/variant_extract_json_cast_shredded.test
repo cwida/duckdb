@@ -5,7 +5,7 @@
 require json
 
 statement ok
-ATTACH '__TEST_DIR__/variant_extract_json_cast.db' AS shred (STORAGE_VERSION 'v1.5.0');
+ATTACH '{TEST_DIR}/variant_extract_json_cast.db' AS shred (STORAGE_VERSION 'v1.5.0');
 
 statement ok
 SET variant_minimum_shredding_size = 0;

@@ -15,3 +15,59 @@ query III
 select relname, attname, attnum from pg_attribute join pg_class on (pg_attribute.attrelid=pg_class.oid) where relname='integers' and attnum>=0;
 ----
 integers	i	1
+
+# atttypid is the oid that pg_type gives the column type, and format_type reads it (duckdblabs/bot-issue-tracker#559)
+statement ok
+CREATE TABLE typed (
+	v VARCHAR, i INTEGER, d DOUBLE, n DECIMAL(10, 2), tm TIME, ts TIMESTAMP_S, tn TIMESTAMP_NS, l DATE[]
+);
+
+query IIII
+SELECT a.attname, a.atttypid, t.typname, format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid LEFT JOIN pg_type t ON t.oid = a.atttypid
+WHERE c.relname = 'typed' AND a.attnum <= 5
+ORDER BY a.attnum;
+----
+v	1043	varchar	varchar
+i	23	int4	int4
+d	701	float8	float8
+n	1700	numeric	numeric(10,2)
+tm	1083	time	time
+
+# types without a PostgreSQL oid get one after the oids of PostgreSQL's types, which pg_type does not list
+query IIII
+SELECT a.attname, a.atttypid BETWEEN 16384 AND 19999, t.typname, format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid LEFT JOIN pg_type t ON t.oid = a.atttypid
+WHERE c.relname = 'typed' AND a.attnum > 5
+ORDER BY a.attnum;
+----
+ts	true	NULL	timestamp_s
+tn	true	NULL	timestamp_ns
+l	true	NULL	list
+
+# the oid of a type defined in the catalog
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'happy');
+
+query I
+SELECT format_type(oid, -1) FROM pg_type WHERE typname = 'mood';
+----
+mood
+
+# a type defined with the name of a built-in one does not take its oid
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TYPE s.int AS VARCHAR;
+
+query II
+SELECT count(*), min(typname) FROM pg_type WHERE oid = 23;
+----
+1	int4
+
+query I
+SELECT t.typname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_type t ON t.oid = a.atttypid
+WHERE c.relname = 'typed' AND a.attname = 'i';
+----
+int4

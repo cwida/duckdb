@@ -1,0 +1,28 @@
+# name: test/sql/parser/tostring_load_export_quoting.test
+# description: LOAD and EXPORT quote and escape their paths and names when printed
+# group: [parser]
+
+statement ok
+SET debug_verify_statement='reparse_statement';
+
+statement error
+LOAD 'it''s';
+----
+<REGEX>:IO Error.*it's.*
+
+statement error
+EXPORT DATABASE "my db" TO '{TEST_DIR}/tostring_export';
+----
+Binder Error: Catalog "my db" does not exist!
+
+statement ok
+ATTACH ':memory:' AS "my db";
+
+statement ok
+CREATE TABLE "my db".tbl AS SELECT 42 i;
+
+statement ok
+EXPORT DATABASE "my db" TO '{TEST_DIR}/tostring_export_ok';
+
+statement ok
+EXPORT DATABASE "my db" TO '{TEST_DIR}/tostring''s_export';

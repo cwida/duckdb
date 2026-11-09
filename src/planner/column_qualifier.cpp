@@ -19,7 +19,7 @@ ColumnQualifier::ColumnQualifier(Binder &binder_p, optional_ptr<vector<DummyBind
       having_binder(having_binder_p) {
 }
 
-static Identifier GetSQLValueFunctionName(const Identifier &column_name) {
+Identifier ColumnQualifier::SQLValueFunctionName(const Identifier &column_name) {
 	if (column_name == "current_catalog") {
 		return "current_catalog";
 	}
@@ -68,7 +68,7 @@ unique_ptr<ParsedExpression> Binder::GetSQLValueFunction(const Identifier &colum
 		}
 	}
 
-	auto value_function = GetSQLValueFunctionName(column_name);
+	auto value_function = ColumnQualifier::SQLValueFunctionName(column_name);
 	if (value_function.empty()) {
 		return nullptr;
 	}
@@ -200,7 +200,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 		auto &col_ref = expr->Cast<ColumnRefExpression>();
 
 		// don't qualify lambda parameters
-		if (LambdaExpression::IsLambdaParameter(lambda_params, col_ref.GetName())) {
+		if (LambdaExpression::IsLambdaParameter(lambda_params, col_ref.GetColumnName())) {
 			return;
 		}
 
@@ -270,7 +270,7 @@ optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &
 	// resolve the qualification: this decides whether a leading component (e.g. "s1" in "s1.s2.my_macro()") is a
 	// catalog or the outermost schema of a nested schema path. The name as written is left alone - the dot-call
 	// rewrite below turns the qualification into a column reference and needs it unresolved.
-	auto bound_name = binder.BindTableName(function.GetQualifiedName());
+	auto bound_name = Binder::BindTableName(binder.EntryRetriever(), function.GetQualifiedName());
 	auto func = binder.GetCatalogEntry(EntryLookupInfo(function_lookup, bound_name), OnEntryNotFound::RETURN_NULL);
 	if (func) {
 		// found the function - we are done

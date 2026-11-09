@@ -45,3 +45,22 @@ statement error
 INSERT INTO chk VALUES (3);
 ----
 <REGEX>:.*Constraint Error.*constraint failed.*
+
+# Issue #24378: DROP COLUMN CASCADE with generated column and CHECK constraint
+statement ok
+CREATE TABLE test_24378 (
+	i INTEGER,
+	j INTEGER CHECK (j > 0),
+	k INTEGER GENERATED ALWAYS AS (j + 1)
+);
+
+statement ok
+ALTER TABLE test_24378 DROP COLUMN j CASCADE;
+
+statement ok
+INSERT INTO test_24378 VALUES (1);
+
+query I
+SELECT * FROM test_24378;
+----
+1

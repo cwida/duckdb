@@ -47,6 +47,8 @@ public:
 	optional_ptr<QueryResult> handle;
 	//! Whether the statements run inside the submission, where a result collector may build its own result object
 	bool inside_submission = false;
+	//! Whether the statement runs on the CONNECT-ed database, outside the local transaction
+	bool outside_local_transaction = false;
 
 public:
 	void SetOpenResult(BaseQueryResult &result) {

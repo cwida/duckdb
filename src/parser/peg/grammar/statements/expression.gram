@@ -62,7 +62,14 @@ RenameEntry <- ExcludeName 'AS' Identifier
 SubqueryExpression <- SubqueryNot? SubqueryExists? SubqueryReference
 SubqueryNot <- 'NOT'
 SubqueryExists <- 'EXISTS'
-CaseExpression <- 'CASE' Expression? CaseWhenThen+ CaseElse? 'END'
+CaseExpression <- SimpleCaseExpression / SearchedCaseExpression
+SimpleCaseExpression <- 'CASE' Expression SimpleCaseWhenThen+ CaseElse? 'END'
+SearchedCaseExpression <- 'CASE' CaseWhenThen+ CaseElse? 'END'
+SimpleCaseWhenThen <- 'WHEN' List(SimpleCaseWhenOperand) 'THEN' Expression
+# WHEN < 0 compares the CASE operand with <, a WHEN operand without an operator compares with =
+# WHEN 0, 1 matches if any of the operands matches
+SimpleCaseWhenOperand <- ComparisonExpressionTail / SimpleCaseWhenEquals
+SimpleCaseWhenEquals <- Expression
 CaseWhenThen <- 'WHEN' Expression 'THEN' Expression
 CaseElse <- 'ELSE' Expression
 TypeLiteral <- Type StringLiteral
@@ -177,11 +184,12 @@ NotKeyword <- 'NOT'
 # LEVEL 4
 IsExpression <- IsDistinctFromExpression IsExpressionContinuation?
 IsExpressionContinuation <- IsTest IsExpressionTail*
-IsExpressionTail <- IsTestTail / IsDistinctTail / IsComparisonTail / IsOtherOperatorTail
+IsExpressionTail <- IsTestTail / IsDistinctTail / IsComparisonTail / IsOtherOperatorTail / IsCastTail
 IsTestTail <- IsTest
 IsDistinctTail <- IsDistinctFromTail
 IsComparisonTail <- ComparisonExpressionTail
 IsOtherOperatorTail <- OtherOperatorTail
+IsCastTail <- CastOperator
 IsTest <- IsLiteral / NotNull / IsNull
 IsLiteral <- 'IS' 'NOT'? IsLiteralValue
 IsLiteralValue <- TrueLiteral / FalseLiteral / NullLiteral / UnknownLiteral
@@ -197,7 +205,10 @@ IsDistinctFromTail <- IsDistinctFromOp ComparisonExpression
 IsDistinctFromOp <- 'IS' 'NOT'? 'DISTINCT' 'FROM'
 # LEVEL 6
 ComparisonExpression <- BetweenInLikeExpression ComparisonExpressionTail*
-ComparisonExpressionTail <- ComparisonOperator NotExpression? BetweenInLikeExpression
+ComparisonExpressionTail <- ComparisonOperator ComparisonOperand
+ComparisonOperand <- NotComparisonOperand / BetweenInLikeExpression
+# NOT after a comparison operator binds everything up to the IS level: a < NOT b IS NULL is a < (NOT (b IS NULL))
+NotComparisonOperand <- NotExpression IsExpression
 ComparisonOperator <-
     OperatorEqual /
     OperatorNotEqual /
@@ -214,7 +225,7 @@ OperatorLessThanEquals <- '<='
 OperatorGreaterThanEquals <- '>='
 # LEVEL 7
 BetweenInLikeExpression <- OtherOperatorExpression InPredicate* BetweenLikeOp?
-InPredicate <- 'NOT'? InClause
+InPredicate <- 'NOT'? InClause CastOperator*
 BetweenLikeOp <- 'NOT'? BetweenLikeOpExpression
 BetweenLikeOpExpression <- BetweenClause / LikeClause
 LikeClause <- LikeVariations OtherOperatorExpression EscapeClause?
@@ -240,10 +251,11 @@ InSelectStatement <- Parens(SelectStatementInternal)
 BetweenClause <- 'BETWEEN' Asymmetric? OtherOperatorExpression 'AND' OtherOperatorExpression
 Asymmetric <- 'ASYMMETRIC'
 # LEVEL 8
-OtherOperatorExpression <- InfixOtherOperatorExpression / CustomPrefixExpression
+OtherOperatorExpression <- InfixOtherOperatorExpression
 InfixOtherOperatorExpression <- BitwiseExpression OtherOperatorTail*
-CustomPrefixExpression <- OperatorLiteral OtherOperatorExpression
-OtherOperatorTail <- OtherOperator BitwiseExpression
+OtherOperatorTail <- AnyAllSubqueryTail / OtherOperatorExpressionTail
+AnyAllSubqueryTail <- AnyAllParsedOperator SubqueryReference
+OtherOperatorExpressionTail <- OtherOperator BitwiseExpression
 OtherOperator <-
     AnyAllParsedOperator / NamedOtherOperator
 AnyAllParsedOperator <- AnyAllOperator
@@ -280,11 +292,13 @@ CollateExpression <- AtTimeZoneExpression CollateExpressionTail*
 CollateExpressionTail <- CollateOperator AtTimeZoneExpression
 CollateOperator <- 'COLLATE'
 # LEVEL 14
-AtTimeZoneExpression <- PrefixExpression AtTimeZoneExpressionTail*
-AtTimeZoneExpressionTail <- AtTimeZoneOperator PrefixExpression
+AtTimeZoneExpression <- UnaryExpression AtTimeZoneExpressionTail*
+AtTimeZoneExpressionTail <- AtTimeZoneOperator UnaryExpression
 AtTimeZoneOperator <- 'AT' 'TIME' 'ZONE'
 # LEVEL 15
+UnaryExpression <- PrefixExpression / CustomPrefixExpression
 PrefixExpression <- PrefixOperator* BaseExpression
+CustomPrefixExpression <- OperatorLiteral TildeExpression
 PrefixOperator <- QualifiedOperator / MinusPrefixOperator / PlusPrefixOperator
 MinusPrefixOperator <- '-'
 PlusPrefixOperator <- '+'
@@ -303,10 +317,11 @@ MethodExpressionArguments <- Parens(MethodExpressionArgumentList)
 MethodExpressionArgumentList <- DistinctOrAll? MethodFunctionArguments? OrderByClause? IgnoreOrRespectNulls?
 MethodFunctionArguments <- List(FunctionArgument)
 SliceExpression <- '[' SliceBound ']'
-SliceBound <- Expression? EndSliceBound? StepSliceBound?
-EndSliceBound <- ':' EndSliceValue?
-EndSliceValue <- Expression / EndSliceMinus
-EndSliceMinus <- '-'
+SliceBound <- Expression? SliceUpperBound?
+SliceUpperBound <- MinusStepSliceBound / EndStepSliceBound
+MinusStepSliceBound <- ':' '-' StepSliceBound
+EndStepSliceBound <- EndSliceBound StepSliceBound?
+EndSliceBound <- ':' Expression?
 StepSliceBound <- ':' Expression?
 PostfixOperator <- '!'
 

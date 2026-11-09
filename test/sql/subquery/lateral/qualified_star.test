@@ -1,0 +1,217 @@
+# name: test/sql/subquery/lateral/qualified_star.test
+# description: Qualified stars resolve enclosing scopes without changing local bindings
+# group: [lateral]
+
+statement ok
+CREATE TABLE outer_rows(i INTEGER, j VARCHAR);
+
+statement ok
+INSERT INTO outer_rows VALUES (1, 'a'), (2, 'b'), (2, 'b'), (NULL, NULL);
+
+# A qualified star works even when its query has no local FROM clause.
+query IIT
+SELECT o.i, x.* FROM outer_rows o, LATERAL (SELECT o.*) x ORDER BY ALL;
+----
+1	1	a
+2	2	b
+2	2	b
+NULL	NULL	NULL
+
+query I
+SELECT (SELECT o.* EXCLUDE (j)) FROM outer_rows o ORDER BY 1;
+----
+1
+2
+2
+NULL
+
+# Search through the intervening query scope.
+query IT
+SELECT x.* FROM outer_rows o,
+LATERAL (SELECT y.* FROM range(1) r, LATERAL (SELECT o.*) y) x ORDER BY ALL;
+----
+1	a
+2	b
+2	b
+NULL	NULL
+
+# Expanding an outer star preserves multiplicity and NULL extension.
+query IT
+SELECT o.i, x.j FROM outer_rows o
+LEFT JOIN LATERAL (SELECT o.* FROM range(1) r WHERE o.i > 1) x ON true ORDER BY ALL;
+----
+1	NULL
+2	b
+2	b
+NULL	NULL
+
+query I
+SELECT count(*) FROM outer_rows o, LATERAL (SELECT o.* FROM range(2)) x;
+----
+8
+
+# A local table alias takes precedence.
+query IT
+SELECT x.* FROM outer_rows o,
+LATERAL (SELECT o.* FROM (VALUES (7, 'local')) o(i,j)) x ORDER BY ALL;
+----
+7	local
+7	local
+7	local
+7	local
+
+# The nearest enclosing alias wins over the outermost alias with the same name.
+query I
+SELECT x.i FROM outer_rows o,
+LATERAL (
+	SELECT y.* FROM (VALUES (7)) o(i), LATERAL (SELECT o.*) y
+) x ORDER BY ALL;
+----
+7
+7
+7
+7
+
+# A local struct column is still expanded locally.
+query I
+SELECT x.a FROM outer_rows o,
+LATERAL (SELECT o.* FROM (VALUES ({'a': 42})) t(o)) x ORDER BY ALL;
+----
+42
+42
+42
+42
+
+# Struct fields can also come from an enclosing query, including a NULL struct.
+query II
+SELECT x.* FROM (VALUES ({'a': 42, 'b': 7}), (NULL::STRUCT(a INTEGER, b INTEGER))) t(s),
+LATERAL (SELECT s.*) x ORDER BY ALL;
+----
+42	7
+NULL	NULL
+
+query IT
+SELECT x.* FROM outer_rows AS "Outer Table",
+LATERAL (SELECT "Outer Table".*) x ORDER BY ALL;
+----
+1	a
+2	b
+2	b
+NULL	NULL
+
+# Modifiers apply to the expanded columns; replacement expressions bind in their own query.
+query I
+SELECT x.* FROM outer_rows o,
+LATERAL (SELECT o.* EXCLUDE (j) REPLACE (o.i + 10 AS i)) x ORDER BY ALL;
+----
+11
+12
+12
+NULL
+
+query IT
+SELECT x.renamed_i, x.j FROM outer_rows o,
+LATERAL (SELECT o.* RENAME (i AS renamed_i)) x ORDER BY ALL;
+----
+1	a
+2	b
+2	b
+NULL	NULL
+
+query IT
+SELECT x.* FROM outer_rows o,
+LATERAL (SELECT COLUMNS(o.*)) x ORDER BY ALL;
+----
+1	a
+2	b
+2	b
+NULL	NULL
+
+query I
+SELECT x.* FROM outer_rows o,
+LATERAL (SELECT COLUMNS(o.* EXCLUDE (j))) x ORDER BY ALL;
+----
+1
+2
+2
+NULL
+
+statement ok
+CREATE TABLE generated_outer(i INTEGER, j INTEGER GENERATED ALWAYS AS (i + 1));
+
+statement ok
+INSERT INTO generated_outer(i) VALUES (1), (NULL);
+
+query II
+SELECT x.* FROM generated_outer o, LATERAL (SELECT o.*) x ORDER BY ALL;
+----
+1	2
+NULL	NULL
+
+# Outer expressions are referenced as columns, rather than evaluated again.
+statement ok
+CREATE SEQUENCE qualified_star_calls;
+
+query II
+SELECT o.i, x.i FROM (SELECT nextval('qualified_star_calls') i) o,
+LATERAL (SELECT o.*) x;
+----
+1	1
+
+query I
+SELECT currval('qualified_star_calls');
+----
+1
+
+statement ok
+PREPARE qualified_star_plan AS
+SELECT x.* FROM outer_rows o, LATERAL (SELECT o.*) x WHERE o.i >= $1 ORDER BY ALL;
+
+query IT
+EXECUTE qualified_star_plan(2);
+----
+2	b
+2	b
+
+query IT
+EXECUTE qualified_star_plan(1);
+----
+1	a
+2	b
+2	b
+
+statement ok
+DEALLOCATE qualified_star_plan;
+
+# An unqualified star cannot capture an outer query's whole FROM clause.
+statement error
+SELECT * FROM outer_rows o, LATERAL (SELECT *) x;
+----
+* expression without FROM clause
+
+statement error
+SELECT * FROM outer_rows o, LATERAL (SELECT missing.* FROM range(1)) x;
+----
+Referenced table "missing" not found
+
+statement error
+SELECT x.* FROM (VALUES (42)) t(x);
+----
+because it is not a struct
+
+# A CTE cannot capture a sibling FROM binding.
+statement error
+WITH c AS (SELECT o.*) SELECT * FROM outer_rows o, c;
+----
+* expression without FROM clause
+
+statement error
+SELECT * FROM (VALUES ({'a': 1})) t1(s), (VALUES ({'a': 2})) t2(s),
+LATERAL (SELECT s.*) x;
+----
+Ambiguous reference to column name
+
+statement error
+SELECT * FROM outer_rows o, LATERAL (SELECT o.* EXCLUDE (missing)) x;
+----
+Column "missing" in EXCLUDE list not found

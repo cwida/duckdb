@@ -67,6 +67,11 @@
 #error "This version of the extension API header only supports API VERSION v2.x.x"
 #endif
 
+// No V2 function has been stabilized yet, so without the unstable surface the function pointer struct would be empty.
+#if !DUCKDB_V2_API_ALLOW_UNSTABLE
+#error "the V2 C API has no stable surface yet: build with build_loadable_extension_capi_unstable or build_static_extension_capi_unstable, which tie the extension to this DuckDB version"
+#endif
+
 //===--------------------------------------------------------------------===//
 // Function pointer struct
 //===--------------------------------------------------------------------===//

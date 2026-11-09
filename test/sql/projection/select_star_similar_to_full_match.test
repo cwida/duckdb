@@ -1,0 +1,41 @@
+# name: test/sql/projection/select_star_similar_to_full_match.test
+# description: * SIMILAR TO matches the whole column name
+# group: [projection]
+
+statement ok
+CREATE TABLE t(ab INT, b INT, bc INT);
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * SIMILAR TO 'b' FROM t)
+----
+b
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * SIMILAR TO 'a|b' FROM t)
+----
+b
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * SIMILAR TO 'b.*' FROM t) ORDER BY 1
+----
+b
+bc
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT * SIMILAR TO 'b' FROM t)
+----
+b
+
+# regexp_full_match behaves the same
+query I
+SELECT column_name FROM (DESCRIBE SELECT regexp_full_match(*, 'b') FROM t)
+----
+b
+
+# capture groups of the pattern can still be used in the alias
+query II
+SELECT c2, c1 FROM (
+SELECT * SIMILAR TO 'number(\d+)' AS 'c\1' FROM (SELECT 1 AS number1, 2 AS number2, 3 AS end)
+)
+----
+2	1

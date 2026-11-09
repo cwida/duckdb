@@ -1,0 +1,29 @@
+# name: test/sql/subquery/any_all/test_any_left_join_in_on_clause.test
+# description: <> ANY / = ALL over a LEFT JOIN column with an IN subquery in the ON clause
+# group: [any_all]
+
+statement ok
+CREATE TABLE t1(i INT, b BOOL);
+
+statement ok
+INSERT INTO t1 VALUES (1, true), (2, false), (NULL, NULL);
+
+statement ok
+CREATE TABLE t2(i INT);
+
+statement ok
+INSERT INTO t2 VALUES (1), (3);
+
+query II
+SELECT x.i, (y.i <> ANY (SELECT i FROM t2)) FROM t1 x LEFT JOIN t1 y ON x.b = y.b AND y.i IN (SELECT i FROM t2) ORDER BY ALL;
+----
+1	true
+2	NULL
+NULL	NULL
+
+query II
+SELECT x.i, (y.i = ALL (SELECT i FROM t2)) FROM t1 x LEFT JOIN t1 y ON x.b = y.b AND y.i IN (SELECT i FROM t2) ORDER BY ALL;
+----
+1	false
+2	NULL
+NULL	NULL

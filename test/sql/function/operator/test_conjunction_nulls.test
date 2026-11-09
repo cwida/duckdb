@@ -1,0 +1,63 @@
+# name: test/sql/function/operator/test_conjunction_nulls.test
+# description: Test three-valued AND/OR on flat vectors with NULLs
+# group: [operator]
+
+statement ok
+CREATE TABLE bools AS
+SELECT
+    CASE WHEN i % 5 = 0 THEN NULL ELSE i % 2 = 0 END AS a,
+    CASE WHEN i % 3 = 0 THEN NULL ELSE i % 7 < 3 END AS b,
+    i % 4 = 0 AS c,
+    CASE WHEN i < 1500 THEN NULL ELSE i % 3 = 1 END AS d,
+    i
+FROM range(3001) t(i);
+
+# reference implementations of AND/OR that do not use the boolean operators
+statement ok
+CREATE MACRO ref_and(x, y) AS CASE WHEN x IS FALSE OR y IS FALSE THEN false WHEN x IS NULL OR y IS NULL THEN NULL ELSE true END;
+
+statement ok
+CREATE MACRO ref_or(x, y) AS CASE WHEN x IS TRUE OR y IS TRUE THEN true WHEN x IS NULL OR y IS NULL THEN NULL ELSE false END;
+
+foreach pair a,b a,c c,a b,d d,d c,c a,a
+
+query I
+SELECT count(*) FROM (SELECT {pair} FROM bools) t(x, y) WHERE (x AND y) IS DISTINCT FROM ref_and(x, y)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT {pair} FROM bools) t(x, y) WHERE (x OR y) IS DISTINCT FROM ref_or(x, y)
+----
+0
+
+endloop
+
+query IIIIII
+SELECT
+    count(*) FILTER (WHERE (a AND b) IS NULL),
+    count(*) FILTER (WHERE a AND b),
+    count(*) FILTER (WHERE NOT (a AND b)),
+    count(*) FILTER (WHERE (a OR b) IS NULL),
+    count(*) FILTER (WHERE a OR b),
+    count(*) FILTER (WHERE NOT (a OR b))
+FROM bools
+----
+771	345	1885	831	1713	457
+
+# three-way conjunctions chain intermediate results through the boolean operators
+query I
+SELECT count(*) FROM bools WHERE (a AND b AND d) IS DISTINCT FROM ref_and(ref_and(a, b), d)
+----
+0
+
+query I
+SELECT count(*) FROM bools WHERE (a OR b OR d) IS DISTINCT FROM ref_or(ref_or(a, b), d)
+----
+0
+
+# BETWEEN in a projection combines two comparison results with AND
+query I
+SELECT count(*) FROM (SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE i END AS v FROM bools) WHERE (v BETWEEN 100 AND 2000) IS DISTINCT FROM ref_and(v >= 100, v <= 2000)
+----
+0

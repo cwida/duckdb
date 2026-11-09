@@ -58,9 +58,13 @@ struct TopNBoundaryValue {
 	Vector boundary_vector;
 	OrderModifiers boundary_modifiers;
 
-	string GetBoundaryValue() {
-		lock_guard<mutex> l(lock);
-		return boundary_value;
+	bool TryGetBoundaryValue(string &current_boundary) {
+		unique_lock<mutex> l(lock, std::try_to_lock);
+		if (!l.owns_lock() || boundary_value == current_boundary) {
+			return false;
+		}
+		current_boundary = boundary_value;
+		return true;
 	}
 
 	void UpdateValue(string_t boundary_val) {
@@ -274,15 +278,14 @@ void TopNHeap::AddLargeHeap(DataChunk &input, const Vector &sort_keys_vec) {
 }
 
 bool TopNHeap::CheckBoundaryValues(DataChunk &sort_chunk, DataChunk &payload, TopNBoundaryValue &global_boundary) {
-	// get the global boundary value
-	auto current_boundary_val = global_boundary.GetBoundaryValue();
-	if (current_boundary_val.empty()) {
+	// An older local boundary remains valid if refreshing it would block.
+	const auto boundary_updated = global_boundary.TryGetBoundaryValue(boundary_val);
+	if (boundary_val.empty()) {
 		// no boundary value (yet) - don't do anything
 		return true;
 	}
-	if (current_boundary_val != boundary_val) {
+	if (boundary_updated) {
 		// new boundary value - decode
-		boundary_val = std::move(current_boundary_val);
 		boundary_values.Reset();
 		CreateSortKeyHelpers::DecodeSortKey(string_t(boundary_val), boundary_values, 0, modifiers);
 		for (auto &col : boundary_values.data) {

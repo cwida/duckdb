@@ -1,0 +1,68 @@
+# name: test/sql/window/window_quantile_build_oom.test
+# description: Issue #27591: the quantile and mad window accelerators fail cleanly when their merge sort tree runs out of memory
+# group: [window]
+
+require 64bit
+
+require vector_size 2048
+
+statement ok
+SET threads = 4;
+
+# The sort data cannot be spilled, so the sort and tree allocation of the quantile sort tree
+# are what run out of memory.
+statement ok
+SET temp_directory = '';
+
+statement ok
+CREATE TABLE t AS
+	SELECT p::INTEGER AS p, j::INTEGER AS j, ((p * 2039 + j) % 7919)::INTEGER AS v
+	FROM range(2048) parts(p), range(2039) rows(j);
+
+# A single partition, so one tree for all rows.
+# The frame barely overlaps its predecessor, so the tree is used instead of the skip list.
+# The limit sits below the build peak with the folded quantile fraction stored as a
+# compact constant column, which is about 34MB smaller than its flat materialization.
+statement ok
+SET memory_limit = '240MB';
+
+statement error
+SELECT sum(q)
+FROM (
+	SELECT quantile_cont(v, 0.5) OVER (ORDER BY p, j ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+	FROM t
+);
+----
+Out of Memory
+
+query I
+SELECT sum(q)
+FROM (
+	SELECT quantile_cont(v, 0.5) OVER (ORDER BY p, j ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+	FROM t
+	WHERE p < 8
+);
+----
+62814506.5
+
+statement ok
+SET memory_limit = '240MB';
+
+statement error
+SELECT sum(q)
+FROM (
+	SELECT mad(v) OVER (ORDER BY p, j ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+	FROM t
+);
+----
+Out of Memory
+
+query I
+SELECT sum(q)
+FROM (
+	SELECT mad(v) OVER (ORDER BY p, j ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS q
+	FROM t
+	WHERE p < 8
+);
+----
+16072.5

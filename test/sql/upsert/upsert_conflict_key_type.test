@@ -1,0 +1,391 @@
+# name: test/sql/upsert/upsert_conflict_key_type.test
+# description: Conflicts are detected on the key after it is cast to the type of its column
+# group: [upsert]
+
+# VARCHAR key, INTEGER source
+statement ok
+CREATE TABLE t1 (k VARCHAR PRIMARY KEY);
+
+statement ok
+INSERT INTO t1 VALUES ('a');
+
+statement ok
+INSERT INTO t1 SELECT 1 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t1 SELECT 1 ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM t1 ORDER BY k
+----
+1
+a
+
+# INTEGER key, DECIMAL source that rounds onto an existing key
+statement ok
+CREATE TABLE t2 (k INTEGER PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t2 VALUES (1, 0);
+
+statement ok
+INSERT OR IGNORE INTO t2 SELECT 1.4, 7;
+
+statement ok
+INSERT OR IGNORE INTO t2 BY NAME SELECT 7 AS n, 1.4 AS k;
+
+statement ok
+INSERT INTO t2 (k) SELECT 1.4 ON CONFLICT (k) DO NOTHING;
+
+query II
+SELECT * FROM t2
+----
+1	0
+
+statement ok
+INSERT INTO t2 SELECT 1.4, 7 ON CONFLICT (k) DO UPDATE SET n = excluded.k * 10;
+
+query II
+SELECT * FROM t2
+----
+1	10
+
+statement ok
+INSERT OR REPLACE INTO t2 SELECT 2.3, 8;
+
+statement ok
+INSERT OR REPLACE INTO t2 SELECT 0.9, 9;
+
+query II
+SELECT * FROM t2 ORDER BY k
+----
+1	9
+2	8
+
+# a prepared upsert sees the cast key in the update condition and in RETURNING
+statement ok
+PREPARE upsert_t2 AS INSERT INTO t2 SELECT $1, 20 ON CONFLICT (k) DO UPDATE SET n = excluded.n WHERE excluded.k = 1 RETURNING k, n;
+
+query II
+EXECUTE upsert_t2(1.4);
+----
+1	20
+
+# the key 2 conflicts, but the update condition is false
+query II
+EXECUTE upsert_t2(2.4);
+----
+
+query II
+SELECT k, n FROM t2 WHERE k = 2
+----
+2	8
+
+# source rows that become the same key
+statement ok
+INSERT INTO t2 SELECT 3.1, 1 UNION ALL SELECT 3.2, 2 ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM t2 WHERE k = 3
+----
+1
+
+# VARCHAR key, DOUBLE source that does not match after the cast
+statement ok
+CREATE TABLE t3 (k VARCHAR PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t3 VALUES ('2', 0);
+
+statement ok
+INSERT INTO t3 SELECT 2.0::DOUBLE, 1 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t3 SELECT '2', 2 ON CONFLICT DO NOTHING;
+
+query II
+SELECT * FROM t3 ORDER BY k
+----
+2	0
+2.0	1
+
+# a default key value is compared in the type of its column
+statement ok
+CREATE TABLE t4 (k VARCHAR PRIMARY KEY DEFAULT 3.0::DOUBLE, n INTEGER);
+
+statement ok
+INSERT INTO t4 VALUES ('3', 0);
+
+statement ok
+INSERT INTO t4 (n) SELECT 1 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t4 (n) VALUES (2) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t4 DEFAULT VALUES ON CONFLICT DO NOTHING;
+
+query II
+SELECT * FROM t4 ORDER BY k
+----
+3	0
+3.0	1
+
+# composite key and a second unique constraint
+statement ok
+CREATE TABLE t5 (a INTEGER, b VARCHAR, c DATE UNIQUE, n INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO t5 VALUES (1, '1', DATE '2000-01-01', 0);
+
+statement ok
+INSERT INTO t5 SELECT 1.2, 1, NULL, 1 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t5 SELECT 2, '2', TIMESTAMP '2000-01-01 10:00:00', 2 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t5 SELECT 1.2, 1, NULL, 3 ON CONFLICT (a, b) DO UPDATE SET n = excluded.n;
+
+query IIII
+SELECT * FROM t5 ORDER BY a
+----
+1	1	2000-01-01	3
+
+# keys with a collation are compared with it, in the source as against the table
+statement ok
+CREATE TABLE t8 (k VARCHAR COLLATE NOCASE PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t8 VALUES ('A', 0);
+
+statement ok
+INSERT INTO t8 SELECT 'a', 1 UNION ALL SELECT 'A', 1 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+statement ok
+INSERT INTO t8 SELECT 'b'::BLOB, 2 UNION ALL SELECT 'B'::BLOB, 2 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT OR IGNORE INTO t8 SELECT 'c', 3 UNION ALL SELECT 'C', 3;
+
+statement ok
+INSERT OR REPLACE INTO t8 SELECT 'd', 4 UNION ALL SELECT 'D', 4;
+
+statement ok
+INSERT INTO t8 SELECT 'Q', 5 ON CONFLICT DO NOTHING;
+
+query II
+SELECT lower(k), n FROM t8 ORDER BY n
+----
+a	1
+b	2
+c	3
+d	4
+q	5
+
+query I
+SELECT k FROM t8 WHERE n IN (1, 5) ORDER BY n
+----
+A
+Q
+
+statement ok
+PREPARE upsert_t8 AS INSERT INTO t8 SELECT $1, 6 ON CONFLICT DO UPDATE SET n = excluded.n RETURNING k, n;
+
+query II
+EXECUTE upsert_t8('q');
+----
+Q	6
+
+query I
+SELECT count(*) FROM t8
+----
+5
+
+statement ok
+CREATE TABLE t8b (k VARCHAR COLLATE NOACCENT UNIQUE);
+
+statement ok
+INSERT INTO t8b SELECT 'é' UNION ALL SELECT 'e' ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM t8b
+----
+1
+
+statement ok
+CREATE TABLE t8c (a INTEGER, b VARCHAR COLLATE NOCASE, n INTEGER, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO t8c SELECT 1.4, 'X', 1 UNION ALL SELECT 1, 'x', 1 ON CONFLICT DO NOTHING;
+
+query II
+SELECT a, lower(b) FROM t8c
+----
+1	x
+
+# a key without a collation is compared without the collation of its source
+statement ok
+CREATE TABLE t8e (k VARCHAR PRIMARY KEY);
+
+statement ok
+INSERT INTO t8e VALUES ('B');
+
+statement ok
+INSERT INTO t8e SELECT 'A' COLLATE NOCASE UNION ALL SELECT 'a' COLLATE NOCASE ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t8e SELECT 'b' COLLATE NOCASE ON CONFLICT DO NOTHING;
+
+query I
+SELECT k FROM t8e ORDER BY k::BLOB
+----
+A
+B
+a
+b
+
+# such a key is compared with the default collation
+statement ok
+SET default_collation = 'nocase';
+
+statement ok
+CREATE TABLE t8f (k VARCHAR PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t8f VALUES ('B', 0);
+
+statement ok
+INSERT INTO t8f SELECT 'A' COLLATE "binary", 1 UNION ALL SELECT 'a' COLLATE "binary", 1 ON CONFLICT DO NOTHING;
+
+query II
+INSERT INTO t8f SELECT 'b' COLLATE "binary", 2 ON CONFLICT DO UPDATE SET n = excluded.n RETURNING k, n;
+----
+B	2
+
+query II
+SELECT lower(k), n FROM t8f ORDER BY n
+----
+a	1
+b	2
+
+statement ok
+RESET default_collation;
+
+statement ok
+PREPARE upsert_t8f AS INSERT INTO t8f SELECT $1::VARCHAR, 3 ON CONFLICT DO UPDATE SET n = t8f.n + 1 RETURNING k, n;
+
+query II
+EXECUTE upsert_t8f('x');
+----
+x	3
+
+query II
+EXECUTE upsert_t8f('x');
+----
+x	4
+
+# TIMETZ keys are equal only with the same time and offset
+statement ok
+CREATE TABLE t8d (k TIMETZ PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t8d VALUES ('12:00:00+00', 0);
+
+statement ok
+INSERT INTO t8d SELECT '13:00:00+01', 1 UNION ALL SELECT '12:00:00+00', 2 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+statement ok
+INSERT INTO t8d SELECT '14:00:00+02', 3 UNION ALL SELECT '15:00:00+03', 4 ON CONFLICT DO NOTHING;
+
+query II
+SELECT k::VARCHAR, n FROM t8d ORDER BY n
+----
+13:00:00+01	1
+12:00:00+00	2
+14:00:00+02	3
+15:00:00+03	4
+
+# ENUM keys
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok');
+
+statement ok
+CREATE TABLE t6 (k mood PRIMARY KEY, n INTEGER);
+
+statement ok
+INSERT INTO t6 VALUES ('ok', 0);
+
+statement ok
+INSERT INTO t6 SELECT 'ok', 1 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+query II
+SELECT * FROM t6
+----
+ok	1
+
+# a composite key of an INTEGER and an ENUM casts the INTEGER part only
+statement ok
+CREATE TABLE t6b (a INTEGER, k mood, n INTEGER, PRIMARY KEY (a, k));
+
+statement ok
+INSERT INTO t6b VALUES (1, 'ok', 0);
+
+statement ok
+INSERT INTO t6b SELECT 1.4, 'ok', 1 ON CONFLICT DO UPDATE SET n = excluded.n;
+
+query III
+SELECT * FROM t6b
+----
+1	ok	1
+
+statement ok
+CREATE TYPE empty_enum AS ENUM ();
+
+statement ok
+CREATE TABLE t7 (k empty_enum UNIQUE);
+
+statement ok
+INSERT INTO t7 VALUES (NULL) ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO t7 SELECT NULL ON CONFLICT DO NOTHING;
+
+query I
+SELECT count(*) FROM t7
+----
+2
+
+# a key that cannot be cast fails as in a plain INSERT
+statement error
+INSERT INTO t2 SELECT 'x', 1 ON CONFLICT DO NOTHING;
+----
+<REGEX>:Conversion Error:.*Could not convert string 'x' to INT32.*
+
+# a prepared upsert only returns the rows of its own execution
+statement ok
+SET enable_optimizer=false;
+
+statement ok
+CREATE TABLE t_prepared_returning (k VARCHAR PRIMARY KEY, n INTEGER);
+
+statement ok
+PREPARE upsert_returning AS INSERT INTO t_prepared_returning SELECT $1::VARCHAR, 3 ON CONFLICT DO UPDATE SET n = t_prepared_returning.n + 1 RETURNING k, n;
+
+query II
+EXECUTE upsert_returning('x');
+----
+x	3
+
+query II
+EXECUTE upsert_returning('x');
+----
+x	4
+
+query II
+EXECUTE upsert_returning('x');
+----
+x	5
+
+statement ok
+SET enable_optimizer=true;

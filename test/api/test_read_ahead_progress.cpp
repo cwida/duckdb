@@ -98,3 +98,58 @@ TEST_CASE("Read-ahead settles a file open that never runs", "[api]") {
 	REQUIRE(settled);
 	REQUIRE(!opened);
 }
+
+#ifndef DUCKDB_NO_THREADS
+TEST_CASE("Automatic read-ahead grows its backlog within the memory budget", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=2"));
+	REQUIRE_NO_FAIL(con.Query("SET async_threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET read_ahead_depth=-1"));
+	REQUIRE_NO_FAIL(con.Query("SET memory_limit='1GB'"));
+
+	bool expect_overlap = true;
+	SECTION("Two scan threads") {
+	}
+	SECTION("One scan thread") {
+		REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	}
+	SECTION("Low memory limits the backlog") {
+		REQUIRE_NO_FAIL(con.Query("SET memory_limit='32MB'"));
+		expect_overlap = false;
+	}
+
+	auto read_ahead = ScanReadAhead::Create(*con.context);
+	REQUIRE(read_ahead);
+	struct JobState {};
+	const idx_t job_count = 32;
+	idx_t produced = 0;
+	auto produce = [&](duckdb::vector<duckdb::unique_ptr<AsyncTask>> &) -> duckdb::unique_ptr<ScanReadAheadJob> {
+		if (produced == job_count) {
+			return nullptr;
+		}
+		auto job = make_uniq<ScanReadAheadJobWrapper<JobState>>();
+		job->batch_index = produced++;
+		return std::move(job);
+	};
+	TableFunctionInput input(nullptr, nullptr, nullptr);
+	for (idx_t consumed = 0; consumed < job_count; consumed++) {
+		duckdb::unique_ptr<ScanReadAheadJob> job;
+		REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::ACQUIRED);
+		REQUIRE(job->batch_index == consumed);
+		if (consumed == 0) {
+			// One producer must fill a bounded backlog before the first job is consumed.
+			REQUIRE(produced < job_count);
+			if (expect_overlap) {
+				REQUIRE(produced > 1);
+			} else {
+				REQUIRE(produced == 1);
+			}
+		}
+	}
+	duckdb::unique_ptr<ScanReadAheadJob> job;
+	REQUIRE(read_ahead->AcquireJob(*con.context, input, produce, job) == ScanReadAheadAcquire::EXHAUSTED);
+	REQUIRE_FALSE(job);
+	REQUIRE(produced == job_count);
+}
+#endif

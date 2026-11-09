@@ -1,0 +1,44 @@
+# name: test/sql/cte/materialized_compact_spill.test
+# description: Materialized constant and repetitive payloads under memory pressure
+# group: [cte]
+
+require vector_size 2048
+
+require block_size 262144
+
+load {TEST_DIR}/compact_spill.db
+
+statement ok
+PRAGMA force_compression='dict_fsst'
+
+# non-inlined dictionary values so the spill exercises the dictionary string heap repair
+statement ok
+CREATE TABLE t AS SELECT i, 'dictionary_spill_payload_' || (i % 100) AS d FROM range(2000000) t(i)
+
+statement ok
+CHECKPOINT
+
+statement ok
+SET threads=4
+
+statement ok
+SET memory_limit='60mb'
+
+statement ok
+SET temp_directory='{TEST_DIR}/compact_spill_tmp'
+
+# the collection blocks holding codes, dictionaries, and constant string bytes spill and reload
+query IIIII
+WITH m AS MATERIALIZED (SELECT i, d, 'a_constant_payload_string_longer_than_twelve' AS c FROM t)
+SELECT count(*), count(DISTINCT d), min(d), max(d), min(c) FROM m WHERE i <= (SELECT max(i) FROM m)
+----
+2000000	100	dictionary_spill_payload_0	dictionary_spill_payload_99	a_constant_payload_string_longer_than_twelve
+
+statement ok
+SET memory_limit='120mb'
+
+query III
+WITH m AS MATERIALIZED (SELECT i, d FROM t)
+SELECT count(ld), min(ld), max(ld) FROM (SELECT lag(d) OVER (ORDER BY i) AS ld FROM m)
+----
+1999999	dictionary_spill_payload_0	dictionary_spill_payload_99

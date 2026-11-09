@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/profiler.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/main/parse_iterator.hpp"
 
@@ -62,6 +63,8 @@ private:
 	unique_ptr<SQLStatement> pending_statement;
 	//! Parser timing for the statement parsed ahead.
 	Profiler parser_timer;
+	timestamp_t parser_start_time = timestamp_t::epoch();
+	timestamp_t parser_end_time = timestamp_t::epoch();
 };
 
 } // namespace duckdb

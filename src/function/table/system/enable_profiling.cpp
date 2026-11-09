@@ -1,5 +1,6 @@
 #include "duckdb/function/table/system_functions.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
@@ -89,6 +90,21 @@ static unique_ptr<FunctionData> BindEnableProfiling(ClientContext &context, Tabl
 	// The metrics are placed by position however they were passed; the overload settled pattern or list of names
 	bind_data->metrics = input.inputs[0];
 
+	auto &config = DBConfig::GetConfig(context);
+	config.CheckLock(EnableProfilingSetting::Name);
+	if (!bind_data->coverage.IsNull()) {
+		config.CheckLock(ProfilingCoverageSetting::Name);
+	}
+	if (!bind_data->save_location.IsNull()) {
+		config.CheckLock(ProfilingOutputSetting::Name);
+	}
+	if (!bind_data->mode.IsNull()) {
+		config.CheckLock(ProfilingModeSetting::Name);
+	}
+	if (!bind_data->metrics.IsNull()) {
+		config.CheckLock(TrackedMetricsSetting::Name);
+	}
+
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 
@@ -102,6 +118,7 @@ static void DisableProfiling(ClientContext &context, TableFunctionInput &data, D
 
 static unique_ptr<FunctionData> BindDisableProfiling(ClientContext &context, TableFunctionBindInput &input,
                                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
+	DBConfig::GetConfig(context).CheckLock(EnableProfilingSetting::Name);
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 

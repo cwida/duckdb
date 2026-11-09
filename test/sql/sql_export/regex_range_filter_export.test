@@ -1,0 +1,24 @@
+# name: test/sql/sql_export/regex_range_filter_export.test
+# description: SQL export of the range filter derived from a regular expression
+# group: [sql_export]
+
+statement ok
+CREATE TABLE t AS SELECT 'goose' AS v UNION ALL SELECT 'gooxe' UNION ALL SELECT 'duck' UNION ALL SELECT 'goo\x5Ce';
+
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I
+SELECT * FROM t WHERE regexp_full_match(v, 'goo.e') ORDER BY v;
+----
+goose
+gooxe
+
+query I
+SELECT * FROM (VALUES ('v1'), ('w2'), ('v\x5C')) t(s) WHERE s SIMILAR TO 'v.*' ORDER BY s;
+----
+v1
+v\x5C

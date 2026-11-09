@@ -166,10 +166,10 @@ public:
 	DUCKDB_API static Value ENUM(uint64_t value, const LogicalType &original_type);
 
 	// Decimal values
-	DUCKDB_API static Value DECIMAL(int16_t value, uint8_t width, uint8_t scale);
-	DUCKDB_API static Value DECIMAL(int32_t value, uint8_t width, uint8_t scale);
-	DUCKDB_API static Value DECIMAL(int64_t value, uint8_t width, uint8_t scale);
-	DUCKDB_API static Value DECIMAL(hugeint_t value, uint8_t width, uint8_t scale);
+	DUCKDB_API static Value DECIMAL(int16_t value, uint32_t width, uint32_t scale);
+	DUCKDB_API static Value DECIMAL(int32_t value, uint32_t width, uint32_t scale);
+	DUCKDB_API static Value DECIMAL(int64_t value, uint32_t width, uint32_t scale);
+	DUCKDB_API static Value DECIMAL(hugeint_t value, uint32_t width, uint32_t scale);
 	//! Create a float Value from a specified value
 	DUCKDB_API static Value FLOAT(float value);
 	//! Create a double Value from a specified value

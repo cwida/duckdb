@@ -101,6 +101,41 @@ void KeyValueSecret::Serialize(Serializer &serializer) const {
 	serializer.WriteProperty(202, "redact_keys", list);
 }
 
+void KeyValueSecret::ReadSecretMap(Deserializer &deserializer, identifier_tree_t<Value> &result) {
+	deserializer.ReadObject(201, "secret_map", [&](Deserializer &map) {
+		auto stored_type = map.ReadProperty<LogicalType>(100, "type");
+		// Before DuckDB 1.1.3, secrets declared VARCHAR values even when storing other types.
+		if (stored_type.id() != LogicalTypeId::MAP || !stored_type.HasParameters() ||
+		    MapType::KeyType(stored_type) != LogicalType::VARCHAR) {
+			throw SerializationException("Secret map must be a MAP with VARCHAR keys");
+		}
+		if (map.ReadProperty<bool>(101, "is_null")) {
+			throw SerializationException("Secret map cannot be NULL");
+		}
+
+		map.Set<const LogicalType &>(ListType::GetChildType(stored_type));
+		map.ReadObject(102, "value", [&](Deserializer &obj) {
+			obj.ReadList(100, "children", [&](Deserializer::List &list, idx_t i) {
+				// Before DuckDB 1.2.0, entries carried their actual value types, even when the map declared VARCHAR.
+				// Deserialize them separately so their payloads still undergo normal Value validation.
+				auto entry = list.ReadElement<Value>();
+				if (entry.IsNull() || entry.type().id() != LogicalTypeId::STRUCT) {
+					throw SerializationException("Secret map entry must be a non-NULL struct");
+				}
+				const auto &children = StructValue::GetChildren(entry);
+				if (children.size() != 2) {
+					throw SerializationException("Secret map entry must have two fields");
+				}
+				if (children[0].IsNull() || children[0].type() != LogicalType::VARCHAR) {
+					throw SerializationException("Secret map key must be a non-NULL VARCHAR");
+				}
+				result[Identifier(StringValue::Get(children[0]))] = children[1];
+			});
+		});
+		map.Unset<LogicalType>();
+	});
+}
+
 Value KeyValueSecret::TryGetValue(const Identifier &key, bool error_on_missing) const {
 	auto lookup = secret_map.find(key);
 	if (lookup == secret_map.end()) {
@@ -175,7 +210,36 @@ KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<Fi
 	context = opener_p.TryGetClientContext();
 
 	if (info) {
-		path = info->file_path;
+		path = info->file.path;
+	}
+	string secret_name;
+	if (info && info->file.extended_info && info->file.extended_info->TryGetSecretName(secret_name)) {
+		// the file names the secret to open it with: look up none by path
+		if (!db) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' cannot be looked up without a database",
+			                                    secret_name, path);
+		}
+		auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+		                           : CatalogTransaction::GetSystemTransaction(*db);
+		secret_entry = db->GetSecretManager().GetSecretByName(transaction, secret_name);
+		if (!secret_entry) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' not found", secret_name, path);
+		}
+		auto &named_secret = *secret_entry->secret;
+		if (named_secret.MatchScore(path) == NumericLimits<int64_t>::Minimum()) {
+			throw InvalidConfigurationException(
+			    "Secret '%s' named by '%s' does not apply to it: the path is outside the secret's scope", secret_name,
+			    path);
+		}
+		auto &type = named_secret.GetType();
+		for (idx_t i = 0; i < secret_types_len; i++) {
+			if (StringUtil::CIEquals(type.GetIdentifierName(), secret_types[i])) {
+				secret = named_secret.Cast<KeyValueSecret>();
+				return;
+			}
+		}
+		throw InvalidConfigurationException("Secret '%s' named by '%s' is of type %s, which this read does not take",
+		                                    secret_name, path, type);
 	}
 
 	Initialize(secret_types, secret_types_len);
@@ -260,7 +324,7 @@ void CreateSecretFunctionSet::AddFunction(CreateSecretFunction &function, OnCrea
 	if (ProviderExists(function.provider)) {
 		if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
 			throw InternalException(
-			    "Attempted to override a Create Secret Function with OnCreateConflict::ERROR_ON_CONFLICT for: '%s'",
+			    "Attempted to override a Create Secret Function with OnCreateConflict::ERROR_ON_CONFLICT for: %s",
 			    function.provider);
 		} else if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 			functions[function.provider] = function;

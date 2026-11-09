@@ -160,7 +160,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_vector_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the internal representation kind: flat, constant, or dictionary.
 
@@ -186,7 +186,7 @@ functions:
     return_type: ERROR
   vector_get_logical_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the vector's logical type.
 
@@ -214,7 +214,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_view:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Reads a vector as a unified view of data, validity, selection, and count.
 
@@ -266,7 +266,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of elements in the vector.
 
@@ -293,7 +293,7 @@ functions:
     return_type: ERROR
   vector_set_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets the number of elements in the vector.
 
@@ -319,7 +319,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Reads one cell of a vector as an owned value.
 
@@ -356,7 +356,7 @@ functions:
     return_type: ERROR
   vector_set_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Writes one cell of a FLAT vector from a value.
 
@@ -395,7 +395,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_data_mutable:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns a mutable pointer to the data of a FLAT or CONSTANT vector.
 
@@ -427,7 +427,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_flatten:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Forces a vector into FLAT representation, in place.
 
@@ -450,7 +450,7 @@ functions:
     return_type: ERROR
   vector_cast:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Casts every row of a vector into another vector, using a factory.
 
@@ -511,7 +511,7 @@ functions:
     return_type: ERROR
   vector_reference:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Repoints a vector at another vector's data, without copying.
 
@@ -538,7 +538,7 @@ functions:
     return_type: ERROR
   vector_make_constant:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Turns the vector into a CONSTANT vector holding the given value.
 
@@ -567,7 +567,7 @@ functions:
     return_type: ERROR
   vector_make_sequence:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets a vector to a SEQUENCE representation.
 
@@ -601,7 +601,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_set_null:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets one row of a FLAT vector to NULL, nested children included.
 
@@ -635,7 +635,7 @@ functions:
     return_type: ERROR
   vector_flat_get_validity_mutable:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns a mutable pointer to the validity mask of a FLAT vector.
 
@@ -668,7 +668,7 @@ functions:
     return_type: ERROR
   vector_constant_set_valid:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Sets the validity of a CONSTANT vector.
 
@@ -697,7 +697,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_arena:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows a string-backed vector's arena for writing.
 
@@ -740,7 +740,7 @@ functions:
   # -----------------------------------------------------------------------
   vector_get_child_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of child vectors a nested vector exposes.
 
@@ -766,7 +766,7 @@ functions:
     return_type: ERROR
   vector_get_child:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows a child vector by index.
 
@@ -822,7 +822,7 @@ functions:
   # -----------------------------------------------------------------------
   bignum_decode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Decodes BIGNUM storage bytes into a caller-supplied magnitude buffer + sign flag.
 
@@ -888,7 +888,7 @@ functions:
     return_type: ERROR
   bignum_encode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Encodes a magnitude + sign flag into BIGNUM storage bytes.
 
@@ -949,7 +949,7 @@ functions:
 
   validate_utf8:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-17" ]
+      - [ "unstable", "v2.0.0", "2026-09-17" ]
     description: |
       Validates all text->len bytes as UTF-8, including bytes after embedded NUL characters.
 

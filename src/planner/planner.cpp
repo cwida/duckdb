@@ -179,6 +179,15 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 }
 #endif
 
+static void RunPreBindExtensions(ClientContext &context, Binder &binder, SQLStatement &statement) {
+	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
+		if (planner_extension.pre_bind_function) {
+			PlannerExtensionInput input {context, binder, planner_extension.planner_info.get()};
+			planner_extension.pre_bind_function(input, statement);
+		}
+	}
+}
+
 static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundStatement &statement) {
 	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
 		if (planner_extension.post_bind_function) {
@@ -199,6 +208,8 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	try {
 		auto binding_timer = profiler.StartTimer<MetricPlannerBindingTime>();
 		binder->SetParameters(bound_parameters);
+		binder->SetStatementParameters(statement.named_param_map);
+		RunPreBindExtensions(context, *binder, statement);
 		auto bound_statement = binder->Bind(statement);
 		binding_timer.EndTimer();
 
@@ -240,9 +251,12 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		auto max_tree_depth = Settings::Get<MaxExpressionDepthSetting>(context);
 		CheckTreeDepth(*plan, max_tree_depth);
 
-		RewriteTriggersToDependent(*this->binder, *this->plan);
-		RecursiveDependentJoinPlanner::Plan(*this->binder, this->plan);
-		this->plan = FlattenDependentJoins::DecorrelateIndependent(*this->binder, std::move(this->plan));
+		// A LogicalPlanStatement carries an already planned (and possibly optimized) plan
+		if (statement.type != StatementType::LOGICAL_PLAN_STATEMENT) {
+			RewriteTriggersToDependent(*this->binder, *this->plan);
+			RecursiveDependentJoinPlanner::Plan(*this->binder, this->plan);
+			this->plan = FlattenDependentJoins::DecorrelateIndependent(*this->binder, std::move(this->plan));
+		}
 		D_ASSERT(!ContainsDependentJoin(*this->plan));
 		D_ASSERT(VerifyPlannedExpressions(*this->plan));
 		D_ASSERT(VerifyCanonicalComparisonJoins(*this->plan));

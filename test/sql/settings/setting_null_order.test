@@ -36,3 +36,9 @@ statement error
 endloop
 
 endloop
+
+# a qualified name is not reduced to its last part
+statement error
+SET default_null_order = this_doesnt_exist.nulls_last
+----
+Unrecognized parameter for option NULL_ORDER "this_doesnt_exist.nulls_last"

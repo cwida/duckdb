@@ -13,6 +13,7 @@
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 #include "json_common.hpp"
+#include "json_enums.hpp"
 
 namespace duckdb {
 
@@ -34,9 +35,14 @@ public:
 	bool error_missing_key = false;
 	//! Throws an error if an object has a key we didn't know about
 	bool error_unknown_key = false;
+	//! How object keys are matched to names
+	JSONKeyMatch key_match = JSONKeyMatch::EXACT;
 
 	//! Whether to delay the error when transforming (e.g., when non-strict casting or reading from file)
 	bool delay_error = false;
+	//! Whether the documents keep numbers as text (JSONCommon::NumbersAsRaw): nested values become strings through
+	//! JSONRawNumberWriter, so that they read the same as without the DECIMAL column
+	bool numbers_as_raw = false;
 	//! Date format used for parsing (can be NULL)
 	optional_ptr<const DateFormatMap> date_format_map = nullptr;
 	//! String to store errors in

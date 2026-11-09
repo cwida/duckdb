@@ -29,6 +29,12 @@
         "id": 104,
         "name": "delay_error",
         "type": "bool"
+      },
+      {
+        "id": 105,
+        "name": "key_match",
+        "type": "JSONKeyMatch",
+        "default": "JSONKeyMatch::EXACT"
       }
     ],
     "pointer_type": "none"

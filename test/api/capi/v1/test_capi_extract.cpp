@@ -109,3 +109,42 @@ TEST_CASE("Test extract statements for 'ALTER TABLE ... ADD COLUMN ... DEFAULT' 
 
 	duckdb_destroy_extracted(&stmts);
 }
+
+TEST_CASE("Test a parser error while extracting statements invalidates the transaction in C API", "[capi]") {
+	CAPITester tester;
+	duckdb_extracted_statements stmts = nullptr;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(tester.Query("BEGIN"));
+	REQUIRE_NO_FAIL(tester.Query("SET current_transaction_invalidation_policy='ALL_ERRORS_INVALIDATE_TRANSACTION'"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO audit VALUES (21)"));
+	auto size = duckdb_extract_statements(tester.connection, "inser into audit_backup from audit", &stmts);
+	REQUIRE(size == 0);
+	REQUIRE(duckdb_extract_statements_error(stmts) != nullptr);
+	duckdb_destroy_extracted(&stmts);
+	REQUIRE_FAIL(tester.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(tester.Query("ABORT"));
+
+	auto result = tester.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 0);
+}
+
+TEST_CASE("Test a parser error while getting table names leaves the transaction usable in C API", "[capi]") {
+	CAPITester tester;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE audit(i INT)"));
+
+	REQUIRE_NO_FAIL(tester.Query("BEGIN"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO audit VALUES (21)"));
+	REQUIRE(duckdb_get_table_names(tester.connection, "inser into audit_backup from audit", false) == nullptr);
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO audit VALUES (22)"));
+	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
+
+	auto result = tester.Query("SELECT COUNT(*) FROM audit");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 2);
+}

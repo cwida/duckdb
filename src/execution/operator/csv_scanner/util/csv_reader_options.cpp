@@ -404,7 +404,7 @@ void CSVReaderOptions::SetWriteOption(const Identifier &loption, const Value &va
 		SetDateFormat(LogicalTypeId::DATE, format, false);
 	} else if (loption == "timestamp_format" || loption == "timestampformat") {
 		string format = ParseString(value, loption);
-		if (StringUtil::Lower(format) == "iso") {
+		if (StringUtil::CIEquals(format, "iso")) {
 			format = "%Y-%m-%dT%H:%M:%S.%fZ";
 		}
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, false);
@@ -680,6 +680,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		if (child_type.id() != LogicalTypeId::STRUCT) {
 			throw BinderException("read_csv columns requires a struct as input");
 		}
+		if (val.IsNull()) {
+			throw BinderException("read_csv columns cannot be NULL");
+		}
 		auto &struct_children = StructValue::GetChildren(val);
 		D_ASSERT(StructType::GetChildCount(child_type) == struct_children.size());
 
@@ -693,6 +696,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 			parsed_names.emplace_back(name);
 			if (val.type().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("read_csv requires a type specification as string");
+			}
+			if (val.IsNull()) {
+				throw BinderException("read_csv columns cannot have a NULL type");
 			}
 			parsed_types_per_column[name] = i;
 			parsed_types.emplace_back(TransformStringToLogicalType(StringValue::Get(val), context));
@@ -719,6 +725,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		if (child_type.id() != LogicalTypeId::LIST) {
 			throw BinderException("read_csv auto_types requires a list as input");
 		}
+		if (val.IsNull()) {
+			throw BinderException("auto_type_candidates cannot be NULL");
+		}
 		auto &list_children = ListValue::GetChildren(val);
 		if (list_children.empty()) {
 			throw BinderException("auto_type_candidates requires at least one type");
@@ -726,6 +735,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		for (auto &child : list_children) {
 			if (child.type().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("auto_type_candidates requires a type specification as string");
+			}
+			if (child.IsNull()) {
+				throw BinderException("auto_type_candidates cannot contain NULL types");
 			}
 			auto candidate_type = TransformStringToLogicalType(StringValue::Get(child), context);
 			candidate_types[GetCandidateSpecificity(candidate_type)] = candidate_type;
@@ -772,6 +784,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 		if (!columns_set && !sql_type_list.empty()) {
 			throw BinderException("read_csv column_types/types/dtypes can only be supplied once");
 		}
+		if (val.IsNull()) {
+			throw BinderException("read_csv %s cannot be NULL", key);
+		}
 
 		// Parse into temporary lists first
 		vector<string> sql_type_names;
@@ -785,6 +800,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 				if (val.type().id() != LogicalTypeId::VARCHAR) {
 					throw BinderException("read_csv %s requires a type specification as string", key);
 				}
+				if (val.IsNull()) {
+					throw BinderException("read_csv %s cannot have a NULL type", key);
+				}
 				sql_type_names.push_back(StringValue::Get(val));
 				parsed_types_per_column[name] = i;
 			}
@@ -795,6 +813,9 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const Identifier &key
 			}
 			auto &children = ListValue::GetChildren(val);
 			for (auto &child : children) {
+				if (child.IsNull()) {
+					throw BinderException("read_csv %s cannot have a NULL type", key);
+				}
 				sql_type_names.push_back(StringValue::Get(child));
 			}
 		}

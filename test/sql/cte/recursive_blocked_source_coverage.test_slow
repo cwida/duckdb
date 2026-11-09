@@ -1,0 +1,85 @@
+# name: test/sql/cte/recursive_blocked_source_coverage.test_slow
+# description: Suspension coverage for recursive epochs over a blocked source
+# group: [cte]
+
+# Companion to recursive_inline_blocked_source.test, which keeps the fast deadlock gate in every
+# CI run. This file covers the remaining suspension shapes: the keyed source machine, prepared
+# re-execution of suspended epochs, a wide-frontier multi-threaded epoch that parks through the
+# event schedule's wake event, and the inline multi-threaded stage wait (EVENT_WAIT on a single
+# pipeline event), reached by an invariant build stage wide enough for multiple threads while the
+# tiny frontier keeps the epoch itself inline.
+# query_timeout is the primary bound on a regression: its watchdog calls Interrupt(), which the
+# parked client loop observes.
+
+require tpch
+
+set query_timeout 120
+
+statement ok
+SET threads=1;
+
+statement ok
+SET external_threads=1;
+
+statement ok
+SET max_execution_time=100000;
+
+# the keyed source machine suspends through its own iteration phase
+query I
+WITH RECURSIVE k(lvl, n) USING KEY (lvl) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT lvl + 1, (SELECT count(*) FROM dbgen(sf = 0.001)) FROM k WHERE lvl < 3
+)
+SELECT count(*) FROM k;
+----
+3
+
+# repeated execution resets and reuses the suspended-epoch bookkeeping
+statement ok
+PREPARE q AS WITH RECURSIVE t(lvl, n) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT lvl + 1, (SELECT count(*) FROM dbgen(sf = 0.001)) FROM t WHERE lvl < 2
+)
+SELECT count(*) FROM t;
+
+query I
+EXECUTE q;
+----
+2
+
+query I
+EXECUTE q;
+----
+2
+
+# a wide frontier makes the epoch run through the event schedule, which parks the source
+# through its wake event while the scheduled events are still running
+statement ok
+SET threads=4;
+
+query I
+WITH RECURSIVE t(lvl, x) AS (
+	SELECT 1, i::BIGINT FROM range(50000) r(i)
+	UNION ALL
+	SELECT lvl + 1, x + 1 + (SELECT count(*) FROM dbgen(sf = 0.001)) FROM t WHERE lvl < 3
+)
+SELECT count(*) FROM t;
+----
+150000
+
+# an invariant build over a large table gets multiple threads while the one-row frontier keeps
+# the epoch inline, so the build stage parks through the inline stage wait's wake event
+statement ok
+CREATE TABLE big AS SELECT i AS k, i % 10 AS v FROM range(2000000) r(i);
+
+query II
+WITH RECURSIVE t(i, s) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT t.i + 1, s + big.v + 1 FROM t JOIN big ON big.k = t.i * 1000 + 1 WHERE t.i < 6
+)
+SELECT count(*), sum(s) FROM t;
+----
+6	30

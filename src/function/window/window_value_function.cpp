@@ -2,6 +2,7 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/interpolate.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/function/window/window_aggregator.hpp"
 #include "duckdb/function/window/window_collection.hpp"
@@ -122,7 +123,7 @@ void WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr c
 	if (local_value) {
 		auto &value_state = local_value->Cast<WindowIndexTreeLocalState>();
 		value_state.Finalize(context, sink.interrupt_state);
-		value_state.index_tree.Build();
+		value_state.index_tree.Build(context.client);
 	}
 
 	// Prepare to scan
@@ -346,7 +347,7 @@ void WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr
 	if (local_row) {
 		auto &row_state = local_row->Cast<WindowMergeSortTreeLocalState>();
 		row_state.Finalize(context, sink.interrupt_state);
-		row_state.window_tree.Build();
+		row_state.window_tree.Build(context.client);
 	}
 }
 
@@ -362,8 +363,8 @@ public:
 			if (offset_expr->HasParameter() || !offset_expr->IsFoldable()) {
 				return false;
 			}
-			auto offset_value = ExpressionExecutor::EvaluateScalar(client, *offset_expr);
-			if (offset_value.IsNull()) {
+			Value offset_value;
+			if (!ExpressionExecutor::TryEvaluateScalar(client, *offset_expr, offset_value) || offset_value.IsNull()) {
 				return false;
 			}
 			auto bigint_value = offset_value.DefaultTryCastAs(LogicalType::BIGINT);
@@ -393,7 +394,10 @@ public:
 		if (default_expr && (default_expr->HasParameter() || !default_expr->IsFoldable())) {
 			return false;
 		}
-		auto dflt_value = ExpressionExecutor::EvaluateScalar(client, *default_expr);
+		Value dflt_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *default_expr, dflt_value)) {
+			return false;
+		}
 		auto cast_value = dflt_value.DefaultTryCastAs(wexpr.GetReturnType());
 		if (!cast_value) {
 			return false;
@@ -609,6 +613,7 @@ WindowFunction LeadFun::GetTypedFunction(const LogicalType &type, idx_t nargs) {
 	if (nargs > 2) {
 		func.GetSignature().GetParameter(2).SetType(type);
 	}
+	func.GetSignature().SetReturnType(type);
 	return func;
 }
 
@@ -626,6 +631,19 @@ unique_ptr<GlobalSinkState> WindowLeadLagExecutor::GetGlobal(ClientContext &clie
 unique_ptr<LocalSinkState> WindowLeadLagExecutor::GetLocal(ExecutionContext &context, const GlobalSinkState &gstate) {
 	const auto &glstate = gstate.Cast<WindowLeadLagGlobalState>();
 	return make_uniq<WindowLeadLagLocalState>(context, glstate);
+}
+
+//! The index of the row at the offset - saturated if it does not fit, as it is outside the partition anyway
+static int64_t LeadLagIndex(ExpressionType type, int64_t row_idx, int64_t offset) {
+	int64_t result;
+	if (type == ExpressionType::WINDOW_LEAD) {
+		if (!TryAddOperator::Operation(row_idx, offset, result)) {
+			result = offset < 0 ? NumericLimits<int64_t>::Minimum() : NumericLimits<int64_t>::Maximum();
+		}
+	} else if (!TrySubtractOperator::Operation(row_idx, offset, result)) {
+		result = offset < 0 ? NumericLimits<int64_t>::Maximum() : NumericLimits<int64_t>::Minimum();
+	}
+	return result;
 }
 
 void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_chunk, DataChunk &bounds, Vector &result,
@@ -668,11 +686,18 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 			frame = FrameBounds(frame_begin[i], MaxValue(frame_end[i], frame_begin[i]));
 			const auto own_row = glstate.row_tree->Rank(frame.start, frame.end, row_idx) - 1;
 			// (2) adjust the row number by adding or subtracting an offset
-			auto val_idx = NumericCast<int64_t>(own_row);
-			if (wexpr.GetExpressionType() == ExpressionType::WINDOW_LEAD) {
-				val_idx = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(val_idx, offset);
-			} else {
-				val_idx = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(val_idx, offset);
+			auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(own_row), offset);
+			const auto is_lead = (wexpr.GetExpressionType() == ExpressionType::WINDOW_LEAD);
+			if (row_idx < frame.start || frame.end <= row_idx) {
+				//	An own row outside the frame ranks just before own_row instead of at it,
+				//	so a zero shift is the own row itself and a forward shift lands one row earlier.
+				if (!offset) {
+					cursor.CopyCell(0, row_idx, result, i);
+					continue;
+				}
+				if (is_lead == (offset > 0)) {
+					--val_idx;
+				}
 			}
 			const auto frame_width = NumericCast<int64_t>(frame.end - frame.start);
 			if (val_idx >= 0 && val_idx < frame_width) {
@@ -727,22 +752,25 @@ void WindowLeadLagExecutor::GetData(ExecutionContext &context, DataChunk &eval_c
 			}
 			offset = leadlag_offset.GetCell<int64_t>(i);
 		}
-		int64_t val_idx = (int64_t)row_idx;
-		if (wexpr.GetExpressionType() == ExpressionType::WINDOW_LEAD) {
-			val_idx = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(val_idx, offset);
-		} else {
-			val_idx = SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(val_idx, offset);
-		}
+		auto val_idx = LeadLagIndex(wexpr.GetExpressionType(), NumericCast<int64_t>(row_idx), offset);
 
 		idx_t delta = 0;
 		if (val_idx < (int64_t)row_idx) {
-			// Count backwards
+			// Count backwards, starting from the last row at or before the own row
 			delta = idx_t(row_idx - idx_t(val_idx));
-			val_idx = int64_t(WindowBoundariesState::FindPrevStart(*ignore_nulls, partition_begin[i], row_idx, delta));
+			const auto lo = partition_begin[i];
+			const auto hi = MinValue(row_idx, partition_end[i]);
+			if (lo < hi) {
+				val_idx = int64_t(WindowBoundariesState::FindPrevStart(*ignore_nulls, lo, hi, delta));
+			}
 		} else if (val_idx > (int64_t)row_idx) {
+			// Count forwards, starting from the first row at or after the own row
 			delta = idx_t(idx_t(val_idx) - row_idx);
-			val_idx =
-			    int64_t(WindowBoundariesState::FindNextStart(*ignore_nulls, row_idx + 1, partition_end[i], delta));
+			const auto lo = MaxValue(row_idx + 1, partition_begin[i]);
+			const auto hi = partition_end[i];
+			if (lo < hi) {
+				val_idx = int64_t(WindowBoundariesState::FindNextStart(*ignore_nulls, lo, hi, delta));
+			}
 		}
 		// else offset is zero, so don't move.
 
@@ -1062,8 +1090,8 @@ public:
 		if (nth_expr && (nth_expr->HasParameter() || !nth_expr->IsFoldable())) {
 			return false;
 		}
-		auto nth_value = ExpressionExecutor::EvaluateScalar(client, *nth_expr);
-		if (nth_value.IsNull()) {
+		Value nth_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *nth_expr, nth_value) || nth_value.IsNull()) {
 			return false;
 		}
 		auto bigint_value = nth_value.DefaultTryCastAs(LogicalType::BIGINT);
@@ -1397,6 +1425,20 @@ static void FillInterpolateFunc(Vector &result, idx_t i, WindowCursor &cursor, i
 	}
 
 	FlatVector::SetNull(result, i, false);
+	if constexpr (std::is_integral<T>::value) {
+		//	The interpolated value lies between the two values, but the double result can round past them
+		const auto lo = MinValue(y0, y1);
+		const auto hi = MaxValue(y0, y1);
+		const auto interpolated = static_cast<double>(y0) + (static_cast<double>(y1) - static_cast<double>(y0)) * slope;
+		if (interpolated <= static_cast<double>(lo)) {
+			data[i] = lo;
+		} else if (interpolated >= static_cast<double>(hi)) {
+			data[i] = hi;
+		} else {
+			data[i] = static_cast<T>(interpolated);
+		}
+		return;
+	}
 	data[i] = InterpolateOperator::Operation<T>(y0, slope, y1);
 }
 
@@ -1428,6 +1470,76 @@ static fill_interpolate_t GetFillInterpolateFunction(const LogicalType &type) {
 		return FillInterpolateFunc<double>;
 	default:
 		throw InternalException("Unsupported FILL interpolation type.");
+	}
+}
+
+//	Interpolation and extrapolation only check the physical type for overflow,
+//	so the results still need to be checked against the range of the logical type
+typedef bool (*fill_validate_t)(Vector &result, idx_t i, const LogicalType &type);
+
+template <int64_t MAX_VALUE>
+static bool FillValidateTime(Vector &result, idx_t i, const LogicalType &type) {
+	const auto value = FlatVector::GetData<int64_t>(result)[i];
+	return value >= 0 && value <= MAX_VALUE;
+}
+
+template <typename T>
+static bool FillValidateDecimal(Vector &result, idx_t i, const LogicalType &type) {
+	const auto value = FlatVector::GetData<T>(result)[i];
+	T limit;
+	if (!TryCast::Operation(Hugeint::POWERS_OF_TEN[DecimalType::GetWidth(type)], limit)) {
+		return true;
+	}
+	return value < limit && value > -limit;
+}
+
+template <typename T>
+static bool FillValidateFinite(Vector &result, idx_t i, const LogicalType &type) {
+	return Value::IsFinite(FlatVector::GetData<T>(result)[i]);
+}
+
+template <int64_t FACTOR>
+static bool FillValidateScaledTimestamp(Vector &result, idx_t i, const LogicalType &type) {
+	//	the value must be representable in microseconds
+	int64_t micros;
+	if (!TryMultiplyOperator::Operation(FlatVector::GetData<int64_t>(result)[i], FACTOR, micros)) {
+		return false;
+	}
+	return Value::IsFinite(timestamp_t(micros));
+}
+
+static fill_validate_t GetFillValidateFunction(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TIME:
+		return FillValidateTime<Interval::MICROS_PER_DAY>;
+	case LogicalTypeId::TIME_NS:
+		return FillValidateTime<Interval::MICROS_PER_DAY * Interval::NANOS_PER_MICRO>;
+	case LogicalTypeId::DATE:
+		return FillValidateFinite<date_t>;
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+		return FillValidateFinite<timestamp_t>;
+	case LogicalTypeId::TIMESTAMP_SEC:
+		return FillValidateScaledTimestamp<Interval::MICROS_PER_SEC>;
+	case LogicalTypeId::TIMESTAMP_MS:
+		return FillValidateScaledTimestamp<Interval::MICROS_PER_MSEC>;
+	case LogicalTypeId::DECIMAL:
+		switch (type.InternalType()) {
+		case PhysicalType::INT16:
+			return FillValidateDecimal<int16_t>;
+		case PhysicalType::INT32:
+			return FillValidateDecimal<int32_t>;
+		case PhysicalType::INT64:
+			return FillValidateDecimal<int64_t>;
+		case PhysicalType::INT128:
+			return FillValidateDecimal<hugeint_t>;
+		default:
+			throw InternalException("Unsupported FILL decimal type.");
+		}
+	default:
+		return nullptr;
 	}
 }
 
@@ -1546,7 +1658,8 @@ void WindowFillExecutor::GetSharing(WindowExecutor &executor, WindowSharedExpres
 	if (arg_order_idx.empty()) {
 		//	We use the range ordering, even if it has not been defined
 		if (executor.range_idx == DConstants::INVALID_INDEX) {
-			D_ASSERT(wexpr.OrderBy().size() == 1);
+			// the first ordering - also when it is shared with an argument ordering that is a prefix of the orderings
+			D_ASSERT(!wexpr.OrderBy().empty());
 			//	We don't need the validity mask because we have also requested the valid range for the ordering.
 			executor.range_idx = shared.RegisterCollection(wexpr.OrderBy()[0].expression, false);
 		}
@@ -1668,7 +1781,15 @@ void WindowFillExecutor::GetData(ExecutionContext &context, DataChunk &eval_chun
 	idx_t next_valid = DConstants::INVALID_INDEX;
 
 	const auto &wexpr = gfstate.executor.wexpr;
-	auto interpolate_func = GetFillInterpolateFunction(wexpr.GetChildren()[0]->GetReturnType());
+	const auto &fill_type = wexpr.GetChildren()[0]->GetReturnType();
+	auto interpolate_func = GetFillInterpolateFunction(fill_type);
+	auto validate_func = GetFillValidateFunction(fill_type);
+	auto interpolate = [&](idx_t i, idx_t lo, idx_t hi, double slope) {
+		interpolate_func(result, i, cursor, lo, hi, slope);
+		if (validate_func && FlatVector::Validity(result).RowIsValid(i) && !validate_func(result, i, fill_type)) {
+			FlatVector::SetNull(result, i, true);
+		}
+	};
 	auto value_func = GetFillValueFunction(wexpr.GetChildren()[0]->GetReturnType());
 
 	//	Secondary sort - use the MSTs
@@ -1779,7 +1900,7 @@ void WindowFillExecutor::GetData(ExecutionContext &context, DataChunk &eval_chun
 			//	Two values, so interpolate
 			//	y = y0 + (y1 - y0) / (x1 - x0) * (x - x0)
 			const auto slope = slope_func(order_cursor, row_idx, prev_valid, next_valid);
-			interpolate_func(result, i, cursor, prev_valid, next_valid, slope);
+			interpolate(i, prev_valid, next_valid, slope);
 		}
 		return;
 	}
@@ -1887,7 +2008,7 @@ void WindowFillExecutor::GetData(ExecutionContext &context, DataChunk &eval_chun
 		//	Two values, so interpolate
 		//	y = y0 + (y1 - y0) / (x1 - x0) * (x - x0)
 		const auto slope = slope_func(order_cursor, row_idx, prev_valid, next_valid);
-		interpolate_func(result, i, cursor, prev_valid, next_valid, slope);
+		interpolate(i, prev_valid, next_valid, slope);
 	}
 }
 

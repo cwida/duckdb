@@ -1,0 +1,167 @@
+# name: test/sql/join/runtime_filter_equivalent_keys.test
+# description: Equivalent inner keys preserve results, cast paths and prepared execution
+# group: [join]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE a AS SELECT i AS id,i%100 AS k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE b AS FROM a;
+
+statement ok
+CREATE TABLE d AS FROM a;
+
+statement ok
+CREATE TABLE c(k BIGINT);
+
+statement ok
+INSERT INTO c VALUES (42);
+
+statement ok
+PREPARE equivalent_window AS SELECT count(*),sum(rn) FROM (
+    SELECT b.k,row_number() OVER (PARTITION BY b.k ORDER BY a.id) rn
+    FROM a JOIN b ON a.id=b.id AND a.k=b.k
+) p JOIN c ON p.k=c.k;
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query II
+EXECUTE equivalent_window;
+----
+100	5050
+
+query II
+SELECT p.k,n FROM (
+    SELECT d.k,count(*) n FROM a JOIN b ON a.id=b.id AND a.k=b.k
+    JOIN d ON b.id=d.id AND b.k=d.k GROUP BY d.k
+) p JOIN c ON p.k=c.k;
+----
+42	100
+
+query I
+SELECT count(*) FROM (SELECT id AS x,k AS y FROM a) a
+JOIN b ON a.x=b.id AND a.y=b.k JOIN c ON b.k=c.k;
+----
+100
+
+query I
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k=b.k AND a.k=b.k
+JOIN c ON b.k=c.k AND a.k=c.k;
+----
+100
+
+query I
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k=b.k
+JOIN c ON TRY_CAST(b.k AS TINYINT)=c.k;
+----
+100
+
+# NULL-safe origin filters can use ordinary equality links.
+query I
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k=b.k
+JOIN c ON b.k IS NOT DISTINCT FROM c.k;
+----
+100
+
+# The NULL-generating input and NULL-safe equality do not create inference links.
+query I
+SELECT count(*) FROM a LEFT JOIN b ON a.id=b.id AND a.k=b.k
+JOIN c ON b.k IS NOT DISTINCT FROM c.k;
+----
+100
+
+query I
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k IS NOT DISTINCT FROM b.k
+JOIN c ON b.k=c.k;
+----
+100
+
+endloop
+
+statement ok
+UPDATE c SET k=99;
+
+query II
+EXECUTE equivalent_window;
+----
+100	5050
+
+statement ok
+DELETE FROM c;
+
+query II
+EXECUTE equivalent_window;
+----
+0	NULL
+
+statement ok
+INSERT INTO c VALUES (42),(NULL);
+
+statement ok
+INSERT INTO a VALUES (10000,NULL);
+
+statement ok
+INSERT INTO b VALUES (10000,NULL);
+
+query II
+EXECUTE equivalent_window;
+----
+100	5050
+
+query I
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k IS NOT DISTINCT FROM b.k
+JOIN c ON b.k IS NOT DISTINCT FROM c.k;
+----
+101
+
+# Filtering equivalent raw keys may hide errors from a later narrowing cast.
+statement ok
+INSERT INTO a VALUES (10001,128);
+
+statement ok
+INSERT INTO b VALUES (10001,128);
+
+statement maybe
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k=b.k JOIN c ON b.k::TINYINT=c.k;
+----
+Type INT64 with value 128 can't be cast because the value is out of range for the destination type INT8
+
+query I
+SELECT count(*) FROM a JOIN b ON a.id=b.id AND a.k=b.k JOIN c ON TRY_CAST(b.k AS TINYINT)=c.k;
+----
+100
+
+# Equality filters retain distinct signed-zero representations and NaN matches.
+statement ok
+CREATE TABLE float_a(id INTEGER,k DOUBLE);
+
+statement ok
+INSERT INTO float_a VALUES (1,'-0.0'),(2,'0.0'),(3,'nan'),(4,NULL);
+
+statement ok
+CREATE TABLE float_b(id INTEGER,k DOUBLE);
+
+statement ok
+INSERT INTO float_b VALUES (1,'0.0'),(2,'-0.0'),(3,'nan'),(4,NULL);
+
+statement ok
+CREATE TABLE float_c(k DOUBLE);
+
+statement ok
+INSERT INTO float_c VALUES ('0.0'),('nan');
+
+query III
+SELECT count(*),count(*) FILTER (WHERE a.k=0 AND signbit(a.k)),
+    count(*) FILTER (WHERE b.k=0 AND signbit(b.k))
+FROM float_a a JOIN float_b b ON a.id=b.id AND a.k=b.k JOIN float_c c ON b.k=c.k;
+----
+3	1	1
+
+statement ok
+RESET disabled_optimizers;

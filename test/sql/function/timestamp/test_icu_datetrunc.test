@@ -67,7 +67,7 @@ query II
 SELECT date_trunc(s, d), s FROM timestamps;
 ----
 -infinity	year
-1000-01-01 00:00:00-07:52	millennium
+1000-01-01 00:00:00-07:52:58	millennium
 1900-01-01 00:00:00-08	century
 1990-01-01 00:00:00-08	decade
 1992-01-01 00:00:00-08	year
@@ -87,7 +87,7 @@ query II
 SELECT datetrunc(s, d), s FROM timestamps;
 ----
 -infinity	year
-1000-01-01 00:00:00-07:52	millennium
+1000-01-01 00:00:00-07:52:58	millennium
 1900-01-01 00:00:00-08	century
 1990-01-01 00:00:00-08	decade
 1992-01-01 00:00:00-08	year
@@ -137,7 +137,7 @@ SELECT date_trunc('quarter', TIMESTAMPTZ '2019-01-06 04:03:02-08') FROM timestam
 query T
 SELECT date_trunc('millennium', TIMESTAMPTZ '1996-01-06 04:03:02-08') FROM timestamps LIMIT 1;
 ----
-1000-01-01 00:00:00-07:52
+1000-01-01 00:00:00-07:52:58
 
 query T
 SELECT date_trunc('century', TIMESTAMPTZ '2019-01-06 04:03:02-08') FROM timestamps LIMIT 1;
@@ -246,3 +246,22 @@ query I
 select date_trunc('day', '2024-05-06 16:09:28+05:00'::timestamptz) >= '2024-05-06 17:19:18+05:20'::date as r
 ----
 True
+
+#
+# Nanoseconds
+#
+query I
+SELECT date_trunc('day', '2026-10-12 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+----
+2026-10-12 00:00:00+00
+
+query I
+SELECT date_trunc('microsecond', '2026-10-12 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+----
+2026-10-12 12:34:56.123456+00
+
+query I
+SELECT date_trunc('microsecond', '1969-12-31 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+----
+1969-12-31 12:34:56.123456+00
+

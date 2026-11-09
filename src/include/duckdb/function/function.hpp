@@ -37,6 +37,7 @@ class ScalarFunction;
 class TableFunctionSet;
 class TableFunction;
 class SimpleFunction;
+class FunctionProperties;
 class WindowFunction;
 class WindowFunctionSet;
 class BoundSimpleFunction;
@@ -47,8 +48,10 @@ struct PragmaInfo;
 enum class FunctionNullHandling : uint8_t { DEFAULT_NULL_HANDLING = 0, SPECIAL_HANDLING = 1 };
 //! The stability of the function, used by the optimizer
 //! CONSISTENT              -> this function always returns the same result when given the same input, no variance
-//! CONSISTENT_WITHIN_QUERY -> this function returns the same result WITHIN the same query/transaction
-//!                            but the result might change across queries (e.g. NOW(), CURRENT_TIME)
+//! CONSISTENT_WITHIN_QUERY -> this function returns the same result for the same input WITHIN the same query, but the
+//!                            result might change across queries (e.g. NOW(), or functions whose bind reads settings
+//!                            such as TimeZone). The optimizer treats it as consistent, statements that call it are
+//!                            bound again at every execution, and index keys cannot contain it
 //! VOLATILE                -> the result of this function might change per row (e.g. RANDOM())
 enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTENT_WITHIN_QUERY = 2 };
 
@@ -56,10 +59,14 @@ enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTEN
 //! PROPAGATE_COLLATIONS        -> this function combines collation from its inputs and emits them again (default)
 //! PUSH_COMBINABLE_COLLATIONS  -> combinable collations are executed for the input arguments
 //! IGNORE_COLLATIONS           -> collations are completely ignored by the function
+//! PUSH_DISTINCT_COLLATIONS    -> aggregate DISTINCT arguments are replaced by their comparison keys
+//!                               Only valid for aggregates that can consume keys instead of original values.
+//!                               Ordinary (non-DISTINCT) calls keep their original arguments.
 enum class FunctionCollationHandling : uint8_t {
 	PROPAGATE_COLLATIONS = 0,
 	PUSH_COMBINABLE_COLLATIONS = 1,
-	IGNORE_COLLATIONS = 2
+	IGNORE_COLLATIONS = 2,
+	PUSH_DISTINCT_COLLATIONS = 3
 };
 
 struct FunctionData {
@@ -480,6 +487,9 @@ private:
 	QualifiedName qualified_name;
 };
 
+//! The kinds of functions that are selected by their arguments - every subclass of SimpleFunction is one kind
+enum class FunctionKind : uint8_t { SCALAR, AGGREGATE, WINDOW, TABLE, PRAGMA, TYPE };
+
 class SimpleFunction : public Function {
 public:
 	DUCKDB_API SimpleFunction(Identifier name, FunctionSignature signature);
@@ -491,8 +501,15 @@ protected:
 	FunctionSignature signature;
 
 public:
-	DUCKDB_API string ToString() const;
+	//! How the function reads in errors, e.g. as a candidate of a call
+	DUCKDB_API virtual string ToString() const;
+	//! What kind of function this is
+	virtual FunctionKind GetKind() const = 0;
 	DUCKDB_API hash_t Hash() const;
+	//! The properties of scalar, aggregate and window functions - other functions have none
+	virtual auto GetFunctionProperties() const -> optional_ptr<const FunctionProperties> {
+		return nullptr;
+	}
 
 	FunctionSignature &GetSignature() {
 		return signature;
@@ -681,9 +698,8 @@ public:
 class BindFunctionInput {
 public:
 	BindFunctionInput(ClientContext &context_p, const BoundSimpleFunction &function_p,
-	                  vector<unique_ptr<Expression>> &arguments_p,
-	                  optional_ptr<const vector<Identifier>> argument_names_p)
-	    : context(context_p), function(function_p), arguments(arguments_p), argument_names(argument_names_p) {
+	                  const FunctionSignature &signature_p, vector<unique_ptr<Expression>> &arguments_p)
+	    : context(context_p), function(function_p), signature(signature_p), arguments(arguments_p) {
 	}
 
 	ClientContext &GetClientContext() const {
@@ -692,10 +708,9 @@ public:
 	vector<unique_ptr<Expression>> &GetArguments() const {
 		return arguments;
 	}
-	//! The resolved name of every argument, parallel to GetArguments(). Not set if the names are unavailable.
-	optional_ptr<const vector<Identifier>> GetArgumentNames() const {
-		return argument_names;
-	}
+	//! The resolved name of an argument: the parameter name for standard and keyword-only parameters, the name the
+	//! caller wrote for "**kwargs", and an empty name for "*args"
+	DUCKDB_API const Identifier &GetArgumentName(idx_t arg_idx) const;
 
 	//! Get the constant value of an argument.
 	//! Throws ParameterNotResolvedException if unresolved, and BinderException for non-constant arguments.
@@ -712,10 +727,11 @@ public:
 	}
 
 	//! Try to get the constant value of an argument.
-	//! Never throws: returns none if the argument...
+	//! Returns none if the argument...
 	//! - is not constant (unresolved parameter or a non-foldable expression)
 	//! - index is out of range
 	//! - was not found when looking up by name
+	//! - raises an evaluation error (internal errors still propagate)
 	//! Use this when a non-constant argument should fall back to the runtime value instead of being an error.
 	DUCKDB_API optional<Value> TryGetConstant(idx_t arg_idx) const;
 	DUCKDB_API optional<Value> TryGetConstant(const Identifier &name) const;
@@ -727,8 +743,8 @@ private:
 private:
 	ClientContext &context;
 	const BoundSimpleFunction &function;
+	const FunctionSignature &signature;
 	vector<unique_ptr<Expression>> &arguments;
-	optional_ptr<const vector<Identifier>> argument_names;
 };
 
 } // namespace duckdb

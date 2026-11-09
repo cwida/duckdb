@@ -8,6 +8,11 @@
 
 namespace duckdb {
 
+void Bignum::ThrowInvalidBlobSize(idx_t size) {
+	throw DataCorruptionException("Invalid BIGNUM blob: size %llu is smaller than the minimum of %llu bytes",
+	                              static_cast<uint64_t>(size), static_cast<uint64_t>(BIGNUM_HEADER_SIZE + 1));
+}
+
 void Bignum::Verify(const bignum_t &input) {
 #ifdef DEBUG
 	// Size must be >= 4
@@ -101,29 +106,8 @@ char Bignum::DigitToChar(int digit) {
 }
 
 static bool ShouldRoundDecimalDigits(const char *data, idx_t decimal_start, idx_t decimal_end) {
-	if (decimal_start >= decimal_end) {
-		return false;
-	}
-	uint64_t decimal = 0;
-	uint16_t decimal_digits = 0;
-	for (idx_t pos = decimal_start; pos < decimal_end; pos++) {
-		auto digit = UnsafeNumericCast<uint8_t>(data[pos] - '0');
-		if (decimal > (NumericLimits<uint64_t>::Maximum() - digit) / 10) {
-			for (; pos < decimal_end; pos++) {
-				if (data[pos] != '0') {
-					return true;
-				}
-			}
-			break;
-		}
-		decimal_digits++;
-		decimal = decimal * 10 + digit;
-	}
-	while (decimal > 10) {
-		decimal /= 10;
-		decimal_digits--;
-	}
-	return decimal_digits == 1 && decimal >= 5;
+	// the fraction is at least 0.5 exactly when its first digit is at least 5
+	return decimal_start < decimal_end && data[decimal_start] >= '5';
 }
 
 static void IncrementDecimalString(string &digits) {
@@ -558,11 +542,8 @@ bool Bignum::BignumToDouble(const bignum_t &blob, double &result, bool &strict) 
 	if (is_negative) {
 		result *= -1;
 	}
-	if (!std::isfinite(result)) {
-		// We throw an error
-		throw ConversionException("Could not convert bignum '%s' to Double", BignumToVarchar(blob));
-	}
-	return true;
+	// the value does not fit in a double
+	return std::isfinite(result);
 }
 
 } // namespace duckdb

@@ -516,10 +516,9 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 				}
 			}
 		}
-		auto client_context = context.GetClientContext();
-		if (client_context) {
-			auto &profiler = *client_context->client_data->profiler;
-			profiler.AddToMetricCounter(MetricStorageWALReplayEntryCount::Name, replay_entry_count);
+		auto profiler = Context::TryGetQueryProfiler(context.GetServices());
+		if (profiler) {
+			profiler->AddToMetricCounter(MetricStorageWALReplayEntryCount::Name, replay_entry_count);
 		}
 	} catch (std::exception &ex) { // LCOV_EXCL_START
 		ErrorData error(ex);
@@ -925,6 +924,10 @@ void WriteAheadLogDeserializer::ReplayIndexData(IndexStorageInfo &info) {
 
 		// Read the data into buffer handles and convert them to blocks on disk.
 		for (idx_t j = 0; j < data_info.allocation_sizes.size(); j++) {
+			if (data_info.allocation_sizes[j] > block_manager->GetBlockSize()) {
+				throw DataCorruptionException("Corrupt WAL: index allocation size (%llu) exceeds the block size (%llu)",
+				                              data_info.allocation_sizes[j], block_manager->GetBlockSize());
+			}
 			// Read the data into a buffer handle.
 			auto buffer_handle = buffer_manager.Allocate(MemoryTag::ART_INDEX, block_manager.get(), false);
 			auto block_handle = buffer_handle.GetBlockHandle();
@@ -1135,7 +1138,7 @@ void WriteAheadLogDeserializer::ReplayDropTrigger() {
 		return;
 	}
 	if (table_name.empty()) {
-		throw InternalException("WAL replay: DROP TRIGGER entry has an empty table name for trigger \"%s\"",
+		throw InternalException("WAL replay: DROP TRIGGER entry has an empty table name for trigger %s",
 		                        info.GetQualifiedName().Name());
 	}
 	// the trigger lives in the same (possibly nested) schema as its base table
@@ -1181,6 +1184,11 @@ void WriteAheadLogDeserializer::ReplaySequenceValue() {
 	// fetch the sequence from the catalog
 	auto &seq = catalog.GetEntry<SequenceCatalogEntry>(context, ReplayEntryName(catalog, entry.qualified_name));
 	seq.ReplayValue(entry.usage_count, entry.counter, entry.last_value);
+	auto &storage_manager = db.GetStorageManager();
+	if (storage_manager.HasStorageVersion() &&
+	    StorageManager::IsPriorToVersion(StorageVersion::V2_0_0, storage_manager.GetStorageVersion())) {
+		seq.DeriveLastValue();
+	}
 }
 
 //===--------------------------------------------------------------------===//

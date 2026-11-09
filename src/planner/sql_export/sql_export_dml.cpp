@@ -16,6 +16,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_delete.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
+#include "duckdb/planner/operator/logical_copy_to_file.hpp"
 #include "duckdb/planner/operator/logical_merge_into.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
@@ -28,18 +29,48 @@ static LogicalPlanVerificationIssue UnsupportedDML(const LogicalPlanVerification
 	return LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(path, std::move(feature), std::move(message));
 }
 
-//! The single row-id column SQL can reference on the modified table; multi-column row ids have no SQL name,
-//! and a physical column with the row-id name would capture the generated references.
-static LogicalPlanVerificationResult<Identifier> ExportedRowIdName(const TableCatalogEntry &table,
-                                                                   const LogicalPlanVerificationPath &path) {
+struct ExportedRowId {
+	Identifier name;
+	//! Index of the key column within the row-id columns the binder appends to the source
+	idx_t ordinal;
+	//! Number of appended row-id columns
+	idx_t count;
+};
+
+//! The row-id column SQL can reference on the modified table. A single row-id column is the key by
+//! itself. Among several, only the logical row identifier can key the generated statement: the
+//! remaining columns are physical coordinates, not identity. Row-id sets without such a key have no
+//! SQL form, and a physical column with the row-id name would capture the generated references.
+static LogicalPlanVerificationResult<ExportedRowId> ExportedRowIdName(const TableCatalogEntry &table,
+                                                                      const LogicalPlanVerificationPath &path) {
 	auto row_id_columns = table.GetRowIdColumns();
 	auto virtual_columns = table.GetVirtualColumns();
-	auto entry = row_id_columns.size() == 1 ? virtual_columns.find(row_id_columns[0]) : virtual_columns.end();
-	if (entry == virtual_columns.end() || table.ColumnExists(entry->second.name)) {
-		return LogicalPlanVerificationResult<Identifier>::Failure(
-		    {UnsupportedDML(path, "dml_row_id", "The modified table does not expose a single named row-id column")});
+	optional<column_t> selected;
+	idx_t ordinal = 0;
+	if (row_id_columns.size() == 1) {
+		selected = row_id_columns[0];
+	} else {
+		for (idx_t i = 0; i < row_id_columns.size(); i++) {
+			if (row_id_columns[i] == COLUMN_IDENTIFIER_ROW_ID) {
+				selected = row_id_columns[i];
+				ordinal = i;
+				break;
+			}
+		}
 	}
-	return LogicalPlanVerificationResult<Identifier>::Success(Identifier(entry->second.name));
+	optional_ptr<const TableColumn> column;
+	if (selected) {
+		auto entry = virtual_columns.find(*selected);
+		if (entry != virtual_columns.end()) {
+			column = &entry->second;
+		}
+	}
+	if (!column || table.ColumnExists(column->name)) {
+		return LogicalPlanVerificationResult<ExportedRowId>::Failure(
+		    {UnsupportedDML(path, "dml_row_id", "The modified table does not expose an exportable row-id column")});
+	}
+	return LogicalPlanVerificationResult<ExportedRowId>::Success(
+	    {Identifier(column->name), ordinal, row_id_columns.size()});
 }
 
 static unique_ptr<TableRef> ModifiedTableRef(const TableCatalogEntry &table) {
@@ -89,9 +120,9 @@ static LogicalPlanSQLExportResult ExportDeleteNode(LogicalDelete &op, LogicalPla
 		return LogicalPlanSQLExportResult::Failure(
 		    {UnsupportedDML(path, "dml_source", "DELETE without a source relation cannot be exported")});
 	}
-	auto row_id_name = ExportedRowIdName(op.table, path);
-	if (row_id_name.HasError()) {
-		return LogicalPlanSQLExportResult::Failure(row_id_name);
+	auto row_id = ExportedRowIdName(op.table, path);
+	if (row_id.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(row_id);
 	}
 	auto fields = LogicalPlanSQLExportHelpers::CreateFields(op, path);
 	if (fields.HasError()) {
@@ -101,7 +132,7 @@ static LogicalPlanSQLExportResult ExportDeleteNode(LogicalDelete &op, LogicalPla
 	optional_ptr<const BoundColumnRefExpression> row_id_reference;
 	bool ambiguous = false;
 	for (auto &expression : op.expressions) {
-		if (expression->GetAlias() != row_id_name.GetValue()) {
+		if (expression->GetAlias() != row_id.GetValue().name) {
 			continue;
 		}
 		ambiguous |= static_cast<bool>(row_id_reference);
@@ -139,7 +170,7 @@ static LogicalPlanSQLExportResult ExportDeleteNode(LogicalDelete &op, LogicalPla
 	subquery->SubqueryMutable()->node = std::move(select);
 	subquery->GetSubqueryTypeMutable() = SubqueryType::ANY;
 	subquery->GetComparisonTypeMutable() = ExpressionType::COMPARE_EQUAL;
-	subquery->GetChildMutable() = make_uniq<ColumnRefExpression>(row_id_name.GetValue());
+	subquery->GetChildMutable() = make_uniq<ColumnRefExpression>(row_id.GetValue().name);
 	auto node = make_uniq<DeleteQueryNode>();
 	node->table = ModifiedTableRef(op.table);
 	node->condition = std::move(subquery);
@@ -152,9 +183,9 @@ static LogicalPlanSQLExportResult ExportUpdateNode(LogicalUpdate &op, LogicalPla
 		return LogicalPlanSQLExportResult::Failure(
 		    {UnsupportedDML(path, "dml_source", "UPDATE without a source relation cannot be exported")});
 	}
-	auto row_id_name = ExportedRowIdName(op.table, path);
-	if (row_id_name.HasError()) {
-		return LogicalPlanSQLExportResult::Failure(row_id_name);
+	auto row_id = ExportedRowIdName(op.table, path);
+	if (row_id.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(row_id);
 	}
 	auto fields = LogicalPlanSQLExportHelpers::CreateFields(op, path);
 	if (fields.HasError()) {
@@ -167,12 +198,13 @@ static LogicalPlanSQLExportResult ExportUpdateNode(LogicalUpdate &op, LogicalPla
 		return LogicalPlanSQLExportResult::Failure(child);
 	}
 	auto &child_fields = child.GetValue().relation.fields;
-	if (op.expressions.size() != op.columns.size() || child_fields.size() <= op.columns.size()) {
+	auto row_id_count = row_id.GetValue().count;
+	if (op.expressions.size() != op.columns.size() || child_fields.size() < op.columns.size() + row_id_count) {
 		return LogicalPlanSQLExportResult::Failure(
 		    {UnsupportedDML(path, "dml_row_id", "The updated row-id column was not found in the exported source")});
 	}
-	// The bound source keeps the row id as its final column.
-	auto row_id_field = child_fields.size() - 1;
+	// The bound source keeps every row-id column as its final columns, the selected key among them.
+	auto row_id_field = child_fields.size() - row_id_count + row_id.GetValue().ordinal;
 	auto expression_context =
 	    LogicalPlanSQLExportHelpers::CreateBindingContext(context.GetClientContext(), {child.GetValue()});
 	vector<reference<const Expression>> set_expressions;
@@ -189,7 +221,7 @@ static LogicalPlanSQLExportResult ExportUpdateNode(LogicalUpdate &op, LogicalPla
 		set_info->expressions.push_back(std::move(exported.GetValue()));
 	}
 	set_info->condition = make_uniq<ComparisonExpression>(
-	    ExpressionType::COMPARE_EQUAL, make_uniq<ColumnRefExpression>(row_id_name.GetValue(), op.table.name),
+	    ExpressionType::COMPARE_EQUAL, make_uniq<ColumnRefExpression>(row_id.GetValue().name, op.table.name),
 	    LogicalPlanSQLExportHelpers::ChildColumn(child.GetValue(), row_id_field));
 	auto node = make_uniq<UpdateQueryNode>();
 	node->table = ModifiedTableRef(op.table);
@@ -213,9 +245,9 @@ static LogicalPlanSQLExportResult ExportMergeNode(LogicalMergeInto &op, LogicalP
 		    {UnsupportedDML(path, "merge_not_matched_by_source",
 		                    "WHEN NOT MATCHED BY SOURCE actions cannot be keyed by the exported row id")});
 	}
-	auto row_id_name = ExportedRowIdName(op.table, path);
-	if (row_id_name.HasError()) {
-		return LogicalPlanSQLExportResult::Failure(row_id_name);
+	auto row_id = ExportedRowIdName(op.table, path);
+	if (row_id.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(row_id);
 	}
 	auto fields = LogicalPlanSQLExportHelpers::CreateFields(op, path);
 	if (fields.HasError()) {
@@ -227,8 +259,8 @@ static LogicalPlanSQLExportResult ExportMergeNode(LogicalMergeInto &op, LogicalP
 	if (child.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(child);
 	}
-	// The bound source keeps the row id as its final column, after every action input.
-	if (op.row_id_start + 1 != child.GetValue().relation.fields.size()) {
+	// The bound source keeps every row-id column as its final columns, after every action input.
+	if (op.row_id_start + row_id.GetValue().count != child.GetValue().relation.fields.size()) {
 		return LogicalPlanSQLExportResult::Failure(
 		    {UnsupportedDML(path, "dml_row_id", "The merged row-id column was not found in the exported source")});
 	}
@@ -249,8 +281,8 @@ static LogicalPlanSQLExportResult ExportMergeNode(LogicalMergeInto &op, LogicalP
 	auto node = make_uniq<MergeQueryNode>();
 	node->target = ModifiedTableRef(op.table);
 	node->join_condition = make_uniq<ComparisonExpression>(
-	    ExpressionType::COMPARE_EQUAL, make_uniq<ColumnRefExpression>(row_id_name.GetValue(), op.table.name),
-	    LogicalPlanSQLExportHelpers::ChildColumn(child.GetValue(), op.row_id_start));
+	    ExpressionType::COMPARE_EQUAL, make_uniq<ColumnRefExpression>(row_id.GetValue().name, op.table.name),
+	    LogicalPlanSQLExportHelpers::ChildColumn(child.GetValue(), op.row_id_start + row_id.GetValue().ordinal));
 	idx_t input_ordinal = 0;
 	auto export_input = [&]() {
 		return context.ExportExpression(op, action_inputs, input_ordinal++, expression_context, path);
@@ -342,6 +374,9 @@ static optional<LogicalPlanVerificationIssue> DMLStatementIssue(const LogicalOpe
 	case LogicalOperatorType::LOGICAL_MERGE_INTO:
 		return_chunk = op.Cast<LogicalMergeInto>().return_chunk;
 		break;
+	case LogicalOperatorType::LOGICAL_COPY_TO_FILE:
+		return_chunk = false;
+		break;
 	default:
 		return_chunk = op.Cast<LogicalDelete>().return_chunk;
 		break;
@@ -410,9 +445,26 @@ bool SQLExportDMLHelpers::MatchDMLBody(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_UPDATE:
 	case LogicalOperatorType::LOGICAL_DELETE:
 	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+	case LogicalOperatorType::LOGICAL_COPY_TO_FILE:
 		return true;
 	default:
 		return MatchReturningRoot(op) || IsIdentityProjectionOverDML(op);
+	}
+}
+
+bool SQLExportDMLHelpers::ContainsReplacedBoundary(const LogicalPlanSQLExportContext &context, LogicalOperator &op) {
+	reference<LogicalOperator> current(op);
+	while (true) {
+		if (context.FindSource(current)) {
+			return true;
+		}
+		auto &node = current.get();
+		if (node.type == LogicalOperatorType::LOGICAL_PROJECTION && node.children.size() == 1 &&
+		    MatchDMLBody(*node.children[0])) {
+			current = *node.children[0];
+			continue;
+		}
+		return false;
 	}
 }
 
@@ -422,6 +474,8 @@ bool SQLExportDMLHelpers::IsDMLNode(const QueryNode &query) {
 	case QueryNodeType::UPDATE_QUERY_NODE:
 	case QueryNodeType::DELETE_QUERY_NODE:
 	case QueryNodeType::MERGE_QUERY_NODE:
+	case QueryNodeType::COPY_QUERY_NODE:
+	case QueryNodeType::STATEMENT_NODE:
 		return true;
 	default:
 		return false;
@@ -459,6 +513,8 @@ LogicalPlanSQLExportResult SQLExportDMLHelpers::ExportBody(LogicalPlanSQLExportC
 		return ExportUpdateNode(op.Cast<LogicalUpdate>(), context, path);
 	case LogicalOperatorType::LOGICAL_MERGE_INTO:
 		return ExportMergeNode(op.Cast<LogicalMergeInto>(), context, path);
+	case LogicalOperatorType::LOGICAL_COPY_TO_FILE:
+		return SQLExportStatementHelpers::ExportCopyToNode(op.Cast<LogicalCopyToFile>(), context, path);
 	default:
 		return ExportDeleteNode(op.Cast<LogicalDelete>(), context, path);
 	}

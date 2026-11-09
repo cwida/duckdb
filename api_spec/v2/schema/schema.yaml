@@ -17,7 +17,7 @@ handles:
 functions:
   schema_get_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: "Returns the number of fields in a schema."
     role: getter
     belongs_to: schema
@@ -38,7 +38,7 @@ functions:
     return_type: ERROR
   schema_get_field:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the name and type of the field at the given index.
 
@@ -72,7 +72,7 @@ functions:
     return_type: ERROR
   schema_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a schema handle.
 

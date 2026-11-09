@@ -296,6 +296,7 @@ AggregateFunction CountFunctionBase::GetFunction() {
 	fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
 	fun.SetName("count");
 	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	fun.SetCollationHandling(FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS);
 	fun.SetStructStateExport(GetCountStateType);
 	fun.SetStatisticsCallback(CountPropagateStats);
 	return fun;

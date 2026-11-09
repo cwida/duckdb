@@ -1,0 +1,19 @@
+# name: test/sql/types/variant/variant_cast_parameter_stats.test
+# description: Casting a VARIANT prepared statement parameter in a filter
+# group: [variant]
+
+statement ok
+CREATE TABLE tbl AS SELECT concat('thisisastring', i) s FROM range(1000) t(i);
+
+statement ok
+PREPARE p AS FROM tbl WHERE s LIKE $1::VARIANT LIMIT 5;
+
+query I
+EXECUTE p('thisisastring99')
+----
+thisisastring99
+
+query I
+SELECT count(*) FROM tbl WHERE s LIKE 'thisisastring1%'::VARIANT
+----
+111

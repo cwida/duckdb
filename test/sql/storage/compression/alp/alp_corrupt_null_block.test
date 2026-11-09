@@ -1,0 +1,27 @@
+# name: test/sql/storage/compression/alp/alp_corrupt_null_block.test
+# description: Reject an ALP data segment without a backing block
+# group: [alp]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/alp_corrupt_null_block.db.gz {TEST_DIR}/alp_corrupt_null_block.db
+
+load {TEST_DIR}/alp_corrupt_null_block.db readonly
+
+statement ok
+USE alp_corrupt_null_block
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Persistent ALP segment is missing its data block
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Persistent ALP segment is missing its data block

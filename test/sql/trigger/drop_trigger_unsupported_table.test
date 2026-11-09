@@ -1,0 +1,22 @@
+# name: test/sql/trigger/drop_trigger_unsupported_table.test
+# description: DROP TRIGGER IF EXISTS on a table type without trigger support is a no-op
+# group: [trigger]
+
+require sqlite_scanner
+
+statement ok
+LOAD sqlite_scanner;
+
+statement ok
+ATTACH ':memory:' AS sqlite_db (TYPE SQLITE);
+
+statement ok
+CREATE TABLE sqlite_db.my_ext_table (id INTEGER);
+
+statement ok
+DROP TRIGGER IF EXISTS trg_missing ON sqlite_db.my_ext_table;
+
+statement error
+DROP TRIGGER trg_missing ON sqlite_db.my_ext_table;
+----
+Trigger with name "trg_missing" does not exist on table "my_ext_table"

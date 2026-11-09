@@ -1,0 +1,23 @@
+# name: test/sql/function/list/list_resize_variant.test
+# description: Test list_resize and array_resize on VARIANT arguments
+# group: [list]
+
+statement error
+SELECT list_resize([1,2,3]::VARIANT, 5);
+----
+Binder Error: "list_resize" can only operate on LISTs
+
+statement error
+SELECT list_resize([1]::VARIANT, 2, 0);
+----
+Binder Error: "list_resize" can only operate on LISTs
+
+statement error
+SELECT array_resize([1,2,3]::VARIANT, 5);
+----
+Binder Error: "array_resize" can only operate on LISTs
+
+query I
+SELECT list_resize([1,2,3], 5);
+----
+[1, 2, 3, NULL, NULL]

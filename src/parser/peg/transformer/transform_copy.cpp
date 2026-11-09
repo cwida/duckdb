@@ -40,7 +40,9 @@ void SetCopyOptions(unique_ptr<CopyInfo> &info, vector<GenericCopyOption> &optio
 				info->parsed_options[option.name] = std::move(row_func);
 			}
 		} else if (option.name == "HEADER" || option.name == "ESCAPE") {
-			if (option.children.empty()) {
+			if (option.expression) {
+				info->parsed_options[option.name] = std::move(option.expression);
+			} else if (option.children.empty()) {
 				info->parsed_options[option.name] = nullptr;
 			} else {
 				info->parsed_options[option.name] = ConstantExpression::FromValue(option.children[0]);
@@ -132,6 +134,7 @@ unique_ptr<SQLStatement>
 PEGTransformerFactory::TransformCopyTable(PEGTransformer &transformer, unique_ptr<BaseTableRef> base_table_name,
                                           const optional<vector<string>> &insert_column_list, const bool &from_or_to,
                                           unique_ptr<ParsedExpression> copy_file_name,
+                                          const optional<GenericCopyOption> &legacy_option,
                                           const optional<vector<GenericCopyOption>> &copy_options) {
 	auto result = make_uniq<CopyStatement>();
 	auto info = make_uniq<CopyInfo>();
@@ -149,8 +152,17 @@ PEGTransformerFactory::TransformCopyTable(PEGTransformer &transformer, unique_pt
 	}
 	info->format = ExtractFormat(info->file_path);
 
+	vector<GenericCopyOption> generic_options;
+
+	if (legacy_option) {
+		generic_options.push_back(*legacy_option);
+	}
+
 	if (copy_options) {
-		auto generic_options = *copy_options;
+		generic_options.insert(generic_options.end(), copy_options->begin(), copy_options->end());
+	}
+
+	if (!generic_options.empty()) {
 		SetCopyOptions(info, generic_options);
 	}
 
@@ -173,8 +185,13 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformCopyFileNameStringL
 
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformCopyFileNameIdentifier(PEGTransformer &transformer,
                                                                                     const Identifier &identifier) {
-	string file_name = identifier == "stdout" ? "/dev/stdout" : identifier.GetIdentifierName();
-	return ConstantExpression::String(file_name);
+	if (identifier == "stdin") {
+		return ConstantExpression::String("/dev/stdin");
+	}
+	if (identifier == "stdout") {
+		return ConstantExpression::String("/dev/stdout");
+	}
+	return ConstantExpression::String(identifier.GetIdentifierName());
 }
 
 unique_ptr<ParsedExpression>
@@ -191,6 +208,11 @@ Identifier PEGTransformerFactory::TransformIdentifierColId(PEGTransformer &trans
 		result += suffix.GetIdentifierName();
 	}
 	return Identifier(result);
+}
+
+GenericCopyOption PEGTransformerFactory::TransformCopyLegacyOption(PEGTransformer &transformer, const bool &has_result,
+                                                                   const string &delimiter) {
+	return GenericCopyOption("delimiter", delimiter);
 }
 
 vector<GenericCopyOption>

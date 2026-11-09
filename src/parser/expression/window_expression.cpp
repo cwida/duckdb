@@ -144,6 +144,10 @@ void WindowExpression::Serialize(Serializer &serializer) const {
 		// the catalog/schema properties above cannot represent a nested schema path
 		serializer.WriteProperty<QualifiedName>(219, "qualified_name", qualified_name);
 	}
+
+	if (serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		serializer.WritePropertyWithDefault<bool>(220, "is_legacy_function_call", is_legacy_function_call);
+	}
 }
 
 unique_ptr<ParsedExpression> WindowExpression::Deserialize(Deserializer &deserializer) {
@@ -191,6 +195,12 @@ unique_ptr<ParsedExpression> WindowExpression::Deserialize(Deserializer &deseria
 	    deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(219, "qualified_name", QualifiedName());
 	if (!qualified_name.Path().empty()) {
 		result->SetQualifiedName(std::move(qualified_name));
+	}
+
+	bool is_legacy_function_call = false;
+	deserializer.ReadPropertyWithDefault<bool>(220, "is_legacy_function_call", is_legacy_function_call);
+	if (is_legacy_function_call) {
+		result->is_legacy_function_call = true;
 	}
 
 	return std::move(result);

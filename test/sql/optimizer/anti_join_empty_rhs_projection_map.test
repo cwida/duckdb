@@ -1,0 +1,82 @@
+# name: test/sql/optimizer/anti_join_empty_rhs_projection_map.test
+# description: Issue #27091: an ANTI join whose right side becomes empty during filter pushdown must keep its output layout
+# group: [optimizer]
+
+# the row counts drive the plan: the join with t_big on i and a correlated IN on (i, g) under an ANTI join on dec
+statement ok
+CREATE TABLE t_del(i BIGINT, i32 INTEGER, tsz TIMESTAMPTZ);
+
+statement ok
+INSERT INTO t_del VALUES (0, -50000, '2020-01-01 00:00:00+00'), (1, -42081, '2020-01-01 00:00:01+00'), (2, -34162, '2020-01-01 00:00:02+00'), (5, NULL, '2020-01-01 00:00:05+00'), (6, -2486, '2020-01-01 00:00:06+00'), (7, 5433, '2020-01-01 00:00:07+00'), (8, 13352, '2020-01-01 00:00:08+00'), (9, 21271, '2020-01-01 00:00:09+00'), (10, 29190, '2020-01-01 00:00:10+00'), (11, 37109, '2020-01-01 00:00:11+00'), (12, 45028, '2020-01-01 00:00:12+00'), (15, -31218, '2020-01-01 00:00:15+00'), (16, NULL, '2020-01-01 00:00:16+00'), (17, -15380, '2020-01-01 00:00:17+00'), (18, -7461, '2020-01-01 00:00:18+00'), (19, 458, '2020-01-01 00:00:19+00'), (20, 8377, '2020-01-01 00:00:20+00'), (21, 16296, '2020-01-01 00:00:21+00'), (23, 32134, '2020-01-01 00:00:23+00'), (24, 40053, '2020-01-01 00:00:24+00'), (26, -44112, '2020-01-01 00:00:26+00'), (27, NULL, '2020-01-01 00:00:27+00'), (28, -28274, '2020-01-01 00:00:28+00'), (29, -20355, '2020-01-01 00:00:29+00'), (30, -12436, '2020-01-01 00:00:30+00'), (32, 3402, '2020-01-01 00:00:32+00'), (33, 11321, '2020-01-01 00:00:33+00'), (34, 19240, '2020-01-01 00:00:34+00'), (35, 27159, NULL), (37, 42997, '2020-01-01 00:00:37+00'), (38, NULL, '2020-01-01 00:00:38+00'), (39, -41168, '2020-01-01 00:00:39+00'), (41, -25330, '2020-01-01 00:00:41+00'), (42, -17411, '2020-01-01 00:00:42+00'), (43, -9492, '2020-01-01 00:00:43+00'), (44, -1573, '2020-01-01 00:00:44+00'), (45, 6346, '2020-01-01 00:00:45+00'), (46, 14265, '2020-01-01 00:00:46+00'), (48, 30103, '2020-01-01 00:00:48+00'), (50, 45941, '2020-01-01 00:00:50+00'), (51, -46143, '2020-01-01 00:00:51+00'), (52, -38224, '2020-01-01 00:00:52+00'), (53, -30305, '2020-01-01 00:00:53+00'), (54, -22386, '2020-01-01 00:00:54+00'), (55, -14467, '2020-01-01 00:00:55+00'), (56, -6548, '2020-01-01 00:00:56+00'), (57, 1371, '2020-01-01 00:00:57+00'), (59, 17209, '2020-01-01 00:00:59+00'), (60, NULL, '2020-01-01 00:01:00+00'), (61, 33047, '2020-01-01 00:01:01+00');
+
+statement ok
+CREATE TABLE t_big(i BIGINT, dec DECIMAL(18,3), g BIGINT);
+
+statement ok
+INSERT INTO t_big VALUES (4, -614.508, 4), (5, -614.385, 5), (6, -614.262, 6), (7, -614.139, 0), (8, -614.016, 1), (9, -613.893, 2), (12, -613.524, 5), (13, -613.401, 6), (14, -613.278, 0), (15, -613.155, 1), (16, -613.032, 2), (17, -612.909, 3), (18, -612.786, 4), (19, -612.663, 5), (20, NULL, 6), (21, -612.417, 0), (22, -612.294, 1), (23, -612.171, 2), (24, -612.048, 3), (25, -611.925, 4), (26, -611.802, 5), (27, -611.679, 6), (28, -611.556, 0), (29, -611.433, 1), (30, -611.310, 2), (31, -611.187, 3), (32, -611.064, 4), (33, -610.941, 5), (34, -610.818, 6), (35, -610.695, 0), (36, -610.572, 1), (37, -610.449, 2), (38, -610.326, 3), (39, -610.203, 4), (40, -610.080, 5), (41, -609.957, 6), (42, -609.834, 0), (43, -609.711, 1), (44, -609.588, 2), (45, -609.465, 3), (46, -609.342, 4), (47, -609.219, 5), (48, -609.096, 6), (49, -608.973, 0), (50, -608.850, 1), (51, -608.727, 2), (52, -608.604, 3), (53, -608.481, NULL), (54, -608.358, 5), (55, -608.235, 6), (56, -608.112, 0);
+
+# k is only ever 1: the ANTI join condition k = 1000 is proven false by the statistics
+statement ok
+CREATE TABLE t_mid(dec DECIMAL(18,3), k BIGINT);
+
+statement ok
+INSERT INTO t_mid VALUES (-615.000, 1);
+
+statement ok
+CREATE TABLE t_small(i BIGINT, g BIGINT);
+
+statement ok
+INSERT INTO t_small VALUES (0, 0);
+
+# the IN never matches either: no row of t_big has i = 0
+query I
+SELECT t1.i32
+FROM t_del t1
+JOIN t_big t2 ON t1.i = t2.i
+ANTI JOIN t_mid t3 ON t2.dec = t3.dec AND t3.k = 1000
+WHERE t1.tsz IS NULL
+  AND t2.i IN (SELECT i FROM t_small WHERE g = t2.g);
+----
+
+query I
+SELECT t1.i32
+FROM t_del t1
+JOIN t_big t2 ON t1.i = t2.i
+ANTI JOIN t_mid t3 ON t2.dec = t3.dec AND t3.k = 1000
+WHERE t1.tsz IS NULL
+  AND EXISTS (SELECT 1 FROM t_small s WHERE s.g = t2.g AND s.i = t2.i);
+----
+
+# the only t_del row with a NULL tsz is i = 35, which matches t_big (35, -610.695, 0)
+statement ok
+INSERT INTO t_small VALUES (35, 0);
+
+query I
+SELECT t1.i32
+FROM t_del t1
+JOIN t_big t2 ON t1.i = t2.i
+ANTI JOIN t_mid t3 ON t2.dec = t3.dec AND t3.k = 1000
+WHERE t1.tsz IS NULL
+  AND t2.i IN (SELECT i FROM t_small WHERE g = t2.g);
+----
+27159
+
+query II
+SELECT t1.i32, t2.g
+FROM t_del t1
+JOIN t_big t2 ON t1.i = t2.i
+ANTI JOIN t_mid t3 ON t2.dec = t3.dec AND t3.k = 1000
+WHERE t1.tsz IS NULL
+  AND t2.i IN (SELECT i FROM t_small WHERE g = t2.g);
+----
+27159	0
+
+query I
+SELECT t1.i32
+FROM t_del t1
+JOIN t_big t2 ON t1.i = t2.i
+ANTI JOIN t_mid t3 ON t2.dec = t3.dec AND t3.k = 1000
+WHERE t1.tsz IS NULL
+  AND EXISTS (SELECT 1 FROM t_small s WHERE s.g = t2.g AND s.i = t2.i);
+----
+27159

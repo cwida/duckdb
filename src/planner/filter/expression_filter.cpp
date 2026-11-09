@@ -283,6 +283,11 @@ static optional_ptr<const BaseStatistics> TryGetExpressionStats(optional_ptr<Cli
 			vector<BaseStatistics> child_stats;
 			child_stats.reserve(func.GetChildren().size());
 			for (auto &child_expr : func.GetChildren()) {
+				if (child_expr->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA) {
+					// a lambda has no value, the callback of its function derives what it produces
+					child_stats.push_back(BaseStatistics::CreateUnknown(child_expr->GetReturnType()));
+					continue;
+				}
 				auto child_stat = TryGetExpressionStats(context_p, *child_expr, input_stats, owned_stats);
 				if (!child_stat) {
 					return nullptr;
@@ -306,7 +311,7 @@ static optional_ptr<const BaseStatistics> TryGetExpressionStats(optional_ptr<Cli
 		// No custom callback: fall back to the declared monotonicity (ArgProperties) and derive output
 		// bounds by evaluating the function at the corners of each argument's range. This lets a
 		// f(col) OP const filter prune row groups via the zonemap of the base column.
-		if (func.Function().GetStability() == FunctionStability::CONSISTENT) {
+		if (func.Function().GetStability() != FunctionStability::VOLATILE) {
 			vector<BaseStatistics> child_stats;
 			child_stats.reserve(func.GetChildren().size());
 			for (auto &child_expr : func.GetChildren()) {

@@ -1,0 +1,18 @@
+# name: test/sql/json/scalar/test_json_structure_depth.test
+# description: json_structure supports deeply nested JSON-typed columns, including through TRY
+# group: [scalar]
+
+require json
+
+statement ok
+CREATE TABLE t AS SELECT (repeat('[', 200) || repeat(']', 200))::JSON AS j;
+
+query I
+SELECT json_structure(j) = repeat('[', 200) || '"NULL"' || repeat(']', 200) FROM t;
+----
+true
+
+query I
+SELECT try(json_structure(j)) = repeat('[', 200) || '"NULL"' || repeat(']', 200) FROM t;
+----
+true

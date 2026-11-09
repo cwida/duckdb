@@ -58,6 +58,25 @@ SELECT message FROM duckdb_logs(sink='file', denormalized_table=true) WHERE mess
 ----
 after enable
 
+# a failed enable_logging that moved the added file sink to main puts it back as an added sink
+statement error
+CALL enable_logging(sink='file', sink_config={'path': '{TEST_DIR}/logging_added_file_sink.csv', 'bogus': 1})
+----
+Unrecognized log sink config option
+
+query I
+SELECT current_setting('logging_sink')
+----
+memory
+
+statement ok
+SELECT write_log('after rollback')
+
+query I
+SELECT count(*) FROM duckdb_logs(sink='file', denormalized_table=true) WHERE message IN ('to both', 'after rollback')
+----
+2
+
 # the added file sink becomes the main log sink without passing its path again
 statement ok
 SET logging_sink='file'

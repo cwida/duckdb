@@ -17,9 +17,10 @@
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
+
+class PartialBlockManager;
 
 //! The FixedSizeAllocator provides pointers to fixed-size memory segments of pre-allocated memory buffers.
 //! The pointers are IndexPointers, and the leftmost byte (metadata) must always be zero.
@@ -47,13 +48,8 @@ public:
 
 	//! Get a segment handle.
 	inline SegmentHandle GetHandle(const IndexPointer ptr) {
-		D_ASSERT(ptr.GetOffset() < available_segments_per_buffer);
-
-		auto buffer_it = buffers.find(ptr.GetBufferId());
-		D_ASSERT(buffer_it != buffers.end());
-
+		auto &buffer = GetBuffer(ptr);
 		auto offset = ptr.GetOffset() * segment_size + bitmask_offset;
-		auto &buffer = *buffer_it->second;
 		return SegmentHandle(buffer, offset);
 	}
 
@@ -67,13 +63,9 @@ public:
 	//! Returns the data_ptr_t to a segment, and sets the dirty flag of the buffer containing that segment.
 	//! DEPRECATED. Use segment handles.
 	inline data_ptr_t Get(const IndexPointer ptr, const bool dirty = true) {
-		D_ASSERT(ptr.GetOffset() < available_segments_per_buffer);
-
-		auto buffer_it = buffers.find(ptr.GetBufferId());
-		D_ASSERT(buffer_it != buffers.end());
-
+		auto &buffer = GetBuffer(ptr);
 		auto offset = ptr.GetOffset() * segment_size + bitmask_offset;
-		auto buffer_ptr = buffer_it->second->GetDeprecated(dirty);
+		auto buffer_ptr = buffer.GetDeprecated(dirty);
 		return buffer_ptr + offset;
 	}
 
@@ -99,21 +91,21 @@ public:
 	//! Returns the data_ptr_t to a segment, or nullptr, if the buffer is not in memory.
 	//! DEPRECATED. Use segment handles.
 	inline data_ptr_t GetIfLoaded(const IndexPointer ptr) {
-		D_ASSERT(ptr.GetOffset() < available_segments_per_buffer);
-		D_ASSERT(buffers.find(ptr.GetBufferId()) != buffers.end());
-
-		auto &buffer = buffers.find(ptr.GetBufferId())->second;
-		if (!buffer->InMemory()) {
+		auto &buffer = GetBuffer(ptr);
+		if (!buffer.InMemory()) {
 			return nullptr;
 		}
 
-		auto buffer_ptr = buffer->GetDeprecated();
+		auto buffer_ptr = buffer.GetDeprecated();
 		auto raw_ptr = buffer_ptr + ptr.GetOffset() * segment_size + bitmask_offset;
 		return raw_ptr;
 	}
 
 	//! Resets the allocator, e.g., during 'DELETE FROM table'
 	void Reset();
+	//! Resets the allocator without freeing the on-disk blocks of its buffers.
+	//! The blocks stay owned by the storage information the allocator was initialized from.
+	void DisownBuffers();
 
 	//! Returns the in-memory size in bytes
 	idx_t GetInMemorySize() const;
@@ -167,6 +159,17 @@ public:
 	void VerifyBuffers();
 
 private:
+	//! Returns the buffer containing the segment of the IndexPointer. Pointers are read from storage, so we verify
+	//! that they point to a segment of an existing buffer
+	inline FixedSizeBuffer &GetBuffer(const IndexPointer ptr) const {
+		auto buffer_it = buffers.find(ptr.GetBufferId());
+		if (ptr.GetOffset() >= available_segments_per_buffer || buffer_it == buffers.end()) {
+			ThrowInvalidPointer(ptr);
+		}
+		return *buffer_it->second;
+	}
+	[[noreturn]] void ThrowInvalidPointer(const IndexPointer ptr) const;
+
 	//! Memory tag of memory that is allocated through the allocator
 	MemoryTag memory_tag;
 	//! Allocation size of one segment in a buffer

@@ -1,0 +1,25 @@
+# name: test/sql/copy/file_size_bytes_error_mid_write.test_slow
+# description: A runtime error while a FILE_SIZE_BYTES COPY rotates files must not free the file state other threads still prepare into
+# group: [copy]
+
+require parquet
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE src AS
+  SELECT i,
+         CASE WHEN i % 100003 = 50000 THEN 250::UTINYINT ELSE (i % 100)::UTINYINT END AS u8,
+         (i * 0.5)::FLOAT AS f, (i * 1.5)::DOUBLE AS d, 'x' || i AS s, i::BIGINT AS g
+  FROM range(3000000) r(i);
+
+loop i 0 30
+
+statement error
+COPY (SELECT try_cast((u8 + 7) AS UTINYINT) AS u8, f, d, s, g FROM src)
+  TO '{TEST_DIR}/error_mid_write_{i}' (FORMAT parquet, ROW_GROUP_SIZE 2048, FILE_SIZE_BYTES 300000, OVERWRITE_OR_IGNORE);
+----
+Overflow in addition of UINT8 (250 + 7)
+
+endloop

@@ -1,3 +1,4 @@
+#include "duckdb/function/cast/nested_to_varchar_cast.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
@@ -336,11 +337,12 @@ BoundCastInfo DefaultCasts::ListCastSwitch(BindCastInput &input, const LogicalTy
 	case LogicalTypeId::LIST:
 		return BoundCastInfo(ListCast::ListToListCast, ListBoundCastData::BindListToListCast(input, source, target),
 		                     ListBoundCastData::InitListLocalState);
-	case LogicalTypeId::VARCHAR:
-		return BoundCastInfo(
-		    ListToVarcharCast,
-		    ListBoundCastData::BindListToListCast(input, source, LogicalType::LIST(LogicalType::VARCHAR)),
-		    ListBoundCastData::InitListLocalState);
+	case LogicalTypeId::VARCHAR: {
+		auto cast_data = ListBoundCastData::BindListToListCast(input, source, LogicalType::LIST(LogicalType::VARCHAR));
+		NestedToVarcharCast::WrapChildCast(cast_data->Cast<ListBoundCastData>().child_cast_info,
+		                                   ListType::GetChildType(source));
+		return BoundCastInfo(ListToVarcharCast, std::move(cast_data), ListBoundCastData::InitListLocalState);
+	}
 	case LogicalTypeId::ARRAY:
 		return BoundCastInfo(ListToArrayCast, BindListToArrayCast(input, source, target),
 		                     ListBoundCastData::InitListLocalState);

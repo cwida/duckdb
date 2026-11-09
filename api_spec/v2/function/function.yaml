@@ -35,7 +35,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   function_bind_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: Retrieves the user data set on the function being bound, e.g. via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -54,7 +54,7 @@ functions:
 
   function_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -81,7 +81,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   function_bind_get_arg_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Returns the number of arguments of the call site being bound, split into the four parts of the argument list.
 
@@ -122,7 +122,7 @@ functions:
 
   function_bind_get_arg_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Retrieves the type of the argument at the given index.
 
@@ -148,7 +148,7 @@ functions:
 
   function_bind_get_arg_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Folds the argument at the given index to a constant value.
 
@@ -175,7 +175,7 @@ functions:
 
   function_bind_get_arg_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Retrieves the name of the argument at the given index.
 
@@ -203,7 +203,7 @@ functions:
 
   function_bind_get_arg_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-28" ]
+      - [ "unstable", "v2.0.0", "2026-09-28" ]
     description: |
       Looks up the index of an argument by name.
 

@@ -48,10 +48,14 @@ private:
 	unique_ptr<LogicalOperator> PullupJoin(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in a left join
 	unique_ptr<LogicalOperator> PullupFromLeft(unique_ptr<LogicalOperator> op);
+	//! Pullup filter in a semi join, with the filters on the left that the filters on the right imply
+	unique_ptr<LogicalOperator> PullupSemiJoin(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in an inner join
 	unique_ptr<LogicalOperator> PullupInnerJoin(unique_ptr<LogicalOperator> op);
 	//! Pullup filter through a distinct
 	unique_ptr<LogicalOperator> PullupDistinct(unique_ptr<LogicalOperator> op);
+	//! Pullup the filters on the partitions of a window
+	unique_ptr<LogicalOperator> PullupWindow(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in LogicalIntersect or LogicalExcept op
 	unique_ptr<LogicalOperator> PullupSetOperation(unique_ptr<LogicalOperator> op);
 	//! Pullup filter in both sides of a join

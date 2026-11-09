@@ -1,0 +1,30 @@
+# name: test/issues/general/test_24328.test
+# description: map_contains respects collations on map keys
+# group: [general]
+
+statement ok
+SET debug_verify_serializer = true;
+
+query IIIIIII
+SELECT map_contains(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       contains(MAP {'Apple': 1}, 'apple' COLLATE NOCASE),
+       map_contains(map(['Apple' COLLATE NOCASE], [1]), 'apple'),
+       map_contains(MAP {'Apple': 1}, 'banana' COLLATE NOCASE),
+       map_contains(map([['Apple' COLLATE NOCASE]], [1]), ['apple']),
+       map_contains(map([array_value('Apple' COLLATE NOCASE)], [1]), array_value('apple')),
+       map_contains(NULL::MAP(VARCHAR, INTEGER), 'apple' COLLATE NOCASE);
+----
+true	true	true	false	true	true	NULL
+
+query I
+WITH data(m, key) AS (
+    VALUES (MAP {'Apple': 1}, 'APPLE'),
+           (MAP {'Banana': 2}, 'banana'),
+           (MAP {'Cherry': 3}, 'pear')
+)
+SELECT map_contains(m, key COLLATE NOCASE)
+FROM data;
+----
+true
+true
+false

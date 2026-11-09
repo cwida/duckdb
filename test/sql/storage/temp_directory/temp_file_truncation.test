@@ -17,8 +17,9 @@ SET threads = 1;
 statement ok
 SET temp_directory = '{TEST_DIR}/tmp_truncation';
 
+# The sort below needs a little more than 20MiB now that the budget of a sorted run includes its merge buffer
 statement ok
-SET memory_limit = '20MiB';
+SET memory_limit = '24MiB';
 
 statement ok
 SET preserve_insertion_order = false;

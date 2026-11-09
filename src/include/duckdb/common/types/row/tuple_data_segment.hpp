@@ -159,6 +159,8 @@ public:
 	idx_t ChunkCount() const;
 	//! The size (in bytes) of this segment
 	idx_t SizeInBytes() const;
+	//! The heap bytes used by the rows of a chunk (fixed-size layouts have no heap)
+	idx_t ChunkHeapSize(idx_t chunk_idx) const;
 	//! Unpins all held pins
 	void Unpin();
 	//! Reset this segment for reuse, clearing chunk metadata while keeping the segment object alive

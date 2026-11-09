@@ -305,7 +305,9 @@ public:
 	}
 
 	bool TryPrepareNextStage();
-	bool TryNextTask(TaskPtr &task, Task &task_local);
+	//! Finish the current task (if any), advance the stage if that was its last task, and try to get the next task.
+	//! Runs under the lock so that a caller can decide to block on failure without missing an unblock.
+	bool TryNextTaskLocked(TaskPtr &task, Task &task_local) DUCKDB_REQUIRES(lock);
 
 	void ExecuteLiTask(ClientContext &client);
 	void ExecutePermutationTask(ClientContext &client);
@@ -483,7 +485,10 @@ public:
 		return !joiner && !left_matches && !right_matches;
 	}
 
-	bool TryAssignTask();
+	//! Release the local state of the current task (if any)
+	void FinishTask();
+	//! Set up the local state for executing a task acquired through IEJoinGlobalSourceState::TryNextTaskLocked
+	void InitializeTask();
 	//! Reports the progress of the current task
 	void UpdateProgress() {
 		if (!task) {
@@ -602,21 +607,24 @@ public:
 
 	//! Simple Joins
 	idx_t anti_lsel = 0;
+
+	//! Whether this task has produced any rows yet.
+	//! A task that has produced rows must not block waiting for other tasks: the sink may be waiting for it.
+	bool produced = false;
 };
 
-bool IEJoinLocalSourceState::TryAssignTask() {
+void IEJoinLocalSourceState::FinishTask() {
 	// Because downstream operators may be using our internal buffers,
 	// we can't "finish" a task until we are about to get the next one.
-	if (task) {
-		task_progress.Finish(gsource.task_progress);
-		++gsource.GetStageNext(task->stage);
-		left_matches = nullptr;
-		right_matches = nullptr;
+	if (!task) {
+		return;
 	}
+	task_progress.Finish(gsource.task_progress);
+	left_matches = nullptr;
+	right_matches = nullptr;
+}
 
-	if (!gsource.TryNextTask(task, task_local)) {
-		return false;
-	}
+void IEJoinLocalSourceState::InitializeTask() {
 	task_progress.Start();
 
 	auto &gsink = gsource.gsink;
@@ -676,8 +684,6 @@ bool IEJoinLocalSourceState::TryAssignTask() {
 	case IEJoinSourceStage::DONE:
 		break;
 	}
-
-	return true;
 }
 
 void IEJoinLocalSourceState::ExecuteSinkL1Task(ExecutionContext &context, InterruptState &interrupt) {
@@ -1198,12 +1204,21 @@ void IEJoinLocalSourceState::ResolveComplexJoin(ExecutionContext &context, DataC
 
 		//	Apply any arbitrary predicate
 		MergePayloads(chunk);
+		SelectionVector match_sel;
 		if (op.predicate) {
-			sel = ApplyArbitraryPredicate(chunk);
+			//	The predicate selection is relative to the rows that passed the tail conditions,
+			//	so combine the two to index the original join pairs
+			auto tail_sel = sel;
+			auto predicate_sel = ApplyArbitraryPredicate(chunk);
 			result_count = chunk.size();
 			if (!result_count) {
 				continue;
 			}
+			match_sel.Initialize(result_count);
+			for (idx_t i = 0; i < result_count; i++) {
+				match_sel.set_index(i, tail_sel->get_index(predicate_sel->get_index(i)));
+			}
+			sel = &match_sel;
 		}
 
 		//	We need all of the data to compute other predicates,
@@ -1332,19 +1347,20 @@ void IEJoinGlobalSourceState::FinishTask(TaskPtr task) {
 	}
 
 	++finished;
+	++GetStageNext(task->stage);
 }
 
-bool IEJoinGlobalSourceState::TryNextTask(TaskPtr &task, Task &task_local) {
-	annotated_lock_guard<annotated_mutex> guard(lock);
+bool IEJoinGlobalSourceState::TryNextTaskLocked(TaskPtr &task, Task &task_local) {
 	FinishTask(task);
+	task = nullptr;
 
-	if (!HasMoreTasks()) {
-		task = nullptr;
-		return false;
+	//	If that was the last task of the stage, move on and wake up the tasks waiting for the next stage
+	if (TryPrepareNextStage() || stage == IEJoinSourceStage::DONE) {
+		UnblockTasks();
 	}
 
-	if (TryPrepareNextStage()) {
-		UnblockTasks();
+	if (!HasMoreTasks()) {
+		return false;
 	}
 
 	if (TryNextTask(task_local)) {
@@ -1352,8 +1368,6 @@ bool IEJoinGlobalSourceState::TryNextTask(TaskPtr &task, Task &task_local) {
 		++started;
 		return true;
 	}
-
-	task = nullptr;
 
 	return false;
 }
@@ -1462,16 +1476,37 @@ SourceResultType PhysicalIEJoin::GetDataInternal(ExecutionContext &context, Data
 	// Any call to GetData must produce tuples, otherwise the pipeline executor thinks that we're done
 	// Therefore, we loop until we've produced tuples, or until the operator is actually done
 	while (gsource.stage != IEJoinSourceStage::DONE && result.size() == 0) {
-		if (!lsource.TaskFinished() || lsource.TryAssignTask()) {
-			lsource.ExecuteTask(context, result, input.interrupt_state);
-			lsource.UpdateProgress();
-		} else {
-			annotated_lock_guard<annotated_mutex> guard(gsource.lock);
-			if (gsource.TryPrepareNextStage() || gsource.stage == IEJoinSourceStage::DONE) {
-				gsource.UnblockTasks();
-			} else {
-				return gsource.BlockSource(input.interrupt_state);
+		if (lsource.TaskFinished()) {
+			{
+				// Finish the current task, advance the stage if it was the last one, look for the next task and
+				// decide what to do without one, all under a single acquisition of the lock: the decision to block
+				// has to be made under the same lock as the failed search, or the unblock could slip in between
+				// and no one would ever wake this task up again.
+				annotated_lock_guard<annotated_mutex> guard(gsource.lock);
+				lsource.FinishTask();
+				if (!gsource.TryNextTaskLocked(lsource.task, lsource.task_local)) {
+					if (gsource.stage == IEJoinSourceStage::DONE) {
+						break;
+					}
+					if (lsource.produced) {
+						// The remaining tasks can only start once the other tasks of this stage have finished.
+						// This task has already handed rows to the sink, which may in turn be waiting for this task
+						// (e.g., a partitioned COPY cannot flush until every producer has combined), so blocking
+						// here could deadlock: let the tasks that are still running finish the join instead.
+						return SourceResultType::FINISHED;
+					}
+					// there are more tasks available, but we can't execute them yet
+					// block the source
+					return gsource.BlockSource(input.interrupt_state);
+				}
 			}
+			// Set up the task outside the lock: it allocates per-task state
+			lsource.InitializeTask();
+		}
+		lsource.ExecuteTask(context, result, input.interrupt_state);
+		lsource.UpdateProgress();
+		if (result.size() != 0) {
+			lsource.produced = true;
 		}
 	}
 	return result.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;

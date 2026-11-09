@@ -1,0 +1,12 @@
+diff --git a/test/sql/compaction/compaction_twice_in_transaction.test b/test/sql/compaction/compaction_twice_in_transaction.test
+--- a/test/sql/compaction/compaction_twice_in_transaction.test
++++ b/test/sql/compaction/compaction_twice_in_transaction.test
+@@ -126,7 +126,7 @@ SELECT count(*) FROM ducklake_list_files('ducklake', 't3')
+ 1
+
+ query I
+-SELECT count(*) FROM glob('{DATA_PATH}/compaction_twice_in_transaction/**/*.parquet') WHERE file LIKE '%/t3/%'
++SELECT count(*) FROM glob('{DATA_PATH}/compaction_twice_in_transaction/**/*.parquet') WHERE replace(file, '\', '/') LIKE '%/t3/%'
+ ----
+ 3
+

@@ -1,0 +1,36 @@
+# name: test/sql/join/asof/test_asof_join_collation_loop_join.test
+# description: ASOF join on a collated ordering key with the loop join rewrite
+# group: [asof]
+
+statement ok
+CREATE TABLE l(id INTEGER, t VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO l VALUES (0, 'b');
+
+statement ok
+CREATE TABLE r(id INTEGER, t VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO r VALUES (1, 'a'), (2, 'B');
+
+query IIII
+SELECT * FROM l ASOF LEFT JOIN r ON l.t >= r.t;
+----
+0	b	2	B
+
+statement ok
+SET asof_loop_join_threshold=0;
+
+query IIII
+SELECT * FROM l ASOF LEFT JOIN r ON l.t >= r.t;
+----
+0	b	2	B
+
+statement ok
+RESET asof_loop_join_threshold;
+
+query IIII
+SELECT * FROM l ASOF JOIN r ON l.t >= r.t;
+----
+0	b	2	B

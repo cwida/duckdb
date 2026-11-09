@@ -1,0 +1,30 @@
+# name: test/sql/types/bignum/test_bignum_to_double_overflow.test
+# description: Casting BIGNUM values that do not fit in a DOUBLE
+# group: [bignum]
+
+query I
+SELECT TRY_CAST(('1' || repeat('0', 309))::BIGNUM AS DOUBLE);
+----
+NULL
+
+query I
+SELECT TRY_CAST(('-1' || repeat('0', 309))::BIGNUM AS DOUBLE);
+----
+NULL
+
+statement error
+SELECT CAST(('1' || repeat('0', 309))::BIGNUM AS DOUBLE);
+----
+Conversion Error
+
+query I
+SELECT TRY_CAST(b AS DOUBLE) FROM (VALUES ('12'::BIGNUM), (('1' || repeat('0', 400))::BIGNUM), ('-3'::BIGNUM)) t(b);
+----
+12.0
+NULL
+-3.0
+
+query I
+SELECT CAST(('1' || repeat('0', 300))::BIGNUM AS DOUBLE);
+----
+1e+300

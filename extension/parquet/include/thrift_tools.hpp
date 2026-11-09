@@ -16,6 +16,7 @@
 #include "duckdb/storage/external_file_cache/file_buffer_handle_group.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/mutex.hpp"
 
 namespace duckdb {
 
@@ -31,28 +32,35 @@ struct ReadHead {
 	AllocatedData local_buffer;
 	const_data_ptr_t buffer_ptr = nullptr;
 	bool data_isset = false;
+	mutex fetch_lock;
+	// Sub-ranges whose smaller cached blocks are re-fetched with the gaps around them (see CachingFileHandle::Read)
+	vector<pair<idx_t, idx_t>> absorb_ranges;
 
 	idx_t GetEnd() const {
 		return size + location;
 	}
 
 	// Materialize [buffer_ptr], should call before access.
-	// TODO(hjiang): Currently it's only used for `Prefetch` operation, should be able to save one copy.
 	void Materialize(Allocator &allocator) {
 		if (handle_group.GetHandles().size() == 1) {
 			buffer_ptr = handle_group.Ptr();
 		} else {
 			local_buffer = allocator.Allocate(size);
 			handle_group.CopyTo(local_buffer.get(), size);
+			handle_group = FileBufferHandleGroup();
 			buffer_ptr = local_buffer.get();
 		}
 	}
 
 	void Fetch(CachingFileHandle &file_handle) {
+		lock_guard<mutex> guard(fetch_lock);
+		if (data_isset) {
+			return;
+		}
 		if (GetEnd() > file_handle.GetFileSize()) {
 			throw std::runtime_error("Prefetch registered requested for bytes outside file");
 		}
-		handle_group = file_handle.Read(size, location);
+		handle_group = file_handle.Read(size, location, absorb_ranges);
 		Materialize(file_handle.GetBufferAllocator());
 		data_isset = true;
 	}
@@ -104,7 +112,7 @@ struct ReadAheadBuffer {
 	}
 
 	// Add a read head to the prefetching list
-	void AddReadHead(idx_t pos, uint64_t len, bool merge_buffers = true) {
+	void AddReadHead(idx_t pos, uint64_t len, bool merge_buffers = true, bool absorb_cached_blocks = false) {
 		// Attempt to merge with existing
 		if (merge_buffers) {
 			ReadHead new_read_head {pos, len};
@@ -115,6 +123,9 @@ struct ReadAheadBuffer {
 				auto new_length = MaxValue<idx_t>(existing_head->GetEnd(), new_read_head.GetEnd()) - new_start;
 				existing_head->location = new_start;
 				existing_head->size = new_length;
+				if (absorb_cached_blocks) {
+					existing_head->absorb_ranges.emplace_back(pos, pos + len);
+				}
 				return;
 			}
 		}
@@ -122,6 +133,9 @@ struct ReadAheadBuffer {
 		read_heads.insert(read_heads.begin(), make_shared_ptr<ReadHead>(pos, len));
 		total_size += len;
 		auto &read_head = *read_heads.front();
+		if (absorb_cached_blocks) {
+			read_head.absorb_ranges.emplace_back(pos, pos + len);
+		}
 
 		if (merge_buffers) {
 			merge_set.insert(&read_head);
@@ -133,6 +147,14 @@ struct ReadAheadBuffer {
 			                         std::to_string(read_head.GetEnd()) +
 			                         "), file size: " + std::to_string(file_handle.GetFileSize()));
 		}
+	}
+
+	// Add a read head whose bytes are already in memory; the caller keeps them alive while the head exists
+	void AddFilledReadHead(idx_t pos, uint64_t len, const_data_ptr_t data) {
+		read_heads.insert(read_heads.begin(), make_shared_ptr<ReadHead>(pos, len));
+		auto &read_head = *read_heads.front();
+		read_head.buffer_ptr = data;
+		read_head.data_isset = true;
 	}
 
 	// Returns the relevant read head
@@ -215,6 +237,17 @@ public:
 		return len;
 	}
 
+	// Serve reads of [pos, pos + len) from bytes that are already in memory
+	void AddFilledReadHead(idx_t pos, uint64_t len, const_data_ptr_t data) {
+		ra_buffer.AddFilledReadHead(pos, len, data);
+	}
+
+	// Attach an immutable, fetched head without registering it for merging.
+	void AddFetchedReadHead(shared_ptr<ReadHead> read_head) {
+		D_ASSERT(read_head->data_isset);
+		ra_buffer.read_heads.insert(ra_buffer.read_heads.begin(), std::move(read_head));
+	}
+
 	// Prefetch a single buffer
 	void Prefetch(idx_t pos, uint64_t len) {
 		RegisterPrefetch(pos, len, false);
@@ -222,9 +255,10 @@ public:
 		PrefetchRegistered();
 	}
 
-	// Register a buffer for prefixing
-	void RegisterPrefetch(idx_t pos, uint64_t len, bool can_merge = true) {
-		ra_buffer.AddReadHead(pos, len, can_merge);
+	// Register a buffer for prefixing; absorb_cached_blocks re-fetches the smaller cached blocks within [pos, pos +
+	// len) with the gaps around them, also when the range ends up merged into a larger read
+	void RegisterPrefetch(idx_t pos, uint64_t len, bool can_merge = true, bool absorb_cached_blocks = false) {
+		ra_buffer.AddReadHead(pos, len, can_merge, absorb_cached_blocks);
 	}
 
 	// Prevents any further merges, should be called before PrefetchRegistered
@@ -258,8 +292,8 @@ public:
 		return location;
 	}
 
-	optional_ptr<ReadHead> GetReadHead(idx_t pos) {
-		return ra_buffer.GetReadHead(pos);
+	optional_ptr<ReadHead> GetReadHead(idx_t pos, idx_t len = 1) {
+		return ra_buffer.GetReadHead(pos, len);
 	}
 
 	vector<shared_ptr<ReadHead>> &GetReadHeads() {

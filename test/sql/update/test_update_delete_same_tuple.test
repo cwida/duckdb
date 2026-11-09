@@ -2,7 +2,7 @@
 # description: Test update and delete of the same tuple
 # group: [update]
 
-# on a normal table, we can update and delete the same tuple concurrently without a conflict
+# an update and a delete of the same tuple by concurrent transactions conflict
 statement ok con1
 CREATE TABLE test (a INTEGER);
 
@@ -18,8 +18,10 @@ BEGIN TRANSACTION;
 statement ok con1
 UPDATE test SET a=a+1;
 
-statement ok con2
+statement error con2
 DELETE FROM test
+----
+Conflict on tuple deletion
 
 query I con1
 SELECT * FROM test ORDER BY a
@@ -28,15 +30,18 @@ SELECT * FROM test ORDER BY a
 3
 4
 
-query I con2
-SELECT * FROM test ORDER BY a
-----
+statement ok con2
+ROLLBACK;
 
 statement ok con1
 COMMIT;
 
-statement ok con2
-COMMIT;
+query I con2
+SELECT * FROM test ORDER BY a
+----
+2
+3
+4
 
 statement ok con1
 DROP TABLE test;

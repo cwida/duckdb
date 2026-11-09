@@ -1,0 +1,95 @@
+# name: test/sql/function/list/lambdas/lambda_parameter_named_argument.test
+# description: A lambda parameter passed as a named argument is the lambda parameter, not a column of the same name
+# group: [lambdas]
+
+statement ok
+CREATE TABLE tt (x INTEGER);
+
+statement ok
+INSERT INTO tt VALUES (10), (20);
+
+query I
+SELECT list_transform([1, 2], lambda x: struct_pack(a := x)) FROM tt
+----
+[{'a': 1}, {'a': 2}]
+[{'a': 1}, {'a': 2}]
+
+statement ok
+CREATE MACRO m(x) AS list_transform([1, 2], lambda x: struct_pack(a := x));
+
+query I
+SELECT m(10)
+----
+[{'a': 1}, {'a': 2}]
+
+# the aggregate belongs to the subquery, not to the query with the column of the same name
+query I
+SELECT (SELECT max(list_transform([1, 2], lambda x: struct_pack(a := x))[2].a) FROM range(3)) FROM tt
+----
+2
+2
+
+query I
+SELECT (SELECT count(*) + max(list_transform([1, 2], lambda x: struct_pack(a := x))[2].a) FROM range(3)) FROM tt
+----
+5
+5
+
+query I
+SELECT r FROM tt, LATERAL (SELECT max(list_transform([1, 2], lambda x: struct_pack(a := x))[2].a) AS r FROM range(3))
+----
+2
+2
+
+statement ok
+CREATE TABLE up (k INTEGER PRIMARY KEY, x INTEGER, l STRUCT(a INTEGER)[]);
+
+statement ok
+INSERT INTO up VALUES (1, 10, NULL);
+
+statement ok
+INSERT INTO up VALUES (1, 20, NULL) ON CONFLICT DO UPDATE SET l = list_transform([1, 2], lambda x: struct_pack(a := x));
+
+query II
+SELECT x, l FROM up
+----
+10	[{'a': 1}, {'a': 2}]
+
+statement error
+CREATE TABLE ck (x INTEGER, CHECK (list_transform([x], lambda x: struct_pack(a := x)) IS NOT NULL));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+# the argument has the name of the lambda parameter, the value is the column
+statement error
+CREATE TABLE ck_column (y INTEGER, CHECK (list_transform([1], lambda x: struct_pack(x := y)) = [{'x': 5}]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+# a column captured by a lambda is not supported either
+statement error
+CREATE TABLE ck_capture (y INTEGER, CHECK (list_transform([7], lambda x: y) = [7]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+statement error
+CREATE TABLE ck_qualified (z INTEGER, y INTEGER, CHECK (list_transform([7], lambda x: ck_qualified.y) = [5]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+# a lambda that references neither stays supported
+statement ok
+CREATE TABLE ck_constant (y INTEGER, CHECK (list_transform([y], lambda x: 7) = [7]), CHECK (y > 0));
+
+statement ok
+INSERT INTO ck_constant VALUES (5);
+
+statement error
+INSERT INTO ck_constant VALUES (0);
+----
+CHECK constraint failed
+
+query I
+SELECT y FROM ck_constant
+----
+5

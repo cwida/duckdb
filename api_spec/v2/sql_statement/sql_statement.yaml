@@ -1,9 +1,11 @@
 module: sql_statement
 #
 # Turn a SQL string into individual statements. parse_sql parses and nothing
-# more: no binding, no catalog access, no transaction. The connection supplies
-# the parser state — its options and the parser extensions loaded on it — so a
-# statement parsed on one connection should be executed on that connection.
+# more: no binding and no catalog access. The connection supplies the parser
+# state — its options and the parser extensions loaded on it — so a statement
+# parsed on one connection should be executed on that connection. The caller
+# chooses whether a parse error invalidates the connection's active
+# transaction, according to the transaction invalidation policy.
 # Statements are raw parser output; statement-level rewrites (pragma
 # reparsing, statement expansion, transaction wrapping) happen inside
 # statement_execute, so one user statement is always one handle.
@@ -115,17 +117,22 @@ enums:
 functions:
   parse_sql:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Parses a SQL string into an iterator over its statements.
 
-      Parses and nothing more: no binding, no catalog access, no transaction.
-      The connection supplies the parser options and parser extensions, and is
-      not otherwise touched. Statements are raw parser output; statement-level
-      rewrites happen inside statement_execute. The SQL string is copied, so
-      the caller may free it once this call returns. An input with no
-      statements — empty, whitespace, or separators only — yields an iterator
-      that is immediately exhausted.
+      Parses and nothing more: no binding and no catalog access. The connection
+      supplies the parser options and parser extensions. With
+      apply_invalidation_policy, a parse error invalidates the connection's
+      active transaction according to the transaction invalidation policy, like
+      an error from running the statement would; pass that when the statements
+      are parsed to be run. Without it, a parse error leaves the transaction
+      usable, for callers that only inspect the statements, for example with
+      `[[statement_bind]]`.
+      Statements are raw parser output; statement-level rewrites happen inside
+      statement_execute. The SQL string is copied, so the caller may free it
+      once this call returns. An input with no statements — empty, whitespace,
+      or separators only — yields an iterator that is immediately exhausted.
     role: constructor
     belongs_to: statement_iterator
     parameters:
@@ -137,6 +144,9 @@ functions:
         indirection: 1
         const: true
         description: Null-terminated SQL string; may contain any number of statements.
+      apply_invalidation_policy:
+        type: bool
+        description: Whether a parse error invalidates the active transaction, according to the transaction invalidation policy.
       out_iterator:
         type: statement_iterator
         indirection: 1
@@ -151,7 +161,7 @@ functions:
 
   statement_iterator_next:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Yields the next statement, or NULL when exhausted.
 
@@ -182,7 +192,7 @@ functions:
 
   statement_bind:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Binds a parsed statement without executing, yielding its schema signature.
 
@@ -235,7 +245,7 @@ functions:
 
   statement_add_collection:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-12" ]
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
     description: |
       Binds a column data collection to the statement under a name.
 
@@ -287,7 +297,7 @@ functions:
 
   sql_statement_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Returns the statement's type as classified by the parser.
 
@@ -319,7 +329,7 @@ functions:
 
   sql_statement_get_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Borrows the statement's own SQL text.
 
@@ -350,7 +360,7 @@ functions:
 
   sql_statement_get_parameter_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Returns the number of distinct parameters the statement declares.
 
@@ -377,7 +387,7 @@ functions:
 
   sql_statement_get_parameter_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Borrows the name of one parameter, in binding order.
 
@@ -412,7 +422,7 @@ functions:
 
   sql_statement_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a statement handle.
 
@@ -431,7 +441,7 @@ functions:
 
   statement_iterator_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a statement iterator handle.
 

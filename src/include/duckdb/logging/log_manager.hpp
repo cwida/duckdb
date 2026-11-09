@@ -16,6 +16,13 @@
 namespace duckdb {
 class LogType;
 
+//! The config and the sinks of the LogManager, see LogManager::GetConfigAndSinks
+struct LogConfigAndSinks {
+	LogConfig config;
+	shared_ptr<LogSink> main_log_sink;
+	case_insensitive_map_t<shared_ptr<LogSink>> added_log_sinks;
+};
+
 // Holds global logging state
 // - Handles configuration changes
 // - Creates Loggers with cached configuration
@@ -33,9 +40,14 @@ public:
 	void Initialize();
 
 	DUCKDB_API static LogManager &Get(ClientContext &context);
-	unique_ptr<Logger> CreateLogger(LoggingContext context, bool thread_safe = true, bool mutable_settings = false);
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, bool thread_safe = true,
+	                                bool mutable_settings = false);
+	//! Creates a logger from the snapshot without locking, unless the config changed since the snapshot was taken
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, const LogConfigSnapshot &snapshot);
+	//! Refreshes the snapshot if the config changed since it was taken, and creates a logger from it
+	unique_ptr<Logger> CreateLogger(const LoggingContext &context, LogConfigSnapshot &snapshot);
 
-	RegisteredLoggingContext RegisterLoggingContext(LoggingContext &context);
+	RegisteredLoggingContext RegisterLoggingContext(const LoggingContext &context);
 
 	DUCKDB_API bool RegisterLogSink(const string &name, shared_ptr<LogSink> &sink);
 
@@ -59,6 +71,10 @@ public:
 	DUCKDB_API bool CanScan(LoggingTargetTable table);
 
 	DUCKDB_API void SetConfig(DatabaseInstance &db, const LogConfig &config);
+	//! The config together with its sinks, to put back with RestoreConfig when a change fails
+	DUCKDB_API LogConfigAndSinks GetConfigAndSinks();
+	//! Puts back a config and its sinks as GetConfigAndSinks returned them
+	DUCKDB_API void RestoreConfig(LogConfigAndSinks previous);
 	DUCKDB_API void SetEnableLogging(bool enable);
 	DUCKDB_API void SetLogMode(LogMode mode);
 	DUCKDB_API void SetLogLevel(LogLevel level);
@@ -85,7 +101,7 @@ public:
 	DUCKDB_API void RegisterDefaultLogTypes();
 
 protected:
-	RegisteredLoggingContext RegisterLoggingContextInternal(LoggingContext &context);
+	RegisteredLoggingContext RegisterLoggingContextInternal(const LoggingContext &context);
 
 	// This is to be called by the Loggers only, it does not verify log_level and log_type
 	void WriteLogEntry(timestamp_t, const char *log_type, LogLevel log_level, const char *log_message,
@@ -93,33 +109,41 @@ protected:
 	// This allows efficiently pushing a cached set of log entries into the log manager
 	void FlushCachedLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context);
 
-	void SetMainLogSinkInternal(DatabaseInstance &db, const string &sink_name);
+	//! Switches the main log sink and sets the storage of new_config accordingly
+	void SetMainLogSinkInternal(DatabaseInstance &db, LogConfig &new_config, const string &sink_name)
+	    DUCKDB_REQUIRES(lock);
 	//! A new built-in sink, or the sink registered under this name. Throws if there is none
-	shared_ptr<LogSink> CreateLogSinkInternal(DatabaseInstance &db, const string &sink_name);
+	shared_ptr<LogSink> CreateLogSinkInternal(DatabaseInstance &db, const string &sink_name) DUCKDB_REQUIRES(lock);
 	//! The main log sink or the added sink with this name, or nullptr if there is none
-	shared_ptr<LogSink> GetEnabledLogSinkInternal(const string &sink_name);
-	shared_ptr<LogSink> GetLogSinkInternal(const string &name);
+	shared_ptr<LogSink> GetEnabledLogSinkInternal(const string &sink_name) DUCKDB_REQUIRES(lock);
+	shared_ptr<LogSink> GetLogSinkInternal(const string &name) DUCKDB_REQUIRES(lock);
 
-	optional_ptr<const LogType> LookupLogTypeInternal(const string &type);
+	optional_ptr<const LogType> LookupLogTypeInternal(const string &type) DUCKDB_REQUIRES(lock);
 
-	void SetConfigInternal(LogConfig config);
+	//! The only way to change the config: publishes it to the global logger and to newly created loggers
+	void SetConfigInternal(LogConfig new_config) DUCKDB_REQUIRES(lock);
+	unique_ptr<Logger> CreateLoggerInternal(const LoggingContext &context,
+	                                        const shared_ptr<const LogConfig> &logger_config);
 
 protected:
-	mutex lock;
-	LogConfig config;
+	annotated_mutex lock;
+	//! Shared by the created loggers; replaced only by SetConfigInternal
+	shared_ptr<const LogConfig> config DUCKDB_GUARDED_BY(lock);
+	//! Incremented whenever config is replaced, invalidating the snapshots of it
+	PaddedAtomic<idx_t> config_version {0};
 
 	shared_ptr<Logger> global_logger;
-	//! The main log sink, it always receives the log entries. Its name is config.storage
-	shared_ptr<LogSink> main_log_sink;
+	//! The main log sink, it always receives the log entries. Its name is config->storage
+	shared_ptr<LogSink> main_log_sink DUCKDB_GUARDED_BY(lock);
 	//! The sinks that receive the log entries next to the main log sink, never including the main log sink
-	case_insensitive_map_t<shared_ptr<LogSink>> added_log_sinks;
+	case_insensitive_map_t<shared_ptr<LogSink>> added_log_sinks DUCKDB_GUARDED_BY(lock);
 	DatabaseInstance &db_instance;
 
-	idx_t next_registered_logging_context_index = 0;
+	PaddedAtomic<idx_t> next_registered_logging_context_index {0};
 
 	// The LogSinks registered with RegisterLogSink, by extensions for example
-	case_insensitive_map_t<shared_ptr<LogSink>> registered_log_sinks;
-	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types;
+	case_insensitive_map_t<shared_ptr<LogSink>> registered_log_sinks DUCKDB_GUARDED_BY(lock);
+	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types DUCKDB_GUARDED_BY(lock);
 };
 
 } // namespace duckdb

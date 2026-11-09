@@ -1,0 +1,15 @@
+# name: benchmark/micro/aggregate/avg_timestamp.benchmark
+# description: AVG over a column of timestamps
+# group: [aggregate]
+
+name Timestamp Average (Ungrouped)
+group aggregate
+
+load
+CREATE TABLE timestamps AS SELECT TIMESTAMP '2000-01-01' + INTERVAL (i) SECOND AS ts FROM range(0, 10000000) tbl(i);
+
+run
+SELECT avg(ts) FROM timestamps
+
+result I
+2000-02-27 20:53:19.5

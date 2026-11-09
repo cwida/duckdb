@@ -1,0 +1,318 @@
+module: query metrics
+#
+# Reading the metrics DuckDB gathers about the queries a connection runs. `[[connection_get_query_metrics]]` takes an
+# owned snapshot: a tree whose root node describes a query as a whole and whose other nodes describe the operators that
+# executed it. Each node carries a set of named, numeric metrics, e.g. `query.total_time` or `operator.timing`.
+#
+# Which metrics DuckDB gathers is decided by its profiling configuration, e.g. `SET enable_profiling = 'no_output'` and
+# `SET custom_profiling_settings = ...`. The set of metrics, their names and the shape of the operator tree may change
+# between DuckDB versions, so look metrics up by name and expect any of them to be missing.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  query_metrics:
+    description: |
+      An owned snapshot of the metrics of a query. Taken with `[[connection_get_query_metrics]]`, read from its root
+      node via `[[query_metrics_get_root]]`, and destroyed with `[[query_metrics_destroy]]`. Later queries do not
+      update it.
+
+  query_metrics_node:
+    description: |
+      A borrowed opaque handle to one node of a query metrics snapshot, valid for as long as the snapshot is. Read its
+      name with `[[query_metrics_node_get_name]]`, its metrics with `[[query_metrics_node_get_metric]]` or by index, and
+      its children with `[[query_metrics_node_get_child]]`.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Constructors
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_get_query_metrics:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Takes a snapshot of the metrics of the last query the connection finished.
+
+      The snapshot is owned by the caller and does not change afterwards. It holds the metrics DuckDB's profiling
+      configuration gathered: without profiling enabled, the root node carries no metrics and has no children. A
+      snapshot is not promised to be complete; any metric, and any operator node, may be missing.
+
+      Fails with `ERROR_RESOURCE_IN_USE` while a query is running on the connection, i.e. while a result of it has
+      not yet been drained or destroyed.
+    role: constructor
+    belongs_to: query_metrics
+    parameters:
+      conn:
+        type: connection
+        description: The connection to take the snapshot of.
+      metrics:
+        type: query_metrics
+        indirection: 1
+        kind: OUT
+        description: On success, receives the owned snapshot. Destroy via `[[query_metrics_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Connection
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_enable_profiling:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Enables or disables profiling for the queries the connection runs from now on.
+
+      While profiling is enabled, DuckDB gathers the metrics `[[connection_get_query_metrics]]` reports. Profiling also
+      prints the profile of every query, as configured by the `enable_profiling` and `profiling_output` options, which
+      by default print a query tree to the standard output: set `enable_profiling` to `no_output` to only gather the
+      metrics. Disabling profiling stops both.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to enable or disable profiling for.
+      enabled:
+        type: bool
+        description: Whether to enable profiling.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Query Metrics
+  #---------------------------------------------------------------------------------------------------------------------
+  query_metrics_get_root:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Borrows the root node of the snapshot, which describes the query as a whole. Its children, if any, describe
+      the operators that executed the query.
+    role: getter
+    belongs_to: query_metrics
+    parameters:
+      metrics:
+        type: query_metrics
+        description: The snapshot.
+      node:
+        type: query_metrics_node
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed root node. Valid until the snapshot is destroyed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Query Metrics Node
+  #---------------------------------------------------------------------------------------------------------------------
+  query_metrics_node_get_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Borrows the name of the node: `QUERY` for the root node, and the name of the operator, e.g. `TABLE_SCAN`, for
+      the other nodes.
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      name:
+        type: str
+        indirection: 1
+        kind: OUT_BORROW
+        description: Receives a borrowed view of the name. Valid until the snapshot is destroyed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  query_metrics_node_get_child_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Returns the number of children of the node. Valid indices for `[[query_metrics_node_get_child]]` are
+      [0, count).
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      count:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the number of children.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  query_metrics_node_get_child:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Borrows the child of the node at index. An out-of-range index is rejected with `ERROR_INPUT_OUT_OF_RANGE`.
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      index:
+        type: idx
+        description: Zero-based child index.
+      child:
+        type: query_metrics_node
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed child. Valid until the snapshot is destroyed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  query_metrics_node_get_metric_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Returns the number of metrics the node carries. Valid indices for `[[query_metrics_node_get_metric_name]]` and
+      `[[query_metrics_node_get_metric_value]]` are [0, count); the order of the metrics is unspecified.
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      count:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the number of metrics.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  query_metrics_node_get_metric_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Borrows the name of the metric at index, e.g. `query.total_time`. An out-of-range index is rejected with
+      `ERROR_INPUT_OUT_OF_RANGE`.
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      index:
+        type: idx
+        description: Zero-based metric index.
+      name:
+        type: str
+        indirection: 1
+        kind: OUT_BORROW
+        description: Receives a borrowed view of the name. Valid until the snapshot is destroyed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  query_metrics_node_get_metric_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Returns the value of the metric at index, a number such as a UBIGINT count or a DOUBLE duration. An
+      out-of-range index is rejected with `ERROR_INPUT_OUT_OF_RANGE`.
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      index:
+        type: idx
+        description: Zero-based metric index.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the owned value. Destroy via `[[value_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  query_metrics_node_get_metric:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Looks up a metric of the node by name, e.g. `query.total_time`. When the node does not carry it, `present`
+      receives false and `value` receives null.
+    role: getter
+    belongs_to: query_metrics_node
+    parameters:
+      node:
+        type: query_metrics_node
+        description: The node.
+      name:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name of the metric, matched exactly. Borrowed for the call only.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the owned value, if present. Destroy via `[[value_destroy]]`.
+      present:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the node carries the metric.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Destroy
+  #---------------------------------------------------------------------------------------------------------------------
+  query_metrics_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Destroys the snapshot, releasing its resources and invalidating the nodes borrowed from it.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
+      double-destruction.
+    role: destructor
+    belongs_to: query_metrics
+    parameters:
+      metrics:
+        type: query_metrics
+        description: The snapshot to destroy.
+        indirection: 1
+    return_type: ERROR

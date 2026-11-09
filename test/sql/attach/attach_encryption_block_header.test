@@ -20,6 +20,10 @@ Binder Error: "42" is not a valid key. A key must be of type VARCHAR
 # We need httpfs to write encrypted database files
 require httpfs
 
+# new encrypted databases get the default storage version
+statement ok
+RESET storage_compatibility_version
+
 statement ok
 ATTACH '{TEST_DIR}/encrypted.duckdb' AS encrypted (ENCRYPTION_KEY 'asdf');
 
@@ -70,7 +74,7 @@ SELECT SUM(i) FROM encrypted.tbl
 query I
 SELECT tags FROM duckdb_databases() WHERE database_name LIKE '%encrypted%' ORDER BY database_name;
 ----
-{storage_version=v1.5.0+}
+{storage_version=v2.0.0+}
 {storage_version=v1.0.0+}
 
 statement ok

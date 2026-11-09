@@ -25,7 +25,7 @@ static unsafe_unique_array<data_t> ReadExtensionFileFromDisk(FileSystem &fs, con
 	auto source_file = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	file_size = source_file->GetFileSize();
 	auto in_buffer = make_unsafe_uniq_array<data_t>(file_size);
-	source_file->Read(QueryContext(), in_buffer.get(), file_size);
+	source_file->Read(QueryContext(), in_buffer.get(), file_size, 0);
 	source_file->Close();
 	return in_buffer;
 }

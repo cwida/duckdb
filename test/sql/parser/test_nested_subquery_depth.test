@@ -1,0 +1,24 @@
+# name: test/sql/parser/test_nested_subquery_depth.test
+# description: Deeply nested subqueries in the FROM clause are rejected by the expression depth limit
+# group: [parser]
+
+statement ok
+SET max_expression_depth=10;
+
+statement error
+SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1 AS x))))))))))) t;
+----
+<REGEX>:Parser Error.*Max expression depth.*
+
+statement ok
+RESET max_expression_depth;
+
+query I
+SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1 AS x)))));
+----
+1
+
+query II
+SELECT * FROM (SELECT * FROM (SELECT x FROM (SELECT 1 AS x) t1) t2) t3 JOIN LATERAL (SELECT x + 1 AS y) t4 ON true;
+----
+1	2

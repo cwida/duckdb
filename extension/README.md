@@ -230,6 +230,20 @@ too; their version is their own commit hash, so it changes on every commit in th
 DuckDB extensions can use [VCPKG](https://vcpkg.io/en/) to manage their dependencies. Check out the [Extension Template](https://github.com/duckdb/extension-template) for an example
 on how to set up vcpkg in extensions. 
 
+## Installing vcpkg
+Building an extension that has a `vcpkg.json` (e.g. `iceberg`) fails with
+`VCPKG_TOOLCHAIN_PATH is not set` until vcpkg is installed. Check out the vcpkg commit that CI uses (`vcpkg-commit` in
+`.github/workflows/Main.yml`) so that dependency versions match CI:
+```shell
+git clone https://github.com/microsoft/vcpkg ~/vcpkg
+git -C ~/vcpkg checkout <vcpkg-commit from .github/workflows/Main.yml>
+~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+export VCPKG_TOOLCHAIN_PATH=~/vcpkg/scripts/buildsystems/vcpkg.cmake
+GEN=ninja CORE_EXTENSIONS='iceberg' make
+```
+The extensions are built as loadable extensions; load them with `duckdb -unsigned` and
+`LOAD 'build/release/extension/iceberg/iceberg.duckdb_extension'`.
+
 ## Building DuckDB with multiple extensions that use vcpkg
 To build duckdb with multiple extensions that all use vcpkg, some extra steps are required. This is due to the fact that each
 extension will specify their own vcpkg.json manifest for their dependencies, but vcpkg allows only a single manifest. The workaround here

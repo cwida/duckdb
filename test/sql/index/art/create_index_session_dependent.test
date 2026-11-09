@@ -1,0 +1,67 @@
+# name: test/sql/index/art/create_index_session_dependent.test
+# description: Index expressions cannot depend on the session or the query they are bound in
+# group: [art]
+
+statement ok
+ATTACH '{TEMP_DIR}/idx_session_dependent.db' AS w;
+
+statement ok
+CREATE TABLE w.t(v BIGINT, s VARCHAR);
+
+statement error
+CREATE INDEX i1 ON w.t((v + epoch_ms(now())));
+----
+Index keys cannot contain expressions with side effects
+
+statement error
+CREATE UNIQUE INDEX i2 ON w.t((v + txid_current()));
+----
+Index keys cannot contain expressions with side effects
+
+statement ok
+SET VARIABLE x = 42;
+
+statement error
+CREATE INDEX i4 ON w.t((v + getvariable('x')));
+----
+Index keys cannot contain expressions with side effects
+
+statement error
+CREATE INDEX i5 ON w.t((s || current_setting('threads')::VARCHAR));
+----
+Index keys cannot contain expressions with side effects
+
+statement error
+CREATE INDEX i6 ON w.t((s || current_schema()));
+----
+Index keys cannot contain expressions with side effects
+
+# deterministic expressions are still allowed
+statement ok
+CREATE INDEX i7 ON w.t((v + 1));
+
+statement ok
+CREATE INDEX i8 ON w.t((lower(s)));
+
+statement ok
+INSERT INTO w.t VALUES (1, 'a'), (2, 'b');
+
+statement ok
+DETACH w;
+
+statement ok
+ATTACH '{TEMP_DIR}/idx_session_dependent.db' AS w;
+
+statement ok
+DELETE FROM w.t WHERE v = 1;
+
+query I
+SELECT count(*) FROM w.t;
+----
+1
+
+# the functions themselves keep working in queries
+query I
+SELECT getvariable('x') + 1;
+----
+43

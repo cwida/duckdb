@@ -57,7 +57,7 @@ NULL
 
 # Known return types do not invoke catalog-dependent resolve_types callbacks.
 query I
-SELECT index_key(NULL::STRUCT(t VARCHAR), 'PRIMARY_tbl1_0', 1);
+SELECT index_key(NULL::STRUCT(t VARCHAR), 1);
 ----
 NULL
 

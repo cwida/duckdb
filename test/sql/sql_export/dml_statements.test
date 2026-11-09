@@ -243,12 +243,12 @@ CREATE TABLE dml_shadowed(rowid INTEGER, v TEXT);
 statement error
 EXPLAIN (SQL) DELETE FROM dml_shadowed WHERE v = 'a';
 ----
-The modified table does not expose a single named row-id column
+The modified table does not expose an exportable row-id column
 
 statement error
 EXPLAIN (SQL) UPDATE dml_shadowed SET v = 'b';
 ----
-The modified table does not expose a single named row-id column
+The modified table does not expose an exportable row-id column
 
 # inserting into a shadowed table needs no row-id key
 query TT
@@ -323,7 +323,7 @@ SQL would discard the unreferenced CTE producer
 statement error
 EXPLAIN (SQL) CREATE TABLE dml_unexpected(i INTEGER);
 ----
-EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE and MERGE INTO statements only
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
 
 # data-modifying CTE definitions stay in the top-level WITH clause of the generated SQL,
 # including chains with plain definitions between them (strict verification executes the export)

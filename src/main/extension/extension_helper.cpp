@@ -237,6 +237,9 @@ bool ExtensionHelper::TryAutoLoadAvailableExtension(DatabaseInstance &instance, 
 		return true;
 	}
 	try {
+		if (!Settings::Get<AutoloadKnownExtensionsSetting>(instance)) {
+			return false;
+		}
 		auto &fs = FileSystem::GetFileSystem(instance);
 		ExtensionHelper::LoadExternalExtension(instance, fs, AutoLoadOptions(extension_name));
 		return true;
@@ -337,7 +340,7 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 	// scan the install directory for installed extensions
 	auto ext_directory = ExtensionHelper::ExtensionDirectory(db, fs);
 	fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-		if (!StringUtil::EndsWith(path, ".duckdb_extension")) {
+		if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 			return;
 		}
 

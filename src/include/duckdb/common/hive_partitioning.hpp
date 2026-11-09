@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/identifier.hpp"
 #include "duckdb/common/types/column/partitioned_column_data.hpp"
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/original/std/sstream.hpp"
@@ -18,7 +19,8 @@ namespace duckdb {
 struct MultiFilePushdownInfo;
 
 struct HivePartitioningFilterInfo {
-	unordered_map<string, column_t> column_map;
+	identifier_map_t<column_t> column_map;
+	Identifier filename_column;
 	bool hive_enabled;
 	bool filename_enabled;
 };

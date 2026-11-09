@@ -1,0 +1,13 @@
+# name: test/sql/settings/test_disabled_file_systems_whitespace.test
+# description: Test disabled file systems list entries with surrounding whitespace
+# group: [settings]
+
+require skip_reload
+
+statement ok
+SET disabled_filesystems='x, LocalFileSystem ';
+
+statement error
+SELECT * FROM read_csv_auto('{DATA_DIR}/csv/auto/skip_row.csv')
+----
+File system LocalFileSystem has been disabled by configuration

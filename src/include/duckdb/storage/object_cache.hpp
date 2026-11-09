@@ -198,6 +198,10 @@ public:
 		return lru_cache.EvictToReduceAtLeast(target_bytes);
 	}
 
+	//! Evict LRU entries until the buffer pool fits memory_limit.
+	//! Return false if evictable entries run out before reaching the limit.
+	bool EvictToMemoryLimit(idx_t memory_limit);
+
 private:
 	//! Build the internal cache key for a typed entry by namespacing the caller-provided key with the entry's
 	//! ObjectType.

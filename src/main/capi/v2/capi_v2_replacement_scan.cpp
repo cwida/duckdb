@@ -331,7 +331,8 @@ DUCKDB_V2_ERROR duckdb_v2_connection_register_replacement_scan(duckdb_v2_connect
 		auto &context = *Convert(conn)->context;
 		auto built = Convert(scan)->Build(*context.db);
 		// Connection-scoped: this touches only the client's own state, never the shared database config.
-		context.config.replacement_scans.push_back(duckdb::make_shared_ptr<duckdb::ReplacementScan>(std::move(built)));
+		duckdb::ClientConfig::GetConfig(context).replacement_scans.push_back(
+		    duckdb::make_shared_ptr<duckdb::ReplacementScan>(std::move(built)));
 	});
 }
 

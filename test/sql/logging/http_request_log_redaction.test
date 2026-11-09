@@ -26,6 +26,7 @@ CREATE SECRET http_log_headers (
         'Cookie': 'dummy-cookie',
         'x-amz-security-token': 'dummy-token',
         'X-Custom': 'dummy-custom',
+        'X-Amz-Target': 'AWSGlue.GetTable',
         'ETag': 'dummy-etag',
         'AcCePt': 'text/csv',
         'AcCePt-EnCoDiNg': 'identity'
@@ -40,12 +41,13 @@ FROM 'https://raw.githubusercontent.com/duckdb/duckdb/v2.0-cyanoptera/data/csv/h
 query TT rowsort
 SELECT DISTINCT entry.key, entry.value
 FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(request.headers)) AS headers(entry)
-WHERE lower(entry.key) IN ('authorization', 'cookie', 'x-amz-security-token', 'x-custom', 'etag', 'accept', 'accept-encoding');
+WHERE lower(entry.key) IN ('authorization', 'cookie', 'x-amz-security-token', 'x-amz-target', 'x-custom', 'etag', 'accept', 'accept-encoding');
 ----
 AcCePt	text/csv
 AcCePt-EnCoDiNg	identity
 Cookie	redacted
 ETag	redacted
+X-Amz-Target	AWSGlue.GetTable
 X-Custom	redacted
 aUtHoRiZaTiOn	redacted
 x-amz-security-token	redacted
@@ -63,12 +65,13 @@ FROM 'https://raw.githubusercontent.com/duckdb/duckdb/v2.0-cyanoptera/data/csv/h
 query TT rowsort
 SELECT DISTINCT entry.key, entry.value
 FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(request.headers)) AS headers(entry)
-WHERE lower(entry.key) IN ('authorization', 'cookie', 'x-amz-security-token', 'x-custom', 'etag', 'accept', 'accept-encoding');
+WHERE lower(entry.key) IN ('authorization', 'cookie', 'x-amz-security-token', 'x-amz-target', 'x-custom', 'etag', 'accept', 'accept-encoding');
 ----
 AcCePt	text/csv
 AcCePt-EnCoDiNg	identity
 Cookie	dummy-cookie
 ETag	dummy-etag
+X-Amz-Target	AWSGlue.GetTable
 X-Custom	dummy-custom
 aUtHoRiZaTiOn	dummy-authorization
 x-amz-security-token	dummy-token

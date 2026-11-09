@@ -1,0 +1,238 @@
+# name: test/optimizer/remove_redundant_order.test
+# description: ORDER BY in a subquery is removed when the operators above it discard the order (issue #27563)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT range % 10 AS g, range AS v FROM range(1000) ORDER BY hash(range);
+
+# a hash aggregate discards the order of its input
+query II
+EXPLAIN SELECT g, count(*), max(v) FROM (SELECT g, v FROM t ORDER BY v) GROUP BY g;
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query III
+SELECT g, count(*), max(v) FROM (SELECT g, v FROM t ORDER BY v) GROUP BY g ORDER BY g;
+----
+0	100	990
+1	100	991
+2	100	992
+3	100	993
+4	100	994
+5	100	995
+6	100	996
+7	100	997
+8	100	998
+9	100	999
+
+# so does an ungrouped aggregate; avg is rewritten to sum/count before this pass runs
+query II
+EXPLAIN SELECT count(*), avg(v) FROM (SELECT v FROM t ORDER BY v);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query II
+SELECT count(*), avg(v) FROM (SELECT v FROM t ORDER BY v);
+----
+1000	499.5
+
+# row-wise operators between the sort and the aggregate do not matter
+query II
+EXPLAIN SELECT count(*) FROM (SELECT v + 1 AS w FROM (SELECT v FROM t ORDER BY v) WHERE w > 5);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+# nested sorts under an aggregate are all removed
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT * FROM t ORDER BY v) ORDER BY g);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+# an ungrouped aggregate with an order-dependent function sinks its input in order: the sort stays
+query II
+EXPLAIN SELECT first(v) FROM (SELECT v FROM t ORDER BY v DESC);
+----
+physical_plan	<REGEX>:.*Order By.*
+
+query I
+SELECT first(v) FROM (SELECT v FROM t ORDER BY v DESC);
+----
+999
+
+query I
+SELECT list(v) FROM (SELECT v FROM t WHERE v < 5 ORDER BY v DESC);
+----
+[4, 3, 2, 1, 0]
+
+# unless the aggregate sorts its own input (the planner turns that into an ascending sort of its own)
+query II
+EXPLAIN SELECT string_agg(v, ',' ORDER BY v) FROM (SELECT v FROM t ORDER BY v DESC);
+----
+physical_plan	<!REGEX>:.*DESC.*
+
+query I
+SELECT string_agg(v, ',' ORDER BY v) FROM (SELECT v FROM t WHERE v < 5 ORDER BY v DESC);
+----
+0,1,2,3,4
+
+# a hash aggregate sinks in parallel, so its aggregates never see the input order: the sort goes even for first()
+query II
+EXPLAIN SELECT g, max(v), first(v) FROM (SELECT g, v FROM t ORDER BY v DESC) GROUP BY g;
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+# an ORDER BY inside the aggregate is the way to order its input
+query III
+SELECT g, max(v), first(v ORDER BY v DESC) FROM (SELECT g, v FROM t ORDER BY v DESC) GROUP BY g ORDER BY g LIMIT 3;
+----
+0	990	990
+1	991	991
+2	992	992
+
+# plain DISTINCT discards the order
+query II
+EXPLAIN SELECT DISTINCT g FROM (SELECT g FROM t ORDER BY v);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query I
+SELECT DISTINCT g FROM (SELECT g FROM t ORDER BY v) ORDER BY g LIMIT 3;
+----
+0
+1
+2
+
+# DISTINCT ON keeps the first row per group, so its input order matters
+query II
+EXPLAIN SELECT DISTINCT ON (g) v FROM (SELECT g, v FROM t ORDER BY v DESC);
+----
+physical_plan	<REGEX>:.*Order By.*
+
+query I
+SELECT v FROM (SELECT DISTINCT ON (g) v FROM (SELECT g, v FROM t ORDER BY v DESC)) ORDER BY v LIMIT 3;
+----
+990
+991
+992
+
+# joins do not preserve the order of either input
+query II
+EXPLAIN SELECT a.g FROM (SELECT g, v FROM t ORDER BY v) a JOIN (SELECT 1 AS g) b USING (g);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query II
+EXPLAIN SELECT a.g FROM (SELECT 1 AS g) a JOIN (SELECT g, v FROM t ORDER BY v) b USING (g);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query I
+SELECT count(*) FROM (SELECT g, v FROM t ORDER BY v) a JOIN (SELECT 1 AS g) b USING (g);
+----
+100
+
+# an order-dependent aggregate above a join cannot see the order of the join inputs either
+query II
+EXPLAIN SELECT list(a.v) FROM (SELECT g, v FROM t ORDER BY v) a JOIN (SELECT 1 AS g) b USING (g);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+# hash-based set operations discard the order, UNION ALL concatenates in order
+query II
+EXPLAIN SELECT g FROM (SELECT g FROM t ORDER BY v) UNION SELECT 1;
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query II
+EXPLAIN SELECT g FROM (SELECT g FROM t ORDER BY v) INTERSECT SELECT 1;
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+query II
+EXPLAIN SELECT v FROM (SELECT v FROM t ORDER BY v) UNION ALL SELECT 1;
+----
+physical_plan	<REGEX>:.*Order By.*
+
+query I
+SELECT v FROM (SELECT v FROM t WHERE v < 3 ORDER BY v DESC) UNION ALL SELECT 42;
+----
+2
+1
+0
+42
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT v FROM (SELECT v FROM t ORDER BY v) UNION ALL SELECT 1);
+----
+physical_plan	<!REGEX>:.*Order By.*
+
+# a sort above replaces the order below it
+query II
+EXPLAIN SELECT * FROM (SELECT * FROM t ORDER BY v) ORDER BY g;
+----
+physical_plan	<!REGEX>:.*Order By:.*Order By:.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT * FROM t ORDER BY v) ORDER BY g LIMIT 3;
+----
+physical_plan	<!REGEX>:.*Order By: v.*
+
+# LIMIT, window functions and the query result read their input in order
+query I
+SELECT v FROM (SELECT v FROM t ORDER BY v) LIMIT 3;
+----
+0
+1
+2
+
+query II
+EXPLAIN SELECT row_number() OVER (), v FROM (SELECT v FROM t ORDER BY v);
+----
+physical_plan	<REGEX>:.*Order By.*
+
+query II
+SELECT row_number() OVER (), v FROM (SELECT v FROM t ORDER BY v) LIMIT 3;
+----
+1	0
+2	1
+3	2
+
+query II
+EXPLAIN SELECT v FROM (SELECT v FROM t WHERE v < 3 ORDER BY v DESC);
+----
+physical_plan	<REGEX>:.*Order By.*
+
+query I
+SELECT v FROM (SELECT v FROM t WHERE v < 3 ORDER BY v DESC);
+----
+2
+1
+0
+
+# so do sinks that preserve insertion order
+query II
+EXPLAIN CREATE TABLE t2 AS SELECT v FROM (SELECT v FROM t ORDER BY v);
+----
+physical_plan	<REGEX>:.*Order By.*
+
+statement ok
+CREATE TABLE t2 AS SELECT v FROM (SELECT v FROM t ORDER BY v);
+
+query I
+SELECT v FROM t2 LIMIT 3;
+----
+0
+1
+2
+
+# the pass can be disabled
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
+query II
+EXPLAIN SELECT g, count(*), max(v) FROM (SELECT g, v FROM t ORDER BY v) GROUP BY g;
+----
+physical_plan	<REGEX>:.*Order By.*
+
+statement ok
+SET disabled_optimizers = '';

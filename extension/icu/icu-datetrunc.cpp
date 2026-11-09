@@ -1,6 +1,7 @@
 #include "include/icu-datetrunc.hpp"
 #include "include/icu-datefunc.hpp"
 
+#include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -9,6 +10,20 @@
 namespace duckdb {
 
 struct ICUDateTrunc : public ICUDateFunc {
+	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input) {
+		auto part_value = input.TryGetConstant(0);
+		if (part_value && !part_value->IsNull()) {
+			DatePartSpecifier part;
+			if (TryGetDatePartSpecifier(part_value->GetValue<string>(), part) &&
+			    (part == DatePartSpecifier::DECADE || part == DatePartSpecifier::CENTURY ||
+			     part == DatePartSpecifier::MILLENNIUM || part == DatePartSpecifier::ERA)) {
+				// date_trunc is not monotone for these parts because ICU years skip year 0 at the BC/AD boundary
+				input.GetBoundFunction().SetArgProperties({});
+			}
+		}
+		return ICUDateFunc::Bind(input);
+	}
+
 	static void PreserveOffsets(Calendar *calendar) {
 		//	We have to extract _everything_ before setting anything
 		//	Otherwise ICU will clear the fStamp fields
@@ -140,26 +155,27 @@ struct ICUDateTrunc : public ICUDateFunc {
 			}
 			const auto specifier = ConstantVector::GetData<string_t>(part_arg)->GetString();
 			auto truncator = TruncationFactory(GetDatePartSpecifier(specifier));
-			UnaryExecutor::Execute<T, T>(date_arg, result, [&](T input) {
+			UnaryExecutor::Execute<T, timestamp_tz_t>(date_arg, result, [&](T input) {
 				if (input.IsFinite()) {
-					auto micros = SetTime(calendar.get(), input);
+					auto micros = SetTime(calendar.get(), TruncCast<T, timestamp_tz_t>(input));
 					truncator(calendar.get(), micros);
 					return GetTimeUnsafe(calendar.get(), micros);
 				} else {
-					return input;
+					return timestamp_tz_t(input.value);
 				}
 			});
 		} else {
-			BinaryExecutor::Execute<string_t, T, T>(part_arg, date_arg, result, [&](string_t specifier, T input) {
-				if (input.IsFinite()) {
-					auto truncator = TruncationFactory(GetDatePartSpecifier(specifier.GetString()));
-					auto micros = SetTime(calendar.get(), input);
-					truncator(calendar.get(), micros);
-					return GetTimeUnsafe(calendar.get(), micros);
-				} else {
-					return input;
-				}
-			});
+			BinaryExecutor::Execute<string_t, T, timestamp_tz_t>(
+			    part_arg, date_arg, result, [&](string_t specifier, T input) {
+				    if (input.IsFinite()) {
+					    auto truncator = TruncationFactory(GetDatePartSpecifier(specifier.GetString()));
+					    auto micros = SetTime(calendar.get(), TruncCast<T, timestamp_tz_t>(input));
+					    truncator(calendar.get(), micros);
+					    return GetTimeUnsafe(calendar.get(), micros);
+				    } else {
+					    return timestamp_tz_t(input.value);
+				    }
+			    });
 		}
 	}
 
@@ -173,8 +189,10 @@ struct ICUDateTrunc : public ICUDateFunc {
 	static void AddBinaryTimestampFunction(const Identifier &name, ExtensionLoader &loader) {
 		ScalarFunctionSet set {name};
 		set.AddFunction(GetDateTruncFunction<timestamp_tz_t>(LogicalType::TIMESTAMP_TZ));
+		set.AddFunction(GetDateTruncFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		// throws for unrecognized part specifiers and for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.SetArgProperties(1, ArgProperties().NonDecreasing());
 		loader.RegisterFunction(set);
 	}

@@ -54,12 +54,12 @@ sql	<REGEX>:(?s)INSERT\s*INTO\s*.*explain_target.*
 statement error
 EXPLAIN (SQL) CREATE TABLE unexpected(i INTEGER);
 ----
-EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE and MERGE INTO statements only
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
 
 statement error
 EXPLAIN (SQL) CALL range(3);
 ----
-EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE and MERGE INTO statements only
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
 
 statement ok
 PREPARE query_to_explain AS SELECT 1;
@@ -67,7 +67,7 @@ PREPARE query_to_explain AS SELECT 1;
 statement error
 EXPLAIN (SQL) EXECUTE query_to_explain;
 ----
-EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE and MERGE INTO statements only
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
 
 query I
 SELECT count(*) FROM explain_target;

@@ -1,0 +1,84 @@
+# name: test/sql/collate/count_distinct_collation.test
+# description: COUNT DISTINCT normalizes only collated keys in aggregate and window paths
+# group: [collate]
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+CREATE TABLE strings(g INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO strings VALUES (1, 'a'), (1, 'A'), (1, 'Z'), (1, NULL), (2, 'b'), (2, 'B'), (2, 'B'), (2, NULL);
+
+# Both the logical rewrite and native DISTINCT aggregation consume the normalized argument.
+foreach disabled '' 'distinct_aggregate_rewrite'
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+query IIII
+SELECT count(DISTINCT s COLLATE NOCASE), count(DISTINCT s), count(s), count(*) FROM strings;
+----
+3	5	6	8
+
+query III
+SELECT g, count(DISTINCT s COLLATE NOCASE), count(DISTINCT s)
+FROM strings GROUP BY g ORDER BY g;
+----
+1	2	3
+2	1	2
+
+query II
+SELECT count(DISTINCT s COLLATE NOCASE) FILTER (WHERE g = 1),
+       count(DISTINCT s) FILTER (WHERE g = 1)
+FROM strings;
+----
+2	3
+
+# A row containing NULL remains non-NULL after normalizing its collated field.
+query II
+SELECT count(DISTINCT row(s COLLATE NOCASE)), count(DISTINCT row(s)) FROM strings;
+----
+4	6
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+query III
+SELECT DISTINCT g, count(DISTINCT s COLLATE NOCASE) OVER (PARTITION BY g),
+       count(DISTINCT s) OVER (PARTITION BY g)
+FROM strings ORDER BY g;
+----
+1	2	3
+2	1	2
+
+query II
+SELECT count(DISTINCT s COLLATE NOCASE), count(DISTINCT s)
+FROM strings WHERE s IS NULL;
+----
+0	0
+
+query II
+SELECT count(DISTINCT s COLLATE NOCASE), count(DISTINCT s)
+FROM strings WHERE false;
+----
+0	0
+
+statement ok
+SET default_collation = 'nocase';
+
+query II
+SELECT count(DISTINCT s), count(s) FROM strings;
+----
+3	6
+
+statement ok
+SET default_collation = 'binary';
+
+query II
+SELECT count(DISTINCT s), count(s) FROM strings;
+----
+5	6

@@ -1,0 +1,42 @@
+# name: test/sql/function/list/lambdas/reduce_try_empty.test
+# description: TRY suppresses the error of list_reduce on an empty list
+# group: [lambdas]
+
+query I
+SELECT TRY(list_reduce([]::INTEGER[], lambda x, y: x + y));
+----
+NULL
+
+query I
+SELECT TRY(list_reduce([10, 20], lambda x, y: x // 0));
+----
+NULL
+
+statement ok
+CREATE TABLE t AS SELECT i, range(0, (i % 3)) AS lst FROM range(5) t(i);
+
+query II
+SELECT i, TRY(list_reduce(lst, lambda x, y: x + y)) FROM t ORDER BY i;
+----
+0	NULL
+1	0
+2	1
+3	NULL
+4	0
+
+# the error is raised without TRY
+statement error
+SELECT list_reduce([]::INTEGER[], lambda x, y: x + y);
+----
+Parameter Not Allowed Error: Cannot perform list_reduce on an empty input list
+
+statement error
+SELECT i, list_reduce(lst, lambda x, y: x + y) FROM t ORDER BY i;
+----
+Parameter Not Allowed Error: Cannot perform list_reduce on an empty input list
+
+# an initial value avoids the error
+query I
+SELECT list_reduce([]::INTEGER[], lambda x, y: x + y, 99);
+----
+99

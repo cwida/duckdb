@@ -93,6 +93,10 @@ struct DuckDBGrammarExtensionsFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct ActiveGrammarExtensionFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DuckDBExtensionsFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -158,6 +162,10 @@ struct DuckDBLogContextFun {
 };
 
 struct DuckDBIndexesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBLiveQueryMetricsFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 

@@ -108,6 +108,9 @@ struct TimeBucket {
 			    SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, bucket_width_micros);
 		}
 		result_micros = AddOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(result_micros, origin_micros);
+		if (!timestamp_t(result_micros).IsFinite()) {
+			throw OutOfRangeException("Overflow in TIME_BUCKET: the result is not a finite TIMESTAMP");
+		}
 
 		return Timestamp::FromEpochMicroSeconds(result_micros);
 	}

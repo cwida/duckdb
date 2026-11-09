@@ -7,6 +7,8 @@
 #include "duckdb/logging/log_sink.hpp"
 #include "duckdb/logging/logging.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_entries.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -30,6 +32,28 @@ static string GetSinkParameterName(const string &storage_parameter) {
 	return "sink" + storage_parameter.substr(strlen("storage"));
 }
 
+//! File logging requires a path. Reject switching to the file sink without one before mutating any state, so the
+//! active sink is preserved instead of becoming a path-less sink that throws on every later flush (end-of-query
+//! and shutdown included).
+static void VerifyFileSinkPath(LogManager &log_manager, const string &sink,
+                               const case_insensitive_map_t<Value> &sink_config) {
+	if (StringUtil::Lower(sink) != LogConfig::FILE_STORAGE_NAME) {
+		return;
+	}
+	// An enabled file sink keeps its existing path, only a fresh switch is guarded.
+	if (log_manager.IsLogSinkEnabled(LogConfig::FILE_STORAGE_NAME)) {
+		return;
+	}
+	auto path_entry = sink_config.find("path");
+	bool has_usable_path =
+	    path_entry != sink_config.end() && !path_entry->second.IsNull() && !path_entry->second.ToString().empty();
+	if (!has_usable_path) {
+		throw InvalidInputException(
+		    "Cannot enable the 'file' log sink without a valid path. Provide one via sink_path, "
+		    "e.g. CALL enable_logging(sink='file', sink_path='mylog.csv');");
+	}
+}
+
 static void EnableLogging(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto bind_data = data.bind_data->Cast<EnableLoggingBindData>();
 
@@ -44,8 +68,11 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 
 	auto &log_manager = context.db->GetLogManager();
 
+	// a prepared call can run after the sink it was bound against changed
+	VerifyFileSinkPath(log_manager, bind_data.config.storage, bind_data.sink_config);
+
 	// Apply the config generated from the input - restoring the previous config if that fails part-way
-	auto previous_config = log_manager.GetConfig();
+	auto previous = log_manager.GetConfigAndSinks();
 	try {
 		log_manager.SetConfig(*context.db, bind_data.config);
 
@@ -60,7 +87,8 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 			log_manager.UpdateMainLogSinkConfig(*context.db, bind_data.sink_config);
 		}
 	} catch (...) {
-		log_manager.SetConfig(*context.db, previous_config);
+		// the previous sinks themselves, as new ones of their kind would lack their sink config
+		log_manager.RestoreConfig(std::move(previous));
 		throw;
 	}
 }
@@ -80,6 +108,13 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 	if (input.inputs.size() > 1) {
 		throw InvalidInputException("EnableLogging: expected 0 or 1 parameter");
 	}
+
+	auto &config = DBConfig::GetConfig(context);
+	config.CheckLock(EnableLogging::Name);
+	config.CheckLock(EnabledLogTypes::Name);
+	config.CheckLock(LoggingLevel::Name);
+	config.CheckLock(LoggingMode::Name);
+	config.CheckLock(LoggingSink::Name);
 
 	auto result = make_uniq<EnableLoggingBindData>();
 
@@ -135,22 +170,7 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 		}
 	}
 
-	// File logging requires a path. Reject switching to the file sink without one before mutating any
-	// state, so the active sink is preserved instead of becoming a path-less sink that throws
-	// on every later flush (end-of-query and shutdown included).
-	if (StringUtil::Lower(result->config.storage) == LogConfig::FILE_STORAGE_NAME) {
-		// An enabled file sink keeps its existing path; only guard a fresh switch.
-		if (!context.db->GetLogManager().IsLogSinkEnabled(LogConfig::FILE_STORAGE_NAME)) {
-			auto path_entry = result->sink_config.find("path");
-			bool has_usable_path = path_entry != result->sink_config.end() && !path_entry->second.IsNull() &&
-			                       !path_entry->second.ToString().empty();
-			if (!has_usable_path) {
-				throw InvalidInputException(
-				    "Cannot enable the 'file' log sink without a valid path. Provide one via sink_path, "
-				    "e.g. CALL enable_logging(sink='file', sink_path='mylog.csv');");
-			}
-		}
-	}
+	VerifyFileSinkPath(context.db->GetLogManager(), result->config.storage, result->sink_config);
 
 	// Process positional params
 	if (!input.inputs.empty()) {
@@ -191,6 +211,7 @@ static void TruncateLogs(ClientContext &context, TableFunctionInput &data, DataC
 
 static unique_ptr<FunctionData> BindDisableLogging(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
+	DBConfig::GetConfig(context).CheckLock(EnableLogging::Name);
 	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("Success");
 

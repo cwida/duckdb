@@ -1,0 +1,29 @@
+# name: test/sql/copy/parquet/kv_metadata_null.test
+# description: NULL values in the KV_METADATA option of COPY TO parquet
+# group: [parquet]
+
+require parquet
+
+statement error
+COPY (SELECT 1) TO '{TEMP_DIR}/kv_null_blob.parquet' (FORMAT PARQUET, KV_METADATA {quz: NULL::BLOB});
+----
+kv_metadata value for key "quz" cannot be NULL
+
+statement error
+COPY (SELECT 1) TO '{TEMP_DIR}/kv_null_varchar.parquet' (FORMAT PARQUET, KV_METADATA {foo: 'bar', quz: NULL::VARCHAR});
+----
+kv_metadata value for key "quz" cannot be NULL
+
+statement error
+COPY (SELECT 1) TO '{TEMP_DIR}/kv_null_struct.parquet' (FORMAT PARQUET, KV_METADATA NULL::STRUCT(a VARCHAR));
+----
+NULL is not supported as a valid option
+
+statement ok
+COPY (SELECT 1) TO '{TEMP_DIR}/kv_ok.parquet' (FORMAT PARQUET, KV_METADATA {foo: 'bar', baz: '\x01\x02'::BLOB});
+
+query II
+SELECT key::VARCHAR, octet_length(value) FROM parquet_kv_metadata('{TEMP_DIR}/kv_ok.parquet') ORDER BY ALL;
+----
+baz	2
+foo	3

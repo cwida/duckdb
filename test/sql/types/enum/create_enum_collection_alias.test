@@ -1,0 +1,94 @@
+# name: test/sql/types/enum/create_enum_collection_alias.test
+# description: Type aliases for literal enums with list and array suffixes
+# group: [enum]
+
+statement ok
+CREATE TYPE enum_list AS ENUM ('sad', 'ok', 'happy')[]
+
+statement ok
+CREATE TYPE enum_array AS ENUM ('sad', 'ok', 'happy')[2]
+
+statement ok
+CREATE TYPE enum_list_of_arrays AS ENUM ('sad', 'ok', 'happy')[2][]
+
+statement ok
+CREATE TYPE enum_array_of_lists AS ENUM ('sad', 'ok', 'happy')[][2]
+
+statement ok
+CREATE TYPE enum_nested_arrays AS ENUM ('sad', 'ok', 'happy')[2][3]
+
+statement ok
+CREATE TYPE enum_keyword_list AS ENUM ('sad', 'ok', 'happy') ARRAY
+
+statement ok
+CREATE TYPE enum_keyword_array AS ENUM ('sad', 'ok', 'happy') ARRAY[2]
+
+query TTT
+SELECT ['happy', 'sad']::enum_list, ['ok', 'happy']::enum_array, enum_range((['happy']::enum_list)[1])
+----
+[happy, sad]	[ok, happy]	[sad, ok, happy]
+
+query TT
+SELECT [['ok', 'sad'], ['happy', 'ok']]::enum_list_of_arrays, [[], ['sad']]::enum_array_of_lists
+----
+[[ok, sad], [happy, ok]]	[[], [sad]]
+
+query T
+SELECT [['sad', 'ok'], ['ok', 'happy'], ['happy', 'sad']]::enum_nested_arrays
+----
+[[sad, ok], [ok, happy], [happy, sad]]
+
+query TT
+SELECT ['happy']::enum_keyword_list, ['sad', 'ok']::enum_keyword_array
+----
+[happy]	[sad, ok]
+
+statement ok
+CREATE TYPE "quoted enum list" AS ENUM ('it''s ok', 'comma, label', '[]')[]
+
+query TTT
+SELECT labels[1], labels[2], labels[3] FROM (SELECT ['it''s ok', 'comma, label', '[]']::"quoted enum list" AS labels)
+----
+it's ok	comma, label	[]
+
+# Bare enum declarations retain their special handling, including empty enums.
+statement ok
+CREATE TYPE empty_enum AS ENUM ()
+
+query I
+SELECT len(enum_range(NULL::empty_enum))
+----
+0
+
+statement ok
+CREATE TYPE enum_from_query AS ENUM (SELECT label FROM (VALUES ('sad'), ('happy')) t(label))
+
+query T
+SELECT enum_range(NULL::enum_from_query)
+----
+[sad, happy]
+
+# Collection aliases use the same enum and array validation as other types.
+statement error
+CREATE TYPE duplicate_labels AS ENUM ('sad', 'sad')[]
+----
+Attempted to create ENUM type with duplicate value
+
+statement error
+CREATE TYPE null_label AS ENUM ('sad', NULL)[]
+----
+
+statement error
+CREATE TYPE invalid_array AS ENUM ('sad', 'happy')[0]
+----
+ARRAY type size must be at least 1
+
+statement error
+SELECT ['invalid']::enum_list
+----
+Could not convert string
+
+statement error
+SELECT ['happy']::enum_array
+----
+Cannot cast list with length 1 to array with length 2

@@ -1,0 +1,28 @@
+# name: test/sql/function/numeric/bit_count_hugeint.test
+# description: bit_count of HUGEINT does not overflow
+# group: [numeric]
+
+query I
+SELECT bit_count(-1::HUGEINT);
+----
+128
+
+query I
+SELECT bit_count(0::HUGEINT);
+----
+0
+
+query I
+SELECT bit_count(170141183460469231731687303715884105727::HUGEINT);
+----
+127
+
+query I
+SELECT bit_count(-170141183460469231731687303715884105727::HUGEINT - 1);
+----
+1
+
+query I
+SELECT typeof(bit_count(1::HUGEINT));
+----
+SMALLINT

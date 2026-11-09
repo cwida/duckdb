@@ -1,0 +1,74 @@
+# name: test/sql/logging/enable_logging_file_keeps_path.test
+# description: enable_logging keeps the path of the file log sink after a failed switch, a late prepared call and an uppercase sink name
+# group: [logging]
+
+require notwindows
+
+require skip_reload
+
+load {TEMP_DIR}/enable_logging_file_keeps_path.db
+
+# a switch to another sink that fails puts back the file sink with its path
+statement ok
+CALL enable_logging(sink = 'file', sink_config = {'path': '{TEMP_DIR}/keeps_path_switch'});
+
+statement ok
+SELECT 1;
+
+statement error
+CALL enable_logging(sink = 'memory', sink_config = {'delim': '|'});
+----
+delim
+
+statement ok
+SELECT 2;
+
+query I
+SELECT current_setting('logging_sink');
+----
+file
+
+restart
+
+# a prepared switch to the file sink without a path is refused once another sink is active
+statement ok
+CALL enable_logging(sink = 'file', sink_config = {'path': '{TEMP_DIR}/keeps_path_prepared'});
+
+statement ok
+PREPARE p AS SELECT * FROM enable_logging(sink = 'file');
+
+statement ok
+CALL enable_logging(sink = 'memory');
+
+statement error
+EXECUTE p;
+----
+Cannot enable the 'file' log sink without a valid path
+
+statement ok
+SELECT 2;
+
+query I
+SELECT current_setting('logging_sink');
+----
+memory
+
+restart
+
+# a sink name given in uppercase is the file sink that enable_logging keeps
+statement ok
+CALL enable_logging(sink = 'FILE', sink_path = '{TEMP_DIR}/keeps_path_uppercase.csv');
+
+statement ok
+SELECT 1;
+
+statement ok
+CALL enable_logging();
+
+statement ok
+SELECT 2;
+
+query I
+SELECT current_setting('logging_sink');
+----
+file

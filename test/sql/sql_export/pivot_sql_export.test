@@ -48,7 +48,7 @@ FROM (VALUES (1,'a_b','c',10),(2,'a','b_c',20)) t(g,k1,k2,v)
 PIVOT (sum(v) FOR (k1,k2) IN (('a_b','c'),('a','b_c')));
 ----
 1	10	NULL
-2	20	NULL
+2	NULL	20
 
 statement ok
 CREATE SEQUENCE pivot_export_sequence;
@@ -99,6 +99,28 @@ PIVOT (quantile_cont(v,0.25) AS q, string_agg(v::VARCHAR,'|' ORDER BY v) AS s,
        list(v ORDER BY v) AS l FOR k IN ('a','z'));
 ----
 3.0	2|6	[2, 6, NULL]	NULL	NULL	NULL
+
+# A fallible pivot default cannot move into the generated query.
+
+query ITT rowsort
+FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bitstring_agg(v, 1, 3) FOR k IN ('p','q'));
+----
+g	100	NULL
+h	NULL	010
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bitstring_agg(v, 1, 3) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+# The same aggregate still exports outside of a PIVOT default.
+
+query TT
+EXPLAIN (SQL) SELECT bitstring_agg(v, 1, 3) AS b FROM (VALUES (1),(2)) t(v);
+----
+sql	<REGEX>:.*bitstring_agg.*
 
 
 statement ok

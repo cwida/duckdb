@@ -137,17 +137,19 @@ JOIN build_hugeint b
 ----
 analyzed_plan	<!REGEX>:(?s).*IN.*PRF.*\(k\).*
 
-# COMPARE_NOT_DISTINCT_FROM would be the path where filters_null_values could be false,
-# but join filter pushdown does not currently generate PRF filters for it.
+statement ok
+INSERT INTO build VALUES (NULL, 0);
+
+# Neither key is non-null, so this comparison cannot simplify to ordinary equality.
 query II
 EXPLAIN ANALYZE
 SELECT count(*)
-FROM probe p
+FROM probe_with_null p
 JOIN build b
   ON p.k IS NOT DISTINCT FROM b.k
  AND p.g >= b.g;
 ----
-analyzed_plan	<!REGEX>:(?s).*IN.*PRF.*\(k\).*
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
 
 statement ok
 SET disabled_optimizers = '';

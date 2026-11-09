@@ -50,6 +50,23 @@ public:
 void RemapNested(Vector &input, Vector &default_vector, Vector &result, idx_t result_size,
                  const vector<RemapColumnInfo> &remap_info);
 
+//! Marks the children of every struct row that is NULL in the validity as NULL
+void PropagateStructNulls(Vector &vec, const ValidityMask &validity, idx_t count) {
+	if (vec.GetType().id() != LogicalTypeId::STRUCT) {
+		return;
+	}
+	for (auto &child : StructVector::GetEntries(vec)) {
+		child.Flatten();
+		auto &child_validity = FlatVector::ValidityMutable(child);
+		for (idx_t row = 0; row < count; row++) {
+			if (!validity.RowIsValid(row)) {
+				child_validity.SetInvalid(row);
+			}
+		}
+		PropagateStructNulls(child, child_validity, count);
+	}
+}
+
 void RemapChildVectors(const Vector &result, const vector<reference<Vector>> &input_vectors,
                        const vector<reference<Vector>> &result_vectors, const vector<RemapColumnInfo> &remap_info,
                        Vector &default_vector, const bool has_top_level_null, idx_t count) {
@@ -66,6 +83,20 @@ void RemapChildVectors(const Vector &result, const vector<reference<Vector>> &in
 			}
 			RemapNested(input_vector, child_default.get(), result_vectors[i], count, remap.child_remap_info);
 			continue;
+		}
+		if (!remap.index.IsValid() && remap.default_index.IsValid() && !remap.child_remap_info.empty()) {
+			// nested default without a source - remap the fields of the default to the target type
+			auto &defaults = StructVector::GetEntries(default_vector);
+			auto &nested_default = defaults[remap.default_index.GetIndex()];
+			if (nested_default.GetType().id() == LogicalTypeId::STRUCT &&
+			    result_vectors[i].get().GetType().id() == LogicalTypeId::STRUCT) {
+				RemapNested(nested_default, nested_default, result_vectors[i], count, remap.child_remap_info);
+				if (has_top_level_null) {
+					FlatVector::SetValidity(result_vectors[i], FlatVector::Validity(result));
+					PropagateStructNulls(result_vectors[i], FlatVector::Validity(result), count);
+				}
+				continue;
+			}
 		}
 		// primitive type remap
 		if (remap.default_index.IsValid()) {
@@ -492,8 +523,17 @@ struct RemapEntry {
 	static LogicalType RemapCast(const LogicalType &type, const identifier_map_t<RemapEntry> &remap_map) {
 		unordered_map<idx_t, string> source_name_map;
 		for (auto &entry : remap_map) {
-			if (entry.second.index.IsValid()) {
-				source_name_map.emplace(entry.second.index.GetIndex(), entry.first);
+			if (!entry.second.index.IsValid()) {
+				continue;
+			}
+			auto result = source_name_map.emplace(entry.second.index.GetIndex(), entry.first);
+			if (!result.second) {
+				auto &other = remap_map.find(Identifier(result.first->second))->second;
+				if (other.target_type != entry.second.target_type) {
+					throw BinderException("remap_struct cannot map a single source field to targets of different "
+					                      "types ('%s' and '%s')",
+					                      other.target_type.ToString(), entry.second.target_type.ToString());
+				}
 			}
 		}
 
@@ -536,6 +576,13 @@ void VerifyRemapArgumentTypes(const vector<LogicalType> &types) {
 	}
 	auto &from_type = types[0];
 	auto &to_type = types[1];
+
+	auto &mapping_type = types[2];
+	if (mapping_type.id() != LogicalTypeId::SQLNULL && !StructType::IsStruct(mapping_type)) {
+		throw BinderException(
+		    "The mapping provided to 'remap_struct' should be of type STRUCT if it's not NULL, not '%s'",
+		    mapping_type.ToString());
+	}
 
 	auto &defaults_type = types[3];
 	if (defaults_type.id() != LogicalTypeId::SQLNULL && !StructType::IsStruct(defaults_type)) {

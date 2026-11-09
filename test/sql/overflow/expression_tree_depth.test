@@ -29,49 +29,49 @@ test-env DEEP_EXPRESSION_DEPTH 2000
 
 # select list
 statement error
-FROM query('SELECT ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', ${DEEP_EXPRESSION_DEPTH}))
+FROM query('SELECT ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', {DEEP_EXPRESSION_DEPTH}))
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # a STAR nested deep inside an expression
 statement error
-FROM query('SELECT ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || 'COLUMNS(*)' || repeat(')', ${DEEP_EXPRESSION_DEPTH}) || ' FROM deep_t')
+FROM query('SELECT ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || 'COLUMNS(*)' || repeat(')', {DEEP_EXPRESSION_DEPTH}) || ' FROM deep_t')
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # WHERE
 statement error
-FROM query('SELECT 1 FROM deep_t WHERE ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', ${DEEP_EXPRESSION_DEPTH}) || ' > 0')
+FROM query('SELECT 1 FROM deep_t WHERE ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', {DEEP_EXPRESSION_DEPTH}) || ' > 0')
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # GROUP BY
 statement error
-FROM query('SELECT 1 FROM deep_t GROUP BY ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', ${DEEP_EXPRESSION_DEPTH}))
+FROM query('SELECT 1 FROM deep_t GROUP BY ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', {DEEP_EXPRESSION_DEPTH}))
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # HAVING
 statement error
-FROM query('SELECT 1 FROM deep_t GROUP BY x HAVING ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', ${DEEP_EXPRESSION_DEPTH}) || ' > 0')
+FROM query('SELECT 1 FROM deep_t GROUP BY x HAVING ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', {DEEP_EXPRESSION_DEPTH}) || ' > 0')
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # QUALIFY
 statement error
-FROM query('SELECT 1 FROM deep_t QUALIFY ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', ${DEEP_EXPRESSION_DEPTH}) || ' > 0')
+FROM query('SELECT 1 FROM deep_t QUALIFY ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', {DEEP_EXPRESSION_DEPTH}) || ' > 0')
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # ORDER BY
 statement error
-FROM query('SELECT 1 FROM deep_t ORDER BY ' || repeat('abs(', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', ${DEEP_EXPRESSION_DEPTH}))
+FROM query('SELECT 1 FROM deep_t ORDER BY ' || repeat('abs(', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(')', {DEEP_EXPRESSION_DEPTH}))
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
 # nested list form, GROUP BY [[[ ... ]]]
 statement error
-FROM query('SELECT 1 FROM deep_t GROUP BY ' || repeat('[', ${DEEP_EXPRESSION_DEPTH}) || '1' || repeat(']', ${DEEP_EXPRESSION_DEPTH}))
+FROM query('SELECT 1 FROM deep_t GROUP BY ' || repeat('[', {DEEP_EXPRESSION_DEPTH}) || '1' || repeat(']', {DEEP_EXPRESSION_DEPTH}))
 ----
 <REGEX>:.*Max expression depth limit of 1000 exceeded.*
 
@@ -158,7 +158,7 @@ PREPARE p AS SELECT abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(
 
 # COPY (query) TO
 statement error
-COPY (SELECT abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) TO '__TEST_DIR__/depth.csv'
+COPY (SELECT abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(abs(1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) TO '{TEST_DIR}/depth.csv'
 ----
 <REGEX>:.*Max expression depth limit of 100 exceeded.*
 

@@ -1,0 +1,15 @@
+# name: test/sql/parser/reject_accidental_type_syntax.test
+# description: Type syntax the PEG grammar accepted by accident is rejected
+# group: [parser]
+
+# TIMESTAMP WITH TIME ZONE has no precision variants - the time zone used to be dropped silently
+statement error
+SELECT '2020-01-01'::TIMESTAMP(3) WITH TIME ZONE;
+----
+TIMESTAMP WITH TIME ZONE does not take a precision
+
+query III
+SELECT typeof('2020-01-01'::TIMESTAMP(3)), typeof('2020-01-01'::TIMESTAMP(3) WITHOUT TIME ZONE),
+       typeof('2020-01-01'::TIMESTAMP WITH TIME ZONE);
+----
+TIMESTAMP_MS	TIMESTAMP_MS	TIMESTAMP WITH TIME ZONE

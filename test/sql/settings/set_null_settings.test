@@ -53,6 +53,11 @@ SET default_block_size=NULL;
 default_block_size setting cannot be NULL
 
 statement error
+SET enable_block_allocator=NULL;
+----
+enable_block_allocator setting cannot be NULL
+
+statement error
 SET enable_external_access=NULL;
 ----
 enable_external_access setting cannot be NULL

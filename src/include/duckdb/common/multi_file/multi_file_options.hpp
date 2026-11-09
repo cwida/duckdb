@@ -30,6 +30,9 @@ struct MultiFileOptions {
 	//! The maximum number of files that are opened to determine the schema - the schemas of the sampled files are
 	//! combined into one. NumericLimits<idx_t>::Maximum() samples every file
 	idx_t maximum_sample_files = 1;
+	//! A scan of at most this many files (0: none) opens all of them at bind for their exact row count and merged
+	//! column statistics, without changing the schema. Not serialized
+	idx_t maximum_files_for_stats = 0;
 	//! Whether the schemas of the sampled files are combined into a union of their columns - files are then allowed
 	//! to be missing columns of the combined schema, the way they are with union_by_name. This is how the schemas of
 	//! sampled files are combined unless the reader combines them itself
@@ -68,7 +71,12 @@ struct MultiFileOptions {
 	DUCKDB_API void Serialize(Serializer &serializer) const;
 	DUCKDB_API static MultiFileOptions Deserialize(Deserializer &source);
 	DUCKDB_API void AddBatchInfo(BindInfo &bind_info) const;
-	DUCKDB_API void AutoDetectHivePartitioning(MultiFileList &files, ClientContext &context);
+	//! Settle the hive partitioning options against each other and against the files: hive_types implies
+	//! hive_partitioning, and the type of a partition key the caller did not give is taken from the values
+	//! in the paths. With detect_partitioning, WHETHER the files are partitioned is taken from the paths
+	//! too; a caller that already knows the scan's schema passes false and asks for partitioning itself
+	DUCKDB_API void AutoDetectHivePartitioning(MultiFileList &files, ClientContext &context,
+	                                           bool detect_partitioning = true);
 	DUCKDB_API static bool AutoDetectHivePartitioningInternal(MultiFileList &files, ClientContext &context);
 	DUCKDB_API void AutoDetectHiveTypesInternal(MultiFileList &files, ClientContext &context);
 	DUCKDB_API void VerifyHiveTypesArePartitions(const std::map<string, string> &partitions) const;

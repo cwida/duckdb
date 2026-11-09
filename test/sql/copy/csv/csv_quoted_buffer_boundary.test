@@ -1,0 +1,18 @@
+# name: test/sql/copy/csv/csv_quoted_buffer_boundary.test
+# description: Read quoted values that straddle buffer boundaries with many different buffer sizes
+# group: [csv]
+
+statement ok
+SET threads=8
+
+statement ok
+COPY (SELECT i, 'v' || i AS s, i % 7 AS k FROM range(5000) r(i)) TO '{TEST_DIR}/quoted_boundary.csv' (FORCE_QUOTE (s));
+
+loop buf 20 64
+
+query IIII
+SELECT count(*), sum(i), count(DISTINCT s), sum(k) FROM read_csv('{TEST_DIR}/quoted_boundary.csv', buffer_size={buf}, max_line_size={buf});
+----
+5000	12497500	5000	14995
+
+endloop

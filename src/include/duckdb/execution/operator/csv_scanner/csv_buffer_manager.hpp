@@ -80,7 +80,7 @@ protected:
 	//! The size of the buffer, if the csv file has a smaller size than this, we will use that instead to malloc less
 	idx_t buffer_size;
 	//! Because the buffer manager can be accessed in Parallel we need a mutex.
-	mutex main_mutex;
+	mutable mutex main_mutex;
 };
 
 } // namespace duckdb

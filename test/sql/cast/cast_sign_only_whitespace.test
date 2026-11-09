@@ -1,0 +1,52 @@
+# name: test/sql/cast/cast_sign_only_whitespace.test
+# description: a sign followed only by whitespace is not a number
+# group: [cast]
+
+query IIII
+SELECT TRY_CAST('- ' AS BIGINT), TRY_CAST('+ ' AS INTEGER), TRY_CAST('-' || chr(9) AS SMALLINT), TRY_CAST('-  ' AS HUGEINT)
+----
+NULL	NULL	NULL	NULL
+
+query II
+SELECT TRY_CAST('- ' AS DECIMAL(10,2)), TRY_CAST('+ ' AS DECIMAL(18,3))
+----
+NULL	NULL
+
+# Unsigned integers and both ends of the DECIMAL storage-width range use the same parser.
+query IIII
+SELECT TRY_CAST('+' || chr(9) AS UINTEGER), TRY_CAST('+ ' AS UHUGEINT), TRY_CAST('- ' AS DECIMAL(4,2)), TRY_CAST('+ ' AS DECIMAL(38,3))
+----
+NULL	NULL	NULL	NULL
+
+# Exponents must contain a digit even when trailing whitespace follows the sign.
+query III
+SELECT TRY_CAST('1e ' AS INTEGER), TRY_CAST('1e+ ' AS BIGINT), TRY_CAST('1e-' || chr(9) AS HUGEINT)
+----
+NULL	NULL	NULL
+
+statement error
+SELECT '- '::BIGINT
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT '+ '::DECIMAL(10,2)
+----
+<REGEX>:Conversion Error.*
+
+# a sign with digits and trailing whitespace is still accepted
+query III
+SELECT '-1 '::BIGINT, '+2  '::INTEGER, '-3.50 '::DECIMAL(10,2)
+----
+-1	2	-3.50
+
+# leading whitespace before the sign is still accepted, a sign alone is still rejected
+query II
+SELECT ' -4'::INTEGER, TRY_CAST('-' AS INTEGER)
+----
+-4	NULL
+
+query III
+SELECT '1e+1 '::INTEGER, '-1e2 '::BIGINT, '0 '::DECIMAL(4,2)
+----
+10	-100	0.00
