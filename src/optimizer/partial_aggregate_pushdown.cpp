@@ -114,6 +114,19 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
 	return true;
 }
 
+// An aggregate argument that can throw must only see the rows the join lets through: evaluated below an inner join
+// it would also run on the rows the join eliminates and could fail a query that succeeds without the pushdown.
+static bool AggregateArgumentsCanThrow(const LogicalAggregate &aggr) {
+	for (auto &expr : aggr.expressions) {
+		for (auto &child : expr->Cast<BoundAggregateExpression>().GetChildren()) {
+			if (child->CanThrow()) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 static bool ContainsAggregateInput(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
 		return true;
@@ -341,6 +354,10 @@ static bool AnalyzePushdown(LogicalAggregate &aggr, LogicalComparisonJoin &join,
 		return false;
 	}
 	if (!JoinPreservesAggregateSide(join, info)) {
+		return false;
+	}
+	// A preserved side of an outer join keeps every row, so the argument is evaluated on all of them either way.
+	if (join.join_type == JoinType::INNER && AggregateArgumentsCanThrow(aggr)) {
 		return false;
 	}
 	if (ContainsAggregateInput(*join.children[info.aggregate_side])) {
@@ -828,7 +845,7 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	LogicalJoin::GetTableReferences(*join.children[1], side_bindings[1]);
 
 	vector<DoubleEagerAggregate> aggregates;
-	if (!DEClassifyAggregates(aggr, side_bindings, aggregates)) {
+	if (!DEClassifyAggregates(aggr, side_bindings, aggregates) || AggregateArgumentsCanThrow(aggr)) {
 		return false;
 	}
 

@@ -1,0 +1,144 @@
+# name: test/optimizer/partial_aggregate_pushdown_throwing_argument.test
+# description: Partial aggregate pushdown must not evaluate an argument that can throw on rows the join eliminates
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS id, i % 5 AS a, i % 3 AS b FROM range(100) t(i) WHERE i <> 50;
+
+# The fact rows with id = 50 have no dimension row and hold a value that does not convert to INTEGER.
+statement ok
+CREATE TABLE fact AS SELECT i % 100 AS id, CASE WHEN i % 100 = 50 THEN 'oops' ELSE (i % 7)::VARCHAR END AS v FROM range(10000) t(i);
+
+# The cast must only run on the rows the join lets through.
+query III
+SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	2100
+0	1	1800
+0	2	1802
+1	0	2100
+1	1	2100
+1	2	1798
+2	0	1796
+2	1	2100
+2	2	2100
+3	0	2100
+3	1	1801
+3	2	2100
+4	0	2100
+4	1	2100
+4	2	1799
+
+# An argument that can throw keeps the aggregate above the inner join.
+query II
+EXPLAIN SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# An argument that cannot throw is still pushed below the join.
+query II
+EXPLAIN SELECT a, b, sum(TRY_CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(TRY_CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	2100
+0	1	1800
+0	2	1802
+1	0	2100
+1	1	2100
+1	2	1798
+2	0	1796
+2	1	2100
+2	2	2100
+3	0	2100
+3	1	1801
+3	2	2100
+4	0	2100
+4	1	2100
+4	2	1799
+
+# A join that preserves the aggregate side evaluates the argument on every fact row either way, so pushing it
+# below the join does not change which rows it sees.
+query II
+EXPLAIN SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact LEFT JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Arithmetic that can overflow is an argument that can throw as well: the unmatched row holds the BIGINT maximum.
+statement ok
+CREATE TABLE fact_wide AS SELECT i AS id, CASE WHEN i = 50 THEN 9223372036854775807 ELSE i END AS v FROM range(100) t(i);
+
+query III
+SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	630
+0	1	570
+0	2	600
+1	0	714
+1	1	644
+1	2	582
+2	0	594
+2	1	728
+2	2	658
+3	0	672
+3	1	606
+3	2	742
+4	0	756
+4	1	686
+4	2	618
+
+query II
+EXPLAIN SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# The plain column is still pushed below the join.
+query II
+EXPLAIN SELECT a, b, sum(v) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# The same results without the optimizer.
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown'
+
+query III
+SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	2100
+0	1	1800
+0	2	1802
+1	0	2100
+1	1	2100
+1	2	1798
+2	0	1796
+2	1	2100
+2	2	2100
+3	0	2100
+3	1	1801
+3	2	2100
+4	0	2100
+4	1	2100
+4	2	1799
+
+query III
+SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	630
+0	1	570
+0	2	600
+1	0	714
+1	1	644
+1	2	582
+2	0	594
+2	1	728
+2	2	658
+3	0	672
+3	1	606
+3	2	742
+4	0	756
+4	1	686
+4	2	618
