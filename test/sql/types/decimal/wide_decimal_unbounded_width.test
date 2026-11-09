@@ -7,6 +7,10 @@ require no_force_storage
 
 require parquet
 
+# the widths of this test exceed the default bound of max_decimal_width
+statement ok
+SET max_decimal_width = 4294967295;
+
 # the type binds any width
 query IIII
 SELECT typeof('1'::DECIMAL(300,100)), typeof('1'::DECIMAL(1000,0)), typeof(1::DECIMAL(4294967295,0)), typeof(NULL::DECIMAL(4294967295,4294967295))
@@ -120,6 +124,22 @@ query III
 SELECT ('1' || repeat('0', 299))::DECIMAL(300,0) > repeat('9', 299)::DECIMAL(299,0), ('1' || repeat('0', 299))::DECIMAL(300,0) = ('1' || repeat('0', 299))::DECIMAL(400,100), typeof(CASE WHEN true THEN '1'::DECIMAL(300,100) ELSE '1'::DECIMAL(400,50) END)
 ----
 true	true	DECIMAL(450,100)
+
+# a common type beyond the uint32_t range is an error, the scale is never truncated silently
+statement error
+SELECT coalesce('0.5'::DECIMAL(4294967295,1), 0::DECIMAL(4294967295,0))
+----
+Combining DECIMAL(4294967295,1) and DECIMAL(4294967295,0) needs a DECIMAL of 4294967296 digits
+
+statement error
+SELECT CASE WHEN true THEN '0.5'::DECIMAL(4294967295,1) ELSE 0::DECIMAL(4294967295,0) END
+----
+needs a DECIMAL of 4294967296 digits
+
+query II
+SELECT coalesce('0.5'::DECIMAL(4294967294,1), 0::DECIMAL(4294967294,0)) AS c, typeof(c)
+----
+0.5	DECIMAL(4294967295,1)
 
 query I
 SELECT typeof(col0) FROM (VALUES ('1'::DECIMAL(300,100)), (1::DECIMAL(38,2)), (NULL)) LIMIT 1

@@ -147,12 +147,15 @@ static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, cons
 	idx_t width = idx_t(extra_width) + scale;
 	const idx_t width_limit = Decimal::MaxResultWidth(
 	    logical_type_resolver.context, MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right)));
-	if (width > width_limit) {
-		// if the resulting decimal does not fit, we truncate the scale
+	if (width > width_limit && !Decimal::IsWide(width_limit)) {
+		// the result does not fit the fixed-size tiers: truncate the scale
 		width = width_limit;
 		scale = NumericCast<uint32_t>(width - extra_width);
 	}
-	result = LogicalType::DECIMAL(NumericCast<uint32_t>(width), scale);
+	// a wide result is never truncated, a result beyond the maximum width is an error
+	result = LogicalType::DECIMAL(Decimal::CheckedWidth(logical_type_resolver.context, width,
+	                                                    "Combining " + left.ToString() + " and " + right.ToString()),
+	                              scale);
 	return true;
 }
 static bool CombineEqualList(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,

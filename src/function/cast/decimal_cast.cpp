@@ -9,6 +9,28 @@
 
 namespace duckdb {
 
+static unique_ptr<FunctionLocalState> InitWideDecimalCastState(CastLocalStateParameters &parameters) {
+	return make_uniq<WideDecimalCastState>(parameters.context);
+}
+
+static bool IsWideDecimal(const LogicalType &type) {
+	return type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(type));
+}
+
+BoundCastInfo DefaultCasts::WideDecimalCast(BoundCastInfo info, const LogicalType &source, const LogicalType &target) {
+	if (!info.HasInitLocalState() && (IsWideDecimal(source) || IsWideDecimal(target))) {
+		info.SetInitLocalState(InitWideDecimalCastState);
+	}
+	return info;
+}
+
+optional_ptr<ClientContext> DefaultCasts::WideDecimalCastContext(CastParameters &parameters) {
+	if (!parameters.local_state) {
+		return nullptr;
+	}
+	return parameters.local_state->Cast<WideDecimalCastState>().context;
+}
+
 template <class T>
 static bool FromDecimalCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	auto &source_type = source.GetType();
@@ -193,7 +215,8 @@ struct BignumDecimalScaleInput {
 	BignumDecimalScaleInput(Vector &result_p, CastParameters &parameters, uint32_t source_width_p,
 	                        uint32_t source_scale_p, uint32_t target_width_p, uint32_t target_scale_p)
 	    : result(result_p), vector_cast_data(result, parameters), source_width(source_width_p),
-	      source_scale(source_scale_p), target_width(target_width_p), target_scale(target_scale_p) {
+	      source_scale(source_scale_p), target_width(target_width_p), target_scale(target_scale_p),
+	      context(DefaultCasts::WideDecimalCastContext(parameters)) {
 	}
 
 	Vector &result;
@@ -202,6 +225,7 @@ struct BignumDecimalScaleInput {
 	uint32_t source_scale;
 	uint32_t target_width;
 	uint32_t target_scale;
+	optional_ptr<ClientContext> context;
 };
 
 //! The unscaled value of a decimal as a BIGNUM (the blob of a fixed-size tier is written into "blob")
@@ -221,7 +245,8 @@ struct BignumDecimalScaleOperator {
 		string unscaled_blob;
 		auto unscaled = UnscaledBignum(input, unscaled_blob);
 		string rescaled;
-		if (!BignumDecimal::TryRescale(unscaled, data.source_scale, data.target_width, data.target_scale, rescaled)) {
+		if (!BignumDecimal::TryRescale(unscaled, data.source_scale, data.target_width, data.target_scale, rescaled,
+		                               data.context)) {
 			auto error = StringUtil::Format("Casting value \"%s\" to type %s failed: value is out of range!",
 			                                Decimal::ToString(input, data.source_width, data.source_scale),
 			                                data.result.GetType().ToString());
@@ -333,6 +358,18 @@ struct StringCastFromDecimalOperator {
 	}
 };
 
+//! The bignum_t tier formats through the context of the cast, so that a long conversion checks for interrupts
+static bool BignumDecimalToStringCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	auto &source_type = source.GetType();
+	auto width = DecimalType::GetWidth(source_type);
+	auto scale = DecimalType::GetScale(source_type);
+	auto context = DefaultCasts::WideDecimalCastContext(parameters);
+	UnaryExecutor::Execute<bignum_t, string_t>(source, result, count, [&](bignum_t input) {
+		return StringVector::AddString(result, Decimal::ToString(input, width, scale, context));
+	});
+	return true;
+}
+
 template <class SRC>
 static bool DecimalToStringCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	auto &source_type = source.GetType();
@@ -344,8 +381,8 @@ static bool DecimalToStringCast(Vector &source, Vector &result, idx_t count, Cas
 	return true;
 }
 
-BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const LogicalType &source,
-                                              const LogicalType &target) {
+static BoundCastInfo DecimalCastSwitchInternal(BindCastInput &input, const LogicalType &source,
+                                               const LogicalType &target) {
 	// now switch on the result type
 	switch (target.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -405,7 +442,7 @@ BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const Logica
 		case PhysicalType::INT128:
 			return DecimalToStringCast<hugeint_t>;
 		case PhysicalType::VARCHAR:
-			return DecimalToStringCast<bignum_t>;
+			return BignumDecimalToStringCast;
 		default:
 			throw InternalException("Unimplemented internal decimal type");
 		}
@@ -413,6 +450,11 @@ BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const Logica
 	default:
 		return DefaultCasts::TryVectorNullCast;
 	}
+}
+
+BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const LogicalType &source,
+                                              const LogicalType &target) {
+	return WideDecimalCast(DecimalCastSwitchInternal(input, source, target), source, target);
 }
 
 } // namespace duckdb

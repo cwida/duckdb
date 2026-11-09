@@ -123,7 +123,7 @@ static void IncrementDecimalString(string &digits) {
 }
 
 string Bignum::EncodeVarcharBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative,
-                                   bool is_zero, bool should_round_up) {
+                                   bool is_zero, bool should_round_up, optional_ptr<ClientContext> context) {
 	if (start_pos == end_pos && !should_round_up) {
 		is_zero = true;
 	}
@@ -132,9 +132,9 @@ string Bignum::EncodeVarcharBignum(const string_t &value, idx_t start_pos, idx_t
 		IncrementDecimalString(integer_digits);
 		is_zero = false;
 		string_t rounded_digits(integer_digits);
-		return EncodeBignum(rounded_digits, 0, integer_digits.size(), is_negative, is_zero);
+		return EncodeBignum(rounded_digits, 0, integer_digits.size(), is_negative, is_zero, context);
 	}
-	return EncodeBignum(value, start_pos, end_pos, is_negative, is_zero);
+	return EncodeBignum(value, start_pos, end_pos, is_negative, is_zero, context);
 }
 
 bool Bignum::VarcharFormatting(const string_t &value, idx_t &start_pos, idx_t &end_pos, bool &is_negative,
@@ -218,41 +218,94 @@ bool Bignum::VarcharFormatting(const string_t &value, idx_t &start_pos, idx_t &e
 	return true;
 }
 
-string Bignum::EncodeBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative, bool is_zero) {
-	if (is_zero) {
-		// Return Value 0
-		return InitializeBignumZero();
-	}
-	auto int_value_char = value.GetData();
-	idx_t actual_size = end_pos - start_pos;
+//! Below this number of decimal digits, a string is converted to base 2^32 digits chunk by chunk
+static constexpr idx_t PARSE_THRESHOLD = 1024;
 
-	// convert the decimal digits to base 2**32 digits (least significant first), DECIMAL_SHIFT digits at a time
-	vector<digit_t> digits;
-	digits.reserve(actual_size / DECIMAL_SHIFT + 1);
-	idx_t chunk_size = actual_size % DECIMAL_SHIFT;
+//! Converts decimal digits to little-endian base 2^32 digits, DECIMAL_SHIFT digits at a time (quadratic)
+static void ShortDecimalToMagnitude(BignumArithmeticState &state, const char *data, idx_t count,
+                                    unsafe_vector<digit_t> &digits) {
+	digits.clear();
+	idx_t chunk_size = count % Bignum::DECIMAL_SHIFT;
 	if (chunk_size == 0) {
-		chunk_size = DECIMAL_SHIFT;
+		chunk_size = Bignum::DECIMAL_SHIFT;
 	}
 	digit_t chunk_base = 1;
 	for (idx_t i = 0; i < chunk_size; i++) {
 		chunk_base *= 10;
 	}
-	for (idx_t pos = start_pos; pos < end_pos; pos += chunk_size, chunk_size = DECIMAL_SHIFT) {
+	for (idx_t pos = 0; pos < count; pos += chunk_size, chunk_size = Bignum::DECIMAL_SHIFT) {
+		state.AccountWork(digits.size() + chunk_size);
 		digit_t carry = 0;
 		for (idx_t i = pos; i < pos + chunk_size; i++) {
-			carry = carry * 10 + static_cast<digit_t>(int_value_char[i] - '0');
+			carry = carry * 10 + static_cast<digit_t>(data[i] - '0');
 		}
 		// digits = digits * 10**chunk_size + chunk
 		for (auto &digit : digits) {
 			twodigit_t tmp = static_cast<twodigit_t>(digit) * chunk_base + carry;
 			digit = static_cast<digit_t>(tmp);
-			carry = static_cast<digit_t>(tmp >> DIGIT_BITS);
+			carry = static_cast<digit_t>(tmp >> Bignum::DIGIT_BITS);
 		}
 		if (carry) {
 			digits.push_back(carry);
 		}
-		chunk_base = DECIMAL_BASE;
+		chunk_base = Bignum::DECIMAL_BASE;
 	}
+}
+
+//! Converts decimal digits to base 2^32 digits by divide and conquer: the digits are high * 10^n + low with
+//! n = DECIMAL_SHIFT * 2^k the largest such count below the digit count, powers[k] holds 10^(DECIMAL_SHIFT * 2^k)
+static void DecimalToMagnitude(BignumArithmeticState &state, const char *data, idx_t count,
+                               vector<unsafe_vector<digit_t>> &powers, unsafe_vector<digit_t> &digits) {
+	if (count <= PARSE_THRESHOLD) {
+		ShortDecimalToMagnitude(state, data, count, digits);
+		return;
+	}
+	idx_t k = 0;
+	idx_t low_count = Bignum::DECIMAL_SHIFT;
+	while (2 * low_count < count) {
+		low_count *= 2;
+		k++;
+	}
+	unsafe_vector<digit_t> high;
+	unsafe_vector<digit_t> low;
+	DecimalToMagnitude(state, data, count - low_count, powers, high);
+	DecimalToMagnitude(state, data + count - low_count, low_count, powers, low);
+	if (powers.empty()) {
+		unsafe_vector<digit_t> base;
+		base.push_back(Bignum::DECIMAL_BASE);
+		powers.push_back(std::move(base));
+	}
+	while (powers.size() <= k) {
+		unsafe_vector<digit_t> square;
+		BignumIntermediate::MultiplyMagnitudes(state, powers.back(), powers.back(), square);
+		powers.push_back(std::move(square));
+	}
+	BignumIntermediate::MultiplyMagnitudes(state, high, powers[k], digits);
+	// digits += low, with room for the carry
+	digits.resize(MaxValue<idx_t>(digits.size(), low.size()) + 1, 0);
+	twodigit_t carry = 0;
+	for (idx_t i = 0; i < digits.size(); i++) {
+		const twodigit_t sum = static_cast<twodigit_t>(digits[i]) + (i < low.size() ? low[i] : 0) + carry;
+		digits[i] = static_cast<digit_t>(sum);
+		carry = sum >> Bignum::DIGIT_BITS;
+	}
+	D_ASSERT(carry == 0);
+	while (!digits.empty() && digits.back() == 0) {
+		digits.pop_back();
+	}
+}
+
+string Bignum::EncodeBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative, bool is_zero,
+                            optional_ptr<ClientContext> context) {
+	if (is_zero) {
+		// Return Value 0
+		return InitializeBignumZero();
+	}
+	// convert the decimal digits to base 2**32 digits (least significant first)
+	BignumArithmeticState state(context);
+	vector<unsafe_vector<digit_t>> powers;
+	unsafe_vector<digit_t> digits;
+	DecimalToMagnitude(state, value.GetData() + start_pos, end_pos - start_pos, powers, digits);
 
 	// we initialize result with space for our header
 	string result(BIGNUM_HEADER_SIZE, '0');
@@ -369,7 +422,8 @@ static void SubtractDecimalLimbs(vector<digit_t> &a, const vector<digit_t> &b) {
 }
 
 // Multiplies two numbers in decimal limbs using Karatsuba multiplication
-static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, const digit_t *b, idx_t b_size) {
+static vector<digit_t> MultiplyDecimalLimbs(BignumArithmeticState &state, const digit_t *a, idx_t a_size,
+                                            const digit_t *b, idx_t b_size) {
 	if (a_size < b_size) {
 		std::swap(a, b);
 		std::swap(a_size, b_size);
@@ -380,14 +434,28 @@ static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, cons
 	}
 	result.resize(a_size + b_size, 0);
 	if (b_size < KARATSUBA_THRESHOLD) {
+		// the column sums are normalized every NORMALIZE_ROWS rows: that many products below 10^18 plus a normalized
+		// limb fit a twodigit_t, so the division by the base runs once per limb per block instead of once per product
+		constexpr idx_t NORMALIZE_ROWS = 16;
+		state.AccountWork(a_size * b_size);
+		vector<twodigit_t> columns(a_size + b_size, 0);
 		for (idx_t i = 0; i < b_size; i++) {
-			twodigit_t carry = 0;
+			const twodigit_t b_digit = b[i];
 			for (idx_t j = 0; j < a_size; j++) {
-				twodigit_t current = UnsafeNumericCast<twodigit_t>(b[i]) * a[j] + result[i + j] + carry;
-				carry = current / Bignum::DECIMAL_BASE;
-				result[i + j] = static_cast<digit_t>(current - carry * Bignum::DECIMAL_BASE);
+				columns[i + j] += b_digit * a[j];
 			}
-			result[i + a_size] = static_cast<digit_t>(carry);
+			if ((i + 1) % NORMALIZE_ROWS == 0 || i + 1 == b_size) {
+				twodigit_t carry = 0;
+				for (auto &column : columns) {
+					const twodigit_t current = column + carry;
+					carry = current / Bignum::DECIMAL_BASE;
+					column = current - carry * Bignum::DECIMAL_BASE;
+				}
+				D_ASSERT(carry == 0);
+			}
+		}
+		for (idx_t i = 0; i < columns.size(); i++) {
+			result[i] = static_cast<digit_t>(columns[i]);
 		}
 		TrimLimbs(result);
 		return result;
@@ -395,7 +463,7 @@ static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, cons
 	if (2 * b_size <= a_size) {
 		// unbalanced: multiply b with chunks of a
 		for (idx_t offset = 0; offset < a_size; offset += b_size) {
-			auto part = MultiplyDecimalLimbs(a + offset, MinValue<idx_t>(b_size, a_size - offset), b, b_size);
+			auto part = MultiplyDecimalLimbs(state, a + offset, MinValue<idx_t>(b_size, a_size - offset), b, b_size);
 			AddDecimalLimbs(result, part.data(), part.size(), offset);
 		}
 		TrimLimbs(result);
@@ -403,14 +471,14 @@ static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, cons
 	}
 	// a = a1 * BASE^m + a0, b = b1 * BASE^m + b0
 	idx_t m = a_size / 2;
-	auto z0 = MultiplyDecimalLimbs(a, m, b, m);
-	auto z2 = MultiplyDecimalLimbs(a + m, a_size - m, b + m, b_size - m);
+	auto z0 = MultiplyDecimalLimbs(state, a, m, b, m);
+	auto z2 = MultiplyDecimalLimbs(state, a + m, a_size - m, b + m, b_size - m);
 	vector<digit_t> a_sum(a, a + m);
 	AddDecimalLimbs(a_sum, a + m, a_size - m, 0);
 	vector<digit_t> b_sum(b, b + m);
 	AddDecimalLimbs(b_sum, b + m, b_size - m, 0);
 	// z1 = (a0 + a1) * (b0 + b1) - z0 - z2
-	auto z1 = MultiplyDecimalLimbs(a_sum.data(), a_sum.size(), b_sum.data(), b_sum.size());
+	auto z1 = MultiplyDecimalLimbs(state, a_sum.data(), a_sum.size(), b_sum.data(), b_sum.size());
 	SubtractDecimalLimbs(z1, z0);
 	SubtractDecimalLimbs(z1, z2);
 	AddDecimalLimbs(result, z0.data(), z0.size(), 0);
@@ -422,12 +490,14 @@ static vector<digit_t> MultiplyDecimalLimbs(const digit_t *a, idx_t a_size, cons
 
 // Converts binary limbs (base 2^32) to decimal limbs (base 10^9), both little-endian
 // powers[k] holds 2^(32 * 2^k) in decimal limbs
-static vector<digit_t> BinaryToDecimalLimbs(const digit_t *binary, idx_t size, vector<vector<digit_t>> &powers) {
+static vector<digit_t> BinaryToDecimalLimbs(BignumArithmeticState &state, const digit_t *binary, idx_t size,
+                                            vector<vector<digit_t>> &powers) {
 	vector<digit_t> digits;
 	if (size <= CONVERSION_THRESHOLD) {
 		// typos:ignore-next-line
 		// Following CPython and Knuth (TAOCP, Volume 2 (3rd edn), section 4.4, Method 1b).
 		for (idx_t i = size; i > 0; i--) {
+			state.AccountWork(digits.size() + 1);
 			digit_t hi = binary[i - 1];
 			for (idx_t j = 0; j < digits.size(); j++) {
 				twodigit_t tmp = UnsafeNumericCast<twodigit_t>(digits[j]) << Bignum::DIGIT_BITS | hi;
@@ -448,20 +518,21 @@ static vector<digit_t> BinaryToDecimalLimbs(const digit_t *binary, idx_t size, v
 		m *= 2;
 		k++;
 	}
-	auto low = BinaryToDecimalLimbs(binary, m, powers);
-	auto high = BinaryToDecimalLimbs(binary + m, size - m, powers);
+	auto low = BinaryToDecimalLimbs(state, binary, m, powers);
+	auto high = BinaryToDecimalLimbs(state, binary + m, size - m, powers);
 	while (powers.size() <= k) {
 		auto &last = powers.back();
-		powers.push_back(MultiplyDecimalLimbs(last.data(), last.size(), last.data(), last.size()));
+		powers.push_back(MultiplyDecimalLimbs(state, last.data(), last.size(), last.data(), last.size()));
 	}
 	auto &power = powers[k];
-	digits = MultiplyDecimalLimbs(high.data(), high.size(), power.data(), power.size());
+	digits = MultiplyDecimalLimbs(state, high.data(), high.size(), power.data(), power.size());
 	AddDecimalLimbs(digits, low.data(), low.size(), 0);
 	TrimLimbs(digits);
 	return digits;
 }
 
-string Bignum::BignumToVarchar(const bignum_t &blob) {
+string Bignum::BignumToVarchar(const bignum_t &blob, optional_ptr<ClientContext> context) {
+	BignumArithmeticState state(context);
 	string decimal_string;
 	vector<uint8_t> byte_array;
 	bool is_negative;
@@ -482,7 +553,7 @@ string Bignum::BignumToVarchar(const bignum_t &blob) {
 	TrimLimbs(binary);
 	// 2^32 in decimal limbs
 	vector<vector<digit_t>> powers {{294967296, 4}};
-	auto digits = BinaryToDecimalLimbs(binary.data(), binary.size(), powers);
+	auto digits = BinaryToDecimalLimbs(state, binary.data(), binary.size(), powers);
 
 	if (digits.empty()) {
 		digits.push_back(0);
@@ -510,13 +581,13 @@ string Bignum::BignumToVarchar(const bignum_t &blob) {
 	return decimal_string;
 }
 
-string Bignum::VarcharToBignum(const string_t &value) {
+string Bignum::VarcharToBignum(const string_t &value, optional_ptr<ClientContext> context) {
 	idx_t start_pos, end_pos;
 	bool is_negative, is_zero, should_round_up;
 	if (!VarcharFormatting(value, start_pos, end_pos, is_negative, is_zero, should_round_up)) {
 		throw ConversionException("Could not convert string \'%s\' to Bignum", value.GetString());
 	}
-	return EncodeVarcharBignum(value, start_pos, end_pos, is_negative, is_zero, should_round_up);
+	return EncodeVarcharBignum(value, start_pos, end_pos, is_negative, is_zero, should_round_up, context);
 }
 
 bool Bignum::BignumToDouble(const bignum_t &blob, double &result, bool &strict) {

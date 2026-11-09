@@ -61,6 +61,9 @@ struct BignumArithmeticState {
 	explicit BignumArithmeticState(optional_ptr<ClientContext> context = nullptr) : context(context) {
 	}
 
+	//! Counts digit operations and checks for an interrupt about once a millisecond, when a context is set
+	DUCKDB_API void AccountWork(idx_t work);
+
 	optional_ptr<ClientContext> context;
 	//! Digit operations performed since the last interrupt check
 	idx_t work_since_interrupt_check = 0;
@@ -105,6 +108,9 @@ struct BignumIntermediate {
 	//! Multiplies two BignumIntermediates and returns a string_t result, equivalent of a *
 	static string_t Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
 	                         const BignumIntermediate &rhs);
+	//! Multiplies two magnitudes given as little-endian base 2^32 digits, result = lhs * rhs without leading zeros
+	DUCKDB_API static void MultiplyMagnitudes(BignumArithmeticState &state, const unsafe_vector<digit_t> &lhs,
+	                                          const unsafe_vector<digit_t> &rhs, unsafe_vector<digit_t> &result);
 	//! Truncating division (a // b) or, with want_remainder, the remainder with the sign of the dividend (a % b)
 	//! Returns false without writing a result when the divisor is zero
 	static bool TryDivMod(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,

@@ -178,9 +178,54 @@ bool FitsWidthInternal(const BignumIntermediate &value, uint32_t width) {
 	return value.IsAbsoluteBigger(limit.intermediate) == SMALLER;
 }
 
-//! 10^exponent as a BIGNUM blob
-string ComputePowerOfTen(idx_t exponent) {
-	return Bignum::VarcharToBignum(string_t("1" + string(exponent, '0')));
+//! The BIGNUM blob of a magnitude given as little-endian base 2^32 digits
+string MagnitudeToBlob(const unsafe_vector<digit_t> &digits) {
+	idx_t top = digits.size();
+	while (top > 0 && digits[top - 1] == 0) {
+		top--;
+	}
+	if (top == 0) {
+		return Bignum::InitializeBignumZero();
+	}
+	idx_t top_bytes = 0;
+	for (auto digit = digits[top - 1]; digit != 0; digit >>= 8) {
+		top_bytes++;
+	}
+	const idx_t byte_count = (top - 1) * Bignum::DIGIT_BYTES + top_bytes;
+	if (byte_count > Bignum::MAX_DATA_SIZE) {
+		throw OutOfRangeException("A power of %llu bytes does not fit a BIGNUM, which holds at most %llu bytes",
+		                          byte_count, idx_t(Bignum::MAX_DATA_SIZE));
+	}
+	vector<uint8_t> bytes(byte_count);
+	for (idx_t i = 0; i < byte_count; i++) {
+		// byte i is the i-th most significant byte
+		const idx_t from_lsb = byte_count - 1 - i;
+		bytes[i] =
+		    static_cast<uint8_t>(digits[from_lsb / Bignum::DIGIT_BYTES] >> (8 * (from_lsb % Bignum::DIGIT_BYTES)));
+	}
+	return Bignum::FromByteArray(bytes.data(), byte_count, false);
+}
+
+//! 10^exponent as a BIGNUM blob, by binary exponentiation
+string ComputePowerOfTen(idx_t exponent, optional_ptr<ClientContext> context) {
+	BignumArithmeticState state(context);
+	unsafe_vector<digit_t> result;
+	result.push_back(1);
+	unsafe_vector<digit_t> base;
+	base.push_back(10);
+	unsafe_vector<digit_t> product;
+	while (exponent > 0) {
+		if (exponent & 1) {
+			BignumIntermediate::MultiplyMagnitudes(state, result, base, product);
+			std::swap(result, product);
+		}
+		exponent >>= 1;
+		if (exponent > 0) {
+			BignumIntermediate::MultiplyMagnitudes(state, base, base, product);
+			std::swap(base, product);
+		}
+	}
+	return MagnitudeToBlob(result);
 }
 
 //! The small constants are built once; their blobs outlive the intermediates that point into them
@@ -206,27 +251,45 @@ bool IsOdd(const BignumIntermediate &value) {
 
 } // namespace
 
-string BignumDecimal::PowerOfTen(idx_t exponent) {
+string BignumDecimal::PowerOfTen(idx_t exponent, optional_ptr<ClientContext> context) {
 	// the powers of everyday widths are computed once and read without locking afterwards
 	static constexpr idx_t CACHED_POWERS = 512;
 	static array<string, CACHED_POWERS> small_powers;
 	static array<OnceFlag, CACHED_POWERS> small_flags;
 	if (exponent < CACHED_POWERS) {
-		CallOnce(small_flags[exponent], [&]() { small_powers[exponent] = ComputePowerOfTen(exponent); });
+		CallOnce(small_flags[exponent], [&]() { small_powers[exponent] = ComputePowerOfTen(exponent, context); });
 		return small_powers[exponent];
 	}
-	// wider powers are kept in a bounded cache
+	// wider powers are kept in a cache bounded by its total size
+	static constexpr idx_t MAX_CACHED_POWER_BYTES = 16ULL * 1024 * 1024;
 	static mutex wide_lock;
 	static unordered_map<idx_t, string> wide_powers;
+	static idx_t wide_power_bytes = 0;
+	{
+		lock_guard<mutex> guard(wide_lock);
+		auto entry = wide_powers.find(exponent);
+		if (entry != wide_powers.end()) {
+			return entry->second;
+		}
+	}
+	// computed outside the lock, so that a long computation does not block the other threads
+	auto power = ComputePowerOfTen(exponent, context);
 	lock_guard<mutex> guard(wide_lock);
-	auto entry = wide_powers.find(exponent);
-	if (entry != wide_powers.end()) {
-		return entry->second;
-	}
-	if (wide_powers.size() >= 64) {
+	if (wide_power_bytes + power.size() > MAX_CACHED_POWER_BYTES) {
 		wide_powers.clear();
+		wide_power_bytes = 0;
 	}
-	return wide_powers.emplace(exponent, ComputePowerOfTen(exponent)).first->second;
+	if (wide_powers.emplace(exponent, power).second) {
+		wide_power_bytes += power.size();
+	}
+	return power;
+}
+
+string BignumDecimal::PowerOfTwo(idx_t exponent) {
+	// big-endian: the top byte holds the single set bit, followed by exponent / 8 zero bytes
+	vector<uint8_t> bytes(exponent / 8 + 1, 0);
+	bytes[0] = static_cast<uint8_t>(1 << (exponent % 8));
+	return Bignum::FromByteArray(bytes.data(), bytes.size(), false);
 }
 
 bool BignumDecimal::FitsWidth(const bignum_t &value, uint32_t width) {
@@ -247,8 +310,8 @@ bool BignumDecimal::IsZero(const bignum_t &value) {
 	       value.data.GetData()[Bignum::BIGNUM_HEADER_SIZE] == 0;
 }
 
-string BignumDecimal::ToString(const bignum_t &value, uint32_t scale) {
-	auto digits = Bignum::BignumToVarchar(value);
+string BignumDecimal::ToString(const bignum_t &value, uint32_t scale, optional_ptr<ClientContext> context) {
+	auto digits = Bignum::BignumToVarchar(value, context);
 	if (scale == 0) {
 		return digits;
 	}
@@ -269,7 +332,7 @@ string BignumDecimal::ToString(const bignum_t &value, uint32_t scale) {
 }
 
 bool BignumDecimal::TryParse(const char *data, idx_t size, uint32_t width, uint32_t scale, string &result,
-                             char decimal_separator) {
+                             char decimal_separator, optional_ptr<ClientContext> context) {
 	idx_t pos = 0;
 	// skip surrounding whitespace
 	while (pos < size && StringUtil::CharacterIsSpace(data[pos])) {
@@ -368,24 +431,25 @@ bool BignumDecimal::TryParse(const char *data, idx_t size, uint32_t width, uint3
 	if (negative) {
 		unscaled.insert(unscaled.begin(), '-');
 	}
-	result = Bignum::VarcharToBignum(string_t(unscaled));
+	result = Bignum::VarcharToBignum(string_t(unscaled), context);
 	return true;
 }
 
-string BignumDecimal::Rescale(const bignum_t &value, uint32_t source_scale, uint32_t target_scale) {
+string BignumDecimal::Rescale(const bignum_t &value, uint32_t source_scale, uint32_t target_scale,
+                              optional_ptr<ClientContext> context) {
 	if (target_scale == source_scale) {
 		return value.data.GetString();
 	}
 	BorrowedBignum source(value);
 	StringHeap heap;
-	BignumArithmeticState state;
+	BignumArithmeticState state(context);
 	if (target_scale > source_scale) {
-		const auto power = PowerOfTen(target_scale - source_scale);
+		const auto power = PowerOfTen(target_scale - source_scale, context);
 		BorrowedBignum factor(power);
 		return BignumIntermediate::Multiply(heap, state, source.intermediate, factor.intermediate).GetString();
 	}
 	// scaling down divides by the power of ten and rounds half away from zero
-	const auto power = PowerOfTen(source_scale - target_scale);
+	const auto power = PowerOfTen(source_scale - target_scale, context);
 	BorrowedBignum divisor(power);
 	string_t quotient;
 	string_t remainder;
@@ -409,8 +473,8 @@ string BignumDecimal::Rescale(const bignum_t &value, uint32_t source_scale, uint
 }
 
 bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uint32_t target_width,
-                               uint32_t target_scale, string &result) {
-	auto rescaled = Rescale(value, source_scale, target_scale);
+                               uint32_t target_scale, string &result, optional_ptr<ClientContext> context) {
+	auto rescaled = Rescale(value, source_scale, target_scale, context);
 	if (!FitsWidth(bignum_t(string_t(rescaled)), target_width)) {
 		return false;
 	}
@@ -423,7 +487,7 @@ bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t res
 	BorrowedBignum source(value);
 	string_t rounded = value.data;
 	if (drop_digits > 0) {
-		const auto power = PowerOfTen(drop_digits);
+		const auto power = PowerOfTen(drop_digits, state.context);
 		BorrowedBignum divisor(power);
 		string_t quotient;
 		string_t remainder;
@@ -474,7 +538,7 @@ bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t res
 	if (restore_digits > 0) {
 		const bignum_t rounded_bignum(rounded);
 		BorrowedBignum rounded_value(rounded_bignum);
-		const auto power = PowerOfTen(restore_digits);
+		const auto power = PowerOfTen(restore_digits, state.context);
 		BorrowedBignum factor(power);
 		rounded = BignumIntermediate::Multiply(heap, state, rounded_value.intermediate, factor.intermediate);
 	}
@@ -526,9 +590,10 @@ bool BignumDecimal::TryToHugeint(const bignum_t &value, hugeint_t &result) {
 }
 
 template <class T>
-static bool TryToFloatingInternal(const bignum_t &value, uint32_t scale, T &result) {
+static bool TryToFloatingInternal(const bignum_t &value, uint32_t scale, T &result,
+                                  optional_ptr<ClientContext> context) {
 	// the decimal text parses directly into the target type, so the value is rounded once
-	auto text = BignumDecimal::ToString(value, scale);
+	auto text = BignumDecimal::ToString(value, scale, context);
 	if (!TryCast::Operation(string_t(text), result, false)) {
 		throw InternalException("Could not convert wide decimal '%s' to a floating point number", text);
 	}
@@ -536,17 +601,19 @@ static bool TryToFloatingInternal(const bignum_t &value, uint32_t scale, T &resu
 	return std::isfinite(result);
 }
 
-bool BignumDecimal::TryToFloating(const bignum_t &value, uint32_t scale, float &result) {
-	return TryToFloatingInternal(value, scale, result);
+bool BignumDecimal::TryToFloating(const bignum_t &value, uint32_t scale, float &result,
+                                  optional_ptr<ClientContext> context) {
+	return TryToFloatingInternal(value, scale, result, context);
 }
 
-bool BignumDecimal::TryToFloating(const bignum_t &value, uint32_t scale, double &result) {
-	return TryToFloatingInternal(value, scale, result);
+bool BignumDecimal::TryToFloating(const bignum_t &value, uint32_t scale, double &result,
+                                  optional_ptr<ClientContext> context) {
+	return TryToFloatingInternal(value, scale, result, context);
 }
 
-double BignumDecimal::ToDouble(const bignum_t &value, uint32_t scale) {
+double BignumDecimal::ToDouble(const bignum_t &value, uint32_t scale, optional_ptr<ClientContext> context) {
 	double result;
-	TryToFloating(value, scale, result);
+	TryToFloating(value, scale, result, context);
 	return result;
 }
 
@@ -617,7 +684,8 @@ void BignumDecimal::ToTwosComplement(const bignum_t &value, data_ptr_t result, i
 	}
 }
 
-bool BignumDecimal::TryFromDouble(double value, uint32_t width, uint32_t scale, string &result) {
+bool BignumDecimal::TryFromDouble(double value, uint32_t width, uint32_t scale, string &result,
+                                  optional_ptr<ClientContext> context) {
 	if (!std::isfinite(value)) {
 		return false;
 	}
@@ -639,7 +707,7 @@ bool BignumDecimal::TryFromDouble(double value, uint32_t width, uint32_t scale, 
 			text += FractionDigits(mantissa & ((uint64_t(1) << fraction_bits) - 1), fraction_bits, idx_t(scale) + 1);
 		}
 	}
-	return TryParse(text.c_str(), text.size(), width, scale, result);
+	return TryParse(text.c_str(), text.size(), width, scale, result, '.', context);
 }
 
 string BignumDecimal::FromDouble(double value) {

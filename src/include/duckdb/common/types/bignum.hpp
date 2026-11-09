@@ -20,6 +20,7 @@ namespace duckdb {
 
 struct BoundCastInfo;
 struct CastParameters;
+class ClientContext;
 
 //! The Bignum class is a static class that holds helper functions for the Bignum type.
 class Bignum {
@@ -58,10 +59,11 @@ public:
 	                                         bool &is_zero, bool &should_round_up);
 	//! Encodes a VARCHAR into a BIGNUM blob using formatting information returned by VarcharFormatting.
 	DUCKDB_API static string EncodeBignum(const string_t &value, idx_t start_pos, idx_t end_pos, bool is_negative,
-	                                      bool is_zero);
+	                                      bool is_zero, optional_ptr<ClientContext> context = nullptr);
 	//! Encodes a VARCHAR into a BIGNUM blob, applying decimal rounding if requested.
 	DUCKDB_API static string EncodeVarcharBignum(const string_t &value, idx_t start_pos, idx_t end_pos,
-	                                             bool is_negative, bool is_zero, bool should_round_up);
+	                                             bool is_negative, bool is_zero, bool should_round_up,
+	                                             optional_ptr<ClientContext> context = nullptr);
 	//! Converts a char to a Digit
 	DUCKDB_API static int CharToDigit(char c);
 	//! Converts a Digit to a char
@@ -70,10 +72,10 @@ public:
 	DUCKDB_API static void GetByteArray(vector<uint8_t> &byte_array, bool &is_negative, const string_t &blob);
 	//! Function to create a BIGNUM blob from a byte array containing the absolute value, plus an is_negative bool
 	DUCKDB_API static string FromByteArray(uint8_t *data, idx_t size, bool is_negative);
-	//! Function to convert BIGNUM blob to a VARCHAR
-	DUCKDB_API static string BignumToVarchar(const bignum_t &blob);
-	//! Function to convert Varchar to BIGNUM blob
-	DUCKDB_API static string VarcharToBignum(const string_t &value);
+	//! Function to convert BIGNUM blob to a VARCHAR, a long conversion checks for interrupts through the context
+	DUCKDB_API static string BignumToVarchar(const bignum_t &blob, optional_ptr<ClientContext> context = nullptr);
+	//! Function to convert Varchar to BIGNUM blob, a long conversion checks for interrupts through the context
+	DUCKDB_API static string VarcharToBignum(const string_t &value, optional_ptr<ClientContext> context = nullptr);
 	//! ----------------------------------- Double Cast ----------------------------------- //
 	DUCKDB_API static bool BignumToDouble(const bignum_t &blob, double &result, bool &strict);
 	[[noreturn]] DUCKDB_API static void ThrowInvalidBlobSize(idx_t size);

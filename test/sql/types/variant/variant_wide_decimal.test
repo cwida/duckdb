@@ -7,6 +7,10 @@ require no_force_storage
 
 load {TEST_DIR}/variant_wide_decimal.db readwrite v2.1.0
 
+# the widest decimals of this test exceed the default bound of max_decimal_width
+statement ok
+SET max_decimal_width = 4294967295;
+
 # round trip through VARIANT, the type survives
 query III
 SELECT v, variant_typeof(v), v::DECIMAL(40,2)

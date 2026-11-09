@@ -3465,7 +3465,8 @@ static bool TryCastIntegerToBignumDecimal(SRC input, bignum_t &result, Vector &r
                                           CastParameters &parameters, uint32_t width, uint32_t scale) {
 	auto unscaled = IntegerToBignumBlob(input);
 	string blob;
-	if (!BignumDecimal::TryRescale(bignum_t(string_t(unscaled)), 0, width, scale, blob)) {
+	if (!BignumDecimal::TryRescale(bignum_t(string_t(unscaled)), 0, width, scale, blob,
+	                               DefaultCasts::WideDecimalCastContext(parameters))) {
 		string error = StringUtil::Format("Could not cast value %s to DECIMAL(%d,%d)",
 		                                  ConvertToString::Operation(input), width, scale);
 		HandleCastError::AssignError(error, parameters);
@@ -3481,7 +3482,7 @@ static bool TryCastBignumToDecimal(bignum_t input, DST &result, CastParameters &
                                    uint32_t scale) {
 	string blob;
 	hugeint_t value;
-	if (!BignumDecimal::TryRescale(input, 0, width, scale, blob) ||
+	if (!BignumDecimal::TryRescale(input, 0, width, scale, blob, DefaultCasts::WideDecimalCastContext(parameters)) ||
 	    !BignumDecimal::TryToHugeint(bignum_t(string_t(blob)), value)) {
 		string error = StringUtil::Format("Could not cast value %s to DECIMAL(%d,%d)", Bignum::BignumToVarchar(input),
 		                                  width, scale);
@@ -3496,7 +3497,8 @@ template <class SRC>
 static bool TryCastDoubleToBignumDecimal(SRC input, bignum_t &result, Vector &result_vector, CastParameters &parameters,
                                          uint32_t width, uint32_t scale) {
 	string blob;
-	if (!BignumDecimal::TryFromDouble(static_cast<double>(input), width, scale, blob)) {
+	if (!BignumDecimal::TryFromDouble(static_cast<double>(input), width, scale, blob,
+	                                  DefaultCasts::WideDecimalCastContext(parameters))) {
 		string error = StringUtil::Format("Could not cast value %f to DECIMAL(%d,%d)", input, width, scale);
 		HandleCastError::AssignError(error, parameters);
 		return false;
@@ -3509,7 +3511,8 @@ template <char decimal_separator>
 static bool TryCastStringToBignumDecimal(string_t input, bignum_t &result, Vector &result_vector,
                                          CastParameters &parameters, uint32_t width, uint32_t scale) {
 	string blob;
-	if (!BignumDecimal::TryParse(input.GetData(), input.GetSize(), width, scale, blob, decimal_separator)) {
+	if (!BignumDecimal::TryParse(input.GetData(), input.GetSize(), width, scale, blob, decimal_separator,
+	                             DefaultCasts::WideDecimalCastContext(parameters))) {
 		string error = StringUtil::Format("Could not convert string \"%s\" to DECIMAL(%d,%d)", input.GetString(),
 		                                  (int)width, (int)scale);
 		HandleCastError::AssignError(error, parameters);
@@ -3520,13 +3523,13 @@ static bool TryCastStringToBignumDecimal(string_t input, bignum_t &result, Vecto
 }
 
 //! Rounds a decimal of the bignum_t tier to an integer
-static string RoundBignumDecimal(bignum_t input, uint32_t scale) {
-	return BignumDecimal::Rescale(input, scale, 0);
+static string RoundBignumDecimal(bignum_t input, uint32_t scale, optional_ptr<ClientContext> context = nullptr) {
+	return BignumDecimal::Rescale(input, scale, 0, context);
 }
 
 template <class DST>
 static bool TryCastBignumDecimalToNumeric(bignum_t input, DST &result, CastParameters &parameters, uint32_t scale) {
-	auto rounded = RoundBignumDecimal(input, scale);
+	auto rounded = RoundBignumDecimal(input, scale, DefaultCasts::WideDecimalCastContext(parameters));
 	bool strict = false;
 	if (!Bignum::BignumToInt<DST>(bignum_t(string_t(rounded)), result, strict)) {
 		string error = StringUtil::Format("Failed to cast decimal value %s to type %s",
@@ -3540,9 +3543,10 @@ static bool TryCastBignumDecimalToNumeric(bignum_t input, DST &result, CastParam
 template <class DST>
 static bool TryCastBignumDecimalToFloatingPoint(bignum_t input, DST &result, CastParameters &parameters,
                                                 uint32_t scale) {
-	if (!BignumDecimal::TryToFloating(input, scale, result)) {
+	auto context = DefaultCasts::WideDecimalCastContext(parameters);
+	if (!BignumDecimal::TryToFloating(input, scale, result, context)) {
 		string error = StringUtil::Format("Casting value \"%s\" to type %s failed: value is out of range!",
-		                                  BignumDecimal::ToString(input, scale), GetTypeId<DST>());
+		                                  BignumDecimal::ToString(input, scale, context), GetTypeId<DST>());
 		HandleCastError::AssignError(error, parameters);
 		return false;
 	}
@@ -3677,7 +3681,7 @@ template <>
 bool TryCastToDecimal::Operation(bignum_t input, bignum_t &result, Vector &result_vector, CastParameters &parameters,
                                  uint32_t width, uint32_t scale) {
 	string blob;
-	if (!BignumDecimal::TryRescale(input, 0, width, scale, blob)) {
+	if (!BignumDecimal::TryRescale(input, 0, width, scale, blob, DefaultCasts::WideDecimalCastContext(parameters))) {
 		string error = StringUtil::Format("Could not cast value %s to DECIMAL(%d,%d)", Bignum::BignumToVarchar(input),
 		                                  width, scale);
 		HandleCastError::AssignError(error, parameters);

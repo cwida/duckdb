@@ -1984,6 +1984,22 @@ struct MatchRecognizeMaxStatesSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct MaxDecimalWidthSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "max_decimal_width";
+	static constexpr const char *Description =
+	    "The maximum width (number of digits) of a DECIMAL type, at least 38. Decimals wider than 38 digits are "
+	    "computed on BIGNUM blobs whose cost grows with the width, so the bound limits the time and memory a single "
+	    "value can take: a type declaration, a cast or an arithmetic result that needs a wider DECIMAL raises an "
+	    "error, and a wider literal binds as a DOUBLE.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "1000000";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct MaxExecutionTimeSetting {
 	using RETURN_TYPE = int64_t;
 	static constexpr const char *Name = "max_execution_time";

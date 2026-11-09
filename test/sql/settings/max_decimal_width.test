@@ -1,0 +1,144 @@
+# name: test/sql/settings/max_decimal_width.test
+# description: max_decimal_width bounds the width of DECIMAL types, casts, literals and arithmetic results
+# group: [settings]
+
+query I
+SELECT current_setting('max_decimal_width')
+----
+1000000
+
+# the type constructor refuses a wider type, naming the setting
+statement error
+SELECT 1::DECIMAL(1000001,0)
+----
+DECIMAL type width 1000001 exceeds the maximum DECIMAL width of 1000000 (SET max_decimal_width to allow wider decimals)
+
+# the width is bounded before any value is computed, so a huge declared width fails at once
+statement error
+SELECT length(1::DECIMAL(1000010,1000000)::VARCHAR)
+----
+exceeds the maximum DECIMAL width
+
+statement error
+SELECT length(1::DECIMAL(10000010,10000000)::VARCHAR)
+----
+exceeds the maximum DECIMAL width
+
+statement error
+SELECT typeof(1::DECIMAL(3000000000,2000000000) * 1::DECIMAL(3000000000,2000000000))
+----
+exceeds the maximum DECIMAL width
+
+# a scale beyond the width is still reported first
+statement error
+SELECT 1::DECIMAL(2000000,3000000)
+----
+scale cannot be greater than width
+
+# within the bound a wide value converts
+query I
+SELECT length(1::DECIMAL(100000,99990)::VARCHAR)
+----
+99992
+
+# arithmetic, aggregate and rounding results are bounded as well
+statement ok
+SET max_decimal_width = 100;
+
+query I
+SELECT typeof(NULL::DECIMAL(50,0) * NULL::DECIMAL(50,0))
+----
+DECIMAL(100,0)
+
+statement error
+SELECT NULL::DECIMAL(60,0) * NULL::DECIMAL(60,0)
+----
+Multiplication needs a DECIMAL of 120 digits, the maximum DECIMAL width is 100 (SET max_decimal_width to allow wider decimals)
+
+statement error
+SELECT NULL::DECIMAL(100,0) + NULL::DECIMAL(100,0)
+----
+Addition needs a DECIMAL of 101 digits, the maximum DECIMAL width is 100
+
+statement error
+SELECT sum(NULL::DECIMAL(90,0))
+----
+The sum needs a DECIMAL of 110 digits, the maximum DECIMAL width is 100
+
+statement error
+SELECT round(NULL::DECIMAL(100,0), -1)
+----
+Rounding needs a DECIMAL of 101 digits, the maximum DECIMAL width is 100
+
+# common types (COALESCE, CASE, VALUES, UNION) are bounded too, the scale is never truncated silently
+statement error
+SELECT coalesce('0.5'::DECIMAL(100,1), 0::DECIMAL(100,0))
+----
+Combining DECIMAL(100,1) and DECIMAL(100,0) needs a DECIMAL of 101 digits, the maximum DECIMAL width is 100
+
+statement error
+SELECT CASE WHEN true THEN '0.5'::DECIMAL(100,1) ELSE 0::DECIMAL(100,0) END
+----
+needs a DECIMAL of 101 digits
+
+query II
+SELECT coalesce('0.5'::DECIMAL(99,1), 0::DECIMAL(99,0)) AS c, typeof(c)
+----
+0.5	DECIMAL(100,1)
+
+# a literal beyond the bound binds as a DOUBLE, as every literal beyond 38 digits did before wide decimals
+statement ok
+SET max_decimal_width = 50;
+
+query II
+SELECT typeof(123456789012345678901234567890123456789012345.5), typeof(1234567890123456789012345678901234567890123456789012345678901234567890.5)
+----
+DECIMAL(46,1)	DOUBLE
+
+# a column created under a larger bound still reads, operations that need a wider result are refused
+statement ok
+SET max_decimal_width = 4294967295;
+
+statement ok
+CREATE TABLE wide AS SELECT '1'::DECIMAL(300,100) AS d;
+
+statement ok
+SET max_decimal_width = 100;
+
+query I
+SELECT d::VARCHAR = '1.' || repeat('0', 100) FROM wide
+----
+true
+
+statement error
+SELECT d * d FROM wide
+----
+Multiplication needs a DECIMAL of 600 digits, the maximum DECIMAL width is 100
+
+# values below 38 act as 38: the fixed-size tiers are never bounded and results stay within 38 digits, as before wide
+# decimals
+statement ok
+SET max_decimal_width = 1;
+
+query III
+SELECT typeof(1::DECIMAL(38,2) + 1::DECIMAL(38,2)), typeof(1::DECIMAL(38,2) * 1::DECIMAL(38,2)), typeof(CASE WHEN true THEN 1::DECIMAL(38,10) ELSE 1::DECIMAL(38,0) END)
+----
+DECIMAL(38,2)	DECIMAL(38,4)	DECIMAL(38,0)
+
+statement error
+SELECT 1::DECIMAL(39,0)
+----
+DECIMAL type width 39 exceeds the maximum DECIMAL width of 38
+
+statement error
+SELECT 99999999999999999999999999999999999999::DECIMAL(38,0) + 1::DECIMAL(38,0)
+----
+<REGEX>:.*(Overflow|Out of Range|out of range).*
+
+statement ok
+RESET max_decimal_width;
+
+query I
+SELECT current_setting('max_decimal_width')
+----
+1000000

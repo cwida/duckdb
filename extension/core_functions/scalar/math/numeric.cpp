@@ -538,10 +538,10 @@ static void GenericRoundFunctionDecimal(DataChunk &input, ExpressionState &state
 //! rounding of the operator, the digits above a negative precision are restored as zeros
 template <BignumRounding ROUNDING>
 static void BignumRoundDecimal(Vector &source, Vector &result, idx_t count, idx_t drop_digits, idx_t restore_digits,
-                               const char *name) {
+                               const char *name, ExpressionState &expression_state) {
 	auto width = DecimalType::GetWidth(result.GetType());
 	auto &heap = StringVector::GetStringHeap(result);
-	BignumArithmeticState state;
+	BignumArithmeticState state(expression_state.HasContext() ? &expression_state.GetContext() : nullptr);
 	UnaryExecutor::Execute<bignum_t, string_t>(source, result, count, [&](bignum_t input) {
 		string_t rounded;
 		if (!BignumDecimal::TryRound(input, drop_digits, restore_digits, ROUNDING, width, heap, state, rounded)) {
@@ -556,7 +556,7 @@ template <class OP>
 static void BignumRoundFunctionDecimal(DataChunk &input, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
-	BignumRoundDecimal<OP::BIGNUM_ROUNDING>(input.data[0], result, input.size(), scale, 0, OP::NAME);
+	BignumRoundDecimal<OP::BIGNUM_ROUNDING>(input.data[0], result, input.size(), scale, 0, OP::NAME, state);
 }
 
 template <class OP>
@@ -750,12 +750,13 @@ static void BignumRoundPrecisionDecimal(DataChunk &input, ExpressionState &state
 		UnaryExecutor::Execute<bignum_t, string_t>(input.data[0], result, input.size(), [&](bignum_t) { return zero; });
 		return;
 	}
-	BignumRoundDecimal<OP::BIGNUM_ROUNDING>(input.data[0], result, input.size(), drop_digits, restore_digits, OP::NAME);
+	BignumRoundDecimal<OP::BIGNUM_ROUNDING>(input.data[0], result, input.size(), drop_digits, restore_digits, OP::NAME,
+	                                        state);
 }
 
 //! Resolves the types and the function of a decimal round with a precision, given the original decimal type
 template <typename NEGOP, typename POSOP, bool CAN_CARRY>
-unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound_function,
+unique_ptr<FunctionData> ResolveDecimalRoundPrecision(ClientContext &context, BoundScalarFunction &bound_function,
                                                       const LogicalType &decimal_type, int32_t round_value) {
 	// our new precision becomes the round value
 	// e.g. ROUND(DECIMAL(18,3), 1) -> DECIMAL(18,1)
@@ -773,7 +774,7 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 		if (CAN_CARRY && scale == 0 && int64_t(round_value) >= -int64_t(width)) {
 			// a fixed-size decimal stays in the fixed-size tiers, a wide decimal grows by the carry digit
 			if (Decimal::IsWide(width)) {
-				result_width = Decimal::CheckedWidth(idx_t(result_width) + 1, "Rounding");
+				result_width = Decimal::CheckedWidth(context, idx_t(result_width) + 1, "Rounding");
 			} else if (result_width < Decimal::MAX_WIDTH_INT128) {
 				result_width++;
 			} else {
@@ -835,8 +836,8 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 template <typename NEGOP, typename POSOP, bool CAN_CARRY = false>
 void DecimalRoundPrecisionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto val = input.GetNonNullConstant(1).DefaultCastAs(LogicalType::INTEGER);
-	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetBoundFunction(), input.GetArgumentType(0),
-	                                                      IntegerValue::Get(val));
+	ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(input.GetClientContext(), input.GetBoundFunction(),
+	                                                      input.GetArgumentType(0), IntegerValue::Get(val));
 }
 
 //! The bind data is derived from the type the function was called with, before it was cast
@@ -845,7 +846,7 @@ unique_ptr<FunctionData> BindDecimalRoundPrecision(BindScalarFunctionInput &inpu
 	auto &bound_function = input.GetBoundFunction();
 	auto val = input.GetNonNullConstant(1).DefaultCastAs(LogicalType::INTEGER);
 	return ResolveDecimalRoundPrecision<NEGOP, POSOP, CAN_CARRY>(
-	    bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
+	    input.GetClientContext(), bound_function, bound_function.GetLogicalArguments()[0], IntegerValue::Get(val));
 }
 
 struct TruncOperatorPrecision {

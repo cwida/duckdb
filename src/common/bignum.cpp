@@ -402,14 +402,7 @@ using bignum_magnitude_t = unsafe_vector<digit_t>;
 constexpr idx_t INTERRUPT_CHECK_INTERVAL = idx_t(1) << 20;
 
 void AccountWork(BignumArithmeticState &state, idx_t work) {
-	if (!state.context) {
-		return;
-	}
-	state.work_since_interrupt_check += work;
-	if (state.work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
-		state.work_since_interrupt_check = 0;
-		state.context->InterruptCheck();
-	}
+	state.AccountWork(work);
 }
 
 void TrimMagnitude(bignum_magnitude_t &digits) {
@@ -479,22 +472,125 @@ string_t WriteMagnitude(StringHeap &heap, const bignum_magnitude_t &digits, bool
 	return target;
 }
 
-//! Schoolbook multiplication: result = lhs * rhs
-void MultiplyMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &lhs, const bignum_magnitude_t &rhs,
-                        bignum_magnitude_t &result) {
-	result.assign(lhs.size() + rhs.size(), 0);
-	for (idx_t i = 0; i < lhs.size(); i++) {
-		AccountWork(state, rhs.size());
+//! Below this number of digits in the shorter factor, a product is computed with the schoolbook algorithm
+constexpr idx_t KARATSUBA_THRESHOLD = 48;
+
+//! Schoolbook multiplication into result, which holds lhs_size + rhs_size digits
+void SchoolbookMultiply(BignumArithmeticState &state, const digit_t *lhs, idx_t lhs_size, const digit_t *rhs,
+                        idx_t rhs_size, digit_t *result) {
+	std::fill(result, result + lhs_size + rhs_size, 0);
+	AccountWork(state, lhs_size * rhs_size);
+	for (idx_t i = 0; i < lhs_size; i++) {
 		twodigit_t carry = 0;
 		const twodigit_t lhs_digit = lhs[i];
-		for (idx_t j = 0; j < rhs.size(); j++) {
+		for (idx_t j = 0; j < rhs_size; j++) {
 			// (2^32 - 1)^2 + 2 * (2^32 - 1) = 2^64 - 1, so this cannot overflow
 			const twodigit_t product = lhs_digit * rhs[j] + result[i + j] + carry;
 			result[i + j] = static_cast<digit_t>(product);
 			carry = product >> Bignum::DIGIT_BITS;
 		}
-		result[i + rhs.size()] = static_cast<digit_t>(carry);
+		result[i + rhs_size] = static_cast<digit_t>(carry);
 	}
+}
+
+//! Adds addend into target at digit offset shift, the caller guarantees that the sum fits target
+void AddMagnitudeAt(digit_t *target, idx_t target_size, const digit_t *addend, idx_t addend_size, idx_t shift) {
+	while (addend_size > 0 && addend[addend_size - 1] == 0) {
+		addend_size--;
+	}
+	D_ASSERT(shift + addend_size <= target_size);
+	twodigit_t carry = 0;
+	idx_t pos = shift;
+	for (idx_t i = 0; i < addend_size; i++, pos++) {
+		const twodigit_t sum = static_cast<twodigit_t>(target[pos]) + addend[i] + carry;
+		target[pos] = static_cast<digit_t>(sum);
+		carry = sum >> Bignum::DIGIT_BITS;
+	}
+	for (; carry != 0 && pos < target_size; pos++) {
+		const twodigit_t sum = static_cast<twodigit_t>(target[pos]) + carry;
+		target[pos] = static_cast<digit_t>(sum);
+		carry = sum >> Bignum::DIGIT_BITS;
+	}
+	D_ASSERT(carry == 0);
+}
+
+//! Subtracts subtrahend from target, which is at least as large
+void SubtractMagnitude(digit_t *target, idx_t target_size, const digit_t *subtrahend, idx_t subtrahend_size) {
+	while (subtrahend_size > 0 && subtrahend[subtrahend_size - 1] == 0) {
+		subtrahend_size--;
+	}
+	D_ASSERT(subtrahend_size <= target_size);
+	twodigit_t borrow = 0;
+	idx_t pos = 0;
+	for (idx_t i = 0; i < subtrahend_size; i++, pos++) {
+		const twodigit_t amount = static_cast<twodigit_t>(subtrahend[i]) + borrow;
+		borrow = target[pos] < amount;
+		target[pos] = static_cast<digit_t>((borrow ? (static_cast<twodigit_t>(1) << Bignum::DIGIT_BITS) : 0) +
+		                                   target[pos] - amount);
+	}
+	for (; borrow != 0; pos++) {
+		D_ASSERT(pos < target_size);
+		borrow = target[pos] == 0;
+		target[pos]--;
+	}
+}
+
+//! Karatsuba multiplication into result, which holds lhs_size + rhs_size digits
+void KaratsubaMultiply(BignumArithmeticState &state, const digit_t *lhs, idx_t lhs_size, const digit_t *rhs,
+                       idx_t rhs_size, digit_t *result) {
+	if (lhs_size < rhs_size) {
+		std::swap(lhs, rhs);
+		std::swap(lhs_size, rhs_size);
+	}
+	if (rhs_size < KARATSUBA_THRESHOLD) {
+		SchoolbookMultiply(state, lhs, lhs_size, rhs, rhs_size, result);
+		return;
+	}
+	const idx_t result_size = lhs_size + rhs_size;
+	if (2 * rhs_size <= lhs_size) {
+		// unbalanced: multiply the shorter factor with chunks of its own size of the longer one
+		std::fill(result, result + result_size, 0);
+		bignum_magnitude_t part;
+		for (idx_t offset = 0; offset < lhs_size; offset += rhs_size) {
+			const idx_t chunk = MinValue<idx_t>(rhs_size, lhs_size - offset);
+			part.resize(chunk + rhs_size);
+			KaratsubaMultiply(state, lhs + offset, chunk, rhs, rhs_size, part.data());
+			AddMagnitudeAt(result, result_size, part.data(), part.size(), offset);
+		}
+		return;
+	}
+	// lhs = lhs1 * B^m + lhs0 and rhs = rhs1 * B^m + rhs0, so that
+	// lhs * rhs = z2 * B^2m + ((lhs0 + lhs1) * (rhs0 + rhs1) - z0 - z2) * B^m + z0
+	const idx_t m = lhs_size / 2;
+	D_ASSERT(rhs_size > m);
+	bignum_magnitude_t z0(2 * m);
+	KaratsubaMultiply(state, lhs, m, rhs, m, z0.data());
+	bignum_magnitude_t z2(result_size - 2 * m);
+	KaratsubaMultiply(state, lhs + m, lhs_size - m, rhs + m, rhs_size - m, z2.data());
+	bignum_magnitude_t lhs_sum(lhs_size - m + 1, 0);
+	std::copy(lhs, lhs + m, lhs_sum.begin());
+	AddMagnitudeAt(lhs_sum.data(), lhs_sum.size(), lhs + m, lhs_size - m, 0);
+	bignum_magnitude_t rhs_sum(MaxValue<idx_t>(m, rhs_size - m) + 1, 0);
+	std::copy(rhs, rhs + m, rhs_sum.begin());
+	AddMagnitudeAt(rhs_sum.data(), rhs_sum.size(), rhs + m, rhs_size - m, 0);
+	bignum_magnitude_t z1(lhs_sum.size() + rhs_sum.size());
+	KaratsubaMultiply(state, lhs_sum.data(), lhs_sum.size(), rhs_sum.data(), rhs_sum.size(), z1.data());
+	SubtractMagnitude(z1.data(), z1.size(), z0.data(), z0.size());
+	SubtractMagnitude(z1.data(), z1.size(), z2.data(), z2.size());
+	std::copy(z0.begin(), z0.end(), result);
+	std::copy(z2.begin(), z2.end(), result + 2 * m);
+	AddMagnitudeAt(result, result_size, z1.data(), z1.size(), m);
+}
+
+//! result = lhs * rhs, Karatsuba above the threshold and schoolbook below it
+void MultiplyMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &lhs, const bignum_magnitude_t &rhs,
+                        bignum_magnitude_t &result) {
+	if (lhs.empty() || rhs.empty()) {
+		result.clear();
+		return;
+	}
+	result.resize(lhs.size() + rhs.size());
+	KaratsubaMultiply(state, lhs.data(), lhs.size(), rhs.data(), rhs.size(), result.data());
 	TrimMagnitude(result);
 }
 
@@ -622,6 +718,22 @@ void DivModMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &di
 }
 
 } // namespace
+
+void BignumArithmeticState::AccountWork(idx_t work) {
+	if (!context) {
+		return;
+	}
+	work_since_interrupt_check += work;
+	if (work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
+		work_since_interrupt_check = 0;
+		context->InterruptCheck();
+	}
+}
+
+void BignumIntermediate::MultiplyMagnitudes(BignumArithmeticState &state, const unsafe_vector<digit_t> &lhs,
+                                            const unsafe_vector<digit_t> &rhs, unsafe_vector<digit_t> &result) {
+	duckdb::MultiplyMagnitudes(state, lhs, rhs, result);
+}
 
 string_t BignumIntermediate::Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
                                       const BignumIntermediate &rhs) {

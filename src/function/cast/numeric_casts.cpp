@@ -73,7 +73,7 @@ static BoundCastInfo InternalNumericCastSwitch(const LogicalType &source, const 
 	case LogicalTypeId::DOUBLE:
 		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<SRC, double, duckdb::NumericTryCast>);
 	case LogicalTypeId::DECIMAL:
-		return BoundCastInfo(&VectorCastHelpers::ToDecimalCast<SRC>);
+		return DefaultCasts::WideDecimalCast(BoundCastInfo(&VectorCastHelpers::ToDecimalCast<SRC>), source, target);
 	case LogicalTypeId::VARCHAR:
 		return BoundCastInfo(&VectorCastHelpers::StringCast<SRC, duckdb::StringCast>);
 	case LogicalTypeId::BIT:
