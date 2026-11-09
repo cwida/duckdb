@@ -18,6 +18,7 @@ JoinOrderSourceStats::JoinOrderSourceStats(ClientContext &context, LogicalOperat
 
 void JoinOrderSourceStats::AddPlan(ClientContext &context, LogicalOperator &root) {
 	vector<reference<LogicalOperator>> pending {root};
+	vector<reference<LogicalProjection>> pending_projections;
 	while (!pending.empty()) {
 		auto &op = pending.back().get();
 		pending.pop_back();
@@ -29,8 +30,18 @@ void JoinOrderSourceStats::AddPlan(ClientContext &context, LogicalOperator &root
 				scans.emplace(get.table_index, ScanStats {cardinality, std::move(stats)});
 			}
 		}
+		if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
+			pending_projections.push_back(op.Cast<LogicalProjection>());
+		}
 		for (auto &child : op.children) {
 			pending.push_back(*child);
+		}
+	}
+	// Capture children first, reusing their summaries when resolving each parent.
+	for (auto it = pending_projections.rbegin(); it != pending_projections.rend(); ++it) {
+		auto &projection = it->get();
+		if (projections.find(projection.table_index) == projections.end()) {
+			projections.emplace(projection.table_index, Resolve(projection));
 		}
 	}
 }
@@ -147,14 +158,19 @@ join_column_sources_t JoinOrderSourceStats::Resolve(LogicalOperator &root) const
 	while (true) {
 		auto &frame = stack.back();
 		auto &op = frame.op.get();
-		if (frame.next_child < SourceChildCount(op)) {
+		auto cached = op.type == LogicalOperatorType::LOGICAL_PROJECTION
+		                  ? projections.find(op.Cast<LogicalProjection>().table_index)
+		                  : projections.end();
+		if (cached == projections.end() && frame.next_child < SourceChildCount(op)) {
 			auto &child = *op.children[frame.next_child++];
 			stack.emplace_back(child);
 			continue;
 		}
 		MergeEquivalentSources(op, frame.inputs);
 		join_column_sources_t output;
-		if (op.type == LogicalOperatorType::LOGICAL_GET && op.children.empty()) {
+		if (cached != projections.end()) {
+			output = cached->second;
+		} else if (op.type == LogicalOperatorType::LOGICAL_GET && op.children.empty()) {
 			auto &get = op.Cast<LogicalGet>();
 			auto entry = scans.find(get.table_index);
 			if (entry != scans.end() && !get.extra_info.sample_options) {

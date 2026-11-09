@@ -26,7 +26,7 @@ struct JoinColumnSource {
 
 using join_column_sources_t = column_binding_map_t<vector<JoinColumnSource>>;
 
-//! Immutable scan evidence captured before any join-order subtree is optimized.
+//! Immutable source evidence captured before any join-order subtree is optimized.
 class JoinOrderSourceStats {
 public:
 	JoinOrderSourceStats(ClientContext &context, LogicalOperator &root);
@@ -45,6 +45,7 @@ private:
 	};
 
 	unordered_map<TableIndex, ScanStats> scans;
+	unordered_map<TableIndex, join_column_sources_t> projections;
 };
 
 } // namespace duckdb
