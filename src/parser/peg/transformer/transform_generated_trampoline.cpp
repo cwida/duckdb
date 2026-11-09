@@ -1667,12 +1667,6 @@ static const TransformFrameOps EXPRESSION_OPS = {"Expression", &PEGTransformerFa
 static const TransformFrameOps COLUMN_DEFAULT_EXPR_OPS = {"ColumnDefaultExpr",
                                                           &PEGTransformerFactory::InitializeColumnDefaultExprTrampoline,
                                                           &PEGTransformerFactory::FinalizeColumnDefaultExprTrampoline};
-static const TransformFrameOps LAMBDA_ARROW_EXPRESSION_OPS = {
-    "LambdaArrowExpression", &PEGTransformerFactory::InitializeLambdaArrowExpressionTrampoline,
-    &PEGTransformerFactory::FinalizeLambdaArrowExpressionTrampoline};
-static const TransformFrameOps SINGLE_ARROW_PAIR_OPS = {"SingleArrowPair",
-                                                        &PEGTransformerFactory::InitializeSingleArrowPairTrampoline,
-                                                        &PEGTransformerFactory::FinalizeSingleArrowPairTrampoline};
 static const TransformFrameOps LOGICAL_OR_EXPRESSION_OPS = {
     "LogicalOrExpression", &PEGTransformerFactory::InitializeLogicalOrExpressionTrampoline,
     &PEGTransformerFactory::FinalizeLogicalOrExpressionTrampoline};
@@ -1869,6 +1863,24 @@ static const TransformFrameOps ANY_ALL_SUBQUERY_TAIL_OPS = {
 static const TransformFrameOps OTHER_OPERATOR_EXPRESSION_TAIL_OPS = {
     "OtherOperatorExpressionTail", &PEGTransformerFactory::InitializeOtherOperatorExpressionTailTrampoline,
     &PEGTransformerFactory::FinalizeOtherOperatorExpressionTailTrampoline};
+static const TransformFrameOps SINGLE_ARROW_TAIL_OPS = {"SingleArrowTail",
+                                                        &PEGTransformerFactory::InitializeSingleArrowTailTrampoline,
+                                                        &PEGTransformerFactory::FinalizeSingleArrowTailTrampoline};
+static const TransformFrameOps SINGLE_ARROW_BODY_OPS = {"SingleArrowBody",
+                                                        &PEGTransformerFactory::InitializeSingleArrowBodyTrampoline,
+                                                        &PEGTransformerFactory::FinalizeSingleArrowBodyTrampoline};
+static const TransformFrameOps ARROW_CHAIN_BODY_OPS = {"ArrowChainBody",
+                                                       &PEGTransformerFactory::InitializeArrowChainBodyTrampoline,
+                                                       &PEGTransformerFactory::FinalizeArrowChainBodyTrampoline};
+static const TransformFrameOps ARROW_CHAIN_TAIL_OPS = {"ArrowChainTail",
+                                                       &PEGTransformerFactory::InitializeArrowChainTailTrampoline,
+                                                       &PEGTransformerFactory::FinalizeArrowChainTailTrampoline};
+static const TransformFrameOps DOUBLE_ARROW_TAIL_OPS = {"DoubleArrowTail",
+                                                        &PEGTransformerFactory::InitializeDoubleArrowTailTrampoline,
+                                                        &PEGTransformerFactory::FinalizeDoubleArrowTailTrampoline};
+static const TransformFrameOps ARROW_FULL_BODY_OPS = {"ArrowFullBody",
+                                                      &PEGTransformerFactory::InitializeArrowFullBodyTrampoline,
+                                                      &PEGTransformerFactory::FinalizeArrowFullBodyTrampoline};
 static const TransformFrameOps OTHER_OPERATOR_OPS = {"OtherOperator",
                                                      &PEGTransformerFactory::InitializeOtherOperatorTrampoline,
                                                      &PEGTransformerFactory::FinalizeOtherOperatorTrampoline};
@@ -3689,8 +3701,6 @@ const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::
 	    {"SingleExpression", &SINGLE_EXPRESSION_OPS},
 	    {"Expression", &EXPRESSION_OPS},
 	    {"ColumnDefaultExpr", &COLUMN_DEFAULT_EXPR_OPS},
-	    {"LambdaArrowExpression", &LAMBDA_ARROW_EXPRESSION_OPS},
-	    {"SingleArrowPair", &SINGLE_ARROW_PAIR_OPS},
 	    {"LogicalOrExpression", &LOGICAL_OR_EXPRESSION_OPS},
 	    {"LogicalOrExpressionTail", &LOGICAL_OR_EXPRESSION_TAIL_OPS},
 	    {"ColDefOrExpr", &COL_DEF_OR_EXPR_OPS},
@@ -3761,6 +3771,12 @@ const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::
 	    {"OtherOperatorTail", &OTHER_OPERATOR_TAIL_OPS},
 	    {"AnyAllSubqueryTail", &ANY_ALL_SUBQUERY_TAIL_OPS},
 	    {"OtherOperatorExpressionTail", &OTHER_OPERATOR_EXPRESSION_TAIL_OPS},
+	    {"SingleArrowTail", &SINGLE_ARROW_TAIL_OPS},
+	    {"SingleArrowBody", &SINGLE_ARROW_BODY_OPS},
+	    {"ArrowChainBody", &ARROW_CHAIN_BODY_OPS},
+	    {"ArrowChainTail", &ARROW_CHAIN_TAIL_OPS},
+	    {"DoubleArrowTail", &DOUBLE_ARROW_TAIL_OPS},
+	    {"ArrowFullBody", &ARROW_FULL_BODY_OPS},
 	    {"OtherOperator", &OTHER_OPERATOR_OPS},
 	    {"AnyAllParsedOperator", &ANY_ALL_PARSED_OPERATOR_OPS},
 	    {"NamedOtherOperator", &NAMED_OTHER_OPERATOR_OPS},
@@ -15669,7 +15685,7 @@ void PEGTransformerFactory::InitializeExpressionTrampoline(PEGTransformer &trans
                                                            GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	process.ReserveChildSlots(1);
-	process.PushChild({transformer.GetRule(PEGRuleId::LambdaArrowExpression), list_pr.GetChild(0)}, 0);
+	process.PushChild({transformer.GetRule(PEGRuleId::LogicalOrExpression), list_pr.GetChild(0)}, 0);
 }
 
 arena_ptr<TransformResultValue>
@@ -15690,68 +15706,6 @@ PEGTransformerFactory::FinalizeColumnDefaultExprTrampoline(PEGTransformer &trans
                                                            GeneratedTransformProcess &process) {
 	auto col_def_or_expr = process.TakeResult<unique_ptr<ParsedExpression>>(0);
 	auto result = TransformColumnDefaultExpr(transformer, std::move(col_def_or_expr));
-	return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(result));
-}
-
-void PEGTransformerFactory::InitializeLambdaArrowExpressionTrampoline(PEGTransformer &transformer,
-                                                                      GeneratedTransformProcess &process) {
-	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	auto &repeat_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
-	idx_t dynamic_child_count = 0;
-	if (repeat_opt.HasResult()) {
-		auto &repeat_pr = repeat_opt.GetResult().Cast<RepeatParseResult>();
-		auto repeat_children = repeat_pr.GetChildren();
-		dynamic_child_count = repeat_children.size();
-		process.ReserveChildSlots(2 + dynamic_child_count - 1);
-		for (idx_t i = repeat_children.size(); i > 0; i--) {
-			auto child_idx = i - 1;
-			process.PushChild({transformer.GetRule(PEGRuleId::SingleArrowPair), repeat_children[child_idx].get()},
-			                  1 + child_idx);
-		}
-	} else {
-		process.ReserveChildSlots(2 - 1);
-	}
-	process.PushChild({transformer.GetRule(PEGRuleId::LogicalOrExpression), list_pr.GetChild(0)}, 0);
-}
-
-arena_ptr<TransformResultValue>
-PEGTransformerFactory::FinalizeLambdaArrowExpressionTrampoline(PEGTransformer &transformer,
-                                                               GeneratedTransformProcess &process) {
-	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	idx_t dynamic_child_count = 0;
-	auto &dynamic_repeat_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
-	if (dynamic_repeat_opt.HasResult()) {
-		auto &dynamic_repeat_pr = dynamic_repeat_opt.GetResult().Cast<RepeatParseResult>();
-		auto dynamic_repeat_children = dynamic_repeat_pr.GetChildren();
-		dynamic_child_count = dynamic_repeat_children.size();
-	}
-	auto logical_or_expression = process.TakeResult<unique_ptr<ParsedExpression>>(0);
-	optional<vector<unique_ptr<ParsedExpression>>> single_arrow_pair {};
-	if (dynamic_child_count > 0) {
-		vector<unique_ptr<ParsedExpression>> single_arrow_pair_value;
-		single_arrow_pair_value.reserve(dynamic_child_count);
-		for (idx_t i = 1; i < 1 + dynamic_child_count; i++) {
-			single_arrow_pair_value.push_back(process.TakeResult<unique_ptr<ParsedExpression>>(i));
-		}
-		single_arrow_pair = std::move(single_arrow_pair_value);
-	}
-	auto result =
-	    TransformLambdaArrowExpression(transformer, std::move(logical_or_expression), std::move(single_arrow_pair));
-	return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(result));
-}
-
-void PEGTransformerFactory::InitializeSingleArrowPairTrampoline(PEGTransformer &transformer,
-                                                                GeneratedTransformProcess &process) {
-	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	process.ReserveChildSlots(1);
-	process.PushChild({transformer.GetRule(PEGRuleId::LogicalOrExpression), list_pr.GetChild(1)}, 0);
-}
-
-arena_ptr<TransformResultValue>
-PEGTransformerFactory::FinalizeSingleArrowPairTrampoline(PEGTransformer &transformer,
-                                                         GeneratedTransformProcess &process) {
-	auto logical_or_expression = process.TakeResult<unique_ptr<ParsedExpression>>(0);
-	auto result = TransformSingleArrowPair(transformer, std::move(logical_or_expression));
 	return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(result));
 }
 
@@ -17226,6 +17180,125 @@ PEGTransformerFactory::FinalizeOtherOperatorExpressionTailTrampoline(PEGTransfor
 	auto result =
 	    TransformOtherOperatorExpressionTail(transformer, std::move(other_operator), std::move(bitwise_expression));
 	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeSingleArrowTailTrampoline(PEGTransformer &transformer,
+                                                                GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	process.PushChild({transformer.GetRule(PEGRuleId::SingleArrowBody), list_pr.GetChild(1)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeSingleArrowTailTrampoline(PEGTransformer &transformer,
+                                                         GeneratedTransformProcess &process) {
+	auto single_arrow_body = process.TakeResult<ArrowBody>(0);
+	auto result = TransformSingleArrowTail(transformer, std::move(single_arrow_body));
+	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeSingleArrowBodyTrampoline(PEGTransformer &transformer,
+                                                                GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &choice_pr = list_pr.Child<ChoiceParseResult>(0);
+	auto &choice_result = choice_pr.GetResult();
+	process.ReserveChildSlots(1);
+	auto child_rule = choice_result.GetRule();
+	auto has_transform_process = child_rule && child_rule->transform_process;
+	if (!has_transform_process) {
+		throw InternalException("No transform process registered for rule '%s'", choice_result.Name());
+	}
+	process.PushChild({*child_rule, choice_result}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeSingleArrowBodyTrampoline(PEGTransformer &transformer,
+                                                         GeneratedTransformProcess &process) {
+	auto result = process.TakeResult<ArrowBody>(0);
+	return transformer.MakeResult<ArrowBody>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeArrowChainBodyTrampoline(PEGTransformer &transformer,
+                                                               GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &repeat_pr = list_pr.GetChild(1).Cast<RepeatParseResult>();
+	auto repeat_children = repeat_pr.GetChildren();
+	auto dynamic_child_count = repeat_children.size();
+	process.ReserveChildSlots(2 + dynamic_child_count - 1);
+	for (idx_t i = repeat_children.size(); i > 0; i--) {
+		auto child_idx = i - 1;
+		process.PushChild({transformer.GetRule(PEGRuleId::ArrowChainTail), repeat_children[child_idx].get()},
+		                  1 + child_idx);
+	}
+	process.PushChild({transformer.GetRule(PEGRuleId::BitwiseExpression), list_pr.GetChild(0)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeArrowChainBodyTrampoline(PEGTransformer &transformer,
+                                                        GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &dynamic_repeat_pr = list_pr.GetChild(1).Cast<RepeatParseResult>();
+	auto dynamic_repeat_children = dynamic_repeat_pr.GetChildren();
+	auto dynamic_child_count = dynamic_repeat_children.size();
+	auto bitwise_expression = process.TakeResult<unique_ptr<ParsedExpression>>(0);
+	vector<OtherOperatorTail> arrow_chain_tail;
+	arrow_chain_tail.reserve(dynamic_child_count);
+	for (idx_t i = 1; i < 1 + dynamic_child_count; i++) {
+		arrow_chain_tail.push_back(process.TakeResult<OtherOperatorTail>(i));
+	}
+	auto result = TransformArrowChainBody(transformer, std::move(bitwise_expression), std::move(arrow_chain_tail));
+	return transformer.MakeResult<ArrowBody>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeArrowChainTailTrampoline(PEGTransformer &transformer,
+                                                               GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	auto &choice_pr = list_pr.Child<ChoiceParseResult>(0);
+	auto &choice_result = choice_pr.GetResult();
+	process.ReserveChildSlots(1);
+	auto child_rule = choice_result.GetRule();
+	auto has_transform_process = child_rule && child_rule->transform_process;
+	if (!has_transform_process) {
+		throw InternalException("No transform process registered for rule '%s'", choice_result.Name());
+	}
+	process.PushChild({*child_rule, choice_result}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeArrowChainTailTrampoline(PEGTransformer &transformer,
+                                                        GeneratedTransformProcess &process) {
+	auto result = process.TakeResult<OtherOperatorTail>(0);
+	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeDoubleArrowTailTrampoline(PEGTransformer &transformer,
+                                                                GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	process.PushChild({transformer.GetRule(PEGRuleId::BitwiseExpression), list_pr.GetChild(1)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeDoubleArrowTailTrampoline(PEGTransformer &transformer,
+                                                         GeneratedTransformProcess &process) {
+	auto bitwise_expression = process.TakeResult<unique_ptr<ParsedExpression>>(0);
+	auto result = TransformDoubleArrowTail(transformer, std::move(bitwise_expression));
+	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeArrowFullBodyTrampoline(PEGTransformer &transformer,
+                                                              GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	process.PushChild({transformer.GetRule(PEGRuleId::LogicalOrExpression), list_pr.GetChild(0)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeArrowFullBodyTrampoline(PEGTransformer &transformer,
+                                                       GeneratedTransformProcess &process) {
+	auto logical_or_expression = process.TakeResult<unique_ptr<ParsedExpression>>(0);
+	auto result = TransformArrowFullBody(transformer, std::move(logical_or_expression));
+	return transformer.MakeResult<ArrowBody>(std::move(result));
 }
 
 void PEGTransformerFactory::InitializeOtherOperatorTrampoline(PEGTransformer &transformer,
