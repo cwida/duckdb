@@ -1,17 +1,5 @@
 {
   "description": "Run with debug_verification_mode set to verify_functions - verifying NULL handling of scalar and aggregate functions",
   "on_init": "SET debug_verification_mode='verify_functions';",
-  "skip_compiled": "true",
-  "skip_tests": [
-    {
-      "reason": "The function verification re-runs NUMERIC functions through the generic path, which returns canonical values: numeric_representation() of a result is an implementation detail these tests assert.",
-      "paths": [
-        "test/sql/types/numeric/numeric_casts.test",
-        "test/sql/types/numeric/numeric_kernel_contract.test",
-        "test/sql/types/numeric/numeric_kernel_sizing.test",
-        "test/sql/types/numeric/numeric_variant_arithmetic.test",
-        "test/sql/types/numeric/numeric_to_float_rounding_representation.test"
-      ]
-    }
-  ]
+  "skip_compiled": "true"
 }

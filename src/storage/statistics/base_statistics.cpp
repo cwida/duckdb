@@ -536,9 +536,11 @@ string BaseStatistics::ToString() const {
 	return ToStruct().ToString();
 }
 
-void BaseStatistics::Verify(const Vector &vector, const SelectionVector &sel, idx_t count,
+void BaseStatistics::Verify(const Vector &input, const SelectionVector &sel, idx_t count,
                             const bool ignore_has_null) const {
-	D_ASSERT(vector.GetType() == this->type);
+	D_ASSERT(input.GetType() == this->type);
+	// reading a shredded vector in unified format flattens it in place: verify a referencing copy instead
+	auto vector = Vector::Ref(input);
 	switch (GetStatsType()) {
 	case StatisticsType::NUMERIC_STATS:
 		NumericStats::Verify(*this, vector, sel, count);

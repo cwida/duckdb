@@ -1,0 +1,41 @@
+# name: test/sql/types/numeric/numeric_variant_vector_constant.test
+# description: Constant vectors holding a NUMERIC stay constant under the variant_vector verification
+# group: [numeric]
+
+# the variant_vector configuration only runs without assertions; this test sets the mode itself so the constant
+# NUMERIC bailout in ExpressionExecutor::Verify is also covered with assertions enabled
+require no_vector_verification
+
+statement ok
+SET debug_verify_vector = 'variant_vector';
+
+query III
+SELECT 1::NUMERIC, {'n': 1::NUMERIC}, [1::NUMERIC];
+----
+1	{'n': 1}	[1]
+
+query III
+SELECT vector_type(1::NUMERIC), vector_type({'n': 1::NUMERIC}), vector_type([1::NUMERIC]);
+----
+CONSTANT_VECTOR	CONSTANT_VECTOR	CONSTANT_VECTOR
+
+query III
+SELECT NULL::NUMERIC, {'n': NULL::NUMERIC}, [NULL::NUMERIC];
+----
+NULL	{'n': NULL}	[NULL]
+
+query III
+SELECT vector_type(NULL::NUMERIC), vector_type({'n': NULL::NUMERIC}), vector_type([NULL::NUMERIC]);
+----
+CONSTANT_VECTOR	CONSTANT_VECTOR	CONSTANT_VECTOR
+
+# non-constant NUMERIC vectors still take the VARIANT round trip
+query III
+SELECT i::NUMERIC, {'n': i::NUMERIC}, [i::NUMERIC] FROM range(3) t(i) ORDER BY i;
+----
+0	{'n': 0}	[0]
+1	{'n': 1}	[1]
+2	{'n': 2}	[2]
+
+statement ok
+RESET debug_verify_vector;

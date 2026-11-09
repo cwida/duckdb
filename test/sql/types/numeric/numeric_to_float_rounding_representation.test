@@ -54,6 +54,18 @@ FROM (SELECT ('340282366920938463463374607431768211455'::UHUGEINT - i::UHUGEINT)
 UHUGEINT	NULL	NULL
 UHUGEINT	NULL	NULL
 
+# the representation is a property of the vector, so NULL rows (row 5 above) and a constant NULL report it too
+query II
+SELECT numeric_representation(NULL::NUMERIC), numeric_representation(CASE WHEN i = 1 THEN NULL ELSE u END::NUMERIC)
+FROM unsigned ORDER BY i
+----
+CANONICAL	UHUGEINT
+CANONICAL	UHUGEINT
+CANONICAL	UHUGEINT
+CANONICAL	UHUGEINT
+CANONICAL	UHUGEINT
+CANONICAL	UHUGEINT
+
 # a cast of a HUGEINT column keeps the HUGEINT representation
 statement ok
 CREATE TABLE signed AS

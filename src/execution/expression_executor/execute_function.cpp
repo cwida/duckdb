@@ -162,10 +162,12 @@ static void VerifyNullHandling(const BoundFunctionExpression &expr, DataChunk &a
 	}
 
 	// Combine all the argument validity masks into a flat validity mask
+	// reading the validity of a shredded vector flattens it in place: inspect referencing copies instead
 	idx_t count = args.size();
 	ValidityMask combined_mask(count);
 	for (const auto &arg : args.data) {
-		auto entries = arg.Validity();
+		auto arg_ref = Vector::Ref(arg);
+		auto entries = arg_ref.Validity();
 		if (!entries.CanHaveNull()) {
 			continue;
 		}
@@ -177,7 +179,8 @@ static void VerifyNullHandling(const BoundFunctionExpression &expr, DataChunk &a
 	}
 
 	// Default is that if any of the arguments are NULL, the result is also NULL
-	auto result_validity = result.Validity();
+	auto result_ref = Vector::Ref(result);
+	auto result_validity = result_ref.Validity();
 	for (idx_t i = 0; i < count; i++) {
 		if (!combined_mask.RowIsValid(i) && result_validity.IsValid(i)) {
 			throw InternalException(

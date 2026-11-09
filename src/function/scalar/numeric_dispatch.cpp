@@ -855,7 +855,7 @@ void NumericDispatchFunction(DataChunk &args, ExpressionState &state, Vector &re
 	FinishResult(func_expr.GetReturnType(), typed_result, count, operand_size, resolved ? &interval : nullptr, result);
 }
 
-//! The run-time representation of a NUMERIC vector
+//! The run-time representation of a NUMERIC vector: a property of the vector, so NULL rows report it as well
 void NumericRepresentationFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &input = args.data[0];
 	string representation = input.GetVectorType() == VectorType::SHREDDED_VECTOR
@@ -899,6 +899,9 @@ ScalarFunction NumericDispatch::GetFunction(const string &name, vector<LogicalTy
 ScalarFunction NumericRepresentationFun::GetFunction() {
 	ScalarFunction function({}, LogicalType::VARCHAR, NumericRepresentationFunction);
 	function.GetSignature().AddParameter("numeric", LogicalType::NUMERIC);
+	// like vector_type(): the result describes the vector, not a value, so it is never NULL and never folded
+	function.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	function.SetStability(FunctionStability::VOLATILE);
 	return function;
 }
 
