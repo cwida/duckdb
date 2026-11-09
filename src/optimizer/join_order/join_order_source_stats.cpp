@@ -112,7 +112,9 @@ static void MergeEquivalentSources(LogicalOperator &op, join_column_sources_t &i
 	column_binding_map_t<ColumnBinding> source_outputs;
 	for (auto &entry : inputs) {
 		groups.AddEquality(entry.first, entry.first);
-		for (auto &source : entry.second) {
+		auto first = source_outputs.emplace(entry.second.direct.binding, entry.first);
+		groups.AddEquality(entry.first, first.first->second);
+		for (auto &source : entry.second.equivalents) {
 			auto first = source_outputs.emplace(source.binding, entry.first);
 			groups.AddEquality(entry.first, first.first->second);
 		}
@@ -131,15 +133,18 @@ static void MergeEquivalentSources(LogicalOperator &op, join_column_sources_t &i
 	unordered_map<idx_t, column_binding_map_t<JoinColumnSource>> contributors;
 	for (auto &entry : inputs) {
 		auto &group = contributors[groups.GetGroup(entry.first)];
-		for (auto &source : entry.second) {
+		group.emplace(entry.second.direct.binding, entry.second.direct);
+		for (auto &source : entry.second.equivalents) {
 			group.emplace(source.binding, source);
 		}
 	}
 	for (auto &entry : inputs) {
 		auto &group = contributors.at(groups.GetGroup(entry.first));
-		entry.second.clear();
+		entry.second.equivalents.clear();
 		for (auto &source : group) {
-			entry.second.push_back(source.second);
+			if (source.first != entry.second.direct.binding) {
+				entry.second.equivalents.push_back(source.second);
+			}
 		}
 	}
 }
@@ -176,9 +181,8 @@ join_column_sources_t JoinOrderSourceStats::Resolve(LogicalOperator &root) const
 			if (entry != scans.end() && !get.extra_info.sample_options) {
 				auto &scan = entry->second;
 				for (auto &column : scan.stats.columns) {
-					output.emplace(column.binding,
-					               vector<JoinColumnSource> {{column.binding, scan.cardinality, scan.stats.cardinality,
-					                                          column.total_domain}});
+					output.emplace(column.binding, JoinColumnSources({column.binding, scan.cardinality,
+					                                                  scan.stats.cardinality, column.total_domain}));
 				}
 			}
 		} else if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {

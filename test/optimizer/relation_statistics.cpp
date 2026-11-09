@@ -250,10 +250,12 @@ TEST_CASE("Join source populations survive changes in relation cardinality", "[o
 			auto right_stats = CreateStats({right}, {10000}, 10000);
 			right_stats.columns[0].total_domain = DistinctCount(20000, weak_source);
 			join_column_sources_t sources;
-			sources[left] = {{ColumnBinding(TableIndex(10), ProjectionIndex(0)), 100000, 100000,
-			                  left_stats.columns[0].total_domain}};
-			sources[right] = {
-			    {ColumnBinding(TableIndex(20), ProjectionIndex(0)), 20000, 10000, right_stats.columns[0].total_domain}};
+			sources.emplace(left, JoinColumnSources({ColumnBinding(TableIndex(10), ProjectionIndex(0)), 100000, 100000,
+			                                         left_stats.columns[0].total_domain}));
+			sources.emplace(right, JoinColumnSources({ColumnBinding(TableIndex(20), ProjectionIndex(0)), 20000, 10000,
+			                                          right_stats.columns[0].total_domain}));
+			sources.at(right).equivalents.push_back({ColumnBinding(TableIndex(30), ProjectionIndex(0)), 200, 100,
+			                                         DistinctCount(200, DistinctCountSource::MIN_MAX)});
 			CardinalityEstimator estimator(sets, model);
 			estimator.Initialize({left_stats, right_stats}, {}, sources);
 			auto expected = weak_source == DistinctCountSource::MIN_MAX ? current_rows : current_rows * 200;
@@ -280,8 +282,10 @@ TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimiz
 			group.columns.insert(bindings.back());
 			group.relations.insert(RelationIndex(i));
 			if (i < 2) {
-				sources[bindings.back()] = {{ColumnBinding(TableIndex(10 + i), ProjectionIndex(0)), populations[i],
-				                             populations[i], stats.back().columns[0].total_domain}};
+				sources.emplace(
+				    bindings.back(),
+				    JoinColumnSources({ColumnBinding(TableIndex(10 + i), ProjectionIndex(0)), populations[i],
+				                       populations[i], stats.back().columns[0].total_domain}));
 			}
 			if (i == 0) {
 				continue;
@@ -306,12 +310,14 @@ TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimiz
 		auto &base_join = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
 		REQUIRE(estimator.EstimateCardinality(base_join).GetIndex() == 100000);
 		auto &full_join = sets.Union(base_join, sets.GetJoinRelation(RelationIndex(2)));
-		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == synthetic_rows * 5);
+		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == 100000);
 	}
 }
 
-TEST_CASE("Min-max uplift counts reliable source columns rather than aliases", "[optimizer][relation_statistics]") {
-	for (bool same_source : {true, false}) {
+TEST_CASE("Min-max uplift counts sources and rejects unknown reliable populations",
+          "[optimizer][relation_statistics]") {
+	for (idx_t provenance : {idx_t(0), idx_t(1), idx_t(2)}) {
+		// Same source alias, independent source, or reliable statistics behind a boundary.
 		JoinRelationSetManager sets;
 		JoinPredicateModel model;
 		vector<ColumnBinding> bindings;
@@ -326,10 +332,13 @@ TEST_CASE("Min-max uplift counts reliable source columns rather than aliases", "
 			if (i == 2) {
 				stats.back().columns[0].total_domain.source = DistinctCountSource::MIN_MAX;
 			}
-			auto origin = same_source && i == 1 ? idx_t(10) : 10 + i;
-			sources[bindings.back()] = {{ColumnBinding(TableIndex(origin), ProjectionIndex(0)),
-			                             stats.back().cardinality, stats.back().cardinality,
-			                             stats.back().columns[0].total_domain}};
+			auto origin = provenance == 0 && i == 1 ? idx_t(10) : 10 + i;
+			if (provenance != 2 || i != 1) {
+				sources.emplace(
+				    bindings.back(),
+				    JoinColumnSources({ColumnBinding(TableIndex(origin), ProjectionIndex(0)), stats.back().cardinality,
+				                       stats.back().cardinality, stats.back().columns[0].total_domain}));
+			}
 			group.columns.insert(bindings.back());
 			group.relations.insert(RelationIndex(i));
 			if (i == 0) {
@@ -353,7 +362,69 @@ TEST_CASE("Min-max uplift counts reliable source columns rather than aliases", "
 		CardinalityEstimator estimator(sets, model);
 		estimator.Initialize(stats, {}, sources);
 		auto &joined = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(2)));
-		REQUIRE(estimator.EstimateCardinality(joined).GetIndex() == (same_source ? 10000 : 200000));
+		REQUIRE(estimator.EstimateCardinality(joined).GetIndex() == (provenance == 0 ? 10000 : 200000));
+	}
+}
+
+TEST_CASE("Predicate-local fallback domains order competing equality edges", "[optimizer][relation_statistics]") {
+	for (bool reverse_classes : {false, true}) {
+		for (bool reverse_edges : {false, true}) {
+			JoinRelationSetManager sets;
+			JoinPredicateModel model;
+			vector<RelationStats> stats;
+			join_column_sources_t sources;
+			vector<unique_ptr<FilterInfo>> filters;
+			for (idx_t i = 0; i < 3; i++) {
+				auto first = ColumnBinding(TableIndex(i), ProjectionIndex(0));
+				auto second = ColumnBinding(TableIndex(i), ProjectionIndex(1));
+				idx_t rows = i == 2 ? 10 : 1000;
+				stats.push_back(CreateStats({first, second}, {rows, MinValue<idx_t>(rows, 100)}, rows));
+				stats.back().columns[0].total_domain.source = DistinctCountSource::CARDINALITY;
+				stats.back().columns[1].total_domain = DistinctCount(100, DistinctCountSource::MIN_MAX);
+				if (i != 2) {
+					sources.emplace(first, JoinColumnSources({first, idx_t(rows), idx_t(rows),
+					                                          stats.back().columns[0].total_domain}));
+				}
+			}
+			for (idx_t class_index = 0; class_index < 2; class_index++) {
+				auto column = reverse_classes ? 1 - class_index : class_index;
+				JoinEqualityClass group;
+				group.index = class_index;
+				vector<idx_t> targets = column == 0 ? vector<idx_t> {1, 2} : vector<idx_t> {2};
+				if (reverse_edges) {
+					std::reverse(targets.begin(), targets.end());
+				}
+				for (auto target : targets) {
+					auto left = ColumnBinding(TableIndex(0), ProjectionIndex(column));
+					auto right = ColumnBinding(TableIndex(target), ProjectionIndex(column));
+					auto &lhs = sets.GetJoinRelation(RelationIndex(0));
+					auto &rhs = sets.GetJoinRelation(RelationIndex(target));
+					auto filter =
+					    make_uniq<FilterInfo>(CreateJoinComparison(left, right, ExpressionType::COMPARE_EQUAL),
+					                          sets.Union(lhs, rhs), filters.size());
+					filter->SetLeftSet(lhs);
+					filter->SetRightSet(rhs);
+					filter->left_binding = left;
+					filter->right_binding = right;
+					auto &predicate = model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, left, right);
+					predicate.SetEqualityClassIndex(optional_idx(class_index));
+					group.columns.insert(left);
+					group.columns.insert(right);
+					group.relations.insert(RelationIndex(0));
+					group.relations.insert(RelationIndex(target));
+					group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(target), left, right);
+					filters.push_back(std::move(filter));
+				}
+				model.AddEqualityClass(std::move(group));
+			}
+			CardinalityEstimator estimator(sets, model);
+			estimator.Initialize(stats, {}, sources);
+			auto &base = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
+			auto &all = sets.Union(base, sets.GetJoinRelation(RelationIndex(2)));
+			REQUIRE(estimator.EstimateCardinality(base).GetIndex() == 1000);
+			// Use domains 1000 and 100 before the redundant local domain of 10.
+			REQUIRE(estimator.EstimateCardinality(all).GetIndex() == 100);
+		}
 	}
 }
 
@@ -1343,7 +1414,7 @@ static unique_ptr<LogicalOperator> CreateContributorJoin(bool projected, idx_t s
 	return std::move(outer);
 }
 
-TEST_CASE("Projected inner joins retain hidden source NDVs and independent contributors",
+TEST_CASE("Projected joins use visible domains and retain independent source guards",
           "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
@@ -1352,10 +1423,15 @@ TEST_CASE("Projected inner joins retain hidden source NDVs and independent contr
 			auto plan = CreateContributorJoin(projected, second_domain);
 			JoinOrderSourceStats snapshot(*connection.context, *plan);
 			auto sources = snapshot.Resolve(*plan->children[0]);
-			REQUIRE(sources.at(plan->children[0]->GetColumnBindings()[0]).size() == 2);
+			auto &lineage = sources.at(plan->children[0]->GetColumnBindings()[0]);
+			REQUIRE(lineage.equivalents.size() == 1);
+			REQUIRE(lineage.direct.binding.table_index == TableIndex(10));
+			REQUIRE(lineage.equivalents[0].binding.table_index == TableIndex(20));
 			snapshot.Resolve(*plan);
-			REQUIRE(snapshot.Resolve(*plan->children[0]).at(plan->children[0]->GetColumnBindings()[0]).size() == 2);
-			auto expected = idx_t(100000000000) / (second_domain * second_domain);
+			REQUIRE(
+			    snapshot.Resolve(*plan->children[0]).at(plan->children[0]->GetColumnBindings()[0]).equivalents.size() ==
+			    1);
+			auto expected = idx_t(100000000000) / (second_domain * (projected ? 50 : second_domain));
 			RelationStatsExtractor extractor(*connection.context);
 			auto stats = extractor.Extract(*plan);
 			REQUIRE(stats);
@@ -1389,16 +1465,17 @@ TEST_CASE("Aliases created before joins retain hidden contributors", "[optimizer
 	    ColumnBinding(TableIndex(15), ProjectionIndex(1));
 	JoinOrderSourceStats snapshot(*connection.context, *plan);
 	auto sources = snapshot.Resolve(outer_projection);
-	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).size() == 2);
+	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).equivalents.size() == 1);
+	REQUIRE(sources.at(outer_projection.GetColumnBindings()[0]).direct.binding == original_binding);
 	RelationStatsExtractor extractor(*connection.context);
 	auto stats = extractor.Extract(*plan);
 	REQUIRE(stats);
-	REQUIRE(stats->cardinality == 10000000);
+	REQUIRE(stats->cardinality == 20000000);
 	JoinOrderOptimizer optimizer(*connection.context);
 	RelationStats optimized_stats;
 	plan = optimizer.Optimize(std::move(plan), optimized_stats);
 	REQUIRE(optimized_stats.stats_initialized);
-	REQUIRE(optimized_stats.cardinality == 10000000);
+	REQUIRE(optimized_stats.cardinality == 20000000);
 }
 
 TEST_CASE("Projected source equalities exclude correlated operands", "[optimizer][relation_statistics]") {
@@ -1420,8 +1497,8 @@ TEST_CASE("Projected source equalities exclude correlated operands", "[optimizer
 		JoinOrderSourceStats snapshot(*connection.context, projection);
 		auto sources = snapshot.Resolve(projection);
 		auto &contributors = sources.at(projection.GetColumnBindings()[0]);
-		REQUIRE(contributors.size() == 1);
-		REQUIRE(contributors[0].binding == binding);
+		REQUIRE(contributors.equivalents.empty());
+		REQUIRE(contributors.direct.binding == binding);
 	}
 }
 
@@ -1451,8 +1528,9 @@ TEST_CASE("Join source snapshots retain scan populations and resolve relation bo
 		auto sources = snapshot.Resolve(*plan);
 		REQUIRE(sources.size() == entry.second);
 		for (auto &source : sources) {
-			for (auto &contributor : source.second) {
-				REQUIRE(contributor.cardinality == 1000);
+			REQUIRE(source.second.direct.source_cardinality == 1000);
+			for (auto &contributor : source.second.equivalents) {
+				REQUIRE(contributor.source_cardinality == 1000);
 			}
 		}
 	}
@@ -1460,18 +1538,18 @@ TEST_CASE("Join source snapshots retain scan populations and resolve relation bo
 	JoinOrderSourceStats snapshot(*connection.context, *plan);
 	auto sources = snapshot.Resolve(*plan);
 	auto bindings = plan->GetColumnBindings();
-	REQUIRE(sources.at(bindings[0]).size() == 1);
-	REQUIRE(sources.at(bindings[1]).size() == 1);
-	REQUIRE(sources.at(bindings[0])[0].binding == sources.at(bindings[1])[0].binding);
+	REQUIRE(sources.at(bindings[0]).equivalents.empty());
+	REQUIRE(sources.at(bindings[1]).equivalents.empty());
+	REQUIRE(sources.at(bindings[0]).direct.binding == sources.at(bindings[1]).direct.binding);
 
 	auto self_join = PlanStatisticsQuery(connection, "SELECT a.x, b.x FROM stats_a a JOIN stats_a b USING(k)");
 	JoinOrderSourceStats self_snapshot(*connection.context, *self_join);
 	auto self_sources = self_snapshot.Resolve(*self_join);
 	auto self_bindings = self_join->GetColumnBindings();
-	REQUIRE(self_sources.at(self_bindings[0]).size() == 1);
-	REQUIRE(self_sources.at(self_bindings[1]).size() == 1);
-	REQUIRE(self_sources.at(self_bindings[0])[0].binding.table_index !=
-	        self_sources.at(self_bindings[1])[0].binding.table_index);
+	REQUIRE(self_sources.at(self_bindings[0]).equivalents.empty());
+	REQUIRE(self_sources.at(self_bindings[1]).equivalents.empty());
+	REQUIRE(self_sources.at(self_bindings[0]).direct.binding.table_index !=
+	        self_sources.at(self_bindings[1]).direct.binding.table_index);
 	vector<pair<string, idx_t>> contributor_cases {
 	    {"SELECT a.k FROM stats_a a JOIN stats_b b USING(k)", 2},
 	    {"SELECT a.k FROM stats_a a, stats_b b WHERE a.k=b.k", 2},
@@ -1488,9 +1566,9 @@ TEST_CASE("Join source snapshots retain scan populations and resolve relation bo
 		JoinOrderSourceStats captured(*connection.context, *input);
 		auto output = captured.Resolve(*input);
 		for (auto &binding : input->GetColumnBindings()) {
-			REQUIRE(output.at(binding).size() == entry.second);
-			column_binding_set_t origins;
-			for (auto &source : output.at(binding)) {
+			REQUIRE(output.at(binding).equivalents.size() + 1 == entry.second);
+			column_binding_set_t origins {output.at(binding).direct.binding};
+			for (auto &source : output.at(binding).equivalents) {
 				origins.insert(source.binding);
 			}
 			REQUIRE(origins.size() == entry.second);
@@ -1528,14 +1606,14 @@ TEST_CASE("Join source snapshots precede child optimization and reuse provider s
 	auto plan = optimizer.Optimize(std::move(projection));
 	auto sources = optimizer.GetSourceStats()->Resolve(*plan);
 	REQUIRE(sources.size() == 1);
-	REQUIRE(sources.begin()->second.size() == 1);
-	auto &source = sources.begin()->second[0];
-	REQUIRE(source.cardinality == 100);
+	REQUIRE(sources.begin()->second.equivalents.empty());
+	auto &source = sources.begin()->second.direct;
+	REQUIRE(source.source_cardinality == 100);
 	REQUIRE(source.domain.distinct_count == 10);
 	REQUIRE(*column_calls == 1);
 	REQUIRE(*calls == 1);
 	plan->SetEstimatedCardinality(1);
-	REQUIRE(optimizer.GetSourceStats()->Resolve(*plan).begin()->second[0].cardinality == 100);
+	REQUIRE(optimizer.GetSourceStats()->Resolve(*plan).begin()->second.direct.source_cardinality == 100);
 }
 
 TEST_CASE("Join source collection visits both subtrees before either is optimized",
@@ -1654,7 +1732,7 @@ TEST_CASE("Join source summaries support new projections and appended roots with
 	auto calls = first->children[0]->Cast<LogicalGet>().bind_data->Cast<CardinalityProviderData>().calls;
 	JoinOrderSourceStats snapshot(*connection.context, *first);
 	auto projected = LogicalProjection::CreateIdentity(TableIndex(30), std::move(first));
-	REQUIRE(snapshot.Resolve(*projected).begin()->second[0].cardinality == 100);
+	REQUIRE(snapshot.Resolve(*projected).begin()->second.direct.source_cardinality == 100);
 	auto limit = make_uniq<LogicalLimit>(BoundLimitNode::ConstantValue(10), BoundLimitNode());
 	limit->children.push_back(std::move(projected));
 	REQUIRE(snapshot.Resolve(*limit).empty());
@@ -1662,7 +1740,7 @@ TEST_CASE("Join source summaries support new projections and appended roots with
 	REQUIRE(snapshot.Resolve(*outer).empty());
 	snapshot.AddPlan(*connection.context, *outer);
 	REQUIRE(snapshot.Resolve(*outer).empty());
-	REQUIRE(snapshot.Resolve(captured).begin()->second[0].cardinality == 100);
+	REQUIRE(snapshot.Resolve(captured).begin()->second.direct.source_cardinality == 100);
 	REQUIRE(*calls == 1);
 
 	auto scan = CreateCardinalityProvider(200, 200);
@@ -1670,8 +1748,8 @@ TEST_CASE("Join source summaries support new projections and appended roots with
 	auto appended_calls = scan->bind_data->Cast<CardinalityProviderData>().calls;
 	auto appended = LogicalProjection::CreateIdentity(TableIndex(60), std::move(scan));
 	snapshot.AddPlan(*connection.context, *appended);
-	REQUIRE(snapshot.Resolve(*appended).begin()->second[0].cardinality == 200);
-	REQUIRE(snapshot.Resolve(captured).begin()->second[0].cardinality == 100);
+	REQUIRE(snapshot.Resolve(*appended).begin()->second.direct.source_cardinality == 200);
+	REQUIRE(snapshot.Resolve(captured).begin()->second.direct.source_cardinality == 100);
 	REQUIRE(*appended_calls == 1);
 	REQUIRE(*calls == 1);
 }

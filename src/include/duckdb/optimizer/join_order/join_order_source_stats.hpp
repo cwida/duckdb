@@ -19,12 +19,20 @@ class LogicalOperator;
 
 struct JoinColumnSource {
 	ColumnBinding binding;
-	idx_t cardinality;
-	idx_t filtered_cardinality;
+	idx_t source_cardinality;
+	idx_t scan_cardinality;
 	DistinctCount domain;
 };
 
-using join_column_sources_t = column_binding_map_t<vector<JoinColumnSource>>;
+struct JoinColumnSources {
+	explicit JoinColumnSources(JoinColumnSource direct) : direct(std::move(direct)) {
+	}
+
+	JoinColumnSource direct;
+	vector<JoinColumnSource> equivalents;
+};
+
+using join_column_sources_t = column_binding_map_t<JoinColumnSources>;
 
 //! Immutable source evidence captured before any join-order subtree is optimized.
 class JoinOrderSourceStats {
