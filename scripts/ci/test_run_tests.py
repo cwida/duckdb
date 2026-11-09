@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import json
+import runpy
 import signal
 import shlex
 import sys
@@ -537,6 +538,24 @@ class RunTestsScriptTest(unittest.TestCase):
         argv = test_runner_wrapper.build_run_tests_argv([], wrapper_path, "duckdb.exe")
         build_dir = wrapper_path.resolve().parent.parent
         self.assertEqual(argv[0], str(build_dir / "duckdb.exe"))
+
+    def test_generated_wrapper_finds_source_root_from_windows_build(self):
+        template = (REPO_ROOT / "scripts" / "ci" / "test_runner_wrapper.py.in").read_text(encoding="utf8")
+        replacements = {
+            "@PROJECT_SOURCE_DIR@": str(REPO_ROOT),
+            "@RUN_WRAPPER_TEST_ROOTS@": "",
+            "@RUN_WRAPPER_DEFAULT_ARGS@": "",
+            "@RUN_WRAPPER_DUCKDB_NAME@": "duckdb.exe",
+        }
+        for key, value in replacements.items():
+            template = template.replace(key, value)
+
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT / "test") as temp_dir:
+            wrapper_path = Path(temp_dir) / "run.py"
+            wrapper_path.write_text(template, encoding="utf8")
+            wrapper_globals = runpy.run_path(wrapper_path, run_name="generated_test_runner")
+
+        self.assertEqual(wrapper_globals["SOURCE_ROOT"], REPO_ROOT)
 
     def test_wrapper_errors_when_duckdb_is_missing(self):
         wrapper_dir = Path(tempfile.mkdtemp())

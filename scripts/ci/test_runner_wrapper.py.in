@@ -2,7 +2,16 @@
 import sys
 from pathlib import Path
 
-SOURCE_ROOT = Path(__file__).resolve().parents[3]
+
+def find_source_root():
+    configured_source_root = Path(r"@PROJECT_SOURCE_DIR@")
+    for candidate in [*Path(__file__).resolve().parents, configured_source_root]:
+        if (candidate / "scripts" / "ci" / "test_runner_wrapper.py").is_file():
+            return candidate
+    raise RuntimeError("Could not locate the DuckDB source directory")
+
+
+SOURCE_ROOT = find_source_root()
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
