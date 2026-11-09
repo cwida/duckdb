@@ -776,7 +776,7 @@ jobs:
 
   bwc-build:
     name: Build DuckDB
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       groups: ${{ steps.resolve.outputs.groups }}
     steps:
@@ -817,7 +817,7 @@ jobs:
 
   bwc-test:
     name: BWC Test (DuckDB ${{ matrix.series.group }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: bwc-build
     strategy:
       fail-fast: false
