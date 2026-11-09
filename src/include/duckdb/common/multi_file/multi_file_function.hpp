@@ -238,7 +238,7 @@ public:
 			result->table_columns = IdentifiersToStrings(names);
 		}
 		result->columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(result->names, result->types);
-		result->file_options.VerifyColumnStatistics(result->names, result->types);
+		result->file_options.VerifyColumnStatistics(context.GetContext(), result->names, result->types);
 		return std::move(result);
 	}
 
@@ -311,7 +311,7 @@ public:
 		file_options.auto_detect_hive_partitioning = false;
 
 		for (auto &[option_name, option_values] : input.info.options) {
-			if (multi_file_reader->ParseCopyOption(option_name, option_values, file_options)) {
+			if (multi_file_reader->ParseCopyOption(context.GetContext(), option_name, option_values, file_options)) {
 				continue;
 			}
 			if (interface->ParseCopyOption(context, option_name, option_values, *options, expected_names,
@@ -1185,7 +1185,8 @@ public:
 		// statistics the caller gave for the column (the "column_statistics" option) stand in for the files' -
 		// they describe the scan as a whole, which is what the optimizer asks about, where a file's describe one file
 		if (!bind_data.file_options.column_statistics.IsNull()) {
-			auto explicit_stats = bind_data.file_options.GetColumnStatistics(col_name, bind_data.types[primary_index]);
+			auto explicit_stats = bind_data.file_options.GetColumnStatistics(context.GetContext(), col_name,
+			                                                                 bind_data.types[primary_index]);
 			if (explicit_stats) {
 				if (!column_index.IsPushdownExtract()) {
 					return explicit_stats;

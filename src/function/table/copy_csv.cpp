@@ -158,7 +158,7 @@ static unique_ptr<FunctionData> WriteCSVBind(ClientContext &context, CopyFunctio
 
 	// check all the options in the copy info
 	for (auto &[option_name, option_values] : input.info.options) {
-		bind_data->options.SetWriteOption(option_name, ConvertVectorToValue(option_values));
+		bind_data->options.SetWriteOption(context.GetContext(), option_name, ConvertVectorToValue(option_values));
 	}
 	// verify the parsed options
 	if (bind_data->options.force_quote.empty()) {
