@@ -40,7 +40,6 @@ RemoveMacroOverloadInfo::~RemoveMacroOverloadInfo() {
 unique_ptr<AlterInfo> RemoveMacroOverloadInfo::Copy() const {
 	auto result = make_uniq<RemoveMacroOverloadInfo>(GetAlterEntryData(), entry_catalog_type, signature);
 	result->allow_internal = allow_internal;
-	result->cascade = cascade;
 	return std::move(result);
 }
 
@@ -57,11 +56,7 @@ string RemoveMacroOverloadInfo::ToString() const {
 		}
 		result += signature[i].ToString();
 	}
-	result += ")";
-	if (cascade) {
-		result += " CASCADE";
-	}
-	result += ";";
+	result += ");";
 	return result;
 }
 

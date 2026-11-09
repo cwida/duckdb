@@ -104,15 +104,8 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 		throw CatalogException("Function %s has no overload with signature (%s)", name, signature_text);
 	}
 	if (macros.size() == 1) {
-		// the binder plans a DROP for the last overload, an alter cannot remove the entry itself
-		throw CatalogException("Cannot remove the last overload of %s: drop the macro instead", name);
-	}
-	if (remove_info.cascade) {
-		// dependencies are tracked per entry, not per member, so a cascade that leaves siblings
-		// behind has no well-defined scope: require an explicit choice
-		throw CatalogException("Cannot drop an overload of %s with CASCADE while other overloads remain: drop the "
-		                       "whole entry or its dependents first",
-		                       name);
+		// an alter keeps the entry, like ALTER TABLE DROP COLUMN cannot drop the last column
+		throw CatalogException("Cannot drop the last overload of %s: drop the macro itself instead", name);
 	}
 	auto new_info_base = GetInfo();
 	auto &new_info = new_info_base->Cast<CreateMacroInfo>();

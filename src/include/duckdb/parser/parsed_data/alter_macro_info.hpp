@@ -46,8 +46,6 @@ struct RemoveMacroOverloadInfo : public AlterMacroInfo {
 
 	//! The parameter types identifying the overload to remove (ANY names an untyped slot)
 	vector<LogicalType> signature;
-	//! DROP ... CASCADE: only honored when the overload is the last one and the entry is dropped
-	bool cascade = false;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;

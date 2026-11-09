@@ -1,6 +1,5 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
-#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/execution/index/art/art.hpp"
@@ -11,7 +10,6 @@
 #include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 #include "duckdb/parser/parsed_data/alter_schema_info.hpp"
 #include "duckdb/parser/parsed_data/comment_on_column_info.hpp"
-#include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/statement/alter_statement.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -20,7 +18,6 @@
 #include "duckdb/planner/operator/logical_create_index.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_alter.hpp"
-#include "duckdb/planner/operator/logical_drop.hpp"
 
 namespace duckdb {
 
@@ -161,18 +158,6 @@ BoundStatement Binder::BindAlterMacro(AlterStatement &stmt) {
 	    scoped_binder->GetSearchPath(entry->ParentCatalog(), info.GetQualifiedName().SchemaPath(), true));
 	for (auto &type : info.signature) {
 		scoped_binder->BindLogicalType(type);
-	}
-	auto &macro = entry->Cast<MacroCatalogEntry>();
-	if (macro.macros.size() == 1 && macro.FindMember(info.signature).IsValid()) {
-		// removing the last overload drops the macro: plan the DROP, which honors CASCADE like any entry drop
-		auto drop_info = make_uniq<DropInfo>();
-		drop_info->type = info.entry_catalog_type;
-		drop_info->SetQualifiedName(info.GetQualifiedName());
-		drop_info->if_not_found = info.if_not_found;
-		drop_info->cascade = info.cascade;
-		properties.RegisterDBModify(entry->ParentCatalog(), context, drop_info->GetModifications());
-		result.plan = make_uniq<LogicalDrop>(std::move(drop_info));
-		return result;
 	}
 	properties.RegisterDBModify(entry->ParentCatalog(), context, info.GetModifications());
 	result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));

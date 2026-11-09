@@ -84,8 +84,11 @@ PEGTransformerFactory::TransformDropFunction(PEGTransformer &transformer, const 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformDropMemberStatement(PEGTransformer &transformer,
                                                                              unique_ptr<AlterInfo> drop_member,
                                                                              const optional<bool> &drop_behavior) {
-	if (drop_behavior) {
-		drop_member->Cast<RemoveMacroOverloadInfo>().cascade = *drop_behavior;
+	if (drop_behavior && *drop_behavior) {
+		// removing an overload is an alter: dependents block it, and only dropping the macro can cascade
+		throw ParserException("Cannot drop an overload of %s with CASCADE: drop the dependent entries first, or "
+		                      "drop the whole macro",
+		                      drop_member->GetQualifiedName().Name());
 	}
 	auto result = make_uniq<AlterStatement>();
 	result->info = std::move(drop_member);

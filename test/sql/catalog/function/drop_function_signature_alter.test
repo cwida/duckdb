@@ -88,9 +88,14 @@ SELECT count(DISTINCT function_oid) FROM duckdb_functions() WHERE function_name 
 ----
 1
 
-# dropping the last member falls through to a real entry drop, replayed from the WAL too
-statement ok
+# the last overload cannot be dropped by signature, dropping the macro itself is replayed from the WAL
+statement error
 DROP MACRO alt(INTEGER);
+----
+<REGEX>:.*Cannot drop the last overload of "alt": drop the macro itself instead.*
+
+statement ok
+DROP MACRO alt;
 
 restart
 
@@ -296,7 +301,7 @@ SELECT blk('b');
 ----
 b
 
-# removing the last overload drops the entry, which blocks on dependents and honors CASCADE like any drop
+# the last overload is rejected regardless of dependents, and CASCADE never applies to a signature drop
 statement ok
 CREATE MACRO last_one(x INTEGER) AS x;
 
@@ -306,20 +311,26 @@ CREATE VIEW last_one_v AS SELECT last_one(1) AS a;
 statement error
 DROP MACRO last_one(INTEGER);
 ----
-<REGEX>:.*Cannot drop entry "last_one" because there are entries that depend on it.*view "last_one_v" depends on macro function "last_one".*
+<REGEX>:.*Cannot drop the last overload of "last_one": drop the macro itself instead.*
 
-statement ok
+statement error
 DROP MACRO last_one(INTEGER) CASCADE;
+----
+<REGEX>:.*Cannot drop an overload of "last_one" with CASCADE: drop the dependent entries first, or drop the whole macro.*
+
+# dropping the macro itself honors CASCADE like any drop
+statement ok
+DROP MACRO last_one CASCADE;
 
 statement error
 SELECT * FROM last_one_v;
 ----
-<REGEX>:.*(Catalog Error|does not exist).*
+<REGEX>:.*Table with name last_one_v does not exist.*
 
 statement error
 SELECT last_one(1);
 ----
-<REGEX>:.*(Catalog Error|does not exist).*
+<REGEX>:.*Scalar Function with name last_one does not exist.*
 
 # a signature names one entry
 statement error
