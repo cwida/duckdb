@@ -66,7 +66,7 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	}
 	if (!new_logical_plan) {
 		// Keep the original tree when there is nothing to reorder or enumeration cannot complete.
-		new_logical_plan = std::move(plan);
+		new_logical_plan = std::move(plan); // NOLINT: plan is only moved when reconstruction succeeded
 		if (!reorderable && relation_stats.size() == 1) {
 			new_logical_plan->estimated_cardinality = relation_stats.at(0).cardinality;
 			new_logical_plan->has_estimated_cardinality = true;
