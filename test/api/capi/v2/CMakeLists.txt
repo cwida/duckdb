@@ -10,6 +10,7 @@ add_library_unity(
   test_capi_v2_cast_function.cpp
   test_capi_v2_column_data_collection.cpp
   test_capi_v2_common_type.cpp
+  test_capi_v2_connection_from_v1.cpp
   test_capi_v2_copy_function.cpp
   test_capi_v2_custom_option.cpp
   test_capi_v2_custom_type.cpp

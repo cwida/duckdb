@@ -1,4 +1,5 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
+#include "duckdb/main/capi/capi_internal.hpp"
 
 using namespace duckdb::capiv2;
 
@@ -10,6 +11,19 @@ DUCKDB_V2_ERROR duckdb_v2_connection_create(duckdb_v2_instance_handle instance, 
 	return WithErrorHandler(err, [&]() {
 		auto &instance_wrapper = *Convert(instance);
 		auto connection = duckdb::make_uniq<CV2Connection>(instance_wrapper.GetDatabase());
+		*out_conn = Convert(connection.release());
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(void *v1_database, duckdb_v2_connection_handle *out_conn,
+                                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(v1_database);
+	DUCKDB_CHECK_ARG(out_conn);
+	*out_conn = nullptr;
+	return WithErrorHandler(err, [&]() {
+		// a duckdb_database points at the V1 API's DatabaseWrapper
+		auto &wrapper = *reinterpret_cast<duckdb::DatabaseWrapper *>(v1_database);
+		auto connection = duckdb::make_uniq<CV2Connection>(*wrapper.database);
 		*out_conn = Convert(connection.release());
 	});
 }
