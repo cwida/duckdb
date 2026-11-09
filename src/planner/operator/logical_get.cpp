@@ -352,7 +352,6 @@ void LogicalGet::SetScanOrder(unique_ptr<RowGroupOrderOptions> options) {
 	}
 	row_group_order_options = make_uniq<RowGroupOrderOptions>(*options);
 	function.set_scan_order(std::move(options), bind_data.get());
-	ClearColumnStatisticsCache();
 }
 
 void LogicalGet::SetPartitionsToScan(vector<idx_t> partition_indices) {
