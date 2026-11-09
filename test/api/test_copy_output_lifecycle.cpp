@@ -2,7 +2,9 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
+#include "duckdb/execution/operator/persistent/physical_batch_copy_to_file.hpp"
 #include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
+#include "duckdb/execution/operator/scan/physical_dummy_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/main/connection.hpp"
@@ -524,6 +526,47 @@ TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producer
 	REQUIRE(count.GetValue(0, 0) == Value::BIGINT(10 * STANDARD_VECTOR_SIZE));
 	pending->Complete();
 	REQUIRE_NO_FAIL(*pending);
+}
+
+TEST_CASE("A failed open of the first batch COPY file is reported to every worker", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	REQUIRE_NO_FAIL(connection.Query("SET async_threads=1"));
+	auto &context = *connection.context;
+	auto &fs = FileSystem::GetFileSystem(context);
+
+	auto info = make_shared_ptr<LifecycleCopyInfo>();
+	auto function = CreateLifecycleCopyFunction("copy_lifecycle_failed_open", info, true);
+	PhysicalPlan plan(Allocator::Get(context));
+	vector<LogicalType> types {LogicalType::BIGINT};
+	auto &child = plan.Make<PhysicalDummyScan>(types, 0);
+	auto &copy = plan.Make<PhysicalBatchCopyToFile>(types, function, make_uniq<LifecycleCopyBindData>(info), 0)
+	                 .Cast<PhysicalBatchCopyToFile>();
+	copy.children.push_back(child);
+	// the output directory does not exist, so the open of the file fails
+	auto missing_directory = TestCreatePath("copy_lifecycle_failed_open");
+	RemoveDirectoryIfPresent(fs, missing_directory);
+	copy.file_path = fs.JoinPath(missing_directory, "file.test");
+	copy.use_tmp_file = false;
+	copy.write_empty_file = false;
+	copy.return_type = CopyFunctionReturnType::CHANGED_ROWS;
+	copy.sink_state = copy.GetGlobalSinkState(context);
+
+	ThreadContext thread(context);
+	ExecutionContext execution(context, thread, nullptr);
+	auto local = copy.GetLocalSinkState(execution);
+	local->partition_info.batch_index = 0;
+	local->partition_info.min_batch_index = 0;
+	InterruptState interrupt;
+	OperatorSinkInput input {*copy.sink_state, *local, interrupt};
+	DataChunk chunk;
+	chunk.Initialize(context, types);
+	chunk.data[0].Append(Value::BIGINT(1));
+
+	// the worker that opens the file gets the error, and so does a worker that initializes after it
+	REQUIRE_THROWS_AS(copy.Sink(execution, chunk, input), IOException);
+	REQUIRE_THROWS_AS(copy.Sink(execution, chunk, input), IOException);
+	REQUIRE(info->initialized_paths.empty());
 }
 #endif
 

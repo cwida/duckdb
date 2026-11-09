@@ -172,7 +172,10 @@ public:
 		if (initialized.load(std::memory_order_relaxed)) {
 			return;
 		}
-		ScheduleFileOpen();
+		// a worker that initializes after a failed open waits on the same job
+		if (!next_file) {
+			ScheduleFileOpen();
+		}
 		first_file_state = TakeOpenedFile();
 		global_state = first_file_state.get();
 		initialized.store(true, std::memory_order_release);
