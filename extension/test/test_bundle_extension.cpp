@@ -40,18 +40,11 @@ struct CaptureState {
 	std::chrono::steady_clock::time_point start;
 };
 
-struct CapturedResult {
-	string test_name;
-	TestStatus status;
-	double duration_ms;
-	idx_t assertions;
-	vector<CapturedFailure> failures;
-	string message;
-};
-
 struct RunContext {
 	CaptureState capture;
-	vector<CapturedResult> results;
+	test_result_callback_t callback;
+	void *callback_data;
+	bool &success;
 	bool test_active = false;
 };
 
@@ -78,6 +71,27 @@ struct TempDirReclaimer {
 };
 
 static thread_local optional_ptr<RunContext> current_run;
+
+static void ReportResult(RunContext &run_context, const string &test_name, TestStatus status, double duration_ms,
+                         idx_t assertion_count, vector<CapturedFailure> failures, const string &message) {
+	vector<TestFailure> reported_failures;
+	reported_failures.reserve(failures.size());
+	for (auto &failure : failures) {
+		reported_failures.push_back(
+		    {failure.file.c_str(), failure.line, failure.expression.c_str(), failure.message.c_str()});
+	}
+	if (status == TestStatus::FAILED) {
+		run_context.success = false;
+	}
+	TestResult result {test_name.c_str(),
+	                   status,
+	                   duration_ms,
+	                   NumericCast<uint64_t>(assertion_count),
+	                   reported_failures.data(),
+	                   NumericCast<uint64_t>(reported_failures.size()),
+	                   message.c_str()};
+	run_context.callback(run_context.callback_data, &result);
+}
 
 class TestBundleReporter : public Catch::StreamingReporterBase<TestBundleReporter> {
 public:
@@ -144,8 +158,8 @@ public:
 			}
 			auto end = std::chrono::steady_clock::now();
 			auto duration = std::chrono::duration<double, std::milli>(end - capture.start).count();
-			current_run->results.push_back({capture.test_name, status, duration, capture.assertions,
-			                                std::move(capture.failures), std::move(capture.skip_reason)});
+			ReportResult(*current_run, capture.test_name, status, duration, capture.assertions,
+			             std::move(capture.failures), capture.skip_reason);
 			current_run->test_active = false;
 		}
 		StreamingReporterBase::testCaseEnded(stats);
@@ -153,8 +167,8 @@ public:
 
 	void skipTest(Catch::TestCaseInfo const &test_info) override {
 		if (current_run) {
-			current_run->results.push_back(
-			    {test_info.name, TestStatus::SKIPPED, 0, 0, {}, "Skipped after an earlier test aborted the run"});
+			ReportResult(*current_run, test_info.name, TestStatus::SKIPPED, 0, 0, {},
+			             "Skipped after an earlier test aborted the run");
 		}
 	}
 };
@@ -259,7 +273,7 @@ static void RunTests(void *, const char *const *test_names, uint64_t test_count,
 	TempDirReclaimer temp_dir_reclaimer;
 	temp_dir_reclaimer.success = true;
 
-	RunContext run_context;
+	RunContext run_context {{}, callback, callback_data, temp_dir_reclaimer.success};
 	current_run = run_context;
 
 	// Catch destroys its global test registry with a Session, so keep the embedded session process-local.
@@ -277,39 +291,14 @@ static void RunTests(void *, const char *const *test_names, uint64_t test_count,
 	}
 	config.testsOrTags.push_back(std::move(test_filter));
 	session->useConfigData(config);
-	string run_output;
 	{
 		StreamCapture stream_capture;
 		session->run();
-		run_output = stream_capture.output.str();
 	}
 	std::fflush(stdout);
 	std::fputc('\n', stdout);
 	std::fflush(stdout);
 	current_run = nullptr;
-
-	for (auto &captured : run_context.results) {
-		vector<TestFailure> failures;
-		failures.reserve(captured.failures.size());
-		for (auto &failure : captured.failures) {
-			failures.push_back(
-			    {failure.file.c_str(), failure.line, failure.expression.c_str(), failure.message.c_str()});
-		}
-		if (captured.status == TestStatus::FAILED) {
-			temp_dir_reclaimer.success = false;
-		}
-		if (captured.status == TestStatus::FAILED && captured.message.empty() && failures.empty()) {
-			captured.message = run_output;
-		}
-		TestResult result {captured.test_name.c_str(),
-		                   captured.status,
-		                   captured.duration_ms,
-		                   NumericCast<uint64_t>(captured.assertions),
-		                   failures.data(),
-		                   NumericCast<uint64_t>(failures.size()),
-		                   captured.message.c_str()};
-		callback(callback_data, &result);
-	}
 }
 
 static TestBundle bundle {DUCKDB_TEST_BUNDLE_NAME, nullptr, EnumerateTests, RunTests};

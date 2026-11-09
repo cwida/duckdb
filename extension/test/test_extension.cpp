@@ -1,12 +1,16 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/extension_load_options.hpp"
+#include "duckdb/main/query_result.hpp"
 #include "duckdb_test/test_bundle.hpp"
 #include "debug_fs_extension.hpp"
 #include "sqllogic_test_executor.hpp"
@@ -18,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
@@ -78,6 +83,7 @@ struct TestScanState : public GlobalTableFunctionState {
 struct TestRunData : public TableFunctionData {
 	vector<TestDescription> tests;
 	vector<string> test_flags;
+	string state_database;
 };
 
 struct TestRunState : public GlobalTableFunctionState {
@@ -87,10 +93,13 @@ struct TestRunState : public GlobalTableFunctionState {
 		}
 	}
 
-	vector<TestResult> results;
-	idx_t offset = 0;
+	string state_database;
+	idx_t test_count = 0;
+	bool output_emitted = false;
 	bool environment_initialized = false;
 	bool success = false;
+	unique_ptr<DuckDB> state_db;
+	unique_ptr<Connection> state_connection;
 };
 
 struct SQLTestReporter : public TestReporter {
@@ -102,6 +111,20 @@ struct SQLTestReporter : public TestReporter {
 	}
 
 	string test_name;
+};
+
+struct StreamCapture {
+	StreamCapture() : old_stdout(std::cout.rdbuf(output.rdbuf())), old_stderr(std::cerr.rdbuf(output.rdbuf())) {
+	}
+
+	~StreamCapture() {
+		std::cout.rdbuf(old_stdout);
+		std::cerr.rdbuf(old_stderr);
+	}
+
+	std::ostringstream output;
+	std::streambuf *old_stdout;
+	std::streambuf *old_stderr;
 };
 
 #ifdef DUCKDB_TEST_CRASH_STACKTRACE
@@ -232,6 +255,30 @@ static vector<string> ReadStringList(const Value &value, const string &argument_
 		result.push_back(StringValue::Get(child));
 	}
 	return result;
+}
+
+static vector<string> ReadNamedStringList(TableFunctionBindInput &input, const string &argument_name) {
+	auto entry = input.named_parameters.find(Identifier(argument_name));
+	if (entry == input.named_parameters.end()) {
+		return {};
+	}
+	return ReadStringList(entry->second, argument_name);
+}
+
+static bool ReadNamedBoolean(TableFunctionBindInput &input, const string &argument_name, bool default_value) {
+	auto entry = input.named_parameters.find(Identifier(argument_name));
+	if (entry == input.named_parameters.end()) {
+		return default_value;
+	}
+	return BooleanValue::Get(entry->second);
+}
+
+static string ReadNamedString(TableFunctionBindInput &input, const string &argument_name) {
+	auto entry = input.named_parameters.find(Identifier(argument_name));
+	if (entry == input.named_parameters.end() || entry->second.IsNull()) {
+		return "";
+	}
+	return StringValue::Get(entry->second);
 }
 
 static void ConfigureTestFlags(const vector<string> &test_flags) {
@@ -785,10 +832,10 @@ static vector<TestDescription> DiscoverTests(ClientContext &context, TestRegistr
 static unique_ptr<FunctionData> TestScanBind(ClientContext &context, TableFunctionBindInput &input,
                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto selectors = ReadStringList(input.inputs[0], "selectors");
-	auto test_roots = ReadStringList(input.inputs[1], "test_roots");
-	auto extension_roots = ReadStringList(input.inputs[2], "extension_roots");
-	auto include_slow = BooleanValue::Get(input.inputs[3]);
-	auto test_flags = ReadStringList(input.inputs[4], "test_flags");
+	auto test_roots = ReadNamedStringList(input, "test_roots");
+	auto extension_roots = ReadNamedStringList(input, "extension_roots");
+	auto include_slow = ReadNamedBoolean(input, "include_slow", false);
+	auto test_flags = ReadNamedStringList(input, "test_flags");
 	auto &registry = GetTestRegistry(context);
 	auto parsed_selectors = ParseSelectors(selectors);
 
@@ -861,6 +908,7 @@ static TestResult RunSQLTest(const TestDescription &test) {
 	SQLTestReporter reporter(test.name);
 	TestReporterScope reporter_scope(reporter);
 	TestCrashHandler crash_handler(test.test_id);
+	StreamCapture stream_capture;
 	auto start = std::chrono::steady_clock::now();
 	TestResult result;
 	result.test_id = test.test_id;
@@ -877,6 +925,9 @@ static TestResult RunSQLTest(const TestDescription &test) {
 		result.message = ex.what();
 		result.failures.push_back(ex.what());
 	}
+	if (result.status == "failed" && result.message.empty()) {
+		result.message = stream_capture.output.str();
+	}
 	auto end = std::chrono::steady_clock::now();
 	result.duration_ms = std::chrono::duration<double, std::milli>(end - start).count();
 	result.assertion_count = reporter.assertion_count.load();
@@ -884,9 +935,52 @@ static TestResult RunSQLTest(const TestDescription &test) {
 }
 
 struct BundleResultContext {
-	vector<TestResult> &results;
+	TestRunState &state;
 	const string &bundle_name;
 };
+
+static void ThrowQueryError(unique_ptr<QueryResult> query_result, const string &operation) {
+	if (query_result->HasError()) {
+		throw IOException("Failed to %s: %s", operation, query_result->GetError());
+	}
+}
+
+static Value FailureListValue(const vector<string> &failures) {
+	vector<Value> values;
+	values.reserve(failures.size());
+	for (auto &failure : failures) {
+		values.emplace_back(failure);
+	}
+	return Value::LIST(LogicalType::VARCHAR, std::move(values));
+}
+
+static void PersistResult(TestRunState &state, const TestResult &result) {
+	auto &connection = *state.state_connection;
+	connection.BeginTransaction();
+	try {
+		auto query_result = connection.Query(
+		    "UPDATE test_results SET status = $1, duration_ms = $2, assertion_count = $3, failures = $4, "
+		    "message = $5 WHERE test_id = $6 AND attempt = 0 AND status = 'pending' RETURNING test_id",
+		    Value(result.status), result.duration_ms, Value::UBIGINT(result.assertion_count),
+		    FailureListValue(result.failures), result.message.empty() ? Value() : Value(result.message),
+		    Value(result.test_id));
+		if (query_result->HasError()) {
+			throw IOException("Failed to persist test result: %s", query_result->GetError());
+		}
+		if (query_result->RowCount() != 1) {
+			throw InternalException("Test result for '%s' did not match exactly one pending attempt", result.test_id);
+		}
+		connection.Commit();
+		if (result.status == "failed") {
+			state.success = false;
+		}
+	} catch (...) {
+		if (connection.HasActiveTransaction()) {
+			connection.Rollback();
+		}
+		throw;
+	}
+}
 
 static void AddBundleResult(void *data, const duckdb_test::TestResult *bundle_result) {
 	auto &context = *static_cast<BundleResultContext *>(data);
@@ -920,20 +1014,25 @@ static void AddBundleResult(void *data, const duckdb_test::TestResult *bundle_re
 		}
 		result.failures.push_back(std::move(text));
 	}
-	context.results.push_back(std::move(result));
+	PersistResult(context.state, result);
 }
 
 static unique_ptr<FunctionData> TestRunBind(ClientContext &context, TableFunctionBindInput &input,
                                             vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto test_ids = ReadStringList(input.inputs[0], "test_ids");
-	auto test_roots = ReadStringList(input.inputs[1], "test_roots");
-	auto extension_roots = ReadStringList(input.inputs[2], "extension_roots");
-	auto test_flags = ReadStringList(input.inputs[3], "test_flags");
+	auto test_roots = ReadNamedStringList(input, "test_roots");
+	auto extension_roots = ReadNamedStringList(input, "extension_roots");
+	auto test_flags = ReadNamedStringList(input, "test_flags");
+	auto state_database = ReadNamedString(input, "state_database");
 	auto &registry = GetTestRegistry(context);
 	ConfigureTestFlags(test_flags);
 
 	auto result = make_uniq<TestRunData>();
+	unordered_set<string> unique_test_ids;
 	for (auto &test_id : test_ids) {
+		if (!unique_test_ids.insert(test_id).second) {
+			throw InvalidInputException("Duplicate DuckDB test id '%s'", test_id);
+		}
 		if (StringUtil::StartsWith(test_id, "sql:")) {
 			result->tests.push_back(ResolveSQLTest(context, test_id, test_roots));
 		} else if (StringUtil::StartsWith(test_id, "cpp:")) {
@@ -943,14 +1042,50 @@ static unique_ptr<FunctionData> TestRunBind(ClientContext &context, TableFunctio
 		}
 	}
 	result->test_flags = std::move(test_flags);
-	names = {"test_id", "status", "duration_ms", "assertion_count", "failures", "message"};
-	return_types = {LogicalType::VARCHAR,
-	                LogicalType::VARCHAR,
-	                LogicalType::DOUBLE,
-	                LogicalType::UBIGINT,
-	                LogicalType::LIST(LogicalType::VARCHAR),
-	                LogicalType::VARCHAR};
+	result->state_database = std::move(state_database);
+	names = {"state_database", "test_count"};
+	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT};
 	return std::move(result);
+}
+
+static void InitializeStateDatabase(ClientContext &context, TestRunState &state, const TestRunData &data) {
+	state.state_database = data.state_database;
+	if (state.state_database.empty()) {
+		state.state_database = TestCreatePath("test-results-" + UUID::ToString(UUID::GenerateRandomUUID()) + ".duckdb");
+	}
+	auto &fs = FileSystem::GetFileSystem(context);
+	if (fs.FileExists(state.state_database) || fs.FileExists(state.state_database + ".wal")) {
+		throw InvalidInputException("Test state database already exists: %s", state.state_database);
+	}
+
+	state.state_db = make_uniq<DuckDB>(state.state_database);
+	state.state_connection = make_uniq<Connection>(Connection::CreateInternal(*state.state_db->instance));
+	auto &connection = *state.state_connection;
+	connection.BeginTransaction();
+	try {
+		auto create_result = connection.Query("CREATE TABLE test_results("
+		                                      "test_id VARCHAR NOT NULL, "
+		                                      "attempt UINTEGER NOT NULL, "
+		                                      "status VARCHAR NOT NULL, "
+		                                      "duration_ms DOUBLE, "
+		                                      "assertion_count UBIGINT, "
+		                                      "failures VARCHAR[], "
+		                                      "message VARCHAR, "
+		                                      "PRIMARY KEY(test_id, attempt))");
+		ThrowQueryError(std::move(create_result), "create test state table");
+		for (auto &test : data.tests) {
+			auto insert_result = connection.Query(
+			    "INSERT INTO test_results VALUES ($1, 0, 'pending', NULL, NULL, NULL, NULL)", Value(test.test_id));
+			ThrowQueryError(std::move(insert_result), "initialize test state");
+		}
+		connection.Commit();
+	} catch (...) {
+		if (connection.HasActiveTransaction()) {
+			connection.Rollback();
+		}
+		throw;
+	}
+	state.test_count = data.tests.size();
 }
 
 static unique_ptr<GlobalTableFunctionState> TestRunInit(ClientContext &context, TableFunctionInitInput &input) {
@@ -958,11 +1093,13 @@ static unique_ptr<GlobalTableFunctionState> TestRunInit(ClientContext &context, 
 	auto &data = input.bind_data->Cast<TestRunData>();
 	InitializeSQLTestEnvironment();
 	result->environment_initialized = true;
+	InitializeStateDatabase(context, *result, data);
+	result->success = true;
 
 	unordered_map<string, vector<string>> bundle_tests;
 	for (auto &test : data.tests) {
 		if (test.kind == "sql") {
-			result->results.push_back(RunSQLTest(test));
+			PersistResult(*result, RunSQLTest(test));
 		} else {
 			bundle_tests[test.bundle].push_back(test.name);
 		}
@@ -982,44 +1119,24 @@ static unique_ptr<GlobalTableFunctionState> TestRunInit(ClientContext &context, 
 		for (auto &test_flag : data.test_flags) {
 			test_flags.push_back(test_flag.c_str());
 		}
-		BundleResultContext callback_context {result->results, entry.name};
+		BundleResultContext callback_context {*result, entry.name};
 		entry.bundle->run(entry.bundle->data, names.data(), names.size(), test_flags.data(), test_flags.size(),
 		                  AddBundleResult, &callback_context);
 	}
-
-	unordered_map<string, idx_t> result_order;
-	for (idx_t index = 0; index < data.tests.size(); index++) {
-		result_order[data.tests[index].test_id] = index;
-	}
-	std::sort(result->results.begin(), result->results.end(), [&](const TestResult &left, const TestResult &right) {
-		return result_order[left.test_id] < result_order[right.test_id];
-	});
-	if (result->results.size() != data.tests.size()) {
-		throw InternalException("A DuckDB test bundle did not return a result for every requested test");
-	}
-	result->success = std::all_of(result->results.begin(), result->results.end(),
-	                              [](const TestResult &test) { return test.status != "failed"; });
+	result->state_connection.reset();
+	result->state_db.reset();
 	return std::move(result);
 }
 
 static void TestRunFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
 	auto &state = input.global_state->Cast<TestRunState>();
-	idx_t count = 0;
-	while (state.offset < state.results.size() && count < STANDARD_VECTOR_SIZE) {
-		auto &result = state.results[state.offset++];
-		output.data[0].Append(Value(result.test_id));
-		output.data[1].Append(Value(result.status));
-		output.data[2].Append(Value::DOUBLE(result.duration_ms));
-		output.data[3].Append(Value::UBIGINT(result.assertion_count));
-		vector<Value> failures;
-		for (auto &failure : result.failures) {
-			failures.emplace_back(failure);
-		}
-		output.data[4].Append(Value::LIST(LogicalType::VARCHAR, std::move(failures)));
-		output.data[5].Append(result.message.empty() ? Value() : Value(result.message));
-		count++;
+	if (state.output_emitted) {
+		return;
 	}
-	output.SetChildCardinality(count);
+	output.data[0].Append(Value(state.state_database));
+	output.data[1].Append(Value::UBIGINT(state.test_count));
+	output.SetChildCardinality(1);
+	state.output_emitted = true;
 }
 
 } // namespace
@@ -1029,17 +1146,24 @@ void LoadTestExtension(ExtensionLoader &loader) {
 	auto service = new duckdb_test::TestRegistry {registry, RegisterBundle};
 	loader.RegisterService(duckdb_test::SERVICE_NAME, service, DeleteTestRegistry);
 
-	TableFunction scan("test_scan",
-	                   {LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR),
-	                    LogicalType::LIST(LogicalType::VARCHAR), LogicalType::BOOLEAN,
-	                    LogicalType::LIST(LogicalType::VARCHAR)},
-	                   TestScanFunction, TestScanBind, TestScanInit);
+	auto string_list = LogicalType::LIST(LogicalType::VARCHAR);
+	auto empty_string_list = Value::LIST(LogicalType::VARCHAR, {});
+	auto scan_signature = FunctionSignature()
+	                          .AddParameter(string_list)
+	                          .AddKeywordOnly("test_roots", string_list, empty_string_list)
+	                          .AddKeywordOnly("extension_roots", string_list, empty_string_list)
+	                          .AddKeywordOnly("include_slow", LogicalType::BOOLEAN, Value::BOOLEAN(false))
+	                          .AddKeywordOnly("test_flags", string_list, empty_string_list);
+	TableFunction scan("scan_tests", std::move(scan_signature), TestScanFunction, TestScanBind, TestScanInit);
 	loader.RegisterFunction(std::move(scan));
 
-	TableFunction run("test_run",
-	                  {LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR),
-	                   LogicalType::LIST(LogicalType::VARCHAR), LogicalType::LIST(LogicalType::VARCHAR)},
-	                  TestRunFunction, TestRunBind, TestRunInit);
+	auto run_signature = FunctionSignature()
+	                         .AddParameter(string_list)
+	                         .AddKeywordOnly("test_roots", string_list, empty_string_list)
+	                         .AddKeywordOnly("extension_roots", string_list, empty_string_list)
+	                         .AddKeywordOnly("test_flags", string_list, empty_string_list)
+	                         .AddKeywordOnly("state_database", LogicalType::VARCHAR, Value(LogicalType::VARCHAR));
+	TableFunction run("run_tests", std::move(run_signature), TestRunFunction, TestRunBind, TestRunInit);
 	run.global_initialization = TableFunctionInitialization::INITIALIZE_ON_SCHEDULE;
 	loader.RegisterFunction(std::move(run));
 }

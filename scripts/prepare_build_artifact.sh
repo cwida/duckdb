@@ -104,7 +104,7 @@ for extension in \
 	copy_file "$extension" "extension/$extension_name/$(basename "$extension")"
 done
 
-# C++ tests are independent loadable test bundles discovered by test_scan.
+# C++ tests are independent loadable test bundles discovered by scan_tests.
 for extension in "$BUILD_DIR"/test/extensions/*.duckdb_extension; do
 	copy_file "$extension" "test/extensions/$(basename "$extension")"
 done

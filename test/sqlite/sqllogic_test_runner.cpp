@@ -847,7 +847,7 @@ void SQLLogicTestRunner::ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &data
 	auto temp_directory_name = StringUtil::Replace(normalized_script, "/", "_");
 	// an absolute Windows path has a drive colon, which a directory name cannot contain
 	temp_directory_name = StringUtil::Replace(temp_directory_name, ":", "_");
-	auto temp_directory = TestJoinPath(TestDirectoryPath(), "sqllogic_temp_" + temp_directory_name);
+	auto temp_directory = TestJoinPath(environment_variables["TEMP_DIR"], "sqllogic_temp_" + temp_directory_name);
 	db_config.SetOption(database.instance.get(), *DBConfig::GetOptionByName("temp_directory"), temp_directory);
 }
 
