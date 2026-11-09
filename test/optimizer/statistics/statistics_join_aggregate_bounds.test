@@ -41,8 +41,9 @@ EXPLAIN SELECT sum(v) FROM amounts POSITIONAL JOIN keys HAVING sum(v) > 90;
 ----
 physical_plan	<REGEX>:.*Empty Result.*
 
+# A fresh empty table has a zero maximum, unlike a table with deleted rows.
 statement ok
-DELETE FROM keys;
+CREATE OR REPLACE TABLE keys(k INTEGER);
 
 query I
 SELECT sum(v) FROM amounts LEFT JOIN keys USING(k) HAVING sum(v) > 40;
@@ -88,6 +89,41 @@ EXPLAIN SELECT sum(coalesce(l.v,r.v)) FROM left_row l FULL OUTER JOIN right_row 
 HAVING sum(coalesce(l.v,r.v)) > 40;
 ----
 physical_plan	<REGEX>:.*Empty Result.*
+
+# Unknown-cardinality scans must not inherit another subtree's row bound.
+statement ok
+CREATE TABLE unknown_scan_left AS SELECT * FROM range(1, 3) t(k);
+
+statement ok
+SET disabled_optimizers='build_side_probe_side';
+
+query I
+SELECT sum(r.v)
+FROM unknown_scan_left l RIGHT JOIN (SELECT 1 AS k, 1 AS v FROM test_all_types()) r
+ON l.k = r.k AND l.k > 5
+HAVING sum(r.v) > 2;
+----
+3
+
+# An unknown bound must not select the unchecked INT64 SUM implementation either.
+query I
+SELECT sum(r.v)
+FROM unknown_scan_left l RIGHT JOIN (
+	SELECT 1 AS k, 4000000000000000000::BIGINT AS v FROM test_all_types()
+) r ON l.k = r.k AND l.k > 5;
+----
+12000000000000000000
+
+query I
+SELECT sum(r.v)
+FROM (SELECT * FROM unknown_scan_left WHERE k > 5) l
+FULL JOIN (SELECT 1 AS k, 1 AS v FROM test_all_types()) r ON l.k = r.k
+HAVING sum(r.v) > 2;
+----
+3
+
+statement ok
+RESET disabled_optimizers;
 
 # Repeated grouping sets can emit more rows than their input.
 statement ok
@@ -161,12 +197,18 @@ EXPLAIN SELECT sum(k) FROM (
 physical_plan	<!REGEX>:.*Empty Result.*
 
 # UNION accepts unsigned grouping-set bounds and withdraws bounds on overflow.
-statement ok
-EXPLAIN SELECT i FROM range(9223372036854775807) r(i)
-GROUP BY GROUPING SETS ((i),(i))
-UNION ALL SELECT i FROM range(1) r(i);
+query II
+EXPLAIN SELECT sum(v) FROM (
+	SELECT 1::HUGEINT AS v FROM range(9223372036854775807) r(i) GROUP BY GROUPING SETS ((i),(i))
+	UNION ALL SELECT 1::HUGEINT AS v FROM range(1) r(i)
+) u HAVING sum(v) > 18446744073709551615::HUGEINT;
+----
+physical_plan	<REGEX>:.*Empty Result.*
 
-statement ok
-EXPLAIN SELECT i FROM range(9223372036854775807) r(i)
-GROUP BY GROUPING SETS ((i),(i))
-UNION ALL SELECT i FROM range(2) r(i);
+query II
+EXPLAIN SELECT sum(v) FROM (
+	SELECT 1::HUGEINT AS v FROM range(9223372036854775807) r(i) GROUP BY GROUPING SETS ((i),(i))
+	UNION ALL SELECT 1::HUGEINT AS v FROM range(2) r(i)
+) u HAVING sum(v) > 18446744073709551615::HUGEINT;
+----
+physical_plan	<!REGEX>:.*Empty Result.*
