@@ -52,7 +52,7 @@ public:
 	vector<ReferencedExtractComponent> components;
 	//! The ColumnIndex with a path that matches this struct extract
 	ColumnIndex extract_path;
-	//! Whether the cast on top of the extract may move into the scan, false once a filter or join sits in between
+	//! Whether the cast on top of the extract may move into the scan
 	bool push_cast = true;
 };
 
@@ -174,7 +174,7 @@ private:
 	void ApplySecureViewReplacements();
 	void RemoveColumnsFromLogicalColumnDataGet(LogicalColumnDataGet &get);
 	void RemoveColumnsFromLogicalGet(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref);
-	//! Moves the casts pushed into the scan that a filter left above it does not read into a projection above it
+	//! Lifts the casts the filter above the scan does not read into a projection above the filter
 	void LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
 	                          const unordered_set<idx_t> &cast_positions);
 	//! Keeps the casts above the inputs of the join whose rows it can drop
