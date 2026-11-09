@@ -4,7 +4,7 @@
 
 statement ok
 CREATE MACRO list_s(opts) AS TABLE
-    SELECT MAP {'id': 'ext-1'} AS handle, 'ext-ref' AS reference, 'running' AS state;
+    SELECT MAP {'id': 'ext-1'} AS handle, 'ext-name' AS name, 'ext-ref' AS reference, 'running' AS state;
 
 statement ok
 CALL register_external_resource_type('a@sq', kind := 'catalog', create_function := 'noop_create', list_function := 'list_s');
@@ -21,14 +21,14 @@ mine	a@sq	true	NULL	NULL	NULL	NULL	{id=local-1}
 query TTTTTTTT rowsort
 SHOW ALL EXTERNAL RESOURCES;
 ----
-NULL	a@sq	false	running	ext-ref	NULL	NULL	{id=ext-1}
+ext-name	a@sq	false	running	ext-ref	NULL	NULL	{id=ext-1}
 mine	a@sq	true	NULL	NULL	NULL	NULL	{id=local-1}
 
 # As a subquery.
 query TT rowsort
 SELECT name, managed FROM (SHOW ALL EXTERNAL RESOURCES);
 ----
-NULL	false
+ext-name	false
 mine	true
 
 query I
@@ -62,9 +62,9 @@ SELECT count(*) FROM ((SHOW ALL EXTERNAL RESOURCES) UNION ALL (SHOW EXTERNAL RES
 3
 
 query T
-SELECT coalesce(name, '<discovered>') FROM (SHOW ALL EXTERNAL RESOURCES) ORDER BY 1 LIMIT 1;
+SELECT name FROM (SHOW ALL EXTERNAL RESOURCES) ORDER BY 1 LIMIT 1;
 ----
-<discovered>
+ext-name
 
 # Also as a bare parenthesized statement.
 query TTTTTTTT
