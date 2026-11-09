@@ -86,6 +86,8 @@ private:
 	unique_ptr<Parser> parser;
 	//! Tokenized view of `sql` and its current position. Populated once on the first Peek.
 	unique_ptr<TokenIterator> token_iterator;
+	//! Byte offset in `sql` where the next statement's text starts: just past the previous one.
+	idx_t next_statement_offset = 0;
 	//! Single-statement buffer holding the result of the most recent Peek. Cleared by
 	//! GetStatement.
 	unique_ptr<SQLStatement> current_statement;
