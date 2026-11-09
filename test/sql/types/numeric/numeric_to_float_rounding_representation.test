@@ -3,11 +3,14 @@
 # group: [numeric]
 
 # numeric_to_float_rounding.test asserts the FLOAT and DOUBLE results of these values; this file pins the representation
-# each of them is computed from. With tiny vectors the representation is chosen per vector, and the alternative
-# verification delivers scanned NUMERIC values as canonical blobs
+# each of them is computed from. With tiny vectors the representation is chosen per vector, the alternative
+# verification delivers scanned NUMERIC values as canonical blobs, and the dictionary vector verification wraps the
+# inputs of every expression in dictionary vectors, after which numeric_representation() sees no shredded vector
 require vector_size 2048
 
 require no_alternative_verify
+
+require no_vector_verification
 
 statement ok
 CREATE TABLE unsigned AS
