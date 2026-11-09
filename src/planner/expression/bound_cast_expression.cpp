@@ -280,6 +280,62 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 	return true;
 }
 
+bool BoundCastExpression::IsLosslessIntegralToFloatingCast(const LogicalType &source_type,
+                                                           const LogicalType &target_type) {
+	if (target_type.id() == LogicalTypeId::DOUBLE) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+		case LogicalTypeId::UINTEGER:
+			return true;
+		default:
+			return false;
+		}
+	}
+	if (target_type.id() == LogicalTypeId::FLOAT) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+			return true;
+		default:
+			return false;
+		}
+	}
+	return false;
+}
+
+bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.IsIntegral()) {
+		if (target_type.id() == LogicalTypeId::VARCHAR) {
+			// a collation can make distinct strings equal
+			return StringType::GetCollation(target_type).empty();
+		}
+		if (IsLosslessIntegralToFloatingCast(source_type, target_type)) {
+			return true;
+		}
+		return target_type.IsIntegral() && CastIsInvertible(source_type, target_type);
+	}
+	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
+}
+
+optional<Value> BoundCastExpression::TryInvertConstant(ClientContext &context, const BoundFunctionExpression &cast_expr,
+                                                       const Value &constant) {
+	auto source_constant = constant.TryCastAs(context, SourceType(cast_expr), nullptr, true);
+	if (!source_constant) {
+		return nullopt;
+	}
+	auto roundtrip = source_constant->TryCastAs(context, TargetType(cast_expr), nullptr, true);
+	if (!roundtrip || !Value::NotDistinctFrom(*roundtrip, constant)) {
+		return nullopt;
+	}
+	return source_constant;
+}
+
 //! The child type of a LIST or ARRAY
 static const LogicalType &ListOrArrayChildType(const LogicalType &type) {
 	return type.id() == LogicalTypeId::ARRAY ? ArrayType::GetChildType(type) : ListType::GetChildType(type);

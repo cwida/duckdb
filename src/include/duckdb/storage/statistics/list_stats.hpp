@@ -19,6 +19,7 @@ class BaseStatistics;
 struct SelectionVector;
 class Vector;
 class Value;
+class StatsStructFields;
 
 struct ListStatsData {
 	//! Whether or not the minimum list length is known
@@ -74,7 +75,9 @@ struct ListStats {
 	DUCKDB_API static void Serialize(const BaseStatistics &stats, Serializer &serializer);
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &base);
 
-	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats, bool exact);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other,
 	                             StatsMergeType merge_type = StatsMergeType::MERGE_STATS);

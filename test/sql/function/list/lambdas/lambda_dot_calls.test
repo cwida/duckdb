@@ -1,0 +1,294 @@
+# name: test/sql/function/list/lambdas/lambda_dot_calls.test
+# description: Test dot calls on lambda parameters, especially when a column shares the parameter name.
+# group: [lambdas]
+
+statement ok
+SET lambda_syntax='DISABLE_SINGLE_ARROW'
+
+statement ok
+CREATE TABLE t_scope (y INTEGER);
+
+statement ok
+INSERT INTO t_scope VALUES (5);
+
+# dot calls work on lambda parameters without any name collision
+
+query I
+SELECT list_transform([-2], lambda y: y.abs());
+----
+[2]
+
+# the lambda parameter shadows the column of the same name
+
+query I
+SELECT list_transform([-2], lambda y: y.abs()) FROM t_scope;
+----
+[2]
+
+# same for list_filter
+
+query I
+SELECT list_filter([-2, 3], lambda y: y.abs() = 2) FROM t_scope;
+----
+[-2]
+
+# same for list_reduce, with both parameters colliding
+
+statement ok
+CREATE TABLE t_scope_ab (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO t_scope_ab VALUES (5, 7);
+
+query I
+SELECT list_reduce([-2, -3], lambda a, b: a.abs() + b.abs()) FROM t_scope_ab;
+----
+5
+
+# chained dot calls on a lambda parameter
+
+query I
+SELECT list_transform(['A'], lambda y: y.lower().trim()) FROM (VALUES ('  XYZ  ')) t(y);
+----
+[a]
+
+# nested lambdas: the inner parameter shadows a column
+
+query I
+SELECT list_transform([[-2]], lambda y: list_transform(y, lambda z: z.abs())) FROM (VALUES (5)) t(z);
+----
+[[2]]
+
+# nested lambdas: dot call on the outer parameter inside the inner lambda
+
+query I
+SELECT list_transform([-2], lambda y: list_transform([1], lambda z: y.abs() + z)) FROM t_scope;
+----
+[[3]]
+
+# list comprehensions use the same lambda path
+
+query I
+SELECT [y.abs() FOR y IN [-2]] FROM t_scope;
+----
+[2]
+
+# a lambda parameter named like the system catalog
+
+query I
+SELECT list_transform(['A'], lambda system: system.lower());
+----
+[a]
+
+# a lambda parameter named like the main schema
+
+query I
+SELECT list_transform(['A'], lambda main: main.lower());
+----
+[a]
+
+# correlated subqueries keep resolving the lambda parameter
+
+query I
+SELECT (SELECT list_transform([-2], lambda y: y.abs())) FROM t_scope;
+----
+[2]
+
+query II
+SELECT y, r FROM (VALUES (5)) t(y), LATERAL (SELECT list_transform([-2], lambda y: y.abs()) AS r);
+----
+5	[2]
+
+# macro bodies keep resolving the lambda parameter
+
+statement ok
+CREATE MACRO abs_all(l) AS list_transform(l, lambda y: y.abs());
+
+query I
+SELECT abs_all([-2]) FROM t_scope;
+----
+[2]
+
+# dot calls on real columns still rewrite, also inside lambda bodies
+
+query I
+SELECT y.abs() FROM (VALUES (-5)) t(y);
+----
+5
+
+query I
+SELECT list_transform([1], lambda z: y.abs() + z) FROM (VALUES (-5)) t(y);
+----
+[6]
+
+# schema-qualified function calls inside lambda bodies are unaffected
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE MACRO s1.plus_one(a) AS a + 1;
+
+query I
+SELECT list_transform([1], lambda z: s1.plus_one(z));
+----
+[2]
+
+# a lambda parameter shadowing a schema still dot-calls functions on the search path
+
+query I
+SELECT list_transform([-2], lambda s1: s1.abs());
+----
+[2]
+
+# a schema-qualified function not on the search path still resolves through the schema
+
+query I
+SELECT list_transform([1], lambda s1: s1.plus_one(s1));
+----
+[2]
+
+# unknown functions on a lambda parameter still error
+
+statement error
+SELECT list_transform([-2], lambda y: y.nosuchfunc());
+----
+<REGEX>:.*nosuchfunc does not exist.*
+
+# clauses that bind without the qualification pass take the bind-time path
+
+query I
+SELECT y FROM t_scope WHERE list_transform([-2], lambda y: y.abs()) = [2];
+----
+5
+
+query I
+SELECT y FROM t_scope WHERE list_transform(['A'], lambda system: system.lower()) = ['a'];
+----
+5
+
+query II
+SELECT * FROM (VALUES (5)) t(y) JOIN (VALUES (1)) u(z) ON list_transform([-2], lambda y: y.abs()) = [2];
+----
+5	1
+
+statement ok
+CREATE TABLE upd_scope (y INTEGER, r INTEGER[]);
+
+statement ok
+INSERT INTO upd_scope VALUES (5, NULL);
+
+statement ok
+UPDATE upd_scope SET r = list_transform([-2], lambda y: y.abs());
+
+query I
+SELECT r FROM upd_scope;
+----
+[2]
+
+statement ok
+CREATE TABLE del_scope (y INTEGER);
+
+statement ok
+INSERT INTO del_scope VALUES (5), (6);
+
+query I
+DELETE FROM del_scope WHERE list_transform([-2], lambda y: y.abs()) = [2];
+----
+2
+
+# bind-time path: real-column receivers and schema fallback still work
+
+query I
+SELECT y FROM (VALUES (-5)) t(y) WHERE y.abs() = 5;
+----
+-5
+
+query I
+SELECT 1 WHERE list_transform([1], lambda s1: s1.plus_one(s1)) = [2];
+----
+1
+
+# a lambda parameter shadowing an attached catalog still resolves functions through the catalog
+
+statement ok
+ATTACH ':memory:' AS aux;
+
+statement ok
+CREATE MACRO aux.main.only_here(v) AS v + 1;
+
+query I
+SELECT list_transform([1], lambda aux: aux.only_here(aux));
+----
+[2]
+
+query I
+SELECT 1 WHERE list_transform([1], lambda aux: aux.only_here(aux)) = [2];
+----
+1
+
+# a lambda parameter named like an attached catalog still dot-calls search-path functions
+
+query I
+SELECT list_transform(['A'], lambda aux: aux.lower());
+----
+[a]
+
+# fully spelled catalog.schema.function paths inside lambda bodies, with and without a parameter named like the catalog
+
+statement ok
+CREATE SCHEMA aux.s2;
+
+statement ok
+CREATE MACRO aux.s2.plus_two(v) AS v + 2;
+
+query I
+SELECT list_transform([1], lambda z: aux.s2.plus_two(z));
+----
+[3]
+
+query I
+SELECT list_transform([1], lambda aux: aux.s2.plus_two(aux));
+----
+[3]
+
+# dot calls on struct fields of a lambda parameter work without a name collision
+
+query I
+SELECT list_transform([{'f': -2}], lambda y: y.f.abs());
+----
+[2]
+
+# deprecated arrow lambdas: dot calls on parameters work without a collision
+
+statement ok
+SET lambda_syntax='ENABLE_SINGLE_ARROW'
+
+query I
+SELECT list_transform([-2], y -> y.abs());
+----
+[2]
+
+query I
+SELECT y FROM t_scope WHERE list_transform([-2], y -> y.abs()) = [2];
+----
+5
+
+# mixed nesting of keyword and arrow lambdas
+
+query I
+SELECT list_transform([-2], lambda y: list_transform([1], z -> y.abs() + z));
+----
+[[3]]
+
+query I
+SELECT list_transform([-2], y -> list_transform([1], lambda z: y.abs() + z));
+----
+[[3]]
+
+# the innermost parameter binding wins
+
+query I
+SELECT list_transform([-2], lambda y: list_transform([-3], y -> y.abs()));
+----
+[[3]]

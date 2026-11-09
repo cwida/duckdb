@@ -1,0 +1,20 @@
+# name: ${FILE_PATH}
+# description: ${DESCRIPTION}
+# group: [csv]
+
+name CSV ${name}
+group csv
+
+require tpch
+
+cache lineitem_sf1_${variant}.csv
+
+load
+CALL dbgen(sf=1);
+COPY lineitem TO '${BENCHMARK_DIR}/lineitem_sf1_${variant}.csv' (${copy_options});
+
+run
+${query_start} read_csv('${BENCHMARK_DIR}/lineitem_sf1_${variant}.csv', delim='|', quote='"', escape='"', header=false, new_line='${newline}', auto_detect=false, columns={'l_orderkey':'BIGINT','l_partkey':'BIGINT','l_suppkey':'BIGINT','l_linenumber':'INTEGER','l_quantity':'DECIMAL(15,2)','l_extendedprice':'DECIMAL(15,2)','l_discount':'DECIMAL(15,2)','l_tax':'DECIMAL(15,2)','l_returnflag':'VARCHAR','l_linestatus':'VARCHAR','l_shipdate':'DATE','l_commitdate':'DATE','l_receiptdate':'DATE','l_shipinstruct':'VARCHAR','l_shipmode':'VARCHAR','l_comment':'VARCHAR'})${query_end}
+
+result I
+${result}
