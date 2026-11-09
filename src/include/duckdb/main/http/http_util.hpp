@@ -45,6 +45,10 @@ struct HTTPParams {
 	uint64_t retries = DEFAULT_RETRIES;
 	uint64_t retry_wait_ms = DEFAULT_RETRY_WAIT_MS;
 	float retry_backoff = DEFAULT_RETRY_BACKOFF;
+	//! Whether the host's retry quota may refuse a throttled retry (http_retry_quota_throttled)
+	bool retry_quota_throttled = true;
+	//! Smallest base wait of the back-off between throttled retries (http_retry_throttled_wait_ms)
+	uint64_t retry_throttled_wait_ms = 0;
 	bool keep_alive = DEFAULT_KEEP_ALIVE;
 	bool follow_location = true;
 	bool override_verify_ssl = false;

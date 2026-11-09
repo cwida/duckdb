@@ -6,6 +6,7 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/window_function_catalog_entry.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
@@ -15,6 +16,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
@@ -880,6 +882,44 @@ FunctionBinder::BindTableFunction(const TableFunctionSet &functions,
 	                                        std::move(named_parameters));
 }
 
+unique_ptr<ResolvedTableFunction>
+FunctionBinder::BindTableInOutFunction(const TableFunctionSet &functions, const vector<LogicalType> &input_types,
+                                       vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
+                                       ErrorData &error) {
+	VerifyNamedArgumentsAccepted(functions, named_arguments);
+	vector<unique_ptr<Expression>> input_arguments;
+	for (idx_t i = 0; i < input_types.size(); i++) {
+		input_arguments.push_back(make_uniq<BoundReferenceExpression>(input_types[i], storage_t(i)));
+	}
+	auto selection = SelectFunction(context, functions, {input_arguments, named_arguments});
+	if (!selection) {
+		error = selection.GetError();
+		return nullptr;
+	}
+	auto &binding = selection.GetBinding();
+	auto definition = binding.GetFunction<TableFunction>();
+	for (const auto &argument : named_arguments) {
+		auto parameter = definition->GetSignature().GetParameterIndexByName(argument.first);
+		if (parameter.IsValid() && definition->GetSignature().GetParameter(parameter.GetIndex()).AcceptsPosition()) {
+			throw BinderException("Table in-out function input columns must be passed positionally: %s",
+			                      argument.first);
+		}
+	}
+	auto resolved = ResolveArguments(*definition, binding, input_arguments, named_arguments);
+	// Input columns remain in the subquery; only named options are cast and folded here.
+	const auto positional_count =
+	    NumericCast<vector<unique_ptr<Expression>>::difference_type>(resolved.positional_count);
+	resolved.arguments.erase(resolved.arguments.begin(), resolved.arguments.begin() + positional_count);
+	resolved.types.erase(resolved.types.begin(), resolved.types.begin() + positional_count);
+	resolved.positional_count = 0;
+	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
+	vector<Value> parameters;
+	named_argument_map_t named_parameters;
+	FoldArguments(context, *definition, resolved, parameters, named_parameters);
+	return make_uniq<ResolvedTableFunction>(BoundTableFunction(definition), std::move(parameters),
+	                                        std::move(named_parameters));
+}
+
 unique_ptr<BoundPragmaInfo> FunctionBinder::BindPragmaFunction(
     const PragmaFunctionSet &functions, vector<unique_ptr<Expression>> &positional_arguments,
     vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments, ErrorData &error) {
@@ -957,6 +997,10 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 			    "Function %s returned a STRING_LITERAL or INTEGER_LITERAL type - return an explicit type instead",
 			    function_name);
 		}
+		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
+			// an unresolved parameter cannot take an incomplete type, the statement is bound again at EXECUTE
+			throw ParameterNotResolvedException();
+		}
 		target_type.Verify();
 		// don't cast lambda children, their slot only ever holds a placeholder
 		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
@@ -974,9 +1018,9 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 		// except for one special case: if the function accepts ANY argument
 		// in that case we don't add a cast
 		if (cast_result == LogicalTypeComparisonResult::DIFFERENT_TYPES) {
-			if (target_has_any && children[i]->GetReturnType().id() != LogicalTypeId::UNKNOWN) {
+			if (target_has_any) {
 				// a type that is not concrete cannot be cast to (e.g. a NULL or a VARIANT passed to LIST(ANY)) - the
-				// function has to handle the argument as-is. Unresolved parameters are still assigned the type.
+				// function has to handle the argument as-is
 				continue;
 			}
 			if (IsIncompleteCastTarget(target_type)) {

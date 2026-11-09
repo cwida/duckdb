@@ -815,6 +815,58 @@ TEST_CASE("Test unsupported types in the deprecated C API", "[capi]") {
 	REQUIRE(duckdb_value_string(&result_c, 1, 1).data == nullptr);
 }
 
+TEST_CASE("Test SQLNULL columns in the deprecated C API", "[capi]") {
+	// an untyped NULL column followed by other columns
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	auto result = tester.Query("SELECT NULL AS n, 'x' AS s, 2 AS b, NULL AS m");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->ColumnCount() == 4);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->ColumnType(0) == DUCKDB_TYPE_SQLNULL);
+	REQUIRE(result->ColumnType(3) == DUCKDB_TYPE_SQLNULL);
+	REQUIRE(result->IsNull(0, 0));
+	REQUIRE(!result->IsNull(1, 0));
+	REQUIRE(result->Fetch<string>(1, 0) == "x");
+	REQUIRE(!result->IsNull(2, 0));
+	REQUIRE(result->Fetch<int32_t>(2, 0) == 2);
+	REQUIRE(result->IsNull(3, 0));
+
+	// reading a SQLNULL value through the typed accessors returns the NULL defaults
+	auto &result_c = result->InternalResult();
+	REQUIRE(duckdb_value_varchar(&result_c, 0, 0) == nullptr);
+	REQUIRE(duckdb_value_int32(&result_c, 0, 0) == 0);
+	REQUIRE(duckdb_value_varchar(&result_c, 3, 0) == nullptr);
+
+	// the data of a SQLNULL column is zeroed
+	auto null_data = reinterpret_cast<int32_t *>(duckdb_column_data(&result_c, 0));
+	REQUIRE(null_data);
+	REQUIRE(null_data[0] == 0);
+
+	// multiple rows and chunks
+	result = tester.Query("SELECT NULL AS n, i FROM range(5000) t(i)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 5000);
+	null_data = reinterpret_cast<int32_t *>(duckdb_column_data(&result->InternalResult(), 0));
+	REQUIRE(null_data);
+	for (idx_t row = 0; row < 5000; row += 999) {
+		REQUIRE(result->IsNull(0, row));
+		REQUIRE(null_data[row] == 0);
+		REQUIRE(!result->IsNull(1, row));
+		REQUIRE(result->Fetch<int64_t>(1, row) == int64_t(row));
+	}
+
+	// columns after a column the deprecated API cannot translate (UUID) are not materialized
+	result = tester.Query("SELECT '00000000-0000-0000-0000-000000000001'::UUID AS u, 42 AS i");
+	REQUIRE_NO_FAIL(*result);
+	auto &untranslated_c = result->InternalResult();
+	REQUIRE(duckdb_nullmask_data(&untranslated_c, 1) == nullptr);
+	REQUIRE(duckdb_value_is_null(&untranslated_c, 1, 0) == false);
+	REQUIRE(duckdb_value_int32(&untranslated_c, 1, 0) == 0);
+	REQUIRE(duckdb_value_varchar(&untranslated_c, 1, 0) == nullptr);
+}
+
 TEST_CASE("Test creating DUCKDB_ERROR_INTERNAL error data", "[capi]") {
 	auto error_data = duckdb_create_error_data(DUCKDB_ERROR_INTERNAL, "foo");
 	REQUIRE(error_data);

@@ -84,6 +84,10 @@ bool CanUseDeprecatedFetch(duckdb_result *result, idx_t col, idx_t row) {
 	if (col >= result->deprecated_column_count || row >= result->deprecated_row_count) {
 		return false;
 	}
+	if (!result->deprecated_columns[col].deprecated_nullmask) {
+		// the column was not translated, e.g. because an earlier column failed to materialize
+		return false;
+	}
 	return true;
 }
 

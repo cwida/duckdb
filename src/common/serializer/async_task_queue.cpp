@@ -2,7 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -79,15 +79,14 @@ private:
 	bool started = false;
 };
 
-AsyncTaskQueue::AsyncTaskQueue(ClientContext &client_context_p, idx_t max_active_tasks_p)
-    : client_context(client_context_p) {
-	auto &scheduler = TaskScheduler::GetScheduler(client_context);
+AsyncTaskQueue::AsyncTaskQueue(Context &context_p, idx_t max_active_tasks_p) : context(context_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_tasks = max_active_tasks_p > 0 ? max_active_tasks_p : MaxValue<idx_t>(async_threads, 1);
 	if (async_threads == 0) {
 		return;
 	}
-	executor = make_uniq<TaskExecutor>(client_context, TaskSchedulerType::ASYNC);
+	executor = make_uniq<TaskExecutor>(context, TaskSchedulerType::ASYNC);
 }
 
 AsyncTaskQueue::~AsyncTaskQueue() {
@@ -367,12 +366,12 @@ void AsyncTaskQueue::VerifyOpen() const {
 //===--------------------------------------------------------------------===//
 // ManagedAsyncTaskQueue
 //===--------------------------------------------------------------------===//
-ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(ClientContext &client_context_p, idx_t max_active_tasks)
-    : client_context(client_context_p), memory_governor(client_context_p) {
-	auto &scheduler = TaskScheduler::GetScheduler(client_context);
+ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(Context &context_p, idx_t max_active_tasks)
+    : context(context_p), memory_governor(context_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_drain_tasks = max_active_tasks > 0 ? max_active_tasks : MaxValue<idx_t>(async_threads, 1);
-	task_queue = make_uniq<AsyncTaskQueue>(client_context, max_active_drain_tasks);
+	task_queue = make_uniq<AsyncTaskQueue>(context, max_active_drain_tasks);
 }
 
 ManagedAsyncTaskQueue::~ManagedAsyncTaskQueue() {

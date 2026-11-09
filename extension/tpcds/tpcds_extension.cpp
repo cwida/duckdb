@@ -304,6 +304,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		    .Add("suffix", LogicalType::VARCHAR);
 	});
 	dsdgen_func.call_return_type = StatementReturnType::NOTHING;
+	// creates and fills tables per execution
+	dsdgen_func.stability = FunctionStability::VOLATILE;
 	dsdgen_func.table_scan_progress = DsdgenProgress;
 	dsdgen_func.cardinality = DsdgenCardinality;
 

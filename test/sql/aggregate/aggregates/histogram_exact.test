@@ -23,13 +23,13 @@ SELECT histogram_exact(n::double, [10, 20, 30, 40, 50]) FROM obs
 {10.0=0, 20.0=1, 30.0=0, 40.0=0, 50.0=0, inf=14}
 
 query I
-SELECT histogram_exact((date '2000-01-01' + interval (n) days)::date, [date '2000-01-01' + interval (x) days for x in [10, 20, 30, 40, 50]]) FROM obs
+SELECT histogram_exact((date '2000-01-01' + interval (n) days)::date, [(date '2000-01-01' + interval (x) days)::date for x in [10, 20, 30, 40, 50]]) FROM obs
 ----
 {2000-01-11=0, 2000-01-21=1, 2000-01-31=0, 2000-02-10=0, 2000-02-20=0, infinity=14}
 
 # for strings it is the empty string
 query I
-SELECT histogram_exact(n::varchar, [10, 20, 30, 40, 50]) FROM obs
+SELECT histogram_exact(n::varchar, [10, 20, 30, 40, 50]::VARCHAR[]) FROM obs
 ----
 {10=0, 20=1, 30=0, 40=0, 50=0, ''=14}
 
@@ -86,6 +86,18 @@ SELECT list_aggregate(map_values(histogram_exact(n, [10, 10, 20])), 'sum') FROM 
 ----
 15
 
+# bins whose element type does not unify with the argument type are rejected at bind time
+statement error
+SELECT histogram_exact(l, b) FROM (VALUES ([1], [1])) t(l, b)
+----
+<REGEX>:Binder Error.*Cannot deduce template type 'T'.*
+
+# the argument promotes to the wider bins element type
+query I
+SELECT histogram_exact(1::INTEGER, [0.6])
+----
+{0.6=0, inf=1}
+
 query I
 SELECT is_histogram_other_bin(NULL)
 ----
@@ -105,3 +117,20 @@ query I
 SELECT is_histogram_other_bin({'i': NULL::INT[][]})
 ----
 true
+
+# a bin equal to the key of the "other values" bucket must not produce duplicate map keys
+statement error
+SELECT histogram_exact(x, [1, 2147483647]) FROM (VALUES (1),(5),(2147483647)) t(x);
+----
+collides with the key of the "other values" bucket
+
+statement error
+SELECT histogram_exact(x, ['', 'b']) FROM (VALUES ('a'),('b')) t(x);
+----
+collides with the key of the "other values" bucket
+
+# no collision when the other bucket is empty
+query I
+SELECT histogram_exact(x, [1, 2147483647]) FROM (VALUES (1),(2147483647)) t(x);
+----
+{1=1, 2147483647=1}

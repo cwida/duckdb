@@ -254,11 +254,14 @@ functions:
         type: replacement_scan_info
         description: The info handle.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name of the parameter to bind the value to. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       value:
         type: value
         description: The argument value. Borrowed and copied.
@@ -300,11 +303,17 @@ functions:
         type: column_data_collection
         description: The collection to read instead. Borrowed; the caller keeps ownership and must keep it alive.
       column_names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: Optional. An array of `column_count` column names, in order. Pass NULL for the default names col1..colN.
+      column_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `column_names`; element i is the length of `column_names[i]`. May be NULL only when `column_names` is NULL.
       column_count:
         type: idx
         description: The number of names in `column_names`. Must equal the collection's column count, or 0 for the default names.
@@ -333,11 +342,14 @@ functions:
         type: replacement_scan_info
         description: The info handle.
       sql:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The SELECT statement to read instead. Borrowed for the call only.
+      sql_length:
+        type: idx
+        description: The length of `sql` in bytes. `sql` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1
@@ -358,11 +370,14 @@ functions:
         type: replacement_scan_info
         description: The info handle.
       alias:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The alias to bind the replacement under. Borrowed and copied.
+      alias_length:
+        type: idx
+        description: The length of `alias` in bytes. `alias` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1

@@ -73,7 +73,7 @@ BoundStatement Binder::Bind(ExecuteStatement &stmt) {
 	if (prepared->RequireRebind(context, bind_values)) {
 		rebind = RebindQueryInfo::ATTEMPT_TO_REBIND;
 	}
-	for (auto &state : context.registered_state->States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		BindPreparedStatementCallbackInfo info {*prepared, bind_values};
 		auto new_rebind = state->OnRebindPreparedStatement(context, info, rebind);
 		if (new_rebind == RebindQueryInfo::ATTEMPT_TO_REBIND) {

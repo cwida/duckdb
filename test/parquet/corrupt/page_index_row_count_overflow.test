@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/page_index_row_count_overflow.test
+# description: Reject overflowing row counts in page index metadata
+# group: [corrupt]
+
+require parquet
+
+# The last page starts at INT64_MIN, so subtracting it from the row group size overflows.
+statement error
+SELECT * FROM parquet_page_index('data/parquet-testing/corrupt/page_index_row_count_overflow.parquet');
+----
+Page row count overflows

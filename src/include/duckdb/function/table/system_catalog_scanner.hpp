@@ -75,8 +75,8 @@ public:
 	                                                  CatalogType type, SystemCatalogScannerStats &stats);
 	//! get_metrics helper: writes the counters into input.operator_metrics via AddExtraInfo.
 	static void ReportMetrics(TableFunctionGetMetricsInput &input, const SystemCatalogScannerStats &stats);
-	//! Enables filter pushdown on the identity columns only. get_metrics is per function because
-	//! it needs the function's own GlobalTableFunctionState type to reach the stats.
+	//! Enables filter pushdown on the identity columns only, for filters that cannot throw. get_metrics is per
+	//! function because it needs the function's own GlobalTableFunctionState type to reach the stats.
 	static void RegisterPushdown(TableFunction &function);
 };
 

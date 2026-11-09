@@ -1,6 +1,8 @@
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_notifier.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 
@@ -108,9 +110,13 @@ TaskExecutor::TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type_p)
     : scheduler(scheduler), type(type_p), token(scheduler.CreateProducer()) {
 }
 
-TaskExecutor::TaskExecutor(ClientContext &context_p, TaskSchedulerType type_p)
-    : TaskExecutor(TaskScheduler::GetScheduler(context_p), type_p) {
-	context = context_p;
+TaskExecutor::TaskExecutor(ClientContext &context, TaskSchedulerType type_p)
+    : TaskExecutor(context.GetContext(), type_p) {
+}
+
+TaskExecutor::TaskExecutor(Context &context_p, TaskSchedulerType type_p)
+    : TaskExecutor(context_p.GetTaskScheduler(), type_p) {
+	context = &context_p;
 }
 
 TaskExecutor::~TaskExecutor() {

@@ -528,6 +528,7 @@ static unique_ptr<BaseStatistics> TryBuildShreddingStats(const LogicalType &type
 		// a variant stores both LISTs and fixed-size ARRAYs as a (variable length) array
 		auto typed_value = BaseStatistics::CreateEmpty(LogicalType::LIST(child_result->GetType()));
 		ListStats::SetChildStats(typed_value, std::move(child_result));
+		ListStats::SetLengthBounds(typed_value, optional_idx(), optional_idx());
 		typed_value.CopyValidity(input);
 		return WrapTypedValue(typed_value, nullptr).ToUnique();
 	}
@@ -692,6 +693,7 @@ bool VariantStats::MergeShredding(const BaseStatistics &stats, const BaseStatist
 		auto new_typed_value = BaseStatistics::CreateEmpty(LogicalType::LIST(new_child_stats.type));
 		new_typed_value.CombineValidity(stats_typed_value, other_typed_value);
 		ListStats::SetChildStats(new_typed_value, new_child_stats.ToUnique());
+		ListStats::SetLengthBounds(new_typed_value, optional_idx(), optional_idx());
 		new_stats = WrapTypedValue(new_typed_value, new_untyped_value_stats);
 		return true;
 	} else {

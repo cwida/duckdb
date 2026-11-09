@@ -80,7 +80,8 @@ public:
 	                                   CopyOutputLifecycle &output_lifecycle);
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
-	static void ReturnStatistics(DataChunk &chunk, const string &file_path, const CopyToFileInfo &info);
+	static void ReturnStatistics(Context &context, DataChunk &chunk, const string &file_path,
+	                             const CopyToFileInfo &info);
 	//! Appends the next chunk of RETURN_STATS rows of the written files
 	static SourceResultType ReturnWrittenFileStatistics(ClientContext &context, DataChunk &chunk,
 	                                                    CopyToFileGlobalSourceState &source_state,
