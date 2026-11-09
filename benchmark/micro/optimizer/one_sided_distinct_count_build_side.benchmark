@@ -1,5 +1,5 @@
 # name: benchmark/micro/optimizer/one_sided_distinct_count_build_side.benchmark
-# description: IN subquery joining a fact with few distinct date keys to a stats-less date range: the subquery, not the outer fact, must be the build side
+# description: IN subquery joining a fact with few distinct date keys to a date range without NDV statistics
 # group: [optimizer]
 
 name One-Sided Distinct Count Build Side

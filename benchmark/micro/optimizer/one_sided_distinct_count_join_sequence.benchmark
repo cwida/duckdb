@@ -1,5 +1,5 @@
 # name: benchmark/micro/optimizer/one_sided_distinct_count_join_sequence.benchmark
-# description: Fact with few distinct date keys joined to a stats-less date range: the fact must join the filtered dates before the other fact
+# description: Fact with few distinct date keys joined to a filtered date range and a second fact table
 # group: [optimizer]
 
 name One-Sided Distinct Count Join Sequence

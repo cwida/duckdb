@@ -1,5 +1,5 @@
 # name: test/optimizer/joins/one_sided_distinct_count_domain.test
-# description: A foreign key's distinct count does not shrink the join domain below a key without a distinct count
+# description: Join domains distinguish source min/max evidence from row-count fallbacks
 # group: [joins]
 
 require parquet
@@ -19,19 +19,22 @@ statement ok
 CREATE TABLE od_dim AS SELECT range::BIGINT k FROM range(1000);
 
 statement ok
+ANALYZE;
+
+statement ok
 COPY (SELECT k, k // 50 AS g FROM od_dim) TO '{TEST_DIR}/od_dim.parquet' (FORMAT parquet);
 
 statement ok
 COPY (SELECT (range % 1000)::BIGINT k FROM range(50000)) TO '{TEST_DIR}/od_fk.csv' (HEADER);
 
-# A dimension key without statistics: the domain is its 1000 rows, not the fact's 50, which estimates ~2M.
+# Row counts do not establish uniqueness: retain the fact's known NDV, estimating about 2M rows.
 
 query II
 EXPLAIN SELECT * FROM od_fact JOIN range(1000) d(k) ON od_fact.k = d.k;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~100.000 rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[12].[0-9]{3}.[0-9]{3} rows.*
 
-# The dimension key has only a min/max span (Parquet footer): the same holds.
+# A dimension key with a min/max span can raise the domain, estimating 100K rows.
 
 query II
 EXPLAIN SELECT * FROM od_fact JOIN read_parquet('{TEST_DIR}/od_dim.parquet') d ON od_fact.k = d.k;
@@ -48,7 +51,7 @@ JOIN read_csv('{TEST_DIR}/od_fk.csv', columns = {'k': 'BIGINT'}) f ON f.k = od_d
 ----
 physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[1-9].[0-9]{3}.[0-9]{3} rows.*
 
-# Two key columns without statistics: the smaller row count is the domain: ~3.9M (exact count 5M).
+# Two row-count-only inputs still do not raise the fact's known NDV.
 
 query II
 EXPLAIN SELECT *
@@ -56,7 +59,7 @@ FROM od_fact
 JOIN range(1000) d(k) ON od_fact.k = d.k
 JOIN read_csv('{TEST_DIR}/od_fk.csv', columns = {'k': 'BIGINT'}) f ON f.k = d.k;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[1-9].[0-9]{3}.[0-9]{3} rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[12].[0-9]{3}.[0-9]{3}.[0-9]{3} rows.*
 
 # A computed column is not a key: the domain stays the fact's 50, ~2M (the exact count) as on main, also over a span.
 
@@ -94,6 +97,9 @@ physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[12][0-9].[0-9]{3} rows.*
 statement ok
 CREATE TABLE od_recent AS SELECT (range % 50)::BIGINT k FROM range(100000);
 
+statement ok
+ANALYZE od_recent;
+
 query II
 EXPLAIN SELECT * FROM od_recent JOIN read_parquet('{TEST_DIR}/od_dim.parquet') d ON od_recent.k = d.k WHERE d.g = 0;
 ----
@@ -109,8 +115,7 @@ EXPLAIN SELECT * FROM od_fact JOIN read_parquet('{TEST_DIR}/od_fk.parquet') d ON
 ----
 physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1.9[0-9]{2}.[0-9]{3} rows.*
 
-# Trade-off: a side without a distinct count or span that is not a key (here 50K rows on the fact's 50 keys) is
-# taken as one. The estimate is ~100K, where the exact count is 100M (main ~76M).
+# Repeated keys in CSV do not raise the known NDV. The exact count is 100M.
 
 statement ok
 COPY (SELECT ((range % 50) * 20)::BIGINT k FROM range(50000)) TO '{TEST_DIR}/od_lowndv.csv' (HEADER);
@@ -118,12 +123,15 @@ COPY (SELECT ((range % 50) * 20)::BIGINT k FROM range(50000)) TO '{TEST_DIR}/od_
 query II
 EXPLAIN SELECT * FROM od_fact JOIN read_csv('{TEST_DIR}/od_lowndv.csv', columns = {'k': 'BIGINT'}) f ON od_fact.k = f.k;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~100.000 rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2,3}.[0-9]{3}.[0-9]{3} rows.*
 
-# The same for a Parquet VARCHAR column: statistics, but no span. ~100K, where the exact count is 100M (main ~106M).
+# The same holds for Parquet VARCHAR: neither NDV nor a numeric span is available.
 
 statement ok
 CREATE TABLE od_sfact AS SELECT k::VARCHAR k FROM od_fact;
+
+statement ok
+ANALYZE od_sfact;
 
 statement ok
 COPY (SELECT ((range % 50) * 20)::VARCHAR k FROM range(50000)) TO '{TEST_DIR}/od_lowndv.parquet' (FORMAT parquet);
@@ -131,15 +139,55 @@ COPY (SELECT ((range % 50) * 20)::VARCHAR k FROM range(50000)) TO '{TEST_DIR}/od
 query II
 EXPLAIN SELECT * FROM od_sfact JOIN read_parquet('{TEST_DIR}/od_lowndv.parquet') f ON od_sfact.k = f.k;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~100.000 rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2,3}.[0-9]{3}.[0-9]{3} rows.*
 
-# Stated trade-off: the raise applies to the whole key class, so two facts joined through a key without statistics are
-# under-estimated (od_fact2: 10K rows on the same 50 keys). ~1M, where the exact count is 20M (main ~384M).
+# Two independent reliable sources keep their NDV, with either a row-count-only or min/max dimension.
 
 statement ok
 CREATE TABLE od_fact2 AS SELECT ((range % 50) * 20)::BIGINT k FROM range(10000);
 
+statement ok
+ANALYZE od_fact2;
+
 query II
 EXPLAIN SELECT * FROM od_fact JOIN range(1000) d(k) ON od_fact.k = d.k JOIN od_fact2 ON od_fact2.k = od_fact.k;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1.000.000 rows.*
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2,3}.[0-9]{3}.[0-9]{3} rows.*
+
+query II
+EXPLAIN SELECT * FROM od_fact JOIN read_parquet('{TEST_DIR}/od_dim.parquet') d USING(k) JOIN od_fact2 USING(k);
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2,3}.[0-9]{3}.[0-9]{3} rows.*
+
+# Hiding the second fact's key does not remove its reliable source from the class.
+
+query II
+EXPLAIN SELECT f.k, f.r FROM (
+    SELECT f.k, random() AS r FROM od_fact f JOIN od_fact2 USING(k)
+) f JOIN read_parquet('{TEST_DIR}/od_dim.parquet') d USING(k);
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[0-9]{2,3}.[0-9]{3}.[0-9]{3} rows.*
+
+# A direct alias next to a computed output retains its base source through the nested join.
+
+query I
+SELECT count(*) FROM (
+    SELECT f.k AS key, f.k % 2 AS g FROM od_fact f JOIN od_dim d USING(k)
+) f JOIN read_parquet('{TEST_DIR}/od_dim.parquet') d ON f.key = d.k;
+----
+100000
+
+# Synthetic IN/VALUES inputs keep their local rows without supplying Parquet's base domain.
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/od_lowndv.parquet') f
+JOIN read_parquet('{TEST_DIR}/od_dim.parquet') d ON f.k = d.k::VARCHAR
+WHERE f.k IN ('0', '20', '40', '60', '80', '100');
+----
+6000
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/od_lowndv.parquet') f
+JOIN (VALUES ('0'), ('20'), ('40'), ('60'), ('80'), ('100')) v(k) USING(k);
+----
+6000

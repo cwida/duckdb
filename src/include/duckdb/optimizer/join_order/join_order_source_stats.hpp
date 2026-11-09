@@ -24,7 +24,7 @@ struct JoinColumnSource {
 	DistinctCount domain;
 };
 
-using join_column_sources_t = column_binding_map_t<JoinColumnSource>;
+using join_column_sources_t = column_binding_map_t<vector<JoinColumnSource>>;
 
 //! Immutable scan evidence captured before any join-order subtree is optimized.
 class JoinOrderSourceStats {

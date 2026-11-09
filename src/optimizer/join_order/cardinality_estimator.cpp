@@ -22,31 +22,28 @@ public:
 
 private:
 	optional<DistinctCount> estimate;
-	//! The smallest relation behind an HLL/EXACT distinct count
-	idx_t reliable_relation_cardinality = NumericLimits<idx_t>::Maximum();
-	//! The smallest relation behind a min/max distinct count
-	idx_t min_max_relation_cardinality = NumericLimits<idx_t>::Maximum();
-	//! Capped min/max spans and scan row counts (no distinct count or span) that can raise a stronger distinct count
-	vector<idx_t> key_domain_candidates;
+	//! Used only when no base domain or distinct-count evidence is available.
+	idx_t derived_fallback = NumericLimits<idx_t>::Maximum();
+	column_binding_set_t sources;
+	idx_t reliable_source_count = 0;
+	idx_t reliable_source_cardinality = NumericLimits<idx_t>::Maximum();
+	vector<idx_t> min_max_candidates;
 };
 
 DomainEstimate::DomainEstimate() {
 }
 
-// The domain is the smallest candidate above the count; candidates above its smallest relation are dropped
 idx_t DomainEstimate::GetDistinctCount() const {
 	if (!estimate) {
-		return NumericLimits<idx_t>::Maximum();
+		return derived_fallback;
 	}
 	auto result = estimate->distinct_count;
-	if (estimate->source == DistinctCountSource::CARDINALITY) {
+	if (!HasReliableDistinctCount() || reliable_source_count != 1) {
 		return result;
 	}
-	auto relation_cardinality =
-	    HasReliableDistinctCount() ? reliable_relation_cardinality : min_max_relation_cardinality;
 	auto key_domain = NumericLimits<idx_t>::Maximum();
-	for (auto candidate : key_domain_candidates) {
-		if (candidate > result && candidate <= relation_cardinality) {
+	for (auto candidate : min_max_candidates) {
+		if (candidate > result && candidate <= reliable_source_cardinality) {
 			key_domain = MinValue(key_domain, candidate);
 		}
 	}
@@ -68,22 +65,26 @@ void DomainEstimate::Restrict(idx_t bound) {
 	D_ASSERT(estimate);
 	estimate->distinct_count = MinValue(estimate->distinct_count, bound);
 	// the filter bound holds for every column of the class; no candidate overrides it
-	key_domain_candidates.clear();
+	min_max_candidates.clear();
 }
 
 void DomainEstimate::Update(const DistinctCount &distinct_count, optional_ptr<const JoinColumnSource> source) {
-	auto source_cardinality = source ? source->cardinality : 0;
+	if (source && !sources.insert(source->binding).second) {
+		return;
+	}
+	if (!source && distinct_count.source == DistinctCountSource::CARDINALITY) {
+		// A VALUES/IN list or derived relation does not describe a base column's domain.
+		derived_fallback = MinValue(derived_fallback, distinct_count.distinct_count);
+		return;
+	}
 	if (distinct_count.source == DistinctCountSource::HLL || distinct_count.source == DistinctCountSource::EXACT) {
-		reliable_relation_cardinality = MinValue(reliable_relation_cardinality, source_cardinality);
-	} else if (distinct_count.source == DistinctCountSource::MIN_MAX) {
-		min_max_relation_cardinality = MinValue(min_max_relation_cardinality, source_cardinality);
+		reliable_source_cardinality = MinValue(reliable_source_cardinality, source ? source->cardinality : 0);
 		if (source) {
-			// capped at the filtered rows: a filter is taken to keep a key range (e.g. a year of a date dimension)
-			key_domain_candidates.push_back(MinValue(distinct_count.distinct_count, source->filtered_cardinality));
+			reliable_source_count++;
 		}
-	} else if (source) {
-		// not capped: with no span a filter is taken to keep a sample of the keys, so its rows are not the domain
-		key_domain_candidates.push_back(distinct_count.distinct_count);
+	} else if (source && distinct_count.source == DistinctCountSource::MIN_MAX) {
+		// Assume a filtered dimension retains a range of keys, capped by its captured scan rows.
+		min_max_candidates.push_back(MinValue(distinct_count.distinct_count, source->filtered_cardinality));
 	}
 	if (!estimate) {
 		estimate = distinct_count;
@@ -966,14 +967,18 @@ void CardinalityEstimator::UpdateTotalDomains(RelationIndex relation_id, const R
 		// Update the relation_to_tdom set with the estimated distinct count (or tdom) calculated above
 		auto key = ColumnBinding(TableIndex(relation_id.index), ProjectionIndex(i));
 		auto entry = sources.find(key);
-		optional_ptr<const JoinColumnSource> source = entry == sources.end() ? nullptr : &entry->second;
-		auto distinct_count = source ? source->domain : stats.columns[i].total_domain;
 		for (auto &relation_to_tdom : state->relation_set_stats) {
 			const auto &i_set = relation_to_tdom.equivalent_relations;
 			if (i_set.find(key) == i_set.end()) {
 				continue;
 			}
-			relation_to_tdom.domain_estimate.Update(distinct_count, source);
+			if (entry == sources.end()) {
+				relation_to_tdom.domain_estimate.Update(stats.columns[i].total_domain, nullptr);
+			} else {
+				for (auto &source : entry->second) {
+					relation_to_tdom.domain_estimate.Update(source.domain, source);
+				}
+			}
 		}
 	}
 }

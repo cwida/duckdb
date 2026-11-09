@@ -1,7 +1,10 @@
 #include "duckdb/optimizer/join_order/join_order_source_stats.hpp"
 
+#include "duckdb/optimizer/join_order/join_predicate.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -64,6 +67,72 @@ static idx_t SourceChildCount(LogicalOperator &op) {
 	}
 }
 
+static void AddSourceEquality(JoinEqualityGroups &groups, ExpressionType type, const Expression &left,
+                              const Expression &right) {
+	if (type != ExpressionType::COMPARE_EQUAL && type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		return;
+	}
+	auto lhs = JoinOrderUtil::GetEquivalenceBinding(left);
+	auto rhs = JoinOrderUtil::GetEquivalenceBinding(right);
+	if (lhs.table_index.IsValid() && rhs.table_index.IsValid()) {
+		groups.AddEquality(lhs, rhs);
+	}
+}
+
+static void AddSourceEqualities(JoinEqualityGroups &groups, const Expression &expression) {
+	if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
+		for (auto &child : expression.Cast<BoundConjunctionExpression>().GetChildren()) {
+			AddSourceEqualities(groups, *child);
+		}
+	} else if (BoundComparisonExpression::IsComparison(expression)) {
+		auto &comparison = expression.Cast<BoundFunctionExpression>();
+		AddSourceEquality(groups, expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
+		                  BoundComparisonExpression::Right(comparison));
+	}
+}
+
+static void MergeEquivalentSources(LogicalOperator &op, join_column_sources_t &inputs) {
+	auto is_inner = op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+	                op.Cast<LogicalComparisonJoin>().join_type == JoinType::INNER;
+	if (!is_inner && op.type != LogicalOperatorType::LOGICAL_FILTER) {
+		return;
+	}
+	JoinEqualityGroups groups;
+	column_binding_map_t<ColumnBinding> source_outputs;
+	for (auto &entry : inputs) {
+		groups.AddEquality(entry.first, entry.first);
+		for (auto &source : entry.second) {
+			auto first = source_outputs.emplace(source.binding, entry.first);
+			groups.AddEquality(entry.first, first.first->second);
+		}
+	}
+	if (is_inner) {
+		for (auto &condition : op.Cast<LogicalComparisonJoin>().conditions) {
+			if (condition.IsComparison()) {
+				AddSourceEquality(groups, condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
+			}
+		}
+	} else {
+		for (auto &expression : op.expressions) {
+			AddSourceEqualities(groups, *expression);
+		}
+	}
+	unordered_map<idx_t, column_binding_map_t<JoinColumnSource>> contributors;
+	for (auto &entry : inputs) {
+		auto &group = contributors[groups.GetGroup(entry.first)];
+		for (auto &source : entry.second) {
+			group.emplace(source.binding, source);
+		}
+	}
+	for (auto &entry : inputs) {
+		auto &group = contributors.at(groups.GetGroup(entry.first));
+		entry.second.clear();
+		for (auto &source : group) {
+			entry.second.push_back(source.second);
+		}
+	}
+}
+
 join_column_sources_t JoinOrderSourceStats::Resolve(LogicalOperator &root) const {
 	struct Frame {
 		explicit Frame(LogicalOperator &op) : op(op) {
@@ -83,6 +152,7 @@ join_column_sources_t JoinOrderSourceStats::Resolve(LogicalOperator &root) const
 			stack.emplace_back(child);
 			continue;
 		}
+		MergeEquivalentSources(op, frame.inputs);
 		join_column_sources_t output;
 		if (op.type == LogicalOperatorType::LOGICAL_GET && op.children.empty()) {
 			auto &get = op.Cast<LogicalGet>();
@@ -90,8 +160,9 @@ join_column_sources_t JoinOrderSourceStats::Resolve(LogicalOperator &root) const
 			if (entry != scans.end() && !get.extra_info.sample_options) {
 				auto &scan = entry->second;
 				for (auto &column : scan.stats.columns) {
-					output.emplace(column.binding, JoinColumnSource {column.binding, scan.cardinality,
-					                                                 scan.stats.cardinality, column.total_domain});
+					output.emplace(column.binding,
+					               vector<JoinColumnSource> {{column.binding, scan.cardinality, scan.stats.cardinality,
+					                                          column.total_domain}});
 				}
 			}
 		} else if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {

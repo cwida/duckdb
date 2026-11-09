@@ -1,5 +1,5 @@
 # name: benchmark/micro/optimizer/one_sided_distinct_count_csv_dimension.benchmark
-# description: IN subquery joining a native fact (distinct count of its date keys) to a CSV date dimension (row count only): the subquery, not the outer fact, must be the build side
+# description: IN subquery joining native date keys with NDV statistics to a CSV date dimension with row counts only
 # group: [optimizer]
 
 name One-Sided Distinct Count CSV Dimension
