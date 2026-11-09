@@ -11,6 +11,7 @@ CREATE VIEW fact AS SELECT (k + 20000) % 20000 k, v FROM fact_data;
 statement ok
 CREATE TABLE demand AS SELECT (i % 100)::INTEGER k, CASE WHEN i = 2999 THEN 'x' ELSE i::VARCHAR END label FROM range(3000) t(i);
 
+# Unused demand outputs must remain eligible for pruning.
 query I
 SELECT count(*) FROM (
     SELECT d.k, d.n, a.s FROM (SELECT k, label::INTEGER n FROM demand) d
@@ -18,6 +19,35 @@ SELECT count(*) FROM (
 );
 ----
 1
+
+# Scan predicates can be evaluated on more rows when demand is materialized under LIMIT.
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE filtered_demand AS
+SELECT (i % 100)::INTEGER k, CASE WHEN i = 199999 THEN 'x' ELSE i::VARCHAR END label
+FROM range(200000) t(i);
+
+query I
+SELECT count(*) FROM (
+    SELECT d.k FROM (SELECT k FROM filtered_demand WHERE label::INTEGER >= 0) d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING (k) LIMIT 1
+);
+----
+1
+
+# Multi-column predicates remain safe when a residual filter is retained.
+query I
+SELECT count(*) FROM (
+    SELECT d.k FROM (SELECT k FROM filtered_demand WHERE label::INTEGER >= k) d
+    LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING (k) LIMIT 1
+);
+----
+1
+
+statement ok
+RESET threads;
 
 # A columnar input stays columnar when its keys are shared with the aggregate.
 statement ok
@@ -29,10 +59,13 @@ SELECT CASE i % 4 WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'zz' ELSE 'q' || (
        i::BIGINT v
 FROM range(50000) t(i);
 
+statement ok
+CREATE VIEW names AS SELECT lower(upper(n)) n, v FROM name_values;
+
 query TI
 SELECT d.column_name, a.s
 FROM (DESCRIBE described_columns) d
-LEFT JOIN (SELECT lower(upper(n)) n, sum(v) s FROM name_values GROUP BY 1) a ON a.n = d.column_name
+LEFT JOIN (SELECT n, sum(v) s FROM names GROUP BY n) a ON a.n = d.column_name
 ORDER BY d.column_name;
 ----
 a	312475000

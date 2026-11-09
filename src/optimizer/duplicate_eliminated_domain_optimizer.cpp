@@ -8,10 +8,10 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
@@ -21,6 +21,7 @@
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_materialized_cte.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/parser/expression_map.hpp"
@@ -232,7 +233,6 @@ static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType
 		return index.IsValid() && CopyExactFixedKeys(*op.children[0], index.GetIndex(), type, rows);
 	}
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET:
-	case LogicalOperatorType::LOGICAL_CHUNK_GET:
 	case LogicalOperatorType::LOGICAL_EMPTY_RESULT:
 		return CopyFixedKeys(op, key, type, rows);
 	default:
@@ -591,6 +591,13 @@ static bool CanChangeRuntimeKeyReaders(LogicalOperator &op, const vector<referen
 	bool can_throw = false;
 	LogicalOperatorVisitor::EnumerateExpressions(
 	    op, [&](unique_ptr<Expression> *expression) { can_throw |= (*expression)->CanThrow(); });
+	// Pushed-down scan predicates are not enumerated by the logical operator visitor.
+	if (op.type == LogicalOperatorType::LOGICAL_GET) {
+		for (auto &entry : op.Cast<LogicalGet>().table_filters) {
+			can_throw |=
+			    ExpressionFilter::GetExpressionFilter(entry.Filter(), "CanChangeRuntimeKeyReaders").expr->CanThrow();
+		}
+	}
 	if (can_throw) {
 		return false;
 	}

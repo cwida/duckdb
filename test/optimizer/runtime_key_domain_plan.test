@@ -164,3 +164,24 @@ ORDER BY d.k;
 ----
 8	8	45080
 9	9	45090
+
+# Columnar demand is shared directly, without expanding stored keys into constant expressions.
+statement ok
+CREATE TABLE described_columns AS SELECT 1 a, 2 b, 3 c;
+
+statement ok
+CREATE TABLE name_values AS
+SELECT CASE i % 4 WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'zz' ELSE 'q' || (i % 997)::VARCHAR END n,
+       i::BIGINT v
+FROM range(50000) t(i);
+
+statement ok
+CREATE VIEW names AS SELECT lower(upper(n)) n, v FROM name_values;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.column_name, a.s
+FROM (DESCRIBE described_columns) d
+LEFT JOIN (SELECT n, sum(v) s FROM names GROUP BY n) a ON a.n = d.column_name;
+----
+physical_plan	<REGEX>:[\s\S]*COLUMN_DATA_SCAN[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
