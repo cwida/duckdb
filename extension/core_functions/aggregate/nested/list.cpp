@@ -38,14 +38,19 @@ unique_ptr<BaseStatistics> ListStatsFunction(ClientContext &context, BoundAggreg
 		child_stats->ResetAdditiveStatistics();
 		ListStats::SetChildStats(stats, std::move(child_stats));
 	}
-	// a list aggregate folds every input row into one list element. Per-list length bounds
-	// are unknown without the group count, so only the total is set.
+	// a list aggregate folds every input row into one list element, and an empty group yields NULL
+	auto length_data = ListStats::GetLengthData(stats);
+	if (input.node_stats && input.node_stats->has_max_cardinality && input.node_stats->max_cardinality >= 1) {
+		length_data.has_min_list_length = true;
+		length_data.min_list_length = 1;
+		length_data.has_max_list_length = true;
+		length_data.max_list_length = input.node_stats->max_cardinality;
+	}
 	if (input.node_stats && input.node_stats->has_estimated_cardinality) {
-		auto length_data = ListStats::GetLengthData(stats);
 		length_data.has_total_list_length = true;
 		length_data.total_list_length = input.node_stats->estimated_cardinality;
-		ListStats::SetLengthData(stats, length_data);
 	}
+	ListStats::SetLengthData(stats, length_data);
 	return stats.ToUnique();
 }
 
