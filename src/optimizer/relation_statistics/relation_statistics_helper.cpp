@@ -202,8 +202,6 @@ optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(Logical
 				return {};
 			}
 			distinct_count = child_column->total_domain;
-			// any other expression, a cast too, is computed and may repeat values
-			distinct_count.is_scan_domain &= expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
 		}
 		auto current_domain = distinct_count;
 		if (child_column) {
@@ -494,8 +492,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 
 optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
                                                                           const RelationStats &child_stats,
-                                                                          RelationStatsExtractor &extractor) {
-	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, false);
+                                                                          RelationStatsExtractor &extractor,
+                                                                          bool use_cached_cardinality) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, use_cached_cardinality);
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,
@@ -624,10 +623,6 @@ optional<RelationStats> RelationStatisticsHelper::ExtractLimitStats(LogicalLimit
 		break;
 	}
 	ApplyCardinality(*result, cardinality);
-	for (auto &column : result->columns) {
-		// a limit keeps the first rows (e.g. after an ORDER BY), not a sample of the keys: a raise may under-estimate
-		column.total_domain.is_scan_domain = false;
-	}
 	return result;
 }
 

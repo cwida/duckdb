@@ -17,7 +17,7 @@ public:
 	idx_t GetDistinctCount() const;
 	bool HasReliableDistinctCount() const;
 	idx_t GetReliableDistinctCount() const;
-	void Update(const DistinctCount &distinct_count, idx_t relation_cardinality);
+	void Update(const DistinctCount &distinct_count, optional_ptr<const JoinColumnSource> source);
 	void Restrict(idx_t bound);
 
 private:
@@ -71,16 +71,17 @@ void DomainEstimate::Restrict(idx_t bound) {
 	key_domain_candidates.clear();
 }
 
-void DomainEstimate::Update(const DistinctCount &distinct_count, idx_t relation_cardinality) {
+void DomainEstimate::Update(const DistinctCount &distinct_count, optional_ptr<const JoinColumnSource> source) {
+	auto source_cardinality = source ? source->cardinality : 0;
 	if (distinct_count.source == DistinctCountSource::HLL || distinct_count.source == DistinctCountSource::EXACT) {
-		reliable_relation_cardinality = MinValue(reliable_relation_cardinality, relation_cardinality);
+		reliable_relation_cardinality = MinValue(reliable_relation_cardinality, source_cardinality);
 	} else if (distinct_count.source == DistinctCountSource::MIN_MAX) {
-		min_max_relation_cardinality = MinValue(min_max_relation_cardinality, relation_cardinality);
-		if (distinct_count.is_scan_domain) {
+		min_max_relation_cardinality = MinValue(min_max_relation_cardinality, source_cardinality);
+		if (source) {
 			// capped at the filtered rows: a filter is taken to keep a key range (e.g. a year of a date dimension)
-			key_domain_candidates.push_back(MinValue(distinct_count.distinct_count, relation_cardinality));
+			key_domain_candidates.push_back(MinValue(distinct_count.distinct_count, source->filtered_cardinality));
 		}
-	} else if (distinct_count.is_scan_domain) {
+	} else if (source) {
 		// not capped: with no span a filter is taken to keep a sample of the keys, so its rows are not the domain
 		key_domain_candidates.push_back(distinct_count.distinct_count);
 	}
@@ -932,7 +933,8 @@ bool SortTdoms(const RelationsSetToStats &a, const RelationsSetToStats &b) {
 }
 
 void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
-                                      const vector<unique_ptr<JoinOrderOperator>> &operators) {
+                                      const vector<unique_ptr<JoinOrderOperator>> &operators,
+                                      const join_column_sources_t &sources) {
 	D_ASSERT(state->leaf_cardinalities.empty());
 	InitEquivalentRelations();
 	for (idx_t i = 0; i < relations.size(); i++) {
@@ -941,7 +943,7 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
 		auto cardinality = CardinalityValue(static_cast<double>(stats.cardinality));
 		state->leaf_cardinalities.push_back(cardinality);
 		state->cardinalities.emplace(set_manager.GetJoinRelation(RelationIndex(i)), cardinality);
-		UpdateTotalDomains(RelationIndex(i), stats);
+		UpdateTotalDomains(RelationIndex(i), stats, sources);
 	}
 	RestrictFilterDomains(relations);
 	for (auto &op : operators) {
@@ -955,20 +957,23 @@ void CardinalityEstimator::Initialize(const vector<RelationStats> &relations,
 	}
 }
 
-void CardinalityEstimator::UpdateTotalDomains(RelationIndex relation_id, const RelationStats &stats) {
+void CardinalityEstimator::UpdateTotalDomains(RelationIndex relation_id, const RelationStats &stats,
+                                              const join_column_sources_t &sources) {
 	//! Initialize the distinct count for all columns used in joins with the current relation.
 	for (idx_t i = 0; i < stats.columns.size(); i++) {
 		//! for every column used in a filter in the relation, get the distinct count via HLL, or assume it to be
 		//! the cardinality
 		// Update the relation_to_tdom set with the estimated distinct count (or tdom) calculated above
 		auto key = ColumnBinding(TableIndex(relation_id.index), ProjectionIndex(i));
-		auto distinct_count = stats.columns[i].total_domain;
+		auto entry = sources.find(key);
+		optional_ptr<const JoinColumnSource> source = entry == sources.end() ? nullptr : &entry->second;
+		auto distinct_count = source ? source->domain : stats.columns[i].total_domain;
 		for (auto &relation_to_tdom : state->relation_set_stats) {
 			const auto &i_set = relation_to_tdom.equivalent_relations;
 			if (i_set.find(key) == i_set.end()) {
 				continue;
 			}
-			relation_to_tdom.domain_estimate.Update(distinct_count, stats.cardinality);
+			relation_to_tdom.domain_estimate.Update(distinct_count, source);
 		}
 	}
 }

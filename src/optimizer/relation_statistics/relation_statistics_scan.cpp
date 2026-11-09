@@ -385,8 +385,12 @@ unique_ptr<BaseStatistics> RelationStatisticsHelper::GetColumnStatistics(Logical
 }
 
 RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientContext &context) {
+	return ExtractGetStats(get, context, get.EstimateSourceCardinality(context));
+}
+
+RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientContext &context,
+                                                        idx_t base_table_cardinality) {
 	RelationStats result;
-	auto base_table_cardinality = get.EstimateSourceCardinality(context);
 	result.cardinality = base_table_cardinality;
 	result.row_retention = base_table_cardinality == 0 ? 0 : 1;
 	result.table_name = get.GetTable() ? get.GetTable()->name : Identifier(get.GetName());
@@ -403,8 +407,6 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 		if (total_domain.distinct_count == 0) {
 			total_domain = DistinctCount(base_table_cardinality, DistinctCountSource::CARDINALITY);
 		}
-		total_domain.is_scan_domain = total_domain.source == DistinctCountSource::MIN_MAX ||
-		                              total_domain.source == DistinctCountSource::CARDINALITY;
 		result.columns.emplace_back(binding, total_domain,
 		                            Identifier(get.GetName() + "." + get.GetColumnName(column_id)));
 		if (column_statistics && column_statistics->GetType().EqualsIncludingCollation(get.GetColumnType(column_id))) {

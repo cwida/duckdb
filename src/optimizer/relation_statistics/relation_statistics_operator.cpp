@@ -293,7 +293,6 @@ static optional<RelationStats> ExtractSetOperationStats(LogicalSetOperation &set
 				return {};
 			}
 			auto &child_column = child_stats[child_idx].get().columns[column_idx];
-			total_domain.is_scan_domain &= child_column.total_domain.is_scan_domain;
 			switch (setop.type) {
 			case LogicalOperatorType::LOGICAL_UNION:
 				total_domain.distinct_count =
