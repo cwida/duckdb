@@ -1615,11 +1615,6 @@ vector<reference<CatalogEntry>> Catalog::GetAllEntries(ClientContext &context, C
 }
 
 void Catalog::Alter(CatalogTransaction transaction, AlterInfo &info) {
-	if (info.type == AlterType::ALTER_MACRO && !IsDuckCatalog()) {
-		// a catalog implementation that does not know about member-granular drops could not apply it
-		throw NotImplementedException("DROP with a parameter type list is not supported for catalog type \"%s\"",
-		                              GetCatalogType());
-	}
 	if (info.type == AlterType::ALTER_SCHEMA) {
 		auto &schema_info = info.Cast<AlterSchemaInfo>();
 		auto schema = GetSchema(transaction, schema_info.SchemaPath(), info.if_not_found);
