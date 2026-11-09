@@ -211,3 +211,27 @@ query I
 SELECT count(*) FILTER (WHERE d IN (-2, 1.495::DECIMAL(10,4))) FROM v;
 ----
 1
+
+# DECIMAL of up to 15 digits -> DOUBLE and BOOLEAN -> integer
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d = 1.5::DOUBLE AND b = 1;
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# a double cannot tell apart all decimals with more digits
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(18,2)::DOUBLE = 1.5::DOUBLE;
+----
+analyzed_plan	<REGEX>:.*AS DOUBLE.*
+
+query IIIIII
+SELECT
+	count(*) FILTER (WHERE d = 1.5::DOUBLE),
+	count(*) FILTER (WHERE d IN (-2e0, 1.499::DOUBLE)),
+	count(*) FILTER (WHERE d = 'nan'::DOUBLE),
+	count(*) FILTER (WHERE b = 1),
+	count(*) FILTER (WHERE b IN (0, 2)),
+	count(*) FILTER (WHERE b != 2)
+FROM v;
+----
+1	1	0	1	1	2

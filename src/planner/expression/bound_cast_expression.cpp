@@ -3,6 +3,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -309,6 +310,9 @@ bool BoundCastExpression::IsLosslessIntegralToFloatingCast(const LogicalType &so
 	return false;
 }
 
+//! Decimals of at most this many digits round-trip through DOUBLE, so distinct decimals stay distinct doubles
+static constexpr uint8_t MAX_DECIMAL_WIDTH_LOSSLESS_AS_DOUBLE = std::numeric_limits<double>::digits10;
+
 //! Whether every value of the type has a unique VARCHAR representation that casts back to the same value
 static bool HasCanonicalVarcharRepresentation(const LogicalType &type) {
 	if (type.IsIntegral()) {
@@ -345,7 +349,17 @@ bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_
 		}
 		return target_type.IsIntegral() && CastIsInvertible(source_type, target_type);
 	}
-	return source_type.id() == LogicalTypeId::FLOAT && target_type.id() == LogicalTypeId::DOUBLE;
+	switch (source_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return target_type.IsIntegral();
+	case LogicalTypeId::DECIMAL:
+		return target_type.id() == LogicalTypeId::DOUBLE &&
+		       DecimalType::GetWidth(source_type) <= MAX_DECIMAL_WIDTH_LOSSLESS_AS_DOUBLE;
+	case LogicalTypeId::FLOAT:
+		return target_type.id() == LogicalTypeId::DOUBLE;
+	default:
+		return false;
+	}
 }
 
 optional<Value> BoundCastExpression::TryInvertConstant(ClientContext &context, const BoundFunctionExpression &cast_expr,
