@@ -23,3 +23,53 @@ statement error
 SELECT * FROM query_table(NULL);
 ----
 Binder Error: Cannot use NULL as function argument
+
+# a WITH RECURSIVE CTE that does not reference itself combines the types of both sides like a plain UNION ALL
+query II
+WITH RECURSIVE t(a) AS (SELECT true UNION ALL SELECT NULL) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+query II
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT true) SELECT a, typeof(a) FROM t ORDER BY a NULLS FIRST;
+----
+NULL	BOOLEAN
+true	BOOLEAN
+
+query II
+WITH RECURSIVE t(a) AS (SELECT [NULL] UNION ALL SELECT [true]) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+[true]	BOOLEAN[]
+[NULL]	BOOLEAN[]
+
+# a recursive CTE still turns a NULL on the left side into INTEGER
+query III
+WITH RECURSIVE t(i, b) AS (SELECT 1, NULL UNION ALL SELECT i + 1, b FROM t WHERE i < 3) SELECT i, b, typeof(b) FROM t ORDER BY i;
+----
+1	NULL	INTEGER
+2	NULL	INTEGER
+3	NULL	INTEGER
+
+query III
+WITH RECURSIVE t(i, b) AS (SELECT 1, true UNION ALL SELECT i + 1, NULL FROM t WHERE i < 3) SELECT i, b, typeof(b) FROM t ORDER BY i;
+----
+1	true	BOOLEAN
+2	NULL	BOOLEAN
+3	NULL	BOOLEAN
+
+# an all-NULL column keeps the NULL type inside the query, as with a plain UNION ALL; a table created from it is INTEGER
+query I
+WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT NULL) SELECT typeof(a) FROM t;
+----
+"NULL"
+"NULL"
+
+statement ok
+CREATE TABLE rec_nulls AS WITH RECURSIVE t(a) AS (SELECT NULL UNION ALL SELECT NULL) SELECT * FROM t
+
+query I
+SELECT typeof(a) FROM rec_nulls
+----
+INTEGER
+INTEGER

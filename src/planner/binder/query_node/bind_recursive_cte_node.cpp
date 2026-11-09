@@ -31,12 +31,26 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	auto setop_index = GenerateTableIndex();
 
 	auto left_binder = Binder::CreateBinder(context, this);
+	// the left side keeps the SQL NULL type (as the children of a set operation do), so that a CTE that turns out not
+	// to be recursive can combine the types of both sides; a recursive CTE exchanges it below, as binding the left side
+	// on its own would have done
+	const bool seed_can_contain_nulls = left_binder->CanContainNulls();
+	left_binder->SetCanContainNulls(true);
 	auto left = left_binder->BindNode(*statement.left);
+
+	vector<LogicalType> seed_types = left.types;
+	if (!seed_can_contain_nulls) {
+		for (auto &type : seed_types) {
+			if (ExpressionBinder::ContainsNullType(type)) {
+				type = ExpressionBinder::ExchangeNullType(type);
+			}
+		}
+	}
 
 	BoundStatement result;
 	// the result types of the CTE are the types of the LHS
-	result.types = left.types;
-	vector<LogicalType> internal_types = left.types;
+	result.types = seed_types;
+	vector<LogicalType> internal_types = seed_types;
 	vector<unique_ptr<Expression>> key_targets, payload_aggregates;
 
 	// names are picked from the LHS, unless aliases are explicitly specified
@@ -225,6 +239,7 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	}
 
 	auto right_binder = Binder::CreateBinder(context, this);
+	right_binder->SetCanContainNulls(true);
 
 	// Add bindings of left side to temporary CTE bindings context
 	BindingAlias cte_alias(statement.ctename);
