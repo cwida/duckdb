@@ -1,8 +1,8 @@
 diff --git a/src/aws_secret.cpp b/src/aws_secret.cpp
-index 2c397b4..77da683 100644
+index ef92dd2..c2482f1 100644
 --- a/src/aws_secret.cpp
 +++ b/src/aws_secret.cpp
-@@ -12,6 +12,7 @@
+@@ -13,6 +13,7 @@
  #include "duckdb/logging/logger.hpp"
  #include "duckdb/main/database.hpp"
  #include "duckdb/main/extension/extension_loader.hpp"
@@ -10,7 +10,7 @@ index 2c397b4..77da683 100644
  #include "duckdb/main/settings.hpp"
  
  #include <aws/core/Aws.h>
-@@ -129,8 +130,9 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
+@@ -169,8 +170,9 @@ Aws::Config::Profile GetAwsProfile(const std::string &profile_name, const bool r
  //! Generate a custom credential provider chain for authentication
  class DuckDBCustomAWSCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
  public:
@@ -22,7 +22,7 @@ index 2c397b4..77da683 100644
  	                                                 const string &external_id = "",
  	                                                 const string &web_identity_token_file = "",
  	                                                 const string &session_name = "") {
-@@ -171,11 +173,12 @@ public:
+@@ -218,11 +220,12 @@ public:
  				// constructed the same way the SDK's DefaultAWSCredentialsProviderChain does it.
  				// https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
  				using Aws::Auth::GeneralHTTPCredentialsProvider;
@@ -39,7 +39,7 @@ index 2c397b4..77da683 100644
  				if (!container_provider->IsValid()) {
  					throw InvalidConfigurationException(
  					    "Chain value 'container' requires container credentials to be available: "
-@@ -376,16 +379,16 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
+@@ -431,16 +434,16 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  	for (const auto &item : StringUtil::Split(chain, ';')) {
  		if (item == "container") {
  			using Aws::Auth::GeneralHTTPCredentialsProvider;
@@ -62,7 +62,7 @@ index 2c397b4..77da683 100644
  			break;
  		}
  	}
-@@ -397,9 +400,9 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
+@@ -452,9 +455,9 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  		if (chain.empty()) {
  			throw InvalidConfigurationException("Invalid RDS secret parameters, 'CHAIN' option must be specified");
  		}
@@ -75,7 +75,7 @@ index 2c397b4..77da683 100644
  		return CreateRDSSecretWithProvider(provider, input, region);
  	}
  
-@@ -411,8 +414,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
+@@ -466,8 +469,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  	}
  
  	if (!chain.empty()) {
@@ -86,7 +86,7 @@ index 2c397b4..77da683 100644
  		credentials = provider.GetAWSCredentials();
  	} else {
  		if (input.options.find("profile") != input.options.end()) {
-@@ -431,7 +434,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
+@@ -485,7 +488,8 @@ unique_ptr<BaseSecret> CreateAWSSecretFromCredentialChain(ClientContext &context
  		// Then we create the credentials using an sts provider. This (should) be the default behavior of the SDK
  		// see https://docs.aws.amazon.com/sdk-for-cpp/v1/developer-guide/credproviders.html
  		chain = "config";
@@ -96,7 +96,7 @@ index 2c397b4..77da683 100644
  		credentials = provider.GetAWSCredentials();
  	}
  
-@@ -562,9 +566,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSec
+@@ -617,9 +621,10 @@ static unique_ptr<BaseSecret> CreateAWSSecretFromNone(ClientContext &, CreateSec
  }
  
  std::shared_ptr<Aws::Auth::AWSCredentialsProvider>
@@ -110,64 +110,15 @@ index 2c397b4..77da683 100644
  	if (chain.empty()) {
  		if (!profile.empty()) {
  			return Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("DuckDBAwsProfile",
-@@ -572,7 +577,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials,
+@@ -627,7 +632,7 @@ BuildAwsCredentialsProvider(const std::string &chain, bool require_credentials,
  		}
- 		return Aws::MakeShared<Aws::Auth::DefaultAWSCredentialsProviderChain>("DuckDBAwsDefault");
+ 		return BuildDefaultAwsCredentialsProvider();
  	}
 -	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", chain, require_credentials,
 +	return Aws::MakeShared<DuckDBCustomAWSCredentialsProviderChain>("DuckDBCustomChain", db, chain, require_credentials,
  	                                                                profile, assume_role_arn, external_id,
  	                                                                web_identity_token_file, session_name);
  }
-diff --git a/src/cloudformation_functions.cpp b/src/cloudformation_functions.cpp
-index d784ac4..71d17dd 100644
---- a/src/cloudformation_functions.cpp
-+++ b/src/cloudformation_functions.cpp
-@@ -382,7 +382,7 @@ static void CloudFormationCreateStackFun(ClientContext &context, TableFunctionIn
- 	// for describe_stack, delete_stack and list_stacks. Accepting per-call
- 	// credential overrides here and nowhere else meant a stack created under an
- 	// assumed role could not be deleted through this extension.
--	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-+	auto provider = BuildAwsCredentialsProvider(*context.db, "", /*require_credentials=*/true);
- 	auto client_config = BuildClientConfigWithCa();
- 	client_config.region = region.c_str();
- 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, client_config);
-@@ -545,7 +545,7 @@ static void CloudFormationDescribeStackFun(ClientContext &context, TableFunction
- 		return;
- 	}
- 
--	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-+	auto provider = BuildAwsCredentialsProvider(*context.db, "", /*require_credentials=*/true);
- 	auto cfg = BuildClientConfigWithCa();
- 	cfg.region = data.handle.region.c_str();
- 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -655,7 +655,7 @@ static void CloudFormationDeleteStackFun(ClientContext &context, TableFunctionIn
- 		return;
- 	}
- 
--	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-+	auto provider = BuildAwsCredentialsProvider(*context.db, "", /*require_credentials=*/true);
- 	auto cfg = BuildClientConfigWithCa();
- 	cfg.region = data.handle.region.c_str();
- 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -808,7 +808,7 @@ static void CloudFormationListStacksFun(ClientContext &context, TableFunctionInp
- 	auto &data = (CloudFormationListStacksBindData &)*data_p.bind_data;
- 
- 	if (!data.initialized) {
--		auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-+		auto provider = BuildAwsCredentialsProvider(*context.db, "", /*require_credentials=*/true);
- 		auto cfg = BuildClientConfigWithCa();
- 		cfg.region = data.region.c_str();
- 		Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
-@@ -904,7 +904,7 @@ static void DescribeRegionStacks(DatabaseInstance &db, const string &region,
- 	// Runs as a scheduler task on another thread, where the thread-local binding set by the
- 	// table function does not reach, so establish one here.
- 	AwsInstanceBinding aws_binding(db);
--	auto provider = BuildAwsCredentialsProvider("", /*require_credentials=*/true);
-+	auto provider = BuildAwsCredentialsProvider(db, "", /*require_credentials=*/true);
- 	auto cfg = BuildClientConfigWithCa();
- 	cfg.region = region.c_str();
- 	Aws::CloudFormation::CloudFormationClient cloudformation_client(provider, cfg);
 diff --git a/src/include/aws_client.hpp b/src/include/aws_client.hpp
 index 0a18d6e..624910f 100644
 --- a/src/include/aws_client.hpp
