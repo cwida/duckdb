@@ -2,7 +2,7 @@
 # description: Sparse UPDATE of a checkpointed DELTA_FOR column fetches base rows starting mid algorithm group
 # group: [bitpacking]
 
-load __TEST_DIR__/bitpacking_delta_for_sparse_update.db
+load {TEST_DIR}/bitpacking_delta_for_sparse_update.db
 
 statement ok
 SET force_compression = 'bitpacking';
