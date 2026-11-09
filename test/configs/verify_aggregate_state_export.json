@@ -14,6 +14,7 @@
       "paths": [
         "test/optimizer/aggregate_reuse.test",
         "test/optimizer/avg_rewrite_profitability.test",
+        "test/optimizer/deferred_domain_plan.test",
         "test/optimizer/deliminator.test",
         "test/optimizer/pushdown/filter_cannot_pushdown.test",
         "test/optimizer/eager_aggregate_execution.test",
