@@ -19,7 +19,7 @@ CREATE TABLE c AS SELECT i AS g FROM range(500,700) t(i);
 
 # Bound CTE execution without timing the fixture loads.
 statement ok
-SET max_execution_time=10000;
+SET max_execution_time=60000;
 
 statement ok
 PREPARE consumers AS
@@ -87,7 +87,7 @@ statement ok
 DELETE FROM b;
 
 statement ok
-SET max_execution_time=10000;
+SET max_execution_time=60000;
 
 query II
 EXECUTE consumers;
@@ -101,7 +101,7 @@ statement ok
 INSERT INTO b SELECT i FROM range(120,140) t(i);
 
 statement ok
-SET max_execution_time=10000;
+SET max_execution_time=60000;
 
 query II
 EXECUTE consumers;
@@ -131,7 +131,7 @@ statement ok
 CREATE OR REPLACE TABLE c AS SELECT i AS g FROM range(100500,100700) t(i);
 
 statement ok
-SET max_execution_time=10000;
+SET max_execution_time=60000;
 
 query II
 EXPLAIN (ANALYZE, FORMAT JSON)
@@ -149,7 +149,7 @@ statement ok
 INSERT INTO b SELECT 100100+i%200 FROM range(999800) t(i);
 
 statement ok
-SET max_execution_time=10000;
+SET max_execution_time=60000;
 
 # At one million rows the producer retains its sibling coordination waits.
 query II

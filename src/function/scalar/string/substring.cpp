@@ -334,14 +334,14 @@ unique_ptr<FunctionData> SubstringBind(BindScalarFunctionInput &input) {
 	if (!offset || offset->IsNull()) {
 		return nullptr;
 	}
-	auto offset_value = offset->DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+	auto offset_value = offset->CastAs(input.GetClientContext(), LogicalType::BIGINT).GetValue<int64_t>();
 	int64_t length_value = NumericLimits<uint32_t>::Maximum();
 	if (input.GetArguments().size() == 3) {
 		auto length = input.TryGetConstant(2);
 		if (!length || length->IsNull()) {
 			return nullptr;
 		}
-		length_value = length->DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+		length_value = length->CastAs(input.GetClientContext(), LogicalType::BIGINT).GetValue<int64_t>();
 	}
 	if (SubstringInSupportedRange(offset_value, length_value)) {
 		input.GetBoundFunction().SetErrorMode(FunctionErrors::CANNOT_ERROR);

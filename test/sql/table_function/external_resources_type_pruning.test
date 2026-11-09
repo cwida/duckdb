@@ -11,11 +11,11 @@ CREATE SEQUENCE calls_b;
 
 statement ok
 CREATE MACRO list_a(opts) AS TABLE
-    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-ref' AS reference, 'running' AS state;
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-name' AS name, 'a-ref' AS reference, 'running' AS state;
 
 statement ok
 CREATE MACRO list_b(opts) AS TABLE
-    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'b-ref' AS reference, 'running' AS state;
+    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'b-name' AS name, 'b-ref' AS reference, 'running' AS state;
 
 statement ok
 CALL register_external_resource_type('a@pr', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
@@ -54,7 +54,7 @@ SELECT currval('calls_a'), currval('calls_b');
 query TTTTTTTT
 SELECT * FROM duckdb_external_resources(discover := true, type := 'b@pr');
 ----
-NULL	b@pr	false	running	b-ref	NULL	NULL	{id=b3}
+b-name	b@pr	false	running	b-ref	NULL	NULL	{id=b3}
 
 query II
 SELECT currval('calls_a'), currval('calls_b');
@@ -99,7 +99,7 @@ SELECT currval('calls_a'), currval('calls_b');
 query TTT rowsort
 SELECT name, type, managed FROM duckdb_external_resources(discover := true, type := 'a@pr');
 ----
-NULL	a@pr	false
+a-name	a@pr	false
 local_a	a@pr	true
 
 query II

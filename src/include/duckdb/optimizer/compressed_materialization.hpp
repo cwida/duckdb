@@ -116,7 +116,6 @@ private:
 	//! Compress materializing operators
 	void CompressAggregate(unique_ptr<LogicalOperator> &op);
 	void CompressComparisonJoin(unique_ptr<LogicalOperator> &op);
-	void CompressDistinct(unique_ptr<LogicalOperator> &op);
 	void CompressOrder(unique_ptr<LogicalOperator> &op);
 	void CompressTopN(unique_ptr<LogicalOperator> &op);
 	//! Compresses the materialized columns of an operator that orders its input without changing its bindings

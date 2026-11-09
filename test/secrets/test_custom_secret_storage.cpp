@@ -420,7 +420,7 @@ TEST_CASE("Transaction secret validation and conflicts", "[secret]") {
 	con.BeginTransaction();
 	auto input = TransactionSecretInput("conflicting_secret", "s3://original");
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(*con.context);
-	REQUIRE_THROWS(secret_manager.BindCreateSecret(transaction, input));
+	REQUIRE_THROWS(secret_manager.BindCreateSecret(con.context->GetContext(), transaction, input));
 	REQUIRE(secret_manager.CreateSecret(*con.context, input));
 	REQUIRE_THROWS(secret_manager.CreateSecret(*con.context, input));
 
