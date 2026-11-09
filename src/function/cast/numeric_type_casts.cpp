@@ -3,6 +3,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/numeric_blob.hpp"
 #include "duckdb/common/types/numeric_type.hpp"
@@ -13,6 +14,8 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
+
+#include <cmath>
 
 namespace duckdb {
 
@@ -282,6 +285,37 @@ static bool SameBits(Vector &source, const Vector &typed, const LogicalType &tar
 	return min <= range.min && range.max <= max;
 }
 
+//! Casts the representation of a NUMERIC vector to the target. A UHUGEINT value beyond the FLOAT range is out of
+//! range, as it is for a canonical value: the plain UHUGEINT cast rounds it to infinity instead
+static bool CastRepresentation(Vector &typed, Vector &result, idx_t count, CastParameters &parameters) {
+	if (typed.GetType().id() != LogicalTypeId::UHUGEINT || result.GetType().id() != LogicalTypeId::FLOAT) {
+		return VectorOperations::DefaultTryCast(typed, result, count, parameters.error_message, parameters.strict);
+	}
+	auto values = typed.Values<uhugeint_t>();
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto writer = FlatVector::Writer<float>(result, count);
+	bool success = true;
+	for (auto entry : values) {
+		if (!entry.IsValid()) {
+			writer.WriteNull();
+			continue;
+		}
+		float value;
+		Uhugeint::TryCast(entry.GetValue(), value);
+		if (!std::isfinite(value)) {
+			HandleCastError::AssignError(
+			    StringUtil::Format("Casting value \"%s\" to type %s failed: value is out of range!",
+			                       entry.GetValue().ToString(), result.GetType().ToString()),
+			    parameters);
+			writer.WriteNull();
+			success = false;
+			continue;
+		}
+		writer.WriteValue(value);
+	}
+	return success;
+}
+
 static bool CastNumericToTyped(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	if (source.GetVectorType() == VectorType::SHREDDED_VECTOR) {
 		auto &typed = ShreddedVector::GetShreddedVector(source);
@@ -293,7 +327,7 @@ static bool CastNumericToTyped(Vector &source, Vector &result, idx_t count, Cast
 			result.Reinterpret(typed);
 			return true;
 		}
-		return VectorOperations::DefaultTryCast(typed, result, count, parameters.error_message, parameters.strict);
+		return CastRepresentation(typed, result, count, parameters);
 	}
 	// canonical values: decoded directly when every value fits the target
 	if (NumericType::IsExact(result.GetType()) && NumericBlob::TryDecode(source, count, result)) {
@@ -305,7 +339,7 @@ static bool CastNumericToTyped(Vector &source, Vector &result, idx_t count, Cast
 	if (NumericBlob::TryRangeType(source, count, type)) {
 		Vector typed(type, count);
 		NumericBlob::Decode(source, count, typed);
-		return VectorOperations::DefaultTryCast(typed, result, count, parameters.error_message, parameters.strict);
+		return CastRepresentation(typed, result, count, parameters);
 	}
 	// values with no common representation convert one at a time
 	UnifiedVectorFormat vdata;
