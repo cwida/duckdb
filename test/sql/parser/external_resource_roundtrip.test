@@ -83,21 +83,47 @@ CREATE EXTERNAL RESOURCE 'aws:ec2:it''s quacky' AS x
 
 # --- REGISTER: name plus an arbitrary handle expression ------------------------------------------------
 
-statement error
+# REGISTER records the handle without looking the type up, so an unknown type succeeds; the record is
+# dropped again so the next mode of the loop can register the same name.
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM {'id': 'i-123'}
-----
-<REGEX>:.*unknown resource type.*
 
-statement error
+statement ok
+CALL deregister_external_resource('x')
+
+statement ok
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS "weird name" FROM {'id': 'i-123', 'tags': ['a','b']}
-----
-<REGEX>:.*unknown resource type.*
 
-# a scalar handle reaches the cast rather than the type lookup - still a full ToString round-trip
+statement ok
+CALL deregister_external_resource('weird name')
+
+# a scalar handle fails the cast to the registry's MAP shape - still a full ToString round-trip
 statement error
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM 'plain-handle'
 ----
 <REGEX>:.*can't be cast to the destination type MAP\(VARCHAR, VARCHAR\).*
+
+# --- REGISTER ... FROM <source>: the source is a table reference, printed by its own ToString; the local names
+# come from its name column ----------------------------------------------------------------------------------
+
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM (SELECT 'aws:ec2:quack' AS type, MAP {'id': 'i-1'} AS handle, 'rt one' AS name)
+----
+registered	rt one	aws:ec2:quack	{id=i-1}
+
+statement ok
+CREATE OR REPLACE TABLE "weird source" AS SELECT 'aws:ec2:quack' AS type, MAP {'id': 'i-2'} AS handle, 'select' AS name
+
+query TTTT
+REGISTER EXTERNAL RESOURCES FROM "weird source"
+----
+registered	select	aws:ec2:quack	{id=i-2}
+
+statement ok
+CALL deregister_external_resource('rt one')
+
+statement ok
+CALL deregister_external_resource('select')
 
 # --- SHOW: no identifiers, but both forms must still copy and reparse ----------------------------------
 

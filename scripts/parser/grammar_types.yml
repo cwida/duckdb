@@ -118,6 +118,7 @@ SQLStatement:
     - ExternalResourceStatement
     - CreateExternalResourceStmt
     - RegisterExternalResourceStmt
+    - RegisterExternalResourcesStmt
     - DestroyExternalResourceStmt
     - ExtensionRepositoryStatement
     - CreateExtensionRepositoryStmt
@@ -155,6 +156,7 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
+    - ShowExternalResourceTypes
     - ShowExternalResources
     - ShowDeprecatedSelect
     - DescribeSelect

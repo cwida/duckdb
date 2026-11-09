@@ -5,7 +5,13 @@
 namespace duckdb {
 
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalExternalResource &op) {
-	return Make<PhysicalExternalResource>(std::move(op.data), op.estimated_cardinality);
+	auto &result = Make<PhysicalExternalResource>(std::move(op.data), op.types, op.estimated_cardinality);
+	if (!op.children.empty()) {
+		// REGISTER EXTERNAL RESOURCES FROM <source>: the source rows are sunk into the operator
+		auto &source = CreatePlan(*op.children[0]);
+		result.children.push_back(source);
+	}
+	return result;
 }
 
 } // namespace duckdb

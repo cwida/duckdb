@@ -1,0 +1,147 @@
+# name: test/sql/attach/external_resource_register_records.test
+# description: REGISTER EXTERNAL RESOURCE records (name, type, handle) only; the type is resolved when the record is used
+# group: [attach]
+
+statement ok
+CALL enable_logging('ExternalResource', storage='memory');
+
+# Nothing provides 'later@rr' yet: REGISTER still succeeds, since it looks nothing up and calls nothing.
+statement ok
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r1 FROM MAP {'id': 'a'};
+
+# A STRUCT handle is normalized to the registry's MAP shape.
+statement ok
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r2 FROM {'id': 'b', 'region': 'eu'};
+
+query TTTTTTTT rowsort
+SHOW EXTERNAL RESOURCES;
+----
+r1	later@rr	true	NULL	NULL	NULL	NULL	{id=a}
+r2	later@rr	true	NULL	NULL	NULL	NULL	{id=b, region=eu}
+
+# No callback ran.
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ExternalResource');
+----
+0
+
+# The handle must be a MAP (or castable to one) and not NULL.
+statement error
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r3 FROM 'plain-handle';
+----
+<REGEX>:.*can't be cast to the destination type MAP\(VARCHAR, VARCHAR\).*
+
+statement error
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r3 FROM NULL;
+----
+<REGEX>:.*handle must not be NULL.*
+
+# REGISTER reports what it did: an identical record is a no-op, a different handle under the same name is a second
+# record. REGISTER never arbitrates between them; a use of the name does, and fails while it is ambiguous.
+query TTTT
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r1 FROM MAP {'id': 'a'};
+----
+pre-existing	r1	later@rr	{id=a}
+
+query TTTT
+REGISTER EXTERNAL RESOURCE 'later@rr' AS r1 FROM MAP {'id': 'other'};
+----
+registered	r1	later@rr	{id=other}
+
+statement error
+ATTACH TO EXTERNAL RESOURCE r1 AS r1;
+----
+<REGEX>:.*external resource "r1" has 2 registrations: 'later@rr' \{id=a\}, 'later@rr' \{id=other\}.*
+
+statement ok
+CALL deregister_external_resource('r1', handle := MAP {'id': 'other'});
+
+# Using a record resolves its type, and that is where an unknown type is reported. The record stays.
+statement error
+ATTACH TO EXTERNAL RESOURCE r1 AS r1;
+----
+<REGEX>:.*unknown resource type "later@rr".*
+
+statement error
+DESTROY EXTERNAL RESOURCE r1;
+----
+<REGEX>:.*unknown resource type "later@rr".*
+
+query I
+SELECT count(*) FROM duckdb_external_resources();
+----
+2
+
+# The type arrives later. Its status points the record at a duckdb file, so ATTACH can open it for real.
+statement ok
+CREATE MACRO rr_status(h) AS TABLE
+    SELECT 'ready' AS state,
+           MAP {'uri': '{TEST_DIR}/register_records_' || h['id'] || '.db', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CREATE MACRO rr_destroy(h) AS TABLE SELECT 'gone' AS status;
+
+statement ok
+CALL register_external_resource_type('later@rr', kind := 'catalog', create_function := 'noop_create',
+    status_function := 'rr_status', destroy_function := 'rr_destroy');
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE r1 AS r1;
+
+statement ok
+CREATE TABLE r1.t AS SELECT 42 AS v;
+
+query I
+FROM r1.t;
+----
+42
+
+# The status check ran at ATTACH, labelled with the record's name.
+query TT
+SELECT operation, resource_name FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+status	r1
+
+statement ok
+DETACH r1;
+
+# DESTROY derives the deleter from the type, since the record carries none, and reports the record it removed.
+query TTTT
+DESTROY EXTERNAL RESOURCE r1;
+----
+destroyed	r1	later@rr	{id=a}
+
+query TT
+SELECT operation, resource_name FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';
+----
+destroy	r1
+
+query T
+SELECT name FROM duckdb_external_resources();
+----
+r2
+
+# A type without a destroy function: DESTROY has nothing to tear down and just drops the record.
+statement ok
+CALL register_external_resource_type('nodestroy@rr', kind := 'catalog', create_function := 'noop_create',
+    status_function := 'rr_status');
+
+statement ok
+REGISTER EXTERNAL RESOURCE 'nodestroy@rr' AS r4 FROM MAP {'id': 'd'};
+
+statement ok
+DESTROY EXTERNAL RESOURCE r4;
+
+query T rowsort
+SELECT name FROM duckdb_external_resources();
+----
+r2
+
+# The record is a plain value: it round-trips through a table and back into the registry's columns.
+statement ok
+CREATE TABLE saved AS FROM (SHOW EXTERNAL RESOURCES);
+
+query TTT
+SELECT name, type, handle FROM saved;
+----
+r2	later@rr	{id=b, region=eu}

@@ -42,6 +42,13 @@ PEGTransformerFactory::TransformRegisterExternalResourceStmt(PEGTransformer &tra
 	return std::move(result);
 }
 
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformRegisterExternalResourcesStmt(PEGTransformer &transformer,
+                                                                                       unique_ptr<TableRef> table_ref) {
+	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::REGISTER);
+	result->source = std::move(table_ref);
+	return std::move(result);
+}
+
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
                                                                                      const Identifier &col_id) {
 	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::DESTROY);
@@ -73,6 +80,19 @@ PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transforme
 	}
 	auto table_function = make_uniq<TableFunctionRef>();
 	table_function->function = make_uniq<FunctionExpression>("duckdb_external_resources", std::move(children));
+
+	auto select_node = make_uniq<SelectNode>();
+	select_node->select_list.push_back(make_uniq<StarExpression>());
+	select_node->from_table = std::move(table_function);
+	return std::move(select_node);
+}
+
+// SHOW EXTERNAL RESOURCE TYPES -> SELECT * FROM duckdb_external_resource_types()
+unique_ptr<QueryNode> PEGTransformerFactory::TransformShowExternalResourceTypes(PEGTransformer &transformer,
+                                                                                const ShowType &show_rule) {
+	auto table_function = make_uniq<TableFunctionRef>();
+	table_function->function =
+	    make_uniq<FunctionExpression>("duckdb_external_resource_types", vector<FunctionArgument>());
 
 	auto select_node = make_uniq<SelectNode>();
 	select_node->select_list.push_back(make_uniq<StarExpression>());

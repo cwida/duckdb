@@ -1492,6 +1492,8 @@ public:
 	                                                                           GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowExternalResourcesTrampoline(PEGTransformer &transformer,
 	                                                                               GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeShowExternalResourceTypesTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
 	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDescribeSelectTrampoline(PEGTransformer &transformer,
@@ -2082,6 +2084,8 @@ public:
 	FinalizeCreateExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeRegisterExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeRegisterExternalResourcesStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeDestroyExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
@@ -3318,6 +3322,8 @@ public:
 	static unique_ptr<QueryNode> TransformShowExternalResources(PEGTransformer &transformer, const ShowType &show_rule,
 	                                                            const bool &has_result,
 	                                                            optional<Identifier> show_external_resources_type);
+	static unique_ptr<QueryNode> TransformShowExternalResourceTypes(PEGTransformer &transformer,
+	                                                                const ShowType &show_rule);
 	static unique_ptr<QueryNode> TransformShowDeprecatedSelect(PEGTransformer &transformer, const ShowType &show_rule,
 	                                                           unique_ptr<SelectStatement> select_statement_internal);
 	static unique_ptr<QueryNode> TransformDescribeSelect(PEGTransformer &transformer,
@@ -3925,6 +3931,8 @@ public:
 	                                                                      const string &string_literal,
 	                                                                      const optional<Identifier> &attach_alias,
 	                                                                      unique_ptr<ParsedExpression> expression);
+	static unique_ptr<SQLStatement> TransformRegisterExternalResourcesStmt(PEGTransformer &transformer,
+	                                                                       unique_ptr<TableRef> table_ref);
 	static unique_ptr<SQLStatement> TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
 	                                                                     const Identifier &col_id);
 	static unique_ptr<SQLStatement> TransformAttachToExternalResource(

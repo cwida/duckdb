@@ -1490,14 +1490,17 @@ TargetOptAlias <- BaseTableName TargetAlias?
 TargetAlias <- 'AS'? ColId
 DeleteUsingClause <- 'USING' List(TableRef)
 
-DescribeStatement <- ShowExternalResources / ShowTables / ShowDeprecatedSelect / DescribeSelect / ShowAllTables / ShowByName / DescribeByName
+DescribeStatement <- ShowExternalResourceTypes / ShowExternalResources / ShowTables / ShowDeprecatedSelect / DescribeSelect / ShowAllTables / ShowByName / DescribeByName
 
-# "SHOW [ALL] EXTERNAL RESOURCES" is a query over duckdb_external_resources, so it works as a subquery too. It comes
-# first: "SHOW ALL" alone is ShowAllTables, and "SHOW <name>" is ShowByName, and neither can be retried once matched.
+# "SHOW [ALL] EXTERNAL RESOURCES" is a query over duckdb_external_resources, so it works as a subquery too. It and
+# ShowExternalResourceTypes come first: "SHOW ALL" alone is ShowAllTables, and "SHOW <name>" is ShowByName, and
+# neither can be retried once matched.
 ShowExternalResources <- ShowRule 'ALL'? 'EXTERNAL' 'RESOURCES' ShowExternalResourcesType?
 # "WITH TYPE 'aws:s3tables:table-bucket'" restricts the listing (and the discovery) to one type; a bare identifier
 # is passed through as the type name as well.
 ShowExternalResourcesType <- 'WITH' 'TYPE' ColIdOrString
+# "SHOW EXTERNAL RESOURCE TYPES" is a query over duckdb_external_resource_types, so it works as a subquery too.
+ShowExternalResourceTypes <- ShowRule 'EXTERNAL' 'RESOURCE' 'TYPES'
 
 # "DESCRIBE (query)" and "SUMMARIZE (query)" describe the query's columns. "SHOW (query)" does too but is deprecated,
 # so ShowDeprecatedSelect is parsed yet suppressed from autocomplete (matcher_factory.cpp) - SHOW won't offer to complete a query.
@@ -1996,10 +1999,12 @@ ExtractDatePart <-
 
 # Every statement about external resources, so the top-level Statement choice carries one entry
 # rather than one per form. SHOW [ALL] EXTERNAL RESOURCES is a query (describe.gram), so it can be a subquery.
-ExternalResourceStatement <- CreateExternalResourceStmt / RegisterExternalResourceStmt / DestroyExternalResourceStmt / AttachToExternalResource / ConnectToExternalResource
+ExternalResourceStatement <- CreateExternalResourceStmt / RegisterExternalResourcesStmt / RegisterExternalResourceStmt / DestroyExternalResourceStmt / AttachToExternalResource / ConnectToExternalResource
 
 CreateExternalResourceStmt <- 'CREATE' ExternalResourceKeyword StringLiteral AttachAlias? ExternalResourceCreationOptions?
 RegisterExternalResourceStmt <- 'REGISTER' ExternalResourceKeyword StringLiteral AttachAlias? 'FROM' Expression
+# Registers every row of a source with columns type, handle and name (e.g. a saved SHOW ALL EXTERNAL RESOURCES).
+RegisterExternalResourcesStmt <- 'REGISTER' 'EXTERNAL' 'RESOURCES' 'FROM' TableRef
 DestroyExternalResourceStmt <- 'DESTROY' ExternalResourceKeyword ColId
 
 # Syntax only: the keyword pair every singular form repeats.

@@ -538,6 +538,7 @@ private:
 	BoundStatement Bind(ConnectStatement &stmt);
 	BoundStatement Bind(DisconnectStatement &stmt);
 	BoundStatement Bind(ExternalResourceStatement &stmt);
+	BoundStatement BindRegisterExternalResourcesFrom(ExternalResourceStatement &stmt);
 	//! Bind + constant-fold a single EXTERNAL RESOURCE expression (a create param, or the REGISTER handle).
 	Value BindExternalResourceValue(unique_ptr<ParsedExpression> &expr);
 	//! Bind + constant-fold the create params of an EXTERNAL RESOURCE statement or clause.

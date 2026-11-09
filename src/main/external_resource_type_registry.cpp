@@ -95,6 +95,21 @@ unique_ptr<ExternalResourceType> ExternalResourceTypeRegistry::LookupOrAutoload(
 	return registry.Lookup(name);
 }
 
+unique_ptr<ExternalResourceType> ExternalResourceTypeRegistry::Require(DatabaseInstance &db, const string &name,
+                                                                       const string &caller) {
+	auto type = LookupOrAutoload(db, name);
+	if (type) {
+		return type;
+	}
+	auto extension = ProvidingExtension(name);
+	if (!extension.empty()) {
+		throw InvalidInputException("%s: unknown resource type \"%s\": it is provided by the %s extension, which could "
+		                            "not be autoloaded. Try: INSTALL AND LOAD %s;",
+		                            caller, name, extension, extension);
+	}
+	throw InvalidInputException("%s: unknown resource type \"%s\"", caller, name);
+}
+
 string ExternalResourceTypeRegistry::ProvidingExtension(const string &name) {
 	return ExtensionHelper::FindExtensionInEntries(Identifier(name), EXTENSION_EXTERNAL_RESOURCE_TYPES);
 }
