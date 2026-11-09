@@ -69,13 +69,17 @@ if(NOT WIN32 AND NOT SUN)
   endif()
 endif()
 
+set(TEST_EXTENSION_PARAMETERS "-warnings -host-bound")
+if(WIN32)
+  set(TEST_EXTENSION_PARAMETERS "-warnings")
+endif()
 build_loadable_extension_directory(
   test
   "CPP"
   extension/test
   "default-version"
   ""
-  "-warnings -host-bound"
+  "${TEST_EXTENSION_PARAMETERS}"
   "${PROJECT_SOURCE_DIR}/extension/test/test_extension.cpp"
   $<TARGET_OBJECTS:test_debug_fs_extension>)
 set_target_properties(
@@ -91,9 +95,6 @@ target_include_directories(
 target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner
                       duckdb_re2)
 set_target_properties(shell PROPERTIES ENABLE_EXPORTS ON)
-if(WIN32)
-  target_link_libraries(test_loadable_extension shell)
-endif()
 
 if(${ENABLE_UNITTEST_CPP_TESTS})
   duckdb_add_test_bundle(duckdb_tests SOURCES ${UNITTEST_OBJECT_FILES})
@@ -108,9 +109,6 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
     PRIVATE "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
   target_link_libraries(duckdb_tests_loadable_extension duckdb_fsst
                         duckdb_mbedtls)
-  if(WIN32)
-    target_link_libraries(duckdb_tests_loadable_extension shell)
-  endif()
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux"

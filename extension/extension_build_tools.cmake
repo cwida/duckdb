@@ -417,13 +417,17 @@ endfunction()
 # directory. The caller supplies existing test object libraries or sources.
 function(duckdb_add_test_bundle NAME)
     cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "SOURCES;LINK_LIBRARIES")
+    set(TEST_BUNDLE_PARAMETERS "-warnings -host-bound")
+    if(WIN32)
+        set(TEST_BUNDLE_PARAMETERS "-warnings")
+    endif()
     build_loadable_extension_directory(
         ${NAME}
         "CPP"
         test/extensions
         "default-version"
         ""
-        "-warnings -host-bound"
+        "${TEST_BUNDLE_PARAMETERS}"
         "${DUCKDB_MODULE_BASE_DIR}/extension/test/test_bundle_extension.cpp"
         ${ARG_SOURCES})
     target_compile_definitions(
