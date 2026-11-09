@@ -155,6 +155,7 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
+    - ShowExternalResourceTypes
     - ShowExternalResources
     - ShowDeprecatedSelect
     - DescribeSelect
