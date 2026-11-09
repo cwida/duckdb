@@ -1,3 +1,4 @@
+#include "duckdb/common/exception/catalog_exception.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 #include "duckdb/execution/index/index_type_set.hpp"
 #include "duckdb/execution/index/art/art.hpp"

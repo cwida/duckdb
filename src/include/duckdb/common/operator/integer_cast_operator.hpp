@@ -152,7 +152,7 @@ struct IntegerDecimalCastOperation : IntegerCastOperation {
 			}
 		}
 
-		state.decimal_digits -= exponent;
+		state.decimal_digits -= static_cast<idx_t>(exponent);
 
 		if (NEGATIVE) {
 			if (!TrySubtractOperator::Operation(state.result, state.decimal, state.result)) {

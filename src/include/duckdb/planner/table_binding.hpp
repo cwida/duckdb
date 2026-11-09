@@ -70,7 +70,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (binding_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast binding to type - binding type mismatch");
+			InternalException::Throw("Failed to cast binding to type - binding type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -78,7 +78,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (binding_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast binding to type - binding type mismatch");
+			InternalException::Throw("Failed to cast binding to type - binding type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

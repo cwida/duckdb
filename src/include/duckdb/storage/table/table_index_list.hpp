@@ -61,10 +61,9 @@ public:
 	                       optional_idx active_checkpoint = optional_idx());
 	//! Removes an index entry from the list of index entries and release any storage the index owns.
 	void RemoveIndex(idx_t index_oid);
-	//! Returns shared ownership of the stable logical index entry matching the name.
-	shared_ptr<IndexEntry> FindEntry(const Identifier &name) const;
 	//! Returns the entry matching the index OID.
 	shared_ptr<IndexEntry> FindEntry(const IndexEntry &index) const;
+	shared_ptr<IndexEntry> FindEntry(idx_t index_oid) const;
 	//! Binds unbound indexes possibly present after loading an extension.
 	void Bind(ClientContext &context, DataTableInfo &table_info, const optional<string> &index_type = {});
 	//! Returns true, if there are no index entries.
@@ -127,8 +126,6 @@ public:
 	vector<shared_ptr<const IndexStorageInfo>> Checkpoint(TableIndexWriter &writer);
 	//! Returns the physical table columns referenced by any index.
 	unordered_set<column_t> GetIndexedColumns() const;
-	//! Returns the indexed columns, sorted for a deterministic scan order.
-	vector<StorageIndex> GetSortedIndexedColumns() const;
 	//! Returns the column sets of unique indexes matching the conflict target.
 	vector<unordered_set<column_t>> GetConflictTargetColumns(const ConflictInfo &conflict_info) const;
 	//! Get the combined column ids of the unique indexes.
@@ -142,10 +139,7 @@ public:
 	                                 vector<StorageIndex> &mapped_column_ids, DataTableInfo &data_table_info);
 	//! Reference the indexed columns of a table chunk.
 	static void ReferenceIndexChunk(DataChunk &table_chunk, DataChunk &index_chunk,
-	                                const vector<StorageIndex> &mapped_column_ids);
-	//! Reference the columns of an index chunk in a table chunk; the inverse of ReferenceIndexChunk.
-	static void ReferenceTableChunk(DataChunk &table_chunk, DataChunk &index_chunk,
-	                                const vector<StorageIndex> &mapped_column_ids);
+	                                vector<StorageIndex> &mapped_column_ids);
 
 private:
 	template <class>

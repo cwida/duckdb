@@ -75,7 +75,9 @@ inline fixed_size_map_t<list_entry_t> &PartitionedTupleDataAppendState::GetMap<t
 enum class PartitionedTupleDataType : uint8_t {
 	INVALID,
 	//! Radix partitioning on a hash column
-	RADIX
+	RADIX,
+	//! Partitioning on the value of an integer column with known bounds
+	INTEGER
 };
 
 class PartitionedTupleDataRepartitionKeyTracker {
@@ -103,8 +105,8 @@ public:
 	                           TupleDataPinProperties properties = TupleDataPinProperties::UNPIN_AFTER_DONE) const;
 	//! Reuses an existing append state for a new iteration - faster than InitializeAppendState when the
 	//! append state already has pre-allocated buffers (selection vectors, partition pin states, chunk state)
-	virtual void ResetAppendState(PartitionedTupleDataAppendState &state,
-	                              TupleDataPinProperties properties = TupleDataPinProperties::UNPIN_AFTER_DONE) const;
+	void ResetAppendState(PartitionedTupleDataAppendState &state,
+	                      TupleDataPinProperties properties = TupleDataPinProperties::UNPIN_AFTER_DONE) const;
 	//! Appends a DataChunk to this PartitionedTupleData
 	void Append(PartitionedTupleDataAppendState &state, DataChunk &input,
 	            const SelectionVector &append_sel = *FlatVector::IncrementalSelectionVector(),
@@ -115,7 +117,8 @@ public:
 	                   const SelectionVector &append_sel = *FlatVector::IncrementalSelectionVector(),
 	                   const idx_t append_count = DConstants::INVALID_INDEX);
 	//! Appends rows to this PartitionedTupleData
-	void Append(PartitionedTupleDataAppendState &state, TupleDataChunkState &input, const idx_t count);
+	void Append(PartitionedTupleDataAppendState &state, TupleDataChunkState &input, const idx_t count,
+	            const SelectionVector &append_sel = *FlatVector::IncrementalSelectionVector());
 	//! Flushes any remaining data in the append state into this PartitionedTupleData
 	void FlushAppendState(PartitionedTupleDataAppendState &state);
 	//! Combine another PartitionedTupleData into this PartitionedTupleData
@@ -150,10 +153,10 @@ protected:
 	//===--------------------------------------------------------------------===//
 	// Partitioning type implementation interface
 	//===--------------------------------------------------------------------===//
-	//! Initialize a PartitionedTupleDataAppendState for this type of partitioning (optional)
+	//! Initialize a PartitionedTupleDataAppendState for this type of partitioning: by default the per-partition pin
+	//! states, the chunk state and the map storage for the current partitions (optional)
 	virtual void InitializeAppendStateInternal(PartitionedTupleDataAppendState &state,
-	                                           TupleDataPinProperties properties) const {
-	}
+	                                           TupleDataPinProperties properties) const;
 	//! Compute the partition indices for this type of partitioning for the input DataChunk and store them in the
 	//! `partition_data` of the local state. If this type creates partitions on the fly (for, e.g., hive), this
 	//! function is also in charge of creating new partitions and mapping the input data to a partition index
@@ -163,7 +166,7 @@ protected:
 	}
 	//! Compute partition indices from rows (similar to function above)
 	virtual void ComputePartitionIndices(Vector &row_locations, idx_t append_count, Vector &partition_indices,
-	                                     unique_ptr<Vector> &utility_vector) const {
+	                                     unique_ptr<Vector> &utility_vector, const SelectionVector &append_sel) const {
 		throw NotImplementedException("ComputePartitionIndices for this type of PartitionedTupleData");
 	}
 	//! Maximum partition index (optional)

@@ -341,7 +341,7 @@ int main(int argc_in, char *argv[]) {
 		return 1;
 	}
 
-	string test_directory = DUCKDB_ROOT_DIRECTORY;
+	string test_directory = TestRootDirectory();
 
 	// route the sqllogictest runner's verdicts into the Catch session
 	static CatchTestReporter catch_reporter;

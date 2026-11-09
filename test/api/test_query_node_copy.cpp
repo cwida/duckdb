@@ -4,7 +4,18 @@
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
+#include "duckdb/main/external_dependencies.hpp"
+#include "duckdb/parser/parsed_data/create_view_info.hpp"
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/delimgetref.hpp"
+#include "duckdb/parser/tableref/emptytableref.hpp"
+#include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/tableref/pivotref.hpp"
 
 using namespace duckdb;
 
@@ -76,4 +87,122 @@ TEST_CASE("CTE containers preserve complete entries when copied", "[api][parser]
 	auto copied_select_entry = copied_cte_map.find("generated_cte");
 	REQUIRE(copied_select_entry != copied_cte_map.end());
 	RequireEquivalentCTE(*select.cte_map.map["generated_cte"], *copied_select_entry->second);
+}
+
+class TestDependencyItem : public DependencyItem {};
+
+static shared_ptr<ExternalDependency> TestDependency(const shared_ptr<DependencyItem> &item) {
+	auto dependency = make_shared_ptr<ExternalDependency>();
+	dependency->AddDependency("client_object", item);
+	return dependency;
+}
+
+static void SetBaseProperties(TableRef &ref, const shared_ptr<ExternalDependency> &dependency) {
+	ref.alias = Identifier("ref_alias");
+	ref.query_location = QueryLocation(7, 3);
+	ref.sample = make_uniq<SampleOptions>(42);
+	ref.sample->sample_size = Value::BIGINT(10);
+	ref.sample->is_percentage = false;
+	ref.sample->method = SampleMethod::RESERVOIR_SAMPLE;
+	ref.external_dependency = dependency;
+}
+
+static void RequireCopiedBaseProperties(const TableRef &original, const TableRef &copy) {
+	REQUIRE(copy.type == original.type);
+	REQUIRE(copy.alias == original.alias);
+	REQUIRE(copy.query_location.IsValid());
+	REQUIRE(copy.query_location.offset == original.query_location.offset);
+	REQUIRE(copy.query_location.length == original.query_location.length);
+	REQUIRE(copy.sample);
+	REQUIRE(copy.sample.get() != original.sample.get());
+	REQUIRE(SampleOptions::Equals(copy.sample.get(), original.sample.get()));
+	REQUIRE(copy.external_dependency);
+	REQUIRE(copy.external_dependency == original.external_dependency);
+}
+
+static unique_ptr<TableRef> TestBaseTable(const string &name) {
+	auto ref = make_uniq<BaseTableRef>();
+	ref->SetQualifiedName(QualifiedName(Identifier(name)));
+	return std::move(ref);
+}
+
+static unique_ptr<TableRef> TestJoin(unique_ptr<TableRef> left) {
+	auto join = make_uniq<JoinRef>(JoinRefType::NATURAL);
+	join->left = std::move(left);
+	join->right = TestBaseTable("join_right");
+	return std::move(join);
+}
+
+static unique_ptr<TableRef> TestPivot() {
+	auto pivot = make_uniq<PivotRef>();
+	pivot->source = TestBaseTable("pivot_source");
+	pivot->aggregates.push_back(make_uniq<ColumnRefExpression>(Identifier("pivot_value")));
+	PivotColumn column;
+	column.pivot_expressions.push_back(make_uniq<ColumnRefExpression>(Identifier("pivot_key")));
+	PivotColumnEntry entry;
+	entry.values.emplace_back(Value::INTEGER(1));
+	column.entries.push_back(std::move(entry));
+	pivot->pivots.push_back(std::move(column));
+	return std::move(pivot);
+}
+
+TEST_CASE("Table reference copies keep the base table reference properties", "[api][parser]") {
+	auto item = make_shared_ptr<TestDependencyItem>();
+	auto dependency = TestDependency(item);
+
+	vector<unique_ptr<TableRef>> refs;
+	refs.push_back(TestBaseTable("reference_kind"));
+	refs.push_back(TestJoin(TestBaseTable("join_left")));
+	refs.push_back(TestPivot());
+	refs.push_back(make_uniq<EmptyTableRef>());
+	refs.push_back(make_uniq<DelimGetRef>(vector<LogicalType> {LogicalType::INTEGER}));
+	for (auto &ref : refs) {
+		INFO(EnumUtil::ToString(ref->type));
+		SetBaseProperties(*ref, dependency);
+		auto copy = ref->Copy();
+		RequireCopiedBaseProperties(*ref, *copy);
+	}
+}
+
+static void RequireViewJoinDependency(Connection &con, const string &step, const string &view_name,
+                                      const shared_ptr<DependencyItem> &item) {
+	INFO(step);
+	con.BeginTransaction();
+	auto &view = Catalog::GetEntry<ViewCatalogEntry>(*con.context, QualifiedName(Identifier(view_name)));
+	auto &from_table = view.GetQuery().node->Cast<SelectNode>().from_table;
+	REQUIRE(from_table->type == TableReferenceType::JOIN);
+	REQUIRE(from_table->external_dependency);
+	REQUIRE(from_table->external_dependency->GetDependency("client_object") == item);
+	con.Rollback();
+}
+
+TEST_CASE("A view over a join keeps the external dependency of the join through catalog copies", "[api][parser]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE l (k INTEGER, a INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE r (k INTEGER, b INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO l VALUES (1, 10)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO r VALUES (1, 20)"));
+
+	Parser parser(*con.context);
+	parser.ParseQuery("CREATE VIEW v AS SELECT * FROM l JOIN r USING (k)");
+	REQUIRE(parser.statements.size() == 1);
+	auto &view_info = parser.statements[0]->Cast<CreateStatement>().info->Cast<CreateViewInfo>();
+	auto &from_table = view_info.query->node->Cast<SelectNode>().from_table;
+	REQUIRE(from_table->type == TableReferenceType::JOIN);
+	auto item = make_shared_ptr<TestDependencyItem>();
+	from_table->external_dependency = TestDependency(item);
+	REQUIRE_NO_FAIL(con.Query(std::move(parser.statements[0])));
+	RequireViewJoinDependency(con, "CREATE VIEW", "v", item);
+
+	REQUIRE_NO_FAIL(con.Query("ALTER VIEW v RENAME TO w"));
+	RequireViewJoinDependency(con, "ALTER VIEW RENAME", "w", item);
+
+	REQUIRE_NO_FAIL(con.Query("COMMENT ON VIEW w IS 'a view over a join'"));
+	RequireViewJoinDependency(con, "COMMENT ON VIEW", "w", item);
+
+	auto result = con.Query("SELECT k, a, b FROM w");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	REQUIRE(CHECK_COLUMN(result, 1, {10}));
+	REQUIRE(CHECK_COLUMN(result, 2, {20}));
 }

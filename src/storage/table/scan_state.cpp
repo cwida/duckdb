@@ -52,7 +52,7 @@ void TableScanState::Initialize(vector<StorageIndex> column_ids_p, optional_ptr<
 			sampling_info.sample_phase = random.NextRandom();
 		}
 		if (table_sampling->seed.IsValid()) {
-			table_state.random.SetSeed(table_sampling->seed.GetIndex());
+			table_state.GetRandomEngine().SetSeed(table_sampling->seed.GetIndex());
 		}
 	}
 }
@@ -90,7 +90,7 @@ void ScanFilterInfo::Initialize(ClientContext &context, TableFilterSet &filters,
 	this->column_ids = &column_ids;
 	if (filters.HasFilters()) {
 		adaptive_filter = make_uniq<AdaptiveFilter>(filters);
-		adaptive_filter->SetLogger(context.logger);
+		adaptive_filter->SetLogger(context.GetContext().GetLoggerPtr());
 	}
 	filter_list.reserve(filters.FilterCount());
 	for (auto &entry : filters) {
@@ -246,7 +246,14 @@ ParallelCollectionScanState::GetNextRowGroup(RowGroupSegmentTree &row_groups, Se
 
 CollectionScanState::CollectionScanState(TableScanState &parent_p)
     : vector_index(0), max_row_group_row(0), row_groups(nullptr), max_row(0), batch_index(0),
-      valid_sel(STANDARD_VECTOR_SIZE), random(-1), row_group(nullptr), parent(parent_p) {
+      valid_sel(STANDARD_VECTOR_SIZE), row_group(nullptr), parent(parent_p) {
+}
+
+RandomEngine &CollectionScanState::GetRandomEngine() {
+	if (!random) {
+		random = make_uniq<RandomEngine>();
+	}
+	return *random;
 }
 
 optional_ptr<SegmentNode<RowGroup>> CollectionScanState::GetRowGroup() const {
@@ -364,8 +371,7 @@ vector<unique_ptr<AsyncTask>> CollectionScanState::RegisterAssignmentIO() {
 	D_ASSERT(row_group);
 	D_ASSERT(!assignment_io_registered);
 	assignment_io_registered = true;
-	auto &current_row_group = *pinned_row_group;
-	return current_row_group.CollectScanIOTasks(*this, current_row_group.PrefetchRowCount(*this));
+	return pinned_row_group->CollectAssignmentIOTasks(*this);
 }
 
 void CollectionScanState::InitializeColumnScans() {
@@ -403,6 +409,21 @@ void CollectionScanState::ProcessPreparedScan(DuckTransaction &transaction, Data
 	D_ASSERT(prepared_vector.prepare_state == VectorPrepareState::IO_REGISTERED);
 	ScanOptions options {TransactionData(transaction)};
 	pinned_row_group->ProcessPreparedScan(options, *this, result);
+}
+
+bool CollectionScanState::RecheckPreparedRowGroup() {
+	if (!row_group || prepared_vector.prepare_state == VectorPrepareState::NONE) {
+		return true;
+	}
+	if (pinned_row_group->CheckZonemap(context.GetClientContext(), GetFilterInfo(), row_group->GetRowStart())) {
+		return true;
+	}
+	// the prepared vector was counted as scanned when it was prepared, it is never decoded
+	D_ASSERT(rows_scanned >= prepared_vector.visible_count);
+	rows_scanned -= prepared_vector.visible_count;
+	prepared_vector.Reset();
+	SetRowGroup(nullptr);
+	return false;
 }
 
 PreparedScanVector::PreparedScanVector() : sample_sel(STANDARD_VECTOR_SIZE) {

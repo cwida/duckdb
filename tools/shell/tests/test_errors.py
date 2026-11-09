@@ -97,3 +97,21 @@ def test_unterminated_quote(shell):
     )
     result = test.run()
     result.check_stderr('I\'m an error')
+
+def test_parser_error_invalidates_transaction(shell):
+    test = (
+        ShellTest(shell)
+        # The script has to keep running after the parser error, to show the following statements are rejected
+        .statement(".bail off")
+        .statement(".mode csv")
+        .statement("CREATE TABLE audit(i INT)")
+        .statement("INSERT INTO audit VALUES (42)")
+        .statement("BEGIN")
+        .statement("inser into audit_backup from audit")
+        .statement("DELETE FROM audit")
+        .statement("COMMIT")
+        .statement("SELECT count(*) AS remaining FROM audit")
+    )
+    result = test.run()
+    result.check_stderr('Current transaction is aborted')
+    assert result.stdout.splitlines()[-2:] == ['remaining', '1']

@@ -1,0 +1,37 @@
+# name: test/sql/topn/test_top_n_window_row_group_pruner.test
+# description: Window partition keys permit row group ordering without pruning partial partitions
+# group: [topn]
+
+load {TEST_DIR}/top_n_window_row_group_pruner_main.duckdb
+
+statement ok
+ATTACH '{TEST_DIR}/top_n_window_row_group_pruner_data.duckdb' AS db (ROW_GROUP_SIZE 2048)
+
+statement ok
+CREATE TABLE db.t(k BIGINT,v BIGINT)
+
+statement ok
+INSERT INTO db.t SELECT 0,i FROM range(8192) t(i)
+
+statement ok
+INSERT INTO db.t SELECT 1,i FROM range(8192) t(i)
+
+restart
+
+statement ok
+ATTACH '{TEST_DIR}/top_n_window_row_group_pruner_data.duckdb' AS db
+
+query II
+SELECT k,n FROM (SELECT k,count(*) OVER (PARTITION BY k) AS n FROM db.t) ORDER BY k LIMIT 1;
+----
+0	8192
+
+query II
+SELECT k,n FROM (SELECT k,count(*) OVER (PARTITION BY k) AS n FROM db.t) ORDER BY k LIMIT 1 OFFSET 4096;
+----
+0	8192
+
+query II
+SELECT k,n FROM (SELECT k,count(*) OVER (PARTITION BY k) AS n FROM db.t) ORDER BY k DESC LIMIT 1 OFFSET 8192;
+----
+0	8192

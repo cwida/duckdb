@@ -117,6 +117,9 @@ TEST_CASE("ParseIterator: parser errors surface through Peek", "[api][parse_iter
 
 	ParseIterator it(ctx, "SELECT FROM;");
 	REQUIRE_THROWS(it.Peek());
+	// A parse error ends the iteration, instead of parsing the failing statement again
+	REQUIRE_FALSE(it.Peek());
+	REQUIRE_FALSE(it.HasMore());
 }
 
 TEST_CASE("ParseIterator: movable", "[api][parse_iterator]") {
@@ -321,6 +324,21 @@ TEST_CASE("StatementIterator: movable", "[api][statement_iterator]") {
 	REQUIRE(moved.Peek());
 	REQUIRE(moved.GetStatement());
 	REQUIRE_FALSE(moved.Peek());
+}
+
+TEST_CASE("StatementIterator: a SET reaches the later statements of the same string", "[api][statement_iterator]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	// the default division of two integers is a float division
+	auto result = con.Query("SELECT 2/4");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {0.5}));
+
+	// a SET between the statements of one string changes how the later statements parse
+	result = con.Query("SET integer_division=true; SELECT 2/4");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
 }
 
 TEST_CASE("StatementIterator: a statement the engine expands is yielded as written", "[api][statement_iterator]") {

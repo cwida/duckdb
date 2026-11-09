@@ -25,7 +25,7 @@ statement ok
 SET variant_minimum_shredding_size=0
 
 statement ok
-ATTACH '__TEST_DIR__/variant_dup_keys.db' AS s
+ATTACH '{TEST_DIR}/variant_dup_keys.db' AS s
 
 statement error
 CREATE TABLE s.t AS SELECT variant_bytes_to_variant('\x01\x01\x00\x01\x61\x02\x02\x00\x00\x00\x02\x04\x0C\x00\x0C\x01'::BLOB) v

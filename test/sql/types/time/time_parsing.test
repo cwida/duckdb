@@ -74,7 +74,7 @@ SELECT '14-42-04'::TIME::VARCHAR
 foreach value 1:2 123:4 12:3
 
 statement ok
-COPY (SELECT '${value}' AS t, ':45' AS s) TO '{TEST_DIR}/strict_time.csv' (DELIMITER '|', HEADER false);
+COPY (SELECT '{value}' AS t, ':45' AS s) TO '{TEST_DIR}/strict_time.csv' (DELIMITER '|', HEADER false);
 
 query I
 SELECT typeof(column0) FROM read_csv('{TEST_DIR}/strict_time.csv', header = false, delim = '|', auto_type_candidates = ['TIME', 'VARCHAR']);
@@ -87,7 +87,7 @@ endloop
 foreach value 11:22 11:22:33
 
 statement ok
-COPY (SELECT '${value}' AS t, ':45' AS s) TO '{TEST_DIR}/strict_time.csv' (DELIMITER '|', HEADER false);
+COPY (SELECT '{value}' AS t, ':45' AS s) TO '{TEST_DIR}/strict_time.csv' (DELIMITER '|', HEADER false);
 
 query I
 SELECT typeof(column0) FROM read_csv('{TEST_DIR}/strict_time.csv', header = false, delim = '|', auto_type_candidates = ['TIME', 'VARCHAR']);

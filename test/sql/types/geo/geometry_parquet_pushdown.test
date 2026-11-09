@@ -42,3 +42,29 @@ FROM '{TEST_DIR}/output.json' prof,
 WHERE t.type = 'TABLE_SCAN';
 ----
 2
+
+# Combining && on a GEOMETRY('<crs>') column with a fallible predicate should still push down && and prune row groups.
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/output_multi.json';
+
+statement ok
+SET tracked_metrics = ['operator.type', 'operator.row_groups_scanned', 'operator.total_row_groups_to_scan'];
+
+statement ok
+select * from '{TEST_DIR}/points.parquet' where g && 'POLYGON((10 10, 20 10, 20 20, 10 20, 10 10))'::GEOMETRY and id::VARCHAR::INT >= 0;
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT t.row_groups_scanned
+FROM '{TEST_DIR}/output_multi.json' prof,
+     LATERAL unnest(prof.operator) t0(op0),
+     LATERAL unnest(op0.children) t1(op1),
+     LATERAL unnest(op1.children) t2(t)
+WHERE t.type = 'TABLE_SCAN';
+----
+2

@@ -85,7 +85,7 @@ SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(
 query II
 EXPLAIN SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a,b,c) WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=false OR c=1);
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a < 2.*OR.*a > 3.*AND.*a = 1.*OR.*a = 4.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a < 2.*OR.*a > 3.*AND.*a IN \(1, 4\).*
 
 query III
 SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a,b,c) WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=false OR c=1) ORDER BY a;
@@ -93,9 +93,6 @@ SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain
 1	false	1
 
 # Testing the number of rows filtered (column "a" has eight values: 0 .. 7)
-statement ok
-PRAGMA enable_profiling
-
 # should return 2 rows: 0 and 7
 query II
 EXPLAIN ANALYZE SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a) WHERE a<1 OR a>6;
@@ -139,6 +136,3 @@ SELECT a FROM '{TEST_DIR}/or_pushdown.parquet' WHERE a < 2 OR a > 16381 ORDER BY
 1
 16382
 16383
-
-statement ok
-PRAGMA disable_profiling;

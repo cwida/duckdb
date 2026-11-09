@@ -1,0 +1,129 @@
+# name: test/parquet/dictionary_boolean_selection.test
+# description: Dictionary filters preserve row mapping, payloads and page state
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TABLE dictionary_rows AS
+SELECT i,
+       CASE WHEN i >= 8192 AND i % 17 = 0 THEN NULL ELSE 'key=' || lpad(k::VARCHAR, 4, '0') END AS v,
+       k::INTEGER AS k, k::DOUBLE / 4 AS d
+FROM (SELECT i, hash(i) % 32 + 32 * (i // 8192) AS k FROM range(32771) t(i))
+
+# Large pages exercise direct filtering; small pages also require reads spanning page boundaries.
+foreach page_size 1048576 128
+
+statement ok
+COPY dictionary_rows TO '{TEST_DIR}/dictionary_selection_{page_size}.parquet'
+(FORMAT PARQUET, COMPRESSION UNCOMPRESSED, ROW_GROUP_SIZE 8192,
+ DICTIONARY_SIZE_LIMIT 1024, DATA_PAGE_SIZE_LIMIT {page_size})
+
+query I
+SELECT count(*) > 0
+FROM parquet_metadata('{TEST_DIR}/dictionary_selection_{page_size}.parquet')
+WHERE path_in_schema = 'v' AND encodings LIKE '%DICTIONARY%'
+----
+true
+
+# Row groups have different dictionaries. Verify selected row IDs and string payloads exactly.
+query I
+WITH actual AS (
+    SELECT i, v FROM read_parquet('{TEST_DIR}/dictionary_selection_{page_size}.parquet')
+    WHERE substring(v, 8, 1) < '5'
+), expected AS (
+    SELECT i, 'key=' || lpad(k::VARCHAR, 4, '0') AS v
+    FROM (SELECT i, hash(i) % 32 + 32 * (i // 8192) AS k FROM range(32771) t(i))
+    WHERE (i < 8192 OR i % 17 <> 0) AND k % 10 < 5
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+# Dictionary selection also applies to integer and floating-point values.
+query I
+WITH actual AS (
+    SELECT i, k, d FROM read_parquet('{TEST_DIR}/dictionary_selection_{page_size}.parquet')
+    WHERE k < 48
+), expected AS (
+    SELECT i, k::INTEGER AS k, k::DOUBLE / 4 AS d
+    FROM (SELECT i, hash(i) % 32 + 32 * (i // 8192) AS k FROM range(32771) t(i))
+    WHERE i < 8192 OR (i < 16384 AND hash(i) % 32 < 16)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+query I
+WITH actual AS (
+    SELECT i FROM read_parquet('{TEST_DIR}/dictionary_selection_{page_size}.parquet') WHERE d < 12
+), expected AS (
+    SELECT i FROM range(32771) t(i) WHERE i < 8192 OR (i < 16384 AND hash(i) % 32 < 16)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+# NULL-accepting predicates must retain the regular filter path.
+query I
+WITH actual AS (
+    SELECT i FROM read_parquet('{TEST_DIR}/dictionary_selection_{page_size}.parquet')
+    WHERE coalesce(substring(v, 8, 1) < '5', true)
+), expected AS (
+    SELECT i FROM range(32771) t(i)
+    WHERE (i >= 8192 AND i % 17 = 0) OR (hash(i) % 32 + 32 * (i // 8192)) % 10 < 5
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+) differences
+----
+0
+
+# A new execution must use the current predicate, including all-filtered row groups.
+statement ok
+PREPARE dictionary_selection AS
+SELECT count(*), sum(i) FROM read_parquet('{TEST_DIR}/dictionary_selection_{page_size}.parquet')
+WHERE substring(v, 5, 4) < $1
+
+query II
+EXECUTE dictionary_selection('0032')
+----
+8192	33550336
+
+query II
+EXECUTE dictionary_selection('0000')
+----
+0	NULL
+
+query II
+EXECUTE dictionary_selection('0032')
+----
+8192	33550336
+
+endloop
+
+# A throwing filter must not evaluate an unused dictionary entry.
+statement ok
+COPY (SELECT i, CASE WHEN i = 0 THEN 'bad' ELSE (i % 2)::VARCHAR END AS s FROM range(8193) t(i))
+TO '{TEST_DIR}/dictionary_selection_throwing.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 16384, DICTIONARY_SIZE_LIMIT 1024)
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/dictionary_selection_throwing.parquet')
+WHERE i = 1 AND CAST(s AS INTEGER) = 1
+----
+1

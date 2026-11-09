@@ -1,0 +1,15 @@
+# name: test/sql/json/test_deserialize_at_clause.test
+# description: json_deserialize_sql rejects an AT clause without an expression
+# group: [json]
+
+require json
+
+statement error
+SELECT json_deserialize_sql(regexp_replace(json_serialize_sql('SELECT * FROM t AT (VERSION => 1)'), '"at_clause":\{"unit":"VERSION","expr":\{.*?"literal":\{"kind":"INTEGER","text":"1"\}\}', '"at_clause":{"unit":"VERSION","expr":null'));
+----
+<REGEX>:Serialization Error.*missing AT expression.*
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('SELECT * FROM t AT (VERSION => 1)'));
+----
+SELECT * FROM t AT (VERSION => 1)

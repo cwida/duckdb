@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/function/function.hpp"
 
@@ -74,6 +75,8 @@ public:
 
 public:
 	unique_ptr<FunctionLocalState> local_state;
+	//! Execution error of the state initialization, thrown on execution so that a surrounding TRY can handle it
+	ErrorData init_error;
 	//! The buffers of all-constant arguments, which can be shared with the input and have to get their size back
 	vector<buffer_ptr<VectorBuffer>> constant_argument_buffers;
 
@@ -93,6 +96,8 @@ struct ExpressionExecutorState {
 
 	unique_ptr<ExpressionState> root_state;
 	ExpressionExecutor *executor = nullptr;
+	//! True while initializing the states below a TRY
+	bool inside_try = false;
 
 	void Verify();
 };

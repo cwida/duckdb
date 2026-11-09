@@ -11,11 +11,11 @@ SET allowed_directories=['{TEST_DIR}', 'http://127.0.0.1:1/allowed', 'https://fo
 statement ok
 SET enable_external_access=false;
 
-# a repository inside allowed_directories is contacted: nothing listens on port 1, so the download fails
+# an allowed repository passes the check: httpfs then cannot read the CA bundle, the built-in client cannot reach port 1
 statement error
 INSTALL bogus FROM 'http://127.0.0.1:1/allowed';
 ----
-Failed to download extension
+<REGEX>:.*(Permission Error: Cannot read a CA certificate bundle|Failed to download extension).*
 
 # a repository outside of allowed_directories is rejected before any request is made
 statement error

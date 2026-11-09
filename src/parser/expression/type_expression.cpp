@@ -112,11 +112,11 @@ string TypeExpression::ToString() const {
 				stack.push_back(StackItem {nullptr, "MAP("});
 			} else if (qual.empty() && type_name == "VARCHAR" && !params.empty() && params.back()->HasAlias() &&
 			           params.back()->GetAlias() == "collation") {
-				// Special case for VARCHAR with collation
+				// the constructor form parses in every type position, a COLLATE clause only in column definitions
 				auto &collate_expr = params.back()->Cast<ConstantExpression>();
-				stack.push_back(StackItem {
-				    nullptr, StringUtil::Format("VARCHAR COLLATE %s",
-				                                SQLIdentifier(collate_expr.GetLiteral().ToValue().ToString()))});
+				stack.push_back(
+				    StackItem {nullptr, StringUtil::Format("VARCHAR(%s)",
+				                                           SQLString(collate_expr.GetLiteral().ToValue().ToString()))});
 			} else if (qual.empty() && type_name == "INTERVAL" && !params.empty()) {
 				// We ignore interval types parameters.
 				stack.push_back(StackItem {nullptr, "INTERVAL"});

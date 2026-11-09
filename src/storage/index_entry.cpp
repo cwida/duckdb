@@ -146,6 +146,9 @@ void IndexEntry::AppendToDeleteIndexes(DataChunk &chunk, Vector &row_ids) {
 	IndexAppendInfo index_append_info(IndexAppendMode::IGNORE_DUPLICATES, nullptr);
 	auto result = bound_index.Append(chunk, row_ids, index_append_info);
 	if (result.HasError()) {
+		if (result.Type() != ExceptionType::CONSTRAINT) {
+			result.Throw();
+		}
 		throw InternalException("unexpected constraint violation on delete ART: ", result.Message());
 	}
 }
@@ -154,6 +157,9 @@ static void AppendIndexEntries(BoundIndex &index, DataChunk &chunk, Vector &row_
 	IndexAppendInfo append_info;
 	const auto error = index.Append(chunk, row_ids, append_info);
 	if (error.HasError()) {
+		if (error.Type() != ExceptionType::CONSTRAINT) {
+			error.Throw();
+		}
 		throw InternalException("Failed to append to %s: %s", index.GetIndexName(), error.Message());
 	}
 }
@@ -454,7 +460,7 @@ void IndexEntry::Rebuild(const IndexRebuildScan &scan) {
 	IndexRebuildAppend append = [&](DataChunk &chunk, Vector &row_ids) {
 		auto error = bound_index.Append(chunk, row_ids);
 		if (error.HasError()) {
-			throw InternalException("Failed to rebuild index '%s' after vacuum: %s", bound_index.GetIndexName(),
+			throw InternalException("Failed to rebuild index %s after vacuum: %s", bound_index.GetIndexName(),
 			                        error.Message());
 		}
 	};

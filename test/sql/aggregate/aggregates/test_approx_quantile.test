@@ -106,11 +106,11 @@ SELECT CASE
 ----
 1
 
-# TIMETZ Support. Note this is not exact because we use DOUBLEs internally.
+# TIMETZ Support. The result is the normalized time at +00.
 query I
 SELECT approx_quantile('1:02:03.000000+05:30'::TIMETZ, 0.5);
 ----
-01:02:42+05:30:39
+19:32:03+00
 
 # TIME test, fixes issue 19874
 query I
@@ -289,6 +289,21 @@ SELECT reservoir_quantile(r, r)  from quantile
 statement error
 SELECT reservoir_quantile(r, NULL)  from quantile
 ----
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[]) from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[], 100) from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[]) OVER () from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
 
 statement error
 SELECT reservoir_quantile(r, 'nan'::DOUBLE)  from quantile

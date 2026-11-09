@@ -5,33 +5,33 @@
 require parquet
 
 statement ok
-COPY (SELECT i AS a, i * 2 AS b, 'v' || i AS c FROM range(5000) t(i)) TO '__TEST_DIR__/single_late_mat.parquet' (FORMAT parquet, ROW_GROUP_SIZE 1000);
+COPY (SELECT i AS a, i * 2 AS b, 'v' || i AS c FROM range(5000) t(i)) TO '{TEST_DIR}/single_late_mat.parquet' (FORMAT parquet, ROW_GROUP_SIZE 1000);
 
 query III
-SELECT * FROM read_single_parquet_file('__TEST_DIR__/single_late_mat.parquet') ORDER BY a DESC LIMIT 3;
+SELECT * FROM read_single_parquet_file('{TEST_DIR}/single_late_mat.parquet') ORDER BY a DESC LIMIT 3;
 ----
 4999	9998	v4999
 4998	9996	v4998
 4997	9994	v4997
 
 query III
-SELECT * FROM read_single_parquet_file('__TEST_DIR__/single_late_mat.parquet') ORDER BY b LIMIT 2 OFFSET 2500;
+SELECT * FROM read_single_parquet_file('{TEST_DIR}/single_late_mat.parquet') ORDER BY b LIMIT 2 OFFSET 2500;
 ----
 2500	5000	v2500
 2501	5002	v2501
 
 query I
-SELECT count(*) FROM (SELECT * FROM read_single_parquet_file('__TEST_DIR__/single_late_mat.parquet') LIMIT 2049);
+SELECT count(*) FROM (SELECT * FROM read_single_parquet_file('{TEST_DIR}/single_late_mat.parquet') LIMIT 2049);
 ----
 2049
 
 query II
-SELECT c, file_row_number FROM read_single_parquet_file('__TEST_DIR__/single_late_mat.parquet') WHERE a % 1000 = 7 ORDER BY a DESC LIMIT 2;
+SELECT c, file_row_number FROM read_single_parquet_file('{TEST_DIR}/single_late_mat.parquet') WHERE a % 1000 = 7 ORDER BY a DESC LIMIT 2;
 ----
 v4007	4007
 v3007	3007
 
 query I
-SELECT count(*) FROM read_single_parquet_file('__TEST_DIR__/single_late_mat.parquet') WHERE a < 2049;
+SELECT count(*) FROM read_single_parquet_file('{TEST_DIR}/single_late_mat.parquet') WHERE a < 2049;
 ----
 2049

@@ -1,0 +1,113 @@
+# name: test/optimizer/statistics/statistics_cast_infinity.test
+# description: Cast statistics of a column whose bounds hold -infinity, below which the smallest finite value lies
+# group: [statistics]
+
+statement ok
+CREATE TABLE t(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO t VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01'), ('infinity');
+
+foreach target TIMESTAMP TIMESTAMP_MS DATE
+
+query I
+SELECT count(*) FROM t WHERE c::{target} = '-infinity'::{target};
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE c::{target} = 'infinity'::{target};
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE c::{target} < '1970-01-01'::{target};
+----
+2
+
+endloop
+
+# bounds from the smallest finite value to -infinity, whose casts are in the other order
+statement ok
+CREATE TABLE v(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO v VALUES (make_timestamp_ns(-9223372036854775807 - 1)), ('-infinity');
+
+foreach target TIMESTAMP TIMESTAMP_MS DATE
+
+query I
+SELECT count(*) FROM v WHERE c::{target} <> '-infinity'::{target};
+----
+1
+
+query I
+SELECT count(*) FROM v WHERE c::{target} = '-infinity'::{target};
+----
+1
+
+# a materialized CTE has exactly these bounds
+query I
+WITH w AS MATERIALIZED (SELECT make_timestamp_ns(-9223372036854775807 - 1) AS c UNION ALL SELECT '-infinity'::TIMESTAMP_NS) SELECT sum((c::{target} <> '-infinity'::{target})::INTEGER) FROM w;
+----
+1
+
+endloop
+
+query I
+SELECT min(c::TIMESTAMP) = '-infinity'::TIMESTAMP FROM t WHERE c::TIMESTAMP < '1900-01-01';
+----
+true
+
+# without the smallest finite value the bounds stay as they are
+statement ok
+CREATE TABLE u(c TIMESTAMP_NS);
+
+statement ok
+INSERT INTO u VALUES ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(*) FROM u WHERE c::TIMESTAMP = '-infinity'::TIMESTAMP;
+----
+1
+
+statement ok
+CREATE TABLE d(c TIMESTAMP);
+
+statement ok
+INSERT INTO d VALUES (make_timestamp(-9223372036854775807 - 1)), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(*) FROM d WHERE c::DATE = '-infinity'::DATE;
+----
+1
+
+# time zone aware timestamps
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE z(c TIMESTAMPTZ_NS);
+
+statement ok
+INSERT INTO z VALUES (make_timestamp_ns(-9223372036854775807 - 1)::TIMESTAMPTZ_NS), ('-infinity'), ('1970-01-01');
+
+query I
+SELECT count(*) FROM z WHERE c::TIMESTAMPTZ = '-infinity'::TIMESTAMPTZ;
+----
+1
+
+statement ok
+DELETE FROM z WHERE c = '1970-01-01';
+
+query I
+SELECT count(*) FROM z WHERE c::TIMESTAMPTZ <> '-infinity'::TIMESTAMPTZ;
+----
+1
+
+query I
+WITH w AS MATERIALIZED (SELECT make_timestamp_ns(-9223372036854775807 - 1)::TIMESTAMPTZ_NS AS c UNION ALL SELECT '-infinity'::TIMESTAMPTZ_NS) SELECT sum((c::TIMESTAMPTZ <> '-infinity'::TIMESTAMPTZ)::INTEGER) FROM w;
+----
+1

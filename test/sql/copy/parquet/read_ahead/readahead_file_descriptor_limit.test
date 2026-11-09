@@ -1,0 +1,52 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_file_descriptor_limit.test
+# description: A scan keeps the files it opens ahead within the file descriptor limit
+# group: [read_ahead]
+
+require parquet
+
+require skip_reload
+
+# few threads keep the files held by queued jobs low, many async threads let the scan open far ahead
+statement ok
+SET threads=2
+
+statement ok
+SET async_threads=72
+
+statement ok
+COPY (SELECT i % 400 AS p, i AS v FROM range(400000) t(i)) TO '{TEST_DIR}/readahead_fd_limit' (FORMAT parquet, PARTITION_BY (p))
+
+statement ok
+SET debug_file_descriptor_limit=256
+
+statement ok
+CALL enable_logging('FileSystem')
+
+query II
+SELECT count(*), sum(v) FROM read_parquet('{TEST_DIR}/readahead_fd_limit/**/*.parquet')
+----
+400000	79999800000
+
+statement ok
+CALL disable_logging()
+
+# the scan keeps fewer than half of the allowed descriptors open at any time
+query I
+WITH events AS (
+	SELECT timestamp, CASE op WHEN 'OPEN' THEN 1 ELSE -1 END AS delta
+	FROM duckdb_logs_parsed('FileSystem')
+	WHERE op IN ('OPEN', 'CLOSE') AND path LIKE '%readahead_fd_limit%'
+)
+SELECT max(open_handles) < 128
+FROM (SELECT sum(delta) OVER (ORDER BY timestamp, delta ROWS UNBOUNDED PRECEDING) AS open_handles FROM events)
+----
+true
+
+# the largest limit leaves the window unchanged
+statement ok
+SET debug_file_descriptor_limit=18446744073709551615
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/readahead_fd_limit/**/*.parquet')
+----
+400000

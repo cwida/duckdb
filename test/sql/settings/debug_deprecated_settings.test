@@ -36,3 +36,33 @@ query T
 SELECT count(*) != 0 FROM duckdb_settings(deprecated := true);
 ----
 true
+
+# include_all := true returns the regular, debug and deprecated settings together
+query I
+SELECT (SELECT count(*) FROM duckdb_settings(include_all := true)) =
+    (SELECT count(*) FROM duckdb_settings()) +
+    (SELECT count(*) FROM duckdb_settings(debug := true)) +
+    (SELECT count(*) FROM duckdb_settings(deprecated := true)) +
+    (SELECT count(*) FROM duckdb_settings(debug := true, deprecated := true));
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_settings(include_all := true) WHERE name IN ('threads', 'debug_enable_caching_operators');
+----
+2
+
+query I
+SELECT (SELECT count(*) FROM duckdb_settings(include_all := false)) = (SELECT count(*) FROM duckdb_settings());
+----
+true
+
+statement error
+SELECT * FROM duckdb_settings(include_all := true, debug := true);
+----
+Cannot combine include_all := true with the debug or deprecated filters
+
+statement error
+SELECT * FROM duckdb_settings(include_all := NULL);
+----
+Cannot use NULL as argument for include_all

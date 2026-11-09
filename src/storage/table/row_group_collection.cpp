@@ -385,7 +385,10 @@ optional_idx RowGroupCollection::NextParallelScan(ClientContext &context, Parall
 			}
 			auto &current_row_group = state.current_row_group->GetNode();
 			if (current_row_group.count == 0) {
-				break;
+				// InitializeAppend creates a row group before any rows are written. A later merge in the
+				// same transaction can append real groups after that empty one, so it is not the end of the table.
+				state.AssignRowGroup(state.GetNextRowGroup(*state.row_groups, *state.current_row_group).get());
+				continue;
 			}
 			auto row_start = state.current_row_group->GetRowStart();
 			collection = state.collection;
@@ -801,7 +804,8 @@ void RowGroupCollection::RevertAppendInternal(idx_t new_end_idx) {
 		return;
 	}
 	auto last_segment = row_groups->GetLastSegment(l);
-	if (last_segment->GetRowEnd() <= new_end_idx) {
+	if (last_segment->GetRowEnd() <= new_end_idx && last_segment->GetRowStart() < new_end_idx) {
+		// nothing to revert, unless a row group starts at the row (a failed append can leave it empty)
 		return;
 	}
 	D_ASSERT(new_end_idx >= row_groups->GetBaseRowId());
@@ -823,10 +827,25 @@ void RowGroupCollection::RevertAppendInternal(idx_t new_end_idx) {
 		new_total_rows += entry.GetNode().count;
 		reverted_row_groups->AppendSegment(rlock, entry.ReferenceNode(), row_start);
 	}
+	if (reverted_row_groups->GetSegmentCount(rlock) < segment_count) {
+		// the reverted append created a row group, so the row group that is last again might not take appends
+		SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
+	}
 	SetRowGroups(std::move(reverted_row_groups));
 	total_rows = new_total_rows;
 	next_row_id = new_end_idx - row_groups->GetBaseRowId();
 	D_ASSERT(next_row_id.load() >= total_rows.load());
+}
+
+void RowGroupCollection::RevertFailedAppend(TableAppendState &state) {
+	auto start_row = NumericCast<idx_t>(state.row_start);
+	auto start_row_group = state.start_row_group;
+	if (start_row_group && start_row_group->GetRowStart() < start_row) {
+		// the columns of the row group that the append started in hold rows past its count
+		auto &row_group = start_row_group->GetNode();
+		row_group.RevertAppend(row_group.count);
+	}
+	RevertAppendInternal(start_row);
 }
 
 void RowGroupCollection::CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count) {
@@ -937,7 +956,8 @@ void RowGroupCollection::MergeStorage(RowGroupCollection &data, optional_ptr<Dat
 //===--------------------------------------------------------------------===//
 // Delete
 //===--------------------------------------------------------------------===//
-idx_t RowGroupCollection::Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids, idx_t count) {
+idx_t RowGroupCollection::Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids, idx_t count,
+                                 optional_ptr<DeletedRowIds> deleted_ids) {
 	idx_t delete_count = 0;
 	// delete is in the row groups
 	// we need to figure out for each id to which row group it belongs
@@ -964,7 +984,8 @@ idx_t RowGroupCollection::Delete(TransactionData transaction, DuckTableEntry &ta
 				break;
 			}
 		}
-		delete_count += current_row_group.Delete(transaction, table_entry, ids + start, pos - start, row_start);
+		delete_count +=
+		    current_row_group.Delete(transaction, table_entry, ids + start, pos - start, row_start, deleted_ids, start);
 	} while (pos < count);
 
 	return delete_count;
@@ -1026,9 +1047,13 @@ void RowGroupCollection::Update(TransactionData transaction, DuckTableEntry &tab
 void RowGroupCollection::RemoveFromIndexes(const QueryContext &context, TableIndexList &indexes,
                                            Vector &row_identifiers, idx_t count, IndexRemovalType removal_type,
                                            optional_idx active_checkpoint) {
-	// Collect all indexed columns on the table, sorted so that the fetched columns align with the
-	// ascending physical order used when referencing them into result_chunk below.
-	auto column_ids = indexes.GetSortedIndexedColumns();
+	// Collect all Indexed columns on the table.
+	auto indexed_column_id_set = indexes.GetIndexedColumns();
+
+	// Sorted so that the fetched columns align with the ascending physical order used when
+	// referencing them into result_chunk below.
+	vector<StorageIndex> column_ids {indexed_column_id_set.begin(), indexed_column_id_set.end()};
+	sort(column_ids.begin(), column_ids.end());
 
 	vector<LogicalType> column_types;
 	column_types.reserve(column_ids.size());
@@ -1050,8 +1075,8 @@ void RowGroupCollection::RemoveFromIndexes(const QueryContext &context, TableInd
 	auto fetched_columns = vector<bool>(types.size(), false);
 	result_chunk.Initialize(GetAllocator(), types, fetched_columns);
 	// Now set all to-be-fetched columns.
-	for (auto &col : column_ids) {
-		fetched_columns[col.GetPrimaryIndex()] = true;
+	for (auto &col : indexed_column_id_set) {
+		fetched_columns[col] = true;
 	}
 
 	// Reference the necessary columns of the fetch_chunk.
@@ -1179,7 +1204,7 @@ public:
 	void ExecuteTask() override {
 		auto entry = checkpoint_state.GetSegment(index);
 		auto &row_group = entry->GetNode();
-		checkpoint_state.writers[index] = checkpoint_state.writer.GetRowGroupWriter(row_group);
+		checkpoint_state.writers[index] = checkpoint_state.writer.GetRowGroupWriter();
 		checkpoint_state.write_data[index] = row_group.WriteToDisk(*checkpoint_state.writers[index]);
 	}
 
@@ -1321,9 +1346,9 @@ public:
 
 	void ExecuteTask() override {
 		MetricsTimer timer;
-		auto context = checkpoint_state.writer.TryGetClientContext();
-		if (context) {
-			timer = QueryProfiler::Get(*context).StartTimer<MetricStorageTotalVacuumTime>();
+		auto profiler = checkpoint_state.writer.GetContext().TryGetQueryProfiler();
+		if (profiler) {
+			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
 		}
 
 		auto &collection = checkpoint_state.collection;
@@ -1823,7 +1848,7 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 				         RowGroupWriteAction::REUSE_EXISTING_ROW_GROUP_METADATA);
 				vector<MetaBlockPointer> extra_metadata_block_pointers = row_group.GetExtraMetadataBlockPointers();
 				metadata_manager.ClearModifiedBlocks(extra_metadata_block_pointers);
-				auto row_group_writer = checkpoint_state.writer.GetRowGroupWriter(row_group);
+				auto row_group_writer = checkpoint_state.writer.GetRowGroupWriter();
 				row_group.CheckpointDeletes(*row_group_writer);
 			}
 			// the totals as of the snapshot: rows appended since stay in the WAL
@@ -2100,14 +2125,13 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 		}
 	}
 
-	// flush any partial blocks BEFORE updating the row group pointer
-	// flushing partial blocks updates where data lives
-	// this cannot be done after other threads start scanning the row groups
-	// so this HAS to happen before we call "SetRowGroups" to update the row groups
-	writer.FlushPartialBlocks();
-	// Rebuild indexes if the REBUILD strategy was chosen (legacy vacuum_rebuild_indexes path) and rowids changed.
+	// Index rebuilds need the checkpointed row groups to be installed first.
 	if (vacuum_state.index_strategy == VacuumIndexStrategy::REBUILD && writer.RowIdsChanged()) {
 		writer.SetRebuildIndexes();
+	}
+	// Flush before installing row groups, since flushing changes their segment locations.
+	if (!writer.CanDeferPublication()) {
+		writer.FlushPartialBlocks();
 	}
 
 	CollectionCheckpointResult result;

@@ -1,0 +1,117 @@
+# name: test/sql/collate/collate_group_subquery.test
+# description: GROUP BY on collated expressions that contain a subquery
+# group: [collate]
+
+# the uncollated value must be returned even though the subquery prevents copying the bound group
+
+statement ok
+CREATE TABLE t(v TIMETZ);
+
+statement ok
+INSERT INTO t VALUES (TIMETZ '01:02:03');
+
+query I
+SELECT (SELECT max(v) FROM t) AS g
+FROM range(2)
+GROUP BY (SELECT max(v) FROM t);
+----
+01:02:03+00
+
+# alias and positional references
+query I
+SELECT (SELECT max(v) FROM t) AS g
+FROM range(2)
+GROUP BY g;
+----
+01:02:03+00
+
+query I
+SELECT (SELECT max(v) FROM t) AS g
+FROM range(2)
+GROUP BY 1;
+----
+01:02:03+00
+
+# the subquery type does not matter
+statement ok
+CREATE TABLE t2(a TIMETZ, k INT);
+
+statement ok
+INSERT INTO t2 VALUES (TIMETZ '01:02:03', 5), (TIMETZ '04:05:06+02', 6);
+
+statement ok
+CREATE TABLE nums(n INT);
+
+statement ok
+INSERT INTO nums VALUES (5);
+
+query I
+SELECT CASE WHEN k IN (SELECT n FROM nums) THEN a ELSE NULL END AS g
+FROM t2
+GROUP BY CASE WHEN k IN (SELECT n FROM nums) THEN a ELSE NULL END
+ORDER BY ALL;
+----
+01:02:03+00
+NULL
+
+# correlated subquery
+query II
+SELECT (SELECT max(a) FROM t2 WHERE t2.k = r.k) AS g, count(*)
+FROM (SELECT range % 2 + 5 AS k FROM range(4)) r
+GROUP BY (SELECT max(a) FROM t2 WHERE t2.k = r.k)
+ORDER BY ALL;
+----
+01:02:03+00	2
+04:05:06+02	2
+
+# HAVING and ORDER BY refer to the group
+query I
+SELECT (SELECT max(v) FROM t) AS g
+FROM range(2)
+GROUP BY (SELECT max(v) FROM t)
+HAVING (SELECT max(v) FROM t) = TIMETZ '01:02:03'
+ORDER BY (SELECT max(v) FROM t);
+----
+01:02:03+00
+
+# grouping sets
+query II
+SELECT (SELECT max(v) FROM t) AS g, count(*)
+FROM range(2)
+GROUP BY GROUPING SETS (((SELECT max(v) FROM t)), ())
+ORDER BY ALL;
+----
+01:02:03+00	2
+NULL	2
+
+# collated strings
+statement ok
+CREATE TABLE s(v VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO s VALUES ('UPPERCASE');
+
+query I
+SELECT (SELECT max(v) FROM s) AS g
+FROM range(2)
+GROUP BY (SELECT max(v) FROM s);
+----
+UPPERCASE
+
+query I
+SELECT (SELECT max(v) FROM s) AS g
+FROM range(2)
+GROUP BY (SELECT max(v) FROM s)
+HAVING (SELECT max(v) FROM s) = 'uppercase';
+----
+UPPERCASE
+
+statement ok
+SET default_collation='nocase'
+
+query I
+SELECT (SELECT 'MiXeD') AS g
+FROM range(2)
+GROUP BY (SELECT 'MiXeD');
+----
+MiXeD

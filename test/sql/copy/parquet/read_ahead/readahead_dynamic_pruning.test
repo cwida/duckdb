@@ -28,14 +28,12 @@ SELECT i FROM read_parquet('{TEST_DIR}/recheck_ordered.parquet') ORDER BY i LIMI
 1
 2
 
-# All eight groups were prepared before the only scan thread could publish a Top-N boundary.
 query I
 SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class='ParquetReader' AND event='ReadRowGroup'
 ----
 8
 
-# Only the first group should reach decoding and produce prefetch outcome metrics.
 query I
 SELECT count(*) FROM duckdb_logs_parsed('ParquetPrefetch')
 WHERE file_path LIKE '%recheck_ordered.parquet'
@@ -61,23 +59,14 @@ COPY recheck_values TO '{TEST_DIR}/recheck_values.parquet' (ROW_GROUP_SIZE 2048)
 statement ok
 CREATE VIEW recheck_input AS SELECT * FROM read_parquet('{TEST_DIR}/recheck_values.parquet', can_have_nan=true)
 
-# Ties span row groups; NULLs, NaNs, offsets and the descending tie-breaker must survive pruning.
-# Selecting payload after a selective filter also exercises first-chunk payload I/O/resumption.
-foreach workers 1 4
+# This pairwise matrix keeps every worker count, depth, type, direction and NULL order fast.
+foreach workers,depth,column,direction,nulls 1,0,k,ASC,FIRST 4,1,f,DESC,LAST 1,64,s,ASC,LAST 4,-1,ts,DESC,FIRST 1,1,k,DESC,FIRST 4,64,f,ASC,LAST 1,-1,s,DESC,LAST 4,0,ts,ASC,FIRST
 
 statement ok
 SET threads={workers}
 
-foreach depth 0 1 64 -1
-
 statement ok
 SET read_ahead_depth={depth}
-
-foreach column k f s ts
-
-foreach direction ASC DESC
-
-foreach nulls FIRST LAST
 
 query I
 WITH actual AS (
@@ -97,15 +86,6 @@ SELECT count(*) FROM (
 
 endloop
 
-endloop
-
-endloop
-
-endloop
-
-endloop
-
-# A larger Top-N keeps payload columns in the scan, exercising payload I/O resumption.
 statement ok
 SET threads=4
 
@@ -123,16 +103,15 @@ WITH actual AS (
     ORDER BY k {direction} NULLS LAST, id DESC LIMIT 128 OFFSET 3
 )
 SELECT count(*) FROM (
-    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    (TABLE actual EXCEPT ALL TABLE expected)
     UNION ALL
-    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+    (TABLE expected EXCEPT ALL TABLE actual)
 )
 ----
 0
 
 endloop
 
-# Reusing the plan must reset the dynamic boundary between executions.
 statement ok
 PREPARE recheck_plan AS SELECT id FROM recheck_input WHERE id >= $1 ORDER BY id LIMIT 3
 

@@ -1,4 +1,5 @@
 #include "duckdb/storage/table/row_version_manager.hpp"
+#include "duckdb/transaction/delete_info.hpp"
 #include "duckdb/transaction/transaction_data.hpp"
 #include "duckdb/storage/metadata/metadata_manager.hpp"
 #include "duckdb/storage/metadata/metadata_reader.hpp"
@@ -195,30 +196,42 @@ ChunkVectorInfo &RowVersionManager::GetVectorInfo(idx_t vector_idx) {
 	return *vector_info[vector_idx];
 }
 
-idx_t RowVersionManager::DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count) {
+void RowVersionManager::WriteRows(idx_t vector_idx, TransactionData transaction, const row_t ids[], idx_t count,
+                                  row_t offset, bool is_update, WrittenRows &written) {
 	lock_guard<mutex> lock(version_lock);
 	needs_compression_check = true;
-	return GetVectorInfo(vector_idx).Delete(transaction_id, rows, count);
+	GetVectorInfo(vector_idx).WriteRows(transaction, ids, count, offset, is_update, written);
 }
 
-void RowVersionManager::CommitDelete(idx_t vector_idx, transaction_t commit_id, const DeleteInfo &info) {
+void RowVersionManager::CommitWrite(transaction_t old_id, transaction_t new_id, const DeleteInfo &info,
+                                    bool is_delete) {
 	lock_guard<mutex> lock(version_lock);
 	needs_compression_check = true;
-	if (commit_id != NOT_DELETED_ID) {
-		// a reverted delete changes nothing a checkpoint writes
-		if (!newest_uncheckpointed_delete_commit.IsValid() ||
-		    commit_id > newest_uncheckpointed_delete_commit.GetIndex()) {
-			newest_uncheckpointed_delete_commit = commit_id;
+	if (is_delete && IsCommitted(new_id)) {
+		// a reverted commit (new_id is the transaction id again) changes nothing a checkpoint writes
+		if (!newest_uncheckpointed_delete_commit.IsValid() || new_id > newest_uncheckpointed_delete_commit.GetIndex()) {
+			newest_uncheckpointed_delete_commit = new_id;
 		}
-		if (!oldest_uncheckpointed_delete_commit.IsValid() ||
-		    commit_id < oldest_uncheckpointed_delete_commit.GetIndex()) {
-			oldest_uncheckpointed_delete_commit = commit_id;
+		if (!oldest_uncheckpointed_delete_commit.IsValid() || new_id < oldest_uncheckpointed_delete_commit.GetIndex()) {
+			oldest_uncheckpointed_delete_commit = new_id;
 		}
 	}
-	GetVectorInfo(vector_idx).CommitDelete(commit_id, info);
+	GetVectorInfo(info.vector_idx).CommitWrite(old_id, new_id, info.GetStoredRows(), info.count);
 }
 
-void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bound) {
+void RowVersionManager::RollbackWrite(idx_t vector_idx, const uint16_t rows[], idx_t count,
+                                      const transaction_t previous_ids[], idx_t previous_id_count) {
+	lock_guard<mutex> lock(version_lock);
+	needs_compression_check = true;
+	GetVectorInfo(vector_idx).RollbackWrite(rows, count, previous_ids, previous_id_count);
+}
+
+static idx_t VectorRowCount(idx_t vector_idx, idx_t row_count) {
+	idx_t vector_start = vector_idx * STANDARD_VECTOR_SIZE;
+	return row_count > vector_start ? MinValue<idx_t>(row_count - vector_start, STANDARD_VECTOR_SIZE) : 0;
+}
+
+void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bound, idx_t row_count) {
 	lock_guard<mutex> lock(version_lock);
 	if (!needs_compression_check) {
 		// no version ids were modified since the last pass, and the last pass left nothing
@@ -236,8 +249,10 @@ void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bou
 		return;
 	}
 	bool pending = false;
-	for (auto &info : vector_info) {
-		if (info && info->CompressVersionIds(lowest_visibility_bound) == VersionCompressionResult::PENDING) {
+	for (idx_t vector_idx = 0; vector_idx < vector_info.size(); vector_idx++) {
+		auto &info = vector_info[vector_idx];
+		if (info && info->CompressVersionIds(lowest_visibility_bound, VectorRowCount(vector_idx, row_count)) ==
+		                VersionCompressionResult::PENDING) {
 			// some ids can still compress once the lowest active start advances - check again next pass
 			pending = true;
 		}
@@ -248,7 +263,7 @@ void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bou
 	allocator.RemoveEmptyBuffers();
 }
 
-vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer) {
+vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer, idx_t row_count) {
 	lock_guard<mutex> lock(version_lock);
 	auto &manager = *writer.GetMetadataManager();
 	auto options = writer.GetCheckpointOptions();
@@ -267,7 +282,12 @@ vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer) {
 		if (!chunk_info) {
 			continue;
 		}
-		if (!chunk_info->HasDeletes(options.visibility_bound)) {
+		auto vector_row_count = VectorRowCount(vector_idx, row_count);
+		if (vector_row_count == 0) {
+			// the vector holds no rows - there is nothing to write
+			continue;
+		}
+		if (!chunk_info->HasDeletes(options.visibility_bound, vector_row_count)) {
 			continue;
 		}
 		to_serialize.emplace_back(vector_idx, *chunk_info);
@@ -283,7 +303,7 @@ vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer) {
 			auto &vector_idx = entry.first;
 			auto &chunk_info = entry.second.get();
 			metadata_writer.Write<idx_t>(vector_idx);
-			chunk_info.Write(metadata_writer, options.visibility_bound);
+			chunk_info.Write(metadata_writer, options.visibility_bound, VectorRowCount(vector_idx, row_count));
 		}
 		metadata_writer.Flush();
 	}

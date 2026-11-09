@@ -1,0 +1,25 @@
+# name: test/sql/copy/copy_per_thread_interrupt.test_slow
+# description: Interrupting a COPY with PER_THREAD_OUTPUT must not free file state that other threads still use
+# group: [copy]
+
+statement ok
+SET threads=6;
+
+loop i 0 8
+
+foreach t 100 200 300 500 700
+
+statement ok
+SET max_execution_time={t};
+
+statement maybe
+COPY (SELECT i, i % 10 g, [i, i] s FROM range(2000000) t(i) ORDER BY i DESC) TO '{TEST_DIR}/interrupt_{i}_{t}' (FORMAT csv, PER_THREAD_OUTPUT true);
+----
+INTERRUPT Error
+
+endloop
+
+endloop
+
+statement ok
+SET max_execution_time=0;

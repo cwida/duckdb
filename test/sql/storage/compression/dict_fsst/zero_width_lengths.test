@@ -1,0 +1,49 @@
+# name: test/sql/storage/compression/dict_fsst/zero_width_lengths.test
+# description: Read NULL and empty-string dictionaries with zero-width lengths
+# group: [dict_fsst]
+
+require vector_size 2048
+
+load {TEST_DIR}/dict_fsst_zero_width_lengths.db readwrite v1.3.0
+
+statement ok
+PRAGMA force_compression = 'dict_fsst';
+
+statement ok
+CREATE TABLE strings AS
+SELECT NULL::VARCHAR AS all_null, ''::VARCHAR AS all_empty,
+       CASE WHEN i % 2 = 0 THEN '' ELSE NULL END AS mixed
+FROM range(5000) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query TI rowsort
+SELECT column_name, compression = 'DICT_FSST' AND segment_info LIKE 'DICTIONARY:%'
+FROM pragma_storage_info('strings', include_segment_info = true)
+WHERE segment_type = 'VARCHAR';
+----
+all_empty	true
+all_null	true
+mixed	true
+
+foreach force_fetch false true
+
+statement ok
+SET debug_force_fetch_row = {force_fetch};
+
+query IIIIII
+SELECT count(*), count(all_null), count(all_empty), count(mixed),
+       sum(length(all_empty)), sum(length(mixed))
+FROM strings;
+----
+5000	0	5000	2500	0	0
+
+query I
+SELECT count(*) FROM strings WHERE all_empty = '' AND mixed IS NULL;
+----
+2500
+
+endloop

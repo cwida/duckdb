@@ -1,0 +1,23 @@
+# name: test/sql/function/timestamp/strptime_year_day_366.test
+# description: strptime rejects day 366 in a year that is not a leap year
+# group: [timestamp]
+
+statement error
+SELECT strptime('2021 366', '%Y %j');
+----
+<REGEX>:Invalid Input Error: Could not parse string.*
+
+query I
+SELECT try_strptime('2021 366', '%Y %j');
+----
+NULL
+
+query III
+SELECT strptime('2020 366', '%Y %j'), strptime('2021 365', '%Y %j'), strptime('2021 001', '%Y %j');
+----
+2020-12-31 00:00:00	2021-12-31 00:00:00	2021-01-01 00:00:00
+
+statement error
+SELECT strptime('2021 400', '%Y %j');
+----
+<REGEX>:Invalid Input Error: Could not parse string.*

@@ -208,17 +208,6 @@
         "default_value": "true"
     },
     {
-        "name": "block_allocator_memory",
-        "description": "Physical memory that the block allocator is allowed to use. This memory is allocated once, never freed, and cannot be reduced.",
-        "type": "VARCHAR",
-        "scope": "global",
-        "custom_implementation": [
-            "get",
-            "set",
-            "reset"
-        ]
-    },
-    {
         "name": "cache_local_files",
         "description": "Whether the external file cache also caches local files. Remote files are always cached.",
         "type": "BOOLEAN",
@@ -372,6 +361,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_file_descriptor_limit",
+        "description": "Override the file descriptor limit that bounds how many files a scan opens ahead. 0 uses the limit of the process.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0",
+        "is_debug": true
+    },
+    {
         "name": "debug_force_bitpacking_mode",
         "description": "Forces a specific bitpacking mode.",
         "type": "ENUM<BitpackingMode>",
@@ -409,7 +406,7 @@
     },
     {
         "name": "debug_force_fetch_row",
-        "description": "Force per-row fetching during scans.",
+        "description": "Read the rows of scans through the fetch by row id.",
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
@@ -631,6 +628,13 @@
         ]
     },
     {
+        "name": "default_grammar_extensions",
+        "description": "The grammar extensions sessions parse with when active_grammar_extensions is not set.",
+        "type": "VARCHAR[]",
+        "scope": "global",
+        "custom_implementation": true
+    },
+    {
         "name": "default_null_order",
         "description": "The NULL ordering used when none is specified (NULLS_FIRST or NULLS_LAST).",
         "type": "ENUM<DefaultOrderByNullType>",
@@ -673,9 +677,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "dialect_compatibility_mode",
@@ -749,6 +751,13 @@
         "default_value": "50"
     },
     {
+        "name": "enable_block_allocator",
+        "description": "Enable new allocations from the fixed-size block pool (64-bit only; disabled by default on MinGW). Disabling preserves existing allocations and the virtual memory reservation.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "custom_implementation": true
+    },
+    {
         "name": "enable_external_access",
         "description": "Allow the database to access external state, e.g. through loading/installing modules, COPY TO/FROM, CSV readers, pandas replacement scans, etc.",
         "type": "BOOLEAN",
@@ -805,9 +814,6 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
         "is_deprecated": true
     },
     {
@@ -869,9 +875,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "errors_as_json",
@@ -887,9 +891,7 @@
         "type": "BOOLEAN",
         "scope": "global",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "explain_output",
@@ -911,10 +913,7 @@
         "type": "VARCHAR",
         "scope": "global",
         "default_value": "",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "extension_repository_directory",
@@ -1002,9 +1001,7 @@
         "type": "BOOLEAN",
         "scope": "global",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "force_compression",
@@ -1152,9 +1149,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "legacy_metrics_format",
@@ -1162,9 +1157,6 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
         "is_deprecated": true
     },
     {
@@ -1283,10 +1275,7 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "operator_memory_limit",
@@ -1394,10 +1383,7 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "profiling_coverage",
@@ -1463,7 +1449,15 @@
         "default_value": "partial",
         "custom_implementation": [
             "set"
-        ]
+        ],
+        "is_deprecated": true
+    },
+    {
+        "name": "scalar_aggregate_merge_threshold",
+        "description": "The number of rows a table needs for sibling scalar aggregates over it to be computed in one pass. 0 computes them in one pass only over table functions such as read_parquet.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0"
     },
     {
         "name": "scalar_subquery_error_on_multiple_rows",
@@ -1543,7 +1537,8 @@
         "default_value": "DEFAULT",
         "custom_implementation": [
             "set"
-        ]
+        ],
+        "is_deprecated": true
     },
     {
         "name": "temp_directory",

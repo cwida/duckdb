@@ -35,7 +35,7 @@ public:
 	//! Convert a time object to a string in the format "hh:mm:ss"
 	DUCKDB_API static string ToString(dtime_t time);
 	//! Convert a UTC offset to ±HH[:MM]
-	DUCKDB_API static string ToUTCOffset(int hour_offset, int minute_offset);
+	DUCKDB_API static string ToUTCOffset(int hour_offset, int minute_offset, int second_offset = 0);
 
 	DUCKDB_API static dtime_t FromTime(int32_t hour, int32_t minute, int32_t second, int32_t microseconds = 0);
 	DUCKDB_API static int64_t ToNanoTime(int32_t hour, int32_t minute, int32_t second, int32_t nanoseconds = 0);

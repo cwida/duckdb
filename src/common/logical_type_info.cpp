@@ -136,7 +136,7 @@ bool LogicalTypeInfo::EqualsInternal(const LogicalTypeInfo *other_p) const {
 DecimalTypeInfo::DecimalTypeInfo() : LogicalTypeInfo(LogicalTypeInfoType::DECIMAL_TYPE_INFO) {
 }
 
-DecimalTypeInfo::DecimalTypeInfo(uint8_t width_p, uint8_t scale_p)
+DecimalTypeInfo::DecimalTypeInfo(uint32_t width_p, uint32_t scale_p)
     : LogicalTypeInfo(LogicalTypeInfoType::DECIMAL_TYPE_INFO), width(width_p), scale(scale_p) {
 	D_ASSERT(width_p >= scale_p);
 }
@@ -302,6 +302,20 @@ PhysicalType EnumTypeInfo::DictType(idx_t size) {
 	} else {
 		throw InternalException("Enum size must be lower than " + std::to_string(NumericLimits<uint32_t>::Maximum()));
 	}
+}
+
+void EnumTypeInfo::ThrowDuplicateValue(const string_t &value) {
+	throw InvalidInputException("Attempted to create ENUM type with duplicate value %s", value.GetString());
+}
+
+void EnumTypeInfo::ThrowCorruptedIndex(idx_t index, idx_t size) {
+	throw SerializationException("Corrupted enum: string value index %llu exceeds enum size %u", index,
+	                             UnsafeNumericCast<uint32_t>(size));
+}
+
+void EnumTypeInfo::ThrowCorruptedCount(idx_t size, idx_t read_count) {
+	throw SerializationException("Corrupted enum: expected %u values, but found %llu",
+	                             UnsafeNumericCast<uint32_t>(size), read_count);
 }
 
 EnumTypeInfo::EnumTypeInfo(const Vector &values_insert_order_p, idx_t dict_size_p)

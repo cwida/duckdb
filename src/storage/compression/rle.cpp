@@ -362,13 +362,14 @@ struct RLEScanState : public SegmentScanState {
 
 	//! Advances past empty entries while validating the current run.
 	ValidatedRun ValidateAndGetCurrentRun() {
-		auto run = layout.ValidateAndGetRun(entry_pos);
-		// Empty runs do not represent rows.
-		while (run.length == 0) {
+		while (true) {
+			auto run = layout.ValidateAndGetRun(entry_pos);
+			if (run.length != 0) {
+				return run;
+			}
+			// Empty runs do not represent rows.
 			ForwardToNextRun();
-			run = layout.ValidateAndGetRun(entry_pos);
 		}
-		return run;
 	}
 
 	inline void SkipInternal(idx_t skip_count) {
@@ -427,9 +428,8 @@ unique_ptr<SegmentScanState> RLEInitScan(const QueryContext &context, ColumnSegm
 //===--------------------------------------------------------------------===//
 template <class T>
 void RLESkip(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count) {
-	auto end = state.GetPositionInSegment();
-	D_ASSERT(end <= segment.count);
-	D_ASSERT(skip_count <= end);
+	D_ASSERT(state.GetPositionInSegment() <= segment.count);
+	D_ASSERT(skip_count <= state.GetPositionInSegment());
 	auto &scan_state = state.scan_state->Cast<RLEScanState<T>>();
 	scan_state.Skip(segment, skip_count);
 }
@@ -466,8 +466,8 @@ static void RLEScanConstant(RLEScanState<T> &scan_state, const typename RLEScanS
 template <class T, bool ENTIRE_VECTOR>
 void RLEScanPartialInternal(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
                             idx_t result_offset) {
-	auto start = state.GetPositionInSegment();
-	D_ASSERT(start <= segment.count && scan_count <= segment.count - start);
+	D_ASSERT(state.GetPositionInSegment() <= segment.count);
+	D_ASSERT(scan_count <= segment.count - state.GetPositionInSegment());
 	auto &scan_state = state.scan_state->Cast<RLEScanState<T>>();
 
 	// If we are scanning an entire Vector and it contains only a single run
@@ -538,7 +538,7 @@ void RLESelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 	for (idx_t i = 0; i < sel_count; i++) {
 		auto next_idx = sel.get_index(i);
 		if (next_idx < prev_idx) {
-			throw InternalException("Error in RLESelect - selection vector indices are not ordered");
+			InternalException::Throw("Error in RLESelect - selection vector indices are not ordered");
 		}
 		D_ASSERT(next_idx < vector_count);
 		while (next_idx >= run_end) {
@@ -637,7 +637,7 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 		for (idx_t i = 0; i < sel_count; i++) {
 			auto read_idx = sel.get_index(i);
 			if (read_idx < prev_idx) {
-				throw InternalException("Error in RLEFilter - selection vector indices are not ordered");
+				InternalException::Throw("Error in RLEFilter - selection vector indices are not ordered");
 			}
 			D_ASSERT(read_idx < vector_count);
 			// skip forward to the next index
@@ -664,23 +664,6 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-template <class T>
-void RLEFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	D_ASSERT(row_id >= 0);
-	auto row_index = NumericCast<idx_t>(row_id);
-	D_ASSERT(row_index < segment.count);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	RLEScanState<T> scan_state(std::move(handle), segment);
-	scan_state.Skip(segment, row_index);
-
-	auto result_data = FlatVector::GetDataMutable<T>(result);
-	result_data[result_idx] = scan_state.ValidateAndGetCurrentRun().value;
-}
-
-//===--------------------------------------------------------------------===//
 // Get Function
 //===--------------------------------------------------------------------===//
 template <class T, bool WRITE_STATISTICS = true>
@@ -688,9 +671,8 @@ CompressionFunction GetRLEFunction(PhysicalType data_type) {
 	return CompressionFunction(CompressionType::COMPRESSION_RLE, data_type, RLEInitAnalyze<T>, RLEAnalyze<T>,
 	                           RLEFinalAnalyze<T>, RLEInitCompression<T, WRITE_STATISTICS>,
 	                           RLECompress<T, WRITE_STATISTICS>, RLEFinalizeCompress<T, WRITE_STATISTICS>,
-	                           RLEInitScan<T>, RLEScan<T>, RLEScanPartial<T>, RLEFetchRow<T>, RLESkip<T>, nullptr,
-	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, RLESelect<T>,
-	                           RLEFilter<T>);
+	                           RLEInitScan<T>, RLEScan<T>, RLEScanPartial<T>, RLESkip<T>, nullptr, nullptr, nullptr,
+	                           nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, RLESelect<T>, RLEFilter<T>);
 }
 
 CompressionFunction RLEFun::GetFunction(PhysicalType type) {

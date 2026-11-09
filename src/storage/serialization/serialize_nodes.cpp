@@ -250,6 +250,9 @@ ColumnDefinition ColumnDefinition::Deserialize(Deserializer &deserializer) {
 	deserializer.ReadProperty<duckdb::CompressionType>(104, "compression_type", result.compression_type);
 	deserializer.ReadPropertyWithExplicitDefault<Value>(105, "comment", result.comment, Value());
 	deserializer.ReadPropertyWithExplicitDefault<InsertionOrderPreservingMap<string>>(106, "tags", result.tags, InsertionOrderPreservingMap<string>());
+	if (result.Generated() && !result.HasGeneratedExpression()) {
+		throw SerializationException("Failed to deserialize: generated column has no expression");
+	}
 	return result;
 }
 
@@ -432,6 +435,8 @@ Literal Literal::Deserialize(Deserializer &deserializer) {
 	Literal result;
 	deserializer.ReadProperty<LiteralKind>(100, "kind", result.kind);
 	deserializer.ReadPropertyWithDefault<string>(101, "text", result.text);
+	result.Verify();
+	deserializer.CheckAllowed(result.kind);
 	return result;
 }
 
@@ -673,6 +678,7 @@ unique_ptr<SampleOptions> SampleOptions::Deserialize(Deserializer &deserializer)
 	result->method = method;
 	deserializer.ReadPropertyWithDefault<bool>(104, "repeatable", result->repeatable);
 	deserializer.ReadPropertyWithExplicitDefault<double>(105, "sample_rate", result->sample_rate, -1.0);
+	result->Verify();
 	return result;
 }
 

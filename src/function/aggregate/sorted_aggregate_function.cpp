@@ -369,8 +369,8 @@ struct SortedAggregateFunction {
 		state.linked_list = LinkedList();
 	}
 
-	static void Finalize(Vector &states, AggregateFinalizeInputData &finalize_input_data, Vector &result, idx_t count,
-	                     const idx_t offset) {
+	static void FinalizeGroups(Vector &states, AggregateFinalizeInputData &finalize_input_data, Vector &result,
+	                           idx_t count, const idx_t offset) {
 		auto &order_bind = finalize_input_data.bind_data->Cast<SortedAggregateBindData>();
 		auto &client = order_bind.context;
 
@@ -542,6 +542,21 @@ struct SortedAggregateFunction {
 
 		result.Verify();
 	}
+
+	static void Finalize(Vector &states, AggregateFinalizeInputData &finalize_input_data, Vector &result, idx_t count,
+	                     const idx_t offset) {
+		//	Internally we can only handle 2^16 rows, so chunk them up
+		const idx_t group_limit = NumericLimits<uint16_t>::Maximum();
+		if (count <= group_limit) {
+			FinalizeGroups(states, finalize_input_data, result, count, offset);
+			return;
+		}
+		for (idx_t group_offset = 0; group_offset < count; group_offset += group_limit) {
+			const auto group_count = MinValue<idx_t>(group_limit, count - group_offset);
+			Vector group_states(states, group_offset, group_offset + group_count);
+			FinalizeGroups(group_states, finalize_input_data, result, group_count, offset + group_offset);
+		}
+	}
 };
 
 //! The exported state of a sorted aggregate is its buffer of values: a LIST<buffered_struct>.
@@ -552,17 +567,24 @@ AggregateStateLayout SortedAggregateGetStateType(AggregateLayoutInput &input) {
 	layout.total_state_size = AlignValue<idx_t>(sizeof(SortedAggregateState));
 	layout.field = BuildStateField<StateListType<StateReturnType>>();
 	AggregateStateField::PopulateListFunctions(layout.type, layout.field);
+	// an empty buffer is an empty group: export it as a non-NULL empty list so finalize runs the wrapped
+	// aggregate's empty-group finalize (e.g. count -> 0) instead of returning NULL on a NULL state
+	layout.field.list_empty_as_empty = true;
 	return layout;
 }
 
 //! Builds the sorted aggregate wrapper AggregateFunction (shared by the forward export path and the re-bind path).
 AggregateFunction CreateSortedAggregateWrapper(const Identifier &name, const vector<LogicalType> &arguments,
-                                               const LogicalType &return_type, FunctionNullHandling null_handling) {
+                                               const LogicalType &return_type,
+                                               const FunctionProperties &inner_properties) {
 	AggregateFunction ordered_aggregate(
 	    name, arguments, return_type, AggregateFunction::StateSize<SortedAggregateState>,
 	    AggregateFunction::StateInitialize<SortedAggregateState, ListFunction>, SortedAggregateFunction::ScatterUpdate,
-	    ListCombineFunction<SortedAggregateFunction>, SortedAggregateFunction::Finalize, null_handling, nullptr,
-	    nullptr, nullptr, nullptr, SortedAggregateFunction::WindowBatch);
+	    ListCombineFunction<SortedAggregateFunction>, SortedAggregateFunction::Finalize,
+	    inner_properties.GetNullHandling(), nullptr, nullptr, nullptr, nullptr, SortedAggregateFunction::WindowBatch);
+	// the wrapper only buffers and sorts: it throws and is volatile exactly when the inner aggregate is
+	ordered_aggregate.SetErrorMode(inner_properties.GetErrorMode());
+	ordered_aggregate.SetStability(inner_properties.GetStability());
 	ordered_aggregate.SetInitLocalStateFinalizeCallback(SortedAggregateFinalizeState::Init);
 	ordered_aggregate.SetStructStateExport(SortedAggregateGetStateType);
 	return ordered_aggregate;
@@ -585,18 +607,17 @@ FunctionBinder::BindSortedAggregateState(ClientContext &context, const BoundAggr
 	auto &buffer_columns = StructType::GetChildTypes(buffer_struct);
 	auto &inner_arguments = inner_function.GetArguments();
 	if (argument_count != inner_arguments.size() || argument_count > buffer_columns.size()) {
-		throw BinderException("Aggregate state for \"%s\" has %llu state columns, expected at least %llu",
+		throw BinderException("Aggregate state for %s has %llu state columns, expected at least %llu",
 		                      inner_function.GetName(), (uint64_t)buffer_columns.size(),
 		                      (uint64_t)inner_arguments.size());
 	}
 	for (idx_t i = 0; i < argument_count; i++) {
 		if (inner_arguments[i].IsComplete() && buffer_columns[i].second != inner_arguments[i]) {
-			throw BinderException("Aggregate state for \"%s\" has state column %llu of type %s, expected %s",
+			throw BinderException("Aggregate state for %s has state column %llu of type %s, expected %s",
 			                      inner_function.GetName(), (uint64_t)i, buffer_columns[i].second.ToString(),
 			                      inner_arguments[i].ToString());
 		}
 	}
-	const auto null_handling = inner_function.GetProperties().GetNullHandling();
 	auto bind_data = make_uniq<SortedAggregateBindData>(context, inner_function, std::move(inner_bind_info),
 	                                                    buffer_struct, orders, argument_count);
 	// the wrapper consumes the buffered columns (the struct fields)
@@ -605,7 +626,7 @@ FunctionBinder::BindSortedAggregateState(ClientContext &context, const BoundAggr
 		arguments.emplace_back(child.second);
 	}
 	auto result_function = CreateSortedAggregateWrapper(inner_function.GetName(), arguments,
-	                                                    inner_function.GetReturnType(), null_handling);
+	                                                    inner_function.GetReturnType(), inner_function.GetProperties());
 	return make_pair(std::move(result_function), std::move(bind_data));
 }
 
@@ -636,7 +657,7 @@ void FunctionBinder::BindSortedAggregate(ClientContext &context, BoundAggregateE
 		auto &logical_fields = StructType::GetChildTypes(export_layout.first);
 		ExportAggregateFunction::GetSortedStateOrders(expr.GetReturnType(), export_layout.second);
 		if (export_layout.second.size() != order_bys.orders.size() || children.size() > logical_fields.size()) {
-			throw InternalException("Exported state layout of ordered aggregate \"%s\" does not match its ORDER BY",
+			throw InternalException("Exported state layout of ordered aggregate %s does not match its ORDER BY",
 			                        bound_function.GetName());
 		}
 		// the statistics optimizer may have narrowed the buffered column types since the exported type was fixed at
@@ -671,9 +692,8 @@ void FunctionBinder::BindSortedAggregate(ClientContext &context, BoundAggregateE
 	}
 
 	// Replace the aggregate with the wrapper
-	auto ordered_aggregate =
-	    CreateSortedAggregateWrapper(bound_function.GetName(), arguments, bound_function.GetReturnType(),
-	                                 bound_function.GetProperties().GetNullHandling());
+	auto ordered_aggregate = CreateSortedAggregateWrapper(
+	    bound_function.GetName(), arguments, bound_function.GetReturnType(), bound_function.GetProperties());
 
 	expr.FunctionMutable().ReplaceImplementation(ordered_aggregate);
 	expr.BindInfoMutable() = std::move(sorted_bind);
@@ -732,6 +752,9 @@ void FunctionBinder::BindSortedAggregate(ClientContext &context, BoundWindowExpr
 	    ListCombineFunction<SortedAggregateFunction>, SortedAggregateFunction::Finalize,
 	    aggregate.GetProperties().GetNullHandling(), nullptr, nullptr, nullptr, nullptr,
 	    SortedAggregateFunction::WindowBatch);
+	// the wrapper only buffers and sorts: it throws and is volatile exactly when the inner aggregate is
+	ordered_aggregate.SetErrorMode(aggregate.GetErrorMode());
+	ordered_aggregate.SetStability(aggregate.GetStability());
 	ordered_aggregate.SetWindowCallback(SortedAggregateFunction::Window);
 	ordered_aggregate.SetInitLocalStateFinalizeCallback(SortedAggregateFinalizeState::Init);
 

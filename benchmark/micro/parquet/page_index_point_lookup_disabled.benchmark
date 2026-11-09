@@ -1,0 +1,25 @@
+# name: benchmark/micro/parquet/page_index_point_lookup_disabled.benchmark
+# description: Point lookup on a sorted column in a single large row group without using the page index (baseline)
+# group: [parquet]
+
+name Page Index Point Lookup (disabled)
+group micro
+subgroup parquet
+
+require parquet
+
+load
+COPY (
+	SELECT range AS id,
+	       (range * 7919) % 1000000 AS v,
+	       'payload_' || lpad(range::VARCHAR, 9, '0') AS s,
+	       (range / 7)::DOUBLE AS d
+	FROM range(10000000)
+) TO '${BENCHMARK_DIR}/page_index_point_lookup.parquet' (ROW_GROUP_SIZE 10000000, DATA_PAGE_SIZE_LIMIT 1048576, WRITE_PAGE_INDEX true);
+SET parquet_use_page_index = false;
+
+run
+SELECT id, v, s, d FROM '${BENCHMARK_DIR}/page_index_point_lookup.parquet' WHERE id = 5000000
+
+result IIII
+5000000	0	payload_005000000	714285.7142857143

@@ -110,11 +110,9 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 		extension_directories.push_back(custom_extension_directory);
 	}
 
-	if (!config.options.extension_directories.empty()) {
-		// Add all configured extension directories
-		for (const auto &dir : config.options.extension_directories) {
-			extension_directories.push_back(dir);
-		}
+	// Add all configured extension directories
+	for (auto &dir : config.GetExtensionDirectories()) {
+		extension_directories.push_back(std::move(dir));
 	}
 	if (extension_directories.empty()) {
 		// Add default extension directory if no custom directories configured
@@ -138,6 +136,11 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 	}
 
 	return extension_directories;
+}
+
+bool ExtensionHelper::IsInstalledExtensionFile(const string &path) {
+	// an install writes <name>.duckdb_extension.tmp-<uuid>.duckdb_extension before it moves the file in place
+	return StringUtil::EndsWith(path, ".duckdb_extension") && !StringUtil::Contains(path, ".duckdb_extension.tmp-");
 }
 
 string ExtensionHelper::ExtensionDirectory(DatabaseInstance &db, FileSystem &fs) {

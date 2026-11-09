@@ -19,4 +19,4 @@ DICT_FSST
 statement error
 SELECT sum(length(s)) FROM t;
 ----
-IO Error: Failed to scan DICT_FSST string segment: invalid FSST symbol table. Database file appears to be corrupted.
+Data Corruption Error: Failed to scan DICT_FSST string segment: invalid FSST symbol table. Database file appears to be corrupted.

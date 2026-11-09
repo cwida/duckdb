@@ -179,7 +179,6 @@ static int64_t ImplicitCastUBigint(const LogicalType &to) {
 
 static int64_t ImplicitCastFloat(const LogicalType &to) {
 	switch (to.id()) {
-	case LogicalTypeId::BIGNUM:
 	case LogicalTypeId::DOUBLE:
 		return TargetTypeCost(to);
 	default:

@@ -1,0 +1,19 @@
+# name: test/sql/function/blob/from_base64_padding_order.test
+# description: from_base64 rejects data after the padding
+# group: [blob]
+
+statement error
+SELECT from_base64('AP=8');
+----
+<REGEX>:Conversion Error.*data after the padding.*
+
+statement error
+SELECT from_base64('QUJDQP=8');
+----
+<REGEX>:Conversion Error.*data after the padding.*
+
+# valid padding is unchanged
+query IIII
+SELECT from_base64('QQ=='), from_base64('QUI='), from_base64('QUJD'), from_base64('QUJDQQ==');
+----
+A	AB	ABC	ABCA

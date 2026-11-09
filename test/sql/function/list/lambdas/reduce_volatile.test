@@ -1,0 +1,27 @@
+# name: test/sql/function/list/lambdas/reduce_volatile.test
+# description: list_reduce with a volatile lambda is evaluated for every row, also with constant arguments
+# group: [lambdas]
+
+statement ok
+CREATE SEQUENCE s;
+
+# every element of every row draws a new sequence value: 1..6 in total
+query II
+SELECT count(DISTINCT r), sum(r) FROM (SELECT list_reduce([1, 2], lambda a, x: a + nextval('s'), 0) r FROM range(3));
+----
+3	21
+
+query I
+SELECT count(DISTINCT list_reduce([1, 2], lambda a, x: a + random(), 0.0)) > 1 FROM range(100);
+----
+true
+
+query I
+SELECT count(DISTINCT list_reduce([1.0, 2.0], lambda a, x: a + random())) > 1 FROM range(100);
+----
+true
+
+query I
+SELECT count(DISTINCT list_reduce([1, 2], lambda a, x: a + x, 0)) FROM range(100);
+----
+1

@@ -1,0 +1,43 @@
+# name: test/sql/aggregate/group/group_by_all_collation.test
+# description: GROUP BY ALL groups collated select-list expressions by their collation
+# group: [group]
+
+query II
+SELECT s COLLATE NOCASE AS s, count(*) FROM (VALUES ('a'), ('A'), ('b')) v(s) GROUP BY ALL ORDER BY 1
+----
+a	2
+b	1
+
+query II
+SELECT s COLLATE NOCASE AS s, count(*) FROM (VALUES ('a'), ('A'), ('b')) v(s) GROUP BY s COLLATE NOCASE ORDER BY 1
+----
+a	2
+b	1
+
+query III
+SELECT s COLLATE NOCASE AS s, upper(s) COLLATE NOCASE AS u, count(*) FROM (VALUES ('a'), ('A'), ('b')) v(s) GROUP BY ALL ORDER BY 1
+----
+a	A	2
+b	B	1
+
+# without a collation values are grouped by their bytes
+query II
+SELECT s, count(*) FROM (VALUES ('a'), ('A')) v(s) GROUP BY ALL ORDER BY 1
+----
+A	1
+a	1
+
+statement ok
+SET default_collation='nocase'
+
+query II
+SELECT s, count(*) FROM (VALUES ('a'), ('A'), ('b')) v(s) GROUP BY ALL ORDER BY 1
+----
+a	2
+b	1
+
+query II
+SELECT s, count(*) FROM (VALUES ('a'), ('A'), ('b')) v(s) GROUP BY s ORDER BY 1
+----
+a	2
+b	1

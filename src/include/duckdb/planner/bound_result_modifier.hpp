@@ -29,7 +29,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast result modifier to type - result modifier type mismatch");
+			InternalException::Throw("Failed to cast result modifier to type - result modifier type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -37,7 +37,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast result modifier to type - result modifier type mismatch");
+			InternalException::Throw("Failed to cast result modifier to type - result modifier type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

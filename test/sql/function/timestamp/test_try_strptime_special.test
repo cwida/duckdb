@@ -1,0 +1,210 @@
+# name: test/sql/function/timestamp/test_try_strptime_special.test
+# description: try_strptime and the format readers of CSV and JSON read the words epoch, infinity and -infinity as strptime does
+# group: [timestamp]
+
+statement ok
+CREATE TABLE words AS SELECT * FROM (VALUES (1, 'epoch'), (2, 'infinity'), (3, '-infinity')) t(i, w);
+
+query III
+SELECT w, try_strptime(w, '%Y-%m-%d'), strptime(w, '%Y-%m-%d') FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00	1970-01-01 00:00:00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query III
+SELECT w, try_strptime(w, '%Y'), strptime(w, '%Y') FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00	1970-01-01 00:00:00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query III
+SELECT w, try_strptime(w, '%Y-%m-%d %H:%M:%S.%n'), strptime(w, '%Y-%m-%d %H:%M:%S.%n') FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00	1970-01-01 00:00:00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query III
+SELECT w, try_strptime(w, '%Y-%m-%d %H:%M:%S.%n %z'), strptime(w, '%Y-%m-%d %H:%M:%S.%n %z') FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00+00	1970-01-01 00:00:00+00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query III
+SELECT typeof(try_strptime('epoch', '%Y-%m-%d %H:%M:%S.%n')), typeof(try_strptime('epoch', '%Y-%m-%d %z')), typeof(try_strptime('epoch', '%Y-%m-%d %H:%M:%S.%n %z'))
+----
+TIMESTAMP_NS	TIMESTAMP WITH TIME ZONE	TIMESTAMPTZ_NS
+
+query III
+SELECT w, try_strptime(w, '%Y-%m-%d %z'), strptime(w, '%Y-%m-%d %z') FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00+00	1970-01-01 00:00:00+00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query III
+SELECT w, try_strptime(w, ['%d/%m/%Y', '%Y-%m-%d']), strptime(w, ['%d/%m/%Y', '%Y-%m-%d']) FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00	1970-01-01 00:00:00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query III
+SELECT w, try_strptime(w, ['%d/%m/%Y', '%n']), strptime(w, ['%d/%m/%Y', '%n']) FROM words ORDER BY i
+----
+epoch	1970-01-01 00:00:00	1970-01-01 00:00:00
+infinity	infinity	infinity
+-infinity	-infinity	-infinity
+
+query IIII
+SELECT w, try_strptime(w, '%Y-%m-%d'), TRY(strptime(w, '%Y-%m-%d')), strptime(w, '%Y-%m-%d')
+FROM (VALUES (1, 'Epoch'), (2, '  epoch  '), (3, 'INFINITY'), (4, '-Infinity')) t(i, w) ORDER BY i
+----
+Epoch	1970-01-01 00:00:00	1970-01-01 00:00:00	1970-01-01 00:00:00
+  epoch  	1970-01-01 00:00:00	1970-01-01 00:00:00	1970-01-01 00:00:00
+INFINITY	infinity	infinity	infinity
+-Infinity	-infinity	-infinity	-infinity
+
+query III
+SELECT w, try_strptime(w, '%Y-%m-%d'), TRY(strptime(w, '%Y-%m-%d'))
+FROM (VALUES (1, 'epochx'), (2, 'epoch x'), (3, 'infinityy'), (4, '-infinity1'), (5, 'epo')) t(i, w) ORDER BY i
+----
+epochx	NULL	NULL
+epoch x	NULL	NULL
+infinityy	NULL	NULL
+-infinity1	NULL	NULL
+epo	NULL	NULL
+
+statement error
+SELECT strptime('epochx', '%Y-%m-%d')
+----
+Special timestamp did not match: trailing characters
+
+statement error
+SELECT strptime('infinityy', '%Y-%m-%d')
+----
+Special timestamp did not match: trailing characters
+
+statement error
+SELECT strptime('epo', '%Y-%m-%d')
+----
+Could not parse string "epo" according to format specifier "%Y-%m-%d"
+
+statement ok
+CREATE TABLE mixed AS SELECT * FROM (VALUES
+	(1, '2024-01-02'),
+	(2, 'epoch'),
+	(3, NULL),
+	(4, 'infinity'),
+	(5, '2024-02-30'),
+	(6, '-infinity'),
+	(7, 'not a date'),
+	(8, '1999-12-31')
+) t(i, s);
+
+query II
+SELECT i, try_strptime(s, '%Y-%m-%d') FROM mixed ORDER BY i
+----
+1	2024-01-02 00:00:00
+2	1970-01-01 00:00:00
+3	NULL
+4	infinity
+5	NULL
+6	-infinity
+7	NULL
+8	1999-12-31 00:00:00
+
+statement error
+SELECT strptime(s, '%Y-%m-%d') FROM mixed WHERE i = 5
+----
+Date out of range: 2024-2-30
+
+statement error
+SELECT strptime(s, '%Y-%m-%d') FROM mixed WHERE i = 7
+----
+Could not parse string "not a date" according to format specifier "%Y-%m-%d"
+
+query II
+SELECT i, try_strptime(s, '%Y-%m-%d') IS NOT DISTINCT FROM CAST(s AS TIMESTAMP) FROM mixed WHERE i NOT IN (5, 7) ORDER BY i
+----
+1	true
+2	true
+3	true
+4	true
+6	true
+8	true
+
+statement ok
+COPY (SELECT s AS d, s AS t FROM mixed WHERE i NOT IN (5, 7) ORDER BY i) TO '{TEST_DIR}/special_words.csv' (HEADER)
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/special_words.csv', header = true, dateformat = '%Y-%m-%d', timestampformat = '%Y-%m-%d', columns = {'d': 'DATE', 't': 'TIMESTAMP'})
+----
+2024-01-02	2024-01-02 00:00:00
+1970-01-01	1970-01-01 00:00:00
+NULL	NULL
+infinity	infinity
+-infinity	-infinity
+1999-12-31	1999-12-31 00:00:00
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/special_words.csv', header = true, columns = {'d': 'DATE', 't': 'TIMESTAMP'})
+----
+2024-01-02	2024-01-02 00:00:00
+1970-01-01	1970-01-01 00:00:00
+NULL	NULL
+infinity	infinity
+-infinity	-infinity
+1999-12-31	1999-12-31 00:00:00
+
+statement ok
+COPY (SELECT * FROM (VALUES ('02/01/2024'), ('infinity'), ('epoch'), ('-infinity'), ('13/01/2024')) t(d)) TO '{TEST_DIR}/special_words_detected.csv' (HEADER)
+
+query II
+SELECT d, typeof(d) FROM read_csv('{TEST_DIR}/special_words_detected.csv')
+----
+2024-01-02	DATE
+infinity	DATE
+1970-01-01	DATE
+-infinity	DATE
+2024-01-13	DATE
+
+require json
+
+statement ok
+COPY (SELECT s AS d, s AS t FROM mixed WHERE i NOT IN (5, 7) ORDER BY i) TO '{TEST_DIR}/special_words.json'
+
+query II
+SELECT * FROM read_json('{TEST_DIR}/special_words.json', dateformat = '%Y-%m-%d', timestampformat = '%Y-%m-%d', columns = {'d': 'DATE', 't': 'TIMESTAMP'})
+----
+2024-01-02	2024-01-02 00:00:00
+1970-01-01	1970-01-01 00:00:00
+NULL	NULL
+infinity	infinity
+-infinity	-infinity
+1999-12-31	1999-12-31 00:00:00
+
+query II
+SELECT * FROM read_json('{TEST_DIR}/special_words.json', columns = {'d': 'DATE', 't': 'TIMESTAMP'})
+----
+2024-01-02	2024-01-02 00:00:00
+1970-01-01	1970-01-01 00:00:00
+NULL	NULL
+infinity	infinity
+-infinity	-infinity
+1999-12-31	1999-12-31 00:00:00
+
+statement ok
+COPY (SELECT * FROM (VALUES ('13-01-2024'), ('infinity'), ('epoch'), ('-infinity'), ('31-12-2024')) t(d)) TO '{TEST_DIR}/special_words_detected.json'
+
+query II
+SELECT d, typeof(d) FROM read_json('{TEST_DIR}/special_words_detected.json')
+----
+2024-01-13	DATE
+infinity	DATE
+1970-01-01	DATE
+-infinity	DATE
+2024-12-31	DATE

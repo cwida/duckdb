@@ -1,0 +1,142 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_size_estimate.test_slow
+# description: The DICT_FSST size estimate has to account for the dictionary being block-local
+# group: [dict_fsst]
+
+statement ok
+ATTACH '{TEMP_DIR}/dict_fsst_size_estimate.db' AS db (BLOCK_SIZE 16384);
+
+# 50 distinct values of 5760 bytes each, scattered over 5000 rows. Only a couple of these values fit in one
+# block, and the dictionary is rebuilt for every block, so DICT_FSST stores nearly every row in full. Its
+# estimate has to reflect that, otherwise it wins the compression selection with a size it cannot deliver.
+statement ok
+CREATE TABLE db.scattered AS
+WITH vals AS (
+    SELECT g AS grp,
+           (SELECT string_agg(md5(g::VARCHAR || '-' || x::VARCHAR), '') FROM range(180) x) AS txt
+    FROM range(50) t(g)
+)
+SELECT vals.txt AS description
+FROM (SELECT (hash(i) % 50) AS grp FROM range(5000) t(i)) i
+JOIN vals USING (grp);
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT count(*) FROM pragma_storage_info('db.scattered')
+WHERE segment_type = 'VARCHAR' AND compression = 'DICT_FSST'
+----
+0
+
+query III
+SELECT count(*), count(DISTINCT description), sum(length(description))::BIGINT FROM db.scattered
+----
+5000	50	28800000
+
+# All values unique and larger than a block can hold a few of. No block ever sees a value twice, so a
+# per-block "did anything repeat" check cannot detect this, yet the blocks are just as sparsely filled: with
+# ~2 values per block DICT_FSST needs a block per couple of rows. The FSST_ONLY layout has to be charged per
+# block too, otherwise this is estimated as half the raw size and selected again.
+statement ok
+CREATE TABLE db.large_unique AS
+SELECT (SELECT string_agg(md5((i * 1000 + x)::VARCHAR), '') FROM range(180) x) AS v FROM range(2000) t(i);
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT count(*) FROM pragma_storage_info('db.large_unique')
+WHERE segment_type = 'VARCHAR' AND compression = 'DICT_FSST'
+----
+0
+
+query III
+SELECT count(*), count(DISTINCT v), sum(length(v))::BIGINT FROM db.large_unique
+----
+2000	2000	11520000
+
+# A low cardinality dictionary that comfortably fits a block is what DICT_FSST is for, and it has to keep
+# winning there - the estimate must not become pessimistic across the board.
+statement ok
+CREATE TABLE db.small_dict AS SELECT concat('value-', (i % 4)::VARCHAR) AS v FROM range(20000) t(i);
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT compression FROM pragma_storage_info('db.small_dict') WHERE segment_type = 'VARCHAR' LIMIT 1
+----
+DICT_FSST
+
+query II
+SELECT count(*), count(DISTINCT v) FROM db.small_dict
+----
+20000	4
+
+# 5000 distinct values of 32 bytes over 300000 rows: a dictionary that fits a block but has more distinct values
+# than the analyze set starts out with, so the set has to grow while the block is simulated.
+statement ok
+ATTACH '{TEMP_DIR}/dict_fsst_size_estimate_mid.db' AS db_mid (BLOCK_SIZE 262144);
+
+statement ok
+CREATE TABLE db_mid.mid_dict AS SELECT md5((i % 5000)::VARCHAR) AS v FROM range(300000) t(i);
+
+statement ok
+CHECKPOINT db_mid
+
+query I
+SELECT compression FROM pragma_storage_info('db_mid.mid_dict') WHERE segment_type = 'VARCHAR' LIMIT 1
+----
+DICT_FSST
+
+query II
+SELECT count(*), count(DISTINCT v) FROM db_mid.mid_dict
+----
+300000	5000
+
+# 80 distinct values of 5760 bytes over 20000 rows in 256 KiB blocks. One block holds the dictionary once the
+# writer FSST encodes it, so DICT_FSST needs a fraction of what ZSTD does. The estimate has to model that
+# encoding, otherwise it is charged for the raw dictionary and loses.
+statement ok
+CREATE TABLE db_mid.encoded_dict AS
+WITH vals AS (
+    SELECT g AS grp,
+           (SELECT string_agg(md5(g::VARCHAR || '-' || x::VARCHAR), '') FROM range(180) x) AS txt
+    FROM range(80) t(g)
+)
+SELECT vals.txt AS v
+FROM (SELECT (hash(i) % 80) AS grp FROM range(20000) t(i)) i
+JOIN vals USING (grp);
+
+statement ok
+CHECKPOINT db_mid
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('db_mid.encoded_dict') WHERE segment_type = 'VARCHAR'
+----
+DICT_FSST
+
+query III
+SELECT count(*), count(DISTINCT v), sum(length(v))::BIGINT FROM db_mid.encoded_dict
+----
+20000	80	115200000
+
+# Unique values that FSST shrinks to a fraction, except that row 1 repeats row 0. FSST_ONLY is decided per
+# segment, so the duplicate only affects the segment it is in and all others still skip the selection buffer.
+# Treating it as ruling out FSST_ONLY for the whole column would estimate the raw dictionary and lose to ZSTD.
+statement ok
+CREATE TABLE db_mid.unique_with_duplicate AS
+SELECT CASE WHEN i = 1 THEN '0' ELSE i::VARCHAR END || repeat('abcdefgh', 500) AS v FROM range(20000) t(i);
+
+statement ok
+CHECKPOINT db_mid
+
+query I
+SELECT DISTINCT compression FROM pragma_storage_info('db_mid.unique_with_duplicate') WHERE segment_type = 'VARCHAR'
+----
+DICT_FSST
+
+query II
+SELECT count(*), count(DISTINCT v) FROM db_mid.unique_with_duplicate
+----
+20000	19999

@@ -1,0 +1,22 @@
+# name: test/sql/copy/parquet/variant_binary_as_string_stats.test
+# description: Test reading a VARIANT column with binary_as_string
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1::VARIANT AS i) TO '{TEST_DIR}/variant_bas.parquet' (FORMAT parquet);
+
+query I
+SELECT i::VARCHAR FROM read_parquet('{TEST_DIR}/variant_bas.parquet', binary_as_string=true);
+----
+1
+
+statement ok
+COPY (SELECT {'a': 1}::VARIANT AS i UNION ALL SELECT NULL) TO '{TEST_DIR}/variant_bas2.parquet' (FORMAT parquet);
+
+query I
+SELECT i::VARCHAR FROM read_parquet('{TEST_DIR}/variant_bas2.parquet', binary_as_string=true) ORDER BY ALL;
+----
+{'a': 1}
+NULL

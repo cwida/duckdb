@@ -100,8 +100,13 @@ static bool FindCascade(const vector<GroupingSet> &grouping_sets, vector<Groupin
 		for (idx_t source_idx = level_idx; source_idx > 0; source_idx--) {
 			auto &source_set = grouping_sets[levels[source_idx - 1].grouping_set_idx];
 			if (std::includes(source_set.begin(), source_set.end(), grouping_set.begin(), grouping_set.end())) {
-				levels[level_idx].source_level = source_idx - 1;
-				levels[source_idx - 1].materialized = true;
+				auto source_level = source_idx - 1;
+				if (source_set.size() == grouping_set.size() && levels[source_level].source_level.IsValid()) {
+					// identical grouping set: share the source instead of chaining, to keep the cascade shallow
+					source_level = levels[source_level].source_level.GetIndex();
+				}
+				levels[level_idx].source_level = source_level;
+				levels[source_level].materialized = true;
 				break;
 			}
 		}
@@ -310,8 +315,7 @@ bool GroupingSetsOptimizer::TryRewriteGroupingSets(unique_ptr<LogicalOperator> &
 				    state_types[aggr_idx], ColumnBinding(cte_ref_index, ProjectionIndex(state_pos))));
 				auto combine_function =
 				    GetBuiltinAggregateFunction(optimizer.context, CombineAggrFun::Name, {state_types[aggr_idx]});
-				auto combine_aggregate =
-				    function_binder.BindAggregateFunction(std::move(combine_function), std::move(arguments));
+				auto combine_aggregate = function_binder.BindAggregateFunction(combine_function, std::move(arguments));
 				if (combine_aggregate->GetReturnType() != state_types[aggr_idx]) {
 					return false;
 				}
@@ -428,8 +432,11 @@ bool GroupingSetsOptimizer::TryRewriteGroupingSets(unique_ptr<LogicalOperator> &
 			continue;
 		}
 		auto cte_name = Identifier(StringUtil::Format("__grouping_sets_cte_%llu", level.cte_index.index));
+		// cap the aggregate with a projection so later binding remaps cannot change the CTE's column layout
+		auto cte_definition =
+		    LogicalProjection::CreateIdentity(optimizer.binder.GenerateTableIndex(), std::move(level.aggregate));
 		auto cte = make_uniq<LogicalMaterializedCTE>(std::move(cte_name), level.cte_index, level.output_types.size(),
-		                                             std::move(level.aggregate), std::move(result),
+		                                             std::move(cte_definition), std::move(result),
 		                                             CTEMaterialize::CTE_MATERIALIZE_DEFAULT);
 		if (aggr.has_estimated_cardinality) {
 			cte->SetEstimatedCardinality(aggr.estimated_cardinality);

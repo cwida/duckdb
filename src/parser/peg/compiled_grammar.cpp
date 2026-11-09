@@ -4,6 +4,8 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/grammar_extension.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 CompiledGrammar::CompiledGrammar(MatcherAllocator &&allocator_p, unique_ptr<PEGKeywordHelper> &&keyword_helper_p,
@@ -12,6 +14,26 @@ CompiledGrammar::CompiledGrammar(MatcherAllocator &&allocator_p, unique_ptr<PEGK
     : allocator(std::move(allocator_p)), keyword_helper(std::move(keyword_helper_p)), tokenizer(std::move(tokenizer_p)),
       rules(std::move(rules_p)), program_matcher(program_matcher),
       top_level_statement_matcher(top_level_statement_matcher) {
+	rules_by_id.resize(static_cast<idx_t>(PEGRuleId::BUILTIN_COUNT));
+	vector<reference<CompiledGrammarRule>> runtime_rules;
+	for (auto &entry : rules) {
+		auto &rule = *entry.second;
+		rule.rule_id = PEGRuleIdFromString(rule.name);
+		if (rule.rule_id == PEGRuleId::INVALID) {
+			runtime_rules.push_back(rule);
+			continue;
+		}
+		rules_by_id[static_cast<idx_t>(rule.rule_id)] = rule;
+	}
+	// the rule map has no stable order, so sort by name to assign the same runtime IDs to the same rule set
+	std::sort(runtime_rules.begin(), runtime_rules.end(),
+	          [](const reference<CompiledGrammarRule> &a, const reference<CompiledGrammarRule> &b) {
+		          return StringUtil::CILessThan(a.get().name, b.get().name);
+	          });
+	for (auto &rule : runtime_rules) {
+		rule.get().rule_id = static_cast<PEGRuleId>(rules_by_id.size());
+		rules_by_id.push_back(rule.get());
+	}
 }
 
 static void ValidateParsedGrammarRoots(const ParsedGrammar &grammar) {
@@ -144,6 +166,7 @@ shared_ptr<CompiledGrammar> CompiledGrammar::Create(const vector<reference<Gramm
 	auto &program_matcher = factory.CreateRootMatcher("Program");
 	auto &top_level_statement_matcher = factory.GetMatcher("TopLevelStatement");
 	ComputeFirstSets(program_matcher, keyword_helper->GetLiteralTable());
+	allocator.InitializeListChains();
 
 	auto new_matcher = shared_ptr<CompiledGrammar>(new CompiledGrammar(std::move(allocator), std::move(keyword_helper),
 	                                                                   std::move(tokenizer), std::move(rules),
@@ -158,6 +181,14 @@ shared_ptr<CompiledGrammar> CompiledGrammar::DefaultGrammar() {
 
 shared_ptr<CompiledGrammar> CompiledGrammar::Create() {
 	return Create({});
+}
+
+optional_ptr<const CompiledGrammarRule> CompiledGrammar::GetRule(PEGRuleId rule_id) const {
+	auto index = static_cast<idx_t>(rule_id);
+	if (index >= rules_by_id.size()) {
+		return nullptr;
+	}
+	return rules_by_id[index];
 }
 
 optional_ptr<const CompiledGrammarRule> CompiledGrammar::GetRule(const string &rule_name) const {

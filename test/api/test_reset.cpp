@@ -78,6 +78,7 @@ OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	    {"show_behavior", {EnumUtil::ToString(ShowBehaviorType::TABLE)}},
 	    {"autoload_known_extensions", {false}},
 	    {"autoinstall_known_extensions", {false}},
+	    {"enable_block_allocator", {!DBConfigOptions().enable_block_allocator}},
 	    {"enable_profiling", {"json"}},
 	    {"explain_output", {{"all", "optimized_only", "physical_only"}}},
 	    {"file_search_path", {"test"}},
@@ -182,8 +183,8 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "allow_unsigned_extensions",    // cant change this while db is running
 	    "allowed_configs",
 	    "allowed_directories",
+	    "default_grammar_extensions", // non-empty values require a registered grammar extension
 	    "allowed_paths",
-	    "block_allocator_memory", // cant reduce
 	    "current_dialect",
 	    "custom_user_agent",
 	    "debug_delta_only_variant_encoding_enabled",

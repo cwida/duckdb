@@ -1,0 +1,25 @@
+# name: test/sql/json/scalar/test_json_geometry_crs.test
+# description: Test JSON casts of a GEOMETRY with a CRS
+# group: [scalar]
+
+require json
+
+query I
+SELECT 'POINT(1 2)'::GEOMETRY('OGC:CRS84')::JSON;
+----
+"POINT (1 2)"
+
+query I
+SELECT json_valid('POINT(1 2)'::GEOMETRY('OGC:CRS84')::JSON);
+----
+true
+
+query I
+SELECT json_type('POINT(1 2)'::GEOMETRY('OGC:CRS84')::JSON);
+----
+VARCHAR
+
+query I
+SELECT '"POINT(1 2)"'::JSON::GEOMETRY('OGC:CRS84')::VARCHAR;
+----
+POINT (1 2)

@@ -181,7 +181,7 @@ string BindContext::GetActualColumnName(const BindingAlias &binding_alias, const
 	ErrorData error;
 	auto binding = GetBinding(binding_alias, error);
 	if (!binding) {
-		throw InternalException("No binding with name \"%s\": %s", binding_alias.GetAlias(), error.RawMessage());
+		throw InternalException("No binding with name %s: %s", binding_alias.GetAlias(), error.RawMessage());
 	}
 	return GetActualColumnName(*binding, column_name);
 }
@@ -455,7 +455,7 @@ BindingAlias GetBindingAlias(ColumnRefExpression &colref) {
 
 BindResult BindContext::BindColumn(ColumnRefExpression &colref, idx_t depth) {
 	if (!colref.IsQualified()) {
-		throw InternalException("Could not bind alias \"%s\"!", colref.GetColumnName());
+		throw InternalException("Could not bind alias %s!", colref.GetColumnName());
 	}
 
 	ErrorData error;

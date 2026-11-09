@@ -60,6 +60,8 @@ struct ParquetReadGlobalState : public GlobalTableFunctionState {
 	optional_ptr<const PhysicalOperator> op;
 	//! Row groups read but not yet reported to the profiler
 	atomic<idx_t> row_groups_scanned_unreported {0};
+	//! Compressed size of their column chunks
+	atomic<idx_t> bytes_scanned_unreported {0};
 	//! Total considered, across all scan states
 	atomic<idx_t> total_row_groups_to_scan {0};
 };

@@ -1,4 +1,5 @@
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -119,7 +120,7 @@ struct FieldIdMapper : public ColumnMapper {
 	static unique_ptr<Expression> GetDefault(ClientContext &context, const MultiFileColumnDefinition &column) {
 		auto &default_val = column.default_expression;
 		if (!default_val) {
-			throw InvalidInputException("Field \"%s\" (field id %d) is missing from the file schema and has no default "
+			throw InvalidInputException("Field %s (field id %d) is missing from the file schema and has no default "
 			                            "expression",
 			                            column.name, column.GetIdentifierFieldId());
 		}
@@ -650,7 +651,11 @@ static unique_ptr<Expression> ConstructMapExpression(ClientContext &context, Mul
 	    !is_trivially_mappable && local_column_type.IsNested();
 	if (!can_use_remap_struct) {
 		// not a struct - potentially add a cast
-		if (local_column_type != global_column_type) {
+		if (local_column_type.id() == LogicalTypeId::VARCHAR && global_column_type.id() == LogicalTypeId::BLOB) {
+			// the text in a file becomes its UTF-8 bytes, it is not a blob literal with \x escapes
+			expr = BoundCastExpression::Create(std::move(expr), global_column_type,
+			                                   BoundCastInfo(DefaultCasts::ReinterpretCast));
+		} else if (local_column_type != global_column_type) {
 			expr = BoundCastExpression::AddCastToType(context, std::move(expr), global_column_type);
 		}
 		return expr;
@@ -881,7 +886,7 @@ Value MultiFileColumnMapper::GetConstantValue(MultiFileGlobalIndex global_index)
 		}
 	}
 	auto &global_column = global_columns[global_column_id];
-	throw InternalException("Column '%s' is not present in the file, but no constant_map entry exists for it!",
+	throw InternalException("Column %s is not present in the file, but no constant_map entry exists for it!",
 	                        global_column.name);
 }
 

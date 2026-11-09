@@ -340,7 +340,7 @@ vector<ExtensionUpdateResult> ExtensionHelper::UpdateExtensions(ClientContext &c
 	// scan the install directory for installed extensions
 	auto ext_directory = ExtensionHelper::ExtensionDirectory(db, fs);
 	fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-		if (!StringUtil::EndsWith(path, ".duckdb_extension")) {
+		if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 			return;
 		}
 

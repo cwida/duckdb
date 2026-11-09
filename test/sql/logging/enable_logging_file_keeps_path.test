@@ -1,0 +1,74 @@
+# name: test/sql/logging/enable_logging_file_keeps_path.test
+# description: enable_logging keeps the path of file log storage after a failed switch, a late prepared call and an uppercase storage name
+# group: [logging]
+
+require notwindows
+
+require skip_reload
+
+load {TEMP_DIR}/enable_logging_file_keeps_path.db
+
+# a switch to another storage that fails puts back the file storage with its path
+statement ok
+CALL enable_logging(storage = 'file', storage_config = {'path': '{TEMP_DIR}/keeps_path_switch'});
+
+statement ok
+SELECT 1;
+
+statement error
+CALL enable_logging(storage = 'memory', storage_config = {'delim': '|'});
+----
+delim
+
+statement ok
+SELECT 2;
+
+query I
+SELECT current_setting('logging_storage');
+----
+file
+
+restart
+
+# a prepared switch to file storage without a path is refused once another storage is active
+statement ok
+CALL enable_logging(storage = 'file', storage_config = {'path': '{TEMP_DIR}/keeps_path_prepared'});
+
+statement ok
+PREPARE p AS SELECT * FROM enable_logging(storage = 'file');
+
+statement ok
+CALL enable_logging(storage = 'memory');
+
+statement error
+EXECUTE p;
+----
+Cannot enable 'file' log storage without a valid path
+
+statement ok
+SELECT 2;
+
+query I
+SELECT current_setting('logging_storage');
+----
+memory
+
+restart
+
+# a storage name given in uppercase is the file storage that enable_logging keeps
+statement ok
+CALL enable_logging(storage = 'FILE', storage_path = '{TEMP_DIR}/keeps_path_uppercase.csv');
+
+statement ok
+SELECT 1;
+
+statement ok
+CALL enable_logging();
+
+statement ok
+SELECT 2;
+
+query I
+SELECT current_setting('logging_storage');
+----
+file

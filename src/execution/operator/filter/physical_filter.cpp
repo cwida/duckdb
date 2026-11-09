@@ -33,6 +33,11 @@ public:
 	}
 };
 
+void PhysicalFilter::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// every output column only references or slices the input
+	chunk.Initialize(allocator, types, vector<bool>(types.size(), false));
+}
+
 unique_ptr<OperatorState> PhysicalFilter::GetOperatorState(ExecutionContext &context) const {
 	return make_uniq<FilterState>(context, *expression);
 }

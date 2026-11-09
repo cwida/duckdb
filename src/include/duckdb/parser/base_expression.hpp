@@ -148,7 +148,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (expression_class != TARGET::TYPE) {
-			throw InternalException("Failed to cast expression to type - expression type mismatch");
+			InternalException::Throw("Failed to cast expression to type - expression type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -156,7 +156,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (expression_class != TARGET::TYPE) {
-			throw InternalException("Failed to cast expression to type - expression type mismatch");
+			InternalException::Throw("Failed to cast expression to type - expression type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

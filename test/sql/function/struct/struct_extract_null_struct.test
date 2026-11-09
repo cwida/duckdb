@@ -1,0 +1,50 @@
+# name: test/sql/function/struct/struct_extract_null_struct.test
+# description: struct_extract on a typed NULL struct resolves the type and validates the key
+# group: [struct]
+
+query I
+SELECT typeof((NULL::STRUCT(a INT, z INT)).z);
+----
+INTEGER
+
+query I
+SELECT typeof(struct_extract_at(NULL::STRUCT(a VARCHAR, b DOUBLE), 2));
+----
+DOUBLE
+
+query I
+SELECT typeof((NULL::TUPLE(INT, VARCHAR))[2]);
+----
+VARCHAR
+
+query I
+SELECT (NULL::STRUCT(a VARCHAR)).a UNION ALL SELECT 'x' ORDER BY 1 NULLS FIRST;
+----
+NULL
+x
+
+statement error
+SELECT (NULL::STRUCT(a INT)).zzz;
+----
+<REGEX>:Binder Error.*Could not find key.*
+
+statement error
+SELECT struct_extract_at(NULL::STRUCT(a INT), 99);
+----
+<REGEX>:Binder Error.*out of range.*
+
+statement error
+SELECT (NULL::TUPLE(INT))[99];
+----
+<REGEX>:Binder Error.*out of range.*
+
+# non-NULL structs behave as before
+query I
+SELECT ({'a': 1, 'z': 2}).z;
+----
+2
+
+statement error
+SELECT ({'a': 1}).zzz;
+----
+<REGEX>:Binder Error.*Could not find key.*

@@ -280,7 +280,7 @@ void TupleDataCollection::SortKeyComputeHeapSizes(TupleDataChunkState &chunk_sta
 	const auto &source_validity = source_vector_data.validity;
 	const auto source_data = UnifiedVectorFormat::GetData<string_t>(source_vector_data);
 
-	const auto inlined_size = SortKeyUtils::GetInlineLength(sort_key_type);
+	const auto inlined_size = SortKeyUtils::GetInlineCapacity(sort_key_type);
 	for (idx_t i = 0; i < append_count; i++) {
 		const auto source_idx = source_sel.get_index(append_sel.get_index(i));
 		const auto &string_size = source_data[source_idx].GetSize();
@@ -753,9 +753,11 @@ static void TupleDataTemplatedScatterInternal(const Vector &, const TupleDataVec
 	const auto offset_in_row = layout.GetOffsets()[col_idx];
 
 	const auto null_value = NullValue<T>();
+	const auto append_indices = append_sel.data();
+	const auto source_indices = source_sel.data();
 	for (idx_t i = 0; i < append_count; i++) {
-		const auto append_idx = HAS_APPEND_SEL ? append_sel.get_index_unsafe(i) : i;
-		const auto source_idx = HAS_SOURCE_SEL ? source_sel.get_index_unsafe(append_idx) : append_idx;
+		const auto append_idx = HAS_APPEND_SEL ? append_indices[i] : i;
+		const auto source_idx = HAS_SOURCE_SEL ? source_indices[append_idx] : append_idx;
 		const auto &target_location = target_locations[i];
 		if (ALL_VALID || validity.RowIsValidUnsafe(source_idx)) {
 			TupleDataValueStore<T>(data[source_idx], target_location, offset_in_row, target_heap_locations[i]);
@@ -1395,9 +1397,11 @@ static void TupleDataTemplatedGatherInternal(const TupleDataLayout &layout, Vect
 
 	const auto offset_in_row = layout.GetOffsets()[col_idx];
 	const auto column_count = layout.ColumnCount();
+	const auto scan_indices = scan_sel.data();
+	const auto target_indices = target_sel.data();
 	for (idx_t i = 0; i < scan_count; i++) {
-		const auto source_idx = HAS_SCAN_SEL ? scan_sel.get_index_unsafe(i) : i;
-		const auto target_idx = HAS_TARGET_SEL ? target_sel.get_index_unsafe(i) : i;
+		const auto source_idx = HAS_SCAN_SEL ? scan_indices[i] : i;
+		const auto target_idx = HAS_TARGET_SEL ? target_indices[i] : i;
 		const auto &source_row = source_locations[source_idx];
 		target_data[target_idx] = Load<T>(source_row + offset_in_row);
 		if (!ALL_VALID &&
@@ -1472,7 +1476,7 @@ void TupleDataSortKeyGather(const TupleDataLayout &layout, Vector &row_locations
                             const SelectionVector &scan_sel, const idx_t scan_count, Vector &target,
                             const SelectionVector &target_sel, optional_ptr<Vector>,
                             const vector<TupleDataGatherFunction> &) {
-	throw NotImplementedException("Unimplemented type for TupleDataSortKeyGather");
+	NotImplementedException::Throw("Unimplemented type for TupleDataSortKeyGather");
 }
 
 static void TupleDataStructGather(const TupleDataLayout &layout, Vector &row_locations, const idx_t col_idx,
@@ -1771,6 +1775,35 @@ static void TupleDataCollectionWithinCollectionGather(const TupleDataLayout &lay
 //------------------------------------------------------------------------------
 // Special cases for arrays
 //------------------------------------------------------------------------------
+// Casts the rows at target_sel in cast_vector to the target type - only the rows at target_sel are written
+static void TupleDataCastToArray(Vector &cast_vector, Vector &target, const SelectionVector &target_sel,
+                                 const idx_t scan_count) {
+	if (scan_count == 0) {
+		return;
+	}
+	// the cast overwrites the validity of the whole target, so it can only be used if no NULLs were set
+	bool identity = FlatVector::Validity(target).CannotHaveNull();
+	for (idx_t i = 0; i < scan_count && identity; i++) {
+		identity = target_sel.get_index(i) == i;
+	}
+	if (identity) {
+		VectorOperations::DefaultCast(cast_vector, target, scan_count);
+		return;
+	}
+	// cast the gathered rows into a dense vector, and copy them to their positions in the target
+	Vector source(cast_vector, target_sel, scan_count);
+	Vector dense(target.GetType(), scan_count);
+	VectorOperations::DefaultCast(source, dense, scan_count);
+	idx_t run_start = 0;
+	for (idx_t i = 1; i <= scan_count; i++) {
+		if (i < scan_count && target_sel.get_index(i) == target_sel.get_index(i - 1) + 1) {
+			continue;
+		}
+		VectorOperations::Copy(dense, target, i, run_start, target_sel.get_index(run_start));
+		run_start = i;
+	}
+}
+
 // A gather function that wraps another gather function and casts the result to the target array type
 static void TupleDataCastToArrayListGather(const TupleDataLayout &layout, Vector &row_locations, const idx_t col_idx,
                                            const SelectionVector &scan_sel, const idx_t scan_count, Vector &target,
@@ -1780,13 +1813,13 @@ static void TupleDataCastToArrayListGather(const TupleDataLayout &layout, Vector
 		// Reuse the cached cast vector
 		TupleDataListGather(layout, row_locations, col_idx, scan_sel, scan_count, *cached_cast_vector, target_sel,
 		                    cached_cast_vector, child_functions);
-		VectorOperations::DefaultCast(*cached_cast_vector, target, scan_count);
+		TupleDataCastToArray(*cached_cast_vector, target, target_sel, scan_count);
 	} else {
 		// Otherwise, create a new temporary cast vector
 		Vector cast_vector(ArrayType::ConvertToList(target.GetType()));
 		TupleDataListGather(layout, row_locations, col_idx, scan_sel, scan_count, cast_vector, target_sel, &cast_vector,
 		                    child_functions);
-		VectorOperations::DefaultCast(cast_vector, target, scan_count);
+		TupleDataCastToArray(cast_vector, target, target_sel, scan_count);
 	}
 }
 
@@ -1798,13 +1831,13 @@ static void TupleDataCastToArrayStructGather(const TupleDataLayout &layout, Vect
 		// Reuse the cached cast vector
 		TupleDataStructGather(layout, row_locations, col_idx, scan_sel, scan_count, *cached_cast_vector, target_sel,
 		                      cached_cast_vector, child_functions);
-		VectorOperations::DefaultCast(*cached_cast_vector, target, scan_count);
+		TupleDataCastToArray(*cached_cast_vector, target, target_sel, scan_count);
 	} else {
 		// Otherwise, create a new temporary cast vector
 		Vector cast_vector(ArrayType::ConvertToList(target.GetType()));
 		TupleDataStructGather(layout, row_locations, col_idx, scan_sel, scan_count, cast_vector, target_sel,
 		                      &cast_vector, child_functions);
-		VectorOperations::DefaultCast(cast_vector, target, scan_count);
+		TupleDataCastToArray(cast_vector, target, target_sel, scan_count);
 	}
 }
 

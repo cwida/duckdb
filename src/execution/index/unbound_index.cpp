@@ -61,10 +61,18 @@ IndexCheckpointResult UnboundIndex::Checkpoint(PartialBlockManager &, StorageVer
 
 unique_ptr<BoundIndex> UnboundIndex::Bind(IndexBinder &binder, const vector<LogicalType> &physical_column_types) {
 	auto bound_index = binder.BindIndex(*this);
-	storage_reclaimed = true;
+	// The bound index references the blocks of storage_info from here on, but this index keeps owning them until
+	// the buffered rows are replayed, so that a bind that fails during the replay leaves this index intact for a
+	// retry. Destroying the bound index would otherwise free the blocks this index still references.
 	if (HasBufferedReplays()) {
-		bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
+		try {
+			bound_index->ApplyBufferedReplays(physical_column_types, buffered_replays, mapped_column_ids);
+		} catch (...) {
+			bound_index->DisownStorage();
+			throw;
+		}
 	}
+	storage_reclaimed = true;
 	return bound_index;
 }
 

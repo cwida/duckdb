@@ -62,6 +62,11 @@ std::string DuckDBPlatform() { // NOLINT: allow definition in header
 #if defined(__aarch64__) || defined(__ARM_ARCH_ISA_A64)
 	arch = "arm64";
 #endif
+#if defined(__loongarch64)
+	arch = "loong64";
+#elif defined(__riscv) && __riscv_xlen == 64
+	arch = "riscv64";
+#endif
 
 #if defined(__MUSL__)
 	if (os == "linux") {

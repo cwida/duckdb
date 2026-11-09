@@ -128,3 +128,29 @@ query I
 SELECT count(*) FROM (SELECT * FROM range(100)) TABLESAMPLE 10 ROWS;
 ----
 10
+
+query I
+SELECT count(*) FROM VALUES (1), (2), (3) v(x) TABLESAMPLE 1 ROWS;
+----
+1
+
+query I
+SELECT count(*) FROM VALUES (1), (2), (3) TABLESAMPLE 2 ROWS;
+----
+2
+
+# a LATERAL reference cannot be sampled
+statement error
+SELECT count(*) FROM range(3) t, LATERAL (SELECT t.range) s TABLESAMPLE 1 ROWS;
+----
+Parser Error: TABLESAMPLE cannot be applied to a LATERAL subquery
+
+statement error
+SELECT count(*) FROM range(3) t, LATERAL range(t.range) s TABLESAMPLE 1 ROWS;
+----
+Parser Error: TABLESAMPLE cannot be applied to a LATERAL table function
+
+query I
+SELECT count(*) FROM range(3) t, LATERAL (SELECT t.range) s;
+----
+3

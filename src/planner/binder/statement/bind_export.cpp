@@ -157,6 +157,7 @@ BoundStatement Binder::Bind(ExportStatement &stmt) {
 	result.names = {"Success"};
 
 	BindCopyFormat(*stmt.info);
+	stmt.info->format = StringUtil::Lower(stmt.info->format);
 
 	// lookup the format in the catalog
 	auto &copy_function = Catalog::GetEntry<CopyFunctionCatalogEntry>(
@@ -197,7 +198,7 @@ BoundStatement Binder::Bind(ExportStatement &stmt) {
 			}
 			auto &fk = constraint->Cast<ForeignKeyConstraint>();
 			if (fk.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
-				throw BinderException("Failed to export database: table \"%s\" has a self-referencing foreign key "
+				throw BinderException("Failed to export database: table %s has a self-referencing foreign key "
 				                      "constraint which is currently not supported for exporting",
 				                      table.name);
 			}

@@ -160,7 +160,7 @@ CALL disable_profiling();
 the configuration has been locked
 
 statement error
-CALL enable_profiling(format='json', save_location='__TEST_DIR__/locked_profile.json');
+CALL enable_profiling(format='json', save_location='{TEST_DIR}/locked_profile.json');
 ----
 the configuration has been locked
 
@@ -205,12 +205,22 @@ CALL enable_logging('QueryLog');
 the configuration has been locked
 
 statement error
-CALL enable_logging(storage='file', storage_path='__TEST_DIR__/locked_logs');
+CALL enable_logging(storage='file', storage_path='{TEST_DIR}/locked_logs');
 ----
 the configuration has been locked
 
 statement error
 CALL disable_logging();
+----
+the configuration has been locked
+
+statement error
+CALL add_grammar_extension('shell');
+----
+the configuration has been locked
+
+statement error
+CALL remove_grammar_extension('shell');
 ----
 the configuration has been locked
 

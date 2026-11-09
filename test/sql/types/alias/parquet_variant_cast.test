@@ -1,0 +1,18 @@
+# name: test/sql/types/alias/parquet_variant_cast.test
+# description: Parquet variant storage values cast to user-defined STRUCT types
+# group: [alias]
+
+require parquet
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+# User-defined type names and parameterized types retain their existing behavior.
+statement ok
+CREATE TYPE encoded_record AS STRUCT(metadata BLOB, value BLOB);
+
+query T
+SELECT get_type(variant_to_parquet_variant(NULL)::encoded_record);
+----
+STRUCT(metadata BLOB, "value" BLOB)
+

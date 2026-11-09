@@ -29,6 +29,9 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		pipe_info.join_index = idx;
 		left_child = CreateChildren();
 		right_child = CreateChildren();
+		// the joins below must keep the columns this join's conditions read
+		left_child->VisitOperatorExpressions(op);
+		right_child->VisitOperatorExpressions(op);
 		left_child->OptimizeInternal(std::move(op.children[0]));
 		right_child->OptimizeInternal(std::move(op.children[1]));
 		return;
@@ -113,6 +116,15 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 				pipe_info.distinct_groups[ref_id] = std::move(new_distinct_group);
 			}
 		}
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_TOP_N:
+	case LogicalOperatorType::LOGICAL_SAMPLE:
+	case LogicalOperatorType::LOGICAL_WINDOW: {
+		// these pick rows by cardinality, or compute values that depend on row multiplicity (window), so a
+		// distinct group above them does not hold below them
+		pipe_info.distinct_groups.clear();
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_GET: {

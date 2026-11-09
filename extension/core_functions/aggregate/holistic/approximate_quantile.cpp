@@ -58,6 +58,23 @@ struct ApproxQuantileCoding {
 };
 
 template <>
+double ApproxQuantileCoding::Encode(const dtime_t &input) {
+	return Encode<int64_t, double>(input.value);
+}
+
+template <>
+bool ApproxQuantileCoding::Decode(const double &source, dtime_t &target) {
+	int64_t micros;
+	auto decoded = Decode<double, int64_t>(source, micros);
+	if (micros < 0 || micros > Interval::MICROS_PER_DAY) {
+		micros = MinValue<int64_t>(MaxValue<int64_t>(micros, 0), Interval::MICROS_PER_DAY);
+		decoded = false;
+	}
+	target = dtime_t(micros);
+	return decoded;
+}
+
+template <>
 double ApproxQuantileCoding::Encode(const dtime_tz_t &input) {
 	return Encode<uint64_t, double>(input.sort_key());
 }
@@ -67,11 +84,11 @@ bool ApproxQuantileCoding::Decode(const double &source, dtime_tz_t &target) {
 	uint64_t sort_key;
 	const auto decoded = Decode<double, uint64_t>(source, sort_key);
 	if (decoded) {
-		//	We can invert the sort key because its offset was not touched.
-		auto offset = dtime_tz_t::decode_offset(sort_key);
+		//	The offset bits of an interpolated sort key are meaningless: return the normalized time at +00.
 		auto micros = dtime_tz_t::decode_micros(sort_key);
-		micros -= int64_t(dtime_tz_t::encode_offset(offset) * dtime_tz_t::OFFSET_MICROS);
-		target = dtime_tz_t(dtime_t(micros), offset);
+		micros -= int64_t(dtime_tz_t::MAX_OFFSET * dtime_tz_t::OFFSET_MICROS);
+		micros = (micros % Interval::MICROS_PER_DAY + Interval::MICROS_PER_DAY) % Interval::MICROS_PER_DAY;
+		target = dtime_tz_t(dtime_t(micros), 0);
 	} else if (source < 0) {
 		target = Value::MinimumValue(LogicalTypeId::TIME_TZ).GetValue<dtime_tz_t>();
 	} else {
@@ -170,9 +187,12 @@ struct ApproxQuantileOperation {
 			return;
 		}
 		D_ASSERT(source.h);
+		auto &allocator = aggr_input_data.allocator;
 		if (!target.h) {
-			auto &allocator = aggr_input_data.allocator;
 			target.h = allocator.Make<duckdb_tdigest::TDigest>(allocator, 100);
+		} else if (&target.h->getAllocator() != &allocator) {
+			// Copied states can share a sink arena across partitions being combined in parallel.
+			target.h = allocator.Make<duckdb_tdigest::TDigest>(allocator, *target.h);
 		}
 		if (!TryAddOperator::Operation(target.pos, source.pos, target.pos)) {
 			throw OutOfRangeException("Overflow in aggregate state combine");
@@ -348,7 +368,13 @@ AggregateFunction GetApproximateQuantileAggregateFunction(const LogicalType &typ
 		return AggregateFunction::UnaryAggregate<ApproxQuantileState, dtime_tz_t, dtime_tz_t,
 		                                         ApproxQuantileScalarOperation>(type, type);
 	}
-	if (type.id() == LogicalTypeId::TIMESTAMP || type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+	if (type == LogicalType::TIME) {
+		return AggregateFunction::UnaryAggregate<ApproxQuantileState, dtime_t, dtime_t, ApproxQuantileScalarOperation>(
+		    type, type);
+	}
+	if (type.id() == LogicalTypeId::TIMESTAMP || type.id() == LogicalTypeId::TIMESTAMP_TZ ||
+	    type.id() == LogicalTypeId::TIMESTAMP_NS || type.id() == LogicalTypeId::TIMESTAMP_TZ_NS) {
+		// every timestamp precision stores an int64 with the same two infinities, which the coding keeps infinite
 		return AggregateFunction::UnaryAggregate<ApproxQuantileState, timestamp_t, timestamp_t,
 		                                         ApproxQuantileScalarOperation>(type, type);
 	}
@@ -442,10 +468,10 @@ AggregateFunction ApproxQuantileDecimalFunction(const LogicalType &type) {
 	return function;
 }
 
-//! Specialises the (stub) DECIMAL function to the implementation over the DECIMAL's physical type. The implementation
-//! only declares the input argument, so the quantile argument that BindApproxQuantile folded into the bind data is
-//! restored afterwards.
-void ReplaceApproxQuantileDecimal(BoundAggregateFunction &function, const AggregateFunction &implementation) {
+//! Specialises a stub function, the DECIMAL ones to the implementation over the DECIMAL's physical type and the
+//! TIMESTAMP_S and TIMESTAMP_MS ones to the TIMESTAMP implementation. The implementation only declares the input
+//! argument, so the quantile argument that BindApproxQuantile folded into the bind data is restored afterwards.
+void ReplaceApproxQuantileImplementation(BoundAggregateFunction &function, const AggregateFunction &implementation) {
 	auto declared_arguments = function.GetArguments();
 	function.ReplaceImplementation(implementation);
 	for (idx_t i = function.GetArguments().size(); i < declared_arguments.size(); i++) {
@@ -458,7 +484,7 @@ unique_ptr<FunctionData> BindApproxQuantileDecimal(BindAggregateFunctionInput &i
 	auto &arguments = input.GetArguments();
 	auto decimal_type = arguments[0]->GetReturnType();
 	auto bind_data = BindApproxQuantile(input);
-	ReplaceApproxQuantileDecimal(function, ApproxQuantileDecimalFunction(decimal_type));
+	ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalFunction(decimal_type));
 	return bind_data;
 }
 
@@ -538,8 +564,9 @@ AggregateFunction GetApproxQuantileListAggregateFunction(const LogicalType &type
 	case LogicalTypeId::DATE:
 		return GetTypedApproxQuantileListAggregateFunction<int32_t, int32_t>(type);
 	case LogicalTypeId::BIGINT:
-	case LogicalTypeId::TIME:
 		return GetTypedApproxQuantileListAggregateFunction<int64_t, int64_t>(type);
+	case LogicalTypeId::TIME:
+		return GetTypedApproxQuantileListAggregateFunction<dtime_t, dtime_t>(type);
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
 		return GetTypedApproxQuantileListAggregateFunction<timestamp_t, timestamp_t>(type);
@@ -584,7 +611,7 @@ unique_ptr<FunctionData> BindApproxQuantileDecimalList(BindAggregateFunctionInpu
 	auto &arguments = input.GetArguments();
 	auto decimal_type = arguments[0]->GetReturnType();
 	auto bind_data = BindApproxQuantile(input);
-	ReplaceApproxQuantileDecimal(function, ApproxQuantileDecimalListFunction(decimal_type));
+	ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalListFunction(decimal_type));
 	return bind_data;
 }
 
@@ -606,9 +633,9 @@ unique_ptr<FunctionData> ApproxQuantileDecimalDeserialize(Deserializer &deserial
 	auto bind_data = ApproximateQuantileBindData::Deserialize(deserializer, function);
 	auto &return_type = deserializer.Get<const LogicalType &>();
 	if (return_type.id() == LogicalTypeId::LIST) {
-		ReplaceApproxQuantileDecimal(function, ApproxQuantileDecimalListFunction(function.GetArguments()[0]));
+		ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalListFunction(function.GetArguments()[0]));
 	} else {
-		ReplaceApproxQuantileDecimal(function, ApproxQuantileDecimalFunction(function.GetArguments()[0]));
+		ReplaceApproxQuantileImplementation(function, ApproxQuantileDecimalFunction(function.GetArguments()[0]));
 	}
 	return bind_data;
 }
@@ -620,6 +647,37 @@ AggregateFunction GetApproxQuantileDecimal() {
 	fun.GetSignature().AddParameter("x", LogicalTypeId::DECIMAL).AddParameter("pos", LogicalType::FLOAT);
 	fun.SetSerializeCallback(ApproximateQuantileBindData::Serialize);
 	fun.SetDeserializeCallback(ApproxQuantileDecimalDeserialize);
+	return fun;
+}
+
+//! The TIMESTAMP implementation, which TIMESTAMP_S and TIMESTAMP_MS arguments are widened to
+AggregateFunction ApproxQuantileTimestampFunction() {
+	auto function = GetApproximateQuantileAggregateFunction(LogicalType::TIMESTAMP);
+	function.SetName("approx_quantile");
+	function.SetSerializeCallback(ApproximateQuantileBindData::Serialize);
+	function.SetDeserializeCallback(ApproximateQuantileBindData::Deserialize);
+	function.SetStateExportCallbacks(ApproxQuantileGetStateType, ApproxQuantileExportState, ApproxQuantileImportState);
+	return function;
+}
+
+unique_ptr<FunctionData> BindApproxQuantileWidenedTimestamp(BindAggregateFunctionInput &input) {
+	auto &function = input.GetBoundFunction();
+	auto bind_data = BindApproxQuantile(input);
+	ReplaceApproxQuantileImplementation(function, ApproxQuantileTimestampFunction());
+	function.GetArguments()[0] = LogicalType::TIMESTAMP;
+	function.SetReturnType(LogicalType::TIMESTAMP);
+	return bind_data;
+}
+
+//! Without an overload of their own, TIMESTAMP_S and TIMESTAMP_MS would widen to TIMESTAMP_NS, the cheapest implicit
+//! cast, whose range is far smaller than theirs
+AggregateFunction GetApproxQuantileWidenedTimestamp(const LogicalType &type) {
+	// stub function, the bind sets the TIMESTAMP implementation and the argument type it casts to
+	AggregateFunction fun({}, LogicalType::TIMESTAMP, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                      BindApproxQuantileWidenedTimestamp);
+	fun.GetSignature().AddParameter("x", type).AddParameter("pos", LogicalType::FLOAT);
+	fun.SetSerializeCallback(ApproximateQuantileBindData::Serialize);
+	fun.SetDeserializeCallback(ApproximateQuantileBindData::Deserialize);
 	return fun;
 }
 
@@ -648,9 +706,14 @@ AggregateFunctionSet ApproxQuantileFun::GetFunctions() {
 
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::DATE));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIME));
+	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIME_NS));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIME_TZ));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP));
+	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP_NS));
 	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP_TZ));
+	approx_quantile.AddFunction(GetApproximateQuantileAggregate(LogicalType::TIMESTAMP_TZ_NS));
+	approx_quantile.AddFunction(GetApproxQuantileWidenedTimestamp(LogicalType::TIMESTAMP_S));
+	approx_quantile.AddFunction(GetApproxQuantileWidenedTimestamp(LogicalType::TIMESTAMP_MS));
 
 	// List variants
 	approx_quantile.AddFunction(GetApproxQuantileDecimalList());

@@ -1,0 +1,271 @@
+# name: test/sql/optimizer/test_common_subplan_matching_plan.test
+# description: Plan coverage for shared aggregate outputs, overlapping columns, and filtered join inputs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE plan_fact AS
+SELECT i::INTEGER AS k, i::INTEGER AS a, (i * 10)::BIGINT AS b
+FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE plan_dim AS
+SELECT i::INTEGER AS k, (i % 2)::INTEGER AS bucket FROM range(10) t(i);
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE projected_plan AS
+SELECT 'a' || i::VARCHAR s, repeat('b', i % 5) u FROM range(1000) t(i);
+
+# Differing computed projections can feed a single shared aggregate producer.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(length(s)), avg(length(s)) FROM projected_plan
+UNION ALL SELECT sum(length(u)), avg(length(u)) FROM projected_plan;
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*"PROJECTION".*length\(s\).*length\(u\).*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(length(s)), avg(length(s)) FROM projected_plan
+UNION ALL SELECT sum(length(u)), avg(length(u)) FROM projected_plan;
+----
+logical_opt	<!REGEX>:.*"AGGREGATE".*"AGGREGATE".*
+
+# Projections alone do not justify sharing their scan.
+query II
+EXPLAIN (FORMAT JSON) SELECT length(s) FROM projected_plan
+UNION ALL SELECT length(u) FROM projected_plan;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Matching projection inputs does not make predicates on different outputs equivalent.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(length(s)), avg(length(s)) FROM projected_plan WHERE length(s) > 1
+UNION ALL SELECT sum(length(u)), avg(length(u)) FROM projected_plan WHERE length(u) > 1;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Fallible projected expressions cannot be added to a shared producer.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(s::INTEGER), avg(s::INTEGER) FROM projected_plan
+UNION ALL SELECT sum(u::INTEGER), avg(u::INTEGER) FROM projected_plan;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Identical positional inputs still allow aggregate sharing above UNION ALL.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(x) FROM (SELECT length(s) x FROM projected_plan UNION ALL SELECT length(u) FROM projected_plan) p
+UNION ALL
+SELECT max(x) FROM (SELECT length(s) x FROM projected_plan UNION ALL SELECT length(u) FROM projected_plan) p;
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*"UNION".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# No individual scan reads all aggregate payloads.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT count(*) FROM plan_fact WHERE k < 5),
+                            (SELECT avg(a) FROM plan_fact WHERE k < 5),
+                            (SELECT avg(b) FROM plan_fact WHERE k < 5);
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# The common filter may remain above the scan.
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k < 5),
+                            (SELECT sum(b) FROM plan_fact WHERE k < 5);
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+statement ok
+SET disabled_optimizers='';
+
+# Different predicates must retain their own aggregate inputs.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k < 5),
+                            (SELECT sum(b) FROM plan_fact WHERE a < 5);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact), (SELECT sum(b) FROM plan_fact);
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# Repeated filtered scans alone do not justify a shared producer.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(x), avg(x)
+FROM (
+	SELECT a + 1 AS x FROM plan_fact WHERE k < 5
+	UNION ALL
+	SELECT a + 1 AS x FROM plan_fact WHERE k < 5
+);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Merge the aggregate results, not just their scan, even with unselective filters.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT avg(a) FROM plan_fact WHERE k < 990),
+                            (SELECT avg(b) FROM plan_fact WHERE k < 990);
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT avg(a) FROM plan_fact WHERE k < 990),
+                            (SELECT avg(b) FROM plan_fact WHERE k < 990);
+----
+logical_opt	<!REGEX>:.*"AGGREGATE".*"AGGREGATE".*
+
+# A high-retention self-join must not materialize its repeated filtered scans.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT a FROM plan_fact WHERE k < 990) x
+JOIN (SELECT a FROM plan_fact WHERE k < 990) y USING (a);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Grouped aggregate output union is outside this rule.
+query II
+EXPLAIN (FORMAT JSON) SELECT k, sum(a) FROM plan_fact GROUP BY k
+UNION ALL SELECT k, sum(b) FROM plan_fact GROUP BY k;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Growing states and execution wrappers retain separate aggregate producers.
+query II
+EXPLAIN (FORMAT JSON) SELECT len(list(a)) FROM plan_fact
+UNION ALL SELECT len(list(b)) FROM plan_fact;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(DISTINCT a) FROM plan_fact
+UNION ALL SELECT count(DISTINCT b) FROM plan_fact;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT quantile_cont(a, 0.5) FROM plan_fact
+UNION ALL SELECT quantile_cont(b, 0.5) FROM plan_fact;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Existing exact aggregate sharing still supports growing states.
+query II
+EXPLAIN (FORMAT JSON) SELECT len(list(a)) FROM plan_fact
+UNION ALL SELECT len(list(a)) FROM plan_fact;
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# Throwing aggregate arguments remain ineligible.
+statement ok
+CREATE TABLE throwing_input AS SELECT i AS k, CASE WHEN i < 5 THEN i::VARCHAR ELSE 'invalid' END AS v FROM range(10) t(i);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(v::INTEGER) FROM throwing_input WHERE k < 5),
+                            (SELECT max(v::INTEGER) FROM throwing_input WHERE k < 5);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Matching input filters are not broadened when combining aggregate outputs.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(k) FROM throwing_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0),
+                            (SELECT max(k) FROM throwing_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0);
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# Fallibility of the aggregate itself also prevents combining outputs.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum_no_overflow(b) FROM plan_fact WHERE k < 5),
+                            (SELECT max(b) FROM plan_fact WHERE k < 5);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Joins reading different payloads share one producer exposing their union.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact JOIN plan_dim USING (k)),
+                            (SELECT sum(b) FROM plan_fact JOIN plan_dim USING (k));
+----
+logical_opt	<REGEX>:.*"CTE".*COMPARISON_JOIN.*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact JOIN plan_dim USING (k)),
+                            (SELECT sum(b) FROM plan_fact JOIN plan_dim USING (k));
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+# Different filters on one join input retain a single shared join.
+query II
+EXPLAIN (FORMAT JSON) SELECT *
+FROM (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 0) a,
+     (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 1) b;
+----
+logical_opt	<REGEX>:.*"CTE".*COMPARISON_JOIN.*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT *
+FROM (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 0) a,
+     (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 1) b;
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+statement ok
+CREATE TABLE outlier_fact AS SELECT i AS a, i % 100 AS b FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE outlier_dim AS SELECT i AS a, i % 10 AS g FROM range(0, 20000, 97) t(i);
+
+# A consumer differing on both inputs must not prevent the other two from sharing their join.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0);
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0);
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+# Finding the incompatible consumer first must still leave a shareable pair.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90);
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90);
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+# Each compatible subset can have its own shared join.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 60 AND d.g = 0);
+----
+logical_opt	<REGEX>:.*"CTE".*"CTE".*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 60 AND d.g = 0);
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*

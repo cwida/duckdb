@@ -1,0 +1,150 @@
+# name: test/sql/cte/recursive_cte_member_limit_union.test
+# description: Operators above a UNION in a recursive member apply once per iteration, not once per union arm
+# group: [cte]
+
+# A recursive member consisting of a UNION ALL decomposes into one pipeline per arm. Operators above
+# the union (e.g. STREAMING_LIMIT) are shared between those pipelines, and their global state must be
+# reset once per member invocation. The recursive runtime picks an inline schedule when an iteration
+# runs with a single worker (tiny frontiers or threads=1) and an event-based schedule otherwise, so
+# both paths are exercised below. The disable_caching_operators config covers the uncached path.
+
+# member-level LIMIT over a UNION ALL of two frontier scans: at most one row per iteration
+query I
+WITH RECURSIVE r(n) AS (
+  SELECT 1
+  UNION ALL
+  (SELECT n+1 FROM r WHERE n < 3 UNION ALL SELECT n+1 FROM r WHERE n < 3 LIMIT 1)
+)
+SELECT n FROM r ORDER BY n;
+----
+1
+2
+3
+
+# LIMIT with OFFSET over the union: each iteration produces two copies, OFFSET 1 keeps exactly one
+query I
+WITH RECURSIVE r(n) AS (
+  SELECT 1
+  UNION ALL
+  (SELECT n+1 FROM r WHERE n < 3 UNION ALL SELECT n+1 FROM r WHERE n < 3 LIMIT 1 OFFSET 1)
+)
+SELECT n FROM r ORDER BY n;
+----
+1
+2
+3
+
+# three arms sharing the limit
+query I
+WITH RECURSIVE r(n) AS (
+  SELECT 1
+  UNION ALL
+  (SELECT n+1 FROM r WHERE n < 3
+   UNION ALL SELECT n+1 FROM r WHERE n < 3
+   UNION ALL SELECT n+1 FROM r WHERE n < 3
+   LIMIT 1)
+)
+SELECT n FROM r ORDER BY n;
+----
+1
+2
+3
+
+# protection: a LIMIT inside a parenthesized arm is arm-local and still applies per arm per iteration
+# (ordered limits keep the surviving row deterministic)
+query II
+WITH RECURSIVE r(n) AS (
+  SELECT 1
+  UNION ALL
+  ((SELECT n+1 FROM r WHERE n < 3 ORDER BY n LIMIT 1)
+   UNION ALL
+   (SELECT n+100 FROM r WHERE n < 200 ORDER BY n LIMIT 1))
+)
+SELECT count(*), max(n) FROM r;
+----
+7	203
+
+# identical arms keep per-arm STREAMING_LIMIT state observable with order-independent results
+# (ordered arm limits above plan as TOP-N instead)
+query II
+WITH RECURSIVE r(n) AS (
+  SELECT 1
+  UNION ALL
+  ((SELECT n+1 FROM r WHERE n < 3 LIMIT 1) UNION ALL (SELECT n+1 FROM r WHERE n < 3 LIMIT 1))
+)
+SELECT n, count(*) FROM r GROUP BY n ORDER BY n;
+----
+1	1
+2	2
+3	2
+
+# UNION (distinct) arms below a member-level LIMIT: the distinct is a sink with its own pipeline
+query I
+WITH RECURSIVE r(n) AS (
+  SELECT 1
+  UNION ALL
+  (SELECT n+1 FROM r WHERE n < 5 UNION SELECT n+1 FROM r WHERE n < 5 LIMIT 1)
+)
+SELECT n FROM r ORDER BY n;
+----
+1
+2
+3
+4
+5
+
+# a full WINDOW above the union is a shared sink, reset once per iteration
+query III
+WITH RECURSIVE r(n, rn) AS (
+  SELECT 1, 0
+  UNION ALL
+  (SELECT n + 1, row_number() OVER ()
+   FROM (SELECT n FROM r WHERE n < 2 UNION ALL SELECT n + 10 FROM r WHERE n < 2) t(n))
+)
+SELECT count(*), sum(rn), max(rn) FROM r;
+----
+3	3	2
+
+# a correlated table in-out function is planned below a join, not above the union
+query II
+WITH RECURSIVE r(n, g) AS (
+  SELECT 1, 0
+  UNION ALL
+  (SELECT n + 1, rg.range
+   FROM (SELECT n FROM r WHERE n < 3 UNION ALL SELECT n FROM r WHERE n < 3) t(n), LATERAL range(t.n) rg)
+)
+SELECT count(*), sum(g) FROM r;
+----
+11	4
+
+statement ok
+SET threads=4;
+
+# multi-chunk frontier through the event-based schedule
+query II
+WITH RECURSIVE r(i, x) AS (
+  SELECT 0, u FROM range(5000) t(u)
+  UNION ALL
+  (SELECT i+1, x FROM r WHERE i < 2 UNION ALL SELECT i+1, x FROM r WHERE i < 2 LIMIT 3000)
+)
+SELECT i, count(*) FROM r GROUP BY i ORDER BY i;
+----
+0	5000
+1	3000
+2	3000
+
+statement ok
+SET threads=1;
+
+# the same shape through the inline schedule with multi-chunk frontiers
+query II
+WITH RECURSIVE r(i, x) AS (
+  SELECT 0, u FROM range(5000) t(u)
+  UNION ALL
+  (SELECT i+1, x FROM r WHERE i < 2 UNION ALL SELECT i+1, x FROM r WHERE i < 2 LIMIT 3000)
+)
+SELECT i, count(*) FROM r GROUP BY i ORDER BY i;
+----
+0	5000
+1	3000
+2	3000

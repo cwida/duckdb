@@ -7,6 +7,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
@@ -33,8 +34,9 @@ GeoColumnData::GeoColumnData(BlockManager &block_manager, DataTableInfo &info, i
 // Scan
 //----------------------------------------------------------------------------------------------------------------------
 
-void GeoColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	return base_column->InitializePrefetch(prefetch_state, scan_state, rows);
+void GeoColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                       idx_t end_row) {
+	return base_column->InitializePrefetch(prefetch_state, scan_state, start_row, end_row);
 }
 
 void GeoColumnData::InitializeChildScanStates(ColumnScanState &state) {
@@ -121,25 +123,6 @@ void GeoColumnData::RevertAppend(row_t new_count) {
 //----------------------------------------------------------------------------------------------------------------------
 // Fetch
 //----------------------------------------------------------------------------------------------------------------------
-
-idx_t GeoColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	// Not a shredded column, so just emit the binary format immediately
-	if (storage_type == GeometryStorageType::WKB) {
-		return base_column->Fetch(state, row_id, result);
-	}
-
-	// Otherwise, we need to fetch and reassemble
-	auto &layout_type = base_column->GetType();
-
-	DataChunk chunk;
-	chunk.Initialize(Allocator::DefaultAllocator(), {layout_type}, 1);
-
-	const auto fetch_count = base_column->Fetch(state, row_id, chunk.data[0]);
-
-	Reassemble(chunk.data[0], result, fetch_count, storage_type, 0);
-
-	return fetch_count;
-}
 
 void GeoColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
                               const idx_t *offsets, const SelectionVector &sel, idx_t fetch_count, Vector &result,

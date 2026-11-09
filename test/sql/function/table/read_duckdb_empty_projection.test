@@ -3,7 +3,7 @@
 # group: [table]
 
 statement ok
-ATTACH '__TEST_DIR__/rd_empty_projection.db' AS x
+ATTACH '{TEST_DIR}/rd_empty_projection.db' AS x
 
 statement ok
 CREATE TABLE x.t AS SELECT i FROM range(5000) r(i)
@@ -12,22 +12,22 @@ statement ok
 DETACH x
 
 query I
-SELECT count(*) FROM read_duckdb('__TEST_DIR__/rd_empty_projection.db', table_name := 't')
+SELECT count(*) FROM read_duckdb('{TEST_DIR}/rd_empty_projection.db', table_name := 't')
 ----
 5000
 
 query I
-SELECT 42 FROM read_duckdb('__TEST_DIR__/rd_empty_projection.db', table_name := 't') LIMIT 2
+SELECT 42 FROM read_duckdb('{TEST_DIR}/rd_empty_projection.db', table_name := 't') LIMIT 2
 ----
 42
 42
 
 query I
-SELECT count(*) FROM read_duckdb(['__TEST_DIR__/rd_empty_projection.db', '__TEST_DIR__/rd_empty_projection.db'], table_name := 't')
+SELECT count(*) FROM read_duckdb(['{TEST_DIR}/rd_empty_projection.db', '{TEST_DIR}/rd_empty_projection.db'], table_name := 't')
 ----
 10000
 
 query II
-SELECT count(i), count(*) FROM read_duckdb('__TEST_DIR__/rd_empty_projection.db', table_name := 't')
+SELECT count(i), count(*) FROM read_duckdb('{TEST_DIR}/rd_empty_projection.db', table_name := 't')
 ----
 5000	5000

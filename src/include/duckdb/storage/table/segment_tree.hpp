@@ -256,13 +256,14 @@ public:
 		if (TryGetSegmentIndex(l, row_number, segment_index)) {
 			return segment_index;
 		}
-		string error;
-		error = StringUtil::Format("Attempting to find row number \"%lld\" in %lld nodes\n", row_number, nodes.size());
+		// callers only look up rows that the tree holds, so a row in none of the segments means it is corrupt
+		string error = StringUtil::Format("Corrupted segment tree: row %llu is not in any of its %llu segments\n",
+		                                  row_number, nodes.size());
 		for (idx_t i = 0; i < nodes.size(); i++) {
 			error += StringUtil::Format("* Node %lld: Start %lld, Count %lld\n", i, nodes[i]->GetRowStart(),
 			                            nodes[i]->GetCount());
 		}
-		throw InternalException("Could not find node in column segment tree!\n%s", error);
+		throw DataCorruptionException(error);
 	}
 
 	bool TryGetSegmentIndex(SegmentLock &l, idx_t row_number, idx_t &result) const {

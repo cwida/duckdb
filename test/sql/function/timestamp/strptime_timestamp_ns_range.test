@@ -1,0 +1,35 @@
+# name: test/sql/function/timestamp/strptime_timestamp_ns_range.test
+# description: strptime with %n at the bounds of the TIMESTAMP_NS range
+# group: [timestamp]
+
+# the upper bound is the infinity sentinel and not a valid timestamp
+statement error
+SELECT strptime('2262-04-11 23:47:16.854775807', '%Y-%m-%d %H:%M:%S.%n');
+----
+<REGEX>:Conversion Error.*
+
+query I
+SELECT try_strptime('2262-04-11 23:47:16.854775807', '%Y-%m-%d %H:%M:%S.%n');
+----
+NULL
+
+query I
+SELECT strptime('2262-04-11 23:47:16.854775806', '%Y-%m-%d %H:%M:%S.%n') = '2262-04-11 23:47:16.854775806'::TIMESTAMP_NS;
+----
+true
+
+# the first day of the range: the nanoseconds of the date alone overflow, the timestamp is valid
+query I
+SELECT strptime('1677-09-21 00:12:43.145224194', '%Y-%m-%d %H:%M:%S.%n') = '1677-09-21 00:12:43.145224194'::TIMESTAMP_NS;
+----
+true
+
+statement error
+SELECT strptime('1677-09-21 00:12:43.145224193', '%Y-%m-%d %H:%M:%S.%n');
+----
+<REGEX>:Conversion Error.*
+
+query I
+SELECT strptime('2020-01-01 10:00:00.123456789', '%Y-%m-%d %H:%M:%S.%n')::VARCHAR;
+----
+2020-01-01 10:00:00.123456789

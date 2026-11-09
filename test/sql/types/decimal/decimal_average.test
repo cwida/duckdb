@@ -187,3 +187,24 @@ FROM (
 ) t(x);
 ----
 -85070591730234615865843651857942052864
+
+# An unresolved prepared parameter must defer binding, not trip an assertion
+statement ok
+PREPARE p AS SELECT decimal_average(?);
+
+query I
+EXECUTE p(1.5);
+----
+1.5
+
+# the same path is reachable through a macro
+statement ok
+CREATE MACRO m(x) AS (SELECT decimal_average(x));
+
+statement ok
+PREPARE p2 AS SELECT m(?);
+
+query I
+EXECUTE p2(2.5);
+----
+2.5

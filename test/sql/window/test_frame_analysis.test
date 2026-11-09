@@ -1,5 +1,5 @@
 # name: test/sql/window/test_frame_analysis.test
-# description: Test IGNORE NULLS window syntax
+# description: Test Frame Analysis Equivalences
 # group: [window]
 
 statement ok
@@ -11,8 +11,7 @@ PRAGMA explain_output = PHYSICAL_ONLY;
 #
 # Table 4
 #
-# Note that cases iii-iv are not yet supported because we don't have UCC detection
-# Note also that ii is not possible with [W] == 0 because only one EXCLUDE clause is allowed
+# Note that ii is not possible with [W] == 0 because only one EXCLUDE clause is allowed
 
 statement ok
 create table t as from values
@@ -22,6 +21,11 @@ create table t as from values
 	(3, 1, 13, 'd')
 	w(u, p, o, a)
 ;
+
+#
+# Case i: ROWS BETWEEN CURRENT ROW AND CURRENT ROW
+# Case ii: RANGE/GROUPS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES
+#
 
 #
 # [W] == 0
@@ -65,9 +69,11 @@ window ib as (rows between 0 preceding and 0 following exclude current row)
 0	0
 
 # any other
+# Note that the paper is wrong here: ranking window functions do not return NULL
+# for empty arguments (checked against PG)
 
 # 0 arguments
-foreach func rank dense_rank cume_dist percent_rank
+foreach func rank dense_rank cume_dist
 
 query II
 explain
@@ -75,17 +81,17 @@ select {func}() over ia
 from t
 window ia as (rows between current row and current row exclude current row)
 ----
-physical_plan	<!REGEX>:.*WINDOW.*
+physical_plan	<REGEX>:.*WINDOW.*
 
 query I
 select {func}() over ia
 from t
 window ia as (rows between current row and current row exclude current row)
 ----
-NULL
-NULL
-NULL
-NULL
+1
+1
+1
+1
 
 query II
 explain
@@ -93,19 +99,55 @@ select {func}() over ib
 from t
 window ib as (rows between 0 preceding and 0 following exclude current row)
 ----
-physical_plan	<!REGEX>:.*WINDOW.*
+physical_plan	<REGEX>:.*WINDOW.*
 
 query I
 select {func}() over ib
 from t
 window ib as (rows between 0 preceding and 0 following exclude current row)
 ----
-NULL
-NULL
-NULL
-NULL
+1
+1
+1
+1
 
 endloop
+
+query II
+explain
+select percent_rank() over ia
+from t
+window ia as (rows between current row and current row exclude current row)
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+query I
+select percent_rank() over ia
+from t
+window ia as (rows between current row and current row exclude current row)
+----
+0.0
+0.0
+0.0
+0.0
+
+query II
+explain
+select percent_rank() over ib
+from t
+window ib as (rows between 0 preceding and 0 following exclude current row)
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+query I
+select percent_rank() over ib
+from t
+window ib as (rows between 0 preceding and 0 following exclude current row)
+----
+0.0
+0.0
+0.0
+0.0
 
 # 1 argument
 foreach func first_value last_value min
@@ -268,41 +310,27 @@ b
 c
 d
 
+foreach framing range groups
+
 query II
 explain
-select {func}(a) over iia
+select {func}(a) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 physical_plan	<!REGEX>:.*WINDOW.*
 
 query I
-select {func}(a) over iia
+select {func}(a) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 a
 b
 c
 d
 
-query II
-explain
-select {func}(a) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
-----
-physical_plan	<!REGEX>:.*WINDOW.*
-
-query I
-select {func}(a) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
-----
-a
-b
-c
-d
+endloop
 
 endloop
 
@@ -345,41 +373,27 @@ b
 c
 d
 
+foreach framing range groups
+
 query II
 explain
-select {func}(a, 1) over iia
+select {func}(a, 1) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 physical_plan	<!REGEX>:.*WINDOW.*
 
 query I
-select {func}(a, 1) over iia
+select {func}(a, 1) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 a
 b
 c
 d
 
-query II
-explain
-select {func}(a, 1) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
-----
-physical_plan	<!REGEX>:.*WINDOW.*
-
-query I
-select {func}(a, 1) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
-----
-a
-b
-c
-d
+endloop
 
 query II
 explain
@@ -417,41 +431,27 @@ NULL
 NULL
 NULL
 
+foreach framing range groups
+
 query II
 explain
-select {func}(a, 2) over iia
+select {func}(a, 2) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 physical_plan	<!REGEX>:.*WINDOW.*
 
 query I
-select {func}(a, 2) over iia
+select {func}(a, 2) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 NULL
 NULL
 NULL
 NULL
 
-query II
-explain
-select {func}(a, 2) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
-----
-physical_plan	<!REGEX>:.*WINDOW.*
-
-query I
-select {func}(a, 2) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
-----
-NULL
-NULL
-NULL
-NULL
+endloop
 
 endloop
 
@@ -510,39 +510,267 @@ window ia as (rows between current row and current row)
 1	1	0
 1	1	0
 
+foreach framing range groups
+
 query II
 explain
-select count(a) over iia, count(*) over iia, count(case when p = 0 then a end) over iia
+select count(a) over ii, count(*) over ii, count(case when p = 0 then a end) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 physical_plan	<!REGEX>:.*WINDOW.*
 
 query III
-select count(a) over iia, count(*) over iia, count(case when p = 0 then a end) over iia
+select count(a) over ii, count(*) over ii, count(case when p = 0 then a end) over ii
 from t
-window iia as (range between current row and current row exclude ties)
+window ii as ({framing} between current row and current row exclude ties)
 ----
 1	1	1
 1	1	1
 1	1	0
 1	1	0
 
+endloop
+
+#
+# Test UCC handling
+#
+statement ok
+CREATE TABLE p(id INTEGER PRIMARY KEY, payload VARCHAR, grp INTEGER);
+
+statement ok
+INSERT INTO p VALUES (3, 'c', 1), (1, 'a', 2), (2, NULL, 1), (5, 'a', NULL), (4, 'b', 2);
+
+#
+# Case iii: O is a UCC for RANGE/GROUPS on the CURRENT ROW
+#
+foreach framing RANGE GROUPS
+
 query II
-explain
-select count(a) over iib, count(*) over iib, count(case when p = 0 then a end) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iii
+FROM p
+WINDOW iii AS (ORDER BY id, grp {framing} BETWEEN CURRENT ROW AND CURRENT ROW)
 ----
 physical_plan	<!REGEX>:.*WINDOW.*
 
 query III
-select count(a) over iib, count(*) over iib, count(case when p = 0 then a end) over iib
-from t
-window iib as (groups between current row and current row exclude ties)
+SELECT id, payload, MIN(payload) OVER iii
+FROM p
+WINDOW iii AS (ORDER BY id, grp {framing} BETWEEN CURRENT ROW AND CURRENT ROW)
+ORDER BY id
 ----
-1	1	1
-1	1	1
-1	1	0
-1	1	0
+1	a	a
+2	NULL	NULL
+3	c	c
+4	b	b
+5	a	a
 
+# Wide framing
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iii
+FROM p
+WINDOW iii AS (ORDER BY id, grp {framing} BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iii
+FROM p
+WINDOW iii AS (ORDER BY id, grp {framing} BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+foreach func rank dense_rank row_number
+
+query II
+EXPLAIN
+SELECT id, {func}() OVER (
+    ORDER BY id {framing} BETWEEN CURRENT ROW AND CURRENT ROW
+) 
+FROM p 
+ORDER BY id;
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+query II
+SELECT id, {func}() OVER (
+    ORDER BY id {framing} BETWEEN CURRENT ROW AND CURRENT ROW
+) 
+FROM p 
+ORDER BY id;
+----
+1	1
+2	2
+3	3
+4	4
+5	5
+
+endloop
+
+query II
+EXPLAIN
+SELECT id, percent_rank() OVER (
+    ORDER BY id {framing} BETWEEN CURRENT ROW AND CURRENT ROW
+) 
+FROM p 
+ORDER BY id;
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+query II
+SELECT id, percent_rank() OVER (
+    ORDER BY id {framing} BETWEEN CURRENT ROW AND CURRENT ROW
+) 
+FROM p 
+ORDER BY id;
+----
+1	0.0
+2	0.25
+3	0.5
+4	0.75
+5	1.0
+
+query II
+EXPLAIN
+SELECT id, cume_dist() OVER (
+    ORDER BY id {framing} BETWEEN CURRENT ROW AND CURRENT ROW
+) 
+FROM p 
+ORDER BY id;
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+query II
+SELECT id, cume_dist() OVER (
+    ORDER BY id {framing} BETWEEN CURRENT ROW AND CURRENT ROW
+) 
+FROM p 
+ORDER BY id;
+----
+1	0.2
+2	0.4
+3	0.6
+4	0.8
+5	1.0
+
+endloop
+
+# No framing
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iii
+FROM p
+WINDOW iii AS (ORDER BY id, grp)
+----
+physical_plan	<REGEX>:.*WINDOW.*
+
+#
+# Case iv: P is a unique column combination
+#
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (PARTITION BY id, payload ORDER BY grp)
+----
+physical_plan	<!REGEX>:.*WINDOW.*
+
+query III
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (PARTITION BY id, payload ORDER BY grp)
+ORDER BY id
+----
+1	a	a
+2	NULL	NULL
+3	c	c
+4	b	b
+5	a	a
+
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (PARTITION BY payload, id ORDER BY grp)
+----
+physical_plan	<!REGEX>:.*WINDOW.*
+
+query III
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (PARTITION BY payload, id ORDER BY grp)
+ORDER BY id
+----
+1	a	a
+2	NULL	NULL
+3	c	c
+4	b	b
+5	a	a
+
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (PARTITION BY id ORDER BY grp)
+----
+physical_plan	<!REGEX>:.*WINDOW.*
+
+query III
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (PARTITION BY id ORDER BY grp)
+ORDER BY id
+----
+1	a	a
+2	NULL	NULL
+3	c	c
+4	b	b
+5	a	a
+
+# Excluding the current row is allowed here -it just produces an empty frame
+query II
+EXPLAIN
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (
+	PARTITION BY id 
+	ORDER BY grp 
+	ROWS BETWEEN UNBOUNDED PRECEDING 
+	AND UNBOUNDED FOLLOWING 
+	EXCLUDE CURRENT ROW)
+----
+physical_plan	<!REGEX>:.*WINDOW.*
+
+query III
+SELECT id, payload, MIN(payload) OVER iv
+FROM p
+WINDOW iv AS (
+	PARTITION BY id 
+	ORDER BY grp 
+	ROWS BETWEEN UNBOUNDED PRECEDING 
+	AND UNBOUNDED FOLLOWING 
+	EXCLUDE CURRENT ROW)
+ORDER BY id
+----
+1	a	NULL
+2	NULL	NULL
+3	c	NULL
+4	b	NULL
+5	a	NULL
+
+# Empty computed frame with UCC
+query II
+SELECT id, count(*) OVER (
+    PARTITION BY id ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING
+) 
+FROM p
+ORDER BY id;
+----
+1	0
+2	0
+3	0
+4	0
+5	0

@@ -29,7 +29,7 @@ NULL
 statement error
 select m[2] from (select MAP(LIST_VALUE([2,2], [2], [3,3], [4,4,4],[2]),LIST_VALUE(10, 9, 8, 7,11)) as m) as T
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 # Check autocast
 query I

@@ -1,3 +1,7 @@
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/union_vector.hpp"
@@ -112,7 +116,8 @@ static unique_ptr<BoundCastData> BindToUnionMemberCast(BindCastInput &input, con
 		throw ConversionException(message);
 	}
 
-	// otherwise, return the selected cast
+	// otherwise, return the selected cast, which is the only member cast that is applied
+	input.stability = candidates[0].member_casts[0].GetStability();
 	return make_uniq<UnionMemberBoundCastData>(std::move(candidates[0]));
 }
 
@@ -169,7 +174,7 @@ static unique_ptr<BoundCastData> BindUnionToUnionCast(BindCastInput &input, cons
 			};
 			// no matching member tag found in the target set
 			auto message =
-			    StringUtil::Format("Type %s can't be cast as %s. The member '%s' is not present in target union",
+			    StringUtil::Format("Type %s can't be cast as %s. The member %s is not present in target union",
 			                       source.ToString(), target.ToString(), source_member_name);
 			throw ConversionException(message);
 		}
@@ -338,6 +343,30 @@ static bool UnionMemberToMemberCast(Vector &source, Vector &result, idx_t count,
 	return all_converted;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Impossible casts: raise the bind error when executed, TRY_CAST turns it into NULL
+//--------------------------------------------------------------------------------------------------
+struct UnionImpossibleCastData : public BoundCastData {
+	explicit UnionImpossibleCastData(string message_p) : message(std::move(message_p)) {
+	}
+
+	string message;
+
+	unique_ptr<BoundCastData> Copy() const override {
+		return make_uniq<UnionImpossibleCastData>(message);
+	}
+};
+
+static bool UnionImpossibleCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	bool success = true;
+	if (VectorOperations::HasNotNull(source)) {
+		HandleCastError::AssignError(parameters.cast_data->Cast<UnionImpossibleCastData>().message, parameters);
+		success = false;
+	}
+	ConstantVector::SetNull(result, count_t(count));
+	return success;
+}
+
 static bool ToUnionCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	D_ASSERT(result.GetType().id() == LogicalTypeId::UNION);
 	auto &cast_data = parameters.cast_data->Cast<UnionMemberBoundCastData>();
@@ -354,8 +383,12 @@ BoundCastInfo DefaultCasts::ImplicitToUnionCast(BindCastInput &input, const Logi
 	if (StructToUnionCast::AllowImplicitCastFromStruct(source, target)) {
 		return StructToUnionCast::Bind(input, source, target);
 	}
-	auto cast_data = BindToUnionMemberCast(input, source, target);
-	return BoundCastInfo(&ToUnionCast, std::move(cast_data), InitToUnionLocalState);
+	try {
+		auto cast_data = BindToUnionMemberCast(input, source, target);
+		return BoundCastInfo(&ToUnionCast, std::move(cast_data), InitToUnionLocalState);
+	} catch (ConversionException &ex) {
+		return BoundCastInfo(UnionImpossibleCast, make_uniq<UnionImpossibleCastData>(ErrorData(ex).RawMessage()));
+	}
 }
 
 static bool UnionToVarcharCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
@@ -412,7 +445,11 @@ BoundCastInfo DefaultCasts::UnionCastSwitch(BindCastInput &input, const LogicalT
 		                     InitToUnionLocalState);
 	}
 	case LogicalTypeId::UNION:
-		return BoundCastInfo(ToUnionCast, BindUnionToUnionCast(input, source, target), InitToUnionLocalState);
+		try {
+			return BoundCastInfo(ToUnionCast, BindUnionToUnionCast(input, source, target), InitToUnionLocalState);
+		} catch (ConversionException &ex) {
+			return BoundCastInfo(UnionImpossibleCast, make_uniq<UnionImpossibleCastData>(ErrorData(ex).RawMessage()));
+		}
 	default:
 		return TryVectorNullCast;
 	}

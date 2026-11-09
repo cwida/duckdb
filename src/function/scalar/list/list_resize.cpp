@@ -109,6 +109,10 @@ static void ListResizeResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		return;
 	}
 
+	if (list_type.id() != LogicalTypeId::LIST) {
+		throw BinderException("%s can only operate on LISTs", bound_function.GetName());
+	}
+
 	// Attempt implicit casting, if the default type does not match list the list child type.
 	if (bound_function.GetArguments().size() == 3 && ListType::GetChildType(list_type) != input.GetArgumentType(2) &&
 	    input.GetArgumentType(2) != LogicalTypeId::SQLNULL) {

@@ -52,6 +52,9 @@ struct HTTPParams {
 	//! When set, the caller has already checked the url against the file access settings, so the central check in
 	//! HTTPUtil::Request is skipped (used by extension installation, which also allows the official repositories)
 	bool skip_external_access_check = false;
+	//! The path the request accesses, for file systems that map their own paths onto HTTP urls (e.g. s3://bucket/key).
+	//! When set, the file access settings are checked against it instead of the url
+	string access_path;
 
 	string http_proxy;
 	idx_t http_proxy_port = 0;
@@ -271,7 +274,7 @@ struct PutRequestInfo : public BaseRequest {
 
 	const_data_ptr_t buffer_in;
 	idx_t buffer_in_len;
-	const string &content_type;
+	string content_type;
 };
 
 struct HeadRequestInfo : public BaseRequest {

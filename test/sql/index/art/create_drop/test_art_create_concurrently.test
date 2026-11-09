@@ -1,0 +1,45 @@
+# name: test/sql/index/art/create_drop/test_art_create_concurrently.test
+# description: CREATE INDEX CONCURRENTLY is accepted and ignored
+# group: [create_drop]
+
+statement ok
+CREATE TABLE t(a INTEGER, b INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20)
+
+statement ok
+CREATE INDEX CONCURRENTLY i ON t(a)
+
+statement ok
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS j ON t(b)
+
+statement ok
+CREATE INDEX CONCURRENTLY IF NOT EXISTS j ON t(b)
+
+query I
+SELECT index_name FROM duckdb_indexes() ORDER BY index_name
+----
+i
+j
+
+statement error
+INSERT INTO t VALUES (3, 10)
+----
+<REGEX>:Constraint Error.*violates unique constraint.*
+
+query II
+SELECT a, b FROM t WHERE a = 2
+----
+2	20
+
+# an index name is still required
+statement error
+CREATE INDEX CONCURRENTLY ON t(a)
+----
+<REGEX>:.*index name.*
+
+statement error
+DROP INDEX CONCURRENTLY i
+----
+<REGEX>:Parser Error.*

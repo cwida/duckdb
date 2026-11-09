@@ -568,6 +568,14 @@ TEST_CASE("Test JSON Parsing", "[string_util]") {
 		"bool_f": false
 	}
 	)JSON_LITERAL");
+	REQUIRE(json_map["real"] == "1.500000");
+}
+
+TEST_CASE("Test ToString of doubles", "[string_util]") {
+	REQUIRE(StringUtil::ToString(10.0) == "10.000000");
+	REQUIRE(StringUtil::ToString(-2.25) == "-2.250000");
+	REQUIRE(StringUtil::ToString(1.0 / 3.0) == "0.333333");
+	REQUIRE(StringUtil::ToString(1e20) == "100000000000000000000.000000");
 }
 
 TEST_CASE("Test CIHash is independent of char signedness", "[string_util]") {
@@ -581,6 +589,20 @@ TEST_CASE("Test CIHash is independent of char signedness", "[string_util]") {
 
 	// ASCII is unaffected
 	REQUIRE(StringUtil::CIHash("hello") == StringUtil::CIHash("HeLLo"));
+}
+
+TEST_CASE("Test Damerau-Levenshtein distance", "[string_util]") {
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("", "") == 0);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("", "abc") == 3);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("from", "FROM") == 0);
+	// a swap of adjacent characters is a single edit, unlike plain Levenshtein
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("form", "from") == 1);
+	REQUIRE(StringUtil::LevenshteinDistance("form", "from") == 2);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("gruop", "group") == 1);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("whre", "where") == 1);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("tabel", "table") == 1);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("alias", "all") == 3);
+	REQUIRE(StringUtil::DamerauLevenshteinDistance("int8_tbl", "int") == 5);
 }
 
 TEST_CASE("Test CILessThan handles embedded NUL bytes", "[string_util]") {

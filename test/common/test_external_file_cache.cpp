@@ -8,12 +8,14 @@
 #include "duckdb/common/thread.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/external_file_cache/caching_file_system.hpp"
 #include "duckdb/storage/object_cache.hpp"
 
 #include <chrono>
 #include <condition_variable>
+#include <thread>
 
 namespace duckdb {
 
@@ -152,8 +154,9 @@ string MakeTestContent(idx_t size) {
 	return content;
 }
 
-string ReadFull(CachingFileHandle &handle, idx_t size, idx_t offset = 0) {
-	auto group = handle.Read(size, offset);
+string ReadFull(CachingFileHandle &handle, idx_t size, idx_t offset = 0,
+                const vector<pair<idx_t, idx_t>> &absorb_ranges = {}) {
+	auto group = handle.Read(size, offset, absorb_ranges);
 	string result(size, '\0');
 	group.CopyTo(reinterpret_cast<data_ptr_t>(&result[0]), size);
 	return result;
@@ -466,6 +469,57 @@ TEST_CASE("Small cached ranges are kept when fetching them with the gaps saves n
 	REQUIRE(recording_fs->TakeReads() == vector<pair<idx_t, idx_t>> {{0, 8192}, {12288, 61440}});
 	REQUIRE(CountCachedBlocks(cache) == 3);
 	REQUIRE(TotalCachedBytes(cache) == FILE_SIZE);
+}
+
+TEST_CASE("A read re-fetches the cached ranges with the gaps only within the ranges it asks for",
+          "[external_file_cache]") {
+	DuckDB db = MakeCacheLocalFilesDB();
+	auto &db_instance = *db.instance;
+	auto recording_fs = make_uniq<EFCTrackingFileSystem>();
+
+	const idx_t BLOCK_SIZE = 65536;
+	Connection con(db);
+	con.Query(StringUtil::Format("SET external_file_cache_local_max_block_size=%llu", BLOCK_SIZE));
+
+	const idx_t FILE_SIZE = 100000;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard plain_file("test_efc_absorb_plain.bin", content);
+	EFCTestFileGuard elsewhere_file("test_efc_absorb_elsewhere.bin", content);
+	EFCTestFileGuard absorbed_file("test_efc_absorb_asked.bin", content);
+
+	CachingFileSystem cfs(*recording_fs, db_instance);
+	auto &cache = db_instance.GetExternalFileCache();
+	const vector<pair<idx_t, idx_t>> kept_reads {
+	    {0, 8192}, {24576, BLOCK_SIZE}, {24576 + BLOCK_SIZE, FILE_SIZE - 24576 - BLOCK_SIZE}};
+
+	// a cached range larger than an eighth of the block is kept by an ordinary read: the gaps around it are fetched
+	auto plain = cfs.OpenFile(MakeTestOpenFileInfo(plain_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*plain, 16384, 8192) == content.substr(8192, 16384));
+	recording_fs->TakeReads();
+	REQUIRE(ReadFull(*plain, FILE_SIZE) == content);
+	REQUIRE(recording_fs->TakeReads() == kept_reads);
+	REQUIRE(CountCachedBlocks(cache) == 4);
+
+	// a read that asks for absorption elsewhere in the file keeps the range as well
+	auto elsewhere = cfs.OpenFile(MakeTestOpenFileInfo(elsewhere_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*elsewhere, 16384, 8192) == content.substr(8192, 16384));
+	recording_fs->TakeReads();
+	REQUIRE(ReadFull(*elsewhere, FILE_SIZE, 0, {{50000, FILE_SIZE}}) == content);
+	REQUIRE(recording_fs->TakeReads() == kept_reads);
+	REQUIRE(CountCachedBlocks(cache) == 8);
+
+	// a read whose asked-for range covers it re-fetches it with its gaps, saving a request
+	auto absorbed = cfs.OpenFile(MakeTestOpenFileInfo(absorbed_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*absorbed, 16384, 8192) == content.substr(8192, 16384));
+	recording_fs->TakeReads();
+	REQUIRE(ReadFull(*absorbed, FILE_SIZE, 0, {{0, 30000}}) == content);
+	REQUIRE(recording_fs->TakeReads() ==
+	        vector<pair<idx_t, idx_t>> {{0, BLOCK_SIZE}, {BLOCK_SIZE, FILE_SIZE - BLOCK_SIZE}});
+	REQUIRE(CountCachedBlocks(cache) == 10);
+	REQUIRE(TotalCachedBytes(cache) == 3 * FILE_SIZE);
+
+	REQUIRE(ReadFull(*absorbed, FILE_SIZE) == content);
+	REQUIRE(recording_fs->TakeReads().empty());
 }
 
 TEST_CASE("Cached ranges of local files between gaps are kept at the default block size", "[external_file_cache]") {
@@ -1317,6 +1371,85 @@ TEST_CASE("Dropping cache blocks preserves existing readers and starts a new gen
 	REQUIRE(replacements.size() == 2);
 	REQUIRE(replacements[0] != acquired[0]);
 	REQUIRE(replacements[1] != acquired[1]);
+}
+
+TEST_CASE("Metadata eviction stops when enough memory is reclaimed", "[external_file_cache]") {
+	DuckDB db = MakeCacheLocalFilesDB();
+	auto &cache = db.instance->GetExternalFileCache();
+	auto &buffer_pool = db.instance->GetBufferPool();
+	const auto initial_memory = buffer_pool.GetUsedMemory();
+	constexpr idx_t FILE_COUNT = 20;
+	constexpr idx_t EVICT_COUNT = 5;
+	constexpr idx_t BLOCK_SIZE = 1024;
+	idx_t block_count = 0;
+	SECTION("Large metadata reservations") {
+		block_count = 1024;
+	}
+	SECTION("Metadata reservations below the memory counter flush threshold") {
+		block_count = 4;
+	}
+
+	idx_t file_memory = 0;
+	for (idx_t i = 0; i < FILE_COUNT; i++) {
+		auto file = cache.GetOrCreateCachedFile(StringUtil::Format("metadata-eviction-%02llu", i));
+		cache.AcquireBlocks(*file, 0, block_count * BLOCK_SIZE, BLOCK_SIZE);
+		if (i == 0) {
+			file_memory = buffer_pool.GetUsedMemory() - initial_memory;
+		}
+	}
+	REQUIRE(file_memory > 0);
+	REQUIRE(cache.GetCachedFileCount() == FILE_COUNT);
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + FILE_COUNT * file_memory);
+
+	const auto limit = initial_memory + (FILE_COUNT - EVICT_COUNT) * file_memory;
+	buffer_pool.SetLimit(limit, "");
+	REQUIRE(buffer_pool.GetUsedMemory() == limit);
+	REQUIRE(cache.GetCachedFileCount() == FILE_COUNT - EVICT_COUNT);
+
+	// The newest files keep their metadata; looking up an evicted file creates an empty one.
+	for (idx_t i = 0; i < FILE_COUNT; i++) {
+		auto file = cache.GetOrCreateCachedFile(StringUtil::Format("metadata-eviction-%02llu", i));
+		const annotated_lock_guard<annotated_mutex> guard(file->map_lock);
+		REQUIRE(file->blocks.size() == (i < EVICT_COUNT ? 0 : block_count));
+	}
+}
+
+TEST_CASE("Metadata eviction accounts for files retained by readers", "[external_file_cache]") {
+	DuckDB db = MakeCacheLocalFilesDB();
+	auto &cache = db.instance->GetExternalFileCache();
+	auto &object_cache = db.instance->GetObjectCache();
+	auto &buffer_pool = db.instance->GetBufferPool();
+	const auto initial_memory = buffer_pool.GetUsedMemory();
+	constexpr idx_t FILE_COUNT = 3;
+	constexpr idx_t BLOCK_COUNT = 1024;
+	constexpr idx_t BLOCK_SIZE = 1024;
+
+	shared_ptr<ExternalFileCache::CachedFile> retained_file;
+	for (idx_t i = 0; i < FILE_COUNT; i++) {
+		auto file = cache.GetOrCreateCachedFile(StringUtil::Format("retained-metadata-%llu", i));
+		cache.AcquireBlocks(*file, 0, BLOCK_COUNT * BLOCK_SIZE, BLOCK_SIZE);
+		if (i == 0) {
+			retained_file = file;
+		}
+	}
+	const auto entry_memory = object_cache.GetCurrentMemory() / FILE_COUNT;
+	const auto total_memory = buffer_pool.GetUsedMemory();
+	const auto file_memory = (total_memory - initial_memory) / FILE_COUNT;
+	const auto metadata_memory = file_memory - entry_memory;
+	REQUIRE(metadata_memory > entry_memory);
+
+	// Removing the oldest entry only frees its entry reservation while a reader retains the file.
+	const auto limit = total_memory - entry_memory - file_memory;
+	buffer_pool.SetLimit(limit, "");
+	REQUIRE(buffer_pool.GetUsedMemory() == limit);
+	REQUIRE(cache.GetCachedFileCount() == 1);
+	{
+		const annotated_lock_guard<annotated_mutex> guard(retained_file->map_lock);
+		REQUIRE(retained_file->blocks.size() == BLOCK_COUNT);
+	}
+
+	retained_file.reset();
+	REQUIRE(buffer_pool.GetUsedMemory() == initial_memory + file_memory);
 }
 
 TEST_CASE("Request sizing can make every read cover the aligned blocks around it", "[external_file_cache]") {

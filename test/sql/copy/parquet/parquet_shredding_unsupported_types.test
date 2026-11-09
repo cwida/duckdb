@@ -7,38 +7,38 @@ require parquet
 require json
 
 statement error
-COPY (SELECT 1::VARIANT AS v) TO '__TEST_DIR__/shred_bit.parquet' (SHREDDING {v: 'BIT'})
+COPY (SELECT 1::VARIANT AS v) TO '{TEST_DIR}/shred_bit.parquet' (SHREDDING {v: 'BIT'})
 ----
 Binder Error: VARIANT cannot be shredded on type BIT in Parquet
 
 statement error
-COPY (SELECT 1::VARIANT AS v) TO '__TEST_DIR__/shred_bignum.parquet' (SHREDDING {v: 'BIGNUM'})
+COPY (SELECT 1::VARIANT AS v) TO '{TEST_DIR}/shred_bignum.parquet' (SHREDDING {v: 'BIGNUM'})
 ----
 Binder Error: VARIANT cannot be shredded on type BIGNUM in Parquet
 
 statement error
-COPY (SELECT 's2'::VARIANT v) TO '__TEST_DIR__/shred_json.parquet' (SHREDDING {v: 'JSON'})
+COPY (SELECT 's2'::VARIANT v) TO '{TEST_DIR}/shred_json.parquet' (SHREDDING {v: 'JSON'})
 ----
 Binder Error: VARIANT cannot be shredded on type JSON in Parquet
 
 statement error
-COPY (SELECT {'a': 'not json'}::VARIANT v) TO '__TEST_DIR__/shred_json2.parquet' (SHREDDING {v: 'STRUCT(a JSON)'})
+COPY (SELECT {'a': 'not json'}::VARIANT v) TO '{TEST_DIR}/shred_json2.parquet' (SHREDDING {v: 'STRUCT(a JSON)'})
 ----
 Binder Error: VARIANT cannot be shredded on type JSON in Parquet
 
 # supported types still work
 statement ok
-COPY (SELECT 's2'::VARIANT v) TO '__TEST_DIR__/shred_varchar.parquet' (SHREDDING {v: 'VARCHAR'})
+COPY (SELECT 's2'::VARIANT v) TO '{TEST_DIR}/shred_varchar.parquet' (SHREDDING {v: 'VARCHAR'})
 
 query I
-SELECT v::VARCHAR FROM '__TEST_DIR__/shred_varchar.parquet'
+SELECT v::VARCHAR FROM '{TEST_DIR}/shred_varchar.parquet'
 ----
 s2
 
 statement ok
-COPY (SELECT {'a': 42}::VARIANT v) TO '__TEST_DIR__/shred_struct.parquet' (SHREDDING {v: 'STRUCT(a BIGINT)'})
+COPY (SELECT {'a': 42}::VARIANT v) TO '{TEST_DIR}/shred_struct.parquet' (SHREDDING {v: 'STRUCT(a BIGINT)'})
 
 query I
-SELECT v::VARCHAR FROM '__TEST_DIR__/shred_struct.parquet'
+SELECT v::VARCHAR FROM '{TEST_DIR}/shred_struct.parquet'
 ----
 {'a': 42}

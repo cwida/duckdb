@@ -2,6 +2,7 @@
 
 #include "test_config.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/main/http/http_transport_manager.hpp"
@@ -18,6 +19,15 @@
 #include <thread>
 
 namespace duckdb {
+
+TEST_CASE("PUT requests retain their content type", "[http_transport_manager]") {
+	HTTPUtil http;
+	HTTPParams params(http);
+	string content_type = "application/json";
+	PutRequestInfo request("http://localhost/upload", HTTPHeaders(), params, nullptr, 0, content_type);
+	content_type = "text/plain";
+	CHECK(request.content_type == "application/json");
+}
 
 enum class MockResponseMode : uint8_t {
 	SUCCESS,
@@ -287,8 +297,9 @@ public:
 		if (state->callback) {
 			state->callback();
 		}
-		state->initialized_paths.push_back(info ? info->file_path : string());
-		state->initialized_with_context.push_back(bool(FileOpener::TryGetClientContext(opener)));
+		state->initialized_paths.push_back(info ? info->file.path : string());
+		state->initialized_with_context.push_back(
+		    bool(Context::TryGetClientContext(FileOpener::TryGetContext(opener))));
 		auto result = make_uniq<MockHTTPParams>(*this);
 		result->Initialize(opener);
 		result->retries = state->retries;
@@ -1068,7 +1079,7 @@ static string ReadExtensionBinary(const string &path) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto size = NumericCast<idx_t>(handle->GetFileSize());
 	string result(size, '\0');
-	handle->Read(data_ptr_cast(result.data()), size);
+	handle->Read(data_ptr_cast(result.data()), size, 0);
 	return result;
 }
 

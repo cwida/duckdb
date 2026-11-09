@@ -35,12 +35,12 @@ public:
 	                                 const std::function<void(const unique_ptr<Expression> *child)> &callback);
 	//! Return the projection map owned by an operator for the given child, if any
 	static optional_ptr<vector<ProjectionIndex>> GetProjectionMap(LogicalOperator &op, idx_t child_index);
-
-protected:
 	//! Preserve the selected binding identities after a child rewrite changes its output layout
 	static void RemapProjectionMap(vector<ProjectionIndex> &projection_map,
 	                               const vector<ColumnBinding> &child_bindings_before,
 	                               const vector<ColumnBinding> &child_bindings_after);
+
+protected:
 	//! Automatically calls the Visit method for LogicalOperator children of the current operator. Can be overloaded to
 	//! change this behavior.
 	void VisitOperatorChildren(LogicalOperator &op);

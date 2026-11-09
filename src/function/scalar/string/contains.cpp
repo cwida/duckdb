@@ -42,9 +42,11 @@ static idx_t Contains(const unsigned char *haystack, idx_t haystack_size, const 
 	haystack_size -= needle_size - 1;
 	auto needle_entry = Load<UNSIGNED>(needle);
 	for (idx_t offset = 0; offset < haystack_size; offset++) {
-		// start off by performing a memchr to find the first character of the
+		// FindStrInStr already found the first candidate.
 		auto location =
-		    static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], haystack_size - offset));
+		    offset == 0
+		        ? haystack
+		        : static_cast<const unsigned char *>(memchr(haystack + offset, needle[0], haystack_size - offset));
 		if (!location) {
 			return DConstants::INVALID_INDEX;
 		}

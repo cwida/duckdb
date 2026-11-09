@@ -79,14 +79,14 @@ BindResult ExpressionBinder::BindExpression(TypeExpression &type_expr, idx_t dep
 
 	for (auto &param : unbound_parameters) {
 		// Otherwise, try to fold it to a constant value
-		ConstantBinder binder(this->binder, context, StringUtil::Format("Type parameter for type '%s'", type_name));
+		ConstantBinder binder(this->binder, context, StringUtil::Format("Type parameter for type %s", type_name));
 		binder.ContinueStackDepth(*this);
 
 		auto expr = param->Copy();
 		auto bound_expr = binder.Bind(expr);
 
 		if (!bound_expr->IsFoldable()) {
-			throw BinderException(type_expr, "Type parameter expression for type '%s' is not a constant", type_name);
+			throw BinderException(type_expr, "Type parameter expression for type %s is not a constant", type_name);
 		}
 
 		// The location comes from the parsed parameter, not the bound one.

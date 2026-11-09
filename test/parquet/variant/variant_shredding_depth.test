@@ -1,0 +1,69 @@
+# name: test/parquet/variant/variant_shredding_depth.test
+# description: Auto-shredding stops at 32 levels of nesting, the part of a value below that stays in 'value'
+# group: [variant]
+
+require parquet
+
+require json
+
+# A deeply nested array used to make the writer recurse once per level into an equally deep 'typed_value' schema,
+# overflowing the stack. Now the shredded type stops at 32 levels. The JSON -> VARIANT cast itself still recurses once
+# per level, and the release tests run worker threads with 128 KiB stacks (--thread-stack-size, as musl sizes them),
+# where 500 and 200 levels overflowed; 100 levels are well past the 32 that matter here.
+statement ok
+COPY (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array.parquet'
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_deep_array.parquet'
+----
+3
+
+# 32 shredded list levels; the elements of the deepest list have no 'typed_value' of their own
+query II
+SELECT count(*) FILTER (name = 'list'), count(*) FILTER (name = 'typed_value') FROM parquet_schema('{TEST_DIR}/variant_deep_array.parquet')
+----
+32	32
+
+# The value reads back whole
+query I
+SELECT DISTINCT v::JSON::VARCHAR = repeat('[', 100) || '1' || repeat(']', 100) FROM '{TEST_DIR}/variant_deep_array.parquet'
+----
+true
+
+# The same for objects: 40 nested objects with a single key, shredded 32 levels deep
+statement ok
+COPY (SELECT (repeat('{"k":', 40) || '1' || repeat('}', 40))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_object.parquet'
+
+query I
+SELECT DISTINCT v::JSON::VARCHAR = repeat('{"k":', 40) || '1' || repeat('}', 40) FROM '{TEST_DIR}/variant_deep_object.parquet'
+----
+true
+
+# 32 shredded 'k' fields, the deepest one holding the rest of the value in its 'value' without a 'typed_value'
+query II
+SELECT count(*) FILTER (name = 'k'), count(*) FILTER (name = 'typed_value') FROM parquet_schema('{TEST_DIR}/variant_deep_object.parquet')
+----
+32	32
+
+# A deep value next to shallow ones does not stop those from being shredded
+statement ok
+COPY (SELECT ('{"a": 1, "b": "x", "c": ' || repeat('[', 100) || '1' || repeat(']', 100) || '}')::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_field.parquet'
+
+query I
+SELECT DISTINCT (v.a::INTEGER, v.b::VARCHAR) FROM '{TEST_DIR}/variant_deep_field.parquet'
+----
+(1, x)
+
+query III
+SELECT count(*) FILTER (name = 'a'), count(*) FILTER (name = 'b'), count(*) FILTER (name = 'c') FROM parquet_schema('{TEST_DIR}/variant_deep_field.parquet')
+----
+1	1	1
+
+# A value exactly 32 levels deep is shredded entirely
+statement ok
+COPY (SELECT (repeat('{"k":', 31) || '1' || repeat('}', 31))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_object_31.parquet'
+
+query II
+SELECT count(*) FILTER (name = 'k'), count(*) FILTER (name = 'typed_value' AND type = 'INT64') FROM parquet_schema('{TEST_DIR}/variant_object_31.parquet')
+----
+31	1

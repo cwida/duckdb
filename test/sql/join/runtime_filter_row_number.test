@@ -1,0 +1,49 @@
+# name: test/sql/join/runtime_filter_row_number.test
+# description: Join filters preserve numbering before joins on rewritten row-number scans
+# group: [join]
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE probe AS SELECT range AS k FROM range(300000);
+
+statement ok
+CREATE TABLE build AS SELECT * FROM (VALUES (1), (150000)) t(k);
+
+query II
+SELECT p.k, p.rn
+FROM (SELECT k, row_number() OVER () AS rn FROM probe) p
+JOIN build ON p.k=build.k ORDER BY p.k;
+----
+1	2
+150000	150001
+
+query II
+SELECT p.k, p.rn
+FROM (SELECT k, row_number() OVER () AS rn FROM probe) p
+JOIN build ON p.rn=build.k ORDER BY p.k;
+----
+0	1
+149999	150000
+
+statement ok
+CREATE TABLE other_build AS SELECT * FROM (VALUES (3001), (250000)) t(k);
+
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+# Both consumers must see numbering over the entire CTE input.
+query II
+WITH p AS MATERIALIZED (SELECT k, row_number() OVER () AS rn FROM probe)
+SELECT p.k, p.rn FROM p JOIN build ON p.k=build.k
+UNION ALL
+SELECT p.k, p.rn FROM p JOIN other_build ON p.k=other_build.k ORDER BY 1;
+----
+1	2
+3001	3002
+150000	150001
+250000	250001
+
+statement ok
+RESET disabled_optimizers;

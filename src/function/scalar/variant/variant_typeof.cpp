@@ -23,6 +23,9 @@ static void VariantTypeofFunction(DataChunk &input, ExpressionState &state, Vect
 	UnifiedVariantVectorData variant(source_format);
 
 	auto result_data = FlatVector::Writer<string_t>(result, count);
+	//! Reused across rows to avoid allocating per row
+	string type_str;
+	vector<string_t> object_keys;
 	for (idx_t i = 0; i < count; i++) {
 		if (!variant.RowIsValid(i)) {
 			result_data.WriteValue(string_t("VARIANT_NULL"));
@@ -31,7 +34,6 @@ static void VariantTypeofFunction(DataChunk &input, ExpressionState &state, Vect
 
 		auto type = variant.GetTypeId(i, 0);
 
-		string type_str;
 		if (IsPrimitiveType(type)) {
 			if (type != VariantLogicalType::DECIMAL) {
 				type_str = EnumUtil::ToString(type);
@@ -39,16 +41,22 @@ static void VariantTypeofFunction(DataChunk &input, ExpressionState &state, Vect
 				auto decimal_data = VariantUtils::DecodeDecimalData(variant, i, 0);
 				type_str = StringUtil::Format("DECIMAL(%d, %d)", decimal_data.width, decimal_data.scale);
 			}
-			result_data.WriteValue(string_t(type_str.c_str()));
-			continue;
-		}
-
-		if (type == VariantLogicalType::OBJECT) {
+		} else if (type == VariantLogicalType::OBJECT) {
 			auto nested_data = VariantUtils::DecodeNestedData(variant, i, 0);
-			//! Find all the keys of the children of this object
-			auto object_keys = VariantUtils::GetObjectKeys(variant, i, nested_data);
+			object_keys.clear();
+			for (idx_t child_idx = 0; child_idx < nested_data.child_count; child_idx++) {
+				auto key_index = variant.GetKeysIndex(i, nested_data.children_idx + child_idx);
+				object_keys.push_back(variant.GetKey(i, key_index));
+			}
 			std::sort(object_keys.begin(), object_keys.end());
-			type_str = StringUtil::Format("OBJECT(%s)", StringUtil::Join(object_keys, ", "));
+			type_str = "OBJECT(";
+			for (idx_t key_idx = 0; key_idx < object_keys.size(); key_idx++) {
+				if (key_idx > 0) {
+					type_str += ", ";
+				}
+				type_str.append(object_keys[key_idx].GetData(), object_keys[key_idx].GetSize());
+			}
+			type_str += ")";
 		} else {
 			D_ASSERT(type == VariantLogicalType::ARRAY);
 			auto nested_data = VariantUtils::DecodeNestedData(variant, i, 0);

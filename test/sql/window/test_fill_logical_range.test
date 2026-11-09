@@ -1,0 +1,82 @@
+# name: test/sql/window/test_fill_logical_range.test
+# description: fill() results outside the range of the logical type are NULL
+# group: [window]
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, TIME '01:00:00'), (1, TIME '00:01:00'), (100, NULL)) t(k, v) ORDER BY k
+----
+0	01:00:00
+1	00:01:00
+100	NULL
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, TIME '23:00:00'), (1, TIME '23:59:00'), (2, NULL)) t(k, v) ORDER BY k
+----
+0	23:00:00
+1	23:59:00
+2	NULL
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, TIME_NS '01:00:00'), (1, TIME_NS '00:01:00'), (100, NULL)) t(k, v) ORDER BY k
+----
+0	01:00:00
+1	00:01:00
+100	NULL
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, 0::DECIMAL(9,9)), (1, 0.9::DECIMAL(9,9)), (2, NULL)) t(k, v) ORDER BY k
+----
+0	0.000000000
+1	0.900000000
+2	NULL
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, 0::DECIMAL(38,0)), (1, 90000000000000000000000000000000000000::DECIMAL(38,0)), (2, NULL)) t(k, v) ORDER BY k
+----
+0	0
+1	90000000000000000000000000000000000000
+2	NULL
+
+statement ok
+CREATE TABLE ts AS SELECT k, fill(v) OVER (ORDER BY k) f FROM (VALUES (0, '200000-01-01'::TIMESTAMP_S), (1, '290000-01-01'::TIMESTAMP_S), (3, NULL)) t(k, v);
+
+query II
+SELECT k, f FROM ts ORDER BY k
+----
+0	200000-01-01 00:00:00
+1	290000-01-01 00:00:00
+3	NULL
+
+statement ok
+CREATE TABLE tms AS SELECT k, fill(v) OVER (ORDER BY k) f FROM (VALUES (0, '200000-01-01'::TIMESTAMP_MS), (1, '290000-01-01'::TIMESTAMP_MS), (3, NULL)) t(k, v);
+
+query II
+SELECT k, f FROM tms ORDER BY k
+----
+0	200000-01-01 00:00:00
+1	290000-01-01 00:00:00
+3	NULL
+
+# interpolation close to the maximum of the physical type
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, 0), (1, NULL), (2, 9223372036854775807)) t(k, v) ORDER BY k
+----
+0	0
+1	4611686018427387904
+2	9223372036854775807
+
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, 9223372036854775806), (1, NULL), (2, 9223372036854775807)) t(k, v) ORDER BY k
+----
+0	9223372036854775806
+1	9223372036854775806
+2	9223372036854775807
+
+# values within the range are still interpolated and extrapolated
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (0, TIME '01:00:00'), (1, NULL), (2, TIME '03:00:00'), (3, NULL)) t(k, v) ORDER BY k
+----
+0	01:00:00
+1	02:00:00
+2	03:00:00
+3	04:00:00

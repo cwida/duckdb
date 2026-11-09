@@ -9,6 +9,10 @@ class weak_ptr { // NOLINT: invalid case style
 public:
 	using original = std::weak_ptr<T>;
 	using element_type = typename original::element_type;
+#if defined(_LIBCPP_VERSION)
+	// libc++ relocates elements of this type with memcpy when the typedef names the class itself
+	using __trivially_relocatable = weak_ptr; // NOLINT: libc++ extension point
+#endif
 
 private:
 	template <class U, bool SAFE_P>

@@ -43,9 +43,13 @@ jobs:
        run: |
           TARGET=$(printf '%s' "$DUCKDB_COMMIT" | cut -c1-10)
           mkdir to_be_uploaded
+          s3_provider="AWS"
+          if [[ "$AWS_ENDPOINT_URL" == *"r2.cloudflarestorage.com"* ]]; then
+            s3_provider="Cloudflare"
+          fi
           rclone copy \
             --no-traverse \
-            ":s3,provider=AWS,env_auth=true,endpoint=${AWS_ENDPOINT_URL}:duckdb-staging/$TARGET/$DUCKDB_VERSION/$GITHUB_REPOSITORY/github_release/" \
+            ":s3,provider=${s3_provider},env_auth=true,endpoint='${AWS_ENDPOINT_URL}':duckdb-staging/$TARGET/$DUCKDB_VERSION/$GITHUB_REPOSITORY/github_release/" \
             to_be_uploaded/
 
      - name: Deploy
@@ -57,9 +61,18 @@ jobs:
          AWS_SECRET_ACCESS_KEY: ${{ secrets.DUCKDB_INSTALL_S3_SECRET }}
          GH_TOKEN: ${{ secrets.GH_TOKEN }}
        run: |
-         python3 scripts/asset-upload-gha.py to_be_uploaded/*
+         GITHUB_REF="refs/tags/$DUCKDB_VERSION" python3 scripts/asset-upload-gha.py to_be_uploaded/*
+         s3_provider="AWS"
+         if [[ "$AWS_ENDPOINT_URL" == *"r2.cloudflarestorage.com"* ]]; then
+           s3_provider="Cloudflare"
+         fi
          rclone copy \
            --no-traverse \
+           --ignore-times \
+           --ignore-checksum \
+           --no-check-dest \
+           --s3-no-check-bucket \
+           --s3-no-head \
            --header-upload "Content-Type: application/octet-stream" \
            to_be_uploaded/ \
-           ":s3,provider=AWS,env_auth=true,endpoint=${AWS_ENDPOINT_URL}:duckdb-install/$DUCKDB_VERSION/"
+           ":s3,provider=${s3_provider},env_auth=true,endpoint='${AWS_ENDPOINT_URL}':duckdb-install/$DUCKDB_VERSION/"

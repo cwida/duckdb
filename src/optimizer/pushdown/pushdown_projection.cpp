@@ -157,18 +157,30 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 	// and add an extra filter operator.
 	vector<unique_ptr<Expression>> remain_expressions;
 	vector<unique_ptr<Expression>> split_expressions;
+	auto stays_on_top = [&](const Filter &f) {
+		return IsVolatile(proj, *f.filter) || (f.filter->CanThrow() && !f.has_barrier);
+	};
+	auto splits_off = [&](const Filter &f) {
+		return projection_mode == ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS &&
+		       ReferencesComputedExpression(proj, *f.filter);
+	};
+	// barred expressions may only cross the projection if every other filter does: a filter kept on top of the
+	// projection, or split off below it, would otherwise be evaluated after them
+	bool hold_back_barriers = false;
+	for (auto &filter : filters) {
+		if (!filter->has_barrier && (stays_on_top(*filter) || splits_off(*filter))) {
+			hold_back_barriers = true;
+		}
+	}
 	for (auto &filter : filters) {
 		auto &f = *filter;
 		D_ASSERT(f.bindings.size() <= 1);
-		bool is_volatile = IsVolatile(proj, *f.filter);
-		bool preserve_computed_expression = projection_mode == ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS &&
-		                                    ReferencesComputedExpression(proj, *f.filter);
-		if (is_volatile || (f.filter->CanThrow() && !f.has_barrier)) {
+		if (stays_on_top(f) || (f.has_barrier && hold_back_barriers)) {
 			// Volatile and throwing expressions cannot move across the projection. Expressions carrying a barrier
 			// are the exception: a projection does not remove any rows, so pushing them through it does not
-			// change which rows they are evaluated on.
+			// change which rows they are evaluated on - unless another filter stays behind, see above.
 			remain_expressions.push_back(std::move(f.filter));
-		} else if (preserve_computed_expression) {
+		} else if (splits_off(f)) {
 			// Compute filter-dependent projection expressions once, below the filter.
 			split_expressions.push_back(std::move(f.filter));
 		} else {

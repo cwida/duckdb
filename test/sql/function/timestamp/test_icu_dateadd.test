@@ -104,14 +104,20 @@ select 'epoch'::timestamptz + '9223372036854774999 microseconds'::interval
 ----
 294247-01-09 20:00:54.774999-08
 
-statement error
+# instants before the first midnight of the range are representable too
+query I
 select 'epoch'::timestamptz + '-9223372022400001001 microseconds'::interval
 ----
-Conversion Error: ICU date overflows timestamp range
+290309-12-21 (BC) 16:07:01.998999-07:52:58
 
-# one microsecond below the smallest representable instant, which a TIMESTAMP rejects too
-statement error
+query I
 select 'epoch'::timestamptz + '-9223372022400001000 microseconds'::interval
+----
+290309-12-21 (BC) 16:07:01.999-07:52:58
+
+# the result would be the -infinity sentinel
+statement error
+select 'epoch'::timestamptz + '-9223372036854775807 microseconds'::interval
 ----
 Conversion Error: ICU date overflows timestamp range
 
@@ -167,14 +173,20 @@ select '9223372036854774999 microseconds'::interval + 'epoch'::timestamptz
 ----
 294247-01-09 20:00:54.774999-08
 
-statement error
+# instants before the first midnight of the range are representable too
+query I
 select '-9223372022400001001 microseconds'::interval + 'epoch'::timestamptz
 ----
-Conversion Error: ICU date overflows timestamp range
+290309-12-21 (BC) 16:07:01.998999-07:52:58
 
-# one microsecond below the smallest representable instant, which a TIMESTAMP rejects too
-statement error
+query I
 select  '-9223372022400001000 microseconds'::interval + 'epoch'::timestamptz
+----
+290309-12-21 (BC) 16:07:01.999-07:52:58
+
+# the result would be the -infinity sentinel
+statement error
+select '-9223372036854775807 microseconds'::interval + 'epoch'::timestamptz
 ----
 Conversion Error: ICU date overflows timestamp range
 
@@ -240,14 +252,20 @@ select '2000-04-09 17:00:00-07'::timestamptz - interval 2400 hours
 ----
 1999-12-31 16:00:00-08
 
-statement error
+# instants before the first midnight of the range are representable too
+query I
 select 'epoch'::timestamptz - '9223372022400001001 microseconds'::interval
 ----
-Conversion Error: ICU date overflows timestamp range
+290309-12-21 (BC) 16:07:01.998999-07:52:58
 
-# one microsecond past the smallest representable instant, which a TIMESTAMP rejects too
-statement error
+query I
 select 'epoch'::timestamptz - '9223372022400001000 microseconds'::interval
+----
+290309-12-21 (BC) 16:07:01.999-07:52:58
+
+# the result would be the -infinity sentinel
+statement error
+select 'epoch'::timestamptz - '9223372036854775807 microseconds'::interval
 ----
 Conversion Error: ICU date overflows timestamp range
 
@@ -312,23 +330,23 @@ SELECT iv, ts + iv FROM limits, intervals
 WHERE label = 'tsmin'
   AND iv >= INTERVAL 0 SECONDS;
 ----
-1 year	290308-12-21 (BC) 16:07:02-07:52
-1 month	290308-01-21 (BC) 16:07:02-07:52
-1 year 1 month	290307-01-21 (BC) 16:07:02-07:52
-1 day	290309-12-22 (BC) 16:07:02-07:52
-32 days	290308-01-22 (BC) 16:07:02-07:52
-01:00:00	290309-12-21 (BC) 17:07:02-07:52
-11:00:00	290309-12-22 (BC) 03:07:02-07:52
-00:01:00	290309-12-21 (BC) 16:08:02-07:52
-00:06:00	290309-12-21 (BC) 16:13:02-07:52
-00:00:01	290309-12-21 (BC) 16:07:03-07:52
-00:00:23	290309-12-21 (BC) 16:07:25-07:52
-00:00:00.001	290309-12-21 (BC) 16:07:02.001-07:52
-00:00:00.91	290309-12-21 (BC) 16:07:02.91-07:52
-00:00:00.000001	290309-12-21 (BC) 16:07:02.000001-07:52
-00:00:00.000612	290309-12-21 (BC) 16:07:02.000612-07:52
+1 year	290308-12-21 (BC) 16:07:02-07:52:58
+1 month	290308-01-21 (BC) 16:07:02-07:52:58
+1 year 1 month	290307-01-21 (BC) 16:07:02-07:52:58
+1 day	290309-12-22 (BC) 16:07:02-07:52:58
+32 days	290308-01-22 (BC) 16:07:02-07:52:58
+01:00:00	290309-12-21 (BC) 17:07:02-07:52:58
+11:00:00	290309-12-22 (BC) 03:07:02-07:52:58
+00:01:00	290309-12-21 (BC) 16:08:02-07:52:58
+00:06:00	290309-12-21 (BC) 16:13:02-07:52:58
+00:00:01	290309-12-21 (BC) 16:07:03-07:52:58
+00:00:23	290309-12-21 (BC) 16:07:25-07:52:58
+00:00:00.001	290309-12-21 (BC) 16:07:02.001-07:52:58
+00:00:00.91	290309-12-21 (BC) 16:07:02.91-07:52:58
+00:00:00.000001	290309-12-21 (BC) 16:07:02.000001-07:52:58
+00:00:00.000612	290309-12-21 (BC) 16:07:02.000612-07:52:58
 
-# Backwards from the minimum
+# Backwards from the first midnight, the smallest timestamps are about four hours earlier
 statement error
 SELECT ts + (INTERVAL (-1) year) FROM limits WHERE label = 'tsmin';
 ----
@@ -355,66 +373,25 @@ SELECT ts + (INTERVAL (-40) day) FROM limits WHERE label = 'tsmin';
 Conversion Error: ICU date overflows timestamp range
 
 statement error
-SELECT ts + (INTERVAL (-1) hour) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
 SELECT ts + (INTERVAL (-14) hour) FROM limits WHERE label = 'tsmin';
 ----
 Conversion Error: ICU date overflows timestamp range
 
-statement error
-SELECT ts + (INTERVAL (-1) minute) FROM limits WHERE label = 'tsmin';
+query II
+SELECT iv, ts + iv FROM limits, intervals
+WHERE label = 'tsmin'
+  AND iv < INTERVAL 0 SECONDS
+  AND iv > INTERVAL (-2) HOUR;
 ----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
-SELECT ts + (INTERVAL (-72) minute) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
-SELECT ts + (INTERVAL (-1) second) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
-SELECT ts + (INTERVAL (-118) second) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-# a millisecond below the smallest instant, which used to succeed only because a millisecond
-# was below the precision that a double has at that end of the range
-statement error
-SELECT ts + (INTERVAL (-1) millisecond) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
-SELECT ts + (INTERVAL (-150) millisecond) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
-SELECT ts + (INTERVAL (-1) microsecond) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: Date out of range in timestamp conversion
-
-statement error
-SELECT ts + (INTERVAL (-485) microsecond) FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: Date out of range in timestamp conversion
-
-statement error
-SELECT ts + INTERVAL (-150) millisecond FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: ICU date overflows timestamp range
-
-statement error
-SELECT ts + INTERVAL (-485) microsecond FROM limits WHERE label = 'tsmin';
-----
-Conversion Error: Date out of range in timestamp conversion
+-01:00:00	290309-12-21 (BC) 15:07:02-07:52:58
+-00:01:00	290309-12-21 (BC) 16:06:02-07:52:58
+-01:12:00	290309-12-21 (BC) 14:55:02-07:52:58
+-00:00:01	290309-12-21 (BC) 16:07:01-07:52:58
+-00:01:58	290309-12-21 (BC) 16:05:04-07:52:58
+-00:00:00.001	290309-12-21 (BC) 16:07:01.999-07:52:58
+-00:00:00.15	290309-12-21 (BC) 16:07:01.85-07:52:58
+-00:00:00.000001	290309-12-21 (BC) 16:07:01.999999-07:52:58
+-00:00:00.000485	290309-12-21 (BC) 16:07:01.999515-07:52:58
 
 # Backward from the maximum. These used to be off by a millisecond, because a double loses
 # millisecond accuracy at this end of the range.
@@ -532,7 +509,7 @@ Conversion Error: ICU date overflows timestamp range
 statement error
 SELECT ts + (INTERVAL 612 microsecond) FROM limits WHERE label = 'tsmax';
 ----
-Out of Range Error: Overflow in multiplication
+Conversion Error: ICU date overflows timestamp range
 
 statement error
 SELECT TIMESTAMPTZ '2024-01-01 12:00:00+00' - INTERVAL '-4611686018427387904 microseconds -4611686018427387904 microseconds'

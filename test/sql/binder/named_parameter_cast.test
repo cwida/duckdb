@@ -8,7 +8,7 @@ statement ok
 SET TimeZone='America/Los_Angeles';
 
 statement ok
-COPY (SELECT 42 AS a) TO '__TEST_DIR__/named_parameter_cast.csv' (HEADER false);
+COPY (SELECT 42 AS a) TO '{TEST_DIR}/named_parameter_cast.csv' (HEADER false);
 
 # -----------------------------------------------------------------------------
 # ICU's TIMESTAMPTZ -> VARCHAR cast prints in the session time zone
@@ -16,11 +16,11 @@ COPY (SELECT 42 AS a) TO '__TEST_DIR__/named_parameter_cast.csv' (HEADER false);
 
 # names is a LIST(VARCHAR) parameter, so the binder casts the timestamp into a column name
 query I
-SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv('__TEST_DIR__/named_parameter_cast.csv', names => [TIMESTAMPTZ '2024-01-01 12:00:00+00']));
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/named_parameter_cast.csv', names => [TIMESTAMPTZ '2024-01-01 12:00:00+00']));
 ----
 2024-01-01 04:00:00-08
 
 query I
-SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv('__TEST_DIR__/named_parameter_cast.csv', names => [TIMESTAMPTZ '2024-01-01 12:00:00+00'::VARCHAR]));
+SELECT column_name FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/named_parameter_cast.csv', names => [TIMESTAMPTZ '2024-01-01 12:00:00+00'::VARCHAR]));
 ----
 2024-01-01 04:00:00-08

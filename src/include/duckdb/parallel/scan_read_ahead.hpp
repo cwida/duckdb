@@ -120,6 +120,18 @@ private:
 	vector<unique_ptr<STATE>> states DUCKDB_GUARDED_BY(lock);
 };
 
+//! Counts one file against the open file budget of all scans until destroyed
+class ReadAheadOpenFile {
+public:
+	ReadAheadOpenFile();
+	~ReadAheadOpenFile();
+	ReadAheadOpenFile(const ReadAheadOpenFile &) = delete;
+	ReadAheadOpenFile &operator=(const ReadAheadOpenFile &) = delete;
+
+	//! Files counted by all scans of the process
+	static idx_t Count();
+};
+
 //! Outcome of ScanReadAhead::AcquireJob
 enum class ScanReadAheadAcquire : uint8_t {
 	ACQUIRED,  //! a job with settled I/O is now held
@@ -158,8 +170,9 @@ public:
 	//! Schedule a file-open closure on the async pool, opening files ahead of decoding
 	//! cancel_fn runs instead when the open is retired without running, and must settle whatever a scan waits on
 	void ScheduleFileOpen(std::function<void()> open_fn, std::function<void()> cancel_fn);
-	//! Whether another file-open may be scheduled without exceeding the open-ahead window
-	bool CanScheduleOpen() const;
+	//! Whether another file may be opened when files_ahead files are already opening or open ahead of the scan
+	//! and the files held open by all scans are within the open file budget
+	bool CanScheduleOpen(idx_t files_ahead) const;
 	//! Run one queued async task inline, returns false when none is queued
 	bool TryRunPendingTask();
 	//! Throw the first error recorded on the async executor, if there is one
@@ -234,8 +247,10 @@ private:
 	const idx_t read_ahead_depth;
 	//! Async memory governor
 	unique_ptr<ManagedAsyncMemoryGovernor> memory_governor;
-	//! Maximum file-opens scheduled ahead of decoding on the async pool
+	//! Maximum files opening or open ahead of decoding
 	const idx_t open_window;
+	//! Maximum files held open by all scans, a share of the file descriptor limit
+	const idx_t open_file_budget;
 	//! Backlog budget granted by the reservation, refreshed whenever a job is pushed
 	atomic<idx_t> backlog_budget {0};
 
@@ -257,8 +272,6 @@ private:
 	//! Threads waiting for progress, only these need a notification
 	atomic<idx_t> waiting_threads {0};
 	condition_variable progress;
-	//! File-opens scheduled on the async pool that have not completed yet, shared with the open tasks
-	shared_ptr<atomic<idx_t>> pending_opens;
 	//! Async I/O executor (async pool)
 	shared_ptr<TaskExecutor> executor;
 };

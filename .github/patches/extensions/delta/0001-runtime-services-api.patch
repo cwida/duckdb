@@ -1,0 +1,13 @@
+diff --git a/src/functions/delta_scan/delta_multi_file_list.cpp b/src/functions/delta_scan/delta_multi_file_list.cpp
+index d4270a8..79e205b 100644
+--- a/src/functions/delta_scan/delta_multi_file_list.cpp
++++ b/src/functions/delta_scan/delta_multi_file_list.cpp
+@@ -201,7 +201,7 @@ static ffi::EngineBuilder *CreateBuilder(ClientContext &context, const string &p
+ 	}
+ 	const auto &kv_secret = dynamic_cast<const KeyValueSecret &>(*secret_match.secret_entry->secret);
+ 
+-	KeyValueSecretReader secret_reader(kv_secret, *context.client_data->file_opener);
++	KeyValueSecretReader secret_reader(kv_secret, *context.GetContext().TryGetFileOpener());
+ 
+ 	// Here you would need to add the logic for setting the builder options for Azure
+ 	// This is just a placeholder and will need to be replaced with the actual logic

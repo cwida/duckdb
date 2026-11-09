@@ -1,0 +1,151 @@
+# name: test/optimizer/statistics/current_domain_join.test
+# description: Current-domain equality classes above reordered joins
+# group: [statistics]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE domain_join_large AS SELECT range::INTEGER k FROM range(1000);
+
+statement ok
+CREATE TABLE domain_join_sparse AS SELECT ((range % 100) * 10)::INTEGER k FROM range(1000);
+
+statement ok
+ANALYZE domain_join_large;
+
+statement ok
+ANALYZE domain_join_sparse;
+
+# Join multiplicity keeps the row estimate high, while the INNER equality class
+# narrows the grouping key to the smallest current domain.
+query II
+EXPLAIN SELECT domain_join_large.k, count(*)
+FROM domain_join_large
+JOIN domain_join_sparse USING (k)
+GROUP BY domain_join_large.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~(?:10[0-9]|110) rows.*HASH_JOIN.*~1,000 rows.*
+
+# Projection aliases retain the normalized equality-class domain.
+query II
+EXPLAIN SELECT joined_key, count(*)
+FROM (
+	SELECT domain_join_large.k joined_key
+	FROM domain_join_large
+	JOIN domain_join_sparse USING (k)
+) projected
+GROUP BY joined_key;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~(?:10[0-9]|110) rows.*HASH_JOIN.*~1,000 rows.*
+
+statement ok
+CREATE TABLE domain_join_small AS SELECT ((range % 20) * 50)::INTEGER k FROM range(1000);
+
+statement ok
+ANALYZE domain_join_small;
+
+# The three-way equality class uses its smallest member domain without multiplying
+# association-dependent intersection fractions.
+query II
+EXPLAIN SELECT domain_join_large.k, count(*)
+FROM domain_join_large
+JOIN domain_join_sparse USING (k)
+JOIN domain_join_small USING (k)
+GROUP BY domain_join_large.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~20 rows.*HASH_JOIN.*
+
+query I
+SELECT count(*)
+FROM (
+	SELECT domain_join_large.k
+	FROM domain_join_large
+	JOIN domain_join_sparse USING (k)
+	JOIN domain_join_small USING (k)
+	GROUP BY domain_join_large.k
+) groups;
+----
+20
+
+# A LEFT condition does not join the preceding INNER equality class. The group
+# estimate therefore remains at the large/sparse minimum rather than the small domain.
+query II
+EXPLAIN SELECT domain_join_large.k, count(*)
+FROM domain_join_large
+JOIN domain_join_sparse USING (k)
+LEFT JOIN domain_join_small USING (k)
+GROUP BY domain_join_large.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~(?:10[0-9]|110) rows.*HASH_JOIN.*
+
+# A left join does not narrow the preserved input's domain.
+query II
+EXPLAIN SELECT domain_join_large.k, count(*)
+FROM domain_join_large
+LEFT JOIN domain_join_sparse USING (k)
+GROUP BY domain_join_large.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~1,000 rows.*HASH_JOIN.*Join Type: LEFT.*
+
+# Cross products preserve input domains.
+query II
+EXPLAIN SELECT domain_join_large.k, count(*)
+FROM domain_join_large
+CROSS JOIN domain_join_sparse
+GROUP BY domain_join_large.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~1,000 rows.*CROSS_PRODUCT.*
+
+statement ok
+CREATE TABLE domain_join_null_large AS
+SELECT CASE WHEN range = 0 THEN NULL ELSE range::INTEGER END k FROM range(1000);
+
+statement ok
+CREATE TABLE domain_join_null_small AS
+SELECT CASE WHEN range = 0 THEN NULL ELSE range::INTEGER END k FROM range(101);
+
+statement ok
+ANALYZE domain_join_null_large;
+
+statement ok
+ANALYZE domain_join_null_small;
+
+# Nullable INNER equality classes narrow conservatively for both comparison forms.
+query II
+EXPLAIN SELECT lhs.k, count(*)
+FROM domain_join_null_large lhs
+JOIN domain_join_null_small rhs ON lhs.k = rhs.k
+GROUP BY lhs.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~9[0-9] rows.*HASH_JOIN.*Join Type: INNER.*
+
+query I
+SELECT count(*)
+FROM (
+	SELECT lhs.k
+	FROM domain_join_null_large lhs
+	JOIN domain_join_null_small rhs ON lhs.k = rhs.k
+	GROUP BY lhs.k
+) groups;
+----
+100
+
+query II
+EXPLAIN SELECT lhs.k, count(*)
+FROM domain_join_null_large lhs
+JOIN domain_join_null_small rhs ON lhs.k IS NOT DISTINCT FROM rhs.k
+GROUP BY lhs.k;
+----
+physical_plan	<REGEX>:(?s).*PERFECT_HASH_GROUP_BY.*~9[0-9] rows.*HASH_JOIN.*Join Type: INNER.*
+
+query I
+SELECT count(*)
+FROM (
+	SELECT lhs.k
+	FROM domain_join_null_large lhs
+	JOIN domain_join_null_small rhs ON lhs.k IS NOT DISTINCT FROM rhs.k
+	GROUP BY lhs.k
+) groups;
+----
+101

@@ -3,6 +3,7 @@
 #include "duckdb/common/shared_ptr_ipp.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -20,7 +21,6 @@
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
-#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include <utility>
@@ -339,22 +339,11 @@ bool TableIndexList::HasBufferedReplays() const {
 	return false;
 }
 
-shared_ptr<IndexEntry> TableIndexList::FindEntry(const Identifier &name) const {
-	annotated_lock_guard lock(index_entries_lock);
-	for (const auto &entry : index_entries) {
-		if (entry->GetName() != name) {
-			continue;
-		}
-		if (entry->GetBindState() != IndexBindState::BOUND) {
-			throw InternalException("TableIndexList::FindEntry cannot return an unbound index");
-		}
-		return entry;
-	}
-	return nullptr;
+shared_ptr<IndexEntry> TableIndexList::FindEntry(const IndexEntry &index) const {
+	return FindEntry(index.GetIndexOid());
 }
 
-shared_ptr<IndexEntry> TableIndexList::FindEntry(const IndexEntry &index) const {
-	auto index_oid = index.GetIndexOid();
+shared_ptr<IndexEntry> TableIndexList::FindEntry(idx_t index_oid) const {
 	annotated_lock_guard lock(index_entries_lock);
 	for (const auto &entry : index_entries) {
 		if (entry->GetIndexOid() != index_oid) {
@@ -422,25 +411,30 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 			throw InternalException("index entry bind state cannot be BOUND here");
 		}
 
-		// Create a binder to bind this index.
-		auto binder = Binder::CreateBinder(context);
-
-		// Add the table to the binder.
-		vector<ColumnIndex> dummy_column_ids;
-		binder->bind_context.AddBaseTable(TableIndex(0), Identifier(), StringsToIdentifiers(column_names), column_types,
-		                                  dummy_column_ids, table);
-
-		// Create an IndexBinder to bind the index
-		IndexBinder idx_binder(*binder, context);
-
 		// Apply any outstanding buffered replays and replace the unbound index with a bound index.
 		unique_ptr<BoundIndex> bound_idx;
-		{
+		try {
+			// Create a binder to bind this index.
+			auto binder = Binder::CreateBinder(context);
+
+			// Add the table to the binder.
+			vector<ColumnIndex> dummy_column_ids;
+			binder->bind_context.AddBaseTable(TableIndex(0), Identifier(), StringsToIdentifiers(column_names),
+			                                  column_types, dummy_column_ids, table);
+
+			// Create an IndexBinder to bind the index
+			IndexBinder idx_binder(*binder, context);
+
 			vector<LogicalType> physical_column_types;
 			for (auto &col : table.GetColumns().Physical()) {
 				physical_column_types.push_back(col.Type());
 			}
 			bound_idx = index_entry->Bind(idx_binder, physical_column_types);
+		} catch (...) {
+			// Leave the index unbound, so that a later attempt binds it instead of waiting for this one forever.
+			lock.lock();
+			index_entry->SetBindState(IndexBindState::UNBOUND);
+			throw;
 		}
 
 		// Commit the bound index to the index entry.
@@ -499,35 +493,40 @@ unordered_set<column_t> TableIndexList::GetIndexedColumns() const {
 	return column_ids;
 }
 
-vector<StorageIndex> TableIndexList::GetSortedIndexedColumns() const {
-	auto indexed_columns = GetIndexedColumns();
-	vector<StorageIndex> column_ids;
-	column_ids.reserve(indexed_columns.size());
-	for (auto &col : indexed_columns) {
-		column_ids.emplace_back(col);
+namespace {
+
+class PendingIndexPublication final : public PendingPublication {
+public:
+	PendingIndexPublication(shared_ptr<IndexEntry> entry_p, unique_ptr<BoundIndex> shadow_index_p)
+	    : entry(std::move(entry_p)), shadow_index(std::move(shadow_index_p)) {
+		D_ASSERT(entry);
+		D_ASSERT(shadow_index);
 	}
-	std::sort(column_ids.begin(), column_ids.end());
-	return column_ids;
-}
+
+	void Publish() override {
+		D_ASSERT(shadow_index);
+		entry->InstallShadow(std::move(shadow_index));
+	}
+
+private:
+	shared_ptr<IndexEntry> entry;
+	unique_ptr<BoundIndex> shadow_index;
+};
+
+} // namespace
 
 vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndexWriter &writer) {
 	annotated_lock_guard lock(index_entries_lock);
 
-	vector<unique_ptr<BoundIndex>> shadows;
 	vector<shared_ptr<const IndexStorageInfo>> infos;
-	shadows.reserve(index_entries.size());
 	infos.reserve(index_entries.size());
 
 	for (const auto &entry : index_entries) {
 		auto checkpoint = entry->Checkpoint(writer);
-		shadows.push_back(std::move(checkpoint.shadow_index));
+		if (checkpoint.shadow_index) {
+			writer.AddPendingPublication(make_uniq<PendingIndexPublication>(entry, std::move(checkpoint.shadow_index)));
+		}
 		infos.push_back(std::move(checkpoint.storage_info));
-	}
-
-	writer.Flush();
-
-	for (idx_t i = 0; i < index_entries.size(); i++) {
-		index_entries[i]->InstallShadow(std::move(shadows[i]));
 	}
 
 	return infos;
@@ -583,7 +582,14 @@ void TableIndexList::InitializeIndexChunk(DataChunk &index_chunk, const vector<L
 	// table_chunk contains all table columns.
 	// We only reference the index columns in the index chunk.
 	auto &index_list = data_table_info.GetIndexes();
-	mapped_column_ids = index_list.GetSortedIndexedColumns();
+	auto indexed_columns = index_list.GetIndexedColumns();
+
+	// Store the mapped_column_ids and index_types in sorted canonical form.
+	// First sort mapped_column_ids, then populate index_types according to the sorted order.
+	for (auto &col : indexed_columns) {
+		mapped_column_ids.emplace_back(col);
+	}
+	std::sort(mapped_column_ids.begin(), mapped_column_ids.end());
 
 	vector<LogicalType> index_types;
 	for (auto &col : mapped_column_ids) {
@@ -594,19 +600,10 @@ void TableIndexList::InitializeIndexChunk(DataChunk &index_chunk, const vector<L
 }
 
 void TableIndexList::ReferenceIndexChunk(DataChunk &table_chunk, DataChunk &index_chunk,
-                                         const vector<StorageIndex> &mapped_column_ids) {
+                                         vector<StorageIndex> &mapped_column_ids) {
 	for (idx_t i = 0; i < mapped_column_ids.size(); i++) {
 		auto col_id = mapped_column_ids[i].GetPrimaryIndex();
 		index_chunk.data[i].Reference(table_chunk.data[col_id]);
-	}
-}
-
-void TableIndexList::ReferenceTableChunk(DataChunk &table_chunk, DataChunk &index_chunk,
-                                         const vector<StorageIndex> &mapped_column_ids) {
-	D_ASSERT(index_chunk.ColumnCount() == mapped_column_ids.size());
-	for (idx_t i = 0; i < mapped_column_ids.size(); i++) {
-		auto col_id = mapped_column_ids[i].GetPrimaryIndex();
-		table_chunk.data[col_id].Reference(index_chunk.data[i]);
 	}
 }
 

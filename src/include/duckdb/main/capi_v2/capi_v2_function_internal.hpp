@@ -13,6 +13,7 @@
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb::capiv2 {
 
@@ -133,6 +134,35 @@ private:
 	const vector<Value> &positional;
 	const named_argument_map_t &named;
 };
+
+//! The statistics a stats callback reads or narrows. Argument statistics are read-only: they have no mutable view
+class CV2Stats {
+public:
+	explicit CV2Stats(const BaseStatistics &stats) : stats(stats) {
+	}
+	static CV2Stats Writable(BaseStatistics &stats) {
+		CV2Stats result(stats);
+		result.mutable_stats = &stats;
+		return result;
+	}
+
+	const BaseStatistics &GetStats() const {
+		return stats;
+	}
+	//! Throws when the statistics are read-only
+	BaseStatistics &GetMutableStats(const char *function_name);
+
+private:
+	const BaseStatistics &stats;
+	optional_ptr<BaseStatistics> mutable_stats;
+};
+
+inline auto Convert(duckdb_v2_stats_handle stats) -> CV2Stats * {
+	return reinterpret_cast<CV2Stats *>(stats);
+}
+inline auto Convert(CV2Stats *stats) -> duckdb_v2_stats_handle {
+	return reinterpret_cast<duckdb_v2_stats_handle>(stats);
+}
 
 inline auto Convert(duckdb_v2_function_bind_info_handle info) -> CV2FunctionBindInfo * {
 	return reinterpret_cast<CV2FunctionBindInfo *>(info);
