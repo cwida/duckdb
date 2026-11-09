@@ -10,13 +10,28 @@
 
 namespace duckdb {
 
-static bool IsActiveGrammarExtension(const ClientContext &context, const string &name) {
-	for (auto &active : ClientConfig::GetConfig(context).active_grammar_extensions) {
+//! The selection these functions read and modify is the effective one, matching the parse path:
+//! the session selection when set, otherwise the database-wide default
+static shared_ptr<const vector<string>> EffectiveGrammarExtensions(const ClientContext &context) {
+	auto selection = ClientConfig::GetConfig(context).active_grammar_extensions.atomic_load();
+	if (!selection) {
+		selection = DBConfig::GetConfig(context).default_grammar_extensions.atomic_load();
+	}
+	return selection;
+}
+
+static bool ListContainsGrammarExtension(const vector<string> &list, const string &name) {
+	for (auto &active : list) {
 		if (StringUtil::CIEquals(active, name)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+static bool IsActiveGrammarExtension(const ClientContext &context, const string &name) {
+	auto active_list = EffectiveGrammarExtensions(context);
+	return active_list && ListContainsGrammarExtension(*active_list, name);
 }
 
 struct GrammarExtensionData {
@@ -121,10 +136,16 @@ static void SetActiveGrammarExtensions(ClientContext &context, const vector<stri
 //! Appends the grammar extension to the active grammar extensions, keeping the ones that are already active
 static void AddGrammarExtension(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &name = data.bind_data->Cast<GrammarExtensionNameData>().name;
-	if (IsActiveGrammarExtension(context, name)) {
+	// one retained snapshot serves both the membership check and the modification, so a
+	// concurrent change to the database default cannot split the two
+	auto current = EffectiveGrammarExtensions(context);
+	if (current && ListContainsGrammarExtension(*current, name)) {
 		return;
 	}
-	auto extensions = ClientConfig::GetConfig(context).active_grammar_extensions;
+	vector<string> extensions;
+	if (current) {
+		extensions = *current;
+	}
 	extensions.push_back(name);
 	SetActiveGrammarExtensions(context, extensions);
 }
@@ -132,11 +153,13 @@ static void AddGrammarExtension(ClientContext &context, TableFunctionInput &data
 //! Removes the grammar extension from the active grammar extensions, keeping the other ones
 static void RemoveGrammarExtension(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &name = data.bind_data->Cast<GrammarExtensionNameData>().name;
-	if (!IsActiveGrammarExtension(context, name)) {
+	// same single-snapshot discipline as the add path
+	auto current = EffectiveGrammarExtensions(context);
+	if (!current || !ListContainsGrammarExtension(*current, name)) {
 		return;
 	}
 	vector<string> extensions;
-	for (auto &active : ClientConfig::GetConfig(context).active_grammar_extensions) {
+	for (auto &active : *current) {
 		if (!StringUtil::CIEquals(active, name)) {
 			extensions.push_back(active);
 		}

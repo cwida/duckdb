@@ -90,7 +90,7 @@ void ScanFilterInfo::Initialize(ClientContext &context, TableFilterSet &filters,
 	this->column_ids = &column_ids;
 	if (filters.HasFilters()) {
 		adaptive_filter = make_uniq<AdaptiveFilter>(filters);
-		adaptive_filter->SetLogger(context.services->GetLoggerPtr());
+		adaptive_filter->SetLogger(context.GetContext().GetLoggerPtr());
 	}
 	filter_list.reserve(filters.FilterCount());
 	for (auto &entry : filters) {
@@ -415,8 +415,7 @@ bool CollectionScanState::RecheckPreparedRowGroup() {
 	if (!row_group || prepared_vector.prepare_state == VectorPrepareState::NONE) {
 		return true;
 	}
-	if (pinned_row_group->CheckZonemap(Context::TryGetClientContext(context.GetServices()), GetFilterInfo(),
-	                                   row_group->GetRowStart())) {
+	if (pinned_row_group->CheckZonemap(context.GetClientContext(), GetFilterInfo(), row_group->GetRowStart())) {
 		return true;
 	}
 	// the prepared vector was counted as scanned when it was prepared, it is never decoded

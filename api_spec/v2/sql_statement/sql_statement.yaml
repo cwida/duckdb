@@ -143,7 +143,11 @@ functions:
         type: char
         indirection: 1
         const: true
-        description: Null-terminated SQL string; may contain any number of statements.
+        kind: IN
+        description: The SQL text, `sql_length` bytes long; may contain any number of statements. Need not be null-terminated. May be NULL only when `sql_length` is 0.
+      sql_length:
+        type: idx
+        description: The length of `sql` in bytes.
       apply_invalidation_policy:
         type: bool
         description: Whether a parse error invalidates the active transaction, according to the transaction invalidation policy.
@@ -272,19 +276,29 @@ functions:
         type: sql_statement
         description: The statement to bind the collection to. Modified in place.
       name:
-        type: identifier
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The non-empty name the statement refers to the collection by. Borrowed and copied.
+      name_length:
+        type: idx
+        description: The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be NULL only when this is 0.
       collection:
         type: column_data_collection
         description: The collection to bind. Borrowed; the caller keeps ownership and must keep it alive.
       column_names:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: Optional. An array of `column_count` names for the collection's columns, in order. Pass NULL for col1..colN.
+      column_names_lengths:
+        type: idx
         indirection: 1
         const: true
-        description: Optional. An array of `column_count` names for the collection's columns, in order. Pass NULL for col1..colN.
+        kind: IN
+        description: Byte lengths of the entries in `column_names`; element i is the length of `column_names[i]`. May be NULL only when `column_names` is NULL.
       column_count:
         type: idx
         description: The number of names in `column_names`. 0 for the default names; otherwise the collection's column count.
@@ -347,10 +361,16 @@ functions:
         type: sql_statement
         description: The statement.
       out_text:
-        type: str
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the statement text, valid until the statement is destroyed.
+        description: Receives a borrowed pointer to the statement text, valid until the statement is destroyed.
+      out_text_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_text` in bytes. `*out_text` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1
@@ -409,10 +429,16 @@ functions:
         type: idx
         description: Zero-based position in binding order.
       out_name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the parameter name, valid until the statement is destroyed.
+        description: Receives a borrowed pointer to the parameter name, valid until the statement is destroyed.
+      out_name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1

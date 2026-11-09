@@ -98,12 +98,14 @@ DUCKDB_V2_ERROR duckdb_v2_table_description_destroy(duckdb_v2_table_description_
 // Column Description
 //----------------------------------------------------------------------------------------------------------------------
 
-DUCKDB_V2_ERROR duckdb_v2_column_description_get_name(duckdb_v2_column_description_handle column,
-                                                      duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_column_description_get_name(duckdb_v2_column_description_handle column, const char **name,
+                                                      idx_t *name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(column);
 	DUCKDB_CHECK_ARG(name);
-	*name = duckdb_v2_identifier_t {nullptr, 0};
-	return WithErrorHandler(err, [&]() { *name = Convert(Convert(column)->Name()); });
+	DUCKDB_CHECK_ARG(name_length);
+	*name = nullptr;
+	*name_length = 0;
+	return WithErrorHandler(err, [&]() { SetStringOut(name, name_length, Convert(column)->Name()); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_column_description_get_type(duckdb_v2_column_description_handle column,

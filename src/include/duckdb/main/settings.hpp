@@ -90,7 +90,7 @@ private:
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const ClientContext &context, idx_t setting_index, Value &result);
-	static bool TryGetSettingInternal(const Context &services, idx_t setting_index, Value &result);
+	static bool TryGetSettingInternal(const Context &context, idx_t setting_index, Value &result);
 
 	static void SetSettingInternal(DatabaseInstance &db, idx_t setting_index, SetScope scope, Value target_value);
 	static void SetSettingInternal(DBConfig &config, idx_t setting_index, SetScope scope, Value target_value);
@@ -1052,6 +1052,19 @@ struct DefaultCollationSetting {
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
+struct DefaultGrammarExtensionsSetting {
+	using RETURN_TYPE = vector<string>;
+	static constexpr const char *Name = "default_grammar_extensions";
+	static constexpr const char *Description =
+	    "The grammar extensions sessions parse with when active_grammar_extensions is not set.";
+	static constexpr const char *InputType = "VARCHAR[]";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
+	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
+	static Value GetSetting(const ClientContext &context);
 };
 
 struct DefaultNullOrderSetting {

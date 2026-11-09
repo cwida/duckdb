@@ -26,6 +26,16 @@ SELECT * FROM read_csv_auto('{DATA_DIR}/csv/auto/skip_row.csv')
 statement ok
 SET disabled_filesystems='LocalFileSystem';
 
+query I
+SELECT current_setting('disabled_filesystems')
+----
+LocalFileSystem
+
+query I
+SELECT value FROM duckdb_settings() WHERE name = 'disabled_filesystems'
+----
+LocalFileSystem
+
 statement error
 RESET disabled_filesystems;
 ----

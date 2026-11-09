@@ -71,6 +71,8 @@ public:
 		completion->AddIOTask();
 	}
 	~ReadAheadIOTask() override {
+		// release the task's resources before waking the scan, they may outlive the database otherwise
+		task.reset();
 		// If we are done we decrement the pending
 		completion->FinishIOTask();
 	}
@@ -83,6 +85,8 @@ public:
 			// recording the error through the read-ahead also wakes the threads waiting for progress
 			read_ahead.PushError(ErrorData(ex));
 		}
+		// release the task's resources while the executor still counts this task as running
+		task.reset();
 	}
 
 private:
@@ -177,7 +181,7 @@ unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
 	if (configured_depth < 0) {
 		// automatic mode, unlimited depth, the backlog is bounded by a temp-memory reservation instead
 		return make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
-		                                make_uniq<ManagedAsyncMemoryGovernor>(context.Services()));
+		                                make_uniq<ManagedAsyncMemoryGovernor>(context.GetContext()));
 	}
 	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
 }

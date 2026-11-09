@@ -495,8 +495,8 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_importer_destroy(duckdb_v2_arrow_importer_handle
 //----------------------------------------------------------------------------------------------------------------------
 
 DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_create(duckdb_v2_context_handle context,
-                                                const duckdb_v2_logical_type_handle *types, const duckdb_v2_str *names,
-                                                idx_t count, idx_t batch_size,
+                                                const duckdb_v2_logical_type_handle *types, const char **names,
+                                                const idx_t *names_lengths, idx_t count, idx_t batch_size,
                                                 duckdb_v2_arrow_exporter_handle *out_exporter,
                                                 duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(context);
@@ -514,16 +514,14 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_create(duckdb_v2_context_handle context
 		exporter->batch_size = batch_size;
 		exporter->types.reserve(count);
 		exporter->names.reserve(count);
+		string_view_array name_views(names, names_lengths, count);
 		for (idx_t i = 0; i < count; i++) {
 			if (!types[i]) {
 				throw duckdb::InvalidInputException("null logical type at index %llu", i);
 			}
-			if (IsNullArgument(&names[i])) {
-				throw duckdb::InvalidInputException("malformed column name at index %llu", i);
-			}
 			auto type = Convert(types[i]);
 			exporter->types.push_back(*type);
-			exporter->names.emplace_back(ConvertIdentifierName(names[i]));
+			exporter->names.emplace_back(name_views[i]);
 		}
 		// Pin the settings and the extension map now: the schema below and every array this exporter produces are built
 		// from them, which is what keeps the two consistent.
@@ -617,7 +615,7 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_destroy(duckdb_v2_arrow_exporter_handle
 
 DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(duckdb_v2_connection_handle conn,
                                                   duckdb_v2_sql_statement_handle statement,
-                                                  const duckdb_v2_identifier_t *parameter_names,
+                                                  const char **parameter_names, const idx_t *parameter_names_lengths,
                                                   const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
                                                   idx_t batch_size, duckdb_v2_arrow_result_handle *out_result,
                                                   duckdb_v2_error_info_handle *err) {
@@ -629,10 +627,11 @@ DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(duckdb_v2_connection_handle co
 		return NullArgumentError(err, __func__, "parameter_values");
 	}
 	return WithErrorHandler(err, [&]() {
-		*out_result = ConvertArrowResult(ExecuteStatementV2(Convert(conn)->context, *Convert(statement),
-		                                                    parameter_names, parameter_values, parameter_count,
-		                                                    __func__, ArrowResultFormat(batch_size))
-		                                     .release());
+		*out_result = ConvertArrowResult(
+		    ExecuteStatementV2(Convert(conn)->context, *Convert(statement),
+		                       string_view_array(parameter_names, parameter_names_lengths, parameter_count),
+		                       parameter_values, parameter_count, __func__, ArrowResultFormat(batch_size))
+		        .release());
 	});
 }
 

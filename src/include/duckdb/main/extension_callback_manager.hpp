@@ -64,6 +64,11 @@ public:
 	optional_ptr<StorageExtension> FindStorageExtension(const string &name) const;
 	optional_ptr<GrammarExtension> FindGrammarExtension(const string &name) const;
 	case_insensitive_map_t<shared_ptr<GrammarExtension>> GrammarExtensions() const;
+	//! Monotonic version bumped on every grammar extension registration, so sessions can detect
+	//! that their composed grammar is stale (e.g. after a LOAD mid-session)
+	idx_t GrammarRegistryVersion() const {
+		return grammar_registry_version.load();
+	}
 	optional_ptr<ProfilerExtension> FindProfilerExtension(const string &name) const;
 	bool HasParserExtensions() const;
 	optional_ptr<DialectExtension> GetDialectExtension(const string &name) const;
@@ -79,6 +84,7 @@ private:
 	//! Every published registry, kept alive so that readers of an older one stay valid
 	vector<shared_ptr<ExtensionCallbackRegistry>> registry_versions;
 	vector<string> extension_schemas;
+	atomic<idx_t> grammar_registry_version {0};
 };
 
 template <class T>
