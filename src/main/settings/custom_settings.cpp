@@ -1797,6 +1797,11 @@ void TrackedMetricsSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 	if (input.IsNull()) {
 		throw InvalidInputException("%s setting cannot be NULL", TrackedMetricsSetting::Name);
 	}
+	for (auto &pattern : ListValue::GetChildren(input)) {
+		if (pattern.IsNull()) {
+			throw InvalidInputException("%s setting cannot contain NULL entries", TrackedMetricsSetting::Name);
+		}
+	}
 }
 
 //===----------------------------------------------------------------------===//

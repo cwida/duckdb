@@ -15,82 +15,20 @@ namespace duckdb {
 
 class Context;
 
+template <class T>
+struct IsSettingList : std::false_type {};
+
+template <class T>
+struct IsSettingList<vector<T>> : std::true_type {};
+
 struct Settings {
 	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_enum<typename OP::RETURN_TYPE>::value, typename OP::RETURN_TYPE>::type
-	Get(const SOURCE &source) {
+	static typename OP::RETURN_TYPE Get(const SOURCE &source) {
 		Value result;
 		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return EnumUtil::FromString<typename OP::RETURN_TYPE>(StringValue::Get(result));
+			return FromValue<typename OP::RETURN_TYPE>(result);
 		}
-		return EnumUtil::FromString<typename OP::RETURN_TYPE>(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, string>::value, string>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return StringValue::Get(result);
-		}
-		return OP::DefaultValue;
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, bool>::value, bool>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return BooleanValue::Get(result);
-		}
-		return StringUtil::Equals(OP::DefaultValue, "true");
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, idx_t>::value, idx_t>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return UBigIntValue::Get(result);
-		}
-		return StringUtil::ToUnsigned(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, int64_t>::value, int64_t>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return BigIntValue::Get(result);
-		}
-		return StringUtil::ToSigned(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<std::is_same<typename OP::RETURN_TYPE, double>::value, double>::type
-	Get(const SOURCE &source) {
-		Value result;
-		if (TryGetSettingInternal(source, OP::SettingIndex, result) && !result.IsNull()) {
-			return DoubleValue::Get(result);
-		}
-		return StringUtil::ToDouble(OP::DefaultValue);
-	}
-
-	template <class OP, class SOURCE>
-	static typename std::enable_if<
-	    std::is_same<typename OP::RETURN_TYPE, vector<typename OP::RETURN_TYPE::value_type>>::value,
-	    typename OP::RETURN_TYPE>::type
-	Get(const SOURCE &source) {
-		using ELEMENT_TYPE = typename OP::RETURN_TYPE::value_type;
-		Value result;
-		if (!TryGetSettingInternal(source, OP::SettingIndex, result) || result.IsNull()) {
-			result = ParseListDefault(OP::DefaultValue, OP::InputType);
-		}
-		typename OP::RETURN_TYPE entries;
-		for (auto &child : ListValue::GetChildren(result)) {
-			entries.push_back(child.GetValue<ELEMENT_TYPE>());
-		}
-		return entries;
+		return FromDefault<typename OP::RETURN_TYPE>(OP::DefaultValue);
 	}
 
 	template <class SOURCE>
@@ -104,7 +42,75 @@ struct Settings {
 	}
 
 private:
-	static Value ParseListDefault(const char *default_value, const char *input_type);
+	//! Converts the value of a setting to its return type
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value, T>::type FromValue(const Value &value) {
+		return EnumUtil::FromString<T>(StringValue::Get(value));
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, string>::value, T>::type FromValue(const Value &value) {
+		return StringValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, bool>::value, T>::type FromValue(const Value &value) {
+		return BooleanValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, idx_t>::value, T>::type FromValue(const Value &value) {
+		return UBigIntValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, int64_t>::value, T>::type FromValue(const Value &value) {
+		return BigIntValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, double>::value, T>::type FromValue(const Value &value) {
+		return DoubleValue::Get(value);
+	}
+	template <class T>
+	static typename std::enable_if<IsSettingList<T>::value, T>::type FromValue(const Value &value) {
+		T result;
+		for (auto &child : ListValue::GetChildren(value)) {
+			result.push_back(FromValue<typename T::value_type>(child));
+		}
+		return result;
+	}
+
+	//! Parses the default value of a setting
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value, T>::type FromDefault(const char *default_value) {
+		return EnumUtil::FromString<T>(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, string>::value, T>::type FromDefault(const char *default_value) {
+		return default_value;
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, bool>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::Equals(default_value, "true");
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, idx_t>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToUnsigned(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, int64_t>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToSigned(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<std::is_same<T, double>::value, T>::type FromDefault(const char *default_value) {
+		return StringUtil::ToDouble(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<IsSettingList<T>::value, T>::type FromDefault(const char *default_value) {
+		T result;
+		for (auto &entry : SplitListDefault(default_value)) {
+			result.push_back(FromDefault<typename T::value_type>(entry.c_str()));
+		}
+		return result;
+	}
+	//! Splits a list literal (e.g. "['a', 'b']") into its entries
+	static vector<string> SplitListDefault(const char *default_value);
 
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);

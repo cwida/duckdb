@@ -35,3 +35,8 @@ statement error
 SET tracked_metrics=NULL
 ----
 tracked_metrics setting cannot be NULL
+
+statement error
+SET tracked_metrics=['query.*', NULL]
+----
+tracked_metrics setting cannot contain NULL entries
