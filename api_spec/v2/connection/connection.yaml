@@ -30,6 +30,36 @@ functions:
         kind: OUT
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
+  connection_create_from_v1_database:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-08" ]
+    description: |
+      Opens a connection to the database of a V1 `duckdb_database`.
+
+      Lets an application that opened its database through the V1 API use the V2 API on the same database, one code
+      path at a time. Like `[[connection_create]]`, the connection carries its own client context and session-scoped
+      (LOCAL) settings, and shares the database's catalog, attached databases, secrets, buffer pool, and transaction
+      manager with every other connection, including the application's V1 connections.
+
+      The V1 database must stay open until the connection is destroyed via `[[connection_destroy]]`.
+    role: constructor
+    belongs_to: connection
+    parameters:
+      v1_database:
+        type: opaque
+        indirection: 1
+        description: "The V1 database: the `duckdb_database` that `duckdb_open` filled in."
+      out_conn:
+        type: connection
+        indirection: 1
+        kind: OUT
+        description: "Receives the new connection handle."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
   connection_destroy:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-08-04" ]
