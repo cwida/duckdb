@@ -48,18 +48,6 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
 			altered_dependencies.AddDependency(altered_dep);
 		}
 		create_info->dependencies = altered_dependencies;
-		if (create_info->type == CatalogType::MACRO_ENTRY || create_info->type == CatalogType::TABLE_MACRO_ENTRY) {
-			// the members' recorded dependency attribution re-roots the same way
-			for (auto &member : create_info->Cast<CreateMacroInfo>().macros) {
-				LogicalDependencyList altered_member_dependencies;
-				for (auto &dep : member->recorded_dependencies.Set()) {
-					auto altered_dep = dep;
-					altered_dep.catalog = target_database_name;
-					altered_member_dependencies.AddDependency(altered_dep);
-				}
-				member->recorded_dependencies = altered_member_dependencies;
-			}
-		}
 		create_info->on_conflict = on_conflict;
 		info->entries.push_back(std::move(create_info));
 	}

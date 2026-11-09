@@ -190,12 +190,6 @@
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]
-    },
-    {
-      "reason": "Member dependency attribution is stored from v2.1.0. This config restarts a database on the default older storage version after every statement, which strips the attribution and makes member drops on entries with dependencies reject by design.",
-      "paths": [
-        "test/sql/catalog/function/drop_function_signature_dependencies.test"
-      ]
     }
   ]
 }

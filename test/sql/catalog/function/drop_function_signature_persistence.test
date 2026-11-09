@@ -1,5 +1,5 @@
 # name: test/sql/catalog/function/drop_function_signature_persistence.test
-# description: Member drops and their dependency attribution survive checkpoint and restart
+# description: Member drops and the entry's dependencies survive checkpoint and restart
 # group: [function]
 
 load {TEST_DIR}/drop_function_signature_base.db
@@ -7,7 +7,7 @@ load {TEST_DIR}/drop_function_signature_base.db
 statement ok
 SET enable_macro_dependencies = true;
 
-# member dependency attribution is stored from v2.1.0
+# a member drop on a v2.1.0 database
 statement ok
 ATTACH '{TEST_DIR}/drop_function_signature_persistence.db' AS pdb (STORAGE_VERSION 'v2.1.0');
 
@@ -39,13 +39,13 @@ DROP MACRO pdb.main.pf(VARCHAR);
 ----
 <REGEX>:.*has no overload with signature \(VARCHAR\).*
 
-# the surviving member's recorded dependency survived the restart
+# the entry's dependency survived the restart
 statement error
 DROP TABLE pdb.src;
 ----
 <REGEX>:.*depend.*
 
-# the recorded attribution survived too: a member drop after restart works and keeps protection
+# a member drop after the restart keeps the entry's dependencies too
 statement ok
 DROP MACRO pdb.main.pf(ANY);
 
@@ -78,8 +78,7 @@ DROP MACRO pdb.main.pf;
 statement ok
 DROP TABLE pdb.src;
 
-# a database pinned below v2.1.0 cannot store attribution, so a member drop on an entry with
-# dependencies is rejected after a round trip instead of guessed
+# on a database pinned below v2.1.0, a member drop after a round trip keeps the entry's dependencies
 statement ok
 SET enable_macro_dependencies = true;
 
@@ -103,12 +102,20 @@ SET enable_macro_dependencies = true;
 statement ok
 ATTACH '{TEST_DIR}/drop_function_signature_old.db' AS odb;
 
-statement error
+statement ok
 DROP MACRO odb.main.old_pf(VARCHAR);
-----
-<REGEX>:.*before member dependency tracking.*
 
-# without dependencies the member drop works even without attribution
+statement error
+DROP TABLE odb.old_src;
+----
+<REGEX>:.*Cannot drop entry "old_src" because there are entries that depend on it.*
+
+query T
+SELECT odb.main.old_pf(1);
+----
+0
+
+# an entry without dependencies
 statement ok
 DROP MACRO odb.main.old_plain(VARCHAR);
 

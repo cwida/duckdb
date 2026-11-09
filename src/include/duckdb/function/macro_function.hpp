@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "duckdb/catalog/dependency_list.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/query_node.hpp"
@@ -46,11 +45,6 @@ public:
 	vector<LogicalType> types;
 	//! The declared return type, UNKNOWN when none was declared: the member's result is cast to it
 	LogicalType return_type = LogicalType::UNKNOWN;
-	//! Whether recorded_dependencies carries this member's create-time dependency attribution.
-	//! False for entries created or stored before member attribution existed.
-	bool dependencies_recorded = false;
-	//! The catalog dependencies this member's CREATE bind registered
-	LogicalDependencyList recorded_dependencies;
 
 public:
 	virtual ~MacroFunction() {

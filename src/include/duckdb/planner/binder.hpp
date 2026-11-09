@@ -76,7 +76,6 @@ struct CreateTriggerInfo;
 struct QualifiedName;
 struct BoundCreateTableInfo;
 struct CreateMacroInfo;
-class MacroFunction;
 struct BoundOnConflictInfo;
 struct CommonTableExpressionInfo;
 struct BoundParameterMap;

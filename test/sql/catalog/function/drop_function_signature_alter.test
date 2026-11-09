@@ -215,7 +215,7 @@ SELECT odb.om('a');
 <REGEX>:.*(No function matches|Binder Error|does not support).*
 
 # a v2.1.0 database carries the member drop as the ALTER_MACRO record: the replay goes through
-# MacroCatalogEntry::AlterEntry, keeps the oid, and re-derives the dependency list
+# MacroCatalogEntry::AlterEntry, keeps the oid, and keeps the dependency list
 statement ok
 SET enable_macro_dependencies = true;
 
@@ -252,7 +252,7 @@ SELECT ndb.nm('a');
 ----
 <REGEX>:.*(No function matches|Binder Error|does not support).*
 
-# the re-derived dependency list still protects the surviving member's reference
+# the kept dependency list still protects the surviving member's reference
 statement error
 DROP TABLE ndb.nsrc;
 ----

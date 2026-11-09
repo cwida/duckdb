@@ -471,26 +471,7 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	vector_of_logical_type_set_t type_overloads;
 	auto &base = info.Cast<CreateMacroInfo>();
 	CheckMacroStorageVersion(catalog, base);
-	const auto should_create_dependencies = Settings::Get<EnableMacroDependenciesSetting>(context);
 	for (auto &function : base.macros) {
-		// record the member's dependencies on the member itself: a later member drop derives the
-		// replacement's dependency list from the surviving members' attribution. The callback is
-		// installed for the whole iteration so the member's declared types and default values
-		// attribute to it too, and cleared below so it cannot leak into the next member.
-		function->dependencies_recorded = true;
-		function->recorded_dependencies = LogicalDependencyList();
-		auto &dependencies = function->recorded_dependencies;
-		const auto binder_callback = [&dependencies, &catalog](CatalogEntry &entry) {
-			if (&catalog != &entry.ParentCatalog()) {
-				// Don't register any cross-catalog dependencies
-				return;
-			}
-			// Register any catalog entry required to bind the macro function
-			dependencies.AddDependency(entry);
-		};
-		if (should_create_dependencies) {
-			SetCatalogLookupCallback(binder_callback);
-		}
 		if (!store_types) {
 			for (const auto &type : function->types) {
 				if (type.id() != LogicalTypeId::UNKNOWN) {
@@ -600,6 +581,17 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		    make_uniq<DummyBinding>(dummy_types, dummy_names, base.GetFunctionName().GetIdentifierName());
 		macro_binding = this_macro_binding.get();
 
+		auto &dependencies = base.dependencies;
+		const auto should_create_dependencies = Settings::Get<EnableMacroDependenciesSetting>(context);
+		const auto binder_callback = [&dependencies, &catalog](CatalogEntry &entry) {
+			if (&catalog != &entry.ParentCatalog()) {
+				// Don't register any cross-catalog dependencies
+				return;
+			}
+			// Register any catalog entry required to bind the macro function
+			dependencies.AddDependency(entry);
+		};
+
 		// bind it to verify the function was defined correctly
 		ErrorData error;
 		if (info.type == CatalogType::MACRO_ENTRY) {
@@ -641,20 +633,9 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			}
 		}
 
-		if (should_create_dependencies) {
-			SetCatalogLookupCallback(nullptr);
-		}
-
 		// if we cannot resolve parameters we postpone binding until the macro function is used
 		if (error.HasError() && error.Type() != ExceptionType::PARAMETER_NOT_RESOLVED) {
 			error.Throw();
-		}
-	}
-
-	// the entry-level dependency list is the union over the members
-	for (auto &function : base.macros) {
-		for (auto &dep : function->recorded_dependencies.Set()) {
-			base.dependencies.AddDependency(dep);
 		}
 	}
 
