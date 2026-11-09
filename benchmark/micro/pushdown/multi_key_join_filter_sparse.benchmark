@@ -1,0 +1,26 @@
+# name: benchmark/micro/pushdown/multi_key_join_filter_sparse.benchmark
+# description: Two-key join where the selective key column gets a bloom filter
+# group: [pushdown]
+
+name MultiKeyJoinFilterSparse
+group micro
+subgroup pushdown
+
+load
+CREATE TABLE fact AS
+  SELECT (i % 300000)::INTEGER AS item,
+         ((i // 12) * 1000003)::BIGINT AS ticket,
+         (i % 997)::INTEGER AS payload
+  FROM range(24000000) t(i);
+CREATE TABLE dim AS
+  SELECT item, ticket
+  FROM fact
+  WHERE hash(ticket * 31 + item) % 50 = 0;
+
+run
+SELECT count(*), sum(f.payload)
+FROM fact f
+JOIN dim d ON f.item = d.item AND f.ticket = d.ticket;
+
+result II
+479664	238830267

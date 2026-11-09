@@ -40,6 +40,11 @@ SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g;
 ----
 3
 
+query I
+SELECT count(*) FROM p JOIN b ON p.a IS NOT DISTINCT FROM b.b AND p.g=b.g WHERE p.a IS NULL;
+----
+1
+
 statement ok
 SET dynamic_or_filter_threshold=50;
 
