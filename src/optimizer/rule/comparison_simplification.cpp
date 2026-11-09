@@ -4,6 +4,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -105,8 +106,28 @@ static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, con
 	return false;
 }
 
-static bool IsIntegralToVarcharCast(const LogicalType &source_type, const LogicalType &target_type) {
-	return source_type.IsIntegral() && target_type.id() == LogicalTypeId::VARCHAR;
+static bool IsEqualityPreservingVarcharCast(const LogicalType &source_type, const LogicalType &target_type) {
+	if (target_type.id() != LogicalTypeId::VARCHAR) {
+		return false;
+	}
+	if (source_type.IsIntegral()) {
+		return true;
+	}
+	switch (source_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIME_NS:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+		return true;
+	default:
+		return false;
+	}
 }
 
 static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpression &expr,
@@ -119,8 +140,8 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	if (cast_expression.GetReturnType().IsIntegral() && target_type.IsIntegral()) {
 		return true;
 	}
-	if (IsIntegralToVarcharCast(target_type, cast_expression.GetReturnType())) {
-		// integer -> VARCHAR is canonical, but string ordering differs from integer ordering
+	if (IsEqualityPreservingVarcharCast(target_type, cast_expression.GetReturnType())) {
+		// These casts preserve equality, but not necessarily ordering.
 		auto op = expr.GetExpressionType();
 		if (op != ExpressionType::COMPARE_EQUAL && op != ExpressionType::COMPARE_NOTEQUAL &&
 		    op != ExpressionType::COMPARE_DISTINCT_FROM && op != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
@@ -257,7 +278,13 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
 		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
 		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType()) &&
-		    !IsIntegralToVarcharCast(target_type, cast_expression.GetReturnType())) {
+		    !IsEqualityPreservingVarcharCast(target_type, cast_expression.GetReturnType())) {
+			return nullptr;
+		}
+		// The type-based proofs only apply to built-in casts in both directions.
+		auto &cast_functions = CastFunctionSet::Get(GetContext());
+		if (cast_functions.CanOverrideDefaultCast(target_type, cast_expression.GetReturnType()) ||
+		    cast_functions.CanOverrideDefaultCast(cast_expression.GetReturnType(), target_type)) {
 			return nullptr;
 		}
 
