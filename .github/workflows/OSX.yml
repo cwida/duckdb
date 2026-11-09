@@ -55,13 +55,6 @@ jobs:
     - name: Build
       run: python3 scripts/ci/retry.py -- make
 
-    - name: Set DUCKDB_INSTALL_LIB for ADBC tests
-      shell: bash
-      run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.dylib' | head -n 1)" >> "$GITHUB_ENV"
-
-    - name: Test DUCKDB_INSTALL_LIB variable
-      run: echo "$DUCKDB_INSTALL_LIB"
-
     - name: Test
       if: ${{ !inputs.skip_tests }}
       run: make unittest_release

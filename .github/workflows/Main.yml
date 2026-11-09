@@ -360,12 +360,6 @@ jobs:
         ls -lh build/relassert/extension/test/test.duckdb_extension
         ls -lh build/relassert/test/extensions/duckdb_tests.duckdb_extension
 
-    - name: Set DUCKDB_INSTALL_LIB for ADBC tests
-      run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.so' | head -n 1)" >> "$GITHUB_ENV"
-
-    - name: Test DUCKDB_INSTALL_LIB variable
-      run: echo "$DUCKDB_INSTALL_LIB"
-
     - name: Test
       run: make unittest_relassert
 

@@ -70,14 +70,6 @@ jobs:
           throw 'Windows amd64 Release compile commands are missing the CLI architecture flags'
         }
 
-    - name: Set DUCKDB_INSTALL_LIB for ADBC tests
-      shell: pwsh
-      run: echo "DUCKDB_INSTALL_LIB=$((Get-ChildItem -Recurse -Filter "duckdb.dll" | Select-Object -First 1).FullName)" >> $env:GITHUB_ENV
-
-    - name: Test DUCKDB_INSTALL_LIB variable
-      shell: bash
-      run: echo "$DUCKDB_INSTALL_LIB"
-
     - name: Test
       shell: bash
       if: ${{ !inputs.skip_tests }}
