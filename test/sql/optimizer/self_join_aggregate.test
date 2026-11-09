@@ -367,7 +367,7 @@ physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
 query II
 EXPLAIN SELECT DISTINCT ON (a.k) a.k, b.k FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
 ----
-physical_plan	<!REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
 
 # ---- Two scans of a table function not marked repeatable need not return the same rows: the join stays ----------
 

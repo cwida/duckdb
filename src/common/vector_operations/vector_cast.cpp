@@ -33,10 +33,9 @@ void VectorOperations::DefaultCast(Vector &source, Vector &result, idx_t count, 
 
 bool VectorOperations::TryCast(Context &context, Vector &source, Vector &result, idx_t count, string *error_message,
                                bool strict, const bool nullify_parent) {
-	auto &config = DBConfig::GetConfig(context.GetDatabase());
-	auto &set = config.GetCastFunctions();
 	GetCastFunctionInput get_input(context);
-	return VectorOperations::TryCast(set, get_input, source, result, count, error_message, strict, nullify_parent);
+	return VectorOperations::TryCast(CastFunctionSet::Get(context), get_input, source, result, count, error_message,
+	                                 strict, nullify_parent);
 }
 
 void VectorOperations::Cast(Context &context, Vector &source, Vector &result, idx_t count, bool strict) {

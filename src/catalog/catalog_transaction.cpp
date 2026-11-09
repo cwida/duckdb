@@ -7,13 +7,13 @@
 namespace duckdb {
 
 CatalogTransaction::CatalogTransaction(Catalog &catalog, ClientContext &context)
-    : db(&DatabaseInstance::GetDatabase(context)), context(&context), transaction(&Transaction::Get(context, catalog)),
+    : db(DatabaseInstance::GetDatabase(context)), context(&context), transaction(&Transaction::Get(context, catalog)),
       view(transaction->GetSnapshotView()) {
 }
 
 CatalogTransaction::CatalogTransaction(DatabaseInstance &db, transaction_t transaction_id_p,
                                        VisibilityBound visibility_bound_p)
-    : db(&db), context(nullptr), transaction(nullptr), view(transaction_id_p, visibility_bound_p) {
+    : db(db), context(nullptr), transaction(nullptr), view(transaction_id_p, visibility_bound_p) {
 }
 
 ClientContext &CatalogTransaction::GetContext() {

@@ -19,11 +19,11 @@ namespace duckdb {
 
 using JSONPathType = JSONCommon::JSONPathType;
 
-JSONPathType JSONReadFunctionData::CheckPath(const Value &path_val, string &path, idx_t &len) {
+JSONPathType JSONReadFunctionData::CheckPath(Context &context, const Value &path_val, string &path, idx_t &len) {
 	if (path_val.IsNull()) {
 		throw BinderException("JSON path cannot be NULL");
 	}
-	const auto path_str_val = path_val.DefaultCastAs(LogicalType::VARCHAR);
+	const auto path_str_val = path_val.CastAs(context, LogicalType::VARCHAR);
 	auto path_str = path_str_val.GetValueUnsafe<string_t>();
 	len = path_str.GetSize();
 	const auto ptr = path_str.GetData();
@@ -86,7 +86,7 @@ unique_ptr<FunctionData> JSONReadFunctionData::Bind(BindScalarFunctionInput &inp
 	auto path_val = input.TryGetConstant(1);
 	if (path_val && !path_val->IsNull()) {
 		constant = true;
-		path_type = CheckPath(*path_val, path, len);
+		path_type = CheckPath(input.GetClientContext().GetContext(), *path_val, path, len);
 	}
 	if (path_type == JSONCommon::JSONPathType::WILDCARD) {
 		bound_function.SetReturnType(LogicalType::LIST(bound_function.GetReturnType()));
@@ -130,7 +130,8 @@ unique_ptr<FunctionData> JSONReadManyFunctionData::Bind(BindScalarFunctionInput 
 	for (auto &path_val : ListValue::GetChildren(paths_val)) {
 		paths.emplace_back("");
 		lens.push_back(0);
-		if (JSONReadFunctionData::CheckPath(path_val, paths.back(), lens.back()) == JSONPathType::WILDCARD) {
+		if (JSONReadFunctionData::CheckPath(input.GetClientContext().GetContext(), path_val, paths.back(),
+		                                    lens.back()) == JSONPathType::WILDCARD) {
 			throw BinderException("Cannot have wildcards in JSON path when supplying multiple paths");
 		}
 	}

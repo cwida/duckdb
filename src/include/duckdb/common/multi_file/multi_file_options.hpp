@@ -87,18 +87,19 @@ struct MultiFileOptions {
 	//! Validate owned declarations before binding or restoring even an empty file list.
 	DUCKDB_API void ValidateBoundSchema() const;
 	//! Set "column_statistics" from an option value - see column_statistics for its shape
-	DUCKDB_API void SetColumnStatistics(const Identifier &key, const Value &val);
+	DUCKDB_API void SetColumnStatistics(Context &context, const Identifier &key, const Value &val);
 	//! Check "column_statistics" against the scan's columns once they are bound: every key must name a column, or a
 	//! part of one, and every value must parse for it. Errors here, at bind, rather than when the optimizer asks.
-	DUCKDB_API void VerifyColumnStatistics(const vector<Identifier> &names, const vector<LogicalType> &types) const;
+	DUCKDB_API void VerifyColumnStatistics(Context &context, const vector<Identifier> &names,
+	                                       const vector<LogicalType> &types) const;
 	//! The statistics the "column_statistics" option gives for a column of the given type, or nullptr when it says
 	//! nothing about it. The bounds are cast to the column's type; a value that does not cast is an error.
-	DUCKDB_API unique_ptr<BaseStatistics> GetColumnStatistics(const Identifier &column_name,
+	DUCKDB_API unique_ptr<BaseStatistics> GetColumnStatistics(Context &context, const Identifier &column_name,
 	                                                          const LogicalType &type) const;
 	//! Set "maximum_sample_files" from an option value - a positive count, or -1 for all files
-	DUCKDB_API void SetMaximumSampleFiles(const Identifier &key, const Value &val);
+	DUCKDB_API void SetMaximumSampleFiles(Context &context, const Identifier &key, const Value &val);
 	//! Set "maximum_sample_files" from an option value, returning false if it is not a valid count
-	DUCKDB_API bool TrySetMaximumSampleFiles(const Value &val);
+	DUCKDB_API bool TrySetMaximumSampleFiles(Context &context, const Value &val);
 	//! Whether the global schema is a union of the schemas of several files - individual files are then allowed to
 	//! be missing columns that are present in the global schema
 	bool SchemaIsUnion() const {

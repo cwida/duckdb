@@ -1249,7 +1249,8 @@ FilterResult FilterCombiner::AddBoundComparisonFilter(Expression &expr) {
 }
 
 FilterResult FilterCombiner::AddFilter(Expression &expr) {
-	if (expr.HasParameter()) {
+	// every occurrence of a volatile expression is its own evaluation, so it cannot share an equivalence set
+	if (expr.HasParameter() || expr.IsVolatile()) {
 		return FilterResult::UNSUPPORTED;
 	}
 	if (expr.IsFoldable()) {
@@ -1258,7 +1259,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
 			return FilterResult::UNSUPPORTED;
 		}
-		result = result.DefaultCastAs(LogicalType::BOOLEAN);
+		result = result.CastAs(context, LogicalType::BOOLEAN);
 		// check if the filter passes
 		if (result.IsNull() || !BooleanValue::Get(result)) {
 			// the filter does not pass the scalar test, create an empty result

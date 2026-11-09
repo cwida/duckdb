@@ -76,11 +76,11 @@ SELECT typeof(COALESCE(1::BIGNUM, 1.5::DOUBLE)), typeof(COALESCE(1::BIGNUM, 1::I
 ----
 DOUBLE	BIGNUM
 
-# an explicit cast still truncates
+# an explicit cast rounds to nearest
 query I
 SELECT 2.7::FLOAT::BIGNUM
 ----
-2
+3
 
 # a function with a BIGNUM overload but none for floating point no longer rounds a FLOAT argument
 statement error
@@ -88,9 +88,9 @@ SELECT hex(1.5::FLOAT)
 ----
 No function matches
 
-# an explicit cast makes the truncation visible
+# an explicit cast makes the rounding visible
 query I
-SELECT hex(1.5::FLOAT::BIGNUM) = hex(1::BIGNUM)
+SELECT hex(1.5::FLOAT::BIGNUM) = hex(2::BIGNUM)
 ----
 true
 

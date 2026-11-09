@@ -10,6 +10,7 @@
 
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/combine_types_rule.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 class Context;
@@ -63,6 +64,7 @@ public:
 	DUCKDB_API static CastFunctionSet &Get(ClientContext &context);
 	DUCKDB_API static const CastFunctionSet &Get(const ClientContext &context);
 	DUCKDB_API static CastFunctionSet &Get(DatabaseInstance &db);
+	DUCKDB_API static CastFunctionSet &Get(Context &context);
 
 	//! Returns a cast function (from source -> target)
 	//! Note that this always returns a function - since a cast is ALWAYS possible if the value is NULL
