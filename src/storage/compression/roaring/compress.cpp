@@ -11,6 +11,14 @@
 
 namespace duckdb {
 
+//! Align the pointer and clear the skipped bytes
+template <idx_t ALIGNMENT>
+static data_ptr_t AlignAndClearPadding(data_ptr_t ptr) {
+	auto aligned = AlignPointer<ALIGNMENT>(ptr);
+	memset(ptr, 0, NumericCast<idx_t>(aligned - ptr));
+	return aligned;
+}
+
 namespace roaring {
 
 ContainerCompressionState::ContainerCompressionState() {
@@ -107,7 +115,7 @@ void ContainerCompressionState::OverrideArray(data_ptr_t &destination, bool null
 		auto data_start = destination + sizeof(uint8_t) * COMPRESSED_SEGMENT_COUNT;
 		compressed_arrays[nulls] = reinterpret_cast<uint8_t *>(data_start);
 	} else {
-		destination = AlignPointer<sizeof(uint16_t)>(destination);
+		destination = AlignAndClearPadding<sizeof(uint16_t)>(destination);
 		arrays[nulls] = reinterpret_cast<uint16_t *>(destination);
 	}
 }
@@ -121,7 +129,7 @@ void ContainerCompressionState::OverrideRun(data_ptr_t &destination, idx_t count
 		auto data_start = destination + sizeof(uint8_t) * COMPRESSED_SEGMENT_COUNT;
 		compressed_runs = reinterpret_cast<uint8_t *>(data_start);
 	} else {
-		destination = AlignPointer<sizeof(RunContainerRLEPair)>(destination);
+		destination = AlignAndClearPadding<sizeof(RunContainerRLEPair)>(destination);
 		runs = reinterpret_cast<RunContainerRLEPair *>(destination);
 	}
 }
@@ -271,7 +279,7 @@ void RoaringCompressState::InitializeContainer() {
 
 	// Override the pointer to write directly into the block
 	if (metadata.IsUncompressed()) {
-		data_ptr = reinterpret_cast<data_ptr_t>(AlignValue<idx_t>(reinterpret_cast<idx_t>(data_ptr)));
+		data_ptr = AlignAndClearPadding<sizeof(validity_t)>(data_ptr);
 		memset(data_ptr, ~0, sizeof(validity_t) * (container_size / ValidityMask::BITS_PER_VALUE));
 		container_state.OverrideUncompressed(data_ptr);
 	} else if (metadata.IsRun()) {
@@ -308,6 +316,7 @@ void RoaringCompressState::FlushSegment() {
 	// Size of the 'd' part
 	auto unaligned_data_size = NumericCast<idx_t>(data_ptr - base_ptr);
 	auto data_size = AlignValue<idx_t, 8>(unaligned_data_size);
+	memset(data_ptr, 0, data_size - unaligned_data_size);
 	data_ptr += data_size - unaligned_data_size;
 
 	// Size of the 'm' part
