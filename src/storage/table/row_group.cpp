@@ -259,7 +259,7 @@ void RowGroup::InitializeEmpty(const vector<LogicalType> &types, ColumnDataType 
 void ColumnScanState::PushDownCast(const LogicalType &original_type, const LogicalType &cast_type) {
 	D_ASSERT(context.Valid());
 	D_ASSERT(!expression_state);
-	auto &client_context = *Context::TryGetClientContext(context.GetServices());
+	auto &client_context = *context.GetClientContext();
 
 	auto input = make_uniq<BoundReferenceExpression>(original_type, 0ULL);
 	auto cast_expression = BoundCastExpression::AddCastToType(client_context, std::move(input), cast_type);
@@ -384,7 +384,7 @@ void CollectionScanState::Initialize(const QueryContext &context_p, const vector
 
 bool RowGroup::InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset) {
 	auto &filters = state.GetFilterInfo();
-	if (!CheckZonemap(Context::TryGetClientContext(state.context.GetServices()), filters, node.GetRowStart())) {
+	if (!CheckZonemap(state.context.GetClientContext(), filters, node.GetRowStart())) {
 		return false;
 	}
 	if (!RefersToSameObject(node.GetNode(), *this)) {
@@ -1500,7 +1500,9 @@ shared_ptr<ColumnData> RowGroup::CheckpointColumn(const RowGroup &row_group, idx
 	// FIXME: we should get rid of the checkpoint state statistics - and instead use the stats in the ColumnData
 	// directly
 	auto stats = checkpoint_state->GetStatistics();
-	result_col->MergeStatistics(*stats);
+	if (result_col.get() != &column) {
+		result_col->MergeStatistics(*stats);
+	}
 
 	write_data.statistics.push_back(stats->Copy());
 	write_data.states.push_back(std::move(checkpoint_state));

@@ -139,6 +139,8 @@ void DuckDBSecretsFun::RegisterFunction(BuiltinFunctions &set) {
 	auto fun = TableFunction({}, DuckDBSecretsFunction, DuckDBSecretsBind, DuckDBSecretsInit);
 	fun.GetSignature().WithTypedKwargs("options",
 	                                   [](TypedKwargs &options) { options.Add("redact", LogicalType::BOOLEAN); });
+	// the secret manager registry is not transactional
+	fun.stability = FunctionStability::VOLATILE;
 	functions.AddFunction(fun);
 	set.AddFunction(functions);
 }

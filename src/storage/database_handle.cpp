@@ -17,7 +17,7 @@ DatabaseHandle::DatabaseHandle(unique_ptr<MemoryMappedFile> mmap_handle_p) : mma
 //! that session's logger. Without a client, the database-wide file system only sees global settings.
 static FileSystem &GetDatabaseFileSystem(QueryContext context, AttachedDatabase &db) {
 	if (context.Valid()) {
-		return context.GetServices()->GetFileSystem();
+		return context.GetContext()->GetFileSystem();
 	}
 	return FileSystem::Get(db);
 }

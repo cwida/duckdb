@@ -242,10 +242,10 @@ void PartialBlock::Clear() {
 // PartialBlockManager
 //===--------------------------------------------------------------------===//
 
-PartialBlockManager::PartialBlockManager(Context &services_p, BlockManager &block_manager,
+PartialBlockManager::PartialBlockManager(Context &context_p, BlockManager &block_manager,
                                          PartialBlockType partial_block_type, optional_idx max_partial_block_size_p,
                                          uint32_t max_use_count)
-    : services(services_p), block_manager(block_manager), partial_block_type(partial_block_type),
+    : context(context_p), block_manager(block_manager), partial_block_type(partial_block_type),
       max_use_count(max_use_count) {
 	if (max_partial_block_size_p.IsValid()) {
 		max_partial_block_size = NumericCast<uint32_t>(max_partial_block_size_p.GetIndex());
@@ -417,7 +417,7 @@ BlockManager &PartialBlockManager::GetBlockManager() const {
 }
 
 QueryContext PartialBlockManager::GetQueryContext() const {
-	return QueryContext(services);
+	return QueryContext(context);
 }
 
 } // namespace duckdb

@@ -322,6 +322,7 @@ enum class ExtraPersistentColumnDataType : uint8_t {
 	INVALID = 0,
 	VARIANT = 1,
 	GEOMETRY = 2,
+	LIST = 3,
 };
 
 class ExtraPersistentColumnData {
@@ -347,6 +348,10 @@ public:
 
 	void Serialize(Serializer &serializer) const;
 	static unique_ptr<ExtraPersistentColumnData> Deserialize(Deserializer &deserializer);
+	//! Whether the extra data can be written for the storage version of the serializer
+	virtual bool IsSupported(const Serializer &serializer) const {
+		return true;
+	}
 
 protected:
 	explicit ExtraPersistentColumnData(ExtraPersistentColumnDataType type_p) : type(type_p) {

@@ -490,10 +490,6 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 	}
 }
 
-static bool RangeIsRepeatable(optional_ptr<const FunctionData>) {
-	return true;
-}
-
 void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet range("range");
 
@@ -513,7 +509,6 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	range_function.table_scan_progress = RangeFunctionProgress;
 	range_function.in_out_function = RangeFunction<false>;
 	range_function.cardinality = RangeCardinality;
-	range_function.is_repeatable = RangeIsRepeatable;
 	range_function.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;
 	range_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 
@@ -530,7 +525,6 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	range_in_out.table_scan_progress = RangeDateTimeProgress;
 	range_in_out.in_out_function = RangeDateTimeFunction<false>;
 	range_in_out.cardinality = RangeDateTimeCardinality;
-	range_in_out.is_repeatable = RangeIsRepeatable;
 	range_in_out.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;
 	range_in_out.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 	range.AddFunction(range_in_out);
@@ -550,7 +544,6 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	                                     RangeDateTimeLocalInit);
 	generate_series_in_out.table_scan_progress = RangeDateTimeProgress;
 	generate_series_in_out.in_out_function = RangeDateTimeFunction<true>;
-	generate_series_in_out.is_repeatable = RangeIsRepeatable;
 	generate_series_in_out.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;
 	generate_series_in_out.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 	generate_series.AddFunction(generate_series_in_out);

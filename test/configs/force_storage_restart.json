@@ -60,6 +60,7 @@
         "test/sql/logging/physical_operator_logging.test_slow",
         "test/sql/cte/recursive_cte_logging.test",
         "test/sql/cte/recursive_cte_invariant_build_logging.test",
+        "test/sql/optimizer/test_common_subplan_repeatability_logging.test",
         "test/sql/cte/recursive_cte_key_finalize_owned_state.test",
         "test/sql/cte/recursive_cte_parallel_output_publication.test",
         "test/logging/warnings_as_errors.test",
@@ -142,7 +143,11 @@
     {
       "reason": "total_string_length requires exact per-row-group stats; force_restart causes persistent row groups with unloaded columns where only bound-expansion is possible, making the stat unknown.",
       "paths": [
+        "test/sql/storage/list_length_stats.test",
+        "test/sql/storage/list_length_stats_checkpoint.test",
+        "test/sql/optimizer/statistics/list_length_stats_propagation.test",
         "test/sql/storage/total_string_length_repeated_insert.test",
+        "test/sql/storage/total_string_length_multi_row_group.test",
         "test/sql/storage/compression/dictionary/total_string_length_dictionary.test"
       ]
     },
@@ -176,7 +181,8 @@
         "test/sql/attach/external_resource_option_collision.test",
         "test/sql/attach/external_resource_attach_failure.test",
         "test/sql/attach/external_resource_null_handle.test",
-        "test/sql/attach/external_resource_show_subquery.test"
+        "test/sql/attach/external_resource_show_subquery.test",
+        "test/sql/attach/external_resource_show_with_type.test"
       ]
     },
     {

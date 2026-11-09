@@ -48,6 +48,10 @@ struct MultiFileReaderInterface {
 	                                                         unique_ptr<BaseFileReaderOptions> options) = 0;
 	virtual void BindReader(ClientContext &context, vector<LogicalType> &return_types, vector<Identifier> &names,
 	                        MultiFileBindData &bind_data) = 0;
+	//! After a custom MultiFileReader::Bind, open the files for their statistics (maximum_files_for_stats) with the
+	//! reader options, which only the interface holds
+	virtual void ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) {
+	}
 	//! Combine the schemas of a set of files that were bound individually into a single schema
 	//! The default implementation combines the return types of the files by name
 	virtual void CombineSchemas(ClientContext &context, const vector<shared_ptr<BaseUnionData>> &union_data,
@@ -170,6 +174,7 @@ public:
 			}
 			result->multi_file_reader->BindOptions(result->file_options, *result->file_list, result->types,
 			                                       result->names, result->reader_bind);
+			interface.ReadFilesForStatistics(context, *result);
 			bound_on_first_file = false;
 		} else {
 			result->file_options.AutoDetectHivePartitioning(*result->file_list, context);
@@ -1149,10 +1154,8 @@ public:
 		auto &column_index = input.column_index;
 
 		optional_ptr<BaseUnionData> file = bind_data.union_readers.empty() ? nullptr : bind_data.union_readers[0].get();
-		if (!file && !bind_data.initial_reader) {
-			return nullptr;
-		}
-		// scanning single file and we have the metadata read already
+		// a scan whose schema was given opens no file at bind - the column_statistics option below still applies
+		const bool opened_a_file = file || bind_data.initial_reader;
 		if (column_index.IsVirtualColumn()) {
 			return nullptr;
 		}
@@ -1162,7 +1165,7 @@ public:
 		auto &file_row_number_idx = bind_data.reader_bind.file_row_number_idx;
 		if (file_row_number_idx.IsValid() && file_row_number_idx.GetIndex() == primary_index) {
 			// the column is read from the row number virtual column of the reader
-			if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
+			if (!opened_a_file || bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
 				return nullptr;
 			}
 			return bind_data.initial_reader
@@ -1194,6 +1197,9 @@ public:
 
 		if (!bind_data.file_options.bound_schema.empty() && bind_data.IsGeneratedColumn(primary_index)) {
 			// A physical shadow's bounds do not describe the generated path. Explicit scan statistics above still do.
+			return nullptr;
+		}
+		if (!opened_a_file) {
 			return nullptr;
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
@@ -1328,7 +1334,11 @@ public:
 		if (file_list_cardinality_estimate) {
 			return file_list_cardinality_estimate;
 		}
-		if (!data.union_readers.empty() && (data.file_options.union_by_name || data.union_readers.size() > 1) &&
+		// a single file opened at bind for its schema keeps the format's own estimate (e.g. explicit_cardinality);
+		// files opened for their statistics alone (ReadFilesForStatistics after a custom Bind) are counted here
+		const bool opened_for_statistics =
+		    data.file_options.union_by_name || data.union_readers.size() > 1 || !data.initial_reader;
+		if (!data.union_readers.empty() && opened_for_statistics &&
 		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
 			// check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
@@ -1342,8 +1352,15 @@ public:
 				cardinality += file_cardinality.GetIndex();
 			}
 			if (has_exact_cardinality) {
-				// counted from the files, so also the maximum, as a table scan reports its count
-				return make_uniq<NodeStatistics>(cardinality, cardinality);
+				// the files' totals are the estimate; the maximum is what the format proves the scan reads, as a
+				// footer's total is not checked against the rows it holds
+				auto result = make_uniq<NodeStatistics>(cardinality);
+				auto format_stats = data.interface->GetCardinality(context, data, data.union_readers.size());
+				if (format_stats && format_stats->has_max_cardinality) {
+					result->has_max_cardinality = true;
+					result->max_cardinality = format_stats->max_cardinality;
+				}
+				return result;
 			}
 		}
 		// get the file count - for >500 files we allow an estimate

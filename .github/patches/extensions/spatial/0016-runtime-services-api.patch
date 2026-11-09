@@ -7,7 +7,7 @@ index a8db1b4..74aed1d 100644
  
  	static DuckDBFileSystemPrefix &GetOrCreate(ClientContext &context) {
 -		return *context.registered_state->GetOrCreate<DuckDBFileSystemPrefix>("gdal", context);
-+		return *context.Services().GetRegisteredState().GetOrCreate<DuckDBFileSystemPrefix>("gdal", context);
++		return *context.GetContext().GetRegisteredState().GetOrCreate<DuckDBFileSystemPrefix>("gdal", context);
  	}
  
  private:

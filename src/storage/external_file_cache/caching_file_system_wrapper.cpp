@@ -393,6 +393,10 @@ void CachingFileSystemWrapper::SetDisabledFileSystems(const vector<string> &name
 	underlying_file_system.SetDisabledFileSystems(names);
 }
 
+vector<string> CachingFileSystemWrapper::GetDisabledFileSystems() {
+	return underlying_file_system.GetDisabledFileSystems();
+}
+
 bool CachingFileSystemWrapper::SubSystemIsDisabled(const string &name) {
 	return underlying_file_system.SubSystemIsDisabled(name);
 }

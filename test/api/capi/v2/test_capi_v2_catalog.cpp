@@ -17,12 +17,13 @@ namespace {
 
 // Owned qname built from parts; the caller destroys it.
 duckdb_v2_qname_handle MakeQName(const std::vector<const char *> &parts) {
-	std::vector<duckdb_v2_identifier_t> views;
+	StrArray views;
 	for (auto *part : parts) {
-		views.push_back(Convert(part));
+		views.push_back(std::string_view(part));
 	}
 	duckdb_v2_qname_handle qname = nullptr;
-	REQUIRE(duckdb_v2_qname_create(views.data(), views.size(), &qname, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_qname_create(views.ptrs(), views.lengths(), views.size(), &qname, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	return qname;
 }
 
@@ -62,9 +63,10 @@ std::string DescribeError(duckdb_v2_connection_handle conn, const std::vector<co
 	REQUIRE(duckdb_v2_connection_describe_table(conn, qname, &desc, &err) != DUCKDB_V2_ERROR_NONE);
 	REQUIRE(desc == nullptr);
 	REQUIRE(err != nullptr);
-	duckdb_v2_str message = {nullptr, 0};
-	REQUIRE(duckdb_v2_error_info_get_text(err, &message) == DUCKDB_V2_ERROR_NONE);
-	auto text = Convert(message);
+	const char *message = nullptr;
+	idx_t message_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(err, &message, &message_length) == DUCKDB_V2_ERROR_NONE);
+	auto text = std::string(message, message_length);
 	duckdb_v2_error_info_destroy(&err);
 	duckdb_v2_qname_destroy(&qname);
 	return text;
@@ -193,9 +195,10 @@ TEST_CASE("V2 table description: column descriptions", "[capi_v2][catalog]") {
 
 	for (idx_t i = 0; i < count; i++) {
 		auto column = columns[i];
-		duckdb_v2_identifier_t name = {nullptr, 0};
-		REQUIRE(duckdb_v2_column_description_get_name(column, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(name == expected_names[i]);
+		const char *name = nullptr;
+		idx_t name_length = 0;
+		REQUIRE(duckdb_v2_column_description_get_name(column, &name, &name_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(std::string_view(name, name_length) == expected_names[i]);
 
 		duckdb_v2_logical_type_handle type = nullptr; // borrowed; do not destroy
 		REQUIRE(duckdb_v2_column_description_get_type(column, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -225,8 +228,10 @@ TEST_CASE("V2 table description: column descriptions", "[capi_v2][catalog]") {
 	// Destroy is null-safe and idempotent; null subjects are rejected.
 	REQUIRE(duckdb_v2_column_description_destroy(nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_column_description_destroy(&column) == DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_identifier_t name = {nullptr, 0};
-	REQUIRE(duckdb_v2_column_description_get_name(nullptr, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	const char *name = nullptr;
+	idx_t name_length = 0;
+	REQUIRE(duckdb_v2_column_description_get_name(nullptr, &name, &name_length, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	bool flag = false;
 	REQUIRE(duckdb_v2_column_description_has_default(nullptr, &flag, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 }

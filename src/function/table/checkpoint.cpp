@@ -62,16 +62,20 @@ static void TemplatedCheckpointFunction(ClientContext &context, TableFunctionInp
 }
 
 void CheckpointFunction::RegisterFunction(BuiltinFunctions &set) {
+	// a checkpoint is a side effect per execution
 	TableFunctionSet checkpoint("checkpoint");
 	checkpoint.AddFunction(TableFunction({}, TemplatedCheckpointFunction<false>, CheckpointBind));
 	checkpoint.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("database", LogicalType::VARCHAR),
 	                                     TemplatedCheckpointFunction<false>, CheckpointBind));
+	checkpoint.ApplyToFunctions([](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(checkpoint);
 
 	TableFunctionSet force_checkpoint("force_checkpoint");
 	force_checkpoint.AddFunction(TableFunction({}, TemplatedCheckpointFunction<true>, CheckpointBind));
 	force_checkpoint.AddFunction(TableFunction(FunctionSignature().AddPositionalOnly("database", LogicalType::VARCHAR),
 	                                           TemplatedCheckpointFunction<true>, CheckpointBind));
+	force_checkpoint.ApplyToFunctions(
+	    [](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(force_checkpoint);
 }
 

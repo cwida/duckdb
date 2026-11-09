@@ -1,0 +1,35 @@
+# name: test/sql/table_function/range_named_arguments.test
+# description: Correlated range calls must not treat named options as positional inputs
+# group: [table_function]
+
+statement error
+SELECT count(*) FROM (VALUES (3)) t(x), LATERAL range(t.x, hello => 123);
+----
+Invalid named parameter "hello" for function range
+
+statement error
+SELECT count(*) FROM (VALUES (3)) t(x), LATERAL range(t.x, hello => (1 = 1));
+----
+Invalid named parameter "hello" for function range
+
+statement error
+SELECT count(*) FROM (VALUES (3)) t(x), LATERAL range(t.x, hello => (SELECT 123));
+----
+cannot contain subqueries
+
+# The non-correlated and legacy named-argument forms reject the same invalid option.
+statement error
+SELECT * FROM range(3, hello => 123);
+----
+Invalid named parameter "hello" for function range
+
+statement error
+SELECT * FROM range(3, hello = 123);
+----
+Invalid named parameter "hello" for function range
+
+# An unnamed scalar subquery is still a positional input.
+query I
+SELECT count(*) FROM range((SELECT 3));
+----
+3

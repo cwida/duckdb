@@ -1,0 +1,75 @@
+# name: test/sql/cte/recursive_inline_blocked_source.test
+# description: Recursive execution suspends and resumes around a blocked source
+# group: [cte]
+
+# With threads == external_threads there are zero internal worker threads. An async-yielding
+# source (dbgen schedules its continuation as an executor task and returns BLOCKED) can then
+# only make progress on the coordinating thread. The recursive source suspends its epoch and
+# returns BLOCKED up the stack, so the regular executor flow services the continuation and
+# re-enters the operator where it stopped. A wait inside the operator that does not service
+# executor tasks deadlocks the first query below.
+# query_timeout is the primary bound on a regression: its watchdog calls Interrupt(), which the
+# parked client loop observes. max_execution_time additionally bounds regressions where tasks
+# still execute without making progress, but cannot fire while the query is fully parked. The
+# runner's process timeout remains the last resort.
+# This file keeps the fast deadlock gate for every CI run. Broader suspension coverage (keyed
+# path, prepared re-execution, multi-threaded event-path epochs) is in
+# recursive_blocked_source_coverage.test_slow.
+
+require tpch
+
+set query_timeout 60
+
+statement ok
+SET threads=1;
+
+statement ok
+SET external_threads=1;
+
+statement ok
+SET max_execution_time=60000;
+
+query I
+WITH RECURSIVE t(lvl, n) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT lvl + 1, (SELECT count(*) FROM dbgen(sf = 0.001)) FROM t WHERE lvl < 2
+)
+SELECT count(*) FROM t;
+----
+2
+
+# a finish stage whose finalize inserts a sort-materialization event suspends on the inserted
+# work with zero workers and resumes once the source thread has serviced its tasks
+statement ok
+CREATE TABLE nodes (node int);
+
+statement ok
+INSERT INTO nodes VALUES (0), (1), (2), (3), (4), (5), (6);
+
+statement ok
+CREATE TABLE edges (here int, there int);
+
+statement ok
+INSERT INTO edges VALUES  (0,4), (4,0), (0,3), (3,0), (1,4), (4,1), (3,4), (4,3), (2,5), (5,2);
+
+query II
+WITH RECURSIVE cc(node, comp) USING KEY (node) AS (
+	SELECT n.node, n.node AS comp
+	FROM nodes AS n
+		UNION ALL
+	(SELECT DISTINCT ON (u.node) u.node, v.comp
+	FROM recurring.cc AS u, cc AS v, edges AS e
+	WHERE (e.here, e.there) = (u.node, v.node)
+	AND v.comp < u.comp
+	ORDER BY u.node asc, v.comp asc)
+)
+TABLE cc ORDER BY node;
+----
+0	0
+1	0
+2	2
+3	0
+4	0
+5	2
+6	6

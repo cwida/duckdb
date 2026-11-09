@@ -212,8 +212,6 @@ typedef enum DUCKDB_V2_ORDER_PRESERVATION {
 
 /* --- Struct forward declarations for common --- */
 
-typedef struct duckdb_v2_str duckdb_v2_str;
-
 typedef struct duckdb_v2_bytes duckdb_v2_bytes;
 
 typedef struct duckdb_v2_opaque duckdb_v2_opaque;
@@ -384,16 +382,6 @@ typedef duckdb_v2_bytes duckdb_v2_bit_t;
 //! BIGNUM storage. Decode via `duckdb_v2_bignum_decode()`.
 typedef duckdb_v2_bytes duckdb_v2_bignum_t;
 
-/*!
- * A borrowed name view with the same layout as str, marking a string DuckDB treats as a SQL identifier: one matched
- * case-insensitively. Compare two identifiers case-insensitively rather than byte for byte, and render one into SQL
- * through the identifier-quoting entry point rather than embedding it raw. The catalog preserves casing; some
- * registries (config settings) canonicalize to lowercase.
- *
- * An identifier passed into the API must be valid UTF-8; otherwise the call fails with `ERROR_INPUT_INVALID`.
- */
-typedef duckdb_v2_str duckdb_v2_identifier_t;
-
 /* --- Constants for common --- */
 
 //! Inline cutoff for `bytes` storage: a value of at most this many bytes is stored inline.
@@ -404,10 +392,10 @@ typedef duckdb_v2_str duckdb_v2_identifier_t;
 /*!
  * Receives text produced by DuckDB
  *
- * Invoked exactly once per producing call, with the complete text in a single view.
+ * Invoked exactly once per producing call, with the complete text in a single call.
  *
- * The view is borrowed for the duration of the call only. Copy what you need before returning, and do not retain `text`
- * or `text->ptr`. The bytes are NOT guaranteed to be null-terminated.
+ * The text is borrowed for the duration of the call only. Copy what you need before returning, and do not retain
+ * `text`. The bytes are NOT guaranteed to be null-terminated.
  *
  * `err` is a live error slot, never NULL. Populate it with `duckdb_v2_error_info_set_code()` /
  * `duckdb_v2_error_info_set_text()` to signal failure to DuckDB. Do not destroy it yourself.
@@ -415,7 +403,8 @@ typedef duckdb_v2_str duckdb_v2_identifier_t;
  * The sink runs inside DuckDB's call frame: it must not throw or unwind across the boundary, and it must not re-enter
  * the API on the handle being operated on.
  */
-typedef void (*duckdb_v2_text_sink_fn)(const duckdb_v2_str *text, void *user_data, duckdb_v2_error_info_handle *err);
+typedef void (*duckdb_v2_text_sink_fn)(const char *text, idx_t text_length, void *user_data,
+                                       duckdb_v2_error_info_handle *err);
 
 /*!
  * Compares two caller-defined resources for equality.
@@ -442,25 +431,6 @@ typedef void (*duckdb_v2_opaque_destroy_fn)(void *data);
 /* --- Functions for common --- */
 
 /* --- Struct definitions for common --- */
-
-/*!
- * A borrowed, length-delimited string view: `ptr` points at `len` bytes of character data. The bytes are NOT guaranteed
- * to be null-terminated and may contain interior null bytes, so always honor `len` rather than scanning for a
- * terminator. The view never owns its bytes; the function that produced it documents how long they live (typically
- * "valid until the owning handle is destroyed"). `{NULL, 0}` is the canonical empty view, and `ptr` must not be
- * dereferenced when `len` is 0. Not to be confused with `bytes`, the transparent 16-byte *storage* format for a
- * variable-size value in a vector.
- *
- * Functions take an input view as a `const str *`, which must not be NULL; a NULL pointer, or a view whose `ptr` is
- * NULL while `len` is nonzero, fails with ERROR_INPUT_INVALID. Point at a `{NULL, 0}` view to pass an empty string.
- *
- * Text inputs, such as VARCHAR values and names, must contain valid UTF-8. The caller is responsible for ensuring this;
- * API functions do not necessarily validate the input. Binary inputs, such as BLOB values, do not require valid UTF-8.
- */
-struct duckdb_v2_str {
-	const char *ptr;
-	idx_t len;
-};
 
 /*!
  * 16-byte storage for a variable-size, byte-backed value: VARCHAR, BLOB, BIT, or BIGNUM. The bytes are inlined when the
@@ -1649,15 +1619,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_context_get_config(duckdb_v2_context_hand
  *
  * @param config The config to read from.
  * @param name Option name (canonical or alias).
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param out_value Receives the value, typed as the option. Owned by the caller.
  * @param out_scope Receives the scope the value came from.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_get_option_value(duckdb_v2_config_handle config,
-                                                               const duckdb_v2_identifier_t *name,
-                                                               duckdb_v2_value_handle *out_value,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_get_option_value(duckdb_v2_config_handle config, const char *name,
+                                                               idx_t name_length, duckdb_v2_value_handle *out_value,
                                                                DUCKDB_V2_SETTING_SCOPE *out_scope,
                                                                duckdb_v2_error_info_handle *err);
 #endif
@@ -1680,15 +1651,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_get_option_value(duckdb_v2_config_
  *
  * @param config The config to write to.
  * @param name Option name (canonical or alias).
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param value The value, cast to the option's type as SQL `SET` does. Borrowed.
  * @param scope Target scope: DEFAULT, GLOBAL, or SESSION.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_set_option_value(duckdb_v2_config_handle config,
-                                                               const duckdb_v2_identifier_t *name,
-                                                               duckdb_v2_value_handle value,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_set_option_value(duckdb_v2_config_handle config, const char *name,
+                                                               idx_t name_length, duckdb_v2_value_handle value,
                                                                DUCKDB_V2_SETTING_SCOPE scope,
                                                                duckdb_v2_error_info_handle *err);
 #endif
@@ -1706,16 +1678,19 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_set_option_value(duckdb_v2_config_
  *
  * @param config The config to write to.
  * @param name Option name (canonical or alias).
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param setting The setting, in the textual form SQL `SET` accepts.
+ * @param setting_length The length of `setting` in bytes. `setting` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param scope Target scope: DEFAULT, GLOBAL, or SESSION.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_set_option_text(duckdb_v2_config_handle config,
-                                                              const duckdb_v2_identifier_t *name,
-                                                              const duckdb_v2_str *setting,
-                                                              DUCKDB_V2_SETTING_SCOPE scope,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_set_option_text(duckdb_v2_config_handle config, const char *name,
+                                                              idx_t name_length, const char *setting,
+                                                              idx_t setting_length, DUCKDB_V2_SETTING_SCOPE scope,
                                                               duckdb_v2_error_info_handle *err);
 #endif
 
@@ -1733,14 +1708,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_set_option_text(duckdb_v2_config_h
  *
  * @param config The config whose instance registered the options.
  * @param name Option name (canonical or alias).
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param out_option Receives the option descriptor.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_get_option_by_name(duckdb_v2_config_handle config,
-                                                                 const duckdb_v2_identifier_t *name,
-                                                                 duckdb_v2_option_handle *out_option,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_config_get_option_by_name(duckdb_v2_config_handle config, const char *name,
+                                                                 idx_t name_length, duckdb_v2_option_handle *out_option,
                                                                  duckdb_v2_error_info_handle *err);
 #endif
 
@@ -1814,13 +1790,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_destroy(duckdb_v2_option_handle *o
  * - unstable: v2.0.0
  *
  * @param option The option.
- * @param out_name Receives a borrowed view of the option name. Valid until the option is destroyed.
+ * @param out_name Receives a borrowed pointer to the option name. Valid until the option is destroyed.
+ * @param out_name_length Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be
+ * null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_get_name(duckdb_v2_option_handle option, duckdb_v2_identifier_t *out_name,
-                                                       duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_get_name(duckdb_v2_option_handle option, const char **out_name,
+                                                       idx_t *out_name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -1851,13 +1829,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_get_default_value(duckdb_v2_option
  * - unstable: v2.0.0
  *
  * @param option The option.
- * @param out_description Receives a borrowed view of the description. Valid until the option is destroyed.
+ * @param out_description Receives a borrowed pointer to the description. Valid until the option is destroyed.
+ * @param out_description_length Receives the length of `*out_description` in bytes. `*out_description` is not
+ * guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_get_description(duckdb_v2_option_handle option,
-                                                              duckdb_v2_str *out_description,
+                                                              const char **out_description,
+                                                              idx_t *out_description_length,
                                                               duckdb_v2_error_info_handle *err);
 #endif
 
@@ -1931,13 +1912,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_get_alias_count(duckdb_v2_option_h
  *
  * @param option The option.
  * @param index The alias index, in [0, alias_count).
- * @param out_alias Receives a borrowed view of the alias. Valid until the option is destroyed.
+ * @param out_alias Receives a borrowed pointer to the alias. Valid until the option is destroyed.
+ * @param out_alias_length Receives the length of `*out_alias` in bytes. `*out_alias` is not guaranteed to be
+ * null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_option_get_alias(duckdb_v2_option_handle option, idx_t index,
-                                                        duckdb_v2_identifier_t *out_alias,
+                                                        const char **out_alias, idx_t *out_alias_length,
                                                         duckdb_v2_error_info_handle *err);
 #endif
 
@@ -2113,13 +2096,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_type_create(duckdb_v2_factory_hand
  *
  * @param type The type to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_type_set_name(duckdb_v2_custom_type_handle type,
-                                                            const duckdb_v2_identifier_t *name,
-                                                            duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_type_set_name(duckdb_v2_custom_type_handle type, const char *name,
+                                                            idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -2493,18 +2477,20 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_get_code(duckdb_v2_error_info_
 /*!
  * Retrieves the error text associated with an error info handle.
  *
- * Returns a borrowed pointer to the info's null-terminated error text. The pointer is owned by DuckDB and is valid
- * until the info is destroyed or a new text is set; callers must not free it, and must not read it once the info has
- * been destroyed.
+ * Returns a borrowed view of the info's error text. The text is owned by DuckDB and is valid until the info is
+ * destroyed or a new text is set; callers must not free it, and must not read it once the info has been destroyed.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param info The error info handle to query.
- * @param out_text Receives a borrowed view of the text. Owned by DuckDB; valid until the info handle is destroyed.
+ * @param out_text Receives a borrowed pointer to the text. Owned by DuckDB; valid until the info handle is destroyed.
+ * @param out_text_length Receives the length of `*out_text` in bytes. `*out_text` is not guaranteed to be
+ * null-terminated.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_get_text(duckdb_v2_error_info_handle info, duckdb_v2_str *out_text);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_get_text(duckdb_v2_error_info_handle info, const char **out_text,
+                                                           idx_t *out_text_length);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -2514,19 +2500,21 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_get_text(duckdb_v2_error_info_
  * Returns a borrowed view of the same text error_info_get_text reports, minus the leading "<Type> Error: " prefix. This
  * is the authoritative unprefixed body: the API exposes no type name, so the prefix cannot be reconstructed and the
  * body cannot be derived from error_info_get_text. Unprefixed does not mean plain — the body keeps whatever form it was
- * rendered in (a LINE/caret block by default, JSON under errors_as_json). `{NULL, 0}` when there is no text. The
- * pointer is owned by DuckDB and valid until the info handle is destroyed.
+ * rendered in (a LINE/caret block by default, JSON under errors_as_json). NULL with a zero length when there is no
+ * text. The text is owned by DuckDB and valid until the info handle is destroyed.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param info The error info handle to query.
- * @param out_raw_text Receives a borrowed view of the raw text. Owned by DuckDB; valid until the info handle is
+ * @param out_raw_text Receives a borrowed pointer to the raw text. Owned by DuckDB; valid until the info handle is
  * destroyed.
+ * @param out_raw_text_length Receives the length of `*out_raw_text` in bytes. `*out_raw_text` is not guaranteed to be
+ * null-terminated.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_get_raw_text(duckdb_v2_error_info_handle info,
-                                                               duckdb_v2_str *out_raw_text);
+                                                               const char **out_raw_text, idx_t *out_raw_text_length);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -2558,9 +2546,12 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_set_code(duckdb_v2_error_info_
  *
  * @param info The error info handle to set. On success, updated with the provided text.
  * @param text The error text to set in the info.
+ * @param text_length The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, const duckdb_v2_str *text);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, const char *text,
+                                                           idx_t text_length);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -2606,7 +2597,8 @@ typedef struct duckdb_v2_extension_input duckdb_v2_extension_input;
  * must return without touching the error slot. Statically linked extensions resolve DuckDB's symbols at link time and
  * never call it, so for those the field is NULL.
  */
-typedef const void *(*duckdb_v2_extension_get_api_fn)(duckdb_v2_extension_handle extension, const char *version);
+typedef const void *(*duckdb_v2_extension_get_api_fn)(duckdb_v2_extension_handle extension, const char *version,
+                                                      idx_t version_length);
 
 /* --- Functions for extension --- */
 
@@ -2818,7 +2810,7 @@ typedef struct _duckdb_v2_file {
  * through `err`, a live slot that must not be destroyed, to stop the glob: `duckdb_v2_file_system_path_glob()` then
  * fails with that error. The callback must not throw or unwind across the boundary.
  */
-typedef void (*duckdb_v2_file_system_path_glob_callback_fn)(const duckdb_v2_str *path, void *user_data,
+typedef void (*duckdb_v2_file_system_path_glob_callback_fn)(const char *path, idx_t path_length, void *user_data,
                                                             duckdb_v2_error_info_handle *err);
 
 /* --- Functions for file system --- */
@@ -2956,13 +2948,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_open_options_set_flag(duckdb_v2_file
  *
  * @param options The options to set the value on.
  * @param name The name of the value. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param value The value. Borrowed and copied.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_open_options_set_value(duckdb_v2_file_open_options_handle options,
-                                                                   const duckdb_v2_str *name,
+                                                                   const char *name, idx_t name_length,
                                                                    duckdb_v2_value_handle value,
                                                                    duckdb_v2_error_info_handle *err);
 #endif
@@ -3006,14 +3000,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_open_options_destroy(duckdb_v2_file_
  *
  * @param file_system The file system to open the file through.
  * @param file_path The path of the file to open. Borrowed for the call only.
+ * @param file_path_length The length of `file_path` in bytes. `file_path` need not be null-terminated and may be NULL
+ * only when this is 0.
  * @param options How to open the file. Borrowed for the call only, and reusable across opens.
  * @param file On success, receives the open file. Owned by the caller; destroy via `duckdb_v2_file_destroy()`.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_handle file_system,
-                                                        const duckdb_v2_str *file_path,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_handle file_system, const char *file_path,
+                                                        idx_t file_path_length,
                                                         duckdb_v2_file_open_options_handle options,
                                                         duckdb_v2_file_handle *file, duckdb_v2_error_info_handle *err);
 #endif
@@ -3030,13 +3026,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_ha
  *
  * @param file_system The file system to ask.
  * @param path The path to check. Borrowed for the call only.
+ * @param path_length The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param out_exists Receives whether a file exists at the path.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_exists(duckdb_v2_file_system_handle file_system,
-                                                               const duckdb_v2_str *path, bool *out_exists,
+                                                               const char *path, idx_t path_length, bool *out_exists,
                                                                duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3052,13 +3050,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_exists(duckdb_v2_file_sy
  *
  * @param file_system The file system the path is meant for.
  * @param path The path to check. Borrowed for the call only.
+ * @param path_length The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param out_is_remote Receives whether the path names a remote file.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_is_remote(duckdb_v2_file_system_handle file_system,
-                                                                  const duckdb_v2_str *path, bool *out_is_remote,
+                                                                  const char *path, idx_t path_length,
+                                                                  bool *out_is_remote,
                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3074,6 +3075,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_is_remote(duckdb_v2_file
  *
  * @param file_system The file system whose settings expand the path.
  * @param path The path to expand. Borrowed for the call only.
+ * @param path_length The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param sink Receives the expanded path in a single call. Borrowed for the duration of that call; see text_sink for
  * the full contract.
  * @param user_data Opaque pointer passed through to sink untouched. May be NULL.
@@ -3082,8 +3085,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_is_remote(duckdb_v2_file
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_expand(duckdb_v2_file_system_handle file_system,
-                                                               const duckdb_v2_str *path, duckdb_v2_text_sink_fn sink,
-                                                               void *user_data, duckdb_v2_error_info_handle *err);
+                                                               const char *path, idx_t path_length,
+                                                               duckdb_v2_text_sink_fn sink, void *user_data,
+                                                               duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -3101,6 +3105,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_expand(duckdb_v2_file_sy
  *
  * @param file_system The file system to glob in.
  * @param pattern The glob pattern. Borrowed for the call only.
+ * @param pattern_length The length of `pattern` in bytes. `pattern` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param callback Invoked once per matched path.
  * @param user_data Opaque pointer passed through to `callback` untouched. May be NULL.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
@@ -3108,7 +3114,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_expand(duckdb_v2_file_sy
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_glob(duckdb_v2_file_system_handle file_system,
-                                                             const duckdb_v2_str *pattern,
+                                                             const char *pattern, idx_t pattern_length,
                                                              duckdb_v2_file_system_path_glob_callback_fn callback,
                                                              void *user_data, duckdb_v2_error_info_handle *err);
 #endif
@@ -3126,13 +3132,18 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_glob(duckdb_v2_file_syst
  *
  * @param file_system The file system to move the file in.
  * @param source The path of the file to move. Borrowed for the call only.
+ * @param source_length The length of `source` in bytes. `source` need not be null-terminated and may be NULL only when
+ * this is 0.
  * @param target The path to move the file to. Borrowed for the call only.
+ * @param target_length The length of `target` in bytes. `target` need not be null-terminated and may be NULL only when
+ * this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_move(duckdb_v2_file_system_handle file_system,
-                                                             const duckdb_v2_str *source, const duckdb_v2_str *target,
+                                                             const char *source, idx_t source_length,
+                                                             const char *target, idx_t target_length,
                                                              duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3148,13 +3159,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_move(duckdb_v2_file_syst
  *
  * @param file_system The file system to remove the file from.
  * @param path The path of the file to remove. Borrowed for the call only.
+ * @param path_length The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param out_removed Optional. Receives whether a file was removed.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_file_system_path_remove(duckdb_v2_file_system_handle file_system,
-                                                               const duckdb_v2_str *path, bool *out_removed,
+                                                               const char *path, idx_t path_length, bool *out_removed,
                                                                duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3531,13 +3544,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_value(duckdb_v2_fun
  *
  * @param info The bind info handle.
  * @param index The index of the argument.
- * @param name Receives a borrowed view of the argument name. Valid only for the duration of the callback.
+ * @param name Receives a borrowed pointer to the argument name. Valid only for the duration of the callback.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_name(duckdb_v2_function_bind_info_handle info, idx_t index,
-                                                                  duckdb_v2_identifier_t *name,
+                                                                  const char **name, idx_t *name_length,
                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3556,6 +3570,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_name(duckdb_v2_func
  *
  * @param info The bind info handle.
  * @param name The name to look up. Borrowed for the call only.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param index Receives the index of the argument, if found.
  * @param found Receives whether the call has an argument of that name.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
@@ -3563,7 +3579,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_name(duckdb_v2_func
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_index(duckdb_v2_function_bind_info_handle info,
-                                                                   const duckdb_v2_identifier_t *name, idx_t *index,
+                                                                   const char *name, idx_t name_length, idx_t *index,
                                                                    bool *found, duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3607,12 +3623,14 @@ typedef struct _duckdb_v2_function_docs {
  *
  * @param docs The documentation to set the description of.
  * @param description The description to set. Borrowed and copied.
+ * @param description_length The length of `description` in bytes. `description` need not be null-terminated and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_docs_set_description(duckdb_v2_function_docs_handle docs,
-                                                                     const duckdb_v2_str *description,
+                                                                     const char *description, idx_t description_length,
                                                                      duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3626,15 +3644,19 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_docs_set_description(duckdb_v2_f
  * - unstable: v2.0.0
  *
  * @param docs The documentation to add the example to.
- * @param title Optional. The title of the example; NULL or an empty view for none. Borrowed and copied.
+ * @param title Optional. The title of the example; NULL or empty for none. Borrowed and copied.
+ * @param title_length The length of `title` in bytes. `title` need not be null-terminated and may be NULL only when
+ * this is 0.
  * @param example The example, e.g. a SQL expression calling the function. Borrowed and copied.
+ * @param example_length The length of `example` in bytes. `example` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_docs_add_example(duckdb_v2_function_docs_handle docs,
-                                                                 const duckdb_v2_str *title,
-                                                                 const duckdb_v2_str *example,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_docs_add_example(duckdb_v2_function_docs_handle docs, const char *title,
+                                                                 idx_t title_length, const char *example,
+                                                                 idx_t example_length,
                                                                  duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3649,12 +3671,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_docs_add_example(duckdb_v2_funct
  *
  * @param docs The documentation to add the category to.
  * @param category The category. Borrowed and copied.
+ * @param category_length The length of `category` in bytes. `category` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_docs_add_category(duckdb_v2_function_docs_handle docs,
-                                                                  const duckdb_v2_str *category,
+                                                                  const char *category, idx_t category_length,
                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3730,6 +3754,8 @@ typedef struct _duckdb_v2_function_signature {
  *
  * @param sig The signature to configure.
  * @param name The parameter name. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param type The parameter type. ANY accepts an argument of any type without casting it. Borrowed and copied.
  * @param value Optional default value, borrowed and copied. Will be cast to the parameter type.
  * @param kind How a caller passes the argument for the parameter.
@@ -3738,7 +3764,7 @@ typedef struct _duckdb_v2_function_signature {
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_signature_add_parameter(
-    duckdb_v2_function_signature_handle sig, const duckdb_v2_identifier_t *name, duckdb_v2_logical_type_handle type,
+    duckdb_v2_function_signature_handle sig, const char *name, idx_t name_length, duckdb_v2_logical_type_handle type,
     duckdb_v2_value_handle value, DUCKDB_V2_FUNCTION_PARAMETER_KIND kind, duckdb_v2_error_info_handle *err);
 #endif
 
@@ -3797,10 +3823,18 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_signature_set_return_type(duckdb
  * out_length never counts the terminator, but a successful write always appends one, so the buffer is usable as a C
  * string.
  *
+ * DuckDB treats names such as catalog entries, columns and parameters as SQL identifiers, matched case-insensitively:
+ * compare two identifiers case-insensitively rather than byte for byte, and render one into SQL through this function
+ * rather than embedding it raw. The catalog preserves casing; some registries (config settings) canonicalize to
+ * lowercase. An identifier passed into the API must be valid UTF-8; otherwise the call fails with
+ * `ERROR_INPUT_INVALID`.
+ *
  * history:
  * - unstable: v2.0.0
  *
  * @param name The name to render. Borrowed for the call only.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param out_text Caller-owned buffer receiving the text plus a null terminator, or NULL to only report the required
  * length in out_length.
  * @param out_capacity Bytes available in out_text, terminator included. Ignored when out_text is NULL.
@@ -3810,7 +3844,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_function_signature_set_return_type(duckdb
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_identifier_render_quoted(const duckdb_v2_identifier_t *name, char *out_text,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_identifier_render_quoted(const char *name, idx_t name_length, char *out_text,
                                                                 idx_t out_capacity, idx_t *out_length,
                                                                 duckdb_v2_error_info_handle *err);
 #endif
@@ -3886,8 +3920,12 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_create(duckdb_v2_environment_han
  * @param env The environment.
  * @param option_names Optional. An array of option_count option names (canonical or alias). Pass NULL when option_count
  * is 0.
+ * @param option_names_lengths Byte lengths of the entries in `option_names`; element i is the length of
+ * `option_names[i]`. May be NULL only when `option_names` is NULL.
  * @param option_values Optional. An array of option_count values, parallel to option_names, in the textual form SQL
  * `SET` accepts. Pass NULL when option_count is 0.
+ * @param option_values_lengths Byte lengths of the entries in `option_values`; element i is the length of
+ * `option_values[i]`. May be NULL only when `option_values` is NULL.
  * @param option_count The number of startup options.
  * @param out_instance Receives the new instance handle.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
@@ -3895,8 +3933,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_create(duckdb_v2_environment_han
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_create_with_options(
-    duckdb_v2_environment_handle env, const duckdb_v2_str *option_names, const duckdb_v2_str *option_values,
-    idx_t option_count, duckdb_v2_instance_handle *out_instance, duckdb_v2_error_info_handle *err);
+    duckdb_v2_environment_handle env, const char **option_names, const idx_t *option_names_lengths,
+    const char **option_values, const idx_t *option_values_lengths, idx_t option_count,
+    duckdb_v2_instance_handle *out_instance, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -3943,7 +3982,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_destroy(duckdb_v2_instance_handl
  * @param instance The instance handle.
  * @param name Optional. The name to attach under; null or an empty view for the name derived from the path. Borrowed
  * and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param path Path to the database file, or `:memory:` / an empty view for an in-memory database.
+ * @param path_length The length of `path` in bytes. `path` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param options Optional attach options created from `instance`, or null to attach with defaults under the derived
  * name.
  * @param make_default Whether to make the attached database the default for connections created afterwards.
@@ -3951,8 +3994,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_destroy(duckdb_v2_instance_handl
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_attach(duckdb_v2_instance_handle instance,
-                                                       const duckdb_v2_identifier_t *name, const duckdb_v2_str *path,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_attach(duckdb_v2_instance_handle instance, const char *name,
+                                                       idx_t name_length, const char *path, idx_t path_length,
                                                        duckdb_v2_attach_options_handle options, bool make_default,
                                                        duckdb_v2_error_info_handle *err);
 #endif
@@ -3972,13 +4015,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_attach(duckdb_v2_instance_handle
  *
  * @param instance The instance handle.
  * @param name The name the database is attached under. Borrowed.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_detach(duckdb_v2_instance_handle instance,
-                                                       const duckdb_v2_identifier_t *name,
-                                                       duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_detach(duckdb_v2_instance_handle instance, const char *name,
+                                                       idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -3997,13 +4041,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_detach(duckdb_v2_instance_handle
  *
  * @param instance The instance handle.
  * @param name The name the database is attached under. Borrowed.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_set_default(duckdb_v2_instance_handle instance,
-                                                            const duckdb_v2_identifier_t *name,
-                                                            duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_set_default(duckdb_v2_instance_handle instance, const char *name,
+                                                            idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -4042,14 +4087,17 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_attach_options_create(duckdb_v2_instance_
  *
  * @param options The attach options.
  * @param key The option name, e.g. READ_ONLY.
+ * @param key_length The length of `key` in bytes. `key` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param setting The option value, in the textual form a quoted SQL literal would carry.
+ * @param setting_length The length of `setting` in bytes. `setting` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_attach_options_set(duckdb_v2_attach_options_handle options,
-                                                          const duckdb_v2_identifier_t *key,
-                                                          const duckdb_v2_str *setting,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_attach_options_set(duckdb_v2_attach_options_handle options, const char *key,
+                                                          idx_t key_length, const char *setting, idx_t setting_length,
                                                           duckdb_v2_error_info_handle *err);
 #endif
 
@@ -4076,11 +4124,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_attach_options_destroy(duckdb_v2_attach_o
  * - unstable: v2.0.0
  *
  * @param out_version The version string.
+ * @param out_version_length Receives the length of `*out_version` in bytes. `*out_version` is not guaranteed to be
+ * null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_library_version(duckdb_v2_str *out_version, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_library_version(const char **out_version, idx_t *out_version_length,
+                                                       duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for instance --- */
@@ -4141,13 +4192,17 @@ typedef enum DUCKDB_V2_LOG_LEVEL {
  * @param ctx The context to log through.
  * @param level Severity of the message.
  * @param log_type The log type to record under, matched case-sensitively. Empty selects the default type.
+ * @param log_type_length The length of `log_type` in bytes. `log_type` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param message The message body. Borrowed for the call only.
+ * @param message_length The length of `message` in bytes. `message` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_context_log(duckdb_v2_context_handle ctx, DUCKDB_V2_LOG_LEVEL level,
-                                                   const duckdb_v2_str *log_type, const duckdb_v2_str *message,
-                                                   duckdb_v2_error_info_handle *err);
+                                                   const char *log_type, idx_t log_type_length, const char *message,
+                                                   idx_t message_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -4165,13 +4220,17 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_context_log(duckdb_v2_context_handle ctx,
  * @param instance The instance to log through.
  * @param level Severity of the message.
  * @param log_type The log type to record under, matched case-sensitively. Empty selects the default type.
+ * @param log_type_length The length of `log_type` in bytes. `log_type` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param message The message body. Borrowed for the call only.
+ * @param message_length The length of `message` in bytes. `message` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_log(duckdb_v2_instance_handle instance, DUCKDB_V2_LOG_LEVEL level,
-                                                    const duckdb_v2_str *log_type, const duckdb_v2_str *message,
-                                                    duckdb_v2_error_info_handle *err);
+                                                    const char *log_type, idx_t log_type_length, const char *message,
+                                                    idx_t message_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -4189,13 +4248,17 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_instance_log(duckdb_v2_instance_handle in
  * @param conn The connection to log through.
  * @param level Severity of the message.
  * @param log_type The log type to record under, matched case-sensitively. Empty selects the default type.
+ * @param log_type_length The length of `log_type` in bytes. `log_type` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param message The message body. Borrowed for the call only.
+ * @param message_length The length of `message` in bytes. `message` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_log(duckdb_v2_connection_handle conn, DUCKDB_V2_LOG_LEVEL level,
-                                                      const duckdb_v2_str *log_type, const duckdb_v2_str *message,
-                                                      duckdb_v2_error_info_handle *err);
+                                                      const char *log_type, idx_t log_type_length, const char *message,
+                                                      idx_t message_length, duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for logging --- */
@@ -4240,12 +4303,14 @@ typedef struct _duckdb_v2_qname {
  * - unstable: v2.0.0
  *
  * @param text The name text to parse. Borrowed for the call only.
+ * @param text_length The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param name On success, receives the qualified name. Owned by the caller; destroy via `duckdb_v2_qname_destroy()`.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_parse(const duckdb_v2_str *text, duckdb_v2_qname_handle *name,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_parse(const char *text, idx_t text_length, duckdb_v2_qname_handle *name,
                                                    duckdb_v2_error_info_handle *err);
 #endif
 
@@ -4261,14 +4326,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_parse(const duckdb_v2_str *text, du
  * history:
  * - unstable: v2.0.0
  *
- * @param parts An array of `part_count` non-empty identifier views, outermost first.
+ * @param parts An array of `part_count` non-empty identifiers, outermost first.
+ * @param parts_lengths Byte lengths of the entries in `parts`; element i is the length of `parts[i]`. May be NULL only
+ * when `parts` is NULL.
  * @param part_count The number of parts, between one and three.
  * @param name On success, receives the qualified name. Owned by the caller; destroy via `duckdb_v2_qname_destroy()`.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_create(const duckdb_v2_identifier_t *parts, idx_t part_count,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_create(const char **parts, const idx_t *parts_lengths, idx_t part_count,
                                                     duckdb_v2_qname_handle *name, duckdb_v2_error_info_handle *err);
 #endif
 
@@ -4305,13 +4372,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_get_part_count(duckdb_v2_qname_hand
  *
  * @param name The qualified name.
  * @param index Zero-based part index.
- * @param part Receives a borrowed view of the part, valid until the qualified name is destroyed.
+ * @param part Receives a borrowed pointer to the part, valid until the qualified name is destroyed.
+ * @param part_length Receives the length of `*part` in bytes. `*part` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_get_part(duckdb_v2_qname_handle name, idx_t index,
-                                                      duckdb_v2_identifier_t *part, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_qname_get_part(duckdb_v2_qname_handle name, idx_t index, const char **part,
+                                                      idx_t *part_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -4516,13 +4584,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_get_root(duckdb_v2_query_me
  * - unstable: v2.0.0
  *
  * @param node The node.
- * @param name Receives a borrowed view of the name. Valid until the snapshot is destroyed.
+ * @param name Receives a borrowed pointer to the name. Valid until the snapshot is destroyed.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_name(duckdb_v2_query_metrics_node_handle node,
-                                                                   duckdb_v2_str *name,
+                                                                   const char **name, idx_t *name_length,
                                                                    duckdb_v2_error_info_handle *err);
 #endif
 
@@ -4594,13 +4663,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_count(duckd
  *
  * @param node The node.
  * @param index Zero-based metric index.
- * @param name Receives a borrowed view of the name. Valid until the snapshot is destroyed.
+ * @param name Receives a borrowed pointer to the name. Valid until the snapshot is destroyed.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_name(duckdb_v2_query_metrics_node_handle node,
-                                                                          idx_t index, duckdb_v2_str *name,
+                                                                          idx_t index, const char **name,
+                                                                          idx_t *name_length,
                                                                           duckdb_v2_error_info_handle *err);
 #endif
 
@@ -4634,6 +4705,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_value(duckd
  *
  * @param node The node.
  * @param name The name of the metric, matched exactly. Borrowed for the call only.
+ * @param name_length The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param value Receives the owned value, if present. Destroy via `duckdb_v2_value_destroy()`.
  * @param present Receives whether the node carries the metric.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
@@ -4641,7 +4714,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric_value(duckd
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_query_metrics_node_get_metric(duckdb_v2_query_metrics_node_handle node,
-                                                                     const duckdb_v2_str *name,
+                                                                     const char *name, idx_t name_length,
                                                                      duckdb_v2_value_handle *value, bool *present,
                                                                      duckdb_v2_error_info_handle *err);
 #endif
@@ -4716,13 +4789,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_schema_get_count(duckdb_v2_schema_handle 
  *
  * @param schema The schema.
  * @param index Zero-based field index.
- * @param out_name Receives a borrowed view of the field name. Valid until the schema is destroyed.
+ * @param out_name Receives a borrowed pointer to the field name. Valid until the schema is destroyed.
+ * @param out_name_length Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be
+ * null-terminated.
  * @param out_type Receives a borrowed field type. Valid until the schema is destroyed; do not destroy it.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_schema_get_field(duckdb_v2_schema_handle schema, idx_t index,
-                                                        duckdb_v2_identifier_t *out_name,
+                                                        const char **out_name, idx_t *out_name_length,
                                                         duckdb_v2_logical_type_handle *out_type,
                                                         duckdb_v2_error_info_handle *err);
 #endif
@@ -4925,12 +5000,15 @@ typedef struct _duckdb_v2_token_iterator {
  * - unstable: v2.0.0
  *
  * @param conn The connection supplying the grammar.
- * @param sql The SQL text. Borrowed for the call only; may contain interior null bytes. {NULL, 0} is the empty input.
+ * @param sql The SQL text. Borrowed for the call only; may contain interior null bytes. NULL with a zero length is the
+ * empty input.
+ * @param sql_length The length of `sql` in bytes. `sql` need not be null-terminated and may be NULL only when this is
+ * 0.
  * @param out_iterator Receives the new iterator handle. Destroy via token_iterator_destroy.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_tokenize_sql(duckdb_v2_connection_handle conn, const duckdb_v2_str *sql,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_tokenize_sql(duckdb_v2_connection_handle conn, const char *sql, idx_t sql_length,
                                                     duckdb_v2_token_iterator_handle *out_iterator,
                                                     duckdb_v2_error_info_handle *err);
 #endif
@@ -5160,12 +5238,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_aggregate_function_create(duckdb_v2_facto
  *
  * @param function The function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_aggregate_function_set_name(duckdb_v2_aggregate_function_handle function,
-                                                                   const duckdb_v2_identifier_t *name,
+                                                                   const char *name, idx_t name_length,
                                                                    duckdb_v2_error_info_handle *err);
 #endif
 
@@ -6311,13 +6391,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_description_destroy(duckdb_v2_table
  * - unstable: v2.0.0
  *
  * @param column The column description.
- * @param name Receives a borrowed view of the column name. Valid until the column description is destroyed.
+ * @param name Receives a borrowed pointer to the column name. Valid until the column description is destroyed.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_column_description_get_name(duckdb_v2_column_description_handle column,
-                                                                   duckdb_v2_identifier_t *name,
+                                                                   const char **name, idx_t *name_length,
                                                                    duckdb_v2_error_info_handle *err);
 #endif
 
@@ -6617,13 +6698,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_function_create(duckdb_v2_factory_ha
  *
  * @param function The function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_function_set_name(duckdb_v2_copy_function_handle function,
-                                                              const duckdb_v2_identifier_t *name,
-                                                              duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_function_set_name(duckdb_v2_copy_function_handle function, const char *name,
+                                                              idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -6640,12 +6722,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_function_set_name(duckdb_v2_copy_fun
  *
  * @param function The function to set the file extension of.
  * @param extension The extension to set, without the leading dot. Borrowed and copied.
+ * @param extension_length The length of `extension` in bytes. `extension` need not be null-terminated and may be NULL
+ * only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_function_set_file_extension(duckdb_v2_copy_function_handle function,
-                                                                        const duckdb_v2_str *extension,
+                                                                        const char *extension, idx_t extension_length,
                                                                         duckdb_v2_error_info_handle *err);
 #endif
 
@@ -6859,13 +6943,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_set_bind_data(duckdb_v2_copy
  * - unstable: v2.0.0
  *
  * @param info The bind info handle.
- * @param path Receives a borrowed view of the file path. Valid only for the duration of the callback.
+ * @param path Receives a borrowed pointer to the file path. Valid only for the duration of the callback.
+ * @param path_length Receives the length of `*path` in bytes. `*path` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_file_path(duckdb_v2_copy_to_bind_info_handle info,
-                                                                  duckdb_v2_str *path,
+                                                                  const char **path, idx_t *path_length,
                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
@@ -6922,13 +7007,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_column_type(duckdb_v2_co
  *
  * @param info The bind info handle.
  * @param index The index of the column to get the name of.
- * @param name Receives a borrowed view of the column name. Valid only for the duration of the callback.
+ * @param name Receives a borrowed pointer to the column name. Valid only for the duration of the callback.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_column_name(duckdb_v2_copy_to_bind_info_handle info,
-                                                                    idx_t index, duckdb_v2_identifier_t *name,
+                                                                    idx_t index, const char **name, idx_t *name_length,
                                                                     duckdb_v2_error_info_handle *err);
 #endif
 
@@ -6965,13 +7051,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_option_count(duckdb_v2_c
  *
  * @param info The bind info handle.
  * @param index The index of the option to get the name of.
- * @param name Receives a borrowed view of the option name. Valid only for the duration of the callback.
+ * @param name Receives a borrowed pointer to the option name. Valid only for the duration of the callback.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_bind_get_option_name(duckdb_v2_copy_to_bind_info_handle info,
-                                                                    idx_t index, duckdb_v2_identifier_t *name,
+                                                                    idx_t index, const char **name, idx_t *name_length,
                                                                     duckdb_v2_error_info_handle *err);
 #endif
 
@@ -7098,13 +7185,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_init_get_bind_data(duckdb_v2_copy
  * - unstable: v2.0.0
  *
  * @param info The init info handle.
- * @param path Receives a borrowed view of the file path. Valid only for the duration of the callback.
+ * @param path Receives a borrowed pointer to the file path. Valid only for the duration of the callback.
+ * @param path_length Receives the length of `*path` in bytes. `*path` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_to_init_get_file_path(duckdb_v2_copy_to_init_info_handle info,
-                                                                  duckdb_v2_str *path,
+                                                                  const char **path, idx_t *path_length,
                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
@@ -7509,13 +7597,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_set_bind_data(duckdb_v2_co
  * - unstable: v2.0.0
  *
  * @param info The bind info handle.
- * @param path Receives a borrowed view of the file path. Valid only for the duration of the callback.
+ * @param path Receives a borrowed pointer to the file path. Valid only for the duration of the callback.
+ * @param path_length Receives the length of `*path` in bytes. `*path` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_file_path(duckdb_v2_copy_from_bind_info_handle info,
-                                                                    duckdb_v2_str *path,
+                                                                    const char **path, idx_t *path_length,
                                                                     duckdb_v2_error_info_handle *err);
 #endif
 
@@ -7573,13 +7662,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_column_type(duckdb_v2_
  *
  * @param info The bind info handle.
  * @param index The index of the column to get the name of.
- * @param name Receives a borrowed view of the column name. Valid only for the duration of the callback.
+ * @param name Receives a borrowed pointer to the column name. Valid only for the duration of the callback.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_column_name(duckdb_v2_copy_from_bind_info_handle info,
-                                                                      idx_t index, duckdb_v2_identifier_t *name,
+                                                                      idx_t index, const char **name,
+                                                                      idx_t *name_length,
                                                                       duckdb_v2_error_info_handle *err);
 #endif
 
@@ -7615,13 +7706,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_option_count(duckdb_v2
  *
  * @param info The bind info handle.
  * @param index The index of the option to get the name of.
- * @param name Receives a borrowed view of the option name. Valid only for the duration of the callback.
+ * @param name Receives a borrowed pointer to the option name. Valid only for the duration of the callback.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_copy_from_bind_get_option_name(duckdb_v2_copy_from_bind_info_handle info,
-                                                                      idx_t index, duckdb_v2_identifier_t *name,
+                                                                      idx_t index, const char **name,
+                                                                      idx_t *name_length,
                                                                       duckdb_v2_error_info_handle *err);
 #endif
 
@@ -8243,13 +8336,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_option_create(duckdb_v2_factory_ha
  *
  * @param option The option to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_option_set_name(duckdb_v2_custom_option_handle option,
-                                                              const duckdb_v2_identifier_t *name,
-                                                              duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_option_set_name(duckdb_v2_custom_option_handle option, const char *name,
+                                                              idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -8304,12 +8398,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_option_set_default_value(duckdb_v2
  *
  * @param option The option to set the description of.
  * @param description The description to set. Borrowed and copied.
+ * @param description_length The length of `description` in bytes. `description` need not be null-terminated and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_custom_option_set_description(duckdb_v2_custom_option_handle option,
-                                                                     const duckdb_v2_str *description,
+                                                                     const char *description, idx_t description_length,
                                                                      duckdb_v2_error_info_handle *err);
 #endif
 
@@ -8815,13 +8911,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_column_ref_get_index(duckdb_v2
  * - unstable: v2.0.0
  *
  * @param expression The function node.
- * @param name Receives a borrowed view of the function name.
+ * @param name Receives a borrowed pointer to the function name.
+ * @param name_length Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_expression_function_get_name(duckdb_v2_expression_handle expression,
-                                                                    duckdb_v2_identifier_t *name,
+                                                                    const char **name, idx_t *name_length,
                                                                     duckdb_v2_error_info_handle *err);
 #endif
 
@@ -8926,8 +9023,9 @@ typedef struct _duckdb_v2_log_sink_flush_info {
 
 typedef void (*duckdb_v2_log_sink_write_callback_fn)(duckdb_v2_log_sink_write_info_handle info, void *user_data,
                                                      int64_t timestamp, DUCKDB_V2_LOG_LEVEL level,
-                                                     DUCKDB_V2_LOG_SCOPE scope, const duckdb_v2_str *type,
-                                                     const duckdb_v2_str *message, duckdb_v2_error_info_handle *err);
+                                                     DUCKDB_V2_LOG_SCOPE scope, const char *type, idx_t type_length,
+                                                     const char *message, idx_t message_length,
+                                                     duckdb_v2_error_info_handle *err);
 
 typedef void (*duckdb_v2_log_sink_flush_callback_fn)(duckdb_v2_log_sink_flush_info_handle info, void *user_data,
                                                      duckdb_v2_error_info_handle *err);
@@ -8970,13 +9068,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_log_sink_create(duckdb_v2_factory_handle 
  *
  * @param sink The log sink to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_log_sink_set_name(duckdb_v2_log_sink_handle sink,
-                                                         const duckdb_v2_identifier_t *name,
-                                                         duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_log_sink_set_name(duckdb_v2_log_sink_handle sink, const char *name,
+                                                         idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -9323,8 +9422,10 @@ typedef enum DUCKDB_V2_LOGICAL_TYPE_ID {
  *
  * @param factory The factory to resolve the type in.
  * @param type_id The type id to instantiate.
- * @param param_names Optional. An array of param_count parameter names; a {NULL, 0} entry is positional. Pass NULL for
- * all-positional parameters.
+ * @param param_names Optional. An array of param_count parameter names; an empty entry (NULL or zero length) is
+ * positional. Pass NULL for all-positional parameters.
+ * @param param_names_lengths Byte lengths of the entries in `param_names`; element i is the length of `param_names[i]`.
+ * May be NULL only when `param_names` is NULL.
  * @param param_values An array of param_count parameter values. Borrowed (copied in). Pass NULL when param_count is 0.
  * @param param_count The number of parameters. 0 instantiates a parameterless primitive.
  * @param out_type Receives the new logical type handle.
@@ -9332,9 +9433,9 @@ typedef enum DUCKDB_V2_LOGICAL_TYPE_ID {
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_id(
-    duckdb_v2_factory_handle factory, DUCKDB_V2_LOGICAL_TYPE_ID type_id, const duckdb_v2_identifier_t *param_names,
-    const duckdb_v2_value_handle *param_values, idx_t param_count, duckdb_v2_logical_type_handle *out_type,
-    duckdb_v2_error_info_handle *err);
+    duckdb_v2_factory_handle factory, DUCKDB_V2_LOGICAL_TYPE_ID type_id, const char **param_names,
+    const idx_t *param_names_lengths, const duckdb_v2_value_handle *param_values, idx_t param_count,
+    duckdb_v2_logical_type_handle *out_type, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -9350,7 +9451,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_id(
  * the type in that catalog or schema or fails.
  *
  * Parameters are (name, value) pairs in two parallel arrays. param_names may be NULL to make every parameter
- * positional, and a {NULL, 0} entry makes that one parameter positional. Child types cross as TYPE values, built with
+ * positional, and an empty entry makes that one parameter positional. Child types cross as TYPE values, built with
  * value_create_type. The built-in shapes are: decimal(width, scale); list(T); array(T, size); map(K, V); struct(fields,
  * as named or all-positional TYPE values); union(members, as named TYPE values); enum(entries, as VARCHAR values); and
  * varchar with a named "collation" VARCHAR parameter.
@@ -9372,8 +9473,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_id(
  * @param factory The factory to resolve the type in.
  * @param name The type name to resolve. Parts are matched case-insensitively; qualify it to name a type in a particular
  * catalog or schema.
- * @param param_names Optional. An array of param_count parameter names; a {NULL, 0} entry is positional. Pass NULL for
- * all-positional parameters.
+ * @param param_names Optional. An array of param_count parameter names; an empty entry (NULL or zero length) is
+ * positional. Pass NULL for all-positional parameters.
+ * @param param_names_lengths Byte lengths of the entries in `param_names`; element i is the length of `param_names[i]`.
+ * May be NULL only when `param_names` is NULL.
  * @param param_values An array of param_count parameter values. Borrowed (copied in). Pass NULL when param_count is 0.
  * @param param_count The number of parameters.
  * @param out_type Receives the new logical type handle.
@@ -9381,9 +9484,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_id(
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_name(
-    duckdb_v2_factory_handle factory, duckdb_v2_qname_handle name, const duckdb_v2_identifier_t *param_names,
-    const duckdb_v2_value_handle *param_values, idx_t param_count, duckdb_v2_logical_type_handle *out_type,
-    duckdb_v2_error_info_handle *err);
+    duckdb_v2_factory_handle factory, duckdb_v2_qname_handle name, const char **param_names,
+    const idx_t *param_names_lengths, const duckdb_v2_value_handle *param_values, idx_t param_count,
+    duckdb_v2_logical_type_handle *out_type, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -9408,13 +9511,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_name(
  * - unstable: v2.0.0
  *
  * @param factory The factory to resolve the type in.
- * @param text View of the SQL type expression to parse.
+ * @param text The SQL type expression to parse.
+ * @param text_length The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param out_type Receives the new logical type handle.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_text(duckdb_v2_factory_handle factory,
-                                                                     const duckdb_v2_str *text,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_from_text(duckdb_v2_factory_handle factory, const char *text,
+                                                                     idx_t text_length,
                                                                      duckdb_v2_logical_type_handle *out_type,
                                                                      duckdb_v2_error_info_handle *err);
 #endif
@@ -9505,13 +9610,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_id(duckdb_v2_logical_typ
  * - unstable: v2.0.0
  *
  * @param type The logical type.
- * @param out_name Receives a borrowed view of the name (alias when set, else the id's canonical name).
+ * @param out_name Receives a borrowed pointer to the name (alias when set, else the id's canonical name).
+ * @param out_name_length Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be
+ * null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_name(duckdb_v2_logical_type_handle type,
-                                                             duckdb_v2_identifier_t *out_name,
-                                                             duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_name(duckdb_v2_logical_type_handle type, const char **out_name,
+                                                             idx_t *out_name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -9575,9 +9681,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_param_count(duckdb_v2_lo
  * Returns one value parameter of a logical type.
  *
  * out_name receives a borrowed view of the parameter name — a STRUCT field name, a UNION member name, "collation" — or
- * the empty view {NULL, 0} for a positional parameter. A non-empty view is valid until the logical type is destroyed.
- * out_value receives an owned value, destroyed via value_destroy: child types come back as TYPE values (unwrap them
- * with value_get_type), DECIMAL width and scale as UTINYINT, ARRAY size as BIGINT, and ENUM dictionary entries and
+ * an empty name for a positional parameter. A non-empty view is valid until the logical type is destroyed. out_value
+ * receives an owned value, destroyed via value_destroy: child types come back as TYPE values (unwrap them with
+ * value_get_type), DECIMAL width and scale as UTINYINT, ARRAY size as BIGINT, and ENUM dictionary entries and
  * collations as VARCHAR. An out-of-range index returns ERROR_INPUT_INVALID. Each call allocates one owned value.
  *
  * history:
@@ -9585,14 +9691,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_param_count(duckdb_v2_lo
  *
  * @param type The logical type.
  * @param index The parameter index, in [0, param_count).
- * @param out_name Receives a borrowed view of the parameter name, or the empty view {NULL, 0} for a positional
+ * @param out_name Receives a borrowed pointer to the parameter name, or NULL with a zero length for a positional
  * parameter.
+ * @param out_name_length Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be
+ * null-terminated.
  * @param out_value Receives the owned parameter value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_param(duckdb_v2_logical_type_handle type, idx_t index,
-                                                              duckdb_v2_identifier_t *out_name,
+                                                              const char **out_name, idx_t *out_name_length,
                                                               duckdb_v2_value_handle *out_value,
                                                               duckdb_v2_error_info_handle *err);
 #endif
@@ -9615,13 +9723,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_param(duckdb_v2_logical_
  * @param base_type The logical type to alias. Typically the base type supplied in the custom type bind info.
  * @param alias_name The name for the resulting type. Typically the name of the custom type being constructed, also
  * available from the bind info.
+ * @param alias_name_length The length of `alias_name` in bytes. `alias_name` must be valid UTF-8, need not be
+ * null-terminated, and may be NULL only when this is 0.
  * @param out_type Receives the new type: the base type's internal representation under the given alias name.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_factory_create_type_with_alias(duckdb_v2_factory_handle factory,
                                                                       duckdb_v2_logical_type_handle base_type,
-                                                                      const duckdb_v2_identifier_t *alias_name,
+                                                                      const char *alias_name, idx_t alias_name_length,
                                                                       duckdb_v2_logical_type_handle *out_type,
                                                                       duckdb_v2_error_info_handle *err);
 #endif
@@ -9736,12 +9846,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_macro_function_create(duckdb_v2_factory_h
  *
  * @param function The macro function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_macro_function_set_name(duckdb_v2_macro_function_handle function,
-                                                               const duckdb_v2_identifier_t *name,
+                                                               const char *name, idx_t name_length,
                                                                duckdb_v2_error_info_handle *err);
 #endif
 
@@ -9759,12 +9871,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_macro_function_set_name(duckdb_v2_macro_f
  *
  * @param function The macro function to set the body of.
  * @param body The SQL text of the body. Borrowed and copied.
+ * @param body_length The length of `body` in bytes. `body` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_macro_function_set_body(duckdb_v2_macro_function_handle function,
-                                                               const duckdb_v2_str *body,
+                                                               const char *body, idx_t body_length,
                                                                duckdb_v2_error_info_handle *err);
 #endif
 
@@ -9940,12 +10054,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_pragma_function_create(duckdb_v2_factory_
  *
  * @param function The function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_pragma_function_set_name(duckdb_v2_pragma_function_handle function,
-                                                                const duckdb_v2_identifier_t *name,
+                                                                const char *name, idx_t name_length,
                                                                 duckdb_v2_error_info_handle *err);
 #endif
 
@@ -10072,12 +10188,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_pragma_function_set_exec_callback(
  *
  * @param info The query info handle.
  * @param query The SQL to run. Borrowed and copied.
+ * @param query_length The length of `query` in bytes. `query` need not be null-terminated and may be NULL only when
+ * this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_pragma_function_query_set_query(duckdb_v2_pragma_function_query_info_handle info,
-                                                                       const duckdb_v2_str *query,
+                                                                       const char *query, idx_t query_length,
                                                                        duckdb_v2_error_info_handle *err);
 #endif
 
@@ -10363,13 +10481,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_argument(duckdb_v2_r
  *
  * @param info The info handle.
  * @param name The name of the parameter to bind the value to. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param value The argument value. Borrowed and copied.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_named_argument(duckdb_v2_replacement_scan_info_handle info,
-                                                                           const duckdb_v2_identifier_t *name,
+                                                                           const char *name, idx_t name_length,
                                                                            duckdb_v2_value_handle value,
                                                                            duckdb_v2_error_info_handle *err);
 #endif
@@ -10404,6 +10524,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_named_argument(duckd
  * @param collection The collection to read instead. Borrowed; the caller keeps ownership and must keep it alive.
  * @param column_names Optional. An array of `column_count` column names, in order. Pass NULL for the default names
  * col1..colN.
+ * @param column_names_lengths Byte lengths of the entries in `column_names`; element i is the length of
+ * `column_names[i]`. May be NULL only when `column_names` is NULL.
  * @param column_count The number of names in `column_names`. Must equal the collection's column count, or 0 for the
  * default names.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
@@ -10412,7 +10534,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_named_argument(duckd
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(
     duckdb_v2_replacement_scan_info_handle info, duckdb_v2_column_data_collection_handle collection,
-    const duckdb_v2_identifier_t *column_names, idx_t column_count, duckdb_v2_error_info_handle *err);
+    const char **column_names, const idx_t *column_names_lengths, idx_t column_count, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -10433,12 +10555,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(
  *
  * @param info The info handle.
  * @param sql The SELECT statement to read instead. Borrowed for the call only.
+ * @param sql_length The length of `sql` in bytes. `sql` need not be null-terminated and may be NULL only when this is
+ * 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_subquery(duckdb_v2_replacement_scan_info_handle info,
-                                                                     const duckdb_v2_str *sql,
+                                                                     const char *sql, idx_t sql_length,
                                                                      duckdb_v2_error_info_handle *err);
 #endif
 
@@ -10455,12 +10579,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_subquery(duckdb_v2_r
  *
  * @param info The info handle.
  * @param alias The alias to bind the replacement under. Borrowed and copied.
+ * @param alias_length The length of `alias` in bytes. `alias` must be valid UTF-8, need not be null-terminated, and may
+ * be NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_alias(duckdb_v2_replacement_scan_info_handle info,
-                                                                  const duckdb_v2_identifier_t *alias,
+                                                                  const char *alias, idx_t alias_length,
                                                                   duckdb_v2_error_info_handle *err);
 #endif
 
@@ -10691,12 +10817,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_create(duckdb_v2_factory_
  *
  * @param function The function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar_function_handle function,
-                                                                const duckdb_v2_identifier_t *name,
+                                                                const char *name, idx_t name_length,
                                                                 duckdb_v2_error_info_handle *err);
 #endif
 
@@ -11405,14 +11533,16 @@ typedef struct _duckdb_v2_statement_iterator {
  * - unstable: v2.0.0
  *
  * @param conn The connection supplying the parser configuration.
- * @param sql Null-terminated SQL string; may contain any number of statements.
+ * @param sql The SQL text, `sql_length` bytes long; may contain any number of statements. Need not be null-terminated.
+ * May be NULL only when `sql_length` is 0.
+ * @param sql_length The length of `sql` in bytes.
  * @param apply_invalidation_policy Whether a parse error invalidates the active transaction, according to the
  * transaction invalidation policy.
  * @param out_iterator Receives the new iterator handle.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char *sql,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char *sql, idx_t sql_length,
                                                  bool apply_invalidation_policy,
                                                  duckdb_v2_statement_iterator_handle *out_iterator,
                                                  duckdb_v2_error_info_handle *err);
@@ -11503,9 +11633,13 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_bind(duckdb_v2_connection_handl
  *
  * @param statement The statement to bind the collection to. Modified in place.
  * @param name The non-empty name the statement refers to the collection by. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param collection The collection to bind. Borrowed; the caller keeps ownership and must keep it alive.
  * @param column_names Optional. An array of `column_count` names for the collection's columns, in order. Pass NULL for
  * col1..colN.
+ * @param column_names_lengths Byte lengths of the entries in `column_names`; element i is the length of
+ * `column_names[i]`. May be NULL only when `column_names` is NULL.
  * @param column_count The number of names in `column_names`. 0 for the default names; otherwise the collection's column
  * count.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
@@ -11513,10 +11647,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_bind(duckdb_v2_connection_handl
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_add_collection(duckdb_v2_sql_statement_handle statement,
-                                                                const duckdb_v2_identifier_t *name,
+                                                                const char *name, idx_t name_length,
                                                                 duckdb_v2_column_data_collection_handle collection,
-                                                                const duckdb_v2_identifier_t *column_names,
-                                                                idx_t column_count, duckdb_v2_error_info_handle *err);
+                                                                const char **column_names,
+                                                                const idx_t *column_names_lengths, idx_t column_count,
+                                                                duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -11555,12 +11690,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_type(duckdb_v2_sql_stat
  * - unstable: v2.0.0
  *
  * @param statement The statement.
- * @param out_text Receives a borrowed view of the statement text, valid until the statement is destroyed.
+ * @param out_text Receives a borrowed pointer to the statement text, valid until the statement is destroyed.
+ * @param out_text_length Receives the length of `*out_text` in bytes. `*out_text` is not guaranteed to be
+ * null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_text(duckdb_v2_sql_statement_handle statement,
-                                                              duckdb_v2_str *out_text,
+                                                              const char **out_text, idx_t *out_text_length,
                                                               duckdb_v2_error_info_handle *err);
 #endif
 
@@ -11600,12 +11737,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_parameter_count(duckdb_
  *
  * @param statement The statement.
  * @param index Zero-based position in binding order.
- * @param out_name Receives a borrowed view of the parameter name, valid until the statement is destroyed.
+ * @param out_name Receives a borrowed pointer to the parameter name, valid until the statement is destroyed.
+ * @param out_name_length Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be
+ * null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_parameter_name(duckdb_v2_sql_statement_handle statement,
-                                                                        idx_t index, duckdb_v2_identifier_t *out_name,
+                                                                        idx_t index, const char **out_name,
+                                                                        idx_t *out_name_length,
                                                                         duckdb_v2_error_info_handle *err);
 #endif
 
@@ -12214,23 +12354,25 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_bignum_encode(const uint8_t *in_data, idx
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
- * Validates all text->len bytes as UTF-8, including bytes after embedded NUL characters.
+ * Validates all `text_length` bytes of `text` as UTF-8, including bytes after embedded NUL characters.
  *
  * Returns ERROR_INPUT_INVALID if any of:
- * - text is NULL.
- * - text->ptr is NULL and text->len is nonzero.
+ * - text is NULL and text_length is nonzero.
  * - The input contains malformed UTF-8.
  *
- * A view with a NULL ptr and zero length is valid.
+ * A NULL text with a zero length is valid.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param text The bytes to validate.
+ * @param text_length The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_validate_utf8(const duckdb_v2_str *text, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_validate_utf8(const char *text, idx_t text_length,
+                                                     duckdb_v2_error_info_handle *err);
 #endif
 
 /* --- Struct definitions for vector --- */
@@ -12344,11 +12486,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_conne
  *
  * `parameter_values` binds the statement's parameters as constants for this execution. Binding is positional by default
  * ($1 = element 0); supply `parameter_names` to bind by name instead, where a non-empty entry binds its value to that
- * named parameter ($name, matched case-insensitively) and a {NULL, 0} entry stays positional. Pass NULL for both
- * arrays, or a count of 0, for a statement without parameters. Both arrays are borrowed and copied in, so the caller
- * still owns and destroys them. A key set that does not match the statement's parameters is rejected with
- * `ERROR_INPUT_INVALID`, with one exception: a named parameter left without a value reads the session variable of the
- * same name (`SET VARIABLE`) when one exists.
+ * named parameter ($name, matched case-insensitively) and an empty entry stays positional. Pass NULL for both arrays,
+ * or a count of 0, for a statement without parameters. Both arrays are borrowed and copied in, so the caller still owns
+ * and destroys them. A key set that does not match the statement's parameters is rejected with `ERROR_INPUT_INVALID`,
+ * with one exception: a named parameter left without a value reads the session variable of the same name (`SET
+ * VARIABLE`) when one exists.
  *
  * Not consumed: execute the same handle again, with the same values or different ones, as often as you like. Values are
  * bound per execution and nothing carries over between them. A catalog change since the statement was prepared, or a
@@ -12364,8 +12506,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_conne
  *
  * @param prepared The prepared statement to execute. Borrowed; not consumed.
  * @param parameter_names Optional. An array of `parameter_count` parameter names; a non-empty entry binds its value to
- * the named parameter ($name, case-insensitive), a {NULL, 0} entry keeps it positional ($1 = element 0). Pass NULL to
- * bind everything positionally.
+ * the named parameter ($name, case-insensitive), an empty entry (NULL or zero length) keeps it positional ($1 = element
+ * 0). Pass NULL to bind everything positionally.
+ * @param parameter_names_lengths Byte lengths of the entries in `parameter_names`; element i is the length of
+ * `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
  * @param parameter_values Optional. An array of `parameter_count` values. Each binds by name when `parameter_names`
  * supplies one, and positionally ($1 = element 0) otherwise. Borrowed and copied in. Pass NULL for a statement without
  * parameters.
@@ -12376,12 +12520,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_conne
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_execute(duckdb_v2_prepared_statement_handle prepared,
-                                                                  const duckdb_v2_identifier_t *parameter_names,
-                                                                  const duckdb_v2_value_handle *parameter_values,
-                                                                  idx_t parameter_count,
-                                                                  duckdb_v2_result_handle *out_result,
-                                                                  duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_execute(
+    duckdb_v2_prepared_statement_handle prepared, const char **parameter_names, const idx_t *parameter_names_lengths,
+    const duckdb_v2_value_handle *parameter_values, idx_t parameter_count, duckdb_v2_result_handle *out_result,
+    duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -12494,7 +12636,7 @@ typedef enum DUCKDB_V2_RESULT_STEP_STATUS {
  * parameter_values binds the statement's parameters as constants for this execution. Binding is positional by default:
  * the i-th value binds $(i+1), matching SQL's own convention, so dense $1..$N and ? placeholders work directly. Supply
  * parameter_names to bind by name instead — a non-empty name binds its value to that named parameter ($name, matched
- * case-insensitively), while a {NULL, 0} entry leaves that value positional. The parameter schema from statement_bind
+ * case-insensitively), while an empty entry leaves that value positional. The parameter schema from statement_bind
  * lists the names to use. Both arrays are borrowed and copied in; the caller still owns and destroys them. Pass NULL
  * for both, or a count of 0, for an unparameterized statement. A key set that does not match the statement's parameters
  * — names for a positional statement, or the reverse — is rejected with ERROR_INPUT_INVALID, and named and positional
@@ -12520,8 +12662,10 @@ typedef enum DUCKDB_V2_RESULT_STEP_STATUS {
  * @param conn The connection on which to execute the statement.
  * @param statement The statement to execute. Borrowed and copied; not consumed. Destroy it with sql_statement_destroy.
  * @param parameter_names Optional. An array of parameter_count parameter names; a non-empty entry binds its value to
- * the named parameter ($name, case-insensitive), a {NULL, 0} entry keeps it positional ($1 = element 0). Pass NULL for
- * all-positional binding. Named and positional parameters cannot be mixed within one statement.
+ * the named parameter ($name, case-insensitive), an empty entry (NULL or zero length) keeps it positional ($1 = element
+ * 0). Pass NULL for all-positional binding. Named and positional parameters cannot be mixed within one statement.
+ * @param parameter_names_lengths Byte lengths of the entries in `parameter_names`; element i is the length of
+ * `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
  * @param parameter_values Optional. An array of parameter_count value handles. Each binds by name when parameter_names
  * supplies one, otherwise positionally ($1 = element 0). Borrowed (copied in). Pass NULL for an unparameterized
  * statement.
@@ -12531,12 +12675,10 @@ typedef enum DUCKDB_V2_RESULT_STEP_STATUS {
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_execute(duckdb_v2_connection_handle conn,
-                                                         duckdb_v2_sql_statement_handle statement,
-                                                         const duckdb_v2_identifier_t *parameter_names,
-                                                         const duckdb_v2_value_handle *parameter_values,
-                                                         idx_t parameter_count, duckdb_v2_result_handle *out_result,
-                                                         duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_execute(
+    duckdb_v2_connection_handle conn, duckdb_v2_sql_statement_handle statement, const char **parameter_names,
+    const idx_t *parameter_names_lengths, const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
+    duckdb_v2_result_handle *out_result, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -12666,6 +12808,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_result_wait(duckdb_v2_result_handle resul
  * @param max_width Maximum total width in characters; 0 selects the renderer default.
  * @param max_col_width Maximum width of one column; 0 selects the renderer default (20).
  * @param null_value Text rendered for NULL cells; empty selects "NULL".
+ * @param null_value_length The length of `null_value` in bytes. `null_value` need not be null-terminated and may be
+ * NULL only when this is 0.
  * @param render_mode 0 renders rows (records down the page); 1 renders columns; other values are rejected with
  * INVALID_INPUT.
  * @param limit The row limit the caller applied to the query before rendering; 0 means none. When the materialized
@@ -12678,9 +12822,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_result_wait(duckdb_v2_result_handle resul
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_result_render_box(duckdb_v2_result_handle *result, idx_t max_rows,
-                                                         idx_t max_width, idx_t max_col_width,
-                                                         const duckdb_v2_str *null_value, idx_t render_mode,
-                                                         idx_t limit, duckdb_v2_text_sink_fn sink, void *user_data,
+                                                         idx_t max_width, idx_t max_col_width, const char *null_value,
+                                                         idx_t null_value_length, idx_t render_mode, idx_t limit,
+                                                         duckdb_v2_text_sink_fn sink, void *user_data,
                                                          duckdb_v2_error_info_handle *err);
 #endif
 
@@ -13025,12 +13169,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_create(duckdb_v2_factory_h
  *
  * @param function The function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_name(duckdb_v2_table_function_handle function,
-                                                               const duckdb_v2_identifier_t *name,
+                                                               const char *name, idx_t name_length,
                                                                duckdb_v2_error_info_handle *err);
 #endif
 
@@ -13347,13 +13493,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_set_stats_callback(
  *
  * @param info The bind info handle.
  * @param name The name of the column. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` must be valid UTF-8, need not be null-terminated, and may be
+ * NULL only when this is 0.
  * @param type The type of the column. Borrowed and copied.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_bind_add_result_column(
-    duckdb_v2_table_function_bind_info_handle info, const duckdb_v2_identifier_t *name,
+    duckdb_v2_table_function_bind_info_handle info, const char *name, idx_t name_length,
     duckdb_v2_logical_type_handle type, duckdb_v2_error_info_handle *err);
 #endif
 
@@ -14680,14 +14828,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_get_bind_info_set_column_i
  *
  * @param info The get bind info handle.
  * @param key The key of the option. Borrowed and copied.
+ * @param key_length The length of `key` in bytes. `key` need not be null-terminated and may be NULL only when this is
+ * 0.
  * @param value The value of the option. Borrowed and copied.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_get_bind_info_set_option(
-    duckdb_v2_table_function_get_bind_info_info_handle info, duckdb_v2_str *key, duckdb_v2_value_handle value,
-    duckdb_v2_error_info_handle *err);
+    duckdb_v2_table_function_get_bind_info_info_handle info, const char *key, idx_t key_length,
+    duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -14728,12 +14878,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_create(duckdb_v2_fact
  *
  * @param function The function to set the name of.
  * @param name The name to set. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_name(duckdb_v2_multi_file_function_handle function,
-                                                                    duckdb_v2_str *name,
+                                                                    const char *name, idx_t name_length,
                                                                     duckdb_v2_error_info_handle *err);
 #endif
 
@@ -14760,12 +14912,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_name(duckdb_v2_mu
  *
  * @param function The function to set the single-file function of.
  * @param name The name of the registered single-file table function. Borrowed and copied.
+ * @param name_length The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this
+ * is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_single_file_function(
-    duckdb_v2_multi_file_function_handle function, duckdb_v2_str *name, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR
+duckdb_v2_multi_file_function_set_single_file_function(duckdb_v2_multi_file_function_handle function, const char *name,
+                                                       idx_t name_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -14780,12 +14935,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_single_file_funct
  *
  * @param function The function to set the reader type of.
  * @param reader_type The reader type. Borrowed and copied.
+ * @param reader_type_length The length of `reader_type` in bytes. `reader_type` need not be null-terminated and may be
+ * NULL only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_reader_type(
-    duckdb_v2_multi_file_function_handle function, duckdb_v2_str *reader_type, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR
+duckdb_v2_multi_file_function_set_reader_type(duckdb_v2_multi_file_function_handle function, const char *reader_type,
+                                              idx_t reader_type_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -14801,12 +14959,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_reader_type(
  *
  * @param function The function to set the file extension of.
  * @param extension The file extension, without a leading dot. Borrowed and copied.
+ * @param extension_length The length of `extension` in bytes. `extension` need not be null-terminated and may be NULL
+ * only when this is 0.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_file_extension(
-    duckdb_v2_multi_file_function_handle function, duckdb_v2_str *extension, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR
+duckdb_v2_multi_file_function_set_file_extension(duckdb_v2_multi_file_function_handle function, const char *extension,
+                                                 idx_t extension_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -15135,11 +15296,12 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_hugeint(duckdb_v2_value_handle 
  * @param value The value to read.
  * @param out Receives the payload as a UTF-8 string. The returned string is borrowed and valid until the value handle
  * is destroyed.
+ * @param out_length Receives the length of `*out` in bytes. `*out` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle value, duckdb_v2_str *out,
-                                                         duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle value, const char **out,
+                                                         idx_t *out_length, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -15156,10 +15318,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_varchar(duckdb_v2_value_handle 
  * @param value The value to read.
  * @param out Receives the payload as a byte string. The returned string is borrowed and valid until the value handle is
  * destroyed.
+ * @param out_length Receives the length of `*out` in bytes. `*out` is not guaranteed to be null-terminated.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, duckdb_v2_str *out,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_get_blob(duckdb_v2_value_handle value, const char **out, idx_t *out_length,
                                                       duckdb_v2_error_info_handle *err);
 #endif
 
@@ -15750,14 +15913,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_hugeint(duckdb_v2_factory_ha
  * - unstable: v2.0.0
  *
  * @param factory The factory to create with.
- * @param in_value The UTF-8 string to wrap. May be null only when len is 0 (empty string).
+ * @param in_value The UTF-8 string to wrap.
+ * @param in_value_length The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param out_value Receives the new VARCHAR value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_handle factory,
-                                                            const duckdb_v2_str *in_value,
-                                                            duckdb_v2_value_handle *out_value,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_handle factory, const char *in_value,
+                                                            idx_t in_value_length, duckdb_v2_value_handle *out_value,
                                                             duckdb_v2_error_info_handle *err);
 #endif
 
@@ -15771,14 +15935,15 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_varchar(duckdb_v2_factory_ha
  * - unstable: v2.0.0
  *
  * @param factory The factory to create with.
- * @param in_value The byte string to wrap. May be null only when len is 0 (empty string).
+ * @param in_value The byte string to wrap.
+ * @param in_value_length The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param out_value Receives the new BLOB value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_blob(duckdb_v2_factory_handle factory,
-                                                         const duckdb_v2_str *in_value,
-                                                         duckdb_v2_value_handle *out_value,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_blob(duckdb_v2_factory_handle factory, const char *in_value,
+                                                         idx_t in_value_length, duckdb_v2_value_handle *out_value,
                                                          duckdb_v2_error_info_handle *err);
 #endif
 
@@ -16140,12 +16305,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_uuid(duckdb_v2_factory_handl
  *
  * @param factory The factory to create with.
  * @param in_value The wire bytes, a padding header byte followed by data. Must be at least 1 byte.
+ * @param in_value_length The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param out_value Receives the new BIT value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_bit(duckdb_v2_factory_handle factory, const duckdb_v2_str *in_value,
-                                                        duckdb_v2_value_handle *out_value,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_bit(duckdb_v2_factory_handle factory, const char *in_value,
+                                                        idx_t in_value_length, duckdb_v2_value_handle *out_value,
                                                         duckdb_v2_error_info_handle *err);
 #endif
 
@@ -16162,13 +16329,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_bit(duckdb_v2_factory_handle
  *
  * @param factory The factory to create with.
  * @param in_value The opaque storage bytes from bignum_encode. Must exceed 3 bytes.
+ * @param in_value_length The length of `in_value` in bytes. `in_value` need not be null-terminated and may be NULL only
+ * when this is 0.
  * @param out_value Receives the new BIGNUM value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_bignum(duckdb_v2_factory_handle factory,
-                                                           const duckdb_v2_str *in_value,
-                                                           duckdb_v2_value_handle *out_value,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_bignum(duckdb_v2_factory_handle factory, const char *in_value,
+                                                           idx_t in_value_length, duckdb_v2_value_handle *out_value,
                                                            duckdb_v2_error_info_handle *err);
 #endif
 
@@ -16244,14 +16412,16 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_array(duckdb_v2_factory_hand
  *
  * @param factory The factory to create with.
  * @param names An array of field_count field names. Pass NULL when field_count is 0.
+ * @param names_lengths Byte lengths of the entries in `names`; element i is the length of `names[i]`. May be NULL only
+ * when `names` is NULL.
  * @param children An array of field_count field values. Borrowed (copied in). Pass NULL when field_count is 0.
  * @param field_count The number of fields.
  * @param out_value Receives the new composite value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_struct(duckdb_v2_factory_handle factory,
-                                                           const duckdb_v2_identifier_t *names,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_struct(duckdb_v2_factory_handle factory, const char **names,
+                                                           const idx_t *names_lengths,
                                                            const duckdb_v2_value_handle *children, idx_t field_count,
                                                            duckdb_v2_value_handle *out_value,
                                                            duckdb_v2_error_info_handle *err);
@@ -16686,6 +16856,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_arrow_importer_destroy(duckdb_v2_arrow_im
  * @param types An array of `count` column types. May be NULL only when `count` is 0.
  * @param names An array of `count` column names, parallel to `types`. Each name must be valid UTF-8. May be NULL only
  * when `count` is 0.
+ * @param names_lengths Byte lengths of the entries in `names`; element i is the length of `names[i]`. May be NULL only
+ * when `names` is NULL.
  * @param count The number of columns, being the length of both `types` and `names`.
  * @param batch_size Maximum rows per produced array, or 0 for no maximum.
  * @param out_exporter On success, receives the new exporter. Owned by the caller; destroy via
@@ -16696,7 +16868,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_arrow_importer_destroy(duckdb_v2_arrow_im
  */
 DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_create(duckdb_v2_context_handle context,
                                                              const duckdb_v2_logical_type_handle *types,
-                                                             const duckdb_v2_str *names, idx_t count, idx_t batch_size,
+                                                             const char **names, const idx_t *names_lengths,
+                                                             idx_t count, idx_t batch_size,
                                                              duckdb_v2_arrow_exporter_handle *out_exporter,
                                                              duckdb_v2_error_info_handle *err);
 #endif
@@ -16815,6 +16988,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_destroy(duckdb_v2_arrow_ex
  * @param conn The connection to run the statement on.
  * @param statement The statement to execute. Not consumed.
  * @param parameter_names Optional. As in `duckdb_v2_statement_execute()`.
+ * @param parameter_names_lengths Byte lengths of the entries in `parameter_names`; element i is the length of
+ * `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
  * @param parameter_values Optional. As in `duckdb_v2_statement_execute()`.
  * @param parameter_count The number of parameters. 0 for none.
  * @param batch_size Maximum rows per array. Arrays can be shorter. 0 means 131072.
@@ -16823,13 +16998,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_destroy(duckdb_v2_arrow_ex
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(duckdb_v2_connection_handle conn,
-                                                               duckdb_v2_sql_statement_handle statement,
-                                                               const duckdb_v2_identifier_t *parameter_names,
-                                                               const duckdb_v2_value_handle *parameter_values,
-                                                               idx_t parameter_count, idx_t batch_size,
-                                                               duckdb_v2_arrow_result_handle *out_result,
-                                                               duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(
+    duckdb_v2_connection_handle conn, duckdb_v2_sql_statement_handle statement, const char **parameter_names,
+    const idx_t *parameter_names_lengths, const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
+    idx_t batch_size, duckdb_v2_arrow_result_handle *out_result, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
@@ -16843,6 +17015,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(duckdb_v2_connect
  *
  * @param prepared The prepared statement to execute. Not consumed.
  * @param parameter_names Optional. As in `duckdb_v2_prepared_statement_execute()`.
+ * @param parameter_names_lengths Byte lengths of the entries in `parameter_names`; element i is the length of
+ * `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
  * @param parameter_values Optional. As in `duckdb_v2_prepared_statement_execute()`.
  * @param parameter_count The number of parameters. 0 for none.
  * @param batch_size Maximum rows per array. Arrays can be shorter. 0 means 131072.
@@ -16851,12 +17025,10 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(duckdb_v2_connect
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_execute_arrow(duckdb_v2_prepared_statement_handle prepared,
-                                                                        const duckdb_v2_identifier_t *parameter_names,
-                                                                        const duckdb_v2_value_handle *parameter_values,
-                                                                        idx_t parameter_count, idx_t batch_size,
-                                                                        duckdb_v2_arrow_result_handle *out_result,
-                                                                        duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_prepared_statement_execute_arrow(
+    duckdb_v2_prepared_statement_handle prepared, const char **parameter_names, const idx_t *parameter_names_lengths,
+    const duckdb_v2_value_handle *parameter_values, idx_t parameter_count, idx_t batch_size,
+    duckdb_v2_arrow_result_handle *out_result, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
