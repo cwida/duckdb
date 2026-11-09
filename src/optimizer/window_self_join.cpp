@@ -103,6 +103,7 @@ static unique_ptr<Expression> TranslateAggregate(ClientContext &client, const Bo
 	const auto aggr_ordered = (agg_func.GetOrderDependent() == AggregateOrderDependent::ORDER_DEPENDENT);
 	auto result = make_uniq<BoundAggregateExpression>(std::move(agg_func), std::move(children), std::move(filter),
 	                                                  std::move(bind_info), aggr_type);
+	result->SetReturnType(w_expr.GetReturnType());
 
 	if (!aggr_ordered) {
 		//	ORDER BY is a NOP, so drop it.
