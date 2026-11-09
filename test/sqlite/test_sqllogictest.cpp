@@ -5,6 +5,7 @@
 #include "sqllogic_test_runner.hpp"
 #include "test_helpers.hpp"
 #include "test_config.hpp"
+#include "test_reporter.hpp"
 
 #include <functional>
 #include <iostream>
@@ -176,7 +177,7 @@ static void RunSQLLogicTest(const string &name, optional_ptr<std::istream> input
 			// here first so a cleanup failure still yields one — preserving the one-begin/one-end
 			// invariant that --emit-test-events consumers rely on.
 			runner.EmitEnd(name, "error", cleanup_failure);
-			FAIL(cleanup_failure);
+			TEST_FAIL_LINE(name, 0, cleanup_failure);
 		}
 	}
 
@@ -197,7 +198,7 @@ static void RunSQLLogicTest(const string &name, optional_ptr<std::istream> input
 		runner.EmitEnd(name, "ok", "");
 	}
 	if (error.HasError()) {
-		FAIL(error.Message());
+		TEST_FAIL_LINE(name, 0, error.Message());
 	}
 }
 

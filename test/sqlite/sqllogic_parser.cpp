@@ -191,7 +191,7 @@ string SQLLogicParser::ExtractExpectedError(ExpectedResult expected_result, bool
 void SQLLogicParser::FailRecursive(const string &msg, vector<ExceptionFormatValue> &values) {
 	auto error_message =
 	    file_name + ":" + to_string(current_line + 1) + ": " + ExceptionFormatValue::Format(msg, values);
-	TEST_FAIL(error_message);
+	TEST_FAIL_LINE(file_name, current_line + 1, error_message);
 }
 
 SQLLogicToken SQLLogicParser::Tokenize() {
