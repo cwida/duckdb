@@ -223,24 +223,6 @@ optional_ptr<CTEBinding> Binder::GetCTEBinding(const BindingAlias &name) {
 	return result;
 }
 
-bool Binder::IsInRecursiveCTEAnchor(const BindingAlias &name) {
-	reference<Binder> current_binder(*this);
-	while (true) {
-		auto &current = current_binder.get();
-		if (!current.recursive_cte_anchor.empty() && BindingAlias(current.recursive_cte_anchor).Matches(name)) {
-			return true;
-		}
-		if (current.bind_context.GetCTEBinding(name)) {
-			// reached the definition of the CTE without passing through its non-recursive term
-			return false;
-		}
-		if (!current.parent || current.binder_type != BinderType::REGULAR_BINDER) {
-			return false;
-		}
-		current_binder = *current.parent;
-	}
-}
-
 void Binder::AddBoundView(ViewCatalogEntry &view) {
 	// check if the view is already bound
 	auto current = this;
