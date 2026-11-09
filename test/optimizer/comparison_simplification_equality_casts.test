@@ -1,0 +1,136 @@
+# name: test/optimizer/comparison_simplification_equality_casts.test
+# description: (In)equality comparisons of casts that are invertible for equality are applied to the source column
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (5), (10), (-3), (NULL)) v(a);
+
+statement ok
+CREATE TABLE f AS SELECT * FROM (VALUES (0.5::FLOAT), (0.1::FLOAT), ('-0.0'::FLOAT), ('nan'::FLOAT), (NULL::FLOAT)) v(f);
+
+statement ok
+CREATE TABLE s AS SELECT 'x' AS s;
+
+# integer -> VARCHAR: the cast is removed for equality comparisons, so the filter can be pushed into the scan
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::VARCHAR = '5';
+----
+analyzed_plan	<REGEX>:.*Filters: a = 5.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE '5' = a::VARCHAR;
+----
+analyzed_plan	<REGEX>:.*Filters: a = 5.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::VARCHAR IN ('5', '10');
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# but not for range comparisons, as the cast does not preserve the order
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::VARCHAR < '3';
+----
+analyzed_plan	<REGEX>:.*CAST.*
+
+query IIIIIIIII
+SELECT
+	count(*) FILTER (WHERE a::VARCHAR = '5'),
+	count(*) FILTER (WHERE '-3' = a::VARCHAR),
+	count(*) FILTER (WHERE a::VARCHAR = '05'),
+	count(*) FILTER (WHERE a::VARCHAR != 'abc'),
+	count(*) FILTER (WHERE a::VARCHAR IS DISTINCT FROM 'abc'),
+	count(*) FILTER (WHERE a::VARCHAR IS NOT DISTINCT FROM '10'),
+	count(*) FILTER (WHERE a::VARCHAR IS NOT DISTINCT FROM 'abc'),
+	count(*) FILTER (WHERE a::VARCHAR IN ('5', '05', 'abc', '10')),
+	count(*) FILTER (WHERE a::VARCHAR NOT IN ('5', 'abc'))
+FROM t;
+----
+1	1	0	5	6	1	0	2	4
+
+# a comparison that can never match is still NULL for NULL rows
+query IIIII
+SELECT a, a::VARCHAR = 'abc', a::VARCHAR != 'abc', a::VARCHAR IN ('05', 'abc'), a::VARCHAR IN ('abc', NULL)
+FROM t WHERE a = 5 OR a IS NULL ORDER BY a NULLS LAST;
+----
+5	false	true	false	NULL
+NULL	NULL	NULL	NULL	NULL
+
+# the cast child does not have to be a column reference
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE (a + 1)::VARCHAR IN ('6', '11');
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query II
+SELECT
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IN ('6', '11', 'abc')),
+	count(*) FILTER (WHERE (a + 1)::VARCHAR IS DISTINCT FROM 'abc')
+FROM t;
+----
+2	6
+
+# folding a comparison that can never match must not drop a child that throws
+statement error
+SELECT s::INTEGER::VARCHAR IS DISTINCT FROM 'abc' FROM s;
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT s::INTEGER::VARCHAR IN ('abc', '06') FROM s;
+----
+<REGEX>:Conversion Error.*
+
+# a narrowing cast is not invertible, so the cast is kept
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::TINYINT = 5;
+----
+analyzed_plan	<REGEX>:.*CAST.*
+
+# integer widening: a constant outside the range of the column can never match
+query III
+SELECT
+	count(*) FILTER (WHERE a = 5000000000),
+	count(*) FILTER (WHERE a != 5000000000),
+	count(*) FILTER (WHERE a IN (5, 5000000000))
+FROM t;
+----
+0	5	1
+
+# lossless integer -> floating point: only integral constants can match
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::DOUBLE IN (2.0::DOUBLE, 2.5::DOUBLE);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query II
+SELECT
+	count(*) FILTER (WHERE a::DOUBLE = 2.5::DOUBLE),
+	count(*) FILTER (WHERE a::DOUBLE IN (2.0::DOUBLE, 2.5::DOUBLE, 5.0::DOUBLE))
+FROM t;
+----
+0	2
+
+# the constant -0.0 matches the integer 0
+query I
+SELECT count(*) FILTER (WHERE (a - a)::DOUBLE = '-0.0'::DOUBLE) FROM t;
+----
+5
+
+# FLOAT -> DOUBLE: only constants that are exactly a FLOAT can match
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM f WHERE f::DOUBLE = 0.5::DOUBLE;
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query IIIIII
+SELECT
+	count(*) FILTER (WHERE f::DOUBLE = 0.1::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 0.1::FLOAT::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 0.0::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 'nan'::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE = 1e300::DOUBLE),
+	count(*) FILTER (WHERE f::DOUBLE IN (0.1::DOUBLE, 0.5::DOUBLE, 'nan'::DOUBLE))
+FROM f;
+----
+0	1	1	1	0	2
