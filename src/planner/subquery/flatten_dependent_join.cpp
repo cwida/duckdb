@@ -1901,19 +1901,28 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::CreateWaveDomainDistinct(Tabl
 	auto wave_ref = make_uniq<LogicalCTERef>(ref_index, cte_index, wave_types, wave_names);
 	wave_ref->correlated_columns = correlated_columns.size();
 	const idx_t base_count = wave_types.size() - correlated_columns.size();
+	auto projection_index = binder.GenerateTableIndex();
 	vector<unique_ptr<Expression>> domain_exprs;
-	vector<unique_ptr<Expression>> distinct_targets;
+	vector<unique_ptr<Expression>> groups;
 	for (idx_t i = 0; i < correlated_columns.size(); i++) {
 		domain_exprs.push_back(make_uniq<BoundColumnRefExpression>(
 		    correlated_columns[i].type, ColumnBinding(ref_index, ProjectionIndex(base_count + i))));
-		distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(
-		    correlated_columns[i].type, ColumnBinding(output_index, ProjectionIndex(i))));
+		groups.push_back(make_uniq<BoundColumnRefExpression>(correlated_columns[i].type,
+		                                                     ColumnBinding(projection_index, ProjectionIndex(i))));
 	}
-	auto projection = make_uniq<LogicalProjection>(output_index, std::move(domain_exprs));
+	auto projection = make_uniq<LogicalProjection>(projection_index, std::move(domain_exprs));
 	projection->children.push_back(std::move(wave_ref));
-	auto distinct = make_uniq<LogicalDistinct>(std::move(distinct_targets), DistinctType::DISTINCT);
-	distinct->children.push_back(std::move(projection));
-	return std::move(distinct);
+	// deduplicate as an aggregate grouping on every domain column, the canonical DISTINCT plan
+	auto aggregate =
+	    make_uniq<LogicalAggregate>(output_index, binder.GenerateTableIndex(), vector<unique_ptr<Expression>>());
+	GroupingSet all_groups;
+	for (idx_t i = 0; i < groups.size(); i++) {
+		all_groups.insert(ProjectionIndex(i));
+	}
+	aggregate->grouping_sets.push_back(std::move(all_groups));
+	aggregate->groups = std::move(groups);
+	aggregate->children.push_back(std::move(projection));
+	return std::move(aggregate);
 }
 
 void FlattenDependentJoins::RestrictBranchFrontierScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
