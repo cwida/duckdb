@@ -15,7 +15,7 @@ USE db
 
 # 4 row groups: [0-2047], [2048-4095], [4096-6143], [6144-8191], j = i * 2
 statement ok
-CREATE TABLE t AS (SELECT * FROM range(8192) _(i), LATERAL (SELECT (i * 2) AS j));
+CREATE TABLE t AS (SELECT * FROM range(8192) _(i), LATERAL (SELECT (i * 2) AS j) ORDER BY i);
 
 # Reopen to clear version info
 statement ok
