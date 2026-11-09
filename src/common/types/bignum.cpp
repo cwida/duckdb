@@ -614,7 +614,7 @@ static void BignumCastWriteDecimal(char *end, const unsafe_vector<uint64_t> &dig
 			}
 		}
 		char *ptr = NumericHelper::FormatUnsigned<uint64_t>(digits.back(), end);
-		D_ASSERT(ptr == start + (is_negative ? 1 : 0));
+		D_ASSERT(ptr == start);
 		(void)ptr;
 	}
 	if (is_negative) {
