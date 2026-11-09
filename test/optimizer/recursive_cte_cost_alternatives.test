@@ -92,7 +92,7 @@ SELECT * FROM threshold_walk_result;
 query II
 EXPLAIN SELECT * FROM threshold_walk_result;
 ----
-physical_plan	<REGEX>:(?s).*memory\.main\.threshold_build_(a[^\n]*memory\.main\.threshold_build_b|b[^\n]*memory\.main\.threshold_build_a).*
+physical_plan	<REGEX>:(?s).*\.main\.threshold_build_(a[^\n]*\.main\.threshold_build_b|b[^\n]*\.main\.threshold_build_a).*
 
 statement ok
 SET prefer_range_joins=true;
@@ -105,7 +105,7 @@ SELECT * FROM dependency_walk_result;
 query II
 EXPLAIN SELECT * FROM dependency_walk_result;
 ----
-physical_plan	<REGEX>:(?s).*Table: memory\.main\.dependency_build_a.*id = y.*Table: memory\.main\.dependency_build_b.*
+physical_plan	<REGEX>:(?s).*\.main\.dependency_build_a.*id = y.*\.main\.dependency_build_b.*
 
 endloop
 

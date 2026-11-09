@@ -42,7 +42,7 @@ PRAGMA explain_output='physical_only';
 query II
 EXPLAIN SELECT * FROM walk_result;
 ----
-physical_plan	<REGEX>:(?s).*memory\.main\.build_(a[^\n]*memory\.main\.build_b|b[^\n]*memory\.main\.build_a).*
+physical_plan	<REGEX>:(?s).*\.main\.build_(a[^\n]*\.main\.build_b|b[^\n]*\.main\.build_a).*
 
 statement ok
 SET approximate_join_order_threshold=0;
@@ -55,4 +55,4 @@ SELECT * FROM walk_result;
 query II
 EXPLAIN SELECT * FROM walk_result;
 ----
-physical_plan	<REGEX>:(?s).*memory\.main\.build_(a[^\n]*memory\.main\.build_b|b[^\n]*memory\.main\.build_a).*
+physical_plan	<REGEX>:(?s).*\.main\.build_(a[^\n]*\.main\.build_b|b[^\n]*\.main\.build_a).*
