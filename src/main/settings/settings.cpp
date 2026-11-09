@@ -9,8 +9,8 @@ bool Settings::TryGetSettingInternal(const ClientContext &context, idx_t setting
 	return context.TryGetCurrentUserSetting(setting_index, result);
 }
 
-bool Settings::TryGetSettingInternal(const Context &services, idx_t setting_index, Value &result) {
-	return services.TryGetCurrentUserSetting(setting_index, result);
+bool Settings::TryGetSettingInternal(const Context &context, idx_t setting_index, Value &result) {
+	return context.TryGetCurrentUserSetting(setting_index, result);
 }
 
 bool Settings::TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result) {

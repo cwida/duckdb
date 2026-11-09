@@ -1,5 +1,6 @@
 #include "capi_tester.hpp"
 #include "duckdb.h"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/function/table/system_functions.hpp"
 
 #include <thread>
@@ -590,6 +591,15 @@ TEST_CASE("Test appender statements in C API", "[capi]") {
 	REQUIRE(hugeint.upper == 0);
 
 	hugeint = duckdb_double_to_hugeint(NAN);
+	REQUIRE(hugeint.lower == 0);
+	REQUIRE(hugeint.upper == 0);
+
+	// -2**127 is the HUGEINT minimum, and 2**127 is one above the maximum
+	hugeint = duckdb_double_to_hugeint(-1.7014118346046923e38);
+	REQUIRE(hugeint.lower == 0);
+	REQUIRE(hugeint.upper == NumericLimits<int64_t>::Minimum());
+
+	hugeint = duckdb_double_to_hugeint(1.7014118346046923e38);
 	REQUIRE(hugeint.lower == 0);
 	REQUIRE(hugeint.upper == 0);
 

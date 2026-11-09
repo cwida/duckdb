@@ -15,6 +15,7 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
+#include "duckdb/planner/logical_operator_repeatability.hpp"
 
 #include <algorithm>
 
@@ -724,7 +725,7 @@ private:
 		return String(char_ptr_cast(stream.GetData() + offset), NumericCast<uint32_t>(length));
 	}
 
-	static bool OperatorIsSupported(const LogicalOperator &op) {
+	static bool OperatorIsSupported(LogicalOperator &op) {
 		if (!op.SupportSerialization()) {
 			return false;
 		}
@@ -752,6 +753,11 @@ private:
 			return true;
 		case LogicalOperatorType::LOGICAL_GET: {
 			auto &get = op.Cast<LogicalGet>();
+			// A function's arguments do not describe hidden state or volatile work performed by its scan.
+			// Only share scans that explicitly promise repeatable results, or scan an ordinary table.
+			if (ClassifyLogicalOperatorRepeatability(get) != LogicalOperatorRepeatability::REPEATABLE) {
+				return false;
+			}
 			if (get.bind_data && !get.function.HasSerializationCallbacks() && get.parameters.empty()) {
 				// Without serialization callbacks, the serialized form carries only the call parameters
 				// (see LogicalGet::Serialize). A scan without positional parameters - e.g., one created through

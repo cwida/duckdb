@@ -7,7 +7,7 @@ index 6454d1c..4441bdb 100644
        transaction_state(GlueTransactionState::TRANSACTION_NOT_YET_STARTED) {
  	if (ConnectionScopedMetadataCache(context)) {
 -		auto state = context.registered_state->GetOrCreate<GlueMetadataCacheState>("glue_metadata_cache");
-+		auto state = context.Services().GetRegisteredState().GetOrCreate<GlueMetadataCacheState>("glue_metadata_cache");
++		auto state = context.GetContext().GetRegisteredState().GetOrCreate<GlueMetadataCacheState>("glue_metadata_cache");
  		cache = state->GetCache(glue_catalog.GetName().GetIdentifierName(), glue_catalog.GetAttached().oid);
  	} else {
  		cache = make_shared_ptr<GlueTransactionCache>();
@@ -16,7 +16,7 @@ index 6454d1c..4441bdb 100644
  	// connection-level one this write would otherwise leave stale: clear those too (all of them, matching
  	// the rollback hook — a write through any alias of the same Glue catalog must not be hidden by another's cache)
 -	auto state = context.registered_state->Get<GlueMetadataCacheState>("glue_metadata_cache");
-+	auto state = context.Services().GetRegisteredState().Get<GlueMetadataCacheState>("glue_metadata_cache");
++	auto state = context.GetContext().GetRegisteredState().Get<GlueMetadataCacheState>("glue_metadata_cache");
  	if (state) {
  		state->ClearAll();
  	}
@@ -24,7 +24,7 @@ index 6454d1c..4441bdb 100644
  
  void GlueTransactionCache::OnDetach(ClientContext &context, Catalog &catalog) {
 -	auto state = context.registered_state->Get<GlueMetadataCacheState>("glue_metadata_cache");
-+	auto state = context.Services().GetRegisteredState().Get<GlueMetadataCacheState>("glue_metadata_cache");
++	auto state = context.GetContext().GetRegisteredState().Get<GlueMetadataCacheState>("glue_metadata_cache");
  	if (state) {
  		state->EraseCache(catalog.GetName().GetIdentifierName(), catalog.GetAttached().oid);
  	}
@@ -37,7 +37,7 @@ index d406117..b3d44f4 100644
  
  shared_ptr<HiveQueryCache> HiveQueryCache::Get(ClientContext &context) {
 -	return context.registered_state->GetOrCreate<HiveQueryCache>(HIVE_QUERY_CACHE);
-+	return context.Services().GetRegisteredState().GetOrCreate<HiveQueryCache>(HIVE_QUERY_CACHE);
++	return context.GetContext().GetRegisteredState().GetOrCreate<HiveQueryCache>(HIVE_QUERY_CACHE);
  }
  
  string HiveQueryCache::TableKey(const string &catalog, const string &database, const string &table) {

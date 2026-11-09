@@ -37,7 +37,7 @@ string MergeQueryNode::ToString() const {
 			if (c > 0) {
 				result += ", ";
 			}
-			result += using_columns[c].GetIdentifierName();
+			result += SQLIdentifier(using_columns[c]);
 		}
 		result += ")";
 	}

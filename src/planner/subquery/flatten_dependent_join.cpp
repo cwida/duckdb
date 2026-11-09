@@ -150,6 +150,29 @@ bool FlattenDependentJoins::RequiresDomain(LogicalOperator &op) const {
 	return access.correlated || (!perform_delim && access.volatile_expression);
 }
 
+bool FlattenDependentJoins::JoinOperandRequiresDomain(LogicalOperator &op, idx_t side) const {
+	// condition operands keep their computation at the join for evaluation-timing reasons,
+	// so a volatile operand is invisible to RequiresDomain on the owning child subtree; it
+	// still pins that child to the domain under the same rule as a volatile child expression
+	if (perform_delim) {
+		return false;
+	}
+	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN && op.type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		return false;
+	}
+	auto &join = op.Cast<LogicalComparisonJoin>();
+	for (auto &cond : join.conditions) {
+		if (!cond.IsComparison()) {
+			continue;
+		}
+		auto &operand = side == 0 ? cond.GetLHS() : cond.GetRHS();
+		if (operand.IsVolatile()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 optional_ptr<const ColumnBinding> FlattenDependentJoins::GetCorrelatedBase(const ColumnBinding &binding) const {
 	auto entry = correlated_aliases.find(binding);
 	if (entry == correlated_aliases.end()) {
@@ -644,11 +667,44 @@ FlattenDependentJoins::AttachDelimToIndependentJoinLeft(unique_ptr<LogicalOperat
 	return result;
 }
 
+void FlattenDependentJoins::MaterializeCorrelatedAggregateRewrites(LogicalDependentJoin &op,
+                                                                   UnnestingState &outer_state) {
+	bool requires_materialization = false;
+	for (auto &col : op.correlated_columns) {
+		if (replacement_map.find(col.binding) != replacement_map.end()) {
+			requires_materialization = true;
+			break;
+		}
+	}
+	if (!requires_materialization) {
+		return;
+	}
+	// A correlation key only obtains its empty-group value through the deferred aggregate rewrite, but delim join
+	// keys must stay plain columns. Materialize the left output in a projection so the key references a column
+	// whose projection expression receives the rewrite instead.
+	auto old_left_bindings = op.children[0]->GetColumnBindings();
+	auto projection_index = binder.GenerateTableIndex();
+	op.children[0] = LogicalProjection::CreateIdentity(projection_index, std::move(op.children[0]));
+
+	BindingReplacementGraph replacements;
+	for (idx_t i = 0; i < old_left_bindings.size(); i++) {
+		replacements.Add(old_left_bindings[i], ColumnBinding(projection_index, ProjectionIndex(i)));
+	}
+	// The projection preserves the left layout, so positional projection maps remain valid. Only the join's own
+	// bindings move: the projection input keeps the original bindings so the deferred rewrite still finds them.
+	ColumnBindingRewrite::ApplyToOperatorBindings(op, replacements);
+	for (auto &binding : outer_state.bindings) {
+		binding = replacements.Resolve(binding);
+	}
+	outer_state.replacement_graph.Merge(replacements);
+}
+
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::FinalizeDependentJoin(unique_ptr<LogicalOperator> &plan,
                                                                                    UnnestingState outer_state,
                                                                                    const UnnestingState &right_state,
                                                                                    DependentJoinOutput output) {
 	auto &op = plan->Cast<LogicalDependentJoin>();
+	MaterializeCorrelatedAggregateRewrites(op, outer_state);
 	RewriteCorrelatedBindings(op, outer_state.bindings);
 
 	vector<unique_ptr<Expression>> duplicate_eliminated_columns;
@@ -1162,8 +1218,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
                                                                           vector<ColumnBinding> state) {
 	auto join_type = plan->Cast<LogicalJoin>().join_type;
 	D_ASSERT(plan->children.size() == 2);
-	bool left_requires_domain = RequiresDomain(*plan->children[0]);
-	bool right_requires_domain = RequiresDomain(*plan->children[1]);
+	bool left_requires_domain = RequiresDomain(*plan->children[0]) || JoinOperandRequiresDomain(*plan, 0);
+	bool right_requires_domain = RequiresDomain(*plan->children[1]) || JoinOperandRequiresDomain(*plan, 1);
 
 	// An ASOF join selects at most one match per left row from its entire right input. If the right input
 	// varies per domain, the left input must carry the domain too, so the selection partitions per domain.

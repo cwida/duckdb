@@ -178,6 +178,10 @@ static unique_ptr<FunctionData> PragmaTableInfoBind(ClientContext &context, Tabl
 	qname = Binder::BindTableName(retriever, qname);
 	auto &entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, qname);
 	Binder::RegisterEntryRead(input.binder, context, entry);
+	if (entry.type != CatalogType::TABLE_ENTRY || !entry.Cast<TableCatalogEntry>().IsDuckTable()) {
+		// views are rebound during execution, and non-native tables are not fixed by the catalog snapshot
+		input.table_function.stability = FunctionStability::VOLATILE;
+	}
 	return make_uniq<PragmaTableFunctionData>(entry, IS_PRAGMA_TABLE_INFO);
 }
 
@@ -292,12 +296,13 @@ static void PragmaTableInfoFunction(ClientContext &context, TableFunctionInput &
 }
 
 void PragmaTableInfo::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("pragma_table_info",
-	                              FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
-	                              PragmaTableInfoFunction, PragmaTableInfoBind<true>, PragmaTableInfoInit));
-	set.AddFunction(TableFunction("pragma_show",
-	                              FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
-	                              PragmaTableInfoFunction, PragmaTableInfoBind<false>, PragmaTableInfoInit));
+	TableFunction table_info("pragma_table_info",
+	                         FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
+	                         PragmaTableInfoFunction, PragmaTableInfoBind<true>, PragmaTableInfoInit);
+	set.AddFunction(table_info);
+	TableFunction show("pragma_show", FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
+	                   PragmaTableInfoFunction, PragmaTableInfoBind<false>, PragmaTableInfoInit);
+	set.AddFunction(show);
 }
 
 } // namespace duckdb
