@@ -391,6 +391,7 @@ public:
 	DUCKDB_API static bool IsRemoteFile(const string &path, string &extension);
 
 	DUCKDB_API virtual void SetDisabledFileSystems(const vector<string> &names);
+	DUCKDB_API virtual vector<string> GetDisabledFileSystems();
 	DUCKDB_API virtual bool SubSystemIsDisabled(const string &name);
 	//! Check if the filesystem that would handle this path is disabled
 	DUCKDB_API virtual bool IsDisabledForPath(const string &path);

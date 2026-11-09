@@ -70,6 +70,8 @@ private:
 	void InvalidateAccessCache();
 	//! Checks whether a subtree must be evaluated in this flattener's active domain.
 	bool RequiresDomain(LogicalOperator &op) const;
+	//! Checks whether a join's condition operands owned by the given side pin that child to the domain.
+	bool JoinOperandRequiresDomain(LogicalOperator &op, idx_t side) const;
 	SubtreeAccess GetSubtreeAccess(LogicalOperator &op) const;
 	idx_t GetDelimKeyIndex(idx_t index) const;
 
