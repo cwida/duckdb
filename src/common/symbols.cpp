@@ -155,16 +155,24 @@ template class weak_ptr<Pipeline>;
 
 } // namespace duckdb
 
+#if defined(_MSVC_VER)
+#define VECTOR_INSTANTIATION_NOEXCEPT noexcept
+#else
+#define VECTOR_INSTANTIATION_NOEXCEPT
+#endif
+
 #define INSTANTIATE_VECTOR(VECTOR_DEFINITION)                                                                          \
-	template std::VECTOR_DEFINITION::size_type std::VECTOR_DEFINITION::size() const;                                   \
+	template std::VECTOR_DEFINITION::size_type std::VECTOR_DEFINITION::size() const VECTOR_INSTANTIATION_NOEXCEPT;     \
 	template std::VECTOR_DEFINITION::const_reference std::VECTOR_DEFINITION::operator[](                               \
-	    std::VECTOR_DEFINITION::size_type n) const;                                                                    \
-	template std::VECTOR_DEFINITION::reference std::VECTOR_DEFINITION::operator[](                                     \
-	    std::VECTOR_DEFINITION::size_type n);                                                                          \
-	template std::VECTOR_DEFINITION::const_reference std::VECTOR_DEFINITION::back() const;                             \
-	template std::VECTOR_DEFINITION::reference std::VECTOR_DEFINITION::back();                                         \
-	template std::VECTOR_DEFINITION::const_reference std::VECTOR_DEFINITION::front() const;                            \
-	template std::VECTOR_DEFINITION::reference std::VECTOR_DEFINITION::front();
+	    std::VECTOR_DEFINITION::size_type n) const VECTOR_INSTANTIATION_NOEXCEPT;                                      \
+	template std::VECTOR_DEFINITION::reference std::VECTOR_DEFINITION::operator[](std::VECTOR_DEFINITION::size_type n) \
+	    VECTOR_INSTANTIATION_NOEXCEPT;                                                                                 \
+	template std::VECTOR_DEFINITION::const_reference std::VECTOR_DEFINITION::back()                                    \
+	    const VECTOR_INSTANTIATION_NOEXCEPT;                                                                           \
+	template std::VECTOR_DEFINITION::reference std::VECTOR_DEFINITION::back() VECTOR_INSTANTIATION_NOEXCEPT;           \
+	template std::VECTOR_DEFINITION::const_reference std::VECTOR_DEFINITION::front()                                   \
+	    const VECTOR_INSTANTIATION_NOEXCEPT;                                                                           \
+	template std::VECTOR_DEFINITION::reference std::VECTOR_DEFINITION::front() VECTOR_INSTANTIATION_NOEXCEPT;
 
 INSTANTIATE_VECTOR(vector<ColumnDefinition>)
 INSTANTIATE_VECTOR(vector<JoinCondition>)
