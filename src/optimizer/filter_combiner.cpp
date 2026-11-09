@@ -1259,7 +1259,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
 			return FilterResult::UNSUPPORTED;
 		}
-		result = result.DefaultCastAs(LogicalType::BOOLEAN);
+		result = result.CastAs(context, LogicalType::BOOLEAN);
 		// check if the filter passes
 		if (result.IsNull() || !BooleanValue::Get(result)) {
 			// the filter does not pass the scalar test, create an empty result

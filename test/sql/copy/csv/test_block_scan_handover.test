@@ -1,0 +1,183 @@
+# name: test/sql/copy/csv/test_block_scan_handover.test
+# description: Block scanner and state machine fallback on unquoted rows: canonical rows stay in the blocks, spaces, lone newlines, empty lines, wrong widths, block and buffer edges hand over
+# group: [csv]
+
+statement ok
+COPY (SELECT i, repeat('x', i % 151) AS s, i * 2 AS d FROM range(6000) t(i)) TO '{TEST_DIR}/blocks.csv' (FORMAT CSV, HEADER false);
+
+statement ok
+COPY (SELECT i, repeat('x', i % 151) AS s, i * 2 AS d FROM range(6000) t(i)) TO '{TEST_DIR}/blocks_crlf.csv' (FORMAT CSV, HEADER false, NEW_LINE '\r\n');
+
+statement ok
+COPY (SELECT unnest(['1,a"b,3','2,"quoted",4','3, spaced,5','4,  two,6','5, "q",7','6,  "nq",8','7,,9','8, ,10','9,"",11','10,x""y,12']) AS line) TO '{TEST_DIR}/handover.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',' || repeat('q', i % 61) AS line FROM range(200) t(i) UNION ALL SELECT 500 + unnest(range(5)) AS o, unnest(['1,a', '', '2,b', '3,c' || chr(13), '4,d']) AS line UNION ALL SELECT 1000 + i AS o, 'p' || (1000 + i) || ',' || repeat('q', i % 61) AS line FROM range(200) t(i)) ORDER BY o) TO '{TEST_DIR}/irregular.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',' || repeat('q', i % 61) AS line FROM range(200) t(i) UNION ALL SELECT 500 + unnest(range(5)) AS o, unnest(['1,a', '2,b' || chr(10) || '3,c', '4,d', '5,e' || chr(13) || '6,f', '7,g']) AS line UNION ALL SELECT 1000 + i AS o, 'p' || (1000 + i) || ',' || repeat('q', i % 61) AS line FROM range(200) t(i)) ORDER BY o) TO '{TEST_DIR}/irregular_crlf.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', NEW_LINE '\r\n');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',' || repeat('q', i % 61) || ',z' AS line FROM range(300) t(i) UNION ALL SELECT 150 + unnest(range(4)) * 0, unnest(['1,a,x', '2,b', '3,c,y,z', '4,d,w'])) ORDER BY o, line) TO '{TEST_DIR}/widths.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT unnest(['1,' || repeat('y', 300), '2,b']) AS line) TO '{TEST_DIR}/longline.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+# rows of every length in blocks.csv, buffer_size None
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'})
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks.csv, buffer_size 4096
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'}, buffer_size=4096)
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks.csv, buffer_size 100000
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'}, buffer_size=100000)
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks.csv, buffer_size 100001
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'}, buffer_size=100001)
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks_crlf.csv, buffer_size None
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'})
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks_crlf.csv, buffer_size 4096
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'}, buffer_size=4096)
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks_crlf.csv, buffer_size 100000
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'}, buffer_size=100000)
+----
+6000	17997000	447780	35994000	0	5999
+
+# rows of every length in blocks_crlf.csv, buffer_size 100001
+query IIIIII
+SELECT count(*), sum(i), sum(length(s)), sum(d), min(i), max(i) FROM read_csv('{TEST_DIR}/blocks_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'}, buffer_size=100001)
+----
+6000	17997000	447780	35994000	0	5999
+
+# quotes and spaces inside rows, strict_mode=true
+query III
+SELECT * FROM read_csv('{TEST_DIR}/handover.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) ORDER BY a::INT
+----
+1	a"b	3
+2	quoted	4
+3	 spaced	5
+4	  two	6
+5	q	7
+6	  "nq"	8
+7	NULL	9
+8	 	10
+9	NULL	11
+10	x""y	12
+
+# quotes and spaces inside rows, strict_mode=false
+query III
+SELECT * FROM read_csv('{TEST_DIR}/handover.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) ORDER BY a::INT
+----
+1	a"b	3
+2	quoted	4
+3	 spaced	5
+4	  two	6
+5	q	7
+6	  "nq"	8
+7	NULL	9
+8	 	10
+9	NULL	11
+10	x""y	12
+
+# empty line and lone carriage return in an LF file, strict_mode=true
+statement error
+SELECT a, replace(b, chr(13), '<CR>') FROM read_csv('{TEST_DIR}/irregular.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+The CSV Parser state machine reached an invalid state.
+
+# empty line and lone carriage return in an LF file, strict_mode=false
+query II
+SELECT a, replace(b, chr(13), '<CR>') FROM read_csv('{TEST_DIR}/irregular.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+1	a
+2	b
+3	c
+4	d
+
+# lone line feed and lone carriage return in a CRLF file, strict_mode=true
+statement error
+SELECT replace(a, chr(13), '<CR>'), replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>') FROM read_csv('{TEST_DIR}/irregular_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+The CSV Parser state machine reached an invalid state.
+
+# lone line feed and lone carriage return in a CRLF file, strict_mode=false
+query II
+SELECT replace(a, chr(13), '<CR>'), replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>') FROM read_csv('{TEST_DIR}/irregular_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+1	a
+2	b
+3	c
+4	d
+5	e
+7	g
+
+# too few and too many columns with null_padding
+query III
+SELECT * FROM read_csv('{TEST_DIR}/widths.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, null_padding=true, ignore_errors=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+1	a	x
+2	b	NULL
+4	d	w
+
+# too few and too many columns with ignore_errors
+query III
+SELECT * FROM read_csv('{TEST_DIR}/widths.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+1	a	x
+4	d	w
+
+# too few columns is an error
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/widths.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 152
+
+# rejects table rows
+statement ok
+CREATE TEMP TABLE w AS SELECT * FROM read_csv('{TEST_DIR}/widths.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, store_rejects=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+
+query IIIIII
+SELECT line, line_byte_position, byte_position, column_idx, error_type, csv_line FROM reject_errors ORDER BY ALL
+----
+152	5135	5138	2	MISSING COLUMNS	2,b
+153	5139	5144	4	TOO MANY COLUMNS	3,c,y,z
+
+# projection of the last column only
+query I
+SELECT sum(d) FROM read_csv('{TEST_DIR}/blocks.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'i':'BIGINT','s':'VARCHAR','d':'BIGINT'})
+----
+35994000
+
+# a cast error names the right line
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/handover.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'INTEGER','c':'INTEGER'})
+----
+CSV Error on Line: 1
+
+# a line over max_line_size is an error
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/longline.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, max_line_size=100, buffer_size=200, columns={'a':'VARCHAR','b':'VARCHAR'})
+----
+The Parallel CSV Reader currently does not support a full read on this file.

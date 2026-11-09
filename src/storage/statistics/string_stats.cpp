@@ -12,6 +12,7 @@
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/storage/statistics/stats_writer.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 
 namespace duckdb {
 
@@ -809,12 +810,27 @@ FilterPropagateResult StringStats::CheckZonemap(string_t min, StringStatsType mi
 	}
 }
 
-child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats) {
+//! A bound as a value of the column's type; a VARCHAR bound whose bytes (a truncated prefix) are not valid UTF-8 is
+//! a BLOB
+static Value StringStatsBoundValue(const LogicalType &type, const string_t &bound) {
+	if (type.id() == LogicalTypeId::VARCHAR &&
+	    Utf8Proc::Analyze(bound.GetData(), bound.GetSize()) != UnicodeType::INVALID) {
+		return Value(bound.GetString());
+	}
+	return Value::BLOB(const_data_ptr_cast(bound.GetData()), bound.GetSize());
+}
+
+child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	child_list_t<Value> result;
 	auto &string_data = GetDataUnsafe(stats);
 	if (HasMinMax(stats)) {
-		result.emplace_back("min", Blob::ToString(string_data.min));
-		result.emplace_back("max", Blob::ToString(string_data.max));
+		if (exact) {
+			result.emplace_back("min", StringStatsBoundValue(stats.GetType(), string_data.min));
+			result.emplace_back("max", StringStatsBoundValue(stats.GetType(), string_data.max));
+		} else {
+			result.emplace_back("min", Blob::ToString(string_data.min));
+			result.emplace_back("max", Blob::ToString(string_data.max));
+		}
 	}
 	result.emplace_back("has_unicode", Value::BOOLEAN(string_data.has_unicode));
 	if (string_data.HasMinStringLength()) {
@@ -827,6 +843,50 @@ child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats) {
 		result.emplace_back("total_string_length", Value::UBIGINT(string_data.total_string_length));
 	}
 	return result;
+}
+
+//! The bytes of a bound: a BLOB or VARCHAR value holds them as they are, any other value is cast to text
+static bool TryGetStringBound(StatsStructFields &fields, const string &name, string &result) {
+	auto field = fields.Get(name);
+	if (!field) {
+		return false;
+	}
+	auto plain = StatsStructFields::Plain(*field);
+	if (plain.type().id() == LogicalTypeId::BLOB || plain.type().id() == LogicalTypeId::VARCHAR) {
+		result = StringValue::Get(plain);
+		return true;
+	}
+	Value text;
+	fields.TryGet(name, LogicalType::VARCHAR, text);
+	result = StringValue::Get(text);
+	return true;
+}
+
+void StringStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto &string_data = GetDataUnsafe(stats);
+	Value field;
+	string bound;
+	// a bound may be a truncated prefix, as a file format stores them
+	if (TryGetStringBound(fields, "min", bound)) {
+		SetMin(stats, string_t(bound), StringStatsType::TRUNCATED_STATS);
+	}
+	if (TryGetStringBound(fields, "max", bound)) {
+		SetMax(stats, string_t(bound), StringStatsType::TRUNCATED_STATS);
+	}
+	if (fields.TryGet("has_unicode", LogicalType::BOOLEAN, field)) {
+		string_data.has_unicode = BooleanValue::Get(field);
+	}
+	if (fields.TryGet("min_string_length", LogicalType::UINTEGER, field)) {
+		string_data.has_min_string_length = true;
+		string_data.min_string_length = UIntegerValue::Get(field);
+	}
+	if (fields.TryGet("max_string_length", LogicalType::UINTEGER, field)) {
+		SetMaxStringLength(stats, UIntegerValue::Get(field));
+	}
+	if (fields.TryGet("total_string_length", LogicalType::UBIGINT, field)) {
+		string_data.has_total_string_length = true;
+		string_data.total_string_length = UBigIntValue::Get(field);
+	}
 }
 
 void StringStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {

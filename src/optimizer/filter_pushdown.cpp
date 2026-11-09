@@ -133,8 +133,6 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 	case LogicalOperatorType::LOGICAL_UNION:
 		return PushdownSetOperation(std::move(op));
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		return PushdownDistinct(std::move(op));
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		// we can just push directly through these operations without any rewriting
 		RewriteChild(*op, 0);

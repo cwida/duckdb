@@ -367,7 +367,7 @@ public:
 			if (!ExpressionExecutor::TryEvaluateScalar(client, *offset_expr, offset_value) || offset_value.IsNull()) {
 				return false;
 			}
-			auto bigint_value = offset_value.DefaultTryCastAs(LogicalType::BIGINT);
+			auto bigint_value = offset_value.TryCastAs(client, LogicalType::BIGINT);
 			if (!bigint_value) {
 				return false;
 			}
@@ -398,7 +398,7 @@ public:
 		if (!ExpressionExecutor::TryEvaluateScalar(client, *default_expr, dflt_value)) {
 			return false;
 		}
-		auto cast_value = dflt_value.DefaultTryCastAs(wexpr.GetReturnType());
+		auto cast_value = dflt_value.TryCastAs(client, wexpr.GetReturnType());
 		if (!cast_value) {
 			return false;
 		}
@@ -1094,7 +1094,7 @@ public:
 		if (!ExpressionExecutor::TryEvaluateScalar(client, *nth_expr, nth_value) || nth_value.IsNull()) {
 			return false;
 		}
-		auto bigint_value = nth_value.DefaultTryCastAs(LogicalType::BIGINT);
+		auto bigint_value = nth_value.TryCastAs(client, LogicalType::BIGINT);
 		if (!bigint_value) {
 			return false;
 		}

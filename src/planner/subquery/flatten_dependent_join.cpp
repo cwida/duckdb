@@ -1482,15 +1482,6 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownSetOperatio
 	return result;
 }
 
-FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownDistinct(unique_ptr<LogicalOperator> &plan,
-                                                                              bool propagate_null_values,
-                                                                              vector<ColumnBinding> state) {
-	auto result = PushDownChild(plan, propagate_null_values, std::move(state), false);
-	auto &distinct = plan->Cast<LogicalDistinct>();
-	AppendCorrelatedColumns(distinct.distinct_targets, result.bindings, false);
-	return result;
-}
-
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownExpressionGet(unique_ptr<LogicalOperator> &plan,
                                                                                    bool propagate_null_values,
                                                                                    vector<ColumnBinding> state) {
@@ -1739,9 +1730,6 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 	case LogicalOperatorType::LOGICAL_INTERSECT:
 	case LogicalOperatorType::LOGICAL_UNION: {
 		return PushDownSetOperation(plan, std::move(state));
-	}
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		return PushDownDistinct(plan, propagate_null_values, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: {
 		// emits its expression rows once per child row
