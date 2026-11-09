@@ -29,6 +29,9 @@ void JoinElimination::OptimizeChildren(LogicalOperator &op, optional_ptr<Logical
 		pipe_info.join_index = idx;
 		left_child = CreateChildren();
 		right_child = CreateChildren();
+		// the joins below must keep the columns this join's conditions read
+		left_child->VisitOperatorExpressions(op);
+		right_child->VisitOperatorExpressions(op);
 		left_child->OptimizeInternal(std::move(op.children[0]));
 		right_child->OptimizeInternal(std::move(op.children[1]));
 		return;

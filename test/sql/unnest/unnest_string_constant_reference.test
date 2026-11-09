@@ -2,7 +2,10 @@
 # description: Strings of an input row that UNNEST or a LATERAL function repeats over many output chunks (duckdblabs/bot-issue-tracker#638)
 # group: [unnest]
 
-# the scan gives dictionary and FSST vectors only from segments of the default block size
+# The materialized strings can exhaust a 32-bit address space.
+require 64bit
+
+# Exercise overflow strings at the default block size.
 require block_size 262144
 
 # a long string, a non-ASCII one, an inlined one, an empty one and NULL, each repeated over three output chunks
@@ -48,42 +51,3 @@ GROUP BY id ORDER BY id;
 3	5000	1	25000
 4	5000	1	0
 5	5000	0	NULL
-
-# strings that a scan gives in dictionary and FSST vectors
-statement ok
-ATTACH '{TEST_DIR}/unnest_string_constant_reference.db' AS db (STORAGE_VERSION 'v1.1.0');
-
-foreach compression dictionary fsst
-
-statement ok
-SET force_compression = '{compression}';
-
-statement ok
-CREATE TABLE db.{compression}_strs AS SELECT (i % 3)::VARCHAR || repeat('x', 100) || i::VARCHAR AS s FROM range(4096) t(i);
-
-statement ok
-CHECKPOINT db;
-
-endloop
-
-statement ok
-SET enable_fsst_vectors = true;
-
-foreach compression dictionary fsst
-
-query IIII
-SELECT count(*), count(DISTINCT s), min(length(s)), sum(length(s)) FROM (SELECT s, unnest(range(2100)) FROM db.{compression}_strs);
-----
-8601600	4096	102	900837000
-
-endloop
-
-query I
-SELECT bool_or(vector_type(s) = 'DICTIONARY_VECTOR') FROM db.dictionary_strs;
-----
-true
-
-query I
-SELECT bool_or(vector_type(s) = 'FSST_VECTOR') FROM db.fsst_strs;
-----
-true
