@@ -1,5 +1,5 @@
 # name: test/optimizer/unused_columns/count_star_over_union_secure_view.test
-# description: A count(*) over a secure view of a UNION ALL evaluates no column of the union
+# description: A count(*) over a secure view of a UNION ALL or a materialized CTE evaluates no column of its input
 # group: [unused_columns]
 
 statement ok
@@ -25,3 +25,44 @@ statement error
 SELECT count(cast_col) FROM union_view;
 ----
 Conversion Error
+
+# the union records its NULL constant as the source of the view's column 0, so the exported view projects it
+query II
+EXPLAIN (SQL) SELECT count(*) FROM union_view;
+----
+sql	<REGEX>:.*SELECT CAST\(NULL AS INTEGER\) AS c0\s+FROM \S+\.main\.union_view AS r0\(.*
+
+statement ok
+CREATE SECURE VIEW varchar_union_view AS SELECT md5(a) AS hash, b FROM t UNION ALL SELECT 'h', 3;
+
+query II
+EXPLAIN (SQL) SELECT count(*) FROM varchar_union_view;
+----
+sql	<REGEX>:.*SELECT CAST\(NULL AS VARCHAR\) AS c0\s+FROM \S+\.main\.varchar_union_view AS r0\(.*
+
+# a materialized CTE inside a secure view is pruned too, and the view's column 0 comes from the constant above it
+statement ok
+CREATE SECURE VIEW cte_view AS WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT * FROM c;
+
+query II
+EXPLAIN (SQL) SELECT count(*) FROM cte_view;
+----
+sql	<REGEX>:.*SELECT CAST\(42 AS INTEGER\) AS c0\s+FROM \S+\.main\.cte_view AS r0\(.*
+
+statement ok
+SET debug_verify_statement = 'explain_sql_strict';
+
+query I
+SELECT count(*) FROM union_view;
+----
+4
+
+query I
+SELECT count(*) FROM varchar_union_view;
+----
+4
+
+query I
+SELECT count(*) FROM cte_view;
+----
+3

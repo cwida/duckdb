@@ -36,6 +36,16 @@ SELECT count(*) FROM (
 8
 
 query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL (SELECT a::INTEGER, b FROM t UNION ALL SELECT 2, 3));
+----
+7
+
+query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL BY NAME SELECT 3 AS b, 2 AS cast_col);
+----
+4
+
+query I
 SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM (VALUES ('x', 1)) v(a, b) UNION ALL SELECT 2, 3);
 ----
 2
@@ -50,6 +60,11 @@ query I
 SELECT count(*) FROM ((SELECT a::INTEGER AS cast_col, b FROM t ORDER BY b LIMIT 2) UNION ALL (SELECT 2, 3));
 ----
 3
+
+query I
+SELECT count(*) FROM (FROM t UNION ALL FROM t);
+----
+6
 
 query I
 SELECT EXISTS (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3);
@@ -144,6 +159,26 @@ SELECT count(*) FROM (SELECT * FROM c UNION ALL SELECT * FROM c);
 ----
 6
 
+query I
+WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t), d AS MATERIALIZED (SELECT * FROM c)
+SELECT count(*) FROM d;
+----
+3
+
+# a materialized CTE below the count(*), in a subquery or a view
+query I
+SELECT count(*) FROM (WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT * FROM c);
+----
+3
+
+statement ok
+CREATE VIEW cte_view AS WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT * FROM c;
+
+query I
+SELECT count(*) FROM cte_view;
+----
+3
+
 # an unread volatile expression is not evaluated, as under a projection
 statement ok
 CREATE SEQUENCE union_sequence;
@@ -191,6 +226,44 @@ SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'cte_sequence';
 ----
 3
 
+# nor is the cast of an unread column to the union's type
+query I
+SELECT count(*) FROM (SELECT [1] UNION ALL SELECT 1);
+----
+2
+
+statement error
+SELECT [1] UNION ALL SELECT 1;
+----
+Conversion Error
+
+# nor is a RETURNING expression of a data modifying CTE that the count(*) does not read
+statement ok
+CREATE TABLE deleted(a VARCHAR, b INTEGER);
+
+statement ok
+INSERT INTO deleted VALUES ('x', 1), ('y', NULL), ('z', 3);
+
+query I
+WITH r AS (DELETE FROM deleted WHERE b = 1 RETURNING a::INTEGER AS cast_col, b) SELECT count(*) FROM r;
+----
+1
+
+query I
+SELECT count(*) FROM deleted;
+----
+2
+
+statement error
+WITH r AS (DELETE FROM deleted WHERE b = 3 RETURNING a::INTEGER AS cast_col, b) SELECT count(cast_col) FROM r;
+----
+Conversion Error
+
+query I
+SELECT count(*) FROM deleted;
+----
+2
+
 # the liveness analysis of a recursive CTE sees that the union in its recursive step reads no column of r
 query I
 WITH RECURSIVE r(i, s) AS (
@@ -202,12 +275,35 @@ SELECT count(*) FROM (SELECT i FROM r);
 ----
 9
 
+# a USING KEY recursive CTE is not pruned, but the union in its recursive step is
+query I
+WITH RECURSIVE r(i, s) USING KEY (i) AS (
+	SELECT 1, 'x'
+	UNION ALL
+	SELECT r.i + 1, r.s FROM r, (SELECT s::INTEGER FROM r UNION ALL SELECT 5) u WHERE r.i < 3
+)
+SELECT count(*) FROM r;
+----
+3
+
+# a materialized CTE in the recursive step that the step reads no column of
+query II
+WITH RECURSIVE r(i, s, k) AS (
+	SELECT 1, 'x', 10
+	UNION ALL
+	SELECT r.i + 1, r.s, r.k + 1 FROM r
+	WHERE r.i < 4 AND (SELECT count(*) FROM (WITH c AS MATERIALIZED (SELECT s::INTEGER AS x, k FROM r) SELECT * FROM c) z) > 0
+)
+SELECT max(k), count(*) FROM r;
+----
+13	4
+
 query I
 SELECT count(*) FROM (SELECT 1 UNION ALL SELECT NULL UNION ALL SELECT NULL::INTEGER);
 ----
 3
 
-# the filter on a NOT NULL column is removed by statistics propagation, after which the pass runs a second time
+# a filter that statistics propagation removes makes the pass run a second time
 statement ok
 CREATE TABLE t_not_null(a VARCHAR, b INTEGER NOT NULL);
 
@@ -215,29 +311,97 @@ statement ok
 INSERT INTO t_not_null VALUES ('x', 1), ('y', 2);
 
 query I
-SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t_not_null UNION ALL SELECT 2, 3) WHERE b IS NOT NULL;
-----
-3
-
-query I
-WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t_not_null) SELECT count(*) FROM c WHERE b IS NOT NULL;
-----
-2
-
-query I
 SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u, t_not_null x WHERE x.b IS NOT NULL;
 ----
 8
 
 query I
-SELECT count(b) FROM (SELECT a::INTEGER AS cast_col, b FROM t_not_null UNION ALL SELECT 2, 3);
+WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT count(*) FROM c, t_not_null x WHERE x.b IS NOT NULL;
+----
+6
+
+# decorrelation puts the union below the count(*) into a materialized CTE that the count(*) reads no column of
+query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u
+WHERE (SELECT count(*) FROM t WHERE t.b = u.b) >= 0;
+----
+4
+
+query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u
+WHERE (SELECT count(*) FROM t WHERE t.b = u.b) > 0;
 ----
 3
 
 query I
-WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT count(*) FROM c, t_not_null x WHERE x.b IS NOT NULL;
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u
+WHERE EXISTS (SELECT 1 FROM t WHERE t.b = u.b);
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT (SELECT count(*) FROM t WHERE t.b = u.b) AS n FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u);
+----
+4
+
+query I
+SELECT sum((SELECT count(*) FROM t WHERE t.b = u.b)) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u;
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u, LATERAL (SELECT count(*) FROM t WHERE t.b = u.b) l;
+----
+4
+
+query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u, t_not_null x
+WHERE x.b IS NOT NULL AND (SELECT count(*) FROM t WHERE t.b = u.b) >= 0;
+----
+8
+
+query I
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u, t_not_null x
+WHERE x.b IS NOT NULL AND (SELECT count(*) FROM t WHERE t.b = u.b) > 0;
 ----
 6
+
+statement error
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u
+WHERE (SELECT count(*) FROM t WHERE t.b = u.cast_col) >= 0;
+----
+Conversion Error
+
+query I
+WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3)
+SELECT count(*) FROM c WHERE (SELECT count(*) FROM t WHERE t.b = c.b) >= 0;
+----
+4
+
+query I
+WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3)
+SELECT count(*) FROM c, LATERAL (SELECT count(*) FROM t WHERE t.b = c.b) l;
+----
+4
+
+query I
+WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT count(*) FROM t WHERE EXISTS (SELECT 1 FROM c WHERE c.b = t.b);
+----
+2
+
+statement ok
+CREATE SEQUENCE correlated_sequence;
+
+query I
+SELECT count(*) FROM (SELECT nextval('correlated_sequence') AS x, b FROM t UNION ALL SELECT nextval('correlated_sequence'), 3) u
+WHERE (SELECT count(*) FROM t WHERE t.b = u.b) >= 0;
+----
+4
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'correlated_sequence';
+----
+NULL
 
 statement ok
 SET explain_output = OPTIMIZED_ONLY;
@@ -258,27 +422,21 @@ EXPLAIN SELECT count(*) FROM ((SELECT a::INTEGER AS cast_col, b FROM t ORDER BY 
 logical_opt	<!REGEX>:.*(cast_col|CAST).*
 
 query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM (FROM t UNION ALL FROM t);
+----
+logical_opt	<REGEX>:.*UNION[^\n]*\n\s*PROJECTION[^\n]*NULL::VARCHAR\n\s*SEQ_SCAN.*
+
+query II
 EXPLAIN SELECT count(b) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3);
 ----
 logical_opt	<!REGEX>:.*(cast_col|CAST).*
 
-query II
-EXPLAIN (FORMAT compact)
-SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t_not_null UNION ALL SELECT 2, 3) WHERE b IS NOT NULL;
-----
-logical_opt	<!REGEX>:.*(cast_col|CAST|PROJECTION[^\n]*\n\s*PROJECTION[^\n]*\n\s*PROJECTION).*
-
+# the first pass reads b; after statistics propagation the second reads no column, and b is no longer projected
 query II
 EXPLAIN (FORMAT compact)
 WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t_not_null) SELECT count(*) FROM c WHERE b IS NOT NULL;
 ----
-logical_opt	<!REGEX>:.*(cast_col|CAST|PROJECTION[^\n]*\n\s*PROJECTION[^\n]*\n\s*PROJECTION).*
-
-query II
-EXPLAIN (FORMAT compact)
-SELECT count(b) FROM (SELECT a::INTEGER AS cast_col, b FROM t_not_null UNION ALL SELECT 2, 3);
-----
-logical_opt	<!REGEX>:.*(cast_col|CAST|PROJECTION[^\n]*\n\s*PROJECTION[^\n]*\n\s*PROJECTION).*
+logical_opt	<!REGEX>:.*(cast_col|CAST|Expressions: b\n|PROJECTION[^\n]*\n\s*PROJECTION[^\n]*\n\s*PROJECTION).*
 
 # when neither pass reads a column, the second keeps the constant projection of the first
 query II
@@ -292,3 +450,16 @@ EXPLAIN (FORMAT compact)
 WITH c AS MATERIALIZED (SELECT a::INTEGER AS cast_col, b FROM t) SELECT count(*) FROM c, t_not_null x WHERE x.b IS NOT NULL;
 ----
 logical_opt	<!REGEX>:.*(cast_col|CAST|PROJECTION[^\n]*\n\s*PROJECTION[^\n]*\n\s*PROJECTION).*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u
+WHERE (SELECT count(*) FROM t WHERE t.b = u.b) >= 0;
+----
+logical_opt	<!REGEX>:.*(cast_col|CAST\(a AS INTEGER\)).*
+
+query II
+EXPLAIN (FORMAT compact)
+SELECT count(*) FROM (SELECT a::INTEGER AS cast_col, b FROM t UNION ALL SELECT 2, 3) u, t_not_null x
+WHERE x.b IS NOT NULL AND (SELECT count(*) FROM t WHERE t.b = u.b) >= 0;
+----
+logical_opt	<!REGEX>:.*(cast_col|CAST\(a AS INTEGER\)).*

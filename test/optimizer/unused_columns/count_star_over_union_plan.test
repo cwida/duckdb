@@ -1,0 +1,19 @@
+# name: test/optimizer/unused_columns/count_star_over_union_plan.test
+# description: After statistics propagation turns count(b) over a UNION ALL into count_star, the union projects no column
+# group: [unused_columns]
+
+statement ok
+CREATE TABLE t_not_null(a VARCHAR, b INTEGER NOT NULL);
+
+statement ok
+INSERT INTO t_not_null VALUES ('x', 1), ('y', 2);
+
+statement ok
+SET explain_output = OPTIMIZED_ONLY;
+
+# the first pass reads b; the second reads no column, and b is no longer projected
+query II
+EXPLAIN (FORMAT compact)
+SELECT count(b) FROM (SELECT a::INTEGER AS cast_col, b FROM t_not_null UNION ALL SELECT 2, 3);
+----
+logical_opt	<!REGEX>:.*(cast_col|CAST|Expressions: b\n|PROJECTION[^\n]*\n\s*PROJECTION[^\n]*\n\s*PROJECTION).*

@@ -60,7 +60,8 @@
       "reason": "Unused column removal keeps a failing cast that no operator reads from being evaluated.",
       "paths": [
         "test/optimizer/unused_columns/count_star_over_union.test",
-        "test/optimizer/unused_columns/count_star_over_union_secure_view.test"
+        "test/optimizer/unused_columns/count_star_over_union_secure_view.test",
+        "test/optimizer/unused_columns/count_star_over_union_plan.test"
       ]
     },
     {

@@ -40,6 +40,7 @@
         "test/sql/optimizer/expression/test_common_aggregate.test",
         "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test",
         "test/sql/subquery/scalar/test_correlated_aggregate_correlation_key_plan.test",
+        "test/optimizer/unused_columns/count_star_over_union_plan.test",
         "test/sql/sql_export/scope_reuse_plan.test",
         "test/sql/sql_export/composition_q1_plan.test",
         "test/sql/sql_export/composition_plan.test",
