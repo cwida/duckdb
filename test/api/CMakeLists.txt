@@ -95,6 +95,11 @@ if(DUCKDB_EXTENSION_TPCDS_SHOULD_LINK)
   set(TEST_API_OBJECTS ${TEST_API_OBJECTS} test_tpcds_with_streaming.cpp)
 endif()
 
+if(DUCKDB_EXTENSION_PARQUET_SHOULD_LINK)
+  include_directories(../../extension/parquet/include)
+  set(TEST_API_OBJECTS ${TEST_API_OBJECTS} test_parquet_cdc_chunker.cpp)
+endif()
+
 add_library(test_api OBJECT ${TEST_API_OBJECTS})
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES} $<TARGET_OBJECTS:test_api>

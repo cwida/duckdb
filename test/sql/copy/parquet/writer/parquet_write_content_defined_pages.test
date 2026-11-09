@@ -103,11 +103,12 @@ create macro cdc_pages(path, file) as
 	(select sum(s.count) from (select unnest(encoding_stats) s from parquet_metadata(file) where path_in_schema = path) where s.page_type = 'DATA_PAGE');
 
 # The page counts below are pinned so that a change to the gear tables, to the size gate, or to which side
-# of a boundary a value lands on fails here instead of quietly moving every boundary after it. They are
-# not arbitrary numbers: parquet-cpp cuts the same pages from the same data, which is what
-# scripts/cdc_conformance.py of the hf extension checks (it compares per-page value counts, not just how
-# many there are). Most of these are written into one row group, so that the counts do not move with the row
-# group size.
+# of a boundary a value lands on fails here instead of quietly moving every boundary after it. A count on
+# its own can survive a boundary moving between pages, so the positions themselves are pinned by
+# test/api/test_parquet_cdc_chunker.cpp. The pinned numbers are not arbitrary: parquet-cpp cuts the same
+# pages from the same data, which is what scripts/cdc_conformance.py of the hf extension checks (it
+# compares per-page value counts, not just how many there are). Most of these are written into one row
+# group, so that the counts do not move with the row group size.
 statement ok
 copy (select range i from range(200_000)) to '{TEST_DIR}/pin_i.parquet' (format parquet, compression uncompressed, row_group_size 10_000_000, content_defined_chunking {min_chunk_size: 65536, max_chunk_size: 131072});
 

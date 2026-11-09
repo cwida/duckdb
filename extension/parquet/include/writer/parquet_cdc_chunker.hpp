@@ -11,8 +11,10 @@
 #include "duckdb/common/bit_utils.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 #include "writer/parquet_cdc_gear_tables.hpp"
 
 namespace duckdb {
@@ -28,6 +30,8 @@ namespace duckdb {
 //! arithmetic, same eight-table run, same minimum-size window. A column written here and the same
 //! column written by arrow-cpp or arrow-rs with the same sizes therefore cut between the same
 //! values. Like Arrow's, the state lives for the whole file and carries over from one row group to the next.
+//! The positions this produces depend on the order values arrive in, so a reproducible file needs
+//! deterministic input order - an ordered copy, which means an explicit ORDER BY when the plan has no order.
 //!
 //! The hash is fed the column's values in Arrow's canonical form - the value's bytes, plus the two
 //! bytes of its definition level when the column is nullable - so a null is content too, exactly as
