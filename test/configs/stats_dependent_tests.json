@@ -25,6 +25,7 @@
         "test/sql/types/list/list_stats.test",
         "test/sql/storage/list_length_stats.test",
         "test/sql/storage/list_length_stats_checkpoint.test",
+        "test/sql/storage/list_length_stats_nested_optimistic.test",
         "test/sql/optimizer/statistics/list_length_stats_propagation.test",
         "test/sql/storage/list_length_stats_old_version.test",
         "test/sql/types/nested/array/array_statistics.test",

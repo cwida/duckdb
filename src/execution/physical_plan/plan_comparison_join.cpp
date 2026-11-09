@@ -6,6 +6,7 @@
 #include "duckdb/execution/operator/join/physical_join.hpp"
 #include "duckdb/execution/operator/join/physical_nested_loop_join.hpp"
 #include "duckdb/execution/operator/join/physical_piecewise_merge_join.hpp"
+#include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/join/physical_recursive_cte_key_join.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
@@ -247,7 +248,8 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		return join;
 	}
 
-	// range joins apply both projection maps, the nested loop join only applies the left one of a MARK join
+	// the IE join applies both projection maps, the nested loop join only applies the left one of a MARK join,
+	// and the piecewise merge and blockwise joins emit full child layouts
 	idx_t nested_loop_join_threshold = Settings::Get<NestedLoopJoinThresholdSetting>(context);
 	if (left.estimated_cardinality < nested_loop_join_threshold ||
 	    right.estimated_cardinality < nested_loop_join_threshold) {
@@ -267,15 +269,19 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		                            std::move(op.filter_pushdown));
 	}
 	if (can_merge) {
-		// range join: use piecewise merge join
-		return Make<PhysicalPiecewiseMergeJoin>(op, left, right, std::move(op.conditions), op.join_type,
-		                                        op.estimated_cardinality, std::move(op.filter_pushdown));
+		// range join: use piecewise merge join, which emits full child layouts
+		auto pruned = ExtractPrunedJoinProjection(op, left, right, true, true);
+		auto &join = Make<PhysicalPiecewiseMergeJoin>(op, left, right, std::move(op.conditions), op.join_type,
+		                                              op.estimated_cardinality, std::move(op.filter_pushdown));
+		return RestorePrunedJoinProjection(op, join, std::move(pruned));
 	}
 	if (PhysicalNestedLoopJoin::IsSupported(op.conditions, op.join_type)) {
-		// inequality join: use nested loop
+		// inequality join: use nested loop, which only applies the left map of a MARK join
+		auto pruned = ExtractPrunedJoinProjection(op, left, right, op.join_type != JoinType::MARK, true);
 		D_ASSERT(op.left_projection_map.empty() || op.join_type == JoinType::MARK);
-		return Make<PhysicalNestedLoopJoin>(op, left, right, std::move(op.conditions), op.join_type,
-		                                    op.estimated_cardinality, std::move(op.filter_pushdown));
+		auto &join = Make<PhysicalNestedLoopJoin>(op, left, right, std::move(op.conditions), op.join_type,
+		                                          op.estimated_cardinality, std::move(op.filter_pushdown));
+		return RestorePrunedJoinProjection(op, join, std::move(pruned));
 	}
 
 	for (auto &cond : op.conditions) {
@@ -283,9 +289,145 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 			RewriteJoinCondition(cond.RightReference(), left.types.size());
 		}
 	}
+	auto pruned = ExtractPrunedJoinProjection(op, left, right, true, true);
 	D_ASSERT(op.left_projection_map.empty());
 	auto condition = JoinCondition::CreateExpression(std::move(op.conditions));
-	return Make<PhysicalBlockwiseNLJoin>(op, left, right, std::move(condition), op.join_type, op.estimated_cardinality);
+	auto &join =
+	    Make<PhysicalBlockwiseNLJoin>(op, left, right, std::move(condition), op.join_type, op.estimated_cardinality);
+	return RestorePrunedJoinProjection(op, join, std::move(pruned));
+}
+
+static bool IsPruningMap(const vector<ProjectionIndex> &projection_map, idx_t input_width) {
+	if (projection_map.empty()) {
+		return false;
+	}
+	if (projection_map.size() != input_width) {
+		return true;
+	}
+	for (idx_t i = 0; i < projection_map.size(); i++) {
+		if (projection_map[i].GetIndex() != i) {
+			return true;
+		}
+	}
+	return false;
+}
+
+PhysicalPlanGenerator::PrunedJoinProjection
+PhysicalPlanGenerator::ExtractPrunedJoinProjection(LogicalComparisonJoin &op, const PhysicalOperator &left,
+                                                   const PhysicalOperator &right, bool expand_left, bool expand_right) {
+	PrunedJoinProjection info;
+	const auto left_width = left.GetTypes().size();
+	const auto right_width = right.GetTypes().size();
+	const bool emits_left = op.join_type != JoinType::RIGHT_SEMI && op.join_type != JoinType::RIGHT_ANTI;
+	const bool emits_right =
+	    op.join_type != JoinType::SEMI && op.join_type != JoinType::ANTI && op.join_type != JoinType::MARK;
+	info.expanded_left = expand_left && emits_left && IsPruningMap(op.left_projection_map, left_width);
+	info.expanded_right = expand_right && emits_right && IsPruningMap(op.right_projection_map, right_width);
+	// a full identity map selects everything: drop it for operators that require an empty map
+	if (expand_left && !info.expanded_left && !op.left_projection_map.empty()) {
+		op.left_projection_map.clear();
+	}
+	if (expand_right && !info.expanded_right && !op.right_projection_map.empty()) {
+		op.right_projection_map.clear();
+	}
+	if (!info.expanded_left && !info.expanded_right) {
+		return info;
+	}
+	info.active = true;
+	info.original_types = op.types;
+	if (info.expanded_left) {
+		info.left_map = std::move(op.left_projection_map);
+		op.left_projection_map.clear();
+	}
+	if (info.expanded_right) {
+		info.right_map = std::move(op.right_projection_map);
+		op.right_projection_map.clear();
+	}
+	// emitted layout: per side either the full input or the original mapped columns,
+	// with the MARK column in between where the join type produces one
+	vector<LogicalType> emitted;
+	idx_t original_pos = 0;
+	if (emits_left) {
+		if (info.expanded_left) {
+			auto &left_types = left.GetTypes();
+			emitted.insert(emitted.end(), left_types.begin(), left_types.end());
+			original_pos += info.left_map.size();
+		} else {
+			idx_t count = op.left_projection_map.empty() ? left_width : op.left_projection_map.size();
+			emitted.insert(emitted.end(), info.original_types.begin(),
+			               info.original_types.begin() + NumericCast<int64_t>(count));
+			original_pos += count;
+		}
+	}
+	if (op.join_type == JoinType::MARK) {
+		emitted.push_back(info.original_types[original_pos]);
+		original_pos++;
+	}
+	if (emits_right) {
+		if (info.expanded_right) {
+			auto &right_types = right.GetTypes();
+			emitted.insert(emitted.end(), right_types.begin(), right_types.end());
+		} else {
+			emitted.insert(emitted.end(), info.original_types.begin() + NumericCast<int64_t>(original_pos),
+			               info.original_types.end());
+		}
+	}
+	op.types = std::move(emitted);
+	return info;
+}
+
+PhysicalOperator &PhysicalPlanGenerator::RestorePrunedJoinProjection(LogicalComparisonJoin &op, PhysicalOperator &join,
+                                                                     PrunedJoinProjection info) {
+	if (!info.active) {
+		return join;
+	}
+	auto &emitted_types = join.GetTypes();
+	const bool emits_left = op.join_type != JoinType::RIGHT_SEMI && op.join_type != JoinType::RIGHT_ANTI;
+	const bool emits_right =
+	    op.join_type != JoinType::SEMI && op.join_type != JoinType::ANTI && op.join_type != JoinType::MARK;
+	vector<unique_ptr<Expression>> select_list;
+	select_list.reserve(info.original_types.size());
+	idx_t emitted_pos = 0;
+	if (emits_left) {
+		idx_t emitted_left_width;
+		if (info.expanded_left) {
+			emitted_left_width = join.children[0].get().GetTypes().size();
+			for (auto &entry : info.left_map) {
+				auto index = entry.GetIndex();
+				select_list.push_back(make_uniq<BoundReferenceExpression>(emitted_types[index], index));
+			}
+		} else {
+			emitted_left_width = op.left_projection_map.empty() ? join.children[0].get().GetTypes().size()
+			                                                    : op.left_projection_map.size();
+			for (idx_t i = 0; i < emitted_left_width; i++) {
+				select_list.push_back(make_uniq<BoundReferenceExpression>(emitted_types[i], i));
+			}
+		}
+		emitted_pos += emitted_left_width;
+	}
+	if (op.join_type == JoinType::MARK) {
+		select_list.push_back(make_uniq<BoundReferenceExpression>(emitted_types[emitted_pos], emitted_pos));
+		emitted_pos++;
+	}
+	if (emits_right) {
+		if (info.expanded_right) {
+			for (auto &entry : info.right_map) {
+				auto index = emitted_pos + entry.GetIndex();
+				select_list.push_back(make_uniq<BoundReferenceExpression>(emitted_types[index], index));
+			}
+		} else {
+			for (idx_t i = emitted_pos; i < emitted_types.size(); i++) {
+				select_list.push_back(make_uniq<BoundReferenceExpression>(emitted_types[i], i));
+			}
+		}
+	}
+	D_ASSERT(select_list.size() == info.original_types.size());
+	auto &projection =
+	    Make<PhysicalProjection>(info.original_types, std::move(select_list), join.estimated_cardinality);
+	projection.children.emplace_back(join);
+	// callers of CreatePlan read the logical schema afterwards: restore it
+	op.types = std::move(info.original_types);
+	return projection;
 }
 
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalComparisonJoin &op) {

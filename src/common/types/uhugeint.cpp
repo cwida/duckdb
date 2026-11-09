@@ -534,8 +534,9 @@ bool ConvertFloatingToUhugeint(REAL_T value, uhugeint_t &result) {
 	if (value < 0 || value >= 340282366920938463463374607431768211456.0) {
 		return false;
 	}
-	result.lower = (uint64_t)fmod(value, REAL_T(NumericLimits<uint64_t>::Maximum()));
-	result.upper = (uint64_t)(value / REAL_T(NumericLimits<uint64_t>::Maximum()));
+	static constexpr REAL_T TWO_TO_THE_64 = REAL_T(18446744073709551616.0);
+	result.lower = static_cast<uint64_t>(std::fmod(value, TWO_TO_THE_64));
+	result.upper = static_cast<uint64_t>(value / TWO_TO_THE_64);
 	return true;
 }
 
