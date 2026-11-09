@@ -24,10 +24,13 @@ UndoBufferReference UndoBufferPointer::Pin() const {
 	return UndoBufferReference(*entry, std::move(handle), position);
 }
 
-UndoBufferAllocator::UndoBufferAllocator(BufferManager &buffer_manager) : buffer_manager(buffer_manager) {
+UndoBufferAllocator::UndoBufferAllocator(BufferManager &buffer_manager, bool hold_head_pin_p)
+    : buffer_manager(buffer_manager), hold_head_pin(hold_head_pin_p) {
 }
 
 UndoBufferReference UndoBufferAllocator::Allocate(idx_t alloc_len) {
+	// Unpins the previous head after the lock is released
+	BufferHandle previous_head_pin;
 	lock_guard<mutex> guard(lock);
 	D_ASSERT(!head || head->position <= head->capacity);
 	BufferHandle handle;
@@ -62,6 +65,10 @@ UndoBufferReference UndoBufferAllocator::Allocate(idx_t alloc_len) {
 			tail = entry.get();
 		}
 		head = std::move(entry);
+		if (hold_head_pin) {
+			previous_head_pin = std::move(head_pin);
+			head_pin = buffer_manager.Pin(head->block);
+		}
 	} else {
 		handle = buffer_manager.Pin(head->block);
 	}

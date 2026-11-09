@@ -101,7 +101,7 @@ GROUP BY ALL;
 ----
 physical_plan	<REGEX>:(?s).*GROUP_BY.*~4,367 rows.*
 
-# Overlapping arms are not assumed disjoint or identical.
+# Overlapping arms are not assumed disjoint or identical; the key's min/max domain (0..9) then caps the estimate.
 query I
 SELECT count(*) FROM (SELECT k FROM (SELECT k FROM keys UNION ALL SELECT k FROM keys) t GROUP BY k);
 ----
@@ -110,7 +110,7 @@ SELECT count(*) FROM (SELECT k FROM (SELECT k FROM keys UNION ALL SELECT k FROM 
 query II
 EXPLAIN SELECT k,count(*) FROM (SELECT k FROM keys UNION ALL SELECT k FROM keys) t GROUP BY k;
 ----
-physical_plan	<REGEX>:(?s).*GROUP_BY.*~20 rows.*
+physical_plan	<REGEX>:(?s).*GROUP_BY.*~10 rows.*
 
 query I
 SELECT count(*) FROM (

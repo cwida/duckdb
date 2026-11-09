@@ -6,9 +6,7 @@
 namespace duckdb {
 
 NotConjunctionSimplificationRule::NotConjunctionSimplificationRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
-	auto op = make_uniq<ExpressionMatcher>(ExpressionClass::BOUND_OPERATOR);
-	op->expr_type = make_uniq<SpecificExpressionTypeMatcher>(ExpressionType::OPERATOR_NOT);
-	root = std::move(op);
+	root = make_uniq<NotExpressionMatcher>();
 }
 
 unique_ptr<Expression> NotConjunctionSimplificationRule::Apply(LogicalOperator &op,

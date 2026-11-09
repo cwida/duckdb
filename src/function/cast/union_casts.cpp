@@ -116,7 +116,8 @@ static unique_ptr<BoundCastData> BindToUnionMemberCast(BindCastInput &input, con
 		throw ConversionException(message);
 	}
 
-	// otherwise, return the selected cast
+	// otherwise, return the selected cast, which is the only member cast that is applied
+	input.stability = candidates[0].member_casts[0].GetStability();
 	return make_uniq<UnionMemberBoundCastData>(std::move(candidates[0]));
 }
 

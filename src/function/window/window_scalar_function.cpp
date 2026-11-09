@@ -128,6 +128,11 @@ unique_ptr<Expression> FunctionBinder::BindScalarWindowFunction(BoundWindowExpre
 	} else {
 		scalar.SetProperties(wexpr.WindowFunction()->GetProperties());
 	}
+	// the wrapper also executes the window expression's children (e.g. casts) and validates frame boundary
+	// expressions at runtime, not just the function itself
+	if (wexpr.CanThrow() || wexpr.StartExpr() || wexpr.EndExpr()) {
+		scalar.SetFallible();
+	}
 	//	NULLs in the input row do not imply a NULL result
 	scalar.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	auto bind_info = make_uniq<ScalarWindowBindData>(context, wexpr);

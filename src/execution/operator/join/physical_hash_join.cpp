@@ -354,6 +354,11 @@ static bool BuildColumnIsComputed(const PhysicalOperator &op, idx_t column_idx) 
 	case PhysicalOperatorType::HASH_JOIN:
 		// a probe column is forwarded as it arrives, but read back from the row store when the probe side spills
 		return column_idx < op.Cast<PhysicalHashJoin>().lhs_output_columns.col_idxs.size();
+	case PhysicalOperatorType::UNNEST:
+	case PhysicalOperatorType::CROSS_PRODUCT:
+	case PhysicalOperatorType::INOUT_FUNCTION:
+		// input columns are forwarded either sliced (keeping the dictionary) or as a constant of a single row
+		return true;
 	default:
 		return false;
 	}
@@ -436,16 +441,16 @@ class HashJoinGlobalSinkState : public GlobalSinkState {
 public:
 	HashJoinGlobalSinkState(const PhysicalHashJoin &op_p, ClientContext &context_p)
 	    : context(context_p), op(op_p), num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), initial_radix_bits(4),
-	      finalized(false), active_local_states(0), total_size(0), max_partition_size(0), max_partition_count(0),
-	      probe_side_requirement(0), scanned_data(false) {
+	      temporary_memory_state(TemporaryMemoryManager::Get(context.GetContext()).Register(context.GetContext())),
+	      initial_radix_bits(4), finalized(false), active_local_states(0), total_size(0), max_partition_size(0),
+	      max_partition_count(0), probe_side_requirement(0), scanned_data(false) {
 		hash_table = op.InitializeHashTable(context, initial_radix_bits);
 		// Reserve the initial partition buffers before upstream hash tables are finalized.
 		auto minimum_reservation = MinValue(temporary_memory_state->GetMinimumReservation(),
 		                                    GetBuildSpaceRequirement(context, *hash_table, num_threads));
 		temporary_memory_state->SetMinimumReservation(minimum_reservation);
 		temporary_memory_state->SetRemainingSize(minimum_reservation);
-		temporary_memory_state->UpdateReservation(context);
+		temporary_memory_state->UpdateReservation(context.GetContext());
 
 		// Multiple build producers can change dictionaries after the layout has been published.
 		build_side_multi_source = BuildSideHasMultipleSources(op.children[1].get());
@@ -995,7 +1000,7 @@ static bool FinalizeSingleThreaded(const HashJoinGlobalSinkState &sink, const bo
 	}
 
 	// if we want to verify parallelism, finalize parallel
-	if (sink.context.config.verify_parallelism) {
+	if (ClientConfig::GetConfig(sink.context).verify_parallelism) {
 		return false;
 	}
 
@@ -1515,7 +1520,7 @@ public:
 		sink.temporary_memory_state->SetMinimumReservation(sink.max_partition_size +
 		                                                   sink.hash_table->PointerTableSize(sink.max_partition_count) +
 		                                                   sink.probe_side_requirement);
-		sink.temporary_memory_state->UpdateReservation(executor.context);
+		sink.temporary_memory_state->UpdateReservation(executor.context.GetContext());
 
 		FinalizeExternalRuntimeFilters(sink.context, op, sink);
 
@@ -1527,7 +1532,8 @@ public:
 bool JoinFilterPushdownInfo::CanUseInFilter(const ClientContext &context, optional_ptr<JoinHashTable> ht,
                                             const ExpressionType &cmp) const {
 	auto dynamic_or_filter_threshold = Settings::Get<DynamicOrFilterThresholdSetting>(context);
-	return ht && ht->Count() > 1 && ht->Count() <= dynamic_or_filter_threshold && cmp == ExpressionType::COMPARE_EQUAL;
+	return ht && ht->Count() > 1 && ht->Count() <= dynamic_or_filter_threshold &&
+	       (cmp == ExpressionType::COMPARE_EQUAL || cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM);
 }
 
 bool JoinFilterPushdownInfo::CanUseBloomFilter(const JoinFilterPushdownFilter &info, const ClientContext &context,
@@ -1583,14 +1589,6 @@ bool JoinFilterPushdownInfo::CanUsePrefixRangeFilter(const JoinFilterPushdownFil
 	if (!CanUseBloomFilter(info, context, op, cmp, ht)) {
 		return false;
 	}
-	if (cmp != ExpressionType::COMPARE_EQUAL) {
-		return false;
-	}
-	if (ht->NullValuesAreEqual(0)) {
-		// TODO: Support "A is B" type joins
-		return false;
-	}
-
 	const auto &key_type = ht->conditions[0].GetLHS().GetReturnType();
 	return PrefixRangeFilter::SupportedType(key_type);
 }
@@ -1613,12 +1611,12 @@ static RuntimeFilterInput CreateRuntimeFilterInputExpression(ClientContext &cont
 	return {std::move(expression), preserves_cast_errors};
 }
 
-static unique_ptr<Expression> PreserveRuntimeFilterCastErrors(unique_ptr<Expression> filter_expr,
-                                                              unique_ptr<Expression> null_check_input) {
+static unique_ptr<Expression> RetainRuntimeFilterNulls(unique_ptr<Expression> filter_expr,
+                                                       unique_ptr<Expression> null_check_input) {
 	if (!null_check_input) {
 		return filter_expr;
 	}
-	// A dynamic filter must not suppress an error raised by the original join cast.
+	// Retain NULL join keys and inputs whose original cast can fail.
 	auto null_check =
 	    ExpressionFilter::CreateNullCheckExpression(std::move(null_check_input), ExpressionType::OPERATOR_IS_NULL);
 	return make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(null_check),
@@ -1817,17 +1815,17 @@ static unique_ptr<Expression> CreateComparisonExpressionFilter(ExpressionType co
 	return CreateComparisonExpressionFilter(comparison_type, std::move(column), constant, column_type);
 }
 
-static unique_ptr<Expression>
-CreateJoinFilterComparisonExpression(ClientContext &context, const JoinFilterPushdownColumn &column,
-                                     ExpressionType comparison_type, const Value &constant,
-                                     const LogicalType &comparison_logical_type, bool reconstruct_expression) {
+static unique_ptr<Expression> CreateJoinFilterComparisonExpression(
+    ClientContext &context, const JoinFilterPushdownColumn &column, ExpressionType comparison_type,
+    const Value &constant, const LogicalType &comparison_logical_type, bool reconstruct_expression, bool retain_nulls) {
 	if (!reconstruct_expression) {
+		D_ASSERT(!retain_nulls);
 		return CreateComparisonExpressionFilter(comparison_type, constant, comparison_logical_type);
 	}
 	auto input = CreateRuntimeFilterInputExpression(context, column, comparison_logical_type);
 	auto input_type = input.expression->GetReturnType();
 	unique_ptr<Expression> null_check_input;
-	if (input.preserves_cast_errors) {
+	if (input.preserves_cast_errors || retain_nulls) {
 		null_check_input = input.expression->Copy();
 	}
 	auto filter_expr =
@@ -1835,7 +1833,7 @@ CreateJoinFilterComparisonExpression(ClientContext &context, const JoinFilterPus
 	if (!filter_expr) {
 		return nullptr;
 	}
-	return PreserveRuntimeFilterCastErrors(std::move(filter_expr), std::move(null_check_input));
+	return RetainRuntimeFilterNulls(std::move(filter_expr), std::move(null_check_input));
 }
 
 bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
@@ -1852,15 +1850,16 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 		return false;
 	}
 
+	const auto retain_nulls = ht.conditions[build_idx].GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
 	const auto reconstruct_expression =
-	    RuntimeFilterCastUtil::RequiresRuntimeFilterExpressionReconstruction(column, runtime_type);
+	    retain_nulls || RuntimeFilterCastUtil::RequiresRuntimeFilterExpressionReconstruction(column, runtime_type);
 	auto filter_input_type = column.storage_type;
 	unique_ptr<Expression> filter_input;
 	unique_ptr<Expression> null_check_input;
 	if (reconstruct_expression) {
 		auto input = CreateRuntimeFilterInputExpression(context, column, runtime_type);
 		filter_input_type = input.expression->GetReturnType();
-		if (input.preserves_cast_errors) {
+		if (input.preserves_cast_errors || retain_nulls) {
 			null_check_input = input.expression->Copy();
 		}
 		filter_input = std::move(input.expression);
@@ -1874,17 +1873,20 @@ bool JoinFilterPushdownInfo::PushInFilter(ClientContext &context, const JoinFilt
 		if (!value) {
 			return false;
 		}
+		if (retain_nulls && value->IsNull()) {
+			continue;
+		}
 		unique_ht_values.insert(std::move(*value));
 	}
 	vector<Value> in_list(unique_ht_values.begin(), unique_ht_values.end());
 
 	// An IN filter is only useful when the values are neither null nor dense.
-	if (FilterCombiner::ContainsNull(in_list) || FilterCombiner::IsDenseRange(in_list)) {
+	if (in_list.empty() || FilterCombiner::ContainsNull(in_list) || FilterCombiner::IsDenseRange(in_list)) {
 		return false;
 	}
 
 	auto in_expr = ExpressionFilter::CreateInExpression(std::move(filter_input), std::move(in_list));
-	in_expr = PreserveRuntimeFilterCastErrors(std::move(in_expr), std::move(null_check_input));
+	in_expr = RetainRuntimeFilterNulls(std::move(in_expr), std::move(null_check_input));
 	auto filter = make_uniq<ExpressionFilter>(CreateOptionalFilterExpression(std::move(in_expr), column.storage_type));
 	info.dynamic_filters->PushFilter(op, filter_col_idx, std::move(filter));
 	return true;
@@ -1896,15 +1898,17 @@ static void CreateDynamicMinMaxFilters(const PhysicalComparisonJoin &op, const J
                                        const Value &max_val, const LogicalType &condition_type,
                                        bool reconstruct_expression, bool selectivity_optional) {
 	auto filter_column_type = reconstruct_expression ? column.storage_type : condition_type;
+	const auto retain_nulls = cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
 	switch (cmp) {
 	case ExpressionType::COMPARE_EQUAL:
+	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
 	case ExpressionType::COMPARE_GREATERTHAN:
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO: {
-		CreateDynamicMinMaxFilter(op, info, filter_col_idx,
-		                          CreateJoinFilterComparisonExpression(context, column,
-		                                                               ExpressionType::COMPARE_GREATERTHANOREQUALTO,
-		                                                               min_val, condition_type, reconstruct_expression),
-		                          filter_column_type, selectivity_optional);
+		CreateDynamicMinMaxFilter(
+		    op, info, filter_col_idx,
+		    CreateJoinFilterComparisonExpression(context, column, ExpressionType::COMPARE_GREATERTHANOREQUALTO, min_val,
+		                                         condition_type, reconstruct_expression, retain_nulls),
+		    filter_column_type, selectivity_optional);
 		break;
 	}
 	default:
@@ -1912,13 +1916,14 @@ static void CreateDynamicMinMaxFilters(const PhysicalComparisonJoin &op, const J
 	}
 	switch (cmp) {
 	case ExpressionType::COMPARE_EQUAL:
+	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
 	case ExpressionType::COMPARE_LESSTHAN:
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO: {
-		CreateDynamicMinMaxFilter(op, info, filter_col_idx,
-		                          CreateJoinFilterComparisonExpression(context, column,
-		                                                               ExpressionType::COMPARE_LESSTHANOREQUALTO,
-		                                                               max_val, condition_type, reconstruct_expression),
-		                          filter_column_type, selectivity_optional);
+		CreateDynamicMinMaxFilter(
+		    op, info, filter_col_idx,
+		    CreateJoinFilterComparisonExpression(context, column, ExpressionType::COMPARE_LESSTHANOREQUALTO, max_val,
+		                                         condition_type, reconstruct_expression, retain_nulls),
+		    filter_column_type, selectivity_optional);
 		break;
 	}
 	default:
@@ -1955,9 +1960,10 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 
 			auto min_val = min_val_before_cast;
 			auto max_val = max_val_before_cast;
+			const bool retain_nulls = cmp == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
 			const bool reconstruct_filter_expression =
-			    RuntimeFilterCastUtil::RequiresRuntimeFilterExpressionReconstruction(pushdown_column,
-			                                                                         min_val_before_cast.type());
+			    retain_nulls || RuntimeFilterCastUtil::RequiresRuntimeFilterExpressionReconstruction(
+			                        pushdown_column, min_val_before_cast.type());
 
 			// Cast to storage type, skip if fails
 			if (pushdown_column.storage_type.IsValid() && !reconstruct_filter_expression) {
@@ -1989,14 +1995,15 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 				// min = max - single value
 				// generate a "one-sided" comparison filter for the LHS
 				// Note that this also works for equalities.
-				auto filter_expr = CreateJoinFilterComparisonExpression(context, pushdown_column, cmp, min_val,
-				                                                        condition_type, reconstruct_filter_expression);
+				auto filter_expr =
+				    CreateJoinFilterComparisonExpression(context, pushdown_column, cmp, min_val, condition_type,
+				                                         reconstruct_filter_expression, retain_nulls);
 				if (filter_expr) {
 					info.dynamic_filters->PushFilter(op, filter_col_idx,
 					                                 make_uniq<ExpressionFilter>(std::move(filter_expr)));
 				}
 			} else {
-				if (cmp != ExpressionType::COMPARE_EQUAL) {
+				if (cmp != ExpressionType::COMPARE_EQUAL && !retain_nulls) {
 					// min != max - generate range filters for non-equality comparisons.
 					// For non-equalities, the range must be half-open.
 					CreateDynamicMinMaxFilters(op, info, context, pushdown_column, filter_col_idx, cmp, min_val,
@@ -2077,7 +2084,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	// the filter covers the whole build side once Sink is done
 	ht.SealBloomFilter();
 
-	sink.temporary_memory_state->UpdateReservation(context);
+	sink.temporary_memory_state->UpdateReservation(context.GetContext());
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
@@ -2091,7 +2098,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		if (temp_total_size < sink.temporary_memory_state->GetReservation()) {
 			// We prevented the external join by reducing the load factor. Update the state accordingly
 			sink.temporary_memory_state->SetMinimumReservation(temp_total_size);
-			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, temp_total_size);
+			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), temp_total_size);
 
 			sink.total_size = temp_total_size;
 			sink.max_partition_size = temp_max_partition_size;
@@ -2478,7 +2485,7 @@ private:
 		probe_chunk_done = 0;
 		external_progress.Reset();
 		probe_count = op.children[0].get().estimated_cardinality;
-		parallel_scan_chunk_count = context.config.verify_parallelism ? 1 : 120;
+		parallel_scan_chunk_count = ClientConfig::GetConfig(context).verify_parallelism ? 1 : 120;
 		full_outer_chunk_idx = DConstants::INVALID_INDEX;
 		full_outer_chunk_count = 0;
 		full_outer_chunk_done = 0;
@@ -2640,8 +2647,8 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	auto &ht = *sink.hash_table;
 
 	// Update remaining size
-	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(sink.context, ht.GetRemainingSize() +
-	                                                                                    sink.probe_side_requirement);
+	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
+	    sink.context.GetContext(), ht.GetRemainingSize() + sink.probe_side_requirement);
 
 	// Try to put the next partitions in the block collection of the HT
 	if (!sink.external || !ht.PrepareExternalFinalize(sink.GetMaxExternalHTSize())) {
@@ -2660,7 +2667,7 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	build_chunk_count = data_collection.ChunkCount();
 	build_chunk_done = 0;
 
-	if (sink.context.config.verify_parallelism) {
+	if (ClientConfig::GetConfig(sink.context).verify_parallelism) {
 		build_chunks_per_thread = 1;
 	} else {
 		if (KeysAreSkewed(sink)) {

@@ -10,6 +10,9 @@
 #include "yyjson_memory.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/common/types/variant.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/types/variant_visitor.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/common/serializer/varint.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
@@ -48,6 +51,8 @@ public:
 	UnifiedVariantVectorData variant;
 	//! The optional client to use for casting
 	optional_ptr<ClientContext> client;
+	//! Checked at execution time so prepared casts see newly registered overrides.
+	optional<bool> varchar_cast_override;
 	//! If unsuccessful - the error of the conversion
 	string error;
 };
@@ -249,9 +254,12 @@ namespace {
 //! case-insensitively duplicate keys, time zone dependent types, ...).
 class VariantVarcharSerializer {
 public:
+	using result_type = bool;
+	using Visitor = VariantVisitor<VariantVarcharSerializer>;
+
 	explicit VariantVarcharSerializer(const UnifiedVariantVectorData &variant)
-	    : variant(variant), object_entries(Variant::MAX_RECURSION_DEPTH), first_entries(Variant::MAX_RECURSION_DEPTH),
-	      other_entries(Variant::MAX_RECURSION_DEPTH) {
+	    : variant(variant), object_entries(Visitor::MAX_RECURSION_DEPTH), first_entries(Visitor::MAX_RECURSION_DEPTH),
+	      other_entries(Visitor::MAX_RECURSION_DEPTH) {
 	}
 
 	bool Serialize(idx_t row, uint32_t values_index) {
@@ -260,8 +268,8 @@ public:
 		return WriteValue(row, values_index, 0);
 	}
 
-	string_t GetResult() const {
-		return string_t(buffer.data(), UnsafeNumericCast<uint32_t>(buffer.size()));
+	const string &GetResult() const {
+		return buffer;
 	}
 
 private:
@@ -271,8 +279,7 @@ private:
 	};
 	//! Collects the entries of an OBJECT, sorted by key. Returns false if the object is not converted to a STRUCT
 	//! with unique names.
-	bool GetSortedEntries(idx_t row, uint32_t values_index, vector<ObjectEntry> &entries) {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
+	bool GetSortedEntries(idx_t row, const VariantNestedData &nested_data, vector<ObjectEntry> &entries) {
 		entries.clear();
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			auto &key = variant.GetKey(row, variant.GetKeysIndex(row, nested_data.children_idx + i));
@@ -300,7 +307,7 @@ private:
 	//! A LIST casts its elements to the type of the first one, which renames STRUCT fields whose names only differ in
 	//! case. Returns true if that can rename a field of `other`.
 	bool NamesDifferInCase(idx_t row, uint32_t first, uint32_t other, idx_t depth) {
-		if (depth >= Variant::MAX_RECURSION_DEPTH) {
+		if (depth >= Visitor::MAX_RECURSION_DEPTH) {
 			return true;
 		}
 		auto first_type = variant.GetTypeId(row, first);
@@ -319,7 +326,8 @@ private:
 		}
 		auto &first_sorted = first_entries[depth];
 		auto &other_sorted = other_entries[depth];
-		if (!GetSortedEntries(row, first, first_sorted) || !GetSortedEntries(row, other, other_sorted) ||
+		if (!GetSortedEntries(row, VariantUtils::DecodeNestedData(variant, row, first), first_sorted) ||
+		    !GetSortedEntries(row, VariantUtils::DecodeNestedData(variant, row, other), other_sorted) ||
 		    first_sorted.size() != other_sorted.size()) {
 			return false;
 		}
@@ -355,37 +363,9 @@ private:
 		}
 	}
 
-	template <class T>
-	void WriteNumeric(const_data_ptr_t ptr, bool escape) {
-		WriteText(StringCast::Operation(Load<T>(ptr), heap), escape);
-	}
-
-	template <class T>
-	void WriteDecimal(const VariantDecimalData &decimal, bool escape) {
-		auto width = UnsafeNumericCast<uint8_t>(decimal.width);
-		auto scale = UnsafeNumericCast<uint8_t>(decimal.scale);
-		WriteText(StringCastFromDecimal::Operation(Load<T>(decimal.value_ptr), width, scale, heap), escape);
-	}
-
-	bool WriteDecimal(idx_t row, uint32_t values_index, bool escape) {
-		auto decimal = VariantUtils::DecodeDecimalData(variant, row, values_index);
-		if (decimal.width > DecimalWidth<hugeint_t>::max) {
-			return false;
-		} else if (decimal.width > DecimalWidth<int64_t>::max) {
-			WriteDecimal<hugeint_t>(decimal, escape);
-		} else if (decimal.width > DecimalWidth<int32_t>::max) {
-			WriteDecimal<int64_t>(decimal, escape);
-		} else if (decimal.width > DecimalWidth<int16_t>::max) {
-			WriteDecimal<int32_t>(decimal, escape);
-		} else {
-			WriteDecimal<int16_t>(decimal, escape);
-		}
-		return true;
-	}
-
-	bool WriteObject(idx_t row, uint32_t values_index, idx_t depth) {
+	bool WriteObject(idx_t row, const VariantNestedData &nested_data, idx_t depth) {
 		auto &entries = object_entries[depth];
-		if (!GetSortedEntries(row, values_index, entries)) {
+		if (!GetSortedEntries(row, nested_data, entries)) {
 			return false;
 		}
 		buffer.push_back('{');
@@ -403,8 +383,7 @@ private:
 		return true;
 	}
 
-	bool WriteArray(idx_t row, uint32_t values_index, idx_t depth) {
-		auto nested_data = VariantUtils::DecodeNestedData(variant, row, values_index);
+	bool WriteArray(idx_t row, const VariantNestedData &nested_data, idx_t depth) {
 		buffer.push_back('[');
 		uint32_t first = 0;
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
@@ -425,93 +404,115 @@ private:
 		return true;
 	}
 
-	//! Primitive members of a STRUCT or LIST are escaped
+	//! Primitive members of a STRUCT or LIST are escaped.
 	bool WriteValue(idx_t row, uint32_t values_index, idx_t depth) {
-		//! Deeper values fall back to the Value conversion, which raises the recursion depth error
-		if (depth >= Variant::MAX_RECURSION_DEPTH) {
-			return false;
-		}
-		bool escape = depth > 0;
-		auto type_id = variant.GetTypeId(row, values_index);
-		auto ptr = const_data_ptr_cast(variant.GetData(row).GetData()) + variant.GetByteOffset(row, values_index);
-		switch (type_id) {
-		case VariantLogicalType::VARIANT_NULL:
-			buffer.append("NULL");
-			return true;
-		case VariantLogicalType::BOOL_TRUE:
-			buffer.append("true");
-			return true;
-		case VariantLogicalType::BOOL_FALSE:
-			buffer.append("false");
-			return true;
-		case VariantLogicalType::INT8:
-			WriteNumeric<int8_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::INT16:
-			WriteNumeric<int16_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::INT32:
-			WriteNumeric<int32_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::INT64:
-			WriteNumeric<int64_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::INT128:
-			WriteNumeric<hugeint_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::UINT8:
-			WriteNumeric<uint8_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::UINT16:
-			WriteNumeric<uint16_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::UINT32:
-			WriteNumeric<uint32_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::UINT64:
-			WriteNumeric<uint64_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::UINT128:
-			WriteNumeric<uhugeint_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::FLOAT:
-			WriteNumeric<float>(ptr, escape);
-			return true;
-		case VariantLogicalType::DOUBLE:
-			WriteNumeric<double>(ptr, escape);
-			return true;
-		case VariantLogicalType::DATE:
-			WriteNumeric<date_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::TIME_MICROS:
-			WriteNumeric<dtime_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::TIMESTAMP_MICROS:
-			WriteNumeric<timestamp_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::INTERVAL:
-			WriteNumeric<interval_t>(ptr, escape);
-			return true;
-		case VariantLogicalType::UUID: {
-			char uuid[UUID::STRING_SIZE];
-			UUID::ToString(Load<hugeint_t>(ptr), uuid);
-			WriteText(string_t(uuid, UUID::STRING_SIZE), escape);
-			return true;
-		}
-		case VariantLogicalType::DECIMAL:
-			return WriteDecimal(row, values_index, escape);
-		case VariantLogicalType::VARCHAR:
-			WriteText(VariantUtils::DecodeStringData(variant, row, values_index), escape);
-			return true;
-		case VariantLogicalType::OBJECT:
-			return WriteObject(row, values_index, depth);
-		case VariantLogicalType::ARRAY:
-			return WriteArray(row, values_index, depth);
-		default:
-			//! Time zone dependent types are formatted with the session time zone (ICU), the remaining types are rare
-			//! in a VARIANT and take the Value conversion
-			return false;
-		}
+		return Visitor::Visit(variant, row, values_index, depth, *this, depth > 0);
+	}
+
+public:
+	static bool VisitNull(VariantVarcharSerializer &writer, bool) {
+		writer.buffer.append("NULL");
+		return true;
+	}
+
+	template <class T>
+	static bool VisitInteger(T value, VariantVarcharSerializer &writer, bool escape) {
+		writer.WriteText(StringCast::Operation(value, writer.heap), escape);
+		return true;
+	}
+
+	static bool VisitBoolean(bool value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitFloat(float value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitDouble(double value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitDate(date_t value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitTime(dtime_t value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitTimestamp(timestamp_t value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitInterval(interval_t value, VariantVarcharSerializer &writer, bool escape) {
+		return VisitInteger(value, writer, escape);
+	}
+
+	static bool VisitUUID(hugeint_t value, VariantVarcharSerializer &writer, bool escape) {
+		char uuid[UUID::STRING_SIZE];
+		UUID::ToString(value, uuid);
+		writer.WriteText(string_t(uuid, UUID::STRING_SIZE), escape);
+		return true;
+	}
+
+	template <class T>
+	static bool VisitDecimal(T value, uint32_t width, uint32_t scale, VariantVarcharSerializer &writer, bool escape) {
+		writer.WriteText(StringCastFromDecimal::Operation(value, width, scale, writer.heap), escape);
+		return true;
+	}
+
+	static bool VisitString(const string_t &value, VariantVarcharSerializer &writer, bool escape) {
+		writer.WriteText(value, escape);
+		return true;
+	}
+
+	static bool VisitObject(const UnifiedVariantVectorData &, idx_t row, const VariantNestedData &nested_data,
+	                        idx_t depth, VariantVarcharSerializer &writer, bool) {
+		return writer.WriteObject(row, nested_data, depth);
+	}
+
+	static bool VisitArray(const UnifiedVariantVectorData &, idx_t row, const VariantNestedData &nested_data,
+	                       idx_t depth, VariantVarcharSerializer &writer, bool) {
+		return writer.WriteArray(row, nested_data, depth);
+	}
+
+	//! Use the Value conversion for session-dependent and uncommon types.
+	static bool VisitTimeNanos(dtime_ns_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitTimeTZ(dtime_tz_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitTimestampSec(timestamp_sec_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitTimestampMs(timestamp_ms_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitTimestampNanos(timestamp_ns_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitTimestampTZ(timestamp_tz_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitTimestampTZNanos(timestamp_tz_ns_t, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitBlob(const string_t &, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitBignum(const string_t &, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitGeometry(const string_t &, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitBitstring(const string_t &, VariantVarcharSerializer &, bool) {
+		return false;
+	}
+	static bool VisitDefault(VariantLogicalType, const_data_ptr_t, VariantVarcharSerializer &, bool) {
+		return false;
 	}
 
 private:
@@ -529,18 +530,72 @@ private:
 #ifdef D_ASSERT_IS_ENABLED
 //! The serializer must produce the same text as the Value conversion
 static void VerifyVarcharSerialization(FromVariantConversionData &conversion_data, const LogicalType &target_type,
-                                       idx_t row_index, uint32_t values_index, const string_t &serialized) {
+                                       idx_t row_index, uint32_t values_index, const string &serialized) {
 	auto value = VariantUtils::ConvertVariantToValue(conversion_data.variant, row_index, values_index);
 	auto expected = conversion_data.TryCastAs(value, target_type);
-	if (!expected || StringValue::Get(*expected) != serialized.GetString()) {
-		throw InternalException("VARIANT to VARCHAR serialization produced \"%s\", expected \"%s\"",
-		                        serialized.GetString(), expected ? StringValue::Get(*expected) : "a cast error");
+	if (!expected || StringValue::Get(*expected) != serialized) {
+		throw InternalException("VARIANT to VARCHAR serialization produced \"%s\", expected \"%s\"", serialized,
+		                        expected ? StringValue::Get(*expected) : "a cast error");
 	}
 }
 #endif
 
+static bool HasVarcharCastOverride(FromVariantConversionData &conversion_data) {
+	if (conversion_data.varchar_cast_override) {
+		return *conversion_data.varchar_cast_override;
+	}
+	conversion_data.varchar_cast_override = false;
+	if (!conversion_data.client) {
+		return false;
+	}
+	auto &casts = CastFunctionSet::Get(*conversion_data.client);
+	for (auto &type : casts.GetRegisteredCastSourceTypes(LogicalType::VARCHAR)) {
+		// VARIANT does not preserve aliases, including JSON in nested types.
+		if (TypeVisitor::Contains(type, [](const LogicalType &child) { return child.HasAlias(); })) {
+			continue;
+		}
+		switch (type.id()) {
+		case LogicalTypeId::ANY:
+		case LogicalTypeId::SQLNULL:
+		case LogicalTypeId::BOOLEAN:
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::BIGINT:
+		case LogicalTypeId::HUGEINT:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+		case LogicalTypeId::UINTEGER:
+		case LogicalTypeId::UBIGINT:
+		case LogicalTypeId::UHUGEINT:
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+		case LogicalTypeId::DATE:
+		case LogicalTypeId::TIME:
+		case LogicalTypeId::TIMESTAMP:
+		case LogicalTypeId::INTERVAL:
+		case LogicalTypeId::UUID:
+		case LogicalTypeId::DECIMAL:
+		case LogicalTypeId::STRUCT:
+		case LogicalTypeId::LIST:
+		case LogicalTypeId::VARIANT:
+			conversion_data.varchar_cast_override = true;
+			return true;
+		default:
+			// The serializer already falls back for the remaining types.
+			break;
+		}
+	}
+	return false;
+}
+
 static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vector &result, const SelectionVector &sel,
                                  idx_t offset, idx_t count, optional_idx row) {
+	if (result.GetType().HasAlias() || HasVarcharCastOverride(conversion_data)) {
+		StringConversionPayload payload(result);
+		return CastVariantToPrimitive<VariantDirectConversion<string_t, VariantLogicalType::VARCHAR>>(
+		    conversion_data, result, sel, offset, count, row, payload);
+	}
 	auto &variant = conversion_data.variant;
 	auto result_data = FlatVector::GetDataMutable<string_t>(result);
 	auto &result_validity = FlatVector::ValidityMutable(result);
@@ -571,11 +626,13 @@ static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vec
 			serializer = make_uniq<VariantVarcharSerializer>(variant);
 		}
 		if (serializer->Serialize(row_index, values_index)) {
+			auto &serialized = serializer->GetResult();
+			// Let the string heap validate the full size before narrowing it to string_t's length.
+			result_data[i + offset] = StringVector::GetStringHeap(result).AddBlob(serialized.data(), serialized.size());
 #ifdef D_ASSERT_IS_ENABLED
 			VerifyVarcharSerialization(conversion_data, result.GetType(), row_index, values_index,
 			                           serializer->GetResult());
 #endif
-			result_data[i + offset] = StringVector::AddStringOrBlob(result, serializer->GetResult());
 			continue;
 		}
 		if (!CastVariantValue(conversion_data, result, offset + i, row_index, values_index)) {
@@ -1144,8 +1201,8 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			    conversion_data, result, sel, offset, count, row, empty_payload);
 		case LogicalTypeId::DECIMAL: {
 			auto physical_type = target_type.InternalType();
-			uint8_t width;
-			uint8_t scale;
+			uint32_t width;
+			uint32_t scale;
 			target_type.GetDecimalProperties(width, scale);
 			DecimalConversionPayloadFromVariant decimal_payload(width, scale);
 

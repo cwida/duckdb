@@ -272,7 +272,7 @@ FilterPropagateResult CheckZonemapTemplated(const BaseStatistics &stats, Express
 			return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 		}
 	default:
-		throw InternalException("Expression type in zonemap check not implemented");
+		InternalException::Throw("Expression type in zonemap check not implemented");
 	}
 }
 
@@ -692,6 +692,11 @@ child_list_t<Value> NumericStats::ToStruct(const BaseStatistics &stats) {
 	return result;
 }
 
+[[noreturn]] static void ThrowStatisticsMismatch(const char *message, const BaseStatistics &stats,
+                                                 const Vector &vector) {
+	throw InternalException("%s\nStatistics: %s\nVector: %s", message, stats.ToString(), vector.ToString());
+}
+
 template <class T>
 void NumericStats::TemplatedVerify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel,
                                    idx_t count) {
@@ -706,12 +711,10 @@ void NumericStats::TemplatedVerify(const BaseStatistics &stats, const Vector &ve
 		}
 		if (!min_value.IsNull() &&
 		    LessThan::Operation(entry.GetValue(), min_value.GetValueUnsafe<T>())) { // LCOV_EXCL_START
-			throw InternalException("Statistics mismatch: value is smaller than min.\nStatistics: %s\nVector: %s",
-			                        stats.ToString(), vector.ToString());
+			ThrowStatisticsMismatch("Statistics mismatch: value is smaller than min.", stats, vector);
 		} // LCOV_EXCL_STOP
 		if (!max_value.IsNull() && GreaterThan::Operation(entry.GetValue(), max_value.GetValueUnsafe<T>())) {
-			throw InternalException("Statistics mismatch: value is bigger than max.\nStatistics: %s\nVector: %s",
-			                        stats.ToString(), vector.ToString());
+			ThrowStatisticsMismatch("Statistics mismatch: value is bigger than max.", stats, vector);
 		}
 	}
 }

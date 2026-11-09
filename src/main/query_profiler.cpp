@@ -14,9 +14,11 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/profiler/profiling_utils.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
+#include "duckdb/main/profiler/metrics_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -115,11 +117,16 @@ string QueryProfiler::GetSaveLocation() const {
 }
 
 QueryProfiler &QueryProfiler::Get(ClientContext &context) {
-	return *ClientData::Get(context).profiler;
+	return Get(context.GetContext());
+}
+
+QueryProfiler &QueryProfiler::Get(Context &context) {
+	return context.GetQueryProfiler();
 }
 
 void QueryProfiler::Start(const string &query) {
 	Reset();
+	tracked_metric_patterns = make_uniq<GatheredMetrics>(ClientConfig::GetConfig(context).tracked_metrics);
 	running = true;
 	query_metrics.query_sql = query;
 	query_metrics.latency_timer = make_uniq<MetricsTimer>(StartTimer<MetricQueryTotalTime>());
@@ -129,6 +136,7 @@ void QueryProfiler::Reset() {
 	tree_map.clear();
 	root = nullptr;
 	metrics.reset();
+	tracked_metric_patterns.reset();
 	running = false;
 	query_metrics.Reset();
 	result_tree.reset();
@@ -310,23 +318,39 @@ void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
 }
 
 void QueryProfiler::AddToMetricCounter(const string &key, const idx_t amount) {
-	if (IsEnabled()) {
+	if (IsEnabled() && running) {
 		query_metrics.UpdateMetricCounter(key, amount);
 	}
 }
 
+void QueryProfiler::AddToMetricTiming(const string &key, const idx_t elapsed_ns) {
+	if (IsEnabled() && running) {
+		query_metrics.UpdateMetric(key, elapsed_ns);
+	}
+}
+
 void QueryProfiler::SetMetric(const string &key, Value new_value) {
-	if (!IsEnabled()) {
+	if (!IsEnabled() || !running) {
 		return;
 	}
-	metrics->SetMetric(key, std::move(new_value));
+	// only the metrics extensions registered: the profiler sets its own, and leaves some out on purpose
+	if (!MetricsManager::Get(context).IsRegisteredMetric(key)) {
+		return;
+	}
+	// the query's metrics are only gathered once its plan is built, so the value is kept with the query until then:
+	// an extension may set it while the query binds
+	query_metrics.SetMetricValue(key, std::move(new_value));
 }
 
 bool QueryProfiler::MetricIsTracked(const string &key) const {
-	if (!IsEnabled()) {
+	if (!IsEnabled() || !running) {
 		return false;
 	}
-	return metrics->MetricIsTracked(key);
+	if (metrics) {
+		return metrics->MetricIsTracked(key);
+	}
+	// before the plan is built there are no gathered metrics to ask
+	return tracked_metric_patterns && tracked_metric_patterns->MetricIsTracked(key);
 }
 
 idx_t QueryProfiler::GetBytesRead() const {
@@ -365,14 +389,14 @@ static string StripExplainPrefix(const string &sql) {
 		start++;
 	}
 	string rest = sql.substr(start);
-	if (!StringUtil::StartsWith(StringUtil::Upper(rest), "EXPLAIN")) {
+	if (!StringUtil::CIStartsWith(rest, "EXPLAIN")) {
 		return sql;
 	}
 	idx_t pos = 7; // past "EXPLAIN"
 	while (pos < rest.size() && is_space(rest[pos])) {
 		pos++;
 	}
-	if (StringUtil::StartsWith(StringUtil::Upper(rest.substr(pos)), "ANALYZE")) {
+	if (StringUtil::CIStartsWith(std::string_view(rest).substr(pos), "ANALYZE")) {
 		pos += 7;
 		while (pos < rest.size() && is_space(rest[pos])) {
 			pos++;
@@ -678,7 +702,7 @@ void QueryProfiler::RenderQueryTree(BaseTreeRenderer &ss) const {
 
 	// the registered states write profiling info through an ostream - capture it and emit as layout text
 	duckdb::stringstream state_info;
-	for (auto &state : context.registered_state->States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		state->WriteProfilingInformation(state_info);
 	}
 	ss << state_info.str();
@@ -1207,6 +1231,7 @@ void QueryProfiler::FinalizeMetricsInternal() {
 	if (query_metrics.latency_timer) {
 		query_metrics.latency_timer->EndTimer();
 	}
+	query_metrics.FinalizeMetricValues(*metrics);
 	if (root) {
 		// collapse secure views first - the query-wide totals are sums over the operator tree, so leaving the
 		// operators of the view in would expose how much of the table behind it was scanned. The time of the view

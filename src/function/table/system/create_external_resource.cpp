@@ -169,8 +169,16 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	}
 	auto &bind_data = data_p.bind_data->Cast<CreateExternalResourceBindData>();
 
-	auto type = ExternalResourceTypeRegistry::Get(context).Lookup(bind_data.type_name);
+	// An unknown type autoloads the extension known to provide it, like an unknown function or file format does
+	auto type =
+	    ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), bind_data.type_name);
 	if (!type) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(bind_data.type_name);
+		if (!extension.empty()) {
+			throw InvalidInputException("create_external_resource: unknown resource type \"%s\": it is provided by the "
+			                            "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			                            bind_data.type_name, extension, extension);
+		}
 		throw InvalidInputException("create_external_resource: unknown resource type \"%s\"", bind_data.type_name);
 	}
 	// Separate internal connection: the current connection's context lock is held here.
@@ -384,6 +392,8 @@ void CreateExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("timeout_seconds", LogicalType::BIGINT)
 		    .Add("poll_interval_seconds", LogicalType::BIGINT);
 	});
+	// provisions an external resource per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -452,12 +462,15 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 }
 
 void DestroyExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("destroy_external_resource",
-	                              FunctionSignature()
-	                                  .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
-	                                  .AddPositionalOnly("payload", LogicalType::ANY),
-	                              DestroyExternalResourceFunction, DestroyExternalResourceBind,
-	                              DestroyExternalResourceInit));
+	TableFunction destroy_fun("destroy_external_resource",
+	                          FunctionSignature()
+	                              .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
+	                              .AddPositionalOnly("payload", LogicalType::ANY),
+	                          DestroyExternalResourceFunction, DestroyExternalResourceBind,
+	                          DestroyExternalResourceInit);
+	// tears down an external resource per execution
+	destroy_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(destroy_fun));
 }
 
 } // namespace duckdb

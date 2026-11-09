@@ -10,6 +10,7 @@
 
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/enums/join_type.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/logical_operator.hpp"
@@ -31,6 +32,7 @@ class LogicalGet;
 class LogicalLimit;
 class LogicalProjection;
 class LogicalWindow;
+class RelationStatsExtractor;
 
 struct SemiAntiJoinDomain {
 	idx_t total_domain;
@@ -49,7 +51,6 @@ public:
 	static constexpr double DEFAULT_SELECTIVITY = 0.2;
 
 public:
-	static idx_t InspectTableFilter(idx_t cardinality, const TableFilter &filter, BaseStatistics &base_stats);
 	static RelationStats ExtractGetStats(LogicalGet &get, ClientContext &context);
 	static RelationStats ExtractDelimGetStats(LogicalDelimGet &delim_get, ClientContext &context);
 	static RelationStats ExtractDummyScanStats(LogicalDummyScan &dummy_scan, ClientContext &context);
@@ -62,6 +63,10 @@ public:
 	                                                      const RelationStats &child_stats);
 	static optional<RelationStats> ExtractAggregationStats(LogicalAggregate &aggregate,
 	                                                       const RelationStats &child_stats, ClientContext &context);
+	//! Reuse the caller snapshot for aggregate input refinements.
+	static optional<RelationStats> ExtractAggregationStats(LogicalAggregate &aggregate,
+	                                                       const RelationStats &child_stats,
+	                                                       RelationStatsExtractor &extractor);
 	static optional<RelationStats> ExtractWindowStats(LogicalWindow &window, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractDistinctStats(LogicalDistinct &distinct, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractFilterStats(LogicalFilter &filter, const RelationStats &child_stats);
@@ -70,10 +75,25 @@ public:
 	static optional<RelationStats> ProjectOutputStats(const RelationStats &stats, LogicalOperator &op);
 	static optional<RelationStats> RebindOutputStats(const RelationStats &stats, LogicalOperator &op);
 	static optional<DistinctCount> SelectTotalDomain(const vector<DistinctCount> &domains);
+	static void ApplySemiAntiJoinStats(LogicalComparisonJoin &join, const RelationStats &left,
+	                                   const RelationStats &right, RelationStats &result);
+	static idx_t CardinalityFromDouble(double cardinality);
 	static idx_t EstimateDistinctCardinality(const vector<DistinctCount> &distinct_counts, idx_t input_cardinality);
 	static DistinctCount EstimateCurrentDomain(const DistinctCount &current_domain, idx_t input_cardinality,
 	                                           idx_t output_cardinality);
 	static void ApplyCardinality(RelationStats &stats, idx_t output_cardinality);
+	//! Share fallback policy between ordinary statistics and scaled join cardinalities.
+	template <class T>
+	static T EstimateSemiAntiJoinFallbackCardinality(const T &preserved_cardinality, idx_t rhs_cardinality,
+	                                                 JoinType join_type) {
+		auto is_anti = join_type == JoinType::ANTI || join_type == JoinType::RIGHT_ANTI;
+		if (rhs_cardinality == 0) {
+			return is_anti ? MaxValue(T(0), preserved_cardinality) : T(0);
+		}
+		// Retain fractional estimates while composing costs.
+		auto estimate = MinValue(preserved_cardinality, MaxValue(T(1), preserved_cardinality * T(DEFAULT_SELECTIVITY)));
+		return MaxValue(T(0), estimate);
+	}
 	static SemiAntiJoinCardinalityEstimate EstimateSemiAntiJoinFallback(double preserved_cardinality,
 	                                                                    idx_t rhs_cardinality, JoinType join_type);
 	static SemiAntiJoinCardinalityEstimate

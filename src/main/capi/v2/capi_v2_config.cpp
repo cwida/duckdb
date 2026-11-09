@@ -87,53 +87,54 @@ DUCKDB_V2_ERROR duckdb_v2_context_get_config(duckdb_v2_context_handle ctx, duckd
 	return WithErrorHandler(err, [&]() { *out_config = Convert(&Convert(ctx)->config_handle); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_config_get_option_value(duckdb_v2_config_handle config, const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_config_get_option_value(duckdb_v2_config_handle config, const char *name, idx_t name_length,
                                                   duckdb_v2_value_handle *out_value, DUCKDB_V2_SETTING_SCOPE *out_scope,
                                                   duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(config);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(out_value);
 	DUCKDB_CHECK_ARG(out_scope);
 	*out_value = nullptr;
 	return WithErrorHandler(err, [&]() {
 		duckdb::Value value;
-		*out_scope = Convert(config)->ReadValue(ConvertIdentifierName(name), value);
+		*out_scope = Convert(config)->ReadValue(ConvertIdentifierName(name, name_length), value);
 		*out_value = Convert(new duckdb::Value(std::move(value)));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_config_set_option_value(duckdb_v2_config_handle config, const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_config_set_option_value(duckdb_v2_config_handle config, const char *name, idx_t name_length,
                                                   duckdb_v2_value_handle value, DUCKDB_V2_SETTING_SCOPE scope,
                                                   duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(config);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(value);
 	return WithErrorHandler(err, [&]() {
-		Convert(config)->Write(duckdb::Identifier(ConvertIdentifierName(name)), *Convert(value), scope);
+		Convert(config)->Write(duckdb::Identifier(ConvertIdentifierName(name, name_length)), *Convert(value), scope);
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_config_set_option_text(duckdb_v2_config_handle config, const duckdb_v2_identifier_t *name,
-                                                 const duckdb_v2_str *setting, DUCKDB_V2_SETTING_SCOPE scope,
-                                                 duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_config_set_option_text(duckdb_v2_config_handle config, const char *name, idx_t name_length,
+                                                 const char *setting, idx_t setting_length,
+                                                 DUCKDB_V2_SETTING_SCOPE scope, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(config);
-	DUCKDB_CHECK_ARG(name);
-	DUCKDB_CHECK_ARG(setting);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	DUCKDB_CHECK_STR_ARG(setting, setting_length);
 	return WithErrorHandler(err, [&]() {
-		Convert(config)->Write(duckdb::Identifier(ConvertIdentifierName(name)),
-		                       duckdb::Value(duckdb::string(Convert(setting))), scope);
+		Convert(config)->Write(duckdb::Identifier(ConvertIdentifierName(name, name_length)),
+		                       duckdb::Value(duckdb::string(Convert(setting, setting_length))), scope);
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_config_get_option_by_name(duckdb_v2_config_handle config, const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_config_get_option_by_name(duckdb_v2_config_handle config, const char *name, idx_t name_length,
                                                     duckdb_v2_option_handle *out_option,
                                                     duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(config);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(out_option);
 	*out_option = nullptr;
-	return WithErrorHandler(
-	    err, [&]() { *out_option = Convert(Convert(config)->GetOption(ConvertIdentifierName(name)).release()); });
+	return WithErrorHandler(err, [&]() {
+		*out_option = Convert(Convert(config)->GetOption(ConvertIdentifierName(name, name_length)).release());
+	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_config_get_option_count(duckdb_v2_config_handle config, idx_t *out_count,

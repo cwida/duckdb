@@ -30,6 +30,7 @@ struct MemorySafety {
 [[noreturn]] DUCKDB_API void ThrowArrayPtrIteratorOutOfRange();
 
 [[noreturn]] DUCKDB_API void ThrowVectorIndexOutOfBounds(idx_t index, idx_t size);
+[[noreturn]] DUCKDB_API void ThrowVectorEraseOutOfBounds(idx_t index, idx_t size);
 [[noreturn]] DUCKDB_API void ThrowDequeIndexOutOfBounds(idx_t index, idx_t size);
 [[noreturn]] DUCKDB_API void ThrowArrayPtrIndexOutOfBounds(idx_t index, idx_t size);
 [[noreturn]] DUCKDB_API void ThrowArrayPtrSubArrayOutOfBounds(idx_t offset, idx_t count, idx_t size);

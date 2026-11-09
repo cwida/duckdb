@@ -59,3 +59,60 @@ SELECT i::VARCHAR, datepart('day', i), datepart('hour', i), j::VARCHAR, datepart
 FROM '{TEST_DIR}/split_interval.parquet'
 ----
 720:00:00	0	720	36:00:00	0	36
+
+# The days are read back as a signed 32 bit integer, so the days plus the whole days moved out of the time must fit.
+statement error
+COPY (SELECT INTERVAL '2147483647 days' + to_microseconds(4320000000000) AS i)
+TO '{TEST_DIR}/days_overflow.parquet'
+----
+<REGEX>:.*Out of Range Error.*Cannot write the interval 2147483647 days 1200:00:00 to Parquet.*exceed 2147483647.*
+
+# The time moves into the days from 2^32 milliseconds on
+statement error
+COPY (SELECT INTERVAL '2147483647 days' + to_microseconds(4294967296000) AS i)
+TO '{TEST_DIR}/days_overflow.parquet'
+----
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
+
+statement error
+COPY (SELECT [INTERVAL '2147483598 days' + to_microseconds(4320000000000)] AS l)
+TO '{TEST_DIR}/days_overflow.parquet'
+----
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
+
+statement error
+COPY (SELECT {'i': INTERVAL '2147483598 days' + to_microseconds(4320000000000)} AS s)
+TO '{TEST_DIR}/days_overflow.parquet'
+----
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
+
+statement error
+COPY (
+	SELECT CASE WHEN r = 5000 THEN INTERVAL '2147483647 days' + to_microseconds(9223372036854775807)
+	            ELSE INTERVAL (r % 10) DAY END AS i
+	FROM range(10000) t(r)
+) TO '{TEST_DIR}/days_overflow.parquet'
+----
+<REGEX>:.*Out of Range Error.*Cannot write the interval.*
+
+# The largest days that fit, with and without days moved out of the time, and the largest months
+statement ok
+COPY (
+	SELECT INTERVAL '2147483597 days' + to_microseconds(4320000000000) AS i,
+	       INTERVAL '2147483647 days' + to_microseconds(4294967295000) AS j,
+	       to_microseconds(9223372036854775000) AS k,
+	       INTERVAL '2147483647 months 2147483647 days' AS m
+) TO '{TEST_DIR}/days_max.parquet'
+
+query IIIIIIII
+SELECT i = INTERVAL '2147483597 days' + to_microseconds(4320000000000),
+       datepart('day', i),
+       j = INTERVAL '2147483647 days' + to_microseconds(4294967295000),
+       datepart('day', j),
+       k = to_microseconds(9223372036854775000),
+       datepart('day', k),
+       m = INTERVAL '2147483647 months 2147483647 days',
+       datepart('day', m)
+FROM '{TEST_DIR}/days_max.parquet'
+----
+true	2147483647	true	2147483647	true	106751991	true	2147483647

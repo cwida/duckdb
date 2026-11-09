@@ -32,8 +32,6 @@ enum class VariantChildLookupMode : uint8_t { INVALID, BY_KEY, BY_INDEX };
 struct Variant {
 public:
 	static constexpr StorageVersion VERSION_ADDED = StorageVersion::V1_5_0; // Added to core in DuckDB v1.5.0
-	//! Maximum nesting depth of a VARIANT value
-	static constexpr idx_t MAX_RECURSION_DEPTH = 128;
 };
 
 struct VariantPathComponent {

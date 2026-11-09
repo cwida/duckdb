@@ -1,0 +1,253 @@
+# name: test/sql/subquery/lateral/lateral_asof_join.test
+# description: ASOF joins with a correlated input must match per outer domain
+# group: [lateral]
+
+statement ok
+CREATE TABLE prices(ts INTEGER, price INTEGER);
+
+statement ok
+INSERT INTO prices VALUES (1, 10), (5, 50), (9, 90);
+
+statement ok
+CREATE TABLE probes(x INTEGER);
+
+statement ok
+INSERT INTO probes VALUES (4), (10);
+
+statement ok
+CREATE TABLE big_prices AS SELECT r AS ts, r * 10 AS price FROM range(0, 1000, 5) t(r);
+
+statement ok
+CREATE TABLE big_probes AS SELECT r AS x FROM range(1000) t(r);
+
+# the correlated input can sit behind a recursive CTE member (default strategy only:
+# the sorted ASOF operator is not supported inside recursive CTEs yet)
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+    WITH RECURSIVE t(i, n) AS (
+        SELECT 0, o.k
+        UNION ALL
+        SELECT 1, v.x
+        FROM (VALUES (2)) v(x)
+        ASOF JOIN (SELECT n FROM t WHERE i = 0) tt ON v.x >= tt.n
+    )
+    SELECT n FROM t WHERE i = 1
+) q ORDER BY ALL;
+----
+1	2
+2	2
+
+# cover the loop join and the sorted ASOF operator
+foreach threshold 0 32
+
+statement ok
+SET asof_loop_join_threshold = {threshold};
+
+# static left, correlated right: every domain keeps its own nearest match
+query III
+SELECT o.k, q.x, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, t.n
+    FROM (VALUES (2)) v(x)
+    ASOF JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2	1
+2	2	2
+
+# multiple probe rows and multiple candidates per domain
+query IIII
+SELECT o.cutoff, q.x, q.ts, q.price
+FROM (VALUES (1), (5), (9)) o(cutoff), LATERAL (
+    SELECT p.x, r.ts, r.price
+    FROM probes p
+    ASOF JOIN (SELECT ts, price FROM prices WHERE ts <= o.cutoff) r ON p.x >= r.ts
+) q ORDER BY ALL;
+----
+1	4	1	10
+1	10	1	10
+5	4	1	10
+5	10	5	50
+9	4	1	10
+9	10	9	90
+
+# duplicate outer keys keep their multiplicity
+query III
+SELECT o.cutoff, q.x, q.price FROM (VALUES (5), (5), (9)) o(cutoff), LATERAL (
+    SELECT p.x, r.price
+    FROM probes p
+    ASOF JOIN (SELECT ts, price FROM prices WHERE ts <= o.cutoff) r ON p.x >= r.ts
+    WHERE p.x = 10
+) q ORDER BY ALL;
+----
+5	10	50
+5	10	50
+9	10	90
+
+# a NULL outer key yields an empty correlated candidate set
+query III
+SELECT o.cutoff, q.x, q.price FROM (VALUES (5), (NULL)) o(cutoff), LATERAL (
+    SELECT p.x, r.price
+    FROM probes p
+    ASOF JOIN (SELECT ts, price FROM prices WHERE ts <= o.cutoff) r ON p.x >= r.ts
+) q ORDER BY ALL;
+----
+5	4	10
+5	10	50
+
+# NULL domain values flow through the domain equality
+query II
+SELECT o.k, q.n FROM (VALUES (NULL), (2)) o(k), LATERAL (
+    SELECT t.n
+    FROM (VALUES (2)) v(x)
+    ASOF JOIN (SELECT coalesce(o.k, 0) AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+2	2
+NULL	0
+
+# correlated left and static right stays per-domain correct
+query II
+SELECT o.k, q.ts FROM (VALUES (4), (10)) o(k), LATERAL (
+    SELECT t.ts FROM (SELECT o.k AS x) v ASOF JOIN prices t ON v.x >= t.ts
+) q ORDER BY ALL;
+----
+4	1
+10	9
+
+# both sides correlated
+query III
+SELECT o.k, q.x, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, t.n
+    FROM (SELECT o.k + 1 AS x) v
+    ASOF JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2	1
+2	3	2
+
+# the opposite inequality direction picks the smallest candidate per domain
+query III
+SELECT o.cutoff, q.x, q.ts FROM (VALUES (5), (9)) o(cutoff), LATERAL (
+    SELECT p.x, r.ts
+    FROM probes p
+    ASOF JOIN (SELECT ts FROM prices WHERE ts <= o.cutoff) r ON p.x <= r.ts
+) q ORDER BY ALL;
+----
+5	4	5
+9	4	5
+
+# ASOF LEFT preserves unmatched probe rows per domain
+query III
+SELECT o.k, q.x, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, t.n
+    FROM (VALUES (0), (2)) v(x)
+    ASOF LEFT JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	0	NULL
+1	2	1
+2	0	NULL
+2	2	2
+
+# ASOF RIGHT preserves unmatched correlated candidates per domain
+query III
+SELECT o.k, q.x, q.n FROM (VALUES (1), (3)) o(k), LATERAL (
+    SELECT v.x, t.n
+    FROM (VALUES (2)) v(x)
+    ASOF RIGHT JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2	1
+3	NULL	3
+
+# ASOF SEMI and ANTI test per-domain match existence
+query II
+SELECT o.k, q.x FROM (VALUES (1), (3)) o(k), LATERAL (
+    SELECT v.x FROM (VALUES (2)) v(x) ASOF SEMI JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2
+
+query II
+SELECT o.k, q.x FROM (VALUES (1), (3)) o(k), LATERAL (
+    SELECT v.x FROM (VALUES (2)) v(x) ASOF ANTI JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+3	2
+
+# ASOF FULL preserves unmatched rows of both sides per domain
+query III
+SELECT o.k, q.x, q.n FROM (VALUES (1), (3)) o(k), LATERAL (
+    SELECT v.x, t.n
+    FROM (VALUES (2)) v(x)
+    ASOF FULL JOIN (SELECT o.k AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2	1
+3	2	NULL
+3	NULL	3
+
+# non-numeric payloads survive the per-domain match
+query III
+SELECT o.k, q.x, q.tag FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, t.tag
+    FROM (VALUES (2)) v(x)
+    ASOF JOIN (SELECT o.k AS n, 'd' || o.k AS tag) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2	d1
+2	2	d2
+
+# larger inputs agree with a computed per-domain reference
+query I
+SELECT count(*) FROM (
+    SELECT o.cutoff, q.x, q.price
+    FROM (VALUES (300), (600), (995)) o(cutoff), LATERAL (
+        SELECT p.x, r.price
+        FROM big_probes p
+        ASOF JOIN (SELECT ts, price FROM big_prices WHERE ts <= o.cutoff) r ON p.x >= r.ts
+    ) q
+    EXCEPT ALL
+    SELECT o.cutoff, p.x, 10 * (least(p.x, o.cutoff) - least(p.x, o.cutoff) % 5)
+    FROM (VALUES (300), (600), (995)) o(cutoff), big_probes p
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+    SELECT o.cutoff, p.x, 10 * (least(p.x, o.cutoff) - least(p.x, o.cutoff) % 5)
+    FROM (VALUES (300), (600), (995)) o(cutoff), big_probes p
+    EXCEPT ALL
+    SELECT o.cutoff, q.x, q.price
+    FROM (VALUES (300), (600), (995)) o(cutoff), LATERAL (
+        SELECT p.x, r.price
+        FROM big_probes p
+        ASOF JOIN (SELECT ts, price FROM big_prices WHERE ts <= o.cutoff) r ON p.x >= r.ts
+    ) q
+);
+----
+0
+
+endloop
+
+statement ok
+RESET asof_loop_join_threshold;
+
+# the window-based debug strategy partitions per domain for orderable key types
+statement ok
+SET debug_asof_iejoin=True;
+
+query ITT
+SELECT o.k, q.x::VARCHAR, q.n::VARCHAR
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, t.n
+    FROM (VALUES (TIMESTAMP '2024-01-02')) v(x)
+    ASOF JOIN (SELECT TIMESTAMP '2024-01-01' + INTERVAL (o.k) DAY AS n) t ON v.x >= t.n
+) q ORDER BY ALL;
+----
+1	2024-01-02 00:00:00	2024-01-02 00:00:00
+
+statement ok
+SET debug_asof_iejoin=False;

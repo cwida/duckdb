@@ -16,10 +16,6 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t StatsIdent(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 // What a stats callback does to the result statistics, passed as the function's user data.
 struct StatsMode {
 	bool set_null = false;
@@ -49,10 +45,9 @@ struct StatsObserved {
 
 StatsObserved g_stats_observed;
 
-void StatsFail(duckdb_v2_error_info_handle *err, const char *message) {
+void StatsFail(duckdb_v2_error_info_handle *err, std::string_view message) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_API);
-	auto text = Convert(message);
-	duckdb_v2_error_info_set_text(*err, &text);
+	duckdb_v2_error_info_set_text(*err, message.data(), message.size());
 }
 
 // Applies the mode to the result statistics and latches what they read back as.
@@ -85,7 +80,7 @@ void StatsObserveArg(duckdb_v2_stats_handle arg, duckdb_v2_error_info_handle *er
 }
 
 // Runs a query producing a single BIGINT cell.
-int64_t StatsQueryI64(duckdb_v2_connection_handle conn, const char *sql) {
+int64_t StatsQueryI64(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -100,15 +95,16 @@ int64_t StatsQueryI64(duckdb_v2_connection_handle conn, const char *sql) {
 	return out;
 }
 
-void StatsExec(duckdb_v2_connection_handle conn, const char *sql) {
+void StatsExec(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
 	auto rc = Query(conn, sql, &result, &err);
 	std::string message;
 	if (err) {
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		message = Convert(text);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		message = std::string(text, text_length);
 	}
 	duckdb_v2_error_info_destroy(&err);
 	INFO(sql << ": " << message);
@@ -121,16 +117,17 @@ void StatsExec(duckdb_v2_connection_handle conn, const char *sql) {
 }
 
 // The message of a query that fails while it is planned.
-std::string StatsQueryError(duckdb_v2_connection_handle conn, const char *sql) {
+std::string StatsQueryError(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
 	auto rc = Query(conn, sql, &result, &err);
 	duckdb_v2_result_destroy(&result);
 	std::string message;
 	if (rc != DUCKDB_V2_ERROR_NONE && err) {
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		message = Convert(text);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		message = std::string(text, text_length);
 	}
 	duckdb_v2_error_info_destroy(&err);
 	REQUIRE(rc != DUCKDB_V2_ERROR_NONE);
@@ -204,17 +201,16 @@ void StatsScalarStatsCb(duckdb_v2_scalar_function_stats_info_handle info, duckdb
 	StatsApply(result, *static_cast<StatsMode *>(user_data), err);
 }
 
-void RegisterStatsScalar(duckdb_v2_connection_handle conn, const char *name, StatsMode *mode) {
+void RegisterStatsScalar(duckdb_v2_connection_handle conn, std::string_view name, StatsMode *mode) {
 	auto integer = MakeType(FactoryOf(conn), DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	duckdb_v2_scalar_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = Convert(name);
-	REQUIRE(duckdb_v2_scalar_function_set_name(function, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto param = StatsIdent("x");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &param, integer, nullptr,
+	std::string_view param = "x";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, param.data(), param.size(), integer, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -284,18 +280,17 @@ void StatsAggStatsCb(duckdb_v2_aggregate_function_stats_info_handle info, duckdb
 	StatsApply(result, *static_cast<StatsMode *>(user_data), err);
 }
 
-void RegisterStatsAgg(duckdb_v2_connection_handle conn, const char *name, StatsMode *mode) {
+void RegisterStatsAgg(duckdb_v2_connection_handle conn, std::string_view name, StatsMode *mode) {
 	auto integer = MakeType(FactoryOf(conn), DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	auto bigint = MakeType(FactoryOf(conn), DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	duckdb_v2_aggregate_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_aggregate_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = Convert(name);
-	REQUIRE(duckdb_v2_aggregate_function_set_name(function, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_aggregate_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto param = StatsIdent("x");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &param, integer, nullptr,
+	std::string_view param = "x";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, param.data(), param.size(), integer, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, bigint, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -336,14 +331,15 @@ void StatsPairBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_functi
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_logical_type_handle integer = nullptr;
 	if (duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                          &integer, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto a = StatsIdent("a");
-	auto b = StatsIdent("b");
-	if (duckdb_v2_table_function_bind_add_result_column(result, &a, integer, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_table_function_bind_add_result_column(result, &b, integer, err);
+	std::string_view a = "a";
+	std::string_view b = "b";
+	if (duckdb_v2_table_function_bind_add_result_column(result, a.data(), a.size(), integer, err) ==
+	    DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_table_function_bind_add_result_column(result, b.data(), b.size(), integer, err);
 	}
 	duckdb_v2_logical_type_destroy(&integer);
 }
@@ -402,11 +398,10 @@ void StatsPairStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2
 	}
 }
 
-void RegisterStatsPair(duckdb_v2_connection_handle conn, const char *name, StatsMode *mode) {
+void RegisterStatsPair(duckdb_v2_connection_handle conn, std::string_view name, StatsMode *mode) {
 	duckdb_v2_table_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_table_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = Convert(name);
-	REQUIRE(duckdb_v2_table_function_set_name(function, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_opaque user_data = {mode, nullptr, nullptr};
 	REQUIRE(duckdb_v2_table_function_set_user_data(function, &user_data, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, StatsPairBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);

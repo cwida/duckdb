@@ -278,12 +278,44 @@ void Binder::SetParameters(BoundParameterMap &parameters) {
 	global_binder_state->parameters = parameters;
 }
 
+void Binder::SetStatementParameters(const identifier_map_t<idx_t> &statement_parameters) {
+	global_binder_state->statement_parameters = statement_parameters;
+}
+
+bool Binder::StatementHasParameter(const Identifier &identifier) const {
+	return global_binder_state->statement_parameters.count(identifier) > 0;
+}
+
 void Binder::SetInsideSubquery() {
 	inside_subquery = true;
 }
 
 bool Binder::IsInsideSubquery() const {
 	return inside_subquery;
+}
+
+void Binder::SetBindingIndexKey(bool binding_index_key_p) {
+	binding_index_key = binding_index_key_p;
+}
+
+bool Binder::IsBindingIndexKey() const {
+	return binding_index_key;
+}
+
+void Binder::SetBindingTrySubquery() {
+	binding_try_subquery = true;
+}
+
+bool Binder::IsBindingTrySubquery() const {
+	return binding_try_subquery;
+}
+
+const TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexes() const {
+	return try_subquery_plan_indexes;
+}
+
+TrySubqueryPlanIndexes &Binder::GetTrySubqueryPlanIndexesMutable() {
+	return try_subquery_plan_indexes;
 }
 
 void Binder::BeginSubqueryBind(Binder &parent, ExpressionBinder &binder) {
@@ -640,13 +672,14 @@ optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const EntryLookupInfo &lookup
 }
 
 //! Create a binder whose catalog search path is anchored to the table's catalog+schema
-shared_ptr<Binder> Binder::CreateBinderWithSearchPath(const Identifier &catalog_name, const Identifier &schema_name) {
+shared_ptr<Binder> Binder::CreateBinderWithSearchPath(const Identifier &catalog_name,
+                                                      const vector<Identifier> &schema_path) {
 	shared_ptr<Binder> new_binder = Binder::CreateBinder(context, this);
 
 	vector<CatalogSearchEntry> search_path;
 
-	search_path.emplace_back(catalog_name, schema_name);
-	if (schema_name != DEFAULT_SCHEMA) {
+	search_path.push_back(CatalogSearchEntry::FromSchemaPath(catalog_name, schema_path));
+	if (schema_path.size() != 1 || schema_path[0] != DEFAULT_SCHEMA) {
 		search_path.emplace_back(catalog_name, DEFAULT_SCHEMA);
 	}
 	new_binder->entry_retriever.SetSearchPath(std::move(search_path));

@@ -1,0 +1,53 @@
+# name: test/sql/copy/parquet/bloom_filter_fallback_options.test
+# description: Validate the Bloom fallback budget and which columns get fallback filters
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TABLE options_test(k VARCHAR)
+
+statement error
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES NULL)
+----
+NULL is not supported
+
+statement error
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES -1)
+----
+Unable to parse bytes
+
+statement error
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES 'lots')
+----
+Memory must have a number
+
+# Only top-level columns with a fallback-capable writer get fallback filters.
+statement ok
+COPY (
+ SELECT i AS n, i::VARCHAR AS s, i % 2 = 0 AS b, {'x': i} AS st, [i] AS l, i::HUGEINT AS h,
+        i::DECIMAL(38,2) AS d, TIMESTAMP '2020-01-01' + i * INTERVAL '1 second' AS ts
+ FROM (SELECT (i * 7919) % 4096 AS i FROM range(4096) t(i))
+) TO '{TEST_DIR}/types.parquet' (DICTIONARY_SIZE_LIMIT 0)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/types.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+b	0
+d	0
+h	1
+l, list, element	0
+n	1
+s	1
+st, x	0
+ts	1
+
+statement ok
+COPY (SELECT TIMESTAMP '2020-01-01' + ((i * 7919) % 4096) * INTERVAL '1 second' AS ts FROM range(4096) t(i))
+TO '{TEST_DIR}/int96.parquet' (DICTIONARY_SIZE_LIMIT 0, WRITE_TIMESTAMP_AS_INT96 TRUE)
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/int96.parquet')
+----
+0

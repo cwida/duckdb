@@ -1,0 +1,314 @@
+# name: test/sql/error/test_has_error_expression.test
+# description: HAS_ERROR returns whether evaluating its argument raises an execution error
+# group: [error]
+
+statement ok
+CREATE TABLE integers(i INTEGER);
+
+statement ok
+INSERT INTO integers VALUES (0), (1), (2), (NULL);
+
+# a constant expression that errors
+query I
+SELECT has_error(1 // 0)
+----
+true
+
+# a constant expression that does not error
+query I
+SELECT has_error(1 // 1)
+----
+false
+
+# evaluating to NULL is not an error
+query I
+SELECT has_error(NULL::INTEGER)
+----
+false
+
+query I
+SELECT has_error(NULL + 1)
+----
+false
+
+# per-row evaluation over a table
+query II
+SELECT i, has_error(1 // i) FROM integers ORDER BY i NULLS LAST
+----
+0	true
+1	false
+2	false
+NULL	false
+
+# the per-row error capture must not write through buffers shared with sibling columns
+query II
+SELECT i, try(1 // i) FROM integers ORDER BY i NULLS LAST
+----
+0	NULL
+1	1
+2	0
+NULL	NULL
+
+# cast errors are execution errors
+statement ok
+CREATE TABLE strings(s VARCHAR);
+
+statement ok
+INSERT INTO strings VALUES ('hello'), ('123'), (NULL);
+
+query II
+SELECT s, has_error(s::INTEGER) FROM strings ORDER BY s NULLS LAST
+----
+123	false
+hello	true
+NULL	false
+
+# HAS_ERROR in a WHERE clause: NULL input rows do not error and pass the filter
+query I
+SELECT i FROM integers WHERE NOT has_error(100 // i) ORDER BY i
+----
+1
+2
+NULL
+
+# HAS_ERROR as an aggregate FILTER condition
+query I
+SELECT count(*) FILTER (WHERE has_error(1 // i)) FROM integers
+----
+1
+
+# HAS_ERROR over TRY never sees an error
+query I
+SELECT has_error(try(1 // i)) FROM integers WHERE i = 0
+----
+false
+
+# TRY over HAS_ERROR is a no-op
+query I
+SELECT try(has_error(1 // i)) FROM integers WHERE i = 0
+----
+true
+
+# HAS_ERROR requires exactly one argument
+statement error
+SELECT has_error()
+----
+Wrong number of arguments provided to HAS_ERROR expression
+
+statement error
+SELECT has_error(1, 2)
+----
+Wrong number of arguments provided to HAS_ERROR expression
+
+# volatile functions are rejected, as in TRY
+statement error
+SELECT has_error(random())
+----
+HAS_ERROR can not be used in combination with a volatile function
+
+# a scalar subquery under HAS_ERROR is lowered like a TRY subquery and re-raises captured
+# errors at the use site, where HAS_ERROR observes them
+query I
+SELECT has_error((SELECT 1 // 0))
+----
+true
+
+query I
+SELECT has_error((SELECT 1 // 1))
+----
+false
+
+query I
+SELECT has_error(1 + (SELECT 1 // 0))
+----
+true
+
+# the exposed aggregate gate also guards the projected value of the subquery
+query I
+SELECT has_error((SELECT 10 // count(1 // i) FROM (VALUES (0)) t(i)))
+----
+true
+
+# HAS_ERROR captures over cast and COALESCE compositions of rethrowing subqueries
+query IIIIII
+SELECT has_error(CAST((SELECT 1 // 0) AS BIGINT)),
+       has_error(CAST((SELECT 'bad') AS INTEGER)),
+       has_error((SELECT 1 // 0) + (SELECT 2 // 0)),
+       has_error(COALESCE((SELECT 1 // 0), 42)),
+       has_error(COALESCE((SELECT NULL::INTEGER), 42)),
+       has_error(COALESCE(42, (SELECT 1 // 0)))
+----
+true	true	true	true	false	false
+
+# sampling attaches below the select list projection and transports correctly
+query I
+SELECT has_error((SELECT 10 // i FROM (VALUES (0)) t(i) USING SAMPLE 100 PERCENT (reservoir, 42)))
+----
+true
+
+# result modifiers cannot transport the error flag
+statement error
+SELECT has_error((SELECT DISTINCT i FROM (VALUES (1), (1)) t(i)))
+----
+TRY over a subquery with result modifiers is only supported when the subquery is the direct argument of TRY
+
+# a recursive scalar select item transports the flag through both levels
+query II
+SELECT has_error((SELECT (SELECT 1 // 0))), has_error((SELECT (SELECT 1 // 1)))
+----
+true	false
+
+# aggregates are rejected, as in TRY
+statement error
+SELECT has_error(sum(i)) FROM integers
+----
+aggregates are not allowed inside the TRY expression
+
+# window functions are rejected, as in TRY
+statement error
+SELECT has_error(row_number() OVER ())
+----
+window functions are not allowed in try
+
+# non-execution errors are not caught at bind time either
+statement error
+SELECT has_error(nonexistent_column)
+----
+<REGEX>:.*Binder Error.*
+
+# an error raised while initializing a function state is captured, as in TRY
+query II
+SELECT has_error(regexp_matches('abc', '(')) AS a, try(regexp_matches('abc', '(')) AS b
+----
+true	NULL
+
+query I
+SELECT has_error(regexp_matches(s, '(')) FROM (VALUES ('abc'), ('def')) v(s)
+----
+true
+true
+
+# a valid constant pattern is unaffected
+query I
+SELECT has_error(regexp_matches('abc', 'b'))
+----
+false
+
+# the initialization error is reported per row, not for the whole vector
+query II
+SELECT s, has_error(CASE WHEN s = 'abc' THEN true ELSE regexp_matches(s, '(') END) FROM (VALUES ('abc'), ('def')) v(s) ORDER BY s
+----
+abc	false
+def	true
+
+# nesting: the inner capture consumes the initialization error
+query II
+SELECT has_error(try(regexp_matches(s, '('))), try(has_error(regexp_matches(s, '('))) FROM (VALUES ('abc'), ('def')) v(s)
+----
+false	true
+false	true
+
+# an uncaptured sibling occurrence still raises the initialization error
+statement error
+SELECT has_error(regexp_matches(s, '(')) OR regexp_matches(s, '(') FROM (VALUES ('abc'), ('def')) v(s)
+----
+Invalid Input Error
+
+# the initialization error is captured through the subquery lowering
+query I
+SELECT try((SELECT count(regexp_matches(s, '(')) FROM (VALUES ('abc'), ('def')) v(s)))
+----
+NULL
+
+# has_error resolves through the catalog like an ordinary function, so a user function of the
+# same name shadows the built-in instead of being silently hijacked
+statement ok
+CREATE MACRO has_error(a) AS 42;
+
+query I
+SELECT has_error(1)
+----
+42
+
+query I
+SELECT main.has_error(1)
+----
+42
+
+statement ok
+DROP MACRO has_error;
+
+query I
+SELECT has_error(1)
+----
+false
+
+# the built-in resolves under explicit qualification as well
+query I
+SELECT system.main.has_error(1 // 0)
+----
+true
+
+# the built-in is listed in the catalog
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'has_error' AND database_name = 'system'
+----
+1
+
+# the quoted spelling also resolves through the catalog
+query I
+SELECT "has_error"(1 // 0)
+----
+true
+
+# the method-chain spelling resolves through the catalog
+query I
+SELECT (1 // 0).has_error()
+----
+true
+
+# named arguments and aggregate-only modifiers are rejected for the built-in
+statement error
+SELECT has_error(expr := 1)
+----
+Named arguments are not supported in HAS_ERROR expression
+
+statement error
+SELECT has_error(DISTINCT 1)
+----
+only applicable to window and aggregate functions
+
+statement error
+SELECT has_error(1) FILTER (WHERE false)
+----
+only applicable to window and aggregate functions
+
+statement error
+SELECT has_error(1 ORDER BY 1)
+----
+only applicable to window and aggregate functions
+
+# explicit system qualification reaches the built-in even while a user macro shadows the name
+statement ok
+CREATE MACRO has_error(a) AS 42;
+
+query II
+SELECT system.main.has_error(1 // 0), has_error(7)
+----
+true	42
+
+statement ok
+DROP MACRO has_error;
+
+# the SQL export spells out the system entry, so a user macro named has_error cannot capture a
+# replay of the exported text
+statement ok
+PRAGMA disable_optimizer;
+
+query TT
+EXPLAIN (SQL) SELECT has_error(1 // i) FROM integers
+----
+sql	<REGEX>:.*"system"\.main\.has_error.*
+
+statement ok
+PRAGMA enable_optimizer;

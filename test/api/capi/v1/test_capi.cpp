@@ -492,6 +492,33 @@ TEST_CASE("decompose every finite timestamp with duckdb_from_timestamp", "[capi]
 	}
 }
 
+TEST_CASE("recompose invalid dates and timestamps without throwing", "[capi]") {
+	duckdb_time_struct midnight {0, 0, 0, 0};
+
+	// invalid or out of range dates become 0
+	for (auto date :
+	     {duckdb_date_struct {2021, 2, 30}, duckdb_date_struct {2021, 2, 29}, duckdb_date_struct {2021, 13, 1},
+	      duckdb_date_struct {2021, 0, 1}, duckdb_date_struct {2021, 1, 0}, duckdb_date_struct {2021, 4, 31},
+	      duckdb_date_struct {NumericLimits<int32_t>::Maximum(), 1, 1},
+	      duckdb_date_struct {NumericLimits<int32_t>::Minimum(), 1, 1}}) {
+		CAPTURE(date.year, date.month, date.day);
+		REQUIRE(duckdb_to_date(date).days == 0);
+		REQUIRE(duckdb_to_timestamp(duckdb_timestamp_struct {date, midnight}).micros == 0);
+	}
+
+	// valid dates outside the timestamp range become 0 as timestamps
+	for (auto date : {duckdb_date_struct {294248, 1, 1}, duckdb_date_struct {-290309, 1, 1}}) {
+		CAPTURE(date.year);
+		REQUIRE(duckdb_to_date(date).days != 0);
+		REQUIRE(duckdb_to_timestamp(duckdb_timestamp_struct {date, midnight}).micros == 0);
+	}
+
+	// valid parts still convert
+	REQUIRE(duckdb_to_date(duckdb_date_struct {2024, 2, 29}).days == 19782);
+	auto ts = duckdb_to_timestamp(duckdb_timestamp_struct {{2024, 2, 29}, {1, 2, 3, 4}});
+	REQUIRE(ts.micros == 1709168523000004);
+}
+
 TEST_CASE("create time_tz value") {
 	duckdb_time_struct time;
 	time.hour = 4;
@@ -786,6 +813,58 @@ TEST_CASE("Test unsupported types in the deprecated C API", "[capi]") {
 	REQUIRE(!string(second_bigint_row).compare("412"));
 	duckdb_free(second_bigint_row);
 	REQUIRE(duckdb_value_string(&result_c, 1, 1).data == nullptr);
+}
+
+TEST_CASE("Test SQLNULL columns in the deprecated C API", "[capi]") {
+	// an untyped NULL column followed by other columns
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	auto result = tester.Query("SELECT NULL AS n, 'x' AS s, 2 AS b, NULL AS m");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->ColumnCount() == 4);
+	REQUIRE(result->row_count() == 1);
+	REQUIRE(result->ColumnType(0) == DUCKDB_TYPE_SQLNULL);
+	REQUIRE(result->ColumnType(3) == DUCKDB_TYPE_SQLNULL);
+	REQUIRE(result->IsNull(0, 0));
+	REQUIRE(!result->IsNull(1, 0));
+	REQUIRE(result->Fetch<string>(1, 0) == "x");
+	REQUIRE(!result->IsNull(2, 0));
+	REQUIRE(result->Fetch<int32_t>(2, 0) == 2);
+	REQUIRE(result->IsNull(3, 0));
+
+	// reading a SQLNULL value through the typed accessors returns the NULL defaults
+	auto &result_c = result->InternalResult();
+	REQUIRE(duckdb_value_varchar(&result_c, 0, 0) == nullptr);
+	REQUIRE(duckdb_value_int32(&result_c, 0, 0) == 0);
+	REQUIRE(duckdb_value_varchar(&result_c, 3, 0) == nullptr);
+
+	// the data of a SQLNULL column is zeroed
+	auto null_data = reinterpret_cast<int32_t *>(duckdb_column_data(&result_c, 0));
+	REQUIRE(null_data);
+	REQUIRE(null_data[0] == 0);
+
+	// multiple rows and chunks
+	result = tester.Query("SELECT NULL AS n, i FROM range(5000) t(i)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 5000);
+	null_data = reinterpret_cast<int32_t *>(duckdb_column_data(&result->InternalResult(), 0));
+	REQUIRE(null_data);
+	for (idx_t row = 0; row < 5000; row += 999) {
+		REQUIRE(result->IsNull(0, row));
+		REQUIRE(null_data[row] == 0);
+		REQUIRE(!result->IsNull(1, row));
+		REQUIRE(result->Fetch<int64_t>(1, row) == int64_t(row));
+	}
+
+	// columns after a column the deprecated API cannot translate (UUID) are not materialized
+	result = tester.Query("SELECT '00000000-0000-0000-0000-000000000001'::UUID AS u, 42 AS i");
+	REQUIRE_NO_FAIL(*result);
+	auto &untranslated_c = result->InternalResult();
+	REQUIRE(duckdb_nullmask_data(&untranslated_c, 1) == nullptr);
+	REQUIRE(duckdb_value_is_null(&untranslated_c, 1, 0) == false);
+	REQUIRE(duckdb_value_int32(&untranslated_c, 1, 0) == 0);
+	REQUIRE(duckdb_value_varchar(&untranslated_c, 1, 0) == nullptr);
 }
 
 TEST_CASE("Test creating DUCKDB_ERROR_INTERNAL error data", "[capi]") {

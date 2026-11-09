@@ -27,8 +27,13 @@ duckdb_date_struct duckdb_from_date(duckdb_date date) {
 }
 
 duckdb_date duckdb_to_date(duckdb_date_struct date) {
+	date_t internal_result;
+	if (!Date::TryFromDate(date.year, date.month, date.day, internal_result)) {
+		internal_result = date_t(0);
+	}
+
 	duckdb_date result;
-	result.days = Date::FromDate(date.year, date.month, date.day).days;
+	result.days = internal_result.days;
 	return result;
 }
 
@@ -95,11 +100,16 @@ duckdb_timestamp_struct duckdb_from_timestamp(duckdb_timestamp ts) {
 }
 
 duckdb_timestamp duckdb_to_timestamp(duckdb_timestamp_struct ts) {
-	date_t date = date_t(duckdb_to_date(ts.date).days);
+	date_t date;
 	dtime_t time = dtime_t(duckdb_to_time(ts.time).micros);
+	timestamp_t internal_result;
+	if (!Date::TryFromDate(ts.date.year, ts.date.month, ts.date.day, date) ||
+	    !Timestamp::TryFromDatetime(date, time, internal_result)) {
+		internal_result = timestamp_t(0);
+	}
 
 	duckdb_timestamp result;
-	result.micros = Timestamp::FromDatetime(date, time).value;
+	result.micros = internal_result.value;
 	return result;
 }
 

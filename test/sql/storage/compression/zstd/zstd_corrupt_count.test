@@ -35,4 +35,4 @@ SET debug_force_fetch_row=true;
 statement error
 SELECT sum(length(s)) FROM t;
 ----
-Data Corruption Error: ZSTD Decompression failed: Unknown frame descriptor
+Out of Memory Error: failed to allocate data of size 256.0 GiB

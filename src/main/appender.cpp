@@ -116,7 +116,7 @@ void BaseAppender::AppendDecimalValueInternal(Vector &col, SRC input) {
 template <class T>
 void BaseAppender::AppendValueInternal(T input) {
 	if (column >= GetActiveTypes().size()) {
-		throw InvalidInputException("Too many appends for chunk!");
+		InvalidInputException::Throw("Too many appends for chunk!");
 	}
 	auto &col = chunk.data[column];
 	switch (col.GetType().id()) {
@@ -309,14 +309,14 @@ void BaseAppender::Append(interval_t value) {
 template <>
 void BaseAppender::Append(Value value) { // NOLINT: template stuff
 	if (column >= chunk.ColumnCount()) {
-		throw InvalidInputException("Too many appends for chunk!");
+		InvalidInputException::Throw("Too many appends for chunk!");
 	}
 	AppendValue(value);
 }
 
 void duckdb::BaseAppender::Append(DataChunk &target, const Value &value, idx_t col, idx_t row) {
 	if (col >= target.ColumnCount()) {
-		throw InvalidInputException("Too many appends for chunk!");
+		InvalidInputException::Throw("Too many appends for chunk!");
 	}
 	if (value.type() == target.GetTypes()[col]) {
 		target.data[col].SetValue(row, value);
@@ -335,7 +335,7 @@ void duckdb::BaseAppender::Append(DataChunk &target, const Value &value, idx_t c
 template <>
 void BaseAppender::Append(std::nullptr_t value) {
 	if (column >= chunk.ColumnCount()) {
-		throw InvalidInputException("Too many appends for chunk!");
+		InvalidInputException::Throw("Too many appends for chunk!");
 	}
 	auto &col = chunk.data[column++];
 	FlatVector::SetNull(col, chunk.size(), true);

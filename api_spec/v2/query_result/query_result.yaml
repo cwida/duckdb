@@ -117,7 +117,7 @@ functions:
       matching SQL's own convention, so dense $1..$N and ? placeholders work
       directly. Supply parameter_names to bind by name instead — a non-empty
       name binds its value to that named parameter ($name, matched
-      case-insensitively), while a {NULL, 0} entry leaves that value
+      case-insensitively), while an empty entry leaves that value
       positional. The parameter schema from statement_bind lists the names to
       use. Both arrays are borrowed and copied in; the caller still owns and
       destroys them. Pass NULL for both, or a count of 0, for an
@@ -156,11 +156,17 @@ functions:
         type: sql_statement
         description: The statement to execute. Borrowed and copied; not consumed. Destroy it with sql_statement_destroy.
       parameter_names:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: Optional. An array of parameter_count parameter names; a non-empty entry binds its value to the named parameter ($name, case-insensitive), an empty entry (NULL or zero length) keeps it positional ($1 = element 0). Pass NULL for all-positional binding. Named and positional parameters cannot be mixed within one statement.
+      parameter_names_lengths:
+        type: idx
         indirection: 1
         const: true
         kind: IN
-        description: Optional. An array of parameter_count parameter names; a non-empty entry binds its value to the named parameter ($name, case-insensitive), a {NULL, 0} entry keeps it positional ($1 = element 0). Pass NULL for all-positional binding. Named and positional parameters cannot be mixed within one statement.
+        description: Byte lengths of the entries in `parameter_names`; element i is the length of `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
       parameter_values:
         type: value
         indirection: 1
@@ -354,11 +360,14 @@ functions:
         type: idx
         description: Maximum width of one column; 0 selects the renderer default (20).
       null_value:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: Text rendered for NULL cells; empty selects "NULL".
+      null_value_length:
+        type: idx
+        description: The length of `null_value` in bytes. `null_value` need not be null-terminated and may be NULL only when this is 0.
       render_mode:
         type: idx
         description: 0 renders rows (records down the page); 1 renders columns; other values are rejected with INVALID_INPUT.

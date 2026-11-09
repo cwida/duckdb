@@ -248,6 +248,11 @@ public:
 	//! Get a ptr to the raw segment tree. This can be useful for some extensions to have directly exposed.
 	shared_ptr<RowGroupSegmentTree> GetRowGroups() const;
 
+	//! The metadata blocks of the table data of this collection, as read from disk or written by the last checkpoint
+	const vector<MetaBlockPointer> &GetMetadataPointers() const {
+		return metadata_pointers;
+	}
+
 private:
 	optional_ptr<SegmentNode<RowGroup>> NextUpdateRowGroup(RowGroupSegmentTree &row_groups, row_t *ids, idx_t &pos,
 	                                                       idx_t count) const;
