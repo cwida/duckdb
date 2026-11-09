@@ -1,3 +1,5 @@
+11||aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÿaaaaa||x||0
+12||aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÿaaaaa||x||0
 1||abc||x||7
 2||ÿbad||y||8
 3||"qÿ"||z||9
@@ -7,8 +9,6 @@
 7||"two
 linesÃ©"||w||12
 8||plain||more||13
-11||aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÿaaaaa||x||16
-12||aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÿaaaaa||x||17
 13||bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb||x||18
-14||ccccccccccccccccccccccccccccccccccccccÃ©Ã©||x||19
+14||ccccccccccccccccccccccccccccccccccccccccccÃ©Ã©||x||19
 15||last||row||20
