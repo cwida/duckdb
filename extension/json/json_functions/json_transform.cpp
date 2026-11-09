@@ -93,7 +93,7 @@ static unique_ptr<FunctionData> JSONTransformBind(BindScalarFunctionInput &input
 	if (structure_val.IsNull() || arguments[1]->GetReturnType() == LogicalTypeId::SQLNULL) {
 		bound_function.SetReturnType(LogicalTypeId::SQLNULL);
 	} else {
-		auto json_structure_val = structure_val.DefaultTryCastAs(LogicalType::JSON());
+		auto json_structure_val = structure_val.TryCastAs(input.GetClientContext(), LogicalType::JSON());
 		if (!json_structure_val) {
 			throw BinderException("Cannot cast JSON structure to string");
 		}
