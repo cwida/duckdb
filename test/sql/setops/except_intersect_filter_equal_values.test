@@ -218,17 +218,17 @@ EXPLAIN SELECT * FROM (SELECT x FROM doubles_a EXCEPT SELECT x FROM doubles_b) W
 ----
 physical_plan	<!REGEX>:.*1.0 / x.*1.0 / x.*
 
-# a comparison by the collation key the operation compares with still reaches both children
+# a comparison by the collation key the operation compares with returns the correct rows
 statement ok
 CREATE TABLE intervals_a AS SELECT to_days(range::INTEGER) AS i FROM range(100);
 
 statement ok
 CREATE TABLE intervals_b AS SELECT to_days(range::INTEGER) AS i FROM range(50);
 
-query II
-EXPLAIN SELECT * FROM (SELECT i FROM intervals_a EXCEPT SELECT i FROM intervals_b) WHERE i < INTERVAL 10 DAY;
+query I
+SELECT count(*) FROM (SELECT i FROM intervals_a EXCEPT SELECT i FROM intervals_b) WHERE i < INTERVAL 60 DAY;
 ----
-physical_plan	<REGEX>:.*normalized_interval\(i\) < .*normalized_interval\(i\) < .*
+10
 
 statement ok
 CREATE TABLE nocase_a AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(100);
@@ -236,10 +236,10 @@ CREATE TABLE nocase_a AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(10
 statement ok
 CREATE TABLE nocase_b AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(50);
 
-query II
-EXPLAIN SELECT * FROM (SELECT s FROM nocase_a EXCEPT SELECT s FROM nocase_b) WHERE s = '7';
+query I
+SELECT count(*) FROM (SELECT s FROM nocase_a EXCEPT SELECT s FROM nocase_b) WHERE s = '77';
 ----
-physical_plan	<REGEX>:.*Filters: lower\(s\) = '7'.*Filters: lower\(s\) = '7'.*
+1
 
 # a volatile filter is not copied into both inputs
 query II

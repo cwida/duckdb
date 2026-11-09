@@ -3,6 +3,9 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/table/list_column_data.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/statistics/array_stats.hpp"
+#include "duckdb/storage/statistics/struct_stats.hpp"
+#include "duckdb/storage/table/struct_column_data.hpp"
 #include "duckdb/storage/storage_info.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
@@ -504,19 +507,44 @@ bool ListColumnData::HasAnyChanges() const {
 	return ColumnData::HasAnyChanges() || validity->HasAnyChanges() || child_column->HasAnyChanges();
 }
 
+//! Resolves the statistics of a column from the statistics of its root column
+//! A nested column can hold its own statistics (e.g. when it was created by a checkpoint), but those are not updated:
+//! the statistics of nested columns are tracked in the statistics of the root column
+static optional_ptr<const BaseStatistics> ResolveColumnStatistics(const ColumnData &column) {
+	if (!column.HasParent()) {
+		return column.GetStatisticsRef();
+	}
+	auto &parent = column.Parent();
+	auto parent_stats = ResolveColumnStatistics(parent);
+	if (!parent_stats) {
+		return nullptr;
+	}
+	switch (parent.GetType().id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::MAP:
+		return ListStats::GetChildStats(*parent_stats);
+	case LogicalTypeId::ARRAY:
+		return ArrayStats::GetChildStats(*parent_stats);
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
+	case LogicalTypeId::UNION: {
+		auto &struct_data = parent.Cast<StructColumnData>();
+		auto child_count = StructType::GetChildCount(parent.GetType());
+		for (idx_t i = 0; i < child_count; i++) {
+			if (RefersToSameObject(struct_data.GetChildColumn(i), column)) {
+				return StructStats::GetChildStats(*parent_stats, i);
+			}
+		}
+		return nullptr;
+	}
+	default:
+		// the statistics of the children of other columns (e.g. VARIANT, GEOMETRY) are not tracked in their parent
+		return nullptr;
+	}
+}
+
 optional_ptr<const BaseStatistics> ListColumnData::GetColumnStatistics() const {
-	if (stats) {
-		return stats->statistics;
-	}
-	if (!HasParent()) {
-		return nullptr;
-	}
-	// the statistics of the children of these columns are not tracked in their parent
-	auto parent_type = Parent().GetType().id();
-	if (parent_type == LogicalTypeId::VARIANT || parent_type == LogicalTypeId::GEOMETRY) {
-		return nullptr;
-	}
-	return GetStatisticsRef();
+	return ResolveColumnStatistics(*this);
 }
 
 bool ListPersistentColumnData::IsSupported(const Serializer &serializer) const {

@@ -17,7 +17,6 @@
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -92,14 +91,13 @@ static optional_idx ReferenceIndex(const Expression &expression, LogicalOperator
 	return ReferenceIndex(expression, input);
 }
 
-//! DISTINCT must group by this key with the same comparison semantics.
-static bool DistinctPreservesKey(LogicalDistinct &distinct, idx_t key, const LogicalType &type) {
-	for (auto &target : distinct.distinct_targets) {
-		if (ReferenceIndex(*target, *distinct.children[0], type) == optional_idx(key)) {
-			return true;
-		}
+//! One full grouping set preserves the directly referenced key and its comparison semantics.
+static optional_idx GroupKeyIndex(LogicalAggregate &aggregate, idx_t key, const LogicalType &type) {
+	if (aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].size() != aggregate.groups.size() ||
+	    key >= aggregate.groups.size() || !aggregate.grouping_functions.empty()) {
+		return {};
 	}
-	return false;
+	return ReferenceIndex(*aggregate.groups[key], *aggregate.children[0], type);
 }
 
 static optional_ptr<LogicalAggregate> FindAggregate(LogicalOperator &op, idx_t key) {
@@ -150,7 +148,6 @@ static optional_idx FixedRowCount(LogicalOperator &op) {
 		return {};
 	case LogicalOperatorType::LOGICAL_PROJECTION:
 	case LogicalOperatorType::LOGICAL_FILTER:
-	case LogicalOperatorType::LOGICAL_DISTINCT:
 		return FixedRowCount(*op.children[0]);
 	default:
 		return {};
@@ -184,11 +181,14 @@ static bool CopyFixedKeys(LogicalOperator &op, idx_t key, const LogicalType &typ
 		auto count = FixedRowCount(*op.children[0]);
 		return count.IsValid() && (count.GetIndex() == 0 || AppendFixedKey(rows, expression, type));
 	}
-	case LogicalOperatorType::LOGICAL_FILTER:
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
+	case LogicalOperatorType::LOGICAL_FILTER: {
 		auto binding = op.GetColumnBindings()[key];
 		BoundColumnRefExpression reference(type, binding);
 		auto index = ReferenceIndex(reference, *op.children[0]);
+		return index.IsValid() && CopyFixedKeys(*op.children[0], index.GetIndex(), type, rows);
+	}
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		auto index = GroupKeyIndex(op.Cast<LogicalAggregate>(), key, type);
 		return index.IsValid() && CopyFixedKeys(*op.children[0], index.GetIndex(), type, rows);
 	}
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: {
@@ -222,17 +222,8 @@ static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType
 		return op.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN &&
 		       AppendFixedKey(rows, expression, type);
 	}
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		auto &distinct = op.Cast<LogicalDistinct>();
-		return DistinctPreservesKey(distinct, key, type) && CopyExactFixedKeys(*op.children[0], key, type, rows);
-	}
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
-		auto &aggregate = op.Cast<LogicalAggregate>();
-		if (aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].size() != aggregate.groups.size() ||
-		    key >= aggregate.groups.size() || !aggregate.grouping_functions.empty()) {
-			return false;
-		}
-		auto index = ReferenceIndex(*aggregate.groups[key], *op.children[0], type);
+		auto index = GroupKeyIndex(op.Cast<LogicalAggregate>(), key, type);
 		return index.IsValid() && CopyExactFixedKeys(*op.children[0], index.GetIndex(), type, rows);
 	}
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
@@ -255,6 +246,21 @@ static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType
 
 enum class RestrictionAction { KEEP, REPLACE, REMOVE };
 
+static unique_ptr<LogicalAggregate> CreateKeyDomain(Optimizer &optimizer, unique_ptr<LogicalOperator> input,
+                                                    unique_ptr<Expression> key) {
+	auto domain = make_uniq<LogicalAggregate>(optimizer.binder.GenerateTableIndex(),
+	                                          optimizer.binder.GenerateTableIndex(), vector<unique_ptr<Expression>>());
+	domain->groups.push_back(std::move(key));
+	domain->grouping_sets.push_back({ProjectionIndex(0)});
+	domain->children.push_back(std::move(input));
+	return domain;
+}
+
+static unique_ptr<Expression> DomainKey(const LogicalAggregate &domain) {
+	return make_uniq<BoundColumnRefExpression>(domain.groups[0]->GetReturnType(),
+	                                           ColumnBinding(domain.group_index, ProjectionIndex(0)));
+}
+
 //! A matched input restriction and the projections between it and its aggregate.
 //! Borrows the plan for one decision. Apply may destroy the matched join.
 class DomainRestriction {
@@ -275,7 +281,7 @@ public:
 		return join->conditions[0].GetComparisonType() == ExpressionType::COMPARE_EQUAL &&
 		       consumer_comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
 	}
-	void Apply(unique_ptr<LogicalDistinct> &domain, RestrictionAction action);
+	void Apply(unique_ptr<LogicalAggregate> &domain, RestrictionAction action);
 
 private:
 	optional_ptr<LogicalComparisonJoin> Find(LogicalOperator &input, const Expression &key);
@@ -338,11 +344,11 @@ bool DomainRestriction::CanRemove() const {
 	return true;
 }
 
-void DomainRestriction::Apply(unique_ptr<LogicalDistinct> &domain, RestrictionAction action) {
+void DomainRestriction::Apply(unique_ptr<LogicalAggregate> &domain, RestrictionAction action) {
 	auto &restriction = *join;
 	auto &condition = restriction.conditions[0];
 	if (action == RestrictionAction::REPLACE) {
-		condition.RightReference() = domain->distinct_targets[0]->Copy();
+		condition.RightReference() = DomainKey(*domain);
 		restriction.children[1] = std::move(domain);
 	} else {
 		D_ASSERT(action == RestrictionAction::REMOVE);
@@ -374,7 +380,7 @@ public:
 
 public:
 	bool IsProfitable(LogicalComparisonJoin &restriction, LogicalOperator &domain);
-	RestrictionAction ChooseRestrictionAction(const DomainRestriction &existing, LogicalDistinct &domain);
+	RestrictionAction ChooseRestrictionAction(const DomainRestriction &existing, LogicalAggregate &domain);
 
 private:
 	static bool IsCheaper(double candidate, double original);
@@ -448,7 +454,8 @@ bool DomainCostModel::IsProfitable(LogicalComparisonJoin &restriction, LogicalOp
 	return IsCheaper(candidate, canonical);
 }
 
-RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestriction &existing, LogicalDistinct &domain) {
+RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestriction &existing,
+                                                           LogicalAggregate &domain) {
 	auto &restriction = *existing.GetJoin();
 	auto &condition = restriction.conditions[0];
 	auto input = extractor.Extract(*restriction.children[0]);
@@ -460,8 +467,7 @@ RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestricti
 		return RestrictionAction::KEEP;
 	}
 	LogicalComparisonJoin replacement(JoinType::SEMI);
-	replacement.conditions.emplace_back(condition.GetLHS().Copy(), domain.distinct_targets[0]->Copy(),
-	                                    condition.GetComparisonType());
+	replacement.conditions.emplace_back(condition.GetLHS().Copy(), DomainKey(domain), condition.GetComparisonType());
 	auto restricted = *input;
 	RelationStatisticsHelper::ApplySemiAntiJoinStats(replacement, *input, *new_keys, restricted);
 	// The projections preserve row counts and directly alias this grouping key.
@@ -515,7 +521,7 @@ static bool HasRuntimeFilterTargets(LogicalAggregate &aggregate) {
 }
 
 static bool TryOptimizeRestriction(Optimizer &optimizer, LogicalAggregate &aggregate,
-                                   unique_ptr<LogicalDistinct> &domain, ExpressionType consumer_comparison) {
+                                   unique_ptr<LogicalAggregate> &domain, ExpressionType consumer_comparison) {
 	DomainRestriction existing(aggregate, consumer_comparison);
 	auto restriction = existing.GetJoin();
 	if (!restriction || HasSharedSource(*restriction->children[1])) {
@@ -556,7 +562,16 @@ static optional_ptr<LogicalCTERef> FindSharedKey(LogicalOperator &op, idx_t &key
 		key = index.GetIndex();
 		return FindSharedKey(*op.children[0], key);
 	}
-	if (op.type == LogicalOperatorType::LOGICAL_DISTINCT) {
+	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		if (key >= aggregate.groups.size()) {
+			return nullptr;
+		}
+		auto index = GroupKeyIndex(aggregate, key, aggregate.groups[key]->GetReturnType());
+		if (!index.IsValid()) {
+			return nullptr;
+		}
+		key = index.GetIndex();
 		return FindSharedKey(*op.children[0], key);
 	}
 	if (op.type != LogicalOperatorType::LOGICAL_CTE_REF) {
@@ -686,23 +701,12 @@ static void TraceSharedKeys(LogicalOperator &op, idx_t key, const LogicalType &t
 				return;
 			}
 			break;
-		case LogicalOperatorType::LOGICAL_DISTINCT: {
-			auto &distinct = current->Cast<LogicalDistinct>();
-			if (!DistinctPreservesKey(distinct, index.GetIndex(), type)) {
-				return;
-			}
-			break;
-		}
 		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 			auto &aggregate = current->Cast<LogicalAggregate>();
-			if (aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].size() != aggregate.groups.size() ||
-			    index.GetIndex() >= aggregate.groups.size() || !aggregate.grouping_functions.empty()) {
+			if (!GroupKeyIndex(aggregate, index.GetIndex(), type).IsValid()) {
 				return;
 			}
 			auto &expression = *aggregate.groups[index.GetIndex()];
-			if (!ReferenceIndex(expression, *aggregate.children[0], type).IsValid()) {
-				return;
-			}
 			binding = expression.Cast<BoundColumnRefExpression>().Binding();
 			break;
 		}
@@ -726,7 +730,7 @@ static void TraceSharedKeys(LogicalOperator &op, idx_t key, const LogicalType &t
 
 static RestrictionAction TryOptimizeRuntimeRestriction(DomainCostModel &costs, LogicalAggregate &aggregate,
                                                        LogicalOperator &demand, idx_t demand_index,
-                                                       unique_ptr<LogicalDistinct> &domain,
+                                                       unique_ptr<LogicalAggregate> &domain,
                                                        ExpressionType consumer_comparison,
                                                        const vector<reference<LogicalMaterializedCTE>> &cte_scopes) {
 	DomainRestriction existing(aggregate, consumer_comparison);
@@ -813,17 +817,11 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<Log
 	    make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), owner_index, source_types,
 	                             AggregateRewriteHelper::GenerateColumnNames("domain", source_types.size()));
 	auto &domain_reference = *key_reference;
-	vector<unique_ptr<Expression>> key_expression;
-	key_expression.push_back(
-	    make_uniq<BoundColumnRefExpression>(source_types[source.key], key_reference->GetColumnBindings()[source.key]));
-	auto projection = make_uniq<LogicalProjection>(optimizer.binder.GenerateTableIndex(), std::move(key_expression));
-	projection->children.push_back(std::move(key_reference));
-	auto domain = make_uniq<LogicalDistinct>(DistinctType::DISTINCT);
-	domain->distinct_targets.push_back(
-	    make_uniq<BoundColumnRefExpression>(source_types[source.key], projection->GetColumnBindings()[0]));
-	domain->children.push_back(std::move(projection));
+	auto key_expression =
+	    make_uniq<BoundColumnRefExpression>(source_types[source.key], key_reference->GetColumnBindings()[source.key]);
+	auto domain = CreateKeyDomain(optimizer, std::move(key_reference), std::move(key_expression));
 	auto restriction = make_uniq<LogicalComparisonJoin>(JoinType::SEMI);
-	restriction->conditions.emplace_back(aggregate.groups[0]->Copy(), domain->distinct_targets[0]->Copy(),
+	restriction->conditions.emplace_back(aggregate.groups[0]->Copy(), DomainKey(*domain),
 	                                     join.conditions[0].GetComparisonType());
 	auto source_rows = static_cast<double>(source_stats->cardinality);
 	// CTE readers scan the full row. A new owner also writes it and replaces the consumer with another reader.
@@ -875,10 +873,9 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeDomain(unique_ptr<LogicalOpe
 	auto fixed =
 	    make_uniq<LogicalExpressionGet>(key_index, vector<LogicalType> {demand_key.GetReturnType()}, std::move(rows));
 	fixed->children.push_back(make_uniq<LogicalDummyScan>(optimizer.binder.GenerateTableIndex()));
-	auto domain = make_uniq<LogicalDistinct>(DistinctType::DISTINCT);
-	domain->distinct_targets.push_back(
-	    make_uniq<BoundColumnRefExpression>(demand_key.GetReturnType(), ColumnBinding(key_index, ProjectionIndex(0))));
-	domain->children.push_back(std::move(fixed));
+	auto key_expression =
+	    make_uniq<BoundColumnRefExpression>(demand_key.GetReturnType(), ColumnBinding(key_index, ProjectionIndex(0)));
+	auto domain = CreateKeyDomain(optimizer, std::move(fixed), std::move(key_expression));
 	if (TryOptimizeRestriction(optimizer, *aggregate, domain, condition.GetComparisonType())) {
 		return true;
 	}
@@ -887,7 +884,7 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeDomain(unique_ptr<LogicalOpe
 		return false;
 	}
 	auto restriction = make_uniq<LogicalComparisonJoin>(JoinType::SEMI);
-	restriction->conditions.emplace_back(aggregate->groups[0]->Copy(), domain->distinct_targets[0]->Copy(),
+	restriction->conditions.emplace_back(aggregate->groups[0]->Copy(), DomainKey(*domain),
 	                                     condition.GetComparisonType());
 	RelationStatsExtractor extractor(optimizer.context);
 	auto key_input_rows = static_cast<double>(domain->children[0]->Cast<LogicalExpressionGet>().expressions.size());

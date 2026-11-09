@@ -1,0 +1,20 @@
+# name: test/parquet/corrupt/encrypted_module_size.test
+# description: Reject encrypted page module size mismatches before decryption
+# group: [corrupt]
+
+require parquet
+
+require noforcestorage
+
+statement ok
+PRAGMA add_parquet_key('module_size_key', '0123456789abcdef');
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/encrypted_module_size_larger.parquet', encryption_config={footer_key: 'module_size_key'});
+----
+Data Corruption Error: Encrypted Parquet module size mismatch (expected 16 bytes, actual 32 bytes)
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/encrypted_module_size_smaller.parquet', encryption_config={footer_key: 'module_size_key'});
+----
+Data Corruption Error: Encrypted Parquet module size mismatch (expected 16 bytes, actual 15 bytes)

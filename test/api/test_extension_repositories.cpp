@@ -140,6 +140,7 @@ TEST_CASE("Test that forbidding repositories distrusts their keys", "[api]") {
 
 TEST_CASE("Test that adding trusted extension repositories must be opted into", "[api]") {
 	auto repository_directory = TestCreatePath("extension_repositories_undecided");
+	auto local_prefix = TestCreatePath("extension_repositories_undecided_prefix");
 
 	// the default is 'undecided': adding a repository fails until the setting is explicitly moved to 'allowed', which
 	// can be done at startup or at runtime. Once decided, the setting cannot be reverted to 'undecided'
@@ -157,6 +158,9 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
 		    "CREATE EXTENSION REPOSITORY acme WITH PREFIX 'http://acme.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
 		REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
+		REQUIRE_NO_FAIL(
+		    con.Query(StringUtil::Format("CREATE EXTENSION REPOSITORY local WITH PREFIX '%s' USING PUBLIC KEY '%s'",
+		                                 local_prefix, TEST_PUBLIC_KEY)));
 
 		// the decision cannot be reverted
 		REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
@@ -169,11 +173,16 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		DuckDB db(nullptr, &config);
 		Connection con(db);
 
-		REQUIRE(UserRepositoryCount(con) == 1);
+		REQUIRE(UserRepositoryCount(con) == 2);
 		REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
 		REQUIRE_FAIL(con.Query(
 		    StringUtil::Format("CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'",
 		                       OTHER_PUBLIC_KEY)));
+
+		// installing from a trusted repository is not gated by the opt-in: the (empty) repository is consulted
+		auto install = con.Query("INSTALL some_extension FROM local");
+		REQUIRE(install->HasError());
+		REQUIRE(install->GetErrorObject().Type() == ExceptionType::IO);
 	}
 
 	// opting in at startup through the config also allows adding repositories

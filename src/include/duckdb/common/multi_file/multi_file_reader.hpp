@@ -148,7 +148,7 @@ public:
 
 	//! Parse the named parameters of a multi-file reader
 	//! Parse an option of a COPY ... FROM that the multi-file reader handles itself
-	DUCKDB_API virtual bool ParseCopyOption(const Identifier &key, const vector<Value> &values,
+	DUCKDB_API virtual bool ParseCopyOption(Context &context, const Identifier &key, const vector<Value> &values,
 	                                        MultiFileOptions &options);
 	DUCKDB_API virtual bool ParseOption(const Identifier &key, const Value &val, MultiFileOptions &options,
 	                                    ClientContext &context);

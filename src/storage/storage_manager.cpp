@@ -83,7 +83,7 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 	encryption_version = target_encryption_version;
 }
 
-void StorageOptions::Initialize(unordered_map<string, Value> &options) {
+void StorageOptions::Initialize(Context &context, unordered_map<string, Value> &options) {
 	string storage_version_user_provided = "";
 	for (auto &entry : options) {
 		if (entry.first == "block_size") {
@@ -99,7 +99,7 @@ void StorageOptions::Initialize(unordered_map<string, Value> &options) {
 			} else if (entry.second.GetValue<string>().empty()) {
 				throw BinderException("Not a valid key. A key cannot be empty");
 			}
-			user_key = make_shared_ptr<string>(StringValue::Get(entry.second.DefaultCastAs(LogicalType::BLOB)));
+			user_key = make_shared_ptr<string>(StringValue::Get(entry.second.CastAs(context, LogicalType::BLOB)));
 			block_header_size = DEFAULT_ENCRYPTION_BLOCK_HEADER_SIZE;
 			encryption = true;
 		} else if (entry.first == "encryption_cipher") {
@@ -115,7 +115,7 @@ void StorageOptions::Initialize(unordered_map<string, Value> &options) {
 			storage_version_user_provided = entry.second.ToString();
 			storage_version = StorageCompatibility::FromString(storage_version_user_provided).storage_version;
 		} else if (entry.first == "compress") {
-			if (entry.second.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>()) {
+			if (entry.second.CastAs(context, LogicalType::BOOLEAN).GetValue<bool>()) {
 				compress_in_memory = CompressInMemory::COMPRESS;
 			} else {
 				compress_in_memory = CompressInMemory::DO_NOT_COMPRESS;
@@ -163,7 +163,8 @@ StorageManager::StorageManager(AttachedDatabase &db, string path_p, AttachOption
 	auto &fs = FileSystem::Get(db);
 	path = fs.ExpandPath(path);
 
-	storage_options.Initialize(options.options);
+	auto services = db.GetDatabase().Services();
+	storage_options.Initialize(*services, options.options);
 }
 
 StorageManager::~StorageManager() {
