@@ -13,6 +13,7 @@
 
 namespace duckdb {
 class MacroCatalogEntry;
+struct RemoveMacroOverloadInfo;
 
 //! A schema in the catalog
 class DuckSchemaEntry : public SchemaCatalogEntry {
@@ -68,6 +69,8 @@ public:
 	//! Create a nested schema inside this schema
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info);
 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+	//! Remove one overload of a macro, dropping the entry when it is the last one
+	void RemoveMacroOverload(CatalogTransaction transaction, RemoveMacroOverloadInfo &info);
 	using SchemaCatalogEntry::Scan;
 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(CatalogTransaction transaction, CatalogType type,

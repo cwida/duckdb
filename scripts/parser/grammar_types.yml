@@ -80,6 +80,7 @@ SQLStatement:
     - DetachStatement
     - DisconnectStatement
     - DropStatement
+    - DropMemberStatement
     - ExecuteStatement
     - ExplainStatement
     - ExplainableStatements
@@ -222,6 +223,9 @@ AlterInfo:
     - AlterSequenceOptions
     - RenameAlterSequenceOptions
     - SetSequenceOption
+    - DropMember
+    - DropTableFunctionMember
+    - DropFunctionMember
 
 AlterTableInfo:
   type: "unique_ptr<AlterTableInfo>"

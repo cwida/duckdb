@@ -7,6 +7,7 @@
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 #include "duckdb/parser/parsed_data/alter_schema_info.hpp"
 #include "duckdb/parser/parsed_data/comment_on_column_info.hpp"
 #include "duckdb/parser/statement/alter_statement.hpp"
@@ -108,6 +109,61 @@ static void BindAlterTypes(Binder &binder, AlterStatement &stmt) {
 	}
 }
 
+BoundStatement Binder::BindAlterMacro(AlterStatement &stmt) {
+	BoundStatement result;
+	result.names = {"Success"};
+	result.types = {LogicalType::BOOLEAN};
+	auto &properties = GetStatementProperties();
+	properties.return_type = StatementReturnType::NOTHING;
+
+	auto &info = stmt.info->Cast<RemoveMacroOverloadInfo>();
+	info.SetQualifiedName(BindTableName(info.GetQualifiedName()));
+	auto catalog = Catalog::GetCatalogEntry(context, info.GetQualifiedName().Catalog());
+	if (catalog) {
+		properties.RegisterDBRead(*catalog, context);
+	}
+	optional_ptr<CatalogEntry> entry;
+	if (info.entry_catalog_type == CatalogType::MACRO_ENTRY) {
+		// DROP MACRO also names a table macro, the scalar one wins
+		EntryLookupInfo macro_lookup(CatalogType::MACRO_ENTRY, info.GetQualifiedName());
+		entry = Catalog::GetEntry(context, macro_lookup, OnEntryNotFound::RETURN_NULL);
+		if (!entry) {
+			EntryLookupInfo table_macro_lookup(CatalogType::TABLE_MACRO_ENTRY, info.GetQualifiedName());
+			entry = Catalog::GetEntry(context, table_macro_lookup, OnEntryNotFound::RETURN_NULL);
+			if (entry) {
+				info.entry_catalog_type = CatalogType::TABLE_MACRO_ENTRY;
+			}
+		}
+		if (!entry) {
+			entry = Catalog::GetEntry(context, macro_lookup, info.if_not_found);
+		}
+	} else {
+		EntryLookupInfo lookup(info.entry_catalog_type, info.GetQualifiedName());
+		entry = Catalog::GetEntry(context, lookup, info.if_not_found);
+	}
+	if (!entry) {
+		// IF EXISTS on a missing entry: the signature types are not resolved
+		result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
+		return result;
+	}
+	if (entry->internal) {
+		throw CatalogException("Cannot drop internal catalog entry %s!", entry->name);
+	}
+	// keep the entry's full (possibly nested) schema path so execution navigates the same schema
+	info.SetQualifiedName(entry->ParentSchema().GetQualifiedName(info.GetQualifiedName().Name()));
+	// resolve the signature's type names from the entry's own schema first, with the session path behind
+	// it, so a same-named type elsewhere cannot make an overload unreachable or name a different member
+	auto scoped_binder = Binder::CreateBinder(context, this);
+	scoped_binder->EntryRetriever().SetSearchPath(
+	    scoped_binder->GetSearchPath(entry->ParentCatalog(), info.GetQualifiedName().SchemaPath(), true));
+	for (auto &type : info.signature) {
+		scoped_binder->BindLogicalType(type);
+	}
+	properties.RegisterDBModify(entry->ParentCatalog(), context, info.GetModifications());
+	result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
+	return result;
+}
+
 BoundStatement Binder::Bind(AlterStatement &stmt) {
 	BoundStatement result;
 	result.names = {"Success"};
@@ -132,6 +188,10 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 		properties.RegisterDBModify(catalog, context, DatabaseModificationType::ALTER_TABLE);
 		result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
 		return result;
+	}
+
+	if (stmt.info->type == AlterType::ALTER_MACRO) {
+		return BindAlterMacro(stmt);
 	}
 
 	// resolve the (possibly nested) catalog/schema qualification of the altered entry

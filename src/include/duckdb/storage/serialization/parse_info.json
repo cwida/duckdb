@@ -547,6 +547,12 @@
         "id": 400,
         "name": "signature",
         "type": "vector<LogicalType>"
+      },
+      {
+        "id": 401,
+        "name": "cascade",
+        "type": "bool",
+        "default": "false"
       }
     ]
   },

@@ -518,6 +518,8 @@ private:
 	BoundStatement Bind(CreateStatement &stmt);
 	BoundStatement Bind(DropStatement &stmt);
 	BoundStatement Bind(AlterStatement &stmt);
+	//! A signature DROP of a macro overload: resolves the entry and the signature types
+	BoundStatement BindAlterMacro(AlterStatement &stmt);
 	BoundStatement Bind(PrepareStatement &stmt);
 	BoundStatement Bind(ExecuteStatement &stmt);
 	BoundStatement Bind(TransactionStatement &stmt);

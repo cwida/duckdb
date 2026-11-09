@@ -1,5 +1,7 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
+#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 #include "duckdb/parser/parsed_data/extra_drop_info.hpp"
+#include "duckdb/parser/statement/alter_statement.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 
 namespace duckdb {
@@ -45,9 +47,10 @@ bool PEGTransformerFactory::TransformFunctionTypeFunction(PEGTransformer &transf
 	return false;
 }
 
-unique_ptr<DropStatement> PEGTransformerFactory::TransformDropTableFunction(
-    PEGTransformer &transformer, const CatalogType &comment_macro_table, const optional<bool> &if_exists,
-    const vector<QualifiedName> &table_function_name, const optional<vector<LogicalType>> &drop_function_signature) {
+unique_ptr<DropStatement>
+PEGTransformerFactory::TransformDropTableFunction(PEGTransformer &transformer, const CatalogType &comment_macro_table,
+                                                  const optional<bool> &if_exists,
+                                                  const vector<QualifiedName> &table_function_name) {
 	auto result = make_uniq<DropStatement>();
 	auto info = make_uniq<DropInfo>();
 	if (table_function_name.size() > 1) {
@@ -56,19 +59,14 @@ unique_ptr<DropStatement> PEGTransformerFactory::TransformDropTableFunction(
 	info->SetQualifiedName(table_function_name[0]);
 	info->type = comment_macro_table;
 	info->if_not_found = if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION;
-	if (drop_function_signature) {
-		// a parameter type list identifies a single overload member instead of the whole entry
-		auto extra_info = make_uniq<ExtraDropFunctionSignatureInfo>();
-		extra_info->signature = *drop_function_signature;
-		info->extra_drop_info = std::move(extra_info);
-	}
 	result->info = std::move(info);
 	return result;
 }
 
-unique_ptr<DropStatement> PEGTransformerFactory::TransformDropFunction(
-    PEGTransformer &transformer, const bool &function_type_macro, const optional<bool> &if_exists,
-    const vector<QualifiedName> &function_identifier, const optional<vector<LogicalType>> &drop_function_signature) {
+unique_ptr<DropStatement>
+PEGTransformerFactory::TransformDropFunction(PEGTransformer &transformer, const bool &function_type_macro,
+                                             const optional<bool> &if_exists,
+                                             const vector<QualifiedName> &function_identifier) {
 	auto result = make_uniq<DropStatement>();
 	auto info = make_uniq<DropInfo>();
 	auto catalog_type = CatalogType::MACRO_ENTRY;
@@ -79,14 +77,39 @@ unique_ptr<DropStatement> PEGTransformerFactory::TransformDropFunction(
 	info->SetQualifiedName(function);
 	info->if_not_found = if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION;
 	info->type = catalog_type;
-	if (drop_function_signature) {
-		// a parameter type list identifies a single overload member instead of the whole entry
-		auto extra_info = make_uniq<ExtraDropFunctionSignatureInfo>();
-		extra_info->signature = *drop_function_signature;
-		info->extra_drop_info = std::move(extra_info);
-	}
 	result->info = std::move(info);
 	return result;
+}
+
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformDropMemberStatement(PEGTransformer &transformer,
+                                                                             unique_ptr<AlterInfo> drop_member,
+                                                                             const optional<bool> &drop_behavior) {
+	if (drop_behavior) {
+		drop_member->Cast<RemoveMacroOverloadInfo>().cascade = *drop_behavior;
+	}
+	auto result = make_uniq<AlterStatement>();
+	result->info = std::move(drop_member);
+	return std::move(result);
+}
+
+//! A parameter type list on DROP names one overload member: removing it alters the macro entry
+static unique_ptr<AlterInfo> MakeRemoveOverloadInfo(const QualifiedName &name, CatalogType type,
+                                                    const optional<bool> &if_exists, vector<LogicalType> signature) {
+	auto if_not_found = if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION;
+	AlterEntryData data(name, if_not_found);
+	return make_uniq<RemoveMacroOverloadInfo>(data, type, std::move(signature));
+}
+
+unique_ptr<AlterInfo> PEGTransformerFactory::TransformDropTableFunctionMember(
+    PEGTransformer &transformer, const CatalogType &comment_macro_table, const optional<bool> &if_exists,
+    const QualifiedName &qualified_table_function, const vector<LogicalType> &drop_function_signature) {
+	return MakeRemoveOverloadInfo(qualified_table_function, comment_macro_table, if_exists, drop_function_signature);
+}
+
+unique_ptr<AlterInfo> PEGTransformerFactory::TransformDropFunctionMember(
+    PEGTransformer &transformer, const bool &function_type_macro, const optional<bool> &if_exists,
+    const QualifiedName &function_identifier, const vector<LogicalType> &drop_function_signature) {
+	return MakeRemoveOverloadInfo(function_identifier, CatalogType::MACRO_ENTRY, if_exists, drop_function_signature);
 }
 
 vector<LogicalType> PEGTransformerFactory::TransformDropFunctionSignature(PEGTransformer &transformer,

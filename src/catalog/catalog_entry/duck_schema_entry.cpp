@@ -331,11 +331,69 @@ void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 		if (!set.AlterOwnership(transaction, info.Cast<ChangeOwnershipInfo>())) {
 			throw CatalogException("Couldn't change ownership!");
 		}
+	} else if (info.type == AlterType::ALTER_MACRO) {
+		RemoveMacroOverload(transaction, info.Cast<RemoveMacroOverloadInfo>());
 	} else {
 		auto &name = info.GetQualifiedName().Name();
 		if (!set.AlterEntry(transaction, name, info)) {
 			throw CatalogException::MissingEntry(type, name, string());
 		}
+	}
+}
+
+void DuckSchemaEntry::RemoveMacroOverload(CatalogTransaction transaction, RemoveMacroOverloadInfo &info) {
+	auto type = info.GetCatalogType();
+	auto &name = info.GetQualifiedName().Name();
+	auto &set = GetCatalogSet(type);
+	auto entry = set.GetEntry(transaction, name);
+	if (!entry || entry->type != type) {
+		if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
+			return;
+		}
+		throw CatalogException::MissingEntry(type, name, string());
+	}
+	auto &macro = entry->Cast<MacroCatalogEntry>();
+	if (!macro.FindMember(info.signature).IsValid()) {
+		if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
+			// IF EXISTS at member granularity: nothing to drop, siblings are unaffected
+			return;
+		}
+		string signature_text;
+		for (auto &signature_type : info.signature) {
+			if (!signature_text.empty()) {
+				signature_text += ", ";
+			}
+			signature_text += signature_type.ToString();
+		}
+		throw CatalogException("Function %s has no overload with signature (%s)", name, signature_text);
+	}
+	// decided on the version this transaction mutates: a concurrent change to the entry conflicts with either path
+	if (macro.macros.size() == 1) {
+		// the last overload: removing it drops the entry, which honors CASCADE like any entry drop
+		if (!DropEntryInternal(transaction, *entry, name, info.cascade, info.allow_internal)) {
+			throw InternalException("Could not drop element because of an internal error");
+		}
+		return;
+	}
+	if (info.cascade) {
+		// dependencies are tracked per entry, not per member, so a cascade that leaves siblings
+		// behind has no well-defined scope: require an explicit choice
+		throw CatalogException("Cannot drop an overload of %s with CASCADE while other overloads remain: drop the "
+		                       "whole entry or its dependents first",
+		                       name);
+	}
+	try {
+		if (!set.AlterEntry(transaction, name, info)) {
+			throw CatalogException::MissingEntry(type, name, string());
+		}
+	} catch (const DependencyException &ex) {
+		// dependencies are tracked per entry: any dependent blocks the member drop, and CASCADE is
+		// rejected for member drops, so the generic hint would send the user in a circle
+		ErrorData error(ex);
+		throw DependencyException("%s\nDependencies block dropping a single overload of %s, and CASCADE cannot "
+		                          "scope to one overload: drop the dependent entries first, or drop the whole "
+		                          "function",
+		                          error.RawMessage(), name);
 	}
 }
 
@@ -375,59 +433,6 @@ void DuckSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 		throw CatalogException("Existing object %s is of type %s, trying to drop type %s",
 		                       info.GetQualifiedName().Name(), CatalogTypeToString(existing_entry->type),
 		                       CatalogTypeToString(info.type));
-	}
-
-	if (info.extra_drop_info && info.extra_drop_info->info_type == ExtraDropInfoType::FUNCTION_SIGNATURE_INFO) {
-		if (existing_entry->type != CatalogType::MACRO_ENTRY &&
-		    existing_entry->type != CatalogType::TABLE_MACRO_ENTRY) {
-			throw CatalogException("Cannot drop %s with a parameter type list: dropping a single overload is only "
-			                       "supported for macros and functions",
-			                       info.GetQualifiedName().Name());
-		}
-		auto &existing = existing_entry->Cast<MacroCatalogEntry>();
-		auto &extra = info.extra_drop_info->Cast<ExtraDropFunctionSignatureInfo>();
-		auto member_idx = existing.FindMember(extra.signature);
-		if (!member_idx.IsValid()) {
-			if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
-				// IF EXISTS at member granularity: nothing to drop, siblings are unaffected
-				return;
-			}
-			string signature_text;
-			for (auto &type : extra.signature) {
-				if (!signature_text.empty()) {
-					signature_text += ", ";
-				}
-				signature_text += type.ToString();
-			}
-			throw CatalogException("Function %s has no overload with signature (%s)", info.GetQualifiedName().Name(),
-			                       signature_text);
-		}
-		if (existing.macros.size() > 1) {
-			if (info.cascade) {
-				// dependencies are tracked per entry, not per member, so a cascade that leaves siblings
-				// behind has no well-defined scope: require an explicit choice
-				throw CatalogException("Cannot drop an overload of %s with CASCADE while other overloads remain: drop "
-				                       "the whole entry or its dependents first",
-				                       info.GetQualifiedName().Name());
-			}
-			// the member removal is an alter: the entry remains, carrying the surviving overloads
-			AlterEntryData alter_data(info.GetQualifiedName(), OnEntryNotFound::THROW_EXCEPTION);
-			RemoveMacroOverloadInfo alter_info(alter_data, existing_entry->type, extra.signature);
-			alter_info.allow_internal = info.allow_drop_internal;
-			try {
-				Alter(transaction, alter_info);
-			} catch (const DependencyException &ex) {
-				// dependencies are tracked per entry: any dependent blocks the member drop, and CASCADE is
-				// rejected for member drops, so the generic hint would send the user in a circle
-				ErrorData error(ex);
-				throw DependencyException("%s\nDependencies block dropping a single overload of %s, and CASCADE "
-				                          "cannot scope to one overload: drop the dependent entries first, or drop "
-				                          "the whole function",
-				                          error.RawMessage(), info.GetQualifiedName().Name());
-			}
-			return;
-		}
-		// the signature identified the last member, dropping it removes the whole entry
 	}
 
 	if (!DropEntryInternal(transaction, *existing_entry, info.GetQualifiedName().Name(), info.cascade,

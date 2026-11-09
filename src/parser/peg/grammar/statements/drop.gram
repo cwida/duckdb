@@ -1,4 +1,8 @@
 DropStatement <- 'DROP' DropEntries DropBehavior?
+DropMemberStatement <- 'DROP' DropMember DropBehavior?
+DropMember <- DropTableFunctionMember / DropFunctionMember
+DropTableFunctionMember <- CommentMacroTable IfExists? QualifiedTableFunction DropFunctionSignature
+DropFunctionMember <- FunctionTypeMacro IfExists? FunctionIdentifier DropFunctionSignature
 
 DropEntries <-
 	DropTable /
@@ -15,8 +19,8 @@ DropEntries <-
 DropTrigger <- 'TRIGGER' IfExists? TriggerName 'ON' BaseTableName
 
 DropTable <- TableOrView IfExists? List(BaseTableName)
-DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction) DropFunctionSignature?
-DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier) DropFunctionSignature?
+DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction)
+DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier)
 DropFunctionSignature <- Parens(List(DropSignatureType)?)
 DropSignatureType <- DropSignatureAnyType / Type
 DropSignatureAnyType <- 'ANY'

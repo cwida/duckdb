@@ -1,7 +1,5 @@
 #include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 
-#include "duckdb/common/sql_identifier.hpp"
-
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -42,24 +40,28 @@ RemoveMacroOverloadInfo::~RemoveMacroOverloadInfo() {
 unique_ptr<AlterInfo> RemoveMacroOverloadInfo::Copy() const {
 	auto result = make_uniq<RemoveMacroOverloadInfo>(GetAlterEntryData(), entry_catalog_type, signature);
 	result->allow_internal = allow_internal;
+	result->cascade = cascade;
 	return std::move(result);
 }
 
 string RemoveMacroOverloadInfo::ToString() const {
-	// the alter is produced internally from a signature drop: render the originating statement
-	string result = entry_catalog_type == CatalogType::TABLE_MACRO_ENTRY ? "DROP MACRO TABLE " : "DROP MACRO ";
+	// the alter is how a signature drop executes: render the statement that produces it
+	string result = "DROP " + ParseInfo::TypeToString(entry_catalog_type);
 	if (if_not_found == OnEntryNotFound::RETURN_NULL) {
-		result += "IF EXISTS ";
+		result += " IF EXISTS";
 	}
-	result += GetQualifiedName().ToString();
-	result += " (";
+	result += " " + GetQualifiedName().ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA) + "(";
 	for (idx_t i = 0; i < signature.size(); i++) {
 		if (i > 0) {
 			result += ", ";
 		}
 		result += signature[i].ToString();
 	}
-	result += ");";
+	result += ")";
+	if (cascade) {
+		result += " CASCADE";
+	}
+	result += ";";
 	return result;
 }
 

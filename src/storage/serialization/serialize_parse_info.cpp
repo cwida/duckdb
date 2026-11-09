@@ -639,11 +639,13 @@ unique_ptr<AlterTableInfo> RemoveFieldInfo::Deserialize(Deserializer &deserializ
 void RemoveMacroOverloadInfo::Serialize(Serializer &serializer) const {
 	AlterMacroInfo::Serialize(serializer);
 	serializer.WritePropertyWithDefault<vector<LogicalType>>(400, "signature", signature);
+	serializer.WritePropertyWithDefault<bool>(401, "cascade", cascade, false);
 }
 
 unique_ptr<AlterMacroInfo> RemoveMacroOverloadInfo::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<RemoveMacroOverloadInfo>(new RemoveMacroOverloadInfo());
 	deserializer.ReadPropertyWithDefault<vector<LogicalType>>(400, "signature", result->signature);
+	deserializer.ReadPropertyWithExplicitDefault<bool>(401, "cascade", result->cascade, false);
 	return std::move(result);
 }
 
