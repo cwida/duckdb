@@ -284,13 +284,16 @@ public:
 	uint32_t read_virt(uint8_t *buf, uint32_t len) override {
 		const uint32_t result = len;
 
-		if (len > transport_remaining - ParquetCrypto::TAG_BYTES + read_buffer_size - read_buffer_offset) {
-			throw InvalidInputException("Too many bytes requested from crypto buffer");
+		// The page header and encrypted module must agree on the decrypted size before decryption.
+		const auto remaining = transport_remaining - ParquetCrypto::TAG_BYTES + read_buffer_size - read_buffer_offset;
+		if (len != remaining) {
+			throw DataCorruptionException("Encrypted Parquet module size mismatch (expected %u bytes, actual %u bytes)",
+			                              len, remaining);
 		}
 
 		while (len != 0) {
 			if (read_buffer_offset == read_buffer_size) {
-				ReadBlock(buf);
+				ReadBlock(buf, len);
 			}
 			const auto next = MinValue(read_buffer_size - read_buffer_offset, len);
 			read_buffer_offset += next;
@@ -350,20 +353,17 @@ private:
 		}
 	}
 
-	void ReadBlock(uint8_t *buf) {
+	void ReadBlock(uint8_t *buf, uint32_t buffer_size) {
 		// Read from transport into read_buffer at one AES block size offset (up to the tag)
 		read_buffer_size = MinValue(ParquetCrypto::CRYPTO_BLOCK_SIZE, transport_remaining - ParquetCrypto::TAG_BYTES);
+		if (read_buffer_size > buffer_size) {
+			throw DataCorruptionException("Encrypted Parquet block exceeds the destination buffer size");
+		}
 		transport_remaining -= trans.read(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size);
 
-		// Decrypt from read_buffer + block size into read_buffer start (decryption can trail behind in same buffer)
-#ifdef DEBUG
-		auto size = aes->Process(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size, buf,
-		                         ParquetCrypto::CRYPTO_BLOCK_SIZE + ParquetCrypto::BLOCK_SIZE);
+		// Decrypt directly into the destination only after checking that the whole block fits.
+		auto size = aes->Process(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size, buf, buffer_size);
 		D_ASSERT(size == read_buffer_size);
-#else
-		aes->Process(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size, buf,
-		             ParquetCrypto::CRYPTO_BLOCK_SIZE + ParquetCrypto::BLOCK_SIZE);
-#endif
 		read_buffer_offset = 0;
 	}
 
@@ -395,12 +395,12 @@ public:
 
 	uint32_t read_virt(uint8_t *buf, uint32_t len) override {
 		const auto remaining = read_buffer_size - read_buffer_offset;
-		if (len > remaining) {
-			return remaining;
+		const auto read_size = MinValue(len, remaining);
+		if (read_size > 0) {
+			memcpy(buf, read_buffer + read_buffer_offset, read_size);
+			read_buffer_offset += read_size;
 		}
-		memcpy(buf, read_buffer + read_buffer_offset, len);
-		read_buffer_offset += len;
-		return len;
+		return read_size;
 	}
 
 private:
