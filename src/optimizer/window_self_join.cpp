@@ -105,7 +105,6 @@ static unique_ptr<Expression> TranslateAggregate(ClientContext &client, const Bo
 	const auto aggr_ordered = (agg_func.GetOrderDependent() == AggregateOrderDependent::ORDER_DEPENDENT);
 	auto result = make_uniq<BoundAggregateExpression>(std::move(agg_func), std::move(children), std::move(filter),
 	                                                  std::move(bind_info), aggr_type);
-	// statistics propagation may already have specialized the function, e.g. sum_no_overflow returns a HUGEINT
 	result->SetReturnType(w_expr.GetReturnType());
 
 	if (!aggr_ordered) {
