@@ -115,9 +115,10 @@ LogicalType BindCollatedVarcharType(BindLogicalTypeInput &input) {
 
 	// The collation can only be checked against the catalog when there is a connection. Without one this is a
 	// type that was bound before - re-binding it, for instance to serialize it, must not lose the collation.
-	if (input.context) {
+	auto client_context = input.TryGetClientContext();
+	if (client_context) {
 		// Ensure this is a valid collation
-		ExpressionBinder::TestCollation(*input.context, collation);
+		ExpressionBinder::TestCollation(*client_context, collation);
 	}
 
 	return LogicalType::VARCHAR_COLLATION(collation);
@@ -338,14 +339,15 @@ LogicalType BindGeometryType(BindLogicalTypeInput &input) {
 	// FIXME: Use extension/ClientContext to expand incomplete/shorthand CRS definitions
 	auto &crs = StringValue::Get(input.modifiers[0].GetValue());
 
-	if (!input.context) {
+	auto client_context = input.TryGetClientContext();
+	if (!client_context) {
 		throw BinderException(input.query_location,
 		                      "Cannot create GEOMETRY type with coordinate system without a connection");
 	}
 
-	const auto crs_result = CoordinateReferenceSystem::TryIdentify(*input.context, crs);
+	const auto crs_result = CoordinateReferenceSystem::TryIdentify(*client_context, crs);
 	if (!crs_result) {
-		if (Settings::Get<IgnoreUnknownCrsSetting>(*input.context)) {
+		if (Settings::Get<IgnoreUnknownCrsSetting>(*client_context)) {
 			// Ignored by user configuration - return generic GEOMETRY type
 			return LogicalType::GEOMETRY();
 		}
@@ -506,19 +508,31 @@ LogicalTypeId DefaultTypeGenerator::GetDefaultType(const Identifier &name) {
 	return LogicalType::INVALID;
 }
 
+static vector<TypeArgument> DefaultBindArguments(const vector<pair<string, Value>> &params) {
+	vector<TypeArgument> args;
+	for (auto &param : params) {
+		args.emplace_back(param.first, param.second);
+	}
+	return args;
+}
+
+LogicalType DefaultTypeGenerator::TryDefaultBind(Context &context, const string &name,
+                                                 const vector<pair<string, Value>> &params) {
+	auto entry = TryGetDefaultTypeEntry(Identifier(name));
+	if (!entry) {
+		return LogicalTypeId::INVALID;
+	}
+	auto constructors = GetConstructors(*entry, Identifier(name));
+	return constructors.Bind(context, LogicalType(entry->type), DefaultBindArguments(params));
+}
+
 LogicalType DefaultTypeGenerator::TryDefaultBind(const string &name, const vector<pair<string, Value>> &params) {
 	auto entry = TryGetDefaultTypeEntry(Identifier(name));
 	if (!entry) {
 		return LogicalTypeId::INVALID;
 	}
-
-	vector<TypeArgument> args;
-	for (auto &param : params) {
-		args.emplace_back(param.first, param.second);
-	}
-
-	// no context is available here, so only the built-in types are reachable
-	return GetConstructors(*entry, Identifier(name)).Bind(nullptr, LogicalType(entry->type), args);
+	auto constructors = GetConstructors(*entry, Identifier(name));
+	return constructors.BindBuiltin(LogicalType(entry->type), DefaultBindArguments(params));
 }
 
 DefaultTypeGenerator::DefaultTypeGenerator(Catalog &catalog, SchemaCatalogEntry &schema)

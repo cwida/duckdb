@@ -17,6 +17,7 @@
 
 namespace duckdb {
 class ClientContext;
+class Context;
 
 //! A single argument passed to a type constructor - an optionally named constant value
 class TypeArgument {
@@ -57,7 +58,8 @@ private:
 };
 
 struct BindLogicalTypeInput {
-	optional_ptr<ClientContext> context;
+	//! Absent only for a built-in type bound without a database (see TypeConstructorSet::BindBuiltin)
+	optional_ptr<Context> context;
 	const LogicalType &base_type;
 	const vector<TypeArgument> &modifiers;
 	//! Location of the type expression as a whole, for errors that are not about one particular modifier
@@ -74,6 +76,9 @@ struct BindLogicalTypeInput {
 		}
 		return query_location;
 	}
+
+	//! The client binding the type, if any - checks against the catalog (e.g. collations) need one
+	DUCKDB_API optional_ptr<ClientContext> TryGetClientContext() const;
 };
 
 //! The type to bind type modifiers to a type
@@ -120,12 +125,20 @@ public:
 	DUCKDB_API TypeConstructorSet();
 	DUCKDB_API explicit TypeConstructorSet(Identifier name);
 
-	//! Select the constructor matching the given arguments and invoke it. The context may be null, in which case only
-	//! the built-in implicit cast rules are available. The location is that of the type expression as a whole, and is
-	//! only available when the type came from source text.
-	DUCKDB_API LogicalType Bind(optional_ptr<ClientContext> context, const LogicalType &base_type,
-	                            const vector<TypeArgument> &arguments,
+	//! Select the constructor matching the given arguments and invoke it. The location is that of the type expression
+	//! as a whole, and is only available when the type came from source text.
+	DUCKDB_API LogicalType Bind(Context &context, const LogicalType &base_type, const vector<TypeArgument> &arguments,
 	                            QueryLocation query_location = QueryLocation()) const;
+	//! Bind a built-in type without a database (e.g. when parsing a type string): only the built-in cast rules are
+	//! available, and checks against the catalog are skipped.
+	DUCKDB_API LogicalType BindBuiltin(const LogicalType &base_type, const vector<TypeArgument> &arguments) const;
+
+private:
+	using argument_cast_t =
+	    std::function<optional<Value>(const Value &value, const LogicalType &target, string &error)>;
+
+	LogicalType BindInternal(optional_ptr<Context> context, const argument_cast_t &cast, const LogicalType &base_type,
+	                         const vector<TypeArgument> &arguments, QueryLocation query_location) const;
 };
 
 } // namespace duckdb
