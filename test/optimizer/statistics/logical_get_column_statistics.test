@@ -4,8 +4,6 @@
 
 require parquet
 
-require vector_size 64
-
 statement ok
 COPY (SELECT i AS a, i + 100 AS b, {'x': i + 200, 'y': i + 300} AS s FROM range(10) t(i))
 TO '{TEMP_DIR}/get_stats_columns.parquet'
