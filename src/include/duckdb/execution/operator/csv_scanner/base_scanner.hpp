@@ -535,7 +535,8 @@ protected:
 							ClearCandidates(candidates, pos, at + 2, at + 1 + delimiter_bytes);
 						}
 						BlockDelimiter(result, at + delimiter_bytes,
-						               MULTI_BYTE_DELIMITER ? DelimiterPenultimateState() : CSVState::UNQUOTED, value_ascii);
+						               MULTI_BYTE_DELIMITER ? DelimiterPenultimateState() : CSVState::UNQUOTED,
+						               value_ascii);
 						value_ascii = block_ascii;
 						last = at + 1 + delimiter_bytes;
 						continue;
