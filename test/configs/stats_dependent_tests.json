@@ -4,6 +4,7 @@
       "reason": "Statistics are not set without optimizers.",
       "paths": [
         "test/optimizer/statistics/statistics_numeric.test",
+        "test/optimizer/statistics/statistics_join_aggregate_bounds.test",
         "test/optimizer/statistics/statistics_monotone_infinity.test",
         "test/optimizer/statistics/right_semi_join_filter.test",
         "test/optimizer/statistics/statistics_additive_duplication.test",
