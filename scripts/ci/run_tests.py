@@ -374,11 +374,13 @@ def split_process_test_flags(test_flags: str):
     return remaining_flags, thread_stack_size
 
 
-def test_protocol_command(duckdb_bin: str, thread_stack_size: str | None = None):
+def test_protocol_command(duckdb_bin: str, thread_stack_size: str | None = None, jsonlines: bool = True):
     command = [duckdb_bin]
     if thread_stack_size is not None:
         command.extend(["--thread-stack-size", thread_stack_size])
-    command.extend(["-unsigned", "-batch", "-jsonlines"])
+    command.extend(["-unsigned", "-no-agent", "-batch"])
+    if jsonlines:
+        command.append("-jsonlines")
     return command
 
 
@@ -435,10 +437,10 @@ def test_list_selector_expression(selector: str):
     return f'"{escaped}"'
 
 
-def build_test_command(config: TestRunnerConfig, test_list: str, protocol: bool = False):
+def build_test_command(config: TestRunnerConfig, test_list: str, protocol: bool = False, jsonlines: bool = True):
     if protocol:
         _, thread_stack_size = split_process_test_flags(config.test_flags)
-        flags = shlex.join(test_protocol_command(config.unittest_bin, thread_stack_size)[1:])
+        flags = shlex.join(test_protocol_command(config.unittest_bin, thread_stack_size, jsonlines)[1:])
         return config.test_command.format(
             binary=shlex.quote(config.unittest_bin),
             flags=flags,
@@ -557,9 +559,11 @@ def generate_test_list(
     )
     configuration_flags, thread_stack_size = split_process_test_flags(test_flags)
     query = (
-        "SELECT test_id, name, is_slow FROM test_scan("
-        f"{sql_string_list(selectors)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
-        f"{'true' if include_slow else 'false'}, {sql_string_list(configuration_flags)});"
+        "SELECT test_id, name, is_slow FROM scan_tests("
+        f"{sql_string_list(selectors)}, test_roots = {sql_string_list(test_roots)}, "
+        f"extension_roots = {sql_string_list(bundle_roots)}, "
+        f"include_slow = {'true' if include_slow else 'false'}, "
+        f"test_flags = {sql_string_list(configuration_flags)});"
     )
     proc = run_test_protocol_query(
         unittest_bin,
@@ -1977,6 +1981,39 @@ def run_custom_batch(config: TestRunnerConfig, batch):
     }
 
 
+def read_test_state(config: TestRunnerConfig, state_database: Path, child_env):
+    if not state_database.is_file():
+        return [], f"test state database was not created: {state_database}"
+    proc = subprocess.run(
+        [config.unittest_bin, "-no-agent", "-batch", "-jsonlines", os.fspath(state_database)],
+        input=(
+            "SELECT test_id, attempt, status, duration_ms, assertion_count, failures, message " "FROM test_results;\n"
+        ),
+        text=True,
+        encoding="utf8",
+        errors="backslashreplace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=child_env,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip()
+        message = f"failed to recover test state from {state_database} (exit: {proc.returncode})"
+        if detail:
+            message += f": {detail}"
+        return [], message
+
+    rows = []
+    for line in proc.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("test_id"), str):
+            rows.append(row)
+    return rows, None
+
+
 def run_batch(config: TestRunnerConfig, batch):
     if config.test_command is not None and not test_protocol_available(config.unittest_bin):
         return run_custom_batch(config, batch)
@@ -1997,10 +2034,14 @@ def run_batch(config: TestRunnerConfig, batch):
 
     _, test_roots, bundle_roots = resolve_test_protocol_paths(config.unittest_bin)
     configuration_flags, thread_stack_size = split_process_test_flags(config.test_flags)
+    state_directory = Path(tempfile.mkdtemp(prefix="duckdb-test-state-"))
+    state_database = state_directory / "results.duckdb"
     query = (
-        "SELECT * FROM test_run("
-        f"{sql_string_list(batch)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
-        f"{sql_string_list(configuration_flags)});"
+        "SELECT * FROM run_tests("
+        f"{sql_string_list(batch)}, test_roots = {sql_string_list(test_roots)}, "
+        f"extension_roots = {sql_string_list(bundle_roots)}, "
+        f"test_flags = {sql_string_list(configuration_flags)}, "
+        f"state_database = {sql_string(state_database)});"
     )
     sql = build_test_protocol_sql(config.unittest_bin, query)
     protocol_file_path = None
@@ -2009,9 +2050,16 @@ def run_batch(config: TestRunnerConfig, batch):
             protocol_file.write(sql)
             protocol_file.flush()
             protocol_file_path = Path(protocol_file.name)
-        command = shlex.split(build_test_command(config, shlex.quote(str(protocol_file_path)), protocol=True))
+        command = shlex.split(
+            build_test_command(
+                config,
+                shlex.quote(str(protocol_file_path)),
+                protocol=True,
+                jsonlines=False,
+            )
+        )
     else:
-        command = test_protocol_command(config.unittest_bin, thread_stack_size)
+        command = test_protocol_command(config.unittest_bin, thread_stack_size, jsonlines=False)
     # Capture the child's stdout/stderr to temp files rather than pipes, avoid deadlock
     # between a process.wait() and a full unread pipe.
     stdout_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
@@ -2044,7 +2092,6 @@ def run_batch(config: TestRunnerConfig, batch):
             if stop_requested():
                 proc.kill()
                 proc.wait()
-                stdout, stderr = read_captures()
                 failed = True
                 allow_retry = False
                 message = "interrupted"
@@ -2055,7 +2102,6 @@ def run_batch(config: TestRunnerConfig, batch):
             if time.monotonic() >= deadline:
                 proc.kill()
                 proc.wait()
-                stdout, stderr = read_captures()
                 failed = True
                 timed_out = proc.returncode == (1 if os.name == "nt" else -signal.SIGKILL)
                 message = f"batch timed out after {config.batch_timeout_seconds} seconds"
@@ -2063,97 +2109,104 @@ def run_batch(config: TestRunnerConfig, batch):
             if proc.poll() is None:
                 time.sleep(DEFAULT_RSS_POLL_INTERVAL_SECONDS)
 
-        if message is None:
-            proc.wait()
-            stdout, stderr = read_captures()
-            rss_bytes = get_process_rss_bytes(proc.pid)
-            if rss_bytes is not None:
-                peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
-            failed = proc.returncode != 0
-            rows = {}
-            non_result_lines = []
-            for line in stdout.splitlines():
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    non_result_lines.append(line)
-                    continue
-                if isinstance(row, dict) and isinstance(row.get("test_id"), str):
-                    rows[row["test_id"]] = row
-                else:
-                    non_result_lines.append(line)
+        proc.wait()
+        _, stderr = read_captures()
+        rss_bytes = get_process_rss_bytes(proc.pid)
+        if rss_bytes is not None:
+            peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
+        if proc.returncode != 0:
+            failed = True
+            if message is None:
+                message = f"run_tests process exited with return code {proc.returncode}"
 
-            event_lines = []
-            failure_lines = []
-            skipped_rows = []
-            missing_test_ids = []
-            for test_id in batch:
-                row = rows.get(test_id)
-                if row is None:
-                    missing_test_ids.append(test_id)
-                    continue
-                status = row.get("status")
-                duration_ms = row.get("duration_ms")
-                if isinstance(duration_ms, (int, float)):
-                    event_lines.append(f"{test_id} took {duration_ms / 1000.0:.3f}s")
-                event_status = "ok"
-                if status == "failed":
-                    failed = True
-                    event_status = "error"
-                    failure_lines.append(f"1. {test_id}:1")
-                    for failure in row.get("failures") or []:
-                        failure_lines.append(str(failure))
-                    if row.get("message"):
-                        failure_lines.append(str(row["message"]))
-                    if message is None:
-                        message = f"test failed: {test_id}"
-                elif status == "skipped":
-                    event_status = "skip-requirement"
-                    skipped_rows.append(row)
-                elif status != "passed":
-                    failed = True
-                    allow_retry = False
-                    event_status = "error"
-                    message = f"test_run returned invalid status {status!r} for {test_id}"
-                    failure_lines.extend([f"1. {test_id}:1", message])
-                event = {
-                    "version": 2,
-                    "event": "end",
-                    "name": test_id,
-                    "status": event_status,
-                }
-                if row.get("message"):
-                    event["data"] = row["message"]
-                event_lines.append(TEST_EVENT_MARKER + json.dumps(event, separators=(",", ":")))
+        state_rows, recovery_error = read_test_state(config, state_database, child_env)
+        event_lines = []
+        failure_lines = []
+        skipped_rows = []
+        rows_by_test = {}
+        for row in state_rows:
+            test_id = row["test_id"]
+            attempt = row.get("attempt")
+            if not isinstance(attempt, int):
+                recovery_error = f"test state contains an invalid attempt for {test_id}"
+                break
+            rows_by_test.setdefault(test_id, []).append(row)
 
-            if missing_test_ids:
+        incomplete_tests = []
+        missing_tests = []
+        for test_id in batch:
+            attempts = sorted(rows_by_test.pop(test_id, []), key=lambda row: row["attempt"])
+            if not attempts:
+                missing_tests.append(test_id)
+                continue
+            row = attempts[-1]
+            status = row.get("status")
+            if status == "pending":
+                incomplete_tests.append(test_id)
+                continue
+
+            duration_ms = row.get("duration_ms")
+            if isinstance(duration_ms, (int, float)):
+                event_lines.append(f"{test_id} took {duration_ms / 1000.0:.3f}s")
+            event_status = "ok"
+            if status == "failed":
                 failed = True
-                process_lost = proc.returncode != 0 and (proc.returncode < 0 or not stderr.strip())
-                if process_lost:
-                    message = (
-                        f"test_run process exited with return code {proc.returncode} before returning "
-                        f"{len(missing_test_ids)} result(s)"
-                    )
-                else:
-                    allow_retry = False
-                    message = f"test_run did not return a result for {missing_test_ids[0]}"
-                    for test_id in missing_test_ids:
-                        failure_lines.extend(
-                            [
-                                f"1. {test_id}:1",
-                                f"test_run did not return a result for {test_id}",
-                            ]
-                        )
-
-            if config.fail_require_skip and skipped_rows:
+                event_status = "error"
+                failure_lines.append(f"1. {test_id}:1")
+                for failure in row.get("failures") or []:
+                    failure_lines.append(str(failure))
+                if row.get("message"):
+                    failure_lines.append(str(row["message"]))
+                if message is None:
+                    message = f"test failed: {test_id}"
+            elif status == "skipped":
+                event_status = "skip-requirement"
+                skipped_rows.append(row)
+            elif status != "passed":
                 failed = True
                 allow_retry = False
-                message = f"error: detected require-based skipped test: {skipped_rows[0]['test_id']}"
-            stdout = normalize_output("\n".join([*non_result_lines, *event_lines]) + ("\n" if event_lines else ""))
-            if failure_lines:
-                stderr = normalize_output(
-                    stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + "\n".join(failure_lines) + "\n"
-                )
+                event_status = "error"
+                message = f"run_tests stored invalid status {status!r} for {test_id}"
+                failure_lines.extend([f"1. {test_id}:1", message])
+            event = {"version": 2, "event": "end", "name": test_id, "status": event_status}
+            if row.get("message"):
+                event["data"] = row["message"]
+            event_lines.append(TEST_EVENT_MARKER + json.dumps(event, separators=(",", ":")))
+
+        if rows_by_test:
+            recovery_error = f"test state contains an unexpected test: {next(iter(rows_by_test))}"
+        if recovery_error:
+            failed = True
+            if proc.returncode == 0:
+                allow_retry = False
+            if message is None:
+                message = recovery_error
+            failure_lines.append(recovery_error)
+        if missing_tests:
+            failed = True
+            if proc.returncode == 0:
+                allow_retry = False
+            if message is None:
+                message = f"test state is missing {len(missing_tests)} requested test(s)"
+            failure_lines.append(message)
+        if incomplete_tests:
+            failed = True
+            if proc.returncode == 0:
+                allow_retry = False
+            if message is None:
+                message = f"{len(incomplete_tests)} test(s) did not produce a durable result"
+            failure_lines.append("incomplete tests:")
+            failure_lines.extend(f"- {test_id}" for test_id in incomplete_tests)
+
+        if config.fail_require_skip and skipped_rows:
+            failed = True
+            allow_retry = False
+            message = f"error: detected require-based skipped test: {skipped_rows[0]['test_id']}"
+        stdout = normalize_output("\n".join(event_lines) + ("\n" if event_lines else ""))
+        if failure_lines:
+            stderr = normalize_output(
+                stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + "\n".join(failure_lines) + "\n"
+            )
     except OSError as exc:
         failed = True
         stderr = str(exc)
@@ -2165,6 +2218,7 @@ def run_batch(config: TestRunnerConfig, batch):
         stderr_capture.close()
         Path(stdout_capture.name).unlink(missing_ok=True)
         Path(stderr_capture.name).unlink(missing_ok=True)
+        shutil.rmtree(state_directory, ignore_errors=True)
 
     return {
         "failed": failed,

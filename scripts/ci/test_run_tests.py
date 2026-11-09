@@ -305,7 +305,7 @@ class RunTestsScriptTest(unittest.TestCase):
     def test_protocol_command_sets_thread_stack_size_before_shell_startup(self):
         self.assertEqual(
             run_tests.test_protocol_command("duckdb", "131072"),
-            ["duckdb", "--thread-stack-size", "131072", "-unsigned", "-batch", "-jsonlines"],
+            ["duckdb", "--thread-stack-size", "131072", "-unsigned", "-no-agent", "-batch", "-jsonlines"],
         )
 
     def test_exact_test_list_selector_escapes_catch_separator(self):
@@ -342,12 +342,70 @@ class RunTestsScriptTest(unittest.TestCase):
                 "--thread-stack-size",
                 "131072",
                 "-unsigned",
+                "-no-agent",
                 "-batch",
                 "-jsonlines",
                 "-f",
                 "/tmp/protocol.sql",
             ],
         )
+
+    def test_custom_run_protocol_omits_jsonlines(self):
+        config = run_tests.TestRunnerConfig(
+            test_list=Path("unused"),
+            unittest_bin="duckdb",
+            test_config=None,
+            test_flags="",
+            patterns=[],
+            test_command="valgrind {binary} {flags} -f {test_list}",
+            workers=1,
+            retry=0,
+            max_retries=4,
+            batch_size=1,
+            batch_timeout_seconds=10,
+            rss_memory_threshold_mib=None,
+            runtime_threshold_seconds=None,
+            max_failures=None,
+            fail_require_skip=False,
+            coverage_profile_dir=None,
+        )
+
+        command = run_tests.build_test_command(
+            config,
+            "/tmp/protocol.sql",
+            protocol=True,
+            jsonlines=False,
+        )
+
+        self.assertNotIn("-jsonlines", shlex.split(command))
+
+    def test_read_test_state_uses_jsonlines(self):
+        state_database = create_temp_file("")
+        result = mock.Mock(
+            returncode=0,
+            stdout=(
+                '{"test_id":"sql:test/sql/a.test","attempt":0,"status":"passed",'
+                '"duration_ms":1.5,"assertion_count":1,"failures":[],"message":null}\n'
+            ),
+            stderr="",
+        )
+        try:
+            with mock.patch("scripts.ci.run_tests.subprocess.run", return_value=result) as run:
+                rows, error = run_tests.read_test_state(
+                    mock.Mock(unittest_bin="duckdb"),
+                    state_database,
+                    {"TEST_ENV": "1"},
+                )
+        finally:
+            state_database.unlink(missing_ok=True)
+
+        self.assertIsNone(error)
+        self.assertEqual(rows[0]["status"], "passed")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["duckdb", "-no-agent", "-batch", "-jsonlines", os.fspath(state_database)],
+        )
+        self.assertIn("FROM test_results", run.call_args.kwargs["input"])
 
     def test_protocol_scan_rejects_unmatched_exact_test_list_entry(self):
         test_list = create_temp_file("test/sql/a.test\ntest/sql/stale.test\n")
@@ -420,7 +478,7 @@ class RunTestsScriptTest(unittest.TestCase):
         self.assertTrue(result["failed"])
         self.assertTrue(result["allow_retry"])
         self.assertEqual(result["returncode"], -signal.SIGKILL)
-        self.assertIn("before returning 1 result", result["message"])
+        self.assertEqual(result["message"], f"run_tests process exited with return code {-signal.SIGKILL}")
 
     def test_highlight_stack_trace_lines_colors_frame_index_and_function_name(self):
         lines = run_tests.highlight_stack_trace_lines(
@@ -2144,7 +2202,7 @@ DuckDB test process received SIGSEGV - Segmentation violation signal while runni
 /duckdb/build/release/extension/test/test.duckdb_extension(duckdb::Execute()+0x34) [0x5678]
 """
         lines, reproduce_batch = run_tests.summarize_failure_output(
-            "test_run process exited with return code -11 before returning 2 result(s)",
+            "run_tests process exited with return code -11",
             "",
             stderr,
             batch,
