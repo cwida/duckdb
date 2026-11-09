@@ -40,7 +40,11 @@ bool CanInferConstantFromNumericBounds(const Value &value) {
 }
 
 bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
-	if (stats.CanHaveNull() && !stats.CanHaveNoNull()) {
+	if (stats.GetType().IsNested()) {
+		return false;
+	}
+
+	if (stats.CanHaveNull() && !stats.CanHaveNoNull() && !stats.GetType().IsNested()) {
 		constant = Value(stats.GetType());
 		return true;
 	}
@@ -48,6 +52,7 @@ bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
 	if (stats.CanHaveNull() || !stats.CanHaveNoNull()) {
 		return false;
 	}
+
 	if (stats.GetStatsType() == StatisticsType::NUMERIC_STATS && NumericStats::HasMinMax(stats)) {
 		auto min = NumericStats::Min(stats);
 		auto max = NumericStats::Max(stats);
