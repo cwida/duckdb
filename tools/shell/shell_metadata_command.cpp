@@ -937,7 +937,7 @@ static const MetadataCommand metadata_commands[] = {
     {"binary", 2, ToggleBinary, "on|off", "Turn binary output on or off.  Default OFF", 3, ""},
     {"cd", 2, ChangeDirectory, "DIRECTORY", "Change the working directory to DIRECTORY", 0, ""},
     {"changes", 2, ToggleChanges, "on|off", "Show number of rows changed by SQL", 3, ""},
-    {"columns", 1, SetColumnRendering, "", "Column-wise rendering of query results", 0, ""},
+    {"columns", 1, SetColumnRendering, "", "Column-wise rendering of query results", 3, ""},
     {"connect_command", 0, SetConnectCommand, "COMMAND", "Set the command executed by -connect", 0,
      "Placeholders of the form {parameter|default} are replaced by the -host/-port/-token arguments"},
 #ifdef HAVE_LINENOISE
@@ -976,7 +976,7 @@ static const MetadataCommand metadata_commands[] = {
     {"excel", 0, SetOutputExcel, "", "Display the output of next command in spreadsheet", 0,
      "--bom\tPut a UTF8 byte-order mark on intermediate file"},
     {"exit", 0, ExitProcess, "?CODE?", "Exit this program with return-code CODE", 0, ""},
-    {"headers", 2, ToggleHeaders, "on|off", "Turn display of headers on or off", 0, ""},
+    {"headers", 2, ToggleHeaders, "on|off", "Turn display of headers on or off", 6, ""},
     {"help", 0, ShowHelp, "?-all? ?PATTERN?", "Show help text for PATTERN (.help agent: the agent mode)", 0, ""},
     {"highlight", 2, ToggleHighlighting, "on|off", "Toggle syntax highlighting in the shell on/off", 0, ""},
     {"highlight_colors", 0, SetHighlightColors, "OPTIONS", "Configure highlighting colors", 0, ""},
@@ -1027,7 +1027,7 @@ static const MetadataCommand metadata_commands[] = {
 #ifdef HAVE_LINENOISE
     {"multiline", 1, ToggleMultiLine, "", "Sets the render mode to multi-line", 0, ""},
 #endif
-    {"nullvalue", 2, ShellState::SetNullValue, "STRING", "Use STRING in place of NULL values", 0, ""},
+    {"nullvalue", 2, ShellState::SetNullValue, "STRING", "Use STRING in place of NULL values", 4, ""},
 
     {"open", 0, OpenDatabase, "?OPTIONS? ?FILE?", "Close existing database and reopen FILE", 2,
      "Options:\n\t--new\tInitialize FILE to an empty database\n\t--nofollow\tDo not follow symbolic "
@@ -1048,7 +1048,7 @@ static const MetadataCommand metadata_commands[] = {
      "OPTIONS:\n\t--add [COMPONENT]\tAdd a component to the progress bar\n\t--clear\tClear all components"},
     {"prompt", 0, SetPrompt, "MAIN CONTINUE", "Replace the standard prompts", 0, ""},
 
-    {"quit", 0, QuitProcess, "", "Exit this program", 0, ""},
+    {"quit", 0, QuitProcess, "", "Exit this program", 1, ""},
     {"read", 2, ReadFromFile, "FILE", "Read input from FILE", 3, ""},
     {"read_line_version", 2, SetReadLineVersion, "linenoise|fallback",
      "Sets the library used for processing interactive input", 0, ""},
@@ -1059,14 +1059,14 @@ static const MetadataCommand metadata_commands[] = {
 #endif
     {"rows", 1, SetRowRendering, "", "Row-wise rendering of query results (default)", 0, ""},
     {"safe_mode", 0, ShellState::EnableSafeMode, "", "Enable safe-mode", 0, ""},
-    {"separator", 0, ShellState::SetSeparator, "COL ?ROW?", "Change the column and row separators", 0, ""},
+    {"separator", 0, ShellState::SetSeparator, "COL ?ROW?", "Change the column and row separators", 3, ""},
     {"serve_command", 0, SetServeCommand, "COMMAND", "Set the command executed by -serve", 0,
      "Placeholders of the form {parameter|default} are replaced by the -host/-port/-token arguments"},
     {"schema", 0, DisplaySchemas, "?PATTERN?", "Show the CREATE statements matching PATTERN", 0,
      "By default the schema is pretty-printed using the SQL formatter.\nOptions:\n\t--no-indent\tPrint the schema as "
      "it is stored, without formatting\n\t--no-format\tAlias for --no-indent\n\t--indent\tForce pretty-printing (the "
      "default)\n\t--format\tAlias for --indent"},
-    {"shell", 0, RunShellCommand, "CMD ARGS...", "Run CMD ARGS... in a system shell", 0, ""},
+    {"shell", 0, RunShellCommand, "CMD ARGS...", "Run CMD ARGS... in a system shell", 2, ""},
     {"show", 1, ShowConfiguration, "", "Show the current values for various settings", 0, ""},
 #ifdef HAVE_LINENOISE
     {"singleline", 1, ToggleSingleLine, "", "Sets the render mode to single-line", 0, ""},
@@ -1259,8 +1259,15 @@ optional_ptr<const MetadataCommand> ShellState::FindMetadataCommand(const string
 	idx_t n = option.size();
 	for (idx_t command_idx = 0; metadata_commands[command_idx].command; command_idx++) {
 		auto &command = metadata_commands[command_idx];
-		idx_t match_size = command.match_size ? command.match_size : n;
-		if (n < match_size || strncmp(option.c_str(), command.command, n) != 0) {
+		if (option == command.command) {
+			return command;
+		}
+	}
+	// a command is abbreviated only as far as it declares, so that a name which is not a command cannot pass for
+	// one that happens to start with it
+	for (idx_t command_idx = 0; metadata_commands[command_idx].command; command_idx++) {
+		auto &command = metadata_commands[command_idx];
+		if (command.match_size == 0 || n < command.match_size || strncmp(option.c_str(), command.command, n) != 0) {
 			continue;
 		}
 		return command;

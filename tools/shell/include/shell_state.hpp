@@ -139,6 +139,7 @@ struct MetadataCommand {
 	metadata_command_t callback;
 	const char *usage;
 	const char *description;
+	//! The shortest abbreviation accepted for the command; 0 accepts the full name only
 	idx_t match_size;
 	const char *extra_description;
 };
