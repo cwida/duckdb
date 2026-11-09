@@ -9,6 +9,7 @@ add_library_unity(
   numeric_range_stats.cpp
   numeric_stats.cpp
   segment_statistics.cpp
+  stats_struct_fields.cpp
   string_stats.cpp
   struct_stats.cpp
   geometry_stats.cpp
