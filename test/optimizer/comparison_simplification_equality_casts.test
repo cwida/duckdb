@@ -160,3 +160,54 @@ SELECT
 FROM v;
 ----
 1	0	1	0	1	2
+
+# temporal -> VARCHAR: only the canonical string of a value can match
+statement ok
+CREATE TABLE dt AS SELECT * FROM (VALUES
+	(DATE '2024-01-05', TIME '12:00:00', TIMESTAMP '2024-01-05 12:00:00.5', '2024-01-05 12:00:00.123456789'::TIMESTAMP_NS),
+	('infinity'::DATE, TIME '24:00:00', '0044-03-15 (BC) 00:00:00'::TIMESTAMP, 'infinity'::TIMESTAMP_NS),
+	(NULL, NULL, NULL, NULL)
+) v(d, t, ts, ns);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM dt
+WHERE d::VARCHAR = '2024-01-05' AND t::VARCHAR = '12:00:00' AND ts::VARCHAR IN ('2024-01-05 12:00:00.5', 'abc')
+	AND ns::VARCHAR = '2024-01-05 12:00:00.123456789';
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query IIIIIII
+SELECT
+	count(*) FILTER (WHERE d::VARCHAR = 'infinity'),
+	count(*) FILTER (WHERE d::VARCHAR IN ('2024-1-5', '2024-01-05 00:00:00')),
+	count(*) FILTER (WHERE t::VARCHAR = '24:00:00'),
+	count(*) FILTER (WHERE t::VARCHAR = '12:00'),
+	count(*) FILTER (WHERE ts::VARCHAR = '0044-03-15 (BC) 00:00:00'),
+	count(*) FILTER (WHERE ts::VARCHAR IN ('2024-01-05 12:00:00.500', '2024-01-05T12:00:00.5')),
+	count(*) FILTER (WHERE ns::VARCHAR != '2024-01-05 12:00:00.123456')
+FROM dt;
+----
+1	0	1	0	1	0	2
+
+# integer and DECIMAL -> wider DECIMAL: only constants that are exactly a source value can match
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a = 5.0;
+----
+analyzed_plan	<REGEX>:.*Filters: a = 5.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d IN (1, 2);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# 4.5 and 1.495 round to a value in the table, but do not cast back to themselves
+query III
+SELECT count(*) FILTER (WHERE a = 4.5), count(*) FILTER (WHERE a != 4.5), count(*) FILTER (WHERE a IN (4.5, 10.0, -3.0))
+FROM t;
+----
+0	5	2
+
+query I
+SELECT count(*) FILTER (WHERE d IN (-2, 1.495::DECIMAL(10,4))) FROM v;
+----
+1

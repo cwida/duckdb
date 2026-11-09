@@ -318,6 +318,13 @@ static bool HasCanonicalVarcharRepresentation(const LogicalType &type) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::DECIMAL:
 	case LogicalTypeId::UUID:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIME_NS:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
 		return true;
 	default:
 		return false;
@@ -328,6 +335,9 @@ bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_
 	if (target_type.id() == LogicalTypeId::VARCHAR) {
 		// a collation can make distinct strings equal
 		return HasCanonicalVarcharRepresentation(source_type) && StringType::GetCollation(target_type).empty();
+	}
+	if (target_type.id() == LogicalTypeId::DECIMAL) {
+		return CastIsInvertible(source_type, target_type);
 	}
 	if (source_type.IsIntegral()) {
 		if (IsLosslessIntegralToFloatingCast(source_type, target_type)) {
