@@ -201,12 +201,39 @@ static bool HasExclusion(const ParsedExpression &expr) {
 	return found;
 }
 
+static bool ReferencesLambdaParameter(const ParsedExpression &expr, const vector<identifier_set_t> &outer,
+                                      vector<identifier_set_t> &inner) {
+	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA) {
+		identifier_set_t parameters;
+		if (MatchRecognizeLambdaParameters(expr, parameters)) {
+			inner.push_back(std::move(parameters));
+			auto found = ReferencesLambdaParameter(expr.Cast<LambdaExpression>().Right(), outer, inner);
+			inner.pop_back();
+			return found;
+		}
+	}
+	if (expr.GetExpressionType() == ExpressionType::COLUMN_REF) {
+		auto &name = expr.Cast<ColumnRefExpression>().ColumnNames()[0];
+		return !LambdaExpression::IsLambdaParameter(inner, name) && LambdaExpression::IsLambdaParameter(outer, name);
+	}
+	bool found = false;
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { found = found || ReferencesLambdaParameter(child, outer, inner); });
+	return found;
+}
+
+static bool ReferencesLambdaParameter(const ParsedExpression &expr, const vector<identifier_set_t> &outer) {
+	vector<identifier_set_t> inner;
+	return ReferencesLambdaParameter(expr, outer, inner);
+}
+
 //! PREV and NEXT walk the ordered partition rather than the match, so a measure's are computed per
 //! input row below the pattern window and read back from above it
 static void HoistMeasureNavigation(unique_ptr<ParsedExpression> &expr, const WindowExpression &pattern_window,
                                    const case_insensitive_map_t<vector<string>> &symbols,
                                    const case_insensitive_map_t<string> &universal,
-                                   vector<unique_ptr<ParsedExpression>> &hoisted, GeneratedNames &names) {
+                                   vector<unique_ptr<ParsedExpression>> &hoisted, GeneratedNames &names,
+                                   vector<identifier_set_t> &lambda_parameters) {
 	if (expr->GetExpressionType() == ExpressionType::FUNCTION) {
 		auto &function = expr->Cast<FunctionExpression>();
 		auto function_name = StringUtil::Upper(function.FunctionName().GetIdentifierName());
@@ -230,6 +257,11 @@ static void HoistMeasureNavigation(unique_ptr<ParsedExpression> &expr, const Win
 			if (arguments.empty() || arguments.size() > 2) {
 				throw BinderException("%s() takes an expression and an optional offset", function_name);
 			}
+			for (auto &argument : arguments) {
+				if (ReferencesLambdaParameter(argument.GetExpression(), lambda_parameters)) {
+					throw BinderException("row pattern navigation cannot reference lambda parameters");
+				}
+			}
 			MatchRecognizeRejectNestedStep(arguments[0].GetExpression(), function_name);
 			if (MatchRecognizeContainsClassifier(arguments[0].GetExpression())) {
 				// no row is classified below the matcher, so this one is read off the finished match
@@ -237,7 +269,7 @@ static void HoistMeasureNavigation(unique_ptr<ParsedExpression> &expr, const Win
 			}
 			for (auto &argument : arguments) {
 				HoistMeasureNavigation(argument.GetExpressionMutable(), pattern_window, symbols, universal, hoisted,
-				                       names);
+				                       names, lambda_parameters);
 			}
 			// a step is a fixed distance through the partition, so the offset is a non-negative
 			// constant - a negative one would step the other way and a column a different way per row
@@ -275,9 +307,18 @@ static void HoistMeasureNavigation(unique_ptr<ParsedExpression> &expr, const Win
 			expr->SetAlias(std::move(alias));
 			return;
 		}
+	} else if (expr->GetExpressionClass() == ExpressionClass::LAMBDA) {
+		identifier_set_t parameters;
+		if (MatchRecognizeLambdaParameters(*expr, parameters)) {
+			lambda_parameters.push_back(std::move(parameters));
+			HoistMeasureNavigation(expr->Cast<LambdaExpression>().RightMutable(), pattern_window, symbols, universal,
+			                       hoisted, names, lambda_parameters);
+			lambda_parameters.pop_back();
+			return;
+		}
 	}
 	ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) {
-		HoistMeasureNavigation(child, pattern_window, symbols, universal, hoisted, names);
+		HoistMeasureNavigation(child, pattern_window, symbols, universal, hoisted, names, lambda_parameters);
 	});
 }
 
@@ -1021,8 +1062,9 @@ BoundStatement Binder::Bind(MatchRecognizeRef &ref) {
 	// PREV() and NEXT() in MEASURES walk the matcher's input, so they are computed down here too
 	vector<unique_ptr<ParsedExpression>> measure_navigation;
 	for (auto &expr : ref.config->measures_expression_list) {
-		HoistMeasureNavigation(expr, *window_template, measure_symbols, input_refs.universal, measure_navigation,
-		                       names);
+		vector<identifier_set_t> lambda_parameters;
+		HoistMeasureNavigation(expr, *window_template, measure_symbols, input_refs.universal, measure_navigation, names,
+		                       lambda_parameters);
 	}
 	if (!measure_navigation.empty()) {
 		SelectBinder navigation_binder(*define_binder, context, define_node);

@@ -227,3 +227,39 @@ FROM (
  DEFINE X AS true)
 ----
 Ambiguous reference to column name "j"
+
+# PREV() and NEXT() are computed per input row before any lambda runs, so their operand cannot
+# read a lambda's parameter
+
+statement ok
+CREATE TABLE nav_t AS SELECT * FROM (VALUES ([1, 2], 10, 100), ([3], 20, 200), ([0, 5, 6], 30, 300)) v(l, c, d);
+
+statement error
+FROM nav_t MATCH_RECOGNIZE (ORDER BY c MEASURES list_transform([1], lambda x: PREV(c + x)) AS s PATTERN (A+) DEFINE A AS true)
+----
+<REGEX>:Binder Error:.*row pattern navigation cannot reference lambda parameters.*
+
+# a column with the same name as the parameter must not be picked up instead
+statement error
+FROM (SELECT *, 100 AS x FROM nav_t) MATCH_RECOGNIZE (ORDER BY c MEASURES list_transform([1], lambda x: PREV(c + x)) AS s PATTERN (A+) DEFINE A AS true)
+----
+<REGEX>:Binder Error:.*row pattern navigation cannot reference lambda parameters.*
+
+statement error
+FROM nav_t MATCH_RECOGNIZE (ORDER BY c MEASURES list_transform([1], lambda x: NEXT(c + x)) AS s PATTERN (A+) DEFINE A AS true)
+----
+<REGEX>:Binder Error:.*row pattern navigation cannot reference lambda parameters.*
+
+# the parameter as the offset
+statement error
+FROM nav_t MATCH_RECOGNIZE (ORDER BY c MEASURES list_transform([1], lambda x: PREV(c, x)) AS s PATTERN (A+) DEFINE A AS true)
+----
+<REGEX>:Binder Error:.*row pattern navigation cannot reference lambda parameters.*
+
+# a navigation that does not read the parameter is still fine inside a lambda
+statement ok
+FROM nav_t MATCH_RECOGNIZE (ORDER BY c MEASURES list_transform([1], lambda x: x + PREV(c)) AS s PATTERN (A+) DEFINE A AS true)
+
+# a lambda inside the navigation binds its own parameter, even one spelled like the outer one
+statement ok
+FROM nav_t MATCH_RECOGNIZE (ORDER BY c MEASURES list_transform([1], lambda x: PREV(list_sum(list_transform(l, lambda x: x + 1)))) AS s PATTERN (A+) DEFINE A AS true)
