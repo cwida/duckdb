@@ -5,6 +5,9 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/bit_utils.hpp"
 
+#include <cmath>
+#include <cstring>
+
 namespace duckdb {
 
 template <class T>
@@ -166,26 +169,43 @@ bignum_t HugeintCastToBignum::Operation(hugeint_t int_value, StringHeap &heap) {
 template <>
 bool TryCastToBignum::Operation(string_t input_value, bignum_t &result_value, Vector &result,
                                 CastParameters &parameters) {
-	idx_t start_pos, end_pos;
-	bool is_negative, is_zero;
-	bool should_round_up;
-	if (!Bignum::VarcharFormatting(input_value, start_pos, end_pos, is_negative, is_zero, should_round_up)) {
-		return false;
+	BignumCastScratch scratch;
+	return Bignum::TryVarcharToBignum(input_value, result_value, result, scratch);
+}
+
+struct VarcharToBignumCastData {
+	VarcharToBignumCastData(Vector &result, CastParameters &parameters) : vector_cast_data(result, parameters) {
 	}
 
-	auto blob_string =
-	    Bignum::EncodeVarcharBignum(input_value, start_pos, end_pos, is_negative, is_zero, should_round_up);
+	VectorTryCastData vector_cast_data;
+	BignumCastScratch scratch;
+};
 
-	uint32_t blob_size = static_cast<uint32_t>(blob_string.size());
-	result_value = bignum_t(StringVector::EmptyString(result, blob_size));
-	auto writable_blob = result_value.data.GetDataWriteable();
-
-	// Write string_blob into blob
-	for (idx_t i = 0; i < blob_string.size(); i++) {
-		writable_blob[i] = blob_string[i];
+struct VarcharToBignumOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input, ValidityMask &mask, idx_t idx, VarcharToBignumCastData &data) {
+		RESULT_TYPE output;
+		if (DUCKDB_LIKELY(Bignum::TryVarcharToBignum(input, output, data.vector_cast_data.result, data.scratch))) {
+			return output;
+		}
+		return HandleVectorCastError::Operation<RESULT_TYPE>(
+		    CastExceptionText<INPUT_TYPE>(input, data.vector_cast_data.result.GetType()), mask, idx,
+		    data.vector_cast_data);
 	}
-	result_value.data.Finalize();
+};
+
+bool Bignum::BignumToVarcharCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	D_ASSERT(result.GetType().InternalType() == PhysicalType::VARCHAR);
+	BignumCastScratch scratch;
+	UnaryExecutor::Execute<bignum_t, string_t>(
+	    source, result, count, [&](bignum_t input) { return Bignum::BignumToVarchar(input, result, scratch); });
 	return true;
+}
+
+bool Bignum::VarcharToBignumCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	VarcharToBignumCastData data(result, parameters);
+	UnaryExecutor::GenericExecute<string_t, bignum_t, VarcharToBignumOperator>(source, result, count, data);
+	return data.vector_cast_data.all_converted;
 }
 
 template <class T>
@@ -200,35 +220,44 @@ static bool DoubleToBignum(T double_value, bignum_t &result_value, Vector &resul
 	// Determine if the number is negative
 	bool is_negative = double_value < 0;
 	// Determine the number of data bytes
-	double abs_value = std::abs(double_value);
+	double abs_value = std::abs(static_cast<double>(double_value));
 
 	if (abs_value == 0) {
 		// Return Value 0
 		result_value = Bignum::InitializeBignumZero(result);
 		return true;
 	}
-	vector<char> value;
-	while (abs_value > 0) {
-		double quotient = abs_value / 256;
-		double truncated = floor(quotient);
-		uint8_t byte = static_cast<uint8_t>(abs_value - truncated * 256);
-		abs_value = truncated;
-		if (is_negative) {
-			value.push_back(static_cast<char>(~byte));
+	// abs_value = fraction * 2^exponent with 0.5 <= fraction < 1, i.e. mantissa * 2^(exponent - 53) with an integer
+	// mantissa of exactly 53 bits
+	int exponent;
+	const double fraction = std::frexp(abs_value, &exponent);
+	uint64_t top = 0;
+	idx_t top_bytes = 1;
+	idx_t zero_bytes = 0;
+	if (exponent > 0) {
+		constexpr int MANTISSA_BITS = 53;
+		const auto mantissa = static_cast<uint64_t>(std::ldexp(fraction, MANTISSA_BITS));
+		if (exponent <= MANTISSA_BITS) {
+			// the fraction is dropped, this leaves "exponent" bits
+			top = mantissa >> (MANTISSA_BITS - exponent);
+			top_bytes = (static_cast<idx_t>(exponent) + 7) / 8;
 		} else {
-			value.push_back(static_cast<char>(byte));
+			// the mantissa is followed by (exponent - 53) zero bits: whole zero bytes, and a shift of the mantissa
+			const int shift = exponent - MANTISSA_BITS;
+			zero_bytes = static_cast<idx_t>(shift) / 8;
+			top = mantissa << (shift % 8);
+			top_bytes = (static_cast<idx_t>(exponent) + 7) / 8 - zero_bytes;
 		}
 	}
-	uint32_t data_byte_size = static_cast<uint32_t>(value.size());
-	uint32_t blob_size = data_byte_size + Bignum::BIGNUM_HEADER_SIZE;
+	// a magnitude below one has an integer part of zero, which keeps the sign of the input as before
+	const idx_t data_byte_size = top_bytes + zero_bytes;
+	const idx_t blob_size = data_byte_size + Bignum::BIGNUM_HEADER_SIZE;
 	result_value.data = StringVector::EmptyString(result, blob_size);
 	auto writable_blob = result_value.data.GetDataWriteable();
 	Bignum::SetHeader(writable_blob, data_byte_size, is_negative);
-	// Add data bytes to the blob, starting off after header bytes
-	idx_t blob_string_idx = value.size() - 1;
-	for (idx_t i = Bignum::BIGNUM_HEADER_SIZE; i < blob_size; i++) {
-		writable_blob[i] = value[blob_string_idx--];
-	}
+	BignumLimb::StoreMagnitudePartial(data_ptr_cast(writable_blob + Bignum::BIGNUM_HEADER_SIZE), top_bytes, top,
+	                                  is_negative);
+	memset(writable_blob + Bignum::BIGNUM_HEADER_SIZE + top_bytes, is_negative ? 0xFF : 0x00, zero_bytes);
 	result_value.data.Finalize();
 	return true;
 }
@@ -339,7 +368,7 @@ BoundCastInfo DefaultCasts::BignumCastSwitch(BindCastInput &input, const Logical
 		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uhugeint_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::VARCHAR:
-		return BoundCastInfo(&VectorCastHelpers::StringCast<bignum_t, BignumCastToVarchar>);
+		return BoundCastInfo(&Bignum::BignumToVarcharCast);
 	case LogicalTypeId::DOUBLE:
 		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, double, BignumToDoubleErrorCast>);
 	default:

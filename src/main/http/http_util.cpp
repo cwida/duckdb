@@ -574,11 +574,18 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 		}
 		http_proxy_username = Settings::Get<HTTPProxyUsernameSetting>(*db);
 		http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(*db);
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*db);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*db);
 	}
 
 	auto context = FileOpener::TryGetContext(opener);
 	if (context && context->IsClient()) {
 		logger = context->GetLoggerPtr();
+	}
+	if (context) {
+		// A session's own value wins over the database's
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*context);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*context);
 	}
 }
 
