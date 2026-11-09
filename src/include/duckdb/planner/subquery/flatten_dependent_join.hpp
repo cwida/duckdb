@@ -137,8 +137,6 @@ private:
 	UnnestingState PushDownWindow(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                              vector<ColumnBinding> state);
 	UnnestingState PushDownSetOperation(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
-	UnnestingState PushDownDistinct(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
-	                                vector<ColumnBinding> state);
 	UnnestingState PushDownExpressionGet(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                     vector<ColumnBinding> state);
 	UnnestingState PushDownDML(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,

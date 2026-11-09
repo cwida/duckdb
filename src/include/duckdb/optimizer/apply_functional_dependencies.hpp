@@ -33,7 +33,6 @@ public:
 private:
 	void VisitLogicalGet(LogicalGet &get);
 	void VisitLogicalAggregate(LogicalAggregate &aggr);
-	void VisitLogicalDistinct(LogicalDistinct &distinct);
 	void VisitLogicalProjection(LogicalProjection &projection);
 	void VisitLogicalOrder(LogicalOrder &order);
 

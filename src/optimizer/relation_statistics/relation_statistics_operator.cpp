@@ -370,8 +370,6 @@ RelationStatisticsHelper::ExtractOperatorStats(LogicalOperator &op, ClientContex
 		return ExtractAggregationStats(op.Cast<LogicalAggregate>(), child_stats[0].get(), context);
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		return ExtractWindowStats(op.Cast<LogicalWindow>(), child_stats[0].get());
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		return ExtractDistinctStats(op.Cast<LogicalDistinct>(), child_stats[0].get());
 	case LogicalOperatorType::LOGICAL_FILTER: {
 		if (child_stats.size() != 1) {
 			return {};

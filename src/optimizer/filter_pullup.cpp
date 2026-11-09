@@ -7,7 +7,6 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
 namespace duckdb {
@@ -28,8 +27,6 @@ unique_ptr<LogicalOperator> FilterPullup::Rewrite(unique_ptr<LogicalOperator> op
 	case LogicalOperatorType::LOGICAL_INTERSECT:
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 		return PullupSetOperation(std::move(op));
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		return PullupDistinct(std::move(op));
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		return PullupWindow(std::move(op));
 	case LogicalOperatorType::LOGICAL_ORDER_BY: {
@@ -147,25 +144,6 @@ unique_ptr<LogicalOperator> FilterPullup::PullupInnerJoin(unique_ptr<LogicalOper
 unique_ptr<LogicalOperator> FilterPullup::PullupCrossProduct(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT);
 	return PullupBothSide(std::move(op));
-}
-
-unique_ptr<LogicalOperator> FilterPullup::PullupDistinct(unique_ptr<LogicalOperator> op) {
-	const auto &distinct = op->Cast<LogicalDistinct>();
-	if (distinct.distinct_type == DistinctType::DISTINCT) {
-		// Can pull up through a DISTINCT
-		op->children[0] = Rewrite(std::move(op->children[0]));
-		for (auto &expr : filters_expr_pullup) {
-			if (expr->IsVolatile()) {
-				// Keep volatile predicates below the DISTINCT, where they run once per input row
-				op->children[0] = GeneratePullupFilter(std::move(op->children[0]), filters_expr_pullup);
-				return op;
-			}
-		}
-		return op;
-	}
-	// Cannot pull up through a DISTINCT ON (see #19327)
-	D_ASSERT(distinct.distinct_type == DistinctType::DISTINCT_ON);
-	return FinishPullup(std::move(op));
 }
 
 unique_ptr<LogicalOperator> FilterPullup::PullupWindow(unique_ptr<LogicalOperator> op) {

@@ -109,6 +109,12 @@
         "name": "distinct_validity",
         "type": "TupleDataValidityType",
         "default": "TupleDataValidityType::CAN_HAVE_NULL_VALUES"
+      },
+      {
+        "id": 208,
+        "name": "preserve_input_order",
+        "type": "bool",
+        "default": "false"
       }
     ],
     "constructor": [

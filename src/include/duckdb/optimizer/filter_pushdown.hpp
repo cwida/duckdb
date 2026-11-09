@@ -68,8 +68,6 @@ private:
 	vector<unique_ptr<Filter>> filters;
 	//! Push down a LogicalAggregate op
 	unique_ptr<LogicalOperator> PushdownAggregate(unique_ptr<LogicalOperator> op);
-	//! Push down a distinct operator
-	unique_ptr<LogicalOperator> PushdownDistinct(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalFilter op
 	unique_ptr<LogicalOperator> PushdownFilter(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalCrossProduct op

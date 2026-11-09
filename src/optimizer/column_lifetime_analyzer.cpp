@@ -8,7 +8,6 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -150,35 +149,6 @@ void ColumnLifetimeAnalyzer::VisitOperator(LogicalOperator &op) {
 
 		GenerateProjectionMap(op.children[0]->GetColumnBindings(), unused_bindings, order.projection_map);
 		return;
-	}
-	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		// DISTINCT ON only references the expressions specified in the target list (and optional ORDER BY),
-		auto &distinct = op.Cast<LogicalDistinct>();
-		if (distinct.distinct_type == DistinctType::DISTINCT_ON) {
-			auto add_bindings = [&](Expression &expr) {
-				vector<ColumnBinding> bindings;
-				ExtractColumnBindings(expr, bindings);
-				for (auto &binding : bindings) {
-					column_references.insert(binding);
-				}
-			};
-			for (auto &target : distinct.distinct_targets) {
-				if (target) {
-					add_bindings(*target);
-				}
-			}
-			if (distinct.order_by) {
-				for (auto &order : distinct.order_by->orders) {
-					if (order.expression) {
-						add_bindings(*order.expression);
-					}
-				}
-			}
-			break;
-		}
-		// DISTINCT without targets references the entire projection list
-		everything_referenced = true;
-		break;
 	}
 	case LogicalOperatorType::LOGICAL_FILTER: {
 		auto &filter = op.Cast<LogicalFilter>();
