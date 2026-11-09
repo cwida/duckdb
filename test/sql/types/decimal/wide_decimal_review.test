@@ -373,3 +373,17 @@ SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (1, ('9' || repeat('0', 38))::D
 1	900000000000000000000000000000000000000
 2	999999999999999999999999999999999999999
 3	NULL
+
+# a tiny slope keeps every mantissa bit: the power of two of the exact scaling is a BIGNUM, 1e1000 * 1e-320 fills 680 digits
+query II
+WITH filled AS (SELECT k, fill(v) OVER (ORDER BY k) AS v FROM (VALUES (0::DOUBLE, '0'::DECIMAL(1001,0)), (1e-320::DOUBLE, NULL), (1::DOUBLE, '1e1000'::DECIMAL(1001,0))) t(k, v))
+SELECT v > 0, length(v::VARCHAR) FROM filled WHERE k = 1e-320;
+----
+true	680
+
+# 1e1000 * 1e-300 is the exact product with the DOUBLE value of 1e-300, 701 digits
+query II
+WITH filled AS (SELECT k, fill(v) OVER (ORDER BY k) AS v FROM (VALUES (0::DOUBLE, '0'::DECIMAL(1001,0)), (1e-300::DOUBLE, NULL), (1::DOUBLE, '1e1000'::DECIMAL(1001,0))) t(k, v))
+SELECT length(v::VARCHAR), v::VARCHAR LIKE '1000000000000000025059%' FROM filled WHERE k = 1e-300;
+----
+701	true

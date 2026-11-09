@@ -1454,8 +1454,9 @@ static void FillInterpolateFunc(Vector &result, idx_t i, WindowCursor &cursor, i
 }
 
 //! The delta between the ends of a wide FILL scaled by the slope and truncated towards zero, as the hugeint tier
-//! computes it in DOUBLE; beyond the DOUBLE range the slope is applied exactly as mantissa / 2^shift. Reports whether
-//! a fraction was dropped and the sign of the scaled delta, which decide the truncation of an extrapolated sum
+//! computes it in DOUBLE; beyond the DOUBLE range the slope is applied exactly as mantissa / 2^shift, with the power
+//! of two as a BIGNUM so that a tiny slope keeps every mantissa bit. Reports whether a fraction was dropped and
+//! the sign of the scaled delta, which decide the truncation of an extrapolated sum
 static string ScaleFillDelta(const bignum_t &delta, double slope, StringHeap &heap, BignumArithmeticState &state,
                              bool &fraction_dropped, bool &negative) {
 	const auto scaled = BignumDecimal::ToDouble(delta, 0) * slope;
@@ -1467,13 +1468,8 @@ static string ScaleFillDelta(const bignum_t &delta, double slope, StringHeap &he
 	}
 	int exponent;
 	const double fraction = std::frexp(std::fabs(slope), &exponent);
-	auto mantissa = static_cast<int64_t>(std::ldexp(fraction, 53));
-	int shift = 53 - exponent;
-	if (shift > 1023) {
-		// a slope below 2^-970 keeps the mantissa bits that the widest double power of two can divide by
-		mantissa = shift - 1023 >= 63 ? 0 : mantissa >> (shift - 1023);
-		shift = 1023;
-	}
+	const auto mantissa = static_cast<int64_t>(std::ldexp(fraction, 53));
+	const int shift = 53 - exponent;
 	const string mantissa_blob = BignumDecimal::FromInteger(hugeint_t(slope < 0 ? -mantissa : mantissa));
 	const bignum_t mantissa_value {string_t(mantissa_blob)};
 	const BignumIntermediate mantissa_intermediate(mantissa_value);
@@ -1482,7 +1478,7 @@ static string ScaleFillDelta(const bignum_t &delta, double slope, StringHeap &he
 	const BignumIntermediate product_intermediate(product);
 	negative = BignumDecimal::IsNegative(product);
 	fraction_dropped = false;
-	const string power_blob = BignumDecimal::FromDouble(std::ldexp(1.0, std::abs(shift)));
+	const string power_blob = BignumDecimal::PowerOfTwo(NumericCast<idx_t>(std::abs(shift)));
 	const bignum_t power_value {string_t(power_blob)};
 	const BignumIntermediate power(power_value);
 	if (shift < 0) {
