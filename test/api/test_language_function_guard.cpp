@@ -140,10 +140,10 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	auto &schema = system_catalog.GetSchema(data, Identifier::DefaultSchema());
 	schema.CreateFunction(data, info);
 
-	// member-granular drop from SQL is blocked by the generic internal-entry drop protection
+	// member-granular drop from SQL is an alter, which the generic binder refuses for system catalog entries
 	auto result = con.Query("DROP FUNCTION internal_fun(INTEGER)");
 	REQUIRE_FAIL(result);
-	REQUIRE(StringUtil::Contains(result->GetError(), "internal"));
+	REQUIRE(StringUtil::Contains(result->GetError(), "System Catalog"));
 
 	// a CREATE from SQL resolves into the user catalog and creates a shadowing entry there, it
 	// never merges into the system entry
