@@ -8,11 +8,11 @@
 
 namespace duckdb {
 
-ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(Context &services_p) : services(services_p) {
-	auto &scheduler = services.GetTaskScheduler();
+ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(Context &context_p) : context(context_p) {
+	auto &scheduler = context.GetTaskScheduler();
 	auto regular_threads = MaxValue<idx_t>(NumericCast<idx_t>(scheduler.NumberOfThreads()), 1);
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
-	auto max_memory = services.GetBufferManager().GetMaxMemory();
+	auto max_memory = context.GetBufferManager().GetMaxMemory();
 	max_pending_bytes = MinValue(ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD * regular_threads,
 	                             max_memory / ManagedAsyncMemoryConfig::MAX_PENDING_MEMORY_LIMIT_DIVISOR);
 	min_pending_bytes =
@@ -20,7 +20,7 @@ ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(Context &services_p) : se
 	                                         max_memory / ManagedAsyncMemoryConfig::MIN_PENDING_MEMORY_LIMIT_DIVISOR));
 	// A reservation is only useful when drain tasks run asynchronously; synchronous draining bounds itself.
 	if (async_threads > 0 && max_pending_bytes > 0) {
-		memory_state = TemporaryMemoryManager::Get(services).Register(services);
+		memory_state = TemporaryMemoryManager::Get(context).Register(context);
 		memory_state->SetMinimumReservation(min_pending_bytes);
 		memory_state->SetZero();
 	}
@@ -61,7 +61,7 @@ void ManagedAsyncMemoryGovernor::UpdateReservation(idx_t current_pending_bytes) 
 		}
 
 		auto previous_reservation = current_reservation;
-		memory_state->SetRemainingSizeAndUpdateReservation(services, next_request);
+		memory_state->SetRemainingSizeAndUpdateReservation(context, next_request);
 		memory_request_bytes = next_request;
 		current_reservation = memory_state->GetReservation();
 		if (current_reservation <= previous_reservation) {

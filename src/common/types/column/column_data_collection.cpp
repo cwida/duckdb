@@ -81,12 +81,12 @@ ColumnDataCollection::ColumnDataCollection(shared_ptr<ColumnDataAllocator> alloc
 
 ColumnDataCollection::ColumnDataCollection(ClientContext &context, vector<LogicalType> types_p,
                                            ColumnDataAllocatorType type, ColumnDataCollectionLifetime lifetime)
-    : ColumnDataCollection(context.Services(), std::move(types_p), type, lifetime) {
+    : ColumnDataCollection(context.GetContext(), std::move(types_p), type, lifetime) {
 }
 
-ColumnDataCollection::ColumnDataCollection(Context &services, vector<LogicalType> types_p, ColumnDataAllocatorType type,
+ColumnDataCollection::ColumnDataCollection(Context &context, vector<LogicalType> types_p, ColumnDataAllocatorType type,
                                            ColumnDataCollectionLifetime lifetime)
-    : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(services, type, lifetime), std::move(types_p)) {
+    : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(context, type, lifetime), std::move(types_p)) {
 }
 
 ColumnDataCollection::ColumnDataCollection(ColumnDataCollection &other)

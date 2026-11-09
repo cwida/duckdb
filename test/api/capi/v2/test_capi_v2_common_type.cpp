@@ -4,10 +4,10 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_logical_type_handle TypeFromText(duckdb_v2_factory_handle factory, const char *text) {
+duckdb_v2_logical_type_handle TypeFromText(duckdb_v2_factory_handle factory, std::string_view text) {
 	duckdb_v2_logical_type_handle t = nullptr;
-	auto text_str = Convert(text);
-	REQUIRE(duckdb_v2_factory_create_type_from_text(factory, &text_str, &t, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_factory_create_type_from_text(factory, text.data(), text.size(), &t, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(t != nullptr);
 	return t;
 }

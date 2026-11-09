@@ -61,7 +61,8 @@ shared_ptr<BlockHandle> BlockManager::ConvertToPersistent(QueryContext context, 
                                                           shared_ptr<BlockHandle> old_block, BufferHandle old_handle,
                                                           ConvertToPersistentMode mode, optional<MemoryTag> tag) {
 	auto default_tag = old_block->GetMemory().GetMemoryTag();
-	if (default_tag == MemoryTag::IN_MEMORY_TABLE) {
+	// Persistent table and index payloads can share a block, so they use the same memory tag.
+	if (default_tag == MemoryTag::IN_MEMORY_TABLE || default_tag == MemoryTag::ART_INDEX) {
 		default_tag = MemoryTag::BASE_TABLE;
 	}
 	// register a block with the new block id

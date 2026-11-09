@@ -36,6 +36,12 @@
       "paths": [
         "test/sql/window/test_ignore_nulls.test"
       ]
+    },
+    {
+      "reason": "Error carets point into the printed statement, which wraps a join in parentheses the typed query lacks",
+      "paths": [
+        "test/sql/error/error_location_copied_query.test"
+      ]
     }
   ]
 }
