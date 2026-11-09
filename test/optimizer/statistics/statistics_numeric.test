@@ -302,6 +302,24 @@ SELECT s.min, s.max FROM (SELECT stats(a * b) s FROM hugeint_stats LIMIT 1)
 ----
 -40000000000000000000	60000000000000000000
 
+# a bound product equal to the HUGEINT minimum fits
+statement ok
+CREATE TABLE hugeint_stats_minimum(a HUGEINT, b HUGEINT);
+
+statement ok
+INSERT INTO hugeint_stats_minimum VALUES (-85070591730234615865843651857942052864, 2), (0, 0);
+
+query II
+SELECT s.min, s.max FROM (SELECT stats(a * b) s FROM hugeint_stats_minimum LIMIT 1)
+----
+-170141183460469231731687303715884105728	0
+
+query I
+SELECT a * b FROM hugeint_stats_minimum
+----
+-170141183460469231731687303715884105728
+0
+
 # potentially overflowing hugeint statistics keep the checked operator
 statement ok
 CREATE TABLE hugeint_stats_overflow(

@@ -7,7 +7,7 @@ index 651044f..8188ef0 100644
  static shared_ptr<LanceDatasetCacheState>
  GetOrCreateLanceDatasetCacheState(ClientContext &context) {
 -  return context.registered_state->GetOrCreate<LanceDatasetCacheState>(
-+  return context.Services().GetRegisteredState().GetOrCreate<LanceDatasetCacheState>(
++  return context.GetContext().GetRegisteredState().GetOrCreate<LanceDatasetCacheState>(
        LANCE_DATASET_CACHE_STATE_KEY);
  }
  
@@ -16,7 +16,7 @@ index 651044f..8188ef0 100644
  void LanceInvalidateDatasetCache(ClientContext &context,
                                   const string &cache_key) {
 -  auto state = context.registered_state->Get<LanceDatasetCacheState>(
-+  auto state = context.Services().GetRegisteredState().Get<LanceDatasetCacheState>(
++  auto state = context.GetContext().GetRegisteredState().Get<LanceDatasetCacheState>(
        LANCE_DATASET_CACHE_STATE_KEY);
    if (state) {
      state->Invalidate(cache_key);
@@ -29,7 +29,7 @@ index 94c758e..d61111b 100644
  shared_ptr<LanceSessionState>
  GetOrCreateLanceSessionState(ClientContext &context) {
 -  return context.registered_state->GetOrCreate<LanceSessionState>(
-+  return context.Services().GetRegisteredState().GetOrCreate<LanceSessionState>(
++  return context.GetContext().GetRegisteredState().GetOrCreate<LanceSessionState>(
        LANCE_SESSION_STATE_KEY, context);
  }
  
@@ -43,7 +43,7 @@ index 9dfb11b..4652077 100644
                       const shared_ptr<CatalogEntry> &entry) {
 -  context.registered_state
 -      ->GetOrCreate<LanceCatalogQueryState>("lance_catalog_entries")
-+  context.Services()
++  context.GetContext()
 +      .GetRegisteredState()
 +      .GetOrCreate<LanceCatalogQueryState>("lance_catalog_entries")
        ->Pin(entry);
@@ -58,7 +58,7 @@ index 9adaa1c..c27c9a2 100644
    if (!DBConfig::GetConfig(context).CanAccessFile(
            open_path, FileType::FILE_TYPE_DIR,
 -          ClientData::Get(context).file_opener.get())) {
-+          context.Services().TryGetFileOpener().get())) {
++          context.GetContext().TryGetFileOpener().get())) {
      throw PermissionException("Cannot access directory \"%s\" - file system "
                                "operations are disabled by configuration",
                                open_path);

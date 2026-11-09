@@ -47,7 +47,7 @@ class AsyncTaskQueue {
 	friend class AsyncTaskQueueTaskGuard;
 
 public:
-	DUCKDB_API explicit AsyncTaskQueue(Context &services, idx_t max_active_tasks = 0);
+	DUCKDB_API explicit AsyncTaskQueue(Context &context, idx_t max_active_tasks = 0);
 	DUCKDB_API ~AsyncTaskQueue();
 
 	AsyncTaskQueue(const AsyncTaskQueue &) = delete;
@@ -95,7 +95,7 @@ private:
 	void CancelPendingRequestsAfterFailure(const ErrorData &error) noexcept;
 
 private:
-	Context &services;
+	Context &context;
 	//! Maximum scheduled/running tasks for this queue.
 	idx_t max_active_tasks = 1;
 
@@ -133,7 +133,7 @@ private:
 class ManagedAsyncTaskQueue {
 public:
 	//! max_active_tasks == 0 -> use TaskScheduler::NumberOfAsyncThreads().
-	DUCKDB_API explicit ManagedAsyncTaskQueue(Context &services, idx_t max_active_tasks = 0);
+	DUCKDB_API explicit ManagedAsyncTaskQueue(Context &context, idx_t max_active_tasks = 0);
 	DUCKDB_API ~ManagedAsyncTaskQueue();
 
 	ManagedAsyncTaskQueue(const ManagedAsyncTaskQueue &) = delete;
@@ -182,7 +182,7 @@ private:
 	void CancelPendingTasksAfterFailure(const ErrorData &error) noexcept;
 
 private:
-	Context &services;
+	Context &context;
 	//! Low-level one-unit-per-task scheduler.
 	unique_ptr<AsyncTaskQueue> task_queue;
 	//! Shared TemporaryMemoryManager reservation governor bounding queued async task data.

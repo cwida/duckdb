@@ -147,9 +147,12 @@ void EnableProfilingFun::RegisterFunction(BuiltinFunctions &set) {
 	                                                                        .Add("mode", LogicalType::VARCHAR)),
 	                                     EnableProfiling, BindEnableProfiling));
 
+	// reconfigures profiling per execution
+	enable_set.ApplyToFunctions([](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(std::move(enable_set));
 
 	auto disable_fun = TableFunction("disable_profiling", {}, DisableProfiling, BindDisableProfiling, nullptr, nullptr);
+	disable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(std::move(disable_fun));
 }
 

@@ -218,7 +218,7 @@ void RecursiveCTEEpochMetrics::RecordPipelineExecution(RecursiveCTEPipelineMetri
 }
 
 RecursiveCTEMetrics::RecursiveCTEMetrics(ClientContext &context, const PhysicalRecursiveCTE &op_p)
-    : logger(context.services->GetLoggerPtr()),
+    : logger(context.GetContext().GetLoggerPtr()),
       enabled(logger && logger->ShouldLog(PhysicalOperatorLogType::NAME, PhysicalOperatorLogType::LEVEL)) {
 	if (enabled) {
 		identity = make_uniq<RecursiveCTELogIdentity>(op_p.type, op_p.NextMetricsInvocation());

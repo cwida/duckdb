@@ -16,12 +16,12 @@ class Context;
 //! The TaskNotifier notifies ClientContextState listener about started / stopped tasks
 class TaskNotifier {
 public:
-	explicit TaskNotifier(optional_ptr<Context> services_p);
+	explicit TaskNotifier(optional_ptr<Context> context_p);
 
 	~TaskNotifier();
 
 private:
-	optional_ptr<Context> services;
+	optional_ptr<Context> context;
 };
 
 } // namespace duckdb

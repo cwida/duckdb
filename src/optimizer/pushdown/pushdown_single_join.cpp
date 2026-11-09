@@ -22,8 +22,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSingleJoin(unique_ptr<Logica
 			i--;
 		}
 	}
-	op->children[0] = left_pushdown.Rewrite(std::move(op->children[0]));
-	op->children[1] = right_pushdown.Rewrite(std::move(op->children[1]));
+	left_pushdown.RewriteChild(*op, 0);
+	right_pushdown.RewriteChild(*op, 1);
 	return PushFinalFilters(std::move(op));
 }
 

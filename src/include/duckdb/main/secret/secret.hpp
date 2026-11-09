@@ -17,6 +17,7 @@
 
 namespace duckdb {
 class BaseSecret;
+class Context;
 struct SecretEntry;
 struct FileOpenerInfo;
 struct CreateSecretInfo;
@@ -349,7 +350,7 @@ protected:
 	//! Secrets/settings will be fetched either through a context (local + global settings) or a databaseinstance
 	//! (global only)
 	optional_ptr<DatabaseInstance> db;
-	optional_ptr<ClientContext> context;
+	optional_ptr<Context> context;
 
 	string path;
 };
