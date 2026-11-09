@@ -355,3 +355,27 @@ statement error
 SELECT multiply_left * multiply_right FROM hugeint_stats_overflow
 ----
 <REGEX>:Out of Range Error.*Overflow in multiplication of INT128.*
+
+# abs on DOUBLE: bounds touching zero, max == 0 with negative min
+statement ok
+CREATE TABLE t_double(c DOUBLE);
+
+statement ok
+INSERT INTO t_double VALUES (-1), (0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(ABS(c)) s FROM t_double LIMIT 1)
+----
+0.0	1.0
+
+# abs on FLOAT:
+statement ok
+CREATE TABLE t_float(c FLOAT);
+
+statement ok
+INSERT INTO t_float VALUES (-1), (0);
+
+query II
+SELECT s.min, s.max FROM (SELECT STATS(ABS(c)) s FROM t_float LIMIT 1)
+----
+0.0	1.0
