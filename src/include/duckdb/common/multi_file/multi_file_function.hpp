@@ -1144,11 +1144,8 @@ public:
 		auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 		auto &column_index = input.column_index;
 
-		if (!bind_data.initial_reader) {
-			// no reader
-			return nullptr;
-		}
-		// scanning single file and we have the metadata read already
+		// a scan whose schema was given opens no file at bind - the column_statistics option below still applies
+		const bool opened_a_file = bind_data.initial_reader != nullptr;
 		if (column_index.IsVirtualColumn()) {
 			return nullptr;
 		}
@@ -1158,7 +1155,7 @@ public:
 		auto &file_row_number_idx = bind_data.reader_bind.file_row_number_idx;
 		if (file_row_number_idx.IsValid() && file_row_number_idx.GetIndex() == primary_index) {
 			// the column is read from the row number virtual column of the reader
-			if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
+			if (!opened_a_file || bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
 				return nullptr;
 			}
 			return bind_data.initial_reader->GetVirtualColumnStatistics(
@@ -1188,6 +1185,9 @@ public:
 
 		if (!bind_data.file_options.bound_schema.empty() && bind_data.IsGeneratedColumn(primary_index)) {
 			// A physical shadow's bounds do not describe the generated path. Explicit scan statistics above still do.
+			return nullptr;
+		}
+		if (!opened_a_file) {
 			return nullptr;
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
