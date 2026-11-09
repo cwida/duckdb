@@ -429,7 +429,7 @@ DETACH attr_dst;
 statement ok
 SET enable_macro_dependencies = false;
 
-# any dependent blocks a member drop, and the error explains that CASCADE cannot help
+# any dependent blocks a member drop: it is an alter, so it reports the alter's dependency error
 statement ok
 SET enable_macro_dependencies = true;
 
@@ -442,7 +442,7 @@ CREATE MACRO blocked_g() AS blocked_f(1);
 statement error
 DROP MACRO blocked_f(VARCHAR);
 ----
-<REGEX>:.*CASCADE cannot scope to one overload.*
+<REGEX>:.*Cannot alter entry "blocked_f" because there are entries that depend on it.*
 
 statement error
 DROP MACRO blocked_f(VARCHAR) CASCADE;
