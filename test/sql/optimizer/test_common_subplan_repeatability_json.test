@@ -1,0 +1,64 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_json.test
+# description: Preserve common subplan sharing for repeatable table functions
+# group: [optimizer]
+
+require json
+
+statement ok
+SET explain_output='optimized_only';
+
+# JSON each with duplicates and NULL.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM json_each('[1,1,null]') INTERSECT ALL SELECT * FROM json_each('[1,1,null]');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM json_each('[1,1,null]') INTERSECT ALL SELECT * FROM json_each('[1,1,null]'));
+----
+3
+
+# JSON tree includes its root.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM json_tree('[1,1,null]') INTERSECT ALL SELECT * FROM json_tree('[1,1,null]');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM json_tree('[1,1,null]') INTERSECT ALL SELECT * FROM json_tree('[1,1,null]'));
+----
+4
+
+# Typed JSON and path selection.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM json_each('{"a":[1,null]}'::JSON, '$.a') INTERSECT ALL SELECT * FROM json_each('{"a":[1,null]}'::JSON, '$.a');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM json_each('{"a":[1,null]}'::JSON, '$.a') INTERSECT ALL SELECT * FROM json_each('{"a":[1,null]}'::JSON, '$.a'));
+----
+2
+
+# Nested tree and path selection.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM json_tree('{"a":[1,null]}'::JSON, '$.a') INTERSECT ALL SELECT * FROM json_tree('{"a":[1,null]}'::JSON, '$.a');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM json_tree('{"a":[1,null]}'::JSON, '$.a') INTERSECT ALL SELECT * FROM json_tree('{"a":[1,null]}'::JSON, '$.a'));
+----
+3
+
+# A pure traversal does not make its input expression repeatable.
+statement ok
+CREATE SEQUENCE json_repeatability_seq;
+
+query I
+SELECT count(*) FROM (
+    SELECT value FROM json_each(to_json([nextval('json_repeatability_seq')]))
+    INTERSECT ALL
+    SELECT value FROM json_each(to_json([nextval('json_repeatability_seq')])));
+----
+0

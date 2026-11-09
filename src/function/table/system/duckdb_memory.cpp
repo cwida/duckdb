@@ -65,7 +65,10 @@ void DuckDBMemoryFunction(ClientContext &context, TableFunctionInput &data_p, Da
 }
 
 void DuckDBMemoryFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_memory", {}, DuckDBMemoryFunction, DuckDBMemoryBind, DuckDBMemoryInit));
+	TableFunction memory_fun("duckdb_memory", {}, DuckDBMemoryFunction, DuckDBMemoryBind, DuckDBMemoryInit);
+	// reads live buffer manager usage
+	memory_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(memory_fun));
 }
 
 } // namespace duckdb

@@ -22,7 +22,6 @@ class FileSystem;
 class QueryProfiler;
 class PreparedStatementData;
 class RandomEngine;
-class BufferManager;
 
 struct ClientData {
 public:
@@ -44,9 +43,6 @@ public:
 	//! The instance's default database as it was when this client connected; later DatabaseManager::SetDefaultDatabase
 	//! calls only affect new clients. Empty when there was none.
 	Identifier default_database;
-
-	//! The clients' buffer manager wrapper.
-	unique_ptr<BufferManager> client_buffer_manager;
 
 	//! The writer used to log queries, if logging is enabled.
 	//! DEPRECATED: Now, queries are written to the generic log.

@@ -205,18 +205,14 @@ jobs:
             --runners '${{ steps.runners.outputs.runners }}' \
             --runner-provider '${{ steps.runners.outputs.runner_provider }}'
 
-          # Wasm extensions: wasm_eh everywhere, wasm_threads only on dispatched (nightly) runs, never wasm_mvp
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            wasm_exclude_archs="wasm_mvp"
-          else
-            wasm_exclude_archs="wasm_mvp;wasm_threads"
-          fi
+          # Wasm extensions: wasm_eh and wasm_threads everywhere, never wasm_mvp
+          wasm_exclude_archs="wasm_mvp"
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             extra_exclude_archs="$wasm_exclude_archs"
           elif [[ "${{ steps.changed.outputs.extensions_any_changed }}" == "true" ]]; then
             extra_exclude_archs="$wasm_exclude_archs;osx_amd64"
           else
-            extra_exclude_archs="$wasm_exclude_archs;windows_arm64;osx_amd64;wasm_eh"
+            extra_exclude_archs="$wasm_exclude_archs;windows_arm64;osx_amd64;wasm_eh;wasm_threads"
           fi
           if [[ -n "$INPUT_EXCLUDE_ARCHS" ]]; then
             extra_exclude_archs="${extra_exclude_archs:+$extra_exclude_archs;}$INPUT_EXCLUDE_ARCHS"
@@ -1451,7 +1447,6 @@ jobs:
           STAGED_VERSION: ${{ needs.prepare.outputs.staged_version }}
           RELEASE_STATUS_SUCCESS: ${{ steps.release-status.outputs.success || 'false' }}
           CURRENT_REF: ${{ github.ref }}
-          ALPHA_BRANCH: 'v2.0-cyanoptera'
         run: |
           is_release_event=false
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -1468,14 +1463,33 @@ jobs:
             run_release_dispatch=true
           fi
 
-          is_default_branch=false
-          if [[ "$CURRENT_REF" == "refs/heads/$ALPHA_BRANCH" ]]; then
-            is_default_branch=true
+          alpha_release_line=""
+          if [[ "$DUCKDB_VERSION" =~ ^v([0-9]+\.[0-9]+)\.[0-9]+-alpha[0-9]+$ ]]; then
+            alpha_release_line="${BASH_REMATCH[1]}"
+          fi
+
+          is_main_branch=false
+          if [[ "$CURRENT_REF" == "refs/heads/main" ]]; then
+            is_main_branch=true
+          fi
+
+          is_release_line_branch=false
+          if [[ -n "$alpha_release_line" && \
+                ("$CURRENT_REF" == "refs/heads/v$alpha_release_line" || \
+                 "$CURRENT_REF" == "refs/heads/v$alpha_release_line-"*) ]]; then
+            is_release_line_branch=true
           fi
 
           publish_latest_alpha=false
-          if [[ "$is_duckdb_repo" == "true" && "$is_default_branch" == "true" && "$RELEASE_STATUS_SUCCESS" == "true" && -n "$STAGED_VERSION" ]]; then
+          if [[ "$is_duckdb_repo" == "true" && \
+                ("$is_main_branch" == "true" || "$is_release_line_branch" == "true") && \
+                "$RELEASE_STATUS_SUCCESS" == "true" && -n "$STAGED_VERSION" && -n "$alpha_release_line" ]]; then
             publish_latest_alpha=true
+          fi
+
+          publish_global_latest_alpha=false
+          if [[ "$publish_latest_alpha" == "true" && "$is_main_branch" == "true" ]]; then
+            publish_global_latest_alpha=true
           fi
 
           echo "summary dispatch context:"
@@ -1488,13 +1502,17 @@ jobs:
           echo "  run_release_dispatch=$run_release_dispatch"
           echo "  staged_version=$STAGED_VERSION"
           echo "  current_ref=$CURRENT_REF"
-          echo "  alpha_branch=$ALPHA_BRANCH"
-          echo "  is_default_branch=$is_default_branch"
+          echo "  alpha_release_line=$alpha_release_line"
+          echo "  is_main_branch=$is_main_branch"
+          echo "  is_release_line_branch=$is_release_line_branch"
           echo "  publish_latest_alpha=$publish_latest_alpha"
+          echo "  publish_global_latest_alpha=$publish_global_latest_alpha"
 
           {
             echo "run_release_dispatch=$run_release_dispatch"
+            echo "alpha_release_line=$alpha_release_line"
             echo "publish_latest_alpha=$publish_latest_alpha"
+            echo "publish_global_latest_alpha=$publish_global_latest_alpha"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run release dispatch
@@ -1549,6 +1567,8 @@ jobs:
           DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}
           DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
           STAGED_VERSION: ${{ needs.prepare.outputs.staged_version }}
+          RELEASE_LINE: ${{ steps.summary-context.outputs.alpha_release_line }}
+          PUBLISH_GLOBAL_LATEST_ALPHA: ${{ steps.summary-context.outputs.publish_global_latest_alpha }}
         run: |
           set -euo pipefail
 
@@ -1561,6 +1581,20 @@ jobs:
             s3_provider="Cloudflare"
           fi
 
+          if [[ "$PUBLISH_GLOBAL_LATEST_ALPHA" == "true" ]]; then
+            rclone copyto \
+              --s3-provider "$s3_provider" \
+              --s3-endpoint "$AWS_ENDPOINT_URL" \
+              --s3-access-key-id "$AWS_ACCESS_KEY_ID" \
+              --s3-secret-access-key "$AWS_SECRET_ACCESS_KEY" \
+              --s3-no-check-bucket \
+              --s3-no-head \
+              --header-upload "Content-Type: text/plain" \
+              --header-upload "Cache-Control: no-cache" \
+              "$pointer_file" \
+              ":s3:duckdb-staging/latest_alpha_version.txt"
+          fi
+
           rclone copyto \
             --s3-provider "$s3_provider" \
             --s3-endpoint "$AWS_ENDPOINT_URL" \
@@ -1571,7 +1605,7 @@ jobs:
             --header-upload "Content-Type: text/plain" \
             --header-upload "Cache-Control: no-cache" \
             "$pointer_file" \
-            ":s3:duckdb-staging/latest_alpha_version.txt"
+            ":s3:duckdb-staging/release/$RELEASE_LINE/latest_alpha_version.txt"
 
           rclone copyto \
             --s3-provider "$s3_provider" \

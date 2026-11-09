@@ -1,0 +1,71 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_readers.test
+# description: Multi-file readers declare repeatable scans within one query
+# group: [optimizer]
+
+require parquet
+
+require json
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE reader_rows AS SELECT i, i % 3 AS j FROM range(100) t(i);
+
+statement ok
+COPY reader_rows TO '{TEST_DIR}/repeatability_rows.parquet' (FORMAT parquet);
+
+statement ok
+COPY reader_rows TO '{TEST_DIR}/repeatability_rows.csv' (FORMAT csv, HEADER);
+
+statement ok
+COPY (SELECT to_json(reader_rows) AS record FROM reader_rows) TO '{TEST_DIR}/repeatability_rows.json' (FORMAT csv, QUOTE '', HEADER false);
+
+# Identical reader calls keep full multiplicity through INTERSECT ALL.
+query I
+SELECT count(*) FROM (SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet'));
+----
+100
+
+query I
+SELECT count(*) FROM (SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv'));
+----
+100
+
+query I
+SELECT count(*) FROM (SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.json') INTERSECT ALL SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.json'));
+----
+100
+
+# Common subplan sharing additionally requires a serializable scan identity. The multi-file wrapper
+# has no bind-data serializers and MultiFileBindData opts out of the statement cache, so these scans
+# are still rejected by LogicalGet::SupportSerialization. If the readers gain real serialization
+# callbacks, sharing becomes reachable and these expectations should flip deliberately.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# A store_rejects CSV scan declares the same within-query stability as any other CSV scan - reject recording
+# reflects the executions of the optimized scan, and sharing would write the rejects once. Sharing is still
+# blocked by the scan identity guard above, like the plain read_csv scans.
+statement ok
+COPY (SELECT * FROM (VALUES ('1'), ('oops'), ('3')) t(k)) TO '{TEST_DIR}/repeatability_rejects.csv' (FORMAT csv, HEADER);
+
+query I
+SELECT count(*) FROM (
+    SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true)
+    INTERSECT ALL
+    SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true));
+----
+2
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true) INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rejects.csv', columns={'k': 'INTEGER'}, header=true, auto_detect=false, store_rejects=true);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*

@@ -50,6 +50,13 @@ struct interval_t { // NOLINT
 		return !(*this == right);
 	}
 
+	//! True when the raw (months, days, micros) fields are identical, without normalizing first. Unlike operator==
+	//! (which falls back to a normalized comparison, so INTERVAL 1 MONTH == INTERVAL 30 DAY), this is a strict
+	//! field-wise test: two intervals that are only equal after normalization are not the same here.
+	inline bool SameFields(const interval_t &right) const {
+		return months == right.months && days == right.days && micros == right.micros;
+	}
+
 	inline bool operator>(const interval_t &right) const {
 		const auto &left = *this;
 		int64_t lmonths, ldays, lmicros;
