@@ -2,7 +2,7 @@
 # description: The last value of a file is an error, straddles the last buffer and has no newline after it
 # group: [csv]
 
-# with buffer_size=32 the first buffer holds 13 rows plus "ab", the last buffer only holds "c"
+# with buffer_size=32 the first buffer holds 13 rows plus "ab", the last buffer only holds "c" (the file is -text in .gitattributes)
 foreach parallel true false
 
 query I

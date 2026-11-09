@@ -1,1 +1,3 @@
 *.test linguist-language=sql
+# byte-exact fixture: the test asserts byte positions and a buffer layout that CRLF conversion would change
+data/csv/last_value_error_no_newline.csv -text
