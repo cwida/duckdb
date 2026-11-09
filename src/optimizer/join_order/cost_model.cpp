@@ -69,9 +69,6 @@ static bool HasHashKey(const DPJoinNode &node, const DPJoinNode &left, const DPJ
 }
 
 void CostModel::UpdateBuildMemory(DPJoinNode &result, const DPJoinNode &left, const DPJoinNode &right) {
-	if (!recursive_relations) {
-		return;
-	}
 	auto &properties = result.recursive_properties;
 	const auto &left_properties = left.recursive_properties;
 	const auto &right_properties = right.recursive_properties;
@@ -83,30 +80,27 @@ void CostModel::UpdateBuildMemory(DPJoinNode &result, const DPJoinNode &left, co
 	for (auto &predicate : result.predicates) {
 		properties.build.repeatable &= !predicate.get().GetFilter().filter->IsVolatile();
 	}
+	if (!recursive_relations) {
+		return;
+	}
 	result.retained_build_size = left.retained_build_size + right.retained_build_size;
-	double transient_build_size = 0;
+	double build_size = 0;
 	if (HasHashKey(result, left, right)) {
 		optional_ptr<const DPJoinNode> build;
-		bool retain = false;
 		if (CanPlaceRecursiveProbe(JoinType::INNER, left_properties, right_properties)) {
 			build = right;
-			retain = right_properties.build.repeatable;
 		} else if (CanPlaceRecursiveProbe(JoinType::INNER, right_properties, left_properties)) {
 			build = left;
-			retain = left_properties.build.repeatable;
 		} else {
 			build = GetBuildSize(left) < GetBuildSize(right) ? left : right;
 		}
-		auto build_size = GetBuildSize(*build);
-		if (retain) {
+		build_size = GetBuildSize(*build);
+		if (!build->recursive_properties.depends_on_recursive_input && build->recursive_properties.build.repeatable) {
 			result.retained_build_size += build_size;
-		} else {
-			transient_build_size = build_size;
 		}
 	}
-	result.peak_build_size =
-	    result.retained_build_size + transient_build_size +
-	    MaxValue(left.peak_build_size - left.retained_build_size, right.peak_build_size - right.retained_build_size);
+	result.peak_build_size = build_size + MaxValue(left.peak_build_size + right.retained_build_size,
+	                                               right.peak_build_size + left.retained_build_size);
 }
 
 JoinPlanCost CostModel::GetCost(const DPJoinNode &node) const {

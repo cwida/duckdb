@@ -121,6 +121,21 @@ const vector<reference<JoinRelationSet>> &PlanEnumerator::GetAllNeighborRelation
 	return inserted.first->second;
 }
 
+static bool EnablesJoinKey(const JoinPredicateModel &predicates, JoinRelationSet &set, JoinRelationSet &left,
+                           JoinRelationSet &right) {
+	auto needs_both_inputs = [&](optional_ptr<JoinRelationSet> key) {
+		return key && JoinRelationSet::Intersects(left, *key) && JoinRelationSet::Intersects(right, *key);
+	};
+	for (auto &predicate_ref : predicates.GetGraphPredicates()) {
+		auto &predicate = predicate_ref.get();
+		if (!JoinRelationSet::IsSubset(set, predicate.GetSet()) &&
+		    (needs_both_inputs(predicate.GetLeftSetOptional()) || needs_both_inputs(predicate.GetRightSetOptional()))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! Create a new JoinTree node by joining together two previous JoinTree nodes
 unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
                                                       const vector<reference<NeighborInfo>> &possible_connections,
@@ -183,13 +198,13 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 		return nullptr;
 	}
 	auto cardinality = cost_model.GetCardinalityEstimator().EstimateCardinality(set);
-	// A pair of recursion-independent subplans may outgrow both inputs only while it stays below the
-	// frontier it will be joined onto. Past that, the frontier-first plan bounds every build by an input.
+	// Avoid large expanding independent builds unless the inputs contribute to the same join key.
 	if (recursive_frontier_estimate > 0 && !left.recursive_properties.depends_on_recursive_input &&
 	    !right.recursive_properties.depends_on_recursive_input) {
 		auto output = cardinality.GetDouble();
 		if (output > left.cardinality.GetDouble() && output > right.cardinality.GetDouble() &&
-		    output > recursive_frontier_estimate) {
+		    output > recursive_frontier_estimate &&
+		    !EnablesJoinKey(query_graph_manager.GetPredicateModel(), set, left.set, right.set)) {
 			return nullptr;
 		}
 	}
