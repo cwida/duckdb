@@ -106,62 +106,11 @@ static void BindAlterTypes(Binder &binder, AlterStatement &stmt) {
 		default:
 			break;
 		}
-	}
-}
-
-BoundStatement Binder::BindAlterMacro(AlterStatement &stmt) {
-	BoundStatement result;
-	result.names = {"Success"};
-	result.types = {LogicalType::BOOLEAN};
-	auto &properties = GetStatementProperties();
-	properties.return_type = StatementReturnType::NOTHING;
-
-	auto &info = stmt.info->Cast<RemoveMacroOverloadInfo>();
-	info.SetQualifiedName(BindTableName(info.GetQualifiedName()));
-	auto catalog = Catalog::GetCatalogEntry(context, info.GetQualifiedName().Catalog());
-	if (catalog) {
-		properties.RegisterDBRead(*catalog, context);
-	}
-	optional_ptr<CatalogEntry> entry;
-	if (info.entry_catalog_type == CatalogType::MACRO_ENTRY) {
-		// DROP MACRO also names a table macro, the scalar one wins
-		EntryLookupInfo macro_lookup(CatalogType::MACRO_ENTRY, info.GetQualifiedName());
-		entry = Catalog::GetEntry(context, macro_lookup, OnEntryNotFound::RETURN_NULL);
-		if (!entry) {
-			EntryLookupInfo table_macro_lookup(CatalogType::TABLE_MACRO_ENTRY, info.GetQualifiedName());
-			entry = Catalog::GetEntry(context, table_macro_lookup, OnEntryNotFound::RETURN_NULL);
-			if (entry) {
-				info.entry_catalog_type = CatalogType::TABLE_MACRO_ENTRY;
-			}
+	} else if (stmt.info->type == AlterType::ALTER_MACRO) {
+		for (auto &type : stmt.info->Cast<RemoveMacroOverloadInfo>().signature) {
+			binder.BindLogicalType(type);
 		}
-		if (!entry) {
-			entry = Catalog::GetEntry(context, macro_lookup, info.if_not_found);
-		}
-	} else {
-		EntryLookupInfo lookup(info.entry_catalog_type, info.GetQualifiedName());
-		entry = Catalog::GetEntry(context, lookup, info.if_not_found);
 	}
-	if (!entry) {
-		// IF EXISTS on a missing entry: the signature types are not resolved
-		result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
-		return result;
-	}
-	if (entry->internal) {
-		throw CatalogException("Cannot drop internal catalog entry %s!", entry->name);
-	}
-	// keep the entry's full (possibly nested) schema path so execution navigates the same schema
-	info.SetQualifiedName(entry->ParentSchema().GetQualifiedName(info.GetQualifiedName().Name()));
-	// resolve the signature's type names from the entry's own schema first, with the session path behind
-	// it, so a same-named type elsewhere cannot make an overload unreachable or name a different member
-	auto scoped_binder = Binder::CreateBinder(context, this);
-	scoped_binder->EntryRetriever().SetSearchPath(
-	    scoped_binder->GetSearchPath(entry->ParentCatalog(), info.GetQualifiedName().SchemaPath(), true));
-	for (auto &type : info.signature) {
-		scoped_binder->BindLogicalType(type);
-	}
-	properties.RegisterDBModify(entry->ParentCatalog(), context, info.GetModifications());
-	result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
-	return result;
 }
 
 BoundStatement Binder::Bind(AlterStatement &stmt) {
@@ -190,10 +139,6 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 		return result;
 	}
 
-	if (stmt.info->type == AlterType::ALTER_MACRO) {
-		return BindAlterMacro(stmt);
-	}
-
 	// resolve the (possibly nested) catalog/schema qualification of the altered entry
 	stmt.info->SetQualifiedName(BindTableName(stmt.info->GetQualifiedName()));
 
@@ -207,6 +152,10 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 			auto &view = entry->Cast<ViewCatalogEntry>();
 			view.BindView(context);
 		}
+	} else if (stmt.info->type == AlterType::ALTER_MACRO) {
+		// a member drop resolves its entry as DROP MACRO does
+		auto &macro_info = stmt.info->Cast<AlterMacroInfo>();
+		entry = GetMacroEntry(macro_info.entry_catalog_type, macro_info.GetQualifiedName(), macro_info.if_not_found);
 	} else {
 		// For any other ALTER, we retrieve the catalog entry directly.
 		EntryLookupInfo lookup_info(stmt.info->GetCatalogType(), stmt.info->GetQualifiedName());
@@ -216,8 +165,10 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 	auto &properties = GetStatementProperties();
 	properties.return_type = StatementReturnType::NOTHING;
 	if (!entry) {
-		// Bind types in this binder
-		BindAlterTypes(*this, stmt);
+		// Bind types in this binder, except a member drop's signature: IF EXISTS on a missing macro resolves nothing
+		if (stmt.info->type != AlterType::ALTER_MACRO) {
+			BindAlterTypes(*this, stmt);
+		}
 
 		result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
 		return result;

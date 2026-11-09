@@ -260,11 +260,11 @@ SELECT whole(1);
 ----
 <REGEX>:.*(Catalog Error|not exist).*
 
-# internal entries refuse member drops
+# built-in macros live in the system catalog, which the generic alter path refuses to alter
 statement error
 DROP MACRO current_role(VARCHAR);
 ----
-<REGEX>:.*(internal|no overload|Cannot alter).*
+<REGEX>:.*Can not comment on System Catalog entries.*
 
 # table functions reject the member path through the macro entry check
 statement error
