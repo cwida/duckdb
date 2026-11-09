@@ -89,7 +89,7 @@ TEST_CASE("Test parser timing is reported per statement", "[api]") {
 	REQUIRE(single_statement_output.find("SELECT 7;") != std::string::npos);
 
 	auto iterator = con.context->IterateStatements("SELECT 42; SELECT 43;");
-	for (const auto expected_query : {"SELECT 42; ", "SELECT 43;"}) {
+	for (const auto expected_query : {"SELECT 42;", " SELECT 43;"}) {
 		REQUIRE(iterator.Peek());
 		auto statement = iterator.GetStatementForExecution();
 		REQUIRE(statement);
