@@ -341,3 +341,20 @@ TEST_CASE("Test every deprecated setting warns when set", "[api]") {
 	}
 	REQUIRE(checked > 0);
 }
+
+TEST_CASE("Test tracked_metrics in the startup config", "[api]") {
+	DBConfig config;
+	REQUIRE_NOTHROW(config.SetOptionByName("tracked_metrics", Value("['query.*']")));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("tracked_metrics", Value("['query.*', NULL]")),
+	                    Catch::Contains("cannot contain NULL entries"));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto expected = Value::LIST(LogicalType::VARCHAR, {Value("query.*")});
+	auto result = con.Query("SELECT current_setting('tracked_metrics')");
+	REQUIRE(CHECK_COLUMN(result, 0, {expected}));
+	// a session value resets to the configured global value
+	REQUIRE_NO_FAIL(con.Query("SET tracked_metrics = ['optimizer.*']"));
+	REQUIRE_NO_FAIL(con.Query("RESET tracked_metrics"));
+	result = con.Query("SELECT current_setting('tracked_metrics')");
+	REQUIRE(CHECK_COLUMN(result, 0, {expected}));
+}
