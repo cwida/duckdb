@@ -47,6 +47,68 @@ FROM (SELECT list(v) AS xs, row_number() OVER () AS rn FROM vertices) s;
 ----
 logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000".*
 
+# the unnested column takes the distinct count of the aggregate input, not one value per element
+statement ok
+CREATE TABLE groups_large AS SELECT (i % 10)::INT AS g FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE groups_small AS SELECT (i % 10)::INT AS g FROM range(1000) t(i);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT x, count(*) FROM (SELECT unnest((SELECT list(g) FROM groups_large)) AS x) u GROUP BY x;
+----
+logical_opt	<REGEX>:.*"Groups":\s*"x",\s*"Expressions":\s*"count_star\(\)",\s*"Estimated Cardinality":\s*"1[01]".*
+
+query II
+SELECT x, count(*) FROM (SELECT unnest((SELECT list(g) FROM groups_large)) AS x) u GROUP BY x ORDER BY x LIMIT 2;
+----
+0	10000
+1	10000
+
+# the domain bound holds under DISTINCT, FILTER and ORDER BY
+query II
+EXPLAIN (FORMAT JSON) SELECT x, count(*) FROM (SELECT unnest((SELECT list(DISTINCT g) FROM groups_large)) AS x) u GROUP BY x;
+----
+logical_opt	<REGEX>:.*"Groups":\s*"x",\s*"Expressions":\s*"count_star\(\)",\s*"Estimated Cardinality":\s*"1[01]".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT x, count(*)
+FROM (SELECT unnest((SELECT list(g) FILTER (WHERE g < 5) FROM groups_large)) AS x) u GROUP BY x;
+----
+logical_opt	<REGEX>:.*"Groups":\s*"x",\s*"Expressions":\s*"count_star\(\)",\s*"Estimated Cardinality":\s*"1[01]".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT x, count(*) FROM (SELECT unnest((SELECT list(g ORDER BY g) FROM groups_large)) AS x) u GROUP BY x;
+----
+logical_opt	<REGEX>:.*"Groups":\s*"x",\s*"Expressions":\s*"count_star\(\)",\s*"Estimated Cardinality":\s*"1[01]".*
+
+# row duplication through a join adds no new values
+query II
+EXPLAIN (FORMAT JSON) SELECT x, count(*)
+FROM (SELECT unnest(s.xs) AS x FROM (SELECT list(g) AS xs FROM groups_small) s, vertices r) u GROUP BY x;
+----
+logical_opt	<REGEX>:.*"Groups":\s*"x",\s*"Expressions":\s*"count_star\(\)",\s*"Estimated Cardinality":\s*"1[01]".*
+
+# a unique input keeps one group per element
+query II
+EXPLAIN (FORMAT JSON) SELECT x, count(*) FROM (SELECT unnest((SELECT list(v) FROM vertices)) AS x) u GROUP BY x;
+----
+logical_opt	<REGEX>:.*"Groups":\s*"x",\s*"Expressions":\s*"count_star\(\)",\s*"Estimated Cardinality":\s*"1000".*
+
+# two unnest-seeded sides without any other domain source: the element domains drive the
+# equality join estimate (10,000,000 actual) instead of the smaller side's cardinality
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM (SELECT unnest((SELECT list(g) FROM groups_large)) AS x) u1
+JOIN (SELECT unnest((SELECT list(g) FROM groups_small)) AS y) u2 ON u1.x = u2.y;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"9[0-9]{6}".*
+
+query I
+SELECT count(*) FROM (SELECT unnest((SELECT list(g) FROM groups_large)) AS x) u1
+JOIN (SELECT unnest((SELECT list(g) FROM groups_small)) AS y) u2 ON u1.x = u2.y;
+----
+10000000
+
 # a join that duplicates the list rows scales the element count along
 query II
 EXPLAIN (FORMAT JSON) SELECT r.v, unnest(s.xs)

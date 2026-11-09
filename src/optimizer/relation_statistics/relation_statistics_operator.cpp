@@ -191,7 +191,10 @@ static optional<RelationStats> ExtractUnnestStats(LogicalOperator &op, const Rel
 	// unnest((SELECT list(x) FROM tbl)) collapses to a single-row estimate and derails join ordering.
 	// When the unnested column carries list statistics with an element count, use it as the estimate.
 	idx_t element_cardinality = 0;
-	for (auto &expr : op.expressions) {
+	// distinct element counts of the unnested lists, zero when unknown
+	vector<idx_t> element_domains(op.expressions.size(), 0);
+	for (idx_t expr_idx = 0; expr_idx < op.expressions.size(); expr_idx++) {
+		auto &expr = op.expressions[expr_idx];
 		if (expr->GetExpressionClass() != ExpressionClass::BOUND_UNNEST) {
 			continue;
 		}
@@ -207,6 +210,8 @@ static optional<RelationStats> ExtractUnnestStats(LogicalOperator &op, const Rel
 		if (element_count.IsValid()) {
 			element_cardinality = MaxValue(element_cardinality, element_count.GetIndex());
 		}
+		auto element_stats = ListStats::GetChildStats(*child_column->list_stats).Copy();
+		element_domains[expr_idx] = element_stats.GetDistinctCount();
 	}
 	RelationStats result;
 	result.cardinality = MaxValue(child_stats.cardinality, element_cardinality);
@@ -220,8 +225,14 @@ static optional<RelationStats> ExtractUnnestStats(LogicalOperator &op, const Rel
 			result.columns.back().list_stats = RelationStatisticsHelper::ScaleListStats(
 			    child_column->list_stats, child_stats.cardinality, result.cardinality);
 		} else if (binding.table_index == unnest.unnest_index) {
-			result.columns.emplace_back(binding, DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY),
-			                            Identifier("unnest"));
+			auto element_domain = element_domains[binding.column_index.GetIndex()];
+			if (element_domain > 0) {
+				DistinctCount domain(MinValue(element_domain, result.cardinality), DistinctCountSource::HLL);
+				result.columns.emplace_back(binding, domain, Identifier("unnest"));
+			} else {
+				result.columns.emplace_back(
+				    binding, DistinctCount(result.cardinality, DistinctCountSource::CARDINALITY), Identifier("unnest"));
+			}
 		} else {
 			return {};
 		}

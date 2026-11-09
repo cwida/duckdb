@@ -593,7 +593,13 @@ static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate 
 			if (child_column && child_column->list_stats) {
 				callback_child_stats.push_back(child_column->list_stats->Copy());
 			} else {
-				callback_child_stats.push_back(BaseStatistics::CreateUnknown(aggr_child->GetReturnType()));
+				auto unknown_stats = BaseStatistics::CreateUnknown(aggr_child->GetReturnType());
+				if (child_column && (child_column->total_domain.source == DistinctCountSource::HLL ||
+				                     child_column->total_domain.source == DistinctCountSource::EXACT)) {
+					// the input domain bounds the distinct list elements
+					unknown_stats.SetDistinctCount(child_column->total_domain.distinct_count);
+				}
+				callback_child_stats.push_back(std::move(unknown_stats));
 			}
 		}
 		NodeStatistics node_stats(child_stats.cardinality);
