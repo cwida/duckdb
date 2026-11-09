@@ -33,7 +33,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 		auto &child = op->children[child_idx];
 		auto child_bindings = child->GetColumnBindings();
 
-		FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+		FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 		// a filter on the result of EXCEPT and INTERSECT only applies to their left child
 		if (child_idx > 0 && op->type != LogicalOperatorType::LOGICAL_UNION) {
 			child = child_pushdown.Rewrite(std::move(child));
@@ -43,6 +43,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 			// first create a copy of the filter
 			auto filter = make_uniq<Filter>();
 			filter->filter = original_filter->filter->Copy();
+			filter->level = original_filter->level;
 
 			//  rewrite references to the result of the union into references to the child index
 			ReplaceSetOpBindings(child_bindings, *filter, filter->filter, setop);

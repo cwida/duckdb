@@ -112,8 +112,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
                                                              unordered_set<TableIndex> &left_bindings,
                                                              unordered_set<TableIndex> &right_bindings) {
 	auto &join = op->Cast<LogicalJoin>();
-	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
-	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
+	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 	// for a comparison join we create a FilterCombiner that checks if we can push conditions on LHS join conditions
 	// into the RHS of the join
 	FilterCombiner filter_combiner(optimizer);
@@ -124,10 +124,11 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 		auto &comparison_join = op->Cast<LogicalComparisonJoin>();
 		for (auto &cond : comparison_join.conditions) {
 			if (cond.IsComparison()) {
-				filter_combiner.AddFilter(BoundComparisonExpression::Create(
-				    cond.GetComparisonType(), cond.GetLHS().Copy(), cond.GetRHS().Copy()));
+				filter_combiner.AddFilter(BoundComparisonExpression::Create(cond.GetComparisonType(),
+				                                                            cond.GetLHS().Copy(), cond.GetRHS().Copy()),
+				                          secure_view_level);
 			} else {
-				filter_combiner.AddFilter(cond.GetJoinExpression().Copy());
+				filter_combiner.AddFilter(cond.GetJoinExpression().Copy(), secure_view_level);
 			}
 		}
 	}
@@ -141,7 +142,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 			if (isComparison) {
 				// we MIGHT be able to push it down the RHS as well, but only if it is a comparison that matches the
 				// join predicates we use the FilterCombiner to figure this out add the expression to the FilterCombiner
-				filter_combiner.AddFilter(filters[i]->filter->Copy());
+				filter_combiner.AddFilter(filters[i]->filter->Copy(), filters[i]->level);
 			}
 			left_pushdown.filters.push_back(std::move(filters[i]));
 			// erase the filter from the list of filters
@@ -180,9 +181,9 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 	// we check now if this combination generated any new filters that are only on JoinSide::RIGHT
 	// this happens if, e.g. a join condition is (i=a) and there is a filter (i=500), we can then push the filter
 	// (a=500) into the RHS
-	filter_combiner.GenerateFilters([&](unique_ptr<Expression> filter) {
+	filter_combiner.GenerateFilters([&](unique_ptr<Expression> filter, idx_t level) {
 		if (JoinSide::GetJoinSide(*filter, left_bindings, right_bindings) == JoinSide::RIGHT) {
-			right_pushdown.AddFilter(std::move(filter));
+			right_pushdown.AddFilter(std::move(filter), level);
 		}
 	});
 	right_pushdown.GenerateFilters();
@@ -195,7 +196,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 		auto &comparison_join = join.Cast<LogicalComparisonJoin>();
 		for (auto &cond : comparison_join.conditions) {
 			if (!cond.IsComparison()) {
-				if (AddFilter(cond.GetJoinExpression().Copy()) == FilterResult::UNSATISFIABLE) {
+				if (AddFilter(cond.GetJoinExpression().Copy(), secure_view_level) == FilterResult::UNSATISFIABLE) {
 					has_unsatisfiable_condition = true;
 					break;
 				}
@@ -203,7 +204,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 		}
 	} else if (op->type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
 		auto &any_join = join.Cast<LogicalAnyJoin>();
-		if (AddFilter(any_join.condition->Copy()) == FilterResult::UNSATISFIABLE) {
+		if (AddFilter(any_join.condition->Copy(), secure_view_level) == FilterResult::UNSATISFIABLE) {
 			has_unsatisfiable_condition = true;
 		}
 	}

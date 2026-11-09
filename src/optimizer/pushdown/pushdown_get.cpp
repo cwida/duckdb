@@ -54,9 +54,15 @@ void FilterPushdown::PushdownBarrierFilters(LogicalGet &get, vector<unique_ptr<F
 	if (!table || !table->IsDuckTable()) {
 		return;
 	}
+	// the scan orders its filters by cost and every barrier costs the same, so level order is lost there: only the
+	// barrier filters of the deepest level go in, the others stay in the filter on top of the scan
+	idx_t deepest = 0;
+	for (auto &barrier_filter : barrier_filters) {
+		deepest = MaxValue(deepest, ExpressionBarrier::Level(*barrier_filter->filter));
+	}
 	for (idx_t i = 0; i < barrier_filters.size(); i++) {
 		auto &expr = *barrier_filters[i]->filter;
-		if (expr.IsVolatile()) {
+		if (expr.IsVolatile() || ExpressionBarrier::Level(expr) != deepest) {
 			continue;
 		}
 		// restrict this to single-column expressions - a multi-column expression is only pushed down partially, and
@@ -137,9 +143,11 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 			restore_barrier_filters();
 			return PushFinalFilters(std::move(op));
 		}
-		// re-generate the filters
+		// re-generate the filters. the scan may have dropped or rewritten expressions; a barred expression carries
+		// its level in the barrier, and from here on only that level is read
 		for (auto &expr : expressions) {
 			auto f = make_uniq<Filter>();
+			f->level = ExpressionBarrier::Contains(*expr) ? ExpressionBarrier::Level(*expr) : secure_view_level;
 			f->filter = std::move(expr);
 			f->ExtractBindings();
 			filters.push_back(std::move(f));

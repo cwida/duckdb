@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -152,7 +153,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 	// push filter through logical projection
 	// all the BoundColumnRefExpressions in the filter should refer to the LogicalProjection
 	// we can rewrite them by replacing those references with the expression of the LogicalProjection node
-	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 	// There are some expressions can not be pushed down. We should keep them
 	// and add an extra filter operator.
 	vector<unique_ptr<Expression>> remain_expressions;
@@ -164,18 +165,30 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 		return projection_mode == ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS &&
 		       ReferencesComputedExpression(proj, *f.filter);
 	};
+	// inside a secure view, a filter that only becomes able to throw once the projection substitutes a column
+	// definition is barred from here on, at the level it came from, and is held back like any other barred filter
+	vector<bool> barred(filters.size());
+	for (idx_t i = 0; i < filters.size(); i++) {
+		auto &f = *filters[i];
+		barred[i] = f.has_barrier;
+		if (!barred[i] && f.level < secure_view_level && !ExpressionBarrier::Required(*f.filter) && !stays_on_top(f)) {
+			auto substituted = ReplaceProjectionBindings(proj, f.filter->Copy());
+			barred[i] = ExpressionBarrier::Required(*substituted) && !ExpressionBarrier::Contains(*substituted);
+		}
+	}
 	// barred expressions may only cross the projection if every other filter does: a filter kept on top of the
 	// projection, or split off below it, would otherwise be evaluated after them
 	bool hold_back_barriers = false;
-	for (auto &filter : filters) {
-		if (!filter->has_barrier && (stays_on_top(*filter) || splits_off(*filter))) {
+	for (idx_t i = 0; i < filters.size(); i++) {
+		auto &f = *filters[i];
+		if (stays_on_top(f) || (!barred[i] && splits_off(f))) {
 			hold_back_barriers = true;
 		}
 	}
-	for (auto &filter : filters) {
-		auto &f = *filter;
+	for (idx_t i = 0; i < filters.size(); i++) {
+		auto &f = *filters[i];
 		D_ASSERT(f.bindings.size() <= 1);
-		if (stays_on_top(f) || (f.has_barrier && hold_back_barriers)) {
+		if (stays_on_top(f) || (barred[i] && hold_back_barriers)) {
 			// Volatile and throwing expressions cannot move across the projection. Expressions carrying a barrier
 			// are the exception: a projection does not remove any rows, so pushing them through it does not
 			// change which rows they are evaluated on - unless another filter stays behind, see above.
@@ -186,8 +199,11 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 		} else {
 			// rewrite the bindings within this subquery
 			f.filter = ReplaceProjectionBindings(proj, std::move(f.filter));
+			if (barred[i] && !f.has_barrier) {
+				f.filter = ExpressionBarrier::Wrap(std::move(f.filter), f.level);
+			}
 			// add the filter to the child pushdown
-			if (child_pushdown.AddFilter(std::move(f.filter)) == FilterResult::UNSATISFIABLE) {
+			if (child_pushdown.AddFilter(std::move(f.filter), f.level) == FilterResult::UNSATISFIABLE) {
 				// filter statically evaluates to false, strip tree
 				return make_uniq<LogicalEmptyResult>(std::move(op));
 			}

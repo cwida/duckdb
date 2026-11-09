@@ -44,15 +44,18 @@ public:
 		ExpressionType comparison_type;
 	};
 
-	FilterResult AddFilter(unique_ptr<Expression> expr);
+	//! The level is the secure-view level the filter originated at, see ExpressionBarrier::Wrap. It is carried to
+	//! the filters GenerateFilters produces from it
+	FilterResult AddFilter(unique_ptr<Expression> expr, idx_t level = 0);
 	//! Splits on AND and adds each conjunct
-	FilterResult AddConjuncts(unique_ptr<Expression> expr);
+	FilterResult AddConjuncts(unique_ptr<Expression> expr, idx_t level = 0);
 
 	//! Returns whether or not a set of integral values is a dense range (i.e. 1, 2, 3, 4, 5)
 	//! If this returns true - this sorts "in_list" as a side-effect
 	static bool IsDenseRange(vector<Value> &in_list);
 	static bool ContainsNull(vector<Value> &in_list);
 
+	void GenerateFilters(const std::function<void(unique_ptr<Expression> filter, idx_t level)> &callback);
 	void GenerateFilters(const std::function<void(unique_ptr<Expression> filter)> &callback);
 	bool HasFilters();
 	void GenerateEquivalentFilters(const Expression &filter,
@@ -73,6 +76,10 @@ public:
 
 private:
 	FilterResult AddFilter(Expression &expr);
+	//! Add a filter the combiner cannot absorb to the remaining filters, at the current level
+	void AddRemainingFilter(unique_ptr<Expression> expr);
+	//! Whether the node already belongs to an equivalence set of a level other than the current one
+	bool CrossesLevel(const Expression &node);
 	FilterResult AddBoundComparisonFilter(Expression &expr);
 	FilterResult AddTransitiveFilters(BoundFunctionExpression &comparison, bool is_root = true);
 	unique_ptr<Expression> FindTransitiveFilter(const Expression &expr);
@@ -99,7 +106,16 @@ private:
 	                              vector<ExpressionValueInformation> &info_list);
 
 private:
-	vector<unique_ptr<Expression>> remaining_filters;
+	//! A filter kept whole, with the level it was added at
+	struct RemainingFilter {
+		unique_ptr<Expression> filter;
+		idx_t level;
+	};
+	vector<RemainingFilter> remaining_filters;
+	//! The level of the filter currently being added
+	idx_t current_level = 0;
+	//! The level of the filters in each equivalence set
+	map<idx_t, idx_t> set_levels;
 
 	expression_map_t<unique_ptr<Expression>> stored_expressions;
 	expression_map_t<idx_t> equivalence_set_map;

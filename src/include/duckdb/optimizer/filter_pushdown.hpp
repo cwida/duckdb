@@ -23,7 +23,8 @@ public:
 	enum class ProjectionMode : uint8_t { ALLOW_COMPUTED_EXPRESSIONS, PRESERVE_COMPUTED_EXPRESSIONS };
 
 	explicit FilterPushdown(Optimizer &optimizer, bool convert_mark_joins = true,
-	                        ProjectionMode projection_mode = ProjectionMode::ALLOW_COMPUTED_EXPRESSIONS);
+	                        ProjectionMode projection_mode = ProjectionMode::ALLOW_COMPUTED_EXPRESSIONS,
+	                        idx_t secure_view_level = 0);
 
 	//! Perform filter pushdown
 	unique_ptr<LogicalOperator> Rewrite(unique_ptr<LogicalOperator> op);
@@ -48,6 +49,8 @@ public:
 		unique_ptr<Expression> filter;
 		//! Whether the filter contains a barrier - see ExpressionBarrier
 		bool has_barrier = false;
+		//! The secure-view level the filter originated at - see ExpressionBarrier::Wrap
+		idx_t level = 0;
 
 		Filter() {
 		}
@@ -64,6 +67,8 @@ private:
 	FilterCombiner combiner;
 	bool convert_mark_joins;
 	ProjectionMode projection_mode;
+	//! How many secure views the operators this pushdown visits are inside of
+	idx_t secure_view_level;
 
 	vector<unique_ptr<Filter>> filters;
 	//! Push down a LogicalAggregate op
@@ -135,7 +140,8 @@ private:
 	//! FilterResult::SUCCESS otherwise
 
 	unique_ptr<LogicalOperator> PushFiltersIntoDelimJoin(unique_ptr<LogicalOperator> op);
-	FilterResult AddFilter(unique_ptr<Expression> expr);
+	//! The level is secure_view_level for an expression of the operator being visited, see ExpressionBarrier::Wrap
+	FilterResult AddFilter(unique_ptr<Expression> expr, idx_t level);
 	//! Extract filter bindings to compare them with expressions in an operator and determine if the filter
 	//! can be pushed down
 	void ExtractFilterBindings(const Expression &expr, vector<ColumnBinding> &bindings);

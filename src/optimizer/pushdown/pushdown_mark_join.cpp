@@ -36,8 +36,8 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownMarkJoin(unique_ptr<LogicalO
 	         op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN || op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN);
 
 	right_bindings.insert(comp_join.mark_index);
-	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
-	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
+	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 #ifdef DEBUG
 	bool simplified_mark_join = false;
 #endif

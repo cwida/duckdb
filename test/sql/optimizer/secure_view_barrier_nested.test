@@ -1,0 +1,363 @@
+# name: test/sql/optimizer/secure_view_barrier_nested.test
+# description: A secure view's own barred predicate is evaluated before a barred predicate pushed down from above it
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1, 'top_secret', '1'), (2, '42', '1'), (3, '7', '1'), (4, 'ov_secret', '0'), (13, '9', '1'), (14, '10', '1')) v(id, s, k);
+
+# sv hides ids 1 and 2; ov hides id 4 as well. k::INT > 0 can throw, so it is barred when it is pushed into sv.
+statement ok
+CREATE SECURE VIEW sv AS SELECT * FROM t WHERE id % 10 > 2;
+
+statement ok
+CREATE SECURE VIEW ov AS SELECT * FROM sv WHERE k::INT > 0;
+
+# through sv alone the row ov hides is visible, and the cast throws on it
+statement error
+SELECT count(*) FROM sv WHERE s::INT = 7
+----
+ov_secret
+
+query I
+SELECT count(*) FROM ov WHERE s::INT = 7
+----
+1
+
+query I
+SELECT count(*) FROM ov WHERE s::INT IN (42, 7, 8, 9)
+----
+2
+
+query I
+SELECT count(*) FROM ov WHERE s::INT NOT IN (42, 7, 8, 9)
+----
+1
+
+# a caller who wrote the barrier themselves is ordered the same way
+query I
+SELECT count(*) FROM ov WHERE __internal_barrier(s::INT = 7)
+----
+1
+
+# the view's predicate runs on the hidden row before the caller's does
+statement ok
+CREATE SECURE VIEW ove AS SELECT * FROM sv WHERE CASE WHEN id = 4 THEN error('view predicate first') ELSE k::INT > 0 END;
+
+statement error
+SELECT count(*) FROM ove WHERE CASE WHEN id = 4 THEN error('caller predicate first') ELSE s::INT > 0 END
+----
+view predicate first
+
+# three levels
+statement ok
+CREATE SECURE VIEW oov AS SELECT * FROM ov WHERE length(s) < 20;
+
+query I
+SELECT count(*) FROM oov WHERE s::INT = 7
+----
+1
+
+# a view whose author wrote the barrier: the barrier belongs to the view, and runs before the caller's
+statement ok
+CREATE SECURE VIEW ovb AS SELECT * FROM sv WHERE __internal_barrier(k::INT > 0);
+
+query I
+SELECT count(*) FROM ovb WHERE s::INT = 7
+----
+1
+
+# a single view whose author wrote a barrier next to a throwing predicate: both are the view's (guard)
+statement ok
+CREATE SECURE VIEW svb AS SELECT * FROM t WHERE __internal_barrier(id % 10 > 2) AND k::INT > 0;
+
+query I
+SELECT count(*) FROM svb WHERE s::INT = 7
+----
+1
+
+# a view exposes a column that can throw; the caller's predicate on it only becomes throwing once the projection
+# substitutes the definition, inside the view
+statement ok
+CREATE SECURE VIEW ovk AS SELECT id, k, s, s::INT AS si FROM sv;
+
+statement ok
+CREATE SECURE VIEW oovk AS SELECT * FROM ovk WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM oovk WHERE si = 7
+----
+1
+
+# a volatile view predicate stays above the projection, and the caller's barred predicate stays with it
+statement ok
+CREATE SECURE VIEW rv AS SELECT * FROM (SELECT id, s, k, random() AS r FROM t) WHERE CASE WHEN id IN (1, 4) THEN r > 2 ELSE true END;
+
+query I
+SELECT count(*) FROM rv WHERE s::INT > 0
+----
+4
+
+# a volatile view predicate stays above the scan, and so does the caller's barred predicate
+statement ok
+CREATE SECURE VIEW ovv AS SELECT * FROM sv WHERE random() < 2 AND k::INT > 0;
+
+query I
+SELECT count(*) FROM ovv WHERE s::INT = 7
+----
+1
+
+# a set operation and a full outer join inside the inner view
+statement ok
+CREATE SECURE VIEW uv AS SELECT * FROM sv UNION ALL SELECT * FROM sv WHERE id > 100;
+
+statement ok
+CREATE SECURE VIEW ouv AS SELECT * FROM uv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM ouv WHERE s::INT = 7
+----
+1
+
+statement ok
+CREATE SECURE VIEW fv AS SELECT a.id, a.s, a.k FROM sv a FULL OUTER JOIN (SELECT id FROM t WHERE id > 100) b ON a.id = b.id;
+
+statement ok
+CREATE SECURE VIEW ofv AS SELECT * FROM fv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM ofv WHERE s::INT = 7
+----
+1
+
+# a semi or anti join inside the view: the caller's predicate on the join key is derived for the right side and keeps
+# the caller's level, so it is barred when the projection substitutes the throwing column
+statement ok
+CREATE TABLE l AS SELECT * FROM (VALUES (1, 7), (2, 9), (3, 11)) v(id, key);
+
+statement ok
+CREATE TABLE u AS SELECT * FROM (VALUES (1, 'u_secret', '0'), (2, '7', '1'), (3, '9', '1')) v(id, s, k);
+
+statement ok
+CREATE SECURE VIEW semv AS SELECT l.id, l.key FROM l SEMI JOIN (SELECT s::INT AS si FROM u WHERE k::INT > 0) r ON l.key = r.si;
+
+statement ok
+CREATE SECURE VIEW antv AS SELECT l.id, l.key FROM l ANTI JOIN (SELECT s::INT AS si FROM u WHERE k::INT > 0) r ON l.key = r.si;
+
+query I
+SELECT count(*) FROM semv WHERE key = 7
+----
+1
+
+query I
+SELECT count(*) FROM antv WHERE key = 11
+----
+1
+
+query I
+SELECT count(*) FROM antv WHERE key = 7
+----
+0
+
+# more than one vector, the hidden row in the last one
+statement ok
+CREATE TABLE big AS SELECT i AS id, CASE WHEN i = 9999 THEN 'big_secret' ELSE i::VARCHAR END AS s, CASE WHEN i = 9999 THEN '0' ELSE '1' END AS k FROM range(10000) r(i);
+
+statement ok
+CREATE SECURE VIEW bsv AS SELECT * FROM big WHERE id % 10 >= 0;
+
+statement ok
+CREATE SECURE VIEW bov AS SELECT * FROM bsv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM bov WHERE s::INT > 0
+----
+9998
+
+# the same within a single view that hides rows
+statement ok
+CREATE TABLE th AS SELECT * FROM (VALUES (1, 'top_secret', '1'), (3, '7', '1'), (13, '9', '1')) v(id, s, k);
+
+statement ok
+CREATE SECURE VIEW pv AS SELECT id, k, s, s::INT AS si FROM th WHERE id % 10 > 2;
+
+query I
+SELECT count(*) FROM pv WHERE si = 7
+----
+1
+
+# the level lives in the barrier's bind data; the function takes one argument, so it cannot be written in SQL
+statement error
+SELECT count(*) FROM ov WHERE __internal_barrier(s::INT = 7, 9)
+----
+Binder Error
+
+# the caller's si = j and the view's j = 3 are not combined into si = 3: the view's predicate keeps its level, and
+# the hidden row, which j = 3 lets through, is removed by the barred k::INT > 0 before si is cast
+statement ok
+CREATE TABLE t5 AS SELECT s, id, k, CASE WHEN id IN (3, 4, 13) THEN 3 ELSE id END AS j FROM t;
+
+statement ok
+CREATE SECURE VIEW b5 AS SELECT * FROM t5 WHERE id % 10 > 2;
+
+statement ok
+CREATE SECURE VIEW a6 AS SELECT * FROM (SELECT s, id, k, j, s::INT AS si FROM b5) WHERE __internal_barrier(k::INT > 0) AND j = 3;
+
+query I
+SELECT count(*) FROM a6 WHERE si = j
+----
+0
+
+query I
+SELECT count(*) FROM a6 WHERE si = j + 4
+----
+1
+
+# the same through a group expression
+statement ok
+CREATE SECURE VIEW gv AS SELECT s::INT AS si, count(*) AS c FROM t WHERE id % 10 > 2 AND k::INT > 0 GROUP BY s::INT;
+
+query I
+SELECT count(*) FROM gv WHERE si = 7
+----
+1
+
+# a caller comparison that repeats or overlaps the view's own on a projected throwing column is not merged with it,
+# so the view's keeps its level and runs first (passes before this change too; guards the combiner)
+statement ok
+CREATE TABLE t7 AS SELECT * FROM (VALUES (3, '7', '1', '3'), (13, '9', '1', '3'), (14, 'xx_secret', '1', '4')) v(id, s, k, j);
+
+statement ok
+CREATE SECURE VIEW iv AS SELECT id, s, k, j::INT AS ji FROM t7;
+
+statement ok
+CREATE SECURE VIEW mv AS SELECT * FROM iv WHERE ji = 3;
+
+query I
+SELECT count(*) FROM mv WHERE ji = 3 AND s::INT = 7
+----
+1
+
+query I
+SELECT count(*) FROM mv WHERE ji > 2 AND s::INT = 7
+----
+1
+
+# with no plain predicate left, only the barred predicate of the deepest level goes into the scan
+statement ok
+CREATE TABLE t2 AS SELECT s, id, k FROM t WHERE id > 2;
+
+statement ok
+CREATE SECURE VIEW i2 AS SELECT * FROM t2;
+
+statement ok
+CREATE SECURE VIEW o2 AS SELECT * FROM i2 WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM o2 WHERE s::INT = 7
+----
+1
+
+# the inner view hides nothing and the outer view's predicate is volatile: neither goes into the scan
+statement ok
+CREATE SECURE VIEW rvo AS SELECT * FROM i2 WHERE CASE WHEN id = 4 THEN random() > 2 ELSE true END;
+
+query I
+SELECT count(*) FROM rvo WHERE s::INT > 0
+----
+3
+
+# the outer view's predicate cannot become a scan filter, the caller's could: it stays above with it
+statement ok
+CREATE SECURE VIEW ov2 AS SELECT * FROM sv WHERE k::INT + id > 4;
+
+query I
+SELECT count(*) FROM ov2 WHERE s::INT = 7
+----
+0
+
+# plan shape, guarding what goes into the scan. EXPLAIN hides the inside of a secure view, and the level is not
+# printed, so the order is observed by which predicate reaches the hidden row
+statement ok
+SET explain_output = 'optimized_only'
+
+# a single barred predicate still goes into the scan
+query II
+EXPLAIN SELECT count(*) FROM t2 WHERE __internal_barrier(s::INT = 7)
+----
+logical_opt	<REGEX>:[\s\S]*Seq Scan[\s\S]*Filters:[\s\S]*__internal_barrier[\s\S]*
+
+# two at the same level come from the same place, neither hides rows from the other: both go into the scan
+query II
+EXPLAIN SELECT count(*) FROM t2 WHERE __internal_barrier(k::INT > 0) AND __internal_barrier(s::INT = 7)
+----
+logical_opt	<REGEX>:[\s\S]*Seq Scan[\s\S]*Filters:[\s\S]*__internal_barrier\(\(CAST\(k AS INTEGER\) > 0\)\)[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM t2 WHERE __internal_barrier(k::INT > 0) AND __internal_barrier(s::INT = 7)
+----
+logical_opt	<REGEX>:[\s\S]*Seq Scan[\s\S]*Filters:[\s\S]*__internal_barrier\(\(CAST\(s AS INTEGER\) = 7\)\)[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM t2 WHERE __internal_barrier(k::INT > 0) AND __internal_barrier(s::INT = 7)
+----
+logical_opt	<!REGEX>:[\s\S]*Filter[\s\S]*__internal_barrier[\s\S]*Seq Scan[\s\S]*
+
+# through three views the innermost view's predicate runs before the middle one's, and the caller's last
+statement ok
+CREATE SECURE VIEW oove AS SELECT * FROM ove WHERE CASE WHEN id = 4 THEN error('outer first') ELSE length(s) < 20 END;
+
+statement error
+SELECT count(*) FROM oove WHERE CASE WHEN id = 4 THEN error('caller first') ELSE s::INT > 0 END
+----
+view predicate first
+
+# a view hidden row reached by the middle view's predicate, with the innermost view letting it through
+statement ok
+CREATE SECURE VIEW m AS SELECT * FROM sv WHERE CASE WHEN id = 13 THEN error('middle first') ELSE k::INT > 0 END;
+
+statement ok
+CREATE SECURE VIEW om AS SELECT * FROM m WHERE CASE WHEN id = 13 THEN error('outer first') ELSE true END;
+
+statement error
+SELECT count(*) FROM om WHERE CASE WHEN id = 13 THEN error('caller first') ELSE s::INT > 0 END
+----
+middle first
+
+# a prepared statement
+statement ok
+PREPARE p AS SELECT count(*) FROM ov WHERE s::INT = $1
+
+query I
+EXECUTE p(7)
+----
+1
+
+# five constants: the IN-clause rewriter turns the IN into a mark join below the filter. Through ov the view's
+# predicate is a scan filter, which the join already sits on top of. Through ov2, whose predicate stays in the
+# filter, the join still runs before it; the rewriter is fixed separately
+query I
+SELECT count(*) FROM ov WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+3
+
+# a base that is not a DuckDB table: nothing goes into the scan, the filter keeps the order
+require parquet
+
+statement ok
+COPY t TO '{TEST_DIR}/barrier_nested.parquet';
+
+statement ok
+CREATE SECURE VIEW psv AS SELECT * FROM read_parquet('{TEST_DIR}/barrier_nested.parquet') WHERE id % 10 > 2;
+
+statement ok
+CREATE SECURE VIEW pov AS SELECT * FROM psv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM pov WHERE s::INT = 7
+----
+1
+
+query I
+SELECT count(*) FROM pov WHERE s::INT IN (42, 7, 8, 9)
+----
+2

@@ -93,10 +93,10 @@ static bool ExprIsFunctionOnlyOf(const Expression &expr, const expression_set_t 
 //! is a join condition of the form `l = r` where `l` and `r` are join keys for
 //! the left and right table respectively, then pushdown `P(l)` to the left
 //! table, `P(r)` to the right table, and remove the original filter.
-static bool
-PushDownFiltersOnCoalescedEqualJoinKeys(vector<unique_ptr<Filter>> &filters, vector<JoinCondition> &join_conditions,
-                                        const std::function<void(unique_ptr<Expression> filter)> &pushdown_left,
-                                        const std::function<void(unique_ptr<Expression> filter)> &pushdown_right) {
+static bool PushDownFiltersOnCoalescedEqualJoinKeys(
+    vector<unique_ptr<Filter>> &filters, vector<JoinCondition> &join_conditions,
+    const std::function<void(unique_ptr<Expression> filter, idx_t level)> &pushdown_left,
+    const std::function<void(unique_ptr<Expression> filter, idx_t level)> &pushdown_right) {
 	// Generate set of all possible coalesced join keys expressions to later
 	// discover filters on such expressions which are candidates for pushdown
 	unordered_map<FlattenedCoalesce, reference<const JoinCondition>, FlattenedCoalesceHash>
@@ -161,8 +161,8 @@ PushDownFiltersOnCoalescedEqualJoinKeys(vector<unique_ptr<Filter>> &filters, vec
 
 		auto left_filter = ReplaceIn(filter->Copy(), coalesce_exprs_to_replace, join_cond_ptr->GetLHS());
 		auto right_filter = ReplaceIn(filter->Copy(), coalesce_exprs_to_replace, join_cond_ptr->GetRHS());
-		pushdown_left(std::move(left_filter));
-		pushdown_right(std::move(right_filter));
+		pushdown_left(std::move(left_filter), filters[i]->level);
+		pushdown_right(std::move(right_filter), filters[i]->level);
 		filters.erase_at(i);
 		has_applied_pushdown = true;
 		i--;
@@ -181,11 +181,12 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownOuterJoin(unique_ptr<Logical
 	auto &join = op->Cast<LogicalComparisonJoin>();
 	D_ASSERT(join.join_type == JoinType::OUTER);
 
-	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode);
-	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown left_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
+	FilterPushdown right_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 	auto has_applied_pushdown = PushDownFiltersOnCoalescedEqualJoinKeys(
-	    filters, join.conditions, [&](unique_ptr<Expression> filter) { left_pushdown.AddFilter(std::move(filter)); },
-	    [&](unique_ptr<Expression> filter) { right_pushdown.AddFilter(std::move(filter)); });
+	    filters, join.conditions,
+	    [&](unique_ptr<Expression> filter, idx_t level) { left_pushdown.AddFilter(std::move(filter), level); },
+	    [&](unique_ptr<Expression> filter, idx_t level) { right_pushdown.AddFilter(std::move(filter), level); });
 
 	if (!has_applied_pushdown) {
 		return FinishPushdown(std::move(op));
