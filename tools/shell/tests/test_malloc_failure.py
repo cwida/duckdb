@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from conftest import ShellTest
+
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the malloc shim is preloaded with LD_PRELOAD"
 )
@@ -128,6 +130,9 @@ LARGE_SQL = "SELECT " + ",".join(["1"] * 200000)
 
 def run_with_malloc_budget(shell, shim, sql, budget=None, report=False):
     env = dict(os.environ)
+    # agent-mode variables of the runner must not switch the shell under test into agent mode
+    for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
+        env.pop(key, None)
     env["LD_PRELOAD"] = shim
     env.pop("FAILMALLOC_AFTER", None)
     env.pop("FAILMALLOC_REPORT", None)
