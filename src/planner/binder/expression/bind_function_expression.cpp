@@ -383,8 +383,7 @@ BindResult ExpressionBinder::BindAggregateInEnclosingScope(FunctionExpression &a
 }
 
 BindResult ExpressionBinder::BindFunction(FunctionExpression &function, ScalarFunctionCatalogEntry &func, idx_t depth) {
-	// a legacy call with names binds positionally and falls back to the names if that fails. A bound subquery cannot be
-	// copied, so keep the parsed arguments to bind them again for the fallback
+	// a bound subquery cannot be copied, so keep the parsed arguments to bind them again for the named fallback
 	vector<FunctionArgument> named_fallback;
 	if (function.IsLegacyFunctionCall()) {
 		for (auto &arg : function.GetArguments()) {
