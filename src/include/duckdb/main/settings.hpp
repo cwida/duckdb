@@ -41,6 +41,12 @@ struct Settings {
 		Set(source, OP::SettingIndex, scope, std::move(target_value));
 	}
 
+	//! The default value of a setting as a Value of its input type
+	template <class OP>
+	static Value GetDefaultValue() {
+		return DefaultToValue<typename OP::RETURN_TYPE>(OP::DefaultValue);
+	}
+
 private:
 	//! Converts the value of a setting to its return type
 	template <class T>
@@ -111,6 +117,59 @@ private:
 	}
 	//! Splits a list literal (e.g. "['a', 'b']") into its entries
 	static vector<string> SplitListDefault(const char *default_value);
+
+	//! String and enum settings are VARCHAR: their default is used as written
+	template <class T>
+	static typename std::enable_if<std::is_enum<T>::value || std::is_same<T, string>::value, Value>::type
+	DefaultToValue(const char *default_value) {
+		return Value(default_value);
+	}
+	template <class T>
+	static typename std::enable_if<!std::is_enum<T>::value && !std::is_same<T, string>::value, Value>::type
+	DefaultToValue(const char *default_value) {
+		return ToSettingValue(FromDefault<T>(default_value));
+	}
+
+	static Value ToSettingValue(const string &value) {
+		return Value(value);
+	}
+	static Value ToSettingValue(bool value) {
+		return Value::BOOLEAN(value);
+	}
+	static Value ToSettingValue(uint64_t value) {
+		return Value::UBIGINT(value);
+	}
+	static Value ToSettingValue(int64_t value) {
+		return Value::BIGINT(value);
+	}
+	static Value ToSettingValue(double value) {
+		return Value::DOUBLE(value);
+	}
+	template <class T>
+	static Value ToSettingValue(const vector<T> &values) {
+		vector<Value> children;
+		for (auto &value : values) {
+			children.push_back(ToSettingValue(value));
+		}
+		return Value::LIST(SettingLogicalType(static_cast<const T *>(nullptr)), std::move(children));
+	}
+
+	//! The logical type of a setting value, selected by the (unused) pointer type
+	static LogicalType SettingLogicalType(const string *) {
+		return LogicalType::VARCHAR;
+	}
+	static LogicalType SettingLogicalType(const bool *) {
+		return LogicalType::BOOLEAN;
+	}
+	static LogicalType SettingLogicalType(const uint64_t *) {
+		return LogicalType::UBIGINT;
+	}
+	static LogicalType SettingLogicalType(const int64_t *) {
+		return LogicalType::BIGINT;
+	}
+	static LogicalType SettingLogicalType(const double *) {
+		return LogicalType::DOUBLE;
+	}
 
 	static bool TryGetSettingInternal(const DatabaseInstance &db, idx_t setting_index, Value &result);
 	static bool TryGetSettingInternal(const DBConfig &config, idx_t setting_index, Value &result);
@@ -2611,7 +2670,7 @@ struct TrackedMetricsSetting {
 	static constexpr bool IsDebug = false;
 	static constexpr bool IsDeprecated = false;
 	static constexpr const char *DefaultValue = "['*']";
-	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_ONLY;
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };

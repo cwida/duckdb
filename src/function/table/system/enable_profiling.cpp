@@ -59,6 +59,9 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 		if (metrics_value.type().id() == LogicalTypeId::VARCHAR) {
 			metrics_value = Value::LIST(LogicalType::VARCHAR, {metrics_value});
 		}
+		// validate the metrics like SET tracked_metrics does
+		SettingCallbackInfo info(context, SetScope::SESSION);
+		TrackedMetricsSetting::OnSet(info, metrics_value);
 		Settings::Set<TrackedMetricsSetting>(context, SetScope::SESSION, std::move(metrics_value));
 	}
 }
