@@ -32,6 +32,9 @@ SELECT * FROM walk_result;
 ----
 102500	5000195000
 
+# The plan pins below depend on in-memory table statistics.
+require noforcestorage
+
 statement ok
 PRAGMA explain_output='physical_only';
 
