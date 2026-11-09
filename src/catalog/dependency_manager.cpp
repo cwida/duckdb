@@ -810,8 +810,13 @@ void DependencyManager::AlterObject(CatalogTransaction transaction, CatalogEntry
 	});
 	if (!blocking_dependents.empty()) {
 		auto subject_info = old_info;
+		// dependencies are tracked per entry and CASCADE is rejected for a member removal, so the drop
+		// error's CASCADE hint alone would send the user in a circle
 		throw DependencyException(
-		    DropErrorToString(old_obj.name, CollectDependents(transaction, blocking_dependents, subject_info)));
+		    "%s\nDependencies block dropping a single overload of %s, and CASCADE cannot scope to one overload: drop "
+		    "the dependent entries first, or drop the whole function",
+		    DropErrorToString(old_obj.name, CollectDependents(transaction, blocking_dependents, subject_info)),
+		    old_obj.name);
 	}
 
 	// Keep old dependencies

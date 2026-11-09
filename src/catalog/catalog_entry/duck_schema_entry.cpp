@@ -25,7 +25,6 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
-#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_collation_info.hpp"
@@ -39,8 +38,6 @@
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
-#include "duckdb/parser/parsed_data/extra_drop_info.hpp"
-#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
@@ -331,69 +328,11 @@ void DuckSchemaEntry::Alter(CatalogTransaction transaction, AlterInfo &info) {
 		if (!set.AlterOwnership(transaction, info.Cast<ChangeOwnershipInfo>())) {
 			throw CatalogException("Couldn't change ownership!");
 		}
-	} else if (info.type == AlterType::ALTER_MACRO) {
-		RemoveMacroOverload(transaction, info.Cast<RemoveMacroOverloadInfo>());
 	} else {
 		auto &name = info.GetQualifiedName().Name();
 		if (!set.AlterEntry(transaction, name, info)) {
 			throw CatalogException::MissingEntry(type, name, string());
 		}
-	}
-}
-
-void DuckSchemaEntry::RemoveMacroOverload(CatalogTransaction transaction, RemoveMacroOverloadInfo &info) {
-	auto type = info.GetCatalogType();
-	auto &name = info.GetQualifiedName().Name();
-	auto &set = GetCatalogSet(type);
-	auto entry = set.GetEntry(transaction, name);
-	if (!entry || entry->type != type) {
-		if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
-			return;
-		}
-		throw CatalogException::MissingEntry(type, name, string());
-	}
-	auto &macro = entry->Cast<MacroCatalogEntry>();
-	if (!macro.FindMember(info.signature).IsValid()) {
-		if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
-			// IF EXISTS at member granularity: nothing to drop, siblings are unaffected
-			return;
-		}
-		string signature_text;
-		for (auto &signature_type : info.signature) {
-			if (!signature_text.empty()) {
-				signature_text += ", ";
-			}
-			signature_text += signature_type.ToString();
-		}
-		throw CatalogException("Function %s has no overload with signature (%s)", name, signature_text);
-	}
-	// decided on the version this transaction mutates: a concurrent change to the entry conflicts with either path
-	if (macro.macros.size() == 1) {
-		// the last overload: removing it drops the entry, which honors CASCADE like any entry drop
-		if (!DropEntryInternal(transaction, *entry, name, info.cascade, info.allow_internal)) {
-			throw InternalException("Could not drop element because of an internal error");
-		}
-		return;
-	}
-	if (info.cascade) {
-		// dependencies are tracked per entry, not per member, so a cascade that leaves siblings
-		// behind has no well-defined scope: require an explicit choice
-		throw CatalogException("Cannot drop an overload of %s with CASCADE while other overloads remain: drop the "
-		                       "whole entry or its dependents first",
-		                       name);
-	}
-	try {
-		if (!set.AlterEntry(transaction, name, info)) {
-			throw CatalogException::MissingEntry(type, name, string());
-		}
-	} catch (const DependencyException &ex) {
-		// dependencies are tracked per entry: any dependent blocks the member drop, and CASCADE is
-		// rejected for member drops, so the generic hint would send the user in a circle
-		ErrorData error(ex);
-		throw DependencyException("%s\nDependencies block dropping a single overload of %s, and CASCADE cannot "
-		                          "scope to one overload: drop the dependent entries first, or drop the whole "
-		                          "function",
-		                          error.RawMessage(), name);
 	}
 }
 

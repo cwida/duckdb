@@ -90,6 +90,10 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 	auto &remove_info = macro_info.Cast<RemoveMacroOverloadInfo>();
 	auto member_idx = FindMember(remove_info.signature);
 	if (!member_idx.IsValid()) {
+		if (remove_info.if_not_found == OnEntryNotFound::RETURN_NULL) {
+			// IF EXISTS at member granularity: nothing to drop, siblings are unaffected
+			return nullptr;
+		}
 		string signature_text;
 		for (auto &sig_type : remove_info.signature) {
 			if (!signature_text.empty()) {
@@ -100,7 +104,15 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 		throw CatalogException("Function %s has no overload with signature (%s)", name, signature_text);
 	}
 	if (macros.size() == 1) {
-		throw InternalException("Removing the last overload of %s must drop the entry instead", name);
+		// the binder plans a DROP for the last overload, an alter cannot remove the entry itself
+		throw CatalogException("Cannot remove the last overload of %s: drop the macro instead", name);
+	}
+	if (remove_info.cascade) {
+		// dependencies are tracked per entry, not per member, so a cascade that leaves siblings
+		// behind has no well-defined scope: require an explicit choice
+		throw CatalogException("Cannot drop an overload of %s with CASCADE while other overloads remain: drop the "
+		                       "whole entry or its dependents first",
+		                       name);
 	}
 	auto new_info_base = GetInfo();
 	auto &new_info = new_info_base->Cast<CreateMacroInfo>();
