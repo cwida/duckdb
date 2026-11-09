@@ -5,13 +5,13 @@
 statement error
 select xvariable a = 1;
 ----
-Parser Error: syntax error at or near "="
+Parser Error: syntax error at or near "a"
 
 # Here we should get the error from the parser override
 statement error
 select xvariable a = 1;
 ----
-Parser Error: syntax error at or near "="
+Parser Error: syntax error at or near "a"
 
 # Just check that it works properly
 query I

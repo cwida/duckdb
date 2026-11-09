@@ -162,3 +162,36 @@ query II
 SELECT stats_min, stats_max FROM parquet_metadata('{TEST_DIR}/enum_stats_single_2.parquet')
 ----
 c	c
+
+# distinct_count and stats reflect the values written in each row group, not the enum size
+statement ok
+CREATE TYPE five AS ENUM ('v1', 'v2', 'v3', 'v4', 'v5');
+
+statement ok
+COPY (SELECT (CASE WHEN i % 2 = 0 THEN 'v1' ELSE 'v2' END)::five AS e FROM range(1000) t(i))
+TO '{TEST_DIR}/enum_distinct_count.parquet' (FORMAT PARQUET);
+
+query I
+SELECT stats_distinct_count FROM parquet_metadata('{TEST_DIR}/enum_distinct_count.parquet')
+----
+2
+
+statement ok
+COPY (SELECT (CASE WHEN i < 50000 THEN 'v1' WHEN i < 90000 THEN 'v2' WHEN i < 110000 THEN NULL WHEN i < 150000 THEN 'v3' ELSE 'v4' END)::five AS e FROM range(200000) t(i))
+TO '{TEST_DIR}/enum_distinct_count_rg.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 100000);
+
+query IIII
+SELECT row_group_id, stats_distinct_count, stats_min, stats_max
+FROM parquet_metadata('{TEST_DIR}/enum_distinct_count_rg.parquet') ORDER BY row_group_id
+----
+0	2	v1	v2
+1	2	v3	v4
+
+query II
+SELECT e, count(*) FROM '{TEST_DIR}/enum_distinct_count_rg.parquet' GROUP BY e ORDER BY e
+----
+v1	50000
+v2	40000
+v3	40000
+v4	50000
+NULL	20000

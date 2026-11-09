@@ -1,6 +1,7 @@
 #include "duckdb/storage/statistics/string_stats.hpp"
 #include "duckdb/common/types/value.hpp"
 
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/typedefs.hpp"
@@ -661,8 +662,12 @@ void StringStats::Merge(BaseStatistics &stats, const StringStatsData &other_data
 		string_data.has_total_string_length = false;
 	} else {
 		string_data.has_total_string_length = string_data.has_total_string_length && other_data.has_total_string_length;
-		if (string_data.has_total_string_length) {
-			string_data.total_string_length += other_data.total_string_length;
+		if (string_data.has_total_string_length &&
+		    !TryAddOperator::Operation<uint64_t, uint64_t, uint64_t>(
+		        string_data.total_string_length, other_data.total_string_length, string_data.total_string_length)) {
+			// the sum of the totals overflows - the total is no longer known
+			string_data.has_total_string_length = false;
+			string_data.total_string_length = 0;
 		}
 	}
 }

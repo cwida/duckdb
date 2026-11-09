@@ -277,10 +277,16 @@ functions:
         type: expression
         description: The function node.
       name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the function name.
+        description: Receives a borrowed pointer to the function name.
+      name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1

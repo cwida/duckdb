@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
@@ -22,9 +23,11 @@ namespace duckdb {
 // `discover := true` also lists what exists externally. The call is then rewritten (bind_replace) into
 // plain SQL: the registry UNION ALL one `SELECT ... FROM <list callback>()` per type with a list callback,
 // each tagged with its type name and anti-joined against the registry, so a resource registered here is
-// shown once, as managed. A `type` restriction leaves out the other types' branches up front, and a
-// `WHERE type = ...` on the result is pushed into the branches by the optimizer, where it folds to a
-// constant and drops the branch - so only the callbacks of the types asked for run.
+// shown once, as managed. A list callback returns one row per resource: handle (MAP), name, reference and
+// state. The name is the provider's own name for the resource (unique within the type), so a discovered
+// row can be referred to by it; a registered row shows its local name instead. A `type` restriction leaves out the
+// other types' branches up front, and a `WHERE type = ...` on the result is pushed into the branches by the optimizer,
+// where it folds to a constant and drops the branch - so only the callbacks of the types asked for run.
 //===--------------------------------------------------------------------===//
 
 struct ExternalResourcesParameters {
@@ -78,6 +81,10 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "
 	                   "attached_db_type, handle FROM " +
 	                   RegistryScan(params.type));
+	if (!params.type.empty()) {
+		// An unknown type autoloads the extension known to provide it, like an unknown function does
+		ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), params.type);
+	}
 	bool matched = false;
 	for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
 		if (!MatchesType(params.type, type.name)) {
@@ -94,21 +101,28 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 			    "external resource discovery for type \"%s\": the list callback \"%s\" does not exist", type.name,
 			    type.list_function);
 		}
-		// The callback returns handle (MAP), reference and state; the rows registered here are left out by handle.
-		// The callback's rows are aliased with its name, so a binder error about a missing column names it.
+		// The callback returns handle (MAP), name, reference and state; the rows registered here are left out by
+		// handle. The callback's rows are aliased with its name, so a binder error about a missing column names it.
 		auto type_literal = Value(type.name).ToSQLString();
 		auto alias = KeywordHelper::WriteQuotedAndEscaped(type.list_function, '"');
 		branches.push_back(StringUtil::Format(
-		    "SELECT NULL::VARCHAR AS name, %s AS type, false AS managed, %s.state::VARCHAR AS state, "
+		    "SELECT %s.name::VARCHAR AS name, %s AS type, false AS managed, %s.state::VARCHAR AS state, "
 		    "%s.reference::VARCHAR AS reference, NULL::VARCHAR AS uri, NULL::VARCHAR AS attached_db_type, "
 		    "%s.handle::MAP(VARCHAR, VARCHAR) AS handle FROM %s(MAP {}::MAP(VARCHAR, VARCHAR)) AS %s "
 		    "ANTI JOIN %s AS registry ON %s.handle = registry.handle",
-		    type_literal, alias, alias, alias, callback, alias, RegistryScan(type.name), alias));
+		    alias, type_literal, alias, alias, alias, callback, alias, RegistryScan(type.name), alias));
 	}
 	// A type nothing provides but the registry knows (its extension is not loaded, or it was registered as an
 	// opaque type) has nothing to discover, like a type without a list callback. A type neither knows is most
 	// likely a typo, or a missing extension.
 	if (!matched && !params.type.empty() && !RegistryHasType(context, params.type)) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(params.type);
+		if (!extension.empty()) {
+			throw InvalidInputException(
+			    "duckdb_external_resources: unknown resource type \"%s\": it is provided by the "
+			    "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
+			    params.type, extension, extension);
+		}
 		throw InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", params.type);
 	}
 	Parser parser(context);
@@ -192,6 +206,8 @@ void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 	fn.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 		options.Add("discover", LogicalType::BOOLEAN).Add("type", LogicalType::VARCHAR);
 	});
+	// reads the live external resource registry, and discovery reaches out to external systems
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -279,6 +295,8 @@ void RegisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("attached_db_type", LogicalType::VARCHAR)
 		    .Add("deleter_function", LogicalType::VARCHAR);
 	});
+	// writes the external resource registry per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -330,9 +348,12 @@ static void DeregisterExternalResourceFunction(ClientContext &context, TableFunc
 }
 
 void DeregisterExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction(
+	TableFunction deregister_fun(
 	    "deregister_external_resource", FunctionSignature().AddPositionalOnly("name", LogicalType::VARCHAR),
-	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit));
+	    DeregisterExternalResourceFunction, DeregisterExternalResourceBind, DeregisterExternalResourceInit);
+	// writes the external resource registry per execution
+	deregister_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(deregister_fun));
 }
 
 } // namespace duckdb

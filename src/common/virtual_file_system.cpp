@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 
 #include "duckdb/common/compressed_file_system.hpp"
@@ -12,6 +13,8 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
+
+#include <algorithm>
 
 namespace duckdb {
 
@@ -244,7 +247,11 @@ unique_ptr<FileHandle> VirtualFileSystem::OpenFileExtended(const OpenFileInfo &f
 
 	try {
 		// Evaluate and apply compression option then.
-		const auto context = !flags.MultiClientAccess() ? FileOpener::TryGetClientContext(opener) : QueryContext();
+		QueryContext context;
+		auto opener_context = FileOpener::TryGetContext(opener);
+		if (opener_context && !flags.MultiClientAccess()) {
+			context = QueryContext(*opener_context);
+		}
 		if (file_handle->GetType() == FileType::FILE_TYPE_FIFO) {
 			file_handle = PipeFileSystem::OpenPipe(context, std::move(file_handle));
 		} else {
@@ -411,6 +418,17 @@ void VirtualFileSystem::SetDisabledFileSystems(const vector<string> &names) {
 	lock_guard<mutex> guard(registry_lock);
 	auto new_registry = file_system_registry->SetDisabledFileSystems(names);
 	file_system_registry.atomic_store(new_registry);
+}
+
+vector<string> VirtualFileSystem::GetDisabledFileSystems() {
+	auto registry = file_system_registry.atomic_load();
+	auto &disabled_file_systems = registry->disabled_file_systems;
+	vector<string> names;
+	for (auto &name : disabled_file_systems) {
+		names.push_back(name);
+	}
+	std::sort(names.begin(), names.end());
+	return names;
 }
 
 unique_ptr<FileSystem> VirtualFileSystem::ExtractSubSystem(const string &name) {

@@ -1,0 +1,171 @@
+# name: test/sql/update/test_update_string_heap_compaction.test
+# description: Test that overwritten update strings are freed, and that compacting the string heap keeps all versions
+# group: [update]
+
+# the memory bound below assumes the standard vector size
+require vector_size 2048
+
+load {TEST_DIR}/update_string_heap_compaction.db
+
+statement ok
+SET wal_autocheckpoint='1TB'
+
+statement ok
+SET threads=1
+
+statement ok
+CREATE TABLE t AS SELECT i, repeat('base', 25) || i AS s FROM range(20000) tbl(i);
+
+statement ok
+CREATE TABLE mem_before AS SELECT memory_usage_bytes AS bytes FROM duckdb_memory() WHERE tag = 'ALLOCATOR'
+
+# repeatedly overwrite all strings - every round adds ~2MB of strings to the update heaps
+loop round 0 30
+
+statement ok
+UPDATE t SET s = repeat('round{round}', 10) || i
+
+endloop
+
+query III
+SELECT COUNT(*), COUNT(DISTINCT s), MIN(s)
+FROM t WHERE s = repeat('round29', 10) || i
+----
+20000	20000	round29round29round29round29round29round29round29round29round29round290
+
+# only the latest strings are kept
+query I
+SELECT CASE WHEN m.memory_usage_bytes - b.bytes < 16 * 1024 * 1024
+            THEN 'ok'
+            ELSE error(concat('expected < 16MB of update strings, got ', m.memory_usage_bytes - b.bytes))
+       END
+FROM duckdb_memory() m, mem_before b
+WHERE m.tag = 'ALLOCATOR'
+----
+ok
+
+# repeatedly overwrite strings within a single transaction
+statement ok
+BEGIN
+
+loop round 0 30
+
+statement ok
+UPDATE t SET s = repeat('txn{round}', 15) || i WHERE i % 2 = 0
+
+endloop
+
+query II
+SELECT COUNT(*), SUM((s = repeat('txn29', 15) || i)::INT) FROM t WHERE i % 2 = 0
+----
+10000	10000
+
+statement ok
+COMMIT
+
+query I
+SELECT CASE WHEN m.memory_usage_bytes - b.bytes < 16 * 1024 * 1024
+            THEN 'ok'
+            ELSE error(concat('expected < 16MB of update strings, got ', m.memory_usage_bytes - b.bytes))
+       END
+FROM duckdb_memory() m, mem_before b
+WHERE m.tag = 'ALLOCATOR'
+----
+ok
+
+# an old snapshot keeps seeing its strings while the heap is compacted by newer updates
+statement ok con1
+BEGIN
+
+query I con1
+SELECT COUNT(*) FROM t WHERE s = (CASE WHEN i % 2 = 0 THEN repeat('txn29', 15) ELSE repeat('round29', 10) END) || i
+----
+20000
+
+loop round 0 20
+
+statement ok con2
+UPDATE t SET s = repeat('snap{round}', 10) || i WHERE i % 3 = 0
+
+endloop
+
+query I con1
+SELECT COUNT(*) FROM t WHERE s = (CASE WHEN i % 2 = 0 THEN repeat('txn29', 15) ELSE repeat('round29', 10) END) || i
+----
+20000
+
+query I con1
+SELECT s FROM t WHERE i = 9
+----
+round29round29round29round29round29round29round29round29round29round299
+
+query I con2
+SELECT COUNT(*) FROM t WHERE i % 3 = 0 AND s = repeat('snap19', 10) || i
+----
+6667
+
+statement ok con1
+COMMIT
+
+# rolling back after another transaction compacted the heap restores the saved strings
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE t SET s = repeat('rollback', 10) || i WHERE i % 3 = 1
+
+loop round 0 20
+
+statement ok con2
+UPDATE t SET s = repeat('other{round}', 10) || i WHERE i % 3 = 2
+
+endloop
+
+query I con1
+SELECT COUNT(*) FROM t WHERE i % 3 = 1 AND s = repeat('rollback', 10) || i
+----
+6667
+
+statement ok con1
+ROLLBACK
+
+query I
+SELECT COUNT(*) FROM t WHERE i % 3 = 1 AND s = (CASE WHEN i % 2 = 0 THEN repeat('txn29', 15) ELSE repeat('round29', 10) END) || i
+----
+6667
+
+query I
+SELECT COUNT(*) FROM t WHERE i % 3 = 2 AND s = repeat('other19', 10) || i
+----
+6666
+
+# mix in NULLs and inlined strings
+statement ok
+UPDATE t SET s = CASE WHEN i % 5 = 0 THEN NULL WHEN i % 5 = 1 THEN 'short' || (i % 10) ELSE s END
+
+query III
+SELECT COUNT(s), COUNT(*) FILTER (s LIKE 'short%'), COUNT(DISTINCT s) FILTER (s NOT LIKE 'short%') FROM t
+----
+16000	4000	12000
+
+statement ok
+CREATE TABLE expected AS SELECT * FROM t
+
+# the strings survive WAL replay
+restart
+
+statement ok
+SET wal_autocheckpoint='1TB'
+
+query I
+SELECT COUNT(*) FROM t JOIN expected USING (i) WHERE t.s IS NOT DISTINCT FROM expected.s
+----
+20000
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM t JOIN expected USING (i) WHERE t.s IS NOT DISTINCT FROM expected.s
+----
+20000

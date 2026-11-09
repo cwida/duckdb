@@ -1,0 +1,70 @@
+# name: test/sql/storage/compression/select_bitpacking.test
+# description: Select on bitpacking segments in every bitpacking mode
+# group: [compression]
+
+require vector_size 2048
+
+require block_size 262144
+
+statement ok
+ATTACH '{TEST_DIR}/select_bitpacking.db' AS db;
+
+statement ok
+SET threads=1;
+
+# CONSTANT (4096 rows), CONSTANT_DELTA (4096), FOR (4096), DELTA_FOR (4096), then a ragged tail
+statement ok
+CREATE MACRO expected(i) AS CASE
+	WHEN i < 4096 THEN 42
+	WHEN i < 8192 THEN i * 3 + 7
+	WHEN i < 12288 THEN (hash(i) % 1000)::BIGINT
+	WHEN i < 16384 THEN i + (hash(i) % 4)::BIGINT
+	ELSE (hash(i) % 7)::BIGINT - 3 END;
+
+foreach type SMALLINT INTEGER BIGINT HUGEINT
+
+statement ok
+CREATE TABLE db.t_{type}(id INTEGER, v {type} USING COMPRESSION bitpacking);
+
+statement ok
+INSERT INTO db.t_{type} SELECT i, expected(i)::{type} FROM range(20000) t(i);
+
+endloop
+
+statement ok
+CHECKPOINT db;
+
+foreach type SMALLINT INTEGER BIGINT HUGEINT
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('db.t_{type}') WHERE column_name='v' AND compression='BitPacking';
+----
+true
+
+# dense, sparse, single-row and boundary selections
+foreach modulo 2 3 31 32 33 97 2048 2049
+
+query I
+SELECT count(*) > 0 AND bool_and(v = expected(id)::{type}) FROM db.t_{type} WHERE id % {modulo} = 1 AND id > 2;
+----
+true
+
+endloop
+
+query I
+SELECT count(*) > 0 AND bool_and(v = expected(id)::{type}) FROM db.t_{type} WHERE id % 2048 IN (0, 1, 31, 32, 33, 1023, 1024, 2047);
+----
+true
+
+endloop
+
+# checksum against the unfiltered scan
+query I
+SELECT (SELECT sum(v) FROM db.t_BIGINT WHERE id % 5 = 2) = (SELECT sum(expected(id)) FROM range(20000) t(id) WHERE id % 5 = 2);
+----
+true
+
+query I
+SELECT (SELECT sum(v) FROM db.t_BIGINT WHERE id IN (5, 4100, 8200, 12290, 16390, 19999)) = (SELECT sum(expected(id)) FROM range(20000) t(id) WHERE id IN (5, 4100, 8200, 12290, 16390, 19999));
+----
+true

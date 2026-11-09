@@ -1,4 +1,11 @@
-DescribeStatement <- ShowTables / ShowDeprecatedSelect / DescribeSelect / ShowAllTables / ShowByName / DescribeByName
+DescribeStatement <- ShowExternalResources / ShowTables / ShowDeprecatedSelect / DescribeSelect / ShowAllTables / ShowByName / DescribeByName
+
+# "SHOW [ALL] EXTERNAL RESOURCES" is a query over duckdb_external_resources, so it works as a subquery too. It comes
+# first: "SHOW ALL" alone is ShowAllTables, and "SHOW <name>" is ShowByName, and neither can be retried once matched.
+ShowExternalResources <- ShowRule 'ALL'? 'EXTERNAL' 'RESOURCES' ShowExternalResourcesType?
+# "WITH TYPE 'aws:s3tables:table-bucket'" restricts the listing (and the discovery) to one type; a bare identifier
+# is passed through as the type name as well.
+ShowExternalResourcesType <- 'WITH' 'TYPE' ColIdOrString
 
 # "DESCRIBE (query)" and "SUMMARIZE (query)" describe the query's columns. "SHOW (query)" does too but is deprecated,
 # so ShowDeprecatedSelect is parsed yet suppressed from autocomplete (matcher_factory.cpp) - SHOW won't offer to complete a query.

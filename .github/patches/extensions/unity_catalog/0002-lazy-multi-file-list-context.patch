@@ -1,0 +1,37 @@
+--- a/src/include/uc_multi_file_list.hpp
++++ b/src/include/uc_multi_file_list.hpp
+@@ -35,6 +35,7 @@
+ 	void AddFileScanTask(const UCScanPlanFileScanTask &task, const vector<UCScanDeleteFile> &all_delete_files) const;
+ 
+ private:
++	ClientContext &client_context;
+ 	mutable vector<string> remaining_tokens;
+ 	//! Parallel to expanded_files (LazyMultiFileList); file_deletes[i] is expanded_files[i]'s deletes.
+ 	mutable vector<vector<UCScanDeleteFile>> file_deletes;
+--- a/src/uc_multi_file_list.cpp
++++ b/src/uc_multi_file_list.cpp
+@@ -53,9 +53,9 @@
+ UCMultiFileList::UCMultiFileList(ClientContext &context, const UCScanPlanResult &plan, UCCredentials credentials_p,
+                                  string catalog_name_p, string schema_name_p, string table_name_p,
+                                  string scan_plan_endpoint_p)
+-    : LazyMultiFileList(&context), credentials(std::move(credentials_p)), catalog_name(std::move(catalog_name_p)),
+-      schema_name(std::move(schema_name_p)), table_name(std::move(table_name_p)),
+-      scan_plan_endpoint(std::move(scan_plan_endpoint_p)) {
++    : LazyMultiFileList(&context.GetContext()), client_context(context), credentials(std::move(credentials_p)),
++      catalog_name(std::move(catalog_name_p)), schema_name(std::move(schema_name_p)),
++      table_name(std::move(table_name_p)), scan_plan_endpoint(std::move(scan_plan_endpoint_p)) {
+ 	for (auto &task : plan.file_scan_tasks) {
+ 		AddFileScanTask(task, plan.delete_files);
+ 	}
+@@ -74,9 +74,8 @@
+ 		string token = std::move(remaining_tokens.front());
+ 		remaining_tokens.erase(remaining_tokens.begin());
+ 
+-		auto &ctx = *context.get_mutable();
+-		auto result =
+-		    UCAPI::FetchScanTasks(ctx, catalog_name, schema_name, table_name, token, credentials, scan_plan_endpoint);
++		auto result = UCAPI::FetchScanTasks(client_context, catalog_name, schema_name, table_name, token, credentials,
++		                                    scan_plan_endpoint);
+ 		// fetchScanTasks may itself hand back more plan-tasks.
+ 		for (auto &new_token : result.plan_tasks) {
+ 			remaining_tokens.push_back(std::move(new_token));

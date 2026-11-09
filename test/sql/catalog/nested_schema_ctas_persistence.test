@@ -1,0 +1,44 @@
+# name: test/sql/catalog/nested_schema_ctas_persistence.test
+# description: Nested-schema CTAS rows survive detach and reattach
+# group: [catalog]
+
+# nested schemas need the v2.0.0 storage format, pin it so older storage-version
+# test configurations do not reject the CREATE SCHEMA below
+statement ok
+ATTACH '{TEST_DIR}/nested_ctas.db' AS pdb (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE SCHEMA pdb.frontier;
+
+statement ok
+CREATE TABLE pdb.frontier.t AS SELECT 99 AS n;
+
+statement ok
+CREATE SCHEMA pdb.p;
+
+statement ok
+CREATE SCHEMA pdb.p.frontier;
+
+statement ok
+CREATE TABLE pdb.p.frontier.t AS SELECT 42 AS n;
+
+query I
+SELECT n FROM pdb.p.frontier.t;
+----
+42
+
+statement ok
+DETACH pdb;
+
+statement ok
+ATTACH '{TEST_DIR}/nested_ctas.db' AS pdb;
+
+query I
+SELECT n FROM pdb.p.frontier.t;
+----
+42
+
+query I
+SELECT n FROM pdb.frontier.t;
+----
+99

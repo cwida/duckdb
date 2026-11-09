@@ -131,12 +131,26 @@ void StructLoopHash(const Vector &input, Vector &hashes, const SelectionVector *
 	}
 }
 
-template <bool HAS_RSEL, bool FIRST_HASH>
-void ListLoopHash(const Vector &input, Vector &hashes, const SelectionVector *rsel, idx_t count) {
-	// FIXME: if we want to be more efficient we shouldn't flatten, but the logic here currently requires it
+template <bool HAS_RSEL>
+hash_t *FlattenHashesForCombine(Vector &hashes, const SelectionVector *rsel, idx_t count) {
+	const bool is_constant = hashes.GetVectorType() == VectorType::CONSTANT_VECTOR;
+	const hash_t constant_hash = is_constant ? *ConstantVector::GetData<hash_t>(hashes) : 0;
 	hashes.Flatten();
 	FlatVector::SetSize(hashes, count_t(count));
 	auto hdata = FlatVector::GetDataMutable<hash_t>(hashes);
+	if (is_constant) {
+		// Flatten fills only the first Size() slots, but a selection reads and writes the hashes at its own positions.
+		for (idx_t i = 0; i < count; i++) {
+			hdata[HAS_RSEL ? rsel->get_index(i) : i] = constant_hash;
+		}
+	}
+	return hdata;
+}
+
+template <bool HAS_RSEL, bool FIRST_HASH>
+void ListLoopHash(const Vector &input, Vector &hashes, const SelectionVector *rsel, idx_t count) {
+	// FIXME: if we want to be more efficient we shouldn't flatten, but the logic here currently requires it
+	auto hdata = FlattenHashesForCombine<HAS_RSEL>(hashes, rsel, count);
 
 	UnifiedVectorFormat idata;
 	input.ToUnifiedFormat(idata);
@@ -225,9 +239,7 @@ void ListLoopHash(const Vector &input, Vector &hashes, const SelectionVector *rs
 
 template <bool HAS_RSEL, bool FIRST_HASH>
 void ArrayLoopHash(const Vector &input, Vector &hashes, const SelectionVector *rsel, idx_t count) {
-	hashes.Flatten();
-	FlatVector::SetSize(hashes, count_t(count));
-	auto hdata = FlatVector::GetDataMutable<hash_t>(hashes);
+	auto hdata = FlattenHashesForCombine<HAS_RSEL>(hashes, rsel, count);
 
 	UnifiedVectorFormat idata;
 	input.ToUnifiedFormat(idata);

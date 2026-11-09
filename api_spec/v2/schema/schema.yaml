@@ -55,10 +55,16 @@ functions:
         type: idx
         description: "Zero-based field index."
       out_name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: "Receives a borrowed view of the field name. Valid until the schema is destroyed."
+        description: "Receives a borrowed pointer to the field name. Valid until the schema is destroyed."
+      out_name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*out_name` in bytes. `*out_name` is not guaranteed to be null-terminated.
       out_type:
         type: logical_type
         indirection: 1

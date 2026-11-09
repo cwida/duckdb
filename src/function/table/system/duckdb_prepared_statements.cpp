@@ -109,8 +109,11 @@ void DuckDBPreparedStatementsFunction(ClientContext &context, TableFunctionInput
 }
 
 void DuckDBPreparedStatementsFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_prepared_statements", {}, DuckDBPreparedStatementsFunction,
-	                              DuckDBPreparedStatementsBind, DuckDBPreparedStatementsInit));
+	TableFunction prepared_fun("duckdb_prepared_statements", {}, DuckDBPreparedStatementsFunction,
+	                           DuckDBPreparedStatementsBind, DuckDBPreparedStatementsInit);
+	// reads the live prepared statement registry
+	prepared_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(prepared_fun));
 }
 
 } // namespace duckdb

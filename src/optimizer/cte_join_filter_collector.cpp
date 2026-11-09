@@ -8,7 +8,6 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 
@@ -141,11 +140,6 @@ static optional_ptr<LogicalCTERef> FindCTEJoinSource(LogicalOperator &op,
 		break;
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		if (!MapCTEJoinAggregate(op.Cast<LogicalAggregate>(), keys)) {
-			return nullptr;
-		}
-		break;
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		if (op.Cast<LogicalDistinct>().distinct_type != DistinctType::DISTINCT) {
 			return nullptr;
 		}
 		break;
@@ -286,11 +280,6 @@ void CTEJoinFilterCollector::PushFilter(LogicalOperator &op, const CTEJoinSource
 		break;
 	case LogicalOperatorType::LOGICAL_FILTER:
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
-		break;
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		if (op.Cast<LogicalDistinct>().distinct_type != DistinctType::DISTINCT) {
-			return;
-		}
 		break;
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 		if (!MapCTEJoinAggregate(op.Cast<LogicalAggregate>(), target_keys)) {

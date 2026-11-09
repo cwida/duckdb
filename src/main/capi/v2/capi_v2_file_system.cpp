@@ -142,14 +142,14 @@ DUCKDB_V2_ERROR duckdb_v2_file_open_options_set_flag(duckdb_v2_file_open_options
 	return WithErrorHandler(err, [&]() { ApplyFileFlag(*Convert(options), flag); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_file_open_options_set_value(duckdb_v2_file_open_options_handle options,
-                                                      const duckdb_v2_str *name, duckdb_v2_value_handle value,
+DUCKDB_V2_ERROR duckdb_v2_file_open_options_set_value(duckdb_v2_file_open_options_handle options, const char *name,
+                                                      idx_t name_length, duckdb_v2_value_handle value,
                                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(options);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(value);
 	return WithErrorHandler(err, [&]() {
-		auto key = duckdb::string(Convert(name));
+		auto key = duckdb::string(Convert(name, name_length));
 		if (key.empty()) {
 			throw duckdb::InvalidInputException("A file option name cannot be empty.");
 		}
@@ -169,11 +169,11 @@ DUCKDB_V2_ERROR duckdb_v2_file_open_options_destroy(duckdb_v2_file_open_options_
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_handle file_system, const duckdb_v2_str *file_path,
-                                           duckdb_v2_file_open_options_handle options,
+DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_handle file_system, const char *file_path,
+                                           idx_t file_path_length, duckdb_v2_file_open_options_handle options,
                                            duckdb_v2_file_handle *out_file_handle, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(file_path);
+	DUCKDB_CHECK_STR_ARG(file_path, file_path_length);
 	DUCKDB_CHECK_ARG(options);
 	DUCKDB_CHECK_ARG(out_file_handle);
 	*out_file_handle = nullptr;
@@ -190,7 +190,7 @@ DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_handle file_sys
 			                                    "cache.");
 		}
 
-		duckdb::OpenFileInfo info(duckdb::string(Convert(file_path)));
+		duckdb::OpenFileInfo info(duckdb::string(Convert(file_path, file_path_length)));
 		info.extended_info = opts.extended_info;
 
 		// No opener is passed: FileSystem::GetFileSystem hands back the context's own OpenerFileSystem, which
@@ -207,50 +207,51 @@ DUCKDB_V2_ERROR duckdb_v2_file_system_open(duckdb_v2_file_system_handle file_sys
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_file_system_path_exists(duckdb_v2_file_system_handle file_system, const duckdb_v2_str *path,
-                                                  bool *out_exists, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(path);
-	DUCKDB_CHECK_ARG(out_exists);
-	return WithErrorHandler(
-	    err, [&]() { *out_exists = Convert(file_system)->fs.FileExists(duckdb::string(Convert(path))); });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_file_system_path_is_remote(duckdb_v2_file_system_handle file_system,
-                                                     const duckdb_v2_str *path, bool *out_is_remote,
-                                                     duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(path);
-	DUCKDB_CHECK_ARG(out_is_remote);
-	return WithErrorHandler(
-	    err, [&]() { *out_is_remote = duckdb::FileSystem::IsRemoteFile(duckdb::string(Convert(path))); });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_file_system_path_expand(duckdb_v2_file_system_handle file_system, const duckdb_v2_str *path,
-                                                  duckdb_v2_text_sink_fn sink, void *user_data,
+DUCKDB_V2_ERROR duckdb_v2_file_system_path_exists(duckdb_v2_file_system_handle file_system, const char *path,
+                                                  idx_t path_length, bool *out_exists,
                                                   duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(path);
+	DUCKDB_CHECK_STR_ARG(path, path_length);
+	DUCKDB_CHECK_ARG(out_exists);
+	return WithErrorHandler(
+	    err, [&]() { *out_exists = Convert(file_system)->fs.FileExists(duckdb::string(Convert(path, path_length))); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_file_system_path_is_remote(duckdb_v2_file_system_handle file_system, const char *path,
+                                                     idx_t path_length, bool *out_is_remote,
+                                                     duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(file_system);
+	DUCKDB_CHECK_STR_ARG(path, path_length);
+	DUCKDB_CHECK_ARG(out_is_remote);
+	return WithErrorHandler(
+	    err, [&]() { *out_is_remote = duckdb::FileSystem::IsRemoteFile(duckdb::string(Convert(path, path_length))); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_file_system_path_expand(duckdb_v2_file_system_handle file_system, const char *path,
+                                                  idx_t path_length, duckdb_v2_text_sink_fn sink, void *user_data,
+                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(file_system);
+	DUCKDB_CHECK_STR_ARG(path, path_length);
 	DUCKDB_CHECK_ARG(sink);
 	return WithErrorHandler(err, [&]() {
-		auto expanded = Convert(file_system)->fs.ExpandPath(duckdb::string(Convert(path)));
-		InvokeTextSink(sink, duckdb_v2_str {expanded.data(), expanded.size()}, user_data);
+		auto expanded = Convert(file_system)->fs.ExpandPath(duckdb::string(Convert(path, path_length)));
+		InvokeTextSink(sink, expanded, user_data);
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_file_system_path_glob(duckdb_v2_file_system_handle file_system, const duckdb_v2_str *pattern,
+DUCKDB_V2_ERROR duckdb_v2_file_system_path_glob(duckdb_v2_file_system_handle file_system, const char *pattern,
+                                                idx_t pattern_length,
                                                 duckdb_v2_file_system_path_glob_callback_fn callback, void *user_data,
                                                 duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(pattern);
+	DUCKDB_CHECK_STR_ARG(pattern, pattern_length);
 	DUCKDB_CHECK_ARG(callback);
 	return WithErrorHandler(err, [&]() {
-		auto matches = Convert(file_system)->fs.Glob(duckdb::string(Convert(pattern)));
+		auto matches = Convert(file_system)->fs.Glob(duckdb::string(Convert(pattern, pattern_length)));
 		for (auto &match : matches) {
 			CV2ErrorInfo info;
 			auto handle = Convert(&info);
-			duckdb_v2_str path {match.path.data(), match.path.size()};
-			callback(&path, user_data, &handle);
+			callback(match.path.data(), match.path.size(), user_data, &handle);
 			if (info.HasError()) {
 				info.ThrowAsException();
 			}
@@ -258,22 +259,26 @@ DUCKDB_V2_ERROR duckdb_v2_file_system_path_glob(duckdb_v2_file_system_handle fil
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_file_system_path_move(duckdb_v2_file_system_handle file_system, const duckdb_v2_str *source,
-                                                const duckdb_v2_str *target, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_file_system_path_move(duckdb_v2_file_system_handle file_system, const char *source,
+                                                idx_t source_length, const char *target, idx_t target_length,
+                                                duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(source);
-	DUCKDB_CHECK_ARG(target);
+	DUCKDB_CHECK_STR_ARG(source, source_length);
+	DUCKDB_CHECK_STR_ARG(target, target_length);
 	return WithErrorHandler(err, [&]() {
-		Convert(file_system)->fs.MoveFile(duckdb::string(Convert(source)), duckdb::string(Convert(target)));
+		Convert(file_system)
+		    ->fs.MoveFile(duckdb::string(Convert(source, source_length)),
+		                  duckdb::string(Convert(target, target_length)));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_file_system_path_remove(duckdb_v2_file_system_handle file_system, const duckdb_v2_str *path,
-                                                  bool *out_removed, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_file_system_path_remove(duckdb_v2_file_system_handle file_system, const char *path,
+                                                  idx_t path_length, bool *out_removed,
+                                                  duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(file_system);
-	DUCKDB_CHECK_ARG(path);
+	DUCKDB_CHECK_STR_ARG(path, path_length);
 	return WithErrorHandler(err, [&]() {
-		auto removed = Convert(file_system)->fs.TryRemoveFile(duckdb::string(Convert(path)));
+		auto removed = Convert(file_system)->fs.TryRemoveFile(duckdb::string(Convert(path, path_length)));
 		if (out_removed) {
 			*out_removed = removed;
 		}
