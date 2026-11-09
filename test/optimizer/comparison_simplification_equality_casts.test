@@ -13,25 +13,25 @@ CREATE TABLE s AS SELECT 'x' AS s;
 
 # integer -> VARCHAR: the cast is removed for equality comparisons, so the filter can be pushed into the scan
 query II
-EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR = '5';
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::VARCHAR = '5';
 ----
-physical_plan	<REGEX>:.*Filters: a = 5.*
+analyzed_plan	<REGEX>:.*Filters: a = 5.*
 
 query II
-EXPLAIN SELECT count(*) FROM t WHERE '5' = a::VARCHAR;
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE '5' = a::VARCHAR;
 ----
-physical_plan	<REGEX>:.*Filters: a = 5.*
+analyzed_plan	<REGEX>:.*Filters: a = 5.*
 
 query II
-EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR IN ('5', '10');
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::VARCHAR IN ('5', '10');
 ----
-physical_plan	<!REGEX>:.*CAST.*
+analyzed_plan	<!REGEX>:.*CAST.*
 
 # but not for range comparisons, as the cast does not preserve the order
 query II
-EXPLAIN SELECT count(*) FROM t WHERE a::VARCHAR < '3';
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::VARCHAR < '3';
 ----
-physical_plan	<REGEX>:.*CAST.*
+analyzed_plan	<REGEX>:.*CAST.*
 
 query IIIIIIIII
 SELECT
@@ -58,9 +58,9 @@ NULL	NULL	NULL	NULL	NULL
 
 # the cast child does not have to be a column reference
 query II
-EXPLAIN SELECT count(*) FROM t WHERE (a + 1)::VARCHAR IN ('6', '11');
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE (a + 1)::VARCHAR IN ('6', '11');
 ----
-physical_plan	<!REGEX>:.*CAST.*
+analyzed_plan	<!REGEX>:.*CAST.*
 
 query II
 SELECT
@@ -83,9 +83,9 @@ SELECT s::INTEGER::VARCHAR IN ('abc', '06') FROM s;
 
 # a narrowing cast is not invertible, so the cast is kept
 query II
-EXPLAIN SELECT count(*) FROM t WHERE a::TINYINT = 5;
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::TINYINT = 5;
 ----
-physical_plan	<REGEX>:.*CAST.*
+analyzed_plan	<REGEX>:.*CAST.*
 
 # integer widening: a constant outside the range of the column can never match
 query III
@@ -99,9 +99,9 @@ FROM t;
 
 # lossless integer -> floating point: only integral constants can match
 query II
-EXPLAIN SELECT count(*) FROM t WHERE a::DOUBLE IN (2.0::DOUBLE, 2.5::DOUBLE);
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::DOUBLE IN (2.0::DOUBLE, 2.5::DOUBLE);
 ----
-physical_plan	<!REGEX>:.*CAST.*
+analyzed_plan	<!REGEX>:.*CAST.*
 
 query II
 SELECT
@@ -119,9 +119,9 @@ SELECT count(*) FILTER (WHERE (a - a)::DOUBLE = '-0.0'::DOUBLE) FROM t;
 
 # FLOAT -> DOUBLE: only constants that are exactly a FLOAT can match
 query II
-EXPLAIN SELECT count(*) FROM f WHERE f::DOUBLE = 0.5::DOUBLE;
+EXPLAIN ANALYZE SELECT count(*) FROM f WHERE f::DOUBLE = 0.5::DOUBLE;
 ----
-physical_plan	<!REGEX>:.*CAST.*
+analyzed_plan	<!REGEX>:.*CAST.*
 
 query IIIIII
 SELECT
