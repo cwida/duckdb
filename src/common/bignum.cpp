@@ -268,7 +268,7 @@ string_t BignumIntermediate::Negate(StringHeap &heap) const {
 			ptr[i + Bignum::BIGNUM_HEADER_SIZE] = static_cast<char>(~data[i]);
 		}
 	}
-
+	target.Finalize();
 	return target;
 }
 
