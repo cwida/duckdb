@@ -135,7 +135,7 @@ statement ok
 insert into dates select date '2020-01-01' + interval (r*7) day from range(20) t(r)
 
 query II
-SELECT bin, count FROM histogram_values(dates, d, bin_count := 4)
+SELECT bin, count FROM histogram_values('dates', d, bin_count := 4)
 ----
 2020-02-04	5
 2020-03-07	5

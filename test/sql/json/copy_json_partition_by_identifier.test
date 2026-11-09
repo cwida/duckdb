@@ -4,14 +4,9 @@
 
 require json
 
+# one statement: configs that restart between statements drop the logger
 statement ok
-SET enable_logging=true;
-
-statement ok
-SET warnings_as_errors=true;
-
-statement ok
-COPY (SELECT i AS part, i AS val FROM range(2) t(i)) TO '{TEST_DIR}/json_partition_identifier' (FORMAT JSON, PARTITION_BY (part));
+SET enable_logging=true; SET warnings_as_errors=true; COPY (SELECT i AS part, i AS val FROM range(2) t(i)) TO '{TEST_DIR}/json_partition_identifier' (FORMAT JSON, PARTITION_BY (part));
 
 query II
 SELECT part, val FROM read_json('{TEST_DIR}/json_partition_identifier/*/*.json', hive_partitioning=true) ORDER BY ALL
