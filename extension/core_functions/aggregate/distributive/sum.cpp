@@ -2,6 +2,9 @@
 #include "core_functions/aggregate/sum_helpers.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/bignum_limbs.hpp"
+#include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -509,13 +512,80 @@ unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 
 struct BignumState {
 	bool is_set;
-	BignumIntermediate value;
+	//! Whether the sum has outgrown the hugeint_t accumulator and lives in the arena-allocated wide value
+	bool is_wide;
+	//! The sum while it fits a hugeint_t
+	hugeint_t small;
+	//! The sum once it does not
+	BignumIntermediate wide;
 };
 
 struct BignumOperation {
+	//! The magnitude of an input of at most 16 bytes as a hugeint_t; false when it does not fit
+	static bool TryGetSmall(const BignumIntermediate &input, hugeint_t &result) {
+		if (input.size > 2 * BignumLimb::BYTES) {
+			return false;
+		}
+		const int64_t end = input.size;
+		uint64_t lo = BignumLimb::LoadAbsolute(input.data, input.is_negative, end);
+		uint64_t hi =
+		    BignumLimb::LoadAbsolute(input.data, input.is_negative, end - static_cast<int64_t>(BignumLimb::BYTES));
+		if (hi >> 63) {
+			// a magnitude of 2^127 or more
+			return false;
+		}
+		if (input.is_negative) {
+			// two's complement of the magnitude
+			hi = ~hi + (lo == 0);
+			lo = ~lo + 1;
+		}
+		result = hugeint_t(static_cast<int64_t>(hi), lo);
+		return true;
+	}
+
+	//! Writes a hugeint_t as a BIGNUM blob and returns its size; blob needs room for 16 + header bytes
+	static idx_t EncodeSmall(hugeint_t value, char *blob) {
+		const bool is_negative = value.upper < 0;
+		uint64_t hi = static_cast<uint64_t>(value.upper);
+		uint64_t lo = value.lower;
+		if (is_negative) {
+			hi = ~hi + (lo == 0);
+			lo = ~lo + 1;
+		}
+		const idx_t byte_count = BignumLimb::ByteCount(hi, lo);
+		Bignum::SetHeader(blob, byte_count, is_negative);
+		BignumLimb::StoreMagnitude(reinterpret_cast<data_ptr_t>(blob + Bignum::BIGNUM_HEADER_SIZE), byte_count, hi, lo,
+		                           is_negative);
+		return byte_count + Bignum::BIGNUM_HEADER_SIZE;
+	}
+
+	//! Adds a hugeint_t to the wide value
+	static void AddSmallToWide(BignumState &state, hugeint_t value, ArenaAllocator &allocator) {
+		char blob[2 * BignumLimb::BYTES + Bignum::BIGNUM_HEADER_SIZE];
+		const auto size = EncodeSmall(value, blob);
+		BignumIntermediate rhs(reinterpret_cast<uint8_t *>(blob), size);
+		state.wide.AddInPlace(allocator, rhs);
+	}
+
+	//! Moves the sum from the hugeint_t accumulator to the wide value
+	static void Widen(BignumState &state, ArenaAllocator &allocator) {
+		D_ASSERT(!state.is_wide);
+		state.wide.Initialize(allocator);
+		AddSmallToWide(state, state.small, allocator);
+		state.is_wide = true;
+	}
+
 	template <class INPUT_TYPE, class STATE, class OP>
 	static void ConstantOperation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input,
 	                              idx_t count) {
+		hugeint_t value;
+		hugeint_t total;
+		if (!state.is_wide && TryGetSmall(BignumIntermediate(input), value) &&
+		    Hugeint::TryMultiply(value, hugeint_t(static_cast<int64_t>(count)), total) &&
+		    Hugeint::TryAddInPlace(state.small, total)) {
+			state.is_set = true;
+			return;
+		}
 		for (idx_t i = 0; i < count; i++) {
 			Operation<INPUT_TYPE, STATE, OP>(state, input, unary_input);
 		}
@@ -523,12 +593,16 @@ struct BignumOperation {
 
 	template <class INPUT_TYPE, class STATE, class OP>
 	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input) {
-		if (!state.is_set) {
-			state.is_set = true;
-			state.value.Initialize(unary_input.input.allocator);
+		const BignumIntermediate rhs(input);
+		state.is_set = true;
+		if (!state.is_wide) {
+			hugeint_t value;
+			if (TryGetSmall(rhs, value) && Hugeint::TryAddInPlace(state.small, value)) {
+				return;
+			}
+			Widen(state, unary_input.input.allocator);
 		}
-		BignumIntermediate rhs(input);
-		state.value.AddInPlace(unary_input.input.allocator, rhs);
+		state.wide.AddInPlace(unary_input.input.allocator, rhs);
 	}
 
 	template <class STATE, class OP>
@@ -537,18 +611,34 @@ struct BignumOperation {
 			return;
 		}
 		if (!target.is_set) {
-			target.value.Initialize(input.allocator);
+			// the target is still zero: a plain add, the small sum is copied, the wide one needs its own allocation
 			target.is_set = true;
 		}
-		target.value.AddInPlace(input.allocator, source.value);
+		if (!target.is_wide) {
+			if (!source.is_wide && Hugeint::TryAddInPlace(target.small, source.small)) {
+				return;
+			}
+			Widen(target, input.allocator);
+		}
+		if (source.is_wide) {
+			target.wide.AddInPlace(input.allocator, source.wide);
+		} else {
+			AddSmallToWide(target, source.small, input.allocator);
+		}
 	}
 
 	template <class TARGET_TYPE, class STATE>
 	static void Finalize(STATE &state, TARGET_TYPE &target, AggregateFinalizeData &finalize_data) {
+		// the state is only read: it is exported while other threads may still read it
 		if (!state.is_set) {
 			finalize_data.ReturnNull();
+		} else if (state.is_wide) {
+			target = state.wide.ToBignum(finalize_data.input.allocator);
 		} else {
-			target = state.value.ToBignum(finalize_data.input.allocator);
+			auto blob = reinterpret_cast<char *>(
+			    finalize_data.input.allocator.Allocate(2 * BignumLimb::BYTES + Bignum::BIGNUM_HEADER_SIZE));
+			const auto size = EncodeSmall(state.small, blob);
+			target = bignum_t(string_t(blob, UnsafeNumericCast<uint32_t>(size)));
 		}
 	}
 

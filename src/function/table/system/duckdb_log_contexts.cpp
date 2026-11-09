@@ -75,6 +75,8 @@ void DuckDBLogContextFun::RegisterFunction(BuiltinFunctions &set) {
 	auto fun =
 	    TableFunction("duckdb_log_contexts", {}, DuckDBLogContextFunction, DuckDBLogContextBind, DuckDBLogContextInit);
 	fun.bind_replace = DuckDBLogContextsBindReplace;
+	// the log sink grows while a query executes
+	fun.stability = FunctionStability::VOLATILE;
 	fun.GetSignature().WithTypedKwargs("options",
 	                                   [](TypedKwargs &options) { options.Add("sink", LogicalType::VARCHAR); });
 	set.AddFunction(fun);

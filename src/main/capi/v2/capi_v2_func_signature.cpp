@@ -21,7 +21,7 @@ static auto ConvertParameterKind(DUCKDB_V2_FUNCTION_PARAMETER_KIND kind) -> duck
 }
 
 DUCKDB_V2_ERROR
-duckdb_v2_function_signature_add_parameter(duckdb_v2_function_signature_handle sig, const duckdb_v2_identifier_t *name,
+duckdb_v2_function_signature_add_parameter(duckdb_v2_function_signature_handle sig, const char *name, idx_t name_length,
                                            duckdb_v2_logical_type_handle type, duckdb_v2_value_handle value,
                                            DUCKDB_V2_FUNCTION_PARAMETER_KIND kind, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(sig);
@@ -30,7 +30,7 @@ duckdb_v2_function_signature_add_parameter(duckdb_v2_function_signature_handle s
 	return WithErrorHandler(err, [&]() {
 		auto &signature = *Convert(sig);
 		auto param_kind = ConvertParameterKind(kind);
-		auto param_name = duckdb::Identifier(ConvertIdentifierName(name));
+		auto param_name = duckdb::Identifier(ConvertIdentifierName(name, name_length));
 		duckdb::optional<duckdb::Value> default_value;
 		if (value) {
 			default_value = *Convert(value);

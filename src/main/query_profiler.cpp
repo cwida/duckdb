@@ -117,11 +117,11 @@ string QueryProfiler::GetSaveLocation() const {
 }
 
 QueryProfiler &QueryProfiler::Get(ClientContext &context) {
-	return Get(*context.services);
+	return Get(context.GetContext());
 }
 
-QueryProfiler &QueryProfiler::Get(Context &services) {
-	return services.GetQueryProfiler();
+QueryProfiler &QueryProfiler::Get(Context &context) {
+	return context.GetQueryProfiler();
 }
 
 void QueryProfiler::Start(const string &query) {
@@ -702,7 +702,7 @@ void QueryProfiler::RenderQueryTree(BaseTreeRenderer &ss) const {
 
 	// the registered states write profiling info through an ostream - capture it and emit as layout text
 	duckdb::stringstream state_info;
-	for (auto &state : context.Services().GetRegisteredState().States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		state->WriteProfilingInformation(state_info);
 	}
 	ss << state_info.str();

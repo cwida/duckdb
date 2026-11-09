@@ -251,11 +251,11 @@ string Prompt::HandleSetting(ShellState &state, const PromptComponent &component
 		return StringUtil::BytesToHumanReadableString(max_swap.GetIndex(), 1000);
 	}
 	if (component.literal == "bytes_read") {
-		auto profiler = context.services->GetQueryProfilerPtr();
+		auto profiler = context.GetContext().GetQueryProfilerPtr();
 		return StringUtil::BytesToHumanReadableString(profiler->GetBytesRead(), 1000);
 	}
 	if (component.literal == "bytes_written") {
-		auto profiler = context.services->GetQueryProfilerPtr();
+		auto profiler = context.GetContext().GetQueryProfilerPtr();
 		return StringUtil::BytesToHumanReadableString(profiler->GetBytesWritten(), 1000);
 	}
 	// When CONNECT-ed the local catalog_search_path doesn't reflect where queries route, so route

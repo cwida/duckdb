@@ -30,7 +30,7 @@ index 77f92ff..0173f32 100644
  	if (!connection) {
  		connection = make_uniq<Connection>(db);
 -		connection->context->registered_state->GetOrCreate<DuckLakeInternalConnectionState>(
-+		connection->context->Services().GetRegisteredState().GetOrCreate<DuckLakeInternalConnectionState>(
++		connection->context->GetContext().GetRegisteredState().GetOrCreate<DuckLakeInternalConnectionState>(
  		    DuckLakeInternalConnectionState::KEY);
  		auto caller_context = context.lock();
  		if (caller_context) {
@@ -43,7 +43,7 @@ index 9078754..2e8ede0 100644
  	transaction->Start();
  	if (Settings::Get<ImmediateTransactionModeSetting>(context) && get_snapshot && ducklake_catalog.IsInitialized() &&
 -	    !context.registered_state->Get<DuckLakeInternalConnectionState>(DuckLakeInternalConnectionState::KEY)) {
-+	    !context.Services().GetRegisteredState().Get<DuckLakeInternalConnectionState>(DuckLakeInternalConnectionState::KEY)) {
++	    !context.GetContext().GetRegisteredState().Get<DuckLakeInternalConnectionState>(DuckLakeInternalConnectionState::KEY)) {
  		get_snapshot = false;
  		// no snapshot loaded yet for this transaction - load it
  		transaction->GetSnapshot();

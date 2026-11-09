@@ -2659,19 +2659,20 @@ const StringUtil::EnumStringLiteral *GetExtraPersistentColumnDataTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::INVALID), "INVALID" },
 		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::VARIANT), "VARIANT" },
-		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::GEOMETRY), "GEOMETRY" }
+		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::GEOMETRY), "GEOMETRY" },
+		{ static_cast<uint32_t>(ExtraPersistentColumnDataType::LIST), "LIST" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ExtraPersistentColumnDataType>(ExtraPersistentColumnDataType value) {
-	return StringUtil::EnumToString(GetExtraPersistentColumnDataTypeValues(), 3, "ExtraPersistentColumnDataType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetExtraPersistentColumnDataTypeValues(), 4, "ExtraPersistentColumnDataType", static_cast<uint32_t>(value));
 }
 
 template<>
 ExtraPersistentColumnDataType EnumUtil::FromString<ExtraPersistentColumnDataType>(const char *value) {
-	return static_cast<ExtraPersistentColumnDataType>(StringUtil::StringToEnum(GetExtraPersistentColumnDataTypeValues(), 3, "ExtraPersistentColumnDataType", value));
+	return static_cast<ExtraPersistentColumnDataType>(StringUtil::StringToEnum(GetExtraPersistentColumnDataTypeValues(), 4, "ExtraPersistentColumnDataType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetFileBufferTypeValues() {

@@ -15,14 +15,14 @@ OptimisticWriteCollection::~OptimisticWriteCollection() {
 }
 
 OptimisticDataWriter::OptimisticDataWriter(ClientContext &context, DataTable &table)
-    : OptimisticDataWriter(context.Services(), table) {
+    : OptimisticDataWriter(context.GetContext(), table) {
 }
 
-OptimisticDataWriter::OptimisticDataWriter(Context &services, DataTable &table) : services(services), table(table) {
+OptimisticDataWriter::OptimisticDataWriter(Context &context, DataTable &table) : context(context), table(table) {
 }
 
 OptimisticDataWriter::OptimisticDataWriter(DataTable &table, OptimisticDataWriter &parent)
-    : services(parent.GetServices()), table(table) {
+    : context(parent.GetContext()), table(table) {
 	if (parent.partial_manager) {
 		parent.partial_manager->ClearBlocks();
 	}
@@ -39,7 +39,7 @@ bool OptimisticDataWriter::CanWriteToDisk() const {
 
 bool OptimisticDataWriter::PrepareWrite() {
 	// check if optimistic writing is enabled
-	if (!Settings::Get<EnableOptimisticWriteSetting>(services)) {
+	if (!Settings::Get<EnableOptimisticWriteSetting>(context)) {
 		return false;
 	}
 	// check if we should pre-emptively write the table to disk
@@ -50,7 +50,7 @@ bool OptimisticDataWriter::PrepareWrite() {
 	// allocate the partial block-manager if none is allocated yet
 	if (!partial_manager) {
 		auto &block_manager = table.GetTableIOManager().GetBlockManagerForRowData();
-		partial_manager = make_uniq<PartialBlockManager>(services, block_manager, PartialBlockType::APPEND_TO_TABLE);
+		partial_manager = make_uniq<PartialBlockManager>(context, block_manager, PartialBlockType::APPEND_TO_TABLE);
 	}
 	return true;
 }
@@ -71,7 +71,7 @@ unique_ptr<OptimisticWriteCollection> OptimisticDataWriter::CreateCollection(Dat
 		for (idx_t i = 0; i < insert_types.size(); i++) {
 			auto &block_manager = table.GetTableIOManager().GetBlockManagerForRowData();
 			result->partial_block_managers.push_back(
-			    make_uniq<PartialBlockManager>(services, block_manager, PartialBlockType::APPEND_TO_TABLE));
+			    make_uniq<PartialBlockManager>(context, block_manager, PartialBlockType::APPEND_TO_TABLE));
 		}
 	}
 	return result;
@@ -93,11 +93,11 @@ void OptimisticDataWriter::WriteNewRowGroup(OptimisticWriteCollection &row_group
 	auto unflushed_row_groups = row_groups.unflushed_row_groups.size();
 	// check if we should flush the row groups
 	// first check the amount of row groups
-	bool need_to_flush = unflushed_row_groups >= Settings::Get<WriteBufferRowGroupCountSetting>(services);
+	bool need_to_flush = unflushed_row_groups >= Settings::Get<WriteBufferRowGroupCountSetting>(context);
 	if (!need_to_flush) {
 		// we don't need to flush based on the amount of row groups - but we still might need to flush based on the
 		// amount of
-		auto &config = DBConfig::GetConfig(services.GetDatabase());
+		auto &config = DBConfig::GetConfig(context.GetDatabase());
 		auto memory_limit = config.GetWriteBufferMemoryLimit();
 		if (row_groups.unflushed_data_size >= memory_limit) {
 			// we exhausted our memory available for buffering - flush

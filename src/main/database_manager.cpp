@@ -164,7 +164,7 @@ shared_ptr<AttachedDatabase> DatabaseManager::AttachDatabase(ClientContext &cont
 
 	if (requires_tracking_attaches) {
 		// Start timing the ATTACH-delay step.
-		auto timer = QueryProfiler::Get(*context.services).StartTimer<MetricStorageWaitingToAttachLatency>();
+		auto timer = QueryProfiler::Get(context.GetContext()).StartTimer<MetricStorageWaitingToAttachLatency>();
 		// Start trying to attach.
 		while (InsertDatabasePath(info, options) == InsertDatabasePathResult::ALREADY_EXISTS) {
 			// database with this name and path already exists

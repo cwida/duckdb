@@ -118,11 +118,8 @@ BoundStatement Binder::BindSummarize(ShowRef &ref) {
 		max_children.push_back(SummarizeCreateAggregate("max", plan.names[i]));
 		unique_children.push_back(make_uniq<CastExpression>(
 		    LogicalType::BIGINT, SummarizeCreateAggregate("approx_count_distinct", plan.names[i])));
-		// TIME_NS and TIMESTAMP_TZ_NS have no avg or approx_quantile overload
 		const auto &column_type = plan.types[i];
-		const auto supports_average =
-		    column_type.IsNumeric() || (column_type.IsTemporal() && column_type.id() != LogicalTypeId::TIME_NS &&
-		                                column_type.id() != LogicalTypeId::TIMESTAMP_TZ_NS);
+		const auto supports_average = column_type.IsNumeric() || column_type.IsTemporal();
 		if (supports_average) {
 			avg_children.push_back(SummarizeCreateAggregate("avg", plan.names[i]));
 		} else {

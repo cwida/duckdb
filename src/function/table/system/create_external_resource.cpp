@@ -128,7 +128,7 @@ static unique_ptr<FunctionData> CreateExternalResourceBind(ClientContext &contex
 			result->adopt_handle =
 			    np.second.type().id() == LogicalTypeId::MAP
 			        ? np.second
-			        : np.second.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+			        : np.second.CastAs(context, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 		} else if (key == "teardown_on_failure" && !np.second.IsNull()) {
 			result->teardown_on_failure = BooleanValue::Get(np.second);
 		} else if (key == "timeout_seconds" && !np.second.IsNull()) {
@@ -392,6 +392,8 @@ void CreateExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("timeout_seconds", LogicalType::BIGINT)
 		    .Add("poll_interval_seconds", LogicalType::BIGINT);
 	});
+	// provisions an external resource per execution
+	fn.stability = FunctionStability::VOLATILE;
 	set.AddFunction(fn);
 }
 
@@ -460,12 +462,15 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 }
 
 void DestroyExternalResourceFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("destroy_external_resource",
-	                              FunctionSignature()
-	                                  .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
-	                                  .AddPositionalOnly("payload", LogicalType::ANY),
-	                              DestroyExternalResourceFunction, DestroyExternalResourceBind,
-	                              DestroyExternalResourceInit));
+	TableFunction destroy_fun("destroy_external_resource",
+	                          FunctionSignature()
+	                              .AddPositionalOnly("deleter_function", LogicalType::VARCHAR)
+	                              .AddPositionalOnly("payload", LogicalType::ANY),
+	                          DestroyExternalResourceFunction, DestroyExternalResourceBind,
+	                          DestroyExternalResourceInit);
+	// tears down an external resource per execution
+	destroy_fun.stability = FunctionStability::VOLATILE;
+	set.AddFunction(std::move(destroy_fun));
 }
 
 } // namespace duckdb

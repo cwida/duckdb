@@ -999,12 +999,7 @@ public:
 	/// @param apply_invalidation_policy Whether a syntax error invalidates the active transaction, according to the
 	/// transaction invalidation policy. Pass false when the statements are only inspected, e.g. with `Bind`, instead of
 	/// run.
-	auto ParseSQL(const char *sql, bool apply_invalidation_policy = true) -> StatementIterator;
-
-	/// `std::string` overload of `ParseSQL`.
-	auto ParseSQL(const std::string &sql, bool apply_invalidation_policy = true) -> StatementIterator {
-		return ParseSQL(sql.c_str(), apply_invalidation_policy);
-	}
+	auto ParseSQL(std::string_view sql, bool apply_invalidation_policy = true) -> StatementIterator;
 
 	/// Splits a SQL string into its tokens without parsing it: no binding, no catalog access, no transaction. The
 	/// connection supplies the grammar whose keyword set decides KEYWORD versus IDENTIFIER. Offsets are byte offsets

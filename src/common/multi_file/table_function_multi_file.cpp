@@ -1,4 +1,5 @@
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
+#include "duckdb/common/operator/add.hpp"
 
 #include <algorithm>
 
@@ -484,7 +485,7 @@ bool TableFunctionMultiFileWrapper::ParseOption(ClientContext &context, const Id
 	if (!settings.sample_files_parameter.empty() && key == settings.sample_files_parameter) {
 		// this parameter of the wrapped function also sets how many files are sampled to determine the schema - a
 		// value we cannot use is left to the function to report, in its own words, when it binds
-		file_options.TrySetMaximumSampleFiles(val);
+		file_options.TrySetMaximumSampleFiles(context.GetContext(), val);
 	}
 	return true;
 }
@@ -515,7 +516,7 @@ bool TableFunctionMultiFileWrapper::ParseCopyOption(ClientContext &context, cons
 	} else if (type.id() == LogicalTypeId::ANY || values[0].type() == type) {
 		val = values[0];
 	} else {
-		val = values[0].DefaultCastAs(type);
+		val = values[0].CastAs(context, type);
 	}
 	return ParseNamedParameter(key, val, options_p.Cast<TableFunctionFileReaderOptions>());
 }
@@ -597,6 +598,12 @@ void TableFunctionMultiFileWrapper::GetVirtualColumns(ClientContext &context, Mu
 	for (auto &entry : function.get_virtual_columns(context, data.options.schema_bind_data.get())) {
 		result.insert(entry);
 	}
+}
+
+void TableFunctionMultiFileWrapper::ReadFilesForStatistics(ClientContext &context, MultiFileBindData &bind_data) {
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	bind_data.multi_file_reader->ReadFilesForStatistics(context, *bind_data.file_list, bind_data, data.options,
+	                                                    bind_data.file_options);
 }
 
 void TableFunctionMultiFileWrapper::FinalizeBindData(MultiFileBindData &multi_file_data) {
@@ -773,16 +780,29 @@ unique_ptr<NodeStatistics> TableFunctionMultiFileWrapper::GetCardinality(ClientC
 			result->estimated_cardinality = rows_per_file.GetIndex() * file_count;
 		}
 	}
-	if (!bind_data.file_options.union_by_name && bind_data.union_readers.size() == 1 &&
+	const bool single_file_opened =
+	    !bind_data.file_options.union_by_name && bind_data.union_readers.size() == 1 &&
 	    bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE &&
-	    bind_data.union_readers[0]->GetFileName() == bind_data.file_list->GetFirstFile().path) {
-		auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
-		if (function.cardinality && file.bind_data) {
-			auto stats = function.cardinality(context, file.bind_data.get());
-			if (stats && stats->has_max_cardinality) {
-				result->has_max_cardinality = true;
-				result->max_cardinality = stats->max_cardinality;
+	    bind_data.union_readers[0]->GetFileName() == bind_data.file_list->GetFirstFile().path;
+	const bool all_files_opened = !bind_data.union_readers.empty() &&
+	                              (bind_data.file_options.union_by_name || bind_data.union_readers.size() > 1) &&
+	                              bind_data.union_readers.size() == bind_data.file_list->GetTotalFileCount();
+	if (function.cardinality && (single_file_opened || all_files_opened)) {
+		// the bound is the sum of what each opened file proves it holds
+		idx_t maximum = 0;
+		bool has_maximum = true;
+		for (auto &union_data : bind_data.union_readers) {
+			auto &file = union_data->Cast<TableFunctionUnionData>();
+			auto stats = file.bind_data ? function.cardinality(context, file.bind_data.get()) : nullptr;
+			if (!stats || !stats->has_max_cardinality ||
+			    !TryAddOperator::Operation(maximum, stats->max_cardinality, maximum)) {
+				has_maximum = false;
+				break;
 			}
+		}
+		if (has_maximum) {
+			result->has_max_cardinality = true;
+			result->max_cardinality = maximum;
 		}
 	}
 	if (!result->has_estimated_cardinality && !result->has_max_cardinality) {
@@ -921,6 +941,9 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 	result.filter_prune = single_file_function.filter_prune;
 	result.supports_pushdown_type = single_file_function.supports_pushdown_type;
 	result.late_materialization = single_file_function.late_materialization;
+	// the declared stability of the wrapped function describes its executions independently of the file list, so it
+	// carries over to the multi-file scan - an explicitly volatile declaration is never upgraded
+	result.stability = single_file_function.stability;
 	if (single_file_function.get_partition_stats) {
 		// the row groups of the scan are those of its files
 		result.get_partition_stats = GetPartitionStats;

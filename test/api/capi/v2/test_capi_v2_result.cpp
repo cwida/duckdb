@@ -420,10 +420,11 @@ TEST_CASE("V2: statement_execute surfaces parser error and leaves out_result nul
 	REQUIRE(r == nullptr);
 	REQUIRE(err != nullptr);
 
-	duckdb_v2_str msg = {nullptr, 0};
-	duckdb_v2_error_info_get_text(err, &msg);
-	REQUIRE(msg.ptr != nullptr);
-	REQUIRE(msg.len > 0); // detail propagated from the parser
+	const char *msg = nullptr;
+	idx_t msg_length = 0;
+	duckdb_v2_error_info_get_text(err, &msg, &msg_length);
+	REQUIRE(msg != nullptr);
+	REQUIRE(msg_length > 0); // detail propagated from the parser
 	duckdb_v2_error_info_destroy(&err);
 }
 
@@ -508,10 +509,11 @@ TEST_CASE("V2: execution error mid-stream is sticky", "[capi_v2][query_result]")
 	REQUIRE_FALSE(finished_early); // must fail before finishing
 	REQUIRE(rc == DUCKDB_V2_ERROR_TYPE_CONVERSION);
 	REQUIRE(err != nullptr);
-	duckdb_v2_str msg = {nullptr, 0};
-	duckdb_v2_error_info_get_text(err, &msg);
-	REQUIRE(msg.ptr != nullptr);
-	REQUIRE(msg.len > 0);
+	const char *msg = nullptr;
+	idx_t msg_length = 0;
+	duckdb_v2_error_info_get_text(err, &msg, &msg_length);
+	REQUIRE(msg != nullptr);
+	REQUIRE(msg_length > 0);
 	duckdb_v2_error_info_destroy(&err);
 
 	// Sticky: subsequent steps report the same code without touching the
@@ -640,11 +642,12 @@ TEST_CASE("V2: interrupt from a second thread cancels a blocked fetch", "[capi_v
 
 	// The interrupt must beat the multi-second aggregation. Capture the
 	// error detail so a wrong code identifies the exception that escaped.
-	duckdb_v2_str err_text = {nullptr, 0};
+	const char *err_text = nullptr;
+	idx_t err_text_length = 0;
 	if (err) {
-		duckdb_v2_error_info_get_text(err, &err_text);
+		duckdb_v2_error_info_get_text(err, &err_text, &err_text_length);
 	}
-	auto err_str = Convert(err_text);
+	auto err_str = std::string(err_text, err_text_length);
 	INFO("fetch_chunk error detail: " << (!err_str.empty() ? err_str : "(none)"));
 	REQUIRE(rc == DUCKDB_V2_ERROR_RUNTIME_INTERRUPT);
 	REQUIRE(chunk == nullptr);
@@ -775,7 +778,7 @@ TEST_CASE("V2: a fetched chunk outlives result, connection, and database", "[cap
 	duckdb_v2_instance_handle instance = nullptr;
 	duckdb_v2_connection_handle conn = nullptr;
 	REQUIRE(duckdb_v2_environment_create(&env, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(OpenInstance(env, std::string_view(), &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_connection_create(instance, &conn, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_result_handle r = nullptr;
@@ -820,10 +823,11 @@ TEST_CASE("V2: result_get_schema outlives the result", "[capi_v2][query_result]"
 	duckdb_v2_result_destroy(&r);
 
 	// The schema is self-contained; it stays valid after the result is gone.
-	duckdb_v2_str name = {nullptr, 0};
+	const char *name = nullptr;
+	idx_t name_length = 0;
 	duckdb_v2_logical_type_handle lt = nullptr;
-	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &lt, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(Convert(name) == "only_column");
+	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &name_length, &lt, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(name, name_length) == "only_column");
 	DUCKDB_V2_LOGICAL_TYPE_ID id = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
 	REQUIRE(duckdb_v2_logical_type_get_id(lt, &id, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(id == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
@@ -838,11 +842,12 @@ TEST_CASE("V2: result_get_schema outlives the result", "[capi_v2][query_result]"
 TEST_CASE("V2: statement_execute null-arg rejection", "[capi_v2][query_result]") {
 	EnvFixture fx;
 
-	// Exercise the real duckdb_v2_str signature. A {NULL, 0} sql is a valid
-	// empty view; the malformed case is a null pointer with a nonzero length.
+	// A NULL sql with a zero length is the empty input; the malformed case is a null pointer with a nonzero length.
 	duckdb_v2_result_handle r = nullptr;
 	REQUIRE(Query(nullptr, "SELECT 1", &r, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(Query(fx.conn, nullptr, &r, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_statement_iterator_handle iter = nullptr;
+	REQUIRE(duckdb_v2_parse_sql(fx.conn, nullptr, 1, true, &iter, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(iter == nullptr);
 	REQUIRE(Query(fx.conn, "SELECT 1", nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 }
 
@@ -989,10 +994,11 @@ TEST_CASE("V2: statement_execute refuses while a live result exists", "[capi_v2]
 	REQUIRE(Query(fx.conn, "SELECT 1", &second, &err) == DUCKDB_V2_ERROR_RESOURCE_IN_USE);
 	REQUIRE(second == nullptr);
 	REQUIRE(err != nullptr);
-	duckdb_v2_str msg = {nullptr, 0};
-	duckdb_v2_error_info_get_text(err, &msg);
-	REQUIRE(msg.ptr != nullptr);
-	REQUIRE(Convert(msg).find("connection has an open result") != std::string::npos);
+	const char *msg = nullptr;
+	idx_t msg_length = 0;
+	duckdb_v2_error_info_get_text(err, &msg, &msg_length);
+	REQUIRE(msg != nullptr);
+	REQUIRE(std::string(msg, msg_length).find("connection has an open result") != std::string::npos);
 	duckdb_v2_error_info_destroy(&err);
 
 	// Consuming the live result still works after the refusal.
@@ -1089,13 +1095,13 @@ TEST_CASE("V2: a statement that expands into a group is refused while another st
 }
 
 //! Executes through the Arrow entry point, destroying any result
-DUCKDB_V2_ERROR ExecuteArrow(duckdb_v2_connection_handle conn, const char *sql) {
+DUCKDB_V2_ERROR ExecuteArrow(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql.data(), sql.size(), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_arrow_result_handle result = nullptr;
-	auto rc = duckdb_v2_statement_execute_arrow(conn, stmt, nullptr, nullptr, 0, 0, &result, nullptr);
+	auto rc = duckdb_v2_statement_execute_arrow(conn, stmt, nullptr, nullptr, nullptr, 0, 0, &result, nullptr);
 	if (result) {
 		duckdb_v2_arrow_result_destroy(&result);
 	}
@@ -1147,11 +1153,11 @@ public:
 TEST_CASE("V2: a cancel requested while a statement is submitted cancels it", "[capi_v2][query_result]") {
 	EnvFixture fx;
 	auto &con = *reinterpret_cast<duckdb::Connection *>(fx.conn);
-	con.context->Services().GetRegisteredState().Insert("cancel_while_planning",
-	                                                    duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
+	con.context->GetContext().GetRegisteredState().Insert("cancel_while_planning",
+	                                                      duckdb::make_shared_ptr<CancelWhilePlanning>(fx.conn));
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(fx.conn, "SELECT 42", &result) == DUCKDB_V2_ERROR_NONE);
-	con.context->Services().GetRegisteredState().Remove("cancel_while_planning");
+	con.context->GetContext().GetRegisteredState().Remove("cancel_while_planning");
 
 	duckdb_v2_data_chunk_handle chunk = nullptr;
 	auto status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING;
@@ -1345,7 +1351,7 @@ TEST_CASE("V2: a busy connection does not affect a second connection", "[capi_v2
 
 namespace {
 // Query + drain + destroy, returning the drained changed-row count.
-idx_t QueryAndDrain(duckdb_v2_connection_handle conn, const char *sql) {
+idx_t QueryAndDrain(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle r = nullptr;
 	REQUIRE(Query(conn, sql, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
 	idx_t rows_changed = 99;
@@ -1497,7 +1503,7 @@ TEST_CASE("V2: an undrained result survives disconnect and close", "[capi_v2][qu
 	duckdb_v2_instance_handle instance = nullptr;
 	duckdb_v2_connection_handle conn = nullptr;
 	REQUIRE(duckdb_v2_environment_create(&env, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(OpenInstance(env, std::string_view(), &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_connection_create(instance, &conn, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_result_handle r = nullptr;
@@ -1639,7 +1645,7 @@ TEST_CASE("V2: statement_bind on a statement that expands reports deferred metad
 	for (const char *sql :
 	     {"PIVOT sales ON year USING sum(amount)", "ALTER TABLE sales ADD COLUMN c DOUBLE DEFAULT random()"}) {
 		duckdb_v2_statement_iterator_handle iter = nullptr;
-		REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_sql_statement_handle stmt = nullptr;
 		REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_schema_handle out = nullptr;
@@ -1866,12 +1872,13 @@ TEST_CASE("V2: result_get_schema mirrors a SELECT's columns", "[capi_v2][query_r
 	idx_t count = 0;
 	REQUIRE(duckdb_v2_schema_get_count(schema, &count, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(count == 2);
-	duckdb_v2_str name = {nullptr, 0};
+	const char *name = nullptr;
+	idx_t name_length = 0;
 	duckdb_v2_logical_type_handle type = nullptr;
-	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(name.ptr, name.len) == "a");
-	REQUIRE(duckdb_v2_schema_get_field(schema, 1, &name, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(name.ptr, name.len) == "b");
+	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &name_length, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(name, name_length) == "a");
+	REQUIRE(duckdb_v2_schema_get_field(schema, 1, &name, &name_length, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(name, name_length) == "b");
 
 	duckdb_v2_schema_destroy(&schema);
 	duckdb_v2_result_destroy(&r);
@@ -1888,9 +1895,10 @@ TEST_CASE("V2: result_get_schema of a CHANGED_ROWS statement is a BIGINT count",
 	idx_t count = 0;
 	REQUIRE(duckdb_v2_schema_get_count(schema, &count, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(count == 1);
-	duckdb_v2_str name = {nullptr, 0};
+	const char *name = nullptr;
+	idx_t name_length = 0;
 	duckdb_v2_logical_type_handle type = nullptr;
-	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &name_length, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
 	DUCKDB_V2_LOGICAL_TYPE_ID id;
 	REQUIRE(duckdb_v2_logical_type_get_id(type, &id, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
@@ -1927,8 +1935,7 @@ TEST_CASE("V2: result_render_box renders, consumes the result, and frees the con
 
 	TextSinkTarget rendered;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto null_value_str = duckdb_v2_str {nullptr, 0};
-	REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &rendered, &err) ==
+	REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, AppendToString, &rendered, &err) ==
 	        DUCKDB_V2_ERROR_NONE);
 	// Adopt-by-transfer: the slot is nulled on success.
 	REQUIRE(r == nullptr);
@@ -1955,17 +1962,17 @@ TEST_CASE("V2: result_render_box on an execution error consumes the result and r
 
 	TextSinkTarget text; // the sink must not be invoked on the error path
 	duckdb_v2_error_info_handle err = nullptr;
-	auto null_value_str = duckdb_v2_str {nullptr, 0};
-	auto rc = duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &text, &err);
+	auto rc = duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, AppendToString, &text, &err);
 	REQUIRE(rc != DUCKDB_V2_ERROR_NONE);
 	// Consumed by transfer on failure too, and the sink never ran.
 	REQUIRE(r == nullptr);
 	REQUIRE(text.text.empty());
 	// The engine's error text propagated through the slot.
 	REQUIRE(err != nullptr);
-	duckdb_v2_str msg = {nullptr, 0};
-	REQUIRE(duckdb_v2_error_info_get_text(err, &msg) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(msg.ptr ? msg.ptr : "", msg.len).find("boom render") != std::string::npos);
+	const char *msg = nullptr;
+	idx_t msg_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(err, &msg, &msg_length) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(msg ? msg : "", msg_length).find("boom render") != std::string::npos);
 	duckdb_v2_error_info_destroy(&err);
 
 	// The busy slot was released despite the error: a new query runs.
@@ -1984,19 +1991,18 @@ TEST_CASE("V2: result_render_box rejects null arguments and leaves the result in
 	// A NULL sink: rejected before adoption, so the result is NOT consumed.
 	TextSinkTarget text;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto null_value_str = duckdb_v2_str {nullptr, 0};
-	REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, nullptr, &text, &err) ==
+	REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, nullptr, &text, &err) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(r != nullptr); // intact
 	duckdb_v2_error_info_destroy(&err);
 
 	// A NULL result-slot pointer is rejected without a crash.
-	REQUIRE(duckdb_v2_result_render_box(nullptr, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &text, nullptr) ==
+	REQUIRE(duckdb_v2_result_render_box(nullptr, 0, 0, 0, nullptr, 0, 0, 0, AppendToString, &text, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(text.text.empty());
 
 	// The still-intact result renders normally now.
-	REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &text, nullptr) ==
+	REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, AppendToString, &text, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(r == nullptr);
 	REQUIRE_FALSE(text.text.empty());
@@ -2016,8 +2022,7 @@ TEST_CASE("V2: result_render_box sink contract", "[capi_v2][query_result]") {
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT * FROM range(200) t(i)", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget target;
-		auto null_value_str = duckdb_v2_str {nullptr, 0};
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &target, nullptr) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, AppendToString, &target, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		REQUIRE(r == nullptr);
 		REQUIRE(target.calls == 1);
@@ -2033,14 +2038,14 @@ TEST_CASE("V2: result_render_box sink contract", "[capi_v2][query_result]") {
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT 1 AS one", &r) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_error_info_handle err = nullptr;
-		auto null_value_str2 = duckdb_v2_str {nullptr, 0};
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str2, 0, 0, FailWithIOError, nullptr, &err) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, FailWithIOError, nullptr, &err) ==
 		        DUCKDB_V2_ERROR_IO_GENERAL);
 		REQUIRE(r == nullptr); // consumed by transfer on failure too
 		REQUIRE(err != nullptr);
-		duckdb_v2_str message {nullptr, 0};
-		REQUIRE(duckdb_v2_error_info_get_text(err, &message) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(Convert(message).find("sink could not write") != std::string::npos);
+		const char *message = nullptr;
+		idx_t message_length = 0;
+		REQUIRE(duckdb_v2_error_info_get_text(err, &message, &message_length) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(std::string(message, message_length).find("sink could not write") != std::string::npos);
 		duckdb_v2_error_info_destroy(&err);
 	}
 }
@@ -2053,9 +2058,9 @@ TEST_CASE("V2: result_render_box null_value override and exact footer at the C b
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT CAST(NULL AS INTEGER) AS b", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
-		auto null_value_str = Convert("<nil>");
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &text, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		std::string_view null_value_str = "<nil>";
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, null_value_str.data(), null_value_str.size(), 0, 0,
+		                                    AppendToString, &text, nullptr) == DUCKDB_V2_ERROR_NONE);
 		const std::string &rendered = text.text;
 		REQUIRE(rendered.find("<nil>") != std::string::npos);
 		REQUIRE(rendered.find("NULL") == std::string::npos);
@@ -2066,8 +2071,7 @@ TEST_CASE("V2: result_render_box null_value override and exact footer at the C b
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT i FROM range(100) t(i)", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
-		auto null_value_str2 = duckdb_v2_str {nullptr, 0};
-		REQUIRE(duckdb_v2_result_render_box(&r, 4, 0, 0, &null_value_str2, 0, 0, AppendToString, &text, nullptr) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 4, 0, 0, nullptr, 0, 0, 0, AppendToString, &text, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		const std::string &rendered = text.text;
 		REQUIRE(rendered.find("100 rows") != std::string::npos); // exact total
@@ -2085,8 +2089,7 @@ TEST_CASE("V2: result_render_box validates by-value arguments before consuming t
 		REQUIRE(Query(fx.conn, "SELECT CAST(NULL AS INTEGER) AS b", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
 		duckdb_v2_error_info_handle err = nullptr;
-		auto null_value_str = duckdb_v2_str {nullptr, 5};
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 0, AppendToString, &text, &err) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 5, 0, 0, AppendToString, &text, &err) ==
 		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(r != nullptr); // intact
 		REQUIRE(text.text.empty());
@@ -2099,8 +2102,7 @@ TEST_CASE("V2: result_render_box validates by-value arguments before consuming t
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT 1 AS one", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
-		auto null_value_str2 = duckdb_v2_str {nullptr, 0};
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str2, 2, 0, AppendToString, &text, nullptr) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 2, 0, AppendToString, &text, nullptr) ==
 		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(r != nullptr); // intact
 		REQUIRE(text.text.empty());
@@ -2109,12 +2111,12 @@ TEST_CASE("V2: result_render_box validates by-value arguments before consuming t
 
 	// The valid empty null_value forms both render the default "NULL":
 	// {NULL, 0} (canonical empty view) and {ptr, 0} (non-null pointer, zero length).
-	for (duckdb_v2_str empty_null : {duckdb_v2_str {nullptr, 0}, duckdb_v2_str {"", 0}}) {
+	for (std::string_view empty_null : {std::string_view(), std::string_view {"", 0}}) {
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT CAST(NULL AS INTEGER) AS b", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &empty_null, 0, 0, AppendToString, &text, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, empty_null.data(), empty_null.size(), 0, 0, AppendToString,
+		                                    &text, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(r == nullptr);
 		const std::string &rendered = text.text;
 		REQUIRE(rendered.find("NULL") != std::string::npos);
@@ -2132,8 +2134,7 @@ TEST_CASE("V2: result_render_box limit renders an approximate footer when the re
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT i FROM range(21) t(i)", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
-		auto null_value_str = duckdb_v2_str {nullptr, 0};
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str, 0, 21, AppendToString, &text, nullptr) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 21, AppendToString, &text, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		const std::string &rendered = text.text;
 		REQUIRE(rendered.find("? rows") != std::string::npos);  // count is unknown
@@ -2146,8 +2147,7 @@ TEST_CASE("V2: result_render_box limit renders an approximate footer when the re
 		duckdb_v2_result_handle r = nullptr;
 		REQUIRE(Query(fx.conn, "SELECT i FROM range(21) t(i)", &r) == DUCKDB_V2_ERROR_NONE);
 		TextSinkTarget text;
-		auto null_value_str2 = duckdb_v2_str {nullptr, 0};
-		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, &null_value_str2, 0, 0, AppendToString, &text, nullptr) ==
+		REQUIRE(duckdb_v2_result_render_box(&r, 0, 0, 0, nullptr, 0, 0, 0, AppendToString, &text, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		const std::string &rendered = text.text;
 		REQUIRE(rendered.find("? rows") == std::string::npos);

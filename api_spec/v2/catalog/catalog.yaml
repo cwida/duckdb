@@ -203,10 +203,16 @@ functions:
         type: column_description
         description: The column description.
       name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the column name. Valid until the column description is destroyed.
+        description: Receives a borrowed pointer to the column name. Valid until the column description is destroyed.
+      name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1

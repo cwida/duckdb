@@ -307,12 +307,16 @@ void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 		        .Add("storage_buffer_size", LogicalType::UBIGINT);
 	    });
 
+	// reconfigures the log storage per execution
+	enable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(enable_fun);
 
 	auto disable_fun = TableFunction("disable_logging", {}, DisableLogging, BindDisableLogging, nullptr, nullptr);
+	disable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(disable_fun);
 
 	auto truncate_fun = TableFunction("truncate_duckdb_logs", {}, TruncateLogs, BindTruncateLogs, nullptr, nullptr);
+	truncate_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(truncate_fun);
 
 	TableFunction add_sink_fun("add_log_sink", FunctionSignature().AddPositionalOnly("sink", LogicalType::VARCHAR),
@@ -324,10 +328,13 @@ void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 		    .Add("normalize", LogicalType::BOOLEAN)
 		    .Add("buffer_size", LogicalType::UBIGINT);
 	});
+	// adds a log sink per execution
+	add_sink_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(add_sink_fun);
 
 	auto remove_sink_fun =
 	    TableFunction("remove_log_sink", {LogicalType::VARCHAR}, RemoveLogSink, BindLogSinkName, nullptr, nullptr);
+	remove_sink_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(remove_sink_fun);
 }
 
