@@ -174,6 +174,46 @@ FROM read_csv('{TEST_DIR}/timestamps.csv', columns={'t': 'TIMESTAMP'}, timestamp
 2024-01-02 10:00:00
 2024-03-04 11:00:00
 
+# ICU is not loaded here, so the scan converts TIMESTAMPTZ directly, with the timestamp format when one is set
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'icu' AND loaded
+----
+0
+
+statement ok
+COPY (FROM (VALUES ('01/02/2024 10:00:00'), ('13/04/2024 11:00:00'))) TO '{TEST_DIR}/timestamps_tz.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S')
+----
+2024-02-01 10:00:00+00
+2024-04-13 11:00:00+00
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S',
+    header=false)
+----
+2024-02-01 10:00:00+00
+2024-04-13 11:00:00+00
+
+statement ok
+COPY (FROM (VALUES ('stamp'), ('01/02/2024 10:00:00'))) TO '{TEST_DIR}/timestamps_tz_named.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz_named.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S')
+----
+2024-02-01 10:00:00+00
+
+# Without a format the direct conversion reads offsets but not zone names, so a zone name stays a header
+statement ok
+COPY (FROM (VALUES ('2024-01-01 10:00:00 Europe/Amsterdam'), ('2024-01-02 10:00:00+01')))
+TO '{TEST_DIR}/timestamps_tz_zone.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz_zone.csv', columns={'t': 'TIMESTAMPTZ'})
+----
+2024-01-02 09:00:00+00
+
 # No format is sniffed for ISO dates; a name over them is still a header
 statement ok
 COPY (FROM (VALUES ('day'), ('2024-01-02'), ('2024-03-04'))) TO '{TEST_DIR}/dates_iso.csv' (HEADER false)
@@ -202,7 +242,8 @@ FROM read_csv('{TEST_DIR}/timestamps_iso_first.csv', columns={'t': 'TIMESTAMP'})
 ----
 Could not convert string "2024-01-02 10:00:00" to 'TIMESTAMP'
 
-# The row is judged as a whole: here neither check reads every value, so the row stays a header
+# The row is judged as a whole: the scan refuses this row and neither check reads every value, so it stays a header,
+# although each value is read by one of the checks
 statement ok
 COPY (FROM (VALUES ('+5', '2024-01-02'), ('6', '03/04/2024'), ('7', '13/04/2024')))
 TO '{TEST_DIR}/mixed_checks.csv' (HEADER false)
@@ -293,8 +334,9 @@ name	true
 bob	true
 ann	false
 
-# The one known difference, in the loud direction: the scan cannot convert an escaped value of a directly converted
-# type, but header detection sees the value without its escapes, so the row is data and the scan reports it
+# Two known differences, both in the loud direction, where header detection sees a value the scan refuses as one it
+# reads, so the row is data and the scan reports it. First: the scan cannot convert an escaped value of a directly
+# converted type, but header detection sees the value without its escapes
 statement ok
 COPY (FROM (VALUES ('"\+5"'), ('6'))) TO '{TEST_DIR}/escaped.csv' (HEADER false, QUOTE '', ESCAPE '')
 
@@ -302,6 +344,22 @@ statement error
 FROM read_csv('{TEST_DIR}/escaped.csv', columns={'v': 'INTEGER'}, escape='\', strict_mode=true)
 ----
 Could not convert string "\+5" to 'INTEGER'
+
+# Second: a force_not_null given before columns is not yet applied when the file is sniffed, so header detection sees
+# the null string as NULL while the scan refuses it in a forced column
+statement ok
+COPY (FROM (VALUES ('+5', 'NA'), ('6', '2'))) TO '{TEST_DIR}/forced.csv' (HEADER false)
+
+statement error
+FROM read_csv('{TEST_DIR}/forced.csv', force_not_null=['b'], columns={'a': 'INTEGER', 'b': 'INTEGER'}, nullstr='NA')
+----
+<REGEX>:.*CSV Error on Line: 1.*Error when converting column "b".*
+
+# Given after columns, the sniffer sees the forced value as text, which neither check reads, so the row is a header
+query II
+FROM read_csv('{TEST_DIR}/forced.csv', columns={'a': 'INTEGER', 'b': 'INTEGER'}, force_not_null=['b'], nullstr='NA')
+----
+6	2
 
 # The scan validates JSON, so invalid JSON beside a newly read number keeps the row a header
 require json
@@ -328,3 +386,18 @@ FROM read_csv('{TEST_DIR}/json_valid.csv', columns={'a': 'INTEGER', 'j': 'JSON'}
 ----
 5	{"k": 1}
 6	{}
+
+# With ICU loaded the scan casts TIMESTAMPTZ text through ICU, which does not use the timestamp format, so a first row
+# in that format is a header
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+statement ok
+COPY (FROM (VALUES ('01/02/2024 10:00:00'), ('2024-01-02 10:00:00'))) TO '{TEST_DIR}/timestamps_tz_icu.csv' (HEADER false)
+
+query I
+FROM read_csv('{TEST_DIR}/timestamps_tz_icu.csv', columns={'t': 'TIMESTAMPTZ'}, timestampformat='%d/%m/%Y %H:%M:%S')
+----
+2024-01-02 10:00:00+00

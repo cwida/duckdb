@@ -8,6 +8,8 @@
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
+#include "duckdb/execution/operator/csv_scanner/string_value_scanner.hpp"
+#include "duckdb/main/database.hpp"
 
 namespace duckdb {
 struct TryCastFloatingOperator {
@@ -158,6 +160,14 @@ static bool CanYouCastUnsigned(const char *value_ptr, idx_t value_size, const bo
 	return TrySimpleIntegerCast<T, false>(value_ptr, value_size, dummy_value, false);
 }
 
+static bool CanYouCastWithValueCast(ClientContext &context, const string_t value, const LogicalType &type,
+                                    const bool strict) {
+	string error_message;
+	Value str_value(value);
+	auto new_value = str_value.TryCastAs(context, type, &error_message, strict);
+	return new_value.has_value() && error_message.empty();
+}
+
 bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, const LogicalType &type,
                               const DialectOptions &dialect_options, const bool is_null, const char decimal_separator,
                               const char thousands_separator, const bool strict) {
@@ -236,6 +246,11 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 		return Date::TryConvertDate(value_ptr, value_size, pos, dummy_value, special, strict) ==
 		       DateCastResult::SUCCESS;
 	}
+	case LogicalTypeId::TIMESTAMP_TZ:
+		if (strict || !StringValueScanner::CanDirectlyCast(type, context.db->ExtensionIsLoaded("icu"))) {
+			return CanYouCastWithValueCast(context, value, type, strict);
+		}
+		DUCKDB_EXPLICIT_FALLTHROUGH;
 	case LogicalTypeId::TIMESTAMP: {
 		timestamp_t dummy_value;
 		if (!dialect_options.date_format.find(LogicalTypeId::TIMESTAMP)->second.GetValue().Empty()) {
@@ -244,7 +259,8 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 			    ->second.GetValue()
 			    .TryParseTimestamp(value, dummy_value, error_message);
 		}
-		return Timestamp::TryConvertTimestamp(value_ptr, value_size, dummy_value, false, nullptr, strict) ==
+		const bool use_offset = type.id() == LogicalTypeId::TIMESTAMP_TZ;
+		return Timestamp::TryConvertTimestamp(value_ptr, value_size, dummy_value, use_offset, nullptr, strict) ==
 		       TimestampCastResult::SUCCESS;
 	}
 	case LogicalTypeId::TIME: {
@@ -317,13 +333,8 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 			return true;
 		}
 		DUCKDB_EXPLICIT_FALLTHROUGH;
-	default: {
-		// We do Value Try Cast for non-basic types.
-		string error_message;
-		Value str_value(value);
-		auto new_value = str_value.TryCastAs(context, type, &error_message, strict);
-		return new_value.has_value() && error_message.empty();
-	}
+	default:
+		return CanYouCastWithValueCast(context, value, type, strict);
 	}
 }
 
