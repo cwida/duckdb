@@ -112,7 +112,7 @@ functions:
 
       `parameter_values` binds the statement's parameters as constants for this execution. Binding is positional by
       default ($1 = element 0); supply `parameter_names` to bind by name instead, where a non-empty entry binds its
-      value to that named parameter ($name, matched case-insensitively) and a {NULL, 0} entry stays positional. Pass
+      value to that named parameter ($name, matched case-insensitively) and an empty entry stays positional. Pass
       NULL for both arrays, or a count of 0, for a statement without parameters. Both arrays are borrowed and copied
       in, so the caller still owns and destroys them. A key set that does not match the statement's parameters is
       rejected with `ERROR_INPUT_INVALID`, with one exception: a named parameter left without a value reads the
@@ -133,14 +133,20 @@ functions:
         type: prepared_statement
         description: The prepared statement to execute. Borrowed; not consumed.
       parameter_names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: |
           Optional. An array of `parameter_count` parameter names; a non-empty entry binds its value to the named
-          parameter ($name, case-insensitive), a {NULL, 0} entry keeps it positional ($1 = element 0). Pass NULL to
-          bind everything positionally.
+          parameter ($name, case-insensitive), an empty entry (NULL or zero length) keeps it positional
+          ($1 = element 0). Pass NULL to bind everything positionally.
+      parameter_names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `parameter_names`; element i is the length of `parameter_names[i]`. May be NULL only when `parameter_names` is NULL.
       parameter_values:
         type: value
         indirection: 1

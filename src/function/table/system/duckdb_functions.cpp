@@ -347,6 +347,10 @@ struct MacroExtractor {
 	}
 
 	static Value GetReturnType(ScalarMacroCatalogEntry &entry, idx_t offset) {
+		auto &macro_entry = *entry.macros[offset];
+		if (macro_entry.return_type.id() != LogicalTypeId::UNKNOWN) {
+			return Value(macro_entry.return_type.ToString());
+		}
 		return Value();
 	}
 

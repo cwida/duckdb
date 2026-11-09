@@ -9,6 +9,7 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -212,7 +213,8 @@ BindResult ExpressionBinder::TryBindLambdaOrJson(FunctionExpression &function, i
 
 	auto setting = Settings::Get<LambdaSyntaxSetting>(context);
 	bool invalid_syntax = setting != LambdaSyntax::ENABLE_SINGLE_ARROW && syntax_type == LambdaSyntaxType::SINGLE_ARROW;
-	bool warn_deprecated_syntax = setting == LambdaSyntax::DEFAULT && syntax_type == LambdaSyntaxType::SINGLE_ARROW;
+	// only arrow lambdas reach this point
+	bool warn_deprecated_syntax = setting == LambdaSyntax::DEFAULT;
 	const string msg = "Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, "
 	                   "i.e.., lambda x, i: x + i, before DuckDB's next release.\n"
 	                   "Use SET lambda_syntax='ENABLE_SINGLE_ARROW' to revert to the deprecated behavior.\n"
@@ -281,6 +283,26 @@ CatalogEntry &ExpressionBinder::BindFunction(FunctionExpression &function) {
 	return *func;
 }
 
+//! Rewrite a call that resolved to the built-in has_error into the HAS_ERROR operator and bind that.
+//! The operator binds its argument itself (per-row error capture, TRY transport for nested subqueries),
+//! so the rewrite must happen before the children are bound.
+BindResult ExpressionBinder::BindHasErrorFunction(FunctionExpression &function, idx_t depth,
+                                                  unique_ptr<ParsedExpression> &expr_ptr) {
+	if (function.GetArguments().size() != 1) {
+		throw BinderException(function, "Wrong number of arguments provided to HAS_ERROR expression");
+	}
+	auto &argument = function.GetArgumentsMutable()[0];
+	if (argument.HasName()) {
+		throw BinderException(function, "Named arguments are not supported in HAS_ERROR expression");
+	}
+	auto op = make_uniq<OperatorExpression>(ExpressionType::OPERATOR_HAS_ERROR);
+	op->GetChildrenMutable().push_back(std::move(argument.GetExpressionMutable()));
+	op->SetQueryLocation(function.GetQueryLocation());
+	op->SetAlias(function.GetAlias());
+	expr_ptr = std::move(op);
+	return BindExpression(expr_ptr->Cast<OperatorExpression>(), depth);
+}
+
 BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t depth,
                                             unique_ptr<ParsedExpression> &expr_ptr) {
 	auto &func = BindFunction(function);
@@ -300,6 +322,11 @@ BindResult ExpressionBinder::BindExpression(FunctionExpression &function, idx_t 
 
 	switch (func.type) {
 	case CatalogType::SCALAR_FUNCTION_ENTRY: {
+		if (func.internal && func.name == "has_error" && func.ParentCatalog().IsSystemCatalog()) {
+			// the built-in has_error binds as the HAS_ERROR operator, whose executor captures errors
+			// raised while evaluating the argument; a user function of the same name resolves normally
+			return BindHasErrorFunction(function, depth, expr_ptr);
+		}
 		auto child = function.IsLambdaFunction();
 		if (child) {
 			auto syntax_type = child->Cast<LambdaExpression>().GetLambdaSyntaxType();

@@ -95,30 +95,30 @@ void ArenaAllocator::AllocateNewBlock(idx_t min_size) {
 }
 
 data_ptr_t ArenaAllocator::Reallocate(data_ptr_t pointer, idx_t old_size, idx_t size) {
-	D_ASSERT(head);
 	if (old_size == size) {
 		// nothing to do
 		return pointer;
 	}
 
-	const auto head_ptr = head->data.get() + head->current_position - old_size;
-	int64_t current_position = NumericCast<int64_t>(head->current_position);
-	int64_t diff = NumericCast<int64_t>(size) - NumericCast<int64_t>(old_size);
-	if (pointer == head_ptr &&
-	    (size < old_size || current_position + diff <= NumericCast<int64_t>(head->maximum_size))) {
-		// passed pointer is the head pointer, and the diff fits on the current chunk
-		if (size < old_size) {
-			head->ResetPosition(NumericCast<idx_t>(current_position + diff));
-		} else {
-			head->current_position = NumericCast<idx_t>(current_position + diff);
+	if (head && old_size <= head->current_position) {
+		const auto head_ptr = head->data.get() + head->current_position - old_size;
+		int64_t current_position = NumericCast<int64_t>(head->current_position);
+		int64_t diff = NumericCast<int64_t>(size) - NumericCast<int64_t>(old_size);
+		if (pointer == head_ptr &&
+		    (size < old_size || current_position + diff <= NumericCast<int64_t>(head->maximum_size))) {
+			// passed pointer is the head pointer, and the diff fits on the current chunk
+			if (size < old_size) {
+				head->ResetPosition(NumericCast<idx_t>(current_position + diff));
+			} else {
+				head->current_position = NumericCast<idx_t>(current_position + diff);
+			}
+			return pointer;
 		}
-		return pointer;
-	} else {
-		// allocate new memory
-		auto result = Allocate(size);
-		memcpy(result, pointer, old_size);
-		return result;
 	}
+	// The allocation may belong to an earlier chunk or another arena.
+	auto result = Allocate(size);
+	memcpy(result, pointer, MinValue(old_size, size));
+	return result;
 }
 
 void ArenaAllocator::AlignNext() {

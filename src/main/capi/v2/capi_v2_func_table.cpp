@@ -885,6 +885,9 @@ public:
 			function.get_bind_info = CV2TableGetBindInfo;
 		}
 
+		// a function registered through the C API makes no stability promise unless one was declared
+		function.stability = stability;
+
 		info.name = name;
 		function.function_info = make_shared_ptr<CV2TableFunctionInfo>(std::move(info));
 
@@ -898,6 +901,7 @@ public:
 	CV2FunctionDocs docs;
 	CV2TableFunctionInfo info;
 	Identifier name;
+	FunctionStability stability = FunctionStability::VOLATILE;
 };
 
 static auto Convert(duckdb_v2_table_function_handle func) -> CV2TableFunction * {
@@ -1008,11 +1012,12 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_create(duckdb_v2_factory_handle factory
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_table_function_set_name(duckdb_v2_table_function_handle function, const duckdb_v2_str *name,
-                                                  duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_table_function_set_name(duckdb_v2_table_function_handle function, const char *name,
+                                                  idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_table_function_get_docs(duckdb_v2_table_function_handle function,
@@ -1116,11 +1121,11 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_set_stats_callback(duckdb_v2_table_func
 }
 
 DUCKDB_V2_ERROR duckdb_v2_table_function_bind_add_result_column(duckdb_v2_table_function_bind_info_handle info,
-                                                                const duckdb_v2_identifier_t *name,
+                                                                const char *name, idx_t name_length,
                                                                 duckdb_v2_logical_type_handle type,
                                                                 duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(type);
 	return WithErrorHandler(err, [&]() {
 		auto column_type_ref = Convert(type);
@@ -1130,7 +1135,7 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_bind_add_result_column(duckdb_v2_table_
 			throw duckdb::InvalidInputException("Result column type must be a fully defined concrete type");
 		}
 		auto &bind_info = *Convert(info);
-		bind_info.out_column_names.emplace_back(ConvertIdentifierName(name));
+		bind_info.out_column_names.emplace_back(ConvertIdentifierName(name, name_length));
 		bind_info.out_column_types.push_back(column_type);
 	});
 }
@@ -1791,13 +1796,14 @@ duckdb_v2_table_function_get_bind_info_set_column_identifier(duckdb_v2_table_fun
 
 DUCKDB_V2_ERROR
 duckdb_v2_table_function_get_bind_info_set_option(duckdb_v2_table_function_get_bind_info_info_handle info,
-                                                  duckdb_v2_str *key, duckdb_v2_value_handle value,
+                                                  const char *key, idx_t key_length, duckdb_v2_value_handle value,
                                                   duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(key);
+	DUCKDB_CHECK_STR_ARG(key, key_length);
 	DUCKDB_CHECK_ARG(value);
-	return WithErrorHandler(
-	    err, [&]() { Convert(info)->out_bind_info.options[duckdb::string(Convert(*key))] = *Convert(value); });
+	return WithErrorHandler(err, [&]() {
+		Convert(info)->out_bind_info.options[duckdb::string(Convert(key, key_length))] = *Convert(value);
+	});
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -1816,37 +1822,38 @@ DUCKDB_V2_ERROR duckdb_v2_multi_file_function_create(duckdb_v2_factory_handle fa
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_name(duckdb_v2_multi_file_function_handle function,
-                                                       duckdb_v2_str *name, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_name(duckdb_v2_multi_file_function_handle function, const char *name,
+                                                       idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(Convert(*name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(Convert(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_single_file_function(duckdb_v2_multi_file_function_handle function,
-                                                                       duckdb_v2_str *name,
+                                                                       const char *name, idx_t name_length,
                                                                        duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err,
-	                        [&]() { Convert(function)->single_file_function = duckdb::Identifier(Convert(*name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->single_file_function = duckdb::Identifier(Convert(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_reader_type(duckdb_v2_multi_file_function_handle function,
-                                                              duckdb_v2_str *reader_type,
+                                                              const char *reader_type, idx_t reader_type_length,
                                                               duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(reader_type);
-	return WithErrorHandler(err, [&]() { Convert(function)->reader_type = duckdb::string(Convert(*reader_type)); });
+	DUCKDB_CHECK_STR_ARG(reader_type, reader_type_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->reader_type = duckdb::string(Convert(reader_type, reader_type_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_multi_file_function_set_file_extension(duckdb_v2_multi_file_function_handle function,
-                                                                 duckdb_v2_str *extension,
+                                                                 const char *extension, idx_t extension_length,
                                                                  duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(extension);
+	DUCKDB_CHECK_STR_ARG(extension, extension_length);
 	return WithErrorHandler(err, [&]() {
-		auto file_extension = duckdb::string(Convert(*extension));
+		auto file_extension = duckdb::string(Convert(extension, extension_length));
 		if (duckdb::StringUtil::StartsWith(file_extension, ".")) {
 			throw duckdb::InvalidInputException("The file extension \"%s\" must be given without a leading dot",
 			                                    file_extension);

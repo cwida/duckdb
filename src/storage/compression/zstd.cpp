@@ -9,6 +9,8 @@
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/checkpoint/string_checkpoint_state.hpp"
+#include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/compression/compression_segment_reader.hpp"
 #include "duckdb/storage/string_uncompressed.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
@@ -84,8 +86,6 @@ struct ZSTDStorage {
 	static void StringScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
 	                              idx_t result_offset);
 	static void StringScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result);
-	static void StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-	                           idx_t result_idx);
 	static void StringSkip(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count) {
 		// NO OP
 	}
@@ -302,7 +302,7 @@ public:
 			buffer_collection.SetCurrentBuffer(buffer.slot);
 			auto &buffer_handle = buffer_collection.BufferHandleMutable();
 			if (!buffer_handle.IsValid()) {
-				buffer_handle = buffer_manager.Allocate(partial_block_manager.GetClientContext(),
+				buffer_handle = buffer_manager.Allocate(partial_block_manager.GetQueryContext(),
 				                                        MemoryTag::OVERFLOW_STRINGS, &block_manager);
 			}
 			return;
@@ -474,7 +474,7 @@ public:
 
 		// Write the current page to disk
 		auto &block_manager = partial_block_manager.GetBlockManager();
-		block_manager.Write(partial_block_manager.GetClientContext(), buffer.GetFileBuffer(), block_id);
+		block_manager.Write(partial_block_manager.GetQueryContext(), buffer.GetFileBuffer(), block_id);
 	}
 
 	void FlushVector() {
@@ -545,7 +545,7 @@ public:
 
 		auto &buffer_manager = BufferManager::GetBufferManager(checkpoint_data.GetDatabase());
 		buffer_collection.segment_handle =
-		    buffer_manager.Pin(partial_block_manager.GetClientContext(), buffer_collection.segment->GetBlockHandle());
+		    buffer_manager.Pin(partial_block_manager.GetQueryContext(), buffer_collection.segment->GetBlockHandle());
 	}
 
 	void FlushSegment() {
@@ -798,8 +798,8 @@ public:
 			// Not the same vector
 			return false;
 		}
-		if (current_vector->scanned_count != internal_offset) {
-			// Not the same scan offset
+		if (current_vector->scanned_count > internal_offset) {
+			// Already past the scan offset
 			return false;
 		}
 		return true;
@@ -807,6 +807,9 @@ public:
 
 	ZSTDVectorScanState &LoadVector(idx_t vector_idx, idx_t internal_offset) {
 		if (UseVectorStateCache(vector_idx, internal_offset)) {
+			if (internal_offset > current_vector->scanned_count) {
+				Skip(*current_vector, internal_offset - current_vector->scanned_count);
+			}
 			return *current_vector;
 		}
 		auto metadata = GetVectorMetadata(vector_idx);
@@ -956,7 +959,6 @@ public:
 			remaining -= to_scan;
 		}
 		scan_state.scanned_count += count;
-		scanned_count += count;
 	}
 
 	void ScanInternal(ZSTDVectorScanState &scan_state, idx_t count, Vector &result, idx_t result_offset) {
@@ -980,7 +982,6 @@ public:
 			offset += string_lengths[i];
 		}
 		scan_state.scanned_count += count;
-		scanned_count += count;
 	}
 
 	void ScanPartial(idx_t start_idx, Vector &result, idx_t offset, idx_t count) {
@@ -1016,8 +1017,6 @@ public:
 
 	//! The amount of tuples stored in the segment
 	idx_t segment_count;
-	//! The amount of tuples consumed
-	idx_t scanned_count = 0;
 	ColumnSegment &segment;
 
 	//! Buffer for skipping data
@@ -1066,15 +1065,6 @@ void ZSTDStorage::StringScan(ColumnSegment &segment, ColumnScanState &state, idx
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ZSTDStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                                 idx_t result_idx) {
-	ZSTDScanState scan_state(state.context, segment);
-	scan_state.ScanPartial(UnsafeNumericCast<idx_t>(row_id), result, result_idx, 1);
-}
-
-//===--------------------------------------------------------------------===//
 // Serialization & Cleanup
 //===--------------------------------------------------------------------===//
 
@@ -1115,11 +1105,11 @@ void ZSTDStorage::VisitBlockIds(const ColumnSegment &segment, BlockIdVisitor &vi
 //===--------------------------------------------------------------------===//
 CompressionFunction ZSTDFun::GetFunction(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::VARCHAR);
-	auto zstd = CompressionFunction(
-	    CompressionType::COMPRESSION_ZSTD, data_type, ZSTDStorage::StringInitAnalyze, ZSTDStorage::StringAnalyze,
-	    ZSTDStorage::StringFinalAnalyze, ZSTDStorage::InitCompression, ZSTDStorage::Compress,
-	    ZSTDStorage::FinalizeCompress, ZSTDStorage::StringInitScan, ZSTDStorage::StringScan,
-	    ZSTDStorage::StringScanPartial, ZSTDStorage::StringFetchRow, ZSTDStorage::StringSkip);
+	auto zstd =
+	    CompressionFunction(CompressionType::COMPRESSION_ZSTD, data_type, ZSTDStorage::StringInitAnalyze,
+	                        ZSTDStorage::StringAnalyze, ZSTDStorage::StringFinalAnalyze, ZSTDStorage::InitCompression,
+	                        ZSTDStorage::Compress, ZSTDStorage::FinalizeCompress, ZSTDStorage::StringInitScan,
+	                        ZSTDStorage::StringScan, ZSTDStorage::StringScanPartial, ZSTDStorage::StringSkip);
 	zstd.init_segment = ZSTDStorage::StringInitSegment;
 	zstd.serialize_state = ZSTDStorage::SerializeState;
 	zstd.deserialize_state = ZSTDStorage::DeserializeState;

@@ -1,0 +1,111 @@
+# name: test/sql/join/semianti/right_match_scan.test
+# description: Scan build-side match flags across output chunks
+# group: [semianti]
+
+statement ok
+CREATE TABLE build_rows AS
+SELECT i AS id, CASE WHEN i % 19 <> 0 THEN 2 * (i // 2) END AS k,
+       repeat('row-' || i::VARCHAR, (i % 3 + 1)::INTEGER) AS payload
+FROM range(32771) t(i);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+foreach rate 0 1 50 99 100
+
+# Each matching key has eight probe rows. Odd keys cannot match; NULLs stay unmatched.
+statement ok
+CREATE TABLE probe_rows AS
+SELECT 2 * (i % 16386) + CASE WHEN hash(i % 16386) % 100 < {rate} THEN 0 ELSE 1 END AS k
+FROM range(131088) t(i);
+
+statement ok
+INSERT INTO probe_rows VALUES (NULL);
+
+statement ok
+CREATE TABLE expected_semi AS
+SELECT * FROM build_rows WHERE k IS NOT NULL AND hash(k // 2) % 100 < {rate};
+
+statement ok
+CREATE TABLE expected_anti AS
+SELECT * FROM build_rows WHERE k IS NULL OR hash(k // 2) % 100 >= {rate};
+
+statement ok
+CREATE TABLE actual_semi AS
+SELECT b.* FROM build_rows b SEMI JOIN probe_rows p ON b.k = p.k;
+
+statement ok
+CREATE TABLE actual_anti AS
+SELECT b.* FROM build_rows b ANTI JOIN probe_rows p ON b.k = p.k;
+
+query I
+SELECT count(*) FROM (
+    (TABLE actual_semi EXCEPT ALL TABLE expected_semi)
+    UNION ALL
+    (TABLE expected_semi EXCEPT ALL TABLE actual_semi)
+    UNION ALL
+    (TABLE actual_anti EXCEPT ALL TABLE expected_anti)
+    UNION ALL
+    (TABLE expected_anti EXCEPT ALL TABLE actual_anti)
+);
+----
+0
+
+# The same scan emits unmatched build rows for RIGHT and FULL joins.
+statement ok
+CREATE TABLE expected_right AS
+SELECT b.*, b.k AS probe_key FROM expected_semi b CROSS JOIN range(8)
+UNION ALL
+SELECT *, NULL FROM expected_anti;
+
+statement ok
+CREATE TABLE actual_right AS
+SELECT b.*, p.k AS probe_key FROM probe_rows p RIGHT JOIN build_rows b ON p.k = b.k;
+
+query I
+SELECT count(*) FROM (
+    (TABLE actual_right EXCEPT ALL TABLE expected_right)
+    UNION ALL
+    (TABLE expected_right EXCEPT ALL TABLE actual_right)
+);
+----
+0
+
+statement ok
+CREATE TABLE expected_full AS
+TABLE expected_right
+UNION ALL
+SELECT NULL, NULL, NULL, k FROM probe_rows WHERE k IS NULL OR k % 2 = 1;
+
+statement ok
+CREATE TABLE actual_full AS
+SELECT b.*, p.k AS probe_key FROM probe_rows p FULL JOIN build_rows b ON p.k = b.k;
+
+query I
+SELECT count(*) FROM (
+    (TABLE actual_full EXCEPT ALL TABLE expected_full)
+    UNION ALL
+    (TABLE expected_full EXCEPT ALL TABLE actual_full)
+);
+----
+0
+
+statement ok
+DROP TABLE probe_rows;
+DROP TABLE expected_semi;
+DROP TABLE expected_anti;
+DROP TABLE actual_semi;
+DROP TABLE actual_anti;
+DROP TABLE expected_right;
+DROP TABLE actual_right;
+DROP TABLE expected_full;
+DROP TABLE actual_full;
+
+endloop
+
+endloop
+
+statement ok
+RESET threads;

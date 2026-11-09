@@ -1,0 +1,71 @@
+# name: test/sql/table_function/duckdb_constraints_struct_check.test
+# description: duckdb_constraints() reports the column of a CHECK that reads a struct field (duckdblabs/bot-issue-tracker#646)
+# group: [table_function]
+
+statement ok
+CREATE TABLE t (b STRUCT(x INTEGER), CHECK (b.x > 0));
+
+query IIII
+SELECT constraint_type, constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 't';
+----
+CHECK	[0]	[b]	t_b_check
+
+statement error
+INSERT INTO t VALUES ({'x': -1});
+----
+CHECK constraint failed
+
+# a struct field with the name of another column
+statement ok
+CREATE TABLE t5 (a INTEGER, b STRUCT(a INTEGER), CHECK (b.a > 0));
+
+query III
+SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 't5' AND constraint_type = 'CHECK';
+----
+[1]	[b]	t5_b_check
+
+query II
+SELECT column_name, constraint_name FROM information_schema.constraint_column_usage WHERE table_name = 't5';
+----
+b	t5_b_check
+
+# names qualified with the table
+statement ok
+CREATE TABLE t6 (a INTEGER, b STRUCT(a INTEGER), CHECK (t6.b.a > 0 AND t6.a > 0));
+
+query III
+SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 't6' AND constraint_type = 'CHECK';
+----
+[1, 0]	[b, a]	t6_b_a_check
+
+# a lambda only names its own parameters, as columns in the lambdas of a CHECK are refused
+statement ok
+CREATE TABLE t7 (a INTEGER[], x INTEGER, CHECK (list_transform(a, lambda x: 1) = [1]));
+
+query III
+SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 't7' AND constraint_type = 'CHECK';
+----
+[0]	[a]	t7_a_check
+
+statement error
+CREATE TABLE t8 (a INTEGER[], x INTEGER, CHECK (list_transform(a, lambda y: x) = [1]));
+----
+Lambda functions are currently not supported in CHECK constraints
+
+query II
+SELECT DISTINCT constraint_name, check_clause FROM information_schema.check_constraints WHERE constraint_name IN ('t_b_check', 't5_b_check', 't6_b_a_check') ORDER BY ALL;
+----
+t5_b_check	CHECK((b.a > 0))
+t6_b_a_check	CHECK(((t6.b.a > 0) AND (t6.a > 0)))
+t_b_check	CHECK((b.x > 0))
+
+# the arrow is also the JSON operator, whose operands are read
+require json
+
+statement ok
+CREATE TABLE tj (j JSON, CHECK ((j -> 'x') = '1'::JSON));
+
+query III
+SELECT constraint_column_indexes, constraint_column_names, constraint_name FROM duckdb_constraints() WHERE table_name = 'tj' AND constraint_type = 'CHECK';
+----
+[0]	[j]	tj_j_check

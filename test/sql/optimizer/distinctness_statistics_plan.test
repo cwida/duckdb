@@ -1,0 +1,160 @@
+# name: test/sql/optimizer/distinctness_statistics_plan.test
+# description: Distinctness rewrites honor input statistics and scalar or join context
+# group: [optimizer]
+
+foreach type INTEGER VARCHAR
+
+statement ok
+CREATE OR REPLACE TABLE scalar_keys AS
+SELECT a::{type} a, b::{type} b, n::{type} n
+FROM (VALUES (1, 1, NULL), (2, 3, 2), (3, 3, 3)) t(a, b, n);
+
+query II
+EXPLAIN SELECT a IS NOT DISTINCT FROM b FROM scalar_keys;
+----
+physical_plan	<REGEX>:.*a = b.*
+
+query II
+EXPLAIN SELECT b IS DISTINCT FROM a FROM scalar_keys;
+----
+physical_plan	<REGEX>:.*b != a.*
+
+# One non-NULL operand is insufficient in scalar context, in either orientation.
+
+query II
+EXPLAIN SELECT a IS NOT DISTINCT FROM n FROM scalar_keys;
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT n IS DISTINCT FROM a FROM scalar_keys;
+----
+physical_plan	<REGEX>:.*IS DISTINCT FROM.*
+
+statement ok
+CREATE OR REPLACE TABLE probe AS SELECT a FROM scalar_keys;
+
+statement ok
+CREATE OR REPLACE TABLE build AS SELECT b FROM scalar_keys;
+
+statement ok
+CREATE OR REPLACE TABLE nullable_probe AS SELECT n AS a FROM scalar_keys;
+
+statement ok
+CREATE OR REPLACE TABLE nullable_build AS SELECT n AS b FROM scalar_keys;
+
+# Ordinary joins can use either input's proof, retaining unmatched outer and ANTI rows.
+
+query II
+EXPLAIN SELECT * FROM nullable_probe JOIN build ON a IS NOT DISTINCT FROM b;
+----
+physical_plan	<!REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT * FROM probe JOIN nullable_build ON b IS NOT DISTINCT FROM a;
+----
+physical_plan	<!REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT * FROM probe JOIN build ON a IS DISTINCT FROM b;
+----
+physical_plan	<!REGEX>:.*IS DISTINCT FROM.*
+
+# Neither input proves non-NULL: preserve NULL-to-NULL matches.
+
+query II
+EXPLAIN SELECT * FROM nullable_probe JOIN nullable_build ON a IS NOT DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+# DISTINCT FROM needs both proofs even in ordinary joins.
+
+query II
+EXPLAIN SELECT * FROM probe JOIN nullable_build ON a IS DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*IS DISTINCT FROM.*
+
+# MARK conditions are preserved even when both operands are non-NULL.
+
+query II
+EXPLAIN SELECT a, __mark_join_marker FROM nullable_probe JOIN BY (TYPE MARK) build ON a IS NOT DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT a, __mark_join_marker FROM probe JOIN BY (TYPE MARK) build ON a IS NOT DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT a, __mark_join_marker FROM probe JOIN BY (TYPE MARK) build ON a IS DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*IS DISTINCT FROM.*
+
+endloop
+
+# Nested children can contain NULL even when their top-level value is non-NULL.
+statement ok
+CREATE TABLE nested_keys AS
+SELECT [a, NULL] a, [b, NULL] b, {'v': a} sa, {'v': b} sb
+FROM (VALUES (1, 1), (2, 3), (NULL, NULL)) t(a, b);
+
+# A function without output statistics must not block the proof from the other input.
+statement ok
+CREATE TABLE function_probe(a INTEGER);
+
+statement ok
+INSERT INTO function_probe VALUES (1), (2), (NULL);
+
+statement ok
+CREATE TABLE function_build(b INTEGER);
+
+statement ok
+INSERT INTO function_build VALUES (1), (3);
+
+query II
+EXPLAIN SELECT * FROM function_probe JOIN function_build ON xor(a, 1) IS NOT DISTINCT FROM b;
+----
+physical_plan	<!REGEX>:.*IS NOT DISTINCT FROM.*
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+query II
+EXPLAIN SELECT * FROM nested_keys WHERE a IS NOT DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+statement ok
+RESET disabled_optimizers;
+
+# UNION and TUPLE comparisons are preserved even when every child is non-NULL.
+statement ok
+CREATE TABLE union_keys AS SELECT union_value(i:=a) a, union_value(i:=b) b FROM scalar_keys;
+
+statement ok
+CREATE TEMP TABLE tuple_keys AS SELECT row(a,a) a, row(b,b) b FROM scalar_keys;
+
+foreach table union_keys tuple_keys
+
+query II
+EXPLAIN SELECT a IS NOT DISTINCT FROM b FROM {table};
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT a IS DISTINCT FROM b FROM {table};
+----
+physical_plan	<REGEX>:.*IS DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT * FROM {table} p JOIN {table} q ON p.a IS NOT DISTINCT FROM q.b;
+----
+physical_plan	<REGEX>:.*IS NOT DISTINCT FROM.*
+
+query II
+EXPLAIN SELECT * FROM {table} p JOIN {table} q ON p.a IS DISTINCT FROM q.b;
+----
+physical_plan	<REGEX>:.*IS DISTINCT FROM.*
+
+endloop

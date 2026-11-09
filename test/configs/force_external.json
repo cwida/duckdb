@@ -10,9 +10,21 @@
       ]
     },
     {
+      "reason": "debug_force_external pins every temporary memory reservation at its minimum, so the read-ahead budget cannot grow.",
+      "paths": [
+        "test/sql/copy/parquet/read_ahead/readahead_budget_growth.test"
+      ]
+    },
+    {
       "reason": "The accounting queries spill themselves with force external",
       "paths": [
         "test/sql/storage/encryption/temp_files/encrypted_temp_file_size_accounting.test"
+      ]
+    },
+    {
+      "reason": "Disables the temporary directory so a materialization fallback fails loudly, which conflicts with forced external execution.",
+      "paths": [
+        "test/sql/cte/materialized/cte_streaming_over_materialization.test"
       ]
     }
   ]

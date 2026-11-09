@@ -1,6 +1,7 @@
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 #include "duckdb/common/vector_operations/ternary_executor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "json_common.hpp"
 #include "json_functions.hpp"
 
@@ -63,7 +64,7 @@ public:
 			const auto path_val = ExpressionExecutor::EvaluateScalar(context, *arguments[1]);
 			if (!path_val.IsNull()) {
 				constant = true;
-				path = path_val.DefaultCastAs(LogicalType::VARCHAR).GetValue<string>();
+				path = path_val.CastAs(context, LogicalType::VARCHAR).GetValue<string>();
 			}
 		}
 		return make_uniq<JSONModifyFunctionData>(constant, std::move(path));

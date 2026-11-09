@@ -12,7 +12,7 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "json_functions.hpp"
 #include "yyjson_memory.hpp"
 
@@ -103,7 +103,7 @@ public:
 				casted_paths = make_uniq<Vector>(Vector::Ref(args.data[1]));
 			} else {
 				casted_paths = make_uniq<Vector>(LogicalTypeId::VARCHAR);
-				VectorOperations::DefaultCast(args.data[1], *casted_paths, args.size(), true);
+				VectorOperations::Cast(state.GetContext(), args.data[1], *casted_paths, args.size(), true);
 			}
 			BinaryExecutor::Execute<string_t, string_t, T>(
 			    inputs, *casted_paths, result, args.size(), [&](string_t input, string_t path) -> optional<T> {

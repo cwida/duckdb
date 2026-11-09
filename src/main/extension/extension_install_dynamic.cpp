@@ -25,7 +25,7 @@ static unsafe_unique_array<data_t> ReadExtensionFileFromDisk(FileSystem &fs, con
 	auto source_file = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	file_size = source_file->GetFileSize();
 	auto in_buffer = make_unsafe_uniq_array<data_t>(file_size);
-	source_file->Read(QueryContext(), in_buffer.get(), file_size);
+	source_file->Read(QueryContext(), in_buffer.get(), file_size, 0);
 	source_file->Close();
 	return in_buffer;
 }
@@ -436,12 +436,13 @@ unique_ptr<ExtensionInstallInfo> InstallExternalExtension(DatabaseInstance &db, 
 	// repositories. Core and community extensions keep the flat top-level layout for backwards compatibility
 	string install_path = local_path;
 	if (options.repository && options.repository->type == ExtensionRepositoryType::USER_PROVIDED) {
-		// installing native code from a user-provided repository trusts that repository's signing keys, so it requires
-		// the same explicit opt-in as adding one. Without this, pointing extension_repository_directory at an
-		// attacker-controlled directory and installing from it would bypass the opt-in entirely
-		if (ExtensionRepositoryManager::GetAccess(db) != ExtensionRepositoryAccess::ALLOWED) {
-			throw PermissionException("Installing extensions from a user-provided repository requires "
-			                          "allow_extension_repositories='allowed'");
+		// the opt-in gates adding a repository, i.e. trusting a new signing key. An existing repository stays trusted
+		// while 'undecided' or 'allowed', as it does for LOAD
+		if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
+			throw PermissionException(
+			    "Installing extensions from a user-provided repository is not permitted while "
+			    "allow_extension_repositories='%s'",
+			    ExtensionRepositoryManager::AccessToString(ExtensionRepositoryManager::GetAccess(db)));
 		}
 		install_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), options.repository->name);
 		FileSystem::GetLocal(db).CreateDirectoriesRecursive(install_path);

@@ -409,6 +409,7 @@ AggregateFunction GetLTTBFunction(const LogicalType &x_type, const LogicalType &
 	fun.SetSerializeCallback(LTTBSerialize);
 	fun.SetDeserializeCallback(LTTBDeserialize);
 	fun.SetStructStateExport(LTTBStateLayout);
+	fun.SetFallible(); // finalize throws when a group exceeds the selection vector limit
 	return fun;
 }
 

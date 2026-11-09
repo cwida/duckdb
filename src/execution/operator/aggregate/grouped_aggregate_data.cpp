@@ -1,5 +1,7 @@
 #include "duckdb/execution/operator/aggregate/grouped_aggregate_data.hpp"
 
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+
 namespace duckdb {
 
 idx_t GroupedAggregateData::GroupCount() const {
@@ -14,7 +16,6 @@ void GroupedAggregateData::InitializeGroupby(vector<unique_ptr<Expression>> grou
                                              vector<unique_ptr<Expression>> expressions,
                                              vector<unsafe_vector<ProjectionIndex>> grouping_functions) {
 	InitializeGroupbyGroups(std::move(groups));
-	vector<LogicalType> payload_types_filters;
 
 	SetGroupingFunctions(grouping_functions);
 
@@ -29,18 +30,33 @@ void GroupedAggregateData::InitializeGroupby(vector<unique_ptr<Expression>> grou
 		for (auto &child : aggr.GetChildren()) {
 			payload_types.push_back(child->GetReturnType());
 		}
-		if (aggr.GetFilter()) {
-			filter_count++;
-			payload_types_filters.push_back(aggr.GetFilter()->GetReturnType());
-		}
 		if (!aggr.Function().HasStateCombineCallback()) {
 			throw InternalException("Aggregate function %s is missing a combine method", aggr.Function().GetName());
 		}
 		aggregates.push_back(std::move(expr));
 	}
-	for (const auto &pay_filters : payload_types_filters) {
-		payload_types.push_back(pay_filters);
+}
+
+unordered_map<idx_t, idx_t> GroupedAggregateData::AddFilterColumns(const vector<unique_ptr<Expression>> &aggregates,
+                                                                   vector<LogicalType> &payload_types) {
+	// identical filters reference the same input column and share one payload column
+	unordered_map<idx_t, idx_t> payload_columns;
+	unordered_map<idx_t, idx_t> filter_columns;
+	for (auto &aggregate : aggregates) {
+		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
+		if (!aggr.GetFilter()) {
+			continue;
+		}
+		auto &filter_ref = aggr.GetFilterMutable()->Cast<BoundReferenceExpression>();
+		auto entry = payload_columns.find(filter_ref.Index());
+		if (entry == payload_columns.end()) {
+			entry = payload_columns.emplace(filter_ref.Index(), payload_types.size()).first;
+			filter_columns.emplace(payload_types.size(), filter_ref.Index());
+			payload_types.push_back(filter_ref.GetReturnType());
+		}
+		filter_ref.IndexMutable() = entry->second;
 	}
+	return filter_columns;
 }
 
 void GroupedAggregateData::InitializeDistinct(const unique_ptr<Expression> &aggregate,

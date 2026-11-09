@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/set_columns.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 namespace duckdb {
 
@@ -55,9 +56,8 @@ string SetColumns::ToString() const {
 	stringstream ss;
 	ss << "columns = { ";
 	for (idx_t i = 0; i < Size(); ++i) {
-		ss << "'" << names->at(i) << "'"
-		   << " : ";
-		ss << "'" << types->at(i).ToString() << "'";
+		ss << SQLString::ToString(names->at(i).GetIdentifierName()) << " : ";
+		ss << SQLString::ToString(types->at(i).ToString());
 		if (i != Size() - 1) {
 			ss << ", ";
 		}

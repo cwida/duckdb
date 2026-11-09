@@ -86,6 +86,8 @@ public:
 	static constexpr idx_t AGGREGATE_STATE_PRESSURE_DIVISOR = 2;
 	//! Estimated memory amplification when importing exported states
 	static constexpr idx_t EXPORTED_STATE_MEMORY_MULTIPLIER = 2;
+	//! Minimum amount of data to combine and scan per thread in the Source phase
+	static constexpr idx_t MINIMUM_SOURCE_BYTES_PER_THREAD = 262144;
 };
 
 class RadixHTGlobalSinkState : public GlobalSinkState {
@@ -136,13 +138,13 @@ public:
 
 	//! The radix HT
 	const RadixPartitionedHashTable &radix_ht;
+	//! The spill metadata of the aggregate layout, set if the states can spill
+	unique_ptr<AggregateStateSpillPlan> spill_plan;
 	//! Config for partitioning
 	RadixHTConfig config;
 
 	//! Uncombined partitioned data that will be put into the AggregatePartitions
 	unique_ptr<PartitionedTupleData> uncombined_data;
-	//! The spill metadata of the aggregate layout, set if the states can spill
-	unique_ptr<AggregateStateSpillPlan> spill_plan;
 	//! Synchronizes the transition to exported-only aggregation with concurrent combines
 	SpillPhase spill_phase DUCKDB_GUARDED_BY(lock);
 	//! Uncombined exported data, aligned one-to-one with the partitions of uncombined_data
@@ -160,6 +162,8 @@ public:
 	TupleDataPinProperties scan_pin_properties;
 	//! Total count before combining
 	idx_t count_before_combining;
+	//! Total size in bytes of the partitions before combining
+	idx_t size_before_combining;
 	//! Maximum partition size if all unique
 	idx_t max_partition_size;
 };

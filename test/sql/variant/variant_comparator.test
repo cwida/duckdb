@@ -271,3 +271,44 @@ SELECT
 FROM variants
 ----
 1	256
+
+# NUMBER exponents outside the single-byte range (only reachable with BIGNUM) still order numerically
+statement ok
+CREATE TABLE huge_numbers AS
+SELECT x, x::VARIANT AS v FROM (
+    SELECT ((i % 2 * 2 - 1)::BIGNUM * (1 + i % 9)::BIGNUM * ('1' || repeat('0', (i * 7) % 400))::BIGNUM) AS x
+    FROM range(3000) t(i)
+);
+
+query I
+SELECT count(*) FROM (SELECT x, lag(x) OVER (ORDER BY v, x) AS prev FROM huge_numbers) WHERE prev > x
+----
+0
+
+query I
+SELECT count(*) FROM huge_numbers WHERE (v > ('1' || repeat('0', 150))::BIGNUM::VARIANT) <> (x > ('1' || repeat('0', 150))::BIGNUM)
+----
+0
+
+query I
+SELECT count(*) FROM huge_numbers WHERE (v < ('-1' || repeat('0', 150))::BIGNUM::VARIANT) <> (x < ('-1' || repeat('0', 150))::BIGNUM)
+----
+0
+
+query I
+SELECT count(DISTINCT v) = count(DISTINCT x) FROM huge_numbers
+----
+true
+
+# magnitudes just inside and outside the single-byte exponent range
+query I
+SELECT list(i ORDER BY v) FROM (VALUES
+    (1, ('1' || repeat('0', 126))::BIGNUM::VARIANT),
+    (2, ('1' || repeat('0', 127))::BIGNUM::VARIANT),
+    (3, ('1' || repeat('0', 125))::BIGNUM::VARIANT),
+    (4, ('-1' || repeat('0', 127))::BIGNUM::VARIANT),
+    (5, ('-1' || repeat('0', 126))::BIGNUM::VARIANT),
+    (6, 0::BIGNUM::VARIANT)
+) t(i, v)
+----
+[4, 5, 6, 3, 1, 2]

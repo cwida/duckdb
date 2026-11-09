@@ -69,8 +69,9 @@ void RowOperations::UpdateStates(RowOperationsState &state, AggregateObject &agg
 }
 
 void RowOperations::UpdateFilteredStates(RowOperationsState &state, AggregateFilterData &filter_data,
-                                         AggregateObject &aggr, Vector &addresses, DataChunk &payload, idx_t arg_idx) {
-	idx_t count = filter_data.ApplyFilter(payload);
+                                         AggregateObject &aggr, Vector &addresses, idx_t arg_idx) {
+	// the filter has been applied to the payload by AggregateFilterDataSet::ApplyFilters
+	idx_t count = filter_data.selected_count;
 	if (count == 0) {
 		return;
 	}
@@ -104,7 +105,7 @@ void RowOperations::UpdateStatesClustered(RowOperationsState &state, vector<Aggr
 
 		if (aggr.aggr_type != AggregateType::DISTINCT && aggr.filter) {
 			D_ASSERT(filter_set);
-			RowOperations::UpdateFilteredStates(state, filter_set->GetFilterData(aggr_idx), aggr, addresses, payload,
+			RowOperations::UpdateFilteredStates(state, filter_set->GetFilterData(aggr_idx), aggr, addresses,
 			                                    payload_idx);
 		} else {
 			UpdateStates(state, aggr, addresses, payload, payload_idx, clustered);

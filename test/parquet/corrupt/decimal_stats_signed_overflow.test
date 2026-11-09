@@ -1,0 +1,20 @@
+# name: test/parquet/corrupt/decimal_stats_signed_overflow.test
+# description: Decode minimum signed decimal statistics without overflowing
+# group: [corrupt]
+
+require parquet
+
+# The minimum statistic encodes INT32_MIN, which does not fit in DECIMAL(9,2).
+query TT
+SELECT stats_min_value, stats_max_value FROM parquet_metadata('data/parquet-testing/corrupt/decimal_stats_signed_overflow.parquet');
+----
+NULL	123.45
+
+# Ignore the invalid statistic without pruning valid data.
+query I
+SELECT val FROM read_parquet('data/parquet-testing/corrupt/decimal_stats_signed_overflow.parquet') WHERE val > 100;
+----
+123.45
+123.45
+123.45
+123.45

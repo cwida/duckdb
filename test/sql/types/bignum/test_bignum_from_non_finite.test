@@ -34,4 +34,4 @@ false
 query II
 SELECT 1.5::DOUBLE::BIGNUM, 2::FLOAT::BIGNUM
 ----
-1	2
+2	2

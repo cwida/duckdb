@@ -21,6 +21,9 @@ public:
 	                         optional_ptr<HavingBinder> having_binder = nullptr);
 	virtual ~ColumnQualifier() = default;
 
+	//! The function a bare SQL value function name (e.g. current_timestamp) converts to, or empty
+	static Identifier SQLValueFunctionName(const Identifier &column_name);
+
 	//! Returns the STRUCT_EXTRACT operator expression
 	unique_ptr<ParsedExpression> CreateStructExtract(unique_ptr<ParsedExpression> base, const Identifier &field_name);
 	//! Returns a STRUCT_PACK function expression

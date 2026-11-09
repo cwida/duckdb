@@ -1,0 +1,236 @@
+# name: test/sql/catalog/nested_schema/nested_schema_search_path.test
+# description: Entries of a nested schema look names up in that schema and not in a top-level schema of the same name
+# group: [nested_schema]
+
+load {TEST_DIR}/nested_schema_search_path.db readwrite v2.0.0
+
+statement ok
+CREATE SCHEMA p;
+
+statement ok
+CREATE SCHEMA p.s;
+
+statement ok
+CREATE SCHEMA s;
+
+statement ok
+CREATE TABLE p.s.audit(x INTEGER);
+
+statement ok
+CREATE TABLE s.audit(x INTEGER);
+
+statement ok
+INSERT INTO p.s.audit VALUES (1);
+
+statement ok
+INSERT INTO s.audit VALUES (2);
+
+statement ok
+CREATE TABLE s.only_top(x INTEGER);
+
+statement ok
+CREATE MACRO p.s.f() AS 1;
+
+statement ok
+CREATE MACRO s.f() AS 2;
+
+statement ok
+CREATE TYPE p.s.mood AS ENUM ('nested');
+
+statement ok
+CREATE TYPE s.mood AS ENUM ('top');
+
+# views
+statement ok
+CREATE VIEW p.s.v AS SELECT x FROM audit;
+
+query I
+SELECT x FROM p.s.v
+----
+1
+
+statement ok
+CREATE VIEW p.s.v_macro AS SELECT f() AS y;
+
+query I
+SELECT y FROM p.s.v_macro
+----
+1
+
+statement ok
+CREATE VIEW p.s.v_type AS SELECT 'nested'::mood AS m;
+
+query T
+SELECT m FROM p.s.v_type
+----
+nested
+
+# binding the view again uses the schema of the view too
+query II
+SELECT name, type FROM pragma_table_info('p.s.v_type')
+----
+m	ENUM('nested')
+
+# a schema qualification names a top-level schema
+statement ok
+CREATE VIEW p.s.v_top AS SELECT x FROM s.audit;
+
+query I
+SELECT x FROM p.s.v_top
+----
+2
+
+# the top-level schema of the same name is not on the search path of the view
+statement error
+CREATE VIEW p.s.v_only_top AS SELECT x FROM only_top;
+----
+only_top does not exist
+
+# a view of a nested schema binds without a top-level schema of the same name
+statement ok
+CREATE SCHEMA p.inner;
+
+statement ok
+CREATE TABLE p.inner.t AS SELECT 5 AS x;
+
+statement ok
+CREATE VIEW p.inner.v AS SELECT x FROM t;
+
+query I
+SELECT x FROM p.inner.v
+----
+5
+
+# column types
+statement ok
+CREATE TABLE p.s.t(m mood);
+
+statement ok
+INSERT INTO p.s.t VALUES ('nested');
+
+statement ok
+ALTER TABLE p.s.t ADD COLUMN m2 mood;
+
+statement ok
+ALTER TABLE p.s.t ADD COLUMN c VARCHAR;
+
+statement ok
+INSERT INTO p.s.t VALUES ('nested', 'nested', 'nested');
+
+statement ok
+ALTER TABLE p.s.t ALTER c TYPE mood;
+
+query TTT
+SELECT DISTINCT typeof(m), typeof(m2), typeof(c) FROM p.s.t
+----
+ENUM('nested')	ENUM('nested')	ENUM('nested')
+
+# column defaults
+statement ok
+CREATE TABLE p.s.d(id INTEGER, y INTEGER DEFAULT f());
+
+statement ok
+INSERT INTO p.s.d (id) VALUES (1);
+
+statement ok
+INSERT INTO p.s.d VALUES (2, 0);
+
+statement ok
+UPDATE p.s.d SET y = DEFAULT WHERE id = 2;
+
+statement ok
+ALTER TABLE p.s.d ADD COLUMN z INTEGER DEFAULT f();
+
+query III
+SELECT id, y, z FROM p.s.d ORDER BY id
+----
+1	1	1
+2	1	1
+
+# a catalog qualification looks in the schema of the view first, as for a view of a top-level schema
+statement ok
+ATTACH ':memory:' AS nested_db;
+
+statement ok
+CREATE SCHEMA nested_db.p;
+
+statement ok
+CREATE SCHEMA nested_db.p.s;
+
+statement ok
+CREATE SCHEMA nested_db.s;
+
+statement ok
+CREATE TABLE nested_db.p.s.audit AS SELECT 1 AS x;
+
+statement ok
+CREATE TABLE nested_db.s.audit AS SELECT 2 AS x;
+
+statement ok
+CREATE TABLE nested_db.audit AS SELECT 3 AS x;
+
+statement ok
+CREATE VIEW nested_db.p.s.v AS SELECT x FROM nested_db.audit;
+
+query I
+SELECT x FROM nested_db.p.s.v
+----
+1
+
+statement ok
+CREATE VIEW nested_db.s.v AS SELECT x FROM nested_db.audit;
+
+query I
+SELECT x FROM nested_db.s.v
+----
+2
+
+# the hint for a name that is also an attached catalog with a default table names the nested schema
+statement ok
+ATTACH '{TEST_DIR}/nested_schema_search_path_dt.db' AS dt (DEFAULT_TABLE 'my_table');
+
+statement ok
+CREATE TABLE dt.my_table AS SELECT 1 AS x;
+
+statement ok
+CREATE TABLE p.s.dt AS SELECT 2 AS x;
+
+statement error
+CREATE VIEW p.s.v_dt AS SELECT x FROM dt;
+----
+<REGEX>:.*Ambiguity detected.*\.p\.s\.dt'.*'dt\.main\.my_table'.*
+
+statement ok
+DETACH dt;
+
+# the views, types and defaults bind the same way after a restart that replays the WAL
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET checkpoint_threshold = '10GB';
+
+restart
+
+query I
+SELECT x FROM p.s.v
+----
+1
+
+query II
+SELECT name, type FROM pragma_table_info('p.s.v_type')
+----
+m	ENUM('nested')
+
+statement ok
+INSERT INTO p.s.d (id) VALUES (3);
+
+query II
+SELECT y, z FROM p.s.d WHERE id = 3
+----
+1	1
+
+query TTT
+SELECT DISTINCT typeof(m), typeof(m2), typeof(c) FROM p.s.t
+----
+ENUM('nested')	ENUM('nested')	ENUM('nested')

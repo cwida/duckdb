@@ -94,6 +94,12 @@ public:
 	vector<ShreddedVariantIterator> children;
 	//! The logical type of this layer
 	LogicalType logical_type;
+	//! The type_id shared by all values of this layer, valid only if has_fixed_type_id is set
+	VariantLogicalType type_id = VariantLogicalType::VARIANT_NULL;
+	//! Whether type_id holds for every value of this layer (BOOLEAN resolves per value)
+	bool has_fixed_type_id = false;
+	//! The size of the physical payload of this layer
+	idx_t type_size = 0;
 };
 
 class VariantNode;

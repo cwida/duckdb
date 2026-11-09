@@ -40,9 +40,11 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/function/built_in_functions.hpp"
 #include "duckdb/catalog/similar_catalog_entry.hpp"
 #include "duckdb/catalog/schema_scan_filters.hpp"
+#include "duckdb/catalog/entry_scan_filters.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/storage/database_size.hpp"
@@ -414,13 +416,15 @@ struct CatalogLookup {
 	    : catalog(catalog),
 	      lookup_info(catalog_type, QualifiedName(catalog.GetName(), std::move(schema_p), std::move(name_p))) {
 	}
-	CatalogLookup(Catalog &catalog, Identifier schema_p, const EntryLookupInfo &lookup_p)
-	    : catalog(catalog),
-	      lookup_info(lookup_p, QualifiedName(catalog.GetName(), std::move(schema_p), lookup_p.GetEntryIdentifier())) {
-	}
 	//! Look the entry up in the given catalog, keeping the lookup's qualification as-is. Used for nested schema
 	//! paths, which cannot be expressed as a single (catalog, schema) pair.
 	CatalogLookup(Catalog &catalog, const EntryLookupInfo &lookup_p) : catalog(catalog), lookup_info(lookup_p) {
+	}
+	//! Look the entry up in the schema of a search path entry, which can be nested
+	CatalogLookup(Catalog &catalog, const CatalogSearchEntry &entry, const EntryLookupInfo &lookup_p)
+	    : catalog(catalog),
+	      lookup_info(lookup_p, QualifiedName::FromCatalogSchema(catalog.GetName(), entry.GetSchemaPath(),
+	                                                             lookup_p.GetEntryIdentifier())) {
 	}
 
 	Catalog &catalog;
@@ -706,10 +710,7 @@ vector<CatalogSearchEntry> GetCatalogEntries(CatalogEntryRetriever &retriever, c
 			}
 		}
 	} else if (IsInvalidSchema(schema)) {
-		auto schemas = search_path.GetSchemasForCatalog(catalog);
-		for (auto &schema_name : schemas) {
-			entries.emplace_back(catalog, schema_name);
-		}
+		entries = search_path.GetEntriesForCatalog(catalog);
 		if (entries.empty()) {
 			auto catalog_entry = Catalog::GetCatalogEntry(context, catalog);
 			if (!catalog_entry) {
@@ -749,7 +750,7 @@ void FindMinimalQualification(CatalogEntryRetriever &retriever, const Identifier
 	found = false;
 	entries = GetCatalogEntries(retriever, catalog_name, Identifier::InvalidSchema());
 	for (auto &entry : entries) {
-		if (entry.GetCatalog() == catalog_name && entry.GetSchema() == schema_name) {
+		if (entry.GetCatalog() == catalog_name && entry.GetSchema() == schema_name && !entry.IsNested()) {
 			found = true;
 			break;
 		}
@@ -1041,11 +1042,11 @@ CatalogEntryLookup Catalog::TryLookupEntry(CatalogEntryRetriever &retriever, con
 		// try all schemas for this catalog
 		auto entries = GetCatalogEntries(retriever, GetName(), Identifier::InvalidSchema());
 		for (auto &entry : entries) {
-			auto &candidate_schema = entry.GetSchema();
 			auto transaction = GetCatalogTransaction(context);
 			auto result = TryLookupEntryInternal(
-			    transaction, EntryLookupInfo(lookup_info, QualifiedName(GetName(), candidate_schema,
-			                                                            lookup_info.GetEntryIdentifier())));
+			    transaction,
+			    EntryLookupInfo(lookup_info, QualifiedName::FromCatalogSchema(GetName(), entry.GetSchemaPath(),
+			                                                                  lookup_info.GetEntryIdentifier())));
 			if (result.Found()) {
 				return result;
 			}
@@ -1121,9 +1122,9 @@ CatalogEntryLookup Catalog::TryLookupEntryAcrossCatalogs(CatalogEntryRetriever &
 		D_ASSERT(catalog_entry);
 		auto lookup_behavior = catalog_entry->CatalogTypeLookupRule(lookup_info.GetCatalogType());
 		if (lookup_behavior == CatalogLookupBehavior::STANDARD) {
-			lookups.emplace_back(*catalog_entry, entry.GetSchema(), lookup_info);
+			lookups.emplace_back(*catalog_entry, entry, lookup_info);
 		} else if (lookup_behavior == CatalogLookupBehavior::LOWER_PRIORITY) {
-			final_lookups.emplace_back(*catalog_entry, entry.GetSchema(), lookup_info);
+			final_lookups.emplace_back(*catalog_entry, entry, lookup_info);
 		}
 	}
 
@@ -1161,12 +1162,10 @@ static void ThrowDefaultTableAmbiguityException(CatalogEntryLookup &base_lookup,
 	string fully_qualified_name_hint;
 	if (base_lookup.schema) {
 		fully_qualified_name_hint =
-		    StringUtil::Format(": '%s.%s.%s'", SQLIdentifier(base_lookup.schema->catalog.GetName()),
-		                       SQLIdentifier(base_lookup.schema->name), SQLIdentifier(base_lookup.entry->name));
+		    StringUtil::Format(": '%s'", base_lookup.schema->GetQualifiedName(base_lookup.entry->name).ToString());
 	}
 	string fully_qualified_catalog_name_hint =
-	    StringUtil::Format(": '%s.%s.%s'", SQLIdentifier(default_table.schema->catalog.GetName()),
-	                       SQLIdentifier(default_table.schema->name), SQLIdentifier(default_table.entry->name));
+	    StringUtil::Format(": '%s'", default_table.schema->GetQualifiedName(default_table.entry->name).ToString());
 	throw CatalogException(
 	    "Ambiguity detected for '%s': this could either refer to the '%s' '%s', or the "
 	    "attached catalog '%s' which has a default table. To avoid this error, either detach the catalog and "
@@ -1285,8 +1284,15 @@ CatalogEntryLookup Catalog::TryLookupDefaultTable(CatalogEntryRetriever &retriev
 		auto transaction = catalog_by_name->GetCatalogTransaction(retriever.GetContext());
 		QueryErrorContext context;
 
-		auto table_schema = catalog_by_name->GetDefaultTableSchema();
-		auto table_name = catalog_by_name->GetDefaultTable();
+		// read the schema and the table under one lock: ATTACH can change both while we look them up
+		Identifier table_schema;
+		Identifier table_name;
+		{
+			lock_guard<mutex> guard(catalog_by_name->default_table_lock);
+			table_schema = !catalog_by_name->default_table_schema.empty() ? catalog_by_name->default_table_schema
+			                                                              : Identifier(DEFAULT_SCHEMA);
+			table_name = catalog_by_name->default_table;
+		}
 
 		optional_ptr<BoundAtClause> at_clause;
 		if (!catalog_by_name->SupportsTimeTravel() && allow_ignore_at_clause) {
@@ -1512,6 +1518,11 @@ bool SchemaScanFilters::Accepts(ClientContext &context, const SchemaCatalogEntry
 	       Satisfies(context, schema_oid, Value::BIGINT(NumericCast<int64_t>(schema.oid)));
 }
 
+bool EntryScanFilters::Accepts(ClientContext &context, const CatalogEntry &entry) const {
+	return SchemaScanFilters::Satisfies(context, name, Value(entry.name.GetIdentifierName())) &&
+	       SchemaScanFilters::Satisfies(context, oid, Value::BIGINT(NumericCast<int64_t>(entry.oid)));
+}
+
 vector<reference<SchemaCatalogEntry>> Catalog::GetSchemasForScan(ClientContext &context,
                                                                  const SchemaScanFilters &filters) {
 	vector<reference<SchemaCatalogEntry>> schemas;
@@ -1565,11 +1576,14 @@ vector<reference<SchemaCatalogEntry>> Catalog::GetAllSchemas(ClientContext &cont
 	vector<reference<SchemaCatalogEntry>> result;
 
 	auto &db_manager = DatabaseManager::Get(context);
+	auto &meta_transaction = MetaTransaction::Get(context);
 	auto databases = db_manager.GetDatabases(context);
 	for (auto &database : databases) {
 		if (database->GetVisibility() == AttachVisibility::HIDDEN) {
 			continue;
 		}
+		// keep the database alive until the end of the transaction, the returned schemas reference it
+		meta_transaction.UseDatabase(database);
 		auto &catalog = database->GetCatalog();
 		auto new_schemas = catalog.GetSchemas(context);
 		result.insert(result.end(), new_schemas.begin(), new_schemas.end());
@@ -1681,19 +1695,23 @@ optional<Identifier> Catalog::GetDefaultSchema() const {
 
 //! Whether this catalog has a default table. Catalogs with a default table can be queries by their catalog name
 bool Catalog::HasDefaultTable() const {
+	lock_guard<mutex> guard(default_table_lock);
 	return !default_table.empty();
 }
 
 void Catalog::SetDefaultTable(const Identifier &schema, const Identifier &name) {
+	lock_guard<mutex> guard(default_table_lock);
 	default_table = name;
 	default_table_schema = schema;
 }
 
 Identifier Catalog::GetDefaultTable() const {
+	lock_guard<mutex> guard(default_table_lock);
 	return default_table;
 }
 
 Identifier Catalog::GetDefaultTableSchema() const {
+	lock_guard<mutex> guard(default_table_lock);
 	return !default_table_schema.empty() ? default_table_schema : DEFAULT_SCHEMA;
 }
 

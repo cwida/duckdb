@@ -4,6 +4,7 @@
 #include "duckdb/common/radix_partitioning.hpp"
 #include "duckdb/common/types/row/tuple_data_iterator.hpp"
 #include "duckdb/common/printer.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
@@ -158,15 +159,16 @@ void PartitionedTupleData::AppendUnified(PartitionedTupleDataAppendState &state,
 }
 
 void PartitionedTupleData::Append(PartitionedTupleDataAppendState &state, TupleDataChunkState &input,
-                                  const idx_t append_count) {
+                                  const idx_t append_count, const SelectionVector &append_sel) {
 	const auto max_partition_idx = MaxPartitionIndex();
 	const auto use_fixed_size_map = max_partition_idx < PartitionedTupleDataAppendState::MAP_THRESHOLD;
 
 	// Compute partition indices and store them in state.partition_indices
-	ComputePartitionIndices(input.row_locations, append_count, state.partition_indices, state.utility_vector);
+	ComputePartitionIndices(input.row_locations, append_count, state.partition_indices, state.utility_vector,
+	                        append_sel);
 
 	// Build the selection vector for the partitions
-	BuildPartitionSel(state, *FlatVector::IncrementalSelectionVector(), append_count);
+	BuildPartitionSel(state, append_sel, append_count);
 
 	// Early out: check if everything belongs to a single partition
 	auto partition_index = state.GetPartitionIndexIfSinglePartition(use_fixed_size_map);
@@ -174,17 +176,22 @@ void PartitionedTupleData::Append(PartitionedTupleDataAppendState &state, TupleD
 		auto &partition = *partitions[partition_index.GetIndex()];
 		auto &partition_pin_state = state.partition_pin_states[partition_index.GetIndex()];
 
-		state.chunk_state.heap_sizes.Reference(input.heap_sizes);
+		if (!layout.AllConstant()) {
+			VectorOperations::Copy(input.heap_sizes, state.chunk_state.heap_sizes, append_sel, input.heap_sizes.size(),
+			                       0, 0, append_count);
+		}
 
 		const auto size_before = partition.data_size;
 		partition.Build(partition_pin_state, state.chunk_state, 0, append_count);
 		data_size += partition.data_size - size_before;
 
-		partition.CopyRows(state.chunk_state, input, *FlatVector::IncrementalSelectionVector(), append_count);
+		partition.CopyRows(state.chunk_state, input, append_sel, append_count);
 	} else {
 		// Build the buffer space
-		state.chunk_state.heap_sizes.Slice(input.heap_sizes, state.partition_sel, append_count);
-		state.chunk_state.heap_sizes.Flatten();
+		if (!layout.AllConstant()) {
+			VectorOperations::Copy(input.heap_sizes, state.chunk_state.heap_sizes, state.partition_sel,
+			                       input.heap_sizes.size(), 0, 0, append_count);
+		}
 		BuildBufferSpace(state);
 
 		// Copy the rows

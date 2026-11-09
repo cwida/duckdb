@@ -50,7 +50,7 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		if (!BoundCastExpression::CastIsInvertible(constant_value.type(), target_type)) {
 			return nullptr;
 		}
-		auto new_constant = constant_value.DefaultTryCastAs(target_type);
+		auto new_constant = constant_value.TryCastAs(GetContext(), target_type);
 		if (!new_constant) {
 			return nullptr;
 		} else {

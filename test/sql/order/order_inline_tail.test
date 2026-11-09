@@ -1,0 +1,100 @@
+# name: test/sql/order/order_inline_tail.test
+# description: Inline tails in variable sort keys, including nested keys and ASOF decoding
+# group: [order]
+
+statement ok
+SET threads=3;
+
+statement ok
+PRAGMA verify_parallelism;
+
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+SET temp_directory='{TEST_DIR}/order_inline_tail';
+
+# BLOBs force variable-key layouts. The shortest encoded keys straddle 8, 16 and 24 bytes.
+foreach prefix 0 1 2 8 9 10 16 17 18
+
+statement ok
+CREATE OR REPLACE TABLE keys AS
+SELECT r, b, [b] AS l, {'b':b} AS s
+FROM (
+    SELECT CASE WHEN v=7 THEN 8192 ELSE g*8+v END AS r,
+           CASE WHEN v=7 THEN NULL
+                ELSE encode(repeat('a',{prefix})||lpad(g::VARCHAR,4,'0'))||tail END AS b
+    FROM (SELECT (i*977)%1024 AS g FROM range(1024) t(i)),
+         (VALUES (0,encode('a'||repeat('x',32))), (1,encode('m')),
+                 (2,encode('m')||from_hex('00')), (3,encode('m')||from_hex('01')),
+                 (4,encode('m'||repeat('z',32))), (5,encode('m')||from_hex('FF')),
+                 (6,encode('z'||repeat('x',32))), (7,NULL)) tails(v,tail)
+);
+
+foreach key b l s
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+# Numeric ranks give an independent order, including equal NULL keys.
+query I
+SELECT list(r ORDER BY {key} NULLS LAST) = list(r ORDER BY r) FROM keys;
+----
+true
+
+query I
+SELECT list(r ORDER BY {key} DESC NULLS FIRST) = list(r ORDER BY r DESC) FROM keys;
+----
+true
+
+# Project only the key to exercise the layout without a payload and its decoder.
+query I
+SELECT list(k ORDER BY n) IS NOT DISTINCT FROM (SELECT list({key} ORDER BY r) FROM keys)
+FROM (SELECT k, row_number() OVER () AS n FROM (SELECT {key} AS k FROM keys ORDER BY k NULLS LAST));
+----
+true
+
+query I
+SELECT list(k ORDER BY n) IS NOT DISTINCT FROM (SELECT list({key} ORDER BY r DESC) FROM keys)
+FROM (SELECT k, row_number() OVER () AS n FROM (SELECT {key} AS k FROM keys ORDER BY k DESC NULLS FIRST));
+----
+true
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+SET asof_loop_join_threshold=0;
+
+statement ok
+SET debug_asof_iejoin=false;
+
+# The equality prefix and inequality key together straddle the inline capacity.
+statement ok
+CREATE TABLE prices AS
+SELECT g, n, symbol, (2*n)::TINYINT AS t
+FROM (VALUES (0,encode(repeat('a',10)||'m')), (1,encode(repeat('a',11)||'m')),
+             (2,encode(repeat('a',12)||'m')), (3,encode(repeat('a',40)||'m')),
+             (4,encode(repeat('a',11)||'m')||from_hex('00'))) symbols(g,symbol),
+     range(3) times(n);
+
+statement ok
+CREATE TABLE trades AS SELECT g,n,symbol,(t+1)::TINYINT AS t FROM prices;
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query III
+SELECT count(*), sum(p.n), bool_and(t.g=p.g AND t.n=p.n)
+FROM trades t ASOF JOIN prices p ON t.symbol=p.symbol AND t.t>=p.t;
+----
+15	15	true
+
+endloop

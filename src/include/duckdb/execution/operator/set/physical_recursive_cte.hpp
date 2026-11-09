@@ -27,6 +27,10 @@ struct RecursiveCTEPipelineSchedulePlan;
 class PhysicalColumnDataScan;
 class Pipeline;
 class PipelineExecutor;
+class InterruptState;
+
+//! Result of driving one recursive epoch
+enum class RecursiveEpochResult : uint8_t { COMPLETE, BLOCKED };
 
 class RecursiveCTEPartialKeySpec {
 public:
@@ -65,6 +69,9 @@ struct RecursiveCTEKeyedProperties {
 	bool can_reuse_changed_group_candidates = false;
 	//! Some payload column compares through a SQL-level expression rather than by value
 	bool has_payload_comparisons = false;
+	//! Every aggregate result fits a fixed-width or string slot, so the commit can materialize the finalized values
+	//! per group and reads consume them without invoking aggregate callbacks
+	bool materialize_finalized_values = false;
 
 	static RecursiveCTEKeyedProperties Derive(const PhysicalRecursiveCTE &op);
 };
@@ -176,7 +183,11 @@ public:
 	vector<const_reference<PhysicalOperator>> GetSources() const override;
 
 private:
-	void ExecuteRecursivePipelines(ExecutionContext &context) const;
+	//! Drives one recursive epoch. BLOCKED means the epoch suspended on blocked inner work: the
+	//! caller must return SourceResultType::BLOCKED and will be re-entered through the given
+	//! interrupt state once the blocking work completes. The epoch resumes where it stopped.
+	RecursiveEpochResult ExecuteRecursivePipelines(ExecutionContext &context,
+	                                               const InterruptState &interrupt_state) const;
 	idx_t NextMetricsInvocation() const;
 
 private:

@@ -1,0 +1,37 @@
+# name: test/sql/window/ntile_fallible.test
+# description: ntile validates its bucket count at runtime and must be registered as fallible
+# group: [window]
+
+statement ok
+CREATE TABLE tile_input(id INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO tile_input VALUES (1), (2);
+
+# a unique partition key scalarizes the window function into a window scalar function that copies
+# its properties - the error must stay a regular error instead of becoming an internal
+# "not marked as fallible" error
+
+statement error
+SELECT ntile(0) OVER (PARTITION BY id) FROM tile_input;
+----
+Argument for ntile must be greater than zero
+
+statement error
+SELECT ntile(0) OVER () FROM tile_input;
+----
+Argument for ntile must be greater than zero
+
+# valid bucket counts keep working in the scalarized position, also under dictionary verification
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT ntile(2) OVER (PARTITION BY id) FROM tile_input;
+----
+1
+1
+
+statement ok
+RESET debug_verify_vector;

@@ -118,13 +118,24 @@ public:
 	void ClearFilters(const PhysicalOperator &op);
 	void PushFilter(const PhysicalOperator &op, ProjectionIndex column_index, unique_ptr<TableFilter> filter);
 
+	vector<shared_ptr<DynamicTableFilterSet>> AddDisjunction(ProjectionIndex column, idx_t alternative_count);
+	vector<reference<DynamicTableFilterSet>> GetDisjunctionFilters() const;
+
 	bool HasFilters() const;
 	unique_ptr<TableFilterSet> GetFinalTableFilters(const PhysicalTableScan &scan,
 	                                                optional_ptr<TableFilterSet> existing_filters) const;
 
 private:
+	unique_ptr<Expression> CopyColumnFilter(ProjectionIndex column) const;
+
+	struct FilterDisjunction {
+		ProjectionIndex column;
+		vector<shared_ptr<DynamicTableFilterSet>> alternatives;
+	};
+
 	mutable mutex lock;
 	reference_map_t<const PhysicalOperator, unique_ptr<TableFilterSet>> filters;
+	vector<FilterDisjunction> disjunctions;
 };
 
 } // namespace duckdb

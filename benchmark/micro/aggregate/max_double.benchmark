@@ -1,0 +1,15 @@
+# name: benchmark/micro/aggregate/max_double.benchmark
+# description: MAX(d) over a DOUBLE column
+# group: [aggregate]
+
+name Double MAX (Ungrouped)
+group aggregate
+
+load
+CREATE TABLE doubles AS SELECT i::DOUBLE + 0.5 AS d FROM range(0, 100000000) tbl(i);
+
+run
+SELECT MAX(d) FROM doubles
+
+result I
+99999999.5

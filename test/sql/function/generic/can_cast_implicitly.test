@@ -40,3 +40,52 @@ query I
 EXECUTE implicit_cast_parameter('one')
 ----
 false
+
+# NULL arguments are resolved when the function is bound, like every other argument type
+query III
+SELECT can_cast_implicitly(i, NULL), can_cast_implicitly(NULL, i), can_cast_implicitly(NULL, NULL) FROM tbl LIMIT 1
+----
+false	true	true
+
+# a NULL parameter value is bound as a NULL argument
+statement ok
+PREPARE implicit_cast_null_parameter AS SELECT can_cast_implicitly($1, 1), can_cast_implicitly(1, $1), can_cast_implicitly($1, $1)
+
+query III
+EXECUTE implicit_cast_null_parameter(NULL)
+----
+true	false	true
+
+query III
+EXECUTE implicit_cast_null_parameter(1.5)
+----
+false	true	true
+
+query III
+EXECUTE implicit_cast_null_parameter('a')
+----
+false	false	true
+
+query III
+EXECUTE implicit_cast_null_parameter(1::BIGINT)
+----
+false	true	true
+
+# a parameter that is only the target type defers binding as well
+statement ok
+PREPARE implicit_cast_target_parameter AS SELECT can_cast_implicitly(1, $1)
+
+query I
+EXECUTE implicit_cast_target_parameter(NULL)
+----
+false
+
+query I
+EXECUTE implicit_cast_target_parameter(1::BIGINT)
+----
+true
+
+query I
+EXECUTE implicit_cast_target_parameter('one')
+----
+false

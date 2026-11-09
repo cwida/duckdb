@@ -248,6 +248,7 @@ template <class TYPE>
 void BindBitString(AggregateFunctionSet &bitstring_agg, const LogicalTypeId &type) {
 	auto function = AggregateFunction::UnaryAggregate<BitAggState<TYPE>, TYPE, string_t, BitStringAggOperation>(
 	    type, LogicalType::BIT);
+	function.SetFallible(); // out-of-range inputs and invalid or missing min/max bounds throw at runtime
 	function.SetBindCallback(BindBitstringAgg); // create new a 'BitstringAggBindData'
 	function.SetSerializeCallback(BitstringAggBindData::Serialize);
 	function.SetDeserializeCallback(BitstringAggBindData::Deserialize);
