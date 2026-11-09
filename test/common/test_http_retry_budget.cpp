@@ -4,6 +4,10 @@
 #include "duckdb/main/http/http_util.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb.hpp"
+#include "test_helpers.hpp"
+
+#include <chrono>
 
 using namespace duckdb;
 
@@ -841,4 +845,127 @@ TEST_CASE("HTTPUtil hands out one retry quota per host and forgets the quietest"
 	REQUIRE(returned->Available() == HTTPRetryQuota::INITIAL_CAPACITY);
 	// The budget that still held the evicted quota keeps a valid object
 	REQUIRE(first->Available() == HTTPRetryQuota::INITIAL_CAPACITY - HTTPRetryQuota::RETRY_COST);
+}
+
+TEST_CASE("An empty quota does not refuse throttled retries when http_retry_quota_throttled is off", "[http]") {
+	HTTPUtil http_util;
+	HTTPParams params(http_util);
+	params.retries = 3;
+	params.retry_wait_ms = 0;
+	params.retry_quota_throttled = false;
+	auto quota = make_shared_ptr<HTTPRetryQuota>();
+	// Leave less than one retry's tokens
+	REQUIRE(quota->TryAcquire(HTTPRetryQuota::INITIAL_CAPACITY - 3));
+	HTTPRetryBudget budget(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	budget.BindQuota(quota);
+	idx_t attempts = 0;
+	budget.Run([&]() {
+		attempts++;
+		return attempts <= 2 ? HTTPRetryDecision::Throttled() : HTTPRetryDecision::Finish();
+	});
+	REQUIRE(attempts == 3);
+	REQUIRE(budget.ThrottledRetries() == 2);
+	REQUIRE_FALSE(budget.QuotaExhausted());
+	// The first retry took the three tokens that were left, the second none
+	REQUIRE(quota->Available() == 0);
+	// A success refunds what the retries took, not what they would have cost
+	budget.ReportSuccess();
+	REQUIRE(quota->Available() == 3);
+
+	// The retries stay bounded by http_retries and the throttle extras
+	HTTPRetryBudget storm(params);
+	storm.BindQuota(quota);
+	attempts = 0;
+	storm.Run([&]() {
+		attempts++;
+		return HTTPRetryDecision::Throttled();
+	});
+	REQUIRE(attempts == 1 + params.retries + HTTPRetryBudget::THROTTLE_EXTRA_RETRIES);
+	REQUIRE_FALSE(storm.QuotaExhausted());
+	REQUIRE(quota->Available() == 0);
+
+	// Server errors and transport failures are still refused by the empty quota
+	HTTPRetryBudget server_error(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	server_error.BindQuota(quota);
+	attempts = 0;
+	server_error.Run([&]() {
+		attempts++;
+		return HTTPRetryDecision::Retry();
+	});
+	REQUIRE(attempts == 1);
+	REQUIRE(server_error.QuotaExhausted());
+	HTTPRetryBudget transport_error(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	transport_error.BindQuota(quota);
+	attempts = 0;
+	transport_error.Run([&]() {
+		attempts++;
+		return HTTPRetryDecision::Transient();
+	});
+	REQUIRE(attempts == 1);
+	REQUIRE(transport_error.QuotaExhausted());
+
+	// By default the empty quota refuses a throttled retry as well
+	params.retry_quota_throttled = true;
+	HTTPRetryBudget fail_fast(params, HTTPRetryOutcomeOwner::COORDINATOR);
+	fail_fast.BindQuota(quota);
+	attempts = 0;
+	fail_fast.Run([&]() {
+		attempts++;
+		return HTTPRetryDecision::Throttled();
+	});
+	REQUIRE(attempts == 1);
+	REQUIRE(fail_fast.QuotaExhausted());
+}
+
+TEST_CASE("Throttled HTTP retries back off from http_retry_throttled_wait_ms", "[http]") {
+	HTTPUtil http_util;
+	HTTPParams params(http_util);
+	params.retries = 1;
+	params.retry_wait_ms = 0;
+	params.retry_throttled_wait_ms = 200;
+	HTTPRetryBudget budget(params);
+	idx_t attempts = 0;
+	const auto start = std::chrono::steady_clock::now();
+	budget.Run([&]() {
+		attempts++;
+		return attempts == 1 ? HTTPRetryDecision::Throttled() : HTTPRetryDecision::Finish();
+	});
+	const auto elapsed = std::chrono::steady_clock::now() - start;
+	REQUIRE(attempts == 2);
+#ifndef DUCKDB_NO_THREADS
+	// The first throttled retry waits in the upper half of its 200 ms base, although http_retry_wait_ms asks for none
+	REQUIRE(elapsed >= std::chrono::milliseconds(100));
+#else
+	(void)elapsed;
+#endif
+}
+
+TEST_CASE("HTTP params take the throttled retry settings of the session", "[http]") {
+	DuckDB db(nullptr);
+	auto params = [](Connection &con) {
+		// A provider that replaces the built-in one (httpfs) reads secrets while it initializes the parameters, which
+		// takes a transaction
+		con.BeginTransaction();
+		auto result = HTTPUtil::Get(*con.context->db).InitializeParameters(*con.context, "http://localhost/");
+		con.Commit();
+		return result;
+	};
+	Connection con(db);
+	auto defaults = params(con);
+	REQUIRE(defaults->retry_quota_throttled);
+	REQUIRE(defaults->retry_throttled_wait_ms == 0);
+	REQUIRE_NO_FAIL(con.Query("SET http_retry_quota_throttled = false"));
+	REQUIRE_NO_FAIL(con.Query("SET http_retry_throttled_wait_ms = 1000"));
+	auto session = params(con);
+	REQUIRE_FALSE(session->retry_quota_throttled);
+	REQUIRE(session->retry_throttled_wait_ms == 1000);
+	// A plain SET is the session's own: another connection keeps the defaults
+	Connection other(db);
+	auto other_params = params(other);
+	REQUIRE(other_params->retry_quota_throttled);
+	REQUIRE(other_params->retry_throttled_wait_ms == 0);
+	// A global value reaches every session that has none of its own
+	REQUIRE_NO_FAIL(other.Query("SET GLOBAL http_retry_quota_throttled = false"));
+	Connection third(db);
+	REQUIRE_FALSE(params(third)->retry_quota_throttled);
 }

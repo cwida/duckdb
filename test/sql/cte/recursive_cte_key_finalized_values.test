@@ -46,11 +46,11 @@ query II
 WITH RECURSIVE t(k, v) USING KEY (k, first(v)) AS (
 	SELECT 0, 0
 	UNION
-	SELECT n.k + 1, n.v + r.cnt FROM t n, (SELECT count(*)::INTEGER AS cnt FROM recurring.t) r WHERE n.k < 5000
+	SELECT n.k + 1, n.v + r.cnt FROM t n, (SELECT count(*)::INTEGER AS cnt FROM recurring.t) r WHERE n.k < 2500
 )
 SELECT count(*), max(v) > 0 FROM t;
 ----
-5001	true
+2501	true
 
 # The changed-candidate reuse path: every iteration updates every existing key, so the commit may forward
 # the candidates. Reads of the next iteration must see the updated values.

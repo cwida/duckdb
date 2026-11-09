@@ -757,7 +757,7 @@ unique_ptr<FunctionData> BindToAggregateState(INPUT &input) {
 		}
 	}
 	// the arguments are not yet cast to the parameter types when binding
-	auto function_name_val = input.GetNonNullConstant(1).DefaultCastAs(LogicalType::VARCHAR);
+	auto function_name_val = input.GetNonNullConstant(1).CastAs(input.GetClientContext(), LogicalType::VARCHAR);
 	auto function_name = StringValue::Get(function_name_val);
 
 	auto signature_val = input.GetNonNullConstant(2);
@@ -779,7 +779,7 @@ unique_ptr<FunctionData> BindToAggregateState(INPUT &input) {
 	}
 	for (auto &entry : constant_parameters) {
 		// cast each constant to the argument type declared in the signature
-		entry.second = entry.second.DefaultCastAs(argument_types[entry.first]);
+		entry.second = entry.second.CastAs(context, argument_types[entry.first]);
 	}
 
 	auto bind_data = BindExportedAggregate(context, function_name, argument_types, constant_parameters);

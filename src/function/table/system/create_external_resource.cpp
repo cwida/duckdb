@@ -128,7 +128,7 @@ static unique_ptr<FunctionData> CreateExternalResourceBind(ClientContext &contex
 			result->adopt_handle =
 			    np.second.type().id() == LogicalTypeId::MAP
 			        ? np.second
-			        : np.second.DefaultCastAs(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+			        : np.second.CastAs(context, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 		} else if (key == "teardown_on_failure" && !np.second.IsNull()) {
 			result->teardown_on_failure = BooleanValue::Get(np.second);
 		} else if (key == "timeout_seconds" && !np.second.IsNull()) {
