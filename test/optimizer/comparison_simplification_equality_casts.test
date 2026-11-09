@@ -134,3 +134,29 @@ SELECT
 FROM f;
 ----
 0	1	1	1	0	2
+
+# BOOLEAN, DECIMAL and UUID -> VARCHAR: only the canonical string of a value can match
+statement ok
+CREATE TABLE v AS SELECT * FROM (VALUES
+	(true, 1.50::DECIMAL(4,2), 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::UUID),
+	(false, -2.00::DECIMAL(4,2), '00000000-0000-0000-0000-000000000001'::UUID),
+	(NULL, NULL, NULL)
+) v(b, d, u);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v
+WHERE b::VARCHAR = 'true' AND d::VARCHAR = '1.50' AND u::VARCHAR IN ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'abc');
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query IIIIII
+SELECT
+	count(*) FILTER (WHERE b::VARCHAR = 'false'),
+	count(*) FILTER (WHERE b::VARCHAR IN ('TRUE', 't', '1')),
+	count(*) FILTER (WHERE d::VARCHAR = '-2.00'),
+	count(*) FILTER (WHERE d::VARCHAR IN ('1.5', '01.50', '1.505')),
+	count(*) FILTER (WHERE u::VARCHAR = '00000000-0000-0000-0000-000000000001'),
+	count(*) FILTER (WHERE u::VARCHAR != 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11')
+FROM v;
+----
+1	0	1	0	1	2

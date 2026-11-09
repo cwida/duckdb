@@ -309,12 +309,27 @@ bool BoundCastExpression::IsLosslessIntegralToFloatingCast(const LogicalType &so
 	return false;
 }
 
+//! Whether every value of the type has a unique VARCHAR representation that casts back to the same value
+static bool HasCanonicalVarcharRepresentation(const LogicalType &type) {
+	if (type.IsIntegral()) {
+		return true;
+	}
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::UUID:
+		return true;
+	default:
+		return false;
+	}
+}
+
 bool BoundCastExpression::CastIsInvertibleForEquality(const LogicalType &source_type, const LogicalType &target_type) {
+	if (target_type.id() == LogicalTypeId::VARCHAR) {
+		// a collation can make distinct strings equal
+		return HasCanonicalVarcharRepresentation(source_type) && StringType::GetCollation(target_type).empty();
+	}
 	if (source_type.IsIntegral()) {
-		if (target_type.id() == LogicalTypeId::VARCHAR) {
-			// a collation can make distinct strings equal
-			return StringType::GetCollation(target_type).empty();
-		}
 		if (IsLosslessIntegralToFloatingCast(source_type, target_type)) {
 			return true;
 		}
