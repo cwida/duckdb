@@ -915,10 +915,6 @@ void ParquetWriter::Flush(ColumnDataCollection &buffer, unique_ptr<ParquetWriteT
 	if (buffer.Count() == 0) {
 		return;
 	}
-	unique_lock<std::mutex> cdc_guard;
-	if (ContentDefinedChunking()) {
-		cdc_guard = unique_lock<std::mutex>(cdc_lock);
-	}
 
 	PreparedRowGroup prepared_row_group;
 	PrepareRowGroup(buffer, prepared_row_group, transform_data);
