@@ -139,9 +139,8 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 	// state, so the active sink is preserved instead of becoming a path-less sink that throws
 	// on every later flush (end-of-query and shutdown included).
 	if (StringUtil::Lower(result->config.storage) == LogConfig::FILE_STORAGE_NAME) {
-		auto current_sink = StringUtil::Lower(context.db->GetLogManager().GetConfig().storage);
-		// An already-active file sink keeps its existing path; only guard a fresh switch.
-		if (current_sink != LogConfig::FILE_STORAGE_NAME) {
+		// An enabled file sink keeps its existing path; only guard a fresh switch.
+		if (!context.db->GetLogManager().IsLogSinkEnabled(LogConfig::FILE_STORAGE_NAME)) {
 			auto path_entry = result->sink_config.find("path");
 			bool has_usable_path = path_entry != result->sink_config.end() && !path_entry->second.IsNull() &&
 			                       !path_entry->second.ToString().empty();
@@ -212,6 +211,7 @@ public:
 	}
 
 	string name;
+	case_insensitive_map_t<Value> sink_config;
 };
 
 static unique_ptr<FunctionData> BindLogSinkName(ClientContext &context, TableFunctionBindInput &input,
@@ -230,28 +230,39 @@ static unique_ptr<FunctionData> BindLogSinkName(ClientContext &context, TableFun
 	return make_uniq<LogSinkNameBindData>(std::move(name));
 }
 
-//! Enable a log sink, creating a new one first if no sink with this name exists
-static void EnableLogSink(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+static unique_ptr<FunctionData> BindAddLogSink(ClientContext &context, TableFunctionBindInput &input,
+                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto result = BindLogSinkName(context, input, return_types, names);
+	auto &bind_data = result->Cast<LogSinkNameBindData>();
+	for (const auto &param : input.named_parameters) {
+		auto &name = param.first.GetIdentifierName();
+		if (name == "config") {
+			if (param.second.type().id() != LogicalTypeId::STRUCT) {
+				throw InvalidInputException("add_log_sink: config must be a struct");
+			}
+			auto &children = StructValue::GetChildren(param.second);
+			for (idx_t i = 0; i < children.size(); i++) {
+				bind_data.sink_config[StructType::GetChildName(param.second.type(), i).GetIdentifierName()] =
+				    children[i];
+			}
+		} else if (name == "path" || name == "normalize" || name == "buffer_size") {
+			bind_data.sink_config[name] = param.second;
+		} else {
+			throw InvalidInputException("add_log_sink: unknown named parameter: %s", name);
+		}
+	}
+	return result;
+}
+
+//! Also send the log entries to this sink
+static void AddLogSink(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->Cast<LogSinkNameBindData>();
-	context.db->GetLogManager().EnableLogSink(bind_data.name);
+	context.db->GetLogManager().AddLogSink(*context.db, bind_data.name, bind_data.sink_config);
 }
 
-static void DisableLogSink(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+static void RemoveLogSink(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->Cast<LogSinkNameBindData>();
-	context.db->GetLogManager().DisableLogSink(bind_data.name);
-}
-
-//! Flush all enabled log sinks
-static void FlushLogs(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	context.db->GetLogManager().Flush();
-}
-
-static unique_ptr<FunctionData> BindFlushLogs(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
-	return_types.emplace_back(LogicalType::BOOLEAN);
-	names.emplace_back("Success");
-
-	return make_uniq<EnableLoggingBindData>();
+	context.db->GetLogManager().RemoveLogSink(*context.db, bind_data.name);
 }
 
 void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
@@ -283,16 +294,20 @@ void EnableLoggingFun::RegisterFunction(BuiltinFunctions &set) {
 	auto truncate_fun = TableFunction("truncate_duckdb_logs", {}, TruncateLogs, BindTruncateLogs, nullptr, nullptr);
 	set.AddFunction(truncate_fun);
 
-	auto enable_sink_fun =
-	    TableFunction("enable_log_sink", {LogicalType::VARCHAR}, EnableLogSink, BindLogSinkName, nullptr, nullptr);
-	set.AddFunction(enable_sink_fun);
+	TableFunction add_sink_fun("add_log_sink", FunctionSignature().AddPositionalOnly("sink", LogicalType::VARCHAR),
+	                           AddLogSink, BindAddLogSink);
+	add_sink_fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		// path, normalize and buffer_size are forwarded to the config struct as syntactic sugar
+		options.Add("config", LogicalType::ANY)
+		    .Add("path", LogicalType::VARCHAR)
+		    .Add("normalize", LogicalType::BOOLEAN)
+		    .Add("buffer_size", LogicalType::UBIGINT);
+	});
+	set.AddFunction(add_sink_fun);
 
-	auto disable_sink_fun =
-	    TableFunction("disable_log_sink", {LogicalType::VARCHAR}, DisableLogSink, BindLogSinkName, nullptr, nullptr);
-	set.AddFunction(disable_sink_fun);
-
-	auto flush_fun = TableFunction("flush_logs", {}, FlushLogs, BindFlushLogs, nullptr, nullptr);
-	set.AddFunction(flush_fun);
+	auto remove_sink_fun =
+	    TableFunction("remove_log_sink", {LogicalType::VARCHAR}, RemoveLogSink, BindLogSinkName, nullptr, nullptr);
+	set.AddFunction(remove_sink_fun);
 }
 
 } // namespace duckdb

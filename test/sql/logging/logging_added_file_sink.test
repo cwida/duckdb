@@ -1,0 +1,87 @@
+# name: test/sql/logging/logging_added_file_sink.test
+# description: Add a file log sink next to the main log sink
+# group: [logging]
+
+require noforcestorage
+
+# Due to different file locking behaviour, this currently fails on windows
+require notwindows
+
+statement ok
+CALL enable_logging()
+
+statement ok
+CALL add_log_sink('file', path='{TEST_DIR}/logging_added_file_sink.csv')
+
+statement ok
+SELECT write_log('to both')
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'to both'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_logs(sink='file', denormalized_table=true) WHERE message = 'to both'
+----
+1
+
+# truncate_duckdb_logs only clears the main log sink
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'to both'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_logs(sink='file', denormalized_table=true) WHERE message = 'to both'
+----
+1
+
+# disable_logging pauses the added sinks as well, enable_logging resumes them
+statement ok
+CALL disable_logging()
+
+statement ok
+SELECT write_log('while disabled')
+
+statement ok
+CALL enable_logging()
+
+statement ok
+SELECT write_log('after enable')
+
+query I
+SELECT message FROM duckdb_logs(sink='file', denormalized_table=true) WHERE message IN ('while disabled', 'after enable')
+----
+after enable
+
+# the added file sink becomes the main log sink without passing its path again
+statement ok
+SET logging_sink='file'
+
+query I
+SELECT count(*) FROM duckdb_logs(denormalized_table=true) WHERE message = 'to both'
+----
+1
+
+statement error
+CALL remove_log_sink('file')
+----
+Log sink 'file' is the main log sink and cannot be removed
+
+# switching the main log sink away drops the file sink, adding it again starts a new one
+statement ok
+CALL enable_logging(sink='memory')
+
+statement error
+CALL add_log_sink('file')
+----
+The 'file' log sink requires a path
+
+statement error
+SELECT * FROM duckdb_logs(sink='file')
+----
+Log sink 'file' is not enabled

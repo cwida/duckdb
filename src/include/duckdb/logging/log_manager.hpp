@@ -20,7 +20,7 @@ class LogType;
 // - Handles configuration changes
 // - Creates Loggers with cached configuration
 // - Main sink for logs (either by logging directly into this, or by syncing a pre-cached set of log entries)
-// - Holds the main log sink and the additional enabled log sinks, every sink name maps to a single instance
+// - Holds the main log sink and the log sinks added next to it, a sink is never both
 class LogManager {
 	friend class ThreadSafeLogger;
 	friend class ThreadLocalLogger;
@@ -48,12 +48,14 @@ public:
 
 	//! Get a shared_ptr to the main log sink (For example, to scan it)
 	DUCKDB_API shared_ptr<LogSink> GetMainLogSink();
-	//! Get the log sink with this name, or the main log sink if the name is empty. Throws if there is none
+	//! Get the main log sink or an added log sink by name, or the main log sink if the name is empty
 	DUCKDB_API shared_ptr<LogSink> GetLogSink(const string &name);
 	//! Like GetLogSink, but throws if the sink cannot be scanned for this table
 	DUCKDB_API shared_ptr<LogSink> GetScannableLogSink(const string &name, LoggingTargetTable table);
 	//! Get the registered log sink with this name, or nullptr if there is none
 	DUCKDB_API shared_ptr<LogSink> GetRegisteredLogSink(const string &name);
+	//! Whether this sink is the main log sink or an added log sink
+	DUCKDB_API bool IsLogSinkEnabled(const string &name);
 	DUCKDB_API bool CanScan(LoggingTargetTable table);
 
 	DUCKDB_API void SetConfig(DatabaseInstance &db, const LogConfig &config);
@@ -63,12 +65,12 @@ public:
 	DUCKDB_API void SetEnabledLogTypes(optional_ptr<unordered_set<string>> enabled_log_types);
 	DUCKDB_API void SetDisabledLogTypes(optional_ptr<unordered_set<string>> disabled_log_types);
 	DUCKDB_API void SetMainLogSink(DatabaseInstance &db, const string &sink_name);
-	//! Enable a log sink: it receives the log entries in addition to the main log sink
-	//! Built-in sinks that are not registered yet are created, except 'file' which needs a path
-	DUCKDB_API void EnableLogSink(const string &name);
-	//! Disable a log sink enabled with EnableLogSink, it keeps the entries it already has
-	//! The main log sink cannot be disabled, switch it with SetLogSink instead
-	DUCKDB_API void DisableLogSink(const string &name);
+	//! Also send the log entries to this sink, and enable logging if it is off
+	//! If the sink is already the main or an added sink, only its config is updated
+	DUCKDB_API void AddLogSink(DatabaseInstance &db, const string &sink_name,
+	                           const case_insensitive_map_t<Value> &sink_config = case_insensitive_map_t<Value>());
+	//! Stop sending the log entries to a sink added with AddLogSink
+	DUCKDB_API void RemoveLogSink(DatabaseInstance &db, const string &sink_name);
 
 	DUCKDB_API void UpdateMainLogSinkConfig(DatabaseInstance &db, case_insensitive_map_t<Value> &config_value);
 
@@ -92,8 +94,10 @@ protected:
 	void FlushCachedLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context);
 
 	void SetMainLogSinkInternal(DatabaseInstance &db, const string &sink_name);
-	//! The sink registered under this name, creating and registering a built-in sink if needed
-	shared_ptr<LogSink> GetOrCreateLogSinkInternal(DatabaseInstance &db, const string &sink_name);
+	//! A new built-in sink, or the sink registered under this name. Throws if there is none
+	shared_ptr<LogSink> CreateLogSinkInternal(DatabaseInstance &db, const string &sink_name);
+	//! The main log sink or the added sink with this name, or nullptr if there is none
+	shared_ptr<LogSink> GetEnabledLogSinkInternal(const string &sink_name);
 	shared_ptr<LogSink> GetLogSinkInternal(const string &name);
 
 	optional_ptr<const LogType> LookupLogTypeInternal(const string &type);
@@ -107,14 +111,14 @@ protected:
 	shared_ptr<Logger> global_logger;
 	//! The main log sink, it always receives the log entries. Its name is config.storage
 	shared_ptr<LogSink> main_log_sink;
+	//! The sinks that receive the log entries next to the main log sink, never including the main log sink
+	case_insensitive_map_t<shared_ptr<LogSink>> added_log_sinks;
 	DatabaseInstance &db_instance;
 
 	idx_t next_registered_logging_context_index = 0;
 
-	// All named LogSinks: built-in sinks once they are used, and sinks registered by extensions for example
+	// The LogSinks registered with RegisterLogSink, by extensions for example
 	case_insensitive_map_t<shared_ptr<LogSink>> registered_log_sinks;
-	// Names of the registered LogSinks that receive the log entries in addition to the main log sink
-	case_insensitive_set_t enabled_log_sinks;
 	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types;
 };
 

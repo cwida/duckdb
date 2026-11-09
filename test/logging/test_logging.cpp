@@ -239,31 +239,35 @@ TEST_CASE("Test multiple log sinks", "[logging]") {
 	REQUIRE(log_manager.GetRegisteredLogSink("sink_a").get() == sink_a.get());
 	REQUIRE(!log_manager.GetRegisteredLogSink("sink_c"));
 
-	REQUIRE_NO_FAIL(con.Query("set enable_logging=true;"));
-	log_manager.EnableLogSink("sink_a");
-	// enable_log_sink uses the sink that is already registered under this name
-	REQUIRE_NO_FAIL(con.Query("call enable_log_sink('sink_b');"));
+	// adding a sink enables logging
+	log_manager.AddLogSink(*db.instance, "sink_a");
+	REQUIRE(log_manager.GetConfig().enabled);
+	REQUIRE(log_manager.IsLogSinkEnabled("sink_a"));
+	// add_log_sink uses the sink that is registered under this name
+	REQUIRE_NO_FAIL(con.Query("call add_log_sink('sink_b');"));
 
-	REQUIRE_NO_FAIL(con.Query("select write_log('BEFORE DISABLE');"));
-	REQUIRE(sink_a->log_store.count("BEFORE DISABLE") == 1);
-	REQUIRE(sink_b->log_store.count("BEFORE DISABLE") == 1);
+	REQUIRE_NO_FAIL(con.Query("select write_log('BEFORE REMOVE');"));
+	REQUIRE(sink_a->log_store.count("BEFORE REMOVE") == 1);
+	REQUIRE(sink_b->log_store.count("BEFORE REMOVE") == 1);
 
-	log_manager.DisableLogSink("sink_a");
-	REQUIRE_NO_FAIL(con.Query("select write_log('AFTER DISABLE');"));
-	REQUIRE(sink_a->log_store.count("AFTER DISABLE") == 0);
-	REQUIRE(sink_b->log_store.count("AFTER DISABLE") == 1);
+	log_manager.RemoveLogSink(*db.instance, "sink_a");
+	REQUIRE(!log_manager.IsLogSinkEnabled("sink_a"));
+	REQUIRE_NO_FAIL(con.Query("select write_log('AFTER REMOVE');"));
+	REQUIRE(sink_a->log_store.count("AFTER REMOVE") == 0);
+	REQUIRE(sink_b->log_store.count("AFTER REMOVE") == 1);
 
-	REQUIRE_NO_FAIL(con.Query("call disable_log_sink('sink_b');"));
-	REQUIRE_NO_FAIL(con.Query("select write_log('BOTH DISABLED');"));
-	REQUIRE(sink_b->log_store.count("BOTH DISABLED") == 0);
+	REQUIRE_NO_FAIL(con.Query("call remove_log_sink('sink_b');"));
+	REQUIRE_NO_FAIL(con.Query("select write_log('BOTH REMOVED');"));
+	REQUIRE(sink_b->log_store.count("BOTH REMOVED") == 0);
 
-	// enabling an unknown name creates an in-memory sink for it
-	log_manager.EnableLogSink("sink_c");
-	REQUIRE(log_manager.GetRegisteredLogSink("sink_c"));
-	REQUIRE_THROWS_WITH(log_manager.DisableLogSink("sink_a"), Catch::Matchers::Contains("is not enabled"));
+	// a removed sink stays registered, and can be added again
+	REQUIRE(log_manager.GetRegisteredLogSink("sink_a").get() == sink_a.get());
+	REQUIRE_THROWS_WITH(log_manager.RemoveLogSink(*db.instance, "sink_a"), Catch::Matchers::Contains("is not enabled"));
+	REQUIRE_THROWS_WITH(log_manager.AddLogSink(*db.instance, "sink_c"),
+	                    Catch::Matchers::Contains("is not yet registered"));
 }
 
-TEST_CASE("Test a log sink that is also enabled gets each entry once", "[logging]") {
+TEST_CASE("Test a log sink is never both the main and an added log sink", "[logging]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto &log_manager = db.instance->GetLogManager();
@@ -274,9 +278,18 @@ TEST_CASE("Test a log sink that is also enabled gets each entry once", "[logging
 
 	REQUIRE_NO_FAIL(con.Query("set enable_logging=true;"));
 	REQUIRE_NO_FAIL(con.Query("set logging_sink='counting_sink';"));
-	REQUIRE_NO_FAIL(con.Query("call enable_log_sink('counting_sink');"));
+	// adding the main log sink changes nothing
+	REQUIRE_NO_FAIL(con.Query("call add_log_sink('counting_sink');"));
 	REQUIRE_NO_FAIL(con.Query("select write_log('ONCE');"));
 	REQUIRE(counting_sink->message_counts["ONCE"] == 1);
+
+	// an added sink that becomes the main log sink is no longer an added sink
+	REQUIRE_NO_FAIL(con.Query("set logging_sink='memory';"));
+	REQUIRE_NO_FAIL(con.Query("call add_log_sink('counting_sink');"));
+	REQUIRE_NO_FAIL(con.Query("set logging_sink='counting_sink';"));
+	REQUIRE_NO_FAIL(con.Query("select write_log('STILL ONCE');"));
+	REQUIRE(counting_sink->message_counts["STILL ONCE"] == 1);
+	REQUIRE_FAIL(con.Query("call remove_log_sink('counting_sink');"));
 }
 
 static bool ContainsMessage(const unordered_set<string> &messages, const string &needle) {

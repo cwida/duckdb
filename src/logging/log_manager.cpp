@@ -54,7 +54,9 @@ RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &cont
 
 bool LogManager::RegisterLogSink(const string &name, shared_ptr<LogSink> &sink) {
 	unique_lock<mutex> lck(lock);
-	if (registered_log_sinks.find(name) != registered_log_sinks.end()) {
+	// the built-in sinks are created by the LogManager, they cannot be replaced
+	if (LogConfig::IsBuiltInLogSink(StringUtil::Lower(name)) ||
+	    registered_log_sinks.find(name) != registered_log_sinks.end()) {
 		return false;
 	}
 	registered_log_sinks.insert({name, std::move(sink)});
@@ -72,10 +74,8 @@ shared_ptr<Logger> LogManager::GlobalLoggerReference() {
 void LogManager::Flush() {
 	unique_lock<mutex> lck(lock);
 	main_log_sink->FlushAll();
-	for (auto &name : enabled_log_sinks) {
-		if (!StringUtil::CIEquals(name, config.storage)) {
-			registered_log_sinks[name]->FlushAll();
-		}
+	for (auto &entry : added_log_sinks) {
+		entry.second->FlushAll();
 	}
 }
 
@@ -89,15 +89,30 @@ shared_ptr<LogSink> LogManager::GetLogSink(const string &name) {
 	return GetLogSinkInternal(name);
 }
 
-shared_ptr<LogSink> LogManager::GetLogSinkInternal(const string &name) {
-	if (name.empty() || StringUtil::CIEquals(name, config.storage)) {
+shared_ptr<LogSink> LogManager::GetEnabledLogSinkInternal(const string &sink_name) {
+	if (StringUtil::CIEquals(sink_name, config.storage)) {
 		return main_log_sink;
 	}
-	auto entry = registered_log_sinks.find(name);
-	if (entry == registered_log_sinks.end()) {
-		throw InvalidInputException("Log sink '%s' is not registered", name);
+	auto entry = added_log_sinks.find(sink_name);
+	if (entry == added_log_sinks.end()) {
+		return nullptr;
 	}
 	return entry->second;
+}
+
+shared_ptr<LogSink> LogManager::GetLogSinkInternal(const string &name) {
+	if (name.empty()) {
+		return main_log_sink;
+	}
+	auto sink = GetEnabledLogSinkInternal(name);
+	if (sink) {
+		return sink;
+	}
+	if (LogConfig::IsBuiltInLogSink(StringUtil::Lower(name)) ||
+	    registered_log_sinks.find(name) != registered_log_sinks.end()) {
+		throw InvalidInputException("Log sink '%s' is not enabled", name);
+	}
+	throw InvalidInputException("Log sink '%s' is not yet registered", name);
 }
 
 shared_ptr<LogSink> LogManager::GetScannableLogSink(const string &name, LoggingTargetTable table) {
@@ -124,6 +139,11 @@ shared_ptr<LogSink> LogManager::GetRegisteredLogSink(const string &name) {
 	return entry->second;
 }
 
+bool LogManager::IsLogSinkEnabled(const string &name) {
+	unique_lock<mutex> lck(lock);
+	return GetEnabledLogSinkInternal(name) != nullptr;
+}
+
 bool LogManager::CanScan(LoggingTargetTable table) {
 	unique_lock<mutex> lck(lock);
 	return main_log_sink->CanScan(table);
@@ -131,7 +151,6 @@ bool LogManager::CanScan(LoggingTargetTable table) {
 
 LogManager::LogManager(DatabaseInstance &db, LogConfig config_p) : config(std::move(config_p)), db_instance(db) {
 	main_log_sink = make_shared_ptr<InMemoryLogSink>(db);
-	registered_log_sinks[LogConfig::IN_MEMORY_STORAGE_NAME] = main_log_sink;
 }
 
 LogManager::~LogManager() {
@@ -167,11 +186,8 @@ void LogManager::WriteLogEntry(timestamp_t timestamp, const char *log_type, LogL
 	} else {
 		unique_lock<mutex> lck(lock);
 		main_log_sink->WriteLogEntry(timestamp, log_level, log_type, log_message, context);
-		for (auto &name : enabled_log_sinks) {
-			// the main log sink can also be enabled, it gets every entry once
-			if (!StringUtil::CIEquals(name, config.storage)) {
-				registered_log_sinks[name]->WriteLogEntry(timestamp, log_level, log_type, log_message, context);
-			}
+		for (auto &entry : added_log_sinks) {
+			entry.second->WriteLogEntry(timestamp, log_level, log_type, log_message, context);
 		}
 	}
 }
@@ -182,7 +198,8 @@ void LogManager::FlushCachedLogEntries(DataChunk &chunk, const RegisteredLogging
 
 void LogManager::SetConfig(DatabaseInstance &db, const LogConfig &config_p) {
 	auto new_config = config_p;
-	new_config.storage = ResolveDeprecatedLogSinkName(db, config_p.storage);
+	// keep the lowercased name, so that it is recognized when set again
+	new_config.storage = StringUtil::Lower(ResolveDeprecatedLogSinkName(db, config_p.storage));
 
 	unique_lock<mutex> lck(lock);
 
@@ -238,7 +255,7 @@ void LogManager::SetMainLogSink(DatabaseInstance &db, const string &requested_si
 	// here (active sink preserved) and point users at enable_logging instead of installing a
 	// path-less sink that throws on every later flush.
 	auto sink_name_to_lower = StringUtil::Lower(sink_name);
-	if (sink_name_to_lower == LogConfig::FILE_STORAGE_NAME && config.storage != sink_name_to_lower) {
+	if (sink_name_to_lower == LogConfig::FILE_STORAGE_NAME && !GetEnabledLogSinkInternal(sink_name_to_lower)) {
 		throw InvalidConfigurationException(
 		    "Cannot select 'file' log sink via 'SET logging_sink' because it requires a path. "
 		    "Use CALL enable_logging(sink='file', sink_path='...') instead.");
@@ -253,78 +270,90 @@ void LogManager::SetMainLogSinkInternal(DatabaseInstance &db, const string &sink
 		return;
 	}
 
+	// an added sink becomes the main log sink, it keeps its entries
+	auto new_sink = GetEnabledLogSinkInternal(sink_name_to_lower);
+	if (!new_sink) {
+		new_sink = CreateLogSinkInternal(db, sink_name_to_lower);
+	}
+
+	// Flush the old sink, we are going to replace it.
+	main_log_sink->FlushAll();
+	added_log_sinks.erase(sink_name_to_lower);
+	main_log_sink = std::move(new_sink);
+	config.storage = sink_name_to_lower;
+}
+
+shared_ptr<LogSink> LogManager::CreateLogSinkInternal(DatabaseInstance &db, const string &sink_name) {
+	auto sink_name_to_lower = StringUtil::Lower(sink_name);
+	if (sink_name_to_lower == LogConfig::IN_MEMORY_STORAGE_NAME) {
+		return make_shared_ptr<InMemoryLogSink>(db);
+	}
+	if (sink_name_to_lower == LogConfig::STDOUT_STORAGE_NAME) {
+		return make_shared_ptr<StdOutLogSink>(db);
+	}
 	if (sink_name_to_lower == LogConfig::FILE_STORAGE_NAME) {
 		auto &fs = FileSystem::GetFileSystem(db);
 		if (fs.SubSystemIsDisabled(LocalFileSystem().GetName())) {
 			throw InvalidConfigurationException("Can not enable file logging with the LocalFileSystem disabled");
 		}
+		return make_shared_ptr<FileLogSink>(db);
 	}
-
-	if (enabled_log_sinks.find(sink_name_to_lower) == enabled_log_sinks.end() &&
-	    LogConfig::IsBuiltInLogSink(sink_name_to_lower)) {
-		// switching to a built-in sink starts a new one, unless it is enabled and receiving entries
-		registered_log_sinks.erase(sink_name_to_lower);
-	}
-	auto new_sink = GetOrCreateLogSinkInternal(db, sink_name_to_lower);
-	if (!new_sink) {
+	auto entry = registered_log_sinks.find(sink_name_to_lower);
+	if (entry == registered_log_sinks.end()) {
 		throw InvalidInputException("Log sink '%s' is not yet registered", sink_name);
 	}
-
-	// Flush the old sink, we are going to replace it.
-	main_log_sink->FlushAll();
-	main_log_sink = std::move(new_sink);
-	config.storage = sink_name_to_lower;
+	return entry->second;
 }
 
-shared_ptr<LogSink> LogManager::GetOrCreateLogSinkInternal(DatabaseInstance &db, const string &sink_name) {
-	auto entry = registered_log_sinks.find(sink_name);
-	if (entry != registered_log_sinks.end()) {
-		return entry->second;
-	}
-	auto sink_name_to_lower = StringUtil::Lower(sink_name);
-	shared_ptr<LogSink> sink;
-	if (sink_name_to_lower == LogConfig::IN_MEMORY_STORAGE_NAME) {
-		sink = make_shared_ptr<InMemoryLogSink>(db);
-	} else if (sink_name_to_lower == LogConfig::STDOUT_STORAGE_NAME) {
-		sink = make_shared_ptr<StdOutLogSink>(db);
-	} else if (sink_name_to_lower == LogConfig::FILE_STORAGE_NAME) {
-		sink = make_shared_ptr<FileLogSink>(db);
+void LogManager::AddLogSink(DatabaseInstance &db, const string &requested_sink_name,
+                            const case_insensitive_map_t<Value> &sink_config) {
+	auto sink_name = StringUtil::Lower(ResolveDeprecatedLogSinkName(db, requested_sink_name));
+	auto config_copy = sink_config;
+
+	unique_lock<mutex> lck(lock);
+	auto sink = GetEnabledLogSinkInternal(sink_name);
+	if (sink) {
+		// the sink already receives the log entries, only update its config
+		if (!config_copy.empty()) {
+			sink->UpdateConfig(db, config_copy);
+		}
 	} else {
-		return nullptr;
+		if (sink_name == LogConfig::FILE_STORAGE_NAME) {
+			auto path_entry = config_copy.find("path");
+			if (path_entry == config_copy.end() || path_entry->second.IsNull() ||
+			    path_entry->second.ToString().empty()) {
+				throw InvalidInputException(
+				    "The 'file' log sink requires a path, e.g. CALL add_log_sink('file', path='log.csv')");
+			}
+		}
+		sink = CreateLogSinkInternal(db, sink_name);
+		if (!config_copy.empty()) {
+			sink->UpdateConfig(db, config_copy);
+		}
+		added_log_sinks[sink_name] = std::move(sink);
 	}
-	registered_log_sinks[sink_name_to_lower] = sink;
-	return sink;
+
+	if (!config.enabled) {
+		config.enabled = true;
+		global_logger->UpdateConfig(config);
+	}
 }
 
-void LogManager::EnableLogSink(const string &name) {
-	unique_lock<mutex> lck(lock);
-	if (registered_log_sinks.find(name) == registered_log_sinks.end()) {
-		if (StringUtil::CIEquals(name, LogConfig::FILE_STORAGE_NAME)) {
-			throw InvalidInputException(
-			    "Cannot enable the 'file' log sink with enable_log_sink because it requires a path");
-		}
-		if (!GetOrCreateLogSinkInternal(db_instance, name)) {
-			// a new name gets its own in-memory sink
-			registered_log_sinks[name] = make_shared_ptr<InMemoryLogSink>(db_instance);
-		}
-	}
-	enabled_log_sinks.insert(name);
-}
+void LogManager::RemoveLogSink(DatabaseInstance &db, const string &requested_sink_name) {
+	auto sink_name = StringUtil::Lower(ResolveDeprecatedLogSinkName(db, requested_sink_name));
 
-void LogManager::DisableLogSink(const string &name) {
 	unique_lock<mutex> lck(lock);
-	if (StringUtil::CIEquals(name, config.storage)) {
-		throw InvalidInputException(
-		    "Cannot disable log sink '%s' because it is the main log sink, select another one with 'SET logging_sink'",
-		    name);
+	if (sink_name == config.storage) {
+		throw InvalidInputException("Log sink '%s' is the main log sink and cannot be removed, switch it with "
+		                            "CALL enable_logging(sink='...') or SET logging_sink",
+		                            requested_sink_name);
 	}
-	auto entry = enabled_log_sinks.find(name);
-	if (entry == enabled_log_sinks.end()) {
-		throw InvalidInputException("Log sink '%s' is not enabled", name);
+	auto entry = added_log_sinks.find(sink_name);
+	if (entry == added_log_sinks.end()) {
+		throw InvalidInputException("Log sink '%s' is not enabled", requested_sink_name);
 	}
-	// flush, so the entries it received stay readable
-	registered_log_sinks[name]->FlushAll();
-	enabled_log_sinks.erase(entry);
+	entry->second->FlushAll();
+	added_log_sinks.erase(entry);
 }
 
 void LogManager::UpdateMainLogSinkConfig(DatabaseInstance &db, case_insensitive_map_t<Value> &config_value) {

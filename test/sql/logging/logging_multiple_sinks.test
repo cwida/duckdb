@@ -1,123 +1,90 @@
 # name: test/sql/logging/logging_multiple_sinks.test
-# description: Enable additional log sinks and read them with duckdb_logs(sink=...)
+# description: Add log sinks next to the main log sink with add_log_sink and read them with duckdb_logs(sink=...)
 # group: [logging]
 
-statement ok
-CALL enable_logging()
-
-# a name that no sink is registered under gets a new in-memory sink
-statement ok
-CALL enable_log_sink('sink1')
-
-statement ok
-CALL enable_log_sink('sink2')
-
-statement ok
-SELECT write_log('to all sinks')
-
-# the log sink and both enabled sinks receive the entry
+# adding a log sink turns logging on
 query I
-SELECT count(*) FROM duckdb_logs WHERE message = 'to all sinks'
+SELECT current_setting('enable_logging')::BOOLEAN
 ----
-1
+false
+
+statement ok
+CALL add_log_sink('memory')
 
 query I
-SELECT count(*) FROM duckdb_logs(sink='sink1') WHERE message = 'to all sinks'
+SELECT current_setting('enable_logging')::BOOLEAN
 ----
-1
+true
 
-query I
-SELECT count(*) FROM duckdb_logs(sink='sink2') WHERE message = 'to all sinks'
-----
-1
-
-# a sink only receives the entries written after it was enabled
-statement ok
-CALL enable_log_sink('sink3')
-
-query I
-SELECT count(*) FROM duckdb_logs(sink='sink3') WHERE message = 'to all sinks'
-----
-0
-
-# a disabled sink stops receiving entries, but keeps the ones it has
-statement ok
-CALL disable_log_sink('sink1')
-
-# including the entries of the query that disabled it
-query I
-SELECT count(*) FROM duckdb_logs(sink='sink1') WHERE starts_with(message, 'CALL disable_log_sink')
-----
-1
-
-statement ok
-SELECT write_log('after disable')
-
-query I
-SELECT message FROM duckdb_logs(sink='sink1') WHERE message IN ('to all sinks', 'after disable')
-----
-to all sinks
-
-query I
-SELECT message FROM duckdb_logs(sink='sink2') WHERE message IN ('to all sinks', 'after disable') ORDER BY message
-----
-after disable
-to all sinks
-
-# enabling it again continues with the same sink
-statement ok
-CALL enable_log_sink('sink1')
-
-statement ok
-SELECT write_log('enabled again')
-
-query I
-SELECT message FROM duckdb_logs(sink='sink1') WHERE message IN ('to all sinks', 'after disable', 'enabled again') ORDER BY message
-----
-enabled again
-to all sinks
-
-# sink names are case insensitive, and enabling an enabled sink changes nothing
-statement ok
-CALL enable_log_sink('SINK2')
-
+# memory is the main log sink, adding it does not deliver its entries twice
 statement ok
 SELECT write_log('once')
 
 query I
-SELECT count(*) FROM duckdb_logs(sink='sink2') WHERE message = 'once'
+SELECT count(*) FROM duckdb_logs WHERE message = 'once'
 ----
 1
 
-statement ok
-CALL flush_logs()
-
-# truncating the log sink does not touch the enabled sinks
-statement ok
-CALL truncate_duckdb_logs()
-
 query I
-SELECT count(*) FROM duckdb_logs WHERE message = 'once'
+SELECT count(*) FROM duckdb_logs(sink='memory') WHERE message = 'once'
 ----
-0
+1
 
-# the denormalized table of an enabled sink joins its own entries and contexts
-query II
-SELECT scope, message FROM duckdb_logs(sink='sink2', denormalized_table=true) WHERE message = 'once'
+# sinks are named by their type, an unknown name does not create a sink
+statement error
+CALL add_log_sink('audit')
 ----
-CONNECTION	once
+Log sink 'audit' is not yet registered
 
-query I
-SELECT count(*) > 0 FROM duckdb_log_contexts(sink='sink2')
+statement error
+CALL add_log_sink('file')
 ----
-true
+The 'file' log sink requires a path
 
-# the stdout sink can be enabled, but it cannot be scanned
+statement error
+CALL add_log_sink('')
+----
+The log sink name cannot be empty
+
+statement error
+CALL add_log_sink(NULL)
+----
+The log sink name cannot be NULL
+
+statement error
+CALL add_log_sink('stdout', config=42)
+----
+add_log_sink: config must be a struct
+
+# the main log sink cannot be removed, and a sink that was not added cannot be removed or read
+statement error
+CALL remove_log_sink('memory')
+----
+Log sink 'memory' is the main log sink and cannot be removed
+
+statement error
+CALL remove_log_sink('stdout')
+----
+Log sink 'stdout' is not enabled
+
+statement error
+SELECT * FROM duckdb_logs(sink='stdout')
+----
+Log sink 'stdout' is not enabled
+
+statement error
+SELECT * FROM duckdb_logs(sink='unknown')
+----
+Log sink 'unknown' is not yet registered
+
+statement error
+SELECT * FROM duckdb_log_contexts(sink='unknown')
+----
+Log sink 'unknown' is not yet registered
+
+# an added stdout sink cannot be read
 statement ok
-CALL enable_log_sink('stdout')
-
-statement ok
-CALL disable_log_sink('stdout')
+CALL add_log_sink('STDOUT')
 
 statement error
 SELECT count(*) FROM duckdb_logs(sink='stdout')
@@ -134,87 +101,31 @@ SELECT count(*) FROM duckdb_logs(sink='stdout', denormalized_table=true)
 ----
 Log sink 'stdout' does not support this query
 
-statement error
-CALL enable_log_sink('file')
-----
-Cannot enable the 'file' log sink with enable_log_sink because it requires a path
-
-statement error
-CALL enable_log_sink('')
-----
-The log sink name cannot be empty
-
-statement error
-CALL enable_log_sink(NULL)
-----
-The log sink name cannot be NULL
-
-statement error
-CALL disable_log_sink('not_enabled')
-----
-Log sink 'not_enabled' is not enabled
-
-statement error
-SELECT * FROM duckdb_logs(sink='unknown')
-----
-Log sink 'unknown' is not registered
-
-statement error
-SELECT * FROM duckdb_log_contexts(sink='unknown')
-----
-Log sink 'unknown' is not registered
-
-# enabling the main log sink by name does not deliver its entries twice
+# sink names are case insensitive
 statement ok
-CALL enable_logging(sink='memory')
+CALL remove_log_sink('stdout')
+
+statement error
+CALL remove_log_sink('stdout')
+----
+Log sink 'stdout' is not enabled
+
+# an added sink that becomes the main log sink is no longer an added sink
+statement ok
+CALL add_log_sink('stdout')
 
 statement ok
-CALL truncate_duckdb_logs()
-
-statement ok
-CALL enable_log_sink('memory')
-
-statement ok
-SELECT write_log('once-marker')
-
-query I
-SELECT count(*) FROM duckdb_logs WHERE message='once-marker'
-----
-1
-
-query I
-SELECT count(*) FROM duckdb_logs(sink='memory') WHERE message='once-marker'
-----
-1
+SET logging_sink='stdout'
 
 statement error
-CALL disable_log_sink('memory')
+CALL remove_log_sink('stdout')
 ----
-Cannot disable log sink 'memory' because it is the main log sink
+Log sink 'stdout' is the main log sink and cannot be removed
 
-# the main log sink cannot be disabled
-statement ok
-CALL enable_log_sink('audit')
-
-statement ok
-SET logging_sink='audit'
-
-statement error
-CALL disable_log_sink('audit')
-----
-Cannot disable log sink 'audit' because it is the main log sink
-
-# after switching the main log sink away, the enabled sink can be disabled
 statement ok
 SET logging_sink='memory'
 
-statement ok
-CALL disable_log_sink('audit')
-
-statement ok
-SELECT write_log('after-disable')
-
-query I
-SELECT count(*) FROM duckdb_logs(sink='audit') WHERE message='after-disable'
+statement error
+CALL remove_log_sink('stdout')
 ----
-0
+Log sink 'stdout' is not enabled
