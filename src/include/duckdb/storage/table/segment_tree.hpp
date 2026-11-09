@@ -480,12 +480,14 @@ private:
 	//! Append a column segment to the tree
 	void AppendSegmentInternal(SegmentLock &l, shared_ptr<T> segment, idx_t row_start) const {
 		D_ASSERT(segment);
-		// add the node to the list of nodes
+		// add the node to the list of nodes before linking it: a push_back that fails destroys the node, and a
+		// predecessor that already pointed at it would leave readers a dangling next pointer
 		auto node = make_uniq<SegmentNode<T>>(row_start, std::move(segment), nodes.size());
-		if (!nodes.empty()) {
-			nodes.back()->SetNext(*node);
-		}
+		auto &new_node = *node;
 		nodes.push_back(std::move(node));
+		if (nodes.size() > 1) {
+			nodes[nodes.size() - 2]->SetNext(new_node);
+		}
 	}
 	void AppendSegmentInternal(SegmentLock &l, shared_ptr<T> segment) const {
 		idx_t row_start;
