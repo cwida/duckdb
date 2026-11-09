@@ -186,7 +186,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 		}
 	});
 	right_pushdown.GenerateFilters();
-	op->children[0] = left_pushdown.Rewrite(std::move(op->children[0]));
+	left_pushdown.RewriteChild(*op, 0);
 
 	bool rewrite_right = true;
 	bool has_unsatisfiable_condition = false;
@@ -216,7 +216,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownLeftJoin(unique_ptr<LogicalO
 	}
 
 	if (rewrite_right) {
-		op->children[1] = right_pushdown.Rewrite(std::move(op->children[1]));
+		right_pushdown.RewriteChild(*op, 1);
 	}
 
 	for (auto &filter : remaining_filters) {
