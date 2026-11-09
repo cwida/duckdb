@@ -93,3 +93,95 @@ WITH RECURSIVE c(a) AS (SELECT NULL UNION ALL SELECT NULL) SELECT coalesce(a, DA
 ----
 2026-01-01
 2026-01-01
+
+# a truly recursive CTE keeps the types of the left side, even if the right side has a wider type
+query II
+WITH RECURSIVE t(i) AS (SELECT 1 UNION ALL SELECT i + 0.5 FROM t WHERE i < 3) SELECT i, typeof(i) FROM t ORDER BY i;
+----
+1	INTEGER
+2	INTEGER
+3	INTEGER
+
+# a self-reference only inside a scalar subquery still makes the CTE recursive
+query II
+WITH RECURSIVE t(i) AS (
+	SELECT 1
+	UNION ALL
+	SELECT (SELECT max(i) FROM t) + 0.5 WHERE (SELECT max(i) FROM t) < 3
+)
+SELECT i, typeof(i) FROM t ORDER BY i;
+----
+1	INTEGER
+2	INTEGER
+3	INTEGER
+
+# a self-reference only inside a LATERAL join still makes the CTE recursive
+query II
+WITH RECURSIVE t(i) AS (
+	SELECT 1
+	UNION ALL
+	SELECT l.j FROM (SELECT 1) s(x), LATERAL (SELECT i + 0.5 AS j FROM t WHERE i < 3) l
+)
+SELECT i, typeof(i) FROM t ORDER BY i;
+----
+1	INTEGER
+2	INTEGER
+3	INTEGER
+
+# non-NULL widening: the right side is not cast to the type of the left side
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 1.5) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1.0	DECIMAL(11,1)
+1.5	DECIMAL(11,1)
+
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 10000000000) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1	BIGINT
+10000000000	BIGINT
+
+# an inner WITH that shadows the name of the CTE is not a self-reference
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL (WITH t(a) AS (SELECT 1.5) SELECT a FROM t)) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1.0	DECIMAL(11,1)
+1.5	DECIMAL(11,1)
+
+# nested types
+query II
+WITH RECURSIVE t(a) AS (SELECT [NULL] UNION ALL SELECT [1]) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+[1]	INTEGER[]
+[NULL]	INTEGER[]
+
+query II
+WITH RECURSIVE t(a) AS (SELECT {'k': NULL} UNION ALL SELECT {'k': 'v'}) SELECT a, typeof(a) FROM t ORDER BY a;
+----
+{'k': v}	STRUCT(k VARCHAR)
+{'k': NULL}	STRUCT(k VARCHAR)
+
+# a view over such a CTE gets the combined type
+statement ok
+CREATE VIEW v AS WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 1.5) SELECT a FROM t;
+
+query II
+SELECT a, typeof(a) FROM v ORDER BY a;
+----
+1.0	DECIMAL(11,1)
+1.5	DECIMAL(11,1)
+
+# with three or more arms, the left side holds all arms but the last one and is a set operation of its own,
+# which casts its arms to its own type before the last arm is added (plain WITH gives 1, 1.5, x)
+query II
+WITH RECURSIVE t(a) AS (SELECT 1 UNION ALL SELECT 1.5 UNION ALL SELECT 'x') SELECT a, typeof(a) FROM t ORDER BY a;
+----
+1.0	VARCHAR
+1.5	VARCHAR
+x	VARCHAR
+
+# so a combination that needs all arms at once still fails (plain WITH gives three VARCHAR rows)
+statement error
+WITH RECURSIVE t(a) AS (SELECT 42 UNION ALL SELECT DATE '2026-01-01' UNION ALL SELECT 'x') SELECT a FROM t;
+----
+Unimplemented type for cast (INTEGER -> DATE)
