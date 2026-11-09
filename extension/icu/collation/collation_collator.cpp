@@ -2,6 +2,7 @@
 
 #include "collation_data.hpp"
 #include "collation_normalizer.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
