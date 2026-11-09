@@ -58,7 +58,14 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
     {"__aws__cloudformation__quack_on_ec2__create", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
     {"__aws__cloudformation__quack_on_ec2__destroy", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
     {"__aws__cloudformation__quack_on_ec2__list", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"__aws__cloudformation__quack_on_ec2__resolve", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
     {"__aws__cloudformation__quack_on_ec2__status", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"__aws__expired", "aws", CatalogType::SCALAR_FUNCTION_ENTRY},
+    {"__aws__s3tables__table_bucket__create", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"__aws__s3tables__table_bucket__destroy", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"__aws__s3tables__table_bucket__list", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"__aws__s3tables__table_bucket__resolve", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"__aws__s3tables__table_bucket__status", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
     {"__internal_json_copy_to_geojson", "json", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"__internal_json_copy_to_json", "json", CatalogType::SCALAR_FUNCTION_ENTRY},
     {"abs", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
@@ -796,6 +803,13 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
     {"rtree_index_dump", "spatial", CatalogType::TABLE_FUNCTION_ENTRY},
     {"rtree_index_scan", "spatial", CatalogType::TABLE_FUNCTION_ENTRY},
     {"rtrim", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
+    {"s3tables_create_table_bucket", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"s3tables_delete_table_bucket", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"s3tables_get_table_bucket", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"s3tables_namespaces", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"s3tables_table_bucket_tags", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"s3tables_table_buckets", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"s3tables_tables", "aws", CatalogType::TABLE_FUNCTION_ENTRY},
     {"scan_data_from_quack_client", "quack", CatalogType::TABLE_FUNCTION_ENTRY},
     {"sem", "core_functions", CatalogType::AGGREGATE_FUNCTION_ENTRY},
     {"set_bit", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY},
@@ -1540,6 +1554,7 @@ static constexpr ExtensionEntry EXTENSION_SECRET_TYPES[] = {
 // Resource types registered by extensions: CREATE/REGISTER EXTERNAL RESOURCE '<type>' autoloads the extension
 static constexpr ExtensionEntry EXTENSION_EXTERNAL_RESOURCE_TYPES[] = {
     {"aws:cloudformation:quack-on-ec2", "aws"},
+    {"aws:s3tables:table-bucket", "aws"},
 }; // END_OF_EXTENSION_EXTERNAL_RESOURCE_TYPES
 
 // Note: these are currently hardcoded in scripts/generate_extensions_function.py
