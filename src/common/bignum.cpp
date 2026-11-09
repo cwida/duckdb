@@ -771,10 +771,7 @@ bignum_digit_t DivideByDigit(const bignum_magnitude_t &dividend, bignum_digit_t 
 		}
 	} else {
 		for (idx_t i = m; i > 0; i--) {
-			const bignum_twodigit_t current = (static_cast<bignum_twodigit_t>(rem) << DIGIT_BITS) | dividend[i - 1];
-			const auto q = static_cast<bignum_digit_t>(current / divisor);
-			rem = static_cast<bignum_digit_t>(current - static_cast<bignum_twodigit_t>(q) * divisor);
-			quotient[i - 1] = q;
+			quotient[i - 1] = BignumLimb::DivRem(rem, dividend[i - 1], divisor, rem);
 		}
 	}
 	TrimMagnitude(quotient);
@@ -832,16 +829,17 @@ void DivModMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &di
 		const idx_t pos = j - 1;
 		// D3: estimate the quotient digit; the top dividend digit never exceeds the top divisor digit, so when they
 		// are equal the estimate is BASE - 1 (the true digit is at most that) and the remainder follows from it
-		const bignum_twodigit_t numerator =
-		    (static_cast<bignum_twodigit_t>(un[pos + n]) << DIGIT_BITS) | un[pos + n - 1];
 		bignum_twodigit_t qhat;
 		bignum_twodigit_t rhat;
 		if (un[pos + n] >= vn[n - 1]) {
+			const bignum_twodigit_t numerator =
+			    (static_cast<bignum_twodigit_t>(un[pos + n]) << DIGIT_BITS) | un[pos + n - 1];
 			qhat = DIGIT_MASK;
 			rhat = numerator - qhat * vn[n - 1];
 		} else {
-			qhat = numerator / vn[n - 1];
-			rhat = numerator - qhat * vn[n - 1];
+			bignum_digit_t rem;
+			qhat = BignumLimb::DivRem(un[pos + n], un[pos + n - 1], vn[n - 1], rem);
+			rhat = rem;
 		}
 		while (rhat < BASE && qhat * vn[n - 2] > ((rhat << DIGIT_BITS) | un[pos + n - 2])) {
 			qhat--;
@@ -860,7 +858,7 @@ void DivModMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &di
 			} else {
 				// the subtrahend is below 2 * BASE, so we need to borrow one or two units from the next digit
 				const bignum_twodigit_t deficit = subtrahend - current;
-				const bignum_twodigit_t units = (deficit + BASE - 1) / BASE;
+				const bignum_twodigit_t units = (deficit + BASE - 1) >> DIGIT_BITS;
 				un[i + pos] = static_cast<bignum_digit_t>(current + units * BASE - subtrahend);
 				borrow = (product >> DIGIT_BITS) + units;
 			}
