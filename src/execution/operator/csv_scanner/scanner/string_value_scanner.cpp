@@ -1685,6 +1685,16 @@ StringValueScanner::MoveBufferResult StringValueScanner::TryMoveToNextBuffer() {
 	if (states.EmptyLine() || states.NewRow() || result.added_last_line || states.IsCurrentNewRow() ||
 	    states.IsNotSet()) {
 		if (result.cur_col_id == result.number_of_columns && !result.IsStateCurrent(CSVState::INVALID)) {
+			// the last value was already added: this row ends at the end of the file
+			LinePosition line_end = {iterator.pos.buffer_idx, previous_buffer_handle->actual_size, result.buffer_size};
+			result.current_line_position.begin = result.current_line_position.end;
+			result.current_line_position.end = line_end;
+			// handle the errors recorded for the row before counting it, as AddRowInternal does
+			const auto chunk_col_id_before = result.chunk_col_id;
+			if (result.current_errors.HandleErrors(result)) {
+				result.InvalidateUnwrittenColumns(chunk_col_id_before);
+			}
+			result.line_positions_per_row[static_cast<idx_t>(result.number_of_rows)] = result.current_line_position;
 			result.number_of_rows++;
 		}
 		result.cur_col_id = 0;
@@ -2020,25 +2030,21 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 	}
 	const bool found_error =
 	    result.current_errors.HasErrorType(UNTERMINATED_QUOTES) || result.current_errors.HasErrorType(INVALID_STATE);
-	auto chunk_col_id_before = result.chunk_col_id;
-	if (result.current_errors.HandleErrors(result)) {
-		result.InvalidateUnwrittenColumns(chunk_col_id_before);
-		result.number_of_rows++;
-	}
 	if (states.IsQuotedCurrent() && !found_error) {
 		if (state_machine->dialect_options.state_machine_options.strict_mode.GetValue()) {
 			// If we finish the execution of a buffer, and we end in a quoted state, it means we have unterminated
 			// quotes
 			result.current_errors.Insert(UNTERMINATED_QUOTES, result.cur_col_id, result.chunk_col_id,
 			                             result.last_position);
-			chunk_col_id_before = result.chunk_col_id;
-			if (result.current_errors.HandleErrors(result)) {
-				result.InvalidateUnwrittenColumns(chunk_col_id_before);
-				result.number_of_rows++;
-			}
 		} else {
 			used_unstrictness = true;
 		}
+	}
+	// the errors all belong to the row being finished, so this appends at most one row
+	const auto chunk_col_id_before = result.chunk_col_id;
+	if (result.current_errors.HandleErrors(result)) {
+		result.InvalidateUnwrittenColumns(chunk_col_id_before);
+		result.number_of_rows++;
 	}
 	if (!iterator.done) {
 		if (iterator.pos.buffer_pos >= iterator.GetEndPos() || iterator.pos.buffer_idx > iterator.GetBufferIdx() ||
