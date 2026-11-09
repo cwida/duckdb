@@ -183,6 +183,16 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 		return nullptr;
 	}
 	auto cardinality = cost_model.GetCardinalityEstimator().EstimateCardinality(set);
+	// A pair of recursion-independent subplans may outgrow both inputs only while it stays below the
+	// frontier it will be joined onto. Past that, the frontier-first plan bounds every build by an input.
+	if (recursive_frontier_estimate > 0 && !left.recursive_properties.depends_on_recursive_input &&
+	    !right.recursive_properties.depends_on_recursive_input) {
+		auto output = cardinality.GetDouble();
+		if (output > left.cardinality.GetDouble() && output > right.cardinality.GetDouble() &&
+		    output > recursive_frontier_estimate) {
+			return nullptr;
+		}
+	}
 	auto cost = cost_model.ComputeCost(left, right, best_candidate->join_operator, cardinality.GetDouble());
 	auto result = make_uniq<DPJoinNode>(set, best_candidate->join_operator, std::move(best_candidate->predicates),
 	                                    best_candidate->generated_cross_product, left.set, right.set, cost);
@@ -591,6 +601,9 @@ void PlanEnumerator::InitLeafPlans() {
 			auto &relation = query_graph_manager.relation_manager.GetRelation(RelationIndex(i));
 			relation.op.ResolveOperatorTypes();
 			join_node->recursive_properties = relation.recursive_properties;
+			if (join_node->recursive_properties.depends_on_recursive_input) {
+				recursive_frontier_estimate = MaxValue(recursive_frontier_estimate, join_node->cardinality.GetDouble());
+			}
 		}
 		plans[relation_set] = std::move(join_node);
 	}
