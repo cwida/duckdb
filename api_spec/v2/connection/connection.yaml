@@ -36,19 +36,19 @@ functions:
     description: |
       Opens a connection to the database of a V1 `duckdb_database`.
 
-      Lets an application that opened its database through the V1 API use the V2 API on the same database, one code
-      path at a time. Like `[[connection_create]]`, the connection carries its own client context and session-scoped
-      (LOCAL) settings, and shares the database's catalog, attached databases, secrets, buffer pool, and transaction
-      manager with every other connection, including the application's V1 connections.
+      Like `[[connection_create]]`, the connection has its own client context and session-scoped (LOCAL) settings, and
+      shares the database's catalog, attached databases, secrets, buffer pool, and transaction manager with every other
+      connection, including V1 connections to the same database.
 
-      The V1 database must stay open until the connection is destroyed via `[[connection_destroy]]`.
+      Like a V1 connection, the connection keeps the database alive, so `duckdb_close` may be called before the
+      connection is destroyed via `[[connection_destroy]]`.
     role: constructor
     belongs_to: connection
     parameters:
       v1_database:
-        type: opaque
+        type: void
         indirection: 1
-        description: "The V1 database: the `duckdb_database` that `duckdb_open` filled in."
+        description: "The `duckdb_database` handle itself, as filled in by `duckdb_open`."
       out_conn:
         type: connection
         indirection: 1

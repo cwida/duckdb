@@ -1969,23 +1969,23 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_create(duckdb_v2_instance_hand
 /*!
  * Opens a connection to the database of a V1 `duckdb_database`.
  *
- * Lets an application that opened its database through the V1 API use the V2 API on the same database, one code path at
- * a time. Like `duckdb_v2_connection_create()`, the connection carries its own client context and session-scoped
- * (LOCAL) settings, and shares the database's catalog, attached databases, secrets, buffer pool, and transaction
- * manager with every other connection, including the application's V1 connections.
+ * Like `duckdb_v2_connection_create()`, the connection has its own client context and session-scoped (LOCAL) settings,
+ * and shares the database's catalog, attached databases, secrets, buffer pool, and transaction manager with every other
+ * connection, including V1 connections to the same database.
  *
- * The V1 database must stay open until the connection is destroyed via `duckdb_v2_connection_destroy()`.
+ * Like a V1 connection, the connection keeps the database alive, so `duckdb_close` may be called before the connection
+ * is destroyed via `duckdb_v2_connection_destroy()`.
  *
  * history:
  * - unstable: v2.0.0
  *
- * @param v1_database The V1 database: the `duckdb_database` that `duckdb_open` filled in.
+ * @param v1_database The `duckdb_database` handle itself, as filled in by `duckdb_open`.
  * @param out_conn Receives the new connection handle.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(duckdb_v2_opaque *v1_database,
+DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(void *v1_database,
                                                                           duckdb_v2_connection_handle *out_conn,
                                                                           duckdb_v2_error_info_handle *err);
 #endif

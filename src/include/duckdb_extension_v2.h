@@ -1571,7 +1571,7 @@ typedef struct {
 	 duckdb_v2_column_data_collection_handle collection, const char **column_names, const idx_t *column_names_lengths,
 	 idx_t column_count, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_connection_create_from_v1_database)
-	(duckdb_v2_opaque *v1_database, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err);
+	(void *v1_database, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;

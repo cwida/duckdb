@@ -15,8 +15,7 @@ DUCKDB_V2_ERROR duckdb_v2_connection_create(duckdb_v2_instance_handle instance, 
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(duckdb_v2_opaque *v1_database,
-                                                             duckdb_v2_connection_handle *out_conn,
+DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(void *v1_database, duckdb_v2_connection_handle *out_conn,
                                                              duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(v1_database);
 	DUCKDB_CHECK_ARG(out_conn);
@@ -24,9 +23,6 @@ DUCKDB_V2_ERROR duckdb_v2_connection_create_from_v1_database(duckdb_v2_opaque *v
 	return WithErrorHandler(err, [&]() {
 		// a duckdb_database points at the V1 API's DatabaseWrapper
 		auto &wrapper = *reinterpret_cast<duckdb::DatabaseWrapper *>(v1_database);
-		if (!wrapper.database) {
-			throw duckdb::InvalidInputException("the V1 database is not open");
-		}
 		auto connection = duckdb::make_uniq<CV2Connection>(*wrapper.database);
 		*out_conn = Convert(connection.release());
 	});
