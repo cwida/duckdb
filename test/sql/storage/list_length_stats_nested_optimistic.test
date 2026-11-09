@@ -26,6 +26,12 @@ statement ok
 CREATE TABLE struct_list(l STRUCT(a INTEGER[]));
 
 statement ok
+CREATE TABLE tuple_list AS SELECT row([1, 2, 3]) l LIMIT 0;
+
+statement ok
+CREATE TABLE union_list(l UNION(a INTEGER[], b VARCHAR));
+
+statement ok
 CHECKPOINT;
 
 # large inserts are written to disk optimistically
@@ -43,6 +49,12 @@ INSERT INTO array_list SELECT [[1, 2, 3], [1, 2, 3], [1, 2, 3]]::INTEGER[][3] FR
 
 statement ok
 INSERT INTO struct_list SELECT {'a': [1, 2, 3]} FROM range(200000);
+
+statement ok
+INSERT INTO tuple_list SELECT row([1, 2, 3]) FROM range(200000);
+
+statement ok
+INSERT INTO union_list SELECT [1, 2, 3]::INTEGER[] FROM range(200000);
 
 # the inserts are only in the WAL: check before and after replaying it
 query II
@@ -75,6 +87,16 @@ SELECT s.child_stats.a.max_list_length, s.child_stats.a.total_list_length FROM (
 ----
 3	600000
 
+query II
+SELECT s.child_stats[1].max_list_length, s.child_stats[1].total_list_length FROM (SELECT stats(l) s FROM tuple_list LIMIT 1)
+----
+3	600000
+
+query II
+SELECT s.child_stats.a.max_list_length, s.child_stats.a.total_list_length FROM (SELECT stats(l) s FROM union_list LIMIT 1)
+----
+3	600000
+
 restart
 
 query II
@@ -104,6 +126,16 @@ SELECT s.child_stats.max_list_length, s.child_stats.total_list_length FROM (SELE
 
 query II
 SELECT s.child_stats.a.max_list_length, s.child_stats.a.total_list_length FROM (SELECT stats(l) s FROM struct_list LIMIT 1)
+----
+3	600000
+
+query II
+SELECT s.child_stats[1].max_list_length, s.child_stats[1].total_list_length FROM (SELECT stats(l) s FROM tuple_list LIMIT 1)
+----
+3	600000
+
+query II
+SELECT s.child_stats.a.max_list_length, s.child_stats.a.total_list_length FROM (SELECT stats(l) s FROM union_list LIMIT 1)
 ----
 3	600000
 
@@ -139,5 +171,15 @@ SELECT s.child_stats.max_list_length, s.child_stats.total_list_length FROM (SELE
 
 query II
 SELECT s.child_stats.a.max_list_length, s.child_stats.a.total_list_length FROM (SELECT stats(l) s FROM struct_list LIMIT 1)
+----
+3	600000
+
+query II
+SELECT s.child_stats[1].max_list_length, s.child_stats[1].total_list_length FROM (SELECT stats(l) s FROM tuple_list LIMIT 1)
+----
+3	600000
+
+query II
+SELECT s.child_stats.a.max_list_length, s.child_stats.a.total_list_length FROM (SELECT stats(l) s FROM union_list LIMIT 1)
 ----
 3	600000
