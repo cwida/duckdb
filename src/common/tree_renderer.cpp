@@ -11,6 +11,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/client_config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/main/profiler_extension.hpp"
 
 namespace duckdb {
@@ -89,6 +90,34 @@ unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(const ProfilerPrintFormat 
 	return CreateRenderer(format.ToString());
 }
 
+unordered_map<string, Value> TreeRenderer::GetRendererSettings(ClientContext &context) {
+	unordered_map<string, Value> result;
+	for (auto &entry : Settings::Get<ProfilingRendererSettingsSetting>(context)) {
+		result.emplace(entry.first, Value(entry.second));
+	}
+	return result;
+}
+
+void TreeRenderer::SetRendererSettings(ClientContext &context, const unordered_map<string, Value> &settings) {
+	Settings::Set<ProfilingRendererSettingsSetting>(context, SetScope::SESSION, RendererSettingsToValue(settings));
+}
+
+Value TreeRenderer::RendererSettingsToValue(const unordered_map<string, Value> &settings) {
+	// sort the settings by name so that the rendered value is deterministic
+	vector<string> setting_names;
+	for (auto &entry : settings) {
+		setting_names.push_back(entry.first);
+	}
+	std::sort(setting_names.begin(), setting_names.end());
+	vector<Value> keys;
+	vector<Value> values;
+	for (auto &name : setting_names) {
+		keys.emplace_back(name);
+		values.push_back(settings.at(name).DefaultCastAs(LogicalType::VARCHAR));
+	}
+	return Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(keys), std::move(values));
+}
+
 unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, const string &name) {
 	// registered renderers take precedence over the built-in formats
 	auto extension = ProfilerExtension::Find(context, name);
@@ -97,7 +126,7 @@ unique_ptr<TreeRenderer> TreeRenderer::CreateRenderer(ClientContext &context, co
 	}
 	auto renderer = CreateRenderer(name);
 	if (renderer) {
-		renderer->Configure(ClientConfig::GetConfig(context).profiling_renderer_settings);
+		renderer->Configure(GetRendererSettings(context));
 	}
 	return renderer;
 }

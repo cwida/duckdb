@@ -1542,7 +1542,10 @@
         "description": "A map of settings passed to the renderer of the profiler output, e.g. {'max_extra_lines': 100}. Settings not recognized by the active renderer are ignored.",
         "type": "MAP(VARCHAR, VARCHAR)",
         "scope": "local",
-        "custom_implementation": true
+        "default_value": "{}",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "progress_bar_time",

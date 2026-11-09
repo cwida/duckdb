@@ -202,10 +202,12 @@ Cannot change custom_user_agent setting while database is running
 # unset local-only settings report a LOCAL scope
 query II
 SELECT name, scope FROM duckdb_settings()
-WHERE name IN ('profiling_coverage', 'profiling_output', 'progress_bar_time') ORDER BY name
+WHERE name IN ('profiling_coverage', 'profiling_output', 'profiling_renderer_settings',
+               'progress_bar_time') ORDER BY name
 ----
 profiling_coverage	LOCAL
 profiling_output	LOCAL
+profiling_renderer_settings	LOCAL
 progress_bar_time	LOCAL
 
 # local-only settings reject a global assignment with the generic-settings error
@@ -218,3 +220,35 @@ statement error
 SET GLOBAL profiling_output='out.txt'
 ----
 Invalid Input Error: Setting "profiling_output" cannot be set as a global variable - it can only be set per session
+
+# map setting: keys are lower-cased, values are stored as strings, sorted by key
+query I
+SELECT current_setting('profiling_renderer_settings')
+----
+{}
+
+statement ok
+SET profiling_renderer_settings = MAP {'B': '1', 'a': 'true'}
+
+query I
+SELECT current_setting('profiling_renderer_settings')
+----
+{a=true, b=1}
+
+statement error
+SET profiling_renderer_settings = MAP {'a': NULL}
+----
+cannot be NULL
+
+statement error
+SET profiling_renderer_settings = 'a'
+----
+can't be cast to the destination type MAP
+
+statement ok
+RESET profiling_renderer_settings
+
+query I
+SELECT current_setting('profiling_renderer_settings')
+----
+{}
