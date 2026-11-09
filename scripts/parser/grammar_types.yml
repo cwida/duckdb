@@ -834,6 +834,8 @@ QualifiedName:
     - SchemaReservedFunctionName
     - CatalogReservedSchemaFunctionName
     - QualifiedTableFunction
+    - CatalogReservedSchemaTableFunctionName
+    - TableFunctionNameAsQualifiedName
     - UseTarget
     - UseTargetCatalogSchema
     - SchemaNameAsUseTarget
@@ -1897,6 +1899,9 @@ matcher_rule_overrides:
     matcher: identifier_string
   TableFunctionName:
     matcher: identifier
+    suggestion: SUGGEST_TABLE_FUNCTION_NAME
+  ReservedTableFunctionName:
+    matcher: reserved_identifier
     suggestion: SUGGEST_TABLE_FUNCTION_NAME
   TypeName:
     matcher: identifier
