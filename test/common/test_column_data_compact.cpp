@@ -1119,6 +1119,9 @@ TEST_CASE("Large list children are scanned without copying", "[column_data_compa
 		auto &child_entry = FirstListChildEntry(*collection);
 		REQUIRE((child_entry.representation == ColumnDataRepresentation::LARGE_FLAT) == !in_memory);
 		REQUIRE(child_entry.next_data.IsValid() == in_memory);
+		if (!in_memory) {
+			REQUIRE(child_entry.count == length);
+		}
 
 		// zero-copy scans alive at the same time view the same storage, scans of a chain copy
 		ColumnDataScanState first_state, second_state, copy_state;

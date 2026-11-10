@@ -442,18 +442,21 @@ static void TemplatedColumnDataCopy(ColumnDataMetaData &meta_data, const Unified
 	while (remaining > 0) {
 		EnsureVectorDataAllocated(meta_data, current_index, OP::TypeSize());
 		auto &current_segment = segment.GetVectorData(current_index);
-		idx_t append_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE - current_segment.count, remaining);
+		const auto capacity = ColumnDataCollectionSegment::GetVectorCapacity(current_segment);
+		D_ASSERT(current_segment.count <= capacity);
+		idx_t append_count = MinValue<idx_t>(capacity - current_segment.count, remaining);
 
 		auto base_ptr = segment.allocator->GetDataPointer(append_state.current_chunk_state, current_segment.block_id,
 		                                                  current_segment.offset);
-		auto validity_data = ColumnDataCollectionSegment::GetValidityPointerForWriting(base_ptr, OP::TypeSize());
+		auto validity_data =
+		    ColumnDataCollectionSegment::GetValidityPointerForWriting(base_ptr, OP::TypeSize(), capacity);
 
-		ValidityMask result_validity(validity_data, STANDARD_VECTOR_SIZE);
+		ValidityMask result_validity(validity_data, capacity);
 		if (current_segment.count == 0) {
 			// first time appending to this vector
 			// all data here is still uninitialized
 			// initialize the validity mask to set all to valid
-			result_validity.SetAllValid(STANDARD_VECTOR_SIZE);
+			result_validity.SetAllValid(capacity);
 		}
 		if (source_data.validity.CannotHaveNull()) {
 			// Fast path: all valid
@@ -744,9 +747,12 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 	auto block_size = meta_data.segment.allocator->GetBufferManager().GetBlockSize();
 	while (remaining > 0) {
 		EnsureVectorDataAllocated(meta_data, current_index, sizeof(string_t));
-		// how many values fit in the current string vector
-		const auto vector_remaining =
-		    MinValue<idx_t>(STANDARD_VECTOR_SIZE - segment.GetVectorData(current_index).count, remaining);
+		// how many values fit in the current string vector, which keeps the standard layout (16-bit swizzle offsets)
+		const idx_t current_count = segment.GetVectorData(current_index).count;
+		D_ASSERT(ColumnDataCollectionSegment::GetVectorCapacity(segment.GetVectorData(current_index)) ==
+		         STANDARD_VECTOR_SIZE);
+		D_ASSERT(current_count <= STANDARD_VECTOR_SIZE);
+		const auto vector_remaining = MinValue<idx_t>(STANDARD_VECTOR_SIZE - current_count, remaining);
 
 		idx_t append_count = 0;
 		idx_t heap_size = 0;
@@ -820,7 +826,9 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 			D_ASSERT(base_heap_ptr == segment.allocator->GetDataPointer(append_state.current_chunk_state,
 			                                                            child_segment.block_id, child_segment.offset));
 #endif
-			current_segment.swizzle_data.emplace_back(child_index, base_heap_ptr, current_segment.count, append_count);
+			current_segment.swizzle_data.emplace_back(child_index, base_heap_ptr,
+			                                          UnsafeNumericCast<uint16_t>(current_segment.count),
+			                                          UnsafeNumericCast<uint16_t>(append_count));
 		}
 
 		current_segment.count += append_count;
@@ -906,8 +914,9 @@ void ColumnDataCopy<list_entry_t>(ColumnDataMetaData &meta_data, const UnifiedVe
 	if (meta_data.GetVectorMetaData().child_index.IsValid()) {
 		auto current_child_index = segment.GetChildIndex(meta_data.GetVectorMetaData().child_index);
 		while (current_child_index.IsValid()) {
-			current_list_size += segment.GetVectorCount(current_child_index);
-			current_child_index = segment.GetVectorData(current_child_index).next_data;
+			auto &child_vdata = segment.GetVectorData(current_child_index);
+			current_list_size += child_vdata.count;
+			current_child_index = child_vdata.next_data;
 		}
 	}
 
@@ -1148,7 +1157,7 @@ static void AppendConstantEntry(ColumnDataMetaData &meta_data, const UnifiedVect
 	auto &vdata = meta_data.GetVectorMetaData();
 	vdata.constant = constant;
 	vdata.representation = ColumnDataRepresentation::CONSTANT;
-	vdata.count = UnsafeNumericCast<uint16_t>(copy_count);
+	vdata.count = UnsafeNumericCast<uint32_t>(copy_count);
 	// account the metadata bytes that hold the value
 	segment.constant_metadata_size += sizeof(ColumnDataConstantValue);
 	segment.total_allocated += sizeof(ColumnDataConstantValue);
@@ -1181,7 +1190,7 @@ static bool TryExtendConstantEntry(ColumnDataMetaData &meta_data, const UnifiedV
 			}
 		}
 	}
-	vdata.count += UnsafeNumericCast<uint16_t>(copy_count);
+	vdata.count += UnsafeNumericCast<uint32_t>(copy_count);
 	return true;
 }
 
@@ -1341,7 +1350,7 @@ static bool TryAppendDictionaryEntry(ColumnDataMetaData &meta_data, const Unifie
 	vdata.representation = ColumnDataRepresentation::DICTIONARY;
 	vdata.dictionary_slot = slot;
 	WriteDictionaryCodes(meta_data, source_data, offset, copy_count, 0);
-	meta_data.GetVectorMetaData().count = UnsafeNumericCast<uint16_t>(copy_count);
+	meta_data.GetVectorMetaData().count = UnsafeNumericCast<uint32_t>(copy_count);
 	return true;
 }
 
@@ -1362,7 +1371,7 @@ static bool TryExtendDictionaryEntry(ColumnDataMetaData &meta_data, const Unifie
 	}
 	D_ASSERT(vdata.count + copy_count <= STANDARD_VECTOR_SIZE);
 	WriteDictionaryCodes(meta_data, source_data, offset, copy_count, vdata.count);
-	vdata.count += UnsafeNumericCast<uint16_t>(copy_count);
+	vdata.count += UnsafeNumericCast<uint32_t>(copy_count);
 	return true;
 }
 

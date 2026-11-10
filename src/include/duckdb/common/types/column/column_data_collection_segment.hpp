@@ -44,8 +44,7 @@ enum class ColumnDataRepresentation : uint8_t {
 	CONSTANT,
 	//! Per-row dictionary codes in block data referencing a per-segment dictionary
 	DICTIONARY,
-	//! Row values of a list child longer than a vector, in block data sized to the child. The entry is marked full,
-	//! its row count is kept in the segment's large_entry_counts
+	//! Row values of a list child longer than a vector, in block data sized to exactly its count
 	LARGE_FLAT
 };
 
@@ -93,7 +92,7 @@ struct VectorMetaData {
 	uint32_t block_id = 0;
 	uint32_t offset = 0;
 	//! The number of entries present in this vector
-	uint16_t count;
+	uint32_t count;
 	//! Whether block space has been allocated for this entry
 	bool is_allocated = false;
 	//! The representation class of this entry
@@ -159,8 +158,6 @@ public:
 	vector<SegmentDictionaryData> dictionaries;
 	//! Map from dictionary id to a slot in "dictionaries"
 	unordered_map<string, idx_t> dictionary_map;
-	//! The row counts of LARGE_FLAT entries by vector data index
-	unordered_map<idx_t, idx_t> large_entry_counts;
 	//! The string heap for the column data collection (only used for IN_MEMORY_ALLOCATOR)
 	shared_ptr<StringHeap> heap;
 
@@ -206,10 +203,8 @@ public:
 		D_ASSERT(index.index < vector_data.size());
 		return vector_data[index.index];
 	}
-	//! The number of rows in an entry
-	idx_t GetVectorCount(VectorDataIndex index);
 	//! The number of rows the block data of an entry has room for
-	idx_t GetVectorCapacity(VectorDataIndex index);
+	static idx_t GetVectorCapacity(const VectorMetaData &vdata);
 
 	idx_t ChunkCount() const;
 	//! Get the total *used* size (not cached)
