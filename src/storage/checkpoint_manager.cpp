@@ -94,8 +94,7 @@ void ActiveCheckpointWrapper::Commit() {
 
 CheckpointWriter::CheckpointWriter(AttachedDatabase &db_p, QueryContext query_context,
                                    optional_ptr<ClientContext> checkpoint_context_p)
-    : db(db_p), owned_context(query_context.Valid() ? nullptr : db_p.GetDatabase().Services()),
-      context(query_context.Valid() ? *query_context.GetContext() : *owned_context),
+    : db(db_p), context(query_context.Valid() ? *query_context.GetContext() : db_p.GetDatabase().GetContext()),
       checkpoint_context(checkpoint_context_p) {
 }
 

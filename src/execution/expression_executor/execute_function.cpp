@@ -266,7 +266,7 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 	} else {
 		arguments.SetChildCardinality(count);
 	}
-	arguments.Verify(context);
+	arguments.Verify(context.GetDatabase());
 
 	auto dictionary_executed = expr.Function().HasFunctionCallback() && !all_constant &&
 	                           execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result);
@@ -324,7 +324,7 @@ idx_t ExpressionExecutor::Select(const BoundFunctionExpression &expr, Expression
 	} else {
 		arguments.SetChildCardinality(count);
 	}
-	arguments.Verify(context);
+	arguments.Verify(context.GetDatabase());
 	if (all_constant) {
 		Vector result(LogicalType::BOOLEAN);
 		if (expr.Function().HasFunctionCallback()) {

@@ -1,3 +1,4 @@
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 
 #include "duckdb/common/type_visitor.hpp"
@@ -55,7 +56,7 @@ BoundIndex::BoundIndex(const Identifier &name, const string &index_type, IndexCo
 		expression_context = make_shared_ptr<ClientContext>(std::move(instance));
 		executor = make_uniq<ExpressionExecutor>(*expression_context);
 	} else {
-		executor = unique_ptr<ExpressionExecutor>(new ExpressionExecutor());
+		executor = make_uniq<ExpressionExecutor>(db.GetDatabase());
 	}
 	for (auto &expr : unbound_expressions_p) {
 		types.push_back(expr->GetReturnType().InternalType());

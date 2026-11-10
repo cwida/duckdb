@@ -730,7 +730,7 @@ template <NumericDispatchKind KIND>
 void NumericDispatchFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &lstate = ExecuteFunctionState::GetFunctionState(state)->Cast<NumericDispatchState>();
-	auto &context = state.GetContext();
+	auto &context = state.GetClientContext();
 	idx_t count = args.size();
 
 	vector<unique_ptr<Vector>> typed;

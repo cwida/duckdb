@@ -19,7 +19,7 @@
 namespace duckdb {
 class StringHeap;
 class ArenaAllocator;
-class ClientContext;
+class Context;
 
 struct bignum_t {
 	string_t data;
@@ -49,10 +49,12 @@ enum AbsoluteNumberComparison : uint8_t {
 
 //! Per-vector scratch digit buffers and interrupt-check state for BIGNUM multiplication and division
 struct BignumArithmeticState {
-	explicit BignumArithmeticState(optional_ptr<ClientContext> context = nullptr) : context(context) {
+	//! Without a context, long operations cannot be interrupted
+	BignumArithmeticState() = default;
+	explicit BignumArithmeticState(Context &context_p) : context(&context_p) {
 	}
 
-	optional_ptr<ClientContext> context;
+	optional_ptr<Context> context;
 	//! Digit operations performed since the last interrupt check
 	idx_t work_since_interrupt_check = 0;
 	unsafe_vector<bignum_digit_t> lhs_digits;

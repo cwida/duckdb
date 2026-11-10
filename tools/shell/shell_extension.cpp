@@ -26,7 +26,7 @@ namespace duckdb {
 
 static void GetEnvFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &heap = StringVector::GetStringHeap(result);
-	auto &os_util = OSUtil::Get(*state.GetContext().db);
+	auto &os_util = OSUtil::Get(state.GetContext().GetDatabase());
 	UnaryExecutor::Execute<string_t, string_t>(
 	    args.data[0], result, [&](string_t input) { return heap.AddString(os_util.GetEnv(input.GetString())); });
 }

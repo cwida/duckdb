@@ -572,11 +572,6 @@ bool BignumIsOdd(StringHeap &heap, BignumArithmeticState &arithmetic_state, cons
 	return !BignumDecimal::IsZero(remainder);
 }
 
-//! The client context (if any) lets long BIGNUM divisions check for interrupts
-optional_ptr<ClientContext> GetBignumContext(ExpressionState &state) {
-	return state.HasContext() ? &state.GetContext() : nullptr;
-}
-
 //! Rounds the unscaled value at `drop` decimal digits and appends `restore` zero digits:
 //! round(value / 10^drop) * 10^restore, exactly
 template <WideRoundingMode MODE>
@@ -659,7 +654,7 @@ void WideDecimalRoundFunction(DataChunk &input, ExpressionState &state, Vector &
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 	auto &heap = StringVector::GetStringHeap(result);
-	BignumArithmeticState arithmetic_state(GetBignumContext(state));
+	BignumArithmeticState arithmetic_state(state.GetContext());
 	UnaryExecutor::Execute<bignum_t, string_t>(input.data[0], result, [&](bignum_t value) {
 		return WideDecimalRoundDigits<MODE>(heap, arithmetic_state, value, scale, 0);
 	});
@@ -865,7 +860,7 @@ void WideDecimalRoundPrecisionFunction(DataChunk &input, ExpressionState &state,
 		restore = 0;
 	}
 	auto &heap = StringVector::GetStringHeap(result);
-	BignumArithmeticState arithmetic_state(GetBignumContext(state));
+	BignumArithmeticState arithmetic_state(state.GetContext());
 	UnaryExecutor::Execute<bignum_t, string_t>(input.data[0], result, [&](bignum_t value) {
 		auto rounded = WideDecimalRoundDigits<MODE>(heap, arithmetic_state, value, drop, restore);
 		if (info.check_overflow && !BignumDecimal::FitsWidth(rounded, result_width)) {
