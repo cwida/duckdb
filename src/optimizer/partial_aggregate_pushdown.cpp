@@ -8,6 +8,7 @@
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -17,6 +18,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 
 namespace duckdb {
@@ -114,12 +116,87 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &expr) {
 	return true;
 }
 
-// An aggregate argument that can throw must only see the rows the join lets through: evaluated below an inner join
-// it would also run on the rows the join eliminates and could fail a query that succeeds without the pushdown.
-static bool AggregateArgumentsCanThrow(const LogicalAggregate &aggr) {
+static bool OwnsTableIndex(const LogicalOperator &op, TableIndex table_index) {
+	for (auto &index : op.GetTableIndex()) {
+		if (index == table_index) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// The statistics of the base table column behind a binding, found through the operators that pass it on unchanged
+static unique_ptr<BaseStatistics> GetBaseColumnStatistics(ClientContext &context, LogicalOperator &op,
+                                                          ColumnBinding binding) {
+	if (!OwnsTableIndex(op, binding.table_index)) {
+		for (auto &child : op.children) {
+			auto stats = GetBaseColumnStatistics(context, *child, binding);
+			if (stats) {
+				return stats;
+			}
+		}
+		return nullptr;
+	}
+	const auto column_index = binding.column_index.GetIndex();
+	if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		ColumnBinding child_binding;
+		if (!GetColumnBinding(*op.Cast<LogicalProjection>().expressions[column_index], child_binding)) {
+			return nullptr;
+		}
+		return GetBaseColumnStatistics(context, *op.children[0], child_binding);
+	}
+	if (op.type != LogicalOperatorType::LOGICAL_GET) {
+		return nullptr;
+	}
+	auto &get = op.Cast<LogicalGet>();
+	auto &column_ids = get.GetColumnIds();
+	if (column_index >= column_ids.size()) {
+		return nullptr;
+	}
+	unique_ptr<BaseStatistics> stats;
+	if (get.function.statistics_extended) {
+		TableFunctionGetStatisticsInput input(get.bind_data.get(), column_ids[column_index]);
+		stats = get.function.statistics_extended(context, input);
+	} else if (get.function.statistics) {
+		stats = get.function.statistics(context, get.bind_data.get(), column_ids[column_index].GetPrimaryIndex());
+	}
+	if (stats) {
+		// an outer join above the scan can add NULL values
+		stats->Set(StatsInfo::CAN_HAVE_NULL_VALUES);
+	}
+	return stats;
+}
+
+// An argument that can throw is safe when the bounds of the base table columns it references prove it cannot fail
+static bool ArgumentCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &aggr, const Expression &argument) {
+	if (!argument.CanThrow()) {
+		return false;
+	}
+	column_binding_map_t<unique_ptr<BaseStatistics>> column_statistics;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(argument, [&](const BoundColumnRefExpression &ref) {
+		if (column_statistics.find(ref.Binding()) != column_statistics.end()) {
+			return;
+		}
+		auto stats = GetBaseColumnStatistics(optimizer.context, *aggr->children[0], ref.Binding());
+		if (stats) {
+			column_statistics[ref.Binding()] = std::move(stats);
+		}
+	});
+	if (column_statistics.empty()) {
+		return true;
+	}
+	auto copy = argument.Copy();
+	StatisticsPropagator propagator(optimizer, aggr);
+	propagator.PropagateExpressionStatistics(copy, std::move(column_statistics));
+	return copy->CanThrow();
+}
+
+// Below an inner join a throwing argument would also run on the rows the join removes
+static bool AggregateArgumentsCanThrow(Optimizer &optimizer, unique_ptr<LogicalOperator> &op) {
+	auto &aggr = op->Cast<LogicalAggregate>();
 	for (auto &expr : aggr.expressions) {
 		for (auto &child : expr->Cast<BoundAggregateExpression>().GetChildren()) {
-			if (child->CanThrow()) {
+			if (ArgumentCanThrow(optimizer, op, *child)) {
 				return true;
 			}
 		}
@@ -354,10 +431,6 @@ static bool AnalyzePushdown(LogicalAggregate &aggr, LogicalComparisonJoin &join,
 		return false;
 	}
 	if (!JoinPreservesAggregateSide(join, info)) {
-		return false;
-	}
-	// A preserved side of an outer join keeps every row, so the argument is evaluated on all of them either way.
-	if (join.join_type == JoinType::INNER && AggregateArgumentsCanThrow(aggr)) {
 		return false;
 	}
 	if (ContainsAggregateInput(*join.children[info.aggregate_side])) {
@@ -845,13 +918,16 @@ bool PartialAggregatePushdown::TryDoubleEagerPushdown(unique_ptr<LogicalOperator
 	LogicalJoin::GetTableReferences(*join.children[1], side_bindings[1]);
 
 	vector<DoubleEagerAggregate> aggregates;
-	if (!DEClassifyAggregates(aggr, side_bindings, aggregates) || AggregateArgumentsCanThrow(aggr)) {
+	if (!DEClassifyAggregates(aggr, side_bindings, aggregates)) {
 		return false;
 	}
 
 	vector<ColumnBinding> join_keys[2];
 	vector<LogicalType> join_key_types[2];
 	if (!DECollectJoinKeys(join, side_bindings, join_keys, join_key_types) || !DEValidateGroups(aggr, side_bindings)) {
+		return false;
+	}
+	if (AggregateArgumentsCanThrow(optimizer, op)) {
 		return false;
 	}
 
@@ -1134,6 +1210,10 @@ bool PartialAggregatePushdown::TryPushdownAggregate(unique_ptr<LogicalOperator> 
 	info.upper_aggregate_index = optimizer.binder.GenerateTableIndex();
 	BuildLowerGroupMap(*aggr, *join, info);
 	if (!PassesLowerGroupHeuristic(*aggr, info)) {
+		return false;
+	}
+	// A preserved side of an outer join keeps every row, so the argument is evaluated on all of them either way.
+	if (join->join_type == JoinType::INNER && AggregateArgumentsCanThrow(optimizer, op)) {
 		return false;
 	}
 

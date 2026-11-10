@@ -274,6 +274,7 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 		}
 		expr.FunctionMutable().SetFunctionCallback(
 		    GetScalarIntegerFunction<BASEOP>(expr.GetReturnType().InternalType()));
+		expr.FunctionMutable().SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	auto result = NumericStats::CreateEmpty(expr.GetReturnType());
 	NumericStats::SetMin(result, new_min);

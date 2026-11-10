@@ -151,11 +151,62 @@ EXPLAIN SELECT a, b, sum(sales.id // qty) FROM sales JOIN dim ON sales.id = dim.
 ----
 physical_plan	<!REGEX>:.*combine_aggr.*
 
-# Arithmetic whose result type cannot hold every result may overflow and can still throw.
+# Arithmetic whose result type cannot hold every result checks for overflow, but the bounds of the base table columns
+# prove that these values cannot overflow.
 query II
 EXPLAIN SELECT a, b, sum(price::DECIMAL(38,2) + discount::DECIMAL(38,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
 ----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# DECIMAL(10,0) * DECIMAL(10,0) is clamped to DECIMAL(18,0) and checks for overflow. The unmatched row holds a value
+# whose square does not fit, and the column bounds cannot rule the overflow out, so the argument stays above the join.
+statement ok
+CREATE TABLE fact_dec AS SELECT i % 100 AS id, CASE WHEN i % 100 = 50 THEN 9999999999 ELSE i % 100 END::DECIMAL(10,0) AS d FROM range(10000) t(i);
+
+query III
+SELECT a, b, sum(d * d) FROM fact_dec JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	2047500
+0	1	1747500
+0	2	2130000
+
+query II
+EXPLAIN SELECT a, b, sum(d * d) FROM fact_dec JOIN dim USING (id) GROUP BY a, b
+----
 physical_plan	<!REGEX>:.*combine_aggr.*
+
+# The bounds of the base table columns prove that this clamped multiplication cannot overflow, so it is pushed down.
+statement ok
+CREATE TABLE fact_rev AS SELECT i % 100 AS id, (i % 1000 + 0.5)::DECIMAL(15,2) AS price, ((i % 10) / 100.0)::DECIMAL(15,2) AS discount FROM range(10000) t(i);
+
+query II
+EXPLAIN SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	339417.5000
+0	1	291217.5000
+0	2	290290.0000
+
+# The bounds are resolved through the operators below the join.
+query II
+EXPLAIN SELECT a, b, sum(price * (1 - discount)) FROM (SELECT * FROM fact_rev WHERE price > 1) r JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Without base table statistics the bounds are unknown and the argument stays above the join.
+query II
+EXPLAIN SELECT a, b, sum(price * (1 - discount)) FROM (SELECT * FROM fact_rev UNION ALL SELECT * FROM fact_rev) r JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum(price) FROM (SELECT * FROM fact_rev UNION ALL SELECT * FROM fact_rev) r JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
 
 # The same results without the optimizer.
 statement ok
@@ -198,3 +249,17 @@ SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP B
 4	0	756
 4	1	686
 4	2	618
+
+query III
+SELECT a, b, sum(d * d) FROM fact_dec JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	2047500
+0	1	1747500
+0	2	2130000
+
+query III
+SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	339417.5000
+0	1	291217.5000
+0	2	290290.0000
