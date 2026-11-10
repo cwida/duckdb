@@ -1,5 +1,8 @@
 #include "duckdb/optimizer/duplicate_eliminated_domain_optimizer.hpp"
 
+#include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/storage/statistics/node_statistics.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/optimizer/aggregate_rewrite_helper.hpp"
 #include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -282,12 +285,196 @@ static unique_ptr<Expression> DomainKey(const LogicalAggregate &domain) {
 	                                           ColumnBinding(domain.group_index, ProjectionIndex(0)));
 }
 
+static optional_ptr<const LogicalMaterializedCTE>
+FindVisibleOwner(TableIndex index, const vector<reference<LogicalMaterializedCTE>> &cte_scopes) {
+	for (auto &owner : cte_scopes) {
+		if (owner.get().table_index == index) {
+			return owner.get();
+		}
+	}
+	return nullptr;
+}
+
+//! Guaranteed bounds valid before and after expanding a domain; callbacks only modify expression copies.
+class DomainAggregateBounds {
+public:
+	DomainAggregateBounds(ClientContext &context_p, const vector<reference<LogicalMaterializedCTE>> &scopes_p)
+	    : context(context_p), scopes(scopes_p) {
+	}
+
+	bool CanEvaluate(LogicalAggregate &aggregate) const {
+		for (auto &expression : aggregate.expressions) {
+			if (!expression->CanThrow()) {
+				continue;
+			}
+			if (expression->GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+				return false;
+			}
+			auto copy = expression->Copy();
+			column_binding_set_t visited;
+			AggregateStats(copy->Cast<BoundAggregateExpression>(), *aggregate.children[0], visited);
+			if (copy->CanThrow()) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+private:
+	optional_idx MaxRows(LogicalOperator &input, unordered_set<TableIndex> &visited) const {
+		switch (input.type) {
+		case LogicalOperatorType::LOGICAL_GET: {
+			auto &get = input.Cast<LogicalGet>();
+			if (!get.children.empty() || !get.function.cardinality || !get.bind_data) {
+				return {};
+			}
+			auto stats = get.function.cardinality(context, get.bind_data.get());
+			return stats && stats->has_max_cardinality ? optional_idx(stats->max_cardinality) : optional_idx();
+		}
+		case LogicalOperatorType::LOGICAL_PROJECTION:
+		case LogicalOperatorType::LOGICAL_FILTER:
+			return MaxRows(*input.children[0], visited);
+		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+			auto &aggregate = input.Cast<LogicalAggregate>();
+			if (aggregate.groups.empty() && aggregate.grouping_sets.size() <= 1) {
+				return 1;
+			}
+			return HasSimpleGrouping(aggregate) ? MaxRows(*input.children[0], visited) : optional_idx();
+		}
+		case LogicalOperatorType::LOGICAL_CTE_REF: {
+			auto &reference = input.Cast<LogicalCTERef>();
+			auto owner = FindVisibleOwner(reference.cte_index, scopes);
+			// Reject repeated definitions as well as cycles: a CTE DAG can otherwise require exponential work.
+			if (!owner || reference.correlated_columns || reference.is_recurring ||
+			    !visited.insert(reference.cte_index).second) {
+				return {};
+			}
+			return MaxRows(*owner->children[0], visited);
+		}
+		case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+		case LogicalOperatorType::LOGICAL_CROSS_PRODUCT: {
+			if (input.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+				auto &join = input.Cast<LogicalComparisonJoin>();
+				if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI) {
+					return MaxRows(*input.children[0], visited);
+				}
+				if (join.join_type != JoinType::INNER) {
+					return {};
+				}
+			}
+			auto left = MaxRows(*input.children[0], visited);
+			auto right = MaxRows(*input.children[1], visited);
+			idx_t product;
+			return left.IsValid() && right.IsValid() &&
+			               TryMultiplyOperator::Operation(left.GetIndex(), right.GetIndex(), product)
+			           ? optional_idx(product)
+			           : optional_idx();
+		}
+		default:
+			return FixedRowCount(input);
+		}
+	}
+
+	unique_ptr<BaseStatistics> AggregateStats(BoundAggregateExpression &copy, LogicalOperator &input,
+	                                          column_binding_set_t &visited) const {
+		if (!copy.Function().HasStatisticsCallback()) {
+			return nullptr;
+		}
+		unordered_set<TableIndex> row_visits;
+		auto maximum = MaxRows(input, row_visits);
+		if (!maximum.IsValid()) {
+			return nullptr;
+		}
+		vector<BaseStatistics> children;
+		for (auto &child : copy.GetChildren()) {
+			auto stats = ExpressionStats(*child, input, visited);
+			children.push_back(stats ? stats->Copy() : BaseStatistics::CreateUnknown(child->GetReturnType()));
+		}
+		NodeStatistics rows(maximum.GetIndex(), maximum.GetIndex());
+		AggregateStatisticsInput statistics(copy.BindInfo(), children, &rows);
+		return copy.Function().GetCallbacks().GetStatisticsCallback()(context, copy, statistics);
+	}
+
+	unique_ptr<BaseStatistics> ExpressionStats(const Expression &expression, LogicalOperator &input,
+	                                           column_binding_set_t &visited) const {
+		if (expression.GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
+			auto copy = expression.Copy();
+			auto stats = AggregateStats(copy->Cast<BoundAggregateExpression>(), input, visited);
+			return copy->CanThrow() ? nullptr : std::move(stats);
+		}
+		auto index = ReferenceIndex(expression, input);
+		if (index.IsValid()) {
+			switch (input.type) {
+			case LogicalOperatorType::LOGICAL_PROJECTION: {
+				auto &projected = *input.expressions[index.GetIndex()];
+				if (!expression.GetReturnType().EqualsIncludingCollation(projected.GetReturnType())) {
+					return nullptr;
+				}
+				return ExpressionStats(projected, *input.children[0], visited);
+			}
+			case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+				auto &aggregate = input.Cast<LogicalAggregate>();
+				if (HasSimpleGrouping(aggregate)) {
+					auto binding = expression.Cast<BoundColumnRefExpression>().Binding();
+					auto &source = aggregate.GetExpression(binding);
+					if (!expression.GetReturnType().EqualsIncludingCollation(source.GetReturnType())) {
+						return nullptr;
+					}
+					return ExpressionStats(source, *input.children[0], visited);
+				}
+				break;
+			}
+			case LogicalOperatorType::LOGICAL_CTE_REF: {
+				auto &reference = input.Cast<LogicalCTERef>();
+				auto owner = FindVisibleOwner(reference.cte_index, scopes);
+				if (!owner || reference.is_recurring || reference.correlated_columns ||
+				    !visited.emplace(reference.cte_index, ProjectionIndex(index.GetIndex())).second) {
+					break;
+				}
+				auto bindings = owner->children[0]->GetColumnBindings();
+				if (index.GetIndex() >= bindings.size() || index.GetIndex() >= reference.chunk_types.size() ||
+				    !expression.GetReturnType().EqualsIncludingCollation(reference.chunk_types[index.GetIndex()])) {
+					break;
+				}
+				BoundColumnRefExpression source(expression.GetReturnType(), bindings[index.GetIndex()]);
+				return ExpressionStats(source, *owner->children[0], visited);
+			}
+			case LogicalOperatorType::LOGICAL_FILTER:
+			case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+			case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
+				for (auto &child : input.children) {
+					if (ReferenceIndex(expression, *child).IsValid()) {
+						return ExpressionStats(expression, *child, visited);
+					}
+				}
+				break;
+			default:
+				break;
+			}
+		}
+		// Declared DECIMAL endpoints remain valid without evaluating predicates or propagating statistics.
+		auto &type = expression.GetReturnType();
+		if (type.id() != LogicalTypeId::DECIMAL) {
+			return nullptr;
+		}
+		auto stats = NumericStats::CreateUnknown(type).ToUnique();
+		NumericStats::SetMin(*stats, Value::MinimumValue(type));
+		NumericStats::SetMax(*stats, Value::MaximumValue(type));
+		return stats;
+	}
+
+private:
+	ClientContext &context;
+	const vector<reference<LogicalMaterializedCTE>> &scopes;
+};
+
 //! A matched input restriction and the projections between it and its aggregate.
 //! Borrows the plan for one decision. Apply may destroy the matched join.
 class DomainRestriction {
 public:
-	DomainRestriction(LogicalAggregate &aggregate_p, ExpressionType consumer_comparison_p)
-	    : aggregate(aggregate_p), consumer_comparison(consumer_comparison_p) {
+	DomainRestriction(ClientContext &context, const vector<reference<LogicalMaterializedCTE>> &scopes,
+	                  LogicalAggregate &aggregate_p, ExpressionType consumer_comparison_p)
+	    : aggregate(aggregate_p), consumer_comparison(consumer_comparison_p), bounds(context, scopes) {
 		join = Find(*aggregate.children[0], *aggregate.groups[0]);
 	}
 
@@ -310,6 +497,7 @@ private:
 private:
 	LogicalAggregate &aggregate;
 	ExpressionType consumer_comparison;
+	DomainAggregateBounds bounds;
 	optional_ptr<LogicalComparisonJoin> join;
 	vector<reference<LogicalProjection>> projections;
 };
@@ -356,13 +544,7 @@ bool DomainRestriction::CanRemove() const {
 	if (!HasSimpleProjections()) {
 		return false;
 	}
-	// Removing the restriction exposes other groups to these aggregates.
-	for (auto &expression : aggregate.expressions) {
-		if (expression->CanThrow()) {
-			return false;
-		}
-	}
-	return true;
+	return bounds.CanEvaluate(aggregate);
 }
 
 void DomainRestriction::Apply(unique_ptr<LogicalAggregate> &domain, RestrictionAction action) {
@@ -595,8 +777,9 @@ static bool HasRuntimeFilterTargets(LogicalAggregate &aggregate) {
 }
 
 static bool TryOptimizeRestriction(Optimizer &optimizer, LogicalAggregate &aggregate,
-                                   unique_ptr<LogicalAggregate> &domain, ExpressionType consumer_comparison) {
-	DomainRestriction existing(aggregate, consumer_comparison);
+                                   unique_ptr<LogicalAggregate> &domain, ExpressionType consumer_comparison,
+                                   const vector<reference<LogicalMaterializedCTE>> &cte_scopes) {
+	DomainRestriction existing(optimizer.context, cte_scopes, aggregate, consumer_comparison);
 	auto restriction = existing.GetJoin();
 	if (!restriction || HasSharedSource(*restriction->children[1])) {
 		return false;
@@ -657,16 +840,6 @@ struct RuntimeDomainSource {
 	optional_ptr<const LogicalMaterializedCTE> owner;
 	idx_t key = 0;
 };
-
-static optional_ptr<const LogicalMaterializedCTE>
-FindVisibleOwner(TableIndex index, const vector<reference<LogicalMaterializedCTE>> &cte_scopes) {
-	for (auto &owner : cte_scopes) {
-		if (owner.get().table_index == index) {
-			return owner.get();
-		}
-	}
-	return nullptr;
-}
 
 static bool ReferencesVisibleOwners(LogicalOperator &op, const vector<reference<LogicalMaterializedCTE>> &cte_scopes) {
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
@@ -804,13 +977,13 @@ static void TraceSharedKeys(LogicalOperator &op, idx_t key, const LogicalType &t
 	}
 }
 
-static RestrictionAction TryOptimizeRuntimeRestriction(DomainCostModel &costs, LogicalAggregate &aggregate,
-                                                       LogicalOperator &demand, idx_t demand_index,
-                                                       unique_ptr<LogicalAggregate> &domain,
+static RestrictionAction TryOptimizeRuntimeRestriction(ClientContext &context, DomainCostModel &costs,
+                                                       LogicalAggregate &aggregate, LogicalOperator &demand,
+                                                       idx_t demand_index, unique_ptr<LogicalAggregate> &domain,
                                                        ExpressionType consumer_comparison,
                                                        const vector<reference<LogicalMaterializedCTE>> &cte_scopes,
                                                        bool keys_may_expand = false) {
-	DomainRestriction existing(aggregate, consumer_comparison);
+	DomainRestriction existing(context, cte_scopes, aggregate, consumer_comparison);
 	auto restriction = existing.GetJoin();
 	if (!restriction || !existing.HasSimpleProjections()) {
 		return RestrictionAction::KEEP;
@@ -976,8 +1149,8 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<Log
 			auto key = make_uniq<BoundColumnRefExpression>(type, scan->GetColumnBindings()[scan_source.key]);
 			scan_domain = CreateKeyDomain(optimizer, std::move(scan), std::move(key));
 			DomainCostModel costs(extractor, aggregate, scan_source.rows, scan_source.scan_rows);
-			if (TryOptimizeRuntimeRestriction(costs, aggregate, demand, demand_index, scan_domain, comparison,
-			                                  cte_scopes, true) != RestrictionAction::KEEP) {
+			if (TryOptimizeRuntimeRestriction(optimizer.context, costs, aggregate, demand, demand_index, scan_domain,
+			                                  comparison, cte_scopes, true) != RestrictionAction::KEEP) {
 				return true;
 			}
 		}
@@ -997,7 +1170,8 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<Log
 	// CTE readers scan the full row. A new owner also writes it and replaces the consumer with another reader.
 	auto source_read_write_work = (source.owner ? 1 : 3) * source_rows * static_cast<double>(source_types.size());
 	DomainCostModel costs(extractor, aggregate, source_rows, source_read_write_work);
-	auto action = TryOptimizeRuntimeRestriction(costs, aggregate, demand, demand_index, domain, comparison, cte_scopes);
+	auto action = TryOptimizeRuntimeRestriction(optimizer.context, costs, aggregate, demand, demand_index, domain,
+	                                            comparison, cte_scopes);
 	if (action != RestrictionAction::KEEP) {
 		if (action == RestrictionAction::REPLACE && !source.owner) {
 			replacements.Merge(MaterializeRuntimeDomain(optimizer, op, 1 - aggregate_side, domain_reference));
@@ -1047,7 +1221,7 @@ bool DuplicateEliminatedDomainOptimizer::TryOptimizeDomain(unique_ptr<LogicalOpe
 	auto key_expression =
 	    make_uniq<BoundColumnRefExpression>(demand_key.GetReturnType(), ColumnBinding(key_index, ProjectionIndex(0)));
 	auto domain = CreateKeyDomain(optimizer, std::move(fixed), std::move(key_expression));
-	if (TryOptimizeRestriction(optimizer, *aggregate, domain, condition.GetComparisonType())) {
+	if (TryOptimizeRestriction(optimizer, *aggregate, domain, condition.GetComparisonType(), cte_scopes)) {
 		return true;
 	}
 	// Replacing an existing restriction keeps its filter opportunity. A new one may duplicate the consumer's work.
