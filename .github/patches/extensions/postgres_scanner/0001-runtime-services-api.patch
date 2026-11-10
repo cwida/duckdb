@@ -7,7 +7,7 @@ index 9560218..012d850 100644
  public:
  	void OnConnectionOpened(ClientContext &context) override {
 -		context.registered_state->Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
-+		context.Services().GetRegisteredState().Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
++		context.GetContext().GetRegisteredState().Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
  	}
  };
  
@@ -25,7 +25,7 @@ index 9560218..012d850 100644
  	ExtensionCallback::Register(config, make_shared_ptr<PostgresExtensionCallback>());
  	for (auto &connection : ConnectionManager::Get(loader.GetDatabaseInstance()).GetConnectionList()) {
 -		connection->registered_state->Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
-+		connection->Services().GetRegisteredState().Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
++		connection->GetContext().GetRegisteredState().Insert("postgres_extension", make_shared_ptr<PostgresExtensionState>());
  	}
  
  	auto &instance = loader.GetDatabaseInstance();

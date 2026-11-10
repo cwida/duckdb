@@ -247,7 +247,6 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	// START GENERATED RULE LABELS
 	//===--------------------------------------------------------------------===//
 	LabelRule("Expression", "an expression");
-	LabelRule("LambdaArrowExpression", "an expression");
 	LabelRule("LogicalOrExpression", "an expression");
 	LabelRule("LogicalAndExpression", "an expression");
 	LabelRule("LogicalNotExpression", "an expression");

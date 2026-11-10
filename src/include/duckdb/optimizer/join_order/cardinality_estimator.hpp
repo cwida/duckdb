@@ -11,6 +11,7 @@
 #include "duckdb/optimizer/join_order/cardinality_value.hpp"
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
+#include "duckdb/optimizer/join_order/join_order_source_stats.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 
 namespace duckdb {
@@ -30,14 +31,14 @@ public:
 
 public:
 	//! Initialize immutable logical statistics before estimating any relation set.
-	void Initialize(const vector<RelationStats> &relations,
-	                const vector<unique_ptr<JoinOrderOperator>> &operators = {});
+	void Initialize(const vector<RelationStats> &relations, const vector<unique_ptr<JoinOrderOperator>> &operators = {},
+	                const join_column_sources_t &sources = {});
 	//! All equivalent plans in a memo group share this estimate.
 	CardinalityValue EstimateCardinality(JoinRelationSet &set);
 
 private:
 	void InitEquivalentRelations();
-	void UpdateTotalDomains(RelationIndex relation, const RelationStats &stats);
+	void UpdateTotalDomains(RelationIndex relation, const RelationStats &stats, const join_column_sources_t &sources);
 	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
 	bool IsFilterApplicable(const FilterInfo &filter, JoinRelationSet &set) const;
 	CardinalityValue GetNumerator(JoinRelationSet &set);

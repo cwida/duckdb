@@ -20,6 +20,7 @@
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_unnest.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -308,6 +309,7 @@ unique_ptr<LogicalOperator> TopNWindowElimination::OptimizeInternal(unique_ptr<L
 		}
 	}
 	const bool used_late_materialization = late_mat_lhs != nullptr;
+	any_late_materialization |= used_late_materialization;
 
 	op = CreateAggregateOperator(window, std::move(aggregate_payload), params);
 	op = TryCreateUnnestOperator(std::move(op), params);
@@ -708,10 +710,15 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 	const auto window_child_bindings = window.children[0]->GetColumnBindings();
 	auto &window_expr = window.expressions[0]->Cast<BoundWindowExpression>();
 
-	// Remember order of group columns to recreate that order in new bindings later
+	// Remember order of group columns to recreate that order in new bindings later.
+	// A FLOAT or DOUBLE group holds both 0.0 and -0.0, so such a column is carried in the payload instead.
 	column_binding_map_t<idx_t> group_bindings;
 	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
 		auto &expr = window_expr.PartitionsMutable()[i];
+		const auto &type = expr->GetReturnType();
+		if (TypeVisitor::Contains(type, LogicalTypeId::FLOAT) || TypeVisitor::Contains(type, LogicalTypeId::DOUBLE)) {
+			continue;
+		}
 		auto column_references = ColumnReferenceExtractor::GetReferences(&expr);
 		group_bindings[column_references.begin()->first] = i;
 	}
@@ -967,6 +974,8 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 	}
 
 	reference<LogicalOperator> op = *window.children[0];
+	// Only a single cast per column can be re-applied, so a cast chain over several projections is not recreatable
+	vector<bool> column_is_cast(projections.size(), false);
 
 	// Traverse projections to a single table scan
 	while (!op.get().children.empty()) {
@@ -986,6 +995,12 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 					// The projected value is derived through a value-transforming expression that the rowid semi-join
 					// cannot reconstruct. Fall back to carrying the computed value through the aggregate instead.
 					return false;
+				}
+				if (BoundCastExpression::IsCast(*projection.expressions[projection_idx])) {
+					if (column_is_cast[i]) {
+						return false;
+					}
+					column_is_cast[i] = true;
 				}
 				if (!ExtractSingleBinding(&projection.expressions[projection_idx], projections[i])) {
 					return false;

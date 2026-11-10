@@ -114,11 +114,11 @@ EXPLAIN (SQL) SELECT i FROM (SELECT i,row_number() OVER (ORDER BY i) r FROM comp
 ----
 sql	<REGEX>:.*[(][[:space:]]*SELECT.*OVER.*[)] AS .*WHERE.*
 
-# An identity projection can disappear while DISTINCT remains.
+# An identity projection can disappear while the deduplication remains.
 query TT
 EXPLAIN (SQL) SELECT * FROM (SELECT DISTINCT i FROM composition_input) q;
 ----
-sql	<REGEX>:^SELECT DISTINCT ON .*[(][[:space:]]*SELECT[^;]*$
+sql	<REGEX>:^SELECT .*GROUP BY [^;]*$
 
 query TT
 EXPLAIN (SQL) SELECT * FROM (SELECT DISTINCT i FROM composition_input) q;

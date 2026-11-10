@@ -486,6 +486,28 @@ bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const 
 	                                     signature_key_fingerprint);
 }
 
+#ifndef WASM_LOADABLE_EXTENSIONS
+// The trusted user-provided repositories for which is_installed holds. This only feeds an error message, so a
+// repository file that cannot be read is skipped rather than reported
+static vector<string> FindUserRepositoryInstalls(DatabaseInstance &db, FileSystem &fs,
+                                                 const std::function<bool(const string &)> &is_installed) {
+	vector<string> result;
+	if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
+		return result;
+	}
+	try {
+		for (auto &repository : ExtensionRepositoryManager::GetRepositories(db, fs)) {
+			if (is_installed(repository.name)) {
+				result.push_back(repository.name);
+			}
+		}
+	} catch (std::exception &) {
+		result.clear();
+	}
+	return result;
+}
+#endif
+
 bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const string &extension,
                                      const string &repository_name, bool core_only, ExtensionInitResult &result,
                                      string &error) {
@@ -523,6 +545,9 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		}
 	}
 
+	// the user-provided repositories that have the extension installed, when a bare load cannot find it
+	vector<string> installed_in_repositories;
+
 	// shorthand case
 	if (!ExtensionHelper::IsFullPath(extension)) {
 		direct_load = false;
@@ -557,6 +582,11 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		if (filename.empty()) {
 			auto directory = RepositoryInstallDirectory(fs, GetExtensionDirectoryPath(db, fs)[0], user_repository_name);
 			filename = fs.JoinPath(directory, extension_name + ".duckdb_extension");
+			if (repository_name.empty()) {
+				installed_in_repositories = FindUserRepositoryInstalls(db, fs, [&](const string &repository) {
+					return !FindInstalledExtension(db, fs, extension_name, repository).empty();
+				});
+			}
 		}
 #endif
 	} else {
@@ -571,8 +601,12 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 	}
 	if (!fs.FileExists(filename)) {
 		string message;
-		bool exact_match = ExtensionHelper::CreateSuggestions(extension, message);
-		if (exact_match) {
+		if (!installed_in_repositories.empty()) {
+			message = StringUtil::Format("Note: extension '%s' exists in one or more user-provided repositories.\n"
+			                             "Consider `LOAD %s FROM <repo_name>`",
+			                             extension, extension);
+			message += StringUtil::CandidatesMessage(installed_in_repositories, "Candidate repositories");
+		} else if (ExtensionHelper::CreateSuggestions(extension, message)) {
 			message += "\nInstall it first using \"INSTALL " + extension + "\".";
 		}
 		error = StringUtil::Format("Extension \"%s\" not found.\n%s", filename, message);

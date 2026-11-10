@@ -42,6 +42,12 @@ timestamp_t SubtractOperator::Operation(date_t left, interval_t right);
 template <>
 timestamp_t SubtractOperator::Operation(timestamp_t left, interval_t right);
 template <>
+timestamp_t SubtractOperator::Operation(timestamp_ms_t left, interval_t right);
+template <>
+timestamp_t SubtractOperator::Operation(timestamp_sec_t left, interval_t right);
+template <>
+timestamp_ns_t SubtractOperator::Operation(timestamp_ns_t left, interval_t right);
+template <>
 interval_t SubtractOperator::Operation(timestamp_t left, timestamp_t right);
 template <>
 int64_t SubtractOperator::Operation(timestamp_t left, timestamp_t right);

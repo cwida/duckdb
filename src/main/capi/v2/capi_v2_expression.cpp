@@ -1,9 +1,13 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
+#include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/common/enums/filter_propagate_result.hpp"
 
 namespace duckdb::capiv2 {
 
@@ -107,6 +111,49 @@ static auto CV2ExpressionRequireFunction(const Expression &expression, const cha
 		throw InvalidInputException("%s: expression is not a function call", function);
 	}
 	return expression.Cast<BoundFunctionExpression>().Function();
+}
+
+// The public enum mirrors FilterPropagateResult numerically, so the mapping below is a plain cast.
+#define CV2_ASSERT_FILTER_PROPAGATE(NAME, V2_NAME)                                                                     \
+	static_assert(static_cast<int>(FilterPropagateResult::NAME) == DUCKDB_V2_FILTER_PROPAGATE_RESULT_##V2_NAME,        \
+	              "FILTER_PROPAGATE_RESULT numeric drift: " #NAME)
+CV2_ASSERT_FILTER_PROPAGATE(NO_PRUNING_POSSIBLE, NO_PRUNING_POSSIBLE);
+CV2_ASSERT_FILTER_PROPAGATE(FILTER_ALWAYS_TRUE, ALWAYS_TRUE);
+CV2_ASSERT_FILTER_PROPAGATE(FILTER_ALWAYS_FALSE, ALWAYS_FALSE);
+CV2_ASSERT_FILTER_PROPAGATE(FILTER_TRUE_OR_NULL, TRUE_OR_NULL);
+CV2_ASSERT_FILTER_PROPAGATE(FILTER_FALSE_OR_NULL, FALSE_OR_NULL);
+#undef CV2_ASSERT_FILTER_PROPAGATE
+
+//! The predicate may refer to one column only, the one the statistics describe, and that column must have their type
+static void CV2CheckPredicateColumn(const Expression &expr, const LogicalType &stats_type,
+                                    optional_ptr<const BoundColumnRefExpression> &seen) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &colref = expr.Cast<BoundColumnRefExpression>();
+		if (seen && seen->Binding() != colref.Binding()) {
+			throw InvalidInputException("duckdb_v2_expression_check_statistics: the predicate refers to more than one "
+			                            "column, the statistics describe a single column");
+		}
+		if (colref.GetReturnType() != stats_type) {
+			throw InvalidInputException("duckdb_v2_expression_check_statistics: the statistics are of type %s, the "
+			                            "column the predicate refers to is of type %s",
+			                            stats_type.ToString(), colref.GetReturnType().ToString());
+		}
+		seen = &colref;
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { CV2CheckPredicateColumn(child, stats_type, seen); });
+}
+
+//! Replaces every column reference of a predicate with a reference to the single column described by the statistics:
+//! a predicate over one column refers to its column by column references, which all stand for that one column.
+static void CV2ReplaceColumnRefsWithReference(unique_ptr<Expression> &expr) {
+	if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		expr = make_uniq<BoundReferenceExpression>(expr->GetAlias(), expr->GetReturnType(), 0ULL);
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<Expression> &child) { CV2ReplaceColumnRefsWithReference(child); });
 }
 
 } // namespace duckdb::capiv2
@@ -219,5 +266,33 @@ DUCKDB_V2_ERROR duckdb_v2_expression_cast_get_mode(duckdb_v2_expression_handle e
 		CV2ExpressionRequireType(node, duckdb::ExpressionType::OPERATOR_CAST, "duckdb_v2_expression_cast_get_mode");
 		const auto &cast = node.Cast<duckdb::BoundFunctionExpression>();
 		*mode = duckdb::BoundCastExpression::IsTryCast(cast) ? DUCKDB_V2_CAST_MODE_TRY : DUCKDB_V2_CAST_MODE_NORMAL;
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_expression_check_statistics(duckdb_v2_context_handle context,
+                                                      duckdb_v2_expression_handle expression,
+                                                      duckdb_v2_stats_handle stats,
+                                                      DUCKDB_V2_FILTER_PROPAGATE_RESULT *result,
+                                                      duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(context);
+	DUCKDB_CHECK_ARG(expression);
+	DUCKDB_CHECK_ARG(stats);
+	DUCKDB_CHECK_ARG(result);
+	*result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
+	return WithErrorHandler(err, [&]() {
+		auto &client_context = Convert(context)->context;
+		const auto &column_stats = Convert(stats)->GetStats();
+		const auto &predicate_expr = *Convert(expression);
+		if (predicate_expr.GetReturnType().id() != duckdb::LogicalTypeId::BOOLEAN) {
+			throw duckdb::InvalidInputException(
+			    "duckdb_v2_expression_check_statistics: the expression is not a predicate (it is not BOOLEAN)");
+		}
+		duckdb::optional_ptr<const duckdb::BoundColumnRefExpression> column;
+		CV2CheckPredicateColumn(predicate_expr, column_stats.GetType(), column);
+		auto predicate = predicate_expr.Copy();
+		CV2ReplaceColumnRefsWithReference(predicate);
+		const auto outcome = duckdb::ExpressionFilter::CheckExpressionStatistics(
+		    &client_context, *predicate, duckdb::array_ptr<const duckdb::BaseStatistics>(&column_stats, 1));
+		*result = static_cast<DUCKDB_V2_FILTER_PROPAGATE_RESULT>(outcome);
 	});
 }

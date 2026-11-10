@@ -1,0 +1,45 @@
+# name: test/sql/unnest/unnest_string_constant_reference_scan.test
+# description: Strings scanned from dictionary and FSST vectors survive repeated UNNEST output
+# group: [unnest]
+
+# The scan gives dictionary and FSST vectors only from segments of the default block size.
+require block_size 262144
+
+# strings that a scan gives in dictionary and FSST vectors
+statement ok
+ATTACH '{TEST_DIR}/unnest_string_constant_reference.db' AS db (STORAGE_VERSION 'v1.1.0');
+
+foreach compression dictionary fsst
+
+statement ok
+SET force_compression = '{compression}';
+
+statement ok
+CREATE TABLE db.{compression}_strs AS SELECT (i % 3)::VARCHAR || repeat('x', 100) || i::VARCHAR AS s FROM range(4096) t(i);
+
+statement ok
+CHECKPOINT db;
+
+endloop
+
+statement ok
+SET enable_fsst_vectors = true;
+
+foreach compression dictionary fsst
+
+query IIII
+SELECT count(*), count(DISTINCT s), min(length(s)), sum(length(s)) FROM (SELECT s, unnest(range(2100)) FROM db.{compression}_strs);
+----
+8601600	4096	102	900837000
+
+endloop
+
+query I
+SELECT bool_or(vector_type(s) = 'DICTIONARY_VECTOR') FROM db.dictionary_strs;
+----
+true
+
+query I
+SELECT bool_or(vector_type(s) = 'FSST_VECTOR') FROM db.fsst_strs;
+----
+true

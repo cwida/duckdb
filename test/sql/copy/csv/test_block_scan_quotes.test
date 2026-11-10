@@ -1,0 +1,171 @@
+# name: test/sql/copy/csv/test_block_scan_quotes.test
+# description: Quoted values in the block scanner: canonical quotes, escaped quotes, quoted newlines, quotes the byte loop must handle
+# group: [csv]
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i) UNION ALL SELECT 1000 + unnest(range(12)) AS o, unnest(['1,"a",x', '2,"a""b",x', '3,"",x', '4,"a' || chr(10) || 'b",x', '5,"a' || chr(13) || chr(10) || 'b",x', '6,c"d,x', '7,"a" ,x', '8,"a"b,x', '9, "a",x', '10,  "a",x', '11,"a""",x', '12,"""a",x']) AS line UNION ALL SELECT 2000 + i AS o, 'p' || (2000 + i) || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i)) ORDER BY o) TO '{TEST_DIR}/quotes.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i) UNION ALL SELECT 1000 + unnest(range(12)) AS o, unnest(['1,"a",x', '2,"a""b",x', '3,"",x', '4,"a' || chr(10) || 'b",x', '5,"a' || chr(13) || chr(10) || 'b",x', '6,c"d,x', '7,"a" ,x', '8,"a"b,x', '9, "a",x', '10,  "a",x', '11,"a""",x', '12,"""a",x']) AS line UNION ALL SELECT 2000 + i AS o, 'p' || (2000 + i) || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i)) ORDER BY o) TO '{TEST_DIR}/quotes_crlf.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', NEW_LINE '\r\n');
+
+statement ok
+COPY (SELECT '"' || repeat('z', 5000) || '",1' UNION ALL SELECT '"' || repeat('y', 300) || chr(10) || repeat('w', 300) || '",2') TO '{TEST_DIR}/long_quoted.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i) UNION ALL SELECT 1000 + unnest(range(1)) AS o, unnest(['13,"open,x']) AS line UNION ALL SELECT 2000 + i AS o, 'p' || (2000 + i) || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i)) ORDER BY o) TO '{TEST_DIR}/unterminated.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT line FROM (SELECT i AS o, 'p' || i || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i) UNION ALL SELECT 1000 + unnest(range(1)) AS o, unnest(['14,"a\\"b",x']) AS line UNION ALL SELECT 2000 + i AS o, 'p' || (2000 + i) || ',"' || repeat('q', i % 61) || '",' || i AS line FROM range(300) t(i)) ORDER BY o) TO '{TEST_DIR}/backslash.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+# quotes in quotes.csv, escape='"', strict_mode=true
+statement error
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+CSV Error on Line: 308
+
+# quotes in quotes.csv, escape='"', strict_mode=false
+query III
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+1	a	x
+2	a"b	x
+3	NULL	x
+4	a<LF>b	x
+5	a<CR><LF>b	x
+6	c"d	x
+7	a	x
+8	a	x
+9	a	x
+10	  "a"	x
+11	a"	x
+12	"a	x
+
+# quotes in quotes.csv, escape='', strict_mode=true
+statement error
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='', header=false, new_line='\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+CSV Error on Line: 302
+
+# quotes in quotes.csv, escape='', strict_mode=false
+query III
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='', header=false, new_line='\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+1	a	x
+2	a""b	x
+3	NULL	x
+4	a<LF>b	x
+5	a<CR><LF>b	x
+6	c"d	x
+7	a	x
+8	a"	x
+9	a	x
+10	  "a"	x
+11	a""	x
+12	""a	x
+
+# quotes in quotes.csv with buffer_size 4096, aggregate
+query III
+SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, buffer_size=4096, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+502	14959	495
+
+# quotes in quotes.csv with buffer_size 100000, aggregate
+query III
+SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, buffer_size=100000, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+307	8875	300
+
+# quotes in quotes_crlf.csv, escape='"', strict_mode=true
+statement error
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+CSV Error on Line: 308
+
+# quotes in quotes_crlf.csv, escape='"', strict_mode=false
+query III
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+1	a	x
+2	a"b	x
+3	NULL	x
+4	a<LF>b	x
+5	a<CR><LF>b	x
+6	c"d	x
+7	a	x
+8	a	x
+9	a	x
+10	  "a"	x
+11	a"	x
+12	"a	x
+
+# quotes in quotes_crlf.csv, escape='', strict_mode=true
+statement error
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='', header=false, new_line='\r\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+CSV Error on Line: 302
+
+# quotes in quotes_crlf.csv, escape='', strict_mode=false
+query III
+SELECT a, replace(replace(b, chr(13), '<CR>'), chr(10), '<LF>'), c FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='', header=false, new_line='\r\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%' ORDER BY a::INT
+----
+1	a	x
+2	a""b	x
+3	NULL	x
+4	a<LF>b	x
+5	a<CR><LF>b	x
+6	c"d	x
+7	a	x
+8	a"	x
+9	a	x
+10	  "a"	x
+11	a""	x
+12	""a	x
+
+# quotes in quotes_crlf.csv with buffer_size 4096, aggregate
+query III
+SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, ignore_errors=true, buffer_size=4096, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+509	15239	502
+
+# quotes in quotes_crlf.csv with buffer_size 100000, aggregate
+query III
+SELECT count(*), sum(length(b)), count(*) FILTER (WHERE a LIKE 'p%') FROM read_csv('{TEST_DIR}/quotes_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, ignore_errors=true, buffer_size=100000, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+307	8875	300
+
+# quoted values longer than a block, with a newline inside
+query II
+SELECT length(a), c FROM read_csv('{TEST_DIR}/long_quoted.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'VARCHAR','c':'INTEGER'}) ORDER BY c
+----
+5000	1
+601	2
+
+# an unterminated quote, strict_mode=true
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/unterminated.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 301
+
+# an unterminated quote, strict_mode=false
+statement error
+SELECT count(*) FROM read_csv('{TEST_DIR}/unterminated.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, strict_mode=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 301
+
+# an unterminated quote with ignore_errors
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/unterminated.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, ignore_errors=true, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'})
+----
+300
+
+# a backslash escape dialect
+statement error
+SELECT a, b, c FROM read_csv('{TEST_DIR}/backslash.csv', delim=',', quote='"', escape='\', header=false, new_line='\n', auto_detect=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a NOT LIKE 'p%'
+----
+CSV Error on Line: 301
+
+# a malformed quoted value in the unprojected column b still fails the read
+statement error
+SELECT sum(c::INT) FROM read_csv('{TEST_DIR}/quotes.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'VARCHAR','b':'VARCHAR','c':'VARCHAR'}) WHERE a LIKE 'p%'
+----
+CSV Error on Line: 308

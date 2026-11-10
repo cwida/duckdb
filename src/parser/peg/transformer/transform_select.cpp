@@ -1546,19 +1546,22 @@ unique_ptr<BaseTableRef> PEGTransformerFactory::TransformCatalogReservedSchemaTa
 	return make_uniq<BaseTableRef>(description);
 }
 
-QualifiedName PEGTransformerFactory::TransformQualifiedTableFunction(
-    PEGTransformer &transformer, const optional<Identifier> &catalog_qualification,
-    const optional<vector<Identifier>> &schema_qualification, const Identifier &table_function_name) {
+QualifiedName PEGTransformerFactory::TransformCatalogReservedSchemaTableFunctionName(
+    PEGTransformer &transformer, const Identifier &catalog_qualification,
+    const optional<vector<Identifier>> &schema_qualification, const Identifier &reserved_table_function_name) {
 	vector<Identifier> qualification;
-	if (catalog_qualification) {
-		qualification.push_back(*catalog_qualification);
-	}
+	qualification.push_back(catalog_qualification);
 	if (schema_qualification) {
 		for (auto &schema : *schema_qualification) {
 			qualification.push_back(schema);
 		}
 	}
-	return QualifiedName(std::move(qualification), table_function_name);
+	return QualifiedName(std::move(qualification), reserved_table_function_name);
+}
+
+QualifiedName PEGTransformerFactory::TransformTableFunctionNameAsQualifiedName(PEGTransformer &transformer,
+                                                                               const Identifier &table_function_name) {
+	return QualifiedName(table_function_name);
 }
 
 vector<FunctionArgument>

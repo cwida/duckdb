@@ -126,7 +126,7 @@ struct AggregatePartition : StateWithBlockableTasks {
 
 RadixHTGlobalSinkState::RadixHTGlobalSinkState(ClientContext &context_p, const RadixPartitionedHashTable &radix_ht_p)
     : context(context_p),
-      temporary_memory_state(TemporaryMemoryManager::Get(context.Services()).Register(context.Services())),
+      temporary_memory_state(TemporaryMemoryManager::Get(context.GetContext()).Register(context.GetContext())),
       finalized(false), external(false), iteration_reused(false), active_threads(0),
       number_of_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
       memory_limit(BufferManager::GetBufferManager(context).GetOperatorMemoryLimit()),
@@ -143,7 +143,7 @@ RadixHTGlobalSinkState::RadixHTGlobalSinkState(ClientContext &context_p, const R
 void RadixHTGlobalSinkState::SetReservationFloor(ClientContext &context_p, const idx_t radix_bits) {
 	minimum_reservation = CalculateMinimumReservation(radix_bits);
 	temporary_memory_state->SetMinimumReservation(minimum_reservation);
-	temporary_memory_state->SetRemainingSizeAndUpdateReservation(context_p.Services(), minimum_reservation);
+	temporary_memory_state->SetRemainingSizeAndUpdateReservation(context_p.GetContext(), minimum_reservation);
 }
 
 void RadixHTGlobalSinkState::ResetConfigForNewIteration(ClientContext &context_p, const idx_t scheduled_workers) {
@@ -613,7 +613,7 @@ void UpdateSinkReservation(ClientContext &context, RadixHTGlobalSinkState &gstat
 	// Grow from current demand, not the previous request, which might not have been granted.
 	const auto remaining_size =
 	    MaxValue<idx_t>(2 * gstate.number_of_threads * required_size, temporary_memory_state.GetRemainingSize());
-	temporary_memory_state.SetRemainingSizeAndUpdateReservation(context.Services(), remaining_size);
+	temporary_memory_state.SetRemainingSizeAndUpdateReservation(context.GetContext(), remaining_size);
 }
 
 void MaybeRepartition(ClientContext &context, RadixHTGlobalSinkState &gstate, RadixHTLocalSinkState &lstate,
@@ -941,7 +941,7 @@ idx_t RadixPartitionedHashTable::MaxThreads(GlobalSinkState &sink_p) const {
 	    MinValue<idx_t>(MinValue<idx_t>(TaskScheduler::GetScheduler(sink.context).NumberOfThreads(), threads_for_size),
 	                    sink.partitions.size());
 	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
-	    sink.context.Services(), sink.stored_allocators_size + max_threads * sink.max_partition_size);
+	    sink.context.GetContext(), sink.stored_allocators_size + max_threads * sink.max_partition_size);
 
 	// we cannot spill aggregate state memory
 	const auto usable_memory = sink.temporary_memory_state->GetReservation() > sink.stored_allocators_size

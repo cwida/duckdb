@@ -1,0 +1,50 @@
+# name: test/sql/storage/compression/select_fixed_size.test
+# description: Select on uncompressed fixed-size segments
+# group: [compression]
+
+require vector_size 2048
+
+statement ok
+ATTACH '{TEST_DIR}/select_fixed_size.db' AS db;
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE MACRO expected(i) AS CASE WHEN i % 13 = 0 THEN NULL ELSE hash(i) % 1000003 END;
+
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UBIGINT DOUBLE FLOAT
+
+statement ok
+CREATE TABLE db.t_{type}(id INTEGER, g2 TINYINT, g7 TINYINT, g97 TINYINT, g1000 SMALLINT, v {type} USING COMPRESSION uncompressed);
+
+statement ok
+INSERT INTO db.t_{type} SELECT i, hash(i*3)%2, hash(i*11)%7, hash(i*13)%97, hash(i*17)%1000, (expected(i) % 100)::{type} FROM range(100000) t(i);
+
+endloop
+
+statement ok
+CHECKPOINT db;
+
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UBIGINT DOUBLE FLOAT
+
+query I
+SELECT bool_and(compression='Uncompressed') FROM pragma_storage_info('db.t_{type}') WHERE column_name='v' AND segment_type != 'VALIDITY';
+----
+true
+
+foreach col g2 g7 g97 g1000
+
+query I
+SELECT count(*) > 0 AND bool_and(v IS NOT DISTINCT FROM (expected(id) % 100)::{type}) FROM db.t_{type} WHERE {col} = 0;
+----
+true
+
+endloop
+
+query I
+SELECT count(*) = 8 AND bool_and(v IS NOT DISTINCT FROM (expected(id) % 100)::{type}) FROM db.t_{type} WHERE id IN (0, 1, 2047, 2048, 4095, 50000, 99998, 99999);
+----
+true
+
+endloop

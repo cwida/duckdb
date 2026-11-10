@@ -222,7 +222,7 @@ public:
 			l_state->column_ids.push_back(bind_data.table.GetStorageIndex(col_idx));
 		}
 		l_state->scan_state.Initialize(l_state->column_ids, context.client, input.filters.get());
-		local_storage.InitializeScan(storage, l_state->scan_state.local_state, input.filters);
+		local_storage.InitializeScan(context.client, storage, l_state->scan_state.local_state, input.filters);
 		return std::move(l_state);
 	}
 

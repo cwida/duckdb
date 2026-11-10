@@ -393,7 +393,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		if (!filled) {
 			// This parameter cannot be filled by the call, so this function cannot be a match.
-			mismatch(FunctionMismatch::MissingParameter {i, param.GetName()});
+			mismatch(FunctionMismatch::MissingParameter {i, param.IsNamed() ? param.GetName() : Identifier()});
 		}
 	}
 
@@ -424,7 +424,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 	}
 
-	if (mismatches > 0) {
+	if (reason) {
 		// the wrong shape is further away than arguments that cannot be cast, of which there are at most this many
 		return FunctionMismatch(overload, std::move(function), received_count + mismatches, std::move(*reason));
 	}
@@ -480,7 +480,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		cost += static_cast<idx_t>(cast_cost);
 	}
-	if (mismatches > 0) {
+	if (reason) {
 		return FunctionMismatch(overload, std::move(function), mismatches, std::move(*reason));
 	}
 
@@ -997,6 +997,10 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 			    "Function %s returned a STRING_LITERAL or INTEGER_LITERAL type - return an explicit type instead",
 			    function_name);
 		}
+		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
+			// bind callbacks only see concrete types - an unresolved parameter is bound again at EXECUTE
+			throw ParameterNotResolvedException();
+		}
 		target_type.Verify();
 		// don't cast lambda children, their slot only ever holds a placeholder
 		if (children[i]->GetReturnType().id() == LogicalTypeId::LAMBDA) {
@@ -1014,9 +1018,9 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 		// except for one special case: if the function accepts ANY argument
 		// in that case we don't add a cast
 		if (cast_result == LogicalTypeComparisonResult::DIFFERENT_TYPES) {
-			if (target_has_any && children[i]->GetReturnType().id() != LogicalTypeId::UNKNOWN) {
+			if (target_has_any) {
 				// a type that is not concrete cannot be cast to (e.g. a NULL or a VARIANT passed to LIST(ANY)) - the
-				// function has to handle the argument as-is. Unresolved parameters are still assigned the type.
+				// function has to handle the argument as-is
 				continue;
 			}
 			if (IsIncompleteCastTarget(target_type)) {

@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
@@ -573,11 +574,18 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 		}
 		http_proxy_username = Settings::Get<HTTPProxyUsernameSetting>(*db);
 		http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(*db);
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*db);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*db);
 	}
 
-	auto client_context = FileOpener::TryGetClientContext(opener);
-	if (client_context) {
-		logger = client_context->services->GetLoggerPtr();
+	auto context = FileOpener::TryGetContext(opener);
+	if (context && context->IsClient()) {
+		logger = context->GetLoggerPtr();
+	}
+	if (context) {
+		// A session's own value wins over the database's
+		retry_quota_throttled = Settings::Get<HTTPRetryQuotaThrottledSetting>(*context);
+		retry_throttled_wait_ms = Settings::Get<HTTPRetryThrottledWaitMsSetting>(*context);
 	}
 }
 
@@ -588,7 +596,7 @@ unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(DatabaseInstance &db, cons
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(ClientContext &context, const string &url) {
-	ClientContextFileOpener opener(context);
+	ClientContextFileOpener opener(context.GetContext());
 	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
