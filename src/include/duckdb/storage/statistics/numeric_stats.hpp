@@ -91,7 +91,7 @@ struct NumericStats {
 	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	template <class T>
-	static inline void UpdateValue(T new_value, T &min, T &max) {
+	static inline void UpdateValue(const T &new_value, T &min, T &max) {
 		min = Min::Operation(new_value, min);
 		max = Max::Operation(new_value, max);
 		if constexpr (std::is_floating_point_v<T>) {
