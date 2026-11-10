@@ -23,8 +23,9 @@ TransactionContext::~TransactionContext() {
 		try {
 			Rollback(nullptr);
 		} catch (std::exception &ex) {
-			ErrorData data(ex);
+			// a destructor cannot throw, and building the error message allocates
 			try {
+				ErrorData data(ex);
 				DUCKDB_LOG_ERROR(context, "TransactionContext::~TransactionContext()\t\t" + data.Message());
 			} catch (...) { // NOLINT
 			}

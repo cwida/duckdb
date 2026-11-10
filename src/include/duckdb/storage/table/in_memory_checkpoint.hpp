@@ -19,7 +19,7 @@ class InMemoryCheckpointer final : public CheckpointWriter {
 public:
 	InMemoryCheckpointer(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
 	                     StorageManager &storage_manager, CheckpointOptions options,
-	                     optional_ptr<ClientContext> client_context = nullptr);
+	                     optional_ptr<ClientContext> checkpoint_context = nullptr);
 
 	void CreateCheckpoint() override;
 
