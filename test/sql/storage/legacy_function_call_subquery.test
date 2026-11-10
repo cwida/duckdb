@@ -1,0 +1,30 @@
+# name: test/sql/storage/legacy_function_call_subquery.test
+# description: Legacy function calls with names bind when an argument is a subquery
+# group: [storage]
+
+# v1.x storage keeps function calls in the v1.x format, so the views read back as legacy calls
+statement ok
+ATTACH '{TEST_DIR}/legacy_function_call_subquery.db' AS old (STORAGE_VERSION 'v1.5.0')
+
+statement ok
+CREATE TABLE old.t AS SELECT range AS i FROM range(3)
+
+# struct_pack takes the names from the aliases, struct_insert only binds with the names (the fallback)
+statement ok
+CREATE VIEW old.v AS
+SELECT {i: i, c: (SELECT count(*) FROM t t2 WHERE t2.i <= t.i)} AS s,
+       struct_insert({i: i}, c := (SELECT count(*) FROM t t2 WHERE t2.i <= t.i)) AS s2
+FROM t
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/legacy_function_call_subquery.db' AS old
+
+query II
+FROM old.v ORDER BY s.i
+----
+{'i': 0, 'c': 1}	{'i': 0, 'c': 1}
+{'i': 1, 'c': 2}	{'i': 1, 'c': 2}
+{'i': 2, 'c': 3}	{'i': 2, 'c': 3}

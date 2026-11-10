@@ -463,7 +463,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (option_values.empty()) {
 				throw BinderException("BATCH_SIZE_BYTES/ROW_GROUP_SIZE_BYTES cannot be empty");
 			}
-			parsed_options.batch_size_bytes = ParseBytesArg(option_name, option_values[0]);
+			parsed_options.batch_size_bytes = ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "file_size_bytes") {
 			if (option_values.empty()) {
 				throw BinderException("FILE_SIZE_BYTES cannot be empty");
@@ -471,7 +471,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (!function.file_size_bytes) {
 				throw BinderException("FILE_SIZE_BYTES not implemented for %s", function.name);
 			}
-			parsed_options.file_size_bytes = ParseBytesArg(option_name, option_values[0]);
+			parsed_options.file_size_bytes = ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "batches_per_file" || option_name == "row_groups_per_file") {
 			if (option_values.empty()) {
 				throw BinderException("BATCHES_PER_FILE/ROW_GROUPS_PER_FILE cannot be empty");

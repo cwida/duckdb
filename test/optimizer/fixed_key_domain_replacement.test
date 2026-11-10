@@ -1,0 +1,163 @@
+# name: test/optimizer/fixed_key_domain_replacement.test
+# description: Replace an existing key restriction without changing demanded groups
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+
+statement ok
+INSERT INTO fact_data VALUES (NULL, 4), (NULL, 7), (1, NULL);
+
+statement ok
+CREATE VIEW fact AS SELECT (k + 1000) % 1000 k, v FROM fact_data;
+
+# The LEFT join multiplies keys but preserves their complete set.
+statement ok
+CREATE VIEW old_keys AS
+SELECT d.k FROM (VALUES (1), (2), (3), (NULL)) d(k) LEFT JOIN fact_data ON true;
+
+query III rowsort
+SELECT d.k, a.s, a.n
+FROM (VALUES (1), (2), (2), (NULL)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s, count(v) n
+    FROM fact f SEMI JOIN old_keys old USING(k)
+    GROUP BY f.k
+) a USING(k);
+----
+1	45010	10
+2	45020	10
+2	45020	10
+NULL	NULL	NULL
+
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1), (NULL), (NULL)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s
+    FROM fact f SEMI JOIN old_keys old ON f.k IS NOT DISTINCT FROM old.k
+    GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+1	45010
+NULL	11
+NULL	11
+
+# Replacing the source must retain the restriction's ordinary NULL exclusion.
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1), (NULL)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k;
+----
+1	45010
+NULL	NULL
+
+# A missing demanded key disproves containment.
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1), (4)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a USING(k);
+----
+1	45010
+4	NULL
+
+# Ordinary callbacks can use the restricted key, including through CTE and window consumers.
+statement ok
+CREATE VIEW callback_groups AS
+SELECT d.k, a.s, a.n
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s, count(f.k) n
+    FROM fact f SEMI JOIN (
+        SELECT d.k FROM (VALUES (1), (2), (3)) d(k) LEFT JOIN fact_data USING(k)
+    ) old USING(k) GROUP BY f.k
+) a USING(k);
+
+query IIII rowsort
+WITH c AS MATERIALIZED (SELECT * FROM callback_groups)
+SELECT s, n, sum(s) OVER (), sum(n) OVER () FROM c;
+----
+11	11	31	21
+20	10	31	21
+
+query II
+SELECT sum(s), sum(n) FROM callback_groups;
+----
+31	21
+
+# A filtered old source is only a superset of its actual surviving keys.
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s
+    FROM fact f SEMI JOIN (SELECT k FROM old_keys WHERE k != 2) old USING(k)
+    GROUP BY f.k
+) a USING(k);
+----
+1	45010
+2	NULL
+
+# DISTINCT ON an unrelated expression may discard a required key.
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s
+    FROM fact f SEMI JOIN (
+        SELECT DISTINCT ON (bucket) k FROM (VALUES (1, 0), (2, 0)) t(k, bucket) ORDER BY bucket, k
+    ) old USING(k)
+    GROUP BY f.k
+) a USING(k);
+----
+1	45010
+2	NULL
+
+statement ok
+PREPARE replacement AS
+SELECT d.k, a.s FROM (VALUES ($1::INTEGER), ($2::INTEGER)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f
+    SEMI JOIN (
+        SELECT d.k FROM (VALUES ($1::INTEGER), ($2::INTEGER), (3)) d(k)
+        LEFT JOIN fact_data ON true
+    ) old ON f.k IS NOT DISTINCT FROM old.k GROUP BY f.k
+) a ON d.k IS NOT DISTINCT FROM a.k ORDER BY d.k NULLS FIRST;
+
+query II
+EXECUTE replacement(1, 2);
+----
+1	45010
+2	45020
+
+query II
+EXECUTE replacement(NULL, 2);
+----
+NULL	11
+2	45020
+
+# Repeatability covers source payload expressions even when only the key is copied.
+statement ok
+CREATE SEQUENCE source_visits;
+
+query I
+SELECT a.s
+FROM (VALUES (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f
+    SEMI JOIN (
+        SELECT d.k FROM (VALUES (1), (2)) d(k)
+        LEFT JOIN fact_data ON nextval('source_visits') > 0
+    ) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+45010
+
+query I
+SELECT currval('source_visits') > 0;
+----
+true

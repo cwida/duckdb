@@ -577,7 +577,8 @@ bool PlanEnumerator::PlanUsesCrossProduct(const DPJoinNode &node) const {
 void PlanEnumerator::InitLeafPlans() {
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
 	auto &estimator = cost_model.GetCardinalityEstimator();
-	estimator.Initialize(relation_stats, query_graph_manager.GetJoinOperators());
+	estimator.Initialize(relation_stats, query_graph_manager.GetJoinOperators(),
+	                     query_graph_manager.relation_manager.GetColumnSources());
 	for (idx_t i = 0; i < relation_stats.size(); i++) {
 		auto &relation_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(i));
 		auto join_node = make_uniq<DPJoinNode>(relation_set);

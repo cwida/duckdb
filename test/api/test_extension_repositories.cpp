@@ -140,6 +140,7 @@ TEST_CASE("Test that forbidding repositories distrusts their keys", "[api]") {
 
 TEST_CASE("Test that adding trusted extension repositories must be opted into", "[api]") {
 	auto repository_directory = TestCreatePath("extension_repositories_undecided");
+	auto local_prefix = TestCreatePath("extension_repositories_undecided_prefix");
 
 	// the default is 'undecided': adding a repository fails until the setting is explicitly moved to 'allowed', which
 	// can be done at startup or at runtime. Once decided, the setting cannot be reverted to 'undecided'
@@ -157,6 +158,9 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
 		    "CREATE EXTENSION REPOSITORY acme WITH PREFIX 'http://acme.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
 		REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
+		REQUIRE_NO_FAIL(
+		    con.Query(StringUtil::Format("CREATE EXTENSION REPOSITORY local WITH PREFIX '%s' USING PUBLIC KEY '%s'",
+		                                 local_prefix, TEST_PUBLIC_KEY)));
 
 		// the decision cannot be reverted
 		REQUIRE_FAIL(con.Query("SET allow_extension_repositories='undecided'"));
@@ -169,11 +173,16 @@ TEST_CASE("Test that adding trusted extension repositories must be opted into", 
 		DuckDB db(nullptr, &config);
 		Connection con(db);
 
-		REQUIRE(UserRepositoryCount(con) == 1);
+		REQUIRE(UserRepositoryCount(con) == 2);
 		REQUIRE(KeyIsTrusted(*db.instance, ExtensionRepositoryType::USER_PROVIDED, "acme", TEST_PUBLIC_KEY));
 		REQUIRE_FAIL(con.Query(
 		    StringUtil::Format("CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'",
 		                       OTHER_PUBLIC_KEY)));
+
+		// installing from a trusted repository is not gated by the opt-in: the (empty) repository is consulted
+		auto install = con.Query("INSTALL some_extension FROM local");
+		REQUIRE(install->HasError());
+		REQUIRE(install->GetErrorObject().Type() == ExceptionType::IO);
 	}
 
 	// opting in at startup through the config also allows adding repositories
@@ -287,4 +296,69 @@ TEST_CASE("Test that a user repository does not block an unsigned load", "[api]"
 	REQUIRE(bare->HasError());
 	// it fails on the stub binary, not on a user-provided-origin rule: the dev flow is not blocked
 	REQUIRE(!StringUtil::Contains(bare->GetError(), "installed from a user-provided repository"));
+}
+
+// Stage a stub extension in the per-repository subfolder that INSTALL ... FROM a user-provided repository writes to
+static void StageUserRepoExtension(DatabaseInstance &db, const string &name, const string &repository_name) {
+	auto fs = FileSystem::CreateLocal();
+	string dir = fs->JoinPath(ExtensionHelper::ExtensionDirectory(db, *fs), "repositories");
+	dir = fs->JoinPath(dir, repository_name);
+	fs->CreateDirectoriesRecursive(dir);
+
+	vector<data_t> stub(ParsedExtensionMetaData::FOOTER_SIZE, 0);
+	WriteExtensionFile(*fs, fs->JoinPath(dir, name + ".duckdb_extension"), stub.data(), stub.size());
+}
+
+TEST_CASE("Test that a bare load names the user repository an extension is installed from", "[api]") {
+	auto repository_directory = TestCreatePath("ext_repo_load_hint");
+	auto extension_directory = TestCreatePath("ext_repo_load_hint_ext");
+
+	DBConfig config;
+	config.SetOptionByName("extension_repository_directory", repository_directory);
+	config.SetOptionByName("extension_directory", extension_directory);
+	config.SetOptionByName("allow_extension_repositories", "allowed");
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY acme WITH PREFIX 'http://acme.com' USING PUBLIC KEY '%s'", TEST_PUBLIC_KEY)));
+	REQUIRE_NO_FAIL(con.Query(StringUtil::Format(
+	    "CREATE EXTENSION REPOSITORY other WITH PREFIX 'http://other.com' USING PUBLIC KEY '%s'", OTHER_PUBLIC_KEY)));
+	StageUserRepoExtension(*db.instance, "some_ext", "acme");
+	StageUserRepoExtension(*db.instance, "shared_ext", "acme");
+	StageUserRepoExtension(*db.instance, "shared_ext", "other");
+	StageUserRepoExtension(*db.instance, "stray_ext", "not_a_repository");
+
+	// a bare load does not reach a user-provided repository, but the error names the repository to load from
+	auto bare = con.Query("LOAD some_ext");
+	REQUIRE(bare->HasError());
+	REQUIRE(bare->GetErrorObject().Type() == ExceptionType::IO);
+	REQUIRE(StringUtil::Contains(bare->GetError(),
+	                             "Note: extension 'some_ext' exists in one or more user-provided repositories.\n"
+	                             "Consider `LOAD some_ext FROM <repo_name>`\nCandidate repositories: \"acme\""));
+	REQUIRE(!StringUtil::Contains(bare->GetError(), "other"));
+
+	// attaching through the extension prefix performs a bare load as well
+	auto attach = con.Query("ATTACH 'some_ext:file.db'");
+	REQUIRE(attach->HasError());
+	REQUIRE(StringUtil::Contains(attach->GetError(), "Candidate repositories: \"acme\""));
+
+	// the same extension name can be installed in several repositories: each of them is a candidate
+	auto shared = con.Query("LOAD shared_ext");
+	REQUIRE(shared->HasError());
+	REQUIRE(StringUtil::Contains(shared->GetError(), "Candidate repositories: \"acme\", \"other\""));
+
+	// an extension that is not installed, or that sits in a folder no repository backs, gets the plain error
+	auto missing = con.Query("LOAD missing_ext");
+	REQUIRE(missing->HasError());
+	REQUIRE(!StringUtil::Contains(missing->GetError(), "Candidate repositories"));
+	auto stray = con.Query("LOAD stray_ext");
+	REQUIRE(stray->HasError());
+	REQUIRE(!StringUtil::Contains(stray->GetError(), "Candidate repositories"));
+
+	// once repositories are forbidden they are distrusted, so loading from them is no longer suggested
+	REQUIRE_NO_FAIL(con.Query("SET allow_extension_repositories='forbidden'"));
+	auto forbidden = con.Query("LOAD some_ext");
+	REQUIRE(forbidden->HasError());
+	REQUIRE(!StringUtil::Contains(forbidden->GetError(), "Candidate repositories"));
 }

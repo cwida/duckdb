@@ -25,6 +25,8 @@ struct CMUtils {
 	static CMExpressionType GetExpressionType(const BoundFunctionExpression &expression);
 	//! The input wrapped by a compressed materialization expression, or nullptr for any other expression
 	static optional_ptr<const Expression> GetWrappedInput(const Expression &expression);
+	//! Whether the expression compresses its input, which only the statistics of the input where it was placed allow
+	static bool CompressesInput(const Expression &expression);
 	static void MarkCast(BoundFunctionExpression &expression);
 
 private:

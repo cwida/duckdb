@@ -286,7 +286,8 @@ unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, cons
 	                              input.storage_type);
 }
 
-BoundStatement SecretManager::BindCreateSecret(CatalogTransaction transaction, CreateSecretInput &info) {
+BoundStatement SecretManager::BindCreateSecret(Context &context, CatalogTransaction transaction,
+                                               CreateSecretInput &info) {
 	if (info.persist_type == SecretPersistType::TRANSACTION || info.storage_type == TRANSACTION_STORAGE_NAME) {
 		throw BinderException("Transaction-scoped secrets cannot be created through SQL");
 	}
@@ -323,7 +324,7 @@ BoundStatement SecretManager::BindCreateSecret(CatalogTransaction transaction, C
 
 		// Cast the provided value to the expected type
 		string error_msg;
-		auto cast_value = param.second.DefaultTryCastAs(matched_param->second, &error_msg);
+		auto cast_value = param.second.TryCastAs(context, matched_param->second, &error_msg);
 		if (!cast_value) {
 			throw BinderException("Failed to cast option %s to type '%s': '%s'", matched_param->first,
 			                      matched_param->second.ToString(), error_msg);
