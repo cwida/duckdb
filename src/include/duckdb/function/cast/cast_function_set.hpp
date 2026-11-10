@@ -73,6 +73,9 @@ public:
 	//! Data-dependent VARIANT conversions are treated conservatively.
 	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;
 
+	//! Returns registered source types that can match this target, without invoking bind callbacks.
+	DUCKDB_API vector<LogicalType> GetRegisteredCastSourceTypes(const LogicalType &target) const;
+
 	//! Register a combine rule for LogicalType::TryGetMaxLogicalType, consulted before previously registered rules
 	//! and the built-in rules
 	DUCKDB_API void RegisterCombineTypesRule(CombineTypesRule rule);

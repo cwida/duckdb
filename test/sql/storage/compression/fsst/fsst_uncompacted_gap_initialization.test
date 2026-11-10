@@ -1,0 +1,47 @@
+# name: test/sql/storage/compression/fsst/fsst_uncompacted_gap_initialization.test
+# description: The gap of an uncompacted FSST segment must be initialized before it is persisted
+# group: [fsst]
+
+# FSST sampling is not deterministic, so this checks the file content directly.
+# scripts/test_zero_initialize.py runs it with one-initialized buffers, which fill unwritten bytes with 0xFF.
+
+statement ok
+ATTACH '{TEST_DIR}/fsst_uncompacted_gap_initialization.db' AS db (STORAGE_VERSION 'v1.0.0')
+
+statement ok
+SET threads=1
+
+statement ok
+SET force_compression='fsst'
+
+# 1700 rows of these strings fill a segment beyond the compaction threshold
+statement ok
+CREATE TABLE db.t AS SELECT repeat('A', 1000) || i::VARCHAR AS c FROM range(1700) tbl(i)
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('db.t') WHERE compression = 'FSST'
+----
+true
+
+# Close the file so that it can be read
+statement ok
+DETACH db
+
+query I
+SELECT strpos(hex(content), repeat('FF', 100)) FROM read_blob('{TEST_DIR}/fsst_uncompacted_gap_initialization.db')
+----
+0
+
+statement ok
+ATTACH '{TEST_DIR}/fsst_uncompacted_gap_initialization.db' AS db
+
+query I
+SELECT count(*) = 1700 AND bool_and(c = repeat('A', 1000) || rowid::VARCHAR) FROM db.t
+----
+true
+
+statement ok
+DETACH db
