@@ -105,7 +105,7 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 	vector<string> extension_directories;
 	auto &config = db.config;
 
-	auto custom_extension_directory = Settings::Get<ExtensionDirectoriesSetting>(config);
+	auto custom_extension_directory = Settings::Get<ExtensionDirectorySetting>(config);
 	if (!custom_extension_directory.empty()) {
 		extension_directories.push_back(custom_extension_directory);
 	}
@@ -121,12 +121,6 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 		}
 	}
 
-	// Check for user-provided repositories
-	auto user_provided_repos = ExtensionRepositoryManager::GetRepositories(db, fs);
-	for (auto repo : user_provided_repos) {
-		extension_directories.push_back(repo.path);
-	}
-
 	// Process all directories with common path operations
 	auto path_components = PathComponents();
 	for (auto &extension_directory : extension_directories) {
@@ -138,6 +132,19 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 		// Add path components (version and platform)
 		for (auto &path_ele : path_components) {
 			extension_directory = fs.JoinPath(extension_directory, path_ele);
+		}
+	}
+
+	// Check for user-provided repositories
+	auto user_provided_repos = ExtensionRepositoryManager::GetRepositories(db, fs);
+	idx_t ext_dir_count = extension_directories.size();
+	for (idx_t i = 0; i < ext_dir_count; i++) {
+		auto repositories_directory = fs.JoinPath(extension_directories[i], "repositories");
+		for (const auto &repo : user_provided_repos) {
+			auto repo_full_path = fs.JoinPath(repositories_directory, repo.name);
+			if (fs.DirectoryExists(repo_full_path)) {
+				extension_directories.push_back(repo_full_path);
+			}
 		}
 	}
 
