@@ -1,0 +1,19 @@
+# name: test/sql/types/variant/variant_to_varchar.test
+# description: Casting VARIANT values to VARCHAR preserves their expected textual representation
+# group: [variant]
+
+query T
+SELECT v::VARCHAR
+FROM (VALUES
+    (42::VARIANT),
+    ('hello'::VARIANT),
+    ([1, 2, 3]::VARIANT),
+    ({'i': 0, 's': 'str0', 'l': [0, 1, 2], 'st': {'a': 0, 'b': 'x0'}}::VARIANT),
+    (NULL::VARIANT)
+) t(v);
+----
+42
+hello
+[1, 2, 3]
+{'i': 0, 'l': [0, 1, 2], 's': 'str0', 'st': {'a': 0, 'b': 'x0'}}
+NULL

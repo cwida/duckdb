@@ -12,6 +12,8 @@
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/common/serializer/varint.hpp"
+#include "duckdb/common/types/variant_visitor.hpp"
+#include "duckdb/function/cast/vector_cast_helpers.hpp"
 #include "yyjson.hpp"
 
 #include "duckdb/common/algorithm.hpp"
@@ -81,6 +83,177 @@ public:
 
 public:
 	optional_ptr<ClientContext> client;
+};
+
+struct VariantVarcharFormatter {
+	using result_type = void;
+
+	struct State {
+		std::string &out;
+		bool quote_strings;
+	};
+
+	template <bool STRUCT_KEY = false>
+	static void AppendEscaped(std::string &out, const string_t &value, bool quote) {
+		bool needs_quotes;
+		auto length = VectorCastHelpers::CalculateEscapedStringLength<STRUCT_KEY>(value, needs_quotes);
+		if (!quote) {
+			out.append(value.GetData(), value.GetSize());
+			return;
+		}
+		auto offset = out.size();
+		out.resize(offset + length);
+		VectorCastHelpers::WriteEscapedString<false>(out.data() + offset, value, needs_quotes);
+	}
+
+	static void VisitNull(State &state) {
+		state.out += "NULL";
+	}
+
+	static void VisitBoolean(bool value, State &state) {
+		state.out += value ? "true" : "false";
+	}
+
+	template <typename T>
+	static void VisitInteger(T value, State &state) {
+		if constexpr (std::is_signed_v<T>) {
+			state.out += Value::Numeric(LogicalType::BIGINT, NumericCast<int64_t>(value)).ToString();
+		} else {
+			state.out += Value::Numeric(LogicalType::UBIGINT, NumericCast<uint64_t>(value)).ToString();
+		}
+	}
+
+	static void VisitInteger(hugeint_t value, State &state) {
+		state.out += Value::HUGEINT(value).ToString();
+	}
+
+	static void VisitInteger(uhugeint_t value, State &state) {
+		state.out += Value::UHUGEINT(value).ToString();
+	}
+
+	static void VisitFloat(float value, State &state) {
+		state.out += Value::FLOAT(value).ToString();
+	}
+
+	static void VisitDouble(double value, State &state) {
+		state.out += Value::DOUBLE(value).ToString();
+	}
+
+	static void VisitDate(date_t value, State &state) {
+		state.out += Value::DATE(value).ToString();
+	}
+
+	static void VisitTime(dtime_t value, State &state) {
+		state.out += Value::TIME(value).ToString();
+	}
+
+	static void VisitTimeNanos(dtime_ns_t value, State &state) {
+		state.out += Value::TIME_NS(value).ToString();
+	}
+
+	static void VisitTimeTZ(dtime_tz_t value, State &state) {
+		state.out += Value::TIMETZ(value).ToString();
+	}
+
+	static void VisitTimestampSec(timestamp_sec_t value, State &state) {
+		state.out += Value::TIMESTAMPSEC(value).ToString();
+	}
+
+	static void VisitTimestampMs(timestamp_ms_t value, State &state) {
+		state.out += Value::TIMESTAMPMS(value).ToString();
+	}
+
+	static void VisitTimestamp(timestamp_t value, State &state) {
+		state.out += Value::TIMESTAMP(value).ToString();
+	}
+
+	static void VisitTimestampNanos(timestamp_ns_t value, State &state) {
+		state.out += Value::TIMESTAMPNS(value).ToString();
+	}
+
+	static void VisitTimestampTZ(timestamp_tz_t value, State &state) {
+		state.out += Value::TIMESTAMPTZ(value).ToString();
+	}
+
+	static void VisitTimestampTZNanos(timestamp_tz_ns_t value, State &state) {
+		state.out += Value::TIMESTAMPTZNS(value).ToString();
+	}
+
+	static void VisitUUID(hugeint_t value, State &state) {
+		state.out += Value::UUID(value).ToString();
+	}
+
+	static void VisitInterval(interval_t value, State &state) {
+		state.out += Value::INTERVAL(value).ToString();
+	}
+
+	static void VisitString(const string_t &value, State &state) {
+		AppendEscaped(state.out, value, state.quote_strings);
+	}
+
+	static void VisitBlob(const string_t &value, State &state) {
+		state.out += Value::BLOB(const_data_ptr_cast(value.GetData()), value.GetSize()).ToString();
+	}
+
+	static void VisitBignum(const string_t &value, State &state) {
+		state.out += Value::BIGNUM(const_data_ptr_cast(value.GetData()), value.GetSize()).ToString();
+	}
+
+	static void VisitGeometry(const string_t &value, State &state) {
+		state.out += Value::GEOMETRY(const_data_ptr_cast(value.GetData()), value.GetSize()).ToString();
+	}
+
+	static void VisitBitstring(const string_t &value, State &state) {
+		state.out += Value::BIT(const_data_ptr_cast(value.GetData()), value.GetSize()).ToString();
+	}
+
+	template <typename T>
+	static void VisitDecimal(T value, uint32_t width, uint32_t scale, State &state) {
+		state.out += Value::DECIMAL(value, NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)).ToString();
+	}
+
+	static void VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested,
+	                       idx_t depth, State &state) {
+		state.out.push_back('[');
+		for (idx_t i = 0; i < nested.child_count; i++) {
+			if (i > 0) {
+				state.out += ", ";
+			}
+			auto child = variant.GetValuesIndex(row, nested.children_idx + i);
+			VariantVisitor<VariantVarcharFormatter>::Visit(variant, row, child, depth + 1, State {state.out, true});
+		}
+		state.out.push_back(']');
+	}
+
+	static void VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested,
+	                        idx_t depth, State &state) {
+		vector<idx_t> order(nested.child_count);
+		for (idx_t i = 0; i < nested.child_count; i++) {
+			order[i] = i;
+		}
+		std::stable_sort(order.begin(), order.end(), [&](idx_t lhs, idx_t rhs) {
+			return variant.GetKey(row, variant.GetKeysIndex(row, nested.children_idx + lhs)).GetString() <
+			       variant.GetKey(row, variant.GetKeysIndex(row, nested.children_idx + rhs)).GetString();
+		});
+		state.out.push_back('{');
+		for (idx_t i = 0; i < order.size(); i++) {
+			if (i > 0) {
+				state.out += ", ";
+			}
+			auto child_offset = nested.children_idx + order[i];
+			auto key = variant.GetKey(row, variant.GetKeysIndex(row, child_offset));
+			auto key_string = key.GetString();
+			AppendEscaped<true>(state.out, string_t(key_string.c_str(), NumericCast<uint32_t>(key_string.size())), true);
+			state.out += ": ";
+			auto child = variant.GetValuesIndex(row, child_offset);
+			VariantVisitor<VariantVarcharFormatter>::Visit(variant, row, child, depth + 1, State {state.out, true});
+		}
+		state.out.push_back('}');
+	}
+
+	static void VisitDefault(VariantLogicalType type_id, const_data_ptr_t, State &) {
+		throw InternalException("VariantLogicalType(%s) not handled", EnumUtil::ToString(type_id));
+	}
 };
 
 } // namespace
@@ -559,6 +732,27 @@ static bool CastVariantToJSON(FromVariantConversionData &conversion_data, Vector
 	return true;
 }
 
+static bool CastVariantToVarchar(FromVariantConversionData &conversion_data, Vector &result, const SelectionVector &sel,
+                                 idx_t offset, idx_t count, optional_idx row) {
+	(void)sel;
+	auto result_data = FlatVector::Writer<string_t>(result, count, offset);
+	for (idx_t i = 0; i < count; i++) {
+		auto row_index = row.IsValid() ? row.GetIndex() : i;
+		if (!conversion_data.variant.RowIsValid(row_index)) {
+			result_data.WriteNull();
+			continue;
+		}
+
+		std::string value;
+		VariantVarcharFormatter::State state {value, false};
+		VariantVisitor<VariantVarcharFormatter>::Visit(conversion_data.variant, row_index, sel[i], 0, state);
+		auto string_value = result_data.WriteEmptyString(value.size());
+		memcpy(string_value.GetDataWriteable(), value.data(), value.size());
+		string_value.Finalize();
+	}
+	return true;
+}
+
 //! * @param conversion_data The constant data relevant at all rows of the conversion
 //! * @param result The typed Vector to populate in this call
 //! * @param sel The selection of value indices to cast
@@ -779,9 +973,7 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			if (target_type.IsJSONType()) {
 				return CastVariantToJSON(conversion_data, result, sel, offset, count, row);
 			}
-			StringConversionPayload string_payload(result);
-			return CastVariantToPrimitive<VariantDirectConversion<string_t, VariantLogicalType::VARCHAR>>(
-			    conversion_data, result, sel, offset, count, row, string_payload);
+			return CastVariantToVarchar(conversion_data, result, sel, offset, count, row);
 		}
 		case LogicalTypeId::INTERVAL:
 			return CastVariantToPrimitive<VariantDirectConversion<interval_t, VariantLogicalType::INTERVAL>>(
