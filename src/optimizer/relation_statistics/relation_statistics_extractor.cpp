@@ -68,14 +68,9 @@ optional<RelationStats> RelationStatsExtractor::ExtractInternal(LogicalOperator 
 			return outer_callback ? outer_callback(index) : nullptr;
 		};
 		optional<RelationStats> result;
-		try {
-			auto stats = Extract(*cte.children[1]);
-			if (stats) {
-				result = RelationStatisticsHelper::ProjectOutputStats(*stats, cte);
-			}
-		} catch (...) {
-			cte_callback = std::move(outer_callback);
-			throw;
+		auto stats = Extract(*cte.children[1]);
+		if (stats) {
+			result = RelationStatisticsHelper::ProjectOutputStats(*stats, cte);
 		}
 		cte_callback = std::move(outer_callback);
 		return result;

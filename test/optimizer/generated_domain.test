@@ -1,5 +1,5 @@
-# name: test/optimizer/deferred_domain.test
-# description: Deferred generated domains preserve composite keys, filters and output bags
+# name: test/optimizer/generated_domain.test
+# description: Generated domains preserve composite keys, filters and output bags
 # group: [optimizer]
 
 # Widening a decimal average can overflow its accumulator in an unrequested group.
@@ -20,6 +20,12 @@ SELECT d.k,(SELECT avg(v::DOUBLE) FROM decimal_average_input f WHERE f.k=d.k)
 FROM (VALUES(0))d(k);
 ----
 0	1.0
+
+query IR
+SELECT d.k,(SELECT avg(v::DOUBLE)+1 FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	2.0
 
 statement ok
 CREATE TABLE facts(k INTEGER, j INTEGER, v INTEGER);
@@ -121,11 +127,11 @@ FROM keys d WHERE d.k=1;
 1	NULL	NULL
 
 statement ok
-PREPARE deferred AS SELECT d.k,d.j,(SELECT sum(v) FROM facts f WHERE f.k=d.k AND f.j=d.j)
+PREPARE generated_domain AS SELECT d.k,d.j,(SELECT sum(v) FROM facts f WHERE f.k=d.k AND f.j=d.j)
 FROM demand d WHERE d.k=$1 ORDER BY ALL;
 
 query III
-EXECUTE deferred(1);
+EXECUTE generated_domain(1);
 ----
 1	1	30
 1	1	30
@@ -133,7 +139,7 @@ EXECUTE deferred(1);
 1	NULL	NULL
 
 query III
-EXECUTE deferred(2);
+EXECUTE generated_domain(2);
 ----
 2	2	NULL
 

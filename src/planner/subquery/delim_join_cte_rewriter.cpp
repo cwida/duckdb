@@ -13,7 +13,6 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/column_binding_replacer.hpp"
-#include "duckdb/optimizer/duplicate_eliminated_domain_optimizer.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -945,22 +944,7 @@ static void ReplaceOperatorBindings(LogicalOperator &op, const vector<ColumnBind
 	replacer.VisitOperator(op);
 }
 
-enum class GeneratedDomainAction { REMOVE, PRESERVE, DEFER };
-
-static bool CanNormalizeDomainExpressions(const vector<unique_ptr<Expression>> &expressions) {
-	for (auto &expression : expressions) {
-		if (expression->CanThrow() || expression->IsVolatile() || ExpressionBarrier::Contains(*expression)) {
-			return false;
-		}
-		bool ordered = false;
-		ExpressionIterator::VisitExpression<BoundFunctionExpression>(
-		    *expression, [&](const auto &function) { ordered |= function.Function().RequiresOrderedExecution(); });
-		if (ordered) {
-			return false;
-		}
-	}
-	return true;
-}
+enum class GeneratedDomainAction { REMOVE, PRESERVE };
 
 static optional_idx FindDomainOutput(const Expression &expression, const GeneratedDomainRef &domain) {
 	ColumnBinding binding;
@@ -1071,11 +1055,6 @@ struct GeneratedDomainReplacement {
 		return true;
 	}
 
-	bool CanApply(GeneratedDomainAction action) const {
-		return action != GeneratedDomainAction::DEFER ||
-		       (CanNormalizeDomainExpressions(filters) && CanNormalizeDomainExpressions(outputs));
-	}
-
 	void Apply(unique_ptr<LogicalOperator> &op, idx_t base_side, const GeneratedDomainRef &domain,
 	           GeneratedDomainAction action, LogicalOperator &root, BindingReplacementGraph &replacements) {
 		const auto replaces_root = &root == op.get();
@@ -1094,12 +1073,6 @@ struct GeneratedDomainReplacement {
 				}
 			}
 			join.join_type = JoinType::SEMI;
-			join.optional_delim_domain = action == GeneratedDomainAction::DEFER;
-			if (action == GeneratedDomainAction::DEFER) {
-				for (auto &filter : filters) {
-					AddFilterToOperator(join.children[0], std::move(filter));
-				}
-			}
 			join.ResolveOperatorTypes();
 			stop = op.get();
 		}
@@ -1119,8 +1092,7 @@ class GeneratedDedupRefEliminator {
 public:
 	GeneratedDedupRefEliminator(ClientContext &context, unique_ptr<LogicalOperator> &delim_join_op,
 	                            TableIndex dedup_cte_index, idx_t dedup_ref_count, LogicalOperator &rewrite_root,
-	                            bool preserve_evidence_side, bool preserve_nested_evidence_side,
-	                            bool defer_domain_reductions);
+	                            bool preserve_evidence_side, bool preserve_nested_evidence_side);
 
 	idx_t Remove();
 
@@ -1134,7 +1106,7 @@ private:
 	bool RemoveInequalityJoinConditions(LogicalOperator &target_op, const vector<JoinCondition> &join_conditions,
 	                                    idx_t dedup_idx);
 	bool RewriteJoin(unique_ptr<LogicalOperator> &join, BindingReplacementGraph &replacements,
-	                 GeneratedDomainAction action, bool under_aggregate);
+	                 GeneratedDomainAction action);
 
 private:
 	ClientContext &context;
@@ -1145,27 +1117,25 @@ private:
 	LogicalOperator &rewrite_root;
 	bool preserve_evidence_side;
 	bool preserve_nested_evidence_side;
-	bool defer_domain_reductions;
 };
 
 GeneratedDedupRefEliminator::GeneratedDedupRefEliminator(ClientContext &context,
                                                          unique_ptr<LogicalOperator> &delim_join_op,
                                                          TableIndex dedup_cte_index, idx_t dedup_ref_count,
                                                          LogicalOperator &rewrite_root, bool preserve_evidence_side,
-                                                         bool preserve_nested_evidence_side,
-                                                         bool defer_domain_reductions)
+                                                         bool preserve_nested_evidence_side)
     : context(context), delim_join_op(delim_join_op), delim_join(delim_join_op->Cast<LogicalComparisonJoin>()),
       dedup_cte_index(dedup_cte_index), dedup_ref_count(dedup_ref_count), rewrite_root(rewrite_root),
-      preserve_evidence_side(preserve_evidence_side), preserve_nested_evidence_side(preserve_nested_evidence_side),
-      defer_domain_reductions(defer_domain_reductions) {
+      preserve_evidence_side(preserve_evidence_side), preserve_nested_evidence_side(preserve_nested_evidence_side) {
 }
 
-unique_ptr<GeneratedDomainRef> GeneratedDedupRefEliminator::GetGeneratedDedupRef(LogicalOperator &op,
-                                                                                 bool collect_filters,
-                                                                                 bool allow_projection) const {
+static unique_ptr<GeneratedDomainRef> GetGeneratedDedupRef(LogicalOperator &op,
+                                                           const vector<TableIndex> &dedup_cte_indexes,
+                                                           bool collect_filters, bool allow_projection) {
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		auto &cteref = op.Cast<LogicalCTERef>();
-		if (cteref.cte_index == dedup_cte_index) {
+		if (std::find(dedup_cte_indexes.begin(), dedup_cte_indexes.end(), cteref.cte_index) !=
+		    dedup_cte_indexes.end()) {
 			auto result = make_uniq<GeneratedDomainRef>();
 			result->cte_ref = cteref;
 			result->output_bindings = cteref.GetColumnBindings();
@@ -1184,7 +1154,7 @@ unique_ptr<GeneratedDomainRef> GeneratedDedupRefEliminator::GetGeneratedDedupRef
 		if (filter.HasProjectionMap() || filter.children.size() != 1) {
 			return nullptr;
 		}
-		auto result = GetGeneratedDedupRef(*filter.children[0], collect_filters, allow_projection);
+		auto result = GetGeneratedDedupRef(*filter.children[0], dedup_cte_indexes, collect_filters, allow_projection);
 		if (!result) {
 			return nullptr;
 		}
@@ -1202,7 +1172,8 @@ unique_ptr<GeneratedDomainRef> GeneratedDedupRefEliminator::GetGeneratedDedupRef
 		if (projection.children.size() != 1) {
 			return nullptr;
 		}
-		auto result = GetGeneratedDedupRef(*projection.children[0], collect_filters, allow_projection);
+		auto result =
+		    GetGeneratedDedupRef(*projection.children[0], dedup_cte_indexes, collect_filters, allow_projection);
 		if (!result) {
 			return nullptr;
 		}
@@ -1221,6 +1192,12 @@ unique_ptr<GeneratedDomainRef> GeneratedDedupRefEliminator::GetGeneratedDedupRef
 		return result;
 	}
 	return nullptr;
+}
+
+unique_ptr<GeneratedDomainRef> GeneratedDedupRefEliminator::GetGeneratedDedupRef(LogicalOperator &op,
+                                                                                 bool collect_filters,
+                                                                                 bool allow_projection) const {
+	return duckdb::GetGeneratedDedupRef(op, {dedup_cte_index}, collect_filters, allow_projection);
 }
 
 bool GeneratedDedupRefEliminator::RewriteSubtree(unique_ptr<LogicalOperator> &op, bool preserve_selected_domain,
@@ -1252,7 +1229,7 @@ bool GeneratedDedupRefEliminator::RewriteSubtree(unique_ptr<LogicalOperator> &op
 		action = GeneratedDomainAction::PRESERVE;
 	}
 	BindingReplacementGraph local_replacements;
-	auto local_rewrite = RewriteJoin(op, local_replacements, action, under_aggregate);
+	auto local_rewrite = RewriteJoin(op, local_replacements, action);
 	if (local_rewrite) {
 		replacements.Merge(local_replacements);
 	}
@@ -1409,7 +1386,7 @@ bool GeneratedDedupRefEliminator::RemoveInequalityJoinConditions(LogicalOperator
 }
 
 bool GeneratedDedupRefEliminator::RewriteJoin(unique_ptr<LogicalOperator> &op, BindingReplacementGraph &replacements,
-                                              GeneratedDomainAction action, bool under_aggregate) {
+                                              GeneratedDomainAction action) {
 	optional_ptr<LogicalFilter> filter;
 	optional_ptr<LogicalOperator> join_op = op.get();
 	if (op->type == LogicalOperatorType::LOGICAL_FILTER && !op->HasProjectionMap() && op->children.size() == 1 &&
@@ -1458,8 +1435,7 @@ bool GeneratedDedupRefEliminator::RewriteJoin(unique_ptr<LogicalOperator> &op, B
 		}
 	} else {
 		auto &join = join_op->Cast<LogicalComparisonJoin>();
-		if (join.optional_delim_domain ||
-		    (join.join_type != JoinType::INNER && (join.join_type != JoinType::SEMI || domain_side != 1))) {
+		if (join.join_type != JoinType::INNER && (join.join_type != JoinType::SEMI || domain_side != 1)) {
 			return false;
 		}
 		for (auto &condition : join.conditions) {
@@ -1468,14 +1444,6 @@ bool GeneratedDedupRefEliminator::RewriteJoin(unique_ptr<LogicalOperator> &op, B
 	}
 	GeneratedDomainReplacement replacement;
 	if (!replacement.Analyze(conditions, *domain)) {
-		return false;
-	}
-	// Inequality lowering keeps its existing policy and outer-condition rewrite.
-	if (defer_domain_reductions && replacement.all_equality &&
-	    (under_aggregate || HasEvidenceSide(delim_join.join_type))) {
-		action = GeneratedDomainAction::DEFER;
-	}
-	if (!replacement.CanApply(action)) {
 		return false;
 	}
 	if (!replacement.all_equality &&
@@ -1526,7 +1494,7 @@ class GeneratedDomainJoinEliminator {
 public:
 	GeneratedDomainJoinEliminator(unique_ptr<LogicalOperator> &rewrite_root,
 	                              const vector<TableIndex> &generated_dedup_cte_indexes,
-	                              const set<TableIndex> &preserve_marker_indexes, bool defer_domain_reductions);
+	                              const set<TableIndex> &preserve_marker_indexes);
 
 	bool Rewrite();
 
@@ -1539,7 +1507,6 @@ private:
 
 	unique_ptr<GeneratedDomainRef> GetGeneratedDedupRef(LogicalOperator &op, bool collect_filters = false,
 	                                                    bool allow_projection = false) const;
-	unique_ptr<GeneratedDomainRef> GetGeneratedDomainDefinition(LogicalOperator &op) const;
 	unique_ptr<GeneratedDomainRef> GetGeneratedDomainRef(LogicalOperator &op, bool collect_filters = false,
 	                                                     bool allow_projection = false) const;
 	bool CTEHasSelection(TableIndex cte_index, vector<TableIndex> &seen_ctes) const;
@@ -1558,15 +1525,13 @@ private:
 	const vector<TableIndex> &generated_dedup_cte_indexes;
 	const set<TableIndex> &preserve_marker_indexes;
 	vector<reference<LogicalCTE>> ctes;
-	bool defer_domain_reductions;
 };
 
 GeneratedDomainJoinEliminator::GeneratedDomainJoinEliminator(unique_ptr<LogicalOperator> &rewrite_root,
                                                              const vector<TableIndex> &generated_dedup_cte_indexes,
-                                                             const set<TableIndex> &preserve_marker_indexes,
-                                                             bool defer_domain_reductions)
+                                                             const set<TableIndex> &preserve_marker_indexes)
     : rewrite_root(rewrite_root), generated_dedup_cte_indexes(generated_dedup_cte_indexes),
-      preserve_marker_indexes(preserve_marker_indexes), defer_domain_reductions(defer_domain_reductions) {
+      preserve_marker_indexes(preserve_marker_indexes) {
 }
 
 void GeneratedDomainJoinEliminator::CollectCTEs(LogicalOperator &op) {
@@ -1626,125 +1591,7 @@ bool GeneratedDomainJoinEliminator::GeneratedDedupRefHasSelection(const Generate
 unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDedupRef(LogicalOperator &op,
                                                                                    bool collect_filters,
                                                                                    bool allow_projection) const {
-	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-		auto &cteref = op.Cast<LogicalCTERef>();
-		if (std::find(generated_dedup_cte_indexes.begin(), generated_dedup_cte_indexes.end(), cteref.cte_index) ==
-		    generated_dedup_cte_indexes.end()) {
-			return nullptr;
-		}
-
-		auto result = make_uniq<GeneratedDomainRef>();
-		result->cte_ref = cteref;
-		result->output_bindings = cteref.GetColumnBindings();
-		result->source_bindings = result->output_bindings;
-		result->output_expressions.reserve(result->output_bindings.size());
-		for (idx_t col_idx = 0; col_idx < result->output_bindings.size(); col_idx++) {
-			result->output_expressions.push_back(
-			    make_uniq<BoundColumnRefExpression>(cteref.chunk_types[col_idx], result->output_bindings[col_idx]));
-		}
-		return result;
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_FILTER) {
-		auto &filter = op.Cast<LogicalFilter>();
-		if (filter.HasProjectionMap() || filter.children.size() != 1) {
-			return nullptr;
-		}
-		auto result = GetGeneratedDedupRef(*filter.children[0], collect_filters, allow_projection);
-		if (!result) {
-			return nullptr;
-		}
-		if (collect_filters) {
-			for (auto &expr : filter.expressions) {
-				auto filter_expr = expr->Copy();
-				ReplaceExpressionBindings(filter_expr, result->output_bindings, result->output_expressions);
-				result->filters.push_back(std::move(filter_expr));
-			}
-		}
-		return result;
-	}
-	if (allow_projection && op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
-		auto &projection = op.Cast<LogicalProjection>();
-		if (projection.children.size() != 1) {
-			return nullptr;
-		}
-		auto result = GetGeneratedDedupRef(*projection.children[0], collect_filters, allow_projection);
-		if (!result) {
-			return nullptr;
-		}
-
-		auto child_bindings = result->output_bindings;
-		auto child_expressions = std::move(result->output_expressions);
-		result->output_bindings = projection.GetColumnBindings();
-		result->output_expressions.clear();
-		result->output_expressions.reserve(projection.expressions.size());
-		for (auto &expr : projection.expressions) {
-			auto rewritten_expr = expr->Copy();
-			ReplaceExpressionBindings(rewritten_expr, child_bindings, child_expressions);
-			result->output_expressions.push_back(std::move(rewritten_expr));
-		}
-		result->has_projection = true;
-		return result;
-	}
-	return nullptr;
-}
-
-unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomainDefinition(LogicalOperator &op) const {
-	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-		auto &cteref = op.Cast<LogicalCTERef>();
-		if (std::find(generated_dedup_cte_indexes.begin(), generated_dedup_cte_indexes.end(), cteref.cte_index) ==
-		    generated_dedup_cte_indexes.end()) {
-			return nullptr;
-		}
-
-		auto result = make_uniq<GeneratedDomainRef>();
-		result->source_bindings = cteref.GetColumnBindings();
-		result->output_bindings = result->source_bindings;
-		result->output_expressions.reserve(result->output_bindings.size());
-		for (idx_t col_idx = 0; col_idx < result->output_bindings.size(); col_idx++) {
-			result->output_expressions.push_back(
-			    make_uniq<BoundColumnRefExpression>(cteref.chunk_types[col_idx], result->output_bindings[col_idx]));
-		}
-		return result;
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_FILTER) {
-		auto &filter = op.Cast<LogicalFilter>();
-		if (filter.HasProjectionMap() || filter.children.size() != 1) {
-			return nullptr;
-		}
-		auto result = GetGeneratedDomainDefinition(*filter.children[0]);
-		if (!result) {
-			return nullptr;
-		}
-		for (auto &expr : filter.expressions) {
-			auto filter_expr = expr->Copy();
-			ReplaceExpressionBindings(filter_expr, result->output_bindings, result->output_expressions);
-			result->filters.push_back(std::move(filter_expr));
-		}
-		return result;
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
-		auto &projection = op.Cast<LogicalProjection>();
-		if (projection.children.size() != 1) {
-			return nullptr;
-		}
-		auto result = GetGeneratedDomainDefinition(*projection.children[0]);
-		if (!result) {
-			return nullptr;
-		}
-
-		auto child_bindings = result->output_bindings;
-		auto child_expressions = std::move(result->output_expressions);
-		result->output_bindings = projection.GetColumnBindings();
-		result->output_expressions.clear();
-		result->output_expressions.reserve(projection.expressions.size());
-		for (auto &expr : projection.expressions) {
-			auto rewritten_expr = expr->Copy();
-			ReplaceExpressionBindings(rewritten_expr, child_bindings, child_expressions);
-			result->output_expressions.push_back(std::move(rewritten_expr));
-		}
-		return result;
-	}
-	return nullptr;
+	return duckdb::GetGeneratedDedupRef(op, generated_dedup_cte_indexes, collect_filters, allow_projection);
 }
 
 unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomainRef(LogicalOperator &op,
@@ -1764,7 +1611,7 @@ unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomain
 		if (cte->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 			return nullptr;
 		}
-		auto result = GetGeneratedDomainDefinition(*cte->children[0]);
+		auto result = GetGeneratedDedupRef(*cte->children[0], true, true);
 		if (!result || result->output_expressions.size() != cteref.chunk_types.size()) {
 			return nullptr;
 		}
@@ -1857,21 +1704,18 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDedupJoin(unique_ptr<LogicalO
 	if (!dedup_ref) {
 		return false;
 	}
-	if (!defer_domain_reductions && (under_aggregate || under_evidence_side) &&
-	    GeneratedDedupRefHasSelection(*dedup_ref)) {
+	if ((under_aggregate || under_evidence_side) && GeneratedDedupRefHasSelection(*dedup_ref)) {
 		// The first CTE rewrite can preserve selected domains below aggregates or existence checks as regular joins.
 		// Do not substitute that selected generated CTE away in the cleanup pass.
 		return false;
 	}
 
 	GeneratedDomainReplacement replacement;
-	auto action = defer_domain_reductions && (under_aggregate || under_evidence_side) ? GeneratedDomainAction::DEFER
-	                                                                                  : GeneratedDomainAction::REMOVE;
 	if (comparison_join.HasProjectionMap() || !replacement.Analyze(comparison_join.conditions, *dedup_ref) ||
-	    !replacement.all_equality || !replacement.CanApply(action)) {
+	    !replacement.all_equality) {
 		return false;
 	}
-	replacement.Apply(join, 1 - dedup_idx, *dedup_ref, action, *rewrite_root, replacements);
+	replacement.Apply(join, 1 - dedup_idx, *dedup_ref, GeneratedDomainAction::REMOVE, *rewrite_root, replacements);
 	return true;
 }
 
@@ -1905,8 +1749,7 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDomainJoin(unique_ptr<Logical
 	if (!generated_ref || !domain_ref) {
 		return false;
 	}
-	if (!defer_domain_reductions && (under_aggregate || under_evidence_side) &&
-	    (domain_ref->has_selection || !domain_ref->filters.empty())) {
+	if ((under_aggregate || under_evidence_side) && (domain_ref->has_selection || !domain_ref->filters.empty())) {
 		// Same invariant as above: selected domains below aggregates or existence checks are part of the physical
 		// reduction.
 		return false;
@@ -1922,13 +1765,11 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDomainJoin(unique_ptr<Logical
 		}
 	}
 	GeneratedDomainReplacement replacement;
-	auto action = defer_domain_reductions && (under_aggregate || under_evidence_side) ? GeneratedDomainAction::DEFER
-	                                                                                  : GeneratedDomainAction::REMOVE;
 	if (comparison_join.HasProjectionMap() || !replacement.Analyze(comparison_join.conditions, *domain_ref) ||
-	    !replacement.all_equality || !replacement.CanApply(action)) {
+	    !replacement.all_equality) {
 		return false;
 	}
-	replacement.Apply(join, generated_idx, *domain_ref, action, *rewrite_root, replacements);
+	replacement.Apply(join, generated_idx, *domain_ref, GeneratedDomainAction::REMOVE, *rewrite_root, replacements);
 	return true;
 }
 
@@ -1940,7 +1781,7 @@ bool GeneratedDomainJoinEliminator::TryRewriteOnce(unique_ptr<LogicalOperator> &
 		auto &child = op->children[child_idx];
 		auto old_child_bindings = child->GetColumnBindings();
 		auto child_under_evidence_side = under_evidence_side;
-		if ((defer_domain_reductions || negated_marker_filter_above) && IsEvidenceSide(*op, child_idx)) {
+		if (negated_marker_filter_above && IsEvidenceSide(*op, child_idx)) {
 			child_under_evidence_side = true;
 		} else if (!under_evidence_side && op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 			auto &join = op->Cast<LogicalComparisonJoin>();
@@ -1970,8 +1811,7 @@ bool GeneratedDomainJoinEliminator::TryRewriteOnce(unique_ptr<LogicalOperator> &
 			return true;
 		}
 	}
-	if (op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
-	    op->Cast<LogicalComparisonJoin>().optional_delim_domain) {
+	if (op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		return false;
 	}
 	return RemoveGeneratedDomainJoin(op, replacements, under_aggregate, under_evidence_side) ||
@@ -2178,8 +2018,7 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 		auto cte_deliminator_timer =
 		    QueryProfiler::Get(binder.context).StartTimerInternal(CTE_DELIMINATOR_PROFILER_KEY);
 		GeneratedDedupRefEliminator eliminator(binder.context, plan, dedup_cte_index, dedup_ref_count, rewrite_root,
-		                                       preserve_evidence_side, preserve_nested_evidence_side,
-		                                       defer_domain_reductions);
+		                                       preserve_evidence_side, preserve_nested_evidence_side);
 		dedup_ref_count = eliminator.Remove();
 		auto &join = plan->Cast<LogicalComparisonJoin>();
 		if (SingleJoinRHSIsDeduplicated(join)) {
@@ -2363,10 +2202,6 @@ void DelimJoinCTERewriter::Rewrite(Binder &binder, unique_ptr<LogicalOperator> &
 }
 
 void DelimJoinCTERewriter::Rewrite(unique_ptr<LogicalOperator> &plan) {
-	auto &config = DBConfig::GetConfig(binder.context);
-	defer_domain_reductions = cte_deliminator_enabled &&
-	                          !config.IsOptimizerDisabled(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN) &&
-	                          !plan->HasSideEffects() && DuplicateEliminatedDomainOptimizer::CanOptimize(*plan);
 	marker_indexes.clear();
 	preserve_marker_indexes.clear();
 	preserve_nested_marker_indexes.clear();
@@ -2384,8 +2219,8 @@ void DelimJoinCTERewriter::Rewrite(unique_ptr<LogicalOperator> &plan) {
 	if (cte_deliminator_enabled) {
 		auto cte_deliminator_timer =
 		    QueryProfiler::Get(binder.context).StartTimerInternal(CTE_DELIMINATOR_PROFILER_KEY);
-		GeneratedDomainJoinEliminator generated_domain_join_eliminator(
-		    plan, generated_dedup_cte_indexes, preserve_marker_indexes, defer_domain_reductions);
+		GeneratedDomainJoinEliminator generated_domain_join_eliminator(plan, generated_dedup_cte_indexes,
+		                                                               preserve_marker_indexes);
 		generated_domain_join_eliminator.Rewrite();
 	}
 	VerifyNoDelim(*plan);

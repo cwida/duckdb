@@ -13,7 +13,7 @@
         "test/optimizer/fixed_key_domain_replacement_plan.test",
         "test/optimizer/runtime_key_domain_plan.test",
         "test/optimizer/shared_key_domain_plan.test",
-        "test/optimizer/deferred_domain_plan.test",
+        "test/optimizer/generated_domain_plan.test",
         "test/sql/optimizer/distinctness_statistics_plan.test",
         "test/sql/join/inner/distinctness_statistics_filter.test",
         "test/sql/optimizer/power_zonemap_pruning.test",

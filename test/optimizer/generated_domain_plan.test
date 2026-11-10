@@ -1,5 +1,5 @@
-# name: test/optimizer/deferred_domain_plan.test
-# description: Generated domains are kept or removed according to downstream work
+# name: test/optimizer/generated_domain_plan.test
+# description: Generated-domain normalization and conservative restriction removal
 # group: [optimizer]
 
 statement ok
@@ -174,7 +174,7 @@ physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
 statement ok
 RESET disabled_optimizers;
 
-# Statistics-dependent bounds retain the pre-deferral binder behavior.
+# Implicit bitstring bounds retain the existing statistics contract.
 statement ok
 CREATE TABLE bit_keys(k INTEGER);
 
@@ -186,3 +186,43 @@ SELECT bit_length((SELECT bitstring_agg(k) FROM bit_keys i WHERE i.k=o.k))
 FROM (SELECT 2 k)o;
 ----
 5
+
+# Missing per-key selectivity for a filtered table is not proof that its domain is unselective.
+statement ok
+CREATE TABLE selected_demand AS SELECT (i%1000)::INTEGER k,(i%13)::INTEGER j,i<2 selected
+FROM range(1000)t(i);
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM selected_demand d WHERE selected;
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query III rowsort
+SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM selected_demand d WHERE selected;
+----
+0	0	0
+1	1	1
+
+statement ok
+RESET disabled_optimizers;
+
+# Simple LATERAL correlation still lowers without materializing a domain.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,x.v FROM (VALUES(1),(2))d(k), LATERAL (SELECT d.k+1 v)x;
+----
+physical_plan	<!REGEX>:[\s\S]*"name": "CTE"[\s\S]*
+
+# A projection above the aggregate remains outside the narrow removal rule.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT avg(v::DOUBLE)+1 FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*

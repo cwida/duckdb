@@ -563,7 +563,7 @@
         "id": 209,
         "name": "optional_delim_domain",
         "type": "bool",
-        "default": "false"
+        "status": "deleted"
       }
     ],
     "constructor": [
