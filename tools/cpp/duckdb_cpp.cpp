@@ -4682,11 +4682,6 @@ auto TableFunction::AddVirtualColumn(VirtualColumn column) & -> TableFunction & 
 	return *this;
 }
 
-auto TableFunction::SetFilterHints(bool enable) & -> TableFunction & {
-	CheckedAPICall(duckdb_v2_table_function_set_filter_hints, handle(), enable);
-	return *this;
-}
-
 auto TableFunction::SetMetricsCallback(MetricsCallback callback) & -> TableFunction & {
 	if (!callback) {
 		CheckedAPICall(duckdb_v2_table_function_set_metrics_callback, handle(), nullptr);
@@ -4798,27 +4793,6 @@ auto TableFunction::InitGlobalInput::GetColumnIndex(idx_t index) const -> idx_t 
 	CheckedAPICall(duckdb_v2_table_function_init_global_get_column_index,
 	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &column_index);
 	return column_index;
-}
-
-auto TableFunction::InitGlobalInput::GetFilterCount() const -> idx_t {
-	idx_t count = 0;
-	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter_count,
-	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), &count);
-	return count;
-}
-
-auto TableFunction::InitGlobalInput::GetFilterColumn(idx_t index) const -> idx_t {
-	idx_t column = 0;
-	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter_column,
-	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &column);
-	return column;
-}
-
-auto TableFunction::InitGlobalInput::GetFilter(idx_t index) const -> Expression {
-	duckdb_v2_expression_handle filter = nullptr;
-	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter,
-	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &filter);
-	return detail::HandleFactory::Make<Expression>(static_cast<void *>(filter));
 }
 
 void TableFunction::InitLocalInput::SetLocalStateInternal(void *data, void (*destructor)(void *)) {

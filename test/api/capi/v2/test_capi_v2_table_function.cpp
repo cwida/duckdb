@@ -2292,30 +2292,23 @@ void NoMetricsCb(duckdb_v2_table_function_metrics_info_handle, duckdb_v2_context
 
 } // namespace
 
-TEST_CASE("V2 table: filter hints and virtual columns need projection pushdown", "[capi_v2][table_function]") {
+TEST_CASE("V2 table: virtual columns need projection pushdown", "[capi_v2][table_function]") {
 	EnvFixture fx;
 
-	for (auto configure : {0, 1}) {
-		auto function = MakeTable(fx.conn, configure == 0 ? "hints_without_projection" : "virtual_without_projection");
-		REQUIRE(duckdb_v2_table_function_set_bind_callback(function, StateBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_table_function_set_exec_callback(function, RangeExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
-		if (configure == 0) {
-			REQUIRE(duckdb_v2_table_function_set_filter_hints(function, true, nullptr) == DUCKDB_V2_ERROR_NONE);
-		} else {
-			REQUIRE(duckdb_v2_table_function_add_virtual_column(
-			            function, DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER, nullptr) == DUCKDB_V2_ERROR_NONE);
-		}
-		REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, function, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
-		duckdb_v2_table_function_destroy(&function);
-	}
+	auto virtual_function = MakeTable(fx.conn, "virtual_without_projection");
+	REQUIRE(duckdb_v2_table_function_set_bind_callback(virtual_function, StateBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_exec_callback(virtual_function, RangeExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_add_virtual_column(
+	            virtual_function, DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_table_function(fx.conn, virtual_function, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_table_function_destroy(&virtual_function);
 
 	// With projection pushdown they register
-	auto function = MakeTable(fx.conn, "hints_with_projection");
+	auto function = MakeTable(fx.conn, "virtual_with_projection");
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, StateBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_exec_callback(function, RangeExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_projection_pushdown(function, true, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_table_function_set_filter_hints(function, true, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_add_virtual_column(function, DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER,
 	                                                    nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_metrics_callback(function, NoMetricsCb, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -2323,28 +2316,19 @@ TEST_CASE("V2 table: filter hints and virtual columns need projection pushdown",
 	duckdb_v2_table_function_destroy(&function);
 }
 
-TEST_CASE("V2 table: filter hints, virtual column and metrics arguments", "[capi_v2][table_function]") {
+TEST_CASE("V2 table: virtual column and metrics arguments", "[capi_v2][table_function]") {
 	EnvFixture fx;
-	auto function = MakeTable(fx.conn, "hint_arguments");
+	auto function = MakeTable(fx.conn, "virtual_arguments");
 
 	// A virtual column that does not exist
 	REQUIRE(duckdb_v2_table_function_add_virtual_column(function, static_cast<DUCKDB_V2_TABLE_VIRTUAL_COLUMN>(99),
 	                                                    nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_table_function_destroy(&function);
 
-	idx_t count = 0;
 	void *data = nullptr;
-	duckdb_v2_expression_handle filter = nullptr;
-	REQUIRE(duckdb_v2_table_function_set_filter_hints(nullptr, true, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_add_virtual_column(nullptr, DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER,
 	                                                    nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_set_metrics_callback(nullptr, NoMetricsCb, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_table_function_init_global_get_filter_count(nullptr, &count, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_table_function_init_global_get_filter_column(nullptr, 0, &count, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_table_function_init_global_get_filter(nullptr, 0, &filter, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_metrics_get_user_data(nullptr, &data, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_metrics_get_bind_data(nullptr, &data, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

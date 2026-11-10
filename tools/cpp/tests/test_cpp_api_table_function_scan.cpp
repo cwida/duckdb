@@ -58,10 +58,10 @@ struct HintGlobal {
 // What the last scan was told about the filters: the declared column of each, and the filter as text
 std::vector<std::pair<idx_t, std::string>> seen_filters;
 
-std::string Render(const Expression &expression) {
+std::string Render(const TableFunction::FilterPushdownInput &input, const Expression &expression) {
 	switch (expression.GetType()) {
 	case ExpressionType::BOUND_COLUMN_REF:
-		return "#" + std::to_string(expression.GetColumnIndex());
+		return "#" + std::to_string(input.GetColumnIndex(expression.GetColumnIndex()));
 	case ExpressionType::VALUE_CONSTANT:
 		return expression.GetConstantValue().ToText();
 	default:
@@ -87,7 +87,7 @@ std::string Render(const Expression &expression) {
 	}
 	std::string result = "(";
 	for (idx_t i = 0; i < expression.GetChildCount(); i++) {
-		result += (i ? " " + name + " " : "") + Render(expression.GetChild(i));
+		result += (i ? " " + name + " " : "") + Render(input, expression.GetChild(i));
 	}
 	return result + ")";
 }
@@ -98,12 +98,29 @@ void HintBindFunction(TableFunction::BindInput &input) {
 	input.SetBindData<HintBind>(HintBind {input.GetConstantArgument(0).Get<int64_t>()});
 }
 
-void HintInitGlobal(TableFunction::InitGlobalInput &input) {
+// The declared column a predicate on a single column applies to
+idx_t FilterColumn(const TableFunction::FilterPushdownInput &input, const Expression &expression) {
+	if (expression.GetType() == ExpressionType::BOUND_COLUMN_REF) {
+		return input.GetColumnIndex(expression.GetColumnIndex());
+	}
+	for (idx_t i = 0; i < expression.GetChildCount(); i++) {
+		if (expression.GetChild(i).GetType() != ExpressionType::VALUE_CONSTANT) {
+			return FilterColumn(input, expression.GetChild(i));
+		}
+	}
+	return 0;
+}
+
+// Called while the query is optimized and again as the scan starts; the last call is the one that matters
+void HintPushdown(TableFunction::FilterPushdownInput &input) {
 	seen_filters.clear();
 	for (idx_t i = 0; i < input.GetFilterCount(); i++) {
-		const auto position = input.GetFilterColumn(i);
-		seen_filters.emplace_back(input.GetColumnIndex(position), Render(input.GetFilter(i)));
+		auto filter = input.GetFilter(i);
+		seen_filters.emplace_back(FilterColumn(input, filter), Render(input, filter));
 	}
+}
+
+void HintInitGlobal(TableFunction::InitGlobalInput &input) {
 	input.SetGlobalState<HintGlobal>();
 }
 
@@ -232,7 +249,7 @@ std::optional<QueryMetricsNode> FindOperator(const QueryMetricsNode &node, std::
 
 } // namespace
 
-TEST_CASE("Stable C++API: table function filter hints", "[cpp_api]") {
+TEST_CASE("Stable C++API: table function sees the filters when the scan starts", "[cpp_api]") {
 	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	auto &factory = conn.GetFactory();
@@ -244,10 +261,11 @@ TEST_CASE("Stable C++API: table function filter hints", "[cpp_api]") {
 	    .SetInitGlobalCallback(HintInitGlobal)
 	    .SetExecCallback(HintExec)
 	    .SetProjectionPushdown(true)
-	    .SetFilterHints(true);
+	    .SetFilterPushdownCallback(HintPushdown);
 	conn.Register(function);
 
-	// No filters, no hints
+	// No filters, nothing offered
+	seen_filters.clear();
 	REQUIRE(CollectBigints(conn.Execute("SELECT i FROM cpp_hint(10)")).size() == 10);
 	REQUIRE(seen_filters.empty());
 
@@ -256,7 +274,7 @@ TEST_CASE("Stable C++API: table function filter hints", "[cpp_api]") {
 	        std::vector<int64_t> {5, 6, 7});
 	REQUIRE_FALSE(seen_filters.empty());
 	for (auto &filter : seen_filters) {
-		// The filter applies to the column i, whichever place that has in the scan, and is written against it
+		// The filter applies to the declared column i, and is written against it
 		REQUIRE(filter.first == 0);
 		REQUIRE(filter.second.find("#0") != std::string::npos);
 	}
@@ -267,12 +285,14 @@ TEST_CASE("Stable C++API: table function filter hints", "[cpp_api]") {
 	REQUIRE(all_filters.find("5") != std::string::npos);
 
 	// A filter on a column the query does not otherwise read keeps that column in the scan
+	seen_filters.clear();
 	REQUIRE(CollectBigints(conn.Execute("SELECT j FROM cpp_hint(10) WHERE i = 3")) == std::vector<int64_t> {6});
 	REQUIRE(seen_filters.size() == 1);
 	REQUIRE(seen_filters[0].first == 0);
 	REQUIRE(seen_filters[0].second == "(#0 = 3)");
 
 	// Filters on both columns
+	seen_filters.clear();
 	REQUIRE(CollectBigints(conn.Execute("SELECT i FROM cpp_hint(10) WHERE j = 8 AND i < 7")) ==
 	        std::vector<int64_t> {4});
 	std::vector<idx_t> columns;
@@ -289,16 +309,10 @@ TEST_CASE("Stable C++API: table function filter hints", "[cpp_api]") {
 	        std::vector<int64_t> {0});
 }
 
-TEST_CASE("Stable C++API: table function filter hints need projection pushdown", "[cpp_api]") {
+TEST_CASE("Stable C++API: table function virtual columns need projection pushdown", "[cpp_api]") {
 	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	auto &factory = conn.GetFactory();
-
-	auto function = TableFunction::Create(factory);
-	function.SetName("cpp_hint_without");
-	function.GetSignature().AddParameter("n", factory.ParseType("BIGINT"));
-	function.SetBindCallback(HintBindFunction).SetExecCallback(HintExec).SetFilterHints(true);
-	REQUIRE_THROWS_AS(conn.Register(function), Exception);
 
 	auto virtual_function = TableFunction::Create(factory);
 	virtual_function.SetName("cpp_virtual_without");

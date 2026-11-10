@@ -4611,7 +4611,7 @@ public:
 	};
 
 	/// The first column index that stands for a virtual column rather than a declared one. The index the inputs'
-	/// `GetColumnIndex` and `GetFilterColumn` report for a virtual column is this plus its value in `VirtualColumn`.
+	/// `GetColumnIndex` reports for a virtual column is this plus its value in `VirtualColumn`.
 	static constexpr idx_t VIRTUAL_COLUMN_START = static_cast<idx_t>(1) << 63;
 
 	/// Whether a column index reported by `GetColumnIndex` stands for a virtual column.
@@ -4695,15 +4695,6 @@ public:
 	/// vector of the exec callback's output chunk, whose column index (see `GetColumnIndex`) is
 	/// `VIRTUAL_COLUMN_START` plus the value of the column. Requires projection pushdown. Unstable API.
 	auto AddVirtualColumn(VirtualColumn column) & -> TableFunction &;
-
-	/// Declares whether the function reads the filters of the query: the predicates the query applies to the
-	/// function's rows, as far as they apply to a single column of it. The global init callback can look at them
-	/// (`InitGlobalInput::GetFilterCount`) to skip what the query can never use, e.g. the parts of a file whose
-	/// statistics rule them out. They are hints only: the engine applies the filters to the rows the function
-	/// produces itself, so the function does not have to understand them, and may produce rows that do not pass
-	/// them. Defaults to false. Requires projection pushdown, and keeps the columns the filters apply to in the scan.
-	/// Unstable API.
-	auto SetFilterHints(bool enable) & -> TableFunction &;
 
 	/// Lets the function report what the scan did: see `MetricsCallback`. Unstable API.
 	auto SetMetricsCallback(MetricsCallback callback) & -> TableFunction &;
@@ -4810,21 +4801,6 @@ public:
 		/// identity without projection pushdown.
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
-
-		/// How many filters the query applies to the rows of the scan, if the function reads them (see
-		/// `SetFilterHints`); zero otherwise.
-		auto GetFilterCount() const -> idx_t;
-		/// The column of the scan that a filter applies to: an index into the scan's columns, which is also the
-		/// index of the vector of the exec callback's output chunk that holds the column. `GetColumnIndex` tells
-		/// which declared column that is.
-		/// @throws InvalidInputException When the index is out of bounds.
-		auto GetFilterColumn(idx_t index) const -> idx_t;
-		/// A filter: a predicate evaluating to `BOOLEAN` on the column returned by `GetFilterColumn`. Every column
-		/// reference in it (`Expression::GetColumnIndex`, which is 0) stands for that column. A filter the engine
-		/// applies speculatively, which it may stop applying at any time, is handed out as the predicate it applies.
-		/// @return A borrowed expression, valid only for the callback duration.
-		/// @throws InvalidInputException When the index is out of bounds.
-		auto GetFilter(idx_t index) const -> Expression;
 
 		/// The scan's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
@@ -5026,6 +5002,13 @@ public:
 	/// the engine as usual, so a callback that recognizes nothing can simply return. The optimizer may run the
 	/// callback more than once for the same query, each time with the predicates not yet accepted, and never with
 	/// none.
+	///
+	/// A function that also has projection pushdown is offered the predicates that apply to a single column of it
+	/// once more when a scan starts, just before the global init callback. That is how the callback of a function
+	/// wrapped in a `MultiFileFunction` sees them, since the optimizer only offers them to the wrapper; the bind data
+	/// is then the one of the file being scanned. The engine applies these predicates to the rows the function
+	/// produces itself, so the function may use them to skip what the query can never use (e.g. the parts of a file
+	/// whose statistics rule them out), and accepting one has no effect. Unstable API.
 	class FilterPushdownInput {
 		friend detail::HandleFactory;
 

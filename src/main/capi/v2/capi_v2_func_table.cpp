@@ -157,8 +157,6 @@ public:
 	void *in_user_data = nullptr;
 	void *in_bind_data = nullptr;
 	const vector<column_t> *in_scan_columns = nullptr;
-	//! The filters of the query, as the position of the scan column each applies to and the predicate on it
-	vector<pair<idx_t, Expression *>> in_filters;
 
 	duckdb_v2_opaque out_global_state = {};
 	idx_t out_max_threads = 1;
@@ -396,8 +394,10 @@ public:
 	duckdb_v2_table_function_metrics_callback_fn metrics_cb = nullptr;
 	shared_ptr<CV2UserData> user_data = nullptr;
 	bool projection_pushdown = false;
-	//! Whether the filters of the query are handed to the global init callback
-	bool filter_hints = false;
+	//! Whether the function sees the filters of the scan: it has a filter pushdown callback and projection pushdown
+	bool ReadsFilters() const {
+		return filter_pushdown_cb && projection_pushdown;
+	}
 	//! Whether the function can produce the file_row_number virtual column
 	bool file_row_number = false;
 
@@ -559,6 +559,46 @@ static auto CV2TableFilters(const TableFunctionInitInput &input) -> vector<pair<
 	return result;
 }
 
+//! Offers the filters the scan applies to the filter pushdown callback once more, for the scan that is about to start.
+//! The callback only sees the predicates at optimization time, which a function wrapped in a multi-file function does
+//! not: the optimizer asks the wrapper. The engine applies the filters to what the function produces, so accepting a
+//! predicate has no effect here.
+static auto CV2TableOfferFilters(ClientContext &context, const CV2TableFunctionData &bind_data,
+                                 const TableFunctionInitInput &input) -> void {
+	const auto &info = *bind_data.info;
+	auto filters = CV2TableFilters(input);
+	if (filters.empty()) {
+		return;
+	}
+	// A predicate refers to the one column it applies to as column 0; the callback resolves references through the
+	// column list, so each gets the position of its column
+	vector<unique_ptr<Expression>> predicates;
+	for (auto &entry : filters) {
+		auto predicate = entry.second->Copy();
+		ExpressionIterator::EnumerateExpression(predicate, [&](Expression &child) {
+			if (child.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+				child.Cast<BoundReferenceExpression>().IndexMutable() = entry.first;
+			}
+		});
+		predicates.push_back(std::move(predicate));
+	}
+
+	CV2TableFilterPushdownInfo args = {};
+	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
+	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
+	args.in_filters = &predicates;
+	args.in_column_ids = &input.column_indexes;
+	args.out_handled.resize(predicates.size(), false);
+
+	CV2ErrorInfo err = {};
+	auto err_ptr = Convert(&err);
+	CV2CallbackContext callback_context(context);
+	info.filter_pushdown_cb(Convert(&args), Convert(&callback_context), &err_ptr);
+	if (err.HasError()) {
+		err.ThrowAsException();
+	}
+}
+
 static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &input)
     -> unique_ptr<GlobalTableFunctionState> {
 	const auto &bind_data = input.bind_data->Cast<CV2TableFunctionData>();
@@ -567,6 +607,9 @@ static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &i
 	// Always produced, even without a callback: it carries the thread count and column list the scan runs with.
 	auto result = make_uniq<CV2TableGlobalState>();
 	result->scan_columns = CV2TableScanColumns(bind_data, input);
+	if (info.ReadsFilters()) {
+		CV2TableOfferFilters(context, bind_data, input);
+	}
 	if (!info.init_global_cb) {
 		return std::move(result);
 	}
@@ -575,9 +618,6 @@ static auto CV2TableInitGlobal(ClientContext &context, TableFunctionInitInput &i
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = bind_data.handle ? bind_data.handle->GetData() : nullptr;
 	args.in_scan_columns = &result->scan_columns;
-	if (info.filter_hints) {
-		args.in_filters = CV2TableFilters(input);
-	}
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
@@ -605,7 +645,7 @@ static auto CV2TableInitLocal(ExecutionContext &context, TableFunctionInitInput 
 
 	// Always produced, even without a callback: get_partition_data keeps its per-thread guard state here.
 	auto result = make_uniq<CV2TableLocalState>();
-	if (info.filter_hints && input.filters) {
+	if (info.ReadsFilters() && input.filters) {
 		// The function only reads the filters, so it is left to the engine to apply them to what it produces
 		for (auto &entry : *input.filters) {
 			result->filters.emplace_back(entry.GetIndex().GetIndex(),
@@ -1030,9 +1070,9 @@ public:
 		}
 
 		// Both are told apart from the declared columns by their place among the columns the scan was asked for
-		if ((info.filter_hints || info.file_row_number) && !info.projection_pushdown) {
-			throw InvalidInputException("A table function that reads the filters of the query or produces a virtual "
-			                            "column requires projection pushdown.");
+		if (info.file_row_number && !info.projection_pushdown) {
+			throw InvalidInputException(
+			    "A table function that produces a virtual column requires projection pushdown.");
 		}
 
 		signature.Verify();
@@ -1061,7 +1101,7 @@ public:
 			function.statistics_extended = CV2TableStats;
 		}
 		function.projection_pushdown = info.projection_pushdown;
-		if (info.filter_hints) {
+		if (info.ReadsFilters()) {
 			// The engine applies the filters to what the function produces, so they only need to reach the scan
 			function.filter_pushdown = true;
 		}
@@ -1294,12 +1334,6 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_add_virtual_column(duckdb_v2_table_func
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_table_function_set_filter_hints(duckdb_v2_table_function_handle function, bool enable,
-                                                          duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(function);
-	return WithErrorHandler(err, [&]() { Convert(function)->info.filter_hints = enable; });
-}
-
 DUCKDB_V2_ERROR
 duckdb_v2_table_function_set_metrics_callback(duckdb_v2_table_function_handle function,
                                               duckdb_v2_table_function_metrics_callback_fn callback,
@@ -1435,45 +1469,6 @@ duckdb_v2_table_function_init_global_get_column_index(duckdb_v2_table_function_i
 			    "Index out of bounds in duckdb_v2_table_function_init_global_get_column_index");
 		}
 		*column_index = columns[index];
-	});
-}
-
-DUCKDB_V2_ERROR
-duckdb_v2_table_function_init_global_get_filter_count(duckdb_v2_table_function_init_global_info_handle info,
-                                                      idx_t *count, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(count);
-	return WithErrorHandler(err, [&]() { *count = Convert(info)->in_filters.size(); });
-}
-
-DUCKDB_V2_ERROR
-duckdb_v2_table_function_init_global_get_filter_column(duckdb_v2_table_function_init_global_info_handle info,
-                                                       idx_t index, idx_t *column, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(column);
-	return WithErrorHandler(err, [&]() {
-		const auto &filters = Convert(info)->in_filters;
-		if (index >= filters.size()) {
-			throw duckdb::InvalidInputException(
-			    "Index out of bounds in duckdb_v2_table_function_init_global_get_filter_column");
-		}
-		*column = filters[index].first;
-	});
-}
-
-DUCKDB_V2_ERROR
-duckdb_v2_table_function_init_global_get_filter(duckdb_v2_table_function_init_global_info_handle info, idx_t index,
-                                                duckdb_v2_expression_handle *filter, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(filter);
-	*filter = nullptr;
-	return WithErrorHandler(err, [&]() {
-		const auto &filters = Convert(info)->in_filters;
-		if (index >= filters.size()) {
-			throw duckdb::InvalidInputException(
-			    "Index out of bounds in duckdb_v2_table_function_init_global_get_filter");
-		}
-		*filter = Convert(filters[index].second);
 	});
 }
 

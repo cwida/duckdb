@@ -614,31 +614,6 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  table_function_set_filter_hints:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-27" ]
-    description: |
-      Sets whether the table function reads the filters of the query. Defaults to false.
-
-      The filters are the predicates the query applies to the function's rows, as far as they apply to a single
-      column of it. The global init callback can look at them (see `[[table_function_init_global_get_filter_count]]`)
-      to skip what the query can never use, e.g. the parts of a file whose statistics rule them out. They are hints
-      only: the engine applies the filters to the rows the function produces itself, so the function does not have to
-      understand them, and may produce rows that do not pass them. This requires projection pushdown (see
-      `[[table_function_set_projection_pushdown]]`) and keeps the columns the filters are applied to in the scan.
-    parameters:
-      function:
-        type: table_function
-        description: The function to configure.
-      enable:
-        type: bool
-        description: Whether the function reads the filters of the query.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
   table_function_set_metrics_callback:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-10-27" ]
@@ -675,6 +650,14 @@ functions:
       keeps applying the rest above the scan, so accepting a predicate is a promise to filter the rows exactly as
       it would have. The optimizer may invoke the callback more than once for the same query, each time with the
       predicates not yet accepted; it is not invoked when there are none.
+
+      A function that also has projection pushdown (see `[[table_function_set_projection_pushdown]]`) is offered the
+      predicates that apply to a single column of it once more when a scan starts, just before the global init
+      callback, in the same form, with the column references resolved by `[[table_function_filter_pushdown_get_column_index]]`
+      as at optimization time. This is how the callback of a function wrapped in a multi-file function sees the
+      predicates, which the optimizer only offers to the wrapper. The engine applies these predicates to the rows the
+      function produces itself, so the function may use them to skip what the query can never use but does not have to
+      understand them, and accepting one has no effect. The scan keeps the columns the predicates are applied to.
     parameters:
       function:
         type: table_function
@@ -992,90 +975,6 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  table_function_init_global_get_filter_count:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-27" ]
-    description: |
-      Returns the number of filters the query applies to the rows of the scan.
-
-      Only a function that reads the filters (see `[[table_function_set_filter_hints]]`) is told about them; for any
-      other function the count is zero. Valid indices for `[[table_function_init_global_get_filter_column]]` and
-      `[[table_function_init_global_get_filter]]` are `0` up to (but excluding) this count.
-    parameters:
-      info:
-        type: table_function_init_global_info
-        description: The global init info handle.
-      count:
-        type: idx
-        indirection: 1
-        kind: OUT
-        description: Receives the number of filters.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  table_function_init_global_get_filter_column:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-27" ]
-    description: |
-      Returns the column of the scan that the filter at the given index applies to.
-
-      The result is an index into the scan's columns, which is also the index of the vector of the exec callback's
-      output chunk that holds the column; `[[table_function_init_global_get_column_index]]` tells which declared
-      column that is. Fails if the index is out of bounds.
-    parameters:
-      info:
-        type: table_function_init_global_info
-        description: The global init info handle.
-      index:
-        type: idx
-        description: The index of the filter.
-      column:
-        type: idx
-        indirection: 1
-        kind: OUT
-        description: Receives the index of the column among the scan's columns.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  table_function_init_global_get_filter:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-27" ]
-    description: |
-      Retrieves the filter at the given index.
-
-      The filter is a bound expression evaluating to `BOOLEAN` on the column returned by
-      `[[table_function_init_global_get_filter_column]]`: every column reference in it, which
-      `[[expression_column_ref_get_index]]` reports as index 0, stands for that column. Inspect it with
-      `[[expression_get_type]]` and the other `expression` functions. A filter the engine applies speculatively, which
-      it may stop applying at any time, is handed out as the predicate it applies. Fails if the index is out of
-      bounds. Borrowed; valid only for the duration of the callback.
-    parameters:
-      info:
-        type: table_function_init_global_info
-        description: The global init info handle.
-      index:
-        type: idx
-        description: The index of the filter to retrieve.
-      filter:
-        type: expression
-        indirection: 1
-        kind: OUT_BORROW
-        description: Receives the borrowed filter.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  #---------------------------------------------------------------------------------------------------------------------
-  # Local Init Callback Functions
-  #---------------------------------------------------------------------------------------------------------------------
   table_function_init_local_get_user_data:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-01" ]
