@@ -1,0 +1,355 @@
+# name: test/sql/optimizer/cse_lazy_positions.test
+# description: Common subexpression extraction must not hoist an expression that only occurs in lazily evaluated arguments
+# group: [optimizer]
+
+statement ok
+CREATE TABLE s(y INTEGER);
+
+statement ok
+INSERT INTO s VALUES (0), (2), (NULL);
+
+# a later COALESCE argument and a CASE branch
+query II
+SELECT COALESCE(y, 10 // y), if(y <> 0, 10 // y, -1) FROM (VALUES (0)) t(y)
+----
+0	-1
+
+query II
+SELECT COALESCE(y, 10 // y) AS a, if(y <> 0, 10 // y, -1) AS b FROM s ORDER BY y NULLS LAST
+----
+0	-1
+2	5
+NULL	-1
+
+# two later COALESCE arguments
+query II
+SELECT COALESCE(y, 10 // y), COALESCE(y + 1, 10 // y) FROM (VALUES (0)) t(y)
+----
+0	1
+
+query II
+SELECT COALESCE(y, 10 // y) AS a, COALESCE(y + 1, 10 // y) AS b FROM s ORDER BY y NULLS LAST
+----
+0	1
+2	3
+NULL	NULL
+
+query II
+EXPLAIN (FORMAT compact) SELECT COALESCE(y, 10 // y), COALESCE(y + 1, 10 // y) FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(y, \(10 // y\)\), COALESCE\(\(y \+ 1\), \(10 // y\)\)\n *SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT COALESCE(y, 10 // y), if(y <> 0, 10 // y, -1) FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(y, \(10 // y\)\), CASE +WHEN[^\n]*THEN \(\(10 // y\)\)[^\n]*\n *SEQ_SCAN.*
+
+# the first argument of a COALESCE inside a CASE branch is lazy as well
+query II
+SELECT CASE WHEN y = 0 THEN 0 ELSE COALESCE(10 // y, 0) END AS a, if(y <> 0, 10 // y, -1) AS b FROM s ORDER BY y NULLS LAST
+----
+0	-1
+5	5
+0	-1
+
+# a CASE inside a later COALESCE argument
+query II
+SELECT COALESCE(y + 1, 10 // y) AS b, COALESCE(y, if(y IS NULL, -1, 10 // y)) AS a FROM s ORDER BY y NULLS LAST
+----
+1	0
+3	2
+NULL	-1
+
+# a later COALESCE argument beyond the second, ifnull, and a later WHEN condition
+query II
+SELECT COALESCE(y, y + 1, 10 // y) AS a, COALESCE(y + 1, 10 // y) AS b FROM s ORDER BY y NULLS LAST
+----
+0	1
+2	3
+NULL	NULL
+
+query II
+SELECT ifnull(y, 10 // y) AS a, ifnull(y + 1, 10 // y) AS b FROM s ORDER BY y NULLS LAST
+----
+0	1
+2	3
+NULL	NULL
+
+query II
+SELECT COALESCE(y, 10 // y) AS a, CASE WHEN y = 0 THEN 0 WHEN 10 // y > 1 THEN 1 ELSE 2 END AS b FROM s ORDER BY y NULLS LAST
+----
+0	0
+2	1
+NULL	2
+
+# a cast error behind COALESCE
+query II
+SELECT COALESCE(i, v::INTEGER), COALESCE(i + 1, v::INTEGER) FROM (VALUES (1, 'bad')) t(i, v)
+----
+1	2
+
+# identical COALESCE expressions are still extracted as a whole, the later argument stays lazy inside it
+query II
+SELECT COALESCE(y, 10 // y) AS a, COALESCE(y, 10 // y) + 1 AS b FROM s ORDER BY y NULLS LAST
+----
+0	1
+2	3
+NULL	NULL
+
+# a strict occurrence evaluates the expression for every row, so the query raises with or without extraction
+statement error
+SELECT 10 // y AS a, COALESCE(y, 10 // y) AS b FROM s
+----
+Division by zero
+
+statement error
+SELECT COALESCE(y, 10 // y) AS a, 10 // y AS b FROM s
+----
+Division by zero
+
+query II
+SELECT 10 // y AS a, COALESCE(y, 10 // y) AS b FROM s WHERE y IS DISTINCT FROM 0 ORDER BY y NULLS LAST
+----
+5	2
+NULL	NULL
+
+query II
+SELECT COALESCE(y, 10 // y) AS a, 10 // y AS b FROM s WHERE y IS DISTINCT FROM 0 ORDER BY y NULLS LAST
+----
+2	5
+NULL	NULL
+
+# a strict occurrence lets the pass extract the expression, before or after the lazy one
+query II
+EXPLAIN (FORMAT compact) SELECT 10 // y, COALESCE(y, 10 // y) FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(y, #.*PROJECTION[^\n]*\(10 // y\).*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT COALESCE(y, 10 // y), 10 // y FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(y, #.*PROJECTION[^\n]*\(10 // y\).*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT if(y <> 0, 10 // y, -1), 10 // y FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*THEN \(#[^\n]*\n *PROJECTION[^\n]*\(10 // y\).*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT 10 // y, if(y <> 0, 10 // y, -1) FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*THEN \(#[^\n]*\n *PROJECTION[^\n]*\(10 // y\).*SEQ_SCAN.*
+
+statement ok
+CREATE TABLE h(v VARCHAR, s VARCHAR);
+
+statement ok
+INSERT INTO h VALUES ('x', 'a'), (NULL, 'b');
+
+query II
+EXPLAIN (FORMAT compact) SELECT COALESCE(v, sha256(s)), sha256(s) FROM h
+----
+physical_plan	<!REGEX>:(?s).*sha256.*sha256.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT sha256(s), COALESCE(v, sha256(s)) FROM h
+----
+physical_plan	<!REGEX>:(?s).*sha256.*sha256.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT COALESCE(v, sha256(s)), sha256(s) FROM h
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(v, #.*PROJECTION[^\n]*sha256\(s\).*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT sha256(s), COALESCE(v, sha256(s)) FROM h
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(v, #.*PROJECTION[^\n]*sha256\(s\).*SEQ_SCAN.*
+
+query II
+SELECT COALESCE(v, sha256(s)) AS a, sha256(s) AS b FROM h ORDER BY s
+----
+x	ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb
+3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d	3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d
+
+query II
+SELECT sha256(s) AS b, COALESCE(v, sha256(s)) AS a FROM h ORDER BY s
+----
+ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb	x
+3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d	3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d
+
+# the first COALESCE argument is evaluated for every row, so it is a strict occurrence
+query II
+EXPLAIN (FORMAT compact) SELECT COALESCE(10 // y, 0), if(y <> 0, 10 // y, -1) FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*COALESCE\(#0, 0\), CASE[^\n]*THEN \(#0\)[^\n]*\n *PROJECTION[^\n]*\(10 // y\).*SEQ_SCAN.*
+
+query II
+SELECT COALESCE(10 // y, 0) AS a, if(y <> 0, 10 // y, -1) AS b FROM s WHERE y IS DISTINCT FROM 0 ORDER BY y NULLS LAST
+----
+5	5
+0	-1
+
+# a conjunction in a CASE condition or an aggregate filter short circuits through Select, so it is not extracted into
+# a projection that would evaluate all of its operands
+query II
+SELECT if(y = 0, false, y <> 0 AND 10 // y > 1), if(y <> 0 AND 10 // y > 1, 1, 2) FROM (VALUES (0)) t(y)
+----
+false	2
+
+query II
+SELECT if(y <> 0 AND 10 // y > 1, 1, 2), if(y = 0, false, y <> 0 AND 10 // y > 1) FROM (VALUES (0)) t(y)
+----
+2	false
+
+query III
+SELECT if(y <> 0 AND 10 // y > 1, 1, 2), if(y <> 0 AND 10 // y > 1, 1, 2) + 1, if(y = 0, false, y <> 0 AND 10 // y > 1) FROM (VALUES (0)) t(y)
+----
+2	3	false
+
+query IIII
+SELECT COALESCE(y::BOOLEAN, if(y = 0, false, y <> 0 AND 10 // y > 1)), if(y <> 0 AND 10 // y > 1, 1, 2), if(y <> 0 AND 10 // y > 1, 1, 2) + 1, if(y = 0, false, y <> 0 AND 10 // y > 1) FROM (VALUES (0)) t(y)
+----
+false	2	3	false
+
+query II
+SELECT if(y <> 0 AND 10 // y > 1, 1, 2) AS a, COALESCE(y, (y <> 0 AND 10 // y > 1)::INT) AS b FROM s ORDER BY y NULLS LAST
+----
+2	0
+1	2
+2	NULL
+
+query II
+SELECT count(*) FILTER (WHERE (y = 0 OR 10 // y > 1) AND y > -100), sum(COALESCE(y, (y = 0 OR 10 // y > 1)::INT)) FROM s
+----
+2	2
+
+# a conjunction in a projection evaluates all of its operands, so extracting it from there is safe in either order
+query II
+SELECT y <> 0 AND 10 // y > 1 AS a, if(y <> 0 AND 10 // y > 1, 1, 2) AS b FROM s WHERE y IS DISTINCT FROM 0 ORDER BY y NULLS LAST
+----
+true	1
+NULL	2
+
+query II
+SELECT if(y <> 0 AND 10 // y > 1, 1, 2) AS b, y <> 0 AND 10 // y > 1 AS a FROM s WHERE y IS DISTINCT FROM 0 ORDER BY y NULLS LAST
+----
+1	true
+2	NULL
+
+query II
+EXPLAIN (FORMAT compact) SELECT y <> 0 AND 10 // y > 1, if(y <> 0 AND 10 // y > 1, 1, 2) FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*CASE +WHEN \(#0\).*PROJECTION[^\n]*\(\(y != 0\) AND \(\(10 // y\) > 1\)\).*SEQ_SCAN.*
+
+query II
+EXPLAIN (FORMAT compact) SELECT if(y <> 0 AND 10 // y > 1, 1, 2), y <> 0 AND 10 // y > 1 FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*CASE +WHEN \(#0\).*PROJECTION[^\n]*\(\(y != 0\) AND \(\(10 // y\) > 1\)\).*SEQ_SCAN.*
+
+# a grouped aggregate evaluates its filters in a projection, so a conjunction there is still shared
+statement ok
+CREATE TABLE w(y INTEGER);
+
+statement ok
+INSERT INTO w VALUES (-1), (1), (20), (NULL);
+
+query II
+EXPLAIN (FORMAT compact) SELECT y IS NULL AS g, count(*) FILTER (WHERE y > 0 AND y < 10), sum((y > 0 AND y < 10)::INTEGER) FROM w GROUP BY g
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*g, #1, CAST\(#1 AS INTEGER\).*PROJECTION[^\n]*\(\(y > 0\) AND \(y < 10\)\).*SEQ_SCAN.*
+
+query III
+SELECT y IS NULL AS g, count(*) FILTER (WHERE y > 0 AND y < 10), sum((y > 0 AND y < 10)::INTEGER) FROM w GROUP BY g ORDER BY g
+----
+false	1	1
+true	0	NULL
+
+# a volatile filter of an ungrouped aggregate is evaluated in a projection as well
+statement ok
+CREATE TABLE ws(y INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO ws VALUES (-1, 'a'), (1, 'b'), (20, 'c'), (NULL, 'd');
+
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FILTER (WHERE (y > 0 AND sha256(s) < '8') OR random() < 2), sum((y > 0 AND sha256(s) < '8')::INTEGER) FROM ws
+----
+physical_plan	<!REGEX>:(?s).*sha256.*sha256.*
+
+query II
+SELECT count(*) FILTER (WHERE (y > 0 AND sha256(s) < '8') OR random() < 2), sum((y > 0 AND sha256(s) < '8')::INTEGER) FROM ws
+----
+4	2
+
+# the filters of a grouped aggregate evaluate every operand with or without the extraction
+statement error
+SELECT g, count(*) FILTER (WHERE y <> 0 AND 10 // y > 1), sum(y) FILTER (WHERE y <> 0 AND 10 // y > 1) FROM (VALUES (0, 1), (2, 1)) t(y, g) GROUP BY g
+----
+Division by zero
+
+query II
+SELECT if(y <> 0, 10 // y, -1) AS a, 10 // y AS b FROM s WHERE y IS DISTINCT FROM 0 ORDER BY y NULLS LAST
+----
+5	5
+-1	NULL
+
+# an expression shared by strict positions only is still extracted
+query II
+EXPLAIN (FORMAT compact) SELECT (y + 1) * 2, (y + 1) * 3 FROM s
+----
+physical_plan	<REGEX>:(?s).*PROJECTION[^\n]*\(#0 \* 2\).*PROJECTION[^\n]*\(y \+ 1\).*SEQ_SCAN.*
+
+query II
+SELECT (y + 1) * 2 AS a, (y + 1) * 3 AS b FROM s ORDER BY y NULLS LAST
+----
+2	3
+6	9
+NULL	NULL
+
+# TRY next to a lazy occurrence
+query II
+SELECT TRY(10 // y) AS a, COALESCE(y, 10 // y) AS b FROM s ORDER BY y NULLS LAST
+----
+NULL	0
+5	2
+NULL	NULL
+
+# aggregate inputs, extracted below the aggregate
+query II
+SELECT sum(COALESCE(y, 10 // y)), max(if(y <> 0, 10 // y, -1)) FROM s
+----
+2	5
+
+query III
+SELECT y IS NULL AS g, sum(COALESCE(y, 10 // y)), sum(COALESCE(y + 1, 10 // y)) FROM s GROUP BY g ORDER BY g
+----
+false	2	4
+true	NULL	NULL
+
+# aggregate filters, kept with an ungrouped aggregate and projected below a grouped one
+query II
+SELECT count(*) FILTER (WHERE COALESCE(y, 10 // y) >= 0), sum(y) FILTER (WHERE COALESCE(y + 1, 10 // y) > 0) FROM s
+----
+2	2
+
+query III
+SELECT y IS NULL AS g, count(*) FILTER (WHERE COALESCE(y, 10 // y) >= 0), sum(y) FILTER (WHERE COALESCE(y + 1, 10 // y) > 0) FROM s GROUP BY g ORDER BY g
+----
+false	2	2
+true	0	NULL
+
+# grouping keys
+query II
+SELECT COALESCE(y, 10 // y) AS a, COALESCE(y + 1, 10 // y) AS b FROM s GROUP BY ALL ORDER BY a NULLS LAST
+----
+0	1
+2	3
+NULL	NULL
+
+# the same expressions in a filter below the projection, which the pass does not rewrite
+query II
+SELECT COALESCE(y, 10 // y) AS a, if(y <> 0, 10 // y, -1) AS b FROM s WHERE COALESCE(y + 1, 10 // y) > 0 ORDER BY y
+----
+0	-1
+2	5
