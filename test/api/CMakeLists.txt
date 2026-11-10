@@ -32,6 +32,7 @@ set(TEST_API_OBJECTS
     test_database_instance_partial_init.cpp
     test_extension_install_in_progress.cpp
     test_extension_repositories.cpp
+    test_read_ahead_remote_budget.cpp
     test_extension_signature_check.cpp
     test_external_extension_provider.cpp
     test_extension_setting_autoload.cpp

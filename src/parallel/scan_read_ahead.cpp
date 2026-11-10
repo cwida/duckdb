@@ -133,6 +133,14 @@ ReadAheadOpenFile::~ReadAheadOpenFile() {
 	--OpenFileCount();
 }
 
+shared_ptr<ReadAheadOpenFile> ReadAheadOpenFile::ForFile(const string &path) {
+	if (FileSystem::IsRemoteFile(path)) {
+		// an idle remote handle holds no descriptor: its sockets belong to in-flight requests
+		return nullptr;
+	}
+	return make_shared_ptr<ReadAheadOpenFile>();
+}
+
 idx_t ReadAheadOpenFile::Count() {
 	return OpenFileCount().load();
 }
