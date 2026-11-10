@@ -107,12 +107,10 @@ public:
 	vector<ColumnCuts> columns;
 };
 
-//! One row group inside the content-defined chunking pipeline: the boundary scan runs in file order on
-//! the flushing thread, the heavy prepare it unlocks runs on a worker, and the result is appended in
-//! batch order when it completes.
+//! One row group inside the content-defined chunking pipeline: the boundary scan ran on the flushing
+//! thread, and the heavy prepare it unlocked runs on a worker, which owns the batch and its cuts until it
+//! completes. The prepared row group is appended in batch order once the future resolves.
 struct ParquetCdcPipelineEntry {
-	std::shared_ptr<ColumnDataCollection> collection;
-	std::shared_ptr<const ParquetCdcBoundaries> boundaries;
 	unique_ptr<PreparedRowGroup> prepared;
 	std::future<void> future;
 };

@@ -604,7 +604,17 @@ static void ParquetWriteCombine(ExecutionContext &context, FunctionData &bind_da
 	global_state.combine_buffer->Combine(local_state.buffer);
 }
 
-static void ParquetCdcDrain(ParquetWriteGlobalState &global_state, idx_t keep_in_flight);
+//! Append completed content-defined row groups, oldest first, keeping at most keep_in_flight prepares running
+static void ParquetCdcDrain(ParquetWriteGlobalState &global_state, idx_t keep_in_flight) {
+	while (global_state.cdc_pipeline.size() > keep_in_flight) {
+		auto &entry = *global_state.cdc_pipeline.front();
+		if (entry.future.valid()) {
+			entry.future.get(); // a failed prepare surfaces here, on the flushing thread
+		}
+		global_state.writer->FlushRowGroup(*entry.prepared);
+		global_state.cdc_pipeline.pop_front();
+	}
+}
 
 static void ParquetWriteFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
@@ -1034,6 +1044,8 @@ static unique_ptr<PreparedBatchData> ParquetWritePrepareBatch(ClientContext &con
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
 	auto result = make_uniq<ParquetWriteBatchData>();
 	if (global_state.writer->ContentDefinedChunking()) {
+		// page boundaries need ordered chunker state, so the batch is held and its row group prepared on the
+		// flushing thread instead, in ParquetWriteFlushBatch
 		result->collection = std::move(collection);
 		return std::move(result);
 	}
@@ -1045,16 +1057,39 @@ static unique_ptr<PreparedBatchData> ParquetWritePrepareBatch(ClientContext &con
 //===--------------------------------------------------------------------===//
 // Flush Batch
 //===--------------------------------------------------------------------===//
-//! Append completed content-defined row groups, oldest first, keeping at most keep_in_flight prepares running
-static void ParquetCdcDrain(ParquetWriteGlobalState &global_state, idx_t keep_in_flight) {
-	while (global_state.cdc_pipeline.size() > keep_in_flight) {
-		auto &entry = *global_state.cdc_pipeline.front();
-		if (entry.future.valid()) {
-			entry.future.get(); // a failed prepare surfaces here, on the flushing thread
-		}
-		global_state.writer->FlushRowGroup(*entry.prepared);
-		global_state.cdc_pipeline.pop_front();
+//! A content-defined batch carries only its collection: the boundary scan runs here, serialized on the
+//! flushing thread, the heavy prepare it unlocks runs on a worker, and finished row groups are appended
+//! in batch order as their prepares complete
+static void ParquetCdcFlushBatch(ClientContext &context, ParquetWriteGlobalState &global_state,
+                                 unique_ptr<ColumnDataCollection> input) {
+	if (input->Count() == 0) {
+		return;
 	}
+	if (global_state.cdc_pipeline_depth == 0) {
+		auto max_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
+		global_state.cdc_pipeline_depth = MaxValue<idx_t>(2, MinValue<idx_t>(8, max_threads));
+	}
+	// the chunker only rolls in file order, so that scan runs here, serialized - it is the cheap pass; the
+	// heavy stages need nothing but its boundaries, so they run on a worker while later batches scan.
+	// The worker owns the batch and its cuts, freeing them as soon as its prepare completes
+	shared_ptr<ColumnDataCollection> collection(std::move(input));
+	shared_ptr<const ParquetCdcBoundaries> boundaries(global_state.writer->ComputeCdcBoundaries(*collection));
+	auto entry = make_uniq<ParquetCdcPipelineEntry>();
+	entry->prepared = make_uniq<PreparedRowGroup>();
+	auto *prepared = entry->prepared.get();
+	auto *writer = global_state.writer.get();
+	try {
+		entry->future = std::async(std::launch::async, [writer, collection, boundaries, prepared]() {
+			unique_ptr<ParquetWriteTransformData> transform_data;
+			writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
+		});
+	} catch (const std::exception &) {
+		// no thread to hand this to - prepare it right here
+		unique_ptr<ParquetWriteTransformData> transform_data;
+		writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
+	}
+	global_state.cdc_pipeline.push_back(std::move(entry));
+	ParquetCdcDrain(global_state, global_state.cdc_pipeline_depth);
 }
 
 static void ParquetWriteFlushBatch(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
@@ -1062,37 +1097,8 @@ static void ParquetWriteFlushBatch(ClientContext &context, FunctionData &bind_da
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
 	auto &batch = batch_p.Cast<ParquetWriteBatchData>();
 	if (batch.collection) {
-		if (batch.collection->Count() == 0) {
-			batch.collection.reset();
-			return;
-		}
-		if (global_state.cdc_pipeline_depth == 0) {
-			auto max_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
-			global_state.cdc_pipeline_depth = MaxValue<idx_t>(2, MinValue<idx_t>(8, max_threads));
-		}
-		// the chunker only rolls in file order, so that scan runs here, serialized - it is the cheap pass;
-		// the heavy stages need nothing but its boundaries, so they run on a worker while later batches scan
-		auto collection = std::shared_ptr<ColumnDataCollection>(std::move(batch.collection));
-		auto boundaries =
-		    std::shared_ptr<const ParquetCdcBoundaries>(global_state.writer->ComputeCdcBoundaries(*collection));
-		auto entry = make_uniq<ParquetCdcPipelineEntry>();
-		entry->collection = collection;
-		entry->boundaries = boundaries;
-		entry->prepared = make_uniq<PreparedRowGroup>();
-		auto *prepared = entry->prepared.get();
-		auto *writer = global_state.writer.get();
-		try {
-			entry->future = std::async(std::launch::async, [writer, collection, boundaries, prepared]() {
-				unique_ptr<ParquetWriteTransformData> transform_data;
-				writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
-			});
-		} catch (const std::exception &) {
-			// no thread to hand this to - prepare it right here
-			unique_ptr<ParquetWriteTransformData> transform_data;
-			writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
-		}
-		global_state.cdc_pipeline.push_back(std::move(entry));
-		ParquetCdcDrain(global_state, global_state.cdc_pipeline_depth);
+		// content-defined chunking: this batch has not been prepared yet
+		ParquetCdcFlushBatch(context, global_state, std::move(batch.collection));
 		return;
 	}
 	global_state.writer->FlushRowGroup(batch.prepared_row_group);
