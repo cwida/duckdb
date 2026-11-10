@@ -128,7 +128,13 @@
         "test/sql/function/list/lambdas/arrow/test_lambda_arrow_storage_deprecated.test",
         "test/sql/function/list/lambdas/arrow/transform_deprecated.test",
         "test/sql/function/list/lambdas/arrow/transform_with_index_deprecated.test",
-        "test/sql/function/list/lambdas/arrow/warn_deprecated_arrow.test"
+        "test/sql/function/list/lambdas/arrow/warn_deprecated_arrow.test",
+        "test/sql/function/list/lambdas/lambda_dot_calls.test",
+        "test/sql/function/list/lambdas/lambda_dot_calls_json.test",
+        "test/sql/function/list/lambdas/lambda_dot_calls_nested_schema.test",
+        "test/sql/function/list/lambdas/reduce_initial.test_slow",
+        "test/sql/function/list/lambdas/reduce_on_larger_data.test_slow",
+        "test/sql/json/scalar/test_json_arrow_chain_precedence.test"
       ]
     },
     {
