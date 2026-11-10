@@ -149,7 +149,8 @@ static void ReplaceNames(vector<Identifier> &detected_names, CSVStateMachine &st
 
 // If our columns were set by the user, we verify if their names match with the first row
 bool CSVSniffer::DetectHeaderWithSetColumn(ClientContext &context, vector<HeaderValue> &best_header_row,
-                                           const SetColumns &set_columns, CSVReaderOptions &options) {
+                                           const SetColumns &set_columns, CSVReaderOptions &options,
+                                           const DialectOptions &scan_dialect_options) {
 	bool has_header = true;
 
 	std::ostringstream error;
@@ -176,20 +177,25 @@ bool CSVSniffer::DetectHeaderWithSetColumn(ClientContext &context, vector<Header
 
 	if (!has_header) {
 		bool all_varchar = true;
-		bool first_row_consistent = true;
-		// We verify if the types are consistent
+		// A row the scan reads is data; for any other row the type detection check decides, as before
+		bool scan_reads_row = true;
+		bool type_detection_reads_row = true;
 		for (idx_t col = 0; col < set_columns.Size(); col++) {
-			// try cast to sql_type of column
 			const auto &sql_type = (*set_columns.types)[col];
 			if (sql_type != LogicalType::VARCHAR) {
 				all_varchar = false;
-				if (!CSVSniffer::CanYouCastIt(context, best_header_row[col].value, sql_type, options.dialect_options,
-				                              best_header_row[col].IsNull(), options.decimal_separator[0],
-				                              options.thousands_separator)) {
-					first_row_consistent = false;
+				const auto &value = best_header_row[col];
+				if (!CSVSniffer::CanYouCastIt(context, value.value, sql_type, scan_dialect_options, value.is_null,
+				                              options.decimal_separator[0], options.thousands_separator, false)) {
+					scan_reads_row = false;
+				}
+				if (!CSVSniffer::CanYouCastIt(context, value.value, sql_type, options.dialect_options, value.is_null,
+				                              options.decimal_separator[0], options.thousands_separator, true)) {
+					type_detection_reads_row = false;
 				}
 			}
 		}
+		const bool first_row_consistent = scan_reads_row || type_detection_reads_row;
 		if (!first_row_consistent) {
 			options.sniffer_user_mismatch_error += error.str();
 		}
@@ -219,10 +225,12 @@ bool EmptyHeader(const string &col_name, bool is_null, bool normalize) {
 	return true;
 }
 
-vector<Identifier> CSVSniffer::DetectHeaderInternal(
-    ClientContext &context, vector<HeaderValue> &best_header_row, CSVStateMachine &state_machine,
-    const SetColumns &set_columns, unordered_map<idx_t, vector<LogicalType>> &best_sql_types_candidates_per_column_idx,
-    CSVReaderOptions &options, const MultiFileOptions &file_options, CSVErrorHandler &error_handler) {
+vector<Identifier>
+CSVSniffer::DetectHeaderInternal(ClientContext &context, vector<HeaderValue> &best_header_row,
+                                 CSVStateMachine &state_machine, const SetColumns &set_columns,
+                                 unordered_map<idx_t, vector<LogicalType>> &best_sql_types_candidates_per_column_idx,
+                                 CSVReaderOptions &options, const DialectOptions &scan_dialect_options,
+                                 const MultiFileOptions &file_options, CSVErrorHandler &error_handler) {
 	vector<Identifier> detected_names;
 	auto &dialect_options = state_machine.dialect_options;
 	dialect_options.num_cols = best_sql_types_candidates_per_column_idx.size();
@@ -259,7 +267,7 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 	bool has_header;
 
 	if (set_columns.IsSet()) {
-		has_header = DetectHeaderWithSetColumn(context, best_header_row, set_columns, options);
+		has_header = DetectHeaderWithSetColumn(context, best_header_row, set_columns, options, scan_dialect_options);
 	} else {
 		bool first_row_consistent = true;
 		bool all_varchar = true;
@@ -274,7 +282,7 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 				all_varchar = false;
 				if (!CanYouCastIt(context, best_header_row[col].value, sql_type, dialect_options,
 				                  best_header_row[col].IsNull(), options.decimal_separator[0],
-				                  options.thousands_separator)) {
+				                  options.thousands_separator, true)) {
 					first_row_consistent = false;
 				}
 			}
@@ -348,7 +356,8 @@ vector<Identifier> CSVSniffer::DetectHeaderInternal(
 void CSVSniffer::DetectHeader() {
 	auto &sniffer_state_machine = best_candidate->GetStateMachine();
 	names = DetectHeaderInternal(buffer_manager->context, best_header_row, sniffer_state_machine, set_columns,
-	                             best_sql_types_candidates_per_column_idx, options, file_options, *error_handler);
+	                             best_sql_types_candidates_per_column_idx, options, ScanDialectOptions(), file_options,
+	                             *error_handler);
 	if (EmptyOrOnlyHeader()) {
 		// This file only contains a header, lets default to the lowest type of all.
 		detected_types.clear();

@@ -98,11 +98,11 @@ public:
 
 	static NewLineIdentifier DetectNewLineDelimiter(CSVBufferManager &buffer_manager);
 
-	//! If a string_t value can be cast to a type
+	//! If a string_t value can be cast to a type: strict is the type detection check, non strict the scan's conversion
 	static bool CanYouCastIt(ClientContext &context, const string_t value, const LogicalType &type,
 	                         const DialectOptions &dialect_options, const bool is_null, const char decimal_separator,
-	                         const char thousands_separator);
-	static bool CanYouCastBignum(const char *value_ptr, idx_t value_size);
+	                         const char thousands_separator, const bool strict);
+	static bool CanYouCastBignum(const char *value_ptr, idx_t value_size, const bool strict);
 
 	idx_t LinesSniffed() const;
 
@@ -134,6 +134,10 @@ private:
 	idx_t lines_sniffed;
 	//! Sets the result options
 	void SetResultOptions() const;
+	//! Whether a column was sniffed as this type, which makes the scan use the sniffed format of the type
+	bool SniffedType(const LogicalTypeId type) const;
+	//! The user's dialect options with the date and timestamp formats that the scan will use
+	DialectOptions ScanDialectOptions() const;
 
 	//! ------------------------------------------------------//
 	//! ----------------- Dialect Detection ----------------- //
@@ -206,13 +210,14 @@ private:
 	//! ------------------------------------------------------//
 	void DetectHeader();
 	static bool DetectHeaderWithSetColumn(ClientContext &context, vector<HeaderValue> &best_header_row,
-	                                      const SetColumns &set_columns, CSVReaderOptions &options);
+	                                      const SetColumns &set_columns, CSVReaderOptions &options,
+	                                      const DialectOptions &scan_dialect_options);
 	static vector<Identifier>
 	DetectHeaderInternal(ClientContext &context, vector<HeaderValue> &best_header_row, CSVStateMachine &state_machine,
 	                     const SetColumns &set_columns,
 	                     unordered_map<idx_t, vector<LogicalType>> &best_sql_types_candidates_per_column_idx,
-	                     CSVReaderOptions &options, const MultiFileOptions &file_options,
-	                     CSVErrorHandler &error_handler);
+	                     CSVReaderOptions &options, const DialectOptions &scan_dialect_options,
+	                     const MultiFileOptions &file_options, CSVErrorHandler &error_handler);
 	vector<Identifier> names;
 	//! If the file only has a header
 	bool single_row_file = false;
