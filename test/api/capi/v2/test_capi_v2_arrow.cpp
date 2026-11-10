@@ -1070,6 +1070,117 @@ TEST_CASE("V2 arrow: a dictionary column survives an importer split", "[capi_v2]
 #endif
 
 // ===========================================================================
+// Field names a producer omits: the C data interface lets a name be NULL.
+// ===========================================================================
+
+namespace {
+
+struct NullNameImportObserved {
+	std::vector<std::string> fields;
+	DUCKDB_V2_ERROR format_code = DUCKDB_V2_ERROR_NONE;
+	std::string format_error;
+};
+NullNameImportObserved null_name_import_observed;
+
+void NullNameRelease(ArrowSchema *schema) {
+	schema->release = nullptr;
+}
+
+void NullNameImportExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle context,
+                        duckdb_v2_error_info_handle *err) {
+	auto &observed = null_name_import_observed;
+	ArrowSchema unnamed_child {};
+	unnamed_child.format = "i";
+	unnamed_child.release = NullNameRelease;
+	ArrowSchema named_child {};
+	named_child.format = "i";
+	named_child.name = "b";
+	named_child.release = NullNameRelease;
+	ArrowSchema *struct_children[2] = {&unnamed_child, &named_child};
+	ArrowSchema unnamed_struct {};
+	unnamed_struct.format = "+s";
+	unnamed_struct.n_children = 2;
+	unnamed_struct.children = struct_children;
+	unnamed_struct.release = NullNameRelease;
+	ArrowSchema unnamed_column {};
+	unnamed_column.format = "i";
+	unnamed_column.release = NullNameRelease;
+	ArrowSchema *columns[2] = {&unnamed_column, &unnamed_struct};
+	ArrowSchema record {};
+	record.format = "+s";
+	record.n_children = 2;
+	record.children = columns;
+	record.release = NullNameRelease;
+
+	duckdb_v2_arrow_importer_handle importer = nullptr;
+	if (duckdb_v2_arrow_importer_create(context, &record, 0, &importer, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_schema_handle resolved = nullptr;
+	if (duckdb_v2_arrow_importer_get_schema(importer, &resolved, err) == DUCKDB_V2_ERROR_NONE) {
+		for (idx_t i = 0; i < 2; i++) {
+			const char *name = nullptr;
+			idx_t name_length = 0;
+			duckdb_v2_logical_type_handle type = nullptr;
+			if (duckdb_v2_schema_get_field(resolved, i, &name, &name_length, &type, err) != DUCKDB_V2_ERROR_NONE) {
+				break;
+			}
+			idx_t type_length = 0;
+			if (duckdb_v2_logical_type_to_text(type, nullptr, 0, &type_length, err) != DUCKDB_V2_ERROR_NONE) {
+				break;
+			}
+			std::string type_text(type_length + 1, '\0');
+			if (duckdb_v2_logical_type_to_text(type, &type_text[0], type_text.size(), &type_length, err) !=
+			    DUCKDB_V2_ERROR_NONE) {
+				break;
+			}
+			type_text.resize(type_length);
+			observed.fields.push_back(std::string(name, name_length) + " " + type_text);
+		}
+		duckdb_v2_schema_destroy(&resolved);
+	}
+	duckdb_v2_arrow_importer_destroy(&importer);
+
+	unnamed_child.format = nullptr;
+	duckdb_v2_error_info_handle format_err = nullptr;
+	observed.format_code = duckdb_v2_arrow_importer_create(context, &record, 0, &importer, &format_err);
+	if (observed.format_code == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_arrow_importer_destroy(&importer);
+	} else {
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		if (duckdb_v2_error_info_get_raw_text(format_err, &text, &text_length) == DUCKDB_V2_ERROR_NONE) {
+			observed.format_error.assign(text, text_length);
+		}
+		duckdb_v2_error_info_destroy(&format_err);
+	}
+
+	duckdb_v2_vector_handle result = nullptr;
+	if (duckdb_v2_scalar_function_exec_get_result(info, &result, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	int32_t one = 1;
+	void *data = nullptr;
+	if (duckdb_v2_vector_get_data_mutable(result, &data, err) == DUCKDB_V2_ERROR_NONE) {
+		std::memcpy(data, &one, sizeof(one));
+	}
+}
+
+} // namespace
+
+TEST_CASE("V2 arrow: an importer reads a NULL field name as an unnamed field", "[capi_v2][arrow]") {
+	EnvFixture fx;
+	RegisterArrowProbe(fx, "null_name_import_probe", NullNameImportExec);
+	null_name_import_observed = {};
+	RunArrowProbe(fx.conn, "SELECT null_name_import_probe(1)");
+	// an unnamed column is named after its position, an unnamed struct child stays unnamed
+	REQUIRE(null_name_import_observed.fields ==
+	        std::vector<std::string> {"v0 INTEGER", "v1 STRUCT(\"\" INTEGER, b INTEGER)"});
+	REQUIRE(null_name_import_observed.format_code == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(null_name_import_observed.format_error == "Arrow schema of field \"\" has no format string");
+}
+
+// ===========================================================================
 // Argument rejection.
 // ===========================================================================
 

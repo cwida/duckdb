@@ -93,6 +93,8 @@ public:
 	                                            ArrowVariableSizeType size_type, bool view);
 
 	static unique_ptr<ArrowType> GetArrowLogicalType(ClientContext &context, ArrowSchema &schema);
+	//! A producer may omit a field name as NULL, which the C data interface defines to mean the same as an empty name
+	static string GetFieldName(const ArrowSchema &schema);
 
 	bool HasExtension() const;
 

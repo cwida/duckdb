@@ -252,7 +252,7 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, Arrow
 		vector<shared_ptr<ArrowType>> children;
 		for (idx_t type_idx = 0; type_idx < static_cast<idx_t>(schema.n_children); type_idx++) {
 			children.emplace_back(GetArrowLogicalType(context, *schema.children[type_idx]));
-			child_types.emplace_back(schema.children[type_idx]->name, children.back()->GetDuckType());
+			child_types.emplace_back(GetFieldName(*schema.children[type_idx]), children.back()->GetDuckType());
 		}
 		auto type_info = make_uniq<ArrowStructInfo>(std::move(children));
 		auto struct_type = make_uniq<ArrowType>(LogicalType::STRUCT(std::move(child_types)), std::move(type_info));
@@ -276,7 +276,7 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, Arrow
 			auto type = schema.children[type_idx];
 
 			children.emplace_back(GetArrowLogicalType(context, *type));
-			members.emplace_back(type->name, children.back()->GetDuckType());
+			members.emplace_back(GetFieldName(*type), children.back()->GetDuckType());
 		}
 
 		auto type_info = make_uniq<ArrowStructInfo>(std::move(children));
@@ -287,12 +287,10 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, Arrow
 		vector<shared_ptr<ArrowType>> children;
 		idx_t n_children = static_cast<idx_t>(schema.n_children);
 		D_ASSERT(n_children == 2);
-		D_ASSERT(string(schema.children[0]->name) == "run_ends");
-		D_ASSERT(string(schema.children[1]->name) == "values");
 		for (idx_t i = 0; i < n_children; i++) {
 			auto type = schema.children[i];
 			children.emplace_back(GetArrowLogicalType(context, *type));
-			members.emplace_back(type->name, children.back()->GetDuckType());
+			members.emplace_back(GetFieldName(*type), children.back()->GetDuckType());
 		}
 
 		auto type_info = make_uniq<ArrowStructInfo>(std::move(children));
@@ -403,6 +401,10 @@ unique_ptr<ArrowType> ArrowType::GetArrowLogicalType(ClientContext &context, Arr
 	return arrow_type;
 }
 
+string ArrowType::GetFieldName(const ArrowSchema &schema) {
+	return schema.name ? string(schema.name) : string();
+}
+
 bool ArrowType::HasExtension() const {
 	return extension_data.get() != nullptr;
 }
@@ -418,6 +420,9 @@ ArrowArrayPhysicalType ArrowType::GetPhysicalType() const {
 }
 
 unique_ptr<ArrowType> ArrowType::GetTypeFromSchema(ClientContext &context, ArrowSchema &schema) {
+	if (!schema.format) {
+		throw InvalidInputException("Arrow schema of field \"%s\" has no format string", GetFieldName(schema));
+	}
 	auto format = string(schema.format);
 	// Let's first figure out if this type is an extension type
 	ArrowSchemaMetadata schema_metadata(schema.metadata);
