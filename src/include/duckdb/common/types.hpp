@@ -287,8 +287,12 @@ struct LogicalTypeInfo {
 	explicit LogicalTypeInfo(LogicalTypeInfoType type, string alias);
 	virtual ~LogicalTypeInfo();
 
-	// the 1-byte fields and the ref count are declared first so they pack into one word after the vtable pointer
-	const LogicalTypeInfoType type;
+private:
+	mutable atomic<uint32_t> ref_count {0};
+
+public:
+	//! Keep immutable metadata beyond the refcount's 128-byte region.
+	alignas(128) const LogicalTypeInfoType type;
 
 private:
 	friend struct LogicalType;
@@ -297,8 +301,6 @@ private:
 	PhysicalType physical_type = PhysicalType::INVALID;
 	//! Immortal infos (e.g. the one behind LogicalType::INTEGER) are shared without ref-counting and never freed.
 	bool immortal = false;
-	//! Atomic intrusive ref-count. This comes after the other members to avoid extra padding.
-	mutable atomic<uint32_t> ref_count {0};
 
 public:
 	string alias;
@@ -323,9 +325,11 @@ public:
 		if (immortal) {
 			return;
 		}
-		auto previous = ref_count.fetch_sub(1, std::memory_order_acq_rel);
+		auto previous = ref_count.fetch_sub(1, std::memory_order_release);
 		D_ASSERT(previous > 0);
 		if (previous == 1) {
+			// Synchronize with prior releases before destroying the info.
+			(void)ref_count.load(std::memory_order_acquire);
 			delete this;
 		}
 	}
@@ -406,7 +410,7 @@ struct LogicalType {
 	//! look at child types - false for a bare LogicalTypeId::LIST, true for LIST(ANY).
 	DUCKDB_API bool HasParameters() const;
 
-	//! Copies the logical type, making a new (unshared) LogicalTypeInfo
+	//! Copies type info, keeping immortal and enum infos shared.
 	LogicalType Copy() const;
 
 	bool EqualTypeInfo(const LogicalType &rhs) const;
