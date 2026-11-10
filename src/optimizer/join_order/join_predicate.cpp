@@ -10,8 +10,7 @@ namespace duckdb {
 ColumnBinding JoinOrderUtil::GetEquivalenceBinding(const Expression &expression) {
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		auto &colref = expression.Cast<BoundColumnRefExpression>();
-		D_ASSERT(colref.Depth() == 0);
-		return colref.Binding();
+		return colref.Depth() == 0 ? colref.Binding() : ColumnBinding();
 	}
 	if (BoundCastExpression::IsCast(expression)) {
 		auto &cast = expression.Cast<BoundFunctionExpression>();
