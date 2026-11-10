@@ -1445,6 +1445,10 @@ if(NOT CLANG_TIDY)
   endif()
 endif()
 
+if(TARGET test_loadable_extension AND TARGET shell)
+  set_target_properties(shell PROPERTIES ENABLE_EXPORTS ON)
+endif()
+
 duckdb_apply_architecture_flags()
 
 if(NOT ${EXTENSION_CONFIG_BUILD})

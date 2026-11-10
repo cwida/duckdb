@@ -59,9 +59,9 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
   add_subdirectory(mbedtls)
   add_subdirectory(encryption)
 endif()
-add_subdirectory(extension)
-add_subdirectory(helpers)
-add_subdirectory(sqlite)
+if(NOT EXTENSION_TESTS_ONLY)
+  add_subdirectory(extension)
+endif()
 
 if(NOT WIN32 AND NOT SUN)
   if(${ENABLE_UNITTEST_CPP_TESTS})
@@ -69,34 +69,6 @@ if(NOT WIN32 AND NOT SUN)
   endif()
 endif()
 
-set(TEST_EXTENSION_PARAMETERS "-warnings -host-bound")
-if(WIN32)
-  set(TEST_EXTENSION_PARAMETERS "-warnings")
-endif()
-build_loadable_extension_directory(
-  test
-  "CPP"
-  extension/test
-  "default-version"
-  ""
-  "${TEST_EXTENSION_PARAMETERS}"
-  "${PROJECT_SOURCE_DIR}/extension/test/test_extension.cpp"
-  $<TARGET_OBJECTS:test_debug_fs_extension>)
-set_target_properties(
-  test_loadable_extension
-  PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/extension/test"
-             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/extension/test")
-target_include_directories(
-  test_loadable_extension
-  PRIVATE "${PROJECT_SOURCE_DIR}/extension/test/include"
-          "${PROJECT_SOURCE_DIR}/extension/test"
-          "${PROJECT_SOURCE_DIR}/test/sqlite"
-          "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
-target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner
-                      duckdb_re2)
-if(WIN32)
-  link_extension_libraries(test_loadable_extension "")
-endif()
 set_target_properties(shell PROPERTIES ENABLE_EXPORTS ON)
 
 if(${ENABLE_UNITTEST_CPP_TESTS})

@@ -17,3 +17,7 @@ duckdb_extension_statically_link(json)
 duckdb_extension_load(icu)
 duckdb_extension_statically_link(icu)
 
+if(BUILD_UNITTESTS AND NOT CLANG_TIDY)
+    duckdb_extension_load(test)
+endif()
+

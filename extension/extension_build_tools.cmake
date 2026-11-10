@@ -568,11 +568,14 @@ endfunction()
 # Compiles a C++ extension once into lib<NAME>_extension.a and links its loadable from that archive.
 # NO_LOADABLE builds the archive only; NO_WARNINGS silences compiler warnings.
 function(build_extension_library NAME)
-    cmake_parse_arguments(PARSE_ARGV 1 ARG "NO_LOADABLE;NO_WARNINGS;DEFAULT_VISIBILITY" "" "")
+    cmake_parse_arguments(PARSE_ARGV 1 ARG "NO_LOADABLE;NO_WARNINGS;DEFAULT_VISIBILITY;HOST_BOUND" "" "")
     set(FILES ${ARG_UNPARSED_ARGUMENTS})
     set(PARAMETERS "-warnings")
     if(ARG_NO_WARNINGS)
         set(PARAMETERS "-no-warnings")
+    endif()
+    if(ARG_HOST_BOUND AND NOT WIN32)
+        string(APPEND PARAMETERS " -host-bound")
     endif()
 
     build_static_extension(${NAME} ${FILES})
@@ -681,7 +684,7 @@ function(register_extension NAME DONT_BUILD LOAD_TESTS PATH INCLUDE_PATH TEST_PA
     # Allows explicitly disabling extensions that may be specified in other configurations
     if (NOT ${DONT_BUILD} AND NOT ${EXTENSION_TESTS_ONLY})
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_BUILD TRUE PARENT_SCOPE)
-    elseif(NOT ${GENERATE_EXTENSION_ENTRIES} AND ${EXTENSION_NAME_UPPERCASE} STREQUAL "CORE_FUNCTIONS")
+    elseif(NOT GENERATE_EXTENSION_ENTRIES AND "${EXTENSION_NAME_UPPERCASE}" STREQUAL "CORE_FUNCTIONS")
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_BUILD TRUE PARENT_SCOPE)
     else()
         set(DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_SHOULD_BUILD FALSE PARENT_SCOPE)

@@ -95,10 +95,9 @@ for extension_library in "$BUILD_DIR"/extension/*/lib*_extension.a "$BUILD_DIR"/
 	extension_name="$(basename "$(dirname "$extension_library")")"
 	copy_file "$extension_library" "extension/$extension_name/$(basename "$extension_library")"
 done
-# The runner loads the test extension, and can load core_functions when the
-# shell was built without it statically linked.
+# The runner loads test from the repository, and can load core_functions when
+# the shell was built without it statically linked.
 for extension in \
-	"$BUILD_DIR"/extension/test/test.duckdb_extension \
 	"$BUILD_DIR"/extension/core_functions/core_functions.duckdb_extension; do
 	extension_name="$(basename "$(dirname "$extension")")"
 	copy_file "$extension" "extension/$extension_name/$(basename "$extension")"

@@ -16,12 +16,14 @@ def build_run_tests_argv(
     duckdb_name: str = "duckdb",
     test_roots: list[str] | None = None,
 ) -> list[str]:
+    from scripts.ci.run_tests import resolve_test_extension_path
+
     wrapper_dir = Path(wrapper_path).resolve().parent
     build_dir = wrapper_dir.parent
     result = [
         os.fspath(resolve_duckdb_path(wrapper_path, duckdb_name)),
         "--test-extension",
-        os.fspath(build_dir / "extension" / "test" / "test.duckdb_extension"),
+        os.fspath(resolve_test_extension_path(build_dir)),
         "--test-bundle-root",
         os.fspath(build_dir / "test" / "extensions"),
     ]

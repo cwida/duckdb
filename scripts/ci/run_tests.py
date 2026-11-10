@@ -315,9 +315,17 @@ def sql_string_list(values):
     return "[" + ", ".join(sql_string(value) for value in values) + "]"
 
 
+def resolve_test_extension_path(build_dir: Path):
+    path = build_dir / "extension" / "test" / "test.duckdb_extension"
+    if path.is_file():
+        return path
+    candidates = sorted((build_dir / "repository").glob("**/test.duckdb_extension"))
+    return candidates[0] if len(candidates) == 1 else path
+
+
 def resolve_test_protocol_paths(duckdb_bin: str):
     build_dir = Path(duckdb_bin).resolve().parent
-    test_extension = TEST_EXTENSION_OVERRIDE or build_dir / "extension" / "test" / "test.duckdb_extension"
+    test_extension = TEST_EXTENSION_OVERRIDE or resolve_test_extension_path(build_dir)
     test_roots = TEST_ROOT_OVERRIDES or [
         Path.cwd() / "test",
         Path.cwd() / "third_party" / "sqllogictest" / "test",
@@ -393,6 +401,7 @@ def run_test_protocol_query(
     thread_stack_size: str | None = None,
 ):
     child_env = os.environ.copy()
+    child_env["DUCKDB_TEST_BUILD_DIRECTORY"] = os.fspath(Path(duckdb_bin).resolve().parent)
     if test_config is not None:
         child_env["DUCKDB_TEST_CONFIG"] = os.fspath(Path(test_config).resolve())
     if coverage_profile_dir is not None:
@@ -2063,6 +2072,7 @@ def run_batch(config: TestRunnerConfig, batch):
     timed_out = False
     peak_rss_bytes = 0
     child_env = os.environ.copy()
+    child_env["DUCKDB_TEST_BUILD_DIRECTORY"] = os.fspath(Path(config.unittest_bin).resolve().parent)
     if config.test_config is not None:
         child_env["DUCKDB_TEST_CONFIG"] = os.fspath(Path(config.test_config).resolve())
     if config.coverage_profile_dir is not None:
@@ -2514,7 +2524,7 @@ def resolve_test_runner_args(args):
     build_dir = wrapper_path.parent.parent
     duckdb_name = wrapper.get("DUCKDB_NAME", "duckdb.exe" if wrapper_path.suffix == ".py" else "duckdb")
     args.unittest_bin = os.fspath(build_dir / duckdb_name)
-    args.test_extension = args.test_extension or build_dir / "extension" / "test" / "test.duckdb_extension"
+    args.test_extension = args.test_extension or resolve_test_extension_path(build_dir)
     args.test_root = args.test_root or [Path(root) for root in wrapper["TEST_ROOTS"]]
     args.test_bundle_root = args.test_bundle_root or [build_dir / "test" / "extensions"]
     return wrapper.get("TEST_ROOT_DIRECTORY", wrapper["SOURCE_ROOT"])

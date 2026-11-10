@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -95,6 +96,43 @@ class TestExtensionIntegrationTest(unittest.TestCase):
             "*legacy_runner_external_root.test",
         ]
         result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 passed", result.stdout)
+
+    def test_downloaded_test_extension_uses_the_current_build_directory(self):
+        build_dir = self.root / "build" / "release"
+        build_dir.mkdir(parents=True)
+        binary = build_dir / Path(self.binary).name
+        shutil.copy2(self.binary, binary)
+        repository = build_dir / "repository" / "version" / "platform"
+        repository.mkdir(parents=True)
+        shutil.copy2(
+            Path(self.binary).parent / "extension" / "test" / "test.duckdb_extension",
+            repository / "test.duckdb_extension",
+        )
+        self.create_test(
+            "current_build_directory.test",
+            f"query T\nSELECT '{{BUILD_DIRECTORY}}'\n----\n{build_dir.resolve()}\n",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "ci" / "run_tests.py"),
+                str(binary),
+                "--test-root",
+                str(self.test_root),
+                "--workers",
+                "1",
+                "--retry",
+                "0",
+                f"--test-flags=--temp-dir-root {self.temp_root}",
+                "*",
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("1 passed", result.stdout)
 
