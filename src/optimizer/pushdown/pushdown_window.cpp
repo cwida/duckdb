@@ -106,6 +106,7 @@ unique_ptr<Filter> CreateAuxiliaryFilter(const Expression &partition, const Filt
 	c_b->Cast<BoundFunctionExpression>().GetChildrenMutable()[0] = children[const_idx]->Copy();
 	auto aux_comp = BoundComparisonExpression::Create(aux_type, std::move(e_b), std::move(c_b));
 	auto aux_filter = make_uniq<Filter>(std::move(aux_comp));
+	aux_filter->level = filter.level;
 	aux_filter->ExtractBindings();
 	aux_filter->ExtractBarrier();
 
@@ -160,7 +161,7 @@ bool FilterPushdown::OnlyRanksWithoutArguments(const LogicalWindow &window) {
 unique_ptr<LogicalOperator> FilterPushdown::PushdownWindow(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_WINDOW);
 	auto &window = op->Cast<LogicalWindow>();
-	FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 
 	// 1. Loop through the expressions, find the window expressions and investigate the partitions
 	// if a filter applies to a partition in each window expression then you can push the filter

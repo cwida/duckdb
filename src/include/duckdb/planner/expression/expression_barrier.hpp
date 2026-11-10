@@ -24,8 +24,18 @@ struct ExpressionBarrier {
 	//! Whether evaluating this expression is observable from the outside, and it must therefore be wrapped in a
 	//! barrier before it can be pushed into a secure view
 	static bool Required(const Expression &expr);
-	//! Wrap the given expression in a barrier
+	//! Wrap the given expression in a barrier. The level is the secure-view depth at which the expression originated:
+	//! 0 for the caller, one more for every secure view the expression is defined inside of. Barriers in one filter
+	//! are evaluated deepest level first, so that a view's predicate never runs after a caller's. The level lives in
+	//! the barrier's bind data and cannot be written in SQL
+	static unique_ptr<Expression> Wrap(unique_ptr<Expression> expr, idx_t level);
+	//! Wrap the given expression in a barrier that has no level yet; filter pushdown gives it the level of the
+	//! filter it ends up in
 	static unique_ptr<Expression> Wrap(unique_ptr<Expression> expr);
+	//! Give every barrier in the tree that has no level yet the given level
+	static void SetLevel(Expression &expr, idx_t level);
+	//! The level a barred expression is evaluated at: the lowest level of the barriers it contains
+	static idx_t Level(const Expression &expr);
 };
 
 } // namespace duckdb

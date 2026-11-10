@@ -75,6 +75,7 @@
         "test/sql/optimizer/secure_view_build_side.test_slow",
         "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/optimizer/secure_view_barrier_nested.test",
         "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/sql_export/secure_view_sql_export.test",

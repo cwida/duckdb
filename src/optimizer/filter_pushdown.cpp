@@ -1,4 +1,6 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+
+#include "duckdb/common/limits.hpp"
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -74,9 +76,10 @@ void FilterPushdown::CheckMarkToSemi(LogicalOperator &op, const unordered_set<Ta
 	}
 }
 
-FilterPushdown::FilterPushdown(Optimizer &optimizer, bool convert_mark_joins, ProjectionMode projection_mode)
+FilterPushdown::FilterPushdown(Optimizer &optimizer, bool convert_mark_joins, ProjectionMode projection_mode,
+                               idx_t secure_view_level)
     : optimizer(optimizer), combiner(optimizer.context), convert_mark_joins(convert_mark_joins),
-      projection_mode(projection_mode) {
+      projection_mode(projection_mode), secure_view_level(secure_view_level) {
 }
 
 bool FilterPushdown::BarrierCanPassThrough(LogicalOperatorType type) {
@@ -139,7 +142,7 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 		return op;
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 		// we can't push filters into the materialized CTE (LHS), but we do want to recurse into it
-		FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
+		FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 		op->children[0] = pushdown.Rewrite(std::move(op->children[0]));
 		// we can push filters into the rest of the query plan (RHS)
 		op->children[1] = Rewrite(std::move(op->children[1]));
@@ -201,7 +204,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 }
 FilterResult FilterPushdown::PushFilters() {
 	for (auto &f : filters) {
-		auto result = combiner.AddFilter(std::move(f->filter));
+		auto result = combiner.AddFilter(std::move(f->filter), f->level);
 		D_ASSERT(result != FilterResult::UNSUPPORTED);
 		if (result == FilterResult::UNSATISFIABLE) {
 			// one of the filters is unsatisfiable - abort filter pushdown
@@ -212,11 +215,15 @@ FilterResult FilterPushdown::PushFilters() {
 	return FilterResult::SUCCESS;
 }
 
-FilterResult FilterPushdown::AddFilter(unique_ptr<Expression> expr) {
+FilterResult FilterPushdown::AddFilter(unique_ptr<Expression> expr, idx_t level) {
 	if (PushFilters() == FilterResult::UNSATISFIABLE) {
 		return FilterResult::UNSATISFIABLE;
 	}
-	return combiner.AddConjuncts(std::move(expr));
+	if (level > 0) {
+		// a barrier without a level is at level 0 already
+		ExpressionBarrier::SetLevel(*expr, level);
+	}
+	return combiner.AddConjuncts(std::move(expr), level);
 }
 
 void FilterPushdown::GenerateFilters() {
@@ -224,9 +231,10 @@ void FilterPushdown::GenerateFilters() {
 		D_ASSERT(!combiner.HasFilters());
 		return;
 	}
-	combiner.GenerateFilters([&](unique_ptr<Expression> filter) {
+	combiner.GenerateFilters([&](unique_ptr<Expression> filter, idx_t level) {
 		auto f = make_uniq<Filter>();
 		f->filter = std::move(filter);
+		f->level = level;
 		f->ExtractBindings();
 		filters.push_back(std::move(f));
 	});
@@ -239,9 +247,33 @@ unique_ptr<LogicalOperator> FilterPushdown::AddLogicalFilter(unique_ptr<LogicalO
 		return op;
 	}
 	// barred expressions are evaluated after every other expression in the filter, so that they never run on rows
-	// that one of the other expressions removes
-	std::stable_partition(expressions.begin(), expressions.end(),
-	                      [](const unique_ptr<Expression> &expr) { return !ExpressionBarrier::Contains(*expr); });
+	// that one of the other expressions removes; among themselves, deepest secure-view level first, so that a
+	// view's predicate never runs after one pushed down into the view
+	bool any_barred = false;
+	for (auto &expr : expressions) {
+		if (ExpressionBarrier::Contains(*expr)) {
+			any_barred = true;
+			break;
+		}
+	}
+	if (any_barred) {
+		// an unbarred expression gets key 0; a barred one gets Maximum - level, so a deeper level sorts earlier
+		vector<idx_t> keys(expressions.size(), 0);
+		vector<idx_t> order(expressions.size());
+		for (idx_t i = 0; i < expressions.size(); i++) {
+			order[i] = i;
+			if (ExpressionBarrier::Contains(*expressions[i])) {
+				keys[i] = NumericLimits<idx_t>::Maximum() - ExpressionBarrier::Level(*expressions[i]);
+			}
+		}
+		std::stable_sort(order.begin(), order.end(), [&](idx_t a, idx_t b) { return keys[a] < keys[b]; });
+		vector<unique_ptr<Expression>> sorted;
+		sorted.reserve(expressions.size());
+		for (auto i : order) {
+			sorted.push_back(std::move(expressions[i]));
+		}
+		expressions = std::move(sorted);
+	}
 	auto filter = make_uniq<LogicalFilter>();
 	if (op->has_estimated_cardinality) {
 		// set the filter's estimated cardinality as the child op's.
@@ -271,7 +303,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto &f = *filters[i];
 		for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
-			FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
+			FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 
 			// check if filter bindings can be applied to the child bindings.
 			auto child_bindings = op->children[child_idx]->GetColumnBindings();
@@ -295,7 +327,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<
 
 			// copy the filter
 			auto filter_copy = f.filter->Copy();
-			if (pushdown.AddFilter(std::move(filter_copy)) == FilterResult::UNSATISFIABLE) {
+			if (pushdown.AddFilter(std::move(filter_copy), f.level) == FilterResult::UNSATISFIABLE) {
 				return make_uniq<LogicalEmptyResult>(std::move(op));
 			}
 
@@ -315,7 +347,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushFiltersIntoDelimJoin(unique_ptr<
 unique_ptr<LogicalOperator> FilterPushdown::FinishPushdown(unique_ptr<LogicalOperator> op) {
 	// unhandled type, first perform filter pushdown in its children
 	for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
-		FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode);
+		FilterPushdown pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 		pushdown.RewriteChild(*op, child_idx);
 	}
 	// now push any existing filters

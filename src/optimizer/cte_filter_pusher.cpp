@@ -177,7 +177,7 @@ void CTEFilterPusher::PushFilterIntoCTE(MaterializedCTEInfo &info) {
 	optimizer.rewriter.VisitOperator(*new_cte);
 	new_cte->children.push_back(std::move(info.materialized_cte.children[0]));
 
-	// Push down the filter
+	// Push down the filter. Level 0 is fine here: the filters pushed carry no barrier and cannot throw (see above)
 	FilterPushdown pushdown(optimizer, true, FilterPushdown::ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS);
 	new_cte = pushdown.Rewrite(std::move(new_cte));
 

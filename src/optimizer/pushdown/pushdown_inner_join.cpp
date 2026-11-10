@@ -22,7 +22,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<Logical
 	if (op->type == LogicalOperatorType::LOGICAL_ANY_JOIN) {
 		auto &any_join = join.Cast<LogicalAnyJoin>();
 		// any join: only one filter to add
-		if (AddFilter(std::move(any_join.condition)) == FilterResult::UNSATISFIABLE) {
+		if (AddFilter(std::move(any_join.condition), secure_view_level) == FilterResult::UNSATISFIABLE) {
 			// filter statically evaluates to false, strip tree
 			return make_uniq<LogicalEmptyResult>(std::move(op));
 		}
@@ -33,7 +33,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownInnerJoin(unique_ptr<Logical
 		// turn the conditions into filters
 		for (auto &i : comp_join.conditions) {
 			auto condition = JoinCondition::CreateExpression(std::move(i));
-			if (AddFilter(std::move(condition)) == FilterResult::UNSATISFIABLE) {
+			if (AddFilter(std::move(condition), secure_view_level) == FilterResult::UNSATISFIABLE) {
 				// filter statically evaluates to false, strip tree
 				return make_uniq<LogicalEmptyResult>(std::move(op));
 			}

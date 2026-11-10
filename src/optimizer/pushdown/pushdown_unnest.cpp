@@ -12,7 +12,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownUnnest(unique_ptr<LogicalOpe
 	// push filter through logical projection
 	// all the BoundColumnRefExpressions in the filter should refer to the LogicalProjection
 	// we can rewrite them by replacing those references with the expression of the LogicalProjection node
-	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 	// There are some expressions can not be pushed down. We should keep them
 	// and add an extra filter operator.
 	vector<unique_ptr<Expression>> remain_expressions;
@@ -33,7 +33,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownUnnest(unique_ptr<LogicalOpe
 			remain_expressions.push_back(std::move(f.filter));
 		} else {
 			// add the filter to the child pushdown
-			if (child_pushdown.AddFilter(std::move(f.filter)) == FilterResult::UNSATISFIABLE) {
+			if (child_pushdown.AddFilter(std::move(f.filter), f.level) == FilterResult::UNSATISFIABLE) {
 				// filter statically evaluates to false, strip tree
 				return make_uniq<LogicalEmptyResult>(std::move(op));
 			}

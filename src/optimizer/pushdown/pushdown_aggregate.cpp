@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
@@ -41,7 +42,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownAggregate(unique_ptr<Logical
 
 	// pushdown into AGGREGATE and GROUP BY
 	// we cannot push expressions that refer to the aggregate
-	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level);
 	for (idx_t i = 0; i < filters.size(); i++) {
 		auto &f = *filters[i];
 		if (f.bindings.find(aggr.aggregate_index) != f.bindings.end()) {
@@ -88,9 +89,16 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownAggregate(unique_ptr<Logical
 		}
 		// no aggregate! we can push this down
 		// rewrite any group bindings within the filter
+		bool was_required = ExpressionBarrier::Required(*f.filter);
 		f.filter = ReplaceGroupBindings(aggr, std::move(f.filter));
+		if (f.level < secure_view_level && !was_required && ExpressionBarrier::Required(*f.filter) &&
+		    !ExpressionBarrier::Contains(*f.filter)) {
+			// the group expression substituted into the filter can throw: inside a secure view it is barred from
+			// here on, at the level it came from
+			f.filter = ExpressionBarrier::Wrap(std::move(f.filter), f.level);
+		}
 		// add the filter to the child node
-		if (child_pushdown.AddFilter(std::move(f.filter)) == FilterResult::UNSATISFIABLE) {
+		if (child_pushdown.AddFilter(std::move(f.filter), f.level) == FilterResult::UNSATISFIABLE) {
 			// filter statically evaluates to false, strip tree
 			return make_uniq<LogicalEmptyResult>(std::move(op));
 		}

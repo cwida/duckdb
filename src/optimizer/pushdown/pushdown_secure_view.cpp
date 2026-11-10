@@ -42,7 +42,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSecureView(unique_ptr<Logica
 		op->SetEstimatedCardinality(op->children[0]->EstimateCardinality(optimizer.GetContext()));
 	}
 
-	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode, secure_view_level + 1);
 	for (auto &f : filters) {
 		auto expr = std::move(f->filter);
 		if (secure_view.has_source) {
@@ -55,9 +55,9 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSecureView(unique_ptr<Logica
 		// the operators inside the view are never shown - report the filter as part of the boundary node instead
 		secure_view.pushed_filters.push_back(expr->ToString());
 		if (ExpressionBarrier::Required(*expr) && !ExpressionBarrier::Contains(*expr)) {
-			expr = ExpressionBarrier::Wrap(std::move(expr));
+			expr = ExpressionBarrier::Wrap(std::move(expr), f->level);
 		}
-		if (child_pushdown.AddFilter(std::move(expr)) == FilterResult::UNSATISFIABLE) {
+		if (child_pushdown.AddFilter(std::move(expr), f->level) == FilterResult::UNSATISFIABLE) {
 			// filter statically evaluates to false, strip tree
 			return make_uniq<LogicalEmptyResult>(std::move(op));
 		}
