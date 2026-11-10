@@ -68,3 +68,18 @@ EXPLAIN (FORMAT JSON) SELECT a.x FROM read_parquet('{TEST_DIR}/small_unknown_dom
 read_parquet('{TEST_DIR}/small_unknown_domain.parquet') b WHERE a.x=b.x;
 ----
 logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"4"\s*}\s*}\s*\]\s*$
+
+# Retain the reliable unused-predicate discount when the composite cap is ineligible.
+statement ok
+CREATE TABLE limited_domain AS SELECT (i%100)::INTEGER n FROM range(1000) r(i);
+
+statement ok
+CREATE VIEW limited_domain_with_row_number AS SELECT row_number() OVER () x, n FROM limited_domain;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a.x
+FROM (SELECT * FROM limited_domain_with_row_number LIMIT 100) a,
+     (SELECT * FROM limited_domain_with_row_number LIMIT 100) b
+WHERE a.x=b.x AND a.n=b.n;
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"1000"\s*}\s*}\s*\]\s*$

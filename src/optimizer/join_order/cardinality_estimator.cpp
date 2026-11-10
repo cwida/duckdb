@@ -513,10 +513,6 @@ double CardinalityEstimator::GetJoinPairCap(JoinRelationSet &join_pair) {
 bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity, JoinRelationSet &join_pair,
                                             reference_map_t<JoinRelationSet, CompositeJoinPairStats> &join_pair_stats,
                                             reference_set_t<JoinRelationSet> &capped_join_pairs) {
-	// A row-count proxy for a composite key must not undo an uncertain-domain floor.
-	if (state->floored_join_pairs.count(join_pair)) {
-		return false;
-	}
 	if (capped_join_pairs.find(join_pair) != capped_join_pairs.end()) {
 		return false;
 	}
@@ -536,8 +532,10 @@ bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity
 		return false;
 	}
 	if (cap > 0 && first_d < cap && first_d > 0) {
-		// Lower weak same-pair composite evidence to the FK/PK cap.
-		target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
+		// A row-count proxy for a composite key must not undo an uncertain-domain floor.
+		if (!state->floored_join_pairs.count(join_pair)) {
+			target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
+		}
 		first_d = cap;
 	}
 	capped_join_pairs.insert(join_pair);
@@ -559,9 +557,6 @@ bool CardinalityEstimator::ApplyJoinIncrement(CardinalityValue &target_selectivi
 		if (!JoinRelationSet::IsSubset(scope, *target_pair) ||
 		    !predicate_model.HasDirectCompositeEquality(*target_pair)) {
 			return false;
-		}
-		if (state->floored_join_pairs.count(*target_pair)) {
-			return true;
 		}
 		if (capped_join_pairs.find(*target_pair) != capped_join_pairs.end()) {
 			// The composite-key cap already accounts for same-pair equality predicates.
