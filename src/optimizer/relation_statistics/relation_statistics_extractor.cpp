@@ -154,7 +154,8 @@ optional<RelationStats> RelationStatsExtractor::ExtractCTERef(LogicalCTERef &cte
 	if (!definition) {
 		return {};
 	}
-	if (cache.find(*definition) == cache.end()) {
+	// Inherited snapshots already contain the entire plan and remain read-only.
+	if (source_stats && cache.find(*definition) == cache.end()) {
 		source_stats->AddPlan(context, *definition);
 	}
 	auto definition_stats = Extract(*definition);

@@ -1157,6 +1157,13 @@ TEST_CASE("Materialized CTE extraction restores nested lookup scopes", "[optimiz
 	REQUIRE(nested_stats->MatchesBindings(outer.GetColumnBindings()));
 	REQUIRE(outside_lookups == 0);
 
+	auto source_stats = make_shared_ptr<JoinOrderSourceStats>(*connection.context, outer);
+	RelationStatsExtractor inherited_extractor(*connection.context, source_stats);
+	auto inherited_stats = inherited_extractor.Extract(outer);
+	REQUIRE(inherited_stats);
+	REQUIRE(inherited_stats->cardinality == 2);
+	REQUIRE(inherited_stats->MatchesBindings(outer.GetColumnBindings()));
+
 	LogicalCTERef outside_outer(TableIndex(90), outer_index, {LogicalType::INTEGER}, {Identifier("i")});
 	LogicalCTERef outside_inner(TableIndex(100), inner_index, {LogicalType::INTEGER}, {Identifier("i")});
 	vector<reference<LogicalCTERef>> outside_references {outside_outer, outside_inner};
