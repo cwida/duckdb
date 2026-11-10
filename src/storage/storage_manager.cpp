@@ -262,6 +262,10 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 		// not holding the WAL lock yet - grab it
 		guard = GetWALLock();
 	}
+	if (ValidChecker::IsInvalidated(db.GetDatabase())) {
+		// a commit that failed while we waited for the commit lock invalidated the database
+		throw IOException("%s", ValidChecker::InvalidatedMessage(db.GetDatabase()));
+	}
 	if (active_checkpoint.HasCheckpointContext()) {
 		// While holding the WAL lock, if we have a context then start a checkpoint transaction.
 		// The start time of this transaction defines the visibility for checkpointing, any new commits are written
