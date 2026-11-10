@@ -1,0 +1,77 @@
+# name: test/sql/optimizer/test_rowid_filter_partial_vector.test
+# description: A row id filter on a vector that deletes or earlier filters have thinned sees the whole vector
+# group: [optimizer]
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CREATE TABLE probe AS SELECT i AS v, i % 3 AS g FROM range(10000) t(i);
+
+# one deleted row in every vector: the selection of each vector holds its last row while fewer rows are visible
+statement ok
+DELETE FROM probe WHERE v % 2048 = 100;
+
+# sparse keys with a duplicate: a bloom filter, not a prefix range filter, reaches the row id
+statement ok
+CREATE TABLE build AS SELECT * FROM (VALUES (0::BIGINT), (100), (2046), (2047), (2047), (4095), (8191), (9999), (100000000)) t(x);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe JOIN build ON probe.rowid = build.x;
+----
+analyzed_plan	<REGEX>:.*rowid IN BF.*
+
+query I
+SELECT list(v ORDER BY v) FROM probe JOIN build ON probe.rowid = build.x;
+----
+[0, 2046, 2047, 2047, 4095, 8191, 9999]
+
+# a filter on another column of the same scan
+query I
+SELECT list(v ORDER BY v) FROM probe JOIN build ON probe.rowid = build.x WHERE probe.g <> 0;
+----
+[2047, 2047, 8191]
+
+# the last vector of the table is shorter than a full vector
+query I
+SELECT list(v ORDER BY v) FROM probe JOIN build ON probe.rowid = build.x WHERE probe.rowid >= 8192;
+----
+[9999]
+
+# a row id expression filter runs through the expression executor
+query II
+SELECT count(*), sum(v) FROM probe WHERE rowid % 7 = 0;
+----
+1428	7135898
+
+query II
+SELECT count(*), sum(v) FROM probe WHERE rowid % 7 = 0 AND g = 0;
+----
+477	2384046
+
+# two deleted rows in every vector: the last selected row lies beyond the number of visible rows
+statement ok
+CREATE TABLE gaps AS SELECT i AS v FROM range(10000) t(i);
+
+statement ok
+DELETE FROM gaps WHERE v % 2048 IN (100, 101);
+
+# an OR of row id ranges merges the selections of its children
+query I
+SELECT list(v ORDER BY v) FROM gaps WHERE rowid BETWEEN 2045 AND 2047 OR rowid < 2;
+----
+[0, 1, 2045, 2046, 2047]
+
+query II
+SELECT count(*), sum(v) FROM gaps WHERE rowid BETWEEN 2045 AND 2049 OR rowid BETWEEN 9997 AND 9999 OR rowid < 2;
+----
+10	40230
+
+# no deletes: a filter on another column of the same scan approves fewer rows than the vector holds
+statement ok
+CREATE TABLE thinned AS SELECT i AS v, CASE WHEN i % 2048 IN (100, 101) THEN 1 ELSE 0 END AS g FROM range(10000) t(i);
+
+query II
+SELECT count(*), sum(v) FROM thinned WHERE g = 0 AND (rowid BETWEEN 2045 AND 2047 OR rowid < 2);
+----
+5	6139
