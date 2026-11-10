@@ -390,18 +390,28 @@ class ExtensionSyncTest(unittest.TestCase):
 
     @unittest.skipUnless(CMAKE, 'CMake is required for configuration integration tests')
     def test_version_is_the_pin_under_patch_commits(self):
-        os.environ.update(PATH=os.defpath, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+        os.environ.update(
+            PATH=os.defpath,
+            GIT_CONFIG_NOSYSTEM='1',
+            GIT_CONFIG_GLOBAL=os.devnull,
+            GIT_AUTHOR_NAME='Extension Sync Test',
+            GIT_AUTHOR_EMAIL='test@example.com',
+            GIT_COMMITTER_NAME='Extension Sync Test',
+            GIT_COMMITTER_EMAIL='test@example.com',
+        )
         checkout = self.root / 'example'
         checkout.mkdir()
 
-        def commit(message):
-            subprocess.check_call(
-                ['git', '-C', str(checkout), '-c', 'user.name=Test', '-c', 'user.email=test@example.com']
-                + ['commit', '-q', '--allow-empty', '-m', message]
-            )
-            return subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+        def git(*args):
+            return subprocess.check_output(
+                ['git', '-C', str(checkout), *args], stderr=subprocess.PIPE, text=True
+            ).strip()
 
-        subprocess.check_call(['git', '-C', str(checkout), 'init', '-q'])
+        def commit(message):
+            git('commit', '--allow-empty', '-m', message)
+            return git('rev-parse', 'HEAD')
+
+        git('init')
         root_patch = commit('0000-root.patch')
         config_dir = self.root / 'configs'
         config_dir.mkdir()

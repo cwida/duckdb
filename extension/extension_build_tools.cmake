@@ -753,12 +753,13 @@ function(duckdb_extension_generate_version OUTPUT_VAR WORKING_DIR)
                     WORKING_DIRECTORY ${WORKING_DIR}
                     RESULT_VARIABLE GIT_RESULT
                     OUTPUT_VARIABLE GIT_COMMIT_INFO
-                    ERROR_QUIET
+                    ERROR_VARIABLE GIT_ERROR
                     OUTPUT_STRIP_TRAILING_WHITESPACE)
             if (GIT_RESULT AND VERSION_COMMIT STREQUAL "HEAD")
                 message(FATAL_ERROR
-                        "git is available (at ${GIT_EXECUTABLE}) but has failed to execute 'log -1 --format=%H'.")
+                        "git is available (at ${GIT_EXECUTABLE}) but has failed to execute 'log -1': ${GIT_ERROR}")
             elseif (GIT_RESULT)
+                string(REPLACE "~1" "" VERSION_COMMIT "${VERSION_COMMIT}")
                 break()
             endif()
             string(REGEX MATCH "^[0-9a-f]+" VERSION_COMMIT "${GIT_COMMIT_INFO}")
@@ -767,7 +768,6 @@ function(duckdb_extension_generate_version OUTPUT_VAR WORKING_DIR)
             endif()
             set(VERSION_COMMIT "${VERSION_COMMIT}~1")
         endwhile()
-        string(REGEX MATCH "^[0-9a-f]+" VERSION_COMMIT "${VERSION_COMMIT}")
         string(SUBSTRING "${VERSION_COMMIT}" 0 10 GIT_COMMIT_HASH)
         execute_process(
                 COMMAND ${GIT_EXECUTABLE} describe --tags --always --match "${VERSIONING_TAG_MATCH}" ${VERSION_COMMIT}
