@@ -482,7 +482,7 @@ bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uin
 	return true;
 }
 
-bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t restore_digits, BignumRounding rounding,
+bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t restore_digits, DecimalRounding rounding,
                              uint32_t width, StringHeap &heap, BignumArithmeticState &state, string_t &result) {
 	BorrowedBignum source(value);
 	string_t rounded = value.data;
@@ -500,12 +500,12 @@ bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t res
 		int32_t adjustment = 0;
 		if (!IsZero(bignum_t(remainder))) {
 			switch (rounding) {
-			case BignumRounding::TRUNCATE:
+			case DecimalRounding::TRUNCATE:
 				break;
-			case BignumRounding::FLOOR:
+			case DecimalRounding::FLOOR:
 				adjustment = negative ? -1 : 0;
 				break;
-			case BignumRounding::CEIL:
+			case DecimalRounding::CEIL:
 				adjustment = negative ? 0 : 1;
 				break;
 			default: {
@@ -520,7 +520,7 @@ bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t res
 				auto comparison = twice_remainder_value.intermediate.IsAbsoluteBigger(divisor.intermediate);
 				// above the half the value rounds away from zero, on the half the rounding mode decides
 				const bool away =
-				    comparison == GREATER || (comparison == EQUAL && (rounding == BignumRounding::HALF_AWAY_FROM_ZERO ||
+				    comparison == GREATER || (comparison == EQUAL && (rounding == DecimalRounding::HALF_AWAY_FROM_ZERO ||
 				                                                      IsOdd(quotient_value.intermediate)));
 				adjustment = away ? (negative ? -1 : 1) : 0;
 				break;

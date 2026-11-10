@@ -39,6 +39,9 @@ struct DecimalWidth<hugeint_t> {
 
 class ClientContext;
 
+//! How the digits a decimal drops when it is rounded, rescaled or parsed are rounded
+enum class DecimalRounding : uint8_t { TRUNCATE, FLOOR, CEIL, HALF_AWAY_FROM_ZERO, HALF_TO_EVEN };
+
 //! The Decimal class is a static class that holds helper functions for the Decimal type
 class Decimal {
 public:

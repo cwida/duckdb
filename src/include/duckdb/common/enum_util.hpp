@@ -100,8 +100,6 @@ enum class AsyncResultsExecutionMode : uint8_t;
 
 enum class BaseColumnPrunerMode : uint8_t;
 
-enum class BignumRounding : uint8_t;
-
 enum class BinderType : uint8_t;
 
 enum class BindingMode : uint8_t;
@@ -199,6 +197,8 @@ enum class DebugVectorVerification : uint8_t;
 enum class DebugVerificationMode : uint8_t;
 
 enum class DecimalBitWidth : uint8_t;
+
+enum class DecimalRounding : uint8_t;
 
 enum class DefaultOrderByNullType : uint8_t;
 
@@ -810,9 +810,6 @@ template<>
 const char* EnumUtil::ToChars<BaseColumnPrunerMode>(BaseColumnPrunerMode value);
 
 template<>
-const char* EnumUtil::ToChars<BignumRounding>(BignumRounding value);
-
-template<>
 const char* EnumUtil::ToChars<BinderType>(BinderType value);
 
 template<>
@@ -958,6 +955,9 @@ const char* EnumUtil::ToChars<DebugVerificationMode>(DebugVerificationMode value
 
 template<>
 const char* EnumUtil::ToChars<DecimalBitWidth>(DecimalBitWidth value);
+
+template<>
+const char* EnumUtil::ToChars<DecimalRounding>(DecimalRounding value);
 
 template<>
 const char* EnumUtil::ToChars<DefaultOrderByNullType>(DefaultOrderByNullType value);
@@ -1822,9 +1822,6 @@ template<>
 BaseColumnPrunerMode EnumUtil::FromString<BaseColumnPrunerMode>(const char *value);
 
 template<>
-BignumRounding EnumUtil::FromString<BignumRounding>(const char *value);
-
-template<>
 BinderType EnumUtil::FromString<BinderType>(const char *value);
 
 template<>
@@ -1970,6 +1967,9 @@ DebugVerificationMode EnumUtil::FromString<DebugVerificationMode>(const char *va
 
 template<>
 DecimalBitWidth EnumUtil::FromString<DecimalBitWidth>(const char *value);
+
+template<>
+DecimalRounding EnumUtil::FromString<DecimalRounding>(const char *value);
 
 template<>
 DefaultOrderByNullType EnumUtil::FromString<DefaultOrderByNullType>(const char *value);

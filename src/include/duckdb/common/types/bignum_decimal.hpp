@@ -17,9 +17,6 @@ namespace duckdb {
 class ClientContext;
 class StringHeap;
 
-//! How the digits dropped by BignumDecimal::TryRound are rounded
-enum class BignumRounding : uint8_t { TRUNCATE, FLOOR, CEIL, HALF_AWAY_FROM_ZERO, HALF_TO_EVEN };
-
 //! Helpers for DECIMAL values wider than 38 digits, whose unscaled value is a bignum_t (the BIGNUM blob)
 class BignumDecimal {
 public:
@@ -54,7 +51,7 @@ public:
 	//! digits, i.e. rounds the value at a digit position; returns false if the result does not fit the width. The
 	//! result is allocated in the heap, the state holds the scratch buffers of the digit arithmetic
 	DUCKDB_API static bool TryRound(const bignum_t &value, idx_t drop_digits, idx_t restore_digits,
-	                                BignumRounding rounding, uint32_t width, StringHeap &heap,
+	                                DecimalRounding rounding, uint32_t width, StringHeap &heap,
 	                                BignumArithmeticState &state, string_t &result);
 
 	//! The BIGNUM blob of an integer
