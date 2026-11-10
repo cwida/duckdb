@@ -187,6 +187,15 @@ FROM text_demand d;
 statement ok
 SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
 
+# A computed domain output must not be evaluated on unrelated fact keys.
+query TI rowsort
+SELECT d.k,(SELECT sum(f.v+keys.n) FROM text_facts f,
+(SELECT d.k k,CAST(d.k AS INTEGER) n) keys WHERE f.k=keys.k)
+FROM text_demand d;
+----
+1	11
+2	22
+
 query TI
 SELECT d.k,(SELECT sum(f.v) FROM text_facts f
 JOIN (SELECT d.k k WHERE CAST(d.k AS INTEGER)>0) keys ON f.k=keys.k)

@@ -1015,8 +1015,7 @@ struct GeneratedDomainReplacement {
 		for (auto &expression : domain.output_expressions) {
 			auto output = expression->Copy();
 			ReplaceExpressionBindings(output, source_bindings, source_expressions);
-			// Substituting domain outputs changes their inputs and evaluation count.
-			if (ReferencesDomain(*output, domain) || output->CanThrow() || output->IsVolatile()) {
+			if (ReferencesDomain(*output, domain) || output->IsVolatile()) {
 				return false;
 			}
 			outputs.push_back(std::move(output));
@@ -1437,8 +1436,8 @@ bool GeneratedDedupRefEliminator::RewriteJoin(unique_ptr<LogicalOperator> &op, B
 	if (join_op->children.size() != 2 || (action == GeneratedDomainAction::PRESERVE && join_op->HasProjectionMap())) {
 		return false;
 	}
-	auto left_domain = GetGeneratedDedupRef(*join_op->children[0], true, true);
-	auto right_domain = GetGeneratedDedupRef(*join_op->children[1], true, true);
+	auto left_domain = GetGeneratedDedupRef(*join_op->children[0], true, !filter);
+	auto right_domain = GetGeneratedDedupRef(*join_op->children[1], true, !filter);
 	if ((left_domain != nullptr) == (right_domain != nullptr)) {
 		return false;
 	}
