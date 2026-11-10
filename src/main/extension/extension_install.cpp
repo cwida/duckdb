@@ -135,20 +135,42 @@ vector<string> ExtensionHelper::GetExtensionDirectoryPath(DatabaseInstance &db, 
 		}
 	}
 
-	// Check for user-provided repositories
-	auto user_provided_repos = ExtensionRepositoryManager::GetRepositories(db, fs);
-	idx_t ext_dir_count = extension_directories.size();
-	for (idx_t i = 0; i < ext_dir_count; i++) {
-		auto repositories_directory = fs.JoinPath(extension_directories[i], "repositories");
+	return extension_directories;
+}
+
+vector<InstalledExtensionDirectory> ExtensionHelper::GetInstalledExtensionDirectories(ClientContext &context) {
+	auto &db = DatabaseInstance::GetDatabase(context);
+	auto &fs = FileSystem::GetFileSystem(context);
+	return GetInstalledExtensionDirectories(db, fs);
+}
+
+vector<InstalledExtensionDirectory> ExtensionHelper::GetInstalledExtensionDirectories(DatabaseInstance &db,
+                                                                                      FileSystem &fs) {
+	auto extension_directories = GetExtensionDirectoryPath(db, fs);
+	vector<InstalledExtensionDirectory> result;
+	for (auto &directory : extension_directories) {
+		result.push_back({directory, string()});
+	}
+
+	// Check for user-provided repositories: distrusted ones are skipped, and so are all of them if one is unreadable
+	vector<ExtensionRepository> user_provided_repos;
+	if (ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
+		try {
+			user_provided_repos = ExtensionRepositoryManager::GetRepositories(db, fs);
+		} catch (std::exception &) {
+			user_provided_repos.clear();
+		}
+	}
+	for (auto &directory : extension_directories) {
+		auto repositories_directory = fs.JoinPath(directory, "repositories");
 		for (const auto &repo : user_provided_repos) {
 			auto repo_full_path = fs.JoinPath(repositories_directory, repo.name);
 			if (fs.DirectoryExists(repo_full_path)) {
-				extension_directories.push_back(repo_full_path);
+				result.push_back({repo_full_path, repo.name});
 			}
 		}
 	}
-
-	return extension_directories;
+	return result;
 }
 
 bool ExtensionHelper::IsInstalledExtensionFile(const string &path) {
