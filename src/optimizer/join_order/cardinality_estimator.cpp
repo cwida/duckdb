@@ -44,6 +44,9 @@ idx_t DomainEstimate::GetReliableDistinctCount() const {
 
 void DomainEstimate::Restrict(idx_t bound) {
 	D_ASSERT(estimate);
+	if (!estimate) {
+		return;
+	}
 	estimate->distinct_count = MinValue(estimate->distinct_count, bound);
 }
 

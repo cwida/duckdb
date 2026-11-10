@@ -2,6 +2,7 @@
 
 #include "collation_data.hpp"
 #include "collation_normalizer.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
@@ -464,7 +465,8 @@ static void WriteSortKey(const vector<collation_element_t> &elements, const Coll
 	const auto alternate_shifted = settings.alternate_shifted;
 	const auto backward_secondary = settings.backward_secondary;
 	const auto primary_strength = settings.strength == CollationStrength::PRIMARY;
-	uint32_t variable_top = alternate_shifted ? variable_top_primary + 1 : 0;
+	uint32_t variable_top =
+	    alternate_shifted ? variable_top_primaries[static_cast<uint8_t>(settings.max_variable)] + 1 : 0;
 
 	SortKeyLevel secondaries(buffer.levels[0]);
 	SortKeyLevel cases(buffer.levels[1]);
@@ -808,11 +810,10 @@ static const CollationInfo *FindCollation(const string &collation) {
 	return nullptr;
 }
 
-Collator::Collator(const string &collation) {
-	auto info = FindCollation(StringUtil::Lower(collation));
+//! The settings of a collation, or of the root collation for nullptr
+static CollationSettings GetCollationSettings(const CollationInfo *info) {
+	CollationSettings settings;
 	if (info) {
-		// the tables of the collation are decompressed here, the sort keys only read them
-		tailoring = &GetCollationTailoring(info->unit);
 		settings.strength = static_cast<CollationStrength>(info->strength);
 		settings.case_level = info->case_level;
 		settings.case_first = static_cast<CaseFirst>(info->case_first);
@@ -820,7 +821,130 @@ Collator::Collator(const string &collation) {
 		settings.backward_secondary = info->backward_secondary;
 		settings.normalization = info->normalization;
 	}
+	return settings;
+}
+
+Collator::Collator(const CollationInfo *info, CollationSettings settings_p) : settings(settings_p) {
+	if (info) {
+		// the tables of the collation are decompressed here, the sort keys only read them
+		tailoring = &GetCollationTailoring(info->unit);
+	}
 	BuildFastPath();
+}
+
+Collator::Collator(const string &collation) : Collator(FindCollation(StringUtil::Lower(collation))) {
+}
+
+Collator::Collator(const CollationInfo *info) : Collator(info, GetCollationSettings(info)) {
+}
+
+//! Looks the value of a collation keyword up among its options, a keyword without a value is true
+template <class T>
+static T GetKeywordValue(const string &tag, const string &key, const string &value,
+                         std::initializer_list<pair<const char *, T>> options) {
+	auto name = value.empty() ? string("true") : value;
+	for (auto &option : options) {
+		if (name == option.first) {
+			return option.second;
+		}
+	}
+	throw InvalidInputException("Invalid value \"%s\" for the collation keyword \"%s\" in \"%s\"", value, key, tag);
+}
+
+static bool GetBooleanKeyword(const string &tag, const string &key, const string &value) {
+	return GetKeywordValue<bool>(tag, key, value, {{"true", true}, {"false", false}});
+}
+
+//! Applies a collation keyword of the "-u-" extension of a language tag, as Unicode Technical Standard #35 defines it
+static void ApplyCollationKeyword(const string &tag, const string &key, const string &value,
+                                  CollationSettings &settings) {
+	if (key == "ka") {
+		settings.alternate_shifted = GetKeywordValue<bool>(tag, key, value, {{"shifted", true}, {"noignore", false}});
+	} else if (key == "ks") {
+		settings.strength = GetKeywordValue<CollationStrength>(tag, key, value,
+		                                                       {{"level1", CollationStrength::PRIMARY},
+		                                                        {"level2", CollationStrength::SECONDARY},
+		                                                        {"level3", CollationStrength::TERTIARY},
+		                                                        {"level4", CollationStrength::QUATERNARY},
+		                                                        {"identic", CollationStrength::IDENTICAL}});
+	} else if (key == "kf") {
+		settings.case_first = GetKeywordValue<CaseFirst>(
+		    tag, key, value,
+		    {{"upper", CaseFirst::UPPER_FIRST}, {"lower", CaseFirst::LOWER_FIRST}, {"false", CaseFirst::DEFAULT}});
+	} else if (key == "kv") {
+		settings.max_variable = GetKeywordValue<MaxVariable>(tag, key, value,
+		                                                     {{"space", MaxVariable::SPACE},
+		                                                      {"punct", MaxVariable::PUNCTUATION},
+		                                                      {"symbol", MaxVariable::SYMBOL},
+		                                                      {"currency", MaxVariable::CURRENCY}});
+	} else if (key == "kc") {
+		settings.case_level = GetBooleanKeyword(tag, key, value);
+	} else if (key == "kb") {
+		settings.backward_secondary = GetBooleanKeyword(tag, key, value);
+	} else if (key == "kk") {
+		settings.normalization = GetBooleanKeyword(tag, key, value);
+	} else if ((key == "co" && value != "standard") || key == "kn" || key == "kr" || key == "kh" || key == "vt") {
+		throw NotImplementedException("The collation keyword \"%s\" in \"%s\" is not supported", key, tag);
+	}
+	// the other keywords, such as the calendar or the numbering system, do not change the collation
+}
+
+Collator Collator::FromLanguageTag(const string &tag) {
+	// subtags are case insensitive, and "_" separates them as well, as in "en_US"
+	auto subtags = StringUtil::Split(StringUtil::Replace(StringUtil::Lower(tag), "_", "-"), '-');
+	for (auto &subtag : subtags) {
+		bool valid = !subtag.empty() && subtag.size() <= 8;
+		for (auto c : subtag) {
+			valid = valid && StringUtil::CharacterIsAlphaNumeric(c);
+		}
+		if (!valid) {
+			throw InvalidInputException("Invalid collation \"%s\"", tag);
+		}
+	}
+	// the language, script, region and variants come before the first single character subtag
+	idx_t locale_end = 0;
+	while (locale_end < subtags.size() && subtags[locale_end].size() > 1) {
+		locale_end++;
+	}
+	// a locale without a collation of its own uses the one of its language, as "sv_se" uses "sv"
+	const CollationInfo *info = nullptr;
+	for (idx_t count = locale_end; count > 0 && !info; count--) {
+		info = FindCollation(StringUtil::Join(subtags, count, "_", [](const string &subtag) { return subtag; }));
+	}
+	auto settings = GetCollationSettings(info);
+	// the "u" extension holds attributes, then keywords: a two character key followed by the subtags of its value
+	idx_t pos = locale_end;
+	while (pos < subtags.size()) {
+		auto singleton = subtags[pos++];
+		if (singleton == "x") {
+			// the rest of the tag is for private use
+			break;
+		}
+		auto end = pos;
+		while (end < subtags.size() && subtags[end].size() > 1) {
+			end++;
+		}
+		if (singleton == "u") {
+			while (pos < end && subtags[pos].size() != 2) {
+				pos++;
+			}
+			// when a key is repeated, its first value counts
+			vector<string> keys;
+			while (pos < end) {
+				auto key = subtags[pos++];
+				string value;
+				while (pos < end && subtags[pos].size() != 2) {
+					value += (value.empty() ? "" : "-") + subtags[pos++];
+				}
+				if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
+					keys.push_back(key);
+					ApplyCollationKeyword(tag, key, value, settings);
+				}
+			}
+		}
+		pos = end;
+	}
+	return Collator(info, settings);
 }
 
 void Collator::BuildFastPath() {

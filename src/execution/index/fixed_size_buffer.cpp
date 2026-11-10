@@ -104,7 +104,9 @@ shared_ptr<FixedSizeBuffer> FixedSizeBuffer::Persist(PartialBlockManager &partia
 	auto result = make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, new_allocation_size);
 	auto new_block_pointer =
 	    partial_block_manager.Write(*result, buffer_handle, NumericCast<uint32_t>(new_allocation_size));
-	D_ASSERT(new_block_pointer);
+	if (!new_block_pointer) {
+		throw InternalException("failed to write FixedSizeBuffer to a partial block");
+	}
 	// Checkpoint metadata is collected before shared partial blocks are flushed.
 	result->block_pointer = *new_block_pointer;
 	result->block_handle = block_manager.RegisterBlock(new_block_pointer->block_id, MemoryTag::BASE_TABLE);
