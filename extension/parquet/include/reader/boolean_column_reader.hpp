@@ -42,14 +42,13 @@ struct BooleanParquetValueConversion {
 	template <bool CHECKED>
 	static bool PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 		auto &byte_pos = reader.Cast<BooleanColumnReader>().byte_pos;
+		if (CHECKED) {
+			plain_data.available(1);
+		}
 		bool ret = (*plain_data.ptr >> byte_pos) & 1;
 		if (++byte_pos == 8) {
 			byte_pos = 0;
-			if (CHECKED) {
-				plain_data.inc(1);
-			} else {
-				plain_data.unsafe_inc(1);
-			}
+			plain_data.unsafe_inc(1);
 		}
 		return ret;
 	}

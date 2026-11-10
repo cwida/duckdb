@@ -387,7 +387,11 @@ void ParquetVariantIterator::BeginRow(idx_t row) {
 
 const VariantMetadata &ParquetVariantIterator::GetMetadata() const {
 	if (!current_metadata) {
-		current_metadata = make_uniq<VariantMetadata>(metadata[current_row].GetValueUnsafe());
+		auto metadata_entry = metadata[current_row];
+		if (!metadata_entry.IsValid()) {
+			throw DataCorruptionException("VARIANT metadata cannot be NULL");
+		}
+		current_metadata = make_uniq<VariantMetadata>(metadata_entry.GetValue());
 	}
 	return *current_metadata;
 }
