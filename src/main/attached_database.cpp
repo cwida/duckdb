@@ -286,6 +286,9 @@ void AttachedDatabase::InvokeCloseIfLastReference(shared_ptr<AttachedDatabase> &
 		}
 		attached_db->is_closing = true;
 	}
+	// use_count() is relaxed: drop a copy (acq_rel) to order references other threads dropped without close_lock
+	auto synchronizing_reference = attached_db;
+	synchronizing_reference.reset();
 	attached_db->Close(close_action);
 	attached_db.reset();
 }
