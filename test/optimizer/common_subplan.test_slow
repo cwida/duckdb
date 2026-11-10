@@ -69,9 +69,9 @@ statement ok
 create view my_view as
 from probe join build on (build.a = probe.e)
 
-# FIXME: we need to disable the unused columns optimizer otherwise it interferes with the common subplan optimizer
+# Keep the input plans stable for the common-subplan shape assertions.
 statement ok
-set disabled_optimizers='unused_columns'
+set disabled_optimizers='unused_columns,projection_pullup'
 
 # there's one subquery that selects all columns from the join
 # and 9 other subqueries that select different column combinations
