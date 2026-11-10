@@ -18,6 +18,7 @@
         "test/sql/copy/csv/csv_wide_decimal_separator.test",
         "test/sql/types/decimal/wide_decimal_arithmetic.test",
         "test/sql/types/decimal/wide_decimal_casts.test",
+        "test/sql/types/decimal/wide_decimal_cast_inversion.test",
         "test/sql/types/decimal/wide_decimal_literals.test",
         "test/sql/types/decimal/wide_decimal_statistics.test",
         "test/sql/types/decimal/wide_decimal_unbounded_statistics.test",

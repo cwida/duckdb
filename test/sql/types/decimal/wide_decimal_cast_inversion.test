@@ -1,0 +1,132 @@
+# name: test/sql/types/decimal/wide_decimal_cast_inversion.test
+# description: Equality comparisons of casts from and to decimals wider than 38 digits are applied to the source only when the cast is invertible
+# group: [decimal]
+
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
+statement ok
+CREATE TABLE w AS SELECT * FROM (VALUES
+	('1.50'::DECIMAL(50,2)),
+	('-2.00'::DECIMAL(50,2)),
+	('123456789012345678901234567890123456789012345.67'::DECIMAL(50,2)),
+	(NULL::DECIMAL(50,2))
+) v(d);
+
+# wide DECIMAL -> VARCHAR renders every value canonically, so the comparison is applied to the column
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d::VARCHAR = '1.50';
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d::VARCHAR IN ('1.50', '-2.00', 'abc');
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# only the canonical string of a value can match
+query IIIIIII
+SELECT
+	count(*) FILTER (WHERE d::VARCHAR = '1.50'),
+	count(*) FILTER (WHERE d::VARCHAR = '123456789012345678901234567890123456789012345.67'),
+	count(*) FILTER (WHERE d::VARCHAR IN ('-2.00', '1.5', '01.50', '1.505', 'abc')),
+	count(*) FILTER (WHERE d::VARCHAR IN ('-0.00', '+1.50', '1.50 ')),
+	count(*) FILTER (WHERE d::VARCHAR != '-2.00'),
+	count(*) FILTER (WHERE d::VARCHAR IS DISTINCT FROM 'abc'),
+	count(*) FILTER (WHERE d::VARCHAR IS NOT DISTINCT FROM 'abc')
+FROM w;
+----
+1	1	1	0	2	4	0
+
+# a comparison that can never match is still NULL for NULL rows
+query III
+SELECT d, d::VARCHAR = 'abc', d::VARCHAR IN ('01.50', 'abc') FROM w WHERE d = 1.5 OR d IS NULL ORDER BY d NULLS LAST;
+----
+1.50	false	false
+NULL	NULL	NULL
+
+# but not for range comparisons, as the cast does not preserve the order
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d::VARCHAR < '2';
+----
+analyzed_plan	<REGEX>:.*CAST.*
+
+# wide DECIMAL -> wider DECIMAL: only constants that are exactly a column value can match
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d = '1.5000'::DECIMAL(60,4);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d::DECIMAL(80,10) IN ('1.5'::DECIMAL(80,10), '-2'::DECIMAL(80,10));
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# 1.495 rounds to a value in the table, but does not cast back to itself
+query IIIII
+SELECT
+	count(*) FILTER (WHERE d = '1.5000'::DECIMAL(60,4)),
+	count(*) FILTER (WHERE d = '1.4950'::DECIMAL(60,4)),
+	count(*) FILTER (WHERE d != '1.4950'::DECIMAL(60,4)),
+	count(*) FILTER (WHERE d IS DISTINCT FROM '1.4950'::DECIMAL(60,4)),
+	count(*) FILTER (WHERE d IN ('-2'::DECIMAL(60,4), '1.495'::DECIMAL(60,4), '123456789012345678901234567890123456789012345.67'::DECIMAL(60,4)))
+FROM w;
+----
+1	0	3	4	2
+
+# a cast that drops fractional digits is kept
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d::DECIMAL(50,1) = '1.5'::DECIMAL(50,1);
+----
+analyzed_plan	<REGEX>:.*CAST.*
+
+# a wide DECIMAL has more digits than a DOUBLE or FLOAT tells apart, so the cast is kept
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM w WHERE d::DOUBLE = 1.5::DOUBLE AND d::FLOAT = 1.5::FLOAT;
+----
+analyzed_plan	<REGEX>:.*CAST.*
+
+query II
+SELECT count(*) FILTER (WHERE d::DOUBLE = 1.5::DOUBLE), count(*) FILTER (WHERE d = 1.5::DOUBLE) FROM w;
+----
+1	1
+
+# the kept cast still throws for a value outside the FLOAT range
+statement error
+SELECT count(*) FROM w WHERE d::FLOAT = -2::FLOAT;
+----
+<REGEX>:Conversion Error.*out of range.*
+
+# every HUGEINT fits a DECIMAL(39,0), so the cast is removed
+statement ok
+CREATE TABLE hi AS SELECT * FROM (VALUES (170141183460469231731687303715884105727::HUGEINT), (5::HUGEINT), (NULL::HUGEINT)) v(h);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM hi WHERE h::DECIMAL(39,0) = '5'::DECIMAL(39,0);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+# a constant outside the HUGEINT range can never match
+query IIII
+SELECT
+	count(*) FILTER (WHERE h::DECIMAL(39,0) = '5'::DECIMAL(39,0)),
+	count(*) FILTER (WHERE h::DECIMAL(39,0) = '170141183460469231731687303715884105727'::DECIMAL(39,0)),
+	count(*) FILTER (WHERE h::DECIMAL(39,0) IN ('170141183460469231731687303715884105728'::DECIMAL(39,0), '5'::DECIMAL(39,0))),
+	count(*) FILTER (WHERE h::DECIMAL(39,0) != '170141183460469231731687303715884105728'::DECIMAL(39,0))
+FROM hi;
+----
+1	1	1	2
+
+# a DECIMAL(39,0) -> HUGEINT cast is kept: HUGEINT does not hold every 39-digit value, and the cast still throws
+statement ok
+CREATE TABLE i AS SELECT '170141183460469231731687303715884105728'::DECIMAL(39,0) AS i;
+
+statement error
+SELECT count(*) FROM i WHERE i::HUGEINT = 1::HUGEINT;
+----
+<REGEX>:Conversion Error.*
+
+statement error
+SELECT count(*) FROM i WHERE i::BIGINT IN (1, 2);
+----
+<REGEX>:Conversion Error.*
