@@ -1,0 +1,58 @@
+# name: test/sql/copy/csv/csv_last_value_error_no_newline.test
+# description: The last value of a file is an error, straddles the last buffer and has no newline after it
+# group: [csv]
+
+# with buffer_size=32 the first buffer holds 13 rows plus "ab", the last buffer only holds "c" (the file is -text in .gitattributes)
+foreach parallel true false
+
+query I
+SELECT a FROM read_csv('data/csv/last_value_error_no_newline.csv', auto_detect=false, columns={'a': 'INTEGER'}, buffer_size=32, parallel={parallel}, ignore_errors=true) ORDER BY a;
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+
+query I
+SELECT a FROM read_csv('data/csv/last_value_error_no_newline.csv', auto_detect=false, columns={'a': 'INTEGER'}, buffer_size=32, parallel={parallel}, store_rejects=true) ORDER BY a;
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+
+query IIIIIIIII
+SELECT * EXCLUDE (scan_id) FROM reject_errors;
+----
+0	14	31	31	1	a	CAST	abc	Error when converting column "a". Could not convert string "abc" to 'INTEGER'
+
+statement ok
+DROP TABLE reject_errors;
+
+statement ok
+DROP TABLE reject_scans;
+
+statement error
+SELECT * FROM read_csv('data/csv/last_value_error_no_newline.csv', auto_detect=false, columns={'a': 'INTEGER'}, buffer_size=32, parallel={parallel});
+----
+Could not convert string "abc" to 'INTEGER'
+
+endloop
