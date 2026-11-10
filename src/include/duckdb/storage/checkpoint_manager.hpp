@@ -69,7 +69,8 @@ private:
 
 class CheckpointWriter {
 public:
-	explicit CheckpointWriter(AttachedDatabase &db) : db(db) {
+	CheckpointWriter(AttachedDatabase &db, optional_ptr<ClientContext> checkpoint_context_p = nullptr)
+	    : db(db), checkpoint_context(checkpoint_context_p) {
 	}
 	virtual ~CheckpointWriter() {
 	}
@@ -77,12 +78,18 @@ public:
 	//! The database
 	AttachedDatabase &db;
 
+	optional_ptr<ClientContext> GetCheckpointContext() const {
+		return checkpoint_context;
+	}
+
 	virtual void CreateCheckpoint() = 0;
 	virtual MetadataManager &GetMetadataManager() = 0;
 	virtual MetadataWriter &GetMetadataWriter() = 0;
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
 
 protected:
+	optional_ptr<ClientContext> checkpoint_context;
+
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);
 	virtual void WriteSchema(SchemaCatalogEntry &schema, Serializer &serializer);
 	virtual void WriteTable(TableCatalogEntry &table, Serializer &serializer) = 0;
@@ -141,7 +148,7 @@ class SingleFileCheckpointWriter final : public CheckpointWriter {
 
 public:
 	SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
-	                           CheckpointOptions options);
+	                           CheckpointOptions options, optional_ptr<ClientContext> checkpoint_context = nullptr);
 
 	void CreateCheckpoint() override;
 
@@ -162,9 +169,6 @@ public:
 
 private:
 	optional_ptr<ClientContext> context;
-	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
-	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
-	optional_ptr<ClientContext> checkpoint_context;
 	//! The metadata writer is responsible for writing schema information
 	unique_ptr<MetadataWriter> metadata_writer;
 	//! The table data writer is responsible for writing the DataPointers used by the table chunks

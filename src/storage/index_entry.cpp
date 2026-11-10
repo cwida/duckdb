@@ -486,7 +486,12 @@ IndexStorageInfo IndexEntry::SerializeToDisk(QueryContext context, const case_in
 	if (owned_index->IsBound()) {
 		return owned_index->Cast<BoundIndex>().SerializeToDisk(context, options);
 	}
-	return owned_index->Cast<UnboundIndex>().CopyStorageInfo();
+	auto &unbound_index = owned_index->Cast<UnboundIndex>();
+	if (unbound_index.HasBufferedReplays()) {
+		throw InternalException("Cannot checkpoint index %s: it has buffered operations that were not applied",
+		                        unbound_index.GetIndexName());
+	}
+	return unbound_index.CopyStorageInfo();
 }
 
 IndexStorageInfo IndexEntry::SerializeToWAL(const case_insensitive_map_t<Value> &options) {
