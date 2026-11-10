@@ -3,6 +3,7 @@
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/main/extension.hpp"
 #include "duckdb/main/extension_helper.hpp"
+#include "duckdb/main/extension_manager.hpp"
 #include "duckdb/main/extension_install_info.hpp"
 #include "duckdb/main/extension_repository_manager.hpp"
 #include "test_helpers.hpp"
@@ -296,4 +297,67 @@ TEST_CASE("Test that a user repository does not block an unsigned load", "[api]"
 	REQUIRE(bare->HasError());
 	// it fails on the stub binary, not on a user-provided-origin rule: the dev flow is not blocked
 	REQUIRE(!StringUtil::Contains(bare->GetError(), "installed from a user-provided repository"));
+}
+
+TEST_CASE("Extension metadata discovers repository installations", "[api]") {
+	DBConfig config;
+	config.SetOptionByName("extension_directory", TestCreatePath("extension_metadata_candidates"));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto fs = FileSystem::CreateLocal();
+	auto directory = ExtensionHelper::ExtensionDirectory(*db.instance, *fs);
+	auto stage = [&](const string &repository, const string &version) {
+		auto path = repository.empty() ? directory : fs->JoinPath(fs->JoinPath(directory, "repositories"), repository);
+		fs->CreateDirectoriesRecursive(path);
+		auto filename = fs->JoinPath(path, "metadata_demo.duckdb_extension");
+		vector<data_t> stub(ParsedExtensionMetaData::FOOTER_SIZE, 0);
+		WriteExtensionFile(*fs, filename, stub.data(), stub.size());
+		ExtensionInstallInfo info;
+		info.mode = ExtensionInstallMode::REPOSITORY;
+		info.repository_type =
+		    repository.empty() ? ExtensionRepositoryType::CORE : ExtensionRepositoryType::USER_PROVIDED;
+		info.repository_name = repository;
+		info.repository_url = "https://example.com/" + repository;
+		info.version = version;
+		info.signature_key_fingerprint = "fingerprint_" + repository;
+		MemoryStream stream;
+		BinarySerializer::Serialize(info, stream);
+		WriteExtensionFile(*fs, filename + ".info", stream.GetData(), stream.GetPosition());
+		return info;
+	};
+
+	auto loaded_info = stage("z_repo", "disk_version");
+	auto result = con.Query("SELECT installed, loaded, installed_from FROM duckdb_extensions() "
+	                        "WHERE extension_name='metadata_demo'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {true}));
+	REQUIRE(CHECK_COLUMN(result, 1, {false}));
+	REQUIRE(CHECK_COLUMN(result, 2, {"z_repo"}));
+
+	stage("a_repo", "other_version");
+	result = con.Query("SELECT installed_from FROM duckdb_extensions() WHERE extension_name='metadata_demo'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {"a_repo"}));
+
+	stage("", "ordinary_version");
+	result = con.Query("SELECT extension_version FROM duckdb_extensions() WHERE extension_name='metadata_demo'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {"ordinary_version"}));
+
+	loaded_info.version = "loaded_version";
+	{
+		auto load = ExtensionManager::Get(*db.instance).BeginLoad({"metadata_demo"});
+		REQUIRE(load);
+		load->FinishLoad(loaded_info);
+	}
+	result = con.Query("SELECT installed, loaded, installed_from, extension_version, signature_key_fingerprint, "
+	                   "contains(replace(install_path, chr(92), '/'), 'repositories/z_repo/') FROM duckdb_extensions() "
+	                   "WHERE extension_name='metadata_demo'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {true}));
+	REQUIRE(CHECK_COLUMN(result, 1, {true}));
+	REQUIRE(CHECK_COLUMN(result, 2, {"z_repo"}));
+	REQUIRE(CHECK_COLUMN(result, 3, {"loaded_version"}));
+	REQUIRE(CHECK_COLUMN(result, 4, {"fingerprint_z_repo"}));
+	REQUIRE(CHECK_COLUMN(result, 5, {true}));
 }

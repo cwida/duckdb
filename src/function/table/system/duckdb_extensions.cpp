@@ -27,6 +27,15 @@ struct ExtensionInformation {
 	string signature_key_fingerprint;
 };
 
+struct ExtensionInstallation {
+	ExtensionInformation info;
+	ExtensionRepositoryType repository_type;
+	string repository_name;
+	string repository_url;
+	string full_path;
+	bool is_repository_directory = false;
+};
+
 struct DuckDBExtensionsData : public GlobalTableFunctionState {
 	DuckDBExtensionsData() : offset(0) {
 	}
@@ -70,6 +79,62 @@ static unique_ptr<FunctionData> DuckDBExtensionsBind(ClientContext &context, Tab
 	return nullptr;
 }
 
+#ifndef WASM_LOADABLE_EXTENSIONS
+static void DuckDBExtensionScanDirectory(FileSystem &fs, const string &directory,
+                                         map<string, vector<ExtensionInstallation>> &installation_candidates,
+                                         bool is_repository_directory = false) {
+	fs.ListFiles(directory, [&](const string &path, bool is_directory) {
+		if (is_directory || !ExtensionHelper::IsInstalledExtensionFile(path)) {
+			return;
+		}
+		ExtensionInformation info;
+		info.name = fs.ExtractBaseName(path);
+		info.installed = true;
+		info.loaded = false;
+		info.file_path = fs.JoinPath(directory, path);
+
+		// Check the info file for its installation source
+		auto info_file_path = fs.JoinPath(directory, path + ".info");
+
+		// Read the info file
+		auto extension_install_info = ExtensionInstallInfo::TryReadInfoFile(fs, info_file_path, info.name);
+		info.install_mode = extension_install_info->mode;
+		info.extension_version = extension_install_info->version;
+		info.signature_key_fingerprint = extension_install_info->signature_key_fingerprint;
+		if (extension_install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED) {
+			info.installed_from = extension_install_info->repository_name;
+		} else if (extension_install_info->mode == ExtensionInstallMode::REPOSITORY) {
+			info.installed_from = ExtensionRepository::GetRepository(extension_install_info->repository_url);
+		} else {
+			info.installed_from = extension_install_info->full_path;
+		}
+
+		ExtensionInstallation candidate;
+		candidate.repository_type = extension_install_info->repository_type;
+		candidate.repository_name = extension_install_info->repository_name;
+		candidate.repository_url = extension_install_info->repository_url;
+		candidate.full_path = extension_install_info->full_path;
+		candidate.is_repository_directory = is_repository_directory;
+		candidate.info = std::move(info);
+		auto name = candidate.info.name;
+		installation_candidates[name].push_back(std::move(candidate));
+	});
+}
+#endif
+
+static void MergeExtensionInstallation(ExtensionInformation &target, const ExtensionInformation &source) {
+	if (target.installed && target.install_mode == ExtensionInstallMode::STATICALLY_LINKED) {
+		return;
+	}
+	target.name = source.name;
+	target.installed = true;
+	target.file_path = source.file_path;
+	target.install_mode = source.install_mode;
+	target.installed_from = source.installed_from;
+	target.extension_version = source.extension_version;
+	target.signature_key_fingerprint = source.signature_key_fingerprint;
+}
+
 unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBExtensionsData>();
 
@@ -78,6 +143,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 
 	// Firstly, we go over all Default Extensions: duckdb_extensions always prints those, installed/loaded or not
 	map<string, ExtensionInformation> installed_extensions;
+	map<string, vector<ExtensionInstallation>> installation_candidates;
 	auto extension_count = ExtensionHelper::DefaultExtensionCount();
 	auto alias_count = ExtensionHelper::ExtensionAliasCount();
 	for (idx_t i = 0; i < extension_count; i++) {
@@ -113,47 +179,35 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 #ifndef WASM_LOADABLE_EXTENSIONS
 	auto ext_directories = ExtensionHelper::GetExtensionDirectoryPath(context);
 	for (const auto &ext_directory : ext_directories) {
-		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
+		DuckDBExtensionScanDirectory(fs, ext_directory, installation_candidates);
+		auto repositories_path = fs.JoinPath(ext_directory, "repositories");
+		if (!fs.DirectoryExists(repositories_path)) {
+			continue;
+		}
+		fs.ListFiles(repositories_path, [&](const string &name, bool is_directory) {
+			if (!is_directory) {
 				return;
 			}
-			ExtensionInformation info;
-			info.name = fs.ExtractBaseName(path);
-			info.installed = true;
-			info.loaded = false;
-			info.file_path = fs.JoinPath(ext_directory, path);
-
-			// Check the info file for its installation source
-			auto info_file_path = fs.JoinPath(ext_directory, path + ".info");
-
-			// Read the info file
-			auto extension_install_info = ExtensionInstallInfo::TryReadInfoFile(fs, info_file_path, info.name);
-			info.install_mode = extension_install_info->mode;
-			info.extension_version = extension_install_info->version;
-			info.signature_key_fingerprint = extension_install_info->signature_key_fingerprint;
-			if (extension_install_info->mode == ExtensionInstallMode::REPOSITORY) {
-				info.installed_from = ExtensionRepository::GetRepository(extension_install_info->repository_url);
-			} else {
-				info.installed_from = extension_install_info->full_path;
-			}
-
-			auto entry = installed_extensions.find(info.name);
-			if (entry == installed_extensions.end()) {
-				installed_extensions[info.name] = std::move(info);
-			} else {
-				if (entry->second.install_mode != ExtensionInstallMode::STATICALLY_LINKED) {
-					entry->second.file_path = info.file_path;
-					entry->second.install_mode = info.install_mode;
-					entry->second.installed_from = info.installed_from;
-					entry->second.install_mode = info.install_mode;
-					entry->second.extension_version = info.extension_version;
-					entry->second.signature_key_fingerprint = info.signature_key_fingerprint;
-				}
-				entry->second.installed = true;
-			}
+			auto repository_path = fs.JoinPath(repositories_path, name);
+			DuckDBExtensionScanDirectory(fs, repository_path, installation_candidates, true);
 		});
 	}
 #endif
+
+	for (auto &entry : installation_candidates) {
+		optional_ptr<ExtensionInstallation> selected;
+		for (auto &candidate : entry.second) {
+			// Prefer the ordinary installation, then use path order for repository copies.
+			if (!selected || (selected->is_repository_directory && !candidate.is_repository_directory) ||
+			    (selected->is_repository_directory == candidate.is_repository_directory &&
+			     candidate.info.file_path < selected->info.file_path)) {
+				selected = candidate;
+			}
+		}
+		if (selected) {
+			MergeExtensionInstallation(installed_extensions[entry.first], selected->info);
+		}
+	}
 
 	// Finally, we check the list of currently loaded extensions
 	auto &manager = ExtensionManager::Get(db);
@@ -190,6 +244,37 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 			auto entry = installed_extensions.find(ext_name);
 			if (entry != installed_extensions.end()) {
 				entry->second.description = ext_load_info->description;
+			}
+		}
+		optional_ptr<ExtensionInstallation> selected;
+		auto candidates = installation_candidates.find(ext_name);
+		if (candidates != installation_candidates.end() && ext_data.install_info) {
+			auto &loaded_info = *ext_data.install_info;
+			if (loaded_info.mode != ExtensionInstallMode::STATICALLY_LINKED &&
+			    loaded_info.mode != ExtensionInstallMode::NOT_INSTALLED) {
+				for (auto &candidate : candidates->second) {
+					if (candidate.info.install_mode != loaded_info.mode ||
+					    candidate.repository_type != loaded_info.repository_type) {
+						continue;
+					}
+					if (loaded_info.repository_type == ExtensionRepositoryType::USER_PROVIDED &&
+					    candidate.repository_name != loaded_info.repository_name) {
+						continue;
+					}
+					if (candidate.repository_url != loaded_info.repository_url ||
+					    candidate.full_path != loaded_info.full_path) {
+						continue;
+					}
+
+					selected = candidate;
+					break;
+				}
+				if (selected) {
+					auto &target = installed_extensions[ext_name];
+					MergeExtensionInstallation(target, selected->info);
+					target.loaded = true;
+					target.extension_version = loaded_info.version;
+				}
 			}
 		}
 	}
