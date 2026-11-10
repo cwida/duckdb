@@ -361,4 +361,4 @@ SET allow_extension_repositories = 'forbidden'
 statement error
 INSTALL loadable_extension_demo FROM iadrepo
 ----
-Permission Error: Installing extensions from a user-provided repository requires allow_extension_repositories='allowed'
+Permission Error: Installing extensions from a user-provided repository is not permitted while allow_extension_repositories='forbidden'
