@@ -278,7 +278,7 @@ TEST_CASE("AsyncTaskQueue close fails requests whose drain tasks were cancelled"
 	DuckDB db(nullptr);
 	auto con = TaskQueueConnectionWithAsyncThreads(db, 1);
 	REQUIRE_NO_FAIL(con->Query("SET threads=1"));
-	AsyncTaskQueue queue(*con->context, 8);
+	AsyncTaskQueue queue(con->context->GetContext(), 8);
 	ConcurrencyLatch latch;
 	std::atomic<idx_t> executed(0);
 	std::atomic<idx_t> failed(0);
