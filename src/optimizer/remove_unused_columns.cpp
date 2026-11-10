@@ -1878,7 +1878,7 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 	}
 	D_ASSERT(BoundCastExpression::IsCast(*expr));
 	auto &cast = expr->Cast<BoundFunctionExpression>();
-	if (BoundCastExpression::IsTryCast(cast)) {
+	if (BoundCastExpression::IsTryCast(cast) || cast.CanThrow()) {
 		return false;
 	}
 	child = BoundCastExpression::ChildMutable(cast);
@@ -1895,10 +1895,8 @@ void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
 		return;
 	}
 
-	//! Check if this is a struct extract wrapped in a cast. TRY_CAST is already
-	//! skipped by TryGetCastChild. A throwing CAST under TRY must also stay put:
-	//! unused-columns would otherwise emit CAST(struct_extract) in a child
-	//! projection and leave TRY wrapping only the already-cast column (#25236).
+	//! Moving a throwing cast into a child projection could evaluate it outside
+	//! its original CASE, filter or TRY. Only non-throwing casts can move with an extract.
 	optional_ptr<unique_ptr<Expression>> cast_child;
 	if (!inside_try && TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {
