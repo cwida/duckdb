@@ -17,7 +17,6 @@
 
 namespace duckdb {
 class LogicalDependencyList;
-enum class StorageVersion : uint64_t;
 
 enum class AlterType : uint8_t {
 	INVALID = 0,
@@ -103,8 +102,6 @@ public:
 	virtual vector<CatalogType> GetEntryLookupTypes() const;
 	//! Records the type of the entry the binder resolved, for an alter that accepts several
 	virtual void SetResolvedEntryType(CatalogType type);
-	//! The oldest storage version whose readers know this alter's WAL record
-	virtual StorageVersion GetMinimumStorageVersion() const;
 
 	AlterEntryData GetAlterEntryData() const;
 	bool IsAddPrimaryKey() const;

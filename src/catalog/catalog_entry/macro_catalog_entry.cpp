@@ -3,6 +3,9 @@
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/parser/parsed_data/alter_macro_info.hpp"
+#include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/common/storage_compatibility.hpp"
 
 namespace duckdb {
 
@@ -92,6 +95,17 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 		throw InternalException("Unsupported ALTER MACRO type");
 	}
 	auto &remove_info = macro_info.Cast<RemoveMacroOverloadInfo>();
+	// releases before v2.1.0 do not know the ALTER_MACRO WAL record, like the RETURNS declarations
+	auto &attached = ParentCatalog().GetAttached();
+	if (!temporary && attached.HasStorageManager() && !attached.IsTemporary()) {
+		auto &storage_manager = attached.GetStorageManager();
+		const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
+		if (!storage_manager.InMemory() && storage_manager.GetStorageVersion() < since) {
+			string msg = "Dropping a single overload is only supported for storage versions v2.1.0 and higher.\n";
+			msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or a TEMP macro";
+			throw CatalogException(msg);
+		}
+	}
 	auto member_idx = FindMember(remove_info.signature);
 	if (!member_idx.IsValid()) {
 		if (remove_info.if_not_found == OnEntryNotFound::RETURN_NULL) {

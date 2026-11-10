@@ -1,6 +1,5 @@
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 
-#include "duckdb/storage/storage_info.hpp"
 #include "duckdb/catalog/dependency_list.hpp"
 
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
@@ -28,10 +27,6 @@ vector<CatalogType> AlterInfo::GetEntryLookupTypes() const {
 }
 
 void AlterInfo::SetResolvedEntryType(CatalogType type) {
-}
-
-StorageVersion AlterInfo::GetMinimumStorageVersion() const {
-	return StorageVersion::V0_0_4;
 }
 
 AlterEntryData AlterInfo::GetAlterEntryData() const {

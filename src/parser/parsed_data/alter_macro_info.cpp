@@ -1,7 +1,5 @@
 #include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 
-#include "duckdb/storage/storage_info.hpp"
-
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -34,10 +32,6 @@ vector<CatalogType> AlterMacroInfo::GetEntryLookupTypes() const {
 
 void AlterMacroInfo::SetResolvedEntryType(CatalogType type) {
 	entry_catalog_type = type;
-}
-
-StorageVersion AlterMacroInfo::GetMinimumStorageVersion() const {
-	return StorageVersion::V2_1_0;
 }
 
 //===--------------------------------------------------------------------===//

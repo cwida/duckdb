@@ -2,7 +2,8 @@
 # description: A member drop is an alter internally: oid preserved, WAL replay, rollback
 # group: [function]
 
-load {TEST_DIR}/drop_function_signature_alter.db
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature_alter.db readwrite v2.1.0
 
 statement ok
 PRAGMA disable_checkpoint_on_shutdown
@@ -58,8 +59,7 @@ SELECT alt(1);
 ----
 2
 
-# the member drop replays from the WAL: a default database predates the ALTER_MACRO record's
-# storage version, so this replays the legacy drop+create (the ALTER_MACRO replay is pinned below)
+# the member drop replays from the WAL as the ALTER_MACRO record
 statement ok
 DROP MACRO alt(DATE);
 
@@ -81,8 +81,7 @@ SELECT alt(DATE '2024-01-01');
 ----
 <REGEX>:.*Macro alt\(\) does not support the supplied arguments.*
 
-# this database predates the ALTER_MACRO record's storage version, so the WAL carried the member
-# drop as the legacy drop+create: the member removal survives the replay either way
+# the member removal and the oid survive the replay
 query I
 SELECT count(DISTINCT function_oid) FROM duckdb_functions() WHERE function_name = 'alt';
 ----
@@ -184,40 +183,33 @@ COMMIT;
 statement ok con1
 DROP MACRO ww;
 
-# a database pinned to a storage version that predates the ALTER_MACRO record gets the member
-# drop written to its WAL as the legacy drop+create, which such releases replay correctly
+# releases before v2.1.0 do not know the ALTER_MACRO WAL record, so a database pinned below v2.1.0, including
+# the v2.0.0 default, rejects a member drop and keeps the macro
+foreach storage_version v1.4.0 v2.0.0
+
 statement ok
-ATTACH '{TEST_DIR}/alter_old_pin.db' AS odb (STORAGE_VERSION 'v1.4.0');
+ATTACH '{TEST_DIR}/alter_old_pin_{storage_version}.db' AS odb (STORAGE_VERSION '{storage_version}');
 
 statement ok
 CREATE MACRO odb.om(x INTEGER) AS x + 1, (x VARCHAR) AS x;
 
-statement ok
-CHECKPOINT odb;
-
-statement ok
-DROP MACRO odb.om(VARCHAR);
-
-restart
-
-statement ok
-PRAGMA disable_checkpoint_on_shutdown
-
-statement ok
-PRAGMA wal_autocheckpoint='1TB';
-
-statement ok
-ATTACH '{TEST_DIR}/alter_old_pin.db' AS odb;
-
-query I
-SELECT odb.om(1);
-----
-2
-
 statement error
-SELECT odb.om('a');
+DROP MACRO odb.om(VARCHAR);
 ----
-<REGEX>:.*Macro om\(\) does not support the supplied arguments.*
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2.1.0 and higher.*
+
+query II
+SELECT odb.om(1), odb.om('a');
+----
+2	a
+
+statement ok
+DROP MACRO odb.om;
+
+statement ok
+DETACH odb;
+
+endloop
 
 # a v2.1.0 database carries the member drop as the ALTER_MACRO record: the replay goes through
 # MacroCatalogEntry::AlterEntry, keeps the oid, and keeps the dependency list

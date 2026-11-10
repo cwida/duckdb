@@ -2,9 +2,10 @@
 # description: Member drops conflict with concurrent dependency creation in either commit order
 # group: [function]
 
-load {TEST_DIR}/drop_function_signature_concurrent.db
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature_concurrent.db readwrite v2.1.0
 
-foreach storage_version v1.4.0 v2.1.0
+foreach storage_version v2.1.0
 
 statement ok
 PRAGMA disable_checkpoint_on_shutdown;
@@ -304,3 +305,4 @@ query II
 SELECT removed_subject('a'), removed_caller();
 ----
 42	42
+

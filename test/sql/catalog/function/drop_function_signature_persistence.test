@@ -78,7 +78,8 @@ DROP MACRO pdb.main.pf;
 statement ok
 DROP TABLE pdb.src;
 
-# on a database pinned below v2.1.0, a member drop after a round trip keeps the entry's dependencies
+# a database pinned below v2.1.0 rejects a member drop after a round trip, with or without dependencies:
+# releases before v2.1.0 do not know the ALTER_MACRO WAL record
 statement ok
 SET enable_macro_dependencies = true;
 
@@ -102,28 +103,22 @@ SET enable_macro_dependencies = true;
 statement ok
 ATTACH '{TEST_DIR}/drop_function_signature_old.db' AS odb;
 
-statement ok
+statement error
 DROP MACRO odb.main.old_pf(VARCHAR);
+----
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2.1.0 and higher.*
 
 statement error
-DROP TABLE odb.old_src;
-----
-<REGEX>:.*Cannot drop entry "old_src" because there are entries that depend on it.*
-
-query T
-SELECT odb.main.old_pf(1);
-----
-0
-
-# an entry without dependencies
-statement ok
 DROP MACRO odb.main.old_plain(VARCHAR);
-
-query T
-SELECT odb.main.old_plain(1);
 ----
-1
+<REGEX>:.*Dropping a single overload is only supported for storage versions v2.1.0 and higher.*
 
+query TT
+SELECT odb.main.old_pf(1), odb.main.old_plain('a');
+----
+0	2
+
+# dropping the macros themselves works on any storage version
 statement ok
 DROP MACRO odb.main.old_plain;
 

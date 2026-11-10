@@ -2,6 +2,9 @@
 # description: A member drop keeps the entry's dependencies, so it is conservative
 # group: [function]
 
+# a member drop needs storage v2.1.0, the forced-storage configs run on the default version
+require noforcestorage
+
 # dependencies register per entry: a member drop keeps the entry's whole list, including what only
 # the removed member referenced
 statement ok

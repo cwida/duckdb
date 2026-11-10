@@ -32,8 +32,6 @@ public:
 	//! DROP MACRO also names a table macro
 	vector<CatalogType> GetEntryLookupTypes() const override;
 	void SetResolvedEntryType(CatalogType type) override;
-	//! Releases before v2.1.0 do not know the ALTER_MACRO WAL record
-	StorageVersion GetMinimumStorageVersion() const override;
 
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &deserializer);
