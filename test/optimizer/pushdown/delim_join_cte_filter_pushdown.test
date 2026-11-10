@@ -67,3 +67,20 @@ query II
 SELECT count(*), count(DISTINCT item) FROM (SELECT user_id, item FROM v WHERE user_id = 3) t;
 ----
 40	18
+
+# a filter that can throw still runs after a guard inside a subquery, also next to a lateral join
+statement ok
+CREATE TABLE raw AS SELECT * FROM (VALUES (1, '[{"type": "a"}, {"type": "b"}]'), (2, '[{"type": "b"}]'), (3, 'not json')) v(id, doc);
+
+query I
+SELECT count(*) FROM (SELECT * FROM raw WHERE json_valid(doc)) r, unnest(CAST(r.doc AS JSON[])) AS i(item)
+WHERE json_extract_string(r.doc, '$[0].type') = 'a';
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT * FROM raw WHERE json_valid(doc)) r
+WHERE EXISTS (SELECT 1 FROM unnest(CAST(r.doc AS JSON[])) AS i(item) WHERE json_extract_string(item, '$.type') = 'a')
+  AND json_extract_string(r.doc, '$[0].type') = 'a';
+----
+1

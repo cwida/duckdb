@@ -2586,7 +2586,10 @@ static bool CanRestrictCorrelationDomain(LogicalOperator &op, unordered_set<Tabl
 	case LogicalOperatorType::LOGICAL_GET: {
 		// a table in-out function turns each input row into rows of its own, unless it emits more after its input
 		auto &get = op.Cast<LogicalGet>();
-		if (!get.GetTable() && (!get.function.in_out_function || get.function.in_out_function_final)) {
+		auto &function = get.function;
+		const bool row_by_row = function.in_out_function && !function.in_out_function_final &&
+		                        function.stability != FunctionStability::VOLATILE;
+		if (!get.GetTable() && !row_by_row) {
 			return false;
 		}
 		break;

@@ -45,7 +45,9 @@ unique_ptr<LogicalOperator> EmptyResultPullup::PullUpEmptyJoinChildren(unique_pt
 	case JoinType::ANTI: {
 		if (op->children[1]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT &&
 		    op->type != LogicalOperatorType::LOGICAL_EXCEPT) {
-			op = std::move(op->children[0]);
+			// keep the join's projection map, which operators above may already index into
+			auto projection_map = std::move(op->Cast<LogicalJoin>().left_projection_map);
+			op = LogicalJoin::PromoteJoinSide(std::move(op->children[0]), std::move(projection_map));
 			break;
 		}
 		if (op->children[0]->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT) {
