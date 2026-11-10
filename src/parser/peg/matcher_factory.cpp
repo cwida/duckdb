@@ -275,6 +275,9 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	// queries.
 	SuppressSuggestions("ShowDeprecatedQualifiedTableName");
 	SuppressSuggestions("ShowDeprecatedSelect");
+	// The type-as-words forms accept any word; nothing to suggest until the registered types are offered as words.
+	SuppressSuggestions("ShowAllResourceWords");
+	SuppressSuggestions("ShowResourceWords");
 
 	// Register all named rules before constructing any children. Grammar changes can introduce cycles through
 	// parameterized rules, so registering only the current recursive path is insufficient.

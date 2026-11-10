@@ -114,10 +114,22 @@ SHOW EXTERNAL RESOURCES WITH TYPE 'aws:ec2:it''s quacky'
 statement ok
 SHOW EXTERNAL RESOURCES WITH TYPE quack
 
+# the type as words prints as the same string literal
+statement ok
+SHOW AWS EC2 QUACK
+
+statement ok
+SHOW aws ec2 quack_quack
+
 statement error
 SHOW ALL EXTERNAL RESOURCES WITH TYPE 'aws:ec2:it''s quacky'
 ----
 <REGEX>:.*unknown resource type "aws:ec2:it's quacky".*
+
+statement error
+SHOW ALL AWS EC2 QUACK_QUACK
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack-quack".*
 
 statement ok
 SELECT count(*) FROM duckdb_external_resources()

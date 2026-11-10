@@ -1493,12 +1493,18 @@ public:
 	                                                                           GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowExternalResourcesTrampoline(PEGTransformer &transformer,
 	                                                                               GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeShowAllResourceWordsTrampoline(PEGTransformer &transformer,
+	                                                                              GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeShowResourceWordsTrampoline(PEGTransformer &transformer,
+	                                                                           GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowDeprecatedSelectTrampoline(PEGTransformer &transformer,
 	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeDescribeSelectTrampoline(PEGTransformer &transformer,
 	                                                                        GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowAllTablesTrampoline(PEGTransformer &transformer,
 	                                                                       GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeShowAllTrampoline(PEGTransformer &transformer,
+	                                                                 GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowTablesTrampoline(PEGTransformer &transformer,
 	                                                                    GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeShowByNameTrampoline(PEGTransformer &transformer,
@@ -3326,13 +3332,18 @@ public:
 	static unique_ptr<QueryNode> TransformShowExternalResources(PEGTransformer &transformer, const ShowType &show_rule,
 	                                                            const bool &has_result,
 	                                                            optional<Identifier> show_external_resources_type);
+	static unique_ptr<QueryNode> TransformShowAllResourceWords(PEGTransformer &transformer, const ShowType &show_rule,
+	                                                           const vector<Identifier> &col_id);
+	static unique_ptr<QueryNode> TransformShowResourceWords(PEGTransformer &transformer, const ShowType &show_rule,
+	                                                        const Identifier &col_id,
+	                                                        const vector<Identifier> &col_ids);
 	static unique_ptr<QueryNode> TransformShowDeprecatedSelect(PEGTransformer &transformer, const ShowType &show_rule,
 	                                                           unique_ptr<SelectStatement> select_statement_internal);
 	static unique_ptr<QueryNode> TransformDescribeSelect(PEGTransformer &transformer,
 	                                                     const ShowType &describe_or_summarize,
 	                                                     unique_ptr<SelectStatement> select_statement_internal);
-	static unique_ptr<QueryNode> TransformShowAllTables(PEGTransformer &transformer, const ShowType &show_or_describe,
-	                                                    const bool &has_result);
+	static unique_ptr<QueryNode> TransformShowAllTables(PEGTransformer &transformer, const ShowType &show_or_describe);
+	static unique_ptr<QueryNode> TransformShowAll(PEGTransformer &transformer, const ShowType &show_or_describe);
 	static unique_ptr<QueryNode> TransformShowTables(PEGTransformer &transformer, const ShowType &show_or_describe,
 	                                                 const QualifiedName &qualified_name);
 	static unique_ptr<QueryNode> TransformShowByName(PEGTransformer &transformer, const ShowType &show_rule,
