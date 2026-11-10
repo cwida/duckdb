@@ -48,6 +48,7 @@ def main(
     source_root: str | Path | None = None,
     duckdb_name: str = "duckdb",
     test_roots: list[str] | None = None,
+    test_root_directory: str | Path | None = None,
 ) -> int:
     if forwarded_args is None:
         forwarded_args = sys.argv[1:]
@@ -67,5 +68,5 @@ def main(
 
     from scripts.ci import run_tests
 
-    with pushd(source_root_path):
+    with pushd(test_root_directory or source_root_path):
         return int(run_tests.main(build_run_tests_argv(forwarded_args, wrapper_path, duckdb_name, test_roots)) or 0)

@@ -98,6 +98,65 @@ class TestExtensionIntegrationTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("1 passed", result.stdout)
 
+    def test_extension_ci_runs_only_configured_project_and_extension_tests(self):
+        (self.root / "project.txt").write_text("project")
+        project_test = self.root / "test" / "project.test"
+        sqlite_test = self.root / "third_party" / "sqllogictest" / "test" / "sqlite.test"
+        extension_root = self.root / "extension" / "test" / "sql"
+        extension_test = extension_root / "extension.test"
+        for path in [project_test, sqlite_test, extension_test]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        project_test.write_text("query I\nSELECT count(*) FROM read_text('project.txt')\n----\n1\n")
+        sqlite_test.write_text("query I\nSELECT 42\n----\n42\n")
+        (extension_root.parent.parent / "extension.txt").write_text("extension")
+        extension_test.write_text("query I\nSELECT count(*) FROM read_text('extension.txt')\n----\n1\n")
+
+        build_dir = self.root / "build"
+        build_dir.mkdir()
+        duckdb_name = Path(self.binary).name
+        (build_dir / duckdb_name).symlink_to(self.binary)
+        wrapper = build_dir / "test" / ("unittest.py" if os.name == "nt" else "unittest")
+        write_runner_wrapper(wrapper, [extension_root], duckdb_name, test_root_directory=self.root)
+        extension_dir = build_dir / "extension" / "test"
+        extension_dir.mkdir(parents=True)
+        (extension_dir / "test.duckdb_extension").symlink_to(
+            Path(self.binary).parent / "extension" / "test" / "test.duckdb_extension"
+        )
+        expected_names = {
+            path.relative_to(self.root).as_posix() for path in [project_test, sqlite_test, extension_test]
+        }
+        commands = [
+            [sys.executable, str(wrapper)],
+            [sys.executable, str(REPO_ROOT / "scripts" / "ci" / "run_tests.py"), str(wrapper)],
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    [*command, "--list-tests", "*"], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                listed_names = {line.split("\t")[0] for line in result.stdout.splitlines()[1:]}
+                self.assertEqual(listed_names, expected_names, result.stdout)
+                result = subprocess.run(
+                    [
+                        *command,
+                        "--workers",
+                        "1",
+                        "--retry",
+                        "0",
+                        "--max-retries",
+                        "0",
+                        f"--test-flags=--temp-dir-root {self.temp_root}",
+                        "*",
+                    ],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("3 passed, 0 skipped", result.stdout)
+
     def test_partial_skip_statistics_are_durable(self):
         test_id = self.create_test(
             "partial.test",

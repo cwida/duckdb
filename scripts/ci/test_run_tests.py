@@ -38,19 +38,29 @@ def strip_ansi_lines(lines: list[str]) -> list[str]:
     return [run_tests.strip_ansi(line) for line in lines]
 
 
-def write_runner_wrapper(path: Path, test_roots: list[Path], duckdb_name="duckdb", legacy=False):
+def write_runner_wrapper(
+    path: Path, test_roots: list[Path], duckdb_name="duckdb", legacy=False, test_root_directory: Path | None = None
+):
     template = (REPO_ROOT / "scripts" / "ci" / "test_runner_wrapper.py.in").read_text(encoding="utf8")
+    if legacy:
+        template = template.replace(
+            'CONFIGURED_TEST_ROOT = r"@UNITTEST_ROOT_DIRECTORY@"\n'
+            "TEST_ROOT_DIRECTORY = Path(CONFIGURED_TEST_ROOT) if CONFIGURED_TEST_ROOT else SOURCE_ROOT\n",
+            "",
+        )
+        template = template.replace("TEST_ROOT_DIRECTORY", "SOURCE_ROOT")
+        template = template.replace("            test_root_directory=SOURCE_ROOT,\n", "")
+        template = template.replace('DUCKDB_NAME = "@RUN_WRAPPER_DUCKDB_NAME@"\n', "")
+        template = template.replace("duckdb_name=DUCKDB_NAME,", 'duckdb_name="@RUN_WRAPPER_DUCKDB_NAME@",')
     replacements = {
         "@PROJECT_SOURCE_DIR@": str(REPO_ROOT),
+        "@UNITTEST_ROOT_DIRECTORY@": str(test_root_directory) if test_root_directory is not None else "",
         "@RUN_WRAPPER_TEST_ROOTS@": ";".join(map(str, test_roots)),
         "@RUN_WRAPPER_DEFAULT_ARGS@": "--workers;1",
         "@RUN_WRAPPER_DUCKDB_NAME@": duckdb_name,
     }
     for key, value in replacements.items():
         template = template.replace(key, value)
-    if legacy:
-        template = template.replace(f'DUCKDB_NAME = "{duckdb_name}"\n', "")
-        template = template.replace("duckdb_name=DUCKDB_NAME,", f'duckdb_name="{duckdb_name}",')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(template, encoding="utf8")
 
@@ -763,6 +773,27 @@ class RunTestsScriptTest(unittest.TestCase):
             self.assertEqual(args.test_root, [Path("custom/sql")])
             self.assertEqual(args.test_bundle_root, [Path("custom/bundles")])
 
+    def test_generated_runner_uses_configured_test_root_directory(self):
+        for name in ["run", "unittest", "run.py", "unittest.py"]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                path = root / "build" / "test" / name
+                extension_root = root / "extension" / "test" / "sql"
+                write_runner_wrapper(path, [extension_root], test_root_directory=root)
+                args = run_tests.parse_args([str(path)])
+                self.assertEqual(run_tests.resolve_test_runner_args(args), root)
+                self.assertEqual(
+                    args.test_root,
+                    [root / "test", root / "third_party" / "sqllogictest" / "test", extension_root],
+                )
+                original_cwd = Path.cwd()
+                with mock.patch(
+                    "scripts.ci.run_tests.run_tests_from_args",
+                    side_effect=lambda args: Path.cwd(),
+                ):
+                    self.assertEqual(run_tests.main_impl([str(path)]), root)
+                self.assertEqual(Path.cwd(), original_cwd)
+
     def test_legacy_windows_paths_without_suffix_resolve_python_wrappers(self):
         for name in ["unittest", "run"]:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -814,6 +845,7 @@ class RunTestsScriptTest(unittest.TestCase):
         template = (REPO_ROOT / "scripts" / "ci" / "test_runner_wrapper.py.in").read_text(encoding="utf8")
         replacements = {
             "@PROJECT_SOURCE_DIR@": str(REPO_ROOT),
+            "@UNITTEST_ROOT_DIRECTORY@": "",
             "@RUN_WRAPPER_TEST_ROOTS@": "",
             "@RUN_WRAPPER_DEFAULT_ARGS@": "",
             "@RUN_WRAPPER_DUCKDB_NAME@": "duckdb.exe",

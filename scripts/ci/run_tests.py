@@ -2517,7 +2517,7 @@ def resolve_test_runner_args(args):
     args.test_extension = args.test_extension or build_dir / "extension" / "test" / "test.duckdb_extension"
     args.test_root = args.test_root or [Path(root) for root in wrapper["TEST_ROOTS"]]
     args.test_bundle_root = args.test_bundle_root or [build_dir / "test" / "extensions"]
-    return wrapper["SOURCE_ROOT"]
+    return wrapper.get("TEST_ROOT_DIRECTORY", wrapper["SOURCE_ROOT"])
 
 
 @dataclass(frozen=True)
@@ -2844,12 +2844,12 @@ def main(argv: list[str] | None = None):
 
 def main_impl(argv: list[str] | None = None):
     args = parse_args(argv)
-    source_root = resolve_test_runner_args(args)
-    if source_root is None:
+    test_root_directory = resolve_test_runner_args(args)
+    if test_root_directory is None:
         return run_tests_from_args(args)
     from scripts.ci.test_runner_wrapper import pushd
 
-    with pushd(source_root):
+    with pushd(test_root_directory):
         return run_tests_from_args(args)
 
 

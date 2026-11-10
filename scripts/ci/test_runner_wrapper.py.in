@@ -17,9 +17,11 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from scripts.ci.test_runner_wrapper import main
 
+CONFIGURED_TEST_ROOT = r"@UNITTEST_ROOT_DIRECTORY@"
+TEST_ROOT_DIRECTORY = Path(CONFIGURED_TEST_ROOT) if CONFIGURED_TEST_ROOT else SOURCE_ROOT
 TEST_ROOTS = [
-    str(SOURCE_ROOT / "test"),
-    str(SOURCE_ROOT / "third_party" / "sqllogictest" / "test"),
+    str(TEST_ROOT_DIRECTORY / "test"),
+    str(TEST_ROOT_DIRECTORY / "third_party" / "sqllogictest" / "test"),
     *filter(None, r"@RUN_WRAPPER_TEST_ROOTS@".split(";")),
 ]
 DEFAULT_ARGS = [*filter(None, r"@RUN_WRAPPER_DEFAULT_ARGS@".split(";"))]
@@ -33,5 +35,6 @@ if __name__ == "__main__":
             source_root=SOURCE_ROOT,
             duckdb_name=DUCKDB_NAME,
             test_roots=TEST_ROOTS,
+            test_root_directory=TEST_ROOT_DIRECTORY,
         )
     )
