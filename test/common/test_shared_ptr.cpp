@@ -2,7 +2,98 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/pair.hpp"
 
+#include <type_traits>
+
 namespace duckdb {
+
+TEST_CASE("Weak pointer move assignment transfers ownership", "[shared_ptr]") {
+	static_assert(std::is_nothrow_move_assignable<weak_ptr<int32_t>>::value, "Weak ownership moves must not throw");
+	auto owner = make_shared_ptr<int32_t>(42);
+	weak_ptr<int32_t> source(owner);
+	weak_ptr<int32_t> target;
+
+	SECTION("A live source becomes empty") {
+		target = std::move(source);
+		REQUIRE(source.use_count() == 0);
+		REQUIRE(source.expired());
+		REQUIRE(target.lock().get() == owner.get());
+		REQUIRE(owner.use_count() == 1);
+		owner.reset();
+		REQUIRE(target.expired());
+	}
+	SECTION("An existing owner is replaced") {
+		auto other = make_shared_ptr<int32_t>(11);
+		target = other;
+		target = std::move(source);
+		REQUIRE(source.expired());
+		REQUIRE(*target.lock() == 42);
+		REQUIRE(other.use_count() == 1);
+	}
+	SECTION("An empty source clears the target") {
+		target = owner;
+		source.reset();
+		target = std::move(source);
+		REQUIRE(target.use_count() == 0);
+		REQUIRE(target.expired());
+		REQUIRE(owner.use_count() == 1);
+	}
+	SECTION("An expired source remains safe to move and reset") {
+		owner.reset();
+		target = std::move(source);
+		REQUIRE(source.expired());
+		REQUIRE(target.expired());
+		REQUIRE(!target.lock());
+		source.reset();
+		target.reset();
+	}
+	SECTION("Moves between references to the same owner consume the source") {
+		target = owner;
+		target = std::move(source);
+		REQUIRE(source.use_count() == 0);
+		REQUIRE(target.lock().get() == owner.get());
+	}
+	SECTION("Self move retains ownership") {
+		auto &same = source;
+		source = std::move(same);
+		REQUIRE(source.lock().get() == owner.get());
+		REQUIRE(owner.use_count() == 1);
+	}
+	SECTION("Lvalue assignment still copies ownership") {
+		target = source;
+		REQUIRE(source.lock().get() == owner.get());
+		REQUIRE(target.lock().get() == owner.get());
+	}
+}
+
+TEST_CASE("Weak pointer moves preserve aliases and SAFE mode", "[shared_ptr]") {
+	auto owner = make_shared_ptr<pair<int32_t, int32_t>>(11, 22);
+	shared_ptr<int32_t> first(owner, &owner->first);
+	shared_ptr<int32_t> second(owner, &owner->second);
+	weak_ptr<int32_t> source(second);
+	weak_ptr<int32_t> target(first);
+	target = std::move(source);
+	REQUIRE(source.expired());
+	REQUIRE(*target.lock() == 22);
+	REQUIRE(owner.use_count() == 3);
+
+	shared_ptr<int32_t> null_alias(owner, nullptr);
+	source = null_alias;
+	target = std::move(source);
+	REQUIRE(source.use_count() == 0);
+	REQUIRE(!target.expired());
+	REQUIRE(!target.lock());
+	REQUIRE(target.use_count() == 4);
+
+	static_assert(std::is_nothrow_move_assignable<unsafe_weak_ptr<int32_t>>::value,
+	              "Unsafe weak ownership moves must not throw");
+	unsafe_shared_ptr<int32_t> unsafe_owner(std::make_shared<int32_t>(7));
+	unsafe_weak_ptr<int32_t> unsafe_source(unsafe_owner);
+	unsafe_weak_ptr<int32_t> unsafe_target;
+	unsafe_target = std::move(unsafe_source);
+	REQUIRE(unsafe_source.expired());
+	REQUIRE(*unsafe_target.lock() == 7);
+	REQUIRE(unsafe_owner.use_count() == 1);
+}
 
 TEST_CASE("Shared pointer copy assignment preserves aliases and ownership", "[shared_ptr]") {
 	auto owner = make_shared_ptr<pair<int32_t, int32_t>>(11, 22);
