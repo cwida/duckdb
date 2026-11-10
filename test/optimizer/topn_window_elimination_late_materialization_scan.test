@@ -14,11 +14,11 @@ EXPLAIN SELECT a, b, c FROM t WHERE a IN (1, 2, 3, 4) QUALIFY row_number() OVER 
 ----
 physical_plan	<REGEX>:.*rowid = rowid.*
 
-# Only the scan that fetches the winning rows reads c, not also the one under the aggregate
+# The scan under the aggregate reads only a and b; only the scan that fetches the winning rows reads c
 query II
 EXPLAIN SELECT a, b, c FROM t WHERE a IN (1, 2, 3, 4) QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 2
 ----
-physical_plan	<!REGEX>:.*Projections: a, b, c.*Projections: a, b, c.*
+physical_plan	<REGEX>:.*Projections: a, b  .*
 
 query III
 SELECT a, b, c FROM t WHERE a IN (1, 2, 3, 4) QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 2 ORDER BY ALL
