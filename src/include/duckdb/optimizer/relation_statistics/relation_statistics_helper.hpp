@@ -51,6 +51,7 @@ public:
 
 public:
 	static RelationStats ExtractGetStats(LogicalGet &get, ClientContext &context);
+	static RelationStats ExtractGetStats(LogicalGet &get, ClientContext &context, idx_t source_cardinality);
 	static RelationStats ExtractDelimGetStats(LogicalDelimGet &delim_get, ClientContext &context);
 	static RelationStats ExtractDummyScanStats(LogicalDummyScan &dummy_scan, ClientContext &context);
 	static RelationStats ExtractExpressionGetStats(LogicalExpressionGet &expression_get, ClientContext &context);
@@ -65,7 +66,8 @@ public:
 	//! Reuse the caller snapshot for aggregate input refinements.
 	static optional<RelationStats> ExtractAggregationStats(LogicalAggregate &aggregate,
 	                                                       const RelationStats &child_stats,
-	                                                       RelationStatsExtractor &extractor);
+	                                                       RelationStatsExtractor &extractor,
+	                                                       bool use_cached_cardinality = false);
 	static optional<RelationStats> ExtractWindowStats(LogicalWindow &window, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractFilterStats(LogicalFilter &filter, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractLimitStats(LogicalLimit &limit, const RelationStats &child_stats);

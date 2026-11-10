@@ -125,7 +125,7 @@ public:
 	static unique_ptr<ParquetBloomFilter> Create(Allocator &allocator, idx_t num_entries, double target);
 	static optional_idx EstimateSize(idx_t num_entries, double target);
 	static unique_ptr<ParquetBloomFilter> TryCreate(Allocator &allocator, idx_t num_entries, double target,
-	                                                shared_ptr<ParquetBloomFilterMemory> memory);
+	                                                const shared_ptr<ParquetBloomFilterMemory> &memory);
 	void FilterInsert(uint64_t x);
 	bool FilterCheck(uint64_t x);
 	void Shrink(Allocator &allocator, idx_t new_block_count);

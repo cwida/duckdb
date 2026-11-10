@@ -142,7 +142,8 @@ extern const CollationUnit collation_units[];
 extern const uint32_t collation_unit_count;
 extern const CollationInfo collation_infos[];
 extern const uint32_t collation_count;
-extern const uint32_t variable_top_primary;
+//! The last variable primary for each MaxVariable group
+extern const uint32_t variable_top_primaries[];
 
 //! The units that hold the tables every collation uses
 static constexpr uint32_t COLLATION_ROOT_UNIT = 0;

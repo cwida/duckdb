@@ -1,0 +1,33 @@
+# name: test/optimizer/topn_window_elimination_late_materialization_scan.test
+# description: With late materialization, the scan under the top-N aggregate reads only the partition, order and row id columns
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT i % 50 AS a, i AS b, md5(i::VARCHAR) AS c FROM range(10000) t(i);
+
+statement ok
+SET explain_output = 'physical_only';
+
+# The rewrite joins the winning row ids back to the table
+query II
+EXPLAIN SELECT a, b, c FROM t WHERE a IN (1, 2, 3, 4) QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 2
+----
+physical_plan	<REGEX>:.*rowid = rowid.*
+
+# The scan under the aggregate reads only a and b; only the scan that fetches the winning rows reads c
+query II
+EXPLAIN SELECT a, b, c FROM t WHERE a IN (1, 2, 3, 4) QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 2
+----
+physical_plan	<REGEX>:.*Projections: a, b  .*
+
+query III
+SELECT a, b, c FROM t WHERE a IN (1, 2, 3, 4) QUALIFY row_number() OVER (PARTITION BY a ORDER BY b DESC) <= 2 ORDER BY ALL
+----
+1	9901	fa60438ac1719d11eb95899af86e27c6
+1	9951	fb6c84779f12283a81d739d8f088fc12
+2	9902	a729d76292a6a72fc99598bbc1e33ae6
+2	9952	74765968c67007219b197f4d9aafb4e2
+3	9903	d93c96e6a23fff65b91b900aaa541998
+3	9953	300ecf93b7224cf439b6de6ee1d6c200
+4	9904	f8548d450d3c2e5f6c847a3de0748b8d
+4	9954	356dc40642abeb3a437e7e06f178701c

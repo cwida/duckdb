@@ -1,0 +1,33 @@
+# name: test/optimizer/partial_aggregate_pushdown_serialized_plan.test
+# description: Partial aggregate pushdown of decimal arithmetic that cannot overflow survives a plan round trip
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS id, i % 5 AS a, i % 3 AS b FROM range(100) t(i) WHERE i <> 50;
+
+statement ok
+CREATE TABLE sales AS SELECT i % 100 AS id, (i % 1000)::DECIMAL(7,2) AS price, (i % 10)::DECIMAL(7,2) AS discount FROM range(10000) t(i);
+
+# EXPLAIN bypasses the plan serialization, so the profiler output shows the plan of the deserialized query.
+statement ok
+SET debug_verify_serializer = true
+
+statement ok
+PRAGMA enable_profiling = 'json'
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/serialized_plan.json'
+
+statement ok
+SELECT a, b, sum(price - discount) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+
+statement ok
+PRAGMA disable_profiling
+
+statement ok
+RESET debug_verify_serializer
+
+query I
+SELECT content LIKE '%combine_aggr%' FROM read_text('{TEST_DIR}/serialized_plan.json')
+----
+true

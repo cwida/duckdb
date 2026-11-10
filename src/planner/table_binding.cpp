@@ -384,6 +384,10 @@ bool CTEBinding::CanBeReferenced() const {
 	return cte_type == CTEType::CAN_BE_REFERENCED;
 }
 
+bool CTEBinding::IsRecursiveSelfReference() const {
+	return cte_type == CTEType::CANNOT_BE_REFERENCED_RECURSIVE;
+}
+
 bool CTEBinding::IsReferenced() const {
 	return reference_count > 0;
 }

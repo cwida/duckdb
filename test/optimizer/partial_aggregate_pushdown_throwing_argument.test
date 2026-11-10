@@ -1,0 +1,324 @@
+# name: test/optimizer/partial_aggregate_pushdown_throwing_argument.test
+# description: Partial aggregate pushdown must not evaluate an argument that can throw on rows the join eliminates
+# group: [optimizer]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS id, i % 5 AS a, i % 3 AS b FROM range(100) t(i) WHERE i <> 50;
+
+# The fact rows with id = 50 have no dimension row and hold a value that does not convert to INTEGER.
+statement ok
+CREATE TABLE fact AS SELECT i % 100 AS id, CASE WHEN i % 100 = 50 THEN 'oops' ELSE (i % 7)::VARCHAR END AS v FROM range(10000) t(i);
+
+# The cast must only run on the rows the join lets through.
+query III
+SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	2100
+0	1	1800
+0	2	1802
+1	0	2100
+1	1	2100
+1	2	1798
+2	0	1796
+2	1	2100
+2	2	2100
+3	0	2100
+3	1	1801
+3	2	2100
+4	0	2100
+4	1	2100
+4	2	1799
+
+# An argument that can throw keeps the aggregate above the inner join.
+query II
+EXPLAIN SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# An argument that cannot throw is still pushed below the join.
+query II
+EXPLAIN SELECT a, b, sum(TRY_CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(TRY_CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	2100
+0	1	1800
+0	2	1802
+1	0	2100
+1	1	2100
+1	2	1798
+2	0	1796
+2	1	2100
+2	2	2100
+3	0	2100
+3	1	1801
+3	2	2100
+4	0	2100
+4	1	2100
+4	2	1799
+
+# A join that preserves the aggregate side evaluates the argument on every fact row either way, so pushing it
+# below the join does not change which rows it sees.
+query II
+EXPLAIN SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact LEFT JOIN dim ON fact.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Arithmetic that can overflow is an argument that can throw as well: the unmatched row holds the BIGINT maximum.
+statement ok
+CREATE TABLE fact_wide AS SELECT i AS id, CASE WHEN i = 50 THEN 9223372036854775807 ELSE i END AS v FROM range(100) t(i);
+
+query III
+SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	630
+0	1	570
+0	2	600
+1	0	714
+1	1	644
+1	2	582
+2	0	594
+2	1	728
+2	2	658
+3	0	672
+3	1	606
+3	2	742
+4	0	756
+4	1	686
+4	2	618
+
+query II
+EXPLAIN SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# The plain column is still pushed below the join.
+query II
+EXPLAIN SELECT a, b, sum(v) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Decimal arithmetic whose result type holds every result cannot overflow, and a floating-point division yields inf
+# or nan instead of an error under the default IEEE semantics, so these arguments are still pushed below the join.
+statement ok
+CREATE TABLE sales AS SELECT i % 100 AS id, (i % 1000)::DECIMAL(7,2) AS price, (i % 10)::DECIMAL(7,2) AS discount, (i % 5)::INTEGER AS qty FROM range(10000) t(i);
+
+query II
+EXPLAIN SELECT a, b, sum(price - discount) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum((price - discount) / 2) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum(price * qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum((price - discount) / 2) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	172500.0
+0	1	148500.0
+0	2	149000.0
+
+# A floating-point division by zero yields inf or nan under the default IEEE semantics, so it cannot throw either.
+query II
+EXPLAIN SELECT a, b, sum(price / qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Without IEEE semantics the division by zero raises, and so does the integer division.
+statement ok
+SET ieee_floating_point_ops = false
+
+query II
+EXPLAIN SELECT a, b, sum(price / qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+statement ok
+RESET ieee_floating_point_ops
+
+query II
+EXPLAIN SELECT a, b, sum(sales.id // qty) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# Arithmetic whose result type cannot hold every result checks for overflow, but the bounds of the base table columns
+# prove that these values cannot overflow.
+query II
+EXPLAIN SELECT a, b, sum(price::DECIMAL(38,2) + discount::DECIMAL(38,2)) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# The double eager pushdown must keep a throwing argument above the join as well. Runtime join filters would hide
+# the error on the unmatched rows.
+statement ok
+CREATE TABLE dl AS SELECT (i % 150)::INTEGER AS k, (i % 150 % 4)::INTEGER AS g FROM range(6000) t(i) WHERE i % 150 <> 75;
+
+statement ok
+CREATE TABLE dv AS SELECT (i % 150)::INTEGER AS k, CASE WHEN i % 150 = 75 THEN 'oops' ELSE (i % 7)::VARCHAR END AS v FROM range(6000) t(i);
+
+statement ok
+ANALYZE
+
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown'
+
+query II
+SELECT g, sum(CAST(v AS INTEGER)) FROM dl JOIN dv USING (k) GROUP BY g ORDER BY g
+----
+0	182400
+1	182160
+2	177600
+3	173000
+
+query II
+EXPLAIN SELECT g, sum(TRY_CAST(v AS INTEGER)) FROM dl JOIN dv USING (k) GROUP BY g
+----
+physical_plan	<REGEX>:.*combine_aggr\(#[0-9]+, #[0-9]+\).*
+
+statement ok
+RESET disabled_optimizers
+
+# A division that yields NULL instead of an error on a zero divisor cannot throw either.
+statement ok
+CREATE TABLE fact_div AS SELECT i % 100 AS id, (i % 1000)::DOUBLE AS x, (i % 5)::DOUBLE AS y FROM range(10000) t(i);
+
+statement ok
+SET ieee_floating_point_ops = false
+
+statement ok
+SET error_on_division_by_zero = false
+
+query II
+EXPLAIN SELECT a, b, sum(x / y) FROM fact_div JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(x / y) FROM fact_div JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 4
+----
+0	0	NULL
+0	1	NULL
+0	2	NULL
+1	0	347600.0
+
+statement ok
+RESET ieee_floating_point_ops
+
+statement ok
+RESET error_on_division_by_zero
+
+# DECIMAL(10,0) * DECIMAL(10,0) is clamped to DECIMAL(18,0) and checks for overflow. The unmatched row holds a value
+# whose square does not fit, and the column bounds cannot rule the overflow out, so the argument stays above the join.
+statement ok
+CREATE TABLE fact_dec AS SELECT i % 100 AS id, CASE WHEN i % 100 = 50 THEN 9999999999 ELSE i % 100 END::DECIMAL(10,0) AS d FROM range(10000) t(i);
+
+query III
+SELECT a, b, sum(d * d) FROM fact_dec JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	2047500
+0	1	1747500
+0	2	2130000
+
+query II
+EXPLAIN SELECT a, b, sum(d * d) FROM fact_dec JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+# The bounds of the base table columns prove that this clamped multiplication cannot overflow, so it is pushed down.
+statement ok
+CREATE TABLE fact_rev AS SELECT i % 100 AS id, (i % 1000 + 0.5)::DECIMAL(15,2) AS price, ((i % 10) / 100.0)::DECIMAL(15,2) AS discount FROM range(10000) t(i);
+
+query II
+EXPLAIN SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+query III
+SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	339417.5000
+0	1	291217.5000
+0	2	290290.0000
+
+# The bounds are resolved through the operators below the join.
+query II
+EXPLAIN SELECT a, b, sum(price * (1 - discount)) FROM (SELECT * FROM fact_rev WHERE price > 1) r JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# Without base table statistics the bounds are unknown and the argument stays above the join.
+query II
+EXPLAIN SELECT a, b, sum(price * (1 - discount)) FROM (SELECT * FROM fact_rev UNION ALL SELECT * FROM fact_rev) r JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<!REGEX>:.*combine_aggr.*
+
+query II
+EXPLAIN SELECT a, b, sum(price) FROM (SELECT * FROM fact_rev UNION ALL SELECT * FROM fact_rev) r JOIN dim USING (id) GROUP BY a, b
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# The same results without the optimizer.
+statement ok
+SET disabled_optimizers = 'partial_aggregate_pushdown'
+
+query III
+SELECT a, b, sum(CAST(v AS INTEGER)) FROM fact JOIN dim ON fact.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	2100
+0	1	1800
+0	2	1802
+1	0	2100
+1	1	2100
+1	2	1798
+2	0	1796
+2	1	2100
+2	2	2100
+3	0	2100
+3	1	1801
+3	2	2100
+4	0	2100
+4	1	2100
+4	2	1799
+
+query III
+SELECT a, b, sum(v * 2) FROM fact_wide JOIN dim ON fact_wide.id = dim.id GROUP BY a, b ORDER BY a, b
+----
+0	0	630
+0	1	570
+0	2	600
+1	0	714
+1	1	644
+1	2	582
+2	0	594
+2	1	728
+2	2	658
+3	0	672
+3	1	606
+3	2	742
+4	0	756
+4	1	686
+4	2	618
+
+query III
+SELECT a, b, sum(d * d) FROM fact_dec JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	2047500
+0	1	1747500
+0	2	2130000
+
+query III
+SELECT a, b, sum(price * (1 - discount)) FROM fact_rev JOIN dim USING (id) GROUP BY a, b ORDER BY a, b LIMIT 3
+----
+0	0	339417.5000
+0	1	291217.5000
+0	2	290290.0000
