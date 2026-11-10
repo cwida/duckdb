@@ -745,7 +745,7 @@ RestrictionAction DomainCostModel::ChooseRestrictionAction(const DomainRestricti
 		// Containment bounds the new aggregation/probe work by the old work; compare only the changed key costs.
 		consider(best_work - old_key_rows - old_producer_work + new_key_work, RestrictionAction::REPLACE);
 	}
-	if (existing.CanRemove()) {
+	if (keys_may_expand || existing.CanRemove()) {
 		// Charge the NULL filter without taking credit for rows it removes.
 		consider(EstimateAggregateWork(*input, group_binding) + (existing.FiltersNullKeys() ? input_rows : 0),
 		         RestrictionAction::REMOVE);

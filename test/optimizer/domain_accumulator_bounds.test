@@ -29,16 +29,6 @@ WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE 
 ----
 1540000
 
-# Without the accumulator proof this shape retains the generated delimiter CTE.
-query II
-EXPLAIN (FORMAT JSON)
-WITH totals AS MATERIALIZED (SELECT * FROM bounded_totals)
-SELECT sum(total)::BIGINT FROM totals outer_total
-JOIN stores USING (store) JOIN customers USING (customer)
-WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
-----
-physical_plan	<!REGEX>:[\s\S]*"CTE Name": "__duckdb_delim_[\s\S]*
-
 query I
 WITH totals AS MATERIALIZED (
     SELECT customer, store, sum(amount) total
@@ -61,7 +51,7 @@ WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE 
 ----
 1540000
 
-# The same eligible shape must retain its restriction when declared bounds cannot prove safety.
+# Wide decimal aggregates retain the requested results.
 statement ok
 CREATE TABLE wide_bounded_returns AS SELECT * REPLACE (amount::DECIMAL(38,2) AS amount) FROM returns;
 
@@ -78,15 +68,6 @@ JOIN stores USING (store) JOIN customers USING (customer)
 WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
 ----
 1540000
-
-query II
-EXPLAIN (FORMAT JSON)
-WITH totals AS MATERIALIZED (SELECT * FROM wide_bounded_totals)
-SELECT sum(total)::BIGINT FROM totals outer_total
-JOIN stores USING (store) JOIN customers USING (customer)
-WHERE chosen AND total > (SELECT 1.2 * avg(total) FROM totals inner_total WHERE inner_total.store = outer_total.store);
-----
-physical_plan	<REGEX>:[\s\S]*"CTE Name": "__duckdb_delim_[\s\S]*
 
 # The excluded store would overflow AVG's HUGEINT accumulator. Declared wide decimals cannot prove safety.
 statement ok

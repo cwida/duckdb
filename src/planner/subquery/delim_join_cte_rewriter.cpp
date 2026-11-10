@@ -970,7 +970,6 @@ struct GeneratedDomainReplacement {
 		vector<unique_ptr<Expression>> source_expressions;
 		vector<ColumnBinding> covered_bindings;
 		vector<unique_ptr<Expression>> comparisons;
-		vector<unique_ptr<Expression>> null_checks;
 		for (auto &condition : conditions) {
 			if (!condition.IsComparison()) {
 				return false;
@@ -1001,13 +1000,6 @@ struct GeneratedDomainReplacement {
 			}
 			comparisons.push_back(BoundComparisonExpression::Create(
 			    condition.GetComparisonType(), condition.GetLHS().Copy(), condition.GetRHS().Copy()));
-			if (condition.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM &&
-			    condition.GetComparisonType() != ExpressionType::COMPARE_DISTINCT_FROM) {
-				auto null_check =
-				    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
-				null_check->GetChildrenMutable().push_back(base_expression.Copy());
-				null_checks.push_back(std::move(null_check));
-			}
 		}
 		if (!CoversAllBindings(domain.source_bindings, covered_bindings)) {
 			return false;
@@ -1030,8 +1022,17 @@ struct GeneratedDomainReplacement {
 			filters.push_back(std::move(filter));
 		}
 		if (!all_equality) {
-			for (auto &filter : null_checks) {
-				filters.push_back(std::move(filter));
+			for (auto &condition : conditions) {
+				if (condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM ||
+				    condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM) {
+					continue;
+				}
+				auto &base_expression =
+				    FindDomainOutput(condition.GetLHS(), domain).IsValid() ? condition.GetRHS() : condition.GetLHS();
+				auto null_check =
+				    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
+				null_check->GetChildrenMutable().push_back(base_expression.Copy());
+				filters.push_back(std::move(null_check));
 			}
 			return !domain.has_projection;
 		}
@@ -1544,8 +1545,7 @@ private:
 
 	unique_ptr<GeneratedDomainRef> GetGeneratedDedupRef(LogicalOperator &op, bool collect_filters = false,
 	                                                    bool allow_projection = false) const;
-	unique_ptr<GeneratedDomainRef> GetGeneratedDomainRef(LogicalOperator &op, bool collect_filters = false,
-	                                                     bool allow_projection = false) const;
+	unique_ptr<GeneratedDomainRef> GetGeneratedDomainRef(LogicalOperator &op) const;
 	bool CTEHasSelection(TableIndex cte_index, vector<TableIndex> &seen_ctes) const;
 	bool OperatorHasSelection(LogicalOperator &op, vector<TableIndex> &seen_ctes) const;
 	bool GeneratedDedupRefHasSelection(const GeneratedDomainRef &dedup_ref) const;
@@ -1632,9 +1632,7 @@ unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDedupR
 	return duckdb::GetGeneratedDedupRef(op, generated_dedup_cte_indexes, collect_filters, allow_projection);
 }
 
-unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomainRef(LogicalOperator &op,
-                                                                                    bool collect_filters,
-                                                                                    bool allow_projection) const {
+unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomainRef(LogicalOperator &op) const {
 	auto resolve = [&](LogicalCTERef &cteref) -> unique_ptr<GeneratedDomainRef> {
 		if (std::find(generated_dedup_cte_indexes.begin(), generated_dedup_cte_indexes.end(), cteref.cte_index) !=
 		    generated_dedup_cte_indexes.end()) {
@@ -1659,7 +1657,7 @@ unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomain
 		result->has_selection = CTEHasSelection(cteref.cte_index, seen_ctes);
 		return result;
 	};
-	return ReadGeneratedDomainRef(op, resolve, collect_filters, allow_projection);
+	return ReadGeneratedDomainRef(op, resolve, true, true);
 }
 
 bool GeneratedDomainJoinEliminator::ContainsRecursiveCTERef(LogicalOperator &op) const {
@@ -1683,24 +1681,21 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDedupJoin(unique_ptr<LogicalO
                                                              BindingReplacementGraph &replacements,
                                                              bool under_aggregate, bool under_evidence_side) {
 	auto &comparison_join = join->Cast<LogicalComparisonJoin>();
-	if (comparison_join.join_type != JoinType::INNER &&
-	    (comparison_join.join_type != JoinType::SEMI || !GetGeneratedDedupRef(*join->children[1], false, true))) {
+	if (comparison_join.join_type != JoinType::INNER && comparison_join.join_type != JoinType::SEMI) {
 		return false;
 	}
 
-	auto left_is_generated = GetGeneratedDedupRef(*join->children[0], false, true) != nullptr;
-	auto right_is_generated = GetGeneratedDedupRef(*join->children[1], false, true) != nullptr;
-	if (left_is_generated == right_is_generated) {
+	auto left_generated = GetGeneratedDedupRef(*join->children[0], true, true);
+	auto right_generated = GetGeneratedDedupRef(*join->children[1], true, true);
+	if ((left_generated != nullptr) == (right_generated != nullptr) ||
+	    (comparison_join.join_type == JoinType::SEMI && !right_generated)) {
 		return false;
 	}
-	const idx_t dedup_idx = left_is_generated ? 0 : 1;
+	const idx_t dedup_idx = left_generated ? 0 : 1;
 	if (ContainsRecursiveCTERef(*join->children[1 - dedup_idx])) {
 		return false;
 	}
-	auto dedup_ref = GetGeneratedDedupRef(*join->children[dedup_idx], true, true);
-	if (!dedup_ref) {
-		return false;
-	}
+	auto dedup_ref = left_generated ? std::move(left_generated) : std::move(right_generated);
 	if ((under_aggregate || under_evidence_side) && GeneratedDedupRefHasSelection(*dedup_ref)) {
 		// The first CTE rewrite can preserve selected domains below aggregates or existence checks as regular joins.
 		// Do not substitute that selected generated CTE away in the cleanup pass.
@@ -1727,24 +1722,14 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDomainJoin(unique_ptr<Logical
 
 	auto left_generated = GetGeneratedDedupRef(*join->children[0], false, true);
 	auto right_generated = GetGeneratedDedupRef(*join->children[1], false, true);
-	auto left_domain = GetGeneratedDomainRef(*join->children[0], false, true);
-	auto right_domain = GetGeneratedDomainRef(*join->children[1], false, true);
-	auto left_is_generated = left_generated != nullptr;
-	auto right_is_generated = right_generated != nullptr;
-	auto left_is_domain = left_domain != nullptr;
-	auto right_is_domain = right_domain != nullptr;
-	if (left_is_generated == right_is_generated || left_is_domain == right_is_domain) {
-		return false;
-	}
-	if (left_is_generated == left_is_domain) {
+	if ((left_generated != nullptr) == (right_generated != nullptr)) {
 		return false;
 	}
 
-	const idx_t generated_idx = left_is_generated ? 0 : 1;
-	const idx_t domain_idx = 1 - generated_idx;
-	auto generated_ref = GetGeneratedDedupRef(*join->children[generated_idx], true, true);
-	auto domain_ref = GetGeneratedDomainRef(*join->children[domain_idx], true, true);
-	if (!generated_ref || !domain_ref) {
+	const idx_t generated_idx = left_generated ? 0 : 1;
+	auto generated_ref = left_generated ? std::move(left_generated) : std::move(right_generated);
+	auto domain_ref = GetGeneratedDomainRef(*join->children[1 - generated_idx]);
+	if (!domain_ref) {
 		return false;
 	}
 	if ((under_aggregate || under_evidence_side) && (domain_ref->has_selection || !domain_ref->filters.empty())) {

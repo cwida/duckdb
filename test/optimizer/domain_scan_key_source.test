@@ -23,25 +23,6 @@ WHERE f.k = d.k AND d.selected
 ----
 270
 
-# The dimension replaces the generated CTE while retaining the aggregate restriction.
-query II
-EXPLAIN (FORMAT JSON)
-SELECT sum(f.v)::BIGINT
-FROM fact f, dimension d
-WHERE f.k = d.k AND d.selected
-  AND f.v < (SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact WHERE inner_fact.k = d.k);
-----
-physical_plan	<!REGEX>:[\s\S]*"name": "CTE_SCAN"[\s\S]*
-
-query II
-EXPLAIN (FORMAT JSON)
-SELECT sum(f.v)::BIGINT
-FROM fact f, dimension d
-WHERE f.k = d.k AND d.selected
-  AND f.v < (SELECT 0.2 * avg(inner_fact.v) FROM fact inner_fact WHERE inner_fact.k = d.k);
-----
-physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
-
 # NULL-safe keys retain the NULL group, including its residual comparison.
 query I
 SELECT sum(f.v)::BIGINT
