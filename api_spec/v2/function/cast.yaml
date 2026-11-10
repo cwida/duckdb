@@ -31,7 +31,7 @@ enums:
         description: A regular cast. A conversion failure reported through the error slot aborts the query.
       CAST_MODE_TRY:
         value: 1
-        description: A "try" cast. Conversion failures should be written as NULLs into the output vector; an error reported through the slot is swallowed and the affected rows are left NULL.
+        description: A "try" cast. The callback writes NULL into the output vector for each row it cannot convert and reports the failure through the error slot. TRY_CAST discards the error and keeps the output as written; a caller that needs the conversion to succeed, such as SET on an option of the target type, raises it.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
@@ -313,9 +313,9 @@ functions:
     description: |
       Returns the mode the cast is being executed in.
 
-      In `CAST_MODE_TRY` a conversion failure should be written as a NULL into the output vector rather than
-      reported through the error slot, since the engine discards the error and keeps whatever the callback left
-      in the output.
+      In `CAST_MODE_TRY` the callback writes NULL into the output vector for each row it cannot convert and
+      reports the failure through the error slot. TRY_CAST discards the error and keeps the output as written; a
+      caller that needs the conversion to succeed, such as SET on an option of the target type, raises it.
     parameters:
       info:
         type: cast_function_exec_info

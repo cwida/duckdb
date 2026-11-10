@@ -461,4 +461,122 @@ TEST_CASE("V2 cast: null arguments and destroy null-safety", "[capi_v2][cast_fun
 	duckdb_v2_logical_type_destroy(&integer);
 }
 
+namespace {
+
+// Calls in which vector_set_null accepted the row at the row count, which is past the last row to write.
+idx_t set_null_past_count_accepted = 0;
+
+// VARCHAR -> TEMPERATURE writing its NULLs through vector_set_null. A NULL input row is set NULL. A malformed row
+// fails a normal cast; a try cast sets it NULL, reports the failure and carries on with the next row.
+void VarcharToTempSetNull(duckdb_v2_cast_function_exec_info_handle info, duckdb_v2_context_handle,
+                          duckdb_v2_error_info_handle *err) {
+	CastArgs args;
+	auto mode = DUCKDB_V2_CAST_MODE_NORMAL;
+	if (!ReadCastArgs(info, args, err) ||
+	    duckdb_v2_cast_function_exec_get_mode(info, &mode, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	if (duckdb_v2_vector_set_null(args.output, args.count, nullptr) == DUCKDB_V2_ERROR_NONE) {
+		set_null_past_count_accepted++;
+	}
+	void *raw = nullptr;
+	if (duckdb_v2_vector_get_data_mutable(args.output, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	const auto *in = static_cast<const duckdb_v2_bytes *>(args.view.data);
+	auto *out = static_cast<int32_t *>(raw);
+	for (idx_t i = 0; i < args.count; i++) {
+		auto idx = SelAt(args.view.sel, i);
+		if (!RowValid(args.view, idx)) {
+			if (duckdb_v2_vector_set_null(args.output, i, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			continue;
+		}
+		auto text = Convert(in[idx]);
+		int32_t parsed = 0;
+		if (ParseTemperature(text.data(), text.size(), parsed)) {
+			out[i] = parsed;
+			continue;
+		}
+		if (mode == DUCKDB_V2_CAST_MODE_TRY && duckdb_v2_vector_set_null(args.output, i, err) != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+		FailCast(err, DUCKDB_V2_ERROR_TYPE_CONVERSION, "Could not convert '" + std::string(text) + "' to TEMPERATURE");
+		if (mode != DUCKDB_V2_CAST_MODE_TRY) {
+			return;
+		}
+	}
+}
+
+// Registers TEMPERATURE, the VARCHAR -> TEMPERATURE cast above, reading(t TEMPERATURE) -> INTEGER, and the option
+// comfort of type TEMPERATURE.
+void RegisterSetNullCast(EnvFixture &fx) {
+	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	auto varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	auto temperature = RegisterTemperatureType(fx, integer);
+	auto cast = MakeCast(fx.conn, varchar, temperature, VarcharToTempSetNull);
+	REQUIRE(duckdb_v2_connection_register_cast_function(fx.conn, cast, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_cast_function_destroy(&cast);
+	RegisterReading(fx.conn, temperature, integer);
+	duckdb_v2_custom_option_handle option = nullptr;
+	std::string_view name = "comfort";
+	REQUIRE(duckdb_v2_custom_option_create(fx.factory, &option, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_custom_option_set_name(option, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_custom_option_set_type(option, temperature, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_custom_option(fx.conn, option, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_custom_option_destroy(&option);
+	duckdb_v2_logical_type_destroy(&temperature);
+	duckdb_v2_logical_type_destroy(&varchar);
+	duckdb_v2_logical_type_destroy(&integer);
+}
+
+} // namespace
+
+TEST_CASE("V2 cast: every output row accepts a NULL write", "[capi_v2][cast_function]") {
+	EnvFixture fx;
+	RegisterSetNullCast(fx);
+	set_null_past_count_accepted = 0;
+
+	// A NULL input row in a normal cast.
+	last_cast_mode = DUCKDB_V2_CAST_MODE_MAX_ENUM;
+	REQUIRE(CastQueryText(fx.conn, "SELECT string_agg(coalesce(CAST(CAST(s AS TEMPERATURE) AS INTEGER)::VARCHAR, "
+	                               "'NULL'), ',' ORDER BY i) FROM (VALUES (1, '1C'), (2, NULL), (3, '3C')) t(i, s)") ==
+	        "1,NULL,3");
+	REQUIRE(last_cast_mode == DUCKDB_V2_CAST_MODE_NORMAL);
+	// A try cast keeps the rows the callback converted and the NULLs it wrote, and discards the reported error.
+	last_cast_mode = DUCKDB_V2_CAST_MODE_MAX_ENUM;
+	REQUIRE(CastQueryText(fx.conn, "SELECT string_agg(coalesce(CAST(TRY_CAST(s AS TEMPERATURE) AS INTEGER)::VARCHAR, "
+	                               "'NULL'), ',' ORDER BY i) FROM (VALUES (1, '1C'), (2, 'not-a-temp'), (3, '3C'), "
+	                               "(4, NULL)) t(i, s)") == "1,NULL,3,NULL");
+	REQUIRE(last_cast_mode == DUCKDB_V2_CAST_MODE_TRY);
+	// A whole chunk of malformed rows after a whole chunk of good ones.
+	auto chunk = std::to_string(STANDARD_VECTOR_SIZE);
+	REQUIRE(CastQueryText(fx.conn, "SELECT count(TRY_CAST(s AS TEMPERATURE))::VARCHAR FROM (SELECT CASE WHEN i < " +
+	                                   chunk + " THEN i || 'C' ELSE 'not-a-temp' END AS s FROM range(2 * " + chunk +
+	                                   ") t(i))") == chunk);
+	// The element cast of a LIST cast runs over more rows than one chunk.
+	REQUIRE(CastQueryText(fx.conn, "SELECT count(e) || '/' || count(*) FROM (SELECT unnest(CAST(l AS TEMPERATURE[])) "
+	                               "AS e FROM (SELECT list(CASE WHEN i % 2 = 0 THEN i || 'C' END ORDER BY i) AS l "
+	                               "FROM range(3000) t(i)))") == "1500/3000");
+	REQUIRE(set_null_past_count_accepted == 0);
+
+	// A normal cast over a malformed row still fails.
+	last_cast_mode = DUCKDB_V2_CAST_MODE_MAX_ENUM;
+	REQUIRE(CastQueryError(fx.conn, "SELECT CAST(s AS TEMPERATURE) FROM (VALUES ('1C'), ('not-a-temp')) t(s)") ==
+	        DUCKDB_V2_ERROR_TYPE_CONVERSION);
+	REQUIRE(last_cast_mode == DUCKDB_V2_CAST_MODE_NORMAL);
+	// A string argument to a TEMPERATURE parameter is cast in normal mode.
+	REQUIRE(CastQueryText(fx.conn, "SELECT reading('12C')::VARCHAR") == "12");
+	last_cast_mode = DUCKDB_V2_CAST_MODE_MAX_ENUM;
+	REQUIRE(CastQueryError(fx.conn, "SELECT reading('not-a-temp')") == DUCKDB_V2_ERROR_TYPE_CONVERSION);
+	REQUIRE(last_cast_mode == DUCKDB_V2_CAST_MODE_NORMAL);
+	// SET casts the value in try mode and raises the failure the callback reported instead of storing its NULL.
+	REQUIRE(RunSql(fx.conn, "SET comfort = '21C'") == DUCKDB_V2_ERROR_NONE);
+	last_cast_mode = DUCKDB_V2_CAST_MODE_MAX_ENUM;
+	REQUIRE(RunSql(fx.conn, "SET comfort = 'not-a-temp'") != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(last_cast_mode == DUCKDB_V2_CAST_MODE_TRY);
+	REQUIRE(CastQueryText(fx.conn, "SELECT CAST(current_setting('comfort') AS INTEGER)::VARCHAR") == "21");
+}
+
 } // namespace test_capi_v2

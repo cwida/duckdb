@@ -813,8 +813,9 @@ typedef enum DUCKDB_V2_CAST_MODE {
 	DUCKDB_V2_CAST_MODE_NORMAL = 0,
 
 	/*!
-	 * A "try" cast. Conversion failures should be written as NULLs into the output vector; an error reported through
-	 * the slot is swallowed and the affected rows are left NULL.
+	 * A "try" cast. The callback writes NULL into the output vector for each row it cannot convert and reports the
+	 * failure through the error slot. TRY_CAST discards the error and keeps the output as written; a caller that needs
+	 * the conversion to succeed, such as SET on an option of the target type, raises it.
 	 */
 	DUCKDB_V2_CAST_MODE_TRY = 1,
 	DUCKDB_V2_CAST_MODE_MAX_ENUM = 0x7FFFFFFF,
@@ -1073,8 +1074,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_cast_function_exec_get_output(duckdb_v2_c
 /*!
  * Returns the mode the cast is being executed in.
  *
- * In `CAST_MODE_TRY` a conversion failure should be written as a NULL into the output vector rather than reported
- * through the error slot, since the engine discards the error and keeps whatever the callback left in the output.
+ * In `CAST_MODE_TRY` the callback writes NULL into the output vector for each row it cannot convert and reports the
+ * failure through the error slot. TRY_CAST discards the error and keeps the output as written; a caller that needs the
+ * conversion to succeed, such as SET on an option of the target type, raises it.
  *
  * history:
  * - unstable: v2.0.0

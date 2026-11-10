@@ -321,6 +321,11 @@ static auto CV2AggregateFinalize(Vector &state, AggregateFinalizeInputData &fina
 	args.result = &result;
 	args.result_offset = offset;
 
+	// Callers size the result after finalizing or never, and the streaming window finalizes into it row by row.
+	if (result.GetVectorType() == VectorType::FLAT_VECTOR && result.size() < offset + count) {
+		FlatVector::SetSize(result, offset + count);
+	}
+
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
 	info.finalize_cb(Convert(&args), &err_ptr);

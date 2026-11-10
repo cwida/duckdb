@@ -246,6 +246,9 @@ static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &resu
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
 
+	// The engine sizes the result only after the function returns, but the callback's row setters check against it.
+	FlatVector::SetSize(result, input.size());
+
 	CV2CallbackContext callback_context(state.GetContext());
 	info.exec_cb(Convert(&args), Convert(&callback_context), &err_ptr);
 

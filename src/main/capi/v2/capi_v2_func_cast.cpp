@@ -72,6 +72,9 @@ static auto CV2CastExec(Vector &input, Vector &output, idx_t count, CastParamete
 		context = parameters.local_state->Cast<CV2CastLocalState>().context.get();
 	}
 
+	// The engine sizes the output only after the cast returns, but the callback's row setters check against it.
+	FlatVector::SetSize(output, count);
+
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
 	bound_data.exec_cb(Convert(&args), Convert(context.get()), &err_ptr);
@@ -80,7 +83,7 @@ static auto CV2CastExec(Vector &input, Vector &output, idx_t count, CastParamete
 		return true;
 	}
 	if (is_try_cast) {
-		// The engine discards the message and keeps whatever the callback left in the output vector.
+		// TRY_CAST discards the message and keeps the output; a caller that needs the conversion raises it.
 		HandleCastError::AssignError(err.message, parameters);
 		return false;
 	}

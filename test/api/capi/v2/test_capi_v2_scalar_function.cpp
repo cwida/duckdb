@@ -1274,4 +1274,363 @@ TEST_CASE("V2 function docs: borrowed from the function, and argument validation
 	duckdb_v2_scalar_function_destroy(&function);
 }
 
+// ===========================================================================
+// Row setters on the result vector inside the exec callback
+// ===========================================================================
+
+namespace {
+
+enum class NullWrite { SET_NULL, SET_VALUE_NULL, SIZE_FIRST };
+
+// Writes x into the rows where x % 3 == 2 and NULL elsewhere. Where x % 3 == 1 the value is written before the NULL,
+// where x % 3 == 2 the NULL before the value, so both orders are covered.
+struct NullWriterState {
+	duckdb_v2_factory_handle factory = nullptr;
+	duckdb_v2_value_handle null_value = nullptr;
+	NullWrite mode = NullWrite::SET_NULL;
+	idx_t calls = 0;
+	idx_t size_mismatches = 0;
+	idx_t past_count_accepted = 0;
+};
+
+DUCKDB_V2_ERROR WriteNull(NullWriterState &state, duckdb_v2_vector_handle out, idx_t row,
+                          duckdb_v2_error_info_handle *err) {
+	if (state.mode == NullWrite::SET_VALUE_NULL) {
+		return duckdb_v2_vector_set_value(out, row, state.null_value, err);
+	}
+	return duckdb_v2_vector_set_null(out, row, err);
+}
+
+void NullWriterExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                    duckdb_v2_error_info_handle *err) {
+	void *user_data = nullptr;
+	duckdb_v2_vector_handle in = nullptr;
+	duckdb_v2_vector_handle out = nullptr;
+	idx_t count = 0;
+	if (duckdb_v2_scalar_function_exec_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_arg(info, 0, &in, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &out, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &state = *static_cast<NullWriterState *>(user_data);
+	state.calls++;
+	if (state.mode == NullWrite::SIZE_FIRST && duckdb_v2_vector_set_size(out, count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	idx_t size = 0;
+	if (duckdb_v2_vector_get_size(out, &size, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	if (size != count) {
+		state.size_mismatches++;
+	}
+	if (duckdb_v2_vector_set_null(out, count, nullptr) == DUCKDB_V2_ERROR_NONE) {
+		state.past_count_accepted++;
+	}
+	duckdb_v2_vector_view view {};
+	void *raw = nullptr;
+	if (duckdb_v2_vector_get_view(in, &view, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(out, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	const auto *src = static_cast<const int32_t *>(view.data);
+	auto *dst = static_cast<int32_t *>(raw);
+	for (idx_t row = 0; row < count; row++) {
+		auto x = src[SelAt(view.sel, row)];
+		if (x % 3 == 1) {
+			dst[row] = x;
+		}
+		if (WriteNull(state, out, row, err) != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+		if (x % 3 == 2) {
+			duckdb_v2_value_handle value = nullptr;
+			if (duckdb_v2_value_create_int(state.factory, x, &value, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			auto rc = duckdb_v2_vector_set_value(out, row, value, err);
+			duckdb_v2_value_destroy(&value);
+			if (rc != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+		}
+	}
+}
+
+// Even x: the row is NULL. Odd x: the first child entry is x and the second is NULL, written through the child
+// vector. For a STRUCT(a, b) the entries are the two fields; for an INTEGER[2] they are the two array elements.
+void NestedNullWriterExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                          duckdb_v2_error_info_handle *err) {
+	duckdb_v2_vector_handle in = nullptr;
+	duckdb_v2_vector_handle out = nullptr;
+	idx_t count = 0;
+	idx_t child_count = 0;
+	if (duckdb_v2_scalar_function_exec_get_arg(info, 0, &in, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &out, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_child_count(out, &child_count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	// The STRUCT has two fields, the ARRAY one element vector.
+	const bool is_array = child_count == 1;
+	duckdb_v2_vector_handle first = nullptr;
+	duckdb_v2_vector_handle second = nullptr;
+	if (duckdb_v2_vector_get_child(out, 0, &first, err) != DUCKDB_V2_ERROR_NONE ||
+	    (!is_array && duckdb_v2_vector_get_child(out, 1, &second, err) != DUCKDB_V2_ERROR_NONE)) {
+		return;
+	}
+	if (is_array) {
+		second = first;
+	}
+	duckdb_v2_vector_view view {};
+	void *raw = nullptr;
+	if (duckdb_v2_vector_get_view(in, &view, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(first, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	const auto *src = static_cast<const int32_t *>(view.data);
+	auto *values = static_cast<int32_t *>(raw);
+	const idx_t stride = is_array ? 2 : 1;
+	for (idx_t row = 0; row < count; row++) {
+		auto x = src[SelAt(view.sel, row)];
+		if (x % 2 == 0) {
+			if (duckdb_v2_vector_set_null(out, row, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			continue;
+		}
+		values[row * stride] = x;
+		if (duckdb_v2_vector_set_null(second, row * stride + stride - 1, err) != DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+	}
+}
+
+// Replaces the result with the constant 7 after the wrapper has sized it.
+void ConstantSevenExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                       duckdb_v2_error_info_handle *err) {
+	void *user_data = nullptr;
+	duckdb_v2_vector_handle out = nullptr;
+	idx_t count = 0;
+	if (duckdb_v2_scalar_function_exec_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &out, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_value_handle seven = nullptr;
+	if (duckdb_v2_value_create_int(static_cast<duckdb_v2_factory_handle>(user_data), 7, &seven, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	duckdb_v2_vector_make_constant(out, seven, count, err);
+	duckdb_v2_value_destroy(&seven);
+}
+
+// Run a query producing a single VARCHAR cell; a NULL cell reads as "NULL".
+std::string QueryCellText(duckdb_v2_connection_handle conn, std::string_view sql) {
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
+	auto chunk = StepChunk(result);
+	REQUIRE(chunk != nullptr);
+	duckdb_v2_vector_handle vec = nullptr;
+	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
+	duckdb_v2_vector_view view {};
+	duckdb_v2_vector_get_view(vec, &view, nullptr);
+	auto row = SelAt(view.sel, 0);
+	auto out = RowValid(view, row) ? std::string(Convert(static_cast<const duckdb_v2_bytes *>(view.data)[row]))
+	                               : std::string("NULL");
+	duckdb_v2_data_chunk_destroy(&chunk);
+	duckdb_v2_result_destroy(&result);
+	return out;
+}
+
+// Registers name(x INTEGER) -> result_type with the given exec callback and user data.
+void RegisterIntegerFunction(EnvFixture &fx, std::string_view name, duckdb_v2_logical_type_handle result_type,
+                             duckdb_v2_scalar_function_exec_callback_fn exec, void *user_data) {
+	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	auto function = MakeScalar(fx.conn, name);
+	auto sig = SigOf(function);
+	SigParam(sig, "x", integer);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, result_type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_opaque opaque = {user_data, nullptr, nullptr};
+	REQUIRE(duckdb_v2_scalar_function_set_user_data(function, &opaque, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, exec, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&integer);
+}
+
+} // namespace
+
+TEST_CASE("V2 scalar: every result row accepts a NULL write", "[capi_v2][scalar_function]") {
+	for (auto mode : {NullWrite::SET_NULL, NullWrite::SET_VALUE_NULL, NullWrite::SIZE_FIRST}) {
+		EnvFixture fx;
+		NullWriterState state;
+		state.mode = mode;
+		REQUIRE(duckdb_v2_instance_get_factory(fx.instance, &state.factory, nullptr) == DUCKDB_V2_ERROR_NONE);
+		auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+		REQUIRE(duckdb_v2_value_create_null(fx.factory, integer, &state.null_value, nullptr) == DUCKDB_V2_ERROR_NONE);
+		RegisterIntegerFunction(fx, "null_writer", integer, NullWriterExec, &state);
+		duckdb_v2_logical_type_destroy(&integer);
+
+		REQUIRE(QueryCellText(fx.conn, "SELECT string_agg(coalesce(null_writer(i::INTEGER)::VARCHAR, 'NULL'), ',' "
+		                               "ORDER BY i) FROM range(6) t(i)") == "NULL,NULL,2,NULL,NULL,5");
+		// Every argument constant: the function runs on one row and its result becomes a constant vector.
+		REQUIRE(QueryCellText(fx.conn, "SELECT null_writer(3)::VARCHAR") == "NULL");
+		REQUIRE(QueryCellText(fx.conn, "SELECT null_writer(5)::VARCHAR") == "5");
+		// Full chunks and a partial one.
+		int64_t expected_count = 0;
+		int64_t expected_sum = 0;
+		for (int64_t x = 0; x < 5000; x++) {
+			if (x % 3 == 2) {
+				expected_count++;
+				expected_sum += x;
+			}
+		}
+		REQUIRE(QueryCellText(fx.conn, "SELECT count(v) || '/' || sum(v) FROM (SELECT null_writer(i::INTEGER) AS v "
+		                               "FROM range(5000) t(i))") ==
+		        std::to_string(expected_count) + "/" + std::to_string(expected_sum));
+		REQUIRE(state.calls > 0);
+		// The callback reads the row count as the result vector's size, and the row at the row count stays refused.
+		REQUIRE(state.size_mismatches == 0);
+		REQUIRE(state.past_count_accepted == 0);
+		duckdb_v2_value_destroy(&state.null_value);
+	}
+}
+
+TEST_CASE("V2 scalar: nested results and their children accept NULL writes", "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	auto pair =
+	    MakeStructType(fx.factory, {"a", "b"}, {DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER});
+	auto array =
+	    MakeType(fx.factory, "array", nullptr,
+	             {MakeTypeValue(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER), MakeInt32Value(fx.factory, 2)});
+	RegisterIntegerFunction(fx, "struct_null_writer", pair, NestedNullWriterExec, nullptr);
+	RegisterIntegerFunction(fx, "array_null_writer", array, NestedNullWriterExec, nullptr);
+	duckdb_v2_logical_type_destroy(&array);
+	duckdb_v2_logical_type_destroy(&pair);
+
+	REQUIRE(QueryCellText(fx.conn,
+	                      "SELECT string_agg(coalesce(struct_null_writer(i::INTEGER)::VARCHAR, 'NULL'), ';' "
+	                      "ORDER BY i) FROM range(4) t(i)") == "NULL;{'a': 1, 'b': NULL};NULL;{'a': 3, 'b': NULL}");
+	REQUIRE(QueryCellText(fx.conn, "SELECT string_agg(coalesce(array_null_writer(i::INTEGER)::VARCHAR, 'NULL'), ';' "
+	                               "ORDER BY i) FROM range(4) t(i)") == "NULL;[1, NULL];NULL;[3, NULL]");
+}
+
+TEST_CASE("V2 scalar: a callback can replace the sized result", "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	duckdb_v2_factory_handle factory = nullptr;
+	REQUIRE(duckdb_v2_instance_get_factory(fx.instance, &factory, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	RegisterIntegerFunction(fx, "constant_seven", integer, ConstantSevenExec, factory);
+	duckdb_v2_logical_type_destroy(&integer);
+
+	REQUIRE(QueryCellText(fx.conn, "SELECT count(*) || '/' || sum(constant_seven(i::INTEGER)) FROM range(3000) t(i)") ==
+	        "3000/21000");
+}
+
+namespace {
+
+struct DigitNullWriterState {
+	idx_t min_count = 0;
+};
+
+// NULL for a NULL input or an odd leading digit, the digit otherwise. The dictionary path also runs the function
+// over the storage dictionary's NULL entry, whose payload must not be read.
+void DigitNullWriterExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                         duckdb_v2_error_info_handle *err) {
+	void *user_data = nullptr;
+	duckdb_v2_vector_handle in = nullptr;
+	duckdb_v2_vector_handle out = nullptr;
+	idx_t count = 0;
+	if (duckdb_v2_scalar_function_exec_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_arg(info, 0, &in, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &out, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &state = *static_cast<DigitNullWriterState *>(user_data);
+	if (state.min_count == 0 || count < state.min_count) {
+		state.min_count = count;
+	}
+	duckdb_v2_vector_view view {};
+	void *raw = nullptr;
+	if (duckdb_v2_vector_get_view(in, &view, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(out, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	const auto *src = static_cast<const duckdb_v2_bytes *>(view.data);
+	auto *dst = static_cast<int32_t *>(raw);
+	for (idx_t row = 0; row < count; row++) {
+		auto idx = SelAt(view.sel, row);
+		if (!RowValid(view, idx)) {
+			if (duckdb_v2_vector_set_null(out, row, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			continue;
+		}
+		auto digit = Convert(src[idx])[0] - '0';
+		if (digit % 2 == 1) {
+			if (duckdb_v2_vector_set_null(out, row, err) != DUCKDB_V2_ERROR_NONE) {
+				return;
+			}
+			continue;
+		}
+		dst[row] = digit;
+	}
+}
+
+} // namespace
+
+TEST_CASE("V2 scalar: NULL writes through the dictionary execution path", "[capi_v2][scalar_function]") {
+	EnvFixture fx;
+	DigitNullWriterState state;
+	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	auto varchar = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
+	auto function = MakeScalar(fx.conn, "digit_null_writer");
+	auto sig = SigOf(function);
+	SigParam(sig, "s", varchar);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_opaque user_data = {&state, nullptr, nullptr};
+	REQUIRE(duckdb_v2_scalar_function_set_user_data(function, &user_data, nullptr) == DUCKDB_V2_ERROR_NONE);
+	// Only a function that cannot throw runs once per dictionary entry.
+	REQUIRE(duckdb_v2_scalar_function_set_property(function, DUCKDB_V2_FUNCTION_PROPERTY_FALLIBILITY,
+	                                               DUCKDB_V2_FUNCTION_PROPERTY_FALLIBILITY_INFALLIBLE,
+	                                               nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, DigitNullWriterExec, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&varchar);
+	duckdb_v2_logical_type_destroy(&integer);
+
+	// A checkpointed low cardinality column scans as dictionary vectors that carry a storage dictionary id. Every
+	// scan chunk is full, so a call over fewer rows than a chunk is a call over the dictionary entries.
+	const idx_t rows = 4 * STANDARD_VECTOR_SIZE;
+	auto path = duckdb::TestCreatePath("v2_dictionary_null_writes.db");
+	duckdb::DeleteDatabase(path);
+	REQUIRE(RunSql(fx.conn, "ATTACH '" + path + "' AS dict_db") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "CREATE TABLE dict_db.digits AS SELECT (i % 10)::VARCHAR AS s FROM range(" +
+	                            std::to_string(rows) + ") t(i)") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "CHECKPOINT dict_db") == DUCKDB_V2_ERROR_NONE);
+	int64_t expected_count = 0;
+	int64_t expected_sum = 0;
+	for (idx_t i = 0; i < rows; i++) {
+		if (i % 10 % 2 == 0) {
+			expected_count++;
+			expected_sum += static_cast<int64_t>(i % 10);
+		}
+	}
+	REQUIRE(QueryCellText(fx.conn, "SELECT count(v) || '/' || sum(v) FROM (SELECT digit_null_writer(s) AS v "
+	                               "FROM dict_db.digits)") ==
+	        std::to_string(expected_count) + "/" + std::to_string(expected_sum));
+	// A vector size below the dictionary's size runs the dictionary in chunks as large as a scan chunk.
+	if (STANDARD_VECTOR_SIZE > 16) {
+		REQUIRE(state.min_count < STANDARD_VECTOR_SIZE);
+	}
+	REQUIRE(RunSql(fx.conn, "DETACH dict_db") == DUCKDB_V2_ERROR_NONE);
+	duckdb::DeleteDatabase(path);
+}
+
 } // namespace test_capi_v2
