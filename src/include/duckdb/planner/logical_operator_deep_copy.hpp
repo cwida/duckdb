@@ -28,7 +28,7 @@ class LogicalOperatorDeepCopy : public LogicalOperatorVisitor {
 public:
 	LogicalOperatorDeepCopy(Binder &binder, optional_ptr<bound_parameter_map_t> parameter_data);
 
-	unique_ptr<LogicalOperator> DeepCopy(unique_ptr<LogicalOperator> &op);
+	unique_ptr<LogicalOperator> DeepCopy(const unique_ptr<LogicalOperator> &op);
 
 private:
 	void VisitOperator(LogicalOperator &op) override;
