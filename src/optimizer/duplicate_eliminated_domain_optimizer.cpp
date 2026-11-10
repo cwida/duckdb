@@ -98,10 +98,15 @@ static optional_idx ReferenceIndex(const Expression &expression, LogicalOperator
 	return ReferenceIndex(expression, input);
 }
 
+static bool HasSimpleGrouping(const LogicalAggregate &aggregate) {
+	return !aggregate.groups.empty() && aggregate.grouping_functions.empty() &&
+	       (aggregate.grouping_sets.empty() ||
+	        (aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() == aggregate.groups.size()));
+}
+
 //! One full grouping set preserves the directly referenced key and its comparison semantics.
 static optional_idx GroupKeyIndex(LogicalAggregate &aggregate, idx_t key) {
-	if (aggregate.grouping_sets.size() != 1 || aggregate.grouping_sets[0].size() != aggregate.groups.size() ||
-	    key >= aggregate.groups.size() || !aggregate.grouping_functions.empty()) {
+	if (!HasSimpleGrouping(aggregate) || key >= aggregate.groups.size()) {
 		return {};
 	}
 	return ReferenceIndex(*aggregate.groups[key], *aggregate.children[0]);
@@ -113,12 +118,6 @@ static optional_idx GroupKeyIndex(LogicalAggregate &aggregate, idx_t key, const 
 		return {};
 	}
 	return index;
-}
-
-static bool HasSimpleGrouping(const LogicalAggregate &aggregate) {
-	return !aggregate.groups.empty() && aggregate.grouping_functions.empty() &&
-	       (aggregate.grouping_sets.empty() ||
-	        (aggregate.grouping_sets.size() == 1 && aggregate.grouping_sets[0].size() == aggregate.groups.size()));
 }
 
 static optional_ptr<LogicalAggregate> FindAggregate(LogicalOperator &op, idx_t key) {
@@ -135,9 +134,7 @@ static optional_ptr<LogicalAggregate> FindAggregate(LogicalOperator &op, idx_t k
 		return nullptr;
 	}
 	auto &aggregate = op.Cast<LogicalAggregate>();
-	if (aggregate.preserve_input_order || aggregate.groups.size() != 1 || aggregate.grouping_sets.size() != 1 ||
-	    aggregate.grouping_sets[0].size() != 1 || !aggregate.grouping_sets[0].count(ProjectionIndex(0)) ||
-	    !aggregate.grouping_functions.empty() ||
+	if (aggregate.preserve_input_order || aggregate.groups.size() != 1 || !HasSimpleGrouping(aggregate) ||
 	    !ReferenceIndex(*aggregate.groups[0], *aggregate.children[0]).IsValid()) {
 		return nullptr;
 	}
