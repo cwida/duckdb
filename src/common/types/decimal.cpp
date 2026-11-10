@@ -4,6 +4,7 @@
 #include "duckdb/common/types/cast_helpers.hpp"
 #include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
 
