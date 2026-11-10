@@ -4,6 +4,8 @@
 
 require parquet
 
+require 64bit
+
 # this test calibrates memory-fit boundaries (the prefetch span must not fit, the synchronous
 # reads must fit). The file is large enough that both sides have ample margin: with a 256MB row
 # group span, prefetching needs well over 450MB while the synchronous reads need less than 120MB.

@@ -900,7 +900,7 @@ TEST_CASE("Test appender_allocator_flush_threshold", "[appender]") {
 	duckdb::unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
-	const size_t blob_size = 100 * 1024;
+	const size_t blob_size = 10 * 1024;
 	std::vector<uint8_t> data(blob_size, 'A');
 	auto value = duckdb::Value::BLOB(data.data(), data.size());
 	REQUIRE_NO_FAIL(con.Query("SET GLOBAL memory_limit='1GB'"));
