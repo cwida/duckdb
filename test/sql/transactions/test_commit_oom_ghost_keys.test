@@ -44,7 +44,7 @@ SET memory_limit = '70MB';
 statement error
 COMMIT;
 ----
-Out of Memory
+Failed to commit
 
 # A checkpoint must not persist the partially inserted keys.
 statement error

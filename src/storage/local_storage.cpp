@@ -633,33 +633,35 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 
 	TableAppendState append_state;
 	table.AppendLock(transaction, append_state);
-	const bool merge_storage =
-	    storage.IsBulkAppend() || (append_state.row_start == 0 && storage.deleted_rows == 0 && !storage.WritesToDisk());
-	if (merge_storage) {
-		// bulk append (at least one full row group, no deletes): move over the storage directly.
-		// Appends to an empty table are also merged directly if the table cannot be written to
-		// disk (temporary / in-memory / read-only, e.g. WAL replay of a read-only attach) -
-		// there are no optimistically written blocks to manage, and merging avoids re-appending
-		// row by row.
-		// first flush any outstanding blocks
-		storage.FlushBlocks();
-	} else {
-		// check if we have written data
-		// if we have, we cannot merge to disk after all
-		// so we need to revert the data we have already written
-		// this happens when rows were deleted after a bulk append, or when the optimistic writer
-		// flushed a partial row group that does not qualify as a bulk append
-		storage.Rollback();
-	}
 	// until PushAppend, a returned error means the shared state was restored; anything thrown invalidates
 	ErrorData error;
 	try {
-		error = storage.AppendToIndexes(transaction, append_state);
-		if (!error.HasError()) {
-			if (merge_storage) {
-				// move over the row groups
+		if (storage.IsBulkAppend() ||
+		    (append_state.row_start == 0 && storage.deleted_rows == 0 && !storage.WritesToDisk())) {
+			// bulk append (at least one full row group, no deletes): move over the storage directly.
+			// Appends to an empty table are also merged directly if the table cannot be written to
+			// disk (temporary / in-memory / read-only, e.g. WAL replay of a read-only attach) -
+			// there are no optimistically written blocks to manage, and merging avoids re-appending
+			// row by row.
+			// first flush any outstanding blocks
+			storage.FlushBlocks();
+			// Append to the indexes.
+			error = storage.AppendToIndexes(transaction, append_state);
+			if (!error.HasError()) {
+				// finally move over the row groups
 				table.MergeStorage(storage.GetCollection(), commit_state);
-			} else {
+			}
+		} else {
+			// check if we have written data
+			// if we have, we cannot merge to disk after all
+			// so we need to revert the data we have already written
+			// this happens when rows were deleted after a bulk append, or when the optimistic writer
+			// flushed a partial row group that does not qualify as a bulk append
+			storage.Rollback();
+			// append to the indexes
+			error = storage.AppendToIndexes(transaction, append_state);
+			if (!error.HasError()) {
+				// after that is successful - append to the table
 				error = storage.AppendToTable(transaction, append_state);
 			}
 		}
