@@ -154,18 +154,6 @@ jobs:
           cp -p build/release/test/run build/release_arm64/test/run
           cp -p build/release/test/run build/release_amd64/test/run
 
-          for extension in build/release/extension/test/*.duckdb_extension; do
-            extension_name="$(basename "$extension")"
-            lipo -extract arm64 -output "build/release_arm64/extension/test/$extension_name" "$extension"
-            lipo -extract x86_64 -output "build/release_amd64/extension/test/$extension_name" "$extension"
-          done
-
-          for extension in build/release/test/extensions/*.duckdb_extension; do
-            extension_name="$(basename "$extension")"
-            lipo -extract arm64 -output "build/release_arm64/test/extensions/$extension_name" "$extension"
-            lipo -extract x86_64 -output "build/release_amd64/test/extensions/$extension_name" "$extension"
-          done
-
           for library in build/release/src/libduckdb*.dylib; do
             library_name="$(basename "$library")"
             if [[ -L "$library" ]]; then
@@ -215,6 +203,21 @@ jobs:
               -DDUCKDB_EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"
             cmake --build "$extension_build_dir" --target "${loadable_targets[@]}"
             cmake --build "$extension_build_dir" --target duckdb_local_extension_repo
+
+            for extension in build/release/extension/test/*.duckdb_extension build/release/test/extensions/*.duckdb_extension; do
+              extension_path="${extension#build/release/}"
+              extracted_extension="build/release_${dir_arch}/$extension_path"
+              lipo -extract "$lipo_arch" -output "$extracted_extension" "$extension"
+              footer_version="$(python3 -c 'import sys; f = open(sys.argv[1], "rb"); f.seek(-352, 2); print(f.read(32).rstrip(b"\0").decode())' "$extension")"
+              cmake \
+                -DABI_TYPE=CPP \
+                -DEXTENSION="$extracted_extension" \
+                -DPLATFORM_FILE="$extension_build_dir/duckdb_platform_out" \
+                -DVERSION_FIELD="$footer_version" \
+                -DEXTENSION_VERSION=default-version \
+                -DNULL_FILE="$PWD/scripts/null.txt" \
+                -P scripts/append_metadata.cmake
+            done
 
             for extension in "$extension_build_dir"/repository/*/*/*.duckdb_extension; do
               if [[ "$(lipo -archs "$extension")" != "$lipo_arch" ]]; then
