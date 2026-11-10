@@ -527,6 +527,7 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 	// the flat top-level layout and only resolves core and community extensions; user-provided repositories live in a
 	// per-repository subfolder, so their extensions require an explicit FROM to be found
 	bool expect_user_repo = false;
+	string user_repository_name;
 	ExtensionRepositoryType expected_repository_type = ExtensionRepositoryType::CORE;
 	if (!repository_name.empty()) {
 		if (ExtensionHelper::IsFullPath(extension)) {
@@ -537,6 +538,9 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		if (ExtensionRepositoryManager::TryGetRepository(db, fs, repository_name, repository)) {
 			expected_repository_type = repository.type;
 			expect_user_repo = repository.type == ExtensionRepositoryType::USER_PROVIDED;
+			if (expect_user_repo) {
+				user_repository_name = repository.name;
+			}
 		} else if (ExtensionRepository::TryGetKnownRepository(repository_name, repository)) {
 			expected_repository_type = repository.type;
 		} else {
@@ -576,7 +580,6 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		filename = address;
 #else
 
-		auto user_repository_name = expect_user_repo ? repository_name : string();
 		filename = FindInstalledExtension(db, fs, extension_name, user_repository_name);
 		// If not found in any directory, use the first directory for error reporting
 		if (filename.empty()) {
@@ -640,7 +643,7 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 	if (!repository_name.empty() && install_info) {
 		bool origin_matches = expect_user_repo
 		                          ? (install_info->repository_type == ExtensionRepositoryType::USER_PROVIDED &&
-		                             install_info->repository_name == repository_name)
+		                             install_info->repository_name == user_repository_name)
 		                          : (install_info->repository_type == expected_repository_type);
 		if (!origin_matches) {
 			error =
