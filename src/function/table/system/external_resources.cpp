@@ -4,6 +4,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension_entries.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
@@ -11,6 +12,8 @@
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+
+#include <algorithm>
 
 namespace duckdb {
 
@@ -55,6 +58,77 @@ static bool MatchesType(const string &type, const string &type_name) {
 	return type.empty() || type == type_name;
 }
 
+//===--------------------------------------------------------------------===//
+// Type name resolution
+//
+// A type asked for by name need not be spelled in full: the leading parts may be left out when the rest is
+// unique ('s3:bucket', or 'bucket', for 'aws:s3:bucket'), and the last part may be plural ('s3:buckets').
+// Resolved against every type this instance knows: the registered ones, the autoloadable ones, and the types
+// of the registered resources. One match wins; several are refused as ambiguous; none keeps the name as
+// written, so the caller's own error names what was asked.
+//===--------------------------------------------------------------------===//
+
+static vector<string> KnownTypeNames(ClientContext &context) {
+	vector<string> names;
+	auto add = [&](const string &name) {
+		if (std::find(names.begin(), names.end(), name) == names.end()) {
+			names.push_back(name);
+		}
+	};
+	for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
+		add(type.name);
+	}
+	for (auto &entry : EXTENSION_EXTERNAL_RESOURCE_TYPES) {
+		add(entry.name);
+	}
+	for (auto &instance : ExternalResourcesManager::Get(context).List()) {
+		add(instance.type);
+	}
+	return names;
+}
+
+//! Whether `known` is what `asked` means: the same name, or a ':'-delimited tail of it, each also with a plural 's'.
+static bool TypeNameMatches(const string &known, const string &asked) {
+	auto singular = asked;
+	if (singular.size() > 1 && singular.back() == 's' && singular[singular.size() - 2] != 's') {
+		singular.pop_back();
+	}
+	for (auto &candidate : {asked, singular}) {
+		if (known == candidate) {
+			return true;
+		}
+		if (known.size() > candidate.size() && StringUtil::EndsWith(known, ":" + candidate)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static string ResolveTypeName(ClientContext &context, const string &asked) {
+	if (asked.empty()) {
+		return asked;
+	}
+	auto known = KnownTypeNames(context);
+	if (std::find(known.begin(), known.end(), asked) != known.end()) {
+		return asked;
+	}
+	vector<string> matches;
+	for (auto &name : known) {
+		if (TypeNameMatches(name, asked)) {
+			matches.push_back(name);
+		}
+	}
+	if (matches.size() == 1) {
+		return matches[0];
+	}
+	if (matches.size() > 1) {
+		throw InvalidInputException(
+		    "duckdb_external_resources: resource type \"%s\" is ambiguous, it could be any of %s", asked,
+		    StringUtil::Join(matches, ", "));
+	}
+	return asked;
+}
+
 //! The registry scan restricted to `type`, as SQL.
 static string RegistryScan(const string &type) {
 	if (type.empty()) {
@@ -77,6 +151,7 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	if (!params.discover) {
 		return nullptr; // the registry scan below
 	}
+	params.type = ResolveTypeName(context, params.type);
 	vector<string> branches;
 	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "
 	                   "attached_db_type, handle FROM " +
@@ -123,7 +198,9 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 			    "%s extension, which could not be autoloaded. Try: INSTALL AND LOAD %s;",
 			    params.type, extension, extension);
 		}
-		throw InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", params.type);
+		throw InvalidInputException(
+		    "duckdb_external_resources: unknown resource type \"%s\"%s", params.type,
+		    StringUtil::CandidatesErrorMessage(KnownTypeNames(context), params.type, "Candidate types"));
 	}
 	Parser parser(context);
 	parser.ParseQuery(StringUtil::Join(branches, " UNION ALL "));
@@ -143,7 +220,7 @@ struct ExternalResourcesGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, TableFunctionBindInput &input,
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ExternalResourcesBindData>();
-	result->type = ReadParameters(input).type;
+	result->type = ResolveTypeName(context, ReadParameters(input).type);
 
 	names.emplace_back("name");
 	return_types.emplace_back(LogicalType::VARCHAR);

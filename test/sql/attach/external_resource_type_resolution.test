@@ -1,0 +1,85 @@
+# name: test/sql/attach/external_resource_type_resolution.test
+# description: a resource type asked for by a unique tail of its name, or in the plural, resolves to the full name
+# group: [attach]
+
+statement ok
+CREATE MACRO list_bucket(opts) AS TABLE
+    SELECT MAP {'id': 'b1'} AS handle, 'bkt' AS name, 'b-ref' AS reference, 'running' AS state;
+
+statement ok
+CREATE MACRO list_table_bucket(opts) AS TABLE
+    SELECT MAP {'id': 't1'} AS handle, 'tbkt' AS name, 't-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('ns:store:bucket', kind := 'storage', create_function := 'noop_create', list_function := 'list_bucket');
+
+statement ok
+CALL register_external_resource_type('ns:store:table-bucket', kind := 'catalog', create_function := 'noop_create', list_function := 'list_table_bucket');
+
+statement ok
+CALL register_external_resource_type('alt:store:bucket', kind := 'storage', create_function := 'noop_create');
+
+# The full name, as before.
+query TT
+SELECT name, type FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'ns:store:table-bucket');
+----
+tbkt	ns:store:table-bucket
+
+# A tail of the name, when unique; the plural of the last part too.
+query TT
+SELECT name, type FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'store:table-bucket');
+----
+tbkt	ns:store:table-bucket
+
+query TT
+SELECT name, type FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'store:table-buckets');
+----
+tbkt	ns:store:table-bucket
+
+# The autoloadable types count as known too, so a tail they share with a registered one is ambiguous.
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'table-buckets';
+----
+<REGEX>:.*"table-buckets" is ambiguous, it could be any of ns:store:table-bucket, aws:s3tables:table-bucket.*
+
+query TT
+SELECT name, type FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'ns:store:buckets');
+----
+bkt	ns:store:bucket
+
+# A tail two types share is refused, naming both.
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'store:bucket';
+----
+<REGEX>:.*"store:bucket" is ambiguous, it could be any of ns:store:bucket, alt:store:bucket.*
+
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'buckets';
+----
+<REGEX>:.*"buckets" is ambiguous.*
+
+# Nothing matches: the type as asked, with the nearest known names.
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'store:bukket';
+----
+<REGEX>:.*unknown resource type "store:bukket".*Candidate types.*store:bucket.*
+
+# The registry listing resolves the same way.
+statement ok
+CALL register_external_resource('ns:store:table-bucket', 'mine', MAP {'id': 'x'});
+
+query TT
+SELECT name, type FROM (SHOW EXTERNAL RESOURCES WITH TYPE 'store:table-buckets');
+----
+mine	ns:store:table-bucket
+
+query I
+SELECT count(*) FROM duckdb_external_resources(type := 'store:table-bucket');
+----
+1
+
+# A tail is never the whole of another name's part: 'bucket' does not match 'table-bucket'.
+query TT
+SELECT name, type FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'ns:store:bucket');
+----
+bkt	ns:store:bucket
