@@ -94,6 +94,7 @@
         "test/sql/alter/alter_type/alter_type_distinct_stats.test",
         "test/issues/general/test_24049.test",
         "test/optimizer/joins/fkpk_composite_key_ce.test",
+        "test/optimizer/joins/one_sided_distinct_count_domain.test",
         "test/optimizer/partitioned_execution_coverage.test",
         "test/optimizer/projection_placement.test",
         "test/optimizer/statistics/statistics_count_not_null_pruning.test",

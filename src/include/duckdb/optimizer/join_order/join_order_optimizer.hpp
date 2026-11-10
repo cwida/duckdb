@@ -16,6 +16,8 @@
 
 namespace duckdb {
 
+class JoinOrderSourceStats;
+
 class JoinOrderOptimizer {
 public:
 	explicit JoinOrderOptimizer(ClientContext &context);
@@ -36,6 +38,7 @@ public:
 	//! Adds/gets delim scan stats
 	void AddDelimScanStats(RelationStats &stats);
 	RelationStats GetDelimScanStats();
+	const shared_ptr<const JoinOrderSourceStats> &GetSourceStats() const;
 
 private:
 	ClientContext &context;
@@ -58,6 +61,7 @@ private:
 	//! Stats of Delim Scans of the Delim Join that is currently being optimized
 	optional_ptr<RelationStats> delim_scan_stats;
 	idx_t depth;
+	shared_ptr<const JoinOrderSourceStats> source_stats;
 
 public:
 	unordered_set<TableIndex> recursive_cte_indexes;
