@@ -136,6 +136,7 @@ public:
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
 	TransactionContext transaction;
+
 public:
 	//! Connect this client to a remote-style AttachedDatabase. Subsequent non-control SQL routes via
 	//! Catalog::GetConnectFunctionName. Use DisconnectFromCatalog() to revert to LOCAL.
