@@ -118,6 +118,8 @@ struct CopyOption {
 
 	LogicalType type;
 	CopyOptionMode mode;
+	//! Whether the option receives credential material that must not appear in generated SQL
+	bool sensitive = false;
 };
 
 struct CopyOptionsInput {

@@ -93,6 +93,76 @@ LogicalPlanVerificationIssue BoundExpressionSQLExportState::UnsupportedFeature(c
 }
 
 LogicalPlanVerificationIssue
+BoundExpressionSQLExportState::SensitiveParameterIssue(const LogicalPlanVerificationPath &path,
+                                                       const Identifier &function_name, const Identifier &parameter) {
+	auto issue = UnsupportedFeature(
+	    path, "sensitive_parameter",
+	    StringUtil::Format("The invocation of \"%s\" passes a value to the sensitive parameter \"%s\", "
+	                       "which must not appear in generated SQL",
+	                       function_name.GetIdentifierName(), parameter.GetIdentifierName()));
+	issue.facts.emplace_back("function", Value(function_name.GetIdentifierName()));
+	issue.facts.emplace_back("parameter", Value(parameter.GetIdentifierName()));
+	return issue;
+}
+
+LogicalPlanVerificationIssue
+BoundExpressionSQLExportState::StateSensitivityIssue(const LogicalPlanVerificationPath &path,
+                                                     const Identifier &function_name, const Identifier &parameter) {
+	if (!parameter.empty()) {
+		return SensitiveParameterIssue(path, function_name, parameter);
+	}
+	auto issue = UnsupportedFeature(
+	    path, "sensitive_parameter",
+	    StringUtil::Format("The exported state of aggregate \"%s\" retains constant parameters whose "
+	                       "declarations cannot be resolved",
+	                       function_name.GetIdentifierName()));
+	issue.facts.emplace_back("function", Value(function_name.GetIdentifierName()));
+	return issue;
+}
+
+bool BoundExpressionSQLExportState::ValueRendersSensitiveState(ClientContext &client, const Value &value,
+                                                               Identifier &function_name, Identifier &parameter) {
+	auto state_check = [&](const LogicalType &child) {
+		return child.IsAggregateState() &&
+		       ExportAggregateFunction::StateRendersSensitiveParameter(client, child, function_name, parameter);
+	};
+	// states reachable through the value's own type
+	if (TypeVisitor::Contains(value.type(), state_check)) {
+		return true;
+	}
+	if (value.IsNull()) {
+		return false;
+	}
+	// a TYPE value renders its payload type, which can itself describe a state
+	if (value.type().id() == LogicalTypeId::TYPE) {
+		return TypeVisitor::Contains(TypeValue::GetType(value), state_check);
+	}
+	// nested TYPE values hide behind containers
+	if (!TypeVisitor::Contains(value.type(),
+	                           [](const LogicalType &child) { return child.id() == LogicalTypeId::TYPE; })) {
+		return false;
+	}
+	auto check_children = [&](const vector<Value> &children) {
+		for (auto &child : children) {
+			if (ValueRendersSensitiveState(client, child, function_name, parameter)) {
+				return true;
+			}
+		}
+		return false;
+	};
+	switch (value.type().InternalType()) {
+	case PhysicalType::LIST:
+		return check_children(ListValue::GetChildren(value));
+	case PhysicalType::ARRAY:
+		return check_children(ArrayValue::GetChildren(value));
+	case PhysicalType::STRUCT:
+		return check_children(StructValue::GetChildren(value));
+	default:
+		return false;
+	}
+}
+
+LogicalPlanVerificationIssue
 BoundExpressionSQLExportState::UnsupportedFunction(const LogicalPlanVerificationPath &path,
                                                    LogicalPlanVerificationFunctionIdentity identity, string message) {
 	return SQLExportHelpers::MakeIssue(
@@ -391,6 +461,17 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportCast(const B
 		return child;
 	}
 	if (expression.GetReturnType().IsAggregateState()) {
+		auto state_client = context.client_context;
+		if (state_client) {
+			// the target state type renders its retained constant parameters
+			Identifier state_function;
+			Identifier state_parameter;
+			if (ExportAggregateFunction::StateRendersSensitiveParameter(*state_client, expression.GetReturnType(),
+			                                                            state_function, state_parameter)) {
+				return BoundExpressionSQLExportResult::Failure(
+				    {StateSensitivityIssue(path, state_function, state_parameter)});
+			}
+		}
 		auto storage_type = expression.GetReturnType().WithAlias("").WithExtensionInfo(nullptr);
 		auto &source_type = expression.GetChildren()[0]->GetReturnType();
 		if (BoundCastExpression::IsTryCast(expression) || !context.client_context ||

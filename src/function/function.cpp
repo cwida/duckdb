@@ -39,6 +39,14 @@ TypedKwargs &TypedKwargs::Alias(Identifier alias) {
 	return *this;
 }
 
+TypedKwargs &TypedKwargs::Sensitive() {
+	if (options.empty()) {
+		throw InternalException("TypedKwargs::Sensitive called before any option was added");
+	}
+	options.back().sensitive = true;
+	return *this;
+}
+
 TypedKwargs TypedKwargs::Merge(const TypedKwargs &other) const {
 	auto result = *this;
 	result.options.insert(result.options.end(), other.options.begin(), other.options.end());

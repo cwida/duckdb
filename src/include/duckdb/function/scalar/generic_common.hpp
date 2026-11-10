@@ -33,6 +33,10 @@ struct ExportAggregateFunction {
 	static unique_ptr<BoundAggregateExpression> Bind(unique_ptr<BoundAggregateExpression> child_aggregate);
 	static void SetStateExport(BoundAggregateExpression &aggregate, LogicalType state_layout);
 	static unique_ptr<ParsedExpression> StateToSQL(const LogicalType &type, unique_ptr<ParsedExpression> value);
+	//! Whether StateToSQL would render a constant bound to a sensitive parameter of the underlying aggregate.
+	//! On a refusal, sets the function and parameter names to report.
+	static bool StateRendersSensitiveParameter(ClientContext &context, const LogicalType &type,
+	                                           Identifier &function_name, Identifier &parameter);
 	//! The per-key (column, modifiers) of the AGGREGATE_STATE type of an ordered aggregate
 	static void GetSortedStateOrders(const LogicalType &state_type, vector<SortedAggregateStateOrder> &orders);
 };

@@ -8,6 +8,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/function/window_function.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
+#include "duckdb/planner/sql_export/sql_export_sensitive_parameters.hpp"
 
 namespace duckdb {
 
@@ -164,6 +165,15 @@ BoundExpressionSQLExportState::ExportWindowFunction(const BoundWindowExpression 
 	if ((expression.StartExpr() && !frame.start) || (expression.EndExpr() && !frame.end)) {
 		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFeature(
 		    path, "window_range_offset", "The RANGE endpoint does not retain its SQL offset and ordering operand")});
+	}
+	for (idx_t i = 0; i < expression.GetChildren().size(); i++) {
+		auto refused = SQLExportSensitiveParameters::RefuseBoundArgument(
+		    context.client_context, definition->GetSignature(), function.GetPositionalArgumentCount(),
+		    function.GetNamedArguments(), i, *expression.GetChildren()[i]);
+		if (refused) {
+			return BoundExpressionSQLExportResult::Failure(
+			    {SensitiveParameterIssue(path, definition->GetName(), *refused)});
+		}
 	}
 
 	vector<ChildExpression> source_children;

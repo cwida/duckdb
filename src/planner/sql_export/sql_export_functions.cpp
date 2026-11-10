@@ -11,6 +11,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_lambda_expression.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
+#include "duckdb/planner/sql_export/sql_export_sensitive_parameters.hpp"
 
 namespace duckdb {
 
@@ -200,9 +201,27 @@ BoundExpressionSQLExportState::ExportScalarFunction(const BoundFunctionExpressio
 			argument_names[positional_count + i] = function.GetNamedArguments()[i];
 		}
 	}
+	if (definition->HasUnbindCallback()) {
+		// binding may have changed the child layout and the callback reconstructs from bind data,
+		// so argument provenance cannot be established
+		auto sensitive = SQLExportSensitiveParameters::FirstSensitiveParameter(definition->GetSignature());
+		if (sensitive) {
+			return BoundExpressionSQLExportResult::Failure(
+			    {SensitiveParameterIssue(path, definition->GetName(), *sensitive)});
+		}
+	}
 	vector<unique_ptr<ParsedExpression>> children;
 	auto sql_argument_count =
 	    lambda_index.IsValid() ? function.GetLogicalArguments().size() : expression.GetChildren().size();
+	for (idx_t child_index = 0; child_index < sql_argument_count; child_index++) {
+		auto refused = SQLExportSensitiveParameters::RefuseBoundArgument(
+		    context.client_context, definition->GetSignature(), function.GetPositionalArgumentCount(),
+		    function.GetNamedArguments(), child_index, *expression.GetChildren()[child_index]);
+		if (refused) {
+			return BoundExpressionSQLExportResult::Failure(
+			    {SensitiveParameterIssue(path, definition->GetName(), *refused)});
+		}
+	}
 	for (idx_t child_index = 0; child_index < sql_argument_count; child_index++) {
 		auto child =
 		    lambda_index == child_index
@@ -273,6 +292,24 @@ BoundExpressionSQLExportState::BuildAggregateCall(const BoundAggregateExpression
 	                                         definition->GetProperties().RequiresExpressionNames())) {
 		return BoundAggregateSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFunction(
 		    path, std::move(identity), "The bound aggregate requires argument aliases that are not retained")});
+	}
+	if (definition->HasUnbindCallback()) {
+		// binding may have changed the child layout and the callback reconstructs from bind data,
+		// so argument provenance cannot be established
+		auto sensitive = SQLExportSensitiveParameters::FirstSensitiveParameter(definition->GetSignature());
+		if (sensitive) {
+			return BoundAggregateSQLExportResult::Failure(
+			    {SensitiveParameterIssue(path, definition->GetName(), *sensitive)});
+		}
+	}
+	for (idx_t child_index = 0; child_index < expression.GetChildren().size(); child_index++) {
+		auto refused = SQLExportSensitiveParameters::RefuseBoundArgument(
+		    context.client_context, definition->GetSignature(), function.GetPositionalArgumentCount(),
+		    function.GetNamedArguments(), child_index, *expression.GetChildren()[child_index]);
+		if (refused) {
+			return BoundAggregateSQLExportResult::Failure(
+			    {SensitiveParameterIssue(path, definition->GetName(), *refused)});
+		}
 	}
 	vector<ChildExpression> source_children;
 	for (idx_t child_index = 0; child_index < expression.GetChildren().size(); child_index++) {

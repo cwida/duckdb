@@ -179,7 +179,7 @@ LogicalPlanSQLExportResult LogicalRecursiveCTE::ExportSQLDefinition(LogicalPlanS
 		auto empty = export_context.CreateNamedSource(name, fields.GetValue(), cte.ref_recurring);
 		empty->select_list.clear();
 		for (auto &type : cte.internal_types) {
-			auto value = LogicalPlanSQLExportHelpers::ExportTypedNull(type, path);
+			auto value = LogicalPlanSQLExportHelpers::ExportTypedNull(export_context.GetClientContext(), type, path);
 			if (value.HasError()) {
 				return LogicalPlanSQLExportResult::Failure(value);
 			}

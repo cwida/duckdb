@@ -93,6 +93,10 @@ LogicalPlanSQLExportResult LogicalGet::ExportSQLSource(LogicalPlanSQLExportConte
 	auto source_sql = LogicalPlanSQLExportHelpers::ReconstructSQLSource(
 	    export_context.GetClientContext(), get, std::move(input), relation_alias, bool(ordinality));
 	if (!source_sql.query) {
+		if (source_sql.issue) {
+			source_sql.issue->path = path;
+			return LogicalPlanSQLExportResult::Failure({std::move(*source_sql.issue)});
+		}
 		auto guard = source_sql.unsupported_reason.empty() ? "to_sql_callback_declined" : source_sql.unsupported_reason;
 		return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::UnsupportedSource(
 		    path, LogicalPlanSQLExportHelpers::LogicalSourceIdentity(get), std::move(guard))});

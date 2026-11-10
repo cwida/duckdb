@@ -397,6 +397,8 @@ struct TableFunctionToSQLResult {
 
 //! Reconstruct the unprojected source; the exporter applies scan projections, predicates and ordinality.
 //! Return an owned table reference without executing the source, or a reason why reconstruction is unsupported.
+//! The result renders as returned - a callback for a function with sensitive parameters is responsible for
+//! not reconstructing their values, the exporter only guards its own generic reconstruction.
 typedef TableFunctionToSQLResult (*table_function_to_sql_t)(ClientContext &context, const LogicalGet &get);
 
 typedef void (*table_function_serialize_t)(Serializer &serializer, const optional_ptr<FunctionData> bind_data,

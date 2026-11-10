@@ -1,6 +1,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/filename_pattern.hpp"
 #include "duckdb/common/sql_identifier.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/query_node/copy_query_node.hpp"
@@ -99,6 +100,25 @@ LogicalPlanSQLExportResult SQLExportStatementHelpers::ExportCopyToNode(LogicalCo
 	info->is_format_auto_detected = false;
 	info->file_path = op.file_path;
 	// format-specific options stay in the bound info, sink options re-emit from the operator's resolved state
+	identifier_map_t<CopyOption> registered_options;
+	if (op.function.copy_options) {
+		CopyOptionsInput options_input(registered_options);
+		op.function.copy_options(context.GetClientContext(), options_input);
+	}
+	auto registered_sensitive = [&](const Identifier &name) {
+		auto registered = registered_options.find(name);
+		return registered != registered_options.end() && registered->second.sensitive;
+	};
+	auto sensitive_option_failure = [&](const Identifier &name) {
+		auto issue = UnsupportedStatement(
+		    path, "sensitive_parameter",
+		    StringUtil::Format("The COPY to format \"%s\" passes a value to the sensitive option \"%s\", "
+		                       "which must not appear in generated SQL",
+		                       op.function.name.GetIdentifierName(), name.GetIdentifierName()));
+		issue.facts.emplace_back("function", Value(op.function.name.GetIdentifierName()));
+		issue.facts.emplace_back("parameter", Value(name.GetIdentifierName()));
+		return LogicalPlanSQLExportResult::Failure({std::move(issue)});
+	};
 	for (auto &entry : op.copy_info->options) {
 		info->options[entry.first] = entry.second;
 	}
@@ -202,6 +222,25 @@ LogicalPlanSQLExportResult SQLExportStatementHelpers::ExportCopyToNode(LogicalCo
 	}
 	if (CopyFunctionReturnsColumnTypes(op.return_type)) {
 		set_option("return_column_types", Value::BOOLEAN(true));
+	}
+	for (auto &entry : info->options) {
+		// a value-less option renders as a bare name, there is no value to protect
+		if (entry.second.empty()) {
+			continue;
+		}
+		if (registered_sensitive(entry.first)) {
+			return sensitive_option_failure(entry.first);
+		}
+	}
+	// generic binding also accepts these sink options under alias names, which disappear from the retained
+	// options and re-render under the canonical name - a sensitive registration of the alias must still refuse
+	const pair<const char *, const char *> option_aliases[] = {{"row_group_size", "batch_size"},
+	                                                           {"row_group_size_bytes", "batch_size_bytes"},
+	                                                           {"row_groups_per_file", "batches_per_file"}};
+	for (auto &alias : option_aliases) {
+		if (info->options.count(Identifier(alias.first)) && registered_sensitive(Identifier(alias.second))) {
+			return sensitive_option_failure(Identifier(alias.second));
+		}
 	}
 	info->select_statement = std::move(child.GetValue().query);
 	auto node = make_uniq<CopyQueryNode>(std::move(info));

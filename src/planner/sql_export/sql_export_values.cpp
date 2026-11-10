@@ -242,8 +242,10 @@ LogicalPlanSQLExportResult LogicalColumnDataGet::ToSQL(LogicalPlanSQLExportConte
 				exported_row.push_back(make_uniq<ConstantExpression>(Literal::Null()));
 			} else {
 				for (idx_t column = 0; column < chunk.ColumnCount(); column++) {
-					auto value =
-					    BoundExpressionSQLExporter::Export(BoundConstantExpression(chunk.GetValue(column, row)), {});
+					BoundExpressionSQLExportContext expression_context;
+					expression_context.client_context = &export_context.GetClientContext();
+					auto value = BoundExpressionSQLExporter::Export(
+					    BoundConstantExpression(chunk.GetValue(column, row)), expression_context);
 					if (value.HasError()) {
 						return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
 						    path, "chunk_value", "The materialized value cannot be represented in SQL")});
@@ -423,8 +425,8 @@ LogicalPlanSQLExportResult LogicalPlanSQLExportContext::ExportRow(unique_ptr<Sel
 	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields)});
 }
 
-static LogicalPlanSQLExportResult ExportConstantSource(LogicalOperator &op, bool has_rows,
-                                                       const LogicalPlanVerificationPath &path) {
+static LogicalPlanSQLExportResult ExportConstantSource(LogicalOperator &op, LogicalPlanSQLExportContext &context,
+                                                       bool has_rows, const LogicalPlanVerificationPath &path) {
 	D_ASSERT(op.children.empty() && op.expressions.empty());
 	auto fields = LogicalPlanSQLExportHelpers::CreateFields(op, path);
 	if (fields.HasError()) {
@@ -433,7 +435,8 @@ static LogicalPlanSQLExportResult ExportConstantSource(LogicalOperator &op, bool
 	auto select = make_uniq<SelectNode>();
 	select->from_table = make_uniq<EmptyTableRef>();
 	for (idx_t i = 0; i < fields.GetValue().size(); i++) {
-		auto expression = LogicalPlanSQLExportHelpers::ExportTypedNull(fields.GetValue()[i].type, path);
+		auto expression =
+		    LogicalPlanSQLExportHelpers::ExportTypedNull(context.GetClientContext(), fields.GetValue()[i].type, path);
 		if (expression.HasError()) {
 			return LogicalPlanSQLExportResult::Failure(expression);
 		}
@@ -448,12 +451,12 @@ static LogicalPlanSQLExportResult ExportConstantSource(LogicalOperator &op, bool
 
 LogicalPlanVerificationResult<LogicalPlanSQLExportRelation>
 LogicalDummyScan::ToSQL(LogicalPlanSQLExportContext &context, const LogicalPlanVerificationPath &path) {
-	return ExportConstantSource(*this, true, path);
+	return ExportConstantSource(*this, context, true, path);
 }
 
 LogicalPlanVerificationResult<LogicalPlanSQLExportRelation>
 LogicalEmptyResult::ToSQL(LogicalPlanSQLExportContext &context, const LogicalPlanVerificationPath &path) {
-	return ExportConstantSource(*this, false, path);
+	return ExportConstantSource(*this, context, false, path);
 }
 
 } // namespace duckdb

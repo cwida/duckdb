@@ -1,4 +1,5 @@
 #include "duckdb/planner/sql_export/logical_plan_sql_exporter_internal.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
@@ -18,6 +19,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/bound_expression_sql_exporter.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/sql_export/sql_export_sensitive_parameters.hpp"
 #include "duckdb/planner/sql_export_helpers.hpp"
 
 namespace duckdb {
@@ -177,6 +179,22 @@ static unique_ptr<ParsedExpression> TableFunctionColumn(const LogicalGet &get, c
 	return std::move(column);
 }
 
+//! Refuse rendering the invocation - the value of a sensitive parameter must not appear in generated SQL
+static SQLSourceQueryResult SensitiveParameterSource(const LogicalGet &get, const Identifier &parameter_name) {
+	auto function_name = get.function.GetName().GetIdentifierName();
+	auto issue = LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+	    LogicalPlanVerificationPath(), "sensitive_parameter",
+	    StringUtil::Format("The invocation of \"%s\" passes a value to the sensitive parameter \"%s\", "
+	                       "which must not appear in generated SQL",
+	                       function_name, parameter_name.GetIdentifierName()));
+	issue.facts.emplace_back("function", Value(function_name));
+	issue.facts.emplace_back("parameter", Value(parameter_name.GetIdentifierName()));
+	SQLSourceQueryResult result;
+	result.unsupported_reason = "sensitive_parameter";
+	result.issue = std::move(issue);
+	return result;
+}
+
 SQLSourceQueryResult LogicalPlanSQLExportHelpers::ReconstructSQLSource(ClientContext &context, const LogicalGet &get,
                                                                        unique_ptr<TableRef> input,
                                                                        const Identifier &relation_alias,
@@ -217,12 +235,25 @@ SQLSourceQueryResult LogicalPlanSQLExportHelpers::ReconstructSQLSource(ClientCon
 				return {nullptr, "input_columns"};
 			}
 			for (idx_t i = 0; i < get.input_table_types.size(); i++) {
+				// the argument is computed by the exported input, its value renders through that subquery
+				auto refused =
+				    SQLExportSensitiveParameters::RefusePositional(context, get.function.GetSignature(), i, nullptr);
+				if (refused) {
+					return SensitiveParameterSource(get, *refused);
+				}
 				parameters.push_back(make_uniq<ColumnRefExpression>(input->column_name_alias[i], input->alias));
 			}
 		} else {
 			bool consumed_input = false;
 			for (idx_t i = 0; i < get.parameters.size(); i++) {
 				if (i < signature.size() && signature[i] == LogicalType::TABLE) {
+					// the TABLE argument renders as the reconstructed input subquery, the retained Value
+					// is only its placeholder
+					auto table_refused = SQLExportSensitiveParameters::RefusePositional(
+					    context, get.function.GetSignature(), i, nullptr);
+					if (table_refused) {
+						return SensitiveParameterSource(get, *table_refused);
+					}
 					const bool has_available_input = input && !consumed_input && get.projected_input.empty();
 					const bool has_input_columns = has_available_input &&
 					                               input->column_name_alias.size() >= get.input_table_types.size() &&
@@ -247,7 +278,15 @@ SQLSourceQueryResult LogicalPlanSQLExportHelpers::ReconstructSQLSource(ClientCon
 					consumed_input = true;
 					continue;
 				}
-				auto exported = BoundExpressionSQLExporter::Export(BoundConstantExpression(get.parameters[i]), {});
+				auto refused = SQLExportSensitiveParameters::RefusePositional(context, get.function.GetSignature(), i,
+				                                                              get.parameters[i]);
+				if (refused) {
+					return SensitiveParameterSource(get, *refused);
+				}
+				BoundExpressionSQLExportContext constant_context;
+				constant_context.client_context = &context;
+				auto exported =
+				    BoundExpressionSQLExporter::Export(BoundConstantExpression(get.parameters[i]), constant_context);
 				if (exported.HasError()) {
 					return {nullptr, "positional_parameter_expression"};
 				}
@@ -258,7 +297,15 @@ SQLSourceQueryResult LogicalPlanSQLExportHelpers::ReconstructSQLSource(ClientCon
 			}
 		}
 		for (auto &parameter : get.named_parameters) {
-			auto exported = BoundExpressionSQLExporter::Export(BoundConstantExpression(parameter.second), {});
+			auto refused = SQLExportSensitiveParameters::RefuseNamed(context, get.function.GetSignature(),
+			                                                         parameter.first, parameter.second);
+			if (refused) {
+				return SensitiveParameterSource(get, *refused);
+			}
+			BoundExpressionSQLExportContext constant_context;
+			constant_context.client_context = &context;
+			auto exported =
+			    BoundExpressionSQLExporter::Export(BoundConstantExpression(parameter.second), constant_context);
 			if (exported.HasError()) {
 				return {nullptr, "named_parameter_expression"};
 			}

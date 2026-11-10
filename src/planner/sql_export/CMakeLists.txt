@@ -13,6 +13,7 @@ add_library_unity(
   sql_export_pivot.cpp
   sql_export_relations.cpp
   sql_export_scope.cpp
+  sql_export_sensitive_parameters.cpp
   sql_export_sources.cpp
   sql_export_statements.cpp
   sql_export_values.cpp

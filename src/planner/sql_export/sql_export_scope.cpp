@@ -28,8 +28,11 @@ LogicalPlanVerificationPath LogicalPlanSQLExportHelpers::PlanExpressionPath(cons
 }
 
 LogicalPlanVerificationResult<unique_ptr<ParsedExpression>>
-LogicalPlanSQLExportHelpers::ExportTypedNull(const LogicalType &type, const LogicalPlanVerificationPath &path) {
-	auto result = BoundExpressionSQLExporter::Export(BoundConstantExpression(Value(type)), {});
+LogicalPlanSQLExportHelpers::ExportTypedNull(ClientContext &client, const LogicalType &type,
+                                             const LogicalPlanVerificationPath &path) {
+	BoundExpressionSQLExportContext expression_context;
+	expression_context.client_context = &client;
+	auto result = BoundExpressionSQLExporter::Export(BoundConstantExpression(Value(type)), expression_context);
 	if (!result.HasError()) {
 		return result;
 	}

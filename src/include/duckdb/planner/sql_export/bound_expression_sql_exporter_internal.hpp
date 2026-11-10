@@ -43,15 +43,30 @@ public:
 	static LogicalPlanVerificationIssue UnsupportedFeature(const LogicalPlanVerificationPath &path, string feature,
 	                                                       string message);
 
+	//! Refuse rendering the invocation - the value of a sensitive parameter must not appear in generated SQL
+	static LogicalPlanVerificationIssue SensitiveParameterIssue(const LogicalPlanVerificationPath &path,
+	                                                            const Identifier &function_name,
+	                                                            const Identifier &parameter);
+
+	//! Refuse rendering an aggregate state whose retained constant parameters must not appear in generated SQL.
+	//! An empty parameter reports constants whose declarations could not be resolved.
+	static LogicalPlanVerificationIssue StateSensitivityIssue(const LogicalPlanVerificationPath &path,
+	                                                          const Identifier &function_name,
+	                                                          const Identifier &parameter);
+
+	//! Whether rendering the value would emit a sensitive retained constant of an aggregate state,
+	//! through the value's own type or through a TYPE value's payload type
+	static bool ValueRendersSensitiveState(ClientContext &client, const Value &value, Identifier &function_name,
+	                                       Identifier &parameter);
+
 	static LogicalPlanVerificationIssue UnsupportedFunction(const LogicalPlanVerificationPath &path,
 	                                                        LogicalPlanVerificationFunctionIdentity identity,
 	                                                        string message);
 
 	static bool HasNestedCollation(const LogicalType &type);
 
-	static BoundExpressionSQLExportResult PreserveCollation(const LogicalType &type,
-	                                                        BoundExpressionSQLExportResult result,
-	                                                        const LogicalPlanVerificationPath &path);
+	BoundExpressionSQLExportResult PreserveCollation(const LogicalType &type, BoundExpressionSQLExportResult result,
+	                                                 const LogicalPlanVerificationPath &path);
 
 	template <class FUNCTION>
 	static LogicalPlanVerificationFunctionIdentity DefinitionFunctionIdentity(const FUNCTION &definition,
@@ -121,9 +136,8 @@ private:
 	BoundExpressionSQLExportResult RestoreResultType(const LogicalType &type, unique_ptr<ParsedExpression> result,
 	                                                 const LogicalPlanVerificationPath &path);
 	static bool RequiresConstantConstructor(const LogicalType &type);
-	static BoundExpressionSQLExportResult CastToConstructedType(const LogicalType &type,
-	                                                            unique_ptr<ParsedExpression> child,
-	                                                            const LogicalPlanVerificationPath &path);
+	BoundExpressionSQLExportResult CastToConstructedType(const LogicalType &type, unique_ptr<ParsedExpression> child,
+	                                                     const LogicalPlanVerificationPath &path);
 	BoundExpressionSQLExportResult ExportConstant(const BoundConstantExpression &expression,
 	                                              const LogicalPlanVerificationPath &path);
 	BoundExpressionSQLExportResult ExportReference(const BoundReferenceExpression &expression,

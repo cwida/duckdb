@@ -3,6 +3,7 @@
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/function/scalar/generic_common.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/sql_export_helpers.hpp"
 
@@ -15,6 +16,16 @@ bool BoundExpressionSQLExportState::RequiresConstantConstructor(const LogicalTyp
 BoundExpressionSQLExportResult
 BoundExpressionSQLExportState::CastToConstructedType(const LogicalType &type, unique_ptr<ParsedExpression> child,
                                                      const LogicalPlanVerificationPath &path) {
+	auto client_context = context.client_context;
+	if (client_context) {
+		// the constructed type witness renders any aggregate state the type contains
+		Identifier state_function;
+		Identifier state_parameter;
+		if (ValueRendersSensitiveState(*client_context, Value(type), state_function, state_parameter)) {
+			return BoundExpressionSQLExportResult::Failure(
+			    {StateSensitivityIssue(path, state_function, state_parameter)});
+		}
+	}
 	vector<unique_ptr<ParsedExpression>> arguments;
 	arguments.push_back(std::move(child));
 	try {
@@ -45,6 +56,15 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportConstant(con
 	if (!SQLExportHelpers::IsSQLValueType(return_type)) {
 		return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::InternalExpressionInvariant(
 		    path, expression, "Bound constant has an unexportable type")});
+	}
+	auto client_context = context.client_context;
+	if (client_context) {
+		Identifier state_function;
+		Identifier state_parameter;
+		if (ValueRendersSensitiveState(*client_context, value, state_function, state_parameter)) {
+			return BoundExpressionSQLExportResult::Failure(
+			    {StateSensitivityIssue(path, state_function, state_parameter)});
+		}
 	}
 	unique_ptr<ParsedExpression> result;
 	try {

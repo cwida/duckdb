@@ -199,11 +199,20 @@ public:
 		return kind == FunctionParameterKind::STANDARD || kind == FunctionParameterKind::KEYWORD_ONLY;
 	}
 
+	//! Whether the parameter receives credential material that must not appear in generated SQL
+	auto IsSensitive() const -> bool {
+		return sensitive;
+	}
+	auto SetSensitive() -> void {
+		sensitive = true;
+	}
+
 private:
 	Identifier name;
 	LogicalType type;
 	shared_ptr<Value> default_value;
 	FunctionParameterKind kind;
+	bool sensitive = false;
 };
 
 //! An option a function receives through its "**kwargs" parameter
@@ -217,6 +226,8 @@ public:
 	vector<Identifier> aliases;
 	//! The type a passed value is cast to - ANY passes it through as-is, for the function to check
 	LogicalType type;
+	//! Whether the option receives credential material that must not appear in generated SQL
+	bool sensitive = false;
 
 public:
 	DUCKDB_API bool operator==(const TypedKwarg &other) const;
@@ -234,6 +245,8 @@ public:
 	DUCKDB_API TypedKwargs &Add(Identifier name, LogicalType type);
 	//! Adds another name for the option added last
 	DUCKDB_API TypedKwargs &Alias(Identifier alias);
+	//! Marks the option added last as sensitive - its value must not appear in generated SQL
+	DUCKDB_API TypedKwargs &Sensitive();
 
 	//! A schema holding the options of this one followed by those of the other
 	DUCKDB_API TypedKwargs Merge(const TypedKwargs &other) const;
@@ -361,6 +374,15 @@ public:
 	}
 	auto AddKwargs(Identifier name, LogicalType type) -> FunctionSignature & {
 		return AddParameter(std::move(name), std::move(type), {}, FunctionParameterKind::VAR_KEYWORD);
+	}
+
+	//! Marks the parameter added last as sensitive - its value must not appear in generated SQL
+	auto Sensitive() -> FunctionSignature & {
+		if (parameters.empty()) {
+			throw InternalException("FunctionSignature::Sensitive called before any parameter was added");
+		}
+		parameters.back().SetSensitive();
+		return *this;
 	}
 
 	//! Adds a "**name" parameter that receives only the options of the given schema
