@@ -1,0 +1,18 @@
+# name: test/sql/types/struct/remap_struct_mapping_type.test
+# description: remap_struct only accepts a STRUCT (or NULL) as the mapping
+# group: [struct]
+
+statement error
+SELECT remap_struct({a: 1}, NULL::STRUCT(a INT), ['a'], NULL);
+----
+Binder Error: The mapping provided to 'remap_struct' should be of type STRUCT
+
+statement error
+SELECT remap_struct({a: 1}, NULL::STRUCT(a INT), MAP {'a': 'a'}, NULL);
+----
+Binder Error: The mapping provided to 'remap_struct' should be of type STRUCT
+
+query I
+SELECT remap_struct({a: 1}, NULL::STRUCT(a INT), {a: 'a'}, NULL);
+----
+{'a': 1}

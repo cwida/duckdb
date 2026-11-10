@@ -1,0 +1,30 @@
+# name: test/sql/cte/materialized/cte_streaming_over_materialization.test
+# description: A starved exchange gated only through an optional ordering must keep streaming (no materialization)
+# group: [materialized]
+
+# The exchange sizes below assume standard vectors.
+require exact_vector_size 2048
+
+set query_timeout 60
+
+# No temporary directory: a fallback to full materialization cannot spill and fails the memory limit, so a
+# regression shows up as an out-of-memory error instead of a silently slower plan.
+statement ok
+SET temp_directory='';
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='32MB';
+
+# Two early-stopping consumers of one CTE, ordered only by the cross product's optional sibling ordering.
+# Dropping that ordering keeps both consumers streaming a one-row prefix.
+query II
+WITH c AS MATERIALIZED (
+    SELECT i FROM range(10000000) r(i)
+)
+SELECT (SELECT count(*) FROM (SELECT * FROM c LIMIT 1)) AS x,
+       (SELECT count(*) FROM (SELECT * FROM c LIMIT 1)) AS y;
+----
+1	1

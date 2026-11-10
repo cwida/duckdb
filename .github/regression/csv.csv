@@ -7,3 +7,9 @@ benchmark/csv/1_byte_values.benchmark
 benchmark/csv/16_byte_values.benchmark
 benchmark/csv/multiple_small_files.benchmark
 benchmark/csv/time_type.benchmark
+benchmark/csv/lineitem_count.benchmark
+benchmark/csv/lineitem_noquote_count.benchmark
+benchmark/csv/lineitem_q6.benchmark
+benchmark/csv/lineitem_load.benchmark
+benchmark/csv/lineitem_quoted_count.benchmark
+benchmark/csv/lineitem_crlf_count.benchmark

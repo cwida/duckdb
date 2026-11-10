@@ -2,6 +2,9 @@
 
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/optimizer/join_order/query_graph_manager.hpp"
 
 namespace duckdb {
 
@@ -37,12 +40,29 @@ idx_t RelationStatsExtractor::ExtractedOperatorCount() const {
 	return extracted_operator_count;
 }
 
+static bool IsInnerJoinRegion(LogicalOperator &op) {
+	optional_ptr<LogicalOperator> root = op;
+	while (root->type == LogicalOperatorType::LOGICAL_FILTER) {
+		root = *root->children[0];
+	}
+	return root->type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT ||
+	       (root->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+	        root->Cast<LogicalComparisonJoin>().join_type == JoinType::INNER);
+}
+
 optional<RelationStats> RelationStatsExtractor::ExtractInternal(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		return ExtractCTERef(op.Cast<LogicalCTERef>());
 	}
 	if (op.type == LogicalOperatorType::LOGICAL_EXPLAIN) {
 		return RelationStatisticsHelper::ExtractExplainStats(op);
+	}
+
+	if (IsInnerJoinRegion(op)) {
+		auto stats = ExtractJoinStats(op);
+		if (stats) {
+			return stats;
+		}
 	}
 
 	vector<reference<const RelationStats>> child_stats;
@@ -54,7 +74,30 @@ optional<RelationStats> RelationStatsExtractor::ExtractInternal(LogicalOperator 
 		}
 		child_stats.push_back(*stats);
 	}
+	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY && child_stats.size() == 1) {
+		return RelationStatisticsHelper::ExtractAggregationStats(op.Cast<LogicalAggregate>(), child_stats[0], *this);
+	}
 	return RelationStatisticsHelper::ExtractOperatorStats(op, context, child_stats);
+}
+
+optional<RelationStats> RelationStatsExtractor::ExtractJoinStats(LogicalOperator &op) {
+	QueryGraphManager graph(context);
+	if (!graph.BuildForEstimation(*this, op)) {
+		return {};
+	}
+	auto relation_stats = graph.relation_manager.GetRelationStats();
+	CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
+	estimator.Initialize(relation_stats, graph.GetJoinOperators());
+	unordered_set<RelationIndex> relations;
+	for (idx_t i = 0; i < relation_stats.size(); i++) {
+		relations.insert(RelationIndex(i));
+	}
+	auto &set = graph.set_manager.GetJoinRelation(relations);
+	auto estimate = estimator.EstimateCardinality(set);
+	if (estimate.GetDouble() >= static_cast<double>(NumericLimits<idx_t>::Maximum())) {
+		return {};
+	}
+	return graph.CombineRelationStats(op.GetColumnBindings(), relation_stats, estimate.GetIndex());
 }
 
 optional<RelationStats> RelationStatsExtractor::ExtractCTERef(LogicalCTERef &cte_ref) {

@@ -1,0 +1,44 @@
+# name: test/sql/storage/bc/null_rows_v1_5_or_filter.test
+# description: A filter that accepts NULL keeps the NULL rows of segments written by v1.x, which record NULLs only in their validity
+# group: [bc]
+
+# data/storage/null_rows_v1_5.db.gz was written by DuckDB v1.5.6 with
+# CREATE TABLE f(id INTEGER, end_snapshot BIGINT);
+# INSERT INTO f SELECT i, CASE WHEN i % 2048 < 1500 THEN 3 END FROM range(250000) r(i);
+# CHECKPOINT;
+# so every full vector of the three row groups ends with 548 NULL rows
+require exact_vector_size 2048
+
+unzip data/storage/null_rows_v1_5.db.gz {TEST_DIR}/null_rows_v1_5.db
+
+load {TEST_DIR}/null_rows_v1_5.db readonly
+
+query I
+SELECT count(*) FROM f WHERE end_snapshot IS NULL
+----
+66856
+
+query I
+SELECT count(*) FROM f WHERE end_snapshot IS NULL OR end_snapshot > 1000000
+----
+66856
+
+query II
+SELECT min(id), max(id) FROM f WHERE end_snapshot IS NULL OR end_snapshot > 1000000
+----
+1500	249855
+
+query I
+SELECT count(*) FROM f WHERE end_snapshot IS NULL OR end_snapshot = 3
+----
+250000
+
+query I
+SELECT count(*) FROM f WHERE end_snapshot > 1000000 OR end_snapshot IS NULL
+----
+66856
+
+query I
+SELECT count(*) FROM f WHERE end_snapshot IS NOT NULL AND end_snapshot > 1
+----
+183144

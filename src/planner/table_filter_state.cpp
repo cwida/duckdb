@@ -59,6 +59,75 @@ public:
 	}
 };
 
+class ConjunctionOrFilterExecutor final : public ExpressionFilterExecutor {
+public:
+	explicit ConjunctionOrFilterExecutor(vector<unique_ptr<ExpressionFilterExecutor>> children_p)
+	    : children(std::move(children_p)), input_sel(STANDARD_VECTOR_SIZE), child_input(STANDARD_VECTOR_SIZE),
+	      result_sel(STANDARD_VECTOR_SIZE), merge_sel(STANDARD_VECTOR_SIZE) {
+	}
+
+	idx_t FilterSelection(SelectionVector &sel, Vector &vector, idx_t scan_count,
+	                      idx_t &approved_tuple_count) override {
+		if (approved_tuple_count == 0) {
+			return 0;
+		}
+		if (approved_tuple_count > input_sel.Capacity()) {
+			input_sel.Initialize(approved_tuple_count);
+			child_input.Initialize(approved_tuple_count);
+			result_sel.Initialize(approved_tuple_count);
+			merge_sel.Initialize(approved_tuple_count);
+		}
+		const auto has_selection = sel.IsSet();
+		if (has_selection) {
+			for (idx_t i = 0; i < approved_tuple_count; i++) {
+				input_sel.set_index(i, sel.get_index(i));
+			}
+		}
+		idx_t result_count = 0;
+		for (auto &child : children) {
+			SelectionVector child_sel;
+			if (has_selection) {
+				for (idx_t i = 0; i < approved_tuple_count; i++) {
+					child_input.set_index(i, input_sel.get_index(i));
+				}
+				child_sel.Initialize(child_input);
+			}
+			auto child_count = approved_tuple_count;
+			child->FilterSelection(child_sel, vector, scan_count, child_count);
+			if (child_count == approved_tuple_count) {
+				if (has_selection) {
+					sel.Initialize(input_sel);
+				}
+				return approved_tuple_count;
+			}
+			// Scan filters preserve ordered selections; merge without repeating overlapping matches.
+			idx_t left = 0;
+			idx_t right = 0;
+			idx_t merged_count = 0;
+			while (left < result_count || right < child_count) {
+				auto left_index = left < result_count ? result_sel.get_index(left) : scan_count;
+				auto right_index = right < child_count ? child_sel.get_index(right) : scan_count;
+				auto index = MinValue(left_index, right_index);
+				merge_sel.set_index(merged_count++, index);
+				left += left_index == index;
+				right += right_index == index;
+			}
+			std::swap(result_sel, merge_sel);
+			result_count = merged_count;
+		}
+		sel.Initialize(result_sel);
+		approved_tuple_count = result_count;
+		return result_count;
+	}
+
+private:
+	vector<unique_ptr<ExpressionFilterExecutor>> children;
+	SelectionVector input_sel;
+	SelectionVector child_input;
+	SelectionVector result_sel;
+	SelectionVector merge_sel;
+};
+
 class ComparisonFilterExecutor final : public ExpressionFilterExecutor {
 public:
 	ComparisonFilterExecutor(ExpressionType comparison_type_p, Value constant_p)
@@ -597,7 +666,8 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 	case ExpressionClass::BOUND_FUNCTION:
 		return TryCreateFunctionExecutor(expression.Cast<BoundFunctionExpression>(), inside_selectivity_optional);
 	case ExpressionClass::BOUND_CONJUNCTION: {
-		if (expression.GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
+		if (expression.GetExpressionType() != ExpressionType::CONJUNCTION_AND &&
+		    expression.GetExpressionType() != ExpressionType::CONJUNCTION_OR) {
 			return nullptr;
 		}
 		auto &conjunction = expression.Cast<BoundConjunctionExpression>();
@@ -609,7 +679,10 @@ static unique_ptr<ExpressionFilterExecutor> TryCreateFastExecutor(const Expressi
 			}
 			children.push_back(std::move(child_executor));
 		}
-		return make_uniq<ConjunctionAndFilterExecutor>(std::move(children));
+		if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
+			return make_uniq<ConjunctionAndFilterExecutor>(std::move(children));
+		}
+		return make_uniq<ConjunctionOrFilterExecutor>(std::move(children));
 	}
 	default:
 		return nullptr;

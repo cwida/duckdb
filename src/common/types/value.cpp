@@ -625,15 +625,15 @@ bool Value::StringIsValid(const char *str, idx_t length) {
 	return utf_type != UnicodeType::INVALID;
 }
 
-Value Value::DECIMAL(int16_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int16_t value, uint32_t width, uint32_t scale) {
 	return Value::DECIMAL(int64_t(value), width, scale);
 }
 
-Value Value::DECIMAL(int32_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int32_t value, uint32_t width, uint32_t scale) {
 	return Value::DECIMAL(int64_t(value), width, scale);
 }
 
-Value Value::DECIMAL(int64_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 	auto decimal_type = LogicalType::DECIMAL(width, scale);
 	Value result(decimal_type);
 	switch (decimal_type.InternalType()) {
@@ -655,7 +655,7 @@ Value Value::DECIMAL(int64_t value, uint8_t width, uint8_t scale) {
 	return result;
 }
 
-Value Value::DECIMAL(hugeint_t value, uint8_t width, uint8_t scale) {
+Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT64 && width <= Decimal::MAX_WIDTH_INT128);
 	Value result(LogicalType::DECIMAL(width, scale));
 	result.value_.hugeint = value;
@@ -2165,6 +2165,12 @@ optional<Value> Value::TryCastAs(ClientContext &context, const LogicalType &targ
 	return TryCastAs(CastFunctionSet::Get(context), get_input, target_type, error_message, strict);
 }
 
+optional<Value> Value::TryCastAs(Context &context, const LogicalType &target_type, string *error_message,
+                                 bool strict) const {
+	GetCastFunctionInput get_input(context);
+	return TryCastAs(CastFunctionSet::Get(context), get_input, target_type, error_message, strict);
+}
+
 optional<Value> Value::DefaultTryCastAs(const LogicalType &target_type, string *error_message, bool strict) const {
 	CastFunctionSet set;
 	GetCastFunctionInput get_input;
@@ -2185,6 +2191,11 @@ Value Value::CastAs(CastFunctionSet &set, GetCastFunctionInput &get_input, const
 }
 
 Value Value::CastAs(ClientContext &context, const LogicalType &target_type, bool strict) const {
+	GetCastFunctionInput get_input(context);
+	return CastAs(CastFunctionSet::Get(context), get_input, target_type, strict);
+}
+
+Value Value::CastAs(Context &context, const LogicalType &target_type, bool strict) const {
 	GetCastFunctionInput get_input(context);
 	return CastAs(CastFunctionSet::Get(context), get_input, target_type, strict);
 }

@@ -133,6 +133,16 @@ statement ok
 INSERT INTO "t chk" VALUES (1, 1) ON CONFLICT DO NOTHING
 
 statement ok
+INSERT INTO "t comp" VALUES (1, 1) ON CONFLICT ("a b", "c d") DO NOTHING
+
+statement ok
+INSERT INTO "t chk" VALUES (1, 1) ON CONFLICT ("c d") DO UPDATE SET "a b" = excluded."a b" + 1 WHERE "t chk"."a b" > 0
+
+statement ok
+INSERT INTO "weird name"("odder col", "select", "He said ""hi""") VALUES (5, 'x', 6)
+ON CONFLICT ("select") DO UPDATE SET "He said ""hi""" = excluded."He said ""hi"""
+
+statement ok
 UPDATE "weird name" SET "select" = 'z' WHERE "odder col" = 1
 
 statement ok
@@ -140,6 +150,9 @@ DELETE FROM "weird name" WHERE "odder col" = 99
 
 statement ok
 MERGE INTO "t chk" USING "t chk" AS "src x" ON "t chk"."a b" = "src x"."a b" WHEN MATCHED THEN DELETE
+
+statement ok
+MERGE INTO "t comp" USING (SELECT 1 AS "a b", 1 AS "c d") AS "src x" USING ("a b", "c d") WHEN MATCHED THEN DELETE
 
 # --- queries ------------------------------------------------------------------------------------------
 

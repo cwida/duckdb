@@ -46,7 +46,7 @@ FixedSizeBuffer::FixedSizeBuffer(BlockManager &block_manager, const idx_t segmen
     : block_manager(block_manager), readers(0), segment_count(segment_count), allocation_size(allocation_size),
       dirty(false), vacuum(false), loaded(false), block_pointer(block_pointer) {
 	D_ASSERT(block_pointer.IsValid());
-	block_handle = block_manager.RegisterBlock(block_pointer.block_id, MemoryTag::ART_INDEX);
+	block_handle = block_manager.RegisterBlock(block_pointer.block_id, MemoryTag::BASE_TABLE);
 	D_ASSERT(block_handle->BlockId() < MAXIMUM_BLOCK);
 }
 
@@ -67,6 +67,11 @@ FixedSizeBuffer::~FixedSizeBuffer() {
 		} catch (...) { // NOLINT
 		}
 	}
+}
+
+void FixedSizeBuffer::DisownBlock() {
+	lock_guard<mutex> l(lock);
+	block_pointer = BlockPointer();
 }
 
 void FixedSizeBuffer::Finalize(shared_ptr<BlockHandle> block_handle_p, uint32_t offset) {
@@ -102,7 +107,7 @@ shared_ptr<FixedSizeBuffer> FixedSizeBuffer::Persist(PartialBlockManager &partia
 	D_ASSERT(new_block_pointer);
 	// Checkpoint metadata is collected before shared partial blocks are flushed.
 	result->block_pointer = *new_block_pointer;
-	result->block_handle = block_manager.RegisterBlock(new_block_pointer->block_id, MemoryTag::ART_INDEX);
+	result->block_handle = block_manager.RegisterBlock(new_block_pointer->block_id, MemoryTag::BASE_TABLE);
 	return result;
 }
 

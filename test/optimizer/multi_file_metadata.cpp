@@ -8,6 +8,7 @@
 #include "duckdb/parser/statement/logical_plan_statement.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/planner.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
 using namespace duckdb;
 
@@ -56,6 +57,11 @@ TEST_CASE("Parquet metadata survives consumption of the initial reader", "[optim
 			GetPartitionStatsInput input(get.function, get.bind_data.get());
 			auto partitions = get.function.get_partition_stats(*con.context, input);
 			REQUIRE(partitions.size() == 1);
+			REQUIRE(partitions[0].partition_row_group);
+			auto stats = partitions[0].partition_row_group->GetColumnStatistics(StorageIndex(0));
+			REQUIRE(stats);
+			REQUIRE(NumericStats::Min(*stats) == Value(1));
+			REQUIRE(NumericStats::Max(*stats) == Value(3));
 			Optimizer optimizer(*planner.binder, *con.context);
 			planner.plan = optimizer.Optimize(std::move(planner.plan));
 			REQUIRE(MetadataGet(*planner.plan).has_pushed_projection == !union_by_name);
@@ -65,6 +71,41 @@ TEST_CASE("Parquet metadata survives consumption of the initial reader", "[optim
 			REQUIRE(CHECK_COLUMN(*result, 1, {1, 2, 3}));
 			REQUIRE(CHECK_COLUMN(*result, 2, {0, 1, 2}));
 		}
+	}
+	con.Rollback();
+}
+
+TEST_CASE("Parquet row group statistics survive consumption of the initial reader",
+          "[optimizer][multi_file_metadata]") {
+	DuckDB db;
+	if (ExtensionHelper::LoadExtension(db, "parquet") != ExtensionLoadResult::LOADED_EXTENSION) {
+		SKIP_TEST("require parquet");
+	}
+	Connection con(db);
+	auto path = "'" + StringUtil::Replace(TestCreatePath("retained_row_group.parquet"), "'", "''") + "'";
+	REQUIRE_NO_FAIL(con.Query("COPY (SELECT * FROM (VALUES (1),(3)) t(k)) TO " + path));
+	con.BeginTransaction();
+	for (bool union_by_name : {false, true}) {
+		CAPTURE(union_by_name);
+		Parser parser(*con.context);
+		parser.ParseQuery("SELECT min(k),max(k) FROM read_parquet(" + path +
+		                  ",union_by_name=" + (union_by_name ? "true" : "false") + ")");
+		Planner planner(*con.context);
+		planner.CreatePlan(std::move(parser.statements[0]));
+		auto &get = MetadataGet(*planner.plan);
+		auto &data = get.bind_data->Cast<MultiFileBindData>();
+		REQUIRE(data.initial_reader);
+		data.initial_reader.reset();
+		GetPartitionStatsInput input(get.function, get.bind_data.get());
+		auto partitions = get.function.get_partition_stats(*con.context, input);
+		REQUIRE(partitions.size() == 1);
+		REQUIRE(partitions[0].partition_row_group);
+		auto &row_group = *partitions[0].partition_row_group;
+		auto stats = row_group.GetColumnStatistics(StorageIndex(0));
+		REQUIRE(stats);
+		REQUIRE(NumericStats::Min(*stats) == Value(1));
+		REQUIRE(NumericStats::Max(*stats) == Value(3));
+		REQUIRE(row_group.MinMaxIsExact(StorageIndex(0)));
 	}
 	con.Rollback();
 }

@@ -54,10 +54,12 @@ ExtensionCallbackManager::~ExtensionCallbackManager() {
 }
 
 void ExtensionCallbackManager::AddExtensionSchema(const Identifier &schema) {
+	lock_guard<mutex> guard(registry_lock);
 	extension_schemas.push_back(schema.GetIdentifierName());
 }
 
 vector<string> ExtensionCallbackManager::GetExtensionSchemas() const {
+	lock_guard<mutex> guard(registry_lock);
 	return extension_schemas;
 }
 
@@ -91,6 +93,8 @@ void ExtensionCallbackManager::Register(shared_ptr<GrammarExtension> extension) 
 		    "Can't add GrammarExtension \"%s\", a GrammarExtension by that name already exists");
 	}
 	PublishRegistry(std::move(new_registry));
+	// sessions compare this against their cached grammar's version and recompose when it moved
+	++grammar_registry_version;
 }
 
 void ExtensionCallbackManager::Register(shared_ptr<DialectExtension> extension) {

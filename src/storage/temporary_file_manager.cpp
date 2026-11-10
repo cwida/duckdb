@@ -384,8 +384,8 @@ void TemporaryFileHandle::RemoveTempBlockIndex(TemporaryFileLock &, idx_t index)
 		// as a result we can truncate the file
 #ifndef WIN32 // this ended up causing issues when sorting
 		auto max_index = index_manager.GetMaxIndex();
-		auto &fs = FileSystem::GetFileSystem(db);
-		fs.Truncate(*handle, NumericCast<int64_t>(GetPositionInFile(max_index)));
+		// truncate through the file system that opened the handle, which a wrapper installed later does not own
+		handle->Truncate(NumericCast<int64_t>(GetPositionInFile(max_index)));
 #endif
 	}
 }

@@ -2,6 +2,7 @@
 
 #include "test_config.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/main/http/http_transport_manager.hpp"
@@ -296,8 +297,9 @@ public:
 		if (state->callback) {
 			state->callback();
 		}
-		state->initialized_paths.push_back(info ? info->file_path : string());
-		state->initialized_with_context.push_back(bool(FileOpener::TryGetClientContext(opener)));
+		state->initialized_paths.push_back(info ? info->file.path : string());
+		state->initialized_with_context.push_back(
+		    bool(Context::TryGetClientContext(FileOpener::TryGetContext(opener))));
 		auto result = make_uniq<MockHTTPParams>(*this);
 		result->Initialize(opener);
 		result->retries = state->retries;

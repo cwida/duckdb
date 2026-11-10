@@ -323,7 +323,8 @@ double CheckReservoirQuantile(const Value &quantile_val) {
 unique_ptr<FunctionData> BindReservoirQuantile(BindAggregateFunctionInput &input) {
 	Value quantile_val = input.GetConstant(1);
 	vector<double> quantiles;
-	if (quantile_val.type().id() != LogicalTypeId::LIST) {
+	// a NULL list is rejected like a NULL quantile
+	if (quantile_val.IsNull() || quantile_val.type().id() != LogicalTypeId::LIST) {
 		quantiles.push_back(CheckReservoirQuantile(quantile_val));
 	} else {
 		for (const auto &element_val : ListValue::GetChildren(quantile_val)) {

@@ -42,7 +42,7 @@ TEST_CASE("SQL export verification executes the generated statement under the pl
 
 	// With a single committed key the optimizer proves the filter always true and the generated SQL drops it
 	auto state = make_shared_ptr<ConcurrentInsertOnQueryEnd>(writer);
-	reader.context->registered_state->Insert("concurrent_insert", state);
+	reader.context->GetContext().GetRegisteredState().Insert("concurrent_insert", state);
 	state->armed = true;
 	auto result = reader.Query("SELECT key FROM versioned_keys WHERE key >= 12 ORDER BY key");
 	REQUIRE_NO_FAIL(*result);

@@ -70,7 +70,7 @@ public:
 		auto &context = auto_detect_state.context;
 		auto &files = auto_detect_state.files;
 		auto &json_data = auto_detect_state.json_data;
-		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx].path);
+		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx]);
 		if (auto_detect_state.sampled_readers[file_idx]) {
 			throw InternalException("Reader for file %llu was already created", file_idx);
 		}
