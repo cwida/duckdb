@@ -1878,7 +1878,7 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 	}
 	D_ASSERT(BoundCastExpression::IsCast(*expr));
 	auto &cast = expr->Cast<BoundFunctionExpression>();
-	if (BoundCastExpression::IsTryCast(cast) || cast.CanThrow()) {
+	if (BoundCastExpression::IsTryCast(cast)) {
 		return false;
 	}
 	child = BoundCastExpression::ChildMutable(cast);
@@ -1887,18 +1887,18 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
 	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
-	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
-		const auto was_inside_try = inside_try;
-		inside_try = true;
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR ||
+	    (*expression)->GetExpressionClass() == ExpressionClass::BOUND_CASE) {
+		const auto was_inside_conditional = inside_conditional;
+		inside_conditional = true;
 		LogicalOperatorVisitor::VisitExpression(expression);
-		inside_try = was_inside_try;
+		inside_conditional = was_inside_conditional;
 		return;
 	}
 
-	//! Moving a throwing cast into a child projection could evaluate it outside
-	//! its original CASE, filter or TRY. Only non-throwing casts can move with an extract.
+	//! Keep a cast inside its CASE or error guard when pushing the underlying extract.
 	optional_ptr<unique_ptr<Expression>> cast_child;
-	if (!inside_try && TryGetCastChild(*expression, cast_child)) {
+	if (!inside_conditional && TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {
 			// already handled
 			return;

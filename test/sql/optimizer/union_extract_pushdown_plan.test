@@ -20,6 +20,18 @@ EXPLAIN SELECT v.k FROM (
 ----
 logical_opt	<!REGEX>:.*variant_extract.*
 
+# An unguarded cast can still be evaluated by a shredded scan.
+query II
+EXPLAIN SELECT v.k::BIGINT FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+----
+logical_opt	<!REGEX>:.*CAST.*
+
+# A plain scan must leave a guarded cast inside CASE, even without a union.
+query II
+EXPLAIN SELECT CASE WHEN s.k = 0 THEN v.k::BIGINT END FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+----
+logical_opt	<REGEX>:.*CAST.*
+
 query II
 EXPLAIN SELECT s.k FROM (
     SELECT s FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'

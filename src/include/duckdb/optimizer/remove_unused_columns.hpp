@@ -130,8 +130,8 @@ protected:
 private:
 	//! The current mode of the pruner, enables/disables certain behaviors
 	BaseColumnPrunerMode mode = BaseColumnPrunerMode::DEFAULT;
-	//! True while visiting the child of OPERATOR_TRY or OPERATOR_HAS_ERROR. Do not push throwing CASTs (#25236).
-	bool inside_try = false;
+	//! Casts must remain inside expressions that guard their evaluation or catch their errors.
+	bool inside_conditional = false;
 };
 
 //! The RemoveUnusedColumns optimizer traverses the logical operator tree and removes any columns that are not required
