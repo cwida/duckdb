@@ -1,0 +1,294 @@
+# name: test/sql/optimizer/secure_view_barrier_in_clause.test
+# description: The mark join the IN-clause rewriter builds for a barred IN lands above the view's own predicate
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (1, 'top_secret', '1'), (2, '42', '1'), (3, '7', '1'), (4, '8', '0'), (13, '9', '1'), (14, '10', '1')) v(id, s, k);
+
+# the view's predicate is not a table filter, so a Filter node stays inside the view for the join to land under
+statement ok
+CREATE SECURE VIEW sv AS SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2;
+
+# the cast throws on the hidden row when nothing keeps it above the filter
+statement error
+SELECT count(*) FROM t WHERE s::INT IN (42, 7, 8, 9, 10, 11, 12)
+----
+top_secret
+
+# below the rewrite threshold the barrier already held
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (7, 8)
+----
+2
+
+# at the threshold (five constants) the IN is rewritten to a mark join; the join must not see the hidden row
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+4
+
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (42, 7, 8, 9, 10, 11, 12)
+----
+4
+
+query I
+SELECT count(*) FROM sv WHERE s::INT NOT IN (42, 7, 8, 9, 10, 11, 12)
+----
+0
+
+# the visible row with s = 7 is not in the list and is counted; the hidden row with s = '42' is in the list and is not
+query I
+SELECT count(*) FROM sv WHERE s::INT NOT IN (42, 8, 9, 10, 11, 12)
+----
+1
+
+# with a NULL in the list the row with s = 7 yields NULL instead of true
+query I
+SELECT count(*) FROM sv WHERE s::INT NOT IN (42, 8, 9, 10, 11, NULL)
+----
+0
+
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (42, 8, 9, 10, 11, NULL)
+----
+3
+
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (42, 7, 8, 9, 10, 11, NULL)
+----
+4
+
+query I
+SELECT count(*) FROM sv WHERE s::INT NOT IN (42, 7, 8, 9, 10, 11, NULL)
+----
+0
+
+# a barrier the caller wrote next to the IN: the IN is not the first child of the OR or CASE, so it is not rewritten
+# and the whole expression is evaluated above the view's predicates. id > 3 removes row 3, so the count depends on
+# the IN as well
+query I
+SELECT count(*) FROM sv WHERE __internal_barrier(id > 3) OR s::INT IN (42, 7, 8, 9, 10)
+----
+4
+
+query I
+SELECT count(*) FROM sv WHERE __internal_barrier(id > 3) OR s::INT IN (42, 8, 9, 10, 11)
+----
+3
+
+query I
+SELECT count(*) FROM sv WHERE CASE WHEN __internal_barrier(id > 3) THEN s::INT IN (42, 7, 8, 9, 10) ELSE false END
+----
+3
+
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (42, 7, 8, 9, 10) AND id IN (3, 4, 13, 14, 15, 16, 17)
+----
+4
+
+# a filter that also drops a column
+query I
+SELECT count(id) FROM (SELECT id FROM sv WHERE s::INT IN (42, 7, 8, 9, 10))
+----
+4
+
+# prepared parameters bind to constants and reach the same rewrite
+statement ok
+PREPARE p AS SELECT count(*) FROM sv WHERE s::INT IN ($1, $2, $3, $4, $5, $6)
+
+query I
+EXECUTE p(42, 7, 8, 9, 10, 11)
+----
+4
+
+# two barred INs: both mark joins sit above the view's predicate (plan asserted below)
+query I
+SELECT count(*) FROM sv WHERE s::INT IN (42, 7, 8, 9, 10) AND s::INT IN (7, 8, 9, 10, 99)
+----
+4
+
+# correlated subquery and LATERAL
+statement ok
+CREATE TABLE u AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (13, 'e'), (14, 'f')) v(id, x);
+
+query I
+SELECT count(*) FROM u WHERE EXISTS (SELECT 1 FROM sv WHERE sv.id = u.id AND s::INT IN (42, 7, 8, 9, 10, 11))
+----
+4
+
+query I
+SELECT count(*) FROM u, LATERAL (SELECT * FROM sv WHERE sv.id = u.id AND s::INT IN (42, 7, 8, 9, 10, 11)) l
+----
+4
+
+# a view whose own predicate is a rewritable IN on an expression
+statement ok
+CREATE SECURE VIEW iv AS SELECT * FROM (SELECT id, s FROM t) WHERE (id % 10) IN (3, 4, 5, 6, 7, 8, 9);
+
+query I
+SELECT count(*) FROM iv WHERE s::INT IN (42, 7, 8, 9, 10, 11)
+----
+4
+
+# nested secure views: the outer view's predicate is barred inside the inner one and must run before the caller's IN
+statement ok
+CREATE TABLE n AS SELECT * FROM (VALUES (1, 'top_secret', '1'), (2, '42', '1'), (3, '7', '1'), (4, 'ov_secret', '0'), (13, '9', '1'), (14, '10', '1')) v(id, s, k);
+
+statement ok
+CREATE SECURE VIEW nv AS SELECT * FROM n WHERE id % 10 > 2;
+
+statement ok
+CREATE SECURE VIEW ov AS SELECT * FROM nv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM ov WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+3
+
+query I
+SELECT count(*) FROM ov WHERE s::INT NOT IN (42, 7, 8, 9, 10)
+----
+0
+
+# two barred INs with a barred predicate between them
+query I
+SELECT count(*) FROM ov WHERE s::INT IN (42, 7, 8, 9, 10) AND k::INT < 5 AND s::INT IN (7, 8, 9, 10, 99)
+----
+3
+
+# no plain expression left: the inner view's predicate is a table filter on the scan
+statement ok
+CREATE SECURE VIEW tv AS SELECT * FROM n WHERE id > 2;
+
+statement ok
+CREATE SECURE VIEW otv AS SELECT * FROM tv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM otv WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+3
+
+# a single barred IN over a table-filter view: no filter is left between the join and the scan
+statement ok
+CREATE SECURE VIEW tv2 AS SELECT * FROM t WHERE id > 2;
+
+query I
+SELECT count(*) FROM tv2 WHERE (s::INT + id) IN (10, 12, 22, 24, 99, 98)
+----
+4
+
+# through a join inside the view: the barrier cannot cross the join, so the IN stays above it
+statement ok
+CREATE SECURE VIEW jv AS SELECT t.id, t.s, u.x FROM t JOIN u ON t.id = u.id WHERE t.id % 10 > 2;
+
+query I
+SELECT count(*) FROM jv WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+4
+
+# an IN that needs no barrier is still pushed into the view
+query I
+SELECT count(*) FROM sv WHERE id IN (3, 4, 13, 14, 15, 16, 17)
+----
+4
+
+# the outer view's predicate cannot become a scan filter: the join must still sit above it
+statement ok
+CREATE SECURE VIEW nv2 AS SELECT * FROM nv WHERE k::INT + id > 4;
+
+query I
+SELECT count(*) FROM nv2 WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+2
+
+# plan shape (EXPLAIN hides the inside of a secure view, so the view's own plan is used with the barrier written out)
+statement ok
+SET explain_output = 'optimized_only'
+
+# an IN that needs no barrier is pushed below the view's predicate
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE id IN (3, 4, 13, 14, 15, 16, 17)
+----
+logical_opt	<REGEX>:[\s\S]*\(id % 10\) > 2[\s\S]*MARK[\s\S]*id = #0[\s\S]*
+
+# five constants reach the rewrite threshold, four do not
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE __internal_barrier(s::INT IN (42, 7, 8, 9, 10))
+----
+logical_opt	<REGEX>:[\s\S]*MARK[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE __internal_barrier(s::INT IN (42, 7, 8, 9))
+----
+logical_opt	<!REGEX>:[\s\S]*MARK[\s\S]*
+
+# the barred IN is a mark join, the view's predicate is a filter below it
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE __internal_barrier(s::INT IN (42, 7, 8, 9, 10, 11, 12))
+----
+logical_opt	<REGEX>:[\s\S]*Filter[\s\S]*__internal_barrier\(IN \(\.\.\.\)\)[\s\S]*MARK[\s\S]*CAST\(s AS INTEGER\) = #0[\s\S]*Filter[\s\S]*\(id % 10\) > 2[\s\S]*
+
+# a harmless IN beside it is rewritten too, under the view's predicate
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE __internal_barrier(s::INT IN (42, 7, 8, 9, 10, 11, 12)) AND id IN (3, 4, 13, 14, 15, 16, 17)
+----
+logical_opt	<REGEX>:[\s\S]*__internal_barrier\(IN \(\.\.\.\)\)[\s\S]*CAST\(s AS INTEGER\) = #0[\s\S]*\(id % 10\) > 2[\s\S]*id = #0[\s\S]*
+
+# a barred expression with no IN leaves the filter as pushdown built it: one node
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE __internal_barrier(s::INT = 7)
+----
+logical_opt	<REGEX>:[\s\S]*Filter[\s\S]*\(id % 10\) > 2,[^╭]*__internal_barrier\(\(CAST\(s AS INTEGER\) = 7\)\)[\s\S]*Seq Scan[\s\S]*
+
+# a barred IN that is not rewritten (not the first child of a CASE) leaves the filter as pushdown built it: one node
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id % 10 > 2) WHERE __internal_barrier(CASE WHEN id > 3 THEN s::INT IN (42, 7, 8, 9, 10) ELSE false END)
+----
+logical_opt	<REGEX>:[\s\S]*Filter[\s\S]*\(id % 10\) > 2,[^╭]*__internal_barrier\(CASE[\s\S]*Seq Scan[\s\S]*
+
+# a barred predicate listed before the IN (an enclosing view's) stays below the join. A base that is not a table keeps
+# every predicate in the filter, as a view over parquet does
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (VALUES (1, 'top_secret', '1'), (2, '42', '1'), (3, '7', '1'), (4, 'ov_secret', '0'), (13, '9', '1'), (14, '10', '1')) v(id, s, k) WHERE id % 10 > 2) WHERE __internal_barrier(k::INT > 0) AND __internal_barrier(s::INT IN (42, 7, 8, 9, 10, 11, 12))
+----
+logical_opt	<REGEX>:[\s\S]*__internal_barrier\(IN \(\.\.\.\)\)[\s\S]*MARK[\s\S]*CAST\(s AS INTEGER\) = #0[\s\S]*Filter[\s\S]*__internal_barrier\(\(CAST\(k AS INTEGER\) > 0\)\)[\s\S]*
+
+# two barred INs with a barred predicate between: one filter per IN, the predicate between them below the second join
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (VALUES (1, 'top_secret', '1'), (2, '42', '1'), (3, '7', '1'), (4, 'ov_secret', '0'), (13, '9', '1'), (14, '10', '1')) v(id, s, k) WHERE id % 10 > 2) WHERE __internal_barrier(k::INT > 0) AND __internal_barrier(s::INT IN (42, 7, 8, 9, 10, 11, 12)) AND __internal_barrier(k::INT < 5) AND __internal_barrier(s::INT IN (7, 8, 9, 10, 11, 99))
+----
+logical_opt	<REGEX>:[\s\S]*MARK[\s\S]*Filter[\s\S]*__internal_barrier\(IN \(\.\.\.\)\),[\s\S]*__internal_barrier\(\(CAST\(k AS INTEGER\) < 5\)\)[\s\S]*MARK[\s\S]*Filter[\s\S]*__internal_barrier\(\(CAST\(k AS INTEGER\) > 0\)\)[\s\S]*
+
+# a single barred IN over a table-filter predicate: nothing to cut, the join sits directly on the scan
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id > 2) WHERE __internal_barrier((s::INT + id) IN (10, 12, 22, 24, 99, 98))
+----
+logical_opt	<!REGEX>:[\s\S]*MARK[\s\S]*Filter[\s\S]*Seq Scan[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT * FROM (SELECT id, s FROM t) WHERE id > 2) WHERE __internal_barrier((s::INT + id) IN (10, 12, 22, 24, 99, 98))
+----
+logical_opt	<REGEX>:[\s\S]*MARK[\s\S]*Seq Scan[\s\S]*
+
+# a parquet base: these predicates do not become scan filters, so the join must sit above all of them
+require parquet
+
+statement ok
+COPY n TO '{TEST_DIR}/barrier_in_clause.parquet';
+
+statement ok
+CREATE SECURE VIEW pnv AS SELECT * FROM read_parquet('{TEST_DIR}/barrier_in_clause.parquet') WHERE id % 10 > 2;
+
+statement ok
+CREATE SECURE VIEW pov AS SELECT * FROM pnv WHERE k::INT > 0;
+
+query I
+SELECT count(*) FROM pov WHERE s::INT IN (42, 7, 8, 9, 10)
+----
+3
+
+query I
+SELECT count(*) FROM pov WHERE s::INT NOT IN (42, 7, 8, 9, 10)
+----
+0

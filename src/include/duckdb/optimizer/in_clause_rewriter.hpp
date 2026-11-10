@@ -14,6 +14,7 @@
 
 namespace duckdb {
 class ClientContext;
+class LogicalFilter;
 class Optimizer;
 
 class InClauseRewriter : public LogicalOperatorVisitor {
@@ -36,6 +37,12 @@ public:
 	//! capture or the guard
 	void VisitExpression(unique_ptr<Expression> *expression) override;
 	unique_ptr<Expression> VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) override;
+
+private:
+	//! Whether VisitExpression reaches a rewritable IN in this expression
+	static bool VisitsRewritableInClause(const Expression &expr);
+	//! Cut the filter in front of each barred expression holding an IN the rewriter turns into a join
+	static void SplitBarrierFilter(LogicalFilter &filter);
 };
 
 } // namespace duckdb

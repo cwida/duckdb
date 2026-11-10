@@ -4,6 +4,7 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
@@ -40,10 +41,74 @@ bool InClauseRewriter::HasRewritableInClause(const Expression &expr) {
 	return result;
 }
 
+bool InClauseRewriter::VisitsRewritableInClause(const Expression &expr) {
+	// same descent as VisitExpression: not below an error capture, and only into the first child of a conjunction,
+	// CASE or COALESCE
+	const auto expression_type = expr.GetExpressionType();
+	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+		return false;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR &&
+	    (expression_type == ExpressionType::COMPARE_IN || expression_type == ExpressionType::COMPARE_NOT_IN)) {
+		return HasRewritableInClause(expr);
+	}
+	const bool first_child_only = expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION ||
+	                              expr.GetExpressionClass() == ExpressionClass::BOUND_CASE ||
+	                              expression_type == ExpressionType::OPERATOR_COALESCE;
+	bool result = false;
+	bool first = true;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!result && (first || !first_child_only)) {
+			result = VisitsRewritableInClause(child);
+		}
+		first = false;
+	});
+	return result;
+}
+
+void InClauseRewriter::SplitBarrierFilter(LogicalFilter &filter) {
+	// an IN rewritten to a mark join is evaluated below its filter, before every expression of that filter. an IN
+	// inside a barred expression may only run after the expressions listed before it: cut the filter in front of each
+	// such IN, so that each mark join lands directly above the expressions that precede its IN
+	vector<idx_t> cuts;
+	for (idx_t i = 1; i < filter.expressions.size(); i++) {
+		const auto &expr = *filter.expressions[i];
+		if (ExpressionBarrier::Contains(expr) && VisitsRewritableInClause(expr)) {
+			cuts.push_back(i);
+		}
+	}
+	if (cuts.empty()) {
+		return;
+	}
+	// build the filters bottom-up: the expressions before the first cut go in the lowest filter
+	auto expressions = std::move(filter.expressions);
+	filter.expressions.clear();
+	auto child = std::move(filter.children[0]);
+	idx_t begin = 0;
+	for (auto cut : cuts) {
+		auto lower = make_uniq<LogicalFilter>();
+		if (child->has_estimated_cardinality) {
+			lower->SetEstimatedCardinality(child->estimated_cardinality);
+		}
+		for (idx_t i = begin; i < cut; i++) {
+			lower->expressions.push_back(std::move(expressions[i]));
+		}
+		lower->children.push_back(std::move(child));
+		child = std::move(lower);
+		begin = cut;
+	}
+	for (idx_t i = begin; i < expressions.size(); i++) {
+		filter.expressions.push_back(std::move(expressions[i]));
+	}
+	filter.children[0] = std::move(child);
+}
+
 unique_ptr<LogicalOperator> InClauseRewriter::Rewrite(unique_ptr<LogicalOperator> op) {
 	switch (op->type) {
-	case LogicalOperatorType::LOGICAL_PROJECTION:
-	case LogicalOperatorType::LOGICAL_FILTER: {
+	case LogicalOperatorType::LOGICAL_FILTER:
+		SplitBarrierFilter(op->Cast<LogicalFilter>());
+		DUCKDB_EXPLICIT_FALLTHROUGH;
+	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		current_op = op.get();
 		root = std::move(op->children[0]);
 		VisitOperatorExpressions(*op);

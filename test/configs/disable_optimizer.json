@@ -34,7 +34,8 @@
       "reason": "Checks barrier ordering and scan pushdown performed by the optimizer.",
       "paths": [
         "test/sql/optimizer/barrier_projection_siblings.test",
-        "test/sql/optimizer/secure_view_barrier_nested.test"
+        "test/sql/optimizer/secure_view_barrier_nested.test",
+        "test/sql/optimizer/secure_view_barrier_in_clause.test"
       ]
     },
     {
