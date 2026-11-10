@@ -4,6 +4,8 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/multi_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "json_deserializer.hpp"
 #include "json_functions.hpp"
 #include "json_serializer.hpp"
@@ -79,6 +81,20 @@ static unique_ptr<FunctionData> JsonSerializeBind(BindScalarFunctionInput &input
 	return make_uniq<JsonSerializeBindData>(skip_if_null, skip_if_empty, skip_if_default, format);
 }
 
+// Dynamic PIVOT is rewritten to a MultiStatement (CREATE TYPE + SELECT). Serialize the
+// SELECT children so json_serialize_sql can inspect a query that executes as SELECT.
+static void CollectSelectStatements(SQLStatement &statement, vector<reference<SelectStatement>> &selects) {
+	if (statement.type == StatementType::MULTI_STATEMENT) {
+		for (auto &child : statement.Cast<MultiStatement>().statements) {
+			CollectSelectStatements(*child, selects);
+		}
+		return;
+	}
+	if (statement.type == StatementType::SELECT_STATEMENT) {
+		selects.push_back(statement.Cast<SelectStatement>());
+	}
+}
+
 static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &local_state = JSONFunctionLocalState::ResetAndGet(state);
 	auto alc = local_state.json_allocator->GetYYAlc();
@@ -100,17 +116,19 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 			auto statements_arr = yyjson_mut_arr(doc);
 
 			for (auto &statement : parser.statements) {
-				if (statement->type != StatementType::SELECT_STATEMENT) {
+				vector<reference<SelectStatement>> selects;
+				CollectSelectStatements(*statement, selects);
+				if (selects.empty()) {
 					throw NotImplementedException("Only SELECT statements can be serialized to json!");
 				}
-				auto &select = statement->Cast<SelectStatement>();
+				for (auto &select : selects) {
+					auto options = make_uniq<SerializationOptions>();
+					options->storage_compatibility = state.GetContext().db->config.options.storage_compatibility;
+					auto json = JsonSerializer::Serialize(select.get(), doc, info.skip_if_null, info.skip_if_empty,
+					                                      info.skip_if_default, *options);
 
-				auto options = make_uniq<SerializationOptions>();
-				options->storage_compatibility = state.GetContext().db->config.options.storage_compatibility;
-				auto json = JsonSerializer::Serialize(select, doc, info.skip_if_null, info.skip_if_empty,
-				                                      info.skip_if_default, *options);
-
-				yyjson_mut_arr_append(statements_arr, json);
+					yyjson_mut_arr_append(statements_arr, json);
+				}
 			}
 
 			yyjson_mut_obj_add_false(doc, result_obj, "error");

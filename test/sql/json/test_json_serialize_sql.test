@@ -239,6 +239,39 @@ SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT * FROM ms P
 ----
 1	10
 
+# Dynamic PIVOT is a MultiStatement (CREATE TYPE + SELECT). Serialize the SELECT (#25310).
+query I
+SELECT json_extract_string(json_serialize_sql($$
+PIVOT (VALUES ('a', 1), ('b', 2)) t(k, v)
+ON k
+USING sum(v)
+$$), '$.error');
+----
+false
+
+query I
+SELECT json_extract_string(json_serialize_sql($$
+PIVOT (VALUES ('a', 1), ('b', 2)) t(k, v)
+ON k
+USING sum(v)
+$$), '$.statements[0].node.from_table.type');
+----
+PIVOT
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql($$
+PIVOT (VALUES ('a', 1), ('b', 2)) t(k, v)
+ON k
+USING sum(v)
+$$));
+----
+<REGEX>:.*PIVOT.*__pivot_enum_.*
+
+query I
+SELECT json_extract_string(json_serialize_sql('CREATE TABLE t(i INTEGER)'), '$.error_message');
+----
+Only SELECT statements can be serialized to json!
+
 statement error
 PRAGMA json_execute_serialized_sql(NULL);
 ----
