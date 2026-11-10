@@ -40,9 +40,9 @@ CREATE TABLE attached.s.t(i INTEGER)
 
 # Names, aliases and reordered/duplicate projections across catalogs.
 query TTTT rowsort
-SELECT table_name AS n, schema_name, database_name, table_name FROM duckdb_tables()
+SELECT table_name AS n, schema_name, CASE WHEN database_name = current_database() THEN 'current' ELSE database_name END, table_name FROM duckdb_tables()
 ----
-t	main	memory	t
+t	main	current	t
 t	s	attached	t
 tmp	main	temp	tmp
 
@@ -65,38 +65,38 @@ SELECT table_name FROM duckdb_tables() WHERE estimated_size > 0
 t
 
 query TI
-SELECT table_name, estimated_size FROM duckdb_tables() WHERE database_name = 'memory' ORDER BY index_count
+SELECT table_name, estimated_size FROM duckdb_tables() WHERE database_name = current_database() ORDER BY index_count
 ----
 t	2
 
 query II
-SELECT index_count, estimated_size FROM duckdb_tables() WHERE database_name = 'memory'
+SELECT index_count, estimated_size FROM duckdb_tables() WHERE database_name = current_database()
 ----
 2	2
 
 query IIII
-SELECT check_constraint_count, column_count, temporary, has_primary_key FROM duckdb_tables() WHERE database_name = 'memory'
+SELECT check_constraint_count, column_count, temporary, has_primary_key FROM duckdb_tables() WHERE database_name = current_database()
 ----
 1	2	False	True
 
 query T
-SELECT comment FROM duckdb_tables() WHERE database_name = 'memory'
+SELECT comment FROM duckdb_tables() WHERE database_name = current_database()
 ----
 projected comment
 
 query TT rowsort
-SELECT table_name, comment FROM duckdb_tables() WHERE database_name <> 'memory'
+SELECT table_name, comment FROM duckdb_tables() WHERE database_name <> current_database()
 ----
 t	NULL
 tmp	NULL
 
 query IIII
-SELECT database_oid IS NOT NULL, schema_oid IS NOT NULL, table_oid IS NOT NULL, internal FROM duckdb_tables() WHERE database_name = 'memory'
+SELECT database_oid IS NOT NULL, schema_oid IS NOT NULL, table_oid IS NOT NULL, internal FROM duckdb_tables() WHERE database_name = current_database()
 ----
 True	True	True	False
 
 query I
-SELECT cardinality(tags) FROM duckdb_tables() WHERE database_name = 'memory'
+SELECT cardinality(tags) FROM duckdb_tables() WHERE database_name = current_database()
 ----
 0
 
