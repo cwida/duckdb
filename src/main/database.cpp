@@ -18,8 +18,10 @@
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/main/capi/extension_api.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/connection.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/database_file_path_manager.hpp"
@@ -702,6 +704,25 @@ ValidChecker &DatabaseInstance::GetValidChecker() {
 const duckdb_ext_api_v1 DatabaseInstance::GetExtensionAPIV1() {
 	D_ASSERT(create_api_v1);
 	return create_api_v1();
+}
+
+unique_ptr<QueryResult> DatabaseInstance::CreateAConnectionAndQuery(const string &sql) {
+	// Execution runs through the C API vtable, whose entries are reached via the create_api_v1 function pointer.
+	// That pointer is only assigned in the host's InitializeInstance, so an extension that calls this method does not
+	// statically reference the parser/binder/optimizer and can strip them from its binary.
+	auto api = GetExtensionAPIV1();
+	DatabaseWrapper db_wrapper;
+	db_wrapper.database = make_shared_ptr<DuckDB>(*this);
+	auto db = reinterpret_cast<duckdb_database>(&db_wrapper);
+	duckdb_connection conn = nullptr;
+	api.duckdb_connect(db, &conn);
+	duckdb_result c_result;
+	api.duckdb_query(conn, sql.c_str(), &c_result);
+	auto &result_data = *reinterpret_cast<DuckDBResultData *>(c_result.internal_data);
+	auto result = std::move(result_data.result);
+	api.duckdb_destroy_result(&c_result);
+	api.duckdb_disconnect(&conn);
+	return result;
 }
 
 void DatabaseInstance::InvokeExtensionEntrypointV2(const ExtensionInitResult &init_result, const string &extension_name,

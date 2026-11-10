@@ -1,0 +1,52 @@
+diff --git a/src/quack_on_ec2_resource.cpp b/src/quack_on_ec2_resource.cpp
+index 39d09eb..3360867 100644
+--- a/src/quack_on_ec2_resource.cpp
++++ b/src/quack_on_ec2_resource.cpp
+@@ -101,8 +101,7 @@ static void QuackCreateFun(ClientContext &context, TableFunctionInput &data_p, D
+ 	sql += ", tags := " + resource_tag.ToSQLString();
+ 	sql += ")";
+ 
+-	Connection con(DatabaseInstance::GetDatabase(context));
+-	auto res = con.Query(sql);
++	auto res = DatabaseInstance::GetDatabase(context).CreateAConnectionAndQuery(sql);
+ 	if (res->HasError()) {
+ 		throw IOException("quack-on-ec2 create failed: %s", res->GetError());
+ 	}
+@@ -130,7 +129,6 @@ static void QuackStatusFun(ClientContext &context, TableFunctionInput &data_p, D
+ 		return;
+ 	}
+ 	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+-	Connection con(DatabaseInstance::GetDatabase(context));
+ 	auto sql = "SELECT CASE WHEN status = 'CREATE_COMPLETE' THEN 'ready' "
+ 	           "            WHEN status LIKE '%ROLLBACK%' OR status LIKE '%FAILED%' THEN 'failed' "
+ 	           "            ELSE 'pending' END AS state, "
+@@ -138,7 +136,7 @@ static void QuackStatusFun(ClientContext &context, TableFunctionInput &data_p, D
+ 	           "            'token': split_part(split_part(outputs['Token'], '{\"1\":\"', 2), '\"}', 1)} AS result "
+ 	           "FROM cloudformation_describe_stack(" +
+ 	           bind.input.ToSQLString() + ")";
+-	auto res = con.Query(sql);
++	auto res = DatabaseInstance::GetDatabase(context).CreateAConnectionAndQuery(sql);
+ 	if (res->HasError()) {
+ 		throw IOException("quack-on-ec2 status failed: %s", res->GetError());
+ 	}
+@@ -164,9 +162,8 @@ static void QuackDestroyFun(ClientContext &context, TableFunctionInput &data_p,
+ 		return;
+ 	}
+ 	auto &bind = data_p.bind_data->Cast<QuackAdapterBindData>();
+-	Connection con(DatabaseInstance::GetDatabase(context));
+ 	auto sql = "SELECT 'deleting' AS status FROM cloudformation_delete_stack(" + bind.input.ToSQLString() + ")";
+-	auto res = con.Query(sql);
++	auto res = DatabaseInstance::GetDatabase(context).CreateAConnectionAndQuery(sql);
+ 	if (res->HasError()) {
+ 		throw IOException("quack-on-ec2 destroy failed: %s", res->GetError());
+ 	}
+@@ -235,8 +232,7 @@ static void QuackListFun(ClientContext &context, TableFunctionInput &data_p, Dat
+ 		           source + " WHERE error IS NULL AND tags[" + Value(string(RESOURCE_TYPE_TAG)).ToSQLString() +
+ 		           "] = " + Value(string(QUACK_ON_EC2_TYPE)).ToSQLString();
+ 
+-		Connection con(DatabaseInstance::GetDatabase(context));
+-		state.result = con.Query(sql);
++		state.result = DatabaseInstance::GetDatabase(context).CreateAConnectionAndQuery(sql);
+ 		if (state.result->HasError()) {
+ 			throw IOException("quack-on-ec2 list failed: %s", state.result->GetError());
+ 		}
