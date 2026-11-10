@@ -1144,6 +1144,30 @@ public:
 		return result;
 	}
 
+	//! Whether a column and its nested fields read the file fields of the same name
+	static bool KeepsFileNames(const MultiFileColumnDefinition &column) {
+		if (!column.identifier.IsNull() && (column.identifier.type().id() != LogicalTypeId::VARCHAR ||
+		                                    column.identifier.GetValue<string>() != column.name.GetIdentifierName())) {
+			return false;
+		}
+		for (auto &child : column.children) {
+			if (!KeepsFileNames(child)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	//! Whether the "schema" option maps the named output column onto the file column of the same name
+	static bool SchemaKeepsFileNames(const vector<MultiFileColumnDefinition> &schema, const Identifier &col_name) {
+		for (auto &column : schema) {
+			if (column.name == col_name) {
+				return KeepsFileNames(column);
+			}
+		}
+		return false;
+	}
+
 	static unique_ptr<BaseStatistics> MultiFileScanStatsInternal(ClientContext &context,
 	                                                             TableFunctionGetStatisticsInput &input) {
 		auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
@@ -1190,6 +1214,10 @@ public:
 
 		if (!bind_data.file_options.bound_schema.empty() && bind_data.IsGeneratedColumn(primary_index)) {
 			// A physical shadow's bounds do not describe the generated path. Explicit scan statistics above still do.
+			return nullptr;
+		}
+		if (!bind_data.file_options.schema.empty() && !SchemaKeepsFileNames(bind_data.file_options.schema, col_name)) {
+			// The files' statistics are looked up by output name, not through the schema's column mapping
 			return nullptr;
 		}
 		if (!opened_a_file && bind_data.union_readers.empty()) {
@@ -1242,8 +1270,9 @@ public:
 		} else {
 			result = bind_data.initial_reader ? bind_data.initial_reader->GetStatistics(context, col_name)
 			                                  : bind_data.union_readers[0]->GetStatistics(context, col_name);
-			if (result && !bind_data.file_options.bound_schema.empty() &&
-			    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
+			if (result && (result->GetType() != bind_data.types[primary_index] ||
+			               (!bind_data.file_options.bound_schema.empty() &&
+			                !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())))) {
 				// Check the whole root before interpreting an extracted child's positional statistics.
 				return nullptr;
 			}
