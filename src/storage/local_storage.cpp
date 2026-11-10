@@ -197,15 +197,30 @@ ErrorData LocalTableStorage::AppendToIndexes(DuckTransaction &transaction, RowGr
 	return error;
 }
 
-void LocalTableStorage::AppendToTable(DuckTransaction &transaction, TableAppendState &append_state) {
+ErrorData LocalTableStorage::AppendToTable(DuckTransaction &transaction, TableAppendState &append_state) {
 	auto &table = table_ref.get();
-	table.InitializeAppend(transaction, append_state);
-	auto &collection = *row_groups->collection;
-	for (auto &table_chunk : collection.Chunks(transaction)) {
-		// Append to the base table.
-		table.Append(table_chunk, append_state);
+	const auto index_end = append_state.current_row;
+	try {
+		table.InitializeAppend(transaction, append_state);
+		auto &collection = *row_groups->collection;
+		for (auto &table_chunk : collection.Chunks(transaction)) {
+			// Append to the base table.
+			table.Append(table_chunk, append_state);
+		}
+		table.FinalizeAppend(transaction, append_state);
+	} catch (std::exception &ex) {
+		// remove the rows and index entries that the failed append added
+		table.RevertFailedAppend(append_state);
+		// free the memory of the reverted rows before this storage is scanned again
+		append_state.row_group_append_state.states.reset();
+		append_state.row_groups.reset();
+		auto revert_error = RevertAppendToIndexes(transaction, append_state.row_start, index_end);
+		if (revert_error.HasError()) {
+			revert_error.Throw();
+		}
+		return ErrorData(ex);
 	}
-	table.FinalizeAppend(transaction, append_state);
+	return ErrorData();
 }
 
 ErrorData LocalTableStorage::AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state) {
@@ -648,9 +663,7 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 		// flushed a partial row group that does not qualify as a bulk append
 		storage.Rollback();
 	}
-	// Rollback can only undo changes recorded in the undo buffer, which happens in PushAppend.
-	// Until then, a returned error means the shared state was restored (retryable commit failure);
-	// anything thrown may have left unrevertable changes and invalidates the database.
+	// until PushAppend, a returned error means the shared state was restored; anything thrown invalidates
 	ErrorData retryable_error;
 	try {
 		retryable_error = storage.AppendToIndexes(transaction, append_state);
@@ -659,21 +672,7 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 				// move over the row groups
 				table.MergeStorage(storage.GetCollection(), commit_state);
 			} else {
-				const auto index_end = append_state.current_row;
-				try {
-					storage.AppendToTable(transaction, append_state);
-				} catch (std::exception &ex) {
-					retryable_error = ErrorData(ex);
-					// remove the rows and index entries that the failed append added
-					table.RevertFailedAppend(append_state);
-					// free the memory of the reverted rows before this storage is scanned again
-					append_state.row_group_append_state.states.reset();
-					append_state.row_groups.reset();
-					auto revert_error = storage.RevertAppendToIndexes(transaction, append_state.row_start, index_end);
-					if (revert_error.HasError()) {
-						revert_error.Throw();
-					}
-				}
+				retryable_error = storage.AppendToTable(transaction, append_state);
 			}
 		}
 		if (!retryable_error.HasError()) {
