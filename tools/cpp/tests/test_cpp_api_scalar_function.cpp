@@ -733,6 +733,21 @@ TEST_CASE("Stable C++API: scalar function properties", "[cpp_api]") {
 	REQUIRE(volatile_rows >= 1000);
 	REQUIRE(consistent_rows < volatile_rows);
 
+	// The catalog reports CONSISTENT_WITHIN_QUERY, and index keys cannot contain the function.
+	auto within_query = ScalarFunction::Create(conn.GetFactory());
+	within_query.SetName("prop_query")
+	    .SetExecCallback(CountingOneExec)
+	    .SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+	within_query.GetSignature().AddParameter("a", integer).SetReturnType(integer);
+	conn.Register(within_query);
+
+	REQUIRE(CollectInts(conn.Execute("SELECT count(*)::INTEGER FROM duckdb_functions() WHERE function_name = "
+	                                 "'prop_query' AND stability = 'CONSISTENT_WITHIN_QUERY'")) ==
+	        std::vector<int32_t> {1});
+	conn.Execute("CREATE TABLE prop_keys (a INTEGER)").Drain();
+	REQUIRE_THROWS_MATCHES(conn.Execute("CREATE INDEX prop_index ON prop_keys ((prop_query(a)))").Drain(), Exception,
+	                       HasErrorCode(DUCKDB_V2_ERROR_QUERY_BINDER));
+
 	// SPECIAL null handling: the callback runs for a NULL argument and produces
 	// a value; with default handling the result would be NULL.
 	auto special = ScalarFunction::Create(conn.GetFactory());

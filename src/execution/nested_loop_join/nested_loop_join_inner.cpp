@@ -121,7 +121,7 @@ static idx_t NestedLoopJoinTypeSwitch(const Vector &left, const Vector &right, i
 		return NLTYPE::template Operation<string_t, OP>(left, right, left_size, right_size, lpos, rpos, lvector,
 		                                                rvector, current_match_count);
 	default:
-		throw InternalException("Unimplemented type for join!");
+		InternalException::Throw("Unimplemented type for join!");
 	}
 }
 
@@ -156,7 +156,7 @@ idx_t NestedLoopJoinComparisonSwitch(const Vector &left, const Vector &right, id
 		return NestedLoopJoinTypeSwitch<NLTYPE, NotDistinctFrom>(left, right, left_size, right_size, lpos, rpos,
 		                                                         lvector, rvector, current_match_count);
 	default:
-		throw NotImplementedException("Unimplemented comparison type for join!");
+		NotImplementedException::Throw("Unimplemented comparison type for join!");
 	}
 }
 

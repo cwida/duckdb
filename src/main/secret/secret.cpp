@@ -8,6 +8,7 @@
 #include "duckdb/parser/parsed_data/create_info.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 
@@ -161,7 +162,7 @@ KeyValueSecretReader::KeyValueSecretReader(DatabaseInstance &db_p, const char *s
 
 KeyValueSecretReader::KeyValueSecretReader(ClientContext &context_p, const char **secret_types, idx_t secret_types_len,
                                            string path_p) {
-	context = context_p;
+	context = &context_p.GetContext();
 	path = std::move(path_p);
 	Initialize(secret_types, secret_types_len);
 }
@@ -181,8 +182,7 @@ void KeyValueSecretReader::Initialize(const char **secret_types, idx_t secret_ty
 	}
 
 	auto &secret_manager = db->GetSecretManager();
-	auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
-	                           : CatalogTransaction::GetSystemTransaction(*db);
+	auto transaction = context ? context->GetSystemCatalogTransaction() : CatalogTransaction::GetSystemTransaction(*db);
 
 	SecretMatch secret_match;
 	for (idx_t i = 0; i < secret_types_len; i++) {
@@ -201,16 +201,45 @@ void KeyValueSecretReader::Initialize(const char **secret_types, idx_t secret_ty
 
 KeyValueSecretReader::KeyValueSecretReader(const KeyValueSecret &secret_p, FileOpener &opener_p) : secret(secret_p) {
 	db = opener_p.TryGetDatabase();
-	context = opener_p.TryGetClientContext();
+	context = &opener_p.TryGetContext();
 }
 
 KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<FileOpenerInfo> info,
                                            const char **secret_types, idx_t secret_types_len) {
 	db = opener_p.TryGetDatabase();
-	context = opener_p.TryGetClientContext();
+	context = &opener_p.TryGetContext();
 
 	if (info) {
-		path = info->file_path;
+		path = info->file.path;
+	}
+	string secret_name;
+	if (info && info->file.extended_info && info->file.extended_info->TryGetSecretName(secret_name)) {
+		// the file names the secret to open it with: look up none by path
+		if (!db) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' cannot be looked up without a database",
+			                                    secret_name, path);
+		}
+		auto transaction =
+		    context ? context->GetSystemCatalogTransaction() : CatalogTransaction::GetSystemTransaction(*db);
+		secret_entry = db->GetSecretManager().GetSecretByName(transaction, secret_name);
+		if (!secret_entry) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' not found", secret_name, path);
+		}
+		auto &named_secret = *secret_entry->secret;
+		if (named_secret.MatchScore(path) == NumericLimits<int64_t>::Minimum()) {
+			throw InvalidConfigurationException(
+			    "Secret '%s' named by '%s' does not apply to it: the path is outside the secret's scope", secret_name,
+			    path);
+		}
+		auto &type = named_secret.GetType();
+		for (idx_t i = 0; i < secret_types_len; i++) {
+			if (StringUtil::CIEquals(type.GetIdentifierName(), secret_types[i])) {
+				secret = named_secret.Cast<KeyValueSecret>();
+				return;
+			}
+		}
+		throw InvalidConfigurationException("Secret '%s' named by '%s' is of type %s, which this read does not take",
+		                                    secret_name, path, type);
 	}
 
 	Initialize(secret_types, secret_types_len);

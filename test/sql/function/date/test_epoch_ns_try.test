@@ -1,0 +1,50 @@
+# name: test/sql/function/date/test_epoch_ns_try.test
+# description: TRY(epoch_ns) over a column with timestamps outside the nanosecond range
+# group: [date]
+
+statement ok
+CREATE TABLE t(o TIMESTAMP);
+
+statement ok
+INSERT INTO t VALUES (TIMESTAMP '2300-01-01'), (TIMESTAMP '2000-01-01');
+
+query I
+SELECT TRY(epoch_ns(o)) FROM t;
+----
+NULL
+946684800000000000
+
+statement error
+SELECT epoch_ns(o) FROM t;
+----
+<REGEX>:Conversion Error.*
+
+statement ok
+CREATE TABLE d(o DATE);
+
+statement ok
+INSERT INTO d VALUES (DATE '2300-01-01'), (DATE '2000-01-01');
+
+query I
+SELECT TRY(epoch_ns(o)) FROM d;
+----
+NULL
+946684800000000000
+
+# the same holds for epoch_us of a date beyond the microsecond range
+statement ok
+CREATE TABLE d_us(o DATE);
+
+statement ok
+INSERT INTO d_us VALUES (DATE '300000-01-01'), (DATE '2000-01-01');
+
+query I
+SELECT TRY(epoch_us(o)) FROM d_us;
+----
+NULL
+946684800000000
+
+statement error
+SELECT epoch_us(o) FROM d_us;
+----
+<REGEX>:Conversion Error.*

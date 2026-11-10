@@ -8,9 +8,10 @@ require json
 
 # A deeply nested array used to make the writer recurse once per level into an equally deep 'typed_value' schema,
 # overflowing the stack. Now the shredded type stops at 32 levels. The JSON -> VARIANT cast itself still recurses once
-# per level, so the depth stays moderate enough for the sanitizer builds (compare test/sql/peg_parser/deep_nesting.test).
+# per level, and the release tests run worker threads with 128 KiB stacks (--thread-stack-size, as musl sizes them),
+# where 500 and 200 levels overflowed; 100 levels are well past the 32 that matter here.
 statement ok
-COPY (SELECT (repeat('[', 500) || '1' || repeat(']', 500))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array.parquet'
+COPY (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array.parquet'
 
 query I
 SELECT count(*) FROM '{TEST_DIR}/variant_deep_array.parquet'
@@ -24,18 +25,10 @@ SELECT count(*) FILTER (name = 'list'), count(*) FILTER (name = 'typed_value') F
 32	32
 
 # The value reads back whole
-statement ok
-COPY (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_array_100.parquet'
-
 query I
-SELECT DISTINCT v::JSON::VARCHAR = repeat('[', 100) || '1' || repeat(']', 100) FROM '{TEST_DIR}/variant_deep_array_100.parquet'
+SELECT DISTINCT v::JSON::VARCHAR = repeat('[', 100) || '1' || repeat(']', 100) FROM '{TEST_DIR}/variant_deep_array.parquet'
 ----
 true
-
-query II
-SELECT count(*) FILTER (name = 'list'), count(*) FILTER (name = 'typed_value') FROM parquet_schema('{TEST_DIR}/variant_deep_array_100.parquet')
-----
-32	32
 
 # The same for objects: 40 nested objects with a single key, shredded 32 levels deep
 statement ok
@@ -54,7 +47,7 @@ SELECT count(*) FILTER (name = 'k'), count(*) FILTER (name = 'typed_value') FROM
 
 # A deep value next to shallow ones does not stop those from being shredded
 statement ok
-COPY (SELECT ('{"a": 1, "b": "x", "c": ' || repeat('[', 200) || '1' || repeat(']', 200) || '}')::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_field.parquet'
+COPY (SELECT ('{"a": 1, "b": "x", "c": ' || repeat('[', 100) || '1' || repeat(']', 100) || '}')::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_deep_field.parquet'
 
 query I
 SELECT DISTINCT (v.a::INTEGER, v.b::VARCHAR) FROM '{TEST_DIR}/variant_deep_field.parquet'

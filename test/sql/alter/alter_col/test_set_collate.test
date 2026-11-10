@@ -55,7 +55,7 @@ ALTER TABLE t ALTER COLUMN s TYPE VARCHAR COLLATE nonexistent_collation;
 
 # the collation is stored in the table definition
 query I
-SELECT sql LIKE '%s VARCHAR COLLATE nocase%' FROM duckdb_tables() WHERE table_name = 't'
+SELECT sql LIKE '%s VARCHAR(''nocase'')%' FROM duckdb_tables() WHERE table_name = 't'
 ----
 true
 
@@ -73,7 +73,7 @@ x1
 x2
 
 query I
-SELECT sql LIKE '%c VARCHAR COLLATE nocase%' FROM duckdb_tables() WHERE table_name = 't'
+SELECT sql LIKE '%c VARCHAR(''nocase'')%' FROM duckdb_tables() WHERE table_name = 't'
 ----
 true
 

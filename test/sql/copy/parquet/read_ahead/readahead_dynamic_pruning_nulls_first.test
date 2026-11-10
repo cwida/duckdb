@@ -1,0 +1,44 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test
+# description: Queued Parquet row groups are pruned before decoding when the Top-N dynamic filter sits inside an OR (NULLS FIRST)
+# group: [read_ahead]
+
+require parquet
+
+require vector_size 2048
+
+statement ok
+SET threads=1
+
+statement ok
+SET async_threads=1
+
+statement ok
+SET read_ahead_depth=64
+
+statement ok
+COPY (SELECT i FROM range(16384) t(i)) TO '{TEST_DIR}/recheck_nulls_first.parquet' (ROW_GROUP_SIZE 2048)
+
+statement ok
+CALL enable_logging(['PhysicalOperator', 'ParquetPrefetch'])
+
+# NULLS FIRST pushes the boundary down as "i IS NULL OR dynamic_filter(i)", not as a bare dynamic filter
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/recheck_nulls_first.parquet') ORDER BY i NULLS FIRST LIMIT 3
+----
+0
+1
+2
+
+# all eight groups were prepared before the only scan thread could publish the boundary
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='ParquetReader' AND event='ReadRowGroup'
+----
+8
+
+# only the first group may reach decoding
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%recheck_nulls_first.parquet'
+----
+1

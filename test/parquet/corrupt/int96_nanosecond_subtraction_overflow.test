@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/int96_nanosecond_subtraction_overflow.test
+# description: Saturate out-of-range INT96 timestamps without signed subtraction overflow
+# group: [corrupt]
+
+require parquet
+
+# INT64_MIN nanoseconds on the day before the epoch is below the TIMESTAMP_NS range.
+query T
+SELECT ts::VARCHAR FROM read_parquet('data/parquet-testing/corrupt/int96_nanosecond_subtraction_overflow.parquet', int96_as='timestamp_ns');
+----
+-infinity

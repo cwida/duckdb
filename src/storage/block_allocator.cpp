@@ -30,6 +30,18 @@
 
 namespace duckdb {
 
+template <class FUNC>
+static data_ptr_t RetryAfterReclaiming(const BlockAllocator &block_allocator, FUNC &&allocate) {
+	try {
+		return allocate();
+	} catch (const std::bad_alloc &) {
+	} catch (const OutOfMemoryException &) {
+	}
+	// Cached backing must not cause an otherwise avoidable allocation failure.
+	block_allocator.FlushAll();
+	return allocate();
+}
+
 struct BlockAllocatorConfig {
 	//! Blocks transferred between thread-local caches and global queues.
 	static constexpr idx_t BATCH_SIZE = 16;
@@ -238,7 +250,8 @@ public:
 		}
 
 		// We have also run out of global blocks, use fallback allocator
-		return block_allocator->allocator.AllocateData(block_allocator->block_size);
+		return RetryAfterReclaiming(
+		    *block_allocator, [&] { return block_allocator->allocator.AllocateData(block_allocator->block_size); });
 	}
 
 	void Free(const data_ptr_t pointer) {
@@ -316,6 +329,9 @@ private:
 			if (now >= next_decay_check) {
 				next_decay_check = now + BlockAllocatorConfig::ACTIVE_DECAY_INTERVAL_MS;
 				try {
+					block_allocator->FlushAllocationCache(BlockAllocatorConfig::MAX_FLUSH_BLOCKS *
+					                                          block_allocator->block_size,
+					                                      BlockAllocator::ReclaimMode::OPPORTUNISTIC);
 					block_allocator->FreeInternal(optional_idx(), BlockAllocatorConfig::MAX_FLUSH_BLOCKS,
 					                              BlockAllocator::ReclaimMode::OPPORTUNISTIC);
 				} catch (...) {
@@ -374,11 +390,11 @@ static bool ThreadHasLocalState() {
 class AllocationCache {
 	using Queue = duckdb_moodycamel::ConcurrentQueue<data_ptr_t>;
 	static constexpr idx_t MIN_SHIFT = 19;
-	static constexpr idx_t MAX_SHIFT = 26;
+	static constexpr idx_t MAX_SHIFT = 32;
 	static constexpr idx_t MAX_SHARDS = 256;
 	static constexpr idx_t CPUS_PER_SHARD = 4;
 	static constexpr idx_t MAX_LOCAL_SPARES = 16;
-	// An admission ceiling, independent of pressure-driven reclamation.
+	// Retain at most 1 GiB per size class, or one larger allocation.
 	static constexpr idx_t MAX_CACHED_BYTES_PER_BUCKET = 1024ULL * 1024 * 1024;
 
 	struct alignas(64) Bucket {
@@ -428,7 +444,8 @@ public:
 			return false;
 		}
 		auto &bucket = buckets[CountZeros<idx_t>::Trailing(size) - MIN_SHIFT];
-		if (bucket.count.fetch_add(1, std::memory_order_relaxed) < MAX_CACHED_BYTES_PER_BUCKET / size) {
+		if (bucket.count.fetch_add(1, std::memory_order_relaxed) <
+		    MaxValue<idx_t>(MAX_CACHED_BYTES_PER_BUCKET / size, 1)) {
 			try {
 				const auto now = RetentionTimeMillis();
 				auto last_return = bucket.last_return_ms.load(std::memory_order_relaxed);
@@ -647,7 +664,7 @@ data_ptr_t BlockAllocator::AllocateData(const idx_t size) const {
 				return pointer;
 			}
 		}
-		return allocator.AllocateData(size);
+		return RetryAfterReclaiming(*this, [&] { return allocator.AllocateData(size); });
 	}
 	return GetBlockAllocatorThreadLocalState(*this).Allocate();
 }
@@ -693,7 +710,7 @@ data_ptr_t BlockAllocator::ReallocateData(const data_ptr_t pointer, const idx_t 
 	const bool old_in_pool = IsInPool(pointer);
 	const bool new_can_use_pool = new_size == block_size && TryUsePool();
 	if (!old_in_pool && !new_can_use_pool) {
-		return allocator.ReallocateData(pointer, old_size, new_size);
+		return RetryAfterReclaiming(*this, [&] { return allocator.ReallocateData(pointer, old_size, new_size); });
 	}
 
 	// Either old or new can be in the pool: allocate, copy, and free
@@ -739,21 +756,13 @@ static void AdviseHugePages(data_ptr_t pointer, idx_t size) {
 }
 
 data_ptr_t BlockAllocator::AllocateHugeData(const idx_t size) const {
-	auto pointer = size == block_size && TryUsePool() ? GetBlockAllocatorThreadLocalState(*this).Allocate()
-	                                                  : allocator.AllocateData(size);
+	auto pointer = AllocateData(size);
 	AdviseHugePages(pointer, size);
 	return pointer;
 }
 
 void BlockAllocator::FreeHugeData(data_ptr_t pointer, const idx_t size) const {
-	if (IsInPool(pointer)) {
-		FreeData(pointer, size);
-		return;
-	}
-	allocator.FreeData(pointer, size);
-	if (pointer) {
-		estimated_unflushed_memory.fetch_add(size, std::memory_order_relaxed);
-	}
+	FreeData(pointer, size);
 }
 
 bool BlockAllocator::SupportsFlush() const {
@@ -936,9 +945,16 @@ bool BlockAllocator::HasPendingCacheDecay() const {
 }
 
 idx_t BlockAllocator::FlushAllocationCache(idx_t byte_limit, ReclaimMode mode) const noexcept {
-	annotated_lock_guard<annotated_mutex> guard(flush_lock);
+	annotated_unique_lock<annotated_mutex> guard(flush_lock, std::defer_lock);
+	if (mode == ReclaimMode::OPPORTUNISTIC) {
+		if (!guard.try_lock()) {
+			return 0;
+		}
+	} else {
+		guard.lock();
+	}
 	const auto freed = allocation_cache->Flush(
-	    byte_limit, mode == ReclaimMode::DECAY ? optional_idx(AllocationCacheIdleCutoff()) : optional_idx());
+	    byte_limit, mode != ReclaimMode::FORCE ? optional_idx(AllocationCacheIdleCutoff()) : optional_idx());
 	estimated_unflushed_memory.fetch_add(freed, std::memory_order_relaxed);
 	return freed;
 }
@@ -1061,6 +1077,9 @@ idx_t BlockAllocator::FreeInternal(const optional_idx block_limit, const optiona
 				guard.lock();
 			}
 			const auto eligible = MinValue(task_remaining, GetReclaimableBlockCount(mode, cache_limit));
+			if (eligible == 0) {
+				return 0;
+			}
 			count = touched->q.try_dequeue_bulk(to_free_buffer.begin(), MinValue(eligible, batch_size));
 			reclaiming_blocks += count;
 		}

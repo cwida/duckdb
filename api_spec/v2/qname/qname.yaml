@@ -45,11 +45,14 @@ functions:
     belongs_to: qname
     parameters:
       text:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The name text to parse. Borrowed for the call only.
+      text_length:
+        type: idx
+        description: The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this is 0.
       name:
         type: qname
         indirection: 1
@@ -75,11 +78,17 @@ functions:
     belongs_to: qname
     parameters:
       parts:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: An array of `part_count` non-empty identifiers, outermost first.
+      parts_lengths:
+        type: idx
         indirection: 1
         const: true
         kind: IN
-        description: An array of `part_count` non-empty identifier views, outermost first.
+        description: Byte lengths of the entries in `parts`; element i is the length of `parts[i]`. May be NULL only when `parts` is NULL.
       part_count:
         type: idx
         description: The number of parts, between one and three.
@@ -141,10 +150,16 @@ functions:
         type: idx
         description: Zero-based part index.
       part:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the part, valid until the qualified name is destroyed.
+        description: Receives a borrowed pointer to the part, valid until the qualified name is destroyed.
+      part_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*part` in bytes. `*part` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1

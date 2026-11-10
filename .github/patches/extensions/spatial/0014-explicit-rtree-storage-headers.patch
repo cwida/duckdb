@@ -1,0 +1,20 @@
+diff --git a/src/spatial/index/rtree/rtree_index.cpp b/src/spatial/index/rtree/rtree_index.cpp
+index 402abf4..4c63d4a 100644
+--- a/src/spatial/index/rtree/rtree_index.cpp
++++ b/src/spatial/index/rtree/rtree_index.cpp
+@@ -12,4 +12,5 @@
+ #include "duckdb/storage/checkpoint/table_index_writer.hpp"
+ #include "duckdb/storage/table/scan_state.hpp"
++#include "duckdb/storage/table_io_manager.hpp"
+ #include "duckdb/main/database.hpp"
+ #include "duckdb/transaction/duck_transaction.hpp"
+diff --git a/src/spatial/index/rtree/rtree_index_scan.cpp b/src/spatial/index/rtree/rtree_index_scan.cpp
+index 29d298d..2356e22 100644
+--- a/src/spatial/index/rtree/rtree_index_scan.cpp
++++ b/src/spatial/index/rtree/rtree_index_scan.cpp
+@@ -7,4 +7,5 @@
+ #include "duckdb/catalog/catalog.hpp"
+ #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
++#include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+ #include "duckdb/catalog/dependency_list.hpp"
+ #include "duckdb/common/mutex.hpp"

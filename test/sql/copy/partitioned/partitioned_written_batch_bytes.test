@@ -1,0 +1,259 @@
+# name: test/sql/copy/partitioned/partitioned_written_batch_bytes.test
+# description: Partitioned COPY sizes byte-limited batches from the columns it writes
+# group: [partitioned]
+
+require parquet
+
+statement ok
+SET threads=2;
+
+statement ok
+SET max_execution_time=60000;
+
+statement ok
+CREATE MACRO batches() AS TABLE
+SELECT regexp_extract(message, 'rows=(\d+)', 1)::BIGINT AS rows,
+       regexp_extract(message, 'size=(\d+)', 1)::BIGINT AS bytes,
+       regexp_extract(message, 'reason=([A-Z_]+)', 1) AS reason
+FROM duckdb_logs WHERE type='PhysicalOperator' AND message LIKE '%FlushBatch%';
+
+# Flush the small fixed-width input through planned batches instead of delayed partition buffers.
+statement ok
+SET partitioned_write_flush_threshold=16384;
+
+# The direct integer partition input stores three columns but writes only two.
+# Counting the bucket and tuple headers closed every batch below the 128 KiB target.
+statement ok
+CREATE TABLE fixed_input AS
+SELECT i AS k, 1::BIGINT AS payload, hash(i,6364136223846793005)%4 AS bucket
+FROM range(131072) t(i);
+
+# Keep the COPY and its in-memory log together under forced database restarts.
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY fixed_input TO '{TEST_DIR}/fixed'
+(FORMAT PARQUET, PARTITION_BY bucket, ROW_GROUP_SIZE 4194304, ROW_GROUP_SIZE_BYTES 131072);
+
+query IIII
+SELECT count(*) FILTER (WHERE reason='BATCH_SIZE_BYTES') >= 8,
+       min(bytes) FILTER (WHERE reason='BATCH_SIZE_BYTES') >= 131072,
+       count(*) FILTER (WHERE reason='FORCED_FLUSH') <= 4,
+       sum(rows)=131072
+FROM batches();
+----
+true	true	true	true
+
+statement ok
+COMMIT;
+
+query IIIIII
+SELECT count(*), count(DISTINCT k), min(k), max(k),
+       bool_and(payload=1), bool_and(bucket=hash(k,6364136223846793005)%4)
+FROM read_parquet('{TEST_DIR}/fixed/**/*.parquet', hive_partitioning=true);
+----
+131072	131072	0	131071	true	true
+
+# Keep the 8000-row partitions in planned batching without an earlier flush generation.
+statement ok
+SET partitioned_write_flush_threshold=8000;
+
+# A long unwritten partition key must not contribute to the byte limit either.
+# ORDER_BY keeps the sorted backend. The byte budget spans multiple input chunks,
+# including chunks before the one that reaches the limit.
+statement ok
+CREATE TABLE nested_input AS
+SELECT i AS k, repeat(CASE WHEN i%2=0 THEN 'a' ELSE 'b' END,200) AS part,
+       repeat(md5(i::VARCHAR),8) AS s,
+       struct_pack(x := CASE WHEN i%7=0 THEN NULL ELSE i END,
+                   ys := [i, NULL, i+1]) AS payload
+FROM range(16000) t(i);
+
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY nested_input TO '{TEST_DIR}/sorted'
+(FORMAT PARQUET, PARTITION_BY part, ORDER_BY k, ROW_GROUP_SIZE 4194304, ROW_GROUP_SIZE_BYTES 2097152);
+
+# Written values occupy at least 328 bytes per row. The row sizer counts 337, including
+# the list length and child validity. Allow that difference and one short tail per partition.
+# The row ceiling requires refinement of the chunk that crosses the byte limit.
+query IIII
+SELECT count(*) FILTER (WHERE bytes >= 2097152 * 328 // 337) >= 2,
+       count(*) FILTER (WHERE bytes < 2097152 * 328 // 337) <= 2,
+       max(rows) <= (2097152 + 327) // 328,
+       sum(rows)=16000
+FROM batches();
+----
+true	true	true	true
+
+statement ok
+COMMIT;
+
+query II
+SELECT (SELECT count(*) FROM (FROM nested_input EXCEPT ALL SELECT k,part,s,payload FROM read_parquet('{TEST_DIR}/sorted/**/*.parquet',hive_partitioning=true))),
+       (SELECT count(*) FROM (SELECT k,part,s,payload FROM read_parquet('{TEST_DIR}/sorted/**/*.parquet',hive_partitioning=true) EXCEPT ALL FROM nested_input));
+----
+0	0
+
+# When partition columns are written, their payload contributes to the same limit.
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY nested_input TO '{TEST_DIR}/written_partition'
+(FORMAT PARQUET, PARTITION_BY part, ORDER_BY k, WRITE_PARTITION_COLUMNS,
+ ROW_GROUP_SIZE 4194304, ROW_GROUP_SIZE_BYTES 2097152);
+
+# Writing the 200-byte key adds its 16-byte string reference and payload to both widths.
+query IIII
+SELECT count(*) FILTER (WHERE bytes >= 2097152 * 544 // 553) >= 4,
+       count(*) FILTER (WHERE bytes < 2097152 * 544 // 553) <= 2,
+       max(rows) <= (2097152 + 543) // 544,
+       sum(rows)=16000
+FROM batches();
+----
+true	true	true	true
+
+statement ok
+COMMIT;
+
+query II
+SELECT (SELECT count(*) FROM (FROM nested_input EXCEPT ALL SELECT k,part,s,payload FROM read_parquet('{TEST_DIR}/written_partition/**/*.parquet',hive_partitioning=false))),
+       (SELECT count(*) FROM (SELECT k,part,s,payload FROM read_parquet('{TEST_DIR}/written_partition/**/*.parquet',hive_partitioning=false) EXCEPT ALL FROM nested_input));
+----
+0	0
+
+query I
+WITH ordered AS (
+    SELECT k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS previous
+    FROM read_parquet('{TEST_DIR}/written_partition/**/*.parquet',filename=true,file_row_number=true)
+)
+SELECT count(*) FROM ordered WHERE previous > k;
+----
+0
+
+# A single VARCHAR partition without ORDER_BY uses the tuple shortcut. Its long key is
+# omitted once per row from the cached heap estimate, including chunks before the boundary.
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY (SELECT k, repeat('a',200) AS part, s, payload FROM nested_input)
+TO '{TEST_DIR}/single_string_partition'
+(FORMAT PARQUET, PARTITION_BY part, ROW_GROUP_SIZE 4194304, ROW_GROUP_SIZE_BYTES 2097152);
+
+query IIII
+SELECT count(*) FILTER (WHERE bytes >= 2097152 * 328 // 337) >= 2,
+       count(*) FILTER (WHERE bytes < 2097152 * 328 // 337) <= 1,
+       max(rows) <= (2097152 + 327) // 328,
+       sum(rows)=16000
+FROM batches();
+----
+true	true	true	true
+
+statement ok
+COMMIT;
+
+query III
+SELECT (SELECT count(*) FROM (SELECT k,s,payload FROM nested_input EXCEPT ALL SELECT k,s,payload FROM read_parquet('{TEST_DIR}/single_string_partition/**/*.parquet',hive_partitioning=true))),
+       (SELECT count(*) FROM (SELECT k,s,payload FROM read_parquet('{TEST_DIR}/single_string_partition/**/*.parquet',hive_partitioning=true) EXCEPT ALL SELECT k,s,payload FROM nested_input)),
+       (SELECT bool_and(part=repeat('a',200)) FROM read_parquet('{TEST_DIR}/single_string_partition/**/*.parquet',hive_partitioning=true));
+----
+0	0	true
+
+# The same variable-width payload through direct integer partition input, including
+# NULL partition values and duplicate rows. The two directions check multiplicities.
+statement ok
+CREATE TABLE direct_input AS
+SELECT k%100 AS k, CASE WHEN k%3=0 THEN NULL ELSE k%3 END AS part, s, payload
+FROM nested_input UNION ALL SELECT k%100, CASE WHEN k%3=0 THEN NULL ELSE k%3 END, s, payload FROM nested_input;
+
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY direct_input TO '{TEST_DIR}/direct_nested'
+(FORMAT PARQUET, PARTITION_BY part, ROW_GROUP_SIZE 4194304, ROW_GROUP_SIZE_BYTES 65536);
+
+query IIII
+SELECT count(*) FILTER (WHERE bytes >= 65536 * 328 // 337) > 10,
+       count(*) FILTER (WHERE bytes < 65536 * 328 // 337) <= 3,
+       max(rows) <= (65536 + 327) // 328,
+       sum(rows)=32000
+FROM batches();
+----
+true	true	true	true
+
+statement ok
+COMMIT;
+
+query II
+SELECT (SELECT count(*) FROM (FROM direct_input EXCEPT ALL SELECT k,part,s,payload FROM read_parquet('{TEST_DIR}/direct_nested/**/*.parquet',hive_partitioning=true))),
+       (SELECT count(*) FROM (SELECT k,part,s,payload FROM read_parquet('{TEST_DIR}/direct_nested/**/*.parquet',hive_partitioning=true) EXCEPT ALL FROM direct_input));
+----
+0	0
+
+statement ok
+RESET partitioned_write_flush_threshold;
+
+# With no byte limit, row-limit batching and short final batches keep their behavior.
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging(level='debug', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+COPY (SELECT i AS k, i%2 AS bucket FROM range(10000) t(i))
+TO '{TEST_DIR}/row_limit' (FORMAT PARQUET, PARTITION_BY bucket, ROW_GROUP_SIZE 2048);
+
+query III
+SELECT count(*) FILTER (WHERE reason='BATCH_SIZE') > 0,
+       count(*) FILTER (WHERE reason='BATCH_SIZE_BYTES'), sum(rows)
+FROM batches();
+----
+true	0	10000
+
+statement ok
+COMMIT;
+
+query II
+SELECT count(*), count(DISTINCT k) FROM read_parquet('{TEST_DIR}/row_limit/**/*.parquet');
+----
+10000	10000

@@ -13,7 +13,7 @@ SET memory_limit='10MB'
 loop i 0 8
 
 statement ok
-COPY (SELECT range AS i, md5(range::VARCHAR) AS s FROM range(50000)) TO '{TEST_DIR}/budget_gate_{i}.parquet' (FORMAT parquet, ROW_GROUP_SIZE 100000)
+COPY (SELECT range AS i, md5(range::VARCHAR) AS s FROM range(50000)) TO '{TEST_DIR}/budget_gate_{i}.parquet' (FORMAT parquet, ROW_GROUP_SIZE 100000, WRITE_BLOOM_FILTER false)
 
 endloop
 

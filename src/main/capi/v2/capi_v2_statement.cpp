@@ -40,11 +40,11 @@ struct StatementIteratorWrapperV2 {
 
 //! Binding-index order, as statement_bind's parameter schema; positional indices may be gapped ($1, $3).
 auto ParameterNamesInBindingOrder(const duckdb::SQLStatement &statement)
-    -> vector<std::pair<idx_t, duckdb_v2_identifier_t>> {
-	vector<std::pair<idx_t, duckdb_v2_identifier_t>> names;
+    -> vector<std::pair<idx_t, reference<const Identifier>>> {
+	vector<std::pair<idx_t, reference<const Identifier>>> names;
 	names.reserve(statement.named_param_map.size());
 	for (auto &entry : statement.named_param_map) {
-		names.emplace_back(entry.second, Convert(entry.first));
+		names.emplace_back(entry.second, entry.first);
 	}
 	std::sort(names.begin(), names.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 	return names;
@@ -87,13 +87,15 @@ auto Convert(StatementIteratorWrapperV2 *ptr) -> duckdb_v2_statement_iterator_ha
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char *sql, bool apply_invalidation_policy,
-                                    duckdb_v2_statement_iterator_handle *out_iterator,
+DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char *sql, idx_t sql_length,
+                                    bool apply_invalidation_policy, duckdb_v2_statement_iterator_handle *out_iterator,
                                     duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(conn);
-	DUCKDB_CHECK_ARG(sql);
 	DUCKDB_CHECK_ARG(out_iterator);
 	*out_iterator = nullptr;
+	if (!sql && sql_length > 0) {
+		return NullArgumentError(err, __func__, "sql");
+	}
 	return WithErrorHandler(err, [&]() {
 		auto *connection = Convert(conn);
 		// Set up a lazy iterator over the connection's parser options and
@@ -105,8 +107,8 @@ DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char
 		// statement_execute, so a statement group is never split across the API
 		// boundary. A parse error is not raised here; it surfaces from the next()
 		// that reaches the failing statement.
-		auto wrapper = duckdb::make_uniq<StatementIteratorWrapperV2>(connection->context, std::string(sql),
-		                                                             apply_invalidation_policy);
+		auto wrapper = duckdb::make_uniq<StatementIteratorWrapperV2>(
+		    connection->context, sql_length ? std::string(sql, sql_length) : std::string(), apply_invalidation_policy);
 		*out_iterator = Convert(wrapper.release());
 	});
 }
@@ -162,16 +164,18 @@ DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_type(duckdb_v2_sql_statement_handle 
 	return WithErrorHandler(err, [&]() { *out_type = Convert(Convert(statement)->type); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_text(duckdb_v2_sql_statement_handle statement, duckdb_v2_str *out_text,
-                                                 duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_text(duckdb_v2_sql_statement_handle statement, const char **out_text,
+                                                 idx_t *out_text_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(statement);
 	DUCKDB_CHECK_ARG(out_text);
-	*out_text = duckdb_v2_str {nullptr, 0};
+	DUCKDB_CHECK_ARG(out_text_length);
+	*out_text = nullptr;
+	*out_text_length = 0;
 	return WithErrorHandler(err, [&]() {
 		// The parse paths already store the statement's own slice in `query`; `stmt_location` covers all of it.
 		auto &query = Convert(statement)->query;
 		if (!query.empty()) {
-			*out_text = Convert(query);
+			SetStringOut(out_text, out_text_length, query);
 		}
 	});
 }
@@ -185,11 +189,13 @@ DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_parameter_count(duckdb_v2_sql_statem
 }
 
 DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_parameter_name(duckdb_v2_sql_statement_handle statement, idx_t index,
-                                                           duckdb_v2_identifier_t *out_name,
+                                                           const char **out_name, idx_t *out_name_length,
                                                            duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(statement);
 	DUCKDB_CHECK_ARG(out_name);
-	*out_name = duckdb_v2_identifier_t {nullptr, 0};
+	DUCKDB_CHECK_ARG(out_name_length);
+	*out_name = nullptr;
+	*out_name_length = 0;
 	return WithErrorHandler(err, [&]() {
 		auto names = ParameterNamesInBindingOrder(*Convert(statement));
 		if (index >= names.size()) {
@@ -200,22 +206,22 @@ DUCKDB_V2_ERROR duckdb_v2_sql_statement_get_parameter_name(duckdb_v2_sql_stateme
 			                                                   static_cast<uint64_t>(index),
 			                                                   static_cast<uint64_t>(names.size())));
 		}
-		*out_name = names[index].second;
+		SetStringOut(out_name, out_name_length, names[index].second.get());
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_statement_add_collection(duckdb_v2_sql_statement_handle statement,
-                                                   const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_statement_add_collection(duckdb_v2_sql_statement_handle statement, const char *name,
+                                                   idx_t name_length,
                                                    duckdb_v2_column_data_collection_handle collection,
-                                                   const duckdb_v2_identifier_t *column_names, idx_t column_count,
-                                                   duckdb_v2_error_info_handle *err) {
+                                                   const char **column_names, const idx_t *column_names_lengths,
+                                                   idx_t column_count, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(statement);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(collection);
 	return WithErrorHandler(err, [&]() {
 		auto &stmt = *Convert(statement);
 		auto &cdc = *Convert(collection);
-		duckdb::Identifier alias(ConvertIdentifierName(name));
+		duckdb::Identifier alias(ConvertIdentifierName(name, name_length));
 		if (alias.empty()) {
 			throw duckdb::InvalidInputException("The name to bind a collection under cannot be empty.");
 		}
@@ -228,8 +234,9 @@ DUCKDB_V2_ERROR duckdb_v2_statement_add_collection(duckdb_v2_sql_statement_handl
 			    static_cast<uint64_t>(column_count), static_cast<uint64_t>(cdc.ColumnCount()));
 		}
 		duckdb::vector<duckdb::Identifier> expected_names;
+		string_view_array name_views(column_names, column_names_lengths, column_count);
 		for (idx_t i = 0; i < column_count; i++) {
-			expected_names.emplace_back(ConvertIdentifierName(column_names[i]));
+			expected_names.emplace_back(name_views[i]);
 			if (expected_names.back().empty()) {
 				throw duckdb::InvalidInputException("Column name %llu of the collection cannot be empty.",
 				                                    static_cast<uint64_t>(i));

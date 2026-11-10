@@ -141,6 +141,25 @@ def test_bail_off_continues_after_error(shell):
     result.check_stderr("Parser Error: syntax error at or near")
     assert "reached here" in str(result.stdout)
 
+def test_home_duckdbrc_is_not_read(shell, tmp_path):
+    (tmp_path / '.duckdbrc').write_text('.print init-output\n')
+    for arguments in ([], ['-csv']):
+        test = ShellTest(shell, arguments).env_var('HOME', tmp_path.as_posix()).env_var('USERPROFILE', str(tmp_path))
+        test = test.statement("SELECT 42;")
+        result = test.run()
+        result.check_stdout('42')
+        result.check_not_exist('init-output')
+
+
+def test_shell_test_adds_no_init_once(shell):
+    arguments = ['-csv']
+    assert ShellTest(shell, arguments).arguments.count('--no-init') == 1
+    assert arguments == ['-csv']
+    for _ in range(2):
+        assert ShellTest(shell).arguments.count('--no-init') == 1
+    assert '--no-init' not in ShellTest(shell, ['-init', '/dev/null']).arguments
+
+
 def test_bail_on_missing_init(shell):
     test = (
         ShellTest(shell, ['-init', '___thisfiledoesnotexist'])

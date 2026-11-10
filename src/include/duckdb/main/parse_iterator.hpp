@@ -17,7 +17,6 @@ namespace duckdb {
 class ClientContext;
 class ClientContextLock;
 class ErrorData;
-class Parser;
 class SQLStatement;
 class TokenIterator;
 
@@ -81,11 +80,10 @@ private:
 	string sql;
 	bool apply_invalidation_policy;
 	optional_ptr<ClientContextLock> held_lock;
-	//! Parser instance kept alive across Peek calls so its PEG matcher / transformer caches
-	//! stay warm. Constructed lazily on the first Peek.
-	unique_ptr<Parser> parser;
 	//! Tokenized view of `sql` and its current position. Populated once on the first Peek.
 	unique_ptr<TokenIterator> token_iterator;
+	//! Byte offset in `sql` where the next statement's text starts: just past the previous one.
+	idx_t next_statement_offset = 0;
 	//! Single-statement buffer holding the result of the most recent Peek. Cleared by
 	//! GetStatement.
 	unique_ptr<SQLStatement> current_statement;

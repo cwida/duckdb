@@ -1,3 +1,4 @@
+#include "duckdb/main/client_context.hpp"
 #include "json_common.hpp"
 #include "json_functions.hpp"
 #include "duckdb/common/atomic.hpp"
@@ -54,6 +55,11 @@ struct JSONTableInOutGlobalState : GlobalTableFunctionState {
 	//! that were produced
 	atomic<idx_t> total_rows {0};
 	atomic<idx_t> produced_rows {0};
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
+	}
 };
 
 static unique_ptr<GlobalTableFunctionState> JSONTableInOutInitGlobal(ClientContext &, TableFunctionInitInput &input) {
@@ -186,6 +192,9 @@ struct JSONTableInOutLocalState : LocalTableFunctionState {
 	idx_t len;
 	yyjson_doc *doc;
 	bool initialized;
+	//! The input row currently being processed, and its document (for the "json" virtual column)
+	idx_t input_row = 0;
+	string json_doc;
 
 	idx_t total_count;
 	vector<JSONTableInOutRecursionNode> recursion_nodes;
@@ -301,20 +310,22 @@ struct JSONTableInOutResult {
 };
 
 template <JSONTableInOutType TYPE>
-static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &input, JSONTableInOutResult &result) {
+static void InitializeLocalState(Context &context, JSONTableInOutLocalState &lstate, DataChunk &input,
+                                 JSONTableInOutResult &result) {
 	lstate.total_count = 0;
 
 	// Parse path, default to root if not given
 	Value path_value("$");
 	if (input.data.size() > 1) {
-		const auto &path_vector = input.data[1];
-		if (ConstantVector::IsNull(path_vector)) {
+		const auto path_values = input.data[1].Values<string_t>();
+		if (!path_values[lstate.input_row].IsValid()) {
 			return;
 		}
-		path_value = ConstantVector::GetData<string_t>(path_vector)[0];
+		path_value = path_values[lstate.input_row].GetValue();
 	}
 
-	if (JSONReadFunctionData::CheckPath(path_value, lstate.path, lstate.len) == JSONCommon::JSONPathType::WILDCARD) {
+	if (JSONReadFunctionData::CheckPath(context, path_value, lstate.path, lstate.len) ==
+	    JSONCommon::JSONPathType::WILDCARD) {
 		throw BinderException("Wildcard JSON path not supported in json_each/json_tree");
 	}
 
@@ -323,11 +334,15 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 	}
 
 	// Parse document and get the value at the supplied path
-	const auto &input_vector = input.data[0];
-	if (ConstantVector::IsNull(input_vector)) {
+	const auto input_values = input.data[0].Values<string_t>();
+	if (!input_values[lstate.input_row].IsValid()) {
 		return;
 	}
-	const auto &input_data = ConstantVector::GetData<string_t>(input_vector)[0];
+	const auto input_data = input_values[lstate.input_row].GetValue();
+	if (lstate.gstate.json_column_index.IsValid()) {
+		// Copy the document only when the "json" virtual column is selected
+		lstate.json_doc = input_data.GetString();
+	}
 	lstate.doc = JSONCommon::ReadDocument(input_data, JSONCommon::READ_FLAG, lstate.alc);
 	const auto root = JSONCommon::GetUnsafe(lstate.doc->root, lstate.path.c_str(), lstate.len);
 
@@ -371,14 +386,17 @@ static bool JSONTableInOutHandleValue(JSONTableInOutLocalState &lstate, JSONTabl
 }
 
 template <JSONTableInOutType TYPE>
-static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFunctionInput &data_p, DataChunk &input,
-                                                 DataChunk &output) {
+static OperatorResultType JSONTableInOutFunction(ExecutionContext &context, TableFunctionInput &data_p,
+                                                 DataChunk &input, DataChunk &output) {
 	auto &gstate = data_p.global_state->Cast<JSONTableInOutGlobalState>();
 	auto &lstate = data_p.local_state->Cast<JSONTableInOutLocalState>();
 
 	JSONTableInOutResult result(gstate, output);
 	if (!lstate.initialized) {
-		InitializeLocalState<TYPE>(lstate, input, result);
+		if (lstate.input_row >= input.size()) {
+			return OperatorResultType::NEED_MORE_INPUT;
+		}
+		InitializeLocalState<TYPE>(context.client.GetContext(), lstate, input, result);
 		lstate.initialized = true;
 	}
 
@@ -419,7 +437,9 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 	// Set constant virtual columns ("json", "root", and "empty")
 	if (gstate.json_column_index.IsValid()) {
 		auto &json_vector = output.data[gstate.json_column_index.GetIndex()];
-		json_vector.Reference(input.data[0]);
+		json_vector.SetVectorType(VectorType::CONSTANT_VECTOR);
+		ConstantVector::GetData<string_t>(json_vector)[0] = string_t(lstate.json_doc.c_str(), lstate.json_doc.size());
+		FlatVector::SetSize(json_vector, count_t(result.count));
 	}
 	if (gstate.root_column_index.IsValid()) {
 		auto &root_vector = output.data[gstate.root_column_index.GetIndex()];
@@ -444,6 +464,12 @@ static OperatorResultType JSONTableInOutFunction(ExecutionContext &, TableFuncti
 		lstate.produced_rows = 0;
 		lstate.json_allocator.Reset();
 		lstate.initialized = false;
+		lstate.input_row++;
+		if (lstate.input_row < input.size()) {
+			// start on the next input row with the next output chunk
+			return OperatorResultType::HAVE_MORE_OUTPUT;
+		}
+		lstate.input_row = 0;
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
 	return OperatorResultType::HAVE_MORE_OUTPUT;

@@ -19,11 +19,11 @@ struct ConstantVector {
 		D_ASSERT(StorageTypeCompatible<T>(vector.GetType().InternalType()));
 #else
 		if (!StorageTypeCompatible<T>(vector.GetType().InternalType())) {
-			throw InternalException("Expected vector of type %s, but found vector of type %s", GetTypeId<T>(),
-			                        vector.GetType().InternalType());
+			ThrowVectorTypeMismatch(GetTypeId<T>(), vector.GetType().InternalType());
 		}
 #endif
 	}
+	[[noreturn]] DUCKDB_API static void ThrowVectorTypeMismatch(PhysicalType expected, PhysicalType found);
 
 	static void VerifyConstantVector(const Vector &vector) {
 #ifdef DUCKDB_DEBUG_NO_SAFETY
@@ -41,7 +41,7 @@ struct ConstantVector {
 	}
 	static inline data_ptr_t GetData(Vector &vector) {
 		VerifyConstantVector(vector);
-		return vector.GetBufferRef() ? vector.BufferMutable().GetData() : nullptr;
+		return vector.GetBufferRef() ? vector.BufferMutable().GetDataMutable() : nullptr;
 	}
 	template <class T>
 	static inline const T *GetDataUnsafe(const Vector &vector) {
@@ -83,7 +83,9 @@ struct ConstantVector {
 	DUCKDB_API static const SelectionVector *ZeroSelectionVector();
 	//! Turns "vector" into a constant vector by referencing a value
 	DUCKDB_API static void Reference(Vector &vector, const Value &value, count_t count);
-	//! Turns "vector" into a constant vector by referencing a value within the source vector
+	//! Turns "vector" into a constant vector by referencing a value within the source vector. A string or a list
+	//! shares the data of the source, which has to stay valid while the constant is used, as for a slice. A shredded
+	//! source is flattened in place first, so that its constants share the unshredded data
 	DUCKDB_API static void Reference(Vector &vector, count_t count, const Vector &source, idx_t position,
 	                                 idx_t source_count);
 

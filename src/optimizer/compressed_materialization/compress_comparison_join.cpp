@@ -197,8 +197,17 @@ void CompressedMaterialization::CompressComparisonJoin(unique_ptr<LogicalOperato
 						if (compress_expr) {
 							D_ASSERT(GetCompressExpression(condition.GetRHS().Copy(), merged_stats));
 							// This will be compressed generically, but we have to merge the stats
+							const auto lhs_can_have_null = lhs_it->second->CanHaveNull();
+							const auto rhs_can_have_null = rhs_it->second->CanHaveNull();
 							lhs_it->second->Merge(merged_stats);
 							rhs_it->second->Merge(merged_stats);
+							// the compression only depends on the merged values, a side without NULLs still has none
+							if (!lhs_can_have_null) {
+								lhs_it->second->Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
+							}
+							if (!rhs_can_have_null) {
+								rhs_it->second->Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
+							}
 							probe_compress_bindings.insert(lhs_colref.Binding());
 							continue;
 						}

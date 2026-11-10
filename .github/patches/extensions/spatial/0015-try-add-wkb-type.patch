@@ -1,0 +1,13 @@
+diff --git a/src/spatial/modules/gdal/gdal_module.cpp b/src/spatial/modules/gdal/gdal_module.cpp
+index 8c19075..a8db1b4 100644
+--- a/src/spatial/modules/gdal/gdal_module.cpp
++++ b/src/spatial/modules/gdal/gdal_module.cpp
+@@ -1230,7 +1230,7 @@ auto Statistics(ClientContext &context, const FunctionData *bind_data, column_t
+ 			if ((geom_type >= 1) && (geom_type <= 7) && (vert_type >= 0) && (vert_type <= 3)) {
+ 				auto &types = GeometryStats::GetTypes(stats);
+ 				types.Clear();
+-				types.AddWKBType(static_cast<int32_t>(geom_type));
++				types.TryAddWKBType(static_cast<int32_t>(geom_type));
+ 			}
+ 
+ 			return stats.ToUnique();

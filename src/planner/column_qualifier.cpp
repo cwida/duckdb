@@ -19,7 +19,7 @@ ColumnQualifier::ColumnQualifier(Binder &binder_p, optional_ptr<vector<DummyBind
       having_binder(having_binder_p) {
 }
 
-static Identifier GetSQLValueFunctionName(const Identifier &column_name) {
+Identifier ColumnQualifier::SQLValueFunctionName(const Identifier &column_name) {
 	if (column_name == "current_catalog") {
 		return "current_catalog";
 	}
@@ -68,7 +68,7 @@ unique_ptr<ParsedExpression> Binder::GetSQLValueFunction(const Identifier &colum
 		}
 	}
 
-	auto value_function = GetSQLValueFunctionName(column_name);
+	auto value_function = ColumnQualifier::SQLValueFunctionName(column_name);
 	if (value_function.empty()) {
 		return nullptr;
 	}
@@ -200,7 +200,7 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 		auto &col_ref = expr->Cast<ColumnRefExpression>();
 
 		// don't qualify lambda parameters
-		if (LambdaExpression::IsLambdaParameter(lambda_params, col_ref.GetName())) {
+		if (LambdaExpression::IsLambdaParameter(lambda_params, col_ref.GetColumnName())) {
 			return;
 		}
 
@@ -257,20 +257,46 @@ void ColumnQualifier::QualifyColumnNames(unique_ptr<ParsedExpression> &expr, vec
 	});
 }
 
+bool ColumnQualifier::IsActiveLambdaParameter(const Identifier &name) {
+	// while qualifying a lambda body, the parameters live in definite_lambda_params
+	if (LambdaExpression::IsLambdaParameter(definite_lambda_params, name)) {
+		return true;
+	}
+	// while binding a lambda body, the parameters live in the lambda bindings
+	return LambdaRefExpression::FindMatchingBinding(lambda_bindings, name) != nullptr;
+}
+
 optional_ptr<CatalogEntry> ColumnQualifier::QualifyFunction(FunctionExpression &function) {
 	D_ASSERT(!ExpressionBinder::IsUnnestFunction(function.FunctionName()));
 	// lookup the function in the catalog
 	QueryErrorContext error_context(function.GetQueryLocation());
+	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, QualifiedName(function.FunctionName()),
+	                                error_context);
+
+	// a lone qualifier that names a lambda parameter and a search-path function is a dot call on that parameter
+	if (function.GetQualifiedName().Catalog().empty() && !function.GetQualifiedName().Schema().empty() &&
+	    IsActiveLambdaParameter(function.GetQualifiedName().Schema())) {
+		auto func = binder.GetCatalogEntry(Identifier::InvalidCatalog(), Identifier::InvalidSchema(), function_lookup,
+		                                   OnEntryNotFound::RETURN_NULL);
+		if (func) {
+			// leave the parameter as an unqualified column reference - the lambda binding resolves it
+			unique_ptr<ParsedExpression> param_ref =
+			    make_uniq<ColumnRefExpression>(function.GetQualifiedName().Schema());
+			function.GetArgumentsMutable().insert(function.GetArgumentsMutable().begin(), std::move(param_ref));
+			function.SetQualifiedName(QualifiedName(function.GetQualifiedName().Name()));
+			return func;
+		}
+		// the function is not on the search path - fall through to the catalog and schema interpretation
+	}
+
 	// promote a lone qualifier that names an attached database to a catalog, so that "db.f()" is not mistaken for a
 	// dot-call on a column named "db" by the rewrite below
 	binder.BindSchemaOrCatalog(function.GetQualifiedNameMutable());
 
-	EntryLookupInfo function_lookup(CatalogType::SCALAR_FUNCTION_ENTRY, QualifiedName(function.FunctionName()),
-	                                error_context);
 	// resolve the qualification: this decides whether a leading component (e.g. "s1" in "s1.s2.my_macro()") is a
 	// catalog or the outermost schema of a nested schema path. The name as written is left alone - the dot-call
 	// rewrite below turns the qualification into a column reference and needs it unresolved.
-	auto bound_name = binder.BindTableName(function.GetQualifiedName());
+	auto bound_name = Binder::BindTableName(binder.EntryRetriever(), function.GetQualifiedName());
 	auto func = binder.GetCatalogEntry(EntryLookupInfo(function_lookup, bound_name), OnEntryNotFound::RETURN_NULL);
 	if (func) {
 		// found the function - we are done
@@ -334,11 +360,19 @@ void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function,
 
 		// push this level
 		lambda_params.emplace_back();
+		// an arrow can turn out to be the JSON operator, so only keyword parameters shadow function qualifiers
+		const bool is_keyword_lambda = lambda_expr.GetLambdaSyntaxType() == LambdaSyntaxType::LAMBDA_KEYWORD;
+		if (is_keyword_lambda) {
+			definite_lambda_params.emplace_back();
+		}
 
 		// push the lambda parameter names
 		for (const auto &column_ref_expr : column_ref_expressions) {
 			const auto &column_ref = column_ref_expr.get().Cast<ColumnRefExpression>();
 			lambda_params.back().emplace(column_ref.GetName());
+			if (is_keyword_lambda) {
+				definite_lambda_params.back().emplace(column_ref.GetName());
+			}
 		}
 
 		// only qualify in RHS
@@ -346,6 +380,9 @@ void ColumnQualifier::QualifyColumnNamesInLambda(FunctionExpression &function,
 
 		// pop this level
 		lambda_params.pop_back();
+		if (is_keyword_lambda) {
+			definite_lambda_params.pop_back();
+		}
 	}
 }
 

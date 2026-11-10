@@ -63,13 +63,14 @@ class TestResult:
 
 
 class ShellTest:
-    def __init__(self, shell, arguments=[]):
+    def __init__(self, shell, arguments=None):
         if not shell:
             raise ValueError("Please provide a shell binary")
+        arguments = list(arguments or [])
         self.shell = shell
         self.arguments = [shell, "--batch"] + arguments
         if "-init" not in arguments and "--init" not in arguments:
-            arguments += ["--no-init"]
+            self.arguments.append("--no-init")
         self.statements: List[str] = []
         self.input = None
         self.output = None

@@ -301,3 +301,157 @@ TEST_CASE("Test automatic DB instance caching", "[api][.]") {
 		REQUIRE_NO_FAIL(con2.Query("SELECT * FROM t"));
 	}
 }
+
+TEST_CASE("Test the instance cache hands out a database that is still open after its last handle", "[api]") {
+	DBInstanceCache instance_cache;
+	DBConfig config;
+	auto path = TestCreatePath("instance_cache_in_use.db");
+
+	SECTION("A connection keeps the database open") {
+		idx_t create_count = 0;
+		auto on_create = [&](DuckDB &) {
+			create_count++;
+		};
+		auto db = instance_cache.GetOrCreateInstance(path, config, true, on_create);
+		auto con = make_uniq<Connection>(*db);
+		REQUIRE_NO_FAIL(con->Query("CREATE TABLE t AS SELECT 42 AS i"));
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		db.reset();
+		REQUIRE(instance_cache.GetInstance(path, config)->instance == instance.lock());
+
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true, on_create);
+		REQUIRE(reopened->instance == instance.lock());
+		REQUIRE(create_count == 1);
+		auto result = Connection(*reopened).Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+		result.reset();
+
+		// a different configuration is still refused, and the same one is still served
+		DBConfig read_only_config;
+		read_only_config.options.access_mode = AccessMode::READ_ONLY;
+		REQUIRE_THROWS(instance_cache.GetOrCreateInstance(path, read_only_config, true));
+		REQUIRE(instance_cache.GetOrCreateInstance(path, config, true)->instance == instance.lock());
+
+		// the instance closes once nothing holds it anymore
+		reopened.reset();
+		REQUIRE_NO_FAIL(con->Query("SELECT i FROM t"));
+		con.reset();
+		REQUIRE(instance.expired());
+	}
+	SECTION("An unfinished result keeps the database open") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		auto con = make_uniq<Connection>(*db);
+		auto result = con->Submit("SELECT * FROM range(100000)");
+		REQUIRE_NO_FAIL(*result);
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		con.reset();
+		db.reset();
+		REQUIRE(!instance.expired());
+
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE(reopened->instance == instance.lock());
+		auto chunk = result->FetchRaw();
+		REQUIRE(chunk);
+		REQUIRE(chunk->size() > 0);
+		result.reset();
+	}
+	SECTION("A closed database is opened again") {
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		REQUIRE_NO_FAIL(Connection(*db).Query("CREATE TABLE t AS SELECT 42 AS i"));
+		weak_ptr<DatabaseInstance> instance = db->instance;
+		db.reset();
+		REQUIRE(instance.expired());
+		auto reopened = instance_cache.GetOrCreateInstance(path, config, true);
+		auto result = Connection(*reopened).Query("SELECT i FROM t");
+		REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	}
+	SECTION("A reopen races with closing the last connection") {
+		for (idx_t i = 0; i < 50; i++) {
+			auto db = instance_cache.GetOrCreateInstance(path, config, true);
+			auto con = make_uniq<Connection>(*db);
+			db.reset();
+			shared_ptr<DuckDB> reopened;
+			std::exception_ptr reopen_error;
+			std::thread reopener([&]() {
+				try {
+					DBConfig reopen_config;
+					reopened = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+				} catch (...) {
+					reopen_error = std::current_exception();
+				}
+			});
+			con.reset();
+			reopener.join();
+			if (reopen_error) {
+				std::rethrow_exception(reopen_error);
+			}
+			REQUIRE_NO_FAIL(Connection(*reopened).Query("SELECT 42"));
+		}
+	}
+	TestDeleteFile(path);
+}
+
+struct SlowShutdownCatalog : public DuckCatalog {
+	explicit SlowShutdownCatalog(AttachedDatabase &db) : DuckCatalog(db) {
+	}
+	~SlowShutdownCatalog() override {
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+};
+
+struct SlowShutdownStorageExtension : StorageExtension {
+	SlowShutdownStorageExtension() {
+		attach = [](optional_ptr<StorageExtensionInfo>, ClientContext &, AttachedDatabase &db, const string &,
+		            AttachInfo &, AttachOptions &) -> unique_ptr<Catalog> {
+			return make_uniq_base<Catalog, SlowShutdownCatalog>(db);
+		};
+		create_transaction_manager = [](optional_ptr<StorageExtensionInfo>, AttachedDatabase &db,
+		                                Catalog &) -> unique_ptr<TransactionManager> {
+			return make_uniq<DuckTransactionManager>(db);
+		};
+	}
+};
+
+TEST_CASE("Test reopening a database from several threads while it shuts down", "[api][.]") {
+	DBInstanceCache instance_cache;
+	const string path = "slow_shutdown::memory:";
+	constexpr idx_t REOPENER_COUNT = 4;
+	for (idx_t i = 0; i < 20; i++) {
+		DBConfig config;
+		StorageExtension::Register(config, "slow_shutdown", make_shared_ptr<SlowShutdownStorageExtension>());
+		auto db = instance_cache.GetOrCreateInstance(path, config, true);
+		weak_ptr<DatabaseInstance> instance = db->instance;
+
+		// the slow catalog gives the reopeners time to look up the entry during shutdown
+		vector<shared_ptr<DuckDB>> reopened(REOPENER_COUNT);
+		vector<std::exception_ptr> reopen_errors(REOPENER_COUNT);
+		vector<std::thread> reopeners;
+		for (idx_t reopener_idx = 0; reopener_idx < REOPENER_COUNT; reopener_idx++) {
+			reopeners.emplace_back([&, reopener_idx]() {
+				try {
+					while (!instance.expired()) {
+					}
+					DBConfig reopen_config;
+					StorageExtension::Register(reopen_config, "slow_shutdown",
+					                           make_shared_ptr<SlowShutdownStorageExtension>());
+					reopened[reopener_idx] = instance_cache.GetOrCreateInstance(path, reopen_config, true);
+				} catch (...) {
+					reopen_errors[reopener_idx] = std::current_exception();
+				}
+			});
+		}
+		db.reset();
+		for (auto &reopener : reopeners) {
+			reopener.join();
+		}
+		for (auto &reopen_error : reopen_errors) {
+			if (reopen_error) {
+				std::rethrow_exception(reopen_error);
+			}
+		}
+		// they all share the one new instance
+		for (auto &reopened_db : reopened) {
+			REQUIRE(reopened_db->instance == reopened[0]->instance);
+		}
+	}
+}

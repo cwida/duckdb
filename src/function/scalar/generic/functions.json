@@ -22,6 +22,21 @@
         "type": "scalar_function"
     },
     {
+        "name": "has_error",
+        "parameters": "expr",
+        "description": "Returns true when evaluating the expression raises an error and false otherwise. Errors are captured per row, exactly where try(expr) returns NULL.",
+        "example": "has_error(1 // 0)",
+        "type": "scalar_function"
+    },
+    {
+        "name": "__internal_try_rethrow",
+        "struct": "TryRethrowFun",
+        "parameters": "error,value",
+        "description": "Raises an error when the flag is set and returns the value otherwise. Created by the TRY subquery lowering to re-raise a captured error at the use site.",
+        "example": "",
+        "type": "scalar_function"
+    },
+    {
         "name": "__internal_barrier",
         "struct": "BarrierFun",
         "parameters": "arg",

@@ -31,5 +31,24 @@ def test_import_json(shell):
     result = test.run()
     result.check_stdout("Broadcast News")
 
+# importing into a temporary view's name inside an open transaction creates a table and keeps the transaction
+def test_import_into_temporary_view_name_keeps_transaction(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CREATE TABLE u (k INTEGER)")
+        .statement("CREATE TEMPORARY VIEW tv AS SELECT 1 AS k")
+        .statement("BEGIN")
+        .statement("INSERT INTO u VALUES (1)")
+        .statement('.import data/json/example_n.ndjson tv')
+        .statement("INSERT INTO u VALUES (2)")
+        .statement("COMMIT")
+        .statement("SELECT 'writes=' || count(*) FROM u")
+        .statement("SELECT name FROM memory.main.tv")
+    )
+
+    result = test.run()
+    result.check_stdout("writes=2")
+    result.check_stdout("Broadcast News")
+
 
 # fmt: on

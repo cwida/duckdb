@@ -158,7 +158,7 @@ static unique_ptr<FunctionData> WriteCSVBind(ClientContext &context, CopyFunctio
 
 	// check all the options in the copy info
 	for (auto &[option_name, option_values] : input.info.options) {
-		bind_data->options.SetWriteOption(option_name, ConvertVectorToValue(option_values));
+		bind_data->options.SetWriteOption(context.GetContext(), option_name, ConvertVectorToValue(option_values));
 	}
 	// verify the parsed options
 	if (bind_data->options.force_quote.empty()) {
@@ -246,10 +246,11 @@ static unique_ptr<AsyncFileWriter> OpenCSVFileWriter(ClientContext &context, con
                                                      FileCompressionType compression) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW | std::move(compression);
-	if (!fs.FileExists(file_path) && !fs.IsPipe(file_path)) {
+	// checking a remote path costs a request, so a remote output is opened like one that may exist
+	if (!fs.IsRemoteFile(file_path) && !fs.FileExists(file_path) && !fs.IsPipe(file_path)) {
 		flags |= FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE;
 	}
-	return make_uniq<AsyncFileWriter>(QueryContext(context), fs, file_path, flags);
+	return make_uniq<AsyncFileWriter>(context.GetContext(), fs, file_path, flags);
 }
 
 struct GlobalWriteCSVData : public GlobalFunctionData {

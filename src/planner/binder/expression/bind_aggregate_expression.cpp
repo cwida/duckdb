@@ -99,7 +99,8 @@ static void NegatePercentileFractions(ClientContext &context, unique_ptr<Express
 	}
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
-	if (value.type().id() == LogicalTypeId::LIST) {
+	// a NULL list stays NULL, the quantile binder rejects it
+	if (value.type().id() == LogicalTypeId::LIST && !value.IsNull()) {
 		vector<Value> values;
 		for (const auto &element_val : ListValue::GetChildren(value)) {
 			values.push_back(NegatePercentileValue(element_val, desc));
@@ -149,6 +150,10 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 
 	inside_aggregate_filter = true;
 	this->inside_aggregate = true;
+	// aggregate arguments are evaluated below the select list projection of the enclosing node, where
+	// a transported error flag has no consumer; nested subqueries in them bind as plain subqueries
+	const auto save_transport_try_errors = transport_try_errors;
+	transport_try_errors = false;
 	auto initial_bound_column_count = GetBoundColumns().size();
 	// Now we bind the filter (if any)
 	unique_ptr<Expression> bound_filter_child;
@@ -209,6 +214,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	}
 
 	inside_aggregate = false;
+	transport_try_errors = save_transport_try_errors;
 	TruncateBoundColumns(initial_bound_column_count);
 	if (error.HasError()) {
 		// the arguments decided that this level owns the aggregate, so a child that does not bind here is an error
@@ -285,6 +291,15 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 		if (!in_args) {
 			throw BinderException("In a DISTINCT aggregate, ORDER BY expressions must appear in the argument list");
 		}
+	}
+
+	// EXPORT_STATE exports the state of the underlying (non-distinct) aggregate: it does not carry the set of values
+	// seen so far, so combining exported states of a DISTINCT aggregate would count repeated values again
+	if (aggr.Distinct() && aggr.ExportState()) {
+		throw BinderException(aggr,
+		                      "EXPORT_STATE is not supported for DISTINCT aggregates: the exported state does not "
+		                      "retain the set of distinct values, so combining states would produce incorrect "
+		                      "results");
 	}
 
 	// Bind the function

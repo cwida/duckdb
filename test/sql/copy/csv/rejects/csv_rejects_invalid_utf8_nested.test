@@ -1,0 +1,22 @@
+# name: test/sql/copy/csv/rejects/csv_rejects_invalid_utf8_nested.test
+# description: Invalid UTF-8 in columns that are parsed as VARCHAR and cast afterwards is rejected once per value
+# group: [rejects]
+
+require skip_reload
+
+# the first row has an invalid value in every column, and the valid rows around the invalid ones are kept
+query II
+SELECT * FROM read_csv('{DATA_DIR}/csv/test/invalid_utf_nested.csv', columns={'a': 'VARCHAR[]', 'b': 'VARCHAR[]'},
+    header=true, store_rejects=true);
+----
+[a]	[b]
+[e]	[f]
+
+# every invalid value is reported once, without a follow-up cast error for the same value
+query III
+SELECT line, column_idx, error_type FROM reject_errors ORDER BY ALL;
+----
+2	1	INVALID ENCODING
+2	2	INVALID ENCODING
+4	1	INVALID ENCODING
+5	2	INVALID ENCODING

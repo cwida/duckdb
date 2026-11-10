@@ -18,6 +18,8 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -179,7 +181,8 @@ LogicalPlanSQLExportResult LogicalProjection::ToSQL(LogicalPlanSQLExportContext 
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
 	D_ASSERT(projection.expressions.size() == fields.GetValue().size());
-	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN;
+	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN &&
+	                !export_context.FindSource(*projection.children[0]);
 	auto child =
 	    export_context.ExportChild(*projection.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
 	if (child.HasError()) {
@@ -339,10 +342,69 @@ LogicalPlanSQLExportResult LogicalSetOperation::ToSQL(LogicalPlanSQLExportContex
 	return LogicalPlanSQLExportResult::Success({std::move(query), std::move(fields.GetValue())});
 }
 
+//! Whether the aggregate is a DISTINCT ON without ORDER BY: groups plus the first value of every other column
+static bool IsInputOrderedDistinct(const LogicalAggregate &aggregate) {
+	if (!aggregate.preserve_input_order || aggregate.grouping_sets.size() > 1 ||
+	    !aggregate.grouping_functions.empty() || aggregate.groups.empty()) {
+		return false;
+	}
+	for (auto &expression : aggregate.expressions) {
+		auto &aggr = expression->Cast<BoundAggregateExpression>();
+		if (aggr.Function().GetName() != FirstFun::Name || aggr.GetFilter() || aggr.GetOrderBys() ||
+		    aggr.GetChildren().size() != 1 || aggr.IsDistinct()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Export as DISTINCT ON, which keeps the first row of every group in input order
+static LogicalPlanSQLExportResult ExportInputOrderedDistinct(LogicalAggregate &aggregate,
+                                                             LogicalPlanSQLExportContext &context,
+                                                             const LogicalPlanVerificationPath &path) {
+	auto fields = LogicalPlanSQLExportHelpers::CreateFields(aggregate, path);
+	if (fields.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(fields);
+	}
+	auto child = context.ExportChild(*aggregate.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
+	if (child.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(child);
+	}
+	auto expression_context =
+	    LogicalPlanSQLExportHelpers::CreateBindingContext(context.GetClientContext(), {child.GetValue()});
+	vector<reference<const Expression>> expressions;
+	for (auto &group : aggregate.groups) {
+		expressions.push_back(*group);
+	}
+	for (auto &expression : aggregate.expressions) {
+		expressions.push_back(*expression->Cast<BoundAggregateExpression>().GetChildren()[0]);
+	}
+	auto select = make_uniq<SelectNode>();
+	auto modifier = make_uniq<DistinctModifier>();
+	for (idx_t i = 0; i < expressions.size(); i++) {
+		ApplySemanticType(fields.GetValue()[i], expressions[i].get(), expression_context);
+		auto expression = context.ExportExpression(aggregate, expressions, i, expression_context, path);
+		if (expression.HasError()) {
+			return LogicalPlanSQLExportResult::Failure(expression);
+		}
+		if (i < aggregate.groups.size()) {
+			modifier->distinct_on_targets.push_back(expression.GetValue()->Copy());
+		}
+		expression.GetValue()->SetAlias(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
+		select->select_list.push_back(std::move(expression.GetValue()));
+	}
+	select->modifiers.push_back(std::move(modifier));
+	select->from_table = LogicalPlanSQLExportHelpers::CreateSubquery(std::move(child.GetValue()));
+	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(fields.GetValue())});
+}
+
 LogicalPlanSQLExportResult LogicalAggregate::ToSQL(LogicalPlanSQLExportContext &export_context,
                                                    const LogicalPlanVerificationPath &path) {
 	auto &aggregate = *this;
 	D_ASSERT(aggregate.children.size() == 1);
+	if (IsInputOrderedDistinct(aggregate)) {
+		return ExportInputOrderedDistinct(aggregate, export_context, path);
+	}
 #ifdef D_ASSERT_IS_ENABLED
 	for (auto &expression : aggregate.expressions) {
 		D_ASSERT(expression && expression->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);

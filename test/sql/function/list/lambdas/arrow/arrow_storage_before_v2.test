@@ -1,0 +1,147 @@
+# name: test/sql/function/list/lambdas/arrow/arrow_storage_before_v2.test
+# description: Arrow lambdas stored with a storage version before v2.0.0 keep binding
+# group: [arrow]
+
+# logging does not survive the forced restarts
+require skip_reload
+
+statement ok
+SET lambda_syntax = 'ENABLE_SINGLE_ARROW'
+
+statement ok
+ATTACH '{TEST_DIR}/arrow_v1_5.db' AS v15 (STORAGE_VERSION 'v1.5.0')
+
+statement ok
+CREATE VIEW v15.v AS SELECT list_transform([1, 2], x -> x + 1) AS r
+
+statement ok
+CREATE MACRO v15.m(l) AS list_transform(l, (x, i) -> x + i)
+
+statement ok
+DETACH v15
+
+statement ok
+ATTACH '{TEST_DIR}/arrow_v2_0.db' AS v20 (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+CREATE VIEW v20.v AS SELECT list_transform([1, 2], x -> x + 1) AS r
+
+statement ok
+DETACH v20
+
+# the default setting binds stored arrows with a warning
+statement ok
+RESET lambda_syntax
+
+statement ok
+SET enable_logging = true
+
+statement ok
+ATTACH '{TEST_DIR}/arrow_v1_5.db' AS v15
+
+query I
+SELECT r FROM v15.v
+----
+[2, 3]
+
+query I
+SELECT v15.m([10, 20])
+----
+[11, 22]
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE log_level = 'WARNING' AND starts_with(message, 'Deprecated lambda arrow')
+----
+true
+
+# the lambda keyword does not warn
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT list_transform([1, 2], lambda x: x + 1)
+----
+[2, 3]
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND starts_with(message, 'Deprecated lambda arrow')
+----
+0
+
+# new SQL still rejects the arrow
+statement error
+SELECT list_transform([1, 2], x -> x + 1)
+----
+Deprecated lambda arrow (->) detected
+
+statement error
+CREATE VIEW v15.w AS SELECT list_transform([1, 2], x -> x + 1) AS r
+----
+Deprecated lambda arrow (->) detected
+
+# objects stored with v2.0.0 are not exempt
+statement ok
+ATTACH '{TEST_DIR}/arrow_v2_0.db' AS v20
+
+statement error
+SELECT r FROM v20.v
+----
+Deprecated lambda arrow (->) detected
+
+# the new syntax only binds stored arrows, without a warning
+statement ok
+SET lambda_syntax = 'DISABLE_SINGLE_ARROW'
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT r FROM v15.v
+----
+[2, 3]
+
+query I
+SELECT v15.m([10, 20])
+----
+[11, 22]
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND starts_with(message, 'Deprecated lambda arrow')
+----
+0
+
+statement error
+SELECT list_transform([1, 2], x -> x + 1)
+----
+Deprecated lambda arrow (->) detected
+
+# arrow lambdas replayed from the WAL
+statement ok
+SET lambda_syntax = 'ENABLE_SINGLE_ARROW'
+
+statement ok
+ATTACH '{TEST_DIR}/arrow_wal_v1_5.db' AS wal15 (STORAGE_VERSION 'v1.5.0')
+
+statement ok
+SET checkpoint_threshold = '10GB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE VIEW wal15.v AS SELECT list_transform([1, 2], x -> x + 1) AS r
+
+restart
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/arrow_wal_v1_5.db.wal')
+----
+1
+
+statement ok
+ATTACH '{TEST_DIR}/arrow_wal_v1_5.db' AS wal15
+
+query I
+SELECT r FROM wal15.v
+----
+[2, 3]

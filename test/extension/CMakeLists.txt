@@ -116,8 +116,6 @@ target_link_libraries(cpp_api_demo_fail_loadable_extension
                       duckdb_cpp_api_loadable)
 
 if(NOT WIN32 AND NOT SUN)
-  add_definitions(-DDUCKDB_BUILD_DIRECTORY="${PROJECT_BINARY_DIR}")
-
   build_loadable_extension_directory(
     loadable_extension_optimizer_demo
     "CPP"

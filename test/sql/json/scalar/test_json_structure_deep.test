@@ -1,5 +1,5 @@
 # name: test/sql/json/scalar/test_json_structure_deep.test
-# description: json_structure on a deeply nested JSON column is fallible
+# description: json_structure on a deeply nested JSON column is supported, including through TRY
 # group: [scalar]
 
 require json
@@ -7,12 +7,12 @@ require json
 statement ok
 CREATE TABLE j AS SELECT ('{' || repeat('"k":{', 200) || '"v":1' || repeat('}', 200) || '}')::JSON AS c;
 
-statement error
-SELECT json_structure(c) FROM j;
+query I
+SELECT json_structure(c) = '{' || repeat('"k":{', 200) || '"v":"UBIGINT"' || repeat('}', 200) || '}' FROM j;
 ----
-Invalid Input Error: JSON exceeds maximum recursion depth of 128
+true
 
 query I
-SELECT TRY(json_structure(c)) FROM j;
+SELECT TRY(json_structure(c)) = '{' || repeat('"k":{', 200) || '"v":"UBIGINT"' || repeat('}', 200) || '}' FROM j;
 ----
-NULL
+true

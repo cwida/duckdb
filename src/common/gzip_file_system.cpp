@@ -178,6 +178,7 @@ void MiniZStreamWrapper::Initialize(QueryContext context, CompressedFile &file, 
 			data_start += GZipConsumeString(context, *file.child_handle);
 		}
 		file.child_handle->Seek(data_start);
+		file.AddConsumedBytes(data_start);
 		// stream is now set to beginning of payload data
 		InitializeInflator();
 	}

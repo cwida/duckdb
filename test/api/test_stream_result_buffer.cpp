@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/main/buffered_data/batched_buffered_data.hpp"
 #include "duckdb/main/buffered_data/simple_buffered_data.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -372,7 +373,10 @@ TEST_CASE("A parked read-ahead batch does not report the batched buffer waiting 
 	Connection con(db);
 	DataChunk chunk;
 	chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::BIGINT});
-	chunk.SetChildCardinality(STANDARD_VECTOR_SIZE);
+	auto writer = FlatVector::Writer<int64_t>(chunk.data[0], STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
+		writer.WriteValue(0);
+	}
 	// The cap counts the buffered copy. Four chunks fit and the reserve for the minimum batch is one
 	// chunk, so a read-ahead batch parks on its fourth chunk with nothing in the read queue
 	const auto chunk_bytes = BufferedData::CopyForBuffering(chunk)->GetDataSize();
@@ -418,7 +422,10 @@ TEST_CASE("The simple buffer's peak counts the unit a parked producer holds", "[
 	Connection con(db);
 	DataChunk chunk;
 	chunk.Initialize(Allocator::DefaultAllocator(), {LogicalType::BIGINT});
-	chunk.SetChildCardinality(STANDARD_VECTOR_SIZE);
+	auto writer = FlatVector::Writer<int64_t>(chunk.data[0], STANDARD_VECTOR_SIZE);
+	for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; i++) {
+		writer.WriteValue(0);
+	}
 	// Two units fill the cap exactly, so the third producer parks holding its unit
 	const auto chunk_bytes = BufferedData::CopyForBuffering(chunk)->GetDataSize();
 	REQUIRE_NO_FAIL(con.Query("SET max_streaming_buffer_size='" + to_string(2 * chunk_bytes) + " bytes'"));

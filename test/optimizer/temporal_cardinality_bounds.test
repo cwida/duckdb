@@ -1,0 +1,27 @@
+# name: test/optimizer/temporal_cardinality_bounds.test
+# description: Approximate timestamp range counts cannot prove a LIMIT redundant
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# Both ranges estimate zero rows but produce one.
+query I
+SELECT count(*) FROM range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-01 12:00:00', INTERVAL '1 day')
+----
+1
+
+query II
+EXPLAIN SELECT * FROM range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-01 12:00:00', INTERVAL '1 day') LIMIT 1
+----
+physical_plan	<REGEX>:.*LIMIT.*
+
+query I
+SELECT count(*) FROM range(TIMESTAMP '2024-02-01', TIMESTAMP '2024-03-01', INTERVAL '1 month')
+----
+1
+
+query II
+EXPLAIN SELECT * FROM range(TIMESTAMP '2024-02-01', TIMESTAMP '2024-03-01', INTERVAL '1 month') LIMIT 1
+----
+physical_plan	<REGEX>:.*LIMIT.*

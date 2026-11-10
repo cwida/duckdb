@@ -149,4 +149,8 @@ bool ExtendedOpenFileInfo::TryGetOption(const string &name, timestamp_t &result)
 	return true;
 }
 
+bool ExtendedOpenFileInfo::TryGetSecretName(string &name) const {
+	return TryGetOption(SECRET_OPTION, name);
+}
+
 } // namespace duckdb

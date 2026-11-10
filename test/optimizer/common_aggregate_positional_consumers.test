@@ -1,0 +1,73 @@
+# name: test/optimizer/common_aggregate_positional_consumers.test
+# description: Duplicate aggregate elimination must not change the column layout read by positional CTE consumers
+# group: [optimizer]
+
+statement ok
+SET explain_output = 'optimized_only';
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# duplicate aggregates in a regular projected aggregate are still merged:
+# statistics propagation turns count(v) over a NULL-free column into a second count_star()
+statement ok
+CREATE TABLE tbl(g INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO tbl VALUES (1, 10), (1, 20), (2, 30);
+
+query II
+EXPLAIN SELECT g, count(*), count(v) FROM tbl GROUP BY g;
+----
+logical_opt	<!REGEX>:.*AGGREGATE.*count_star.*count_star.*
+
+query III
+SELECT g, count(*), count(v) FROM tbl GROUP BY g ORDER BY g;
+----
+1	2	2
+2	1	1
+
+# the grouping sets rewrite materializes an aggregate as a CTE definition whose columns are read positionally:
+# the identity projection cap lets the duplicate count(*) aggregates built by decorrelation merge
+# while preserving the CTE's column layout
+query II
+EXPLAIN SELECT o.k, a.c
+FROM (VALUES (7), (8)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+logical_opt	<!REGEX>:.*EXPORT_STATE.*EXPORT_STATE.*
+
+query II
+EXPLAIN SELECT o.k, a.c
+FROM (VALUES (7), (8)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+logical_opt	<REGEX>:.*count_star\(\) EXPORT_STATE.*
+
+query II
+SELECT o.k, a.c
+FROM (VALUES (7), (8)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+7	0
+7	0
+8	0
+8	0

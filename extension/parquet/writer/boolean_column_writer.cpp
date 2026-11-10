@@ -38,6 +38,23 @@ public:
 	string GetMaxValue() override {
 		return HasStats() ? string(const_char_ptr_cast(&max), sizeof(bool)) : string();
 	}
+
+	void Merge(const ColumnWriterStatistics &other_p) override {
+		auto &other = other_p.Cast<BooleanStatisticsState>();
+		if (other.min && !other.max) {
+			return;
+		}
+		min = min && other.min;
+		max = max || other.max;
+	}
+	int CompareMin(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<BooleanStatisticsState>();
+		return static_cast<int>(min) - static_cast<int>(other.min);
+	}
+	int CompareMax(const ColumnWriterStatistics &other_p) const override {
+		auto &other = other_p.Cast<BooleanStatisticsState>();
+		return static_cast<int>(max) - static_cast<int>(other.max);
+	}
 };
 
 class BooleanWriterPageState : public ColumnWriterPageState {

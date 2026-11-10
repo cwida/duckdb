@@ -713,6 +713,26 @@ void PipelineBroadcastExchange::SelectBufferedConsumer(idx_t consumer_idx,
 	}
 }
 
+void PipelineBroadcastExchange::DemoteBufferedConsumerToMaterialized(idx_t consumer_idx) {
+	// Pre-execution demotion of a buffered consumer that the schedule gates behind its own producer's
+	// completion: it could never drain the exchange, so serve it from CTE storage instead.
+	annotated_lock_guard<annotated_mutex> guard(lock);
+	D_ASSERT(consumer_idx < consumers.size());
+	auto &consumer = consumers[consumer_idx];
+	D_ASSERT(consumer.mode == PipelineBroadcastExchangeConsumerMode::BUFFERED);
+	consumer.mode = PipelineBroadcastExchangeConsumerMode::MATERIALIZED;
+	consumer.scan_mode = PipelineBroadcastExchangeScanMode::CHUNK;
+	DeactivateConsumerLocked(consumer, buffer->NextPosition());
+	has_batch_scan_consumer = false;
+	for (auto &entry : consumers) {
+		if (entry.mode == PipelineBroadcastExchangeConsumerMode::BUFFERED &&
+		    entry.scan_mode == PipelineBroadcastExchangeScanMode::BATCH) {
+			has_batch_scan_consumer = true;
+			break;
+		}
+	}
+}
+
 void PipelineBroadcastExchange::ResetConsumerRegistrations() {
 	annotated_lock_guard<annotated_mutex> guard(lock);
 	buffer->EndExecution();

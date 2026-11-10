@@ -1,0 +1,109 @@
+# name: test/optimizer/shared_key_domain_plan.test
+# description: Nested sharing and runtime restriction replacement/removal are costed and qualified
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i%1000)::INTEGER k,i::BIGINT v FROM range(10000)t(i);
+
+statement ok
+INSERT INTO fact_data VALUES (NULL,4),(NULL,7);
+
+statement ok
+CREATE VIEW fact AS SELECT (k+1000)%1000 k,v FROM fact_data;
+
+statement ok
+CREATE TABLE demand(k INTEGER,label VARCHAR);
+
+statement ok
+INSERT INTO demand VALUES (1,'one'),(2,'two'),(2,'again'),(2000,'missing'),(NULL,'null');
+
+statement ok
+CREATE TABLE low_fact AS SELECT (i%4)::INTEGER k,i::BIGINT v FROM range(10000)t(i);
+
+statement ok
+INSERT INTO low_fact VALUES (NULL,11);
+
+statement ok
+CREATE TABLE all_keys AS SELECT DISTINCT k FROM low_fact;
+
+statement ok
+CREATE SEQUENCE barrier_visits;
+
+statement ok
+CREATE SEQUENCE reader_guard_visits;
+
+# An outer owner is visible while another owner is being defined
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT * FROM demand), result AS MATERIALIZED (SELECT d.k,a.s FROM d LEFT JOIN (SELECT
+    k,sum(v)s FROM fact GROUP BY k)a USING(k)) SELECT * FROM result UNION ALL SELECT * FROM result ORDER BY
+    ALL;
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Filtered shared input can be materialized without adding an unfiltered reader to its old owner
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT * FROM demand) SELECT d.label,a.s FROM d LEFT JOIN (SELECT k,sum(v)s FROM fact
+    GROUP BY k)a USING(k) WHERE d.label='one' ORDER BY ALL;
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
+
+# Replacing an old runtime domain is considered on a native filter key
+query II
+EXPLAIN (FORMAT JSON)
+WITH c AS MATERIALIZED (SELECT * FROM fact_data), d AS MATERIALIZED (SELECT * FROM c WHERE k=1) SELECT
+    count(*),sum(d.v),sum(a.s) FROM d LEFT JOIN (SELECT f.k,sum(v)s FROM fact_data f SEMI JOIN c old USING(k)
+    GROUP BY f.k)a USING(k);
+----
+physical_plan	<REGEX>:[\s\S]*GROUP_BY[\s\S]*GROUP_BY[\s\S]*
+
+# Runtime removal preserves ordinary-equality NULL exclusion under a null-safe consumer
+query II
+EXPLAIN (FORMAT JSON)
+WITH first AS MATERIALIZED (SELECT * FROM all_keys), d AS MATERIALIZED (SELECT DISTINCT k FROM first) SELECT
+    d.k,a.s,a.n FROM d LEFT JOIN (SELECT f.k,sum(v)s,count(*)n FROM low_fact f SEMI JOIN d ON f.k=d.k GROUP BY
+    f.k)a ON d.k IS NOT DISTINCT FROM a.k ORDER BY ALL;
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+# The parent optimizer pushes the surviving key into this volatile producer.
+query III
+WITH c AS MATERIALIZED (SELECT i::INTEGER k,nextval('barrier_visits') payload FROM range(1000)t(i)), result AS
+    MATERIALIZED (SELECT d.k,d.payload,a.s FROM (SELECT * FROM c WHERE k<3)d LEFT JOIN (SELECT k,sum(v)s FROM
+    fact GROUP BY k)a USING(k)) SELECT * FROM result WHERE k=2 ORDER BY ALL;
+----
+2	1	45020
+
+query I
+SELECT currval('barrier_visits');
+----
+1
+
+# Null-safe restriction removal retains the NULL group
+query II
+EXPLAIN (FORMAT JSON)
+WITH first AS MATERIALIZED (SELECT * FROM all_keys), d AS MATERIALIZED (SELECT DISTINCT k FROM first) SELECT
+    d.k,a.s,a.n FROM d LEFT JOIN (SELECT f.k,sum(v)s,count(*)n FROM low_fact f SEMI JOIN d ON f.k IS NOT
+    DISTINCT FROM d.k GROUP BY f.k)a ON d.k IS NOT DISTINCT FROM a.k ORDER BY ALL;
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
+# Discarding the last unfiltered reader must not change surviving sequence payloads
+query II
+EXPLAIN (FORMAT JSON)
+WITH c AS MATERIALIZED (SELECT i::INTEGER k,nextval('reader_guard_visits') payload FROM range(4)t(i)), d AS
+    MATERIALIZED (SELECT * FROM c WHERE k=2) SELECT d.k,d.payload,a.s FROM d LEFT JOIN (SELECT f.k,sum(v)s
+    FROM (SELECT (k+4)%4 k,v FROM low_fact)f SEMI JOIN c old USING(k) GROUP BY f.k)a USING(k) UNION ALL SELECT
+    k,payload,NULL::HUGEINT FROM c WHERE k=3 ORDER BY ALL;
+----
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
+
+# A materialization barrier cannot block filters into a volatile producer
+query II
+EXPLAIN (FORMAT JSON)
+WITH c AS MATERIALIZED (SELECT i::INTEGER k,nextval('barrier_visits') payload FROM range(1000)t(i)), result AS
+    MATERIALIZED (SELECT d.k,d.payload,a.s FROM (SELECT * FROM c WHERE k<3)d LEFT JOIN (SELECT k,sum(v)s FROM
+    fact GROUP BY k)a USING(k)) SELECT * FROM result WHERE k=2 ORDER BY ALL;
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*

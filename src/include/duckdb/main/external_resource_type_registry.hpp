@@ -34,7 +34,8 @@ struct ExternalResourceType {
 	//! Function that reconnects to an existing resource. May be empty.
 	string resolve_function;
 	//! Function that enumerates the resources of this type that exist externally (for discovery /
-	//! `SHOW ALL EXTERNAL RESOURCES`). Returns a table of handles. May be empty.
+	//! `SHOW ALL EXTERNAL RESOURCES`). Returns one row per resource: handle (MAP), name (the provider's own
+	//! name for it, unique within the type), reference and state. May be empty.
 	string list_function;
 	//! Where it came from: "user" (register_external_resource_type) or "extension".
 	string origin;
@@ -59,6 +60,11 @@ public:
 	vector<ExternalResourceType> List() const;
 	//! The registered type with the given name, or nullptr if none.
 	unique_ptr<ExternalResourceType> Lookup(const string &name) const;
+	//! Lookup that, for a type not registered yet, first autoloads the extension known to provide it (see
+	//! EXTENSION_EXTERNAL_RESOURCE_TYPES in extension_entries.hpp)
+	static unique_ptr<ExternalResourceType> LookupOrAutoload(DatabaseInstance &db, const string &name);
+	//! The extension known to provide the type, or empty if none
+	static string ProvidingExtension(const string &name);
 
 private:
 	mutable mutex lock;

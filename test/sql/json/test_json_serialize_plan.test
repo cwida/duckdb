@@ -34,6 +34,24 @@ SELECT json_serialize_plan('SELECT *, 1 + 2 FROM tbl1', skip_null := true, skip_
 ----
 <REGEX>:.*LOGICAL_PROJECTION.*LOGICAL_GET.*
 
+# Binding verification must not hide stale types after late materialization.
+statement ok
+SET debug_verify_column_bindings = false;
+
+statement ok
+CREATE TABLE top_n AS SELECT range AS a, range AS b FROM range(10);
+
+query II
+SELECT plan->>'error', json_array_length(plan->'plans')
+FROM (
+	SELECT json_serialize_plan('SELECT * FROM top_n ORDER BY a LIMIT 1', optimize := true) AS plan
+);
+----
+false	1
+
+statement ok
+RESET debug_verify_column_bindings;
+
 # Optimized IN clauses use LogicalColumnDataGet internally
 query II
 SELECT plan::VARCHAR LIKE '%LOGICAL_CHUNK_GET%', plan::VARCHAR NOT LIKE '%"column_ids"%'

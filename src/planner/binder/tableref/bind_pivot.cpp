@@ -70,7 +70,7 @@ static void ExtractPivotExpressions(ParsedExpression &root_expr, identifier_set_
 	    root_expr, [&](const ColumnRefExpression &child_colref) {
 		    if (child_colref.IsQualified()) {
 			    if (child_colref.ColumnNames()[0].StartsWith(DummyBinding::DUMMY_NAME) && macro_binding &&
-			        macro_binding->HasMatchingBinding(Identifier(child_colref.GetName()))) {
+			        macro_binding->HasMatchingBinding(Identifier(child_colref.GetColumnName()))) {
 				    throw ParameterNotResolvedException();
 			    }
 			    throw BinderException(child_colref, "PIVOT expression cannot contain qualified columns");
@@ -179,7 +179,7 @@ static unique_ptr<SelectNode> PivotFilteredAggregate(ClientContext &context, Piv
 			for (auto &pivot_expr : pivot_column.pivot_expressions) {
 				auto column_ref = make_uniq<CastExpression>(LogicalType::VARCHAR, pivot_expr->Copy());
 				auto constant_value = ConstantExpression::FromValue(
-				    pivot_value.values[pivot_value_idx++].DefaultCastAs(LogicalType::VARCHAR));
+				    pivot_value.values[pivot_value_idx++].CastAs(context, LogicalType::VARCHAR));
 				auto comp_expr = make_uniq<ComparisonExpression>(ExpressionType::COMPARE_NOT_DISTINCT_FROM,
 				                                                 std::move(column_ref), std::move(constant_value));
 				if (filter) {

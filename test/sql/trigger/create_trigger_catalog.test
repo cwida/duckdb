@@ -101,6 +101,44 @@ SELECT trigger_name, sql FROM duckdb_triggers() WHERE trigger_name = 'insert_sel
 ----
 insert_select_trigger	CREATE TRIGGER insert_select_trigger AFTER UPDATE ON t_ins_sel FOR EACH STATEMENT INSERT INTO log_table SELECT id FROM t_ins_sel;
 
+# Trigger with an INSERT ... ON CONFLICT body whose names need quoting or have mixed case
+statement ok
+CREATE TABLE t_upsert_src (id INTEGER);
+
+statement ok
+CREATE TABLE "t upsert" ("Two Words" INTEGER PRIMARY KEY, "V v" INTEGER, "select" INTEGER, MixedCase INTEGER);
+
+statement ok
+CREATE TRIGGER upsert_trigger AFTER INSERT ON t_upsert_src INSERT INTO "t upsert" VALUES (1, 1, 1, 1) ON CONFLICT ("Two Words") DO UPDATE SET "V v" = "t upsert"."V v" + 1, "select" = excluded."select", MixedCase = 2 WHERE "t upsert"."V v" < 10;
+
+query TT
+SELECT trigger_name, sql FROM duckdb_triggers() WHERE trigger_name = 'upsert_trigger';
+----
+upsert_trigger	CREATE TRIGGER upsert_trigger AFTER INSERT ON t_upsert_src FOR EACH STATEMENT INSERT INTO "t upsert" (VALUES (1, 1, 1, 1)) ON CONFLICT ("Two Words") DO UPDATE SET "V v" = ("t upsert"."V v" + 1), "select" = excluded."select", MixedCase = 2 WHERE ("t upsert"."V v" < 10);
+
+# The stored text creates the same trigger again
+statement ok
+DROP TRIGGER upsert_trigger ON t_upsert_src;
+
+statement ok
+CREATE TRIGGER upsert_trigger AFTER INSERT ON t_upsert_src FOR EACH STATEMENT INSERT INTO "t upsert" (VALUES (1, 1, 1, 1)) ON CONFLICT ("Two Words") DO UPDATE SET "V v" = ("t upsert"."V v" + 1), "select" = excluded."select", MixedCase = 2 WHERE ("t upsert"."V v" < 10);
+
+query T
+SELECT sql FROM duckdb_triggers() WHERE trigger_name = 'upsert_trigger';
+----
+CREATE TRIGGER upsert_trigger AFTER INSERT ON t_upsert_src FOR EACH STATEMENT INSERT INTO "t upsert" (VALUES (1, 1, 1, 1)) ON CONFLICT ("Two Words") DO UPDATE SET "V v" = ("t upsert"."V v" + 1), "select" = excluded."select", MixedCase = 2 WHERE ("t upsert"."V v" < 10);
+
+statement ok
+INSERT INTO t_upsert_src VALUES (1), (2);
+
+statement ok
+INSERT INTO t_upsert_src VALUES (3);
+
+query IIII
+SELECT * FROM "t upsert";
+----
+1	2	1	2
+
 # Cleanup - CASCADE to drop dependent triggers
 statement ok
 DROP TABLE t1 CASCADE;
