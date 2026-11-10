@@ -616,19 +616,6 @@ void LocalStorage::Update(DataTable &table, DuckTableEntry &table_entry, Vector 
 	storage->GetCollection().Update(TransactionData::Unversioned(), table_entry, ids, column_ids, updates);
 }
 
-static void ThrowOnForcedFlushAppendFailure(DataTable &table) {
-	if (table.db.IsSystem() || table.db.IsTemporary()) {
-		return;
-	}
-	if (!table.db.GetStorageManager().IsLoaded()) {
-		// do not inject failures into commits that replay the WAL
-		return;
-	}
-	if (Settings::Get<DebugForceFlushAppendFailureSetting>(table.db.GetDatabase())) {
-		throw IOException("Forced flush append failure (debug_force_flush_append_failure)");
-	}
-}
-
 void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_ptr<StorageCommitState> commit_state) {
 	if (storage.is_dropped) {
 		storage.Rollback();
@@ -664,29 +651,32 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 		storage.Rollback();
 	}
 	// until PushAppend, a returned error means the shared state was restored; anything thrown invalidates
-	ErrorData retryable_error;
+	ErrorData error;
 	try {
-		retryable_error = storage.AppendToIndexes(transaction, append_state);
-		if (!retryable_error.HasError()) {
+		error = storage.AppendToIndexes(transaction, append_state);
+		if (!error.HasError()) {
 			if (merge_storage) {
 				// move over the row groups
 				table.MergeStorage(storage.GetCollection(), commit_state);
 			} else {
-				retryable_error = storage.AppendToTable(transaction, append_state);
+				error = storage.AppendToTable(transaction, append_state);
 			}
 		}
-		if (!retryable_error.HasError()) {
-			ThrowOnForcedFlushAppendFailure(table);
+		if (!error.HasError()) {
+			if (!table.db.IsSystem() && !table.db.IsTemporary() &&
+			    Settings::Get<DebugForceFlushAppendFailureSetting>(table.db.GetDatabase())) {
+				throw IOException("Forced flush append failure (debug_force_flush_append_failure)");
+			}
 			// table_entry is set through the append path (InitializeAppend/Append/LocalMerge/Alter)
 			D_ASSERT(storage.table_entry);
 			transaction.PushAppend(*storage.table_entry, NumericCast<idx_t>(append_state.row_start), append_count);
 		}
 	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		throw FatalException("Failed to flush table %s during commit: %s", table.GetTableName(), error.RawMessage());
+		throw FatalException("Failed to flush table %s during commit: %s", table.GetTableName(),
+		                     ErrorData(ex).RawMessage());
 	}
-	if (retryable_error.HasError()) {
-		retryable_error.Throw();
+	if (error.HasError()) {
+		error.Throw();
 	}
 
 #ifdef DEBUG

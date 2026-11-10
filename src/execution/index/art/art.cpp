@@ -693,7 +693,7 @@ ErrorData ART::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppe
 	try {
 		ExecuteExpressions(chunk, expr_chunk);
 	} catch (std::exception &ex) {
-		// nothing was inserted yet: return the error so that the caller can retry
+		// nothing was inserted yet: return the error instead of throwing
 		return ErrorData(ex);
 	}
 

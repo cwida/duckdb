@@ -63,3 +63,24 @@ query III
 SELECT count(*), count(DISTINCT k), count(DISTINCT u) FROM pk;
 ----
 5001	5001	5001
+
+# A non-unique expression index is first evaluated at COMMIT: an expression error there
+# must be a normal error that removes all keys of the failed commit.
+statement ok
+CREATE TABLE ix (k INTEGER PRIMARY KEY, j INTEGER, l BIGINT);
+
+statement ok
+CREATE INDEX ix_e ON ix ((j + l));
+
+statement error
+INSERT INTO ix SELECT i, 1, CASE WHEN i = 5000 THEN 9223372036854775807 ELSE i END FROM range(1, 5001) r(i);
+----
+<REGEX>:.*Overflow.*
+
+statement ok
+INSERT INTO ix SELECT i, 1, i FROM range(1, 5000) r(i);
+
+query I
+SELECT count(*) FROM ix;
+----
+4999

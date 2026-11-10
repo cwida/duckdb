@@ -245,7 +245,7 @@ private:
 	bool synced_flushed_blocks = false;
 
 private:
-	//! Flushes the local rows into the shared table and indexes; on failure either restores them or invalidates
+	//! Flushes the local rows into the shared table and indexes; throws a FatalException if they cannot be restored
 	void Flush(DataTable &table, LocalTableStorage &storage, optional_ptr<StorageCommitState> commit_state);
 };
 

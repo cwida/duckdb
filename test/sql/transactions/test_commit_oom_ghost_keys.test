@@ -1,5 +1,5 @@
 # name: test/sql/transactions/test_commit_oom_ghost_keys.test
-# description: A COMMIT that runs out of memory while inserting into a primary key index leaves no keys behind
+# description: A COMMIT that runs out of memory while inserting into a primary key index invalidates the database, and its keys are gone after a restart
 # group: [transactions]
 
 require no_alternative_verify

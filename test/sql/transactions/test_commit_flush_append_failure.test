@@ -14,6 +14,10 @@ CREATE TABLE pk (k INTEGER PRIMARY KEY, v VARCHAR);
 statement ok
 INSERT INTO pk VALUES (1, 'a'), (2, 'b');
 
+# the restart below replays the WAL with the debug setting still enabled
+statement ok
+CHECKPOINT;
+
 statement ok
 BEGIN;
 
