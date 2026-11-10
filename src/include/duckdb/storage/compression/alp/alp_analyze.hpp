@@ -26,8 +26,6 @@ public:
 	explicit AlpAnalyzeState(BlockManager &block_manager) : AnalyzeState(block_manager), compression_data() {
 	}
 
-	idx_t total_bytes_used = 0;
-	idx_t current_bytes_used_in_segment = 0;
 	idx_t vectors_sampled_count = 0;
 	idx_t total_values_count = 0;
 	idx_t vectors_count = 0;
@@ -35,31 +33,6 @@ public:
 	vector<vector<T>> complete_vectors_sampled;
 	alp::AlpCompressionData<T, true> compression_data;
 	StorageVersion storage_version = StorageVersion::INVALID;
-
-public:
-	// Returns the required space to hyphotetically store the compressed segment
-	void FlushSegment() {
-		// We add the size of the segment header (the pointer to the metadata)
-		total_bytes_used += current_bytes_used_in_segment + AlpConstants::METADATA_POINTER_SIZE;
-		current_bytes_used_in_segment = 0;
-	}
-
-	void FlushVector(idx_t vector_size) {
-		current_bytes_used_in_segment += vector_size;
-		compression_data.Reset();
-	}
-
-	// Check if we have enough space in the segment to hyphotetically store the compressed vector
-	bool HasEnoughSpace(idx_t vector_size) {
-		idx_t bytes_to_be_used = AlignValue(current_bytes_used_in_segment + vector_size);
-		// We have enough space if the already used space + the required space for a new vector
-		// does not exceed the space of the block - the segment header (the pointer to the metadata)
-		return bytes_to_be_used <= (info.GetBlockSize() - AlpConstants::METADATA_POINTER_SIZE);
-	}
-
-	idx_t TotalUsedBytes() const {
-		return AlignValue(total_bytes_used);
-	}
 };
 
 template <class T>
@@ -158,6 +131,7 @@ idx_t AlpFinalAnalyze(AnalyzeState &state) {
 
 	// Encode the entire sampled vectors to estimate a compression size
 	idx_t compressed_values = 0;
+	idx_t compressed_bytes = 0;
 	for (auto &vector_to_compress : analyze_state.complete_vectors_sampled) {
 		alp::AlpCompression<T, true>::Compress(vector_to_compress.data(), vector_to_compress.size(),
 		                                       analyze_state.compression_data);
@@ -169,25 +143,30 @@ idx_t AlpFinalAnalyze(AnalyzeState &state) {
 
 		const idx_t vector_size = should_compress ? compressed_size : uncompressed_size;
 
-		if (!analyze_state.HasEnoughSpace(vector_size)) {
-			analyze_state.FlushSegment();
-		}
-		analyze_state.FlushVector(vector_size);
+		compressed_bytes += vector_size;
+		analyze_state.compression_data.Reset();
 
 		compressed_values += vector_to_compress.size();
 	}
-
-	// Flush last unfinished segment
-	analyze_state.FlushSegment();
 
 	if (compressed_values == 0) {
 		return DConstants::INVALID_INDEX;
 	}
 
-	// We estimate the size by taking into account the portion of the values we took
-	const auto factor_of_sampling = analyze_state.total_values_count / compressed_values;
-	const auto final_analyze_size = analyze_state.TotalUsedBytes() * factor_of_sampling;
-	return final_analyze_size; // return size of data in bytes
+	// Extrapolate vector data without scaling segment headers or alignment padding.
+	const auto factor_of_sampling =
+	    static_cast<double>(analyze_state.total_values_count) / static_cast<double>(compressed_values);
+	const auto vector_count =
+	    std::ceil(static_cast<double>(analyze_state.total_values_count) / AlpConstants::ALP_VECTOR_SIZE);
+	const auto estimated_size =
+	    static_cast<double>(compressed_bytes) * factor_of_sampling + vector_count * AlpConstants::METADATA_POINTER_SIZE;
+	const auto segment_count =
+	    std::ceil(estimated_size / static_cast<double>(state.info.GetBlockSize() - AlpConstants::HEADER_SIZE));
+	const auto final_analyze_size = std::ceil(estimated_size + segment_count * AlpConstants::HEADER_SIZE);
+	if (final_analyze_size >= static_cast<double>(DConstants::INVALID_INDEX)) {
+		return DConstants::INVALID_INDEX;
+	}
+	return AlignValue(LossyNumericCast<idx_t>(final_analyze_size));
 }
 
 } // namespace duckdb
