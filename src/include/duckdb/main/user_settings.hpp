@@ -36,7 +36,6 @@ private:
 	vector<GenericSetting> settings;
 };
 
-#ifndef __MINGW32__
 struct GlobalUserSettings;
 
 struct CachedGlobalSettings {
@@ -50,7 +49,18 @@ struct CachedGlobalSettings {
 	identifier_map_t<idx_t> extension_setting_indexes;
 	hugeint_t uuid;
 };
-#endif
+
+//! The settings cache of a worker thread. While it exists, the thread reads settings through it instead of through the
+//! thread_local cache, whose first use registers a destructor that glibc cannot fail to allocate without ending the
+//! process
+class WorkerSettingsCache {
+public:
+	WorkerSettingsCache();
+	~WorkerSettingsCache();
+
+private:
+	CachedGlobalSettings cache;
+};
 
 struct GlobalUserSettings {
 public:

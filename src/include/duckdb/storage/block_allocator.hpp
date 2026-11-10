@@ -28,6 +28,24 @@ class TaskScheduler;
 struct ProducerToken;
 struct BlockQueue;
 struct BlockAllocatorLifetimeState;
+class BlockAllocatorThreadLocalState;
+
+//! The block cache of a worker thread. While it is initialized, the thread allocates through it instead of through the
+//! thread_local cache, whose first use registers a destructor that glibc cannot fail to allocate without ending the
+//! process
+class BlockAllocatorWorkerState {
+public:
+	BlockAllocatorWorkerState();
+	~BlockAllocatorWorkerState();
+
+public:
+	bool IsInitialized() const;
+	//! Create the cache, this allocates
+	void Initialize(const BlockAllocator &block_allocator);
+
+private:
+	unique_ptr<BlockAllocatorThreadLocalState> state;
+};
 
 class BlockAllocator {
 	friend class BlockAllocatorThreadLocalState;

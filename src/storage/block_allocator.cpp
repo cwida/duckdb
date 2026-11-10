@@ -357,7 +357,29 @@ private:
 #ifndef __MVS__
 //! Whether this thread created its state. A bool needs no thread_local destructor, so reading it allocates nothing
 static thread_local bool thread_local_state_created = false; // NOLINT
+//! The state of the worker thread running on this thread, if any. A pointer needs no thread_local destructor either
+static thread_local BlockAllocatorThreadLocalState *worker_local_state = nullptr; // NOLINT
 #endif
+
+BlockAllocatorWorkerState::BlockAllocatorWorkerState() {
+}
+
+BlockAllocatorWorkerState::~BlockAllocatorWorkerState() {
+#ifndef __MVS__
+	worker_local_state = nullptr;
+#endif
+}
+
+bool BlockAllocatorWorkerState::IsInitialized() const {
+	return state != nullptr;
+}
+
+void BlockAllocatorWorkerState::Initialize(const BlockAllocator &block_allocator) {
+	state = make_uniq<BlockAllocatorThreadLocalState>(block_allocator);
+#ifndef __MVS__
+	worker_local_state = state.get();
+#endif
+}
 
 BlockAllocatorThreadLocalState &GetBlockAllocatorThreadLocalState(const BlockAllocator &block_allocator) {
 #ifdef __MVS__
@@ -367,6 +389,10 @@ BlockAllocatorThreadLocalState &GetBlockAllocatorThreadLocalState(const BlockAll
 	(*local_state).TryInitialize(block_allocator);
 	return *local_state;
 #else
+	if (worker_local_state) {
+		worker_local_state->TryInitialize(block_allocator);
+		return *worker_local_state;
+	}
 	thread_local BlockAllocatorThreadLocalState local_state(block_allocator);
 	thread_local_state_created = true;
 	local_state.TryInitialize(block_allocator);
@@ -380,7 +406,7 @@ static bool ThreadHasLocalState() {
 #ifdef __MVS__
 	return true;
 #else
-	return thread_local_state_created;
+	return worker_local_state || thread_local_state_created;
 #endif
 }
 
