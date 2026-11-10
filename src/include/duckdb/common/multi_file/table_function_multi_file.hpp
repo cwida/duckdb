@@ -292,7 +292,8 @@ public:
 	TableFunction function;
 	//! The bind data of the wrapped function for this file
 	shared_ptr<FunctionData> bind_data;
-	//! The names/types the wrapped function bound to for this file
+	//! The names/types the wrapped function bound to for this file - follow any change to the names with
+	//! name_index.Build(names)
 	vector<Identifier> names;
 	vector<LogicalType> types;
 	//! The position of each of the names, for the statistics of a column - built with them in BindFunction

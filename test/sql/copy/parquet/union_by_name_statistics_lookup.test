@@ -52,3 +52,12 @@ query I
 SELECT d FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE d = 'z'
 ----
 z
+
+# the statistics of a column the first files have but a later file lacks are dropped, not kept from those
+# files - with b's x..y from the first two files retained, b >= 'x' would look always true and keep the row
+# where b is NULL
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/ubn_stats_lookup_0.parquet', '{TEST_DIR}/ubn_stats_lookup_1.parquet', '{TEST_DIR}/ubn_stats_lookup_2.parquet'], union_by_name=true) WHERE b >= 'x' ORDER BY a
+----
+1
+2
