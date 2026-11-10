@@ -109,8 +109,8 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 	bind_input.multi_file_input = file_input;
 	names.clear();
 	types.clear();
-	name_index.Reset();
 	bind_data = function.bind(context, bind_input, types, names);
+	name_index.Build(names);
 	// a function can describe what it bound in more detail than its names and types - e.g. with the field ids of its
 	// columns, and options that describe the file, which are exposed as the metadata of the reader of the file
 	optional<BindInfo> bind_info;
@@ -138,6 +138,7 @@ void TableFunctionFileReader::BindFunction(ClientContext &context, const TableFu
 	} else {
 		columns = MultiFileColumnDefinition::ColumnsFromNamesAndTypes(names, types);
 	}
+	column_name_index.Build(columns);
 	metadata.clear();
 	if (bind_info) {
 		// the options are kept unordered - sort them, so the same file always has the same metadata
@@ -175,6 +176,7 @@ shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) 
 	auto result = make_shared_ptr<TableFunctionUnionData>(file);
 	result->names = IdentifiersToStrings(names);
 	result->types = types;
+	result->column_name_index.Build(result->names);
 	result->cardinality = cardinality;
 	result->bind_data = bind_data;
 	result->statistics = function.statistics;
@@ -189,11 +191,11 @@ unique_ptr<BaseStatistics> TableFunctionFileReader::GetStatistics(ClientContext 
 	if (!function.statistics || !bind_data) {
 		return nullptr;
 	}
-	auto col_idx = name_index.Find(
-	    name, names, [](const Identifier &column_name) -> const string & { return column_name.GetIdentifierName(); });
+	auto col_idx = name_index.Find(name);
 	if (!col_idx.IsValid()) {
 		return nullptr;
 	}
+	D_ASSERT(names[col_idx.GetIndex()] == name);
 	return function.statistics(context, bind_data.get(), col_idx.GetIndex());
 }
 

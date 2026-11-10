@@ -757,6 +757,7 @@ ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const Col
 					auto local_index = global_id.RemapRootIndex(local_id.GetId());
 
 					reader.columns.emplace_back(virtual_entry->second.name.GetIdentifierName(), virtual_column_type);
+					reader.column_name_index.Build(reader.columns);
 					reader.column_ids.push_back(local_id);
 					reader.column_indexes.push_back(std::move(local_index));
 					reader.AddVirtualColumn(id);

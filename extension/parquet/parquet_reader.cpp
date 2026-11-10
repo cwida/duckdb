@@ -1381,6 +1381,7 @@ void ParquetReader::InitializeSchema(ClientContext &context) {
 		auto &element = root_schema->children[i];
 		columns.push_back(ParseColumnDefinition(*file_meta_data, element));
 	}
+	column_name_index.Build(columns);
 }
 
 void ParquetReader::AddVirtualColumn(column_t virtual_column_id) {

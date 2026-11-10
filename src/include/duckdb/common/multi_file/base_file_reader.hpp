@@ -9,9 +9,8 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
-#include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/identifier.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
-#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/column_index.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
@@ -42,43 +41,20 @@ public:
 	vector<ColumnIndex> column_indexes;
 };
 
-//! The position of every column of a file by name, built when a column is first looked up. The optimizer asks for the
-//! statistics of each column of a scan separately, and every request has to find that column in every file of the
-//! scan - scanning the names for each request costs columns x columns x files comparisons, which dominates the
-//! planning of wide multi-file scans. Names compare case-insensitively, as identifiers do, and of two columns with the
-//! same name the first is found, as a scan over the names would.
+//! The position of every column of a file by name. The optimizer asks for the statistics of each column of a scan
+//! separately and has to find that column in every file, so the names are indexed rather than scanned per request.
+//! Names compare case-insensitively, as identifiers do, and of two columns with the same name the first wins
 class ColumnNameIndex {
 public:
-	//! The position of the column with the given name among "names", or an invalid index when there is none.
-	//! get_name returns the name of an element of names. The positions are (re)built when names has grown or shrunk
-	//! since they were built, e.g. when a virtual column was added to a reader
-	template <class NAMES, class GET_NAME>
-	optional_idx Find(const Identifier &name, const NAMES &names, GET_NAME get_name) const {
-		lock_guard<mutex> guard(lock);
-		if (!positions || indexed_count != names.size()) {
-			positions = make_uniq<case_insensitive_map_t<idx_t>>();
-			for (idx_t i = 0; i < names.size(); i++) {
-				positions->emplace(get_name(names[i]), i);
-			}
-			indexed_count = names.size();
-		}
-		auto entry = positions->find(name.GetIdentifierName());
-		if (entry == positions->end()) {
-			return optional_idx();
-		}
-		return entry->second;
-	}
-	//! Forget the positions - for when the columns are bound again
-	void Reset() {
-		lock_guard<mutex> guard(lock);
-		positions.reset();
-		indexed_count = 0;
-	}
+	//! Index the given names - called again whenever the names change
+	DUCKDB_API void Build(const vector<MultiFileColumnDefinition> &columns);
+	DUCKDB_API void Build(const vector<Identifier> &names);
+	DUCKDB_API void Build(const vector<string> &names);
+	//! The position of the column with the given name, or an invalid index when there is none
+	DUCKDB_API optional_idx Find(const Identifier &name) const;
 
 private:
-	mutable mutex lock;
-	mutable unique_ptr<case_insensitive_map_t<idx_t>> positions;
-	mutable idx_t indexed_count = 0;
+	identifier_map_t<idx_t> positions;
 };
 
 //! Parent class of single-file readers - this must be inherited from for readers implementing the MultiFileReader
@@ -113,7 +89,7 @@ public:
 	vector<MultiFileGlobalIndex> filter_global_indices;
 	//! Counts the file against the open file budget of read-ahead until the reader closes it
 	shared_ptr<ReadAheadOpenFile> read_ahead_open_file;
-	//! The position of each column by name, for FindColumn
+	//! The position of each column by name - rebuilt by whoever changes "columns"
 	ColumnNameIndex column_name_index;
 
 public:
@@ -209,7 +185,7 @@ public:
 	shared_ptr<BaseFileReader> reader;
 	vector<string> names;
 	vector<LogicalType> types;
-	//! The position of each column by name, for FindColumn
+	//! The position of each column by name - built by GetUnionData once the names are filled
 	ColumnNameIndex column_name_index;
 
 	const string &GetFileName() {
