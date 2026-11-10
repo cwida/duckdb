@@ -46,6 +46,16 @@ optional<DistinctCount> RelationStatisticsHelper::SelectTotalDomain(const vector
 	return fallback;
 }
 
+idx_t RelationStatisticsHelper::CardinalityFromDouble(double cardinality) {
+	if (!(cardinality > 0)) {
+		return 0;
+	}
+	if (cardinality >= static_cast<double>(NumericLimits<idx_t>::Maximum())) {
+		return NumericLimits<idx_t>::Maximum();
+	}
+	return LossyNumericCast<idx_t>(cardinality);
+}
+
 static bool MatchesTargetColumn(const Expression &expression, optional<ColumnBinding> target_binding) {
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		return !target_binding || expression.Cast<BoundColumnRefExpression>().Binding() == *target_binding;
@@ -222,7 +232,7 @@ idx_t RelationStatisticsHelper::EstimateDistinctCardinality(const vector<Distinc
 	product *= pow(0.95, static_cast<double>(distinct_counts.size() - 1));
 	const auto multiplier = 1.0 - exp(-static_cast<double>(input_cardinality) / product);
 	const auto estimate = multiplier == 0 ? static_cast<double>(input_cardinality) : product * multiplier;
-	auto result = LossyNumericCast<idx_t>(MinValue(estimate, static_cast<double>(input_cardinality)));
+	auto result = MinValue(CardinalityFromDouble(estimate), input_cardinality);
 	return input_cardinality > 0 ? MaxValue<idx_t>(result, 1) : 0;
 }
 
@@ -240,7 +250,7 @@ DistinctCount RelationStatisticsHelper::EstimateCurrentDomain(const DistinctCoun
 	const auto multiplicity = static_cast<double>(input_cardinality) / static_cast<double>(count);
 	const auto retained_fraction = -expm1(multiplicity * log1p(-row_survival));
 	const auto estimate = round(static_cast<double>(count) * retained_fraction);
-	auto result = LossyNumericCast<idx_t>(MinValue(estimate, static_cast<double>(output_cardinality)));
+	auto result = MinValue(CardinalityFromDouble(estimate), output_cardinality);
 	result = MinValue(result, count);
 	return DistinctCount(MaxValue<idx_t>(result, 1), DistinctCountSource::CARDINALITY);
 }
@@ -272,14 +282,7 @@ static double RoundSemiAntiCardinality(double preserved_cardinality, double sele
 SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinFallback(double preserved_cardinality,
                                                                                        idx_t rhs_cardinality,
                                                                                        JoinType join_type) {
-	auto is_anti = join_type == JoinType::ANTI || join_type == JoinType::RIGHT_ANTI;
-	if (rhs_cardinality == 0) {
-		return {is_anti ? MaxValue(0.0, preserved_cardinality) : 0, false};
-	}
-	// Keep fractional estimates while composing costs. Rounding a small preserved input
-	// can otherwise make equivalent selectivities depend on where the SEMI/ANTI is placed.
-	auto estimate = MinValue(preserved_cardinality, MaxValue(1.0, preserved_cardinality * DEFAULT_SELECTIVITY));
-	return {MaxValue(0.0, estimate), false};
+	return {EstimateSemiAntiJoinFallbackCardinality(preserved_cardinality, rhs_cardinality, join_type), false};
 }
 
 static constexpr double MAX_BASE_CARDINALITY_TO_DOMAIN_RATIO = 8;
@@ -327,8 +330,7 @@ SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCa
 }
 
 static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> groups, idx_t maximum,
-                                        ClientContext &context) {
-	RelationStatsExtractor extractor(context);
+                                        RelationStatsExtractor &extractor, bool use_cached_cardinality) {
 	vector<pair<reference<LogicalOperator>, vector<idx_t>>> pending;
 	pending.emplace_back(input, std::move(groups));
 	idx_t result = 0;
@@ -373,7 +375,8 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 		if (!stats) {
 			return {};
 		}
-		auto cardinality = op.has_estimated_cardinality ? op.estimated_cardinality : stats->cardinality;
+		auto cardinality =
+		    use_cached_cardinality && op.has_estimated_cardinality ? op.estimated_cardinality : stats->cardinality;
 		auto estimate = MinValue<idx_t>(cardinality, 1);
 		for (auto index : entry.second) {
 			auto domain = MaxValue<idx_t>(stats->columns[index].current_domain.distinct_count, 1);
@@ -388,9 +391,10 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 	return optional_idx(result);
 }
 
-optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
-                                                                          const RelationStats &child_stats,
-                                                                          ClientContext &context) {
+static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate &aggregate,
+                                                               const RelationStats &child_stats,
+                                                               RelationStatsExtractor &extractor,
+                                                               bool use_cached_cardinality) {
 	RelationColumnStatsLookup child_columns(child_stats);
 	vector<DistinctCount> cardinality_counts;
 	for (auto &grouping_set : aggregate.grouping_sets) {
@@ -415,7 +419,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 
 	RelationStats result;
 	result.cardinality =
-	    aggregate.groups.empty() ? 1 : EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
+	    aggregate.groups.empty()
+	        ? 1
+	        : RelationStatisticsHelper::EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
 	result.table_name = Identifier(aggregate.GetName());
 	result.stats_initialized = true;
 	auto bindings = aggregate.GetColumnBindings();
@@ -427,8 +433,8 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 		for (auto &group : aggregate.groups) {
 			groups.push_back(child_stats.FindColumn(group->Cast<BoundColumnRefExpression>().Binding()).GetIndex());
 		}
-		auto union_groups =
-		    EstimateUnionGroups(*aggregate.children[0], std::move(groups), child_stats.cardinality, context);
+		auto union_groups = EstimateUnionGroups(*aggregate.children[0], std::move(groups), child_stats.cardinality,
+		                                        extractor, use_cached_cardinality);
 		if (union_groups.IsValid()) {
 			// Per-arm domain products avoid inventing cross-arm combinations of grouping keys.
 			result.cardinality = MinValue(result.cardinality, union_groups.GetIndex());
@@ -476,6 +482,20 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 	return result;
 }
 
+optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
+                                                                          const RelationStats &child_stats,
+                                                                          ClientContext &context) {
+	// Join reconstruction has already published the selected input cardinalities.
+	RelationStatsExtractor extractor(context);
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, true);
+}
+
+optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
+                                                                          const RelationStats &child_stats,
+                                                                          RelationStatsExtractor &extractor) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, false);
+}
+
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,
                                                                      const RelationStats &child_stats) {
 	RelationStats result;
@@ -497,106 +517,6 @@ optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWind
 		}
 	}
 	result.Verify(window.GetColumnBindings());
-	return result;
-}
-
-static optional<DistinctCount> GetDistinctTargetCount(Expression &target, const RelationStats &child_stats,
-                                                      const RelationColumnStatsLookup &child_columns) {
-	switch (target.GetExpressionClass()) {
-	case ExpressionClass::BOUND_COLUMN_REF: {
-		auto column = child_columns.Find(target.Cast<BoundColumnRefExpression>().Binding());
-		return column ? optional<DistinctCount>(column->current_domain) : optional<DistinctCount>();
-	}
-	case ExpressionClass::BOUND_REF: {
-		auto index = target.Cast<BoundReferenceExpression>().Index();
-		return index < child_stats.columns.size() ? optional<DistinctCount>(child_stats.columns[index].current_domain)
-		                                          : optional<DistinctCount>();
-	}
-	case ExpressionClass::BOUND_CONSTANT:
-		return DistinctCount(MinValue<idx_t>(child_stats.cardinality, 1), DistinctCountSource::EXACT);
-	default:
-		return {};
-	}
-}
-
-static optional<ColumnBinding> GetDistinctTargetBinding(Expression &target, const RelationStats &child_stats) {
-	switch (target.GetExpressionClass()) {
-	case ExpressionClass::BOUND_COLUMN_REF:
-		return target.Cast<BoundColumnRefExpression>().Binding();
-	case ExpressionClass::BOUND_REF: {
-		auto index = target.Cast<BoundReferenceExpression>().Index();
-		return index < child_stats.columns.size() ? optional<ColumnBinding>(child_stats.columns[index].binding)
-		                                          : optional<ColumnBinding>();
-	}
-	default:
-		return {};
-	}
-}
-
-optional<RelationStats> RelationStatisticsHelper::ExtractDistinctStats(LogicalDistinct &distinct,
-                                                                       const RelationStats &child_stats) {
-	auto result = ProjectOutputStats(child_stats, distinct);
-	if (!result) {
-		return {};
-	}
-	result->row_retention = 1;
-	vector<DistinctCount> distinct_counts;
-	if (distinct.distinct_targets.empty()) {
-		for (auto &column : child_stats.columns) {
-			distinct_counts.push_back(column.current_domain);
-		}
-	} else {
-		RelationColumnStatsLookup child_columns(child_stats);
-		for (auto &target : distinct.distinct_targets) {
-			auto count = GetDistinctTargetCount(*target, child_stats, child_columns);
-			if (!count) {
-				return result;
-			}
-			distinct_counts.push_back(*count);
-		}
-	}
-	result->cardinality = EstimateDistinctCardinality(distinct_counts, child_stats.cardinality);
-	result->CapCurrentDomainsToCardinality();
-	if (result->columns.size() == 1 && distinct.distinct_targets.empty()) {
-		result->columns[0].semi_anti_join_domain_evidence.MarkUnique();
-	} else if (distinct.distinct_targets.size() == 1) {
-		auto target_binding = GetDistinctTargetBinding(*distinct.distinct_targets[0], child_stats);
-		if (target_binding) {
-			for (auto &column : result->columns) {
-				if (column.binding == *target_binding) {
-					column.semi_anti_join_domain_evidence.MarkUnique();
-					break;
-				}
-			}
-		}
-	}
-	return result;
-}
-
-optional<RelationStats> RelationStatisticsHelper::ExtractFilterStats(LogicalFilter &filter,
-                                                                     const RelationStats &child_stats) {
-	auto result = ProjectOutputStats(child_stats, filter);
-	if (!result) {
-		return {};
-	}
-	auto cardinality = child_stats.cardinality;
-	if (cardinality > 0) {
-		cardinality = MaxValue<idx_t>(LossyNumericCast<idx_t>(double(cardinality) * DEFAULT_SELECTIVITY), 1);
-	}
-	ApplyCardinality(*result, cardinality);
-	for (auto &column : result->columns) {
-		for (auto &expression : filter.expressions) {
-			auto direct_bound =
-			    EstimateDirectFilterDomain(*expression, column.binding, column.total_domain.distinct_count);
-			if (!direct_bound.IsValid()) {
-				continue;
-			}
-			column.current_domain =
-			    DistinctCount(MinValue(column.current_domain.distinct_count, direct_bound.GetIndex()),
-			                  DistinctCountSource::CARDINALITY);
-			column.semi_anti_join_domain_evidence.TightenFilterDomainBound(direct_bound.GetIndex());
-		}
-	}
 	return result;
 }
 

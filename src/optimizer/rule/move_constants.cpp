@@ -275,6 +275,13 @@ unique_ptr<Expression> MoveUnaryMinusRule::Apply(LogicalOperator &op, vector<ref
 	bool nan_guard_disjunctive = false;
 	if (constant_type.IsFloating()) {
 		if (IsOrderedComparison(comparison.GetExpressionType())) {
+			auto constant_value = outer_constant.GetValue();
+			bool constant_is_nan = constant_type.id() == LogicalTypeId::FLOAT
+			                           ? Value::IsNan(FloatValue::Get(constant_value))
+			                           : Value::IsNan(DoubleValue::Get(constant_value));
+			if (constant_is_nan) {
+				return nullptr;
+			}
 			auto &input = *negation.GetChildren()[0];
 			if (!CanDuplicateForNaNGuard(input)) {
 				return nullptr;

@@ -1,0 +1,195 @@
+# name: test/sql/function/generic/hash_comparison_keys.test
+# description: values that compare equal hash equally, for VARIANT, combinable string collations, TIMETZ, BIT and INTERVAL
+# group: [generic]
+
+load {TEST_DIR}/hash_comparison_keys.db
+
+statement ok
+CREATE TABLE vals AS SELECT * FROM (VALUES (1::TINYINT::VARIANT, 'i8'), (1::BIGINT::VARIANT, 'i64'), (1::UINTEGER::VARIANT, 'u32'), (1.00::DECIMAL(5,2)::VARIANT, 'dec'), (1::BIGNUM::VARIANT, 'bignum'), (1.0::DOUBLE::VARIANT, 'dbl'), (1.0::FLOAT::VARIANT, 'flt'), (2::INTEGER::VARIANT, 'two'), ('1'::VARIANT, 'str')) t(v, label);
+
+# equality puts the integers, decimal and bignum in one class, and the float and double in another
+query I
+SELECT count(*) FROM vals a JOIN vals b ON a.v = b.v
+----
+31
+
+query I
+SELECT count(*) FROM vals a JOIN vals b ON a.v = b.v WHERE hash(a.v) <> hash(b.v)
+----
+0
+
+query I
+SELECT count(*) FROM vals a JOIN vals b ON hash(a.v) = hash(b.v) WHERE a.v <> b.v
+----
+0
+
+query III
+SELECT count(DISTINCT v), count(DISTINCT hash(v)), count(DISTINCT hash(v, label = 'two'))
+FROM vals
+----
+4	4	4
+
+query II
+SELECT list(label ORDER BY label), count(*) FROM vals GROUP BY hash(v) ORDER BY ALL
+----
+[bignum, dec, i64, i8, u32]	5
+[dbl, flt]	2
+[str]	1
+[two]	1
+
+# nested values
+query III
+SELECT hash({'a': 1::TINYINT::VARIANT, 'b': 'x'}) = hash({'a': 1::BIGINT::VARIANT, 'b': 'x'}),
+       hash([1::TINYINT::VARIANT, NULL]) = hash([1.00::DECIMAL(5,2)::VARIANT, NULL]),
+       hash([1::UINTEGER::VARIANT, 2::INTEGER::VARIANT]::VARIANT[2]) = hash([1::BIGNUM::VARIANT, 2.0::DECIMAL(3,1)::VARIANT]::VARIANT[2])
+----
+true	true	true
+
+query II
+SELECT hash({'a': 1::TINYINT, 'b': [2::SMALLINT]}::VARIANT) = hash({'b': [2::BIGINT], 'a': 1::INTEGER}::VARIANT),
+       hash({'a': 1}::VARIANT) = hash({'a': 2}::VARIANT)
+----
+true	false
+
+query II
+SELECT hash(1::TINYINT::VARIANT, 'x') = hash(1::BIGINT::VARIANT, 'x'), hash(0, 'x', 1::TINYINT::VARIANT) = hash(0, 'x', 1::BIGINT::VARIANT)
+----
+true	true
+
+# NULL hashes like the NULL of any other type
+query II
+SELECT hash(NULL::VARIANT) = hash(NULL), hash({'a': NULL::VARIANT}) = hash({'a': NULL::INTEGER})
+----
+true	true
+
+# nested values in a table, with NULL containers, empty lists and NULL elements
+statement ok
+CREATE TABLE nested AS SELECT * FROM (VALUES
+	(1, [1::TINYINT::VARIANT, NULL], {'a': 1::TINYINT::VARIANT, 'b': [2::SMALLINT::VARIANT]}, (1::TINYINT::VARIANT, 'x')),
+	(2, [1.00::DECIMAL(5,2)::VARIANT, NULL], {'a': 1::BIGINT::VARIANT, 'b': [2.0::DECIMAL(3,1)::VARIANT]}, (1::BIGNUM::VARIANT, 'x')),
+	(3, [], {'a': NULL, 'b': []}, (NULL, NULL)),
+	(4, [], {'a': NULL, 'b': []}, (NULL, NULL)),
+	(5, NULL, NULL, NULL),
+	(6, NULL, NULL, NULL)
+) t(id, l, s, r);
+
+# rows 1 and 2, 3 and 4, and 5 and 6 are equal
+query I
+SELECT count(*) FROM nested a JOIN nested b ON a.l IS NOT DISTINCT FROM b.l AND a.s IS NOT DISTINCT FROM b.s AND a.r IS NOT DISTINCT FROM b.r
+----
+12
+
+query I
+SELECT count(*) FROM nested a JOIN nested b ON a.l IS NOT DISTINCT FROM b.l AND a.s IS NOT DISTINCT FROM b.s AND a.r IS NOT DISTINCT FROM b.r WHERE hash(a.l, a.s, a.r) <> hash(b.l, b.s, b.r)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT id, hash(l, s, r) AS h FROM nested WHERE id % 2 = 0) even JOIN (SELECT id, hash(l, s, r) AS h FROM nested WHERE id % 2 = 1) odd ON even.id = odd.id + 1 AND even.h = odd.h
+----
+3
+
+# VARIANT values stored as typed (shredded) columns
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE stored AS SELECT i, (i % 3)::TINYINT::VARIANT AS a, (i % 3)::DECIMAL(10, 1)::VARIANT AS b FROM range(5000) t(i);
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT DISTINCT segment_type FROM pragma_storage_info('stored') WHERE segment_type IN ('TINYINT', 'DECIMAL(10,1)') ORDER BY segment_type
+----
+DECIMAL(10,1)
+TINYINT
+
+query II
+SELECT count(*), count(*) FILTER (WHERE hash(a) = hash(b) AND hash(a) = hash((i % 3)::BIGINT::VARIANT))
+FROM stored
+----
+5000	5000
+
+query I
+SELECT count(DISTINCT hash(v)) FROM (SELECT a AS v FROM stored UNION ALL SELECT b FROM stored)
+----
+3
+
+# collated strings hash their collated value
+query IIII
+SELECT hash('A' COLLATE NOCASE) = hash('a' COLLATE NOCASE), hash('é' COLLATE NOACCENT) = hash('e' COLLATE NOACCENT),
+       hash({'s': 'A' COLLATE NOCASE}) = hash({'s': 'a' COLLATE NOCASE}), hash('A' COLLATE NOCASE) = hash('b' COLLATE NOCASE)
+----
+true	true	true	false
+
+statement ok
+CREATE TABLE collated AS SELECT i, CASE WHEN i % 2 = 0 THEN 'ABC' ELSE 'abc' END::VARCHAR COLLATE NOCASE AS s FROM range(5000) t(i);
+
+query II
+SELECT count(DISTINCT s), count(DISTINCT hash(s)) FROM collated
+----
+1	1
+
+# TIMETZ, BIT and INTERVAL hash their comparison keys, also at the limits of the interval fields
+query I
+SELECT count(*) FROM (VALUES
+	(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds', INTERVAL '-2147483648 months -2147483648 days -9223372036854775806 microseconds'),
+	(INTERVAL '-2147483648 months -2147483648 days -9223372036854775807 microseconds', INTERVAL '-2147483648 months -2147483647 days -9223372036854775807 microseconds'),
+	(INTERVAL '2147483647 months 2147483647 days 9223372036854775806 microseconds', INTERVAL '2147483647 months 2147483647 days 9223372036854775807 microseconds'),
+	(INTERVAL '1 month', INTERVAL '30 days'),
+	(INTERVAL '1 month', INTERVAL '31 days')
+) t(a, b) WHERE (a = b) IS DISTINCT FROM (hash(a) = hash(b))
+----
+0
+
+query I
+SELECT count(*) FROM (VALUES ('12:00:00+01'::TIMETZ, '11:00:00+00'::TIMETZ), ('12:00:00+01'::TIMETZ, '12:00:00+01'::TIMETZ)) t(a, b)
+WHERE (a = b) IS DISTINCT FROM (hash(a) = hash(b))
+----
+0
+
+query I
+SELECT count(*) FROM (VALUES ('0101'::BIT, '0101'::BIT), ('0101'::BIT, '0110'::BIT)) t(a, b) WHERE (a = b) IS DISTINCT FROM (hash(a) = hash(b))
+----
+0
+
+# the arguments share one string collation, as in other functions that combine their arguments
+statement error
+SELECT hash('a' COLLATE NOCASE, 'b' COLLATE NOACCENT)
+----
+Cannot combine types with different collation
+
+# strings without an explicit collation hash under the default collation
+statement ok
+SET default_collation = 'nocase';
+
+query II
+SELECT hash('A') = hash('a'), hash({'s': 'A'}) = hash({'s': 'a'})
+----
+true	true
+
+statement ok
+RESET default_collation;
+
+# an index on hash() of a collated column finds its rows after a restart
+statement ok
+CREATE TABLE names (s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO names VALUES ('A'), ('b');
+
+statement ok
+CREATE INDEX names_hash ON names (hash(s));
+
+statement ok
+CHECKPOINT
+
+restart
+
+query T
+SELECT s FROM names WHERE hash(s) = hash('a')
+----
+A

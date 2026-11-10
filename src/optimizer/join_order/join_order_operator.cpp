@@ -43,20 +43,6 @@ static bool ContainedInUnion(const JoinRelationSet &required, const JoinRelation
 	return true;
 }
 
-static JoinRelationSet &Intersection(JoinRelationSetManager &set_manager, const JoinRelationSet &left,
-                                     const JoinRelationSet &right) {
-	unordered_set<RelationIndex> result;
-	for (idx_t left_idx = 0; left_idx < left.count; left_idx++) {
-		for (idx_t right_idx = 0; right_idx < right.count; right_idx++) {
-			if (left.relations[left_idx] == right.relations[right_idx]) {
-				result.insert(left.relations[left_idx]);
-				break;
-			}
-		}
-	}
-	return set_manager.GetJoinRelation(result);
-}
-
 bool JoinOrderConflictDetector::IsCommutative(JoinOrderOperatorType type) {
 	return type == JoinOrderOperatorType::INNER || type == JoinOrderOperatorType::CROSS_PRODUCT;
 }
@@ -182,7 +168,7 @@ static void AddConflictRule(JoinOrderOperator &op, JoinRelationSet &trigger, Joi
 
 static JoinRelationSet &PredicateIntersectionOrInput(JoinRelationSetManager &set_manager, JoinRelationSet &input,
                                                      JoinRelationSet &syntactic_set) {
-	auto &intersection = Intersection(set_manager, input, syntactic_set);
+	auto &intersection = set_manager.Intersection(input, syntactic_set);
 	return intersection.Empty() ? input : intersection;
 }
 
@@ -234,8 +220,8 @@ static void SimplifyConflictRules(JoinOrderOperator &op, JoinRelationSetManager 
 		}
 	}
 	op.conflict_rules = std::move(remaining_rules);
-	op.left_total_set = Intersection(set_manager, op.total_set, op.left_relations);
-	op.right_total_set = Intersection(set_manager, op.total_set, op.right_relations);
+	op.left_total_set = set_manager.Intersection(op.total_set, op.left_relations);
+	op.right_total_set = set_manager.Intersection(op.total_set, op.right_relations);
 }
 
 void JoinOrderConflictDetector::Build(vector<unique_ptr<JoinOrderOperator>> &operators,

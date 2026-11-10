@@ -246,7 +246,7 @@ mood
 # "||", "//" and "%" shadows created above
 
 query I
-SELECT format_type((SELECT min(type_oid) FROM duckdb_types() WHERE logical_type = 'INTEGER'), 10002);
+SELECT format_type(23, 10002);
 ----
 int4(10,2)
 

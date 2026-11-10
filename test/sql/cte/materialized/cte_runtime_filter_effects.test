@@ -1,0 +1,131 @@
+# name: test/sql/cte/materialized/cte_runtime_filter_effects.test
+# description: CTE runtime filters retain producer effects and recover after build errors
+# group: [materialized]
+
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+SET max_execution_time=5000;
+
+statement ok
+CREATE TABLE probe AS SELECT i AS k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE b(s VARCHAR);
+
+statement ok
+CREATE TABLE c(s VARCHAR);
+
+statement ok
+INSERT INTO b VALUES ('1');
+
+statement ok
+INSERT INTO c VALUES ('2');
+
+statement ok
+PREPARE changing_builds AS
+WITH p AS MATERIALIZED (SELECT k FROM probe)
+SELECT p.k FROM p JOIN b ON p.k=CAST(b.s AS BIGINT)
+UNION ALL SELECT p.k FROM p JOIN c ON p.k=CAST(c.s AS BIGINT);
+
+query I rowsort
+EXECUTE changing_builds;
+----
+1
+2
+
+statement ok
+INSERT INTO b VALUES ('bad');
+
+statement error
+EXECUTE changing_builds;
+----
+Could not convert string
+
+statement ok
+DELETE FROM b;
+
+statement ok
+INSERT INTO b VALUES ('3');
+
+query I rowsort
+EXECUTE changing_builds;
+----
+2
+3
+
+statement ok
+CREATE TABLE wide(k BIGINT);
+
+statement ok
+INSERT INTO wide VALUES (1),(2),(5000000000);
+
+statement ok
+INSERT INTO b VALUES ('5000000000');
+
+# Join ordering supplies the cardinality estimates needed to schedule the filters before the CTE scan.
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,build_side_probe_side,compressed_materialization';
+
+# The overflow key matches the simplified runtime filter, but the original TRY_CAST must prevent a join match.
+query I
+WITH p AS MATERIALIZED (SELECT TRY_CAST(k AS INTEGER) k FROM wide)
+SELECT p.k FROM p JOIN b ON p.k=CAST(b.s AS BIGINT)
+UNION ALL SELECT p.k FROM p JOIN c ON p.k=CAST(c.s AS BIGINT);
+----
+2
+
+statement ok
+DELETE FROM b WHERE s='5000000000';
+
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE SEQUENCE cte_effect_seq;
+
+statement ok
+CREATE TABLE sequence_probe AS SELECT i AS k FROM range(20) t(i);
+
+query II
+WITH p AS MATERIALIZED (SELECT k,nextval('cte_effect_seq') n FROM sequence_probe)
+SELECT count(*),bool_and(n>0)::INTEGER FROM (
+    SELECT p.n FROM p JOIN b ON p.k=CAST(b.s AS BIGINT)
+    UNION ALL SELECT p.n FROM p JOIN c ON p.k=CAST(c.s AS BIGINT)
+) matches;
+----
+2	1
+
+query I
+SELECT currval('cte_effect_seq');
+----
+20
+
+statement ok
+CREATE TABLE miss_a AS SELECT 100::BIGINT k;
+
+statement ok
+CREATE TABLE miss_b AS SELECT 101::BIGINT k;
+
+statement ok
+CREATE SEQUENCE sibling_effect_seq;
+
+# Emptying the CTE must not suppress volatile expressions on a sibling probe input.
+query I
+WITH p AS MATERIALIZED (SELECT k FROM sequence_probe)
+SELECT count(n) FROM (
+    SELECT v.n FROM (SELECT i k,nextval('sibling_effect_seq') n FROM range(10) t(i)) v
+    JOIN p ON v.k=p.k JOIN miss_a ON p.k=miss_a.k
+    UNION ALL SELECT p.k FROM p JOIN miss_b ON p.k=miss_b.k
+) matches;
+----
+0
+
+query I
+SELECT currval('sibling_effect_seq');
+----
+10
+
+statement ok
+RESET disabled_optimizers;

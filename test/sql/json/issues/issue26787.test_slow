@@ -1,0 +1,179 @@
+# name: test/sql/json/issues/issue26787.test_slow
+# description: A parallel newline-delimited scan reads lines that continue across a buffer without a newline
+# group: [issues]
+
+require json
+
+statement ok
+SET threads=4;
+
+# a parallel scan reads one file in buffers of 16777212 bytes, and explicit columns and records keep schema sampling
+# from limiting the scan to one thread
+# the last line has no newline, and its last 36 bytes are the only bytes of the third buffer
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 335541) || '{"pad":"' || repeat('x', 149) || '"}' || chr(10) || '{"pad":"' || repeat('y', 190) || '"}')::BLOB) TO '{TEST_DIR}/unterminated_last_line.jsonl' (FORMAT BLOB);
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+335543	335543	190	1
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true, ignore_errors = true);
+----
+335543	335543	190	1
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl');
+----
+335543	335543	190	1
+
+query II
+SELECT count(*), count(json) FROM read_json_objects('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited');
+----
+335543	335543
+
+query II
+SELECT count(*), count(json) FROM read_json_objects('{TEST_DIR}/unterminated_last_line.jsonl', format = 'auto');
+----
+335543	335543
+
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 335541) || '{"pad":"' || repeat('x', 149) || '"}' || chr(10) || '{"pad":"' || repeat('y', 190) || '"}')::BLOB) TO '{TEST_DIR}/unterminated_last_line.jsonl.gz' (FORMAT BLOB, COMPRESSION gzip);
+
+query III
+SELECT count(*), count(pad), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl.gz', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+335543	335543	1
+
+# a line that fills the whole second buffer and ends with the first byte of the third
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777205) || '"}' || chr(10) || repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 3))::BLOB) TO '{TEST_DIR}/line_over_buffer.jsonl' (FORMAT BLOB);
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+167776	167776	16777205
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true, ignore_errors = true);
+----
+167776	167776	16777205
+
+# the same line ends the file without a newline, at the end of the second buffer
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777205) || '"}')::BLOB) TO '{TEST_DIR}/line_over_buffer_at_end.jsonl' (FORMAT BLOB);
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer_at_end.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+167773	167773	16777205
+
+# the newline after that line is the only newline of the third buffer, followed by a last line without a newline
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777205) || '"}' || chr(10) || '{"pad":"' || repeat('z', 50) || '"}')::BLOB) TO '{TEST_DIR}/newline_at_buffer_start.jsonl' (FORMAT BLOB);
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'z%') FROM read_json('{TEST_DIR}/newline_at_buffer_start.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+167774	167774	16777205	1
+
+# a line that ends with a carriage return as the last byte of the second buffer
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(13) || chr(10), 166110) || '{"pad":"' || repeat('x', 87) || '"}' || chr(13) || chr(10) || '{"pad":"' || repeat('g', 16777204) || '"}' || chr(13) || chr(10) || '{"pad":"' || repeat('z', 50) || '"}' || chr(13) || chr(10))::BLOB) TO '{TEST_DIR}/crlf_over_buffer.jsonl' (FORMAT BLOB);
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'z%') FROM read_json('{TEST_DIR}/crlf_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+166113	166113	16777204	1
+
+# a line of exactly maximum_object_size bytes that ends the file one byte into the third buffer
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777206) || '"}')::BLOB) TO '{TEST_DIR}/line_at_size_limit.jsonl' (FORMAT BLOB);
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_at_size_limit.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+167773	167773	16777206
+
+# a line that spans four buffers is larger than maximum_object_size
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 40000000) || '"}' || chr(10) || '{"pad":"' || repeat('x', 1) || '"}')::BLOB) TO '{TEST_DIR}/line_over_size_limit.jsonl' (FORMAT BLOB);
+
+statement error
+SELECT count(*) FROM read_json('{TEST_DIR}/line_over_size_limit.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+<REGEX>:Invalid Input Error.*"maximum_object_size" of 16777216 bytes exceeded.*
+
+# a malformed line that fills the whole second buffer and ends with the first byte of the third
+statement ok
+COPY (SELECT (repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 167771) || '{"pad":"' || repeat('x', 98) || '"}' || chr(10) || '{"pad":"' || repeat('g', 16777207) || chr(10) || repeat('{"pad":"' || repeat('x', 89) || '"}' || chr(10), 3))::BLOB) TO '{TEST_DIR}/malformed_line_over_buffer.jsonl' (FORMAT BLOB);
+
+statement error
+SELECT count(*) FROM read_json('{TEST_DIR}/malformed_line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+<REGEX>:Invalid Input Error.*Malformed JSON.*at byte 16777216 in line.*
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/malformed_line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true, ignore_errors = true);
+----
+167776	167775	98
+
+# whitespace without a newline over more than maximum_object_size bytes is not part of a line
+statement ok
+COPY (SELECT (repeat(' ', 33554424) || '{"pad":"x"}' || chr(10))::BLOB) TO '{TEST_DIR}/whitespace_before_line.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_before_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+1	1
+
+statement ok
+COPY (SELECT ('{"pad":"a"}' || chr(10) || repeat(' ', 33554424) || '{"pad":"x"}')::BLOB) TO '{TEST_DIR}/whitespace_before_last_line.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_before_last_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+2	2
+
+statement ok
+COPY (SELECT (repeat(' ', 20000000))::BLOB) TO '{TEST_DIR}/whitespace_only.jsonl' (FORMAT BLOB);
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_only.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+0	0
+
+# a single thread reads the files the same way
+statement ok
+SET threads=1;
+
+query IIII
+SELECT count(*), count(pad), max(length(pad)), count(*) FILTER (pad LIKE 'y%') FROM read_json('{TEST_DIR}/unterminated_last_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+335543	335543	190	1
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+167776	167776	16777205
+
+query III
+SELECT count(*), count(pad), max(length(pad)) FROM read_json('{TEST_DIR}/line_at_size_limit.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+167773	167773	16777206
+
+statement error
+SELECT count(*) FROM read_json('{TEST_DIR}/line_over_size_limit.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+<REGEX>:Invalid Input Error.*"maximum_object_size" of 16777216 bytes exceeded.*
+
+statement error
+SELECT count(*) FROM read_json('{TEST_DIR}/malformed_line_over_buffer.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+<REGEX>:Invalid Input Error.*Malformed JSON.*at byte 16777216 in line.*
+
+query II
+SELECT count(*), count(pad) FROM read_json('{TEST_DIR}/whitespace_before_line.jsonl', format = 'newline_delimited', columns = {pad: 'VARCHAR'}, records = true);
+----
+1	1

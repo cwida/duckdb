@@ -41,11 +41,13 @@ struct GlobalUserSettings;
 
 struct CachedGlobalSettings {
 	CachedGlobalSettings();
-	CachedGlobalSettings(const GlobalUserSettings &global_user_settings, idx_t version, UserSettingsMap settings);
+	CachedGlobalSettings(const GlobalUserSettings &global_user_settings, idx_t version, UserSettingsMap settings,
+	                     const identifier_map_t<ExtensionOption> &extension_parameters);
 
 	optional_ptr<const GlobalUserSettings> global_user_settings;
 	idx_t version;
 	UserSettingsMap settings;
+	identifier_map_t<idx_t> extension_setting_indexes;
 	hugeint_t uuid;
 };
 #endif
@@ -65,6 +67,7 @@ public:
 	idx_t AddExtensionOption(const Identifier &name, ExtensionOption extension_option);
 	identifier_map_t<ExtensionOption> GetExtensionSettings() const;
 	bool TryGetExtensionOption(const Identifier &name, ExtensionOption &result) const;
+	optional_idx TryGetExtensionSettingIndex(const Identifier &name) const;
 	hugeint_t GetUUID() const;
 
 #ifndef __MINGW32__

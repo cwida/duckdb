@@ -97,6 +97,20 @@ ORDER BY choices.a NULLS FIRST LIMIT 2;
 NULL
 1
 
+# Use multiple row groups so an unsafe TopN filter actually prunes.
+statement ok
+CREATE TABLE topn_left AS SELECT i AS a FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE topn_right AS SELECT i AS a FROM range(-1, 1000000) t(i);
+
+query I
+SELECT topn_left.a FROM topn_left RIGHT JOIN topn_right ON topn_left.a=topn_right.a
+ORDER BY topn_left.a NULLS FIRST LIMIT 2;
+----
+NULL
+0
+
 statement ok
 CREATE TABLE prepared_probe AS SELECT i AS a, [i % 2] AS items FROM range(10000) t(i);
 

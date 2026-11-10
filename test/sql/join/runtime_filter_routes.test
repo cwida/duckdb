@@ -1,0 +1,185 @@
+# name: test/sql/join/runtime_filter_routes.test
+# description: Runtime filter routes retain complete partitions and nested join inputs
+# group: [join]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE a AS SELECT i AS id,i%100 AS k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE b AS FROM a;
+
+statement ok
+CREATE TABLE c(k BIGINT,rn BIGINT);
+
+statement ok
+INSERT INTO c VALUES (42,2);
+
+statement ok
+PREPARE window_target AS
+SELECT id,p.k,p.rn FROM (
+    SELECT id,k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn FROM a
+) p JOIN c ON p.k=c.k AND p.rn=c.rn ORDER BY id;
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+query II
+SELECT p.k,n FROM (
+    SELECT b.k,count(*) AS n FROM a JOIN b USING(id) GROUP BY b.k
+) p JOIN c ON p.k=c.k;
+----
+42	100
+
+query II
+SELECT p.k,n FROM (
+    SELECT a.k,count(*) AS n FROM a JOIN b USING(id) GROUP BY a.k
+) p JOIN c ON p.k=c.k;
+----
+42	100
+
+query II
+SELECT p.k,n FROM (
+    SELECT b.k,count(*) AS n FROM range(10000) a(id) JOIN b USING(id) GROUP BY b.k
+) p JOIN c ON p.k=c.k;
+----
+42	100
+
+query II
+SELECT count(*),sum(p.rn) FROM (
+    SELECT b.k,row_number() OVER (PARTITION BY b.k ORDER BY a.id) AS rn FROM a JOIN b USING(id)
+) p JOIN c ON p.k=c.k;
+----
+100	5050
+
+query III
+EXECUTE window_target;
+----
+142	42	2
+
+query II
+SELECT count(*),sum(p.rn) FROM (
+    SELECT k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn,
+        row_number() OVER (ORDER BY id) AS rn2 FROM a
+) p JOIN c ON p.k=c.k AND p.rn2>0;
+----
+100	5050
+
+query I
+SELECT count(*) FROM a JOIN b USING(id) JOIN c ON b.k=c.k;
+----
+100
+
+query II
+SELECT count(*),sum(p.rn) FROM (
+    SELECT b.k,row_number() OVER (ORDER BY a.id) AS rn FROM a JOIN b USING(id)
+) p JOIN c ON p.k=c.k;
+----
+100	499300
+
+query II
+SELECT p.k,n FROM (
+    SELECT b.k,count(*) AS n FROM (SELECT id FROM a LIMIT 2) a CROSS JOIN b GROUP BY b.k
+) p JOIN c ON p.k=c.k;
+----
+42	200
+
+query I
+SELECT count(*) FROM (
+    WITH q AS MATERIALIZED (SELECT * FROM c)
+    SELECT a.k FROM a CROSS JOIN q
+) p JOIN c ON p.k=c.k;
+----
+100
+
+query I
+SELECT count(*) FROM (
+    WITH q AS MATERIALIZED (SELECT * FROM a)
+    SELECT k FROM q
+) p JOIN c ON p.k=c.k;
+----
+100
+
+endloop
+
+statement ok
+UPDATE c SET k=99,rn=3;
+
+query III
+EXECUTE window_target;
+----
+299	99	3
+
+statement ok
+DELETE FROM c;
+
+query III
+EXECUTE window_target;
+----
+
+statement ok
+INSERT INTO c VALUES (42,2);
+
+query III
+EXECUTE window_target;
+----
+142	42	2
+
+statement ok
+INSERT INTO a VALUES (10000,NULL);
+
+statement ok
+INSERT INTO b VALUES (10000,NULL);
+
+statement ok
+INSERT INTO c VALUES (NULL,1);
+
+query III rowsort
+SELECT id,p.k,p.rn FROM (
+    SELECT id,k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn FROM a
+) p JOIN c ON p.k IS NOT DISTINCT FROM c.k AND p.rn=c.rn;
+----
+10000	NULL	1
+142	42	2
+
+query II rowsort
+SELECT p.k,n FROM (
+    SELECT b.k,count(*) AS n FROM a JOIN b USING(id) GROUP BY b.k
+) p JOIN c ON p.k IS NOT DISTINCT FROM c.k;
+----
+42	100
+NULL	1
+
+query II
+SELECT count(*),sum(n) FROM (
+    SELECT k,count(*) AS n FROM a GROUP BY GROUPING SETS ((k),())
+) p JOIN c ON p.k IS NOT DISTINCT FROM c.k;
+----
+3	10102
+
+query I
+SELECT count(*) FROM (
+    SELECT a.k AS ak,b.k AS bk FROM a LEFT JOIN b ON a.id=b.id AND b.k=99
+) p JOIN c ON p.bk IS NOT DISTINCT FROM c.k;
+----
+9901
+
+query I
+SELECT count(*) FROM (SELECT k FROM a ORDER BY id LIMIT 1) p JOIN c ON p.k=c.k;
+----
+0
+
+query I
+SELECT count(*) FROM (
+    WITH RECURSIVE r(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM r WHERE i<2)
+    SELECT b.k FROM a JOIN b USING(id) CROSS JOIN r
+) p JOIN c ON p.k=c.k;
+----
+300
+
+statement ok
+RESET disabled_optimizers;

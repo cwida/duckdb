@@ -38,7 +38,8 @@ static const DefaultView internal_views[] = {
      "SELECT name, statement, NULL prepare_time, parameter_types, result_types, NULL from_sql, NULL generic_plans, "
      "NULL custom_plans from duckdb_prepared_statements()"},
     {"pg_catalog", "pg_attribute",
-     "SELECT table_oid attrelid, column_name attname, data_type_id atttypid, 0 attstattarget, NULL attlen, "
+     "SELECT table_oid attrelid, column_name attname, "
+     "coalesce(map_type_id_to_pg_oid(data_type_id), data_type_id + 16384) atttypid, 0 attstattarget, NULL attlen, "
      "column_index attnum, 0 attndims, -1 attcacheoff, case when data_type ilike '%decimal%' then "
      "numeric_precision*1000+numeric_scale else -1 end atttypmod, false attbyval, NULL attstorage, NULL attalign, NOT "
      "is_nullable attnotnull, column_default IS NOT NULL atthasdef, false atthasmissing, '' attidentity, '' "
@@ -139,7 +140,8 @@ static const DefaultView internal_views[] = {
     {"pg_catalog", "pg_tablespace", "SELECT 0 oid, 'pg_default' spcname, 0 spcowner, NULL spcacl, NULL spcoptions"},
     {"pg_catalog", "pg_type",
      "SELECT CASE WHEN type_oid IS NULL THEN NULL WHEN logical_type = 'ENUM' AND type_name <> 'enum' THEN type_oid "
-     "ELSE map_to_pg_oid(type_name) END oid, format_pg_type(logical_type, type_name) typname, schema_oid typnamespace, "
+     "WHEN internal THEN map_type_id_to_pg_oid(type_oid) END oid, format_pg_type(logical_type, type_name) typname, "
+     "schema_oid typnamespace, "
      "0 typowner, type_size typlen, false typbyval, CASE WHEN logical_type='ENUM' THEN 'e' else 'b' end typtype, CASE "
      "WHEN type_category='NUMERIC' THEN 'N' WHEN type_category='STRING' THEN 'S' WHEN type_category='DATETIME' THEN "
      "'D' WHEN type_category='BOOLEAN' THEN 'B' WHEN type_category='COMPOSITE' THEN 'C' WHEN type_category='USER' THEN "

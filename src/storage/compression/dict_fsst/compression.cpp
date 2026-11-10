@@ -32,12 +32,6 @@ DictFSSTCompressionState::~DictFSSTCompressionState() {
 	}
 }
 
-static constexpr idx_t DICTIONARY_ENCODE_THRESHOLD = 4096;
-
-static inline bool IsEncoded(DictionaryAppendState state) {
-	return state == DictionaryAppendState::ENCODED || state == DictionaryAppendState::ENCODED_ALL_UNIQUE;
-}
-
 static DictFSSTMode ConvertToMode(DictionaryAppendState &state) {
 	switch (state) {
 	case DictionaryAppendState::ENCODED:
@@ -132,23 +126,6 @@ idx_t DictFSSTCompressionState::Finalize() {
 #endif
 	D_ASSERT(base_ptr + required_space == base_ptr + dictionary_indices_dest + dictionary_indices_space);
 	D_ASSERT((uint64_t)*max_element(std::begin(dictionary_indices), std::end(dictionary_indices)) == dict_count - 1);
-	return required_space;
-}
-
-idx_t DictFSSTCompressionState::CalculateRequiredSpace() const {
-	idx_t required_space = 0;
-	required_space += sizeof(dict_fsst_compression_header_t);
-	required_space = AlignValue<idx_t>(required_space);
-	required_space += dictionary_offset + to_encode_string_sum;
-	required_space = AlignValue<idx_t>(required_space);
-	if (IsEncoded(append_state)) {
-		required_space += symbol_table_size;
-		required_space = AlignValue<idx_t>(required_space);
-	}
-	required_space += string_lengths_space;
-	required_space = AlignValue<idx_t>(required_space);
-	required_space += dictionary_indices_space;
-
 	return required_space;
 }
 
@@ -666,7 +643,7 @@ bool DictFSSTCompressionState::AllUnique() const {
 DictionaryAppendState DictFSSTCompressionState::TryEncode() {
 	//! We were appending normally, the segment is full
 
-	if (dictionary_offset < DICTIONARY_ENCODE_THRESHOLD) {
+	if (dictionary_offset < DictFSSTCompression::DICTIONARY_ENCODE_THRESHOLD) {
 		return DictionaryAppendState::NOT_ENCODED;
 	}
 
@@ -729,7 +706,7 @@ DictionaryAppendState DictFSSTCompressionState::TryEncode() {
 				max_length = str_len;
 			}
 		}
-		if (new_size + DICTIONARY_ENCODE_THRESHOLD > dictionary_offset) {
+		if (new_size + DictFSSTCompression::DICTIONARY_ENCODE_THRESHOLD > dictionary_offset) {
 			can_use_encoding = false;
 			break;
 		}
@@ -884,10 +861,6 @@ void DictFSSTCompressionState::Compress(const Vector &scan_vector) {
 		}
 		tuple_count++;
 	}
-}
-
-void DictFSSTCompressionState::FinalizeCompress() {
-	Flush(true);
 }
 
 } // namespace dict_fsst

@@ -1,0 +1,33 @@
+# name: test/sql/optimizer/struct_extract_struct_pack_collation.test
+# description: Folding struct_extract(struct_pack(...)) keeps the collation of the extracted expression
+# group: [optimizer]
+
+statement ok
+CREATE TABLE c(s VARCHAR);
+
+statement ok
+INSERT INTO c VALUES ('a');
+
+query I
+SELECT s FROM c WHERE ({'b': s}).b COLLATE nocase = 'A';
+----
+a
+
+query I
+SELECT s FROM c WHERE ({'b': s}).b = 'A';
+----
+
+query I
+SELECT s FROM c WHERE ({'b': s}).b COLLATE nocase = 'A' COLLATE nocase;
+----
+a
+
+query I
+SELECT ({b: s}).b COLLATE nocase = 'A' FROM c;
+----
+true
+
+query I
+SELECT ({b: s})['b'] COLLATE nocase = 'A' FROM c;
+----
+true

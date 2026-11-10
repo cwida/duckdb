@@ -19,12 +19,17 @@ void ConnectionManager::AddConnection(ClientContext &context) {
 }
 
 void ConnectionManager::RemoveConnection(ClientContext &context) {
-	lock_guard<mutex> lock(connections_lock);
-	for (auto &callback : ExtensionCallback::Iterate(context)) {
+	unique_lock<mutex> lock(connections_lock);
+	auto callbacks = ExtensionCallback::Iterate(context);
+	for (auto &callback : callbacks) {
 		callback->OnConnectionClosed(context);
 	}
 	connections.erase(context);
 	connection_count = connections.size();
+	lock.unlock();
+	for (auto &callback : callbacks) {
+		callback->OnConnectionUnregistered(context);
+	}
 }
 
 idx_t ConnectionManager::GetConnectionCount() const {

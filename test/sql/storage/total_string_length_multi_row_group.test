@@ -1,0 +1,29 @@
+# name: test/sql/storage/total_string_length_multi_row_group.test
+# description: Test that total string length merges exactly across row groups, a checkpoint, and a restart
+# group: [storage]
+
+load {TEST_DIR}/total_string_length_multi_row_group.db readwrite v2.0.0
+
+statement ok
+CREATE TABLE multi_rg(s VARCHAR);
+
+statement ok
+INSERT INTO multi_rg SELECT repeat('x', i % 7) FROM range(250000) t(i);
+
+statement ok
+INSERT INTO multi_rg SELECT repeat('y', i % 11) FROM range(50000) t(i);
+
+query III
+SELECT s.min_string_length, s.max_string_length, s.total_string_length = (SELECT sum(strlen(s)) FROM multi_rg) FROM (SELECT stats(s) s FROM multi_rg LIMIT 1)
+----
+0	10	true
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT s.min_string_length, s.max_string_length, s.total_string_length = (SELECT sum(strlen(s)) FROM multi_rg) FROM (SELECT stats(s) s FROM multi_rg LIMIT 1)
+----
+0	10	true

@@ -44,6 +44,9 @@ public:
 
 public:
 	void Finalize(shared_ptr<BlockHandle> block_handle_p, uint32_t offset) override;
+	//! Drops the reference to the on-disk block without marking it as modified, i.e., without freeing it.
+	//! The block stays owned by the storage information this buffer was created from.
+	void DisownBlock();
 
 public:
 	bool IsEmpty() const {

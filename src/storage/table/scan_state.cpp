@@ -90,7 +90,7 @@ void ScanFilterInfo::Initialize(ClientContext &context, TableFilterSet &filters,
 	this->column_ids = &column_ids;
 	if (filters.HasFilters()) {
 		adaptive_filter = make_uniq<AdaptiveFilter>(filters);
-		adaptive_filter->SetLogger(context.logger);
+		adaptive_filter->SetLogger(context.GetContext().GetLoggerPtr());
 	}
 	filter_list.reserve(filters.FilterCount());
 	for (auto &entry : filters) {
@@ -371,8 +371,7 @@ vector<unique_ptr<AsyncTask>> CollectionScanState::RegisterAssignmentIO() {
 	D_ASSERT(row_group);
 	D_ASSERT(!assignment_io_registered);
 	assignment_io_registered = true;
-	auto &current_row_group = *pinned_row_group;
-	return current_row_group.CollectScanIOTasks(*this, current_row_group.PrefetchRowCount(*this));
+	return pinned_row_group->CollectAssignmentIOTasks(*this);
 }
 
 void CollectionScanState::InitializeColumnScans() {

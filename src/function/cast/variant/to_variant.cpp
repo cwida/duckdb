@@ -12,6 +12,7 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/type_visitor.hpp"
 
 #include "duckdb/function/cast/variant/to_variant.hpp"
 
@@ -276,6 +277,10 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 BoundCastInfo DefaultCasts::ImplicitToVariantCast(BindCastInput &input, const LogicalType &source,
                                                   const LogicalType &target) {
+	if (TypeVisitor::Contains(source, LogicalTypeId::TYPE)) {
+		//! TYPE has no VARIANT representation - only NULL values can be cast
+		return TryVectorNullCast;
+	}
 	return BoundCastInfo(variant::CastToVARIANT, make_uniq<variant::VariantCastData>(source),
 	                     variant::CastToVariantLocalState);
 }

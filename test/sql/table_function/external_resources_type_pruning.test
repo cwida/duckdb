@@ -1,0 +1,134 @@
+# name: test/sql/table_function/external_resources_type_pruning.test
+# description: duckdb_external_resources(discover := true, type := ...) only calls that type's list callback
+# group: [table_function]
+
+# Each list callback bumps its own sequence, so the sequences count how often discovery called it.
+statement ok
+CREATE SEQUENCE calls_a;
+
+statement ok
+CREATE SEQUENCE calls_b;
+
+statement ok
+CREATE MACRO list_a(opts) AS TABLE
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-name' AS name, 'a-ref' AS reference, 'running' AS state;
+
+statement ok
+CREATE MACRO list_b(opts) AS TABLE
+    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'b-name' AS name, 'b-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('a@pr', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
+
+statement ok
+CALL register_external_resource_type('b@pr', kind := 'catalog', create_function := 'noop_create', list_function := 'list_b');
+
+# currval needs a prior nextval
+query II
+SELECT nextval('calls_a'), nextval('calls_b');
+----
+1	1
+
+# Unrestricted discovery calls both callbacks.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true);
+----
+2
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+2	2
+
+# A type: only that type's callback runs.
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true, type := 'a@pr');
+----
+a@pr	{id=a3}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	2
+
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(discover := true, type := 'b@pr');
+----
+b-name	b@pr	false	running	b-ref	NULL	NULL	{id=b3}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	3
+
+# A type nothing provides is an error (most likely a typo), and calls nothing.
+statement error
+SELECT * FROM duckdb_external_resources(discover := true, type := 'none@pr');
+----
+<REGEX>:.*unknown resource type "none@pr".*
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	3
+
+# Without discover there is no discovery: the type restricts the registry listing and no callback runs.
+statement ok
+CALL register_external_resource('a@pr', 'local_a', MAP {'id': 'x'});
+
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(type := 'a@pr');
+----
+local_a	a@pr	true	NULL	NULL	NULL	NULL	{id=x}
+
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(type := 'b@pr');
+----
+
+# An unknown type is not an error for the registry listing: nothing is registered under it, so nothing is listed.
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(type := 'none@pr');
+----
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	3
+
+# Discovery restricted to a type lists its registered resources too, and leaves them out of the discovered rows.
+query TTT rowsort
+SELECT name, type, managed FROM duckdb_external_resources(discover := true, type := 'a@pr');
+----
+a-name	a@pr	false
+local_a	a@pr	true
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# The type restriction composes with WHERE.
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(discover := true, type := 'a@pr') WHERE handle['id'] = 'x';
+----
+local_a	a@pr	true	NULL	NULL	NULL	NULL	{id=x}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+5	3
+
+# A type nothing provides but the registry knows (its extension is not loaded) is not an error:
+# discovery lists what is registered under it and has nothing else to look for.
+statement ok
+CALL register_external_resource('orphan@pr', 'kept', MAP {'id': 'o'});
+
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(discover := true, type := 'orphan@pr');
+----
+kept	orphan@pr	true	NULL	NULL	NULL	NULL	{id=o}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+5	3

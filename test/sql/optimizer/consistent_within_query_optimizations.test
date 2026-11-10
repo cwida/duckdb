@@ -1,0 +1,165 @@
+# name: test/sql/optimizer/consistent_within_query_optimizations.test
+# description: Functions that are consistent within a query, such as age(), now() and in_search_path(), get the optimizations of consistent functions in that query only
+# group: [optimizer]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+ATTACH '{TEST_DIR}/consistent_within_query.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+# every row group holds one timestamp, 0, 10, 20 and 30 days before the start of the transaction
+statement ok
+CREATE TABLE db.events AS SELECT now() - (i // 2048) * INTERVAL '10 days' AS ts FROM range(8192) r(i);
+
+# age(ts) is taken from midnight of the current date, and the row groups younger than 15 days are skipped
+query I
+SELECT count(*) FROM db.events WHERE age(ts) >= INTERVAL '15 days';
+----
+4096
+
+query II
+EXPLAIN ANALYZE SELECT ts FROM db.events WHERE age(ts) >= INTERVAL '15 days';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+# age(ts) is computed after grouping by ts
+query II
+SELECT count(*), count(DISTINCT a) FROM (SELECT ts, age(ts) AS a FROM db.events GROUP BY ts, age(ts));
+----
+4	4
+
+statement ok
+SET explain_output = 'optimized_only';
+
+query II
+EXPLAIN SELECT ts, age(ts) FROM db.events GROUP BY ts, age(ts);
+----
+logical_opt	<REGEX>:.*Groups: ts .*
+
+statement ok
+CREATE TABLE db.marks AS SELECT now() AS ts FROM range(4096) r(i);
+
+# the statistics of a constant column make the filter false in this query
+query II
+EXPLAIN SELECT count(*) FROM db.marks WHERE age(ts) >= INTERVAL '2 days';
+----
+logical_opt	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT count(*) FROM db.marks WHERE date_diff('millisecond', ts, now()) >= 3600000;
+----
+logical_opt	<REGEX>:.*Empty Result.*
+
+# a prepared statement is planned again at every execution, so now() is taken at the start of each one
+statement ok
+PREPARE older AS SELECT count(*) FROM db.marks WHERE date_diff('millisecond', ts, now()) >= 1000;
+
+statement ok
+SET VARIABLE start_ms = 0;
+
+# a statement that reads no table is planned again only because it calls now() and getvariable()
+statement ok
+PREPARE elapsed AS SELECT epoch_ms(now()) - getvariable('start_ms') >= 1000;
+
+statement ok
+BEGIN;
+
+statement ok
+SET VARIABLE start_ms = epoch_ms(now());
+
+query I
+EXECUTE elapsed;
+----
+false
+
+statement ok
+COMMIT;
+
+sleep 1100 millisecond
+
+query I
+EXECUTE older;
+----
+4096
+
+query I
+EXECUTE elapsed;
+----
+true
+
+# the TimeZone and other settings can change between executions
+statement ok
+CREATE TABLE db.instants AS SELECT TIMESTAMPTZ '2026-01-01 00:00:00+00' AS ts, 'UTC' AS zone FROM range(4096) r(i);
+
+statement ok
+PREPARE midnight AS SELECT count(*) FROM db.instants WHERE hour(ts) = 0;
+
+statement ok
+PREPARE same_zone AS SELECT count(*) FROM db.instants WHERE zone = current_setting('TimeZone');
+
+query I
+EXECUTE midnight;
+----
+4096
+
+query I
+EXECUTE same_zone;
+----
+4096
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+EXECUTE midnight;
+----
+0
+
+query I
+EXECUTE same_zone;
+----
+0
+
+# in_search_path(s) reads the search path, which changes between executions of a prepared statement
+statement ok
+CREATE TABLE db.main.schema_names AS SELECT CASE WHEN i < 2048 THEN 'main' ELSE 'other' END AS s FROM range(8192) r(i);
+
+statement ok
+USE db;
+
+query II
+EXPLAIN SELECT s, in_search_path('db', s) FROM db.main.schema_names GROUP BY s, in_search_path('db', s);
+----
+logical_opt	<REGEX>:.*Groups: s .*
+
+statement ok
+PREPARE in_path AS SELECT count(*) FROM db.main.schema_names WHERE in_search_path('db', s);
+
+query I
+EXECUTE in_path;
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT s FROM db.main.schema_names WHERE in_search_path('db', s);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*
+
+statement ok
+ATTACH ':memory:' AS elsewhere;
+
+statement ok
+USE elsewhere;
+
+query I
+EXECUTE in_path;
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT s FROM db.main.schema_names WHERE in_search_path('db', s);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 0 / 4.*

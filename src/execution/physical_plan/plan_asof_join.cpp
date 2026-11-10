@@ -333,6 +333,8 @@ static idx_t ValidateAsOfConditions(LogicalComparisonJoin &op, vector<idx_t> &eq
 }
 
 PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op) {
+	// The sorted ASOF operator emits the full left payload in child order. Pruning left projection maps are
+	// honored by ExtractPrunedJoinProjection, which wraps the operator in an explicit projection.
 	// If we have a predicate and its a "simple" join, then we can just plan a regular join
 	switch (op.join_type) {
 	case JoinType::SEMI:
@@ -396,7 +398,11 @@ PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op)
 			rhs_partition_cols.clear();
 		}
 
-		return Make<PhysicalAsOfJoin>(op, left, right, lhs_partition_cols, rhs_partition_cols);
+		// The sorted operator always emits the full left input width. A pruning left
+		// projection map is applied through a projection above the join instead.
+		auto pruned = ExtractPrunedJoinProjection(op, left, right, true, false);
+		auto &asof_join = Make<PhysicalAsOfJoin>(op, left, right, lhs_partition_cols, rhs_partition_cols);
+		return RestorePrunedJoinProjection(op, asof_join, std::move(pruned));
 	}
 
 	return *PlanAsOfInequalityJoin(op, left, right, lhs_cardinality, rhs_cardinality);

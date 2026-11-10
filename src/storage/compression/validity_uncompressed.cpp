@@ -578,7 +578,8 @@ idx_t ValidityAppend(CompressionAppendState &append_state, ColumnSegment &segmen
 		return append_count;
 	}
 
-	ValidityMask mask(reinterpret_cast<validity_t *>(append_state.handle.GetDataMutable()), max_tuples);
+	ValidityMask mask(reinterpret_cast<validity_t *>(append_state.handle.GetDataMutable() + segment.GetBlockOffset()),
+	                  max_tuples);
 	for (idx_t i = 0; i < append_count; i++) {
 		auto idx = data.sel->get_index(offset + i);
 		if (!data.validity.RowIsValidUnsafe(idx)) {

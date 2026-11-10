@@ -1,5 +1,5 @@
 # name: test/sql/join/inner/null_safe_runtime_filter_boundaries.test
-# description: New NULL-safe runtime filter routes stop at non-direct scan paths
+# description: NULL-safe runtime filters cross legal boundaries and retain row-selection barriers
 # group: [inner]
 
 statement ok
@@ -20,27 +20,27 @@ CREATE TABLE aux AS SELECT 1 g;
 query II
 EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,count(*) n FROM p GROUP BY a)q JOIN b ON a IS NOT DISTINCT FROM b;
 ----
-analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*
 
 query II
 EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,unnest([g]) n FROM p)q JOIN b ON a IS NOT DISTINCT FROM b;
 ----
-analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*
 
 query II
 EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT p.a,aux.g n FROM p JOIN aux ON p.g<>aux.g)q JOIN b ON a IS NOT DISTINCT FROM b;
 ----
-analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*
 
 query II
 EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,g n FROM p UNION ALL SELECT a,g n FROM p)q JOIN b ON a IS NOT DISTINCT FROM b;
 ----
-analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*
 
 query II
 EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,row_number() OVER (PARTITION BY a ORDER BY g) n FROM p)q JOIN b ON a IS NOT DISTINCT FROM b;
 ----
-analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*a IS NULL.*
 
 query II
 EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,g n FROM p ORDER BY a NULLS FIRST LIMIT 200)q JOIN b ON a IS NOT DISTINCT FROM b;

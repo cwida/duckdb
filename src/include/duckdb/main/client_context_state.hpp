@@ -18,6 +18,7 @@
 
 namespace duckdb {
 class ClientContext;
+class Context;
 class ErrorData;
 class MetaTransaction;
 class PreparedStatementData;
@@ -46,6 +47,16 @@ public:
 	virtual void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) {
 		QueryEnd(context);
 	}
+	//! A statement of the active query starts, after QueryBegin and before it is planned. A statement that expands
+	//! into several runs them as one query, with a StatementBegin and StatementEnd for each
+	virtual void StatementBegin(ClientContext &context) {
+	}
+	//! A statement of the active query released its executor and plan, before the next one starts
+	virtual void StatementEnd(ClientContext &context) {
+	}
+	virtual void StatementEnd(ClientContext &context, optional_ptr<ErrorData> error) {
+		StatementEnd(context);
+	}
 	virtual void TransactionBegin(MetaTransaction &transaction, ClientContext &context) {
 	}
 	virtual void TransactionCommit(MetaTransaction &transaction, ClientContext &context) {
@@ -72,9 +83,9 @@ public:
 	}
 	virtual void WriteProfilingInformation(std::ostream &ss) {
 	}
-	virtual void OnTaskStart(ClientContext &context) {
+	virtual void OnTaskStart(Context &context) {
 	}
-	virtual void OnTaskStop(ClientContext &context) {
+	virtual void OnTaskStop(Context &context) {
 	}
 
 public:
@@ -93,7 +104,7 @@ public:
 class RegisteredStateManager {
 public:
 	template <class T, typename... ARGS>
-	shared_ptr<T> GetOrCreate(const string &key, ARGS &&... args) {
+	shared_ptr<T> GetOrCreate(const string &key, ARGS &&...args) {
 		lock_guard<mutex> l(lock);
 		auto lookup = registered_state.find(key);
 		if (lookup != registered_state.end()) {
@@ -156,7 +167,7 @@ private:
 			return snapshot;
 		}
 		lock_guard<mutex> l(lock);
-		snapshot = state_snapshot;
+		snapshot = state_snapshot.atomic_load();
 		if (!snapshot && !registered_state.empty()) {
 			snapshot = make_shared_ptr<vector<shared_ptr<ClientContextState>>>(StatesInternal());
 			state_snapshot.atomic_store(snapshot);

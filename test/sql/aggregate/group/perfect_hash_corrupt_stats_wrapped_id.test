@@ -2,6 +2,9 @@
 # description: Reject a group id whose high bits are dropped when clustering perfect hash aggregates
 # group: [group]
 
+# On 32-bit builds, the raw group id truncates to an in-bounds index before clustering.
+require 64bit
+
 require vector_size 2048
 
 unzip data/storage/corrupt/perfect_hash_corrupt_stats_wrapped_id.db.gz {TEST_DIR}/perfect_hash_corrupt_stats_wrapped_id.db

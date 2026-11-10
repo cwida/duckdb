@@ -681,6 +681,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		    .Add("max_file_suggestion_count", LogicalType::UBIGINT)
 		    .Add("max_exact_suggestion_count", LogicalType::UBIGINT);
 	});
+	// the bind captures a filesystem and catalog suggestion snapshot that the call arguments do not identify
+	auto_complete_fun.stability = FunctionStability::VOLATILE;
 	loader.RegisterFunction(auto_complete_fun);
 
 	TableFunction check_peg_parser_fun("check_peg_parser",

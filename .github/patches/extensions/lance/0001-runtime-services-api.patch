@@ -1,0 +1,64 @@
+diff --git a/src/lance_dataset_cache.cpp b/src/lance_dataset_cache.cpp
+index 651044f..8188ef0 100644
+--- a/src/lance_dataset_cache.cpp
++++ b/src/lance_dataset_cache.cpp
+@@ -129,7 +129,7 @@ LanceDatasetCacheEntry::~LanceDatasetCacheEntry() {
+ 
+ static shared_ptr<LanceDatasetCacheState>
+ GetOrCreateLanceDatasetCacheState(ClientContext &context) {
+-  return context.registered_state->GetOrCreate<LanceDatasetCacheState>(
++  return context.GetContext().GetRegisteredState().GetOrCreate<LanceDatasetCacheState>(
+       LANCE_DATASET_CACHE_STATE_KEY);
+ }
+ 
+@@ -561,7 +561,7 @@ string LanceBuildDatasetCacheKeyForTable(ClientContext &context,
+ 
+ void LanceInvalidateDatasetCache(ClientContext &context,
+                                  const string &cache_key) {
+-  auto state = context.registered_state->Get<LanceDatasetCacheState>(
++  auto state = context.GetContext().GetRegisteredState().Get<LanceDatasetCacheState>(
+       LANCE_DATASET_CACHE_STATE_KEY);
+   if (state) {
+     state->Invalidate(cache_key);
+diff --git a/src/lance_session_state.cpp b/src/lance_session_state.cpp
+index 94c758e..d61111b 100644
+--- a/src/lance_session_state.cpp
++++ b/src/lance_session_state.cpp
+@@ -85,7 +85,7 @@ void LanceSessionState::WriteProfilingInformation(std::ostream &ss) {
+ 
+ shared_ptr<LanceSessionState>
+ GetOrCreateLanceSessionState(ClientContext &context) {
+-  return context.registered_state->GetOrCreate<LanceSessionState>(
++  return context.GetContext().GetRegisteredState().GetOrCreate<LanceSessionState>(
+       LANCE_SESSION_STATE_KEY, context);
+ }
+ 
+diff --git a/src/lance_storage.cpp b/src/lance_storage.cpp
+index 9dfb11b..4652077 100644
+--- a/src/lance_storage.cpp
++++ b/src/lance_storage.cpp
+@@ -631,8 +631,9 @@ private:
+ static optional_ptr<CatalogEntry>
+ PinLanceCatalogEntry(ClientContext &context,
+                      const shared_ptr<CatalogEntry> &entry) {
+-  context.registered_state
+-      ->GetOrCreate<LanceCatalogQueryState>("lance_catalog_entries")
++  context.GetContext()
++      .GetRegisteredState()
++      .GetOrCreate<LanceCatalogQueryState>("lance_catalog_entries")
+       ->Pin(entry);
+   return entry.get();
+ }
+diff --git a/src/lance_write.cpp b/src/lance_write.cpp
+index 9adaa1c..c27c9a2 100644
+--- a/src/lance_write.cpp
++++ b/src/lance_write.cpp
+@@ -146,7 +146,7 @@ LanceWriteInitGlobal(ClientContext &context,
+   // Check at execution so a prepared COPY observes later policy restrictions.
+   if (!DBConfig::GetConfig(context).CanAccessFile(
+           open_path, FileType::FILE_TYPE_DIR,
+-          ClientData::Get(context).file_opener.get())) {
++          context.GetContext().TryGetFileOpener().get())) {
+     throw PermissionException("Cannot access directory \"%s\" - file system "
+                               "operations are disabled by configuration",
+                               open_path);

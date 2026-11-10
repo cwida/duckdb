@@ -182,10 +182,11 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 	if (!best_candidate) {
 		return nullptr;
 	}
-	auto cost = cost_model.ComputeCost(left, right, set, applicable_connections);
+	auto cardinality = cost_model.GetCardinalityEstimator().EstimateCardinality(set);
+	auto cost = cost_model.ComputeCost(left, right, best_candidate->join_operator, cardinality.GetDouble());
 	auto result = make_uniq<DPJoinNode>(set, best_candidate->join_operator, std::move(best_candidate->predicates),
 	                                    best_candidate->generated_cross_product, left.set, right.set, cost);
-	result->cardinality = cost_model.GetCardinalityEstimator().EstimateCardinalityWithSet<idx_t>(set);
+	result->cardinality = cardinality;
 	return result;
 }
 
@@ -406,6 +407,18 @@ bool PlanEnumerator::SolveJoinOrderExactly() {
 }
 
 bool PlanEnumerator::SolveJoinOrderApproximately() {
+	// Keep the incoming join order as a candidate for the greedy search.
+	for (auto &op : query_graph_manager.GetJoinOperators()) {
+		auto &left = op->left_relations.get();
+		auto &right = op->right_relations.get();
+		if (plans.find(left) == plans.end() || plans.find(right) == plans.end()) {
+			continue;
+		}
+		auto &connections = GetConnections(left, right);
+		if (!connections.empty()) {
+			EmitPair(left, right, connections);
+		}
+	}
 	// at this point, we exited the dynamic programming but did not compute the final join order because it took too
 	// long instead, we use a greedy heuristic to obtain a join ordering now we use Greedy Operator Ordering to
 	// construct the result tree first we start out with all the base relations (the to-be-joined relations)
@@ -423,12 +436,19 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 		double cost;
 	};
 	vector<GreedyCandidate> candidates;
-	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+	auto EmitOrientation = [&](JoinRelationSet &left, JoinRelationSet &right) -> optional_ptr<DPJoinNode> {
 		auto &connection = GetConnections(left, right);
 		if (connection.empty()) {
-			return;
+			return nullptr;
 		}
-		auto node = EmitPair(left, right, connection);
+		return EmitPair(left, right, connection);
+	};
+	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+		// non-commutative joins (e.g. LEFT, SEMI, ANTI) are only valid in one orientation
+		auto node = EmitOrientation(left, right);
+		if (!node) {
+			node = EmitOrientation(right, left);
+		}
 		if (node) {
 			candidates.push_back({&left, &right, node->cost});
 		}
@@ -555,27 +575,16 @@ bool PlanEnumerator::PlanUsesCrossProduct(const DPJoinNode &node) const {
 }
 
 void PlanEnumerator::InitLeafPlans() {
-	// First we initialize each of the single-node plans with themselves and with their cardinalities these are the leaf
-	// nodes of the join tree NOTE: we can just use pointers to JoinRelationSet* here because the GetJoinRelation
-	// function ensures that a unique combination of relations will have a unique JoinRelationSet object.
-	// first initialize equivalent relations based on the filters
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
-
-	cost_model.GetCardinalityEstimator().InitEquivalentRelations();
-	cost_model.GetCardinalityEstimator().AddRelationNamesToRelationStats(relation_stats);
-
-	// then update the total domains based on the cardinalities of each relation.
+	auto &estimator = cost_model.GetCardinalityEstimator();
+	estimator.Initialize(relation_stats, query_graph_manager.GetJoinOperators());
 	for (idx_t i = 0; i < relation_stats.size(); i++) {
-		auto stats = relation_stats.at(i);
 		auto &relation_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(i));
 		auto join_node = make_uniq<DPJoinNode>(relation_set);
 		join_node->cost = 0;
-		join_node->cardinality = stats.cardinality;
-		D_ASSERT(join_node->set.count == 1);
+		join_node->cardinality = estimator.EstimateCardinality(relation_set);
 		plans[relation_set] = std::move(join_node);
-		cost_model.GetCardinalityEstimator().InitCardinalityEstimatorProps(&relation_set, stats);
 	}
-	cost_model.GetCardinalityEstimator().RestrictFilterDomains(relation_stats);
 }
 
 // the plan enumeration is a straight implementation of the paper "Dynamic Programming Strikes Back" by Guido
