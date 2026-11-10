@@ -1,0 +1,119 @@
+# name: test/sql/copy/csv/test_rrrn_leading_newline.test
+# description: Test CSV reader does not leak the trailing \n of a \r\r\n terminator into the next value (issue #25164, second symptom)
+# group: [csv]
+
+require notwindows
+
+# With auto_detect=false the CSV reader runs in CARRY_ON newline mode, which
+# historically assumed a 2-byte "\r\n" terminator. Files using "\r\r\n" (3
+# bytes) leaked the trailing "\n" into the first field of the following row
+# (e.g. id arriving as "\n05" instead of "05"). The leak is invisible when the
+# first column is cast to an integer type, so these tests use VARCHAR columns
+# and assert on the raw value prefix.
+#
+# Three layouts are exercised (sequential and parallel):
+#   1. all rows inside a single buffer (no boundary involved)
+#   2. buffer boundary splits a terminator as "\r" | "\r\n"
+#   3. buffer boundary splits a terminator as "\r\r" | "\n"
+#
+# Layout 2 (matches test_rrrn_parallel.test):
+#   - header line: 23 'p' chars + "\r\r\n" terminator  -> 26 bytes
+#   - 60 data rows of fixed width 25 bytes ("NN,x<19 x's>\r\r\n")
+#   - row 39's terminator starts at byte 1023, so the 1024-byte buffer
+#     boundary splits it as "\r" | "\r\n"
+# Layout 3:
+#   - header line: 38 'p' chars + "\r\r\n" terminator  -> 41 bytes
+#   - 60 data rows of fixed width 24 bytes ("NN,x<18 x's>\r\r\n")
+#   - row 40's terminator starts at byte 1022, so the 1024-byte buffer
+#     boundary splits it as "\r\r" | "\n"
+
+statement ok
+COPY (
+    SELECT (repeat('p', 23) || chr(13) || chr(13) || chr(10) ||
+        string_agg(lpad(CAST(t.id AS VARCHAR), 2, '0') || ',' ||
+                   repeat('x', 19) || chr(13) || chr(13) || chr(10), '')
+    )::BLOB
+    FROM generate_series(0, 59) t(id)
+) TO '{TEST_DIR}/rrrn_leading_layout2.csv' (FORMAT BLOB);
+
+statement ok
+COPY (
+    SELECT (repeat('p', 38) || chr(13) || chr(13) || chr(10) ||
+        string_agg(lpad(CAST(t.id AS VARCHAR), 2, '0') || ',' ||
+                   repeat('x', 18) || chr(13) || chr(13) || chr(10), '')
+    )::BLOB
+    FROM generate_series(0, 59) t(id)
+) TO '{TEST_DIR}/rrrn_leading_layout3.csv' (FORMAT BLOB);
+
+# Layout 1: single buffer, sequential and parallel. No id or val may start
+# with a "\n", all 60 rows present, values intact (sum of ids 0..59 = 1770)
+query IIII
+SELECT
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=4096, parallel=false)) AS total,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=4096, parallel=false)
+     WHERE starts_with(id, chr(10)) OR starts_with(val, chr(10))) AS leaked,
+    (SELECT SUM(CAST(id AS BIGINT)) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=4096, parallel=false)) AS id_sum,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=4096, parallel=true)
+     WHERE starts_with(id, chr(10)) OR starts_with(val, chr(10))) AS leaked_parallel
+----
+60	0	1770	0
+
+# Layout 2: boundary splits the terminator as "\r" | "\r\n"
+query IIII
+SELECT
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=false)) AS total,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=false)
+     WHERE starts_with(id, chr(10)) OR starts_with(val, chr(10))) AS leaked,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=true)) AS total_parallel,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout2.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=true)
+     WHERE starts_with(id, chr(10)) OR starts_with(val, chr(10))) AS leaked_parallel
+----
+60	0	60	0
+
+# Layout 3: boundary splits the terminator as "\r\r" | "\n"
+query IIII
+SELECT
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout3.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=false)) AS total,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout3.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=false)
+     WHERE starts_with(id, chr(10)) OR starts_with(val, chr(10))) AS leaked,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout3.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=true)) AS total_parallel,
+    (SELECT COUNT(*) FROM read_csv('{TEST_DIR}/rrrn_leading_layout3.csv',
+        auto_detect=false, header=true, delim=',',
+        columns={'id':'VARCHAR','val':'VARCHAR'},
+        strict_mode=false, buffer_size=1024, parallel=true)
+     WHERE starts_with(id, chr(10)) OR starts_with(val, chr(10))) AS leaked_parallel
+----
+60	0	60	0

@@ -216,6 +216,10 @@ bool StringValueResult::UnsetComment(StringValueResult &result, idx_t buffer_pos
 	result.comment = false;
 	if (result.state_machine.dialect_options.state_machine_options.new_line.GetValue() != NewLineIdentifier::CARRY_ON) {
 		result.last_position.buffer_pos = buffer_pos + 1;
+	} else if (buffer_pos + 2 < result.buffer_size && result.buffer_ptr[buffer_pos + 1] == '\r' &&
+	           result.buffer_ptr[buffer_pos + 2] == '\n') {
+		// The row terminator is \r\r\n (3 bytes), not \r\n (2 bytes), so skip it fully
+		result.last_position.buffer_pos = buffer_pos + 3;
 	} else {
 		result.last_position.buffer_pos = buffer_pos + 2;
 	}
@@ -965,6 +969,10 @@ bool StringValueResult::AddRow(StringValueResult &result, const idx_t buffer_pos
 			if (result.states.states[1] == CSVState::RECORD_SEPARATOR) {
 				// Even though this is marked as a carry on, this is a hippie mixie
 				result.last_position.buffer_pos = buffer_pos + 1;
+			} else if (buffer_pos + 2 < result.buffer_size && result.buffer_ptr[buffer_pos + 1] == '\r' &&
+			           result.buffer_ptr[buffer_pos + 2] == '\n') {
+				// The row terminator is \r\r\n (3 bytes), not \r\n (2 bytes), so skip it fully
+				result.last_position.buffer_pos = buffer_pos + 3;
 			} else {
 				result.last_position.buffer_pos = buffer_pos + 2;
 			}
@@ -1457,6 +1465,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 		if (!iterator.IsBoundarySet()) {
 			if (buffer_handle_ptr[iterator.pos.buffer_pos] == '\n') {
 				iterator.pos.buffer_pos++;
+				// With a \r\r\n terminator split as \r\r | \n, the leading \n is the first byte of
+				// this buffer: start the next value after it, otherwise it leaks into the value
+				result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
 			}
 		} else {
 			idx_t pre_carry_pos = iterator.pos.buffer_pos;
@@ -1478,6 +1489,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 						        buffer_handle_ptr[iterator.pos.buffer_pos] == '\n')) {
 							state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos++]);
 						}
+						// The \r\r\n terminator is fully consumed here: start the next value after it, otherwise
+						// the trailing \n leaks into it
+						result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
 						return;
 					}
 				} else {
@@ -1493,6 +1507,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 			if (over_buffer_string.empty() && iterator.pos.buffer_pos > pre_carry_pos &&
 			    result.last_position.buffer_pos > previous_buffer_handle->actual_size &&
 			    buffer_handle_ptr[pre_carry_pos] == '\r') {
+				// The remaining \r\n of a \r\r\n terminator was consumed here: start the next value after
+				// it, otherwise the \n leaks into it
+				result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, result.buffer_size};
 				return;
 			}
 		}
@@ -1508,7 +1525,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		if (states.NewRow() || states.NewValue()) {
 			break;
-		} else if (!result.comment && !states.IsComment()) {
+		} else if (!result.comment && !states.IsComment() &&
+		           !(over_buffer_string.empty() && (buffer_handle_ptr[iterator.pos.buffer_pos] == '\r' ||
+		                                            buffer_handle_ptr[iterator.pos.buffer_pos] == '\n'))) {
 			over_buffer_string += buffer_handle_ptr[iterator.pos.buffer_pos];
 		}
 		if (states.IsQuoted()) {
@@ -1647,7 +1666,14 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 	if (states.IsCarriageReturn() &&
 	    state_machine->dialect_options.state_machine_options.new_line == NewLineIdentifier::CARRY_ON) {
-		result.last_position = {iterator.pos.buffer_idx, ++iterator.pos.buffer_pos + 1, result.buffer_size};
+		iterator.pos.buffer_pos++;
+		// With a \r\r\n terminator the machine stops at the first \r; skip the second one too,
+		// otherwise the trailing \n leaks into the next value
+		if (iterator.pos.buffer_pos < cur_buffer_handle->actual_size &&
+		    buffer_handle_ptr[iterator.pos.buffer_pos] == '\r') {
+			iterator.pos.buffer_pos++;
+		}
+		result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos + 1, result.buffer_size};
 	} else {
 		result.last_position = {iterator.pos.buffer_idx, ++iterator.pos.buffer_pos, result.buffer_size};
 	}
