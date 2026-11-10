@@ -28,6 +28,7 @@ class TaskScheduler;
 struct ProducerToken;
 struct BlockQueue;
 struct BlockAllocatorLifetimeState;
+class BlockAllocator;
 class BlockAllocatorThreadLocalState;
 
 //! The block cache of a worker thread. While it is initialized, the thread allocates through it instead of through the
