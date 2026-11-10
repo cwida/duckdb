@@ -61,6 +61,7 @@ ScalarFunction MapContainsFun::GetFunction() {
 
 	ScalarFunction fun("map_contains", {}, LogicalType::BOOLEAN, MapContainsFunction);
 	fun.GetSignature().AddParameter("map", LogicalType::MAP(key_type, val_type)).AddParameter("key", key_type);
+	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetBindExpressionCallback(BindMapContainsExpression);
 	return fun;
 }

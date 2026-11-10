@@ -3,6 +3,7 @@
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -17,8 +18,8 @@
 namespace duckdb {
 
 GenerateJoinRelation::GenerateJoinRelation(optional_ptr<JoinRelationSet> set, unique_ptr<LogicalOperator> op_p,
-                                           idx_t cardinality_p)
-    : set(set), op(std::move(op_p)), cardinality(cardinality_p) {
+                                           RelationStats stats_p)
+    : set(set), op(std::move(op_p)), stats(std::move(stats_p)) {
 }
 
 QueryGraphManager::QueryGraphManager(ClientContext &context) : context(context), relation_manager(context) {
@@ -102,10 +103,11 @@ void QueryGraphManager::BuildPredicateModel() {
 			predicate_model.AddDirectEqualityPairClass(pair, equality_class.index, first_binding, second_binding);
 		}
 	}
-	BuildLeftEqualityPairs();
+	BuildLeftJoinPredicates();
 }
 
-void QueryGraphManager::BuildLeftEqualityPairs() {
+void QueryGraphManager::BuildLeftJoinPredicates() {
+	idx_t next_left_equality_group = 0;
 	for (auto &op : join_operators) {
 		if (op->type != JoinOrderOperatorType::LEFT) {
 			continue;
@@ -113,40 +115,52 @@ void QueryGraphManager::BuildLeftEqualityPairs() {
 		JoinEqualityGroups groups;
 		auto add_equality = [&](ExpressionType type, const Expression &left, const Expression &right) {
 			if (type != ExpressionType::COMPARE_EQUAL && type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
-				return;
+				return ColumnBinding();
 			}
 			ColumnBinding left_binding;
 			ColumnBinding right_binding;
 			GetEquivalenceBinding(left, left_binding);
 			GetEquivalenceBinding(right, right_binding);
-			if (left_binding.table_index.IsValid() && right_binding.table_index.IsValid()) {
-				groups.AddEquality(left_binding, right_binding);
+			if (!left_binding.table_index.IsValid() || !right_binding.table_index.IsValid()) {
+				return ColumnBinding();
 			}
+			groups.AddEquality(left_binding, right_binding);
+			return left_binding;
 		};
-		vector<reference<const Expression>> residuals;
+		vector<ColumnBinding> modeled_equalities;
+		vector<reference<const Expression>> pending_residuals;
+		vector<pair<reference<const Expression>, ColumnBinding>> residuals;
 		for (auto &condition : op->conditions) {
 			if (condition.IsComparison()) {
-				add_equality(condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
+				auto binding = add_equality(condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
+				if (binding.table_index.IsValid()) {
+					modeled_equalities.push_back(binding);
+				}
 			} else {
-				residuals.push_back(condition.GetJoinExpression());
+				pending_residuals.push_back(condition.GetJoinExpression());
 			}
 		}
 		// Same-side ON equalities can connect keys even though they are not costing predicates.
-		while (!residuals.empty()) {
-			auto &expression = residuals.back().get();
-			residuals.pop_back();
+		while (!pending_residuals.empty()) {
+			auto &expression = pending_residuals.back().get();
+			pending_residuals.pop_back();
 			if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 				for (auto &child : expression.Cast<BoundConjunctionExpression>().GetChildren()) {
-					residuals.push_back(*child);
+					pending_residuals.push_back(*child);
 				}
-			} else if (BoundComparisonExpression::IsComparison(expression)) {
-				auto &comparison = expression.Cast<BoundFunctionExpression>();
-				add_equality(expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
-				             BoundComparisonExpression::Right(comparison));
+				continue;
 			}
+			ColumnBinding binding;
+			if (BoundComparisonExpression::IsComparison(expression)) {
+				auto &comparison = expression.Cast<BoundFunctionExpression>();
+				binding = add_equality(expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
+				                       BoundComparisonExpression::Right(comparison));
+			}
+			residuals.emplace_back(expression, binding);
 		}
 		reference_map_t<JoinRelationSet, RelationPairEqualitySummary> summaries;
 		vector<pair<reference<JoinPredicate>, reference<JoinRelationSet>>> pairs;
+		unordered_map<idx_t, idx_t> group_ids;
 		for (auto predicate_index : op->costing_predicate_indices) {
 			auto &predicate = predicate_model.GetPredicates()[predicate_index].get();
 			auto type = predicate.GetComparisonType();
@@ -166,12 +180,28 @@ void QueryGraphManager::BuildLeftEqualityPairs() {
 			if (pair.relations[0] != first_relation) {
 				std::swap(first_binding, second_binding);
 			}
-			summaries[pair].AddEquality(groups.GetGroup(first_binding), first_binding, second_binding);
+			auto group_root = groups.GetGroup(first_binding);
+			auto group_entry = group_ids.find(group_root);
+			if (group_entry == group_ids.end()) {
+				group_entry = group_ids.insert(make_pair(group_root, next_left_equality_group++)).first;
+			}
+			predicate.GetFilter().left_equality_group = optional_idx(group_entry->second);
+			summaries[pair].AddEquality(group_root, first_binding, second_binding);
 			pairs.emplace_back(predicate, pair);
 		}
 		for (auto &entry : pairs) {
 			if (summaries.at(entry.second).HasDirectCompositeEquality()) {
 				entry.first.get().SetCompositeJoinPair(entry.second);
+			}
+		}
+		unordered_set<idx_t> accounted_groups;
+		for (auto &binding : modeled_equalities) {
+			accounted_groups.insert(groups.GetGroup(binding));
+		}
+		for (auto &residual : residuals) {
+			auto &binding = residual.second;
+			if (!binding.table_index.IsValid() || accounted_groups.insert(groups.GetGroup(binding)).second) {
+				op->residual_predicates.push_back(residual.first);
 			}
 		}
 	}
@@ -226,6 +256,49 @@ bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op
 		// nothing to optimize/reorder
 		return false;
 	}
+	PreparePredicateModel(op);
+	BuildInnerCompanionSets();
+	CreateHyperGraphEdges();
+	return true;
+}
+
+bool QueryGraphManager::BuildForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op) {
+	if (!relation_manager.ExtractJoinRelationsForEstimation(extractor, op, filter_operators) ||
+	    relation_manager.NumRelations() <= 1) {
+		return false;
+	}
+	for (auto &filter : filter_operators) {
+		bool valid_bindings = true;
+		LogicalOperatorVisitor::EnumerateExpressions(
+		    static_cast<const LogicalOperator &>(filter.get()), [&](optional_ptr<const unique_ptr<Expression>> expr) {
+			    ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+			        **expr, [&](const BoundColumnRefExpression &column) {
+				        ColumnBinding normalized;
+				        if (column.Depth() != 0 ||
+				            !relation_manager.TryNormalizeBinding(column.Binding(), normalized)) {
+					        valid_bindings = false;
+				        }
+			        });
+			    for (auto expr_class : {ExpressionClass::BOUND_REF, ExpressionClass::BOUND_SUBQUERY}) {
+				    ExpressionIterator::VisitExpressionClass(**expr, expr_class,
+				                                             [&](const Expression &) { valid_bindings = false; });
+			    }
+		    });
+		if (!valid_bindings) {
+			return false;
+		}
+	}
+	PreparePredicateModel(op);
+	for (auto &filter : filters_and_bindings) {
+		// Single-relation root filters need to be estimated outside the join region.
+		if (filter->from_logical_filter && filter->set.get().count < 2) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void QueryGraphManager::PreparePredicateModel(LogicalOperator &op) {
 	// extract the edges of the hypergraph, creating a list of filters and their associated bindings.
 	auto extraction = relation_manager.ExtractEdges(op, filter_operators, set_manager);
 	filters_and_bindings = std::move(extraction.filters);
@@ -253,14 +326,121 @@ bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op
 	BindFilterEndpoints();
 	// Build the predicate model after BindFilterEndpoints so that left_binding/right_binding are populated.
 	BuildPredicateModel();
-	BuildInnerCompanionSets();
-	// Create query_graph hyper edges from the normalized predicate model.
-	CreateHyperGraphEdges();
-	return true;
+}
+
+optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<ColumnBinding> &bindings,
+                                                                const vector<RelationStats> &relation_stats,
+                                                                idx_t root_cardinality) const {
+	vector<reference<const RelationStats>> inputs;
+	for (auto &stats : relation_stats) {
+		inputs.push_back(stats);
+	}
+	return CombineRelationStats(bindings, inputs, root_cardinality);
+}
+
+static column_binding_map_t<idx_t>
+GetEqualityDomainBounds(const vector<JoinEqualityClass> &equality_classes,
+                        const column_binding_map_t<reference<const RelationColumnStats>> &source_columns) {
+	column_binding_map_t<idx_t> equality_bounds;
+	for (auto &equality_class : equality_classes) {
+		idx_t current_domain = NumericLimits<idx_t>::Maximum();
+		bool complete = !equality_class.columns.empty();
+		for (auto &binding : equality_class.columns) {
+			auto column = source_columns.find(binding);
+			if (column == source_columns.end()) {
+				complete = false;
+				break;
+			}
+			current_domain = MinValue(current_domain, column->second.get().current_domain.distinct_count);
+		}
+		if (!complete) {
+			continue;
+		}
+		for (auto &binding : equality_class.columns) {
+			auto entry = equality_bounds.find(binding);
+			if (entry == equality_bounds.end()) {
+				equality_bounds.emplace(binding, current_domain);
+			} else {
+				entry->second = MinValue(entry->second, current_domain);
+			}
+		}
+	}
+	return equality_bounds;
+}
+
+static RelationColumnStats CombineColumnStats(const ColumnBinding &binding, const ColumnBinding &normalized,
+                                              const RelationColumnStats &source,
+                                              const column_binding_map_t<idx_t> &equality_bounds,
+                                              bool preserve_semi_anti_evidence) {
+	SemiAntiJoinDomainEvidence semi_anti_evidence;
+	if (preserve_semi_anti_evidence) {
+		semi_anti_evidence = source.semi_anti_join_domain_evidence;
+	}
+	RelationColumnStats column(binding, source.total_domain, source.current_domain, source.name, semi_anti_evidence);
+	auto equality_entry = equality_bounds.find(normalized);
+	if (equality_entry != equality_bounds.end()) {
+		column.current_domain = DistinctCount(MinValue(column.current_domain.distinct_count, equality_entry->second),
+		                                      DistinctCountSource::CARDINALITY);
+	}
+	column.current_domain.distinct_count =
+	    MinValue(column.current_domain.distinct_count, column.total_domain.distinct_count);
+	return column;
+}
+
+optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<ColumnBinding> &bindings,
+                                                                const vector<reference<const RelationStats>> &inputs,
+                                                                idx_t root_cardinality) const {
+	RelationStats result;
+	result.cardinality = root_cardinality;
+	if (inputs.size() == 1) {
+		result.row_retention = inputs[0].get().row_retention;
+	}
+	result.stats_initialized = true;
+	column_binding_map_t<reference<const RelationColumnStats>> source_columns;
+	for (auto &input : inputs) {
+		auto &stats = input.get();
+		if (!stats.stats_initialized) {
+			return {};
+		}
+#ifdef DEBUG
+		if (!result.table_name.empty()) {
+			result.table_name = Identifier(result.table_name + " joined with ");
+		}
+		result.table_name = Identifier(result.table_name + stats.table_name);
+#endif
+		for (auto &column : stats.columns) {
+			ColumnBinding normalized;
+			if (!relation_manager.TryNormalizeBinding(column.binding, normalized)) {
+				return {};
+			}
+			source_columns.emplace(normalized, column);
+		}
+	}
+
+	auto equality_bounds = GetEqualityDomainBounds(predicate_model.GetEqualityClasses(), source_columns);
+	for (auto &binding : bindings) {
+		ColumnBinding normalized;
+		if (!relation_manager.TryNormalizeBinding(binding, normalized)) {
+			return {};
+		}
+		auto source_entry = source_columns.find(normalized);
+		if (source_entry == source_columns.end()) {
+			return {};
+		}
+		result.columns.push_back(
+		    CombineColumnStats(binding, normalized, source_entry->second.get(), equality_bounds, inputs.size() == 1));
+	}
+	result.CapCurrentDomainsToCardinality();
+	result.Verify(bindings);
+	return result;
 }
 
 const JoinPredicateModel &QueryGraphManager::GetPredicateModel() const {
 	return predicate_model;
+}
+
+const vector<unique_ptr<JoinOrderOperator>> &QueryGraphManager::GetJoinOperators() const {
+	return join_operators;
 }
 
 void QueryGraphManager::GetColumnBinding(const Expression &root_expr, ColumnBinding &binding) {
@@ -278,34 +458,11 @@ void QueryGraphManager::GetColumnBinding(const Expression &root_expr, ColumnBind
 }
 
 void QueryGraphManager::GetEquivalenceBinding(const Expression &expression, ColumnBinding &binding) {
-	switch (expression.GetExpressionClass()) {
-	case ExpressionClass::BOUND_COLUMN_REF: {
-		auto &colref = expression.Cast<BoundColumnRefExpression>();
-		D_ASSERT(colref.Depth() == 0);
-		if (!colref.Binding().table_index.IsValid()) {
-			return;
-		}
-		auto normalized = relation_manager.TryNormalizeBinding(colref.Binding(), binding);
+	auto source = JoinOrderUtil::GetEquivalenceBinding(expression);
+	if (source.table_index.IsValid()) {
+		auto normalized = relation_manager.TryNormalizeBinding(source, binding);
 		D_ASSERT(normalized);
-		if (!normalized) {
-			return;
-		}
-		return;
-	}
-	case ExpressionClass::BOUND_FUNCTION: {
-		if (!BoundCastExpression::IsCast(expression)) {
-			return;
-		}
-		auto &cast = expression.Cast<BoundFunctionExpression>();
-		if (BoundCastExpression::IsTryCast(cast) ||
-		    !BoundCastExpression::CastIsInvertible(BoundCastExpression::SourceType(cast), cast.GetReturnType())) {
-			return;
-		}
-		GetEquivalenceBinding(BoundCastExpression::Child(cast), binding);
-		return;
-	}
-	default:
-		return;
+		(void)normalized;
 	}
 }
 
@@ -501,10 +658,27 @@ void QueryGraphManager::ClearExtractedExpressions() {
 	}
 }
 
-unique_ptr<LogicalOperator> QueryGraphManager::Reconstruct(unique_ptr<LogicalOperator> plan,
-                                                           const vector<RelationStats> &relation_stats) {
+GenerateJoinRelation QueryGraphManager::Reconstruct(unique_ptr<LogicalOperator> plan,
+                                                    const vector<RelationStats> &relation_stats) {
 	// now we have to rewrite the plan
 	bool root_is_join = plan->children.size() > 1;
+	// find the operator whose child is replaced by the new join tree
+	optional_ptr<unique_ptr<LogicalOperator>> parent;
+	vector<ColumnBinding> old_child_bindings;
+	vector<reference<LogicalOperator>> ancestors;
+	if (!root_is_join) {
+		D_ASSERT(plan->children.size() == 1);
+		parent = &plan;
+		ancestors.push_back(**parent);
+		while ((*parent)->children[0]->type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
+		       (*parent)->children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+		       (*parent)->children[0]->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+			D_ASSERT((*parent)->children[0]->children.size() == 1);
+			parent = &(*parent)->children[0];
+			ancestors.push_back(**parent);
+		}
+		old_child_bindings = (*parent)->children[0]->GetColumnBindings();
+	}
 	ClearExtractedExpressions();
 
 	unordered_set<RelationIndex> bindings;
@@ -544,27 +718,29 @@ unique_ptr<LogicalOperator> QueryGraphManager::Reconstruct(unique_ptr<LogicalOpe
 			join_tree.op = PushFilter(std::move(join_tree.op), std::move(filter->filter));
 		}
 	}
-	join_tree.op->SetEstimatedCardinality(join_tree.cardinality);
+	join_tree.op->SetEstimatedCardinality(join_tree.stats.cardinality);
 
 	// find the first join in the relation to know where to place this node
 	if (root_is_join) {
 		// first node is the join, return it immediately
-		return std::move(join_tree.op);
-	}
-	D_ASSERT(plan->children.size() == 1);
-	// have to move up through the relations
-	auto op = plan.get();
-	auto parent = plan.get();
-	while (op->type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
-	       op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
-	       op->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
-		D_ASSERT(op->children.size() == 1);
-		parent = op;
-		op = op->children[0].get();
+		return join_tree;
 	}
 	// have to replace at this node
-	parent->children[0] = std::move(join_tree.op);
-	return plan;
+	(*parent)->children[0] = std::move(join_tree.op);
+	// the new join tree can emit its columns in a different order: preserve the parent's output layout
+	ColumnBindingRewrite::ApplyToChild(*parent, 0, std::move(old_child_bindings), BindingReplacementGraph());
+	for (auto ancestor = ancestors.rbegin(); ancestor != ancestors.rend(); ++ancestor) {
+		vector<reference<const RelationStats>> input {join_tree.stats};
+		auto output_stats = RelationStatisticsHelper::ExtractOperatorStats(ancestor->get(), context, input);
+		if (!output_stats) {
+			join_tree.stats = RelationStats();
+			break;
+		}
+		join_tree.stats = std::move(*output_stats);
+		ancestor->get().SetEstimatedCardinality(join_tree.stats.cardinality);
+	}
+	join_tree.op = std::move(plan);
+	return join_tree;
 }
 
 static JoinCondition MaybeInvertConditions(unique_ptr<Expression> condition, bool invert) {
@@ -617,112 +793,6 @@ static JoinType GetJoinType(JoinOrderOperatorType type) {
 	}
 }
 
-static bool ContainsRelation(const JoinRelationSet &set, const ColumnBinding &binding) {
-	if (!binding.table_index.IsValid()) {
-		return false;
-	}
-	for (idx_t set_idx = 0; set_idx < set.count; set_idx++) {
-		if (set.relations[set_idx].index == binding.table_index.index) {
-			return true;
-		}
-	}
-	return false;
-}
-
-static optional_ptr<const RelationColumnStats> GetSelectedJoinColumn(const vector<RelationStats> &relation_stats,
-                                                                     const ColumnBinding &binding) {
-	if (!binding.table_index.IsValid() || !binding.column_index.IsValid() ||
-	    binding.table_index.index >= relation_stats.size()) {
-		return nullptr;
-	}
-	auto &relation = relation_stats[binding.table_index.index];
-	auto column_index = binding.column_index.GetIndex();
-	if (column_index >= relation.columns.size()) {
-		return nullptr;
-	}
-	return relation.columns[column_index];
-}
-
-static optional<SemiAntiJoinCardinalityEstimate>
-EstimateSelectedSemiAntiJoin(const JoinOrderOperator &join_operator, const GenerateJoinRelation &left,
-                             const GenerateJoinRelation &right, const JoinPredicateModel &predicate_model,
-                             const vector<RelationStats> &relation_stats) {
-	if (join_operator.type != JoinOrderOperatorType::SEMI && join_operator.type != JoinOrderOperatorType::ANTI) {
-		return {};
-	}
-	if (!RelationSetsEqual(*left.set, join_operator.left_total_set) ||
-	    !RelationSetsEqual(*right.set, join_operator.right_total_set)) {
-		return {};
-	}
-	auto join_type = GetJoinType(join_operator.type);
-	if (right.set->count != 1) {
-		return {};
-	}
-
-	vector<SemiAntiJoinDomain> domains;
-	for (auto predicate_index : join_operator.costing_predicate_indices) {
-		auto predicate = predicate_model.GetPredicateByFilterIndex(predicate_index);
-		if (!predicate || predicate->GetJoinType() != join_type || !predicate->HasValidEqualityBindings() ||
-		    (predicate->GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
-		     predicate->GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
-			return {};
-		}
-		auto semantic_left = predicate->GetSemanticLeftSetOptional();
-		auto semantic_right = predicate->GetSemanticRightSetOptional();
-		if (!semantic_left || !semantic_right || !RelationSetsEqual(*semantic_left, join_operator.left_total_set) ||
-		    !RelationSetsEqual(*semantic_right, join_operator.right_total_set)) {
-			return {};
-		}
-
-		auto preserved_binding = predicate->GetEqualityBinding(true);
-		auto rhs_binding = predicate->GetEqualityBinding(false);
-		auto lhs_is_rhs = ContainsRelation(*right.set, preserved_binding);
-		auto rhs_is_rhs = ContainsRelation(*right.set, rhs_binding);
-		if (lhs_is_rhs == rhs_is_rhs) {
-			return {};
-		}
-		if (lhs_is_rhs) {
-			std::swap(preserved_binding, rhs_binding);
-		}
-		if (!ContainsRelation(*left.set, preserved_binding)) {
-			return {};
-		}
-		auto preserved_column = GetSelectedJoinColumn(relation_stats, preserved_binding);
-		auto rhs_column = GetSelectedJoinColumn(relation_stats, rhs_binding);
-		if (!preserved_column || !rhs_column) {
-			return {};
-		}
-		auto rhs_current_domain = rhs_column->GetSupportedSemiAntiDomainSize();
-		auto total_domain =
-		    RelationStatisticsHelper::SelectTotalDomain({preserved_column->total_domain, rhs_column->total_domain});
-		if (!rhs_current_domain.IsValid() || !total_domain || total_domain->distinct_count == 0) {
-			return {};
-		}
-		bool seen_domain = false;
-		for (auto &domain : domains) {
-			if (domain.preserved_binding == preserved_binding && domain.rhs_binding == rhs_binding) {
-				seen_domain = true;
-				break;
-			}
-		}
-		if (!seen_domain) {
-			domains.push_back(
-			    {total_domain->distinct_count, rhs_current_domain.GetIndex(), preserved_binding, rhs_binding});
-		}
-	}
-	if (domains.empty()) {
-		return {};
-	}
-
-	auto rhs_relation_index = right.set->relations[0].index;
-	if (rhs_relation_index >= relation_stats.size()) {
-		return {};
-	}
-	return RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(
-	    static_cast<double>(left.cardinality), right.cardinality, relation_stats[rhs_relation_index].row_retention,
-	    join_type, domains, false);
-}
-
 static void OrientInnerConditions(RelationManager &relation_manager, JoinRelationSetManager &set_manager,
                                   vector<JoinCondition> &conditions, const JoinRelationSet &left,
                                   const JoinRelationSet &right) {
@@ -752,13 +822,14 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 	optional_ptr<JoinRelationSet> right_node;
 	optional_ptr<JoinRelationSet> result_relation;
 	unique_ptr<LogicalOperator> result_operator;
+	optional<RelationStats> result_stats;
 
 	auto dp_entry = plans->find(set);
 	if (dp_entry == plans->end()) {
 		throw InternalException("Join Order Optimizer Error: No full plan was created");
 	}
 	auto &node = dp_entry->second;
-	auto result_cardinality = node->cardinality;
+	auto result_cardinality = node->cardinality.GetIndex();
 	if (!dp_entry->second->is_leaf) {
 		// generate the left and right children
 		auto left = GenerateJoins(extracted_relations, node->left_set, relation_stats);
@@ -789,12 +860,6 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 			    !reconstructed_operators.insert(descriptor->index).second) {
 				throw InternalException("Operator occurrence %llu was reconstructed more than once", descriptor->index);
 			}
-			auto semi_anti_estimate =
-			    EstimateSelectedSemiAntiJoin(*descriptor, left, right, predicate_model, relation_stats);
-			if (semi_anti_estimate && semi_anti_estimate->used_domain_evidence) {
-				result_cardinality = LossyNumericCast<idx_t>(semi_anti_estimate->cardinality);
-			}
-
 			for (auto predicate_index : descriptor->costing_predicate_indices) {
 				auto &filter = filters_and_bindings.at(predicate_index);
 				if (!filter->filter) {
@@ -871,12 +936,25 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 		left_node = left.set;
 		right_node = right.set;
 		result_relation = &set_manager.Union(*left.set, *right.set);
+		vector<reference<const RelationStats>> child_stats {left.stats, right.stats};
+		if (result_operator->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+		    (result_operator->Cast<LogicalComparisonJoin>().join_type == JoinType::SEMI ||
+		     result_operator->Cast<LogicalComparisonJoin>().join_type == JoinType::ANTI)) {
+			result_stats = RelationStatisticsHelper::ExtractOperatorStats(*result_operator, context, child_stats);
+			if (result_stats) {
+				result_cardinality = result_stats->cardinality;
+			}
+		} else {
+			result_stats = CombineRelationStats(result_operator->GetColumnBindings(), child_stats, result_cardinality);
+		}
 	} else {
 		// base node, get the entry from the list of extracted relations
 		D_ASSERT(node->set.count == 1);
 		D_ASSERT(extracted_relations[node->set.relations[0].index]);
 		result_relation = &node->set;
 		result_operator = std::move(extracted_relations[result_relation->relations[0].index]);
+		vector<reference<const RelationStats>> inputs {relation_stats[result_relation->relations[0].index]};
+		result_stats = CombineRelationStats(result_operator->GetColumnBindings(), inputs, result_cardinality);
 	}
 	// TODO: this is where estimated properties start coming into play.
 	//  when creating the result operator, we should ask the cost model and cardinality estimator what
@@ -1016,8 +1094,13 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 		}
 	}
 	result_operator->SetEstimatedCardinality(result_cardinality);
-	auto result = GenerateJoinRelation(result_relation, std::move(result_operator), result_cardinality);
-	return result;
+	RelationStats output_stats;
+	if (result_stats) {
+		output_stats = std::move(*result_stats);
+		output_stats.Verify(result_operator->GetColumnBindings());
+	}
+	output_stats.cardinality = result_cardinality;
+	return GenerateJoinRelation(result_relation, std::move(result_operator), std::move(output_stats));
 }
 
 const QueryGraphEdges &QueryGraphManager::GetQueryGraphEdges() const {

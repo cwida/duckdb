@@ -115,7 +115,6 @@ private:
 	//! Compress materializing operators
 	void CompressAggregate(unique_ptr<LogicalOperator> &op);
 	void CompressComparisonJoin(unique_ptr<LogicalOperator> &op);
-	void CompressDistinct(unique_ptr<LogicalOperator> &op);
 	void CompressOrder(unique_ptr<LogicalOperator> &op);
 
 	//! Update statistics after compressing

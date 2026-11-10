@@ -89,7 +89,7 @@ SELECT a, list_contains(a, NULL) FROM lists
 ----
 [2, 2, 3, NULL, NULL]	NULL
 NULL	NULL
-[]	NULL
+[]	false
 [NULL]	NULL
 
 # a non-constant NULL needle

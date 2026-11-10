@@ -26,9 +26,26 @@ struct ParsedOperator {
 	bool is_any = true;
 };
 
+//! A '->' or '->>' operator that directly follows the operand of a '->'
+struct ArrowChainLink {
+	bool is_double_arrow = false;
+	unique_ptr<ParsedExpression> expression;
+};
+
 struct OtherOperatorTail {
 	ParsedOperator op;
 	unique_ptr<ParsedExpression> expression;
+	//! Whether the right-hand side is a subquery, as in ANY(SELECT ...)
+	bool is_subquery = false;
+	//! Set for the '->' operator, whose operand may be followed by a chain of arrows
+	bool is_arrow = false;
+	vector<ArrowChainLink> arrow_chain;
+};
+
+//! The operand of a '->' and the arrows chained behind it
+struct ArrowBody {
+	unique_ptr<ParsedExpression> expression;
+	vector<ArrowChainLink> arrow_chain;
 };
 
 enum class ExpressionTailType : uint8_t { IS_TEST, DISTINCT, COMPARISON, OTHER_OPERATOR, CAST };
@@ -40,6 +57,11 @@ struct IsExpressionTail {
 	ComparisonExpressionTail comparison;
 	OtherOperatorTail other;
 	unique_ptr<ParsedExpression> cast;
+};
+
+struct SimpleCaseCheck {
+	vector<ComparisonExpressionTail> when;
+	unique_ptr<ParsedExpression> then_expr;
 };
 
 struct BinaryExpressionTail {

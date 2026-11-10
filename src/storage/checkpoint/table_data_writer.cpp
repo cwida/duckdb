@@ -1,5 +1,7 @@
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -21,8 +23,8 @@
 
 namespace duckdb {
 
-TableDataWriter::TableDataWriter(TableCatalogEntry &table_p, QueryContext context)
-    : table(table_p.Cast<DuckTableEntry>()), context(context.GetClientContext()) {
+TableDataWriter::TableDataWriter(TableCatalogEntry &table_p, Context &context_p)
+    : table(table_p.Cast<DuckTableEntry>()), context(context_p) {
 	D_ASSERT(table_p.IsDuckTable());
 
 	auto storage_compatibility = StorageCompatibility::FromDatabase(table_p.ParentCatalog().GetAttached());
@@ -41,6 +43,10 @@ void TableDataWriter::WriteTableData(Serializer &metadata_serializer) {
 	table.GetStorage().Checkpoint(*this, metadata_serializer);
 }
 
+void TableDataWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	throw InternalException("This table writer does not support deferred publication");
+}
+
 void TableDataWriter::AddRowGroup(RowGroupPointer &&row_group_pointer, unique_ptr<RowGroupWriter> writer) {
 	row_group_pointers.push_back(std::move(row_group_pointer));
 }
@@ -54,23 +60,20 @@ DatabaseInstance &TableDataWriter::GetDatabase() {
 }
 
 unique_ptr<TaskExecutor> TableDataWriter::CreateTaskExecutor() {
-	if (context) {
-		return make_uniq<TaskExecutor>(*context);
-	}
-	return make_uniq<TaskExecutor>(TaskScheduler::GetScheduler(GetDatabase()));
+	return make_uniq<TaskExecutor>(context);
 }
 
-optional_ptr<ClientContext> TableDataWriter::TryGetClientContext() const {
+Context &TableDataWriter::GetContext() const {
 	return context;
 }
 
 SingleFileTableDataWriter::SingleFileTableDataWriter(SingleFileCheckpointWriter &checkpoint_manager,
                                                      TableCatalogEntry &table, MetadataWriter &table_data_writer)
-    : TableDataWriter(table, checkpoint_manager.GetClientContext()), checkpoint_manager(checkpoint_manager),
+    : TableDataWriter(table, checkpoint_manager.GetContext()), checkpoint_manager(checkpoint_manager),
       table_data_writer(table_data_writer) {
 }
 
-unique_ptr<RowGroupWriter> SingleFileTableDataWriter::GetRowGroupWriter(RowGroup &row_group) {
+unique_ptr<RowGroupWriter> SingleFileTableDataWriter::GetRowGroupWriter() {
 	return make_uniq<SingleFileRowGroupWriter>(table, checkpoint_manager.partial_block_manager, *this,
 	                                           table_data_writer);
 }
@@ -94,6 +97,15 @@ void SingleFileTableDataWriter::WriteUnchangedTable(MetaBlockPointer pointer,
 
 unique_ptr<TableIndexWriter> SingleFileTableDataWriter::GetTableIndexWriter(StorageVersion version) {
 	return make_uniq<SingleFileTableIndexWriter>(checkpoint_manager, version);
+}
+
+bool SingleFileTableDataWriter::CanDeferPublication() const {
+	return !GetRebuildIndexes();
+}
+
+void SingleFileTableDataWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	D_ASSERT(CanDeferPublication());
+	checkpoint_manager.AddPendingPublication(std::move(publication));
 }
 
 void SingleFileTableDataWriter::FlushPartialBlocks() {

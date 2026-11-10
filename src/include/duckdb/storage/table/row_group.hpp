@@ -194,7 +194,7 @@ public:
 	//! Checks the given set of table filters against the row-group statistics. Returns false if the entire row group
 	//! can be skipped.
 	bool CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo &filters, idx_t row_start);
-	//! Checks the given set of table filters against the per-segment statistics. Returns false if any segments were
+	//! Checks the given set of table filters against the zonemaps of their columns. Returns false if any vectors were
 	//! skipped.
 	bool CheckZonemapSegments(CollectionScanState &state);
 	void Scan(ScanOptions options, CollectionScanState &state, DataChunk &result);
@@ -203,8 +203,8 @@ public:
 	void PrefetchScanIO(CollectionScanState &state, idx_t row_count) const;
 	//! Collects the async I/O tasks required to scan the next row_count rows, without performing any I/O
 	vector<unique_ptr<AsyncTask>> CollectScanIOTasks(CollectionScanState &state, idx_t row_count) const;
-	//! Rows of the remaining assignment worth prefetching, trailing vectors the zonemaps reject are left out
-	idx_t PrefetchRowCount(CollectionScanState &state);
+	//! Collects the async I/O tasks of the remaining assignment, leaving out the vectors the zonemaps reject
+	vector<unique_ptr<AsyncTask>> CollectAssignmentIOTasks(CollectionScanState &state) const;
 	//! Prepares the next eligible vector in the assigned range, idempotent, returns false when none remain
 	bool PrepareScan(ScanOptions options, CollectionScanState &state);
 	//! Processes the vector prepared by PrepareScan, clearing the prepared state when the vector is finished
@@ -309,8 +309,10 @@ public:
 	ColumnData &GetRawColumnData(storage_t c) const;
 
 private:
-	//! Registers prefetch candidates for the next row_count rows, returns false when prefetching is not supported
-	bool RegisterScanIO(CollectionScanState &state, idx_t row_count, PrefetchState &prefetch_state) const;
+	//! Registers prefetch candidates for the rows in [start_row, end_row), returns false when prefetching is not
+	//! supported
+	bool RegisterScanIO(CollectionScanState &state, idx_t start_row, idx_t end_row,
+	                    PrefetchState &prefetch_state) const;
 	//! Shared scan-state setup for InitializeScan and InitializeScanWithOffset
 	bool InitializeScanInternal(CollectionScanState &state, SegmentNode<RowGroup> &node, idx_t vector_offset);
 	//! Advances the scan past the current vector, clearing the prepared state

@@ -951,21 +951,23 @@ functions:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-17" ]
     description: |
-      Validates all text->len bytes as UTF-8, including bytes after embedded NUL characters.
+      Validates all `text_length` bytes of `text` as UTF-8, including bytes after embedded NUL characters.
 
       Returns ERROR_INPUT_INVALID if any of:
-      - text is NULL.
-      - text->ptr is NULL and text->len is nonzero.
+      - text is NULL and text_length is nonzero.
       - The input contains malformed UTF-8.
 
-      A view with a NULL ptr and zero length is valid.
+      A NULL text with a zero length is valid.
     parameters:
       text:
-        type: str
+        type: char
         indirection: 1
         const: true
         kind: IN
         description: The bytes to validate.
+      text_length:
+        type: idx
+        description: The length of `text` in bytes. `text` need not be null-terminated and may be NULL only when this is 0.
       err:
         type: error_info
         indirection: 1

@@ -1,0 +1,12 @@
+# name: benchmark/csv/lineitem_crlf_count.benchmark
+# description: Count the rows of lineitem written as CSV with carriage return line feed line endings
+# group: [csv]
+
+template benchmark/csv/lineitem_csv.benchmark.in
+name=Lineitem CRLF Count
+variant=crlf
+copy_options=FORMAT CSV, DELIMITER '|', HEADER false, NEW_LINE '\r\n'
+newline=\r\n
+query_start=SELECT count(*) FROM
+query_end=;
+result=6001215

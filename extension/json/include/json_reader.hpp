@@ -43,6 +43,8 @@ public:
 	const idx_t buffer_size;
 	//! The start position in the buffer
 	idx_t buffer_start;
+	//! The start of the line copied in from the previous buffer, set once it is copied
+	atomic<idx_t> remainder_start;
 };
 
 struct JSONFileHandle {
@@ -220,8 +222,10 @@ public:
 	JSONFileHandle &GetFileHandle() const;
 
 public:
-	//! Get a new buffer index (must hold the lock)
+	//! Get a new buffer index (grabs the lock)
 	idx_t GetBufferIndex();
+	//! The index the next buffer will receive (grabs the lock)
+	idx_t GetNextBufferIndex();
 	//! Set line count for a buffer that is done (grabs the lock)
 	void SetBufferLineOrObjectCount(JSONBufferHandle &handle, idx_t count);
 	//! Records a parse error in the specified buffer

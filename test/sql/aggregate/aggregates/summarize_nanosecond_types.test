@@ -1,0 +1,44 @@
+# name: test/sql/aggregate/aggregates/summarize_nanosecond_types.test
+# description: SUMMARIZE averages TIME_NS and TIMESTAMPTZ_NS columns and computes their quantiles
+# group: [aggregates]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE t_ns AS SELECT * FROM (VALUES
+    (TIME_NS '01:00:00.000000001', TIMESTAMP_NS '2000-01-01 01:00:00.000000001', TIMESTAMPTZ_NS '2000-01-01 01:00:00.000000001+00'),
+    (TIME_NS '03:00:00.000000003', TIMESTAMP_NS '2000-01-01 03:00:00.000000003', TIMESTAMPTZ_NS '2000-01-01 03:00:00.000000003+00')
+) t(tn, tsn, tstzn);
+
+# the quantiles are approximate, the timestamps lose their nanoseconds in the digest's doubles
+query IIIIII
+SELECT column_name, column_type, avg, q25, q50, q75 FROM (SUMMARIZE t_ns);
+----
+tn	TIME_NS	02:00:00.000000002	01:00:00.000000001	02:00:00.000000002	03:00:00.000000003
+tsn	TIMESTAMP_NS	2000-01-01 02:00:00.000000002	2000-01-01 01:00:00	2000-01-01 02:00:00	2000-01-01 03:00:00
+tstzn	TIMESTAMPTZ_NS	2000-01-01 02:00:00.000000002+00	2000-01-01 01:00:00+00	2000-01-01 02:00:00+00	2000-01-01 03:00:00+00
+
+# the same values as the aggregates give directly
+query IIII
+SELECT avg(tn), approx_quantile(tn, 0.5), avg(tstzn), approx_quantile(tstzn, 0.5) FROM t_ns;
+----
+02:00:00.000000002	02:00:00.000000002	2000-01-01 02:00:00.000000002+00	2000-01-01 02:00:00+00
+
+query III
+SELECT column_name, column_type, avg IS NULL FROM (SUMMARIZE SELECT '12:34:56'::TIME_NS AS t);
+----
+t	TIME_NS	false
+
+query III
+SELECT column_name, column_type, avg IS NULL FROM (SUMMARIZE SELECT '2020-01-01 00:00:00'::TIMESTAMPTZ_NS AS ts);
+----
+ts	TIMESTAMPTZ_NS	false
+
+# other temporal types are still averaged
+query III
+SELECT column_name, column_type, avg IS NULL FROM (SUMMARIZE SELECT '2020-01-01 00:00:00'::TIMESTAMP AS ts);
+----
+ts	TIMESTAMP	false

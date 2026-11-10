@@ -136,7 +136,13 @@ shared_ptr<DuckDB> DBInstanceCache::CreateInstanceInternal(const string &databas
 		lock_guard<mutex> create_db_lock(cache_entry->update_database_mutex);
 		db_instances[cache_key] = cache_entry;
 		db_instances_lock.unlock();
-		db_instance = make_shared_ptr<DuckDB>(instance_path, &config);
+		try {
+			db_instance = make_shared_ptr<DuckDB>(instance_path, &config);
+		} catch (...) {
+			// the instance did not take the entry over, so the next attempt must not wait for it to expire
+			config.db_cache_entry.reset();
+			throw;
+		}
 		cache_entry->instance = db_instance->instance;
 	} else {
 		db_instances_lock.unlock();

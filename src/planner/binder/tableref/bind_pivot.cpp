@@ -179,7 +179,7 @@ static unique_ptr<SelectNode> PivotFilteredAggregate(ClientContext &context, Piv
 			for (auto &pivot_expr : pivot_column.pivot_expressions) {
 				auto column_ref = make_uniq<CastExpression>(LogicalType::VARCHAR, pivot_expr->Copy());
 				auto constant_value = ConstantExpression::FromValue(
-				    pivot_value.values[pivot_value_idx++].DefaultCastAs(LogicalType::VARCHAR));
+				    pivot_value.values[pivot_value_idx++].CastAs(context, LogicalType::VARCHAR));
 				auto comp_expr = make_uniq<ComparisonExpression>(ExpressionType::COMPARE_NOT_DISTINCT_FROM,
 				                                                 std::move(column_ref), std::move(constant_value));
 				if (filter) {

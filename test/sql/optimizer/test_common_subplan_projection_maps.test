@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/test_common_subplan_projection_maps.test
-# description: Common subplan materialization invalidates stale projection maps
+# description: Common subplan replacement preserves projection maps
 # group: [optimizer]
 
 statement ok

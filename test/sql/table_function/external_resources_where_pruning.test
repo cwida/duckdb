@@ -1,0 +1,118 @@
+# name: test/sql/table_function/external_resources_where_pruning.test
+# description: A WHERE on `type` over discovery is pushed into the per-type branches by the optimizer, so only the matching list callbacks run
+# group: [table_function]
+
+# Each list callback bumps its own sequence, so the sequences count how often discovery called it.
+statement ok
+CREATE SEQUENCE calls_a;
+
+statement ok
+CREATE SEQUENCE calls_b;
+
+statement ok
+CREATE MACRO list_a(opts) AS TABLE
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-name' AS name, 'a-ref' AS reference, 'running' AS state;
+
+statement ok
+CREATE MACRO list_b(opts) AS TABLE
+    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'b-name' AS name, 'b-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('a@wp', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
+
+statement ok
+CALL register_external_resource_type('b@wp', kind := 'catalog', create_function := 'noop_create', list_function := 'list_b');
+
+# currval needs a prior nextval
+query II
+SELECT nextval('calls_a'), nextval('calls_b');
+----
+1	1
+
+# Equality on type: the other branch folds to a constant false and is removed.
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type = 'a@wp';
+----
+a@wp	{id=a2}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+2	1
+
+# All columns.
+query TTTTTTTT
+SELECT * FROM duckdb_external_resources(discover := true) WHERE type = 'b@wp';
+----
+b-name	b@wp	false	running	b-ref	NULL	NULL	{id=b2}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+2	2
+
+# IN
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type IN ('a@wp', 'none@wp');
+----
+a@wp	{id=a3}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	2
+
+# LIKE with a prefix
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type LIKE 'b@%';
+----
+b@wp	{id=b3}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	3
+
+# <>
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type <> 'b@wp';
+----
+a@wp	{id=a4}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# A type no registered type matches calls no callback at all.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = 'none@wp';
+----
+0
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# A filter on a column the callbacks compute runs both callbacks and filters the rows.
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE handle['id'] LIKE 'b%';
+----
+b@wp	{id=b4}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+5	4
+
+# Combined: the type predicate prunes the branches, the other predicate the rows.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = 'a@wp' AND handle['id'] LIKE 'b%';
+----
+0
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+6	4

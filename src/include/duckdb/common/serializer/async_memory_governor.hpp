@@ -9,10 +9,11 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/mutex.hpp"
 
 namespace duckdb {
 
-class ClientContext;
+class Context;
 class TemporaryMemoryState;
 
 //! Memory policy shared by the managed async queues.
@@ -34,7 +35,7 @@ struct ManagedAsyncMemoryConfig {
 //! queued and in-flight backlog through the same memory logic.
 class ManagedAsyncMemoryGovernor {
 public:
-	explicit ManagedAsyncMemoryGovernor(ClientContext &client_context);
+	explicit ManagedAsyncMemoryGovernor(Context &context);
 	~ManagedAsyncMemoryGovernor();
 
 	ManagedAsyncMemoryGovernor(const ManagedAsyncMemoryGovernor &) = delete;
@@ -50,9 +51,11 @@ public:
 	void Release();
 
 private:
-	ClientContext &client_context;
+	Context &context;
 	//! Temporary memory reservation state used to limit queued async data. Absent when draining synchronously.
 	unique_ptr<TemporaryMemoryState> memory_state;
+	//! Serializes concurrent reservation updates and releases from multiple producers.
+	mutex reservation_lock;
 	//! Last remaining-size request sent to TemporaryMemoryManager. Grows monotonically until Release().
 	idx_t memory_request_bytes = 0;
 	//! Minimum TemporaryMemoryManager reservation while work is outstanding.

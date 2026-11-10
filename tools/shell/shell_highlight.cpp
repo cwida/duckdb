@@ -69,6 +69,8 @@ static HighlightElement highlight_elements[] = {
 };
 
 const HighlightElement &ShellHighlight::GetHighlightElement(HighlightElementType type) {
+	// colors are about to be used - detect the terminal colors if we have not yet
+	ShellState::Get().DetectDarkLightMode();
 	auto index = static_cast<uint32_t>(type);
 	auto max_index = static_cast<uint32_t>(HighlightElementType::NONE);
 	if (index > max_index) {

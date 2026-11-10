@@ -1,0 +1,49 @@
+# name: test/sql/storage/bc/test_lag_lead_v1_5.test
+# description: Test that lead and lag stored by v1.5 keep their offset and default
+# group: [bc]
+
+# data/storage/lag_lead_v1_5.db.gz was written by DuckDB v1.5.6, which stores the offset and default of lead and lag
+# in their own properties
+require vector_size 2048
+
+unzip data/storage/lag_lead_v1_5.db.gz {TEST_DIR}/lag_lead_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/lag_lead_v1_5.db' AS old
+
+query III
+FROM old.v ORDER BY x
+----
+0	NULL	2
+1	NULL	3
+2	NULL	4
+3	0	5
+4	1	6
+5	2	7
+6	3	-1
+7	4	-1
+
+# a checkpoint writes the view back in the v1.5 format
+statement ok
+CREATE TABLE old.unrelated (i INTEGER)
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/lag_lead_v1_5.db' AS old
+
+query III
+FROM old.v ORDER BY x
+----
+0	NULL	2
+1	NULL	3
+2	NULL	4
+3	0	5
+4	1	6
+5	2	7
+6	3	-1
+7	4	-1
