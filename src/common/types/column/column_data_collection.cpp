@@ -838,14 +838,19 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 	}
 }
 
-//! Block capacities are 32-bit, and in-memory blocks round their capacity up to a power of two
-static constexpr idx_t MAXIMUM_LARGE_LIST_CHILD_SIZE = idx_t(1) << 31;
+//! Block capacities are 32-bit
+static constexpr idx_t MAXIMUM_LARGE_LIST_CHILD_SIZE = NumericLimits<uint32_t>::Maximum();
 
-//! Store a list child longer than a vector, appended into an empty child chain, as a single LARGE_FLAT entry, so
-//! scans read it without copying. Returns false if the child must be appended as a chain of vector-sized entries
+//! Store a list child longer than a vector, appended into an empty child chain of a buffer-managed collection, as a
+//! single LARGE_FLAT entry, so scans read it without copying. Returns false if the child must be appended as a chain of
+//! vector-sized entries
 static bool TryAppendLargeListChild(ColumnDataMetaData &meta_data, Vector &source, Vector &child_vector,
                                     const ConsecutiveChildListInfo &info, idx_t offset, idx_t copy_count) {
 	auto &segment = meta_data.segment;
+	if (segment.allocator->GetType() == ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR) {
+		// in-memory blocks round their capacity up to a power of two, a child-sized block could double its footprint
+		return false;
+	}
 	const auto length = info.child_list_info.length;
 	if (meta_data.GetVectorMetaData().child_index.IsValid() || length <= STANDARD_VECTOR_SIZE) {
 		return false;

@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/common/types/column/column_data_consumer.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/dictionary_vector.hpp"
@@ -1091,6 +1092,12 @@ static const_data_ptr_t ScanLargeListChild(ColumnDataCollection &collection, Col
 
 // Results are identical whether a scan copies a large list child or hands out a view of collection storage, so only
 // the child data pointers can show that a single-entry child is read without a copy.
+static VectorMetaData &FirstListChildEntry(ColumnDataCollection &collection) {
+	auto &segment = *collection.GetSegments()[0];
+	auto &list_vdata = segment.GetVectorData(segment.chunk_data[0].vector_data[0]);
+	return segment.GetVectorData(segment.GetChildIndex(list_vdata.child_index));
+}
+
 TEST_CASE("Large list children are scanned without copying", "[column_data_compact]") {
 	if (STANDARD_VECTOR_SIZE < 1024) {
 		// the shapes below assume full-size vectors
@@ -1108,14 +1115,18 @@ TEST_CASE("Large list children are scanned without copying", "[column_data_compa
 		ColumnDataAppendState append_state;
 		collection->InitializeAppend(append_state);
 		AppendLargeList(*collection, append_state, length, 0);
+		// only buffer-managed collections store the child as a single entry, in-memory ones keep the chain
+		auto &child_entry = FirstListChildEntry(*collection);
+		REQUIRE((child_entry.representation == ColumnDataRepresentation::LARGE_FLAT) == !in_memory);
+		REQUIRE(child_entry.next_data.IsValid() == in_memory);
 
-		// zero-copy scans alive at the same time view the same storage
+		// zero-copy scans alive at the same time view the same storage, scans of a chain copy
 		ColumnDataScanState first_state, second_state, copy_state;
 		DataChunk first, second, copied;
 		auto first_ptr = ScanLargeListChild(*collection, first_state, first, ColumnDataScanProperties::ALLOW_ZERO_COPY);
 		auto second_ptr =
 		    ScanLargeListChild(*collection, second_state, second, ColumnDataScanProperties::ALLOW_ZERO_COPY);
-		REQUIRE(first_ptr == second_ptr);
+		REQUIRE((first_ptr == second_ptr) == !in_memory);
 		REQUIRE(ListVector::GetListSize(first.data[0]) == length);
 		VerifyLargeListChild(first, 0, length, 0);
 		VerifyLargeListChild(second, 0, length, 0);
