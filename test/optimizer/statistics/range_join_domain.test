@@ -1,0 +1,59 @@
+# name: test/optimizer/statistics/range_join_domain.test
+# description: Constant integer ranges supply known distinct counts
+# group: [statistics]
+
+statement ok
+SET explain_output='optimized_only';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT a.k FROM range(1000) a(k) JOIN range(1000) b(k) USING (k);
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"1000"\s*}\s*}\s*\]\s*$
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT a.k FROM range(0, 2000, 2) a(k) JOIN range(1998, -2, -2) b(k) USING (k);
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"1000"\s*}\s*}\s*\]\s*$
+
+query I
+SELECT count(*) FROM range(0, 2000, 2) a(k) JOIN range(1998, -2, -2) b(k) USING (k);
+----
+1000
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT a.k FROM generate_series(0, 1998, 2) a(k) JOIN generate_series(1998, 0, -2) b(k) USING (k);
+----
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"1000"\s*}\s*}\s*\]\s*$
+
+query I
+SELECT count(*) FROM generate_series(0, 1998, 2) a(k) JOIN generate_series(1998, 0, -2) b(k) USING (k);
+----
+1000
+
+query I
+SELECT count(*) FROM range(NULL::BIGINT) a(k) JOIN range(1000) b(k) USING (k);
+----
+0
+
+query I
+SELECT count(*) FROM range(0) a(k) JOIN range(1000) b(k) USING (k);
+----
+0
+
+# Correlated ranges can produce overlapping values across their input rows.
+query I
+WITH ranges AS (
+	SELECT s.k FROM range(3) r(i), range(i + 1) s(k)
+)
+SELECT count(*) FROM ranges a JOIN ranges b USING (k);
+----
+14
+
+query I
+SELECT count(*)
+FROM generate_series(9223372036854775805, 9223372036854775807) a(k)
+JOIN generate_series(9223372036854775807, 9223372036854775805, -1) b(k) USING (k);
+----
+3

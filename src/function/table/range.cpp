@@ -5,6 +5,7 @@
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb {
 
@@ -238,6 +239,17 @@ unique_ptr<NodeStatistics> RangeCardinality(ClientContext &context, const Functi
 	}
 	auto &bind_data = bind_data_p->Cast<RangeFunctionBindData>();
 	return make_uniq<NodeStatistics>(bind_data.cardinality, bind_data.cardinality);
+}
+
+static unique_ptr<BaseStatistics> RangeStatistics(ClientContext &context, const FunctionData *bind_data_p,
+                                                  column_t column_index) {
+	if (!bind_data_p || column_index != 0) {
+		return nullptr;
+	}
+	auto &bind_data = bind_data_p->Cast<RangeFunctionBindData>();
+	auto result = BaseStatistics::CreateUnknown(LogicalType::BIGINT);
+	result.SetDistinctCount(bind_data.cardinality);
+	return result.ToUnique();
 }
 
 //===--------------------------------------------------------------------===//
@@ -509,6 +521,7 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	range_function.table_scan_progress = RangeFunctionProgress;
 	range_function.in_out_function = RangeFunction<false>;
 	range_function.cardinality = RangeCardinality;
+	range_function.statistics = RangeStatistics;
 	range_function.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;
 	range_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 
