@@ -393,7 +393,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		if (!filled) {
 			// This parameter cannot be filled by the call, so this function cannot be a match.
-			mismatch(FunctionMismatch::MissingParameter {i, param.GetName()});
+			mismatch(FunctionMismatch::MissingParameter {i, param.IsNamed() ? param.GetName() : Identifier()});
 		}
 	}
 
@@ -424,7 +424,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 	}
 
-	if (mismatches > 0) {
+	if (reason) {
 		// the wrong shape is further away than arguments that cannot be cast, of which there are at most this many
 		return FunctionMismatch(overload, std::move(function), received_count + mismatches, std::move(*reason));
 	}
@@ -480,7 +480,7 @@ std::variant<FunctionBinding, FunctionMismatch> FunctionBinder::MatchOverload(op
 		}
 		cost += static_cast<idx_t>(cast_cost);
 	}
-	if (mismatches > 0) {
+	if (reason) {
 		return FunctionMismatch(overload, std::move(function), mismatches, std::move(*reason));
 	}
 
@@ -998,7 +998,7 @@ void FunctionBinder::CastToFunctionArguments(const Identifier &function_name, ve
 			    function_name);
 		}
 		if (children[i]->GetReturnType().id() == LogicalTypeId::UNKNOWN && !target_type.IsComplete()) {
-			// an unresolved parameter cannot take an incomplete type, the statement is bound again at EXECUTE
+			// bind callbacks only see concrete types - an unresolved parameter is bound again at EXECUTE
 			throw ParameterNotResolvedException();
 		}
 		target_type.Verify();

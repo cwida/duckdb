@@ -1,0 +1,17 @@
+1,ann,x,7
+2,"q,q",x,8
+3,"line
+break",x,9
+4,"a""b",x,10
+5,"c"x,y,11
+6,b,x
+7,b,x,y,extra
+8,,,12
+9,bc,x,13
+10,",","
+",14
+11, b , x , 15
+15,ppppppppppppppppppppppppppppppppppppppppp,x,19
+16,ppppppppppppppppppppppppppppppppppppppppppppppppppppppp,x,20
+17,a,b,x,21
+18,"open,x,22

@@ -152,7 +152,7 @@ struct DatePart {
 		return OP::template TryOperation<T, TR>(input, result);
 	}
 	template <class OP, class T, class TR>
-	static bool TryDatePartOperation(T input, TR &result, long) {
+	static bool TryDatePartOperation(T input, TR &result, int64_t) {
 		result = OP::template Operation<T, TR>(input);
 		return true;
 	}
