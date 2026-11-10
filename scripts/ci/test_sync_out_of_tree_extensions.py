@@ -453,6 +453,31 @@ index 4b48dee..92efc5d 100644
             any(call.args[0][1] in ('clone', 'fetch', 'checkout', 'submodule') for call in commands.call_args_list)
         )
 
+        if CMAKE:
+            config_dir = self.root / 'version-configs'
+            config_dir.mkdir()
+            (config_dir / 'example.cmake').write_text(
+                f'duckdb_extension_load(example GIT_URL "{extension}" GIT_TAG "{revision}")'
+            )
+            os.environ['DUCKDB_EXAMPLE_DIRECTORY'] = str(checkout)
+            configured = subprocess.run(
+                [
+                    CMAKE,
+                    '-S',
+                    str(REPO_ROOT),
+                    '-B',
+                    str(self.root / 'version-build'),
+                    '-DEXTENSION_CONFIG_BUILD=TRUE',
+                    '-DBUILD_EXTENSIONS=example',
+                    f'-DEXTENSION_CONFIG_BASE_DIR={config_dir}',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(configured.returncode, 0, configured.stdout)
+            self.assertIn(f'@ {revision[:10]}\n', configured.stdout)
+
         os.environ['EXPORT_EXTENSION_PATCHES'] = '1'
         with contextlib.redirect_stdout(io.StringIO()):
             sync.sync_extension(descriptor, external_dir, self.root)
