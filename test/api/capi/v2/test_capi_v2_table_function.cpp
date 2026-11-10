@@ -2334,7 +2334,7 @@ TEST_CASE("V2 table: virtual column and metrics arguments", "[capi_v2][table_fun
 	REQUIRE(duckdb_v2_table_function_metrics_get_bind_data(nullptr, &data, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_metrics_get_global_state(nullptr, &data, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_table_function_metrics_set_metric(nullptr, "operator.rows_scanned", 21, 1, nullptr) ==
+	REQUIRE(duckdb_v2_table_function_metrics_set(nullptr, "operator.row_groups_scanned", 27, 1, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 }
 

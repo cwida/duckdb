@@ -227,9 +227,38 @@ public:
 	void *in_bind_data = nullptr;
 	void *in_global_state = nullptr;
 
-	//! The metrics the callback reported, by the name of the profiling metric
-	unordered_map<string, idx_t> out_metrics;
+	//! The metrics the callback reported, by name, applied to the scan's metrics afterwards
+	vector<pair<string, uint64_t>> out_metrics;
 };
+
+//! The operator metrics a table function scan can report, by the name the profiler uses for them
+static auto CV2TableApplyMetric(OperatorMetrics &metrics, const string &name, uint64_t value) -> bool {
+	if (name == MetricOperatorRowsScanned::Name) {
+		metrics.rows_scanned = value;
+	} else if (name == MetricOperatorRowGroupsScanned::Name) {
+		metrics.row_groups_scanned = value;
+	} else if (name == MetricOperatorTotalRowGroupsToScan::Name) {
+		metrics.total_row_groups_to_scan = value;
+	} else if (name == MetricOperatorBytesScanned::Name) {
+		metrics.bytes_scanned = value;
+		metrics.bytes_scanned_reported = true;
+	} else {
+		return false;
+	}
+	return true;
+}
+
+static void CV2TableAddMetric(CV2TableMetricsInfo &info, const char *name, idx_t name_length, uint64_t value) {
+	string metric_name(name, name_length);
+	OperatorMetrics probe;
+	if (!CV2TableApplyMetric(probe, metric_name, value)) {
+		throw InvalidInputException("\"%s\" is not a metric a table function can report, expected one of "
+		                            "\"%s\", \"%s\", \"%s\" or \"%s\"",
+		                            metric_name, MetricOperatorRowsScanned::Name, MetricOperatorRowGroupsScanned::Name,
+		                            MetricOperatorTotalRowGroupsToScan::Name, MetricOperatorBytesScanned::Name);
+	}
+	info.out_metrics.emplace_back(std::move(metric_name), value);
+}
 
 static auto Convert(duckdb_v2_table_function_metrics_info_handle info) -> CV2TableMetricsInfo * {
 	return reinterpret_cast<CV2TableMetricsInfo *>(info);
@@ -897,23 +926,6 @@ static auto CV2TableProgress(ClientContext &context, const FunctionData *bind_da
 	return MinValue<double>(MaxValue<double>(args.out_progress, 0.0), 1.0) * 100.0;
 }
 
-//! The field of the operator metrics that a profiling metric name stands for, or null if a scan cannot report it
-static auto CV2TableMetricField(const string &name, OperatorMetrics &metrics) -> idx_t * {
-	if (name == MetricOperatorRowsScanned::Name) {
-		return &metrics.rows_scanned;
-	}
-	if (name == MetricOperatorRowGroupsScanned::Name) {
-		return &metrics.row_groups_scanned;
-	}
-	if (name == MetricOperatorTotalRowGroupsToScan::Name) {
-		return &metrics.total_row_groups_to_scan;
-	}
-	if (name == MetricOperatorBytesScanned::Name) {
-		return &metrics.bytes_scanned;
-	}
-	return nullptr;
-}
-
 static auto CV2TableGetMetrics(TableFunctionGetMetricsInput &input) -> void {
 	if (!input.bind_data) {
 		return;
@@ -939,11 +951,7 @@ static auto CV2TableGetMetrics(TableFunctionGetMetricsInput &input) -> void {
 	}
 
 	for (auto &metric : args.out_metrics) {
-		auto &field = *CV2TableMetricField(metric.first, input.operator_metrics);
-		field = metric.second;
-		if (metric.first == MetricOperatorBytesScanned::Name) {
-			input.operator_metrics.bytes_scanned_reported = true;
-		}
+		CV2TableApplyMetric(input.operator_metrics, metric.first, metric.second);
 	}
 }
 
@@ -1655,19 +1663,12 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_global_state(duckdb_v2_tabl
 	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_global_state; });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set_metric(duckdb_v2_table_function_metrics_info_handle info,
-                                                            const char *name, idx_t name_length, idx_t value,
-                                                            duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set(duckdb_v2_table_function_metrics_info_handle info,
+                                                     const char *name, idx_t name_length, uint64_t value,
+                                                     duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_STR_ARG(name, name_length);
-	return WithErrorHandler(err, [&]() {
-		const string metric(name, name_length);
-		OperatorMetrics unused;
-		if (!CV2TableMetricField(metric, unused)) {
-			throw duckdb::InvalidInputException("A table function cannot report the metric \"%s\"", metric);
-		}
-		Convert(info)->out_metrics[metric] = value;
-	});
+	DUCKDB_CHECK_ARG(name);
+	return WithErrorHandler(err, [&]() { CV2TableAddMetric(*Convert(info), name, name_length, value); });
 }
 
 DUCKDB_V2_ERROR

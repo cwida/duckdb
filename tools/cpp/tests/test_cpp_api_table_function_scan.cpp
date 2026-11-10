@@ -201,6 +201,17 @@ struct MetricsGlobal {
 	std::atomic<idx_t> scanned {0};
 };
 
+std::atomic<bool> metrics_rejected_unknown {false};
+
+auto MetricRejected(TableFunction::MetricsInput &input, std::string_view name) -> bool {
+	try {
+		input.SetMetric(name, 1);
+	} catch (const InvalidInputException &) {
+		return true;
+	}
+	return false;
+}
+
 void MetricsBind(TableFunction::BindInput &input) {
 	input.AddResultColumn("i", input.GetContext().GetFactory().ParseType("BIGINT"));
 	input.SetBindData<HintBind>(HintBind {input.GetConstantArgument(0).Get<int64_t>()});
@@ -232,7 +243,10 @@ void MetricsReport(TableFunction::MetricsInput &input) {
 	}
 	input.SetMetric("operator.row_groups_scanned", global->scanned.exchange(0));
 	input.SetMetric("operator.total_row_groups_to_scan", input.GetBindData<HintBind>().count);
-	REQUIRE_THROWS_AS(input.SetMetric("operator.timing", 1), InvalidInputException);
+	if (MetricRejected(input, "operator.no_such_metric") && MetricRejected(input, "latency") &&
+	    MetricRejected(input, "operator.cpu_time")) {
+		metrics_rejected_unknown = true;
+	}
 }
 
 std::optional<QueryMetricsNode> FindOperator(const QueryMetricsNode &node, std::string_view name) {
@@ -409,6 +423,7 @@ TEST_CASE("Stable C++API: table function metrics", "[cpp_api]") {
 	REQUIRE(total.has_value());
 	REQUIRE(scanned->Get<uint64_t>() == 5);
 	REQUIRE(total->Get<uint64_t>() == 12);
+	REQUIRE(metrics_rejected_unknown.load());
 }
 
 namespace {

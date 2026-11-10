@@ -5368,13 +5368,12 @@ public:
 			return static_cast<T *>(GetGlobalStateInternal());
 		}
 
-		/// Reports a metric of the scan by the name of the operator metric DuckDB's profiling gathers. A scan can
-		/// report `operator.rows_scanned`, `operator.row_groups_scanned` and `operator.bytes_scanned` (counted since
-		/// the metrics were last collected: the engine adds them up) and `operator.total_row_groups_to_scan` (the row
-		/// groups that were read or skipped, in all, so far). A row group is the unit a format lets the scan skip,
-		/// e.g. a Parquet row group or an ORC stripe.
-		/// @throws InvalidInputException When the scan cannot report a metric of that name.
-		auto SetMetric(const std::string &name, idx_t value) -> void;
+		/// Reports an operator metric of the scan by its profiler name, e.g. "operator.row_groups_scanned" or
+		/// "operator.total_row_groups_to_scan". See `duckdb_v2_table_function_metrics_set` for the accepted names.
+		/// @param name The name of the metric.
+		/// @param value The value since the metrics were last collected ("operator.total_row_groups_to_scan": in all).
+		/// @throws InvalidInputException When the name is not a metric a table function can report.
+		auto SetMetric(std::string_view name, uint64_t value) -> void;
 
 		/// The query's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
