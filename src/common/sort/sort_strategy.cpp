@@ -3,6 +3,7 @@
 #include "duckdb/common/sorting/hashed_sort.hpp"
 #include "duckdb/common/sorting/natural_sort.hpp"
 #include "duckdb/common/sorting/partitioned_sort.hpp"
+#include "duckdb/common/types/row/tuple_data_collection.hpp"
 
 namespace duckdb {
 
