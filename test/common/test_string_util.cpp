@@ -568,6 +568,14 @@ TEST_CASE("Test JSON Parsing", "[string_util]") {
 		"bool_f": false
 	}
 	)JSON_LITERAL");
+	REQUIRE(json_map["real"] == "1.500000");
+}
+
+TEST_CASE("Test ToString of doubles", "[string_util]") {
+	REQUIRE(StringUtil::ToString(10.0) == "10.000000");
+	REQUIRE(StringUtil::ToString(-2.25) == "-2.250000");
+	REQUIRE(StringUtil::ToString(1.0 / 3.0) == "0.333333");
+	REQUIRE(StringUtil::ToString(1e20) == "100000000000000000000.000000");
 }
 
 TEST_CASE("Test CIHash is independent of char signedness", "[string_util]") {

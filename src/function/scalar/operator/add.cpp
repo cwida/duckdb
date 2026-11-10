@@ -8,6 +8,7 @@
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/uhugeint.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 
 namespace duckdb {
 
@@ -108,8 +109,38 @@ timestamp_t AddOperator::Operation(timestamp_t left, interval_t right) {
 }
 
 template <>
+timestamp_t AddOperator::Operation(timestamp_sec_t left, interval_t right) {
+	return Interval::Add(Cast::Operation<timestamp_sec_t, timestamp_t>(left), right);
+}
+
+template <>
+timestamp_t AddOperator::Operation(timestamp_ms_t left, interval_t right) {
+	return Interval::Add(Cast::Operation<timestamp_ms_t, timestamp_t>(left), right);
+}
+
+template <>
+timestamp_ns_t AddOperator::Operation(timestamp_ns_t left, interval_t right) {
+	return Interval::Add(left, right);
+}
+
+template <>
+timestamp_t AddOperator::Operation(interval_t left, timestamp_sec_t right) {
+	return AddOperator::Operation<timestamp_sec_t, interval_t, timestamp_t>(right, left);
+}
+
+template <>
+timestamp_t AddOperator::Operation(interval_t left, timestamp_ms_t right) {
+	return AddOperator::Operation<timestamp_ms_t, interval_t, timestamp_t>(right, left);
+}
+
+template <>
 timestamp_t AddOperator::Operation(interval_t left, timestamp_t right) {
 	return AddOperator::Operation<timestamp_t, interval_t, timestamp_t>(right, left);
+}
+
+template <>
+timestamp_ns_t AddOperator::Operation(interval_t left, timestamp_ns_t right) {
+	return AddOperator::Operation<timestamp_ns_t, interval_t, timestamp_ns_t>(right, left);
 }
 
 template <>
@@ -117,6 +148,33 @@ timestamp_t AddOperator::Operation(timestamp_t left, double right) {
 	timestamp_t result;
 	if (!TryAddOperator::Operation(left.value, int64_t(right), result.value)) {
 		throw OutOfRangeException("Overflow in timestamp addition");
+	}
+	return result;
+}
+
+template <>
+timestamp_t AddOperator::Operation(timestamp_sec_t left, double right) {
+	timestamp_t result;
+	if (!TryAddOperator::Operation(left.value, int64_t(right), result.value)) {
+		throw OutOfRangeException("Overflow in timestamp (s) addition");
+	}
+	return result;
+}
+
+template <>
+timestamp_t AddOperator::Operation(timestamp_ms_t left, double right) {
+	timestamp_t result;
+	if (!TryAddOperator::Operation(left.value, int64_t(right), result.value)) {
+		throw OutOfRangeException("Overflow in timestamp (ms) addition");
+	}
+	return result;
+}
+
+template <>
+timestamp_ns_t AddOperator::Operation(timestamp_ns_t left, double right) {
+	timestamp_ns_t result;
+	if (!TryAddOperator::Operation(left.value, int64_t(right), result.value)) {
+		throw OutOfRangeException("Overflow in timestamp_ns addition");
 	}
 	return result;
 }
@@ -164,6 +222,11 @@ bool TryAddOperator::Operation(uint64_t left, uint64_t right, uint64_t &result) 
 
 template <>
 bool TryAddOperator::Operation(timestamp_t left, interval_t right, timestamp_t &result) {
+	return Interval::TryAdd(left, right, result);
+}
+
+template <>
+bool TryAddOperator::Operation(timestamp_ns_t left, interval_t right, timestamp_ns_t &result) {
 	return Interval::TryAdd(left, right, result);
 }
 

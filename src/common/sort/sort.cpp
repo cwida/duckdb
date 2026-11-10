@@ -11,6 +11,7 @@
 #include "duckdb/common/types/row/tuple_data_collection.hpp"
 #include "duckdb/function/create_sort_key.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
@@ -137,13 +138,32 @@ public:
 	DataChunk payload;
 };
 
+//! Physically reorders a run that was sorted in memory before the sort went external
+class SortedRunMakeExternalTask : public BaseExecutorTask {
+public:
+	SortedRunMakeExternalTask(TaskExecutor &executor, SortedRun &sorted_run_p)
+	    : BaseExecutorTask(executor), sorted_run(sorted_run_p) {
+	}
+
+	void ExecuteTask() override {
+		sorted_run.MakeExternal();
+	}
+
+	string TaskType() const override {
+		return "SortedRunMakeExternalTask";
+	}
+
+private:
+	SortedRun &sorted_run;
+};
+
 class SortGlobalSinkState : public GlobalSinkState {
 public:
 	explicit SortGlobalSinkState(ClientContext &context)
 	    : num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), sorted_tuples(0),
-	      sunk_tuples(0), external(Settings::Get<DebugForceExternalSetting>(context)), any_combined(false),
-	      total_count(0), partition_size(0) {
+	      temporary_memory_state(TemporaryMemoryManager::Get(context.GetContext()).Register(context.GetContext())),
+	      sorted_tuples(0), sunk_tuples(0), external(Settings::Get<DebugForceExternalSetting>(context)), total_count(0),
+	      partition_size(0) {
 	}
 
 public:
@@ -158,9 +178,7 @@ public:
 
 		// If we already got less than we requested last time, have to go external
 		if (temporary_memory_state->GetReservation() < temporary_memory_state->GetRemainingSize()) {
-			if (!any_combined) {
-				external = true;
-			}
+			GoExternal(context);
 			return;
 		}
 
@@ -175,18 +193,38 @@ public:
 		}
 
 		// Send the request
-		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, request);
+		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.GetContext(), request);
 
 		// If we got less than we required, we have to go external
 		if (temporary_memory_state->GetReservation() < required) {
-			if (!any_combined) {
-				external = true;
-			}
+			GoExternal(context);
 		}
 	}
 
+	//! Go external, reordering in parallel the runs that threads that finished early sorted in memory
+	void GoExternal(ClientContext &context) {
+		external = true;
+		if (sorted_runs.empty()) {
+			return;
+		}
+		TaskExecutor executor(context);
+		vector<unique_ptr<BaseExecutorTask>> tasks;
+		tasks.reserve(sorted_runs.size());
+		for (auto &sorted_run : sorted_runs) {
+			tasks.push_back(make_uniq<SortedRunMakeExternalTask>(executor, *sorted_run));
+		}
+		executor.ScheduleTasks(std::move(tasks));
+		executor.WorkOnTasks();
+	}
+
 	void AddSortedRun(SortLocalSinkState &lstate) {
-		const lock_guard<mutex> guard(lock);
+		unique_lock<mutex> guard(lock);
+		if (external && !lstate.sorted_run->external) {
+			// Reorder a run that was sorted in memory before the sort went external, without holding the lock
+			guard.unlock();
+			lstate.sorted_run->MakeExternal();
+			guard.lock();
+		}
 		sorted_runs.push_back(std::move(lstate.sorted_run));
 		sorted_tuples += sorted_runs.back()->Count();
 	}
@@ -207,8 +245,6 @@ public:
 
 	//! Whether this is an external sort
 	atomic<bool> external;
-	//! Whether any thread has called Combine yet
-	bool any_combined;
 
 	//! Total count (for the source phase)
 	idx_t total_count;
@@ -298,11 +334,6 @@ SinkCombineResultType Sort::Combine(ExecutionContext &context, OperatorSinkCombi
 		return SinkCombineResultType::FINISHED;
 	}
 
-	// Set any_combined under lock
-	unique_lock<mutex> guard {gstate.lock};
-	gstate.any_combined = true;
-	guard.unlock();
-
 	// Do the final local sort (lock-free)
 	lstate.sorted_run->Finalize(gstate.external);
 
@@ -351,14 +382,14 @@ SinkFinalizeType Sort::Finalize(ClientContext &context, OperatorSinkFinalizeInpu
 		gstate.total_count += sorted_run->Count();
 		maximum_run_count = MaxValue(maximum_run_count, sorted_run->Count());
 	}
-	if (context.config.verify_parallelism) {
+	if (ClientConfig::GetConfig(context).verify_parallelism) {
 		gstate.partition_size = STANDARD_VECTOR_SIZE;
 	} else {
 		gstate.partition_size = MinValue<idx_t>(gstate.total_count, DEFAULT_ROW_GROUP_SIZE);
 	}
 
 	// Amortize external boundary searches while keeping enough parallel work and estimated memory headroom.
-	if (gstate.external && !is_index_sort && !context.config.verify_parallelism) {
+	if (gstate.external && !is_index_sort && !ClientConfig::GetConfig(context).verify_parallelism) {
 		const auto partition_size = gstate.partition_size * 4;
 		if (gstate.total_count / gstate.num_threads >= partition_size &&
 		    CanUseLargerPartitions(gstate, partition_size)) {

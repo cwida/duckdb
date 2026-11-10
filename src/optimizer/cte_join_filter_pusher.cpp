@@ -2,6 +2,7 @@
 #include "duckdb/optimizer/cte_join_filter_collector.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
+#include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/logical_operator_deep_copy.hpp"
@@ -155,8 +156,8 @@ void CTEJoinFilterPusher::Optimize(LogicalOperator &op) {
 					valid_columns = false;
 					break;
 				}
-				auto &source_distinct = source_stats->columns[source_col].distinct_count;
-				auto &target_distinct = target_stats->columns[target_col].distinct_count;
+				auto &source_distinct = source_stats->columns[source_col].total_domain;
+				auto &target_distinct = target_stats->columns[target_col].total_domain;
 				if (target_distinct.source == DistinctCountSource::CARDINALITY || target_distinct.distinct_count == 0) {
 					continue;
 				}
@@ -209,9 +210,10 @@ void CTEJoinFilterPusher::Optimize(LogicalOperator &op) {
 			    best->comparisons[i]);
 		}
 		auto stats = *target_stats;
-		stats.cardinality = LossyNumericCast<idx_t>(std::ceil(static_cast<double>(stats.cardinality) * best_fraction));
+		auto cardinality = LossyNumericCast<idx_t>(std::ceil(static_cast<double>(stats.cardinality) * best_fraction));
+		RelationStatisticsHelper::ApplyCardinality(stats, cardinality);
 		for (auto &column : stats.columns) {
-			column.distinct_count.distinct_count = MinValue(column.distinct_count.distinct_count, stats.cardinality);
+			column.semi_anti_join_domain_evidence.Invalidate();
 		}
 		restricted_stats.emplace(target, std::move(stats));
 		join->children.push_back(std::move(cte.children[0]));

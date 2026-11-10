@@ -29,6 +29,19 @@ if(TARGET parquet_extension)
   duckdb_link_extensions(static_link_explicit_smoke EXPLICIT parquet)
 endif()
 
+# Used by test/helpers to generate test_paths.cpp, so it needs to be set before
+# adding that directory.
+set(UNITTEST_ROOT_DIRECTORY
+    ""
+    CACHE
+      STRING
+      "The unittest root directory (defaults to the project source directory)")
+if(DEFINED UNITTEST_ROOT_DIRECTORY AND NOT UNITTEST_ROOT_DIRECTORY STREQUAL "")
+  set(DUCKDB_TEST_ROOT_DIRECTORY "${UNITTEST_ROOT_DIRECTORY}")
+else()
+  set(DUCKDB_TEST_ROOT_DIRECTORY "${PROJECT_SOURCE_DIR}")
+endif()
+
 if(${ENABLE_UNITTEST_CPP_TESTS})
   add_subdirectory(api)
   add_subdirectory(appender)
@@ -54,17 +67,6 @@ if(NOT WIN32 AND NOT SUN)
   if(${ENABLE_UNITTEST_CPP_TESTS})
     add_subdirectory(persistence)
   endif()
-endif()
-
-set(UNITTEST_ROOT_DIRECTORY
-    ""
-    CACHE
-      STRING
-      "The unittest root directory (defaults to the project source directory)")
-if(DEFINED UNITTEST_ROOT_DIRECTORY AND NOT UNITTEST_ROOT_DIRECTORY STREQUAL "")
-  add_definitions(-DDUCKDB_ROOT_DIRECTORY="${UNITTEST_ROOT_DIRECTORY}")
-else()
-  add_definitions(-DDUCKDB_ROOT_DIRECTORY="${PROJECT_SOURCE_DIR}")
 endif()
 
 add_executable(unittest unittest.cpp ${UNITTEST_OBJECT_FILES})

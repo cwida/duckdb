@@ -17,6 +17,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 
@@ -80,6 +81,11 @@ ColumnDataCollection::ColumnDataCollection(shared_ptr<ColumnDataAllocator> alloc
 
 ColumnDataCollection::ColumnDataCollection(ClientContext &context, vector<LogicalType> types_p,
                                            ColumnDataAllocatorType type, ColumnDataCollectionLifetime lifetime)
+    : ColumnDataCollection(context.GetContext(), std::move(types_p), type, lifetime) {
+}
+
+ColumnDataCollection::ColumnDataCollection(Context &context, vector<LogicalType> types_p, ColumnDataAllocatorType type,
+                                           ColumnDataCollectionLifetime lifetime)
     : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(context, type, lifetime), std::move(types_p)) {
 }
 
@@ -1428,12 +1434,13 @@ void ColumnDataCollection::Append(ColumnDataAppendState &state, DataChunk &input
 			for (idx_t vector_idx = 0; vector_idx < types.size(); vector_idx++) {
 				ColumnDataMetaData meta_data(copy_functions[vector_idx], segment, state, chunk_data,
 				                             chunk_data.vector_data[vector_idx]);
-				if (TryAppendCompactVector(meta_data, state.vector_data[vector_idx], input.data[vector_idx], offset,
-				                           append_amount)) {
-					continue;
+				const auto allocated_before = segment.total_allocated;
+				if (!TryAppendCompactVector(meta_data, state.vector_data[vector_idx], input.data[vector_idx], offset,
+				                            append_amount)) {
+					copy_functions[vector_idx].function(meta_data, state.vector_data[vector_idx],
+					                                    input.data[vector_idx], offset, append_amount);
 				}
-				copy_functions[vector_idx].function(meta_data, state.vector_data[vector_idx], input.data[vector_idx],
-				                                    offset, append_amount);
+				chunk_data.allocation_sizes[vector_idx] += segment.total_allocated - allocated_before;
 			}
 			chunk_data.count += append_amount;
 		}
@@ -1684,6 +1691,10 @@ idx_t ColumnDataChunkCursor::Count() const {
 
 idx_t ColumnDataChunkCursor::AllocationSize() const {
 	return collection.GetSegments()[position.segment_index]->GetChunkAllocationSize(position.chunk_index);
+}
+
+idx_t ColumnDataChunkCursor::AllocationSize(const vector<column_t> &column_ids) const {
+	return collection.GetSegments()[position.segment_index]->GetChunkAllocationSize(position.chunk_index, column_ids);
 }
 
 ColumnDataRowCollection ColumnDataCollection::GetRows() const {

@@ -190,7 +190,7 @@ SourceResultType PhysicalLimitPercent::GetDataInternal(ExecutionContext &context
 InsertionOrderPreservingMap<string> PhysicalLimitPercent::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	if (limit_val.Type() == LimitNodeType::CONSTANT_PERCENTAGE) {
-		result["Limit"] = to_string(limit_val.GetConstantPercentage()) + "%";
+		result["Limit"] = StringUtil::ToString(limit_val.GetConstantPercentage()) + "%";
 	}
 	if (offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		auto offset = offset_val.GetConstantValue();

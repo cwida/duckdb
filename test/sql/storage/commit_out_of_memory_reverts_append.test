@@ -1,0 +1,176 @@
+# name: test/sql/storage/commit_out_of_memory_reverts_append.test
+# description: A commit that runs out of memory while it appends to the table removes the rows and index entries it appended
+# group: [storage]
+
+require skip_reload
+
+require exact_vector_size 2048
+
+require block_size 262144
+
+require no_alternative_verify
+
+require 64bit
+
+load {TEST_DIR}/commit_out_of_memory_reverts_append.db
+
+# keep the row groups in memory until the explicit checkpoints
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+SET threads = 1
+
+statement ok
+SET temp_directory = ''
+
+statement ok
+CREATE MACRO wide_rows(first_row, last_row, width) AS TABLE
+SELECT i, repeat('x', width) || i AS s,
+       CASE WHEN i % 3 = 0 THEN NULL WHEN i % 3 = 1 THEN [] ELSE [i, NULL, i] END AS l,
+       [i, i + 1]::INTEGER[2] AS a,
+       {'a': i, 'b': repeat('y', width // 10)} AS st
+FROM range(first_row, last_row) r(i)
+
+# the next append to this table starts a new row group
+statement ok
+CREATE TABLE fresh (i INTEGER, s VARCHAR, l INTEGER[], a INTEGER[2], st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO fresh FROM wide_rows(0, 1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok
+CREATE TABLE t (i BIGINT PRIMARY KEY, s VARCHAR)
+
+statement ok
+INSERT INTO t VALUES (0, 'x')
+
+statement ok
+CREATE TABLE wide (i INTEGER, s VARCHAR, l INTEGER[], a INTEGER[2], st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO wide FROM wide_rows(0, 1, 1)
+
+# the append fails after it added rows to the row group it started in, to new row groups and to the index
+statement ok
+SET memory_limit = '40MB'
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT i, repeat('x', 20) || i FROM range(1, 1000000) r(i)
+
+statement ok
+DELETE FROM t WHERE i = 1
+
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
+
+# the append fails inside the row group that it started in
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO wide FROM wide_rows(1, 20000, 1000)
+
+statement ok
+DELETE FROM wide WHERE i = 1
+
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
+
+# the append fails inside the new row group that it created
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO fresh FROM wide_rows(1, 20000, 1000)
+
+statement ok
+DELETE FROM fresh WHERE i = 1
+
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit.*(could not allocate|failed to pin) block.*
+
+statement ok
+RESET memory_limit
+
+query III
+SELECT count(*), sum(i), max(s) FROM t
+----
+1	0	x
+
+query IIIIIII
+SELECT count(*), sum(i), max(s), count(l), sum(list_sum(l)), sum(a[2]), max(st.b) FROM wide
+----
+1	0	x0	0	NULL	1	(empty)
+
+query IIIIIII
+SELECT count(*), sum(i), max(s), count(l), sum(list_sum(l)), sum(a[2]), max(st.b) FROM fresh
+----
+1	0	x0	0	NULL	1	(empty)
+
+# the keys of the failed append are not in the index
+statement ok
+INSERT INTO t SELECT i, 'y' || i FROM range(1, 5000) r(i)
+
+statement ok
+INSERT INTO t VALUES (999999, 'z')
+
+statement error
+INSERT INTO t VALUES (4999, 'z')
+----
+<REGEX>:Constraint Error.*Duplicate key.*
+
+statement ok
+INSERT INTO wide FROM wide_rows(100000, 105000, 1)
+
+statement ok
+INSERT INTO fresh FROM wide_rows(100000, 105000, 1)
+
+loop k 0 2
+
+query IIII
+SELECT count(*), sum(i), min(s), max(s) FROM t
+----
+5001	13497499	x	z
+
+query II
+SELECT i, s FROM t WHERE i IN (4999, 999999) ORDER BY i
+----
+4999	y4999
+999999	z
+
+query IIIIIII
+SELECT count(*), sum(i), sum(length(s)), count(l), sum(len(l)), sum(list_sum(l)), sum(a[1] + a[2] + st.a) FROM wide
+----
+5001	512497500	35002	3334	5001	341735000	1537497501
+
+query IIIIIII
+SELECT count(*), sum(i), sum(length(s)), count(l), sum(len(l)), sum(list_sum(l)), sum(a[1] + a[2] + st.a) FROM fresh
+----
+5001	512497500	35002	3334	5001	341735000	1537497501
+
+query III
+SELECT i, l, a FROM wide WHERE i IN (100000, 100001, 100002) ORDER BY i
+----
+100000	[]	[100000, 100001]
+100001	[100001, NULL, 100001]	[100001, 100002]
+100002	NULL	[100002, 100003]
+
+statement ok
+CHECKPOINT
+
+restart
+
+endloop

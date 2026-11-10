@@ -86,6 +86,7 @@ public:
 	void UnregisterSubSystem(const string &name) override;
 	unique_ptr<FileSystem> ExtractSubSystem(const string &name) override;
 	void SetDisabledFileSystems(const vector<string> &names) override;
+	vector<string> GetDisabledFileSystems() override;
 	bool SubSystemIsDisabled(const string &name) override;
 	bool IsDisabledForPath(const string &path) override;
 	vector<string> ListSubSystems() override;

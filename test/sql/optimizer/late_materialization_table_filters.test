@@ -244,3 +244,33 @@ FROM lm_test WHERE rowid = 5 ORDER BY ts LIMIT 1;
 
 statement ok
 DROP TABLE lm_test;
+
+# filters on virtual columns (filename, file_row_number) are copied to the LHS scan as well
+require parquet
+
+statement ok
+COPY (SELECT i, i + 1 AS j, i + 2 AS k, -i AS l FROM range(100) t(i)) TO '{TEST_DIR}/test_lm.parquet';
+
+# the reproducer from #27743
+query IIII
+SELECT * FROM read_parquet('{TEST_DIR}/test_lm.parquet') WHERE filename LIKE '%test_lm%' ORDER BY j DESC LIMIT 5;
+----
+99	100	101	-99
+98	99	100	-98
+97	98	99	-97
+96	97	98	-96
+95	96	97	-95
+
+# filters on a pushed-down struct field use the field type, not the struct type
+statement ok
+COPY (SELECT i id, {'xmin': CASE WHEN i < 10000 THEN 100.0 ELSE 1.0 END, 'ymin': 1.0, 'xmax': 1.0, 'ymax': 1.0}::STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE) bbox FROM range(20000) t(i)) TO '{TEST_DIR}/lm_struct.parquet' (ROW_GROUP_SIZE 2048);
+
+query I
+SELECT id FROM '{TEST_DIR}/lm_struct.parquet' WHERE bbox.xmin <= 12.8 ORDER BY id LIMIT 1;
+----
+10000
+
+query I
+SELECT id FROM '{TEST_DIR}/lm_struct.parquet' WHERE bbox.xmin <= 12.8 ORDER BY id LIMIT 1 OFFSET 10;
+----
+10010

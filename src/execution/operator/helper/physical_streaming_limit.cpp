@@ -78,7 +78,7 @@ InsertionOrderPreservingMap<string> PhysicalStreamingLimit::ParamsToString() con
 	if (limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		result["Limit"] = to_string(limit_val.GetConstantValue());
 	} else if (limit_val.Type() == LimitNodeType::CONSTANT_PERCENTAGE) {
-		result["Limit"] = to_string(limit_val.GetConstantPercentage()) + "%";
+		result["Limit"] = StringUtil::ToString(limit_val.GetConstantPercentage()) + "%";
 	}
 	if (offset_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		auto offset = offset_val.GetConstantValue();

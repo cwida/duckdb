@@ -1,0 +1,575 @@
+# name: test/sql/subquery/lateral/lateral_empty_grouping_sets.test
+# description: Correlated subqueries with repeated and mixed empty grouping sets
+# group: [lateral]
+
+# repeated empty grouping sets: one row per empty set per outer row, also for keys without inner matches
+query II
+SELECT o.k, a.c
+FROM (VALUES (7), (8)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+7	0
+7	0
+8	0
+8	0
+
+# outer key present in the inner input
+query II
+SELECT o.k, a.c
+FROM (VALUES (1)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+1	1
+1	1
+
+# mix of present and missing keys
+query II
+SELECT o.k, a.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1), (1), (2)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), (), ())
+) AS a
+ORDER BY ALL;
+----
+1	2
+1	2
+1	2
+7	0
+7	0
+7	0
+
+# single empty grouping set stays a single row per outer row
+query II
+SELECT o.k, a.c
+FROM (VALUES (7), (8)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS (())
+) AS a
+ORDER BY ALL;
+----
+7	0
+8	0
+
+# mixed empty and non-empty sets: empty sets always emit a row, non-empty sets only for matched keys
+query III
+SELECT o.k, a.c, a.g
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, g
+    FROM (VALUES (1, 10), (1, 20)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), (g), ())
+) AS a
+ORDER BY ALL;
+----
+1	1	10
+1	1	20
+1	2	NULL
+1	2	NULL
+7	0	NULL
+7	0	NULL
+
+# duplicate non-empty sets: no recovered rows for missing keys, one row per set for matched groups
+query III
+SELECT o.k, a.c, a.g
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, g
+    FROM (VALUES (1, 10), (1, 20)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), (g))
+) AS a
+ORDER BY ALL;
+----
+1	1	10
+1	1	10
+1	1	20
+1	1	20
+
+# duplicate outer keys each get the full per-key result
+query II
+SELECT o.k, a.c
+FROM (VALUES (7), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+7	0
+7	0
+7	0
+7	0
+
+# NULL outer key never matches the inner predicate
+query II
+SELECT o.k, a.c
+FROM (VALUES (NULL), (1)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+1	1
+1	1
+NULL	0
+NULL	0
+
+# aggregates with different empty-input results: count is 0, sum and first are NULL
+query IIII
+SELECT o.k, a.c, a.s, a.f
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, sum(v) AS s, first(v) AS f
+    FROM (VALUES (1, 42)) AS i(k, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+1	1	42	42
+1	1	42	42
+7	0	NULL	NULL
+7	0	NULL	NULL
+
+# GROUPING() masks on recovered rows reflect the original empty grouping set
+query IIII
+SELECT o.k, a.c, a.gm, a.g
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, GROUPING(g) AS gm, g
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), ())
+) AS a
+ORDER BY ALL;
+----
+1	1	0	10
+1	1	1	NULL
+7	0	1	NULL
+
+# GROUPING() over multiple columns on recovered rows
+query IIII
+SELECT o.k, a.c, a.gm, a.g
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, GROUPING(g, h) AS gm, g
+    FROM (VALUES (1, 10, 100)) AS i(k, g, h)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g, h), (), ())
+) AS a
+ORDER BY ALL;
+----
+1	1	0	10
+1	1	3	NULL
+1	1	3	NULL
+7	0	3	NULL
+7	0	3	NULL
+
+# CUBE expands to an empty set
+query III
+SELECT o.k, a.c, a.g
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, g
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY CUBE (g)
+) AS a
+ORDER BY ALL;
+----
+1	1	10
+1	1	NULL
+7	0	NULL
+
+# ROLLUP over two columns expands to one empty set
+query IIII
+SELECT o.k, a.c, a.g, a.h
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, g, h
+    FROM (VALUES (1, 10, 100)) AS i(k, g, h)
+    WHERE i.k = o.k
+    GROUP BY ROLLUP (g, h)
+) AS a
+ORDER BY ALL;
+----
+1	1	10	100
+1	1	10	NULL
+1	1	NULL	NULL
+7	0	NULL	NULL
+
+# HAVING filters recovered rows through the rewritten aggregate values
+query II
+SELECT o.k, a.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+    HAVING count(*) > 0
+) AS a
+ORDER BY ALL;
+----
+1	1
+1	1
+
+# HAVING that keeps only recovered rows
+query II
+SELECT o.k, a.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+    HAVING count(*) = 0
+) AS a
+ORDER BY ALL;
+----
+7	0
+7	0
+
+# NULL-propagating aggregates only: missing keys still get one row per empty set
+query II
+SELECT o.k, a.s
+FROM (VALUES (7)) AS o(k) LEFT JOIN LATERAL (
+    SELECT sum(v) AS s
+    FROM (VALUES (1, 42)) AS i(k, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a ON true
+ORDER BY ALL;
+----
+7	NULL
+7	NULL
+
+query II
+SELECT o.k, a.s
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT sum(v) AS s
+    FROM (VALUES (1, 42)) AS i(k, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+1	42
+1	42
+7	NULL
+7	NULL
+
+# scalar subquery with a NULL-propagating aggregate: repeated empty sets break the cardinality rule
+statement error
+SELECT o.k, (
+    SELECT sum(v)
+    FROM (VALUES (1, 42)) AS i(k, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS s
+FROM (VALUES (7)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# the cardinality error must also fire when the outer key is present in the inner input
+statement error
+SELECT o.k, (
+    SELECT sum(v)
+    FROM (VALUES (1, 42)) AS i(k, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS s
+FROM (VALUES (1)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# duplicate non-empty sets in a scalar subquery must raise the cardinality error for present keys
+statement error
+SELECT o.k, (
+    SELECT sum(i.v)
+    FROM (VALUES (1, 10, 42)) AS i(k, g, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((i.g), (i.g))
+) AS s
+FROM (VALUES (1)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# scalar GROUPING() with a single empty set: the recovered row is observable, not NULL
+query II
+SELECT o.k, (
+    SELECT GROUPING(g)
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), ())
+) AS gm
+FROM (VALUES (7)) AS o(k)
+ORDER BY ALL;
+----
+7	1
+
+# a present key emits both grouping set rows and must raise the cardinality error
+statement error
+SELECT o.k, (
+    SELECT GROUPING(g)
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), ())
+) AS gm
+FROM (VALUES (1)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# WHERE-clause consumption of the recovered GROUPING() value
+query I
+SELECT o.k
+FROM (VALUES (7), (8)) AS o(k)
+WHERE (
+    SELECT GROUPING(g)
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), ())
+) = 1
+ORDER BY ALL;
+----
+7
+8
+
+# GROUPING() in HAVING keeps only the empty-set rows, including recovered ones
+query II
+SELECT o.k, a.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), (), ())
+    HAVING GROUPING(g) = 1
+) AS a
+ORDER BY ALL;
+----
+1	1
+1	1
+7	0
+7	0
+
+# ROLLUP nested inside GROUPING SETS adds another empty set
+query II
+SELECT o.k, a.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS (ROLLUP (g), ())
+) AS a
+ORDER BY ALL;
+----
+1	1
+1	1
+1	1
+7	0
+7	0
+
+# EXISTS over repeated empty grouping sets is true for every outer row
+query II
+SELECT o.k, EXISTS (
+    SELECT count(*)
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS e
+FROM (VALUES (1), (7)) AS o(k)
+ORDER BY ALL;
+----
+1	true
+7	true
+
+# a scalar subquery over repeated empty grouping sets produces more than one row per outer row
+statement error
+SELECT o.k, (
+    SELECT count(*)
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS c
+FROM (VALUES (1), (7)) AS o(k)
+ORDER BY ALL;
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# a scalar subquery over a single empty grouping set is still allowed
+query II
+SELECT o.k, (
+    SELECT count(*)
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS (())
+) AS c
+FROM (VALUES (1), (7)) AS o(k)
+ORDER BY ALL;
+----
+1	1
+7	0
+
+# plain correlated GROUP BY is unaffected
+query III
+SELECT o.k, a.c, a.g
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, g
+    FROM (VALUES (1, 10), (1, 10), (1, 20)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY g
+) AS a
+ORDER BY ALL;
+----
+1	1	20
+1	2	10
+
+# plain correlated ungrouped aggregate is unaffected
+query II
+SELECT o.k, a.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+) AS a
+ORDER BY ALL;
+----
+1	1
+7	0
+
+# LIST correlation keys disable duplicate elimination and take the row-number delim path
+query II
+SELECT o.k, a.c
+FROM (VALUES ([7]), ([8]), ([1])) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES ([1])) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+[1]	1
+[1]	1
+[7]	0
+[7]	0
+[8]	0
+[8]	0
+
+query III
+SELECT o.k, a.c, a.gm
+FROM (VALUES ([1]), ([7])) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, GROUPING(g) AS gm
+    FROM (VALUES ([1], 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), (), ())
+) AS a
+ORDER BY ALL;
+----
+[1]	1	0
+[1]	1	1
+[1]	1	1
+[7]	0	1
+[7]	0	1
+
+# the plain delim join path must preserve the same multiplicity and masks
+statement ok
+SET delim_join_as_cte = false
+
+query II
+SELECT o.k, a.c
+FROM (VALUES (7), (8)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c
+    FROM (VALUES (1)) AS i(k)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS a
+ORDER BY ALL;
+----
+7	0
+7	0
+8	0
+8	0
+
+query III
+SELECT o.k, a.c, a.gm
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT count(*) AS c, GROUPING(g) AS gm
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), (), ())
+) AS a
+ORDER BY ALL;
+----
+1	1	0
+1	1	1
+1	1	1
+7	0	1
+7	0	1
+
+# the scalar cardinality error must also survive the plain delim join rewrites
+statement error
+SELECT o.k, (
+    SELECT sum(v)
+    FROM (VALUES (1, 42)) AS i(k, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((), ())
+) AS s
+FROM (VALUES (1)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+statement error
+SELECT o.k, (
+    SELECT sum(i.v)
+    FROM (VALUES (1, 10, 42)) AS i(k, g, v)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((i.g), (i.g))
+) AS s
+FROM (VALUES (1)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+query II
+SELECT o.k, (
+    SELECT GROUPING(g)
+    FROM (VALUES (1, 10)) AS i(k, g)
+    WHERE i.k = o.k
+    GROUP BY GROUPING SETS ((g), ())
+) AS gm
+FROM (VALUES (7)) AS o(k)
+ORDER BY ALL;
+----
+7	1

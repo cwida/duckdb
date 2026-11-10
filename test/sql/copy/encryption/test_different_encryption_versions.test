@@ -3,6 +3,10 @@
 
 require skip_reload
 
+# the storage_compatibility_version default resolves to latest under alternative verify,
+# while this test pins the ordinary default's storage version rendering
+require no_alternative_verify
+
 require tpch
 
 # We need httpfs to do encrypted writes

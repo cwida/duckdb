@@ -1,0 +1,20 @@
+# name: test/sql/copy/parquet/parquet_delta_byte_array_length_overflow.test
+# description: DELTA_BYTE_ARRAY pages whose prefix + suffix length overflows uint32 are rejected
+# group: [parquet]
+
+# the fixture has one BYTE_ARRAY column with prefix lengths [0, 100] and suffix
+# lengths [100, -100]; the second suffix read as uint32 is 4294967196, so
+# prefix + suffix wraps to 0 and a naive decoder undersizes the output buffer
+
+require parquet
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/broken/delta_byte_array_length_overflow.parquet');
+----
+DELTA_BYTE_ARRAY - value length is out of range
+
+# the database is still usable afterwards
+query I
+SELECT 42;
+----
+42

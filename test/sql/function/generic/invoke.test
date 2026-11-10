@@ -37,7 +37,7 @@ SELECT invoke(lambda x: error('expected'), 1)
 ----
 expected
 
-# CONSISTENT_WITHIN_QUERY lambda bodies must remain inconsistent for persistent expressions.
+# CONSISTENT_WITHIN_QUERY lambda bodies cannot be part of persistent expressions such as index keys.
 statement ok
 CREATE TABLE invoke_consistency_tbl(i INTEGER)
 

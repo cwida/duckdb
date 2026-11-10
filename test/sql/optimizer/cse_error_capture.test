@@ -1,0 +1,43 @@
+# name: test/sql/optimizer/cse_error_capture.test
+# description: Common subexpression extraction must not hoist expressions out of TRY or HAS_ERROR
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(x INTEGER);
+
+statement ok
+INSERT INTO t VALUES (0), (2);
+
+# the shared subexpression 1 // x only occurs below TRY and must stay there
+query II
+SELECT try(1 // x + 1) AS a, try(1 // x + 2) AS b FROM t ORDER BY x
+----
+NULL	NULL
+1	2
+
+# TRY and HAS_ERROR over the same subexpression
+query II
+SELECT try(1 // x) AS a, has_error(1 // x) AS b FROM t ORDER BY x
+----
+NULL	true
+0	false
+
+# the same pair as aggregate inputs, extracted below an aggregate
+query II
+SELECT min(try(1 // x)) AS a, bool_or(has_error(1 // x)) AS b FROM t
+----
+0	true
+
+# identical TRY expressions are still extracted as a whole, with the capture intact
+query II
+SELECT try(1 // x + 1) AS a, try(1 // x + 1) AS b FROM t ORDER BY x
+----
+NULL	NULL
+1	1
+
+# protection: extraction of error-free duplicates still happens and results are unchanged
+query II
+SELECT (x + 1) * 2 AS a, (x + 1) * 3 AS b FROM t ORDER BY x
+----
+2	3
+6	9

@@ -31,6 +31,8 @@ public:
 	bool skip_comment[256];
 	//! The byte patterns that cover every byte the skip tables stop at, for the byte skipper
 	vector<SwarBlock::BytePattern> stop_patterns;
+	//! Whether BaseScanner::ProcessBlocks may drive this state machine, see BlockScanEligible
+	bool block_scan = false;
 
 	const CSVState *operator[](const idx_t i) const {
 		return state_machine[i];

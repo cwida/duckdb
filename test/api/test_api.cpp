@@ -189,6 +189,21 @@ TEST_CASE("Test temp_directory defaults", "[api][.]") {
 	}
 }
 
+TEST_CASE("Test max_temp_directory_size set at startup is enforced", "[api]") {
+	auto config = GetTestConfig();
+	config->SetOptionByName("temp_directory", TestCreatePath("max_temp_directory_size_startup"));
+	config->SetOptionByName("max_temp_directory_size", "0KiB");
+	DuckDB db(nullptr, config.get());
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("PRAGMA memory_limit='4MB'"));
+
+	// the table does not fit in memory, so it has to be offloaded, which the limit does not allow
+	auto result = con.Query("CREATE TABLE t AS SELECT random() FROM range(1000000)");
+	REQUIRE(result->HasError());
+	REQUIRE(result->GetErrorType() == ExceptionType::OUT_OF_MEMORY);
+	REQUIRE(StringUtil::Contains(result->GetError(), "failed to offload data block"));
+}
+
 TEST_CASE("Test parallel usage of single client", "[api][.]") {
 	auto db = make_uniq<DuckDB>(nullptr);
 	auto conn = make_uniq<Connection>(*db);
@@ -641,6 +656,41 @@ TEST_CASE("Test parser tokenize", "[api]") {
 	// The end-of-input sentinel is not a token: nothing starts at or past the input length.
 	REQUIRE(tokens.back().start < sql.size());
 	REQUIRE(tokens.size() == expected.size());
+}
+
+TEST_CASE("Test parser tokenize of words the grammar matches literally", "[api]") {
+	// REPOSITORY, PREFIX, PUBLIC and KEYS are in none of the keyword lists, the grammar matches them literally;
+	// highlighting shows them as keywords, while names and quoted identifiers stay identifiers
+	string sql = "CREATE EXTENSION REPOSITORY r WITH PREFIX 'p' USING PUBLIC KEYS [\"prefix\"]";
+	auto tokens = Parser::Tokenize(sql);
+
+	using T = SimplifiedTokenType;
+	vector<pair<T, idx_t>> expected {
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 0},          // CREATE
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 7},          // EXTENSION
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 17},         // REPOSITORY
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 28},      // r
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 30},         // WITH
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 35},         // PREFIX
+	    {T::SIMPLIFIED_TOKEN_STRING_CONSTANT, 42}, // 'p'
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 46},         // USING
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 52},         // PUBLIC
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 59},         // KEYS
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 64},        // [
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 65},      // "prefix"
+	};
+	REQUIRE(tokens.size() >= expected.size());
+	for (idx_t i = 0; i < expected.size(); i++) {
+		REQUIRE(tokens[i].type == expected[i].first);
+		REQUIRE(tokens[i].start == expected[i].second);
+	}
+
+	// the grammar also matches the quotes of quoted identifiers literally: an unfinished one stays an identifier
+	for (auto &unfinished : {"\"", "`", "SELECT \""}) {
+		auto unfinished_tokens = Parser::Tokenize(unfinished);
+		REQUIRE(!unfinished_tokens.empty());
+		REQUIRE(unfinished_tokens.back().type == T::SIMPLIFIED_TOKEN_IDENTIFIER);
+	}
 }
 
 TEST_CASE("Test opening an invalid database file", "[api]") {

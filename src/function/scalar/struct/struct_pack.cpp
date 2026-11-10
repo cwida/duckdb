@@ -50,10 +50,9 @@ static unique_ptr<FunctionData> StructPackBind(BindScalarFunctionInput &input) {
 	auto &args = input.GetArguments();
 
 	if (IS_STRUCT_PACK) {
-		auto &names = *input.GetArgumentNames();
 		child_list_t<LogicalType> fields;
 		for (idx_t i = 0; i < args.size(); i++) {
-			fields.emplace_back(names[i], args[i]->GetReturnType());
+			fields.emplace_back(input.GetArgumentName(i), args[i]->GetReturnType());
 		}
 		bound_function.SetReturnType(LogicalType::STRUCT(std::move(fields)));
 	} else {

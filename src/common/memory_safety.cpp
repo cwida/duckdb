@@ -28,6 +28,10 @@ void ThrowVectorIndexOutOfBounds(idx_t index, idx_t size) {
 	throw InternalException("Attempted to access index %lld within vector of size %lld", index, size);
 }
 
+void ThrowVectorEraseOutOfBounds(idx_t index, idx_t size) {
+	throw InternalException("Can't remove offset %d from vector of size %d", index, size);
+}
+
 void ThrowDequeIndexOutOfBounds(idx_t index, idx_t size) {
 	throw InternalException("Attempted to access index %lld within deque of size %lld", index, size);
 }

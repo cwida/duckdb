@@ -26,17 +26,14 @@
 namespace test_capi_v2 {
 namespace {
 
-duckdb_v2_identifier_t ArrowIdent(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 // Builds a type inside a callback. Returns null after populating the error slot.
 duckdb_v2_logical_type_handle ArrowTypeInCallback(duckdb_v2_context_handle context, DUCKDB_V2_LOGICAL_TYPE_ID id,
                                                   duckdb_v2_error_info_handle *err) {
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_context_get_factory(context, &factory, nullptr);
 	duckdb_v2_logical_type_handle type = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &type, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
 		return nullptr;
 	}
 	return type;
@@ -59,11 +56,12 @@ void ArrowRoundtripDestroy(void *ptr) {
 // Builds an exporter over `types`/`names` and an importer over the schema it reports, so the pair
 // round-trips those columns. Returns null after populating the error slot.
 ArrowRoundtrip *ArrowMakeRoundtrip(duckdb_v2_context_handle context, const duckdb_v2_logical_type_handle *types,
-                                   const duckdb_v2_str *names, idx_t count, idx_t export_batch, idx_t import_batch,
+                                   const std::string_view *names, idx_t count, idx_t export_batch, idx_t import_batch,
                                    duckdb_v2_error_info_handle *err) {
 	duckdb_v2_arrow_exporter_handle exporter = nullptr;
-	if (duckdb_v2_arrow_exporter_create(context, types, names, count, export_batch, &exporter, err) !=
-	    DUCKDB_V2_ERROR_NONE) {
+	StrArray name_array(names, count);
+	if (duckdb_v2_arrow_exporter_create(context, types, name_array.ptrs(), name_array.lengths(), count, export_batch,
+	                                    &exporter, err) != DUCKDB_V2_ERROR_NONE) {
 		return nullptr;
 	}
 	// The importer is resolved from the exporter's own schema, so the two agree by construction.
@@ -138,7 +136,7 @@ void ArrowRtBind(duckdb_v2_function_bind_info_handle info, duckdb_v2_scalar_func
 	if (duckdb_v2_function_bind_get_arg_type(info, 0, &arg_type, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto name = Convert("x");
+	std::string_view name = "x";
 	auto *rt = ArrowMakeRoundtrip(context, &arg_type, &name, 1, 0, 0, err);
 	duckdb_v2_logical_type_destroy(&arg_type);
 	if (!rt) {
@@ -200,14 +198,14 @@ void ArrowRtExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_cont
 void RegisterArrowRoundtrip(EnvFixture &fx) {
 	duckdb_v2_scalar_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name = Convert("arrow_roundtrip");
-	REQUIRE(duckdb_v2_scalar_function_set_name(function, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name = "arrow_roundtrip";
+	REQUIRE(duckdb_v2_scalar_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	auto any = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_ANY);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = ArrowIdent("x");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, any, nullptr,
+	std::string_view name_str = "x";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name_str.data(), name_str.size(), any, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, any, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -265,13 +263,13 @@ void ArrowRangeBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_
 		duckdb_v2_logical_type_destroy(&varchar);
 		return;
 	}
-	auto name_str = ArrowIdent("i");
-	duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
-	auto name_str2 = ArrowIdent("s");
-	duckdb_v2_table_function_bind_add_result_column(result, &name_str2, varchar, err);
+	std::string_view name_str = "i";
+	duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
+	std::string_view name_str2 = "s";
+	duckdb_v2_table_function_bind_add_result_column(result, name_str2.data(), name_str2.size(), varchar, err);
 
 	duckdb_v2_logical_type_handle types[2] = {bigint, varchar};
-	duckdb_v2_str names[2] = {Convert("i"), Convert("s")};
+	std::string_view names[2] = {std::string_view("i"), std::string_view("s")};
 	auto *rt = ArrowMakeRoundtrip(context, types, names, 2, 0, 0, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 	duckdb_v2_logical_type_destroy(&varchar);
@@ -373,14 +371,14 @@ void ArrowRangeExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_
 void RegisterArrowRoundtripRange(EnvFixture &fx) {
 	duckdb_v2_table_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_table_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name = Convert("arrow_roundtrip_range");
-	REQUIRE(duckdb_v2_table_function_set_name(function, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name = "arrow_roundtrip_range";
+	REQUIRE(duckdb_v2_table_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_table_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = ArrowIdent("n");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, bigint, nullptr,
+	std::string_view name_str = "n";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name_str.data(), name_str.size(), bigint, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 
@@ -399,7 +397,7 @@ void RegisterArrowRoundtripRange(EnvFixture &fx) {
 
 // Runs a single-row single-BOOLEAN query. The queries below aggregate with bool_and over a
 // non-empty set, so the row is never NULL.
-bool ArrowQueryBool(duckdb_v2_connection_handle conn, const char *sql) {
+bool ArrowQueryBool(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -444,8 +442,9 @@ void ArrowSplitExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_c
 	}
 	duckdb_v2_logical_type_handle column_type = nullptr;
 	if (arrow_split_dict_size) {
-		auto text_str = Convert("arrow_split_enum");
-		if (duckdb_v2_factory_create_type_from_text(factory, &text_str, &column_type, err) != DUCKDB_V2_ERROR_NONE) {
+		std::string_view text_str = "arrow_split_enum";
+		if (duckdb_v2_factory_create_type_from_text(factory, text_str.data(), text_str.size(), &column_type, err) !=
+		    DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
 	} else {
@@ -454,7 +453,7 @@ void ArrowSplitExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_c
 			return;
 		}
 	}
-	auto column = Convert("v");
+	std::string_view column = "v";
 	auto *rt =
 	    ArrowMakeRoundtrip(context, &column_type, &column, 1, arrow_split_export_batch, arrow_split_import_batch, err);
 	if (!rt) {
@@ -572,16 +571,15 @@ void ArrowSplitExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_c
 }
 
 // Registers a no-argument-meaning probe that runs `exec` once.
-void RegisterArrowProbe(EnvFixture &fx, const char *name, duckdb_v2_scalar_function_exec_callback_fn exec) {
+void RegisterArrowProbe(EnvFixture &fx, std::string_view name, duckdb_v2_scalar_function_exec_callback_fn exec) {
 	duckdb_v2_scalar_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto fname = Convert(name);
-	REQUIRE(duckdb_v2_scalar_function_set_name(function, &fname, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = ArrowIdent("x");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, integer, nullptr,
+	std::string_view name_str = "x";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name_str.data(), name_str.size(), integer, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -592,7 +590,7 @@ void RegisterArrowProbe(EnvFixture &fx, const char *name, duckdb_v2_scalar_funct
 }
 
 // Runs a registered probe once.
-void RunArrowProbe(duckdb_v2_connection_handle conn, const char *sql) {
+void RunArrowProbe(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle r = nullptr;
 	REQUIRE(Query(conn, sql, &r) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(DrainRowCount(r) == 1);
@@ -627,13 +625,14 @@ void ArrowTopLevelValidityExec(duckdb_v2_scalar_function_exec_info_handle info, 
 	}
 	auto bigint = ArrowTypeInCallback(context, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, err);
 	duckdb_v2_logical_type_handle mood = nullptr;
-	auto text_str = Convert("mood");
-	if (!bigint || duckdb_v2_factory_create_type_from_text(factory, &text_str, &mood, err) != DUCKDB_V2_ERROR_NONE) {
+	std::string_view text_str = "mood";
+	if (!bigint || duckdb_v2_factory_create_type_from_text(factory, text_str.data(), text_str.size(), &mood, err) !=
+	                   DUCKDB_V2_ERROR_NONE) {
 		duckdb_v2_logical_type_destroy(&bigint);
 		return;
 	}
 	duckdb_v2_logical_type_handle types[2] = {bigint, mood};
-	duckdb_v2_str names[2] = {Convert("i"), Convert("v")};
+	std::string_view names[2] = {std::string_view("i"), std::string_view("v")};
 	auto *rt = ArrowMakeRoundtrip(context, types, names, 2, 0, 0, err);
 	if (!rt) {
 		duckdb_v2_logical_type_destroy(&bigint);
@@ -822,11 +821,12 @@ void EnumProbeExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_co
 		return;
 	}
 	duckdb_v2_logical_type_handle mood = nullptr;
-	auto text_str = Convert("mood");
-	if (duckdb_v2_factory_create_type_from_text(factory, &text_str, &mood, err) != DUCKDB_V2_ERROR_NONE) {
+	std::string_view text_str = "mood";
+	if (duckdb_v2_factory_create_type_from_text(factory, text_str.data(), text_str.size(), &mood, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto col = Convert("v");
+	std::string_view col = "v";
 	auto *rt = ArrowMakeRoundtrip(context, &mood, &col, 1, 0, 0, err);
 	duckdb_v2_logical_type_destroy(&mood);
 	if (!rt) {
@@ -834,9 +834,11 @@ void EnumProbeExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_co
 	}
 	duckdb_v2_schema_handle resolved = nullptr;
 	if (duckdb_v2_arrow_importer_get_schema(rt->importer, &resolved, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_str field_name = {nullptr, 0};
+		const char *field_name = nullptr;
+		idx_t field_name_length = 0;
 		duckdb_v2_logical_type_handle field_type = nullptr;
-		if (duckdb_v2_schema_get_field(resolved, 0, &field_name, &field_type, err) == DUCKDB_V2_ERROR_NONE) {
+		if (duckdb_v2_schema_get_field(resolved, 0, &field_name, &field_name_length, &field_type, err) ==
+		    DUCKDB_V2_ERROR_NONE) {
 			auto rc2 = DUCKDB_V2_ERROR_NONE;
 			enum_probe_type = RenderText(
 			    [&](char *buf, idx_t cap, idx_t *len) {
@@ -864,13 +866,13 @@ TEST_CASE("V2 arrow: a dictionary column resolves to VARCHAR by default", "[capi
 	enum_probe_type.clear();
 	duckdb_v2_scalar_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto fname = Convert("enum_probe");
-	REQUIRE(duckdb_v2_scalar_function_set_name(function, &fname, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view fname = "enum_probe";
+	REQUIRE(duckdb_v2_scalar_function_set_name(function, fname.data(), fname.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name_str = ArrowIdent("x");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, integer, nullptr,
+	std::string_view name_str = "x";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name_str.data(), name_str.size(), integer, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -1086,8 +1088,8 @@ TEST_CASE("V2 arrow: functions guard null arguments", "[capi_v2][arrow]") {
 	REQUIRE(chunk == nullptr);
 
 	duckdb_v2_arrow_exporter_handle exporter = nullptr;
-	duckdb_v2_str name = Convert("a");
-	REQUIRE(duckdb_v2_arrow_exporter_create(nullptr, nullptr, &name, 0, 0, &exporter, nullptr) ==
+	StrArray name = {"a"};
+	REQUIRE(duckdb_v2_arrow_exporter_create(nullptr, nullptr, name.ptrs(), name.lengths(), 0, 0, &exporter, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(exporter == nullptr);
 	REQUIRE(duckdb_v2_arrow_exporter_get_schema(nullptr, &schema, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -1170,9 +1172,9 @@ struct ArrowBatches {
 	}
 };
 
-duckdb_v2_sql_statement_handle ParseOne(duckdb_v2_connection_handle conn, const char *sql) {
+duckdb_v2_sql_statement_handle ParseOne(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql.data(), sql.size(), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle statement = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &statement, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);
@@ -1181,13 +1183,14 @@ duckdb_v2_sql_statement_handle ParseOne(duckdb_v2_connection_handle conn, const 
 	return statement;
 }
 
-DUCKDB_V2_ERROR QueryArrow(duckdb_v2_connection_handle conn, const char *sql, idx_t batch_size,
+DUCKDB_V2_ERROR QueryArrow(duckdb_v2_connection_handle conn, std::string_view sql, idx_t batch_size,
                            duckdb_v2_arrow_result_handle *out_result, duckdb_v2_error_info_handle *err = nullptr,
-                           const duckdb_v2_identifier_t *names = nullptr,
-                           const duckdb_v2_value_handle *values = nullptr, idx_t value_count = 0) {
+                           const std::string_view *names = nullptr, const duckdb_v2_value_handle *values = nullptr,
+                           idx_t value_count = 0) {
 	auto statement = ParseOne(conn, sql);
-	auto rc =
-	    duckdb_v2_statement_execute_arrow(conn, statement, names, values, value_count, batch_size, out_result, err);
+	StrArray name_array(names, names ? value_count : 0);
+	auto rc = duckdb_v2_statement_execute_arrow(conn, statement, name_array.ptrs(), name_array.lengths(), values,
+	                                            value_count, batch_size, out_result, err);
 	duckdb_v2_sql_statement_destroy(&statement);
 	return rc;
 }
@@ -1324,9 +1327,10 @@ void UnusedStreamRelease(ArrowArrayStream *) {
 }
 
 std::string ErrorText(duckdb_v2_error_info_handle err) {
-	duckdb_v2_str text = {nullptr, 0};
-	REQUIRE(duckdb_v2_error_info_get_text(err, &text) == DUCKDB_V2_ERROR_NONE);
-	return std::string(text.ptr ? text.ptr : "", text.len);
+	const char *text = nullptr;
+	idx_t text_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(err, &text, &text_length) == DUCKDB_V2_ERROR_NONE);
+	return std::string(text ? text : "", text_length);
 }
 
 } // namespace
@@ -1441,7 +1445,7 @@ TEST_CASE("V2 arrow result: parameters bind by position and by name", "[capi_v2]
 	REQUIRE(CountsUpFrom(positional_rows, 10));
 	duckdb_v2_arrow_result_destroy(&positional);
 
-	auto name = ArrowIdent("base");
+	std::string_view name = "base";
 	ArrowResult named;
 	REQUIRE(QueryArrow(fx.conn, "SELECT $base::BIGINT + i FROM range(3) t(i)", 0, &named, nullptr, &name, &value, 1) ==
 	        DUCKDB_V2_ERROR_NONE);
@@ -1464,7 +1468,7 @@ TEST_CASE("V2 arrow result: a prepared statement executes as an Arrow result, re
 	for (int64_t base : {0, 100}) {
 		auto value = MakeInt64Value(fx.factory, base);
 		ArrowResult r;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, &value, 1, 0, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, &value, 1, 0, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_value_destroy(&value);
 		auto statement_type = DUCKDB_V2_STATEMENT_TYPE_INVALID;
@@ -1482,7 +1486,7 @@ TEST_CASE("V2 arrow result: a prepared statement executes as an Arrow result, re
 	duckdb_v2_sql_statement_destroy(&statement);
 	auto value = MakeInt64Value(fx.factory, 17);
 	ArrowResult r;
-	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, &value, 1, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, &value, 1, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&value);
 	idx_t rows_changed = 0;
@@ -1696,7 +1700,7 @@ TEST_CASE("V2 arrow result: arrays and schemas outlive the result and the databa
 		duckdb_v2_instance_handle instance = nullptr;
 		duckdb_v2_connection_handle conn = nullptr;
 		REQUIRE(duckdb_v2_environment_create(&env, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(OpenInstance(env, std::string_view(), &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_connection_create(instance, &conn, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 		ArrowBatches batches;
@@ -1822,7 +1826,7 @@ TEST_CASE("V2 arrow result: an unfinished result survives disconnect", "[capi_v2
 	duckdb_v2_instance_handle instance = nullptr;
 	duckdb_v2_connection_handle conn = nullptr;
 	REQUIRE(duckdb_v2_environment_create(&env, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(OpenInstance(env, std::string_view(), &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_connection_create(instance, &conn, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	ArrowResult r;
@@ -1948,11 +1952,11 @@ TEST_CASE("V2 arrow result: a prepared Arrow result honours its batch size and c
 	duckdb_v2_sql_statement_destroy(&statement);
 	{
 		ArrowResult r;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, 0, 700, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, nullptr, 0, 700, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		ArrowResult busy;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, 0, 700, &busy, nullptr) ==
-		        DUCKDB_V2_ERROR_RESOURCE_IN_USE);
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, nullptr, 0, 700, &busy,
+		                                                   nullptr) == DUCKDB_V2_ERROR_RESOURCE_IN_USE);
 		REQUIRE(busy.handle == nullptr);
 		ArrowBatches batches;
 		FetchAll(r, batches);
@@ -1962,7 +1966,7 @@ TEST_CASE("V2 arrow result: a prepared Arrow result honours its batch size and c
 	}
 	{
 		ArrowResult r;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, 0, 700, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, nullptr, 0, 700, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		OwnedStream stream;
 		REQUIRE(duckdb_v2_arrow_result_to_arrow_c_stream(&r, &stream.stream, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -1998,16 +2002,16 @@ TEST_CASE("V2 arrow result: functions guard null arguments", "[capi_v2][arrow]")
 	EnvFixture fx;
 	auto statement = ParseOne(fx.conn, "SELECT 1");
 	duckdb_v2_arrow_result_handle out = nullptr;
-	REQUIRE(duckdb_v2_statement_execute_arrow(nullptr, statement, nullptr, nullptr, 0, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(nullptr, statement, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, nullptr, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, 1, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, nullptr, 1, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, 0, 0, nullptr, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, nullptr, 0, 0, nullptr, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
-	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(nullptr, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 
@@ -2034,7 +2038,7 @@ TEST_CASE("V2 arrow result: functions guard null arguments", "[capi_v2][arrow]")
 	REQUIRE(stream.release == nullptr);
 
 	ArrowResult r;
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, 0, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, nullptr, 0, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_destroy(&statement);
 	REQUIRE(duckdb_v2_arrow_result_step(r, nullptr, &status, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

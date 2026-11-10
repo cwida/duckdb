@@ -1,0 +1,159 @@
+# name: test/issues/general/test_27102.test
+# description: Issue 27102: fmod returns the exact floored remainder for large quotients
+# group: [general]
+
+query RRRRRR
+SELECT fmod(1e16, 3.0), fmod(-1e16, 3.0), fmod(1e16, -3.0), fmod(-1e16, -3.0), fmod(1e300, 7.0), fmod(-1e-300, 3)
+----
+1.0	2.0	-2.0	-1.0	1.0	3.0
+
+# remainders use the stored DOUBLE values
+query III
+SELECT fmod(6.0, 0.2)::VARCHAR, fmod(-6.0, 0.2)::VARCHAR, fmod(1e308, 1e-308)::VARCHAR
+----
+0.19999999999999968	3.3306690738754696e-16	3.498445546245627e-309
+
+statement ok
+CREATE TABLE vals AS SELECT * FROM (VALUES (1e16::DOUBLE, 3), (1e16, -3), (-1e16, 3), (10, 3), (10, -3), (-10, 3), (-10, -3), (NULL, 3), (10, NULL)) t(x, y)
+
+query R
+SELECT fmod(x, y) FROM vals
+----
+1.0
+-2.0
+2.0
+1.0
+-2.0
+2.0
+-1.0
+NULL
+NULL
+
+# FLOAT arguments are computed and returned as FLOAT, all other numeric arguments as DOUBLE
+query IIIIII
+SELECT typeof(fmod(10::FLOAT, 3::FLOAT)), typeof(fmod(10::FLOAT, 3)), typeof(fmod(10, 3)), typeof(fmod(10.5, 3)), typeof(fmod(10::HUGEINT, 3)), typeof(fmod(10::FLOAT, 3::DOUBLE))
+----
+FLOAT	FLOAT	DOUBLE	DOUBLE	DOUBLE	DOUBLE
+
+query RR
+SELECT fmod(1e16::FLOAT, 3::FLOAT), fmod(-10::FLOAT, 3::FLOAT)
+----
+2.0	2.0
+
+# an exact zero remainder is a positive zero
+query IIII
+SELECT fmod(-6.0, 3)::VARCHAR, fmod(6.0, -3)::VARCHAR, fmod(-6::FLOAT, 3::FLOAT)::VARCHAR, fmod(6::FLOAT, -3::FLOAT)::VARCHAR
+----
+0.0	0.0	0.0	0.0
+
+# each argument is evaluated once
+statement ok
+CREATE SEQUENCE dividends
+
+statement ok
+CREATE SEQUENCE divisors
+
+query RR
+SELECT fmod(nextval('dividends'), 4), fmod(10, nextval('divisors')) FROM range(4)
+----
+1.0	0.0
+2.0	0.0
+3.0	1.0
+0.0	2.0
+
+query II
+SELECT currval('dividends'), currval('divisors')
+----
+4	4
+
+query R
+SELECT fmod(y := 3, x := -10)
+----
+2.0
+
+# infinite divisors keep the dividend, or the divisor when the signs differ
+query RRRR
+SELECT fmod(5, 'inf'::DOUBLE), fmod(-5, 'inf'::DOUBLE), fmod(5, '-inf'::DOUBLE), fmod(-5, '-inf'::DOUBLE)
+----
+5.0	inf	-inf	-5.0
+
+query III
+SELECT isnan(fmod('inf'::DOUBLE, 3)), isnan(fmod('nan'::DOUBLE, 3)), isnan(fmod(3, 'nan'::DOUBLE))
+----
+true	true	true
+
+# with IEEE semantics a zero divisor gives NaN
+query III
+SELECT isnan(fmod(42, 0)), isnan(fmod(42::FLOAT, 0::FLOAT)), isnan(fmod(42, -0.0::DOUBLE))
+----
+true	true	true
+
+statement ok
+CREATE TABLE zero_divisors AS SELECT * FROM (VALUES (5.0::DOUBLE, 0.0::DOUBLE), (5, 2), (NULL, 0)) t(x, y)
+
+statement ok
+CREATE TABLE float_zero_divisors AS SELECT x::FLOAT AS x, y::FLOAT AS y FROM zero_divisors
+
+foreach table zero_divisors float_zero_divisors
+
+query I
+SELECT isnan(fmod(x, y)) FROM {table}
+----
+true
+false
+NULL
+
+endloop
+
+statement ok
+SET ieee_floating_point_ops=false;
+
+statement error
+SELECT fmod(42, 0)
+----
+Division by zero
+
+statement error
+SELECT fmod(42::FLOAT, 0::FLOAT)
+----
+Division by zero
+
+statement error
+SELECT fmod(42, -0.0::DOUBLE)
+----
+Division by zero
+
+foreach table zero_divisors float_zero_divisors
+
+statement error
+SELECT fmod(x, y) FROM {table}
+----
+Division by zero
+
+query R
+SELECT TRY(fmod(x, y)) FROM {table}
+----
+NULL
+1.0
+NULL
+
+endloop
+
+statement ok
+SET error_on_division_by_zero=false;
+
+query RR
+SELECT fmod(42, 0), fmod(42::FLOAT, 0::FLOAT)
+----
+NULL	NULL
+
+foreach table zero_divisors float_zero_divisors
+
+query R
+SELECT fmod(x, y) FROM {table}
+----
+NULL
+1.0
+NULL
+
+endloop

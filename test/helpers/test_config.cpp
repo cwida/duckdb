@@ -166,7 +166,7 @@ void TestConfiguration::UpdateEnvironment() {
 
 	// XXX: UUID used by ducklake to avoid collisions, is there a better way?
 	test_env["TEST_UUID"] = test_uuid;
-	test_env["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
+	test_env["BUILD_DIR"] = TestBuildDirectory();
 	test_env["WORKING_DIR"] = working_dir; // can be overridden per runner
 	// DATA_DIR: an explicit override (--data-dir / DUCKDB_TEST_DATA_DIR / config data_dir) is read fresh
 	// here, so it survives cwd changes -- an absolute/remote value stays put, a relative value is resolved

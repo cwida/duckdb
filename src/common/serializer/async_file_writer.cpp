@@ -2,7 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 #include <cstring>
@@ -14,7 +14,7 @@ const FileOpenFlags AsyncFileWriter::DEFAULT_OPEN_FLAGS =
 
 class CopiedAsyncWriteBuffer : public AsyncWriteBuffer {
 public:
-	CopiedAsyncWriteBuffer(ClientContext &context, idx_t capacity_p)
+	CopiedAsyncWriteBuffer(Context &context, idx_t capacity_p)
 	    : data(BufferAllocator::Get(context).Allocate(capacity_p)), capacity(capacity_p) {
 	}
 
@@ -42,22 +42,14 @@ private:
 	idx_t size = 0;
 };
 
-static ClientContext &RequireClientContext(QueryContext context) {
-	auto client_context = context.GetClientContext();
-	if (!client_context) {
-		throw InvalidInputException("AsyncFileWriter requires a ClientContext");
-	}
-	return *client_context;
-}
-
-AsyncFileWriter::AsyncFileWriter(QueryContext context_p, FileSystem &fs_p, const string &path_p,
+AsyncFileWriter::AsyncFileWriter(Context &context_p, FileSystem &fs_p, const string &path_p,
                                  const FileOpenFlags &open_flags)
-    : context(context_p), client_context(RequireClientContext(context_p)), fs(fs_p), path(path_p) {
+    : context(context_p), fs(fs_p), path(path_p) {
 	handle = fs.OpenFile(path, open_flags | FileLockType::WRITE_LOCK);
 
 	try {
 		ManagedAsyncWriteStreamTarget &target = *this;
-		write_queue = make_uniq<ManagedAsyncWriteStreamQueue>(client_context, target);
+		write_queue = make_uniq<ManagedAsyncWriteStreamQueue>(context, target);
 	} catch (...) {
 		auto error = std::current_exception();
 		try {
@@ -146,7 +138,7 @@ void AsyncFileWriter::WriteDataInternal(const_data_ptr_t buffer, idx_t write_siz
 	// Caller-owned memory cannot outlive async scheduling, so even large const inputs are copied before registration.
 	if (write_size >= AsyncWriteConfig::COPIED_BUFFER_CAPACITY) {
 		SealCopiedBuffer(ScheduleMode::DEFER);
-		auto owned_buffer = make_uniq<CopiedAsyncWriteBuffer>(client_context, write_size);
+		auto owned_buffer = make_uniq<CopiedAsyncWriteBuffer>(context, write_size);
 		owned_buffer->Append(buffer, write_size);
 		RegisterWrite(std::move(owned_buffer));
 		return;
@@ -158,7 +150,7 @@ void AsyncFileWriter::WriteDataInternal(const_data_ptr_t buffer, idx_t write_siz
 		idx_t sealed_buffer_offset = 0;
 		if (!copied_buffer) {
 			copied_buffer_offset = total_written;
-			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(client_context, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
+			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(context, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
 		}
 		auto append_size = MinValue(write_size - offset, copied_buffer->Remaining());
 		copied_buffer->Append(buffer + offset, append_size);
@@ -258,7 +250,7 @@ void AsyncFileWriter::WriteDataSynchronously(data_ptr_t buffer, idx_t write_size
 		idx_t sealed_buffer_offset = 0;
 		if (!copied_buffer) {
 			copied_buffer_offset = total_written;
-			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(client_context, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
+			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(context, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
 		}
 		auto append_size = MinValue(write_size - input_offset, copied_buffer->Remaining());
 		copied_buffer->Append(buffer + input_offset, append_size);

@@ -32,6 +32,7 @@ class PEGTransformerFactory;
 class ParseResultAllocator;
 class Matcher;
 class MatcherAllocator;
+struct ListMatchChain;
 class MatchProcess;
 
 enum class SuggestionState : uint8_t {
@@ -175,6 +176,8 @@ struct MatchContext {
 	//! Ignore rule-level suggestion suppression, so the suggestions a rule adds depend only on its
 	//! position and the packrat cache stays valid while collecting them
 	bool memoizable_suggestions = false;
+	//! With memoizable_suggestions: walk labelled rules instead of summarising them by their label alone
+	bool expand_labels = false;
 	//! With memoizable_suggestions: suggestion walks already done, keyed by matcher and active label
 	std::map<std::pair<const Matcher *, const string *>, SuggestionType> walked_suggestions;
 };
@@ -441,11 +444,17 @@ public:
 
 class MatcherAllocator {
 public:
+	DUCKDB_API MatcherAllocator();
+	DUCKDB_API MatcherAllocator(MatcherAllocator &&) noexcept;
+	DUCKDB_API MatcherAllocator &operator=(MatcherAllocator &&) noexcept;
+	DUCKDB_API ~MatcherAllocator();
+
 	Matcher &Allocate(unique_ptr<Matcher> matcher);
 	void InitializeListChains();
 
 private:
 	vector<unique_ptr<Matcher>> matchers;
+	vector<unique_ptr<ListMatchChain>> list_chains;
 };
 
 class ParseResultAllocator {
@@ -463,6 +472,14 @@ public:
 			pending_destructors.push_back(std::move(owned));
 		}
 		return optional_ptr<ParseResult>(result);
+	}
+
+	//! Uninitialized child storage owned by the result arena.
+	unsafe_array_ptr<reference<ParseResult>> AllocateChildren(idx_t capacity) {
+		arena.AlignNext();
+		return unsafe_array_ptr<reference<ParseResult>>(
+		    reinterpret_cast<reference<ParseResult> *>(arena.Allocate(capacity * sizeof(reference<ParseResult>))),
+		    capacity);
 	}
 
 	//! Copy a collected set of children into the arena, where it lives as long as the results it belongs to

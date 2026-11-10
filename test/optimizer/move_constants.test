@@ -315,3 +315,20 @@ query I
 SELECT count(*) FROM decimals WHERE -x < -5.25
 ----
 1
+
+statement ok
+CREATE TABLE f(d DOUBLE)
+
+statement ok
+INSERT INTO f VALUES (1.5), (-2.5), ('nan'), ('inf')
+
+query I
+SELECT d FROM f WHERE -d > 'nan'::DOUBLE ORDER BY d;
+----
+
+query I
+SELECT d FROM f WHERE -d < 'nan'::DOUBLE ORDER BY d;
+----
+-2.5
+1.5
+inf

@@ -1,0 +1,53 @@
+# name: test/sql/window/test_window_constant_aggregate.test_slow
+# description: Test "constant" aggregation (single result for each partition) at scale
+# group: [window]
+
+statement ok 
+SET threads = 20; 
+
+statement ok 
+SET memory_limit = '4GB';
+
+statement ok 
+CREATE TABLE t AS
+	SELECT i AS id, (hash(i) % 1000000)::FLOAT / 10 AS x, (hash(i * 3) % 100000)::DOUBLE AS y
+	FROM range(13000000) r(i);
+
+statement ok 
+CREATE TABLE w AS
+    SELECT id, last_value(y) OVER win AS last_y, sum(x) OVER win AS sum_x
+    FROM (SELECT t.*, t.id AS grp FROM t)
+    WINDOW win AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING);
+
+query I
+SELECT 
+	count(*) FILTER (w.sum_x IS NULL OR abs(w.sum_x - t.x) > 1e-3) AS wrong_sum,
+FROM w JOIN t USING (id);
+----
+0
+
+# More than 2^16 partitions in a single hash group, finalized in several batches
+statement ok
+DROP TABLE w;
+
+statement ok
+DROP TABLE t;
+
+statement ok
+SET threads = 16;
+
+statement ok
+SET memory_limit = '500MB';
+
+statement ok
+CREATE TABLE t2 AS SELECT i AS id, i AS x, (i * 7) % 13 AS y FROM range(1200000) r(i);
+
+query II
+SELECT count(*) FILTER (l IS NULL), count(*) FILTER (l[1] IS DISTINCT FROM x)
+FROM (
+	SELECT x, list(x ORDER BY y) OVER win AS l, last_value(y) OVER win AS last_y
+	FROM (SELECT t2.*, t2.id AS grp FROM t2)
+	WINDOW win AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+);
+----
+0	0

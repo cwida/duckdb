@@ -109,6 +109,7 @@
       "reason": "Relies on exact hash function output.",
       "paths": [
         "test/sql/function/generic/hash_func.test",
+        "test/sql/function/generic/hash_comparison_keys.test",
         "test/sql/copy/file_size_bytes.test",
         "test/sql/copy/parquet/parquet_prefetch_projection.test",
         "test/sql/copy/parquet/parquet_prefetch_shared_column_chunks.test",

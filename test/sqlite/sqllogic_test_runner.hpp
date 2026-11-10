@@ -82,6 +82,9 @@ public:
 	bool original_sqlite_test = false;
 	bool output_sql = false;
 	bool skip_reload = false;
+	//! Per-query timeout in seconds (0 = disabled). On expiry the connection is interrupted, so a query that
+	//! deadlocks idle fails fast instead of hanging until an external timeout kills the process.
+	double query_timeout = 0;
 	unordered_map<string, string> environment_variables;
 	string local_extension_repo;
 	TestConfiguration::ExtensionAutoLoadingMode autoloading_mode;

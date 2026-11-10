@@ -1,0 +1,142 @@
+# name: test/sql/optimizer/test_common_subplan_filtered_join.test
+# description: Share common join inputs below differently filtered consumers
+# group: [optimizer]
+
+statement ok
+CREATE TABLE shared_fact(k INTEGER, j INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO shared_fact VALUES
+    (1, 10, 5), (1, 10, 7), (1, 20, NULL),
+    (2, 10, 11), (2, 20, 13), (NULL, 10, 17), (3, 30, 19);
+
+statement ok
+CREATE TABLE shared_dim(k INTEGER, bucket INTEGER);
+
+statement ok
+INSERT INTO shared_dim VALUES (1, 0), (1, 1), (2, 1), (NULL, 0), (3, NULL);
+
+statement ok
+CREATE TABLE shared_store(j INTEGER, keep BOOLEAN);
+
+statement ok
+INSERT INTO shared_store VALUES (10, true), (20, true), (30, false);
+
+# Preserve join multiplicity, NULL payloads, and independent scalar aggregates.
+query IIII
+SELECT *
+FROM (SELECT count(*), sum(v)
+      FROM shared_fact f, shared_dim d, shared_store s
+      WHERE f.k = d.k AND d.bucket = 0 AND f.j = s.j AND s.keep) a,
+     (SELECT count(*), sum(v)
+      FROM shared_fact f, shared_dim d, shared_store s
+      WHERE f.k = d.k AND d.bucket = 1 AND f.j = s.j AND s.keep) b;
+----
+3	12	5	36
+
+# Aliases and explicit INNER JOIN syntax expose the same common input.
+query II
+SELECT *
+FROM (SELECT count(*)
+      FROM shared_fact f JOIN shared_dim d ON f.k = d.k
+      JOIN shared_store s ON f.j = s.j
+      WHERE s.keep AND d.bucket = 0) a,
+     (SELECT count(*)
+      FROM shared_fact x JOIN shared_dim y ON x.k = y.k
+      JOIN shared_store z ON x.j = z.j
+      WHERE z.keep AND y.bucket = 1) b;
+----
+3	5
+
+# Consumers may group, overlap, and use different aggregate arguments.
+query III rowsort
+SELECT d.bucket, count(v), sum(v)
+FROM shared_fact f, shared_dim d, shared_store s
+WHERE f.k = d.k AND f.j = s.j AND s.keep AND d.bucket <= 1
+GROUP BY d.bucket
+UNION ALL
+SELECT d.bucket, count(*), sum(f.k)
+FROM shared_fact f, shared_dim d, shared_store s
+WHERE f.k = d.k AND f.j = s.j AND s.keep AND d.bucket = 1
+GROUP BY d.bucket;
+----
+0	2	12
+1	4	36
+1	5	7
+
+# An empty consumer still produces its scalar aggregate row.
+query II
+SELECT *
+FROM (SELECT count(*)
+      FROM shared_fact f, shared_dim d
+      WHERE f.k = d.k AND d.bucket = 0) a,
+     (SELECT count(*)
+      FROM shared_fact f, shared_dim d
+      WHERE f.k = d.k AND d.bucket = 9) b;
+----
+3	0
+
+# Different join predicates must retain their own matching rows.
+query II
+SELECT *
+FROM (SELECT count(*)
+      FROM shared_fact f, shared_dim d
+      WHERE f.k = d.k AND d.bucket = 0) a,
+     (SELECT count(*)
+      FROM shared_fact f, shared_dim d
+      WHERE f.j = d.k AND d.bucket = 1) b;
+----
+3	0
+
+statement ok
+PRAGMA explain_output='optimized_only';
+
+# Common predicates interleaved with bucket predicates must still become joins.
+query II
+EXPLAIN (FORMAT JSON) SELECT *
+FROM (SELECT count(*)
+      FROM shared_fact f, shared_dim d, shared_store s
+      WHERE f.k = d.k AND d.bucket = 0 AND f.j = s.j AND s.keep) a,
+     (SELECT count(*)
+      FROM shared_fact f, shared_dim d, shared_store s
+      WHERE f.k = d.k AND d.bucket = 1 AND f.j = s.j AND s.keep) b;
+----
+logical_opt	<REGEX>:.*"CTE".*COMPARISON_JOIN.*COMPARISON_JOIN.*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+statement ok
+CREATE TABLE outlier_fact AS SELECT i AS a, i % 100 AS b FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE outlier_dim AS SELECT i AS a, i % 10 AS g FROM range(0, 20000, 97) t(i);
+
+# Keep a consumer with different filters on both join inputs independent.
+query III
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0);
+----
+21	21	2
+
+# Candidate order must not affect results.
+query III
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90);
+----
+2	21	21
+
+query III
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90);
+----
+21	2	21
+
+# The outliers can form a second compatible group.
+query IIII
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 60 AND d.g = 0);
+----
+21	21	2	2

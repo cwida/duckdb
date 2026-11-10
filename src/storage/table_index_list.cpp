@@ -3,6 +3,7 @@
 #include "duckdb/common/shared_ptr_ipp.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -20,7 +21,6 @@
 #include "duckdb/planner/expression_binder/index_binder.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
-#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include <utility>
@@ -411,25 +411,30 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 			throw InternalException("index entry bind state cannot be BOUND here");
 		}
 
-		// Create a binder to bind this index.
-		auto binder = Binder::CreateBinder(context);
-
-		// Add the table to the binder.
-		vector<ColumnIndex> dummy_column_ids;
-		binder->bind_context.AddBaseTable(TableIndex(0), Identifier(), StringsToIdentifiers(column_names), column_types,
-		                                  dummy_column_ids, table);
-
-		// Create an IndexBinder to bind the index
-		IndexBinder idx_binder(*binder, context);
-
 		// Apply any outstanding buffered replays and replace the unbound index with a bound index.
 		unique_ptr<BoundIndex> bound_idx;
-		{
+		try {
+			// Create a binder to bind this index.
+			auto binder = Binder::CreateBinder(context);
+
+			// Add the table to the binder.
+			vector<ColumnIndex> dummy_column_ids;
+			binder->bind_context.AddBaseTable(TableIndex(0), Identifier(), StringsToIdentifiers(column_names),
+			                                  column_types, dummy_column_ids, table);
+
+			// Create an IndexBinder to bind the index
+			IndexBinder idx_binder(*binder, context);
+
 			vector<LogicalType> physical_column_types;
 			for (auto &col : table.GetColumns().Physical()) {
 				physical_column_types.push_back(col.Type());
 			}
 			bound_idx = index_entry->Bind(idx_binder, physical_column_types);
+		} catch (...) {
+			// Leave the index unbound, so that a later attempt binds it instead of waiting for this one forever.
+			lock.lock();
+			index_entry->SetBindState(IndexBindState::UNBOUND);
+			throw;
 		}
 
 		// Commit the bound index to the index entry.
@@ -488,24 +493,40 @@ unordered_set<column_t> TableIndexList::GetIndexedColumns() const {
 	return column_ids;
 }
 
+namespace {
+
+class PendingIndexPublication final : public PendingPublication {
+public:
+	PendingIndexPublication(shared_ptr<IndexEntry> entry_p, unique_ptr<BoundIndex> shadow_index_p)
+	    : entry(std::move(entry_p)), shadow_index(std::move(shadow_index_p)) {
+		D_ASSERT(entry);
+		D_ASSERT(shadow_index);
+	}
+
+	void Publish() override {
+		D_ASSERT(shadow_index);
+		entry->InstallShadow(std::move(shadow_index));
+	}
+
+private:
+	shared_ptr<IndexEntry> entry;
+	unique_ptr<BoundIndex> shadow_index;
+};
+
+} // namespace
+
 vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndexWriter &writer) {
 	annotated_lock_guard lock(index_entries_lock);
 
-	vector<unique_ptr<BoundIndex>> shadows;
 	vector<shared_ptr<const IndexStorageInfo>> infos;
-	shadows.reserve(index_entries.size());
 	infos.reserve(index_entries.size());
 
 	for (const auto &entry : index_entries) {
 		auto checkpoint = entry->Checkpoint(writer);
-		shadows.push_back(std::move(checkpoint.shadow_index));
+		if (checkpoint.shadow_index) {
+			writer.AddPendingPublication(make_uniq<PendingIndexPublication>(entry, std::move(checkpoint.shadow_index)));
+		}
 		infos.push_back(std::move(checkpoint.storage_info));
-	}
-
-	writer.Flush();
-
-	for (idx_t i = 0; i < index_entries.size(); i++) {
-		index_entries[i]->InstallShadow(std::move(shadows[i]));
 	}
 
 	return infos;

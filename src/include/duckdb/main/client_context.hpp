@@ -22,6 +22,7 @@
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/winapi.hpp"
+#include "duckdb/logging/logging.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/client_properties.hpp"
@@ -43,6 +44,7 @@ class CatalogSearchPath;
 class ColumnDataCollection;
 class DatabaseInstance;
 class FileOpener;
+class Context;
 class LogicalOperator;
 class PreparedStatement;
 class PreparedStatementData;
@@ -128,12 +130,8 @@ public:
 	shared_ptr<ClientContext> base_context;
 	//! The number of internal connections between this client and its base client (0 for a base client)
 	idx_t internal_depth = 0;
-	//! Set of optional states (e.g. Caches) that can be held by the ClientContext
-	unique_ptr<RegisteredStateManager> registered_state;
-	//! The logger to be used by this ClientContext
-	shared_ptr<Logger> logger;
-	//! The client configuration
-	ClientConfig config;
+	//! The context of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
+	shared_ptr<Context> context;
 	//! The set of client-specific data
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
@@ -303,9 +301,20 @@ public:
 
 	//! Return the current logger
 	Logger &GetLogger() const;
+	const LogConfigSnapshot &GetLogConfig() const {
+		return log_config;
+	}
+
+	//! The Context (client configuration, logging, metrics, file system) owned by this client context
+	Context &GetContext() const {
+		return *context;
+	}
 
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
+	//! Whether the statement that runs now is the last of the active query. A statement that expands into several
+	//! runs them as one query in one transaction; for any other query this is always true
+	DUCKDB_API bool ActiveQueryIsLastStatement() const;
 
 	connection_t GetConnectionId() const;
 
@@ -418,6 +427,8 @@ private:
 	void BeginStatementInternal(ClientContextLock &lock, const string &query);
 	//! Refreshes the logger for the statement that begins
 	void RefreshLoggerInternal();
+	//! Replaces the logger with one created from the up-to-date log config
+	void ResetLoggerInternal(const LoggingContext &logging_context);
 	//! Ends the statement of a query that expands into several once it finished, and starts the next one
 	QueryResultState StartNextStatementInternal(ClientContextLock &lock);
 	//! Ends the statement that finished and starts the next one. Returns the result object a collector built for it,
@@ -426,8 +437,10 @@ private:
 	//! Whether this query or, for an internal connection, the base client's query has a deadline
 	bool HasQueryDeadline() const;
 	bool QueryDeadlinePassed() const;
-	//! Ends the statement of the active query that finished, when another one follows
-	void EndStatementInternal(ClientContextLock &lock);
+	//! Ends the statement that finished: releases its executor and plan and notifies every registered state, also
+	//! when one of them fails. Returns the first failure
+	ErrorData EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
+	void NotifyStatementBeginInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);
 	//! End the query in the profiler; a failure to emit the profile becomes the error unless there is one already
@@ -476,6 +489,9 @@ private:
 	QueryProgress query_progress;
 	//! The connection corresponding to this client context
 	connection_t connection_id;
+	//! The log config used to create loggers for this ClientContext and its ThreadContexts. Only refreshed (with the
+	//! logger) at query begin and end, when no tasks that could read it from other threads are running
+	LogConfigSnapshot log_config;
 	//! Type of connection (USER or INTERNAL)
 	ConnectionType connection_type = ConnectionType::USER;
 	//! Routing target for SQL execution while CONNECT-ed (CONNECT/DISCONNECT). When is_connected is

@@ -179,6 +179,8 @@ public:
 class OutOfRangeException : public Exception {
 public:
 	DUCKDB_API explicit OutOfRangeException(const string &msg);
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
+	[[noreturn]] DUCKDB_API static void ThrowConversion(double value, PhysicalType orig_type, PhysicalType new_type);
 
 	template <typename... ARGS>
 	explicit OutOfRangeException(const string &msg, ARGS &&...params)
@@ -255,6 +257,7 @@ public:
 class DataCorruptionException : public Exception {
 public:
 	DUCKDB_API explicit DataCorruptionException(const string &msg);
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
 
 	template <typename... ARGS>
 	explicit DataCorruptionException(const string &msg, ARGS &&...params)
@@ -285,6 +288,10 @@ public:
 class NotImplementedException : public Exception {
 public:
 	DUCKDB_API explicit NotImplementedException(const string &msg);
+	//! Throw from a non-template helper so template instantiations do not carry the exception construction
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
+	//! Formats the message with the name of the physical type
+	[[noreturn]] DUCKDB_API static void Throw(const char *message, PhysicalType type);
 	explicit NotImplementedException(const unordered_map<string, string> &extra_info, const string &msg);
 
 	template <typename... ARGS>
@@ -368,6 +375,7 @@ public:
 class InvalidInputException : public Exception {
 public:
 	DUCKDB_API explicit InvalidInputException(const string &msg);
+	[[noreturn]] DUCKDB_API static void Throw(const char *message);
 	DUCKDB_API explicit InvalidInputException(const unordered_map<string, string> &extra_info, const string &msg);
 
 	template <typename... ARGS>
