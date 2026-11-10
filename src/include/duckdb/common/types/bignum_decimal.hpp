@@ -15,6 +15,7 @@
 
 namespace duckdb {
 class ClientContext;
+class Context;
 class StringHeap;
 class Vector;
 
@@ -30,7 +31,7 @@ struct DecimalHelper<bignum_t> {
 	//! The scratch of TryRound: the heap of the result vector, where the results are allocated, and the buffers of the
 	//! digit arithmetic
 	struct RoundState {
-		DUCKDB_API RoundState(Vector &result, optional_ptr<ClientContext> context);
+		DUCKDB_API RoundState(Vector &result, Context &context);
 
 		StringHeap &heap;
 		BignumArithmeticState state;

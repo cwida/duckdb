@@ -4,13 +4,14 @@
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
+#include "duckdb/main/context.hpp"
 #include "include/icu-current.hpp"
 #include "include/icu-casts.hpp"
 
 namespace duckdb {
 
 static timestamp_t GetTransactionTimestamp(ExpressionState &state) {
-	return MetaTransaction::Get(state.GetContext()).start_timestamp;
+	return MetaTransaction::Get(state.GetClientContext()).start_timestamp;
 }
 
 static void CurrentTimeFunction(DataChunk &input, ExpressionState &state, Vector &result) {

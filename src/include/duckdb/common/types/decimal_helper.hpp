@@ -27,7 +27,7 @@ struct FixedSizeDecimalHelper {
 
 	//! The scratch of TryRound, nothing in these tiers
 	struct RoundState {
-		RoundState(Vector &result, optional_ptr<ClientContext> context) {
+		RoundState(Vector &result, Context &context) {
 		}
 	};
 

@@ -1,0 +1,86 @@
+# name: test/sql/transactions/test_commit_constraint_violation.test
+# description: A duplicate key that is only detected at COMMIT fails the transaction without invalidating the database
+# group: [transactions]
+
+statement ok
+CREATE TABLE pk (k INTEGER PRIMARY KEY, u INTEGER UNIQUE, v VARCHAR);
+
+statement ok
+INSERT INTO pk VALUES (0, 0, 'seed');
+
+statement ok con1
+BEGIN;
+
+statement ok con2
+BEGIN;
+
+statement ok con1
+INSERT INTO pk VALUES (5000, 5000, 'first');
+
+# the duplicate key 5000 sits in the third chunk: the two chunks before it are
+# fully appended to both indexes at commit and must be reverted
+statement ok con2
+INSERT INTO pk SELECT i, i, 'second' FROM range(1, 5001) r(i);
+
+statement ok con1
+COMMIT;
+
+# the duplicate is only detected when con2 appends to the shared indexes at COMMIT
+statement error con2
+COMMIT;
+----
+<REGEX>:.*Failed to commit.*
+
+# The failed commit must not invalidate the database.
+query II
+SELECT count(*), count(DISTINCT k) FROM pk;
+----
+2	2
+
+query I
+SELECT v FROM pk WHERE k = 5000;
+----
+first
+
+# All keys of the failed commit must have been removed from both indexes.
+statement ok
+INSERT INTO pk SELECT i, i, 'retry' FROM range(1, 5000) r(i);
+
+statement error
+INSERT INTO pk VALUES (1, 50000, 'duplicate');
+----
+violates primary key constraint
+
+statement error
+INSERT INTO pk VALUES (50001, 1, 'duplicate');
+----
+<REGEX>:Constraint Error.*
+
+statement ok
+CHECKPOINT;
+
+query III
+SELECT count(*), count(DISTINCT k), count(DISTINCT u) FROM pk;
+----
+5001	5001	5001
+
+# A non-unique expression index is first evaluated at COMMIT: an expression error there
+# must be a normal error that removes all keys of the failed commit.
+statement ok
+CREATE TABLE ix (k INTEGER PRIMARY KEY, j INTEGER, l BIGINT);
+
+statement ok
+CREATE INDEX ix_e ON ix ((j + l));
+
+statement error
+INSERT INTO ix SELECT i, 1, CASE WHEN i = 5000 THEN 9223372036854775807 ELSE i END FROM range(1, 5001) r(i);
+----
+<REGEX>:.*Overflow.*
+
+statement ok
+INSERT INTO ix SELECT i, 1, i FROM range(1, 5000) r(i);
+
+query I
+SELECT count(*) FROM ix;
+----
+4999

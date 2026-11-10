@@ -544,8 +544,7 @@ template <class T, DecimalRounding ROUNDING>
 static void RoundDecimalVector(Vector &source, Vector &result, idx_t count, idx_t drop_digits, idx_t restore_digits,
                                const char *name, ExpressionState &expression_state) {
 	const auto width = DecimalType::GetWidth(result.GetType());
-	typename DecimalHelper<T>::RoundState state(result, expression_state.HasContext() ? &expression_state.GetContext()
-	                                                                                  : nullptr);
+	typename DecimalHelper<T>::RoundState state(result, expression_state.GetContext());
 	UnaryExecutor::Execute<T, T>(source, result, count, [&](T input) {
 		T rounded;
 		if (!DecimalHelper<T>::template TryRound<ROUNDING>(input, drop_digits, restore_digits, width, state, rounded)) {

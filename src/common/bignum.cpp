@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/bignum_limbs.hpp"
 #include "duckdb/common/types/bignum.hpp"
@@ -892,6 +893,10 @@ void DivModMagnitudes(BignumArithmeticState &state, const bignum_magnitude_t &di
 
 } // namespace
 
+BignumArithmeticState::BignumArithmeticState(optional_ptr<ClientContext> client_context)
+    : context(client_context ? &client_context->GetContext() : nullptr) {
+}
+
 void BignumArithmeticState::AccountWork(idx_t work) {
 	if (!context) {
 		return;
@@ -900,7 +905,10 @@ void BignumArithmeticState::AccountWork(idx_t work) {
 	if (work_since_interrupt_check >= INTERRUPT_CHECK_INTERVAL) {
 		work_since_interrupt_check = 0;
 		// the calls are already a millisecond of work apart, so the deadline is read on every one of them
-		context->BlockingInterruptCheck();
+		auto client_context = context->TryGetClientContext();
+		if (client_context) {
+			client_context->BlockingInterruptCheck();
+		}
 	}
 }
 

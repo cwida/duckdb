@@ -2,6 +2,8 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/function/scalar_function.hpp"
 
 namespace duckdb {
@@ -11,7 +13,7 @@ bool VectorOperations::TryCast(CastFunctionSet &set, GetCastFunctionInput &input
 	auto cast_function = set.GetCastFunction(source.GetType(), result.GetType(), input);
 	unique_ptr<FunctionLocalState> local_state;
 	if (cast_function.HasInitLocalState()) {
-		CastLocalStateParameters lparameters(input.context, cast_function.GetCastData());
+		CastLocalStateParameters lparameters(input.client_context, cast_function.GetCastData());
 		local_state = cast_function.InitLocalState(lparameters);
 	}
 	CastParameters parameters(cast_function.GetCastData().get(), strict, error_message, local_state.get(),
@@ -21,20 +23,12 @@ bool VectorOperations::TryCast(CastFunctionSet &set, GetCastFunctionInput &input
 
 bool VectorOperations::DefaultTryCast(Vector &source, Vector &result, idx_t count, string *error_message, bool strict) {
 	CastFunctionSet set;
-	GetCastFunctionInput input;
+	auto input = GetCastFunctionInput::Default();
 	return VectorOperations::TryCast(set, input, source, result, count, error_message, strict);
 }
 
 void VectorOperations::DefaultCast(Vector &source, Vector &result, idx_t count, bool strict) {
 	VectorOperations::DefaultTryCast(source, result, count, nullptr, strict);
-}
-
-bool VectorOperations::TryCast(ClientContext &context, Vector &source, Vector &result, idx_t count,
-                               string *error_message, bool strict, const bool nullify_parent) {
-	auto &config = DBConfig::GetConfig(context);
-	auto &set = config.GetCastFunctions();
-	GetCastFunctionInput get_input(context);
-	return VectorOperations::TryCast(set, get_input, source, result, count, error_message, strict, nullify_parent);
 }
 
 bool VectorOperations::TryCast(Context &context, Vector &source, Vector &result, idx_t count, string *error_message,
@@ -46,6 +40,12 @@ bool VectorOperations::TryCast(Context &context, Vector &source, Vector &result,
 
 void VectorOperations::Cast(Context &context, Vector &source, Vector &result, idx_t count, bool strict) {
 	VectorOperations::TryCast(context, source, result, count, nullptr, strict);
+}
+
+bool VectorOperations::TryCast(ClientContext &context, Vector &source, Vector &result, idx_t count,
+                               string *error_message, bool strict, const bool nullify_parent) {
+	return VectorOperations::TryCast(context.GetContext(), source, result, count, error_message, strict,
+	                                 nullify_parent);
 }
 
 void VectorOperations::Cast(ClientContext &context, Vector &source, Vector &result, idx_t count, bool strict) {

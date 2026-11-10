@@ -1,5 +1,6 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/main/context.hpp"
 
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/bignum.hpp"
@@ -496,7 +497,7 @@ bool DecimalHelper<bignum_t>::TryRescale(const bignum_t &value, uint32_t source_
 	return true;
 }
 
-DecimalHelper<bignum_t>::RoundState::RoundState(Vector &result, optional_ptr<ClientContext> context)
+DecimalHelper<bignum_t>::RoundState::RoundState(Vector &result, Context &context)
     : heap(StringVector::GetStringHeap(result)), state(context) {
 }
 
@@ -512,7 +513,7 @@ bool DecimalHelper<bignum_t>::TryRound(const bignum_t &value, idx_t drop_digits,
 	BorrowedBignum source(value);
 	string_t rounded = value.data;
 	if (drop_digits > 0) {
-		const auto power = PowerOfTen(drop_digits, state.context);
+		const auto power = PowerOfTen(drop_digits, Context::TryGetClientContext(state.context));
 		BorrowedBignum divisor(power);
 		string_t quotient;
 		string_t remainder;
@@ -563,7 +564,7 @@ bool DecimalHelper<bignum_t>::TryRound(const bignum_t &value, idx_t drop_digits,
 	if (restore_digits > 0) {
 		const bignum_t rounded_bignum(rounded);
 		BorrowedBignum rounded_value(rounded_bignum);
-		const auto power = PowerOfTen(restore_digits, state.context);
+		const auto power = PowerOfTen(restore_digits, Context::TryGetClientContext(state.context));
 		BorrowedBignum factor(power);
 		rounded = BignumIntermediate::Multiply(heap, state, rounded_value.intermediate, factor.intermediate);
 	}
