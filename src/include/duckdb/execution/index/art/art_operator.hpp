@@ -74,7 +74,7 @@ public:
 				return current_ptr.GetRowId() == rowid.GetRowId();
 			}
 			case NType::LEAF: {
-				throw InternalException("Invalid node type (LEAF) for ARTOperator::NestedLookup.");
+				throw InternalException("Invalid node type (LEAF) for ARTOperator::LookupInLeaf.");
 			}
 			case NType::NODE_7_LEAF:
 			case NType::NODE_15_LEAF:
@@ -110,7 +110,10 @@ public:
 					depth++;
 				}
 				current_ptr = child_ptr;
+				break;
 			}
+			default:
+				throw InternalException("Invalid node type for ARTOperator::LookupInLeaf: %d.", type);
 			}
 		}
 		return false;
