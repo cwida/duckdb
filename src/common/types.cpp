@@ -1565,34 +1565,32 @@ uint32_t DecimalType::MaxWidth() {
 	return DecimalWidth<hugeint_t>::max;
 }
 
+static constexpr idx_t DecimalTypeInfoIndex(idx_t width, idx_t scale) {
+	return (width - 1) * (width + 2) / 2 + scale;
+}
+
 LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
 	D_ASSERT(width >= scale);
 	if (!Decimal::IsValidWidthScale(width, scale)) {
 		return LogicalType(LogicalTypeId::DECIMAL, make_uniq<DecimalTypeInfo>(width, scale));
 	}
-	constexpr idx_t TYPE_COUNT = Decimal::MAX_WIDTH_DECIMAL * (Decimal::MAX_WIDTH_DECIMAL + 3) / 2;
-	struct DecimalTypeInfos {
-		array<optional_ptr<const LogicalTypeInfo>, TYPE_COUNT> infos;
-		//! Keep the infos alive through static destruction, like the builtin type infos.
-		alignas(DecimalTypeInfo) char storage[TYPE_COUNT][sizeof(DecimalTypeInfo)];
-	};
-	static const auto &decimal_types = []() -> const DecimalTypeInfos & {
-		static DecimalTypeInfos result;
-		idx_t index = 0;
+	constexpr idx_t TYPE_COUNT = DecimalTypeInfoIndex(Decimal::MAX_WIDTH_DECIMAL, Decimal::MAX_WIDTH_DECIMAL) + 1;
+	static const auto decimal_types = []() {
+		// Finish allocation before immortalizing any info so failed initialization releases partial allocations.
+		array<unique_ptr<LogicalTypeInfo>, TYPE_COUNT> infos;
 		for (uint32_t width = 1; width <= Decimal::MAX_WIDTH_DECIMAL; width++) {
 			for (uint32_t scale = 0; scale <= width; scale++) {
-				auto &info = *new (result.storage[index]) DecimalTypeInfo(width, scale);
-				info.id = LogicalTypeId::DECIMAL;
-				info.immortal = true;
-				auto valid = TryGetPhysicalType(info.id, info, info.physical_type);
-				D_ASSERT(valid);
-				(void)valid;
-				result.infos[index++] = info;
+				infos[DecimalTypeInfoIndex(width, scale)] = make_uniq<DecimalTypeInfo>(width, scale);
 			}
+		}
+		array<optional_ptr<const LogicalTypeInfo>, TYPE_COUNT> result;
+		for (idx_t i = 0; i < TYPE_COUNT; i++) {
+			auto type = CreateImmortal(LogicalTypeId::DECIMAL, std::move(infos[i]));
+			result[i] = type.GetTypeInfo();
 		}
 		return result;
 	}();
-	return LogicalType(*decimal_types.infos[(width - 1) * (width + 2) / 2 + scale]);
+	return LogicalType(*decimal_types[DecimalTypeInfoIndex(width, scale)]);
 }
 
 //===--------------------------------------------------------------------===//

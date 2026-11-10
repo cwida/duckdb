@@ -2261,6 +2261,10 @@ public:
 
 public:
 	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
+		scan_structure.dictionary_gather_state.Reset();
+		if (perfect_hash_join_state) {
+			perfect_hash_join_state->Finalize(op, context);
+		}
 		context.thread.profiler.Flush(op);
 	}
 
@@ -2880,8 +2884,9 @@ void HashJoinLocalSourceState::ExternalScanHT(HashJoinGlobalSinkState &sink, Has
 	D_ASSERT(local_stage == HashJoinSourceStage::SCAN_HT);
 
 	if (!full_outer_scan_state) {
-		full_outer_scan_state = make_uniq<JoinHTScanState>(sink.hash_table->GetDataCollection(),
-		                                                   full_outer_chunk_idx_from, full_outer_chunk_idx_to);
+		full_outer_scan_state =
+		    make_uniq<JoinHTScanState>(sink.hash_table->GetDataCollection(), full_outer_chunk_idx_from,
+		                               full_outer_chunk_idx_to, sink.hash_table->output_columns.size());
 		full_outer_chunks_reported = 0;
 	}
 	sink.hash_table->ScanFullOuter(*full_outer_scan_state, addresses, chunk);

@@ -27,16 +27,25 @@ using ProbeSpillLocalState = JoinHashTable::ProbeSpillLocalAppendState;
 
 const buffer_ptr<DictionaryEntry> &DictionaryOwnershipCache::GetEntry(idx_t column,
                                                                       const buffer_ptr<DictionaryEntry> &entry) {
-	if (entries.size() <= column) {
-		entries.resize(column + 1);
+	D_ASSERT(column < column_count);
+	if (!entries) {
+		entries = make_uniq_array<buffer_ptr<DictionaryEntry>>(column_count);
 	}
 	auto &local_entry = entries[column];
 	if (local_entry.get() != entry.get()) {
-		// Chunk references share a local control block that retains the original dictionary.
-		auto owner = make_shared_ptr<buffer_ptr<DictionaryEntry>>(entry);
+		auto owner = make_shared_ptr<DictionaryOwner>(entry);
 		local_entry = buffer_ptr<DictionaryEntry>(owner, entry.get());
 	}
 	return local_entry;
+}
+
+void DictionaryOwnershipCache::Reset() {
+	if (!entries) {
+		return;
+	}
+	for (idx_t i = 0; i < column_count; i++) {
+		entries[i].reset();
+	}
 }
 
 JoinHashTable::SharedState::SharedState()
@@ -1448,7 +1457,7 @@ ScanStructure::ScanStructure(JoinHashTable &ht_p, TupleDataChunkState &key_state
       chain_match_sel_vector(STANDARD_VECTOR_SIZE), chain_no_match_sel_vector(STANDARD_VECTOR_SIZE),
       found_match(make_unsafe_uniq_array_uninitialized<bool>(STANDARD_VECTOR_SIZE)), ht(ht_p), finished(false),
       is_null(true), rhs_pointers(LogicalType::POINTER), lhs_sel_vector(STANDARD_VECTOR_SIZE), last_match_count(0),
-      last_sel_vector(STANDARD_VECTOR_SIZE) {
+      last_sel_vector(STANDARD_VECTOR_SIZE), dictionary_gather_state(ht.output_columns.size()) {
 	if (ht.residual_predicate) {
 		residual_executor = make_uniq<ExpressionExecutor>(ht.context);
 		residual_executor->AddExpression(*ht.residual_predicate);
@@ -2406,7 +2415,7 @@ idx_t JoinHashTable::ScanKeyColumn(Vector &addresses, Vector &result, idx_t colu
 		return 0;
 	}
 	D_ASSERT(result.GetType() == layout_ptr->GetTypes()[column_index]);
-	JoinHTScanState join_ht_state(*data_collection, 0, data_collection->ChunkCount(),
+	JoinHTScanState join_ht_state(*data_collection, 0, data_collection->ChunkCount(), output_columns.size(),
 	                              TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	auto key_count = FillWithHTOffsets(join_ht_state, addresses);
 	if (key_count == 0) {
@@ -2882,7 +2891,8 @@ void JoinHashTable::BuildDictionaryArrays(const PhysicalHashJoin &op) {
 	// collect a row pointer per build row; the TDC holds its own BufferHandles for its lifetime,
 	// and FinishEvent has already verified everything is pinned before calling us
 	Vector row_pointer_vector(LogicalType::POINTER, build_count);
-	JoinHTScanState scan_state(collection, 0, collection.ChunkCount(), TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
+	JoinHTScanState scan_state(collection, 0, collection.ChunkCount(), output_columns.size(),
+	                           TupleDataPinProperties::KEEP_EVERYTHING_PINNED);
 	const auto collected = FillWithHTOffsets(scan_state, row_pointer_vector);
 	D_ASSERT(collected == build_count);
 	(void)collected;

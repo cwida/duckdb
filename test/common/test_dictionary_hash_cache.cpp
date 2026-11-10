@@ -159,8 +159,9 @@ TEST_CASE("Local dictionary owners preserve escaped values identity and hash cac
 		original.Dictionary(entry, selection, 3);
 		original_hashes = DictionaryVector::GetCachedHashes(original);
 
-		DictionaryOwnershipCache first_cache, second_cache;
-		auto first = first_cache.GetEntry(0, entry);
+		DictionaryOwnershipCache first_cache(8), second_cache(1);
+		const auto &first_slot = first_cache.GetEntry(0, entry);
+		auto first = first_slot;
 		auto second = second_cache.GetEntry(0, entry);
 		REQUIRE(first.get() == entry.get());
 		REQUIRE(second.get() == entry.get());
@@ -175,10 +176,17 @@ TEST_CASE("Local dictionary owners preserve escaped values identity and hash cac
 		}
 		REQUIRE(&DictionaryVector::GetCachedHashes(result) == original_hashes.get());
 
-		// Growing or replacing the cache must not invalidate previously emitted vectors.
+		// Populating another column preserves slots and previously emitted vectors.
 		REQUIRE(first_cache.GetEntry(7, entry).get() == entry.get());
+		REQUIRE(&first_slot == &first_cache.GetEntry(0, entry));
+		REQUIRE(first_slot.get() == entry.get());
 		auto replacement = DictionaryVector::CreateReusableGlobalDictionary(LogicalType::VARCHAR, 1);
 		REQUIRE(first_cache.GetEntry(0, replacement).get() == replacement.get());
+		REQUIRE(first_slot.get() == replacement.get());
+		first_cache.Reset();
+		REQUIRE_FALSE(first_slot);
+		REQUIRE(&first_slot == &first_cache.GetEntry(0, entry));
+		REQUIRE(first_slot.get() == entry.get());
 		first_cache.Reset();
 		second_cache.Reset();
 	}
@@ -203,7 +211,9 @@ TEST_CASE("Resetting a hash join scan releases its dictionary ownership", "[dict
 	conditions.emplace_back(make_uniq<BoundReferenceExpression>(LogicalType::INTEGER, 0),
 	                        make_uniq<BoundReferenceExpression>(LogicalType::INTEGER, 0),
 	                        ExpressionType::COMPARE_EQUAL);
-	JoinHashTable table(*con.context, op, conditions, {}, JoinType::INNER, 0, {}, nullptr);
+	const vector<idx_t> output_columns {1};
+	JoinHashTable table(*con.context, op, conditions, {LogicalType::INTEGER}, JoinType::INNER, 0, output_columns,
+	                    nullptr);
 	TupleDataChunkState key_state;
 	JoinHashTable::ScanStructure scan(table, key_state);
 	weak_ptr<DictionaryEntry> original_owner;

@@ -254,7 +254,8 @@ bool PerfectHashJoinExecutor::TemplatedFillSelectionVectorBuild(const Vector &so
 //===--------------------------------------------------------------------===//
 class PerfectHashJoinState : public OperatorState {
 public:
-	PerfectHashJoinState(ClientContext &context, const PhysicalHashJoin &join) : probe_executor(context) {
+	PerfectHashJoinState(ClientContext &context, const PhysicalHashJoin &join)
+	    : probe_executor(context), dictionary_gather_state(join.rhs_output_columns.col_types.size()) {
 		join_keys.Initialize(Allocator::Get(context), join.condition_types);
 		for (auto &cond : join.conditions) {
 			probe_executor.AddExpression(cond.GetLHS());
@@ -262,6 +263,10 @@ public:
 		build_sel_vec.Initialize(STANDARD_VECTOR_SIZE);
 		probe_sel_vec.Initialize(STANDARD_VECTOR_SIZE);
 		seq_sel_vec.Initialize(STANDARD_VECTOR_SIZE);
+	}
+
+	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
+		dictionary_gather_state.Reset();
 	}
 
 	DataChunk join_keys;

@@ -287,6 +287,7 @@ void EvictionQueue::PurgeIteration(const idx_t purge_size) {
 			}
 		}
 #else
+		// A failed bulk enqueue leaves the input nodes untouched.
 		if (!purge_producer_token.valid() ||
 		    !q.enqueue_bulk(purge_producer_token, std::make_move_iterator(purge_nodes.begin()), alive_count)) {
 			for (idx_t i = 0; i < alive_count; i++) {

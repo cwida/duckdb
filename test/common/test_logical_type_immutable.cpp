@@ -195,7 +195,11 @@ TEST_CASE("Decimal cache preserves validation and unparameterized types", "[logi
 	auto invalid = LogicalType::DECIMAL(0, 0);
 	REQUIRE(DecimalType::GetWidth(invalid) == 0);
 	REQUIRE_THROWS(RoundtripCachedDecimalType(invalid));
+	REQUIRE_FALSE(Decimal::IsValidWidthScale(39, 0));
+#ifndef DUCKDB_CRASH_ON_ASSERT
+	// InternalException aborts instead of throwing in crash-on-assert builds.
 	REQUIRE_THROWS(LogicalType::DECIMAL(39, 0));
+#endif
 }
 
 namespace {

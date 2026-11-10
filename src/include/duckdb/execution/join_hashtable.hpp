@@ -35,23 +35,35 @@ struct ClientConfig;
 struct ResidualPredicateInfo;
 class PhysicalHashJoin;
 
-//! Gives each local producer an owner for its shared dictionaries; emitted vectors retain that owner.
+//! Each producer has its own refcounts; emitted vectors retain the original dictionaries through these owners.
 class DictionaryOwnershipCache {
 public:
-	const buffer_ptr<DictionaryEntry> &GetEntry(idx_t column, const buffer_ptr<DictionaryEntry> &entry);
-	void Reset() {
-		entries.clear();
+	explicit DictionaryOwnershipCache(idx_t column_count) : column_count(column_count) {
 	}
 
+	const buffer_ptr<DictionaryEntry> &GetEntry(idx_t column, const buffer_ptr<DictionaryEntry> &entry);
+	void Reset();
+
 private:
-	vector<buffer_ptr<DictionaryEntry>> entries;
+	struct DictionaryOwner {
+		explicit DictionaryOwner(const buffer_ptr<DictionaryEntry> &entry) : entry(entry) {
+		}
+
+		buffer_ptr<DictionaryEntry> entry;
+	};
+
+	const idx_t column_count;
+	//! Allocated once on first use; resetting owners does not invalidate references to these slots.
+	unique_array<buffer_ptr<DictionaryEntry>> entries;
 };
 
 struct JoinHTScanState {
 public:
 	JoinHTScanState(TupleDataCollection &collection, idx_t chunk_idx_from, idx_t chunk_idx_to,
+	                idx_t output_column_count,
 	                TupleDataPinProperties properties = TupleDataPinProperties::ALREADY_PINNED)
-	    : iterator(collection, properties, chunk_idx_from, chunk_idx_to, false), offset_in_chunk(0), chunks_done(0) {
+	    : iterator(collection, properties, chunk_idx_from, chunk_idx_to, false),
+	      dictionary_gather_state(output_column_count), offset_in_chunk(0), chunks_done(0) {
 	}
 
 	TupleDataChunkIterator iterator;
