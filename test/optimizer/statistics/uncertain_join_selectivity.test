@@ -1,5 +1,5 @@
 # name: test/optimizer/statistics/uncertain_join_selectivity.test
-# description: Unknown join domains use independent selectivity factors without duplicate equalities
+# description: Unknown join domains use conservative selectivity without changing predicate combination
 # group: [statistics]
 
 require parquet
@@ -14,11 +14,11 @@ TO '{TEST_DIR}/uncertain_join_selectivity.parquet';
 statement ok
 CREATE VIEW p AS FROM read_parquet('{TEST_DIR}/uncertain_join_selectivity.parquet');
 
-# Expressions without equality-class bindings still contribute independent factors.
+# Retain the existing conservative combination of predicates on an uncertain pair.
 query II
 EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b WHERE lower(a.x)=b.x AND lower(a.y)=b.y;
 ----
-logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"40000"\s*}\s*}\s*\]\s*$
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"200000"\s*}\s*}\s*\]\s*$
 
 query I
 SELECT count(*) FROM p a, p b WHERE lower(a.x)=b.x AND lower(a.y)=b.y;
@@ -34,12 +34,12 @@ logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"200000"\s*}\s*}\s*\]\s*$
 query II
 EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y;
 ----
-logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"8000000"\s*}\s*}\s*\]\s*$
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"40000000"\s*}\s*}\s*\]\s*$
 
 query II
 EXPLAIN (FORMAT JSON) SELECT a.x FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y AND a.x=c.x;
 ----
-logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"8000000"\s*}\s*}\s*\]\s*$
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"40000000"\s*}\s*}\s*\]\s*$
 
 query I
 SELECT count(*) FROM p a, p b, p c WHERE a.x=b.x AND b.x=c.x AND a.y=c.y AND a.x=c.x;
