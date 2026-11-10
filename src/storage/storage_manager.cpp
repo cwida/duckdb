@@ -4,10 +4,12 @@
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/connection.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/database.hpp"
@@ -25,6 +27,7 @@
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/data_table_info.hpp"
 #include "mbedtls_wrapper.hpp"
 #include "duckdb/common/path.hpp"
 
@@ -191,6 +194,14 @@ void StorageManager::AddWALSize(idx_t size) {
 
 void StorageManager::SetWALSize(idx_t size) {
 	wal_size = size;
+}
+
+void StorageManager::MarkBufferedIndexReplays() {
+	buffered_index_replays = true;
+}
+
+bool StorageManager::HasBufferedIndexReplays() const {
+	return buffered_index_replays;
 }
 
 idx_t StorageManager::GetWALEntriesCount() const {
@@ -757,11 +768,120 @@ bool SingleFileStorageManager::IsCheckpointClean(MetaBlockPointer checkpoint_id)
 
 unique_ptr<CheckpointWriter>
 SingleFileStorageManager::CreateCheckpointWriter(QueryContext context, CheckpointOptions options,
-                                                 optional_ptr<ClientContext> client_context) {
+                                                 optional_ptr<ClientContext> checkpoint_context) {
 	if (InMemory()) {
-		return make_uniq<InMemoryCheckpointer>(context, db, *block_manager, *this, options, client_context);
+		return make_uniq<InMemoryCheckpointer>(context, db, *block_manager, *this, options, checkpoint_context);
 	}
-	return make_uniq<SingleFileCheckpointWriter>(context, db, *block_manager, options, client_context);
+	return make_uniq<SingleFileCheckpointWriter>(context, db, *block_manager, options, checkpoint_context);
+}
+
+static vector<reference<DuckTableEntry>> GetCommittedTables(AttachedDatabase &db) {
+	vector<reference<DuckTableEntry>> tables;
+	auto &catalog = Catalog::GetCatalog(db).Cast<DuckCatalog>();
+	auto bound = VisibilityBound::AllCommitted();
+	catalog.ScanSchemas(bound, [&](DuckSchemaEntry &schema) {
+		schema.Scan(CatalogType::TABLE_ENTRY, bound, [&](CatalogEntry &entry) {
+			if (!entry.internal && entry.type == CatalogType::TABLE_ENTRY) {
+				tables.push_back(entry.Cast<DuckTableEntry>());
+			}
+		});
+	});
+	return tables;
+}
+
+static vector<reference<DuckTableEntry>> GetTablesWithUnboundIndexes(AttachedDatabase &db) {
+	// Don't take index locks inside the catalog scan: concurrent binds take them in the opposite order.
+	vector<reference<DuckTableEntry>> result;
+	for (auto &table : GetCommittedTables(db)) {
+		if (table.get().GetStorage().GetDataTableInfo()->GetIndexes().HasUnbound()) {
+			result.push_back(table);
+		}
+	}
+	return result;
+}
+
+static ErrorData TryBindIndexes(DataTableInfo &info, ClientContext &context) {
+	try {
+		info.BindIndexes(context);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
+			throw;
+		}
+		return error;
+	}
+	return ErrorData();
+}
+
+static bool HasBufferedReplays(const vector<reference<DuckTableEntry>> &tables) {
+	for (auto &table : tables) {
+		if (table.get().GetStorage().GetDataTableInfo()->GetIndexes().HasBufferedReplays()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool SingleFileStorageManager::BindIndexesForCheckpoint(optional_ptr<ClientContext> checkpoint_context,
+                                                        bool explicit_checkpoint) {
+	// Explicit checkpoints also bind indexes without buffered replays, so that their tables can be vacuumed.
+	if (!buffered_index_replays && !explicit_checkpoint) {
+		return true;
+	}
+	auto tables = GetTablesWithUnboundIndexes(db);
+	if (tables.empty()) {
+		buffered_index_replays = false;
+		return true;
+	}
+
+	// Shutdown and DETACH do not bind.
+	if (!checkpoint_context) {
+		buffered_index_replays = HasBufferedReplays(tables);
+		return !buffered_index_replays;
+	}
+
+	auto checkpoint_sleep_ms = Settings::Get<DebugCheckpointSleepMsSetting>(db.GetDatabase());
+	if (checkpoint_sleep_ms > 0) {
+		ThreadUtil::SleepMs(checkpoint_sleep_ms);
+	}
+
+	// Read-only: a concurrent FORCE CHECKPOINT holds start_transaction_lock while waiting for this checkpoint.
+	auto &transaction = checkpoint_context->transaction;
+	transaction.BeginTransaction();
+	transaction.SetReadOnly();
+
+	// Indexes with buffered replays must be bound, otherwise the checkpoint would lose these operations.
+	ErrorData failure;
+	string failed_table;
+	for (auto &table : tables) {
+		auto &info = *table.get().GetStorage().GetDataTableInfo();
+		if (!explicit_checkpoint && !info.GetIndexes().HasBufferedReplays()) {
+			continue;
+		}
+		auto error = TryBindIndexes(info, *checkpoint_context);
+		// A failed bind only matters if it leaves buffered replays behind.
+		if (error.HasError() && info.GetIndexes().HasBufferedReplays()) {
+			failure = std::move(error);
+			failed_table = info.GetTableName().GetIdentifierName();
+			break;
+		}
+	}
+	// End the bind transaction: the checkpoint transaction runs on the same connection.
+	transaction.Rollback(nullptr);
+
+	if (failure.HasError()) {
+		auto message = StringUtil::Format("an index on table \"%s\" has buffered operations and cannot be bound: %s",
+		                                  failed_table, failure.RawMessage());
+		if (explicit_checkpoint) {
+			throw Exception(failure.Type(), "Cannot CHECKPOINT: " + message);
+		}
+		// FIXME: every commit that triggers an automatic checkpoint retries the bind until it succeeds
+		DUCKDB_LOG_WARNING(db.GetDatabase(), "Skipped the checkpoint of database %s and kept its write-ahead log: %s",
+		                   db.GetName(), message);
+		return false;
+	}
+	buffered_index_replays = false;
+	return true;
 }
 
 void SingleFileStorageManager::CreateCheckpoint(QueryContext context, CheckpointOptions options,
@@ -790,7 +910,21 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	auto &config = DBConfig::Get(db);
 	// We only need to checkpoint if there is anything in the WAL.
 	auto wal_size = GetWALSize();
-	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
+	auto should_checkpoint =
+	    wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT;
+	// Shared by the index binds before the checkpoint and by the checkpoint transaction.
+	unique_ptr<Connection> checkpoint_connection;
+	optional_ptr<ClientContext> checkpoint_context;
+	if (should_checkpoint && Context::TryGetClientContext(context.GetContext())) {
+		checkpoint_connection = make_uniq<Connection>(Connection::CreateInternal(db.GetDatabase()));
+		checkpoint_context = checkpoint_connection->context.get();
+	}
+	// Bind before the checkpoint starts: a failure after that invalidates the database.
+	if (should_checkpoint && !BindIndexesForCheckpoint(checkpoint_context, client_context != nullptr)) {
+		should_checkpoint = false;
+	}
+
+	if (should_checkpoint) {
 		try {
 			// Start timing the checkpoint.
 			auto profiler = Context::TryGetQueryProfiler(context.GetContext());
@@ -800,7 +934,7 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 			}
 
 			// Write the checkpoint.
-			auto checkpointer = CreateCheckpointWriter(context, options, client_context);
+			auto checkpointer = CreateCheckpointWriter(context, options, checkpoint_context);
 			checkpointer->CreateCheckpoint();
 			timer.EndTimer();
 
@@ -827,26 +961,8 @@ void SingleFileStorageManager::Destroy() {
 	if (!load_complete) {
 		return;
 	}
-	vector<reference<DuckSchemaEntry>> schemas;
-	// we scan the set of committed schemas
-	auto &catalog = Catalog::GetCatalog(db).Cast<DuckCatalog>();
-	catalog.ScanSchemas(VisibilityBound::AllCommitted(), [&](DuckSchemaEntry &entry) { schemas.push_back(entry); });
-
-	vector<reference<DuckTableEntry>> tables;
-	for (auto &schema : schemas) {
-		schema.get().Scan(CatalogType::TABLE_ENTRY, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
-			if (entry.internal) {
-				return;
-			}
-			if (entry.type == CatalogType::TABLE_ENTRY) {
-				tables.push_back(entry.Cast<DuckTableEntry>());
-			}
-		});
-	}
-
-	for (auto &table : tables) {
-		auto &data_table = table.get().GetStorage();
-		data_table.Destroy();
+	for (auto &table : GetCommittedTables(db)) {
+		table.get().GetStorage().Destroy();
 	}
 }
 

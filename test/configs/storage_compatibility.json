@@ -256,6 +256,12 @@
       ]
     },
     {
+      "reason": "Checkpoint vacuum of indexed tables requires storage version v2.0.0.",
+      "paths": [
+        "test/sql/storage/checkpoint_vacuum_unbound_index.test"
+      ]
+    },
+    {
       "reason": "Triggers are a new catalog type not present in old storage files.",
       "paths": [
         "test/sql/trigger/create_trigger_catalog.test",
