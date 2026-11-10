@@ -247,6 +247,9 @@ FROM outer_rows o JOIN minimum_cost m ON o.k = m.k AND o.cost = m.cost
 ----
 logical_opt	<REGEX>:(?s).*payload_fact.*payload_fact.*
 
+statement ok
+RESET disabled_optimizers
+
 # A redundant NULL guard on the domain key preserves payload reuse.
 query II
 EXPLAIN WITH outer_rows AS MATERIALIZED (
@@ -264,10 +267,7 @@ EXPLAIN WITH outer_rows AS MATERIALIZED (
 SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
 FROM outer_rows o JOIN minimum_cost m ON o.k = m.k AND o.cost = m.cost
 ----
-logical_opt	<REGEX>:(?s).*payload_fact.*payload_fact.*
-
-statement ok
-RESET disabled_optimizers
+logical_opt	<!REGEX>:(?s).*payload_fact.*payload_fact.*
 
 query II
 EXPLAIN WITH outer_rows AS MATERIALIZED (

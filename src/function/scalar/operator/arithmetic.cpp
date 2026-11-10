@@ -1249,11 +1249,7 @@ ScalarFunctionSet OperatorMultiplyFun::GetFunctions() {
 	// we can multiply bignums together
 	multiply.AddFunction(
 	    ScalarFunction({LogicalType::BIGNUM, LogicalType::BIGNUM}, LogicalType::BIGNUM, BignumMultiply));
-	multiply.ApplyToFunctions([](ScalarFunction &function) {
-		if (!function.GetReturnType().IsFloating()) {
-			function.SetFallible();
-		}
-	});
+	multiply.SetFallible();
 
 	multiply.ApplyToFunctions(NameOperatorParameters);
 	return multiply;

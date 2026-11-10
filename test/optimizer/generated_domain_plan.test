@@ -8,6 +8,13 @@ SELECT (i>=9998)::INTEGER k,
        CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
 FROM range(10000)t(i);
 
+# This unfiltered caller relies on optimizer filtering to avoid overflowing an unused group.
+query IR
+SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+0	1.0
+
 # Preserve the baseline normalization of an unfiltered fixed caller.
 query II
 EXPLAIN (FORMAT JSON)

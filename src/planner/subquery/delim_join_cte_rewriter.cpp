@@ -965,7 +965,7 @@ struct GeneratedDomainReplacement {
 	bool all_equality = true;
 
 	// Each candidate is analyzed once; successful analysis consumes its copied filters.
-	bool Analyze(const vector<JoinCondition> &conditions, GeneratedDomainRef &domain) {
+	bool Analyze(const vector<JoinCondition> &conditions, GeneratedDomainRef &domain, GeneratedDomainAction action) {
 		vector<ColumnBinding> source_bindings;
 		vector<unique_ptr<Expression>> source_expressions;
 		vector<ColumnBinding> covered_bindings;
@@ -1015,14 +1015,17 @@ struct GeneratedDomainReplacement {
 		for (auto &expression : domain.output_expressions) {
 			auto output = expression->Copy();
 			ReplaceExpressionBindings(output, source_bindings, source_expressions);
-			if (ReferencesDomain(*output, domain)) {
+			// Substituting domain outputs changes their inputs and evaluation count.
+			if (ReferencesDomain(*output, domain) || output->CanThrow() || output->IsVolatile()) {
 				return false;
 			}
 			outputs.push_back(std::move(output));
 		}
 		for (auto &filter : domain.filters) {
 			ReplaceExpressionBindings(filter, source_bindings, source_expressions);
-			if (ReferencesDomain(*filter, domain)) {
+			// Removing the domain evaluates its predicates on previously unrelated base rows.
+			if (ReferencesDomain(*filter, domain) ||
+			    (action == GeneratedDomainAction::REMOVE && (filter->CanThrow() || filter->IsVolatile()))) {
 				return false;
 			}
 			filters.push_back(std::move(filter));
@@ -1036,7 +1039,8 @@ struct GeneratedDomainReplacement {
 		for (auto &comparison : comparisons) {
 			ReplaceExpressionBindings(comparison, domain.output_bindings, outputs);
 			ReplaceExpressionBindings(comparison, source_bindings, source_expressions);
-			if (ReferencesDomain(*comparison, domain)) {
+			if (ReferencesDomain(*comparison, domain) ||
+			    (action == GeneratedDomainAction::REMOVE && (comparison->CanThrow() || comparison->IsVolatile()))) {
 				return false;
 			}
 			if (IsTautologicalNotDistinctComparison(*comparison)) {
@@ -1477,7 +1481,7 @@ bool GeneratedDedupRefEliminator::RewriteJoin(unique_ptr<LogicalOperator> &op, B
 		}
 	}
 	GeneratedDomainReplacement replacement;
-	if (!replacement.Analyze(conditions, *domain)) {
+	if (!replacement.Analyze(conditions, *domain, action)) {
 		return false;
 	}
 	if (!replacement.all_equality &&
@@ -1705,7 +1709,8 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDedupJoin(unique_ptr<LogicalO
 	}
 
 	GeneratedDomainReplacement replacement;
-	if (!replacement.Analyze(comparison_join.conditions, *dedup_ref) || !replacement.all_equality) {
+	if (!replacement.Analyze(comparison_join.conditions, *dedup_ref, GeneratedDomainAction::REMOVE) ||
+	    !replacement.all_equality) {
 		return false;
 	}
 	replacement.Apply(binder, join, 1 - dedup_idx, *dedup_ref, GeneratedDomainAction::REMOVE, *rewrite_root,
@@ -1759,7 +1764,8 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDomainJoin(unique_ptr<Logical
 		}
 	}
 	GeneratedDomainReplacement replacement;
-	if (!replacement.Analyze(comparison_join.conditions, *domain_ref) || !replacement.all_equality) {
+	if (!replacement.Analyze(comparison_join.conditions, *domain_ref, GeneratedDomainAction::REMOVE) ||
+	    !replacement.all_equality) {
 		return false;
 	}
 	replacement.Apply(binder, join, generated_idx, *domain_ref, GeneratedDomainAction::REMOVE, *rewrite_root,

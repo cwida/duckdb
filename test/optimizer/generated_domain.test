@@ -9,9 +9,15 @@ SELECT (i>=9998)::INTEGER k,
        CASE WHEN i>=9998 THEN 90000000000000000000000000000000000000::DECIMAL(38,0) ELSE 1 END v
 FROM range(10000)t(i);
 
+statement ok
+CREATE TABLE average_demand(k INTEGER, selected BOOLEAN);
+
+statement ok
+INSERT INTO average_demand VALUES (0,true),(1,false);
+
 query IR
 SELECT d.k,(SELECT avg(v) FROM decimal_average_input f WHERE f.k=d.k)
-FROM (VALUES(0))d(k);
+FROM average_demand d WHERE selected;
 ----
 0	1.0
 
@@ -31,7 +37,7 @@ statement ok
 CREATE TABLE facts(k INTEGER, j INTEGER, v INTEGER);
 
 statement ok
-INSERT INTO facts VALUES (1,1,10),(1,1,20),(1,2,5),(2,1,7),(3,3,11),(NULL,1,13),(1,NULL,17),(NULL,NULL,19);
+INSERT INTO facts VALUES (1,1,10),(1,1,20),(1,2,5),(2,1,7),(3,3,11),(NULL,1,13),(1,NULL,17),(NULL,NULL,19),(2147483647,1,7);
 
 statement ok
 CREATE TABLE demand(k INTEGER, j INTEGER);
@@ -65,7 +71,7 @@ FROM demand d;
 NULL	1	13
 NULL	NULL	19
 
-# A predicate on a projected correlation key remains required after substitution.
+# The domain predicate must not evaluate the unrelated overflowing fact key.
 query III rowsort
 SELECT d.k,d.j,(SELECT sum(f.v) FROM facts f
 JOIN (SELECT d.j b,d.k a WHERE d.k+d.j>2) keys ON f.k=keys.a AND f.j=keys.b)
@@ -160,6 +166,23 @@ CREATE TABLE text_facts(k VARCHAR, v INTEGER);
 
 statement ok
 INSERT INTO text_facts VALUES ('1',10),('2',20),('bad',99);
+
+# Both join forms must keep this predicate on the demand, where all keys are numeric.
+query TI rowsort
+SELECT d.k,(SELECT sum(f.v) FROM text_facts f,
+(SELECT d.k k WHERE CAST(d.k AS INTEGER)>0) keys WHERE f.k=keys.k)
+FROM text_demand d;
+----
+1	10
+2	20
+
+query TI rowsort
+SELECT d.k,(SELECT sum(f.v) FROM text_facts f
+JOIN (SELECT d.k k WHERE CAST(d.k AS INTEGER)>0) keys ON f.k=keys.k)
+FROM text_demand d;
+----
+1	10
+2	20
 
 statement ok
 SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
