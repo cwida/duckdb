@@ -80,6 +80,8 @@
       "reason": "Uses the deprecated extension_directory setting",
       "paths": [
         "test/extension/install_extension.test",
+        "test/extension/install_extension.test_slow",
+        "test/extension/install_extension_httpfs.test",
         "test/extension/install_httpfs_https_repository.test",
         "test/extension/local_extension_coverage.test",
         "test/sql/attach/external_resource_type_autoload.test",
