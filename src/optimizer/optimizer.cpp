@@ -42,6 +42,7 @@
 #include "duckdb/optimizer/topn_window_elimination.hpp"
 #include "duckdb/optimizer/type_pushdown.hpp"
 #include "duckdb/optimizer/unnest_rewriter.hpp"
+#include "duckdb/optimizer/variant_comparison_rewriter.hpp"
 #include "duckdb/optimizer/late_materialization.hpp"
 #include "duckdb/optimizer/common_subplan_optimizer.hpp"
 #include "duckdb/optimizer/partitioned_execution.hpp"
@@ -205,6 +206,13 @@ void Optimizer::RunBuiltInOptimizers() {
 	// determine which secure views may expose the statistics of their contents - this runs before any rewrites so
 	// that the filters the optimizer pushes into a view are not mistaken for the view restricting its own rows
 	LogicalSecureView::AnalyzeStatistics(*plan);
+
+	// avoid variant_comparator for filters over fully shredded integral VARIANT columns by comparing the
+	// shredded values directly - this has to run before constant folding turns the comparison value into a sort key
+	RunOptimizer(OptimizerType::VARIANT_COMPARISON_REWRITER, [&]() {
+		VariantComparisonRewriter variant_comparison_rewriter(context);
+		variant_comparison_rewriter.Rewrite(plan);
+	});
 
 	// first we perform expression rewrites using the ExpressionRewriter
 	// this does not change the logical plan structure, but only simplifies the expression trees

@@ -1,0 +1,152 @@
+# name: test/parquet/variant/variant_filter_rewrite.test
+# description: Filters over fully shredded primitive Parquet VARIANTs bypass variant_comparator
+# group: [variant]
+
+require parquet
+
+statement ok
+SET threads=1
+
+statement ok
+COPY (
+	SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE abs(i % 60 - 30)::INTEGER END::VARIANT AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_rewrite.parquet' (SHREDDING {v: 'INTEGER'})
+
+# a filter directly above the scan is rewritten into a cast
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v > 5
+----
+physical_plan	<!REGEX>:.*variant_comparator.*
+
+# ... and so is a filter above a projection
+query II
+EXPLAIN SELECT count(*) FROM (SELECT v FROM '{TEST_DIR}/variant_filter_rewrite.parquet') WHERE v > 5
+----
+physical_plan	<!REGEX>:.*variant_comparator.*
+
+query II
+EXPLAIN SELECT count(*) FROM (SELECT v AS w FROM (SELECT v FROM '{TEST_DIR}/variant_filter_rewrite.parquet')) WHERE w > 5
+----
+physical_plan	<!REGEX>:.*variant_comparator.*
+
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v BETWEEN 5 AND 20
+----
+physical_plan	<!REGEX>:.*variant_comparator.*
+
+# negation is rewritten as well
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE NOT (v > 5)
+----
+physical_plan	<!REGEX>:.*variant_comparator.*
+
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v NOT BETWEEN 5 AND 20
+----
+physical_plan	<!REGEX>:.*variant_comparator.*
+
+# the rewrite is what removes the comparator
+statement ok
+SET disabled_optimizers='variant_comparison_rewriter'
+
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v > 5
+----
+physical_plan	<REGEX>:.*variant_comparator.*
+
+statement ok
+RESET disabled_optimizers
+
+# results are unaffected by the rewrite
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v > 5
+----
+4045
+
+query I
+SELECT count(*) FROM (SELECT v FROM '{TEST_DIR}/variant_filter_rewrite.parquet') WHERE v > 5
+----
+4045
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v BETWEEN -5 AND 5
+----
+903
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE NOT (v > 5)
+----
+903
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v NOT BETWEEN 5 AND 20
+----
+2310
+
+# the rewritten filters agree with the variant comparator
+statement ok
+SET disabled_optimizers='variant_comparison_rewriter'
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE NOT (v > 5)
+----
+903
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v NOT BETWEEN 5 AND 20
+----
+2310
+
+statement ok
+RESET disabled_optimizers
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v IS NULL
+----
+52
+
+# comparison against a value outside the shredded type range is not rewritten incorrectly
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite.parquet' WHERE v > 10000000000
+----
+0
+
+# the comparison must still order VARIANTs of other types after the numbers
+statement ok
+COPY (
+	SELECT CASE WHEN i % 3 = 0 THEN ('s' || (i % 60))::VARIANT ELSE ((i % 60)::BIGINT)::VARIANT END AS v
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_rewrite_partial.parquet' (SHREDDING {v: 'BIGINT'})
+
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite_partial.parquet' WHERE v > 5
+----
+physical_plan	<REGEX>:.*variant_comparator.*
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite_partial.parquet' WHERE v > 5
+----
+4664
+
+# a non-integral shredding type is left alone
+statement ok
+COPY (
+	SELECT ('s' || (i % 60))::VARIANT AS v FROM range(5000) t(i)
+) TO '{TEST_DIR}/variant_filter_rewrite_varchar.parquet' (SHREDDING {v: 'VARCHAR'})
+
+query II
+EXPLAIN SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite_varchar.parquet' WHERE v > 5
+----
+physical_plan	<REGEX>:.*variant_comparator.*
+
+# numbers sort before strings, so every row matches
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite_varchar.parquet' WHERE v > 5
+----
+5000
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_filter_rewrite_varchar.parquet' WHERE v > 's5'
+----
+1166
