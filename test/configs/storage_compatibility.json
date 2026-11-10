@@ -228,7 +228,8 @@
         "test/sql/table_function/duckdb_columns.test",
         "test/sql/catalog/view/test_view_schema_change.test",
         "test/sql/catalog/dependencies/add_column_to_table_referenced_by_view.test",
-        "test/sql/function/generic/null_constant_return_type.test"
+        "test/sql/function/generic/null_constant_return_type.test",
+        "test/sql/cte/test_recursive_cte_union_all_types.test"
       ]
     },
     {
