@@ -100,3 +100,17 @@ logical_opt	<REGEX>:.*SEMI.*
 
 statement ok
 RESET disabled_optimizers;
+
+# Retain the evaluation boundary around fallible MARK conditions.
+statement ok
+CREATE TABLE fallible_probe AS SELECT i::VARCHAR AS s FROM range(100) r(i);
+
+query II
+EXPLAIN SELECT s, __mark_join_marker FROM fallible_probe JOIN BY (TYPE MARK) mark_build ON CAST(s AS INTEGER)=b WHERE __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*
+
+query II
+EXPLAIN SELECT s, __mark_join_marker FROM fallible_probe JOIN BY (TYPE MARK) mark_build ON CAST(s AS INTEGER) IS NOT DISTINCT FROM b WHERE NOT __mark_join_marker;
+----
+logical_opt	<REGEX>:.*MARK.*

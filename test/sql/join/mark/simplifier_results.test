@@ -171,3 +171,35 @@ SELECT currval('marker_sequence');
 
 statement ok
 RESET threads;
+
+# The inner join removes invalid strings before the MARK condition evaluates its cast.
+statement ok
+CREATE TABLE fallible_probe AS
+SELECT i, CASE WHEN i=0 THEN 'bad' ELSE '1' END AS s FROM range(-1000,1001) r(i);
+
+statement ok
+CREATE TABLE fallible_filter AS
+SELECT CASE WHEN i%2=0 THEN -1 ELSE 1 END::BIGINT AS k FROM range(100000) r(i);
+
+statement ok
+CREATE TABLE fallible_build AS SELECT 1::INTEGER AS b;
+
+query II
+SELECT count(*), sum(m::INTEGER)
+FROM (
+	SELECT CAST(p.s AS INTEGER) IN (SELECT b FROM fallible_build) AS m
+	FROM fallible_probe p JOIN fallible_filter g ON p.i=g.k
+) q
+WHERE m;
+----
+100000	100000
+
+query I
+SELECT count(*)
+FROM (
+	SELECT CAST(p.s AS INTEGER) NOT IN (SELECT b FROM fallible_build) AS m
+	FROM fallible_probe p JOIN fallible_filter g ON p.i=g.k
+) q
+WHERE m;
+----
+0

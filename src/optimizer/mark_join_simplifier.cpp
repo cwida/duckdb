@@ -171,6 +171,12 @@ bool MarkJoinSimplifier::TrySimplify(LogicalFilter &filter, LogicalOperator &roo
 			return false;
 		}
 		for (auto &condition : join.conditions) {
+			// Reordering can evaluate conditions on rows removed by other joins.
+			auto can_throw = condition.IsComparison() ? condition.GetLHS().CanThrow() || condition.GetRHS().CanThrow()
+			                                          : condition.GetJoinExpression().CanThrow();
+			if (can_throw) {
+				return false;
+			}
 			// MARK tuple inequality uses row equality, unlike ordinary nested inequality.
 			if (condition.IsComparison() && condition.GetComparisonType() == ExpressionType::COMPARE_NOTEQUAL &&
 			    condition.GetLHS().GetReturnType().id() == LogicalTypeId::TUPLE) {
