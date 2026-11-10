@@ -1,0 +1,284 @@
+# name: test/sql/upsert/insert_or_replace/returning_key_only_table.test
+# description: INSERT OR REPLACE with RETURNING into a table whose only physical column is the conflict key
+# group: [insert_or_replace]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE pk (id INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO pk VALUES (1);
+
+query I
+INSERT OR REPLACE INTO pk VALUES (1) RETURNING *;
+----
+1
+
+query I rowsort
+INSERT OR REPLACE INTO pk VALUES (1), (2) RETURNING *;
+----
+1
+2
+
+query I
+SELECT id FROM pk ORDER BY id;
+----
+1
+2
+
+query I rowsort
+INSERT OR REPLACE INTO pk VALUES (2), (3) RETURNING id * 10;
+----
+20
+30
+
+query I
+INSERT OR REPLACE INTO pk (id) VALUES (3) RETURNING id;
+----
+3
+
+query I
+INSERT OR REPLACE INTO pk BY NAME SELECT 1 AS id RETURNING *;
+----
+1
+
+# duplicates in the source replace the row once
+query I
+INSERT OR REPLACE INTO pk VALUES (1), (1) RETURNING *;
+----
+1
+
+query I
+SELECT id FROM pk ORDER BY id;
+----
+1
+2
+3
+
+# UNIQUE allows NULLs, which never conflict
+statement ok
+CREATE TABLE uq (id INTEGER UNIQUE);
+
+statement ok
+INSERT INTO uq VALUES (1), (NULL);
+
+query I rowsort
+INSERT OR REPLACE INTO uq VALUES (1), (NULL), (2) RETURNING *;
+----
+1
+2
+NULL
+
+query I
+SELECT id FROM uq ORDER BY id NULLS LAST;
+----
+1
+2
+NULL
+NULL
+
+# a unique index instead of a constraint
+statement ok
+CREATE TABLE ux (id INTEGER);
+
+statement ok
+CREATE UNIQUE INDEX ux_id ON ux (id);
+
+statement ok
+INSERT INTO ux VALUES (1);
+
+query I
+INSERT OR REPLACE INTO ux VALUES (1) RETURNING *;
+----
+1
+
+query I
+SELECT id FROM ux;
+----
+1
+
+statement ok
+CREATE TABLE vk (s VARCHAR PRIMARY KEY);
+
+statement ok
+INSERT INTO vk VALUES ('a string longer than the inline limit');
+
+query I
+INSERT OR REPLACE INTO vk VALUES ('a string longer than the inline limit') RETURNING *;
+----
+a string longer than the inline limit
+
+query I
+SELECT s FROM vk;
+----
+a string longer than the inline limit
+
+# generated columns are not physical, so the key is still the only physical column
+statement ok
+CREATE TABLE gen (id INTEGER PRIMARY KEY, doubled INTEGER AS (id * 2), wrapped INTEGER[] AS ([id]));
+
+statement ok
+INSERT INTO gen VALUES (1);
+
+query III
+INSERT OR REPLACE INTO gen VALUES (1) RETURNING *;
+----
+1	2	[1]
+
+query III
+SELECT * FROM gen;
+----
+1	2	[1]
+
+# a CHECK constraint over the key column
+statement ok
+CREATE TABLE ck (id INTEGER PRIMARY KEY CHECK (id > 0));
+
+statement ok
+INSERT INTO ck VALUES (1);
+
+query I
+INSERT OR REPLACE INTO ck VALUES (1) RETURNING *;
+----
+1
+
+# a one column CHECK adds no indexed key to an update of other columns, which a referencing row would reject
+statement ok
+CREATE TABLE ck_parent (id INTEGER PRIMARY KEY CHECK (id > 0), v INTEGER);
+
+statement ok
+CREATE TABLE ck_child (pid INTEGER REFERENCES ck_parent (id));
+
+statement ok
+INSERT INTO ck_parent VALUES (1, 1);
+
+statement ok
+INSERT INTO ck_child VALUES (1);
+
+statement ok
+UPDATE ck_parent SET v = 2;
+
+query II
+SELECT * FROM ck_parent;
+----
+1	2
+
+statement ok
+INSERT OR REPLACE INTO ck_parent VALUES (1, 3);
+
+query II
+SELECT * FROM ck_parent;
+----
+1	3
+
+# more than one vector of replaced rows
+statement ok
+CREATE TABLE big (id INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO big SELECT range FROM range(5000);
+
+query III
+WITH replaced AS (INSERT OR REPLACE INTO big SELECT range FROM range(1000, 6000) RETURNING id) SELECT count(*), min(id), max(id) FROM replaced;
+----
+5000	1000	5999
+
+query II
+SELECT count(*), sum(id) FROM big;
+----
+6000	17997000
+
+# the update also runs as delete and insert without RETURNING, which needs every column as well
+statement ok
+SET debug_force_update_to_del_and_insert=true;
+
+statement ok
+INSERT OR REPLACE INTO big VALUES (1), (6000);
+
+statement ok
+RESET debug_force_update_to_del_and_insert;
+
+query II
+SELECT count(*), sum(id) FROM big;
+----
+6001	18003000
+
+# a replaced key that a foreign key references fails with RETURNING, as it does for a table with more columns
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE child (pid INTEGER REFERENCES parent (id));
+
+statement ok
+INSERT INTO parent VALUES (1);
+
+statement ok
+INSERT INTO child VALUES (1);
+
+statement ok
+INSERT OR REPLACE INTO parent VALUES (1);
+
+statement error
+INSERT OR REPLACE INTO parent VALUES (1) RETURNING *;
+----
+Violates foreign key constraint because key "pid: 1" is still referenced
+
+statement ok
+CREATE TABLE wide_parent (id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+CREATE TABLE wide_child (pid INTEGER REFERENCES wide_parent (id));
+
+statement ok
+INSERT INTO wide_parent VALUES (1, 1);
+
+statement ok
+INSERT INTO wide_child VALUES (1);
+
+statement error
+INSERT OR REPLACE INTO wide_parent VALUES (1, 2) RETURNING *;
+----
+Violates foreign key constraint because key "pid: 1" is still referenced
+
+# the shapes that worked already: two key columns, a key column list on a wider table, DO UPDATE, MERGE
+statement ok
+CREATE TABLE two_keys (x INTEGER, y INTEGER, PRIMARY KEY (x, y));
+
+statement ok
+INSERT INTO two_keys VALUES (1, 1);
+
+query II
+INSERT OR REPLACE INTO two_keys VALUES (1, 1) RETURNING *;
+----
+1	1
+
+statement ok
+CREATE TABLE wide (id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO wide VALUES (1, 5);
+
+query II
+INSERT OR REPLACE INTO wide (id) VALUES (1) RETURNING *;
+----
+1	5
+
+query I
+INSERT INTO pk VALUES (1) ON CONFLICT (id) DO UPDATE SET id = excluded.id RETURNING *;
+----
+1
+
+query I
+MERGE INTO pk USING (SELECT 2 AS id) s USING (id) WHEN MATCHED THEN UPDATE RETURNING *;
+----
+2
+
+query I
+SELECT id FROM pk ORDER BY id;
+----
+1
+2
+3

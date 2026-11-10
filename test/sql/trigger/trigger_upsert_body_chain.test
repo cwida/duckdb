@@ -1,0 +1,294 @@
+# name: test/sql/trigger/trigger_upsert_body_chain.test
+# description: Statement trigger bodies that upsert into a table whose only physical column is the key, where the target has its own trigger
+# group: [trigger]
+
+require noforcestorage
+
+statement ok
+SET threads=4;
+
+# The trigger expansion adds RETURNING * to the upsert into a, so the replace returns its rows
+statement ok
+CREATE TABLE a (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b (id INTEGER);
+
+statement ok
+CREATE TABLE log (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa AFTER INSERT ON a FOR EACH STATEMENT INSERT INTO log VALUES (0);
+
+statement ok
+CREATE TRIGGER sb AFTER INSERT ON b FOR EACH STATEMENT INSERT INTO a SELECT id FROM b ON CONFLICT DO NOTHING;
+
+statement ok
+CREATE TRIGGER sb2 AFTER INSERT ON b FOR EACH STATEMENT INSERT OR REPLACE INTO a SELECT id FROM b;
+
+# sb2 replaces the row sb inserted in the same statement
+statement ok
+INSERT INTO b VALUES (1);
+
+query I
+SELECT id FROM a;
+----
+1
+
+query I
+SELECT count(*) FROM log;
+----
+2
+
+statement ok
+INSERT INTO b VALUES (2);
+
+query I
+SELECT id FROM a ORDER BY id;
+----
+1
+2
+
+query I
+SELECT count(*) FROM log;
+----
+4
+
+# Statement triggers on one event fire in name order: here the replace body fires first and conflicts from the second
+# INSERT on
+statement ok
+CREATE TABLE a2 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b2 (id INTEGER);
+
+statement ok
+CREATE TABLE log2 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa2 AFTER INSERT ON a2 FOR EACH STATEMENT INSERT INTO log2 VALUES (0);
+
+statement ok
+CREATE TRIGGER t1_replace AFTER INSERT ON b2 FOR EACH STATEMENT INSERT OR REPLACE INTO a2 SELECT id FROM b2;
+
+statement ok
+CREATE TRIGGER t2_nothing AFTER INSERT ON b2 FOR EACH STATEMENT INSERT INTO a2 SELECT id FROM b2 ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO b2 VALUES (1);
+
+statement ok
+INSERT INTO b2 VALUES (2);
+
+query I
+SELECT id FROM a2 ORDER BY id;
+----
+1
+2
+
+query I
+SELECT count(*) FROM log2;
+----
+4
+
+# One replace body alone
+statement ok
+CREATE TABLE a3 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b3 (id INTEGER);
+
+statement ok
+CREATE TABLE log3 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa3 AFTER INSERT ON a3 FOR EACH STATEMENT INSERT INTO log3 SELECT count(*) FROM a3;
+
+statement ok
+CREATE TRIGGER sb3 AFTER INSERT ON b3 FOR EACH STATEMENT INSERT OR REPLACE INTO a3 SELECT id FROM b3;
+
+statement ok
+INSERT INTO b3 VALUES (1);
+
+statement ok
+INSERT INTO b3 VALUES (2);
+
+statement ok
+INSERT INTO b3 VALUES (3);
+
+query I
+SELECT id FROM a3 ORDER BY id;
+----
+1
+2
+3
+
+query I
+SELECT id FROM log3 ORDER BY id;
+----
+1
+2
+3
+
+# A replace body next to a DO UPDATE body
+statement ok
+CREATE TABLE a4 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b4 (id INTEGER);
+
+statement ok
+CREATE TABLE log4 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa4 AFTER INSERT ON a4 FOR EACH STATEMENT INSERT INTO log4 VALUES (0);
+
+statement ok
+CREATE TRIGGER sb4_update AFTER INSERT ON b4 FOR EACH STATEMENT
+	INSERT INTO a4 SELECT id FROM b4 ON CONFLICT (id) DO UPDATE SET id = excluded.id;
+
+statement ok
+CREATE TRIGGER sb4_replace AFTER INSERT ON b4 FOR EACH STATEMENT INSERT OR REPLACE INTO a4 SELECT id FROM b4;
+
+statement ok
+INSERT INTO b4 VALUES (1);
+
+statement ok
+INSERT INTO b4 VALUES (2);
+
+query I
+SELECT id FROM a4 ORDER BY id;
+----
+1
+2
+
+query I
+SELECT count(*) FROM log4;
+----
+4
+
+# A BEFORE statement trigger on the target
+statement ok
+CREATE TABLE a5 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b5 (id INTEGER);
+
+statement ok
+CREATE TABLE log5 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa5 BEFORE INSERT ON a5 FOR EACH STATEMENT INSERT INTO log5 VALUES (0);
+
+statement ok
+CREATE TRIGGER sb5 AFTER INSERT ON b5 FOR EACH STATEMENT INSERT INTO a5 SELECT id FROM b5 ON CONFLICT DO NOTHING;
+
+statement ok
+CREATE TRIGGER sb5_replace AFTER INSERT ON b5 FOR EACH STATEMENT INSERT OR REPLACE INTO a5 SELECT id FROM b5;
+
+statement ok
+INSERT INTO b5 VALUES (1);
+
+query I
+SELECT id FROM a5;
+----
+1
+
+query I
+SELECT count(*) FROM log5;
+----
+2
+
+# A direct INSERT OR REPLACE into a table with a statement trigger, with and without RETURNING
+statement ok
+CREATE TABLE a6 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE log6 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa6 AFTER INSERT ON a6 FOR EACH STATEMENT INSERT INTO log6 VALUES (0);
+
+statement ok
+INSERT INTO a6 VALUES (1);
+
+statement ok
+INSERT OR REPLACE INTO a6 VALUES (1);
+
+query I rowsort
+INSERT OR REPLACE INTO a6 VALUES (1), (2) RETURNING id;
+----
+1
+2
+
+query I
+SELECT count(*) FROM log6;
+----
+3
+
+# Neighbours that worked before: two upsert bodies into a table without a trigger, two plain INSERT bodies
+statement ok
+CREATE TABLE a7 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b7 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sb7 AFTER INSERT ON b7 FOR EACH STATEMENT INSERT INTO a7 SELECT id FROM b7 ON CONFLICT DO NOTHING;
+
+statement ok
+CREATE TRIGGER sb7_replace AFTER INSERT ON b7 FOR EACH STATEMENT INSERT OR REPLACE INTO a7 SELECT id FROM b7;
+
+statement ok
+INSERT INTO b7 VALUES (1);
+
+statement ok
+INSERT INTO b7 VALUES (2);
+
+query I
+SELECT id FROM a7 ORDER BY id;
+----
+1
+2
+
+statement ok
+CREATE TABLE a8 (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE b8 (id INTEGER);
+
+statement ok
+CREATE TABLE log8 (id INTEGER);
+
+statement ok
+CREATE TRIGGER sa8 AFTER INSERT ON a8 FOR EACH STATEMENT INSERT INTO log8 VALUES (0);
+
+statement ok
+CREATE TRIGGER sb8 AFTER INSERT ON b8 FOR EACH STATEMENT INSERT INTO a8 SELECT id FROM b8;
+
+statement ok
+CREATE TRIGGER sb8_shifted AFTER INSERT ON b8 FOR EACH STATEMENT INSERT INTO a8 SELECT id + 10 FROM b8;
+
+statement ok
+INSERT INTO b8 VALUES (1);
+
+query I
+SELECT id FROM a8 ORDER BY id;
+----
+1
+11
+
+statement error
+INSERT INTO b8 VALUES (2);
+----
+Duplicate key "id: 1"
+
+query I
+SELECT id FROM b8;
+----
+1
+
+query I
+SELECT count(*) FROM log8;
+----
+2
