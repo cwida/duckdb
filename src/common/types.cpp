@@ -8,6 +8,7 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/logical_type_info.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/type_visitor.hpp"
@@ -160,6 +161,10 @@ static bool TryGetPhysicalType(LogicalTypeId id, const LogicalTypeInfo &info, Ph
 			break;
 		}
 		auto width = info.Cast<DecimalTypeInfo>().width;
+		if (width > Decimal::MAX_WIDTH_DECIMAL) {
+			throw InternalException("Decimal has a width of %d which is bigger than the maximum supported width of %d",
+			                        width, DecimalType::MaxWidth());
+		}
 		if (Decimal::IsWide(width)) {
 			// wide decimals hold their unscaled value as a BIGNUM blob
 			result = PhysicalType::VARCHAR;
@@ -1579,23 +1584,24 @@ LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
 	if (!Decimal::IsValidWidthScale(width, scale)) {
 		return LogicalType(LogicalTypeId::DECIMAL, make_uniq<DecimalTypeInfo>(width, scale));
 	}
+	// The shared infos are created on first use: there are too many (width, scale) pairs to create them up front, and
+	// the physical type depends on debug_force_wide_decimal, so each representation has its own table. The tables are
+	// zero-initialized static storage, only the pages of the slots in use are ever touched.
 	constexpr idx_t TYPE_COUNT = DecimalTypeInfoIndex(Decimal::MAX_WIDTH_DECIMAL, Decimal::MAX_WIDTH_DECIMAL) + 1;
-	static const auto decimal_types = []() {
-		// Finish allocation before immortalizing any info so failed initialization releases partial allocations.
-		array<unique_ptr<LogicalTypeInfo>, TYPE_COUNT> infos;
-		for (uint32_t width = 1; width <= Decimal::MAX_WIDTH_DECIMAL; width++) {
-			for (uint32_t scale = 0; scale <= width; scale++) {
-				infos[DecimalTypeInfoIndex(width, scale)] = make_uniq<DecimalTypeInfo>(width, scale);
-			}
+	static atomic<const LogicalTypeInfo *> decimal_types[2][TYPE_COUNT];
+	static mutex decimal_types_lock;
+	auto &slot = decimal_types[Decimal::ForceWide() ? 1 : 0][DecimalTypeInfoIndex(width, scale)];
+	auto info = slot.load(std::memory_order_acquire);
+	if (!info) {
+		lock_guard<mutex> guard(decimal_types_lock);
+		info = slot.load(std::memory_order_relaxed);
+		if (!info) {
+			auto type = CreateImmortal(LogicalTypeId::DECIMAL, make_uniq<DecimalTypeInfo>(width, scale));
+			info = &type.GetTypeInfo();
+			slot.store(info, std::memory_order_release);
 		}
-		array<optional_ptr<const LogicalTypeInfo>, TYPE_COUNT> result;
-		for (idx_t i = 0; i < TYPE_COUNT; i++) {
-			auto type = CreateImmortal(LogicalTypeId::DECIMAL, std::move(infos[i]));
-			result[i] = type.GetTypeInfo();
-		}
-		return result;
-	}();
-	return LogicalType(*decimal_types[DecimalTypeInfoIndex(width, scale)]);
+	}
+	return LogicalType(*info);
 }
 
 //===--------------------------------------------------------------------===//
