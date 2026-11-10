@@ -93,6 +93,8 @@ public:
 		unique_ptr<DataChunk> input;
 	};
 	vector<ConvertedColumn> converted_columns;
+	//! For each scan column, whether it is one of the converted columns
+	vector<bool> converted_position;
 	//! What the function produces, in the types of its file, when some columns are converted afterwards
 	unique_ptr<DataChunk> file_chunk;
 
@@ -728,6 +730,10 @@ static auto CV2TableInitConvertedColumns(ClientContext &context, const CV2TableF
 		converted.input->InitializeEmpty(input_types);
 		local_state.converted_columns.push_back(std::move(converted));
 	}
+	local_state.converted_position.assign(file_types.size(), false);
+	for (auto &converted : local_state.converted_columns) {
+		local_state.converted_position[converted.position] = true;
+	}
 	local_state.file_chunk = make_uniq<DataChunk>();
 	local_state.file_chunk->Initialize(context, file_types);
 }
@@ -735,12 +741,9 @@ static auto CV2TableInitConvertedColumns(ClientContext &context, const CV2TableF
 //! Produces the converted columns from what the function produced in the types of its file
 static auto CV2TableConvertColumns(CV2TableLocalState &local_state, DataChunk &output) -> void {
 	auto &file_chunk = *local_state.file_chunk;
-	vector<bool> converted_position(output.ColumnCount(), false);
-	for (auto &converted : local_state.converted_columns) {
-		converted_position[converted.position] = true;
-	}
+	D_ASSERT(local_state.converted_position.size() == output.ColumnCount());
 	for (idx_t i = 0; i < output.ColumnCount(); i++) {
-		if (!converted_position[i]) {
+		if (!local_state.converted_position[i]) {
 			output.data[i].Reference(file_chunk.data[i]);
 		}
 	}
