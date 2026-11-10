@@ -166,7 +166,7 @@ ClientContext::~ClientContext() {
 	try {
 		Destroy();
 	} catch (...) {
-		// a destructor cannot throw, and locking the context allocates
+		// a destructor cannot throw, and ending the active query allocates
 	}
 }
 
@@ -218,7 +218,9 @@ static unique_ptr<SQLStatement> WrapAsSelect(unique_ptr<TableRef> from_ref) {
 }
 
 void ClientContext::Destroy() {
-	auto lock = LockContext();
+	// the destructor runs this when the heap may be exhausted: lock on the stack, so the tasks of an active query are
+	// still drained before their executor goes away
+	ClientContextLock lock(context_lock);
 	if (transaction.HasActiveTransaction()) {
 		transaction.ResetActiveQuery();
 		if (!transaction.IsAutoCommit()) {
@@ -229,7 +231,7 @@ void ClientContext::Destroy() {
 			}
 		}
 	}
-	CleanupInternal(*lock);
+	CleanupInternal(lock);
 }
 
 void ClientContext::ProcessError(ErrorData &error, const string &query) const {
