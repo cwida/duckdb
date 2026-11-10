@@ -344,8 +344,8 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 		return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::DOUBLE, double>(
 		    source, result, count, selvec, values_index_selvec, empty_payload, is_root);
 	case LogicalTypeId::DECIMAL: {
-		uint8_t width;
-		uint8_t scale;
+		uint32_t width;
+		uint32_t scale;
 		type.GetDecimalProperties(width, scale);
 		DecimalConversionPayloadToVariant payload(width, scale);
 
@@ -404,8 +404,6 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 	case LogicalTypeId::BIT:
 		return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::BITSTRING, string_t>(
 		    source, result, count, selvec, values_index_selvec, empty_payload, is_root);
-	case LogicalTypeId::TYPE:
-		NotImplementedException::Throw("Cannot convert TYPE to VARIANT");
 	default:
 		throw NotImplementedException("Invalid LogicalType (%s) for ConvertToVariant",
 		                              EnumUtil::ToString(logical_type));

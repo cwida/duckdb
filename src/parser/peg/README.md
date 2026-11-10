@@ -60,7 +60,7 @@ SelectClause <- 'SELECT' DistinctClause? TargetList?
 
 ```
 IsExpression <- IsDistinctFromExpression IsTest*
-CaseExpression <- 'CASE' Expression? CaseWhenThen+ CaseElse? 'END'
+SearchedCaseExpression <- 'CASE' CaseWhenThen+ CaseElse? 'END'
 ```
 
 ### Grouping with Parentheses
@@ -124,7 +124,7 @@ Lines starting with `#` are comments:
 ```
 # Expression precedence levels
 # LEVEL 1 (Lowest)
-Expression <- LambdaArrowExpression
+Expression <- LogicalOrExpression
 ```
 
 ### Keywords
@@ -232,6 +232,9 @@ generated process. Listed rules are either `excluded`, `forward` (delegate to a 
    typed body that still needs to be hand-written.
 4. Implement the body in the matching `transform_*.cpp` file (e.g. rules from `describe.gram` go in
    `transform_describe.cpp`), then run `make parser-grammar` again so the declarations pick it up.
+
+Generated transformer code refers to child rules by `PEGRuleId` rather than by name. Rules that grammar extensions
+add at runtime receive IDs past `PEGRuleId::BUILTIN_COUNT` in the compiled grammar that defines them.
 
 ### Transformer Implementation Pattern
 

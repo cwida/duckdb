@@ -1,0 +1,84 @@
+# name: test/sql/index/art/storage/test_art_list_sort_checkpoint_on_close.test
+# description: The checkpoint on close copies an index whose key uses list_sort, after the connection that bound it is gone
+# group: [storage]
+
+require skip_reload
+
+require no_alternative_verify
+
+load {TEST_DIR}/art_list_sort_checkpoint_on_close.db
+
+# keep the changes in the WAL, so that the checkpoint on close has to write them
+statement ok
+SET checkpoint_threshold = '1GB';
+
+statement ok
+CREATE TABLE t (id INTEGER, l INTEGER[]);
+
+statement ok
+INSERT INTO t VALUES (1, [1, 2]), (2, [5, 4]);
+
+statement ok
+CREATE INDEX i ON t ((list_sort(l)[1]));
+
+statement ok
+CREATE INDEX j ON t ((list_grade_up(l, 'DESC')[1]));
+
+statement ok
+CHECKPOINT;
+
+restart
+
+statement ok
+SET checkpoint_threshold = '1GB';
+
+statement ok
+DELETE FROM t WHERE id = 1;
+
+query I
+SELECT wal_size <> '0 bytes' FROM pragma_database_size();
+----
+true
+
+restart
+
+# the checkpoint on close copied the indexes and wrote the change
+query I
+SELECT wal_size FROM pragma_database_size();
+----
+0 bytes
+
+query II
+SELECT id, l FROM t;
+----
+2	[5, 4]
+
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 4;
+----
+2
+
+# an automatic checkpoint at commit copies the indexes as well
+statement ok
+SET checkpoint_threshold = '1B';
+
+statement ok
+INSERT INTO t VALUES (3, [7, 6]);
+
+query I
+SELECT wal_size FROM pragma_database_size();
+----
+0 bytes
+
+statement ok
+DELETE FROM t WHERE id = 2;
+
+query II
+SELECT id, list_grade_up(l, 'DESC')[1] FROM t;
+----
+3	1
+
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 6;
+----
+3

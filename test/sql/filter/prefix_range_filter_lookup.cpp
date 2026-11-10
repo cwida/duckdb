@@ -3,10 +3,12 @@
 
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 
 using namespace duckdb;
 
@@ -291,4 +293,76 @@ TEST_CASE("Prefix range staged lookup handles string prefixes", "[filter][prefix
 	                             {Value(string("a\0\0\1", 4)), false},
 	                             {Value(""), false}},
 	                            1ULL << 25);
+}
+
+TEST_CASE("Dense numeric prefix filters prune only contained non-NULL ranges", "[filter][prefix_range]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &context = *con.context;
+	bool unsigned_keys = false;
+	bool missing_bucket = false;
+	SECTION("Signed bounds across zero") {
+	}
+	SECTION("Unsigned bounds near the maximum") {
+		unsigned_keys = true;
+	}
+	SECTION("A missing bucket keeps row filtering") {
+		missing_bucket = true;
+	}
+
+	const auto type = unsigned_keys ? LogicalType::UBIGINT : LogicalType::BIGINT;
+	Vector keys(type, 65);
+	Value min_value, max_value, before, after;
+	if (unsigned_keys) {
+		const auto start = NumericLimits<uint64_t>::Maximum() - 65;
+		auto writer = FlatVector::Writer<uint64_t>(keys, 65);
+		for (idx_t i = 0; i < 65; i++) {
+			writer.WriteValue(start + i);
+		}
+		min_value = Value::UBIGINT(start);
+		max_value = Value::UBIGINT(start + 64);
+		before = Value::UBIGINT(start - 1);
+		after = Value::UBIGINT(start + 65);
+	} else {
+		auto writer = FlatVector::Writer<int64_t>(keys, 65);
+		for (idx_t i = 0; i < 65; i++) {
+			if (missing_bucket && i == 32) {
+				writer.WriteNull();
+			} else {
+				writer.WriteValue(NumericCast<int64_t>(i) - 32);
+			}
+		}
+		min_value = Value::BIGINT(-32);
+		max_value = Value::BIGINT(32);
+		before = Value::BIGINT(-33);
+		after = Value::BIGINT(33);
+	}
+
+	auto filter = PrefixRangeFilter::CreatePrefixRangeFilter(type);
+	filter->Initialize(context, keys.size(), min_value, max_value, 128);
+	auto state = filter->InitializeBuildState(context);
+	filter->InsertKeys(keys, *state);
+	filter->MergeBuildState(*state);
+	const auto contained =
+	    missing_bucket ? FilterPropagateResult::NO_PRUNING_POSSIBLE : FilterPropagateResult::FILTER_ALWAYS_TRUE;
+	REQUIRE(filter->LookupRange(min_value, max_value) == contained);
+	REQUIRE(filter->LookupRange(before, max_value) == FilterPropagateResult::NO_PRUNING_POSSIBLE);
+	REQUIRE(filter->LookupRange(min_value, after) == FilterPropagateResult::NO_PRUNING_POSSIBLE);
+	REQUIRE(filter->LookupRange(before, before) == FilterPropagateResult::FILTER_ALWAYS_FALSE);
+	REQUIRE(filter->LookupRange(after, after) == FilterPropagateResult::FILTER_ALWAYS_FALSE);
+
+	vector<unique_ptr<Expression>> children;
+	children.push_back(make_uniq<BoundReferenceExpression>(type, idx_t(0)));
+	auto expression = make_uniq<BoundFunctionExpression>(
+	    BoundScalarFunction(PrefixRangeScalarFun::GetFunction(type)), std::move(children),
+	    make_uniq<PrefixRangeFunctionData>(filter.get(), true, "k", type, 0.0f, idx_t(0)));
+	auto stats = BaseStatistics::CreateEmpty(type);
+	stats.SetHasNoNull();
+	NumericStats::SetMin(stats, min_value);
+	NumericStats::SetMax(stats, max_value);
+	vector<optional_ptr<const BaseStatistics>> child_stats {&stats};
+	FunctionStatisticsPruneInput input(*expression, expression->BindInfo().get(), child_stats);
+	REQUIRE(PrefixRangeScalarFun::FilterPrune(input) == contained);
+	stats.SetHasNull();
+	REQUIRE(PrefixRangeScalarFun::FilterPrune(input) == FilterPropagateResult::NO_PRUNING_POSSIBLE);
 }

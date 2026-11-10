@@ -7,6 +7,11 @@ require skip_reload
 statement ok
 SET disabled_filesystems='x, LocalFileSystem ';
 
+query I
+SELECT current_setting('disabled_filesystems')
+----
+LocalFileSystem,x
+
 statement error
 SELECT * FROM read_csv_auto('{DATA_DIR}/csv/auto/skip_row.csv')
 ----

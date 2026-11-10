@@ -37,6 +37,17 @@ bool VectorOperations::TryCast(ClientContext &context, Vector &source, Vector &r
 	return VectorOperations::TryCast(set, get_input, source, result, count, error_message, strict, nullify_parent);
 }
 
+bool VectorOperations::TryCast(Context &context, Vector &source, Vector &result, idx_t count, string *error_message,
+                               bool strict, const bool nullify_parent) {
+	GetCastFunctionInput get_input(context);
+	return VectorOperations::TryCast(CastFunctionSet::Get(context), get_input, source, result, count, error_message,
+	                                 strict, nullify_parent);
+}
+
+void VectorOperations::Cast(Context &context, Vector &source, Vector &result, idx_t count, bool strict) {
+	VectorOperations::TryCast(context, source, result, count, nullptr, strict);
+}
+
 void VectorOperations::Cast(ClientContext &context, Vector &source, Vector &result, idx_t count, bool strict) {
 	VectorOperations::TryCast(context, source, result, count, nullptr, strict);
 }

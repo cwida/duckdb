@@ -56,7 +56,7 @@ void TransactionContext::BeginTransaction() {
 	current_transaction = make_uniq<MetaTransaction>(context, start_timestamp, global_transaction_id);
 
 	// Notify any registered state of transaction begin
-	for (auto &state : context.registered_state->States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		state->TransactionBegin(*current_transaction, context);
 	}
 }
@@ -84,7 +84,7 @@ void TransactionContext::Commit() {
 	auto error = transaction->Commit();
 	// Notify any registered state of transaction commit
 	if (error.HasError()) {
-		for (auto const &s : context.registered_state->States()) {
+		for (auto const &s : context.GetContext().GetRegisteredState().States()) {
 			s->TransactionRollback(*transaction, context, error);
 		}
 		if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
@@ -93,7 +93,7 @@ void TransactionContext::Commit() {
 		}
 		throw TransactionException("Failed to commit: %s", error.RawMessage());
 	}
-	for (auto &state : context.registered_state->States()) {
+	for (auto &state : context.GetContext().GetRegisteredState().States()) {
 		state->TransactionCommit(*transaction, context);
 	}
 	transaction->Finalize();
@@ -130,7 +130,7 @@ void TransactionContext::Rollback(optional_ptr<ErrorData> error) {
 		rollback_error = ErrorData(ex);
 	}
 	// Notify any registered state of transaction rollback - all of them, also when one of them fails
-	for (auto const &s : context.registered_state->States()) {
+	for (auto const &s : context.GetContext().GetRegisteredState().States()) {
 		try {
 			s->TransactionRollback(*transaction, context, error);
 		} catch (std::exception &ex) {

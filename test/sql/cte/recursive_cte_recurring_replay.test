@@ -1,0 +1,211 @@
+# name: test/sql/cte/recursive_cte_recurring_replay.test
+# description: Recurring state must be scoped to one invocation of the recursive operator
+# group: [cte]
+
+# The recurring collection is owned by the physical operator. A re-executed prepared
+# plan and a nested recursion re-entered per outer iteration must start from an empty
+# recurring state instead of reading the previous invocation's rows.
+
+statement ok
+PREPARE q1 AS
+WITH RECURSIVE r(n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + (SELECT count(*) FROM recurring.r)::INT FROM r WHERE n < 4
+)
+SELECT array_agg(n ORDER BY n) FROM r;
+
+query I
+EXECUTE q1;
+----
+[1, 2, 4]
+
+# re-execution of the same prepared plan reuses the physical operator
+query I
+EXECUTE q1;
+----
+[1, 2, 4]
+
+query I
+EXECUTE q1;
+----
+[1, 2, 4]
+
+# UNION (distinct) recurring form
+statement ok
+PREPARE q2 AS
+WITH RECURSIVE r(n) AS (
+    SELECT 1
+    UNION
+    SELECT n + (SELECT count(*) FROM recurring.r)::INT FROM r WHERE n < 4
+)
+SELECT array_agg(n ORDER BY n) FROM r;
+
+query I
+EXECUTE q2;
+----
+[1, 2, 4]
+
+query I
+EXECUTE q2;
+----
+[1, 2, 4]
+
+# nested recursion: the inner operator is re-entered once per outer iteration
+# within a single statement, so every outer row must observe the same inner result
+query I
+WITH RECURSIVE outer_r(i, s) AS (
+    SELECT 1, 0
+    UNION ALL
+    SELECT i + 1,
+           (WITH RECURSIVE inner_r(m) AS (
+                SELECT 1
+                UNION ALL
+                SELECT m + (SELECT count(*) FROM recurring.inner_r)::INT
+                FROM inner_r WHERE m < 3
+            )
+            SELECT sum(m)::INT FROM inner_r)
+    FROM outer_r WHERE i < 4
+)
+SELECT array_agg(s ORDER BY i) FROM outer_r;
+----
+[0, 7, 7, 7]
+
+# recurring reference next to a static join build that invariant-build retention may keep
+statement ok
+CREATE TABLE lookup(k INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO lookup VALUES (1, 10), (2, 20), (3, 30), (4, 40);
+
+statement ok
+PREPARE q3 AS
+WITH RECURSIVE r(n, acc) AS (
+    SELECT 1, 0
+    UNION ALL
+    SELECT n + 1, acc + l.v + (SELECT count(*) FROM recurring.r)::INT
+    FROM r JOIN lookup l ON l.k = n
+    WHERE n < 4
+)
+SELECT max(acc) FROM r;
+
+query I
+EXECUTE q3;
+----
+66
+
+query I
+EXECUTE q3;
+----
+66
+
+# UNION with duplicate seeds and an echo of the recurring state: the invocation's
+# distinct hash table must reject the echoed rows, and the count branch must see
+# only this invocation's accumulated rows; the timeout bounds a broken dedup
+statement ok
+SET max_execution_time=30000;
+
+statement ok
+PREPARE duplicate_replay AS
+WITH RECURSIVE r(n) AS (
+    VALUES (1), (1)
+    UNION
+    (
+        SELECT n + (SELECT count(*) FROM recurring.r)::INT
+        FROM r WHERE n < 4
+        UNION ALL
+        SELECT n FROM recurring.r
+    )
+)
+SELECT list(n ORDER BY n) FROM r;
+
+query I
+EXECUTE duplicate_replay;
+----
+[1, 2, 4]
+
+query I
+EXECUTE duplicate_replay;
+----
+[1, 2, 4]
+
+statement ok
+SET max_execution_time=0;
+
+# keyed recurring reads with a seed row removed between executions: a leaked keyed
+# state would resurrect the removed key
+statement ok
+CREATE TABLE replay_seed(k INTEGER);
+
+statement ok
+INSERT INTO replay_seed VALUES (1), (2);
+
+statement ok
+PREPARE keyed_replay AS
+WITH RECURSIVE r(k, v) USING KEY (k) AS (
+    SELECT k, 0 FROM replay_seed
+    UNION
+    SELECT w.k, s.v + 1
+    FROM r w JOIN recurring.r s USING (k)
+    WHERE s.v < 2
+)
+SELECT k, v FROM r ORDER BY k;
+
+query II
+EXECUTE keyed_replay;
+----
+1	2
+2	2
+
+statement ok
+DELETE FROM replay_seed WHERE k = 2;
+
+query II
+EXECUTE keyed_replay;
+----
+1	2
+
+statement ok
+PREPARE keyed_replay_all AS
+WITH RECURSIVE r(k, v) USING KEY (k) AS (
+    SELECT k, 0 FROM replay_seed
+    UNION ALL
+    SELECT w.k, s.v + 1
+    FROM r w JOIN recurring.r s USING (k)
+    WHERE s.v < 2
+)
+SELECT k, v FROM r ORDER BY k;
+
+query II
+EXECUTE keyed_replay_all;
+----
+1	2
+
+statement ok
+INSERT INTO replay_seed VALUES (3);
+
+query II
+EXECUTE keyed_replay_all;
+----
+1	2
+3	2
+
+# keyed recursion keeps per-invocation state already; protect that it stays correct
+statement ok
+PREPARE q4 AS
+WITH RECURSIVE r(k, v) USING KEY (k) AS (
+    SELECT 1, 1
+    UNION ALL
+    SELECT k, v + 1 FROM r WHERE v < 3
+)
+SELECT array_agg(v ORDER BY k) FROM r;
+
+query I
+EXECUTE q4;
+----
+[3]
+
+query I
+EXECUTE q4;
+----
+[3]

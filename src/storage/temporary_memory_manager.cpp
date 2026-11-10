@@ -1,6 +1,6 @@
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
@@ -25,7 +25,7 @@ void TemporaryMemoryState::SetRemainingSize(idx_t new_remaining_size) {
 	temporary_memory_manager.SetRemainingSize(*this, new_remaining_size);
 }
 
-void TemporaryMemoryState::SetRemainingSizeAndUpdateReservation(ClientContext &context, idx_t new_remaining_size) {
+void TemporaryMemoryState::SetRemainingSizeAndUpdateReservation(Context &context, idx_t new_remaining_size) {
 	D_ASSERT(new_remaining_size != 0); // Use SetZero instead
 	const annotated_lock_guard<annotated_mutex> guard(temporary_memory_manager.lock);
 	temporary_memory_manager.SetRemainingSize(*this, new_remaining_size);
@@ -50,7 +50,7 @@ idx_t TemporaryMemoryState::GetMinimumReservation() const {
 	return minimum_reservation;
 }
 
-void TemporaryMemoryState::UpdateReservation(ClientContext &context) {
+void TemporaryMemoryState::UpdateReservation(Context &context) {
 	const annotated_lock_guard<annotated_mutex> guard(temporary_memory_manager.lock);
 	temporary_memory_manager.UpdateState(context, *this);
 }
@@ -86,23 +86,23 @@ void TemporaryMemoryManager::Unregister(TemporaryMemoryState &temporary_memory_s
 	Verify();
 }
 
-void TemporaryMemoryManager::UpdateConfiguration(ClientContext &context) {
-	auto &buffer_manager = BufferManager::GetBufferManager(context);
-	auto &task_scheduler = TaskScheduler::GetScheduler(context);
+void TemporaryMemoryManager::UpdateConfiguration(Context &context) {
+	auto &buffer_manager = context.GetBufferManager();
+	auto &task_scheduler = context.GetTaskScheduler();
 
 	memory_limit =
 	    LossyNumericCast<idx_t>(MAXIMUM_MEMORY_LIMIT_RATIO * static_cast<double>(buffer_manager.GetMaxMemory()));
 	has_temporary_directory = buffer_manager.HasTemporaryDirectory();
 	num_threads = task_scheduler.NumberOfThreads();
-	num_connections = ConnectionManager::Get(context).GetConnectionCount();
+	num_connections = ConnectionManager::Get(context.GetDatabase()).GetConnectionCount();
 	query_max_memory = buffer_manager.GetOperatorMemoryLimit();
 }
 
-TemporaryMemoryManager &TemporaryMemoryManager::Get(ClientContext &context) {
-	return BufferManager::GetBufferManager(context).GetTemporaryMemoryManager();
+TemporaryMemoryManager &TemporaryMemoryManager::Get(Context &context) {
+	return context.GetBufferManager().GetTemporaryMemoryManager();
 }
 
-unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext &context) {
+unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(Context &context) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
 	UpdateConfiguration(context);
 
@@ -115,7 +115,7 @@ unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext 
 	return result;
 }
 
-void TemporaryMemoryManager::UpdateState(ClientContext &context, TemporaryMemoryState &temporary_memory_state) {
+void TemporaryMemoryManager::UpdateState(Context &context, TemporaryMemoryState &temporary_memory_state) {
 	UpdateConfiguration(context);
 
 	// The lower bound for the reservation of this state is either the minimum reservation or the remaining size

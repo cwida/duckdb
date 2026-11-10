@@ -1,0 +1,47 @@
+# name: test/optimizer/joins/join_elimination_condition_reference.test
+# description: Join elimination keeps a join whose output is read by the condition of a join above it
+# group: [joins]
+
+statement ok
+CREATE TABLE supplier AS SELECT range AS s_suppkey, range % 5 AS s_nationkey FROM range(20);
+
+statement ok
+CREATE TABLE nation AS SELECT range AS n_nationkey FROM range(5);
+
+statement ok
+CREATE TABLE partsupp AS SELECT range % 20 AS ps_suppkey, range AS ps_partkey, range * 1.5 AS ps_supplycost FROM range(100);
+
+statement ok
+CREATE TABLE part AS SELECT range AS p_partkey, range % 3 AS p_mfgr FROM range(100);
+
+statement ok
+CREATE TABLE orders AS SELECT range AS o_orderkey, range % 7 AS o_custkey FROM range(50);
+
+statement ok
+CREATE TABLE lineitem AS SELECT range AS l_orderkey, range % 20 AS l_suppkey FROM range(50);
+
+statement ok
+CREATE TABLE customer AS SELECT range AS c_custkey FROM range(7);
+
+# the SINGLE join of the LIMIT 1 subquery sits below a filter and feeds the LEFT JOIN condition
+query IIII
+WITH rs AS (
+    SELECT s.s_suppkey, SUM(ps.ps_supplycost) AS total_cost,
+           RANK() OVER (PARTITION BY p.p_mfgr ORDER BY SUM(ps.ps_supplycost) DESC) AS rnk
+    FROM supplier s JOIN partsupp ps ON s.s_suppkey = ps.ps_suppkey JOIN part p ON ps.ps_partkey = p.p_partkey
+    GROUP BY s.s_suppkey, p.p_mfgr),
+tc AS (
+    SELECT c.c_custkey, COUNT(o.o_orderkey) AS n
+    FROM customer c LEFT JOIN orders o ON c.c_custkey = o.o_custkey GROUP BY c.c_custkey)
+SELECT ns.n_nationkey, rs.s_suppkey, MAX(rs.total_cost), tc.n
+FROM rs
+JOIN nation ns ON ns.n_nationkey = (SELECT s_nationkey FROM supplier WHERE s_suppkey = rs.s_suppkey)
+LEFT JOIN tc ON tc.c_custkey = (SELECT o.o_custkey FROM orders o JOIN lineitem l ON o.o_orderkey = l.l_orderkey
+                                WHERE l.l_suppkey = rs.s_suppkey LIMIT 1)
+WHERE rs.rnk = 1
+GROUP BY ns.n_nationkey, rs.s_suppkey, tc.n
+ORDER BY ALL;
+----
+2	17	201.0	7
+3	18	204.0	7
+4	19	207.0	7

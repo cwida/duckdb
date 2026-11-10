@@ -235,7 +235,7 @@ TEST_CASE("V2: column_data_collection VARCHAR round-trip", "[capi_v2][column_dat
 	REQUIRE(duckdb_v2_vector_get_view(scan_vec, &view, nullptr) == DUCKDB_V2_ERROR_NONE);
 	const auto *data = static_cast<const duckdb_v2_bytes *>(view.data);
 	for (idx_t i = 0; i < strings.size(); i++) {
-		REQUIRE(Convert(Convert(data[SelAt(view.sel, i)])) == strings[i]);
+		REQUIRE(std::string(Convert(data[SelAt(view.sel, i)])) == strings[i]);
 	}
 
 	duckdb_v2_data_chunk_destroy(&scan_chunk);

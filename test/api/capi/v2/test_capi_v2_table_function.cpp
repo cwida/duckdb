@@ -26,16 +26,11 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_identifier_t TableIdent(const char *s) {
-	return duckdb_v2_identifier_t {s, std::strlen(s)};
-}
-
 // Create a table function on the connection with the given name.
-duckdb_v2_table_function_handle MakeTable(duckdb_v2_connection_handle conn, const char *name) {
+duckdb_v2_table_function_handle MakeTable(duckdb_v2_connection_handle conn, std::string_view name) {
 	duckdb_v2_table_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_table_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto str = Convert(name);
-	REQUIRE(duckdb_v2_table_function_set_name(function, &str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	return function;
 }
 
@@ -47,16 +42,15 @@ duckdb_v2_function_signature_handle SigOf(duckdb_v2_table_function_handle functi
 	return sig;
 }
 
-void TableSigParam(duckdb_v2_function_signature_handle sig, const char *name, duckdb_v2_logical_type_handle type,
+void TableSigParam(duckdb_v2_function_signature_handle sig, std::string_view name, duckdb_v2_logical_type_handle type,
                    duckdb_v2_value_handle default_value = nullptr) {
-	auto name_str = TableIdent(name);
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &name_str, type, default_value,
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, name.data(), name.size(), type, default_value,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 }
 
 // Run a query producing a single BIGINT cell.
-int64_t QueryI64(duckdb_v2_connection_handle conn, const char *sql) {
+int64_t QueryI64(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
@@ -84,14 +78,15 @@ duckdb_v2_logical_type_handle MakeTypeInCallback(duckdb_v2_context_handle contex
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_context_get_factory(context, &factory, nullptr);
 	duckdb_v2_logical_type_handle type = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &type, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
 		return nullptr;
 	}
 	return type;
 }
 
 // The message of a failing query, or the empty string when it succeeded.
-std::string QueryError(duckdb_v2_connection_handle conn, const char *sql) {
+std::string QueryError(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
 	auto rc = Query(conn, sql, &result, &err);
@@ -113,9 +108,10 @@ std::string QueryError(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_result_destroy(&result);
 	std::string message;
 	if (rc != DUCKDB_V2_ERROR_NONE && err) {
-		duckdb_v2_str text = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &text);
-		message = Convert(text);
+		const char *text = nullptr;
+		idx_t text_length = 0;
+		duckdb_v2_error_info_get_text(err, &text, &text_length);
+		message = std::string(text, text_length);
 	}
 	duckdb_v2_error_info_destroy(&err);
 	REQUIRE(rc != DUCKDB_V2_ERROR_NONE);
@@ -156,12 +152,12 @@ void RangeBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	}
 
 	duckdb_v2_logical_type_handle bigint = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, 0, &bigint,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, nullptr, 0,
+	                                          &bigint, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto name_str = TableIdent("i");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	std::string_view name_str = "i";
+	rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -220,7 +216,7 @@ void RangeExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_conte
 }
 
 // Registers my_range on the connection, optionally with partition callbacks.
-void RegisterRange(EnvFixture &fx, const char *name = "my_range",
+void RegisterRange(EnvFixture &fx, std::string_view name = "my_range",
                    duckdb_v2_table_function_partitioning_callback_fn info_cb = nullptr,
                    duckdb_v2_table_function_partition_data_callback_fn data_cb = nullptr) {
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
@@ -273,8 +269,8 @@ void PairsBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	if (!integer) {
 		return;
 	}
-	auto name_str = TableIdent("a");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, integer, err);
+	std::string_view name_str = "a";
+	rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), integer, err);
 	duckdb_v2_logical_type_destroy(&integer);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -283,8 +279,8 @@ void PairsBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	if (!varchar) {
 		return;
 	}
-	auto name_str2 = TableIdent("b");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str2, varchar, err);
+	std::string_view name_str2 = "b";
+	rc = duckdb_v2_table_function_bind_add_result_column(result, name_str2.data(), name_str2.size(), varchar, err);
 	duckdb_v2_logical_type_destroy(&varchar);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -390,8 +386,8 @@ void ArgsBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_functi
 	if (!bigint) {
 		return;
 	}
-	auto name_str = TableIdent("n");
-	auto rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	std::string_view name_str = "n";
+	auto rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -463,8 +459,8 @@ void StateBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	if (!bigint) {
 		return;
 	}
-	auto name_str = TableIdent("v");
-	auto rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	std::string_view name_str = "v";
+	auto rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -541,15 +537,15 @@ void StateExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_conte
 void FailingBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle,
                    duckdb_v2_context_handle, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_INPUT_INVALID);
-	auto text_str = Convert("bind refused");
-	duckdb_v2_error_info_set_text(*err, &text_str);
+	std::string_view text_str = "bind refused";
+	duckdb_v2_error_info_set_text(*err, text_str.data(), text_str.size());
 }
 
 void FailingExecCb(duckdb_v2_table_function_exec_info_handle, duckdb_v2_context_handle,
                    duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_INPUT_OUT_OF_RANGE);
-	auto text_str = Convert("exec refused");
-	duckdb_v2_error_info_set_text(*err, &text_str);
+	std::string_view text_str = "exec refused";
+	duckdb_v2_error_info_set_text(*err, text_str.data(), text_str.size());
 }
 
 // A bind callback that declares nothing: registration cannot catch this, the scan must.
@@ -564,8 +560,8 @@ void AnyColumnBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_f
 	if (!any) {
 		return;
 	}
-	auto name_str = TableIdent("x");
-	auto rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, any, err);
+	std::string_view name_str = "x";
+	auto rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), any, err);
 	duckdb_v2_logical_type_destroy(&any);
 	(void)rc;
 }
@@ -654,7 +650,7 @@ TEST_CASE("V2 table: multiple result columns share the batch row count", "[capi_
 	duckdb_v2_vector_view view {};
 	duckdb_v2_vector_get_view(vec, &view, nullptr);
 	auto bytes = static_cast<const duckdb_v2_bytes *>(view.data)[SelAt(view.sel, 0)];
-	REQUIRE(Convert(Convert(bytes)) == "row0,row1,row2");
+	REQUIRE(std::string(Convert(bytes)) == "row0,row1,row2");
 	duckdb_v2_data_chunk_destroy(&chunk);
 	duckdb_v2_result_destroy(&text);
 }
@@ -673,8 +669,8 @@ TEST_CASE("V2 table: parameter defaults, named arguments and varargs", "[capi_v2
 	auto sig = SigOf(function);
 	TableSigParam(sig, "a", bigint);
 	TableSigParam(sig, "b", bigint, seven);
-	auto args_ident = TableIdent("args");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &args_ident, bigint, nullptr,
+	std::string_view args_ident = "args";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, args_ident.data(), args_ident.size(), bigint, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_POSITIONAL_VARIADIC,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, ArgsBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -922,8 +918,9 @@ TEST_CASE("V2 table: null arguments and destroy null-safety", "[capi_v2][table_f
 	REQUIRE(duckdb_v2_table_function_create(fx.factory, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_connection_register_table_function(nullptr, function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
-	auto str = Convert("x");
-	REQUIRE(duckdb_v2_table_function_set_name(nullptr, &str, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	std::string_view str = "x";
+	REQUIRE(duckdb_v2_table_function_set_name(nullptr, str.data(), str.size(), nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(nullptr, StateBindCb, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_set_exec_callback(nullptr, RangeExecCb, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_table_function_get_signature(nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -972,8 +969,9 @@ void ProjBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_functi
 		return;
 	}
 	for (auto name : {"x", "y", "z"}) {
-		auto name_str = TableIdent(name);
-		if (duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err) != DUCKDB_V2_ERROR_NONE) {
+		auto name_str = std::string_view(name);
+		if (duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err) !=
+		    DUCKDB_V2_ERROR_NONE) {
 			break;
 		}
 	}
@@ -1050,7 +1048,7 @@ void ProjExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_contex
 	global.position += rows;
 }
 
-void RegisterProj(duckdb_v2_connection_handle conn, const char *name, bool projection_pushdown) {
+void RegisterProj(duckdb_v2_connection_handle conn, std::string_view name, bool projection_pushdown) {
 	auto function = MakeTable(conn, name);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, ProjBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_init_global_callback(function, ProjInitGlobalCb, nullptr) ==
@@ -1066,7 +1064,7 @@ void RegisterProj(duckdb_v2_connection_handle conn, const char *name, bool proje
 
 // Runs a query and calls fn(view, row) for every cell, row-major.
 template <class FN>
-void ForEachCell(duckdb_v2_connection_handle conn, const char *sql, FN fn) {
+void ForEachCell(duckdb_v2_connection_handle conn, std::string_view sql, FN fn) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	while (auto chunk = StepChunk(result)) {
@@ -1089,7 +1087,7 @@ void ForEachCell(duckdb_v2_connection_handle conn, const char *sql, FN fn) {
 }
 
 // Runs a query and collects its BIGINT columns row-major.
-std::vector<int64_t> QueryCells(duckdb_v2_connection_handle conn, const char *sql) {
+std::vector<int64_t> QueryCells(duckdb_v2_connection_handle conn, std::string_view sql) {
 	std::vector<int64_t> cells;
 	ForEachCell(conn, sql, [&](const duckdb_v2_vector_view &view, idx_t row) {
 		cells.push_back(static_cast<const int64_t *>(view.data)[row]);
@@ -1138,8 +1136,8 @@ void ClaimBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	if (!bigint) {
 		return;
 	}
-	auto name_str = TableIdent("i");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	std::string_view name_str = "i";
+	rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -1260,7 +1258,8 @@ void FailingPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle, duc
 	SetErrorInfo(err, DUCKDB_V2_ERROR_INPUT_INVALID, "pushdown refused");
 }
 
-void RegisterClaim(EnvFixture &fx, const char *name, duckdb_v2_table_function_filter_pushdown_callback_fn pushdown) {
+void RegisterClaim(EnvFixture &fx, std::string_view name,
+                   duckdb_v2_table_function_filter_pushdown_callback_fn pushdown) {
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	auto function = MakeTable(fx.conn, name);
 	TableSigParam(SigOf(function), "n", bigint);
@@ -1358,11 +1357,11 @@ TEST_CASE("V2 table: pushdown null arguments", "[capi_v2][table_function]") {
 namespace {
 
 // Runs sql (an EXPLAIN statement) and reports whether any VARCHAR cell of the output contains needle.
-bool ExplainContains(duckdb_v2_connection_handle conn, const char *sql, const char *needle) {
+bool ExplainContains(duckdb_v2_connection_handle conn, std::string_view sql, std::string_view needle) {
 	bool found = false;
 	ForEachCell(conn, sql, [&](const duckdb_v2_vector_view &view, idx_t row) {
 		auto bytes = static_cast<const duckdb_v2_bytes *>(view.data)[row];
-		if (Convert(Convert(bytes)).find(needle) != std::string::npos) {
+		if (std::string(Convert(bytes)).find(needle) != std::string::npos) {
 			found = true;
 		}
 	});
@@ -1396,8 +1395,8 @@ void BatchOrderBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_
 	if (!bigint) {
 		return;
 	}
-	auto name_str = TableIdent("b");
-	duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	std::string_view name_str = "b";
+	duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 }
 
@@ -1480,7 +1479,7 @@ void BatchOrderGetPartitionDataCb(duckdb_v2_table_function_partition_data_info_h
 	duckdb_v2_table_function_partition_data_set_batch_index(info, static_cast<idx_t>(local.id), err);
 }
 
-void RegisterBatchOrder(duckdb_v2_connection_handle conn, const char *name, bool with_partition_data) {
+void RegisterBatchOrder(duckdb_v2_connection_handle conn, std::string_view name, bool with_partition_data) {
 	auto function = MakeTable(conn, name);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, BatchOrderBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_init_global_callback(function, BatchOrderInitGlobalCb, nullptr) ==
@@ -1541,11 +1540,11 @@ void PartProbeBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_f
 	if (!bigint) {
 		return;
 	}
-	auto name_str = TableIdent("part_col");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, bigint, err);
+	std::string_view name_str = "part_col";
+	rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), bigint, err);
 	if (rc == DUCKDB_V2_ERROR_NONE) {
-		auto name_str2 = TableIdent("val");
-		rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str2, bigint, err);
+		std::string_view name_str2 = "val";
+		rc = duckdb_v2_table_function_bind_add_result_column(result, name_str2.data(), name_str2.size(), bigint, err);
 	}
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
@@ -1684,7 +1683,7 @@ void PartProbeGetPartitionInfoCb(duckdb_v2_table_function_partitioning_info_hand
 }
 
 // Registers part_probe's bind/init_global/exec with the given partition callbacks.
-void RegisterPartProbeVariant(EnvFixture &fx, const char *name,
+void RegisterPartProbeVariant(EnvFixture &fx, std::string_view name,
                               duckdb_v2_table_function_partitioning_callback_fn info_cb,
                               duckdb_v2_table_function_partition_data_callback_fn data_cb) {
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
@@ -1701,7 +1700,7 @@ void RegisterPartProbeVariant(EnvFixture &fx, const char *name,
 	duckdb_v2_logical_type_destroy(&bigint);
 }
 
-void RegisterPartProbe(EnvFixture &fx, const char *name) {
+void RegisterPartProbe(EnvFixture &fx, std::string_view name) {
 	RegisterPartProbeVariant(fx, name, PartProbeGetPartitionInfoCb, PartProbeGetPartitionDataCb);
 }
 
@@ -1823,15 +1822,15 @@ void ProjPartProbeBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_tab
 		duckdb_v2_logical_type_destroy(&integer);
 		return;
 	}
-	auto name_str = TableIdent("pad");
-	rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, integer, err);
+	std::string_view name_str = "pad";
+	rc = duckdb_v2_table_function_bind_add_result_column(result, name_str.data(), name_str.size(), integer, err);
 	if (rc == DUCKDB_V2_ERROR_NONE) {
-		auto name_str2 = TableIdent("part_col");
-		rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str2, bigint, err);
+		std::string_view name_str2 = "part_col";
+		rc = duckdb_v2_table_function_bind_add_result_column(result, name_str2.data(), name_str2.size(), bigint, err);
 	}
 	if (rc == DUCKDB_V2_ERROR_NONE) {
-		auto name_str3 = TableIdent("val");
-		rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str3, bigint, err);
+		std::string_view name_str3 = "val";
+		rc = duckdb_v2_table_function_bind_add_result_column(result, name_str3.data(), name_str3.size(), bigint, err);
 	}
 	duckdb_v2_logical_type_destroy(&integer);
 	duckdb_v2_logical_type_destroy(&bigint);
@@ -1937,7 +1936,7 @@ void ProjPartProbeGetPartitionInfoCb(duckdb_v2_table_function_partitioning_info_
 	    info, DUCKDB_V2_TABLE_PARTITION_INFO_SINGLE_VALUE_PARTITIONS, err);
 }
 
-void RegisterProjPartProbe(EnvFixture &fx, const char *name) {
+void RegisterProjPartProbe(EnvFixture &fx, std::string_view name) {
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 	auto function = MakeTable(fx.conn, name);
 	TableSigParam(SigOf(function), "n", bigint);
@@ -2162,23 +2161,24 @@ void KwargsBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_func
 	}
 	table_kind_probe = TableKindProbe {};
 	auto &counts = table_kind_probe.counts;
-	auto n_ident = TableIdent("n");
-	auto step_ident = TableIdent("step");
+	std::string_view n_ident = "n";
+	std::string_view step_ident = "step";
 	if (duckdb_v2_function_bind_get_arg_count(info, &counts[0], &counts[1], &counts[2], &counts[3], err) !=
 	        DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_function_bind_get_arg_index(info, &n_ident, &table_kind_probe.n_index, &table_kind_probe.n_found,
-	                                          err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_function_bind_get_arg_index(info, &step_ident, &table_kind_probe.step_index,
+	    duckdb_v2_function_bind_get_arg_index(info, n_ident.data(), n_ident.size(), &table_kind_probe.n_index,
+	                                          &table_kind_probe.n_found, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_function_bind_get_arg_index(info, step_ident.data(), step_ident.size(), &table_kind_probe.step_index,
 	                                          &table_kind_probe.step_found, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	const auto arg_count = counts[0] + counts[1] + counts[2] + counts[3];
 	for (idx_t i = 0; i < arg_count; i++) {
-		duckdb_v2_identifier_t name {};
+		const char *name = nullptr;
+		idx_t name_length = 0;
 		duckdb_v2_logical_type_handle type = nullptr;
 		duckdb_v2_value_handle value = nullptr;
 		DUCKDB_V2_LOGICAL_TYPE_ID type_id = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
-		if (duckdb_v2_function_bind_get_arg_name(info, i, &name, err) != DUCKDB_V2_ERROR_NONE ||
+		if (duckdb_v2_function_bind_get_arg_name(info, i, &name, &name_length, err) != DUCKDB_V2_ERROR_NONE ||
 		    duckdb_v2_function_bind_get_arg_type(info, i, &type, err) != DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
@@ -2188,7 +2188,7 @@ void KwargsBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_func
 		    duckdb_v2_function_bind_get_arg_value(info, i, &value, err) != DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
-		table_kind_probe.names.push_back(Convert(name));
+		table_kind_probe.names.push_back(std::string(name, name_length));
 		table_kind_probe.types.push_back(type_id);
 		table_kind_probe.values.push_back(value);
 	}
@@ -2197,7 +2197,7 @@ void KwargsBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_func
 	if (!bigint) {
 		return;
 	}
-	auto rc = duckdb_v2_table_function_bind_add_result_column(result, &n_ident, bigint, err);
+	auto rc = duckdb_v2_table_function_bind_add_result_column(result, n_ident.data(), n_ident.size(), bigint, err);
 	duckdb_v2_logical_type_destroy(&bigint);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return;
@@ -2237,12 +2237,12 @@ TEST_CASE("V2 table: named-only parameters and kwargs", "[capi_v2][table_functio
 	auto function = MakeTable(fx.conn, "my_kw");
 	auto sig = SigOf(function);
 	TableSigParam(sig, "n", bigint);
-	auto opts_ident = TableIdent("opts");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &opts_ident, any, nullptr,
+	std::string_view opts_ident = "opts";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, opts_ident.data(), opts_ident.size(), any, nullptr,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_NAMED_VARIADIC,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto step_ident = TableIdent("step");
-	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, &step_ident, bigint, one,
+	std::string_view step_ident = "step";
+	REQUIRE(duckdb_v2_function_signature_add_parameter(sig, step_ident.data(), step_ident.size(), bigint, one,
 	                                                   DUCKDB_V2_FUNCTION_PARAMETER_KIND_NAMED_ONLY,
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, KwargsBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);

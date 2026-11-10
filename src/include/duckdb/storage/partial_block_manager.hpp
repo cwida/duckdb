@@ -36,7 +36,7 @@ public:
 
 public:
 	//! Use the default packing threshold unless supplied; it must not exceed the block size.
-	PartialBlockManager(QueryContext context, BlockManager &block_manager, PartialBlockType partial_block_type,
+	PartialBlockManager(Context &context, BlockManager &block_manager, PartialBlockType partial_block_type,
 	                    optional_idx max_partial_block_size = optional_idx(),
 	                    uint32_t max_use_count = DEFAULT_MAX_USE_COUNT);
 	//! Discard pending blocks without flushing or finalizing their packables.
@@ -68,8 +68,8 @@ public:
 
 	//! Returns a reference to the underlying block manager.
 	BlockManager &GetBlockManager() const;
-	//! Returns the optional client context.
-	optional_ptr<ClientContext> GetClientContext() const;
+	//! Returns the query context to attribute IO to.
+	QueryContext GetQueryContext() const;
 
 private:
 	//! Remove the smallest fitting block from the map, or return nullptr if none fits.
@@ -84,11 +84,8 @@ private:
 	void RetainOrFlush(unique_ptr<PartialBlock> partial_block);
 
 private:
-	//! The optional client context in which we use the partial block manager.
-	//! The SingleFileCheckpointWriter contains a partial block manager, and the destructor of
-	//! AttachedDatabase invokes CreateCheckpoint with that checkpoint writer.
-	//! Thus, we're using the optional client context instead of a reference.
-	optional_ptr<ClientContext> context;
+	//! The context in which we use the partial block manager (owned by the checkpoint writer)
+	Context &context;
 	BlockManager &block_manager;
 	PartialBlockType partial_block_type;
 	mutex partial_block_lock;

@@ -9,7 +9,6 @@
 #pragma once
 
 #include "column_reader.hpp"
-#include "reader/templated_column_reader.hpp"
 
 namespace duckdb {
 
@@ -31,26 +30,30 @@ public:
 			auto byte = *(pointer + (size - i - 1));
 			res_ptr[i] = positive ? byte : byte ^ 0xFF;
 		}
+		bool invalid = false;
 		// Verify that there are only 0s here
-		if (size > sizeof(PHYSICAL_TYPE)) {
-			for (idx_t i = sizeof(PHYSICAL_TYPE); i < size; i++) {
-				auto byte = *(pointer + (size - i - 1));
-				if (!positive) {
-					byte ^= 0xFF;
-				}
-				if (byte != 0) {
-					throw InvalidInputException("Invalid decimal encoding in Parquet file");
-				}
+		for (idx_t i = sizeof(PHYSICAL_TYPE); i < size; i++) {
+			auto byte = *(pointer + (size - i - 1));
+			if (!positive) {
+				byte ^= 0xFF;
 			}
+			invalid |= byte != 0;
+		}
+		invalid |= res < 0;
+		if (invalid) {
+			ThrowInvalidDecimalEncoding();
 		}
 		if (!positive) {
-			res += 1;
-			return -res;
+			// Negate before subtracting one to keep the minimum signed value representable.
+			return -res - 1;
 		}
 		return res;
 	}
 
 	static unique_ptr<ColumnReader> CreateReader(const ParquetReader &reader, const ParquetColumnSchema &schema);
+
+private:
+	[[noreturn]] static void ThrowInvalidDecimalEncoding();
 };
 
 template <>

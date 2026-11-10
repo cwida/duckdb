@@ -20,21 +20,21 @@ TEST_CASE("TemporaryMemoryManager preserves minimum reservations", "[storage][te
 	SECTION("Regular processing") {
 	}
 
-	auto &manager = TemporaryMemoryManager::Get(context);
-	auto state = manager.Register(context);
+	auto &manager = TemporaryMemoryManager::Get(context.GetContext());
+	auto state = manager.Register(context.GetContext());
 	constexpr idx_t mib = 1024ULL * 1024ULL;
 	state->SetMinimumReservation(96 * mib);
-	state->SetRemainingSizeAndUpdateReservation(context, 128 * mib);
+	state->SetRemainingSizeAndUpdateReservation(context.GetContext(), 128 * mib);
 	REQUIRE(state->GetReservation() == 96 * mib);
 
-	auto other = manager.Register(context);
+	auto other = manager.Register(context.GetContext());
 	other->SetMinimumReservation(8 * mib);
-	other->SetRemainingSizeAndUpdateReservation(context, 128 * mib);
+	other->SetRemainingSizeAndUpdateReservation(context.GetContext(), 128 * mib);
 	REQUIRE(other->GetReservation() == 8 * mib);
 
-	state->SetRemainingSizeAndUpdateReservation(context, 80 * mib);
+	state->SetRemainingSizeAndUpdateReservation(context.GetContext(), 80 * mib);
 	REQUIRE(state->GetReservation() == 80 * mib);
-	state->SetRemainingSizeAndUpdateReservation(context, 48 * mib);
+	state->SetRemainingSizeAndUpdateReservation(context.GetContext(), 48 * mib);
 	REQUIRE(state->GetReservation() == 48 * mib);
 	state->SetZero();
 	REQUIRE(state->GetReservation() == 0);
@@ -46,9 +46,9 @@ TEST_CASE("TemporaryMemoryManager does not limit states without temporary storag
 	Connection con(db);
 	auto &context = *con.context;
 	REQUIRE_NO_FAIL(con.Query("SET memory_limit='64MiB'; SET temp_directory=''"));
-	auto state = TemporaryMemoryManager::Get(context).Register(context);
+	auto state = TemporaryMemoryManager::Get(context.GetContext()).Register(context.GetContext());
 	constexpr idx_t remaining_size = 128ULL * 1024ULL * 1024ULL;
-	state->SetRemainingSizeAndUpdateReservation(context, remaining_size);
+	state->SetRemainingSizeAndUpdateReservation(context.GetContext(), remaining_size);
 	REQUIRE(state->GetReservation() == remaining_size);
 }
 
@@ -65,11 +65,11 @@ TEST_CASE("TemporaryMemoryManager handles many active states", "[storage][tempor
 
 	buffer_pool.SetLimit(memory_limit, "temporary memory manager test");
 
-	auto &manager = TemporaryMemoryManager::Get(context);
+	auto &manager = TemporaryMemoryManager::Get(context.GetContext());
 	duckdb::vector<duckdb::unique_ptr<TemporaryMemoryState>> states;
 	states.reserve(state_count);
 	for (idx_t i = 0; i < state_count; i++) {
-		auto state = manager.Register(context);
+		auto state = manager.Register(context.GetContext());
 		state->SetMinimumReservation(initial_reservation);
 		state->SetRemainingSize(remaining_size);
 		states.push_back(std::move(state));
@@ -77,12 +77,12 @@ TEST_CASE("TemporaryMemoryManager handles many active states", "[storage][tempor
 
 	REQUIRE_NO_FAIL(con.Query("SET debug_force_external=true"));
 	for (auto &state : states) {
-		state->UpdateReservation(context);
+		state->UpdateReservation(context.GetContext());
 		REQUIRE(state->GetReservation() == initial_reservation);
 	}
 
 	REQUIRE_NO_FAIL(con.Query("SET debug_force_external=false"));
-	states.back()->UpdateReservation(context);
+	states.back()->UpdateReservation(context.GetContext());
 
 	REQUIRE(states.back()->GetReservation() >= initial_reservation);
 	REQUIRE(states.back()->GetReservation() <= remaining_size);

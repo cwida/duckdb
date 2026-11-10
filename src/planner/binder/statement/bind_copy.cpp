@@ -106,33 +106,6 @@ identifier_map_t<CopyOption> Binder::GetFullCopyOptionsList(const CopyFunction &
 	return copy_options;
 }
 
-static idx_t ParseBytesArg(const Identifier &name, Value &arg) {
-	if (arg.IsNull()) {
-		throw BinderException("NULL is not supported as a valid option for COPY option \"%s\"",
-		                      StringUtil::Upper(name.GetIdentifierName()));
-	}
-	optional_idx result;
-	if (arg.type().id() == LogicalTypeId::VARCHAR) {
-		result = DBConfig::ParseMemoryLimit(arg.ToString());
-	} else {
-		auto cast_arg = arg.DefaultTryCastAs(LogicalType::UBIGINT);
-		if (!cast_arg) {
-			throw BinderException("Unable to parse bytes from \"%s\" for copy option \"%s\" ", arg.ToString(),
-			                      StringUtil::Upper(name.GetIdentifierName()));
-		}
-		auto bytes = cast_arg->GetValue<idx_t>();
-		if (bytes != DConstants::INVALID_INDEX) {
-			result = bytes;
-		}
-	}
-	if (!result.IsValid()) {
-		// e.g. '-1' or 'none', which ParseMemoryLimit parses as unlimited
-		throw BinderException("Copy option \"%s\" must be a valid size, not \"%s\"",
-		                      StringUtil::Upper(name.GetIdentifierName()), arg.ToString());
-	}
-	return result.GetIndex();
-}
-
 struct CopyToParsedOptions {
 	optional<bool> use_tmp_file;
 	optional<CopyOverwriteMode> overwrite_mode;
@@ -490,7 +463,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (option_values.empty()) {
 				throw BinderException("BATCH_SIZE_BYTES/ROW_GROUP_SIZE_BYTES cannot be empty");
 			}
-			parsed_options.batch_size_bytes = ParseBytesArg(option_name, option_values[0]);
+			parsed_options.batch_size_bytes = ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "file_size_bytes") {
 			if (option_values.empty()) {
 				throw BinderException("FILE_SIZE_BYTES cannot be empty");
@@ -498,7 +471,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (!function.file_size_bytes) {
 				throw BinderException("FILE_SIZE_BYTES not implemented for %s", function.name);
 			}
-			parsed_options.file_size_bytes = ParseBytesArg(option_name, option_values[0]);
+			parsed_options.file_size_bytes = ParseBytesArg(context.GetContext(), option_name, option_values[0]);
 		} else if (option_name == "batches_per_file" || option_name == "row_groups_per_file") {
 			if (option_values.empty()) {
 				throw BinderException("BATCHES_PER_FILE/ROW_GROUPS_PER_FILE cannot be empty");
