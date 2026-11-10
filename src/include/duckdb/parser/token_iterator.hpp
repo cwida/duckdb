@@ -40,6 +40,8 @@ public:
 		return tokens.size();
 	}
 	DUCKDB_API idx_t EndOffset() const;
+	//! Byte offset just past the last consumed token, or 0 if no token has been consumed yet
+	DUCKDB_API idx_t ConsumedEndOffset() const;
 
 	DUCKDB_API optional_ptr<const MatcherToken> Current() const {
 		if (position >= tokens.size()) {

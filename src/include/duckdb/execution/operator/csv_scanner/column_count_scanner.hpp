@@ -33,6 +33,8 @@ struct ColumnCount {
 
 class ColumnCountResult : public ScannerResult {
 public:
+	static constexpr bool BLOCK_SCAN = false;
+
 	ColumnCountResult(CSVStates &states, CSVStateMachine &state_machine, idx_t result_size,
 	                  CSVErrorHandler &error_handler);
 	inline ColumnCount &operator[](size_t index) {

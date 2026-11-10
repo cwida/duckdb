@@ -2437,8 +2437,11 @@ public:
 	FinalizeTableFunctionAliasColonTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeWithOrdinalityTrampoline(PEGTransformer &transformer,
 	                                                                        GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeQualifiedTableFunctionTrampoline(PEGTransformer &transformer,
-	                                                                                GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeCatalogReservedSchemaTableFunctionNameTrampoline(PEGTransformer &transformer,
+	                                                         GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeTableFunctionNameAsQualifiedNameTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeTableFunctionArgumentsTrampoline(PEGTransformer &transformer,
 	                                                                                GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeNamedFunctionArgumentTrampoline(PEGTransformer &transformer,
@@ -4322,10 +4325,11 @@ public:
 	                                                             const optional<bool> &with_ordinality,
 	                                                             optional<unique_ptr<SampleOptions>> sample_clause);
 	static bool TransformWithOrdinality(PEGTransformer &transformer);
-	static QualifiedName TransformQualifiedTableFunction(PEGTransformer &transformer,
-	                                                     const optional<Identifier> &catalog_qualification,
-	                                                     const optional<vector<Identifier>> &schema_qualification,
-	                                                     const Identifier &table_function_name);
+	static QualifiedName TransformCatalogReservedSchemaTableFunctionName(
+	    PEGTransformer &transformer, const Identifier &catalog_qualification,
+	    const optional<vector<Identifier>> &schema_qualification, const Identifier &reserved_table_function_name);
+	static QualifiedName TransformTableFunctionNameAsQualifiedName(PEGTransformer &transformer,
+	                                                               const Identifier &table_function_name);
 	static vector<FunctionArgument>
 	TransformTableFunctionArguments(PEGTransformer &transformer, optional<vector<FunctionArgument>> function_argument);
 	static FunctionArgument TransformNamedFunctionArgument(PEGTransformer &transformer,

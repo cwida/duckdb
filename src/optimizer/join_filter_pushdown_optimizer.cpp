@@ -252,7 +252,6 @@ static void FindScanFilterTargets(LogicalGet &get, vector<JoinFilterPushdownColu
 	if (!get.function.filter_pushdown || get.ordinality_idx.IsValid() || get.extra_info.sample_options) {
 		return;
 	}
-	get.ResolveOperatorTypes();
 	const auto bindings = get.GetColumnBindings();
 	vector<JoinFilterPushdownColumn> accepted_columns;
 	filter_column_set_t seen;
@@ -268,7 +267,7 @@ static void FindScanFilterTargets(LogicalGet &get, vector<JoinFilterPushdownColu
 		}
 		for (idx_t i = 0; i < bindings.size(); i++) {
 			if (filter.probe_column_index.column_index == bindings[i].column_index) {
-				filter.storage_type = get.types[i];
+				filter.storage_type = get.GetColumnType(get.GetColumnIndex(bindings[i]));
 				break;
 			}
 		}
