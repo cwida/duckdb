@@ -370,11 +370,6 @@ BoundExpressionSQLExportResult BoundExpressionSQLExportState::ExportCast(const B
 		    path, "cast_type", "The cast type has no SQL type representation")});
 	}
 	if (context.discard_optimizer_metadata && CMUtils::GetExpressionType(expression) == CMExpressionType::CAST) {
-		if (!BoundCastExpression::IsDefaultCast(expression)) {
-			return BoundExpressionSQLExportResult::Failure({BoundExpressionSQLExportState::UnsupportedFeature(
-			    path, "compressed_materialization_cast",
-			    "The compressed materialization projection contains a non-default cast")});
-		}
 		return ExportChild(*expression.GetChildren()[0], path, 0);
 	}
 	if (BoundCastExpression::IsDefaultCast(expression)) {
