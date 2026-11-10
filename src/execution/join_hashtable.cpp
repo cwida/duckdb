@@ -821,7 +821,7 @@ static inline data_ptr_t InsertRowToEntry(atomic<ht_entry_t> &entry, const data_
 		// If we are not in parallel mode, we can just do the operation without any checks
 		data_ptr_t current_row_pointer = entry.load(std::memory_order_relaxed).GetPointerOrNull();
 		StorePointer(current_row_pointer, row_ptr_to_insert + pointer_offset);
-		entry = desired_entry;
+		entry.store(desired_entry, std::memory_order_relaxed);
 		return nullptr;
 	}
 }
@@ -968,7 +968,7 @@ static void InsertHashesLoop(unsafe_optional_ptr<atomic<ht_entry_t>> entries, Ve
 			bool occupied;
 			while (true) {
 				atomic<ht_entry_t> &atomic_entry = entries.get()[ht_offset];
-				entry = atomic_entry.load(std::memory_order_acquire);
+				entry = atomic_entry.load(PARALLEL ? std::memory_order_acquire : std::memory_order_relaxed);
 				occupied = entry.IsOccupied();
 
 				// condition for incrementing the ht_offset: occupied and row_salt does not match -> move to next entry
