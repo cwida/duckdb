@@ -435,6 +435,7 @@ unique_ptr<FunctionData> DeserializeDecimalArithmetic(Deserializer &deserializer
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OPOVERFLOWCHECK>(return_type.InternalType()));
 	} else {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OP>(return_type.InternalType()));
+		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
 	bound_function.SetStatisticsCallback(nullptr); // TODO we likely dont want to do stats prop again
 	bound_function.SetReturnType(return_type);
