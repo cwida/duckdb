@@ -148,9 +148,13 @@ public:
 	bool SupportsScopedInvalidation() const;
 	//! Invalidate this database after an unrecoverable error: it rejects all use until it is detached.
 	//! Escalates to the database instance if the invalidation cannot be scoped to this database.
+	//! A database that is already invalidated keeps its original error.
 	void Invalidate(const string &cause, const string &error);
-	//! Scope a fatal error raised by this database to it, so the invalidation site invalidates only this database
+	//! Invalidate this database for a fatal error it raised, marking the error as handled by this database.
+	//! Errors that are not fatal, or cannot be scoped to this database, are returned unchanged.
 	ErrorData ScopeFatalError(ErrorData error);
+	//! The error rejecting the given operation if this database or its instance has been invalidated
+	ErrorData InvalidationError(const string &operation);
 
 	optional_ptr<StorageExtension> GetStorageExtension() {
 		return storage_extension;

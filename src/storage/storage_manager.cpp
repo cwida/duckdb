@@ -264,12 +264,10 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 		// not holding the commit lock yet - grab it
 		guard = GetCommitLock();
 	}
-	if (ValidChecker::IsInvalidated(db.GetDatabase())) {
-		// a commit that failed while we waited for the commit lock invalidated the database
-		throw IOException("%s", ValidChecker::InvalidatedMessage(db.GetDatabase()));
-	}
-	if (ValidChecker::IsInvalidated(db)) {
-		throw IOException("%s", ValidChecker::InvalidatedMessage(db));
+	// a commit that failed while we waited for the commit lock may have invalidated the database
+	auto invalidation_error = db.InvalidationError("checkpoint");
+	if (invalidation_error.HasError()) {
+		invalidation_error.Throw();
 	}
 	// drain under the commit lock before the checkpoint transaction starts: its snapshot would
 	// otherwise be bounded below commits whose WAL this checkpoint deletes

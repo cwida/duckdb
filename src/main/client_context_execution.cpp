@@ -482,7 +482,7 @@ QueryResultState ClientContext::FailQueryInternal(ClientContextLock &lock, BaseQ
 	} else if (!ErrorInvalidatesQueryTransaction(error.Type())) {
 		invalidate_transaction = false;
 	} else if (Exception::InvalidatesDatabase(error.Type()) || error.Type() == ExceptionType::INTERNAL) {
-		// fatal exceptions invalidate the entire database
+		// fatal exceptions invalidate the database instance, unless scoped to an attached database
 		auto &db_instance = DatabaseInstance::GetDatabase(*this);
 		ValidChecker::Invalidate(db_instance, error);
 	}

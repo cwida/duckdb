@@ -104,14 +104,12 @@ void ErrorData::Merge(const ErrorData &other) {
 		return;
 	}
 	if (Exception::InvalidatesDatabase(other.Type()) || other.type == ExceptionType::INTERNAL) {
-		// inherit severe types, keeping a scoped invalidation only if both errors agree on its scope
+		// inherit severe types; the result is scoped only if every severe error was handled by its database
 		auto was_severe = Exception::InvalidatesDatabase(type) || type == ExceptionType::INTERNAL;
-		auto entry = extra_info.find(Exception::INVALIDATED_DATABASE_KEY);
 		auto other_entry = other.extra_info.find(Exception::INVALIDATED_DATABASE_KEY);
-		if (other_entry == other.extra_info.end() ||
-		    (was_severe && (entry == extra_info.end() || entry->second != other_entry->second))) {
+		if (other_entry == other.extra_info.end()) {
 			extra_info.erase(Exception::INVALIDATED_DATABASE_KEY);
-		} else {
+		} else if (!was_severe) {
 			extra_info[Exception::INVALIDATED_DATABASE_KEY] = other_entry->second;
 		}
 		type = other.type;
