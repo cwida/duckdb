@@ -25,6 +25,20 @@ using ScanStructure = JoinHashTable::ScanStructure;
 using ProbeSpill = JoinHashTable::ProbeSpill;
 using ProbeSpillLocalState = JoinHashTable::ProbeSpillLocalAppendState;
 
+const buffer_ptr<DictionaryEntry> &DictionaryOwnershipCache::GetEntry(idx_t column,
+                                                                      const buffer_ptr<DictionaryEntry> &entry) {
+	if (entries.size() <= column) {
+		entries.resize(column + 1);
+	}
+	auto &local_entry = entries[column];
+	if (local_entry.get() != entry.get()) {
+		// Chunk references share a local control block that retains the original dictionary.
+		auto owner = make_shared_ptr<buffer_ptr<DictionaryEntry>>(entry);
+		local_entry = buffer_ptr<DictionaryEntry>(owner, entry.get());
+	}
+	return local_entry;
+}
+
 JoinHashTable::SharedState::SharedState()
     : salt_v(LogicalType::UBIGINT), keys_to_compare_sel(STANDARD_VECTOR_SIZE), keys_no_match_sel(STANDARD_VECTOR_SIZE) {
 }
@@ -1476,6 +1490,7 @@ ScanStructure::ScanStructure(JoinHashTable &ht_p, TupleDataChunkState &key_state
 }
 
 void ScanStructure::Reset() {
+	dictionary_gather_state.Reset();
 	count = 0;
 	finished = false;
 	is_null = true;
@@ -1698,10 +1713,10 @@ void ScanStructure::GatherResult(Vector &result, const idx_t count, const idx_t 
 }
 
 void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
-                              idx_t rhs_col_offset) const {
+                              idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const {
 	if (use_dict_emission) {
 		const auto ptrs = FlatVector::GetData<data_ptr_t>(row_ptrs);
-		EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset);
+		EmitDictVectors(ptrs, ptr_sel, count, result, rhs_col_offset, dictionary_state);
 		return;
 	}
 	const auto &result_sel = *FlatVector::IncrementalSelectionVector();
@@ -1722,7 +1737,8 @@ void JoinHashTable::GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, 
 				const auto col_offset = offsets[output_col_idx];
 				// Read the dict index at the width chosen at layout-publication time
 				LoadDictIndices(dict_column->index_width, ptrs, ptr_sel, count, col_offset, build_sel_vec);
-				vector.Dictionary(dict_column->entry, build_sel_vec, count);
+				const auto &entry = dictionary_state.GetEntry(col_idx, dict_column->entry);
+				vector.Dictionary(entry, build_sel_vec, count);
 				continue;
 			}
 		}
@@ -1814,7 +1830,8 @@ void ScanStructure::NextInnerJoin(DataChunk &keys, DataChunk &probe_data, DataCh
 						}
 					}
 					// on the RHS, we need to fetch the data from the hash table
-					ht.GatherRHS(pointers, chain_match_sel_vector, result_count, result, ht.lhs_output_in_probe.size());
+					ht.GatherRHS(pointers, chain_match_sel_vector, result_count, result, ht.lhs_output_in_probe.size(),
+					             dictionary_gather_state);
 
 					AdvancePointers();
 					return;
@@ -1841,7 +1858,7 @@ void ScanStructure::NextInnerJoin(DataChunk &keys, DataChunk &probe_data, DataCh
 		}
 		// 2) gather RHS vectors
 		ht.GatherRHS(rhs_pointers, *FlatVector::IncrementalSelectionVector(), base_count, result,
-		             ht.lhs_output_in_probe.size());
+		             ht.lhs_output_in_probe.size(), dictionary_gather_state);
 	}
 }
 
@@ -2360,7 +2377,7 @@ void JoinHashTable::ScanFullOuter(JoinHTScanState &state, Vector &addresses, Dat
 	}
 
 	// gather the values from the RHS
-	GatherRHS(addresses, sel_vector, found_entries, result, left_column_count);
+	GatherRHS(addresses, sel_vector, found_entries, result, left_column_count, state.dictionary_gather_state);
 	// the result may have no columns, so set the count explicitly
 	result.SetChildCardinality(found_entries);
 }
@@ -2840,7 +2857,8 @@ bool JoinHashTable::CanUseDictionaryEmission(const PhysicalHashJoin &op, bool ex
 }
 
 void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count,
-                                    DataChunk &result, idx_t rhs_col_offset) const {
+                                    DataChunk &result, idx_t rhs_col_offset,
+                                    DictionaryOwnershipCache &dictionary_state) const {
 	D_ASSERT(output_columns.size() == dict_arrays.size());
 	SelectionVector build_sel_vec(count);
 	for (idx_t i = 0; i < count; i++) {
@@ -2849,7 +2867,7 @@ void JoinHashTable::EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionV
 	}
 	for (idx_t col_idx = 0; col_idx < output_columns.size(); col_idx++) {
 		auto &vector = result.data[rhs_col_offset + col_idx];
-		vector.Dictionary(dict_arrays[col_idx], build_sel_vec, count);
+		vector.Dictionary(dictionary_state.GetEntry(col_idx, dict_arrays[col_idx]), build_sel_vec, count);
 	}
 }
 

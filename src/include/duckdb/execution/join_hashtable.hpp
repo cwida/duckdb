@@ -19,6 +19,7 @@
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -34,6 +35,18 @@ struct ClientConfig;
 struct ResidualPredicateInfo;
 class PhysicalHashJoin;
 
+//! Gives each local producer an owner for its shared dictionaries; emitted vectors retain that owner.
+class DictionaryOwnershipCache {
+public:
+	const buffer_ptr<DictionaryEntry> &GetEntry(idx_t column, const buffer_ptr<DictionaryEntry> &entry);
+	void Reset() {
+		entries.clear();
+	}
+
+private:
+	vector<buffer_ptr<DictionaryEntry>> entries;
+};
+
 struct JoinHTScanState {
 public:
 	JoinHTScanState(TupleDataCollection &collection, idx_t chunk_idx_from, idx_t chunk_idx_to,
@@ -42,6 +55,7 @@ public:
 	}
 
 	TupleDataChunkIterator iterator;
+	DictionaryOwnershipCache dictionary_gather_state;
 	idx_t offset_in_chunk;
 	//! The number of chunks that have been scanned entirely
 	idx_t chunks_done;
@@ -173,6 +187,7 @@ public:
 
 		// Thread-local probe match count, flushed when the current chunk's pointer scan is exhausted.
 		idx_t local_probe_matches = 0;
+		DictionaryOwnershipCache dictionary_gather_state;
 
 		explicit ScanStructure(JoinHashTable &ht, TupleDataChunkState &key_state);
 		void Reset();
@@ -352,11 +367,11 @@ public:
 	//! Emit dictionary vectors for row_ptrs[ptr_sel[0..count)]; pass
 	//! *FlatVector::IncrementalSelectionVector() when row_ptrs is already compacted
 	void EmitDictVectors(const data_ptr_t *row_ptrs, const SelectionVector &ptr_sel, idx_t count, DataChunk &result,
-	                     idx_t rhs_col_offset) const;
+	                     idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Emit RHS output columns for matched rows row_ptrs[ptr_sel[0..count)] into result starting at
 	//! result column rhs_col_offset; routes through EmitDictVectors when use_dict_emission is active.
 	void GatherRHS(Vector &row_ptrs, const SelectionVector &ptr_sel, const idx_t count, DataChunk &result,
-	               idx_t rhs_col_offset) const;
+	               idx_t rhs_col_offset, DictionaryOwnershipCache &dictionary_state) const;
 	//! Follow the chain pointer; when USE_DICT_EMISSION, resolves via aux_next_ptrs
 	template <bool USE_DICT_EMISSION>
 	inline data_ptr_t GetNextPointer(data_ptr_t row_ptr) const {

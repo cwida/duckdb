@@ -269,6 +269,7 @@ public:
 	SelectionVector build_sel_vec;
 	SelectionVector probe_sel_vec;
 	SelectionVector seq_sel_vec;
+	DictionaryOwnershipCache dictionary_gather_state;
 };
 
 unique_ptr<OperatorState> PerfectHashJoinExecutor::GetOperatorState(ExecutionContext &context) {
@@ -303,7 +304,8 @@ OperatorResultType PerfectHashJoinExecutor::ProbePerfectHashTable(ExecutionConte
 	for (idx_t i = 0; i < join.rhs_output_columns.col_types.size(); i++) {
 		auto &result_vector = result.data[lhs_output_columns.ColumnCount() + i];
 		D_ASSERT(result_vector.GetType() == ht.layout_ptr->GetTypes()[ht.output_columns[i]]);
-		result_vector.Dictionary(perfect_hash_table[i], state.build_sel_vec, probe_sel_count);
+		result_vector.Dictionary(state.dictionary_gather_state.GetEntry(i, perfect_hash_table[i]), state.build_sel_vec,
+		                         probe_sel_count);
 	}
 	return OperatorResultType::NEED_MORE_INPUT;
 }
