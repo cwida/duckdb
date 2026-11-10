@@ -20,6 +20,7 @@
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_unnest.hpp"
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -708,10 +709,15 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 	const auto window_child_bindings = window.children[0]->GetColumnBindings();
 	auto &window_expr = window.expressions[0]->Cast<BoundWindowExpression>();
 
-	// Remember order of group columns to recreate that order in new bindings later
+	// Remember order of group columns to recreate that order in new bindings later.
+	// A FLOAT or DOUBLE group holds both 0.0 and -0.0, so such a column is carried in the payload instead.
 	column_binding_map_t<idx_t> group_bindings;
 	for (idx_t i = 0; i < window_expr.PartitionsMutable().size(); i++) {
 		auto &expr = window_expr.PartitionsMutable()[i];
+		const auto &type = expr->GetReturnType();
+		if (TypeVisitor::Contains(type, LogicalTypeId::FLOAT) || TypeVisitor::Contains(type, LogicalTypeId::DOUBLE)) {
+			continue;
+		}
 		auto column_references = ColumnReferenceExtractor::GetReferences(&expr);
 		group_bindings[column_references.begin()->first] = i;
 	}
