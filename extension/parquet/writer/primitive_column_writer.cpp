@@ -146,6 +146,13 @@ void PrimitiveColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterStat
 		// which means a null moves the hash, so null density shifts boundaries - and a non-nullable column has no
 		// levels to feed, in Arrow either.
 		const bool feed_levels = MaxDefine() > 0;
+		// boundaries may have been computed up front, in file order, by ComputeCdcBoundaries - then the chunker
+		// has already rolled through this chunk and the cut positions below are its answers
+		const duckdb::vector<idx_t> *precomputed_cuts = nullptr;
+		idx_t precomputed_pos = 0;
+		if (cut_by_content && state.cdc_cuts_per_chunk && state.cdc_cut_chunk_idx < state.cdc_cuts_per_chunk->size()) {
+			precomputed_cuts = &(*state.cdc_cuts_per_chunk)[state.cdc_cut_chunk_idx];
+		}
 		for (idx_t i = 0; i < vcount; i++) {
 			if (check_parent_empty && parent->is_empty[parent_index + i]) {
 				auto &empty_page = page_info_ref.get();
@@ -160,15 +167,23 @@ void PrimitiveColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterStat
 			// following page's first value, which is the whole thing this is trying to keep still.
 			bool cut_before = false;
 			if (cut_by_content) {
-				if (feed_levels) {
-					cdc_chunker.RollLevel(state.definition_levels[parent_index + i]);
+				if (precomputed_cuts) {
+					cut_before =
+					    precomputed_pos < precomputed_cuts->size() && (*precomputed_cuts)[precomputed_pos] == i;
+					if (cut_before) {
+						precomputed_pos++;
+					}
+				} else {
+					if (feed_levels) {
+						cdc_chunker.RollLevel(state.definition_levels[parent_index + i]);
+					}
+					if (is_valid) {
+						ParquetCdcHashValue(cdc_chunker, vector, vector_index);
+					}
+					// the minimum is enforced inside the chunker, where the bytes are counted, and the maximum is its
+					// hard stop for the case where no boundary is hit at all - a long run of identical values, say
+					cut_before = cdc_chunker.NeedNewChunk();
 				}
-				if (is_valid) {
-					ParquetCdcHashValue(cdc_chunker, vector, vector_index);
-				}
-				// the minimum is enforced inside the chunker, where the bytes are counted, and the maximum is its
-				// hard stop for the case where no boundary is hit at all - a long run of identical values, say
-				cut_before = cdc_chunker.NeedNewChunk();
 			}
 			// a vector that cannot span multiple pages stays on the page it started on, and a page that is still
 			// empty is already at a boundary: the writer erases an empty page only at the end of the row group, so
@@ -202,6 +217,32 @@ void PrimitiveColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterStat
 			vector_index++;
 		}
 	}
+	if (parent == nullptr && state.cdc_cuts_per_chunk) {
+		state.cdc_cut_chunk_idx++;
+	}
+}
+
+vector<idx_t> PrimitiveColumnWriter::RollCdcChunk(Vector &vector, idx_t count) {
+	duckdb::vector<idx_t> cuts;
+	// the same predicate as Prepare's cut_by_content, on the same chunk, gives the same answer
+	if (!ParquetCdcSupportedType(vector.GetType())) {
+		return cuts;
+	}
+	auto &validity = FlatVector::ValidityMutable(vector);
+	const bool feed_levels = MaxDefine() > 0;
+	for (idx_t i = 0; i < count; i++) {
+		const bool is_valid = validity.RowIsValid(i);
+		if (feed_levels) {
+			cdc_chunker.RollLevel(is_valid ? MaxDefine() : MaxDefine() - 1);
+		}
+		if (is_valid) {
+			ParquetCdcHashValue(cdc_chunker, vector, i);
+		}
+		if (cdc_chunker.NeedNewChunk()) {
+			cuts.push_back(i);
+		}
+	}
+	return cuts;
 }
 
 duckdb_parquet::Encoding::type PrimitiveColumnWriter::GetEncoding(PrimitiveColumnWriterState &state) {

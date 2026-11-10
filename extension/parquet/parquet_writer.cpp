@@ -706,7 +706,8 @@ void ParquetWriter::InitializePreprocessing(unique_ptr<ParquetWriteTransformData
 }
 
 void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRowGroup &result,
-                                    unique_ptr<ParquetWriteTransformData> &transform_data) {
+                                    unique_ptr<ParquetWriteTransformData> &transform_data,
+                                    const ParquetCdcBoundaries *cdc_boundaries) {
 	AnalyzeSchema(raw_buffer, column_writers);
 
 	bool requires_transform = false;
@@ -755,6 +756,14 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 			column_ids.emplace_back(col_idx + i);
 			col_writers.emplace_back(*column_writers[column_ids.back()]);
 			write_states.emplace_back(col_writers.back().get().InitializeWriteState(row_group));
+			if (cdc_boundaries) {
+				// ComputeCdcBoundaries rolled these cuts in file order, so Prepare page-cuts from them
+				// without touching the chunker
+				auto *cuts = cdc_boundaries->FindColumn(column_ids.back());
+				if (cuts) {
+					write_states.back()->cdc_cuts_per_chunk = &cuts->cuts_per_chunk;
+				}
+			}
 		}
 
 		for (auto &chunk : buffer.Chunks(column_ids)) {
@@ -800,6 +809,25 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 			states.push_back(std::move(write_state));
 		}
 	}
+}
+
+unique_ptr<ParquetCdcBoundaries> ParquetWriter::ComputeCdcBoundaries(ColumnDataCollection &buffer) {
+	D_ASSERT(ContentDefinedChunking());
+	auto result = make_uniq<ParquetCdcBoundaries>();
+	for (idx_t col_idx = 0; col_idx < buffer.ColumnCount(); col_idx++) {
+		auto &col_writer = *column_writers[col_idx];
+		if (!col_writer.CutsByContent()) {
+			continue;
+		}
+		ParquetCdcBoundaries::ColumnCuts cuts;
+		cuts.column_index = col_idx;
+		vector<column_t> column_ids = {NumericCast<column_t>(col_idx)};
+		for (auto &chunk : buffer.Chunks(column_ids)) {
+			cuts.cuts_per_chunk.push_back(col_writer.RollCdcChunk(chunk.data[0], chunk.size()));
+		}
+		result->columns.push_back(std::move(cuts));
+	}
+	return result;
 }
 
 // Validation code adapted from Impala
@@ -1528,5 +1556,14 @@ void ParquetWriter::SetWrittenStatistics(CopyFunctionFileStatistics &written_sta
 }
 
 ParquetWriteGlobalState::ParquetWriteGlobalState() = default;
+
+ParquetWriteGlobalState::~ParquetWriteGlobalState() {
+	// an error path can leave a prepare running; wait for it before the writer it references goes away
+	for (auto &entry : cdc_pipeline) {
+		if (entry->future.valid()) {
+			entry->future.wait();
+		}
+	}
+}
 
 } // namespace duckdb

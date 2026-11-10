@@ -96,14 +96,20 @@ public:
 	void PrepareWrite(ColumnWriterState &state) override;
 	void FinalizeWrite(ColumnWriterState &state) override;
 	idx_t FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) override;
+	//! Rolls the chunker over one chunk exactly as Prepare would, returning the value indices opening a
+	//! new page, and writes nothing. Paired with Prepare consuming precomputed ParquetCdcBoundaries.
+	vector<idx_t> RollCdcChunk(Vector &vector, idx_t count) override;
+	bool CutsByContent() const override {
+		return cdc_cut_pages;
+	}
 
 protected:
 	//! Whether the file asked for content-defined page boundaries at all. Whether this particular column gets
 	//! them additionally depends on it being a top-level column of a type the chunker can read - see Prepare.
 	bool cdc_cut_pages = false;
 	//! Decides where this column's content-defined pages end (see writer/parquet_cdc_chunker.hpp). One per column
-	//! per file, so its state carries over from one row group to the next, as in Arrow. That is only sound because
-	//! ParquetWriter prepares row groups one at a time and in file order when content-defined chunking is enabled.
+	//! per file, so its state carries over from one row group to the next, as in Arrow. Only the ordered boundary
+	//! scan advances it - batched prepares consume its output and run off the ordered path without touching it.
 	ParquetContentDefinedChunker cdc_chunker;
 
 	static void WriteLevels(Allocator &allocator, WriteStream &temp_writer, const unsafe_vector<uint16_t> &levels,

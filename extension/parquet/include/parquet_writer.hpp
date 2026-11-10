@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 #include <atomic>
+#include <deque>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -83,6 +85,38 @@ struct PreparedRowGroup {
 	PreparedParquetLayout layout;
 };
 
+//! Content-defined page boundaries, computed up front for one row group by rolling the chunker over the
+//! values in file order without writing anything. Cut positions are the value indices opening a new page,
+//! per CDC-cut top-level column, per input chunk of that column.
+class ParquetCdcBoundaries {
+public:
+	struct ColumnCuts {
+		idx_t column_index = 0;
+		vector<vector<idx_t>> cuts_per_chunk;
+	};
+
+	const ColumnCuts *FindColumn(idx_t column_index) const {
+		for (auto &column : columns) {
+			if (column.column_index == column_index) {
+				return &column;
+			}
+		}
+		return nullptr;
+	}
+
+	vector<ColumnCuts> columns;
+};
+
+//! One row group inside the content-defined chunking pipeline: the boundary scan runs in file order on
+//! the flushing thread, the heavy prepare it unlocks runs on a worker, and the result is appended in
+//! batch order when it completes.
+struct ParquetCdcPipelineEntry {
+	std::shared_ptr<ColumnDataCollection> collection;
+	std::shared_ptr<const ParquetCdcBoundaries> boundaries;
+	unique_ptr<PreparedRowGroup> prepared;
+	std::future<void> future;
+};
+
 struct ParquetBloomFilterEntry {
 	unique_ptr<ParquetBloomFilter> bloom_filter;
 	idx_t row_group_idx;
@@ -139,6 +173,7 @@ public:
 struct ParquetWriteGlobalState : public GlobalFunctionData {
 public:
 	ParquetWriteGlobalState();
+	~ParquetWriteGlobalState() override;
 
 public:
 	unique_ptr<ParquetWriter> writer;
@@ -147,6 +182,11 @@ public:
 	unique_ptr<ColumnDataCollection> combine_buffer;
 	//! If any of the column writers require a transformation to a different shape, this will be initialized and used
 	unique_ptr<ParquetWriteTransformData> transform_data;
+	//! Row groups whose content-defined boundaries are scanned but whose heavy prepare is still running,
+	//! oldest first - declared last so it is torn down before the writer the prepares reference
+	std::deque<unique_ptr<ParquetCdcPipelineEntry>> cdc_pipeline;
+	//! How many prepares may run at once; 0 until the first CDC batch sizes it from the scheduler
+	idx_t cdc_pipeline_depth = 0;
 };
 
 struct ParquetWriterOptions {
@@ -210,9 +250,14 @@ public:
 
 public:
 	void PrepareRowGroup(ColumnDataCollection &buffer, PreparedRowGroup &result,
-	                     unique_ptr<ParquetWriteTransformData> &transform_data);
+	                     unique_ptr<ParquetWriteTransformData> &transform_data,
+	                     const ParquetCdcBoundaries *cdc_boundaries = nullptr);
 	void FlushRowGroup(PreparedRowGroup &row_group);
 	void Flush(ColumnDataCollection &buffer, unique_ptr<ParquetWriteTransformData> &transform_data);
+	//! Rolls the content-defined chunker over a row group's values in file order, writing nothing, and
+	//! returns the boundaries that PrepareRowGroup will then cut pages at. The chunker is the only state
+	//! that needs file order, so this serial scan is what lets the heavy prepares run off the ordered path.
+	unique_ptr<ParquetCdcBoundaries> ComputeCdcBoundaries(ColumnDataCollection &buffer);
 	void Finalize();
 
 	static duckdb_parquet::Type::type DuckDBTypeToParquetType(const LogicalType &duckdb_type,

@@ -38,6 +38,7 @@
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -603,8 +604,13 @@ static void ParquetWriteCombine(ExecutionContext &context, FunctionData &bind_da
 	global_state.combine_buffer->Combine(local_state.buffer);
 }
 
+static void ParquetCdcDrain(ParquetWriteGlobalState &global_state, idx_t keep_in_flight);
+
 static void ParquetWriteFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
+	// the last batches' prepares are still in flight when the last flush_batch ran - finish them first,
+	// so their row groups reach the file before anything that follows
+	ParquetCdcDrain(global_state, 0);
 	// flush the combine buffer (if it's there)
 	if (global_state.combine_buffer) {
 		global_state.writer->Flush(*global_state.combine_buffer, global_state.transform_data);
@@ -1039,13 +1045,54 @@ static unique_ptr<PreparedBatchData> ParquetWritePrepareBatch(ClientContext &con
 //===--------------------------------------------------------------------===//
 // Flush Batch
 //===--------------------------------------------------------------------===//
+//! Append completed content-defined row groups, oldest first, keeping at most keep_in_flight prepares running
+static void ParquetCdcDrain(ParquetWriteGlobalState &global_state, idx_t keep_in_flight) {
+	while (global_state.cdc_pipeline.size() > keep_in_flight) {
+		auto &entry = *global_state.cdc_pipeline.front();
+		if (entry.future.valid()) {
+			entry.future.get(); // a failed prepare surfaces here, on the flushing thread
+		}
+		global_state.writer->FlushRowGroup(*entry.prepared);
+		global_state.cdc_pipeline.pop_front();
+	}
+}
+
 static void ParquetWriteFlushBatch(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate,
                                    PreparedBatchData &batch_p) {
 	auto &global_state = gstate.Cast<ParquetWriteGlobalState>();
 	auto &batch = batch_p.Cast<ParquetWriteBatchData>();
 	if (batch.collection) {
-		unique_ptr<ParquetWriteTransformData> transform_data;
-		global_state.writer->Flush(*batch.collection, transform_data);
+		if (batch.collection->Count() == 0) {
+			batch.collection.reset();
+			return;
+		}
+		if (global_state.cdc_pipeline_depth == 0) {
+			auto max_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
+			global_state.cdc_pipeline_depth = MaxValue<idx_t>(2, MinValue<idx_t>(8, max_threads));
+		}
+		// the chunker only rolls in file order, so that scan runs here, serialized - it is the cheap pass;
+		// the heavy stages need nothing but its boundaries, so they run on a worker while later batches scan
+		auto collection = std::shared_ptr<ColumnDataCollection>(std::move(batch.collection));
+		auto boundaries =
+		    std::shared_ptr<const ParquetCdcBoundaries>(global_state.writer->ComputeCdcBoundaries(*collection));
+		auto entry = make_uniq<ParquetCdcPipelineEntry>();
+		entry->collection = collection;
+		entry->boundaries = boundaries;
+		entry->prepared = make_uniq<PreparedRowGroup>();
+		auto *prepared = entry->prepared.get();
+		auto *writer = global_state.writer.get();
+		try {
+			entry->future = std::async(std::launch::async, [writer, collection, boundaries, prepared]() {
+				unique_ptr<ParquetWriteTransformData> transform_data;
+				writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
+			});
+		} catch (const std::exception &) {
+			// no thread to hand this to - prepare it right here
+			unique_ptr<ParquetWriteTransformData> transform_data;
+			writer->PrepareRowGroup(*collection, *prepared, transform_data, boundaries.get());
+		}
+		global_state.cdc_pipeline.push_back(std::move(entry));
+		ParquetCdcDrain(global_state, global_state.cdc_pipeline_depth);
 		return;
 	}
 	global_state.writer->FlushRowGroup(batch.prepared_row_group);
