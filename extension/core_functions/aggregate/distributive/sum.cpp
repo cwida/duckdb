@@ -7,6 +7,7 @@
 #include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/function/aggregate/numeric_aggregates.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
@@ -608,18 +609,22 @@ struct BignumOperation {
 		}
 	}
 
-	template <class INPUT_TYPE, class STATE, class OP>
-	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input) {
-		const BignumIntermediate rhs(input);
+	//! Adds a value to the sum, moving to the wide value once the hugeint_t accumulator overflows
+	static void Add(BignumState &state, const BignumIntermediate &rhs, ArenaAllocator &allocator) {
 		state.is_set = true;
 		if (!state.is_wide) {
 			hugeint_t value;
 			if (TryGetSmall(rhs, value) && Hugeint::TryAddInPlace(state.small, value)) {
 				return;
 			}
-			Widen(state, unary_input.input.allocator);
+			Widen(state, allocator);
 		}
-		state.wide.AddInPlace(unary_input.input.allocator, rhs);
+		state.wide.AddInPlace(allocator, rhs);
+	}
+
+	template <class INPUT_TYPE, class STATE, class OP>
+	static void Operation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input) {
+		Add(state, BignumIntermediate(input), unary_input.input.allocator);
 	}
 
 	template <class STATE, class OP>
@@ -644,18 +649,22 @@ struct BignumOperation {
 		}
 	}
 
+	//! The sum as an arena-allocated BIGNUM; the state is only read, it is exported while other threads still read it
+	static bignum_t ToBignum(const BignumState &state, ArenaAllocator &allocator) {
+		if (state.is_wide) {
+			return state.wide.ToBignum(allocator);
+		}
+		auto blob = reinterpret_cast<char *>(allocator.Allocate(2 * BignumLimb::BYTES + Bignum::BIGNUM_HEADER_SIZE));
+		const auto size = EncodeSmall(state.small, blob);
+		return bignum_t(string_t(blob, UnsafeNumericCast<uint32_t>(size)));
+	}
+
 	template <class TARGET_TYPE, class STATE>
 	static void Finalize(STATE &state, TARGET_TYPE &target, AggregateFinalizeData &finalize_data) {
-		// the state is only read: it is exported while other threads may still read it
 		if (!state.is_set) {
 			finalize_data.ReturnNull();
-		} else if (state.is_wide) {
-			target = state.wide.ToBignum(finalize_data.input.allocator);
 		} else {
-			auto blob = reinterpret_cast<char *>(
-			    finalize_data.input.allocator.Allocate(2 * BignumLimb::BYTES + Bignum::BIGNUM_HEADER_SIZE));
-			const auto size = EncodeSmall(state.small, blob);
-			target = bignum_t(string_t(blob, UnsafeNumericCast<uint32_t>(size)));
+			target = ToBignum(state, finalize_data.input.allocator);
 		}
 	}
 
@@ -681,11 +690,49 @@ struct WideDecimalSumOperation : public BignumOperation {
 	}
 };
 
+//! The exported state is the sum as a BIGNUM, NULL while no value was added. The sum lives in a hugeint_t until it
+//! outgrows it, which the static field layouts cannot describe, hence the explicit callbacks
+AggregateStateLayout BignumSumGetStateType(AggregateLayoutInput &) {
+	AggregateStateLayout layout;
+	layout.type = LogicalType::BIGNUM;
+	layout.total_state_size = AlignValue<idx_t>(sizeof(BignumState));
+	return layout;
+}
+
+void BignumSumExportState(Vector &state_vector, AggregateFinalizeInputData &input, Vector &result, idx_t count,
+                          idx_t offset) {
+	auto states = state_vector.Values<BignumState *>();
+	auto writer = FlatVector::Writer<string_t>(result, count, offset);
+	for (idx_t i = 0; i < count; i++) {
+		auto &state = *states[i].GetValue();
+		if (!state.is_set) {
+			writer.WriteNull();
+			continue;
+		}
+		writer.WriteValue(BignumOperation::ToBignum(state, input.allocator).data);
+	}
+}
+
+void BignumSumImportState(AggregateImportInputData &input) {
+	auto values = input.input_vec.Values<string_t>();
+	const auto count = input.input_vec.size();
+	for (idx_t i = 0; i < count; i++) {
+		auto &state = *reinterpret_cast<BignumState *>(input.dest_buffer + i * input.layout.total_state_size);
+		const auto entry = values[i];
+		if (!entry.IsValid()) {
+			// a NULL state has no values, the state stays empty
+			continue;
+		}
+		BignumOperation::Add(state, BignumIntermediate(bignum_t(entry.GetValue())), input.allocator);
+	}
+}
+
 AggregateFunction GetWideDecimalSumAggregate() {
 	auto function = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, WideDecimalSumOperation>(
 	    LogicalTypeId::DECIMAL, LogicalTypeId::DECIMAL);
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	function.SetFallible(); // the finalize throws when the sum does not fit the width of the result
+	function.SetStateExportCallbacks(BignumSumGetStateType, BignumSumExportState, BignumSumImportState);
 	return function;
 }
 
@@ -710,6 +757,7 @@ AggregateFunctionSet SumFun::GetFunctions() {
 	auto sum_bignum = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, BignumOperation>(
 	    LogicalType::BIGNUM, LogicalType::BIGNUM);
 	sum_bignum.GetSignature().GetParameter(0).SetName("arg");
+	sum_bignum.SetStateExportCallbacks(BignumSumGetStateType, BignumSumExportState, BignumSumImportState);
 	sum.AddFunction(sum_bignum);
 	sum.AddFunction(NumericAggregates::GetSum());
 	return sum;

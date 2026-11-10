@@ -492,6 +492,9 @@ void DecimalAddSubtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (result_type.InternalType() == PhysicalType::VARCHAR) {
 		// wide decimals have no numeric statistics propagation
 		bound_function.SetFunctionCallback(GetWideDecimalAddSubtract<IS_SUBTRACT>(check_overflow));
+		if (!check_overflow) {
+			bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
 		return;
 	}
 	if (check_overflow) {
@@ -526,6 +529,9 @@ unique_ptr<FunctionData> DeserializeDecimalArithmetic(Deserializer &deserializer
 	auto arguments = deserializer.ReadProperty<vector<LogicalType>>(102, "arguments");
 	if (return_type.InternalType() == PhysicalType::VARCHAR) {
 		bound_function.SetFunctionCallback(GetWideDecimalBinaryFunction<OP, IS_SUBTRACT>(check_overflow));
+		if (!check_overflow) {
+			bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
 	} else if (check_overflow) {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OPOVERFLOWCHECK>(return_type.InternalType()));
 	} else {
@@ -1300,6 +1306,9 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (result_type.InternalType() == PhysicalType::VARCHAR) {
 		// wide decimals have no numeric statistics propagation
 		bound_function.SetFunctionCallback(GetWideDecimalMultiply(check_overflow));
+		if (!check_overflow) {
+			bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
 		return;
 	}
 	if (check_overflow) {

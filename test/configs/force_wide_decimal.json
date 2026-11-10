@@ -12,8 +12,7 @@
 		"decimal_average over DECIMAL types wider than",
 		"not supported in VARIANT",
 		"Unimplemented Median Absolute Deviation DECIMAL aggregate",
-		"FILL is not supported for DECIMAL types wider than",
-		"does not have a state type callback defined"
+		"FILL is not supported for DECIMAL types wider than"
 	],
 	"skip_tests": [
 		{
@@ -65,6 +64,7 @@
 		{
 			"reason": "Wide decimals carry string statistics, arithmetic on them propagates no numeric min/max",
 			"paths": [
+				"test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
 				"test/sql/optimizer/modulo_zonemap_pruning.test",
 				"test/sql/optimizer/list_transform_row_group_pruning.test",
 				"test/sql/types/decimal/wide_decimal_statistics.test",
