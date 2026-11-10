@@ -366,7 +366,9 @@ BlockAllocatorWorkerState::BlockAllocatorWorkerState() {
 
 BlockAllocatorWorkerState::~BlockAllocatorWorkerState() {
 #ifndef __MVS__
-	worker_local_state = nullptr;
+	if (state) {
+		worker_local_state = previous.get();
+	}
 #endif
 }
 
@@ -377,6 +379,7 @@ bool BlockAllocatorWorkerState::IsInitialized() const {
 void BlockAllocatorWorkerState::Initialize(const BlockAllocator &block_allocator) {
 	state = make_uniq<BlockAllocatorThreadLocalState>(block_allocator);
 #ifndef __MVS__
+	previous = worker_local_state;
 	worker_local_state = state.get();
 #endif
 }

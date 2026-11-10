@@ -210,7 +210,7 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	auto &pool = GetPool(pool_type);
 	// this thread allocates blocks and reads settings while the heap may be exhausted: its block cache and its
 	// settings cache live here, so neither creates a thread_local whose destructor registration glibc cannot fail to
-	// allocate without ending the process
+	// allocate without ending the process. Creating them allocates, so that happens in the retry loop below
 	BlockAllocatorWorkerState block_state;
 	WorkerSettingsCache settings_cache;
 
@@ -230,6 +230,9 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 		try {
 			if (!block_state.IsInitialized()) {
 				block_state.Initialize(block_allocator);
+			}
+			if (!settings_cache.IsInitialized()) {
+				settings_cache.Initialize();
 			}
 			if (!consumer) {
 				consumer = make_uniq<ConsumerToken>(queues);

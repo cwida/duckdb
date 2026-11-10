@@ -160,14 +160,25 @@ static thread_local CachedGlobalSettings *worker_settings_cache = nullptr; // NO
 #endif
 
 WorkerSettingsCache::WorkerSettingsCache() {
-#if !defined(__MINGW32__) && !defined(__MVS__)
-	worker_settings_cache = &cache;
-#endif
 }
 
 WorkerSettingsCache::~WorkerSettingsCache() {
 #if !defined(__MINGW32__) && !defined(__MVS__)
-	worker_settings_cache = nullptr;
+	if (cache) {
+		worker_settings_cache = previous.get();
+	}
+#endif
+}
+
+bool WorkerSettingsCache::IsInitialized() const {
+	return cache != nullptr;
+}
+
+void WorkerSettingsCache::Initialize() {
+	cache = make_uniq<CachedGlobalSettings>();
+#if !defined(__MINGW32__) && !defined(__MVS__)
+	previous = worker_settings_cache;
+	worker_settings_cache = cache.get();
 #endif
 }
 

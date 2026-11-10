@@ -38,6 +38,10 @@ class BlockAllocatorWorkerState {
 public:
 	BlockAllocatorWorkerState();
 	~BlockAllocatorWorkerState();
+	BlockAllocatorWorkerState(const BlockAllocatorWorkerState &) = delete;
+	BlockAllocatorWorkerState &operator=(const BlockAllocatorWorkerState &) = delete;
+	BlockAllocatorWorkerState(BlockAllocatorWorkerState &&) = delete;
+	BlockAllocatorWorkerState &operator=(BlockAllocatorWorkerState &&) = delete;
 
 public:
 	bool IsInitialized() const;
@@ -46,6 +50,8 @@ public:
 
 private:
 	unique_ptr<BlockAllocatorThreadLocalState> state;
+	//! The state the thread allocated through before, restored when this one goes away
+	optional_ptr<BlockAllocatorThreadLocalState> previous;
 };
 
 class BlockAllocator {
