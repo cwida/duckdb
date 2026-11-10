@@ -104,20 +104,33 @@ GROUP BY a.g
 ----
 physical_plan	<REGEX>:.*combine_aggr.*
 
-# A producer can itself be rewritten before its consumers are visited.
-query II
+# Resolve a rewritten producer before aggregating its consumer.
+query IR
 WITH a AS MATERIALIZED (
 	SELECT x.k, x.g, sum(x.tag) AS m
-	FROM repeated_{storage} x JOIN small_{storage} y USING (k)
+	FROM repeated_{storage} x JOIN repeated_{storage} y USING (k)
 	GROUP BY x.k, x.g
 )
 SELECT sum(n), sum(s) FROM (
-	SELECT a.g, count(*) AS n, sum(a.m) AS s
+	SELECT a.g, count(*) AS n, sum(a.m::DOUBLE) AS s
 	FROM a JOIN repeated_{storage} b USING (k)
 	GROUP BY a.g
 )
 ----
-7000	2479500000
+35000	124975000000.0
+
+query II
+EXPLAIN
+WITH a AS MATERIALIZED (
+	SELECT x.k, x.g, sum(x.tag) AS m
+	FROM repeated_{storage} x JOIN repeated_{storage} y USING (k)
+	GROUP BY x.k, x.g
+)
+SELECT a.g, count(*), sum(a.m::DOUBLE)
+FROM a JOIN repeated_{storage} b USING (k)
+GROUP BY a.g
+----
+physical_plan	<REGEX>:.*combine_aggr.*combine_aggr.*combine_aggr.*
 
 # Reduction on one input still avoids expanding the other input.
 query II
