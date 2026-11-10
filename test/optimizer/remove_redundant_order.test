@@ -177,6 +177,25 @@ EXPLAIN SELECT * FROM (SELECT * FROM t ORDER BY v) ORDER BY g LIMIT 3;
 ----
 physical_plan	<!REGEX>:.*Order By: v.*
 
+# ordered-execution scalar functions observe input order through row-wise projections
+statement ok
+CREATE SEQUENCE redundant_order_nextval_seq START 1;
+
+query I
+SELECT x
+FROM (
+  SELECT x, nextval('redundant_order_nextval_seq') AS n
+  FROM (
+    SELECT x
+    FROM (VALUES (2), (1)) AS t(x)
+    ORDER BY x
+  ) AS ordered
+) AS numbered
+WHERE n = 1
+ORDER BY x;
+----
+1
+
 # LIMIT, window functions and the query result read their input in order
 query I
 SELECT v FROM (SELECT v FROM t ORDER BY v) LIMIT 3;
