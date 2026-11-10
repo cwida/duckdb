@@ -793,7 +793,7 @@ bool RowGroup::CheckZonemap(optional_ptr<ClientContext> context, ScanFilterInfo 
 			return false;
 		}
 		if (ExpressionFilter::IsRootNonSelectivityOptionalFilter(filter)) {
-			// these are only for row group checking, set as always true so we don't check it
+			// these are only for pruning, set as always true so we don't execute them
 			filters.SetFilterAlwaysTrue(i);
 		} else if (prune_result == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 			// filter is always true - no need to check it
@@ -808,37 +808,26 @@ bool RowGroup::CheckZonemapSegments(CollectionScanState &state) {
 	auto &filters = state.GetFilterInfo();
 	optional_idx target_vector_index_max;
 	for (auto &entry : filters.GetFilterList()) {
-		if (entry.IsAlwaysTrue()) {
-			// filter is always true - avoid checking
-			continue;
-		}
-		auto column_idx = entry.scan_column_index;
-		auto base_column_idx = entry.table_column_index;
-		auto &filter = entry.filter;
-		auto &column_data = GetColumn(base_column_idx);
-
-		optional_ptr<SegmentNode<ColumnSegment>> current_segment;
-		auto prune_result = column_data.CheckZonemap(state.column_scans[column_idx], filter, current_segment);
+		auto &column_data = GetColumn(entry.table_column_index);
+		optional_idx checked_end;
+		auto prune_result = column_data.CheckZonemap(state.column_scans[entry.scan_column_index], entry, checked_end);
 		if (prune_result != FilterPropagateResult::FILTER_ALWAYS_FALSE &&
 		    prune_result != FilterPropagateResult::FILTER_FALSE_OR_NULL) {
 			continue;
 		}
-
-		// check zone map segment.
-		if (!current_segment) {
-			// no segment to skip
+		if (!checked_end.IsValid()) {
+			// no rows to skip
 			continue;
 		}
-		auto row_start = current_segment->GetRowStart();
-		idx_t target_row = row_start + current_segment->GetNode().count;
-		if (target_row >= state.max_row) {
-			target_row = state.max_row;
+		// checked_end is relative to the row group, as state.vector_index is
+		idx_t target_vector_index;
+		if (checked_end.GetIndex() >= state.max_row_group_row) {
+			// the filter rejects the rest of the scan
+			target_vector_index = (state.max_row_group_row + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE;
+		} else {
+			// the vector that holds checked_end can hold rows the filter accepts
+			target_vector_index = checked_end.GetIndex() / STANDARD_VECTOR_SIZE;
 		}
-		D_ASSERT(target_row >= row_start);
-		D_ASSERT(target_row <= row_start + this->count);
-		// current_segment->GetRowStart() is already row-group-relative, and state.vector_index uses the same
-		// coordinate space. Subtracting row_start here incorrectly makes the target segment-local.
-		idx_t target_vector_index = target_row / STANDARD_VECTOR_SIZE;
 
 		if (!target_vector_index_max.IsValid() || target_vector_index_max.GetIndex() < target_vector_index) {
 			target_vector_index_max = target_vector_index;
@@ -846,12 +835,8 @@ bool RowGroup::CheckZonemapSegments(CollectionScanState &state) {
 	}
 	if (target_vector_index_max.IsValid()) {
 		if (state.vector_index == target_vector_index_max.GetIndex()) {
-			// we can't skip any full vectors because this segment contains less than a full vector
-			// for now we just bail-out
-			// FIXME: we could check if we can ALSO skip the next segments, in which case skipping a full vector
-			// might be possible
-			// we don't care that much though, since a single segment that fits less than a full vector is
-			// exceedingly rare
+			// the rejected rows end inside the current vector, which can hold rows of the next segment
+			// FIXME: the next segments could reject the rest of the vector, which would let the scan skip it
 			return true;
 		}
 		while (state.vector_index < target_vector_index_max.GetIndex()) {
@@ -863,20 +848,22 @@ bool RowGroup::CheckZonemapSegments(CollectionScanState &state) {
 	}
 }
 
-bool RowGroup::RegisterScanIO(CollectionScanState &state, idx_t row_count, PrefetchState &prefetch_state) const {
+bool RowGroup::RegisterScanIO(CollectionScanState &state, idx_t start_row, idx_t end_row,
+                              PrefetchState &prefetch_state) const {
 	if (!GetBlockManager().Prefetch()) {
 		return false;
 	}
 	const auto &column_ids = state.GetColumnIds();
 	for (idx_t i = 0; i < column_ids.size(); i++) {
-		GetColumn(column_ids[i]).InitializePrefetch(prefetch_state, state.column_scans[i], row_count);
+		GetColumn(column_ids[i]).InitializePrefetch(prefetch_state, state.column_scans[i], start_row, end_row);
 	}
 	return true;
 }
 
 void RowGroup::PrefetchScanIO(CollectionScanState &state, idx_t row_count) const {
 	PrefetchState prefetch_state;
-	if (!RegisterScanIO(state, row_count, prefetch_state)) {
+	const idx_t start_row = state.vector_index * STANDARD_VECTOR_SIZE;
+	if (!RegisterScanIO(state, start_row, start_row + row_count, prefetch_state)) {
 		return;
 	}
 	GetBlockManager().buffer_manager.Prefetch(state.context, prefetch_state.blocks);
@@ -884,24 +871,53 @@ void RowGroup::PrefetchScanIO(CollectionScanState &state, idx_t row_count) const
 
 vector<unique_ptr<AsyncTask>> RowGroup::CollectScanIOTasks(CollectionScanState &state, idx_t row_count) const {
 	PrefetchState prefetch_state;
-	if (!RegisterScanIO(state, row_count, prefetch_state)) {
+	const idx_t start_row = state.vector_index * STANDARD_VECTOR_SIZE;
+	if (!RegisterScanIO(state, start_row, start_row + row_count, prefetch_state)) {
 		return vector<unique_ptr<AsyncTask>>();
 	}
 	return GetBlockManager().buffer_manager.CreatePrefetchTasks(state.context, prefetch_state.blocks);
 }
 
-idx_t RowGroup::PrefetchRowCount(CollectionScanState &state) {
-	const idx_t start_row = state.vector_index * STANDARD_VECTOR_SIZE;
-	idx_t end_row = state.max_row_group_row;
-	auto context = state.context.GetClientContext();
-	for (auto &entry : state.GetFilterInfo().GetFilterList()) {
-		if (entry.IsAlwaysTrue() || entry.table_column_index.IsPushdownExtract()) {
+vector<unique_ptr<AsyncTask>> RowGroup::CollectAssignmentIOTasks(CollectionScanState &state) const {
+	if (!GetBlockManager().Prefetch()) {
+		return vector<unique_ptr<AsyncTask>>();
+	}
+	PrefetchState prefetch_state;
+	const auto &filters = state.GetFilterInfo().GetFilterList();
+	const idx_t end_row = state.max_row_group_row;
+	idx_t row = state.vector_index * STANDARD_VECTOR_SIZE;
+	while (row < end_row) {
+		// the rows from row that a zonemap rejects, or up to which every zonemap keeps its result
+		idx_t rejected_end = row;
+		idx_t accepted_end = end_row;
+		for (auto &entry : filters) {
+			auto &column_data = GetColumn(entry.table_column_index);
+			optional_idx checked_end;
+			auto prune_result =
+			    column_data.CheckZonemapAt(state.column_scans[entry.scan_column_index], entry, row, checked_end);
+			if (!checked_end.IsValid()) {
+				continue;
+			}
+			const idx_t result_end = MinValue<idx_t>(checked_end.GetIndex(), end_row);
+			if (prune_result == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
+			    prune_result == FilterPropagateResult::FILTER_FALSE_OR_NULL) {
+				rejected_end = MaxValue<idx_t>(rejected_end, result_end);
+			} else {
+				accepted_end = MinValue<idx_t>(accepted_end, result_end);
+			}
+		}
+		if (rejected_end > row) {
+			row = rejected_end;
 			continue;
 		}
-		auto &column_data = GetColumn(entry.table_column_index);
-		end_row = MinValue<idx_t>(end_row, column_data.ZonemapScanEnd(context, start_row, end_row, entry.filter));
+		// the vectors that hold the accepted rows are read, the following vector is checked again
+		D_ASSERT(accepted_end > row);
+		const idx_t run_start = row - row % STANDARD_VECTOR_SIZE;
+		const idx_t run_end = MinValue<idx_t>(AlignValue<idx_t, STANDARD_VECTOR_SIZE>(accepted_end), end_row);
+		RegisterScanIO(state, run_start, run_end, prefetch_state);
+		row = run_end;
 	}
-	return end_row > start_row ? end_row - start_row : 0;
+	return GetBlockManager().buffer_manager.CreatePrefetchTasks(state.context, prefetch_state.blocks);
 }
 
 bool RowGroup::PrepareScan(ScanOptions options, CollectionScanState &state) {
@@ -1484,7 +1500,9 @@ shared_ptr<ColumnData> RowGroup::CheckpointColumn(const RowGroup &row_group, idx
 	// FIXME: we should get rid of the checkpoint state statistics - and instead use the stats in the ColumnData
 	// directly
 	auto stats = checkpoint_state->GetStatistics();
-	result_col->MergeStatistics(*stats);
+	if (result_col.get() != &column) {
+		result_col->MergeStatistics(*stats);
+	}
 
 	write_data.statistics.push_back(stats->Copy());
 	write_data.states.push_back(std::move(checkpoint_state));
@@ -1992,7 +2010,7 @@ void RowGroup::CompressVersionInfo(VisibilityBound lowest_visibility_bound) {
 	if (!vinfo) {
 		return;
 	}
-	vinfo->CompressVersionIds(lowest_visibility_bound);
+	vinfo->CompressVersionIds(lowest_visibility_bound, count);
 }
 
 vector<MetaBlockPointer> RowGroup::CheckpointDeletes(RowGroupWriter &writer) {
@@ -2009,7 +2027,7 @@ vector<MetaBlockPointer> RowGroup::CheckpointDeletes(RowGroupWriter &writer) {
 		// no version information: write nothing
 		return vector<MetaBlockPointer>();
 	}
-	return vinfo->Checkpoint(writer);
+	return vinfo->Checkpoint(writer, count);
 }
 
 void RowGroup::Serialize(RowGroupPointer &pointer, Serializer &serializer, bool supports_per_column_writes) {

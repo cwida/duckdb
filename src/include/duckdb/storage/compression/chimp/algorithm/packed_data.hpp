@@ -47,13 +47,6 @@ public:
 		return result;
 	}
 
-	// FIXME: remove once chimp has been moved over to the above.
-	static inline void Unpack(uint16_t packed_data, UnpackedData &dest) {
-		dest = Unpack(packed_data);
-		//  Verify that combined, this is not bigger than the full size of the type
-		D_ASSERT(dest.significant_bits + dest.leading_zero <= (sizeof(CHIMP_TYPE) * 8));
-	}
-
 	static inline uint16_t Pack(uint8_t index, uint8_t leading_zero, uint8_t significant_bits) {
 		static constexpr uint8_t BIT_SIZE = (sizeof(CHIMP_TYPE) * 8);
 

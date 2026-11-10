@@ -115,12 +115,13 @@ void DeltaByteArrayDecoder::InitializePage() {
 			output += sizeof(uint32_t);
 		}
 
-		memcpy(output, prev_value.data(), prefix_len);
 		block.available(suffix_len);
-		memcpy(output + prefix_len, block.ptr, suffix_len);
+		if (value_len > 0) {
+			memcpy(output, prev_value.data(), prefix_len);
+			memcpy(output + prefix_len, block.ptr, suffix_len);
+			memcpy(prev_value.data(), output, value_len);
+		}
 		block.inc(suffix_len);
-
-		memcpy(prev_value.data(), output, value_len);
 		prev_len = value_len;
 		output += value_len;
 	}

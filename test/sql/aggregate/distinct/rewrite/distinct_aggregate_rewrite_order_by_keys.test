@@ -1,0 +1,86 @@
+# name: test/sql/aggregate/distinct/rewrite/distinct_aggregate_rewrite_order_by_keys.test
+# description: DISTINCT aggregates only share a rewrite branch when their ORDER BY keys agree
+# group: [rewrite]
+
+# '1' and 1 cast to the same VARCHAR, but ORDER BY u still distinguishes them
+statement ok
+CREATE TABLE tu(g INT, u UNION(a VARCHAR, b INT));
+
+statement ok
+INSERT INTO tu VALUES (1, union_value(a := '1')), (1, union_value(b := 1)), (2, union_value(a := 'x')), (2, union_value(b := 2)), (2, NULL);
+
+query III
+SELECT g, list_sort(string_split(STRING_AGG(DISTINCT u, ','), ',')), STRING_AGG(DISTINCT u, ',' ORDER BY u)
+FROM tu
+GROUP BY g
+ORDER BY g;
+----
+1	[1]	1,1
+2	[2, x]	x,2
+
+query III
+SELECT g, STRING_AGG(DISTINCT u, ',' ORDER BY u), list_sort(string_split(STRING_AGG(DISTINCT u, ','), ','))
+FROM tu
+GROUP BY g
+ORDER BY g;
+----
+1	1,1	[1]
+2	x,2	[2, x]
+
+query III
+SELECT STRING_AGG(DISTINCT u, ',' ORDER BY u), list_sort(string_split(STRING_AGG(DISTINCT u, ','), ',')), count(DISTINCT u)
+FROM tu;
+----
+1,x,1,2	[1, 2, x]	4
+
+query III
+SELECT g, list_sort(string_split(STRING_AGG(DISTINCT u, ',') FILTER (WHERE g > 0), ',')),
+       STRING_AGG(DISTINCT u, ',' ORDER BY u) FILTER (WHERE g > 0)
+FROM tu
+GROUP BY g
+ORDER BY g;
+----
+1	[1]	1,1
+2	[2, x]	x,2
+
+# ordered aggregates with the same ORDER BY key can still share a branch
+query IIII
+SELECT g, list_sort(string_split(STRING_AGG(DISTINCT u, ','), ',')), STRING_AGG(DISTINCT u, ',' ORDER BY u),
+       STRING_AGG(DISTINCT u, ',' ORDER BY u DESC)
+FROM tu
+GROUP BY g
+ORDER BY g;
+----
+1	[1]	1,1	1,1
+2	[2, x]	x,2	2,x
+
+statement ok
+CREATE TABLE tv(g INT, v VARIANT);
+
+statement ok
+INSERT INTO tv VALUES (1, '1'::VARIANT), (1, 1::VARIANT), (2, 'x'::VARIANT);
+
+query III
+SELECT g, STRING_AGG(DISTINCT v, ','), STRING_AGG(DISTINCT v, ',' ORDER BY v)
+FROM tv
+GROUP BY g
+ORDER BY g;
+----
+1	1	1,1
+2	x	x
+
+# ORDER BY keys derived from the argument
+statement ok
+CREATE TABLE ts(g INT, s VARCHAR);
+
+statement ok
+INSERT INTO ts VALUES (1, 'a'), (1, 'b'), (1, 'a'), (2, 'c'), (2, NULL);
+
+query IIII
+SELECT g, list_sort(list(DISTINCT s)), list(DISTINCT s ORDER BY unicode(s) DESC), list(DISTINCT s ORDER BY unicode(s))
+FROM ts
+GROUP BY g
+ORDER BY g;
+----
+1	[a, b]	[b, a]	[a, b]
+2	[c, NULL]	[c, NULL]	[c, NULL]

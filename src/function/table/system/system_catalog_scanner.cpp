@@ -10,6 +10,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/profiler/profiling_node.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/optimizer/column_lifetime_analyzer.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
@@ -78,9 +79,14 @@ unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Ident
 	return std::move(result);
 }
 
-// pushdown_expression: accept an expression only if the single column it references is an identity column.
+// pushdown_expression: accept an expression only if the single column it references is an identity column and it
+// cannot throw. The scan evaluates the expression on the names of all catalogs, schemas and entries, including ones
+// the function never returns, so one that fails on such a name raises an error that a filter on the rows would not.
 static bool PushdownExpression(ClientContext &context, const LogicalGet &get, Expression &expr) {
 	if (!get.bind_data) {
+		return false;
+	}
+	if (expr.CanThrow()) {
 		return false;
 	}
 	auto &data = get.bind_data->Cast<SystemCatalogScannerData>();
@@ -151,6 +157,7 @@ vector<reference<SchemaCatalogEntry>> GetSchemasWithFilters(ClientContext &conte
 
 	vector<reference<SchemaCatalogEntry>> result;
 	auto &db_manager = DatabaseManager::Get(context);
+	auto &meta_transaction = MetaTransaction::Get(context);
 	for (auto &database : db_manager.GetDatabases(context)) {
 		if (database->GetVisibility() == AttachVisibility::HIDDEN) {
 			continue; // same skip as Catalog::GetAllSchemas
@@ -163,6 +170,8 @@ vector<reference<SchemaCatalogEntry>> GetSchemasWithFilters(ClientContext &conte
 			continue;
 		}
 		stats.catalogs_scanned++;
+		// keep the database alive until the end of the transaction, the returned schemas reference it
+		meta_transaction.UseDatabase(database);
 		for (auto &schema : catalog.GetSchemasForScan(context, filters.schema)) {
 			stats.schemas_total++;
 			// the catalog may return schemas the filters reject

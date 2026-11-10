@@ -64,7 +64,7 @@ INSERT INTO t0(c0) VALUES (true);
 statement ok
 INSERT INTO t86(c0) VALUES (''), ('cOB4');
 
-query II
+query II rowsort
 (SELECT t86.c0, t0.c0 FROM t0, t86) EXCEPT ALL (
 	SELECT i,i FROM range(0, 4) r(i)
 );

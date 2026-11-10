@@ -8,6 +8,7 @@
 #include "json_functions.hpp"
 #include "json_serializer.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/literal.hpp"
 
 namespace duckdb {
 
@@ -194,6 +195,10 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 		throw ParserException("Error parsing json: no statements");
 	}
 
+	DeserializationPolicy policy;
+	policy.Disallow(LogicalTypeId::POINTER);
+	policy.Disallow(LiteralKind::POINTER);
+
 	vector<unique_ptr<SelectStatement>> result;
 
 	idx_t idx;
@@ -201,6 +206,7 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 	yyjson_val *stmt_json;
 	yyjson_arr_foreach(statements, idx, max, stmt_json) {
 		JsonDeserializer deserializer(stmt_json, doc);
+		deserializer.SetPolicy(policy);
 		auto stmt = SelectStatement::Deserialize(deserializer);
 		if (!stmt->node) {
 			throw ParserException("Error parsing json: no select node found in json");
@@ -281,13 +287,22 @@ PragmaFunctionSet JSONFunctions::GetExecuteJsonSerializedSqlPragmaFunction() {
 struct ExecuteSqlTableFunction {
 	struct BindData : public TableFunctionData {
 		shared_ptr<Relation> plan;
-		unique_ptr<QueryResult> result;
 		unique_ptr<Connection> con;
 
 		bool SupportStatementCache() const override {
 			return false;
 		}
 	};
+
+	// The result is scan state, not bind state: a scan can be initialized multiple times (e.g. per recursive
+	// CTE iteration) and must produce the full result each time.
+	struct State : public GlobalTableFunctionState {
+		unique_ptr<QueryResult> result;
+	};
+
+	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFunctionInitInput &input) {
+		return make_uniq<State>();
+	}
 
 	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
 	                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
@@ -315,11 +330,12 @@ struct ExecuteSqlTableFunction {
 	}
 
 	static void Function(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-		auto &data = data_p.bind_data->CastNoConst<BindData>();
-		if (!data.result) {
-			data.result = data.plan->Execute();
+		auto &data = data_p.bind_data->Cast<BindData>();
+		auto &state = data_p.global_state->Cast<State>();
+		if (!state.result) {
+			state.result = data.plan->ExecuteOrThrow();
 		}
-		auto result_chunk = data.result->Fetch();
+		auto result_chunk = state.result->Fetch();
 		if (!result_chunk) {
 			return;
 		}
@@ -330,7 +346,7 @@ struct ExecuteSqlTableFunction {
 TableFunctionSet JSONFunctions::GetExecuteJsonSerializedSqlFunction() {
 	TableFunction func("json_execute_serialized_sql",
 	                   FunctionSignature().AddPositionalOnly("serialized_sql", LogicalType::VARCHAR),
-	                   ExecuteSqlTableFunction::Function, ExecuteSqlTableFunction::Bind);
+	                   ExecuteSqlTableFunction::Function, ExecuteSqlTableFunction::Bind, ExecuteSqlTableFunction::Init);
 	return TableFunctionSet(func);
 }
 

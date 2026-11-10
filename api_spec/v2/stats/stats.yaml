@@ -1,10 +1,15 @@
 module: stats
 #
 # Statistics describe the values an expression or a column can produce. The engine propagates them through a query
-# plan and uses them to simplify it, e.g. to fold `x IS NULL` to false when `x` cannot be NULL. A function takes part
-# in that propagation through its stats callback (`[[scalar_function_set_stats_callback]]`,
-# `[[aggregate_function_set_stats_callback]]`, `[[table_function_set_stats_callback]]`), which reads the statistics of
-# its arguments and narrows the statistics of its result.
+# plan and uses them to simplify it, e.g. to fold `x IS NULL` to false when `x` cannot be NULL, or to drop a scan
+# whose filter no value within the column's bounds satisfies. A function takes part in that propagation through its
+# stats callback (`[[scalar_function_set_stats_callback]]`, `[[aggregate_function_set_stats_callback]]`,
+# `[[table_function_set_stats_callback]]`), which reads the statistics of its arguments and narrows the statistics of
+# its result. A function can also build statistics of its own with `[[stats_create]]`, e.g. to check a pushed-down
+# filter against the statistics of a row group with `[[expression_check_statistics]]`.
+#
+# Statistics are read and written as a STRUCT value with one field per statistic, the shape the SQL function `stats()`
+# shows: see `[[stats_get_value]]` and `[[stats_set_value]]`.
 #
 # Every statistic states what can occur, never what does occur: `true` means a kind of value may be present, `false`
 # guarantees it is absent. The engine relies on the guarantees, so a statistic that claims less than the data holds
@@ -16,12 +21,17 @@ module: stats
 handles:
   stats:
     description: |
-      A borrowed opaque handle to the statistics of an expression or a column. A stats callback receives it for the
-      result it describes and for each of its arguments; it is valid only for the duration of that callback.
+      An opaque handle to the statistics of an expression or a column: whether it can hold NULLs and non-NULL values, a
+      minimum and a maximum for numeric and string columns, the statistics of the children of a LIST / ARRAY / STRUCT
+      column, the shredding of a VARIANT column and the extent of a GEOMETRY column.
 
-      The statistics of an argument are read-only, and the setters fail on them. The statistics of the result start
-      out unknown, with every kind of value possible, and the callback narrows them through the setters. A callback
-      that leaves the result unchanged tells the engine nothing.
+      A stats callback receives borrowed statistics for the result it describes and for each of its arguments; they are
+      valid only for the duration of that callback. The statistics of an argument are read-only, and the setters fail on
+      them. The statistics of the result start out unknown, with every kind of value possible, and the callback narrows
+      them through the setters. A callback that leaves the result unchanged tells the engine nothing.
+
+      Statistics created with `[[stats_create]]` are owned by the caller: they start out unknown, are narrowed with the
+      setters, combined with `[[stats_merge]]`, and destroyed with `[[stats_destroy]]`.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Functions
@@ -117,4 +127,222 @@ functions:
         type: error_info
         indirection: 1
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Statistics as a value
+  #---------------------------------------------------------------------------------------------------------------------
+  stats_get_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-04" ]
+    description: |
+      Returns the statistics as a STRUCT value with one field per known statistic, the shape the SQL function
+      `stats()` shows for the same statistics: `stats(42)` for example gives
+      `{'min': 42, 'max': 42, 'has_null': false, 'has_no_null': true, 'approx_unique': 1}`. Every field keeps the
+      type of what it describes, so a bound is a value of the column's type: a DATE for a DATE column, a DECIMAL for a
+      DECIMAL column. Read the fields with `[[value_get_child_count]]` and `[[value_get_child]]`, and their names from
+      the struct type (`[[value_get_logical_type]]`, `[[logical_type_get_param]]`).
+
+      Every statistics struct has `has_null` and `has_no_null` (whether NULLs and non-NULL values can occur) and, when
+      known, `approx_unique` (the estimated number of distinct values). The other fields depend on the type, and a
+      field is absent when that statistic is unknown:
+
+      - numeric types (integers, floating point numbers, DECIMAL, dates, times, timestamps, INTERVAL, UUID, BOOLEAN):
+        `min` and `max`, values of the column's type;
+      - VARCHAR and BLOB: `min` and `max` (bounds in binary order, possibly truncated prefixes), `has_unicode`,
+        `min_string_length`, `max_string_length` and `total_string_length`. A bound holds its bytes as they are: as a
+        VARCHAR for a VARCHAR column, unless a truncated prefix is not valid UTF-8, in which case it is a BLOB; as a
+        BLOB for a BLOB column. (`stats()` instead renders string bounds as text, with `\xNN` escapes for bytes
+        outside printable ASCII);
+      - LIST: `min_list_length`, `max_list_length` and `total_list_length`, and `child_stats`, the statistics struct
+        of the elements;
+      - ARRAY: `child_stats`, the statistics struct of the elements;
+      - STRUCT: `child_stats`, a struct with the statistics of each field by name; a MAP is a LIST of
+        `STRUCT(key, value)` entries, so its keys and values are
+        `child_stats.child_stats.key` and `child_stats.child_stats.value`;
+      - TUPLE: `child_stats`, a TUPLE with the statistics struct of each element in order (`stats()` shows it as an
+        array);
+      - GEOMETRY: `extent`, a struct with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the
+        geometries have those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types
+        the column holds (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...; `stats()` does not
+        show this field); and the flags `has_empty_geom`, `has_non_empty_geom`, `has_empty_part` and
+        `has_non_empty_part`;
+      - VARIANT: `shredding_state` (`'SHREDDED'` when the values are stored in a structured layout, `'NOT_SHREDDED'`,
+        `'INCONSISTENT'` or `'UNINITIALIZED'`), and for a shredded column `fully_shredded` and `partially_shredded`:
+        trees over the structured layout whose leaves are `{'type': <type name>, 'stats': <statistics struct>}` for
+        the values shredded on that type, whose arrays are `{'child_stats': <node>}` and whose objects hold a node per
+        field. A node under `fully_shredded` has every value in the structured layout, so that a filter on it can be
+        answered from its statistics; a node under `partially_shredded` also has values that fell back to the generic
+        layout. `{'shredding_state': 'SHREDDED', 'fully_shredded': {'x': {'type': 'INTEGER', 'stats': {'min': 1,
+        'max': 5, 'has_null': false, 'has_no_null': true}}}}` describes objects whose field `x` is an INTEGER in
+        [1, 5] throughout.
+
+      The returned value is owned by the caller and must be destroyed via `[[value_destroy]]`.
+    role: getter
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the owned STRUCT value.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-04" ]
+    description: |
+      Sets the statistics from a STRUCT value in the shape `[[stats_get_value]]` returns: every field whose value is
+      not NULL replaces that statistic, a NULL field or an absent one leaves it unchanged. The result statistics of a
+      stats callback start out unknown, so `{'min': 20, 'max': 30, 'has_null': false}` on an INTEGER column reports
+      exactly those bounds and the absence of NULLs; a nested field such as `child_stats.x` or `extent.z_min` narrows
+      that part only, and a `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as
+      a whole. The `child_stats` of a TUPLE is a TUPLE (`[[value_create_tuple]]`) or a LIST with one statistics struct
+      per element in order, a NULL element leaving that element's statistics unchanged; an error names an element
+      `child_stats.element1`, `child_stats.element2`, ...
+
+      The simplest way to build the value is `[[value_create_struct]]` over the fields: for the example above the
+      names `min`, `max` and `has_null` with the values of `[[value_create_int]]` and `[[value_create_bool]]`. A bound
+      is a value of the column's type, or one that casts to it: a DATE column takes `[[value_create_date]]` or the
+      VARCHAR `'2024-01-01'`, but not a number. A string bound is taken as it is: the bytes of a VARCHAR or BLOB value
+      are the bound, nothing in them is interpreted (`'C:\temp'` is the seven characters it shows), and a bound may be
+      a truncated prefix, as a file format stores them. A geometry `types` list names the types the column holds with
+      the names `[[stats_get_value]]` returns; a shredded `type` is a type name such as `'INTEGER'` or
+      `'DECIMAL(10, 2)'`.
+
+      The output of the SQL function `stats()` is accepted too: a VARIANT is read as the struct it holds, with the
+      field values cast as above. Note that `stats()` renders string bounds as text, with `\xNN` escapes for bytes
+      outside printable ASCII, and that text is the bound it sets; copy exact bounds with `[[stats_get_value]]`.
+
+      Each statistic states what can occur: a bound that excludes a value the scan then produces, or `has_null: false`
+      for a column with NULLs, produces wrong query results.
+
+      Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not a STRUCT (or a VARIANT holding one), a
+      field the statistics of the type do not have, a field whose value does not convert (the message names the
+      field, e.g. `child_stats.a.min`), or read-only statistics such as those of an argument. A failure leaves the
+      statistics as they were.
+    role: method
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to set.
+      value:
+        type: value
+        description: The statistics as a STRUCT value, or the output of `stats()`. Borrowed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Construction
+  #---------------------------------------------------------------------------------------------------------------------
+  stats_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-30" ]
+    description: |
+      Creates the statistics of a column of the given type through a factory.
+
+      The statistics start out unknown: they claim nothing about the values (NULLs and non-NULL values may occur, no
+      bounds, and the statistics of the children of a nested type are unknown too). Narrow them with
+      `[[stats_set_value]]`, `[[stats_set_can_have_null]]` and `[[stats_set_can_have_valid]]`. The caller owns the
+      returned handle and must destroy it with `[[stats_destroy]]`. A stats callback does not need this: it narrows
+      the result statistics it receives in place.
+    role: constructor
+    belongs_to: stats
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create the statistics through.
+      type:
+        type: logical_type
+        description: The type of the column the statistics describe. Borrowed and copied.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: On success, receives the newly created statistics. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  stats_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-30" ]
+    description: |
+      Destroys statistics created with `[[stats_create]]`, releasing their resources.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
+      double-destruction. Fails with `ERROR_INPUT_INVALID` for the borrowed statistics a stats callback receives, which
+      the engine owns. Statistics that were merged into or assigned to others were copied, so destroying them
+      afterwards does not affect those.
+    role: destructor
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        indirection: 1
+        description: The statistics to destroy.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Combining statistics
+  #---------------------------------------------------------------------------------------------------------------------
+  stats_merge:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-30" ]
+    description: |
+      Merges the statistics of another part of the column into these: afterwards the statistics hold for the values of
+      both parts together (the bounds widen, NULLs can occur when they can in either, the children are merged, a VARIANT
+      shredded differently in the two parts becomes inconsistently shredded). This is how the statistics of the row
+      groups of a file are combined into those of the file. Both must be of the same type; `other` is borrowed and left
+      unchanged. Fails with `ERROR_INPUT_INVALID` for statistics of different types or read-only statistics.
+    role: method
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to widen.
+      other:
+        type: stats
+        description: The statistics of the other part of the column. Borrowed.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  stats_assign:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Replaces the statistics with a copy of `other`: afterwards they claim exactly what `other` claims, nothing that
+      was set before remains. This is how a stats callback hands the engine statistics the function built with
+      `[[stats_create]]`, e.g. combined from the files of a scan with `[[stats_merge]]`. Both must be of the same type;
+      `other` is borrowed and left unchanged. Fails with `ERROR_INPUT_INVALID` for statistics of different types or
+      read-only statistics.
+    role: method
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to replace.
+      other:
+        type: stats
+        description: The statistics to copy. Borrowed.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR

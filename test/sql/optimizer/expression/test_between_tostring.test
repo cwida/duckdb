@@ -1,0 +1,198 @@
+# name: test/sql/optimizer/expression/test_between_tostring.test
+# description: A BETWEEN the optimizer folds from two comparisons prints its exclusive bounds as comparisons
+# group: [expression]
+
+statement ok
+SET explain_output = OPTIMIZED_ONLY;
+
+# both bounds exclusive
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n > 1 AND n < 8;
+----
+logical_opt	<REGEX>:.*\(n > 1\) AND \(n < 8\).*
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n > 1 AND n < 8;
+----
+logical_opt	<!REGEX>:.*BETWEEN.*
+
+# lower bound inclusive
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n >= 1 AND n < 8;
+----
+logical_opt	<REGEX>:.*\(n >= 1\) AND \(n < 8\).*
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n >= 1 AND n < 8;
+----
+logical_opt	<!REGEX>:.*BETWEEN.*
+
+# upper bound inclusive
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n > 1 AND n <= 8;
+----
+logical_opt	<REGEX>:.*\(n > 1\) AND \(n <= 8\).*
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n > 1 AND n <= 8;
+----
+logical_opt	<!REGEX>:.*BETWEEN.*
+
+# both bounds inclusive keep the BETWEEN form
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n >= 1 AND n <= 8;
+----
+logical_opt	<REGEX>:.*n BETWEEN 1 AND 8.*
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE n BETWEEN 1 AND 8;
+----
+logical_opt	<REGEX>:.*n BETWEEN 1 AND 8.*
+
+# the rows each printed predicate selects, with a NULL and both bound values present
+
+query I
+SELECT n FROM (SELECT * FROM range(10) UNION ALL SELECT NULL) t(n) WHERE n > 1 AND n < 8 ORDER BY n;
+----
+2
+3
+4
+5
+6
+7
+
+query I
+SELECT n FROM (SELECT * FROM range(10) UNION ALL SELECT NULL) t(n) WHERE n >= 1 AND n < 8 ORDER BY n;
+----
+1
+2
+3
+4
+5
+6
+7
+
+query I
+SELECT n FROM (SELECT * FROM range(10) UNION ALL SELECT NULL) t(n) WHERE n > 1 AND n <= 8 ORDER BY n;
+----
+2
+3
+4
+5
+6
+7
+8
+
+query I
+SELECT n FROM (SELECT * FROM range(10) UNION ALL SELECT NULL) t(n) WHERE n BETWEEN 1 AND 8 ORDER BY n;
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+# a function input and the JSON plan
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE abs(n) > 1 AND abs(n) < 8;
+----
+logical_opt	<REGEX>:.*\(abs\(n\) > 1\) AND \(abs\(n\) < 8\).*
+
+query II
+EXPLAIN (FORMAT json) SELECT n FROM range(10) t(n) WHERE n > 1 AND n < 8;
+----
+logical_opt	<REGEX>:.*"Expressions": "\(\(n > 1\) AND \(n < 8\)\)".*
+
+# VARCHAR and DATE bounds
+
+query II
+EXPLAIN SELECT s FROM (SELECT n::VARCHAR FROM range(10) t(n)) t(s) WHERE s > '1' AND s <= '8';
+----
+logical_opt	<REGEX>:.*\(CAST\(n AS VARCHAR\) > '1'\) AND \(CAST\(n AS VARCHAR\) <= '8'\).*
+
+query I
+SELECT s FROM (SELECT n::VARCHAR FROM range(10) t(n)) t(s) WHERE s > '1' AND s <= '8' ORDER BY s;
+----
+2
+3
+4
+5
+6
+7
+8
+
+query II
+EXPLAIN SELECT d FROM (SELECT DATE '2024-01-01' + n::INTEGER FROM range(10) t(n)) t(d) WHERE d >= DATE '2024-01-02' AND d < DATE '2024-01-04';
+----
+logical_opt	<REGEX>:.*>= '2024-01-02'::DATE\) AND \(.*< '2024-01-04'::DATE\).*
+
+query I
+SELECT d FROM (SELECT DATE '2024-01-01' + n::INTEGER FROM range(10) t(n)) t(d) WHERE d >= DATE '2024-01-02' AND d < DATE '2024-01-04' ORDER BY d;
+----
+2024-01-02
+2024-01-03
+
+# a range merged from an OR keeps the exclusive upper bound of its second branch
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE abs(n) BETWEEN 1 AND 3 OR abs(n) > 3 AND abs(n) < 8;
+----
+logical_opt	<REGEX>:.*\(abs\(n\) >= 1\) AND \(abs\(n\) < 8\).*
+
+query I
+SELECT n FROM range(10) t(n) WHERE abs(n) BETWEEN 1 AND 3 OR abs(n) > 3 AND abs(n) < 8 ORDER BY n;
+----
+1
+2
+3
+4
+5
+6
+7
+
+# a BETWEEN the user writes prints unchanged, NOT BETWEEN included; the bounds are columns so that the prepared
+# statement verifier, which turns constants into parameters, does not change the column names
+
+query T
+SELECT column_name FROM (DESCRIBE SELECT n BETWEEN lo AND hi, n NOT BETWEEN lo AND hi FROM (SELECT range, 1, 8 FROM range(10)) t(n, lo, hi));
+----
+(n BETWEEN lo AND hi)
+(NOT (n BETWEEN lo AND hi))
+
+query II
+EXPLAIN SELECT abs(n) BETWEEN 1 AND 8 FROM range(10) t(n);
+----
+logical_opt	<REGEX>:.*abs\(n\) BETWEEN 1 AND 8.*
+
+query II
+EXPLAIN SELECT n FROM range(10) t(n) WHERE abs(n) NOT BETWEEN 1 AND 8;
+----
+logical_opt	<REGEX>:.*NOT \(abs\(n\) BETWEEN 1 AND 8\).*
+
+# the table scan prints the folded filter it cannot push into the scan
+
+statement ok
+CREATE TABLE t AS SELECT range::VARCHAR AS s FROM range(10);
+
+query II
+EXPLAIN SELECT s FROM t WHERE lower(s) > '1' AND lower(s) < '8';
+----
+logical_opt	<REGEX>:.*\(lower\(s\) > '1'\) AND \(lower\(s\) < '8'\).*
+
+query I
+SELECT s FROM t WHERE lower(s) > '1' AND lower(s) < '8' ORDER BY s;
+----
+2
+3
+4
+5
+6
+7

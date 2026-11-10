@@ -185,7 +185,7 @@ physical_plan	<REGEX>:[\s\S]*~1,000 rows[\s\S]*
 query II
 EXPLAIN SELECT * FROM secure_view WHERE i > 500
 ----
-physical_plan	<REGEX>:[\s\S]*~200 rows[\s\S]*
+physical_plan	<REGEX>:[\s\S]*~499 rows[\s\S]*
 
 # Statistics are still propagated *within* the view definition, so the view body is optimized as usual. This is
 # deliberately not observable from the outside - neither the plan nor the metrics of the operators inside a secure

@@ -27,6 +27,40 @@ arena_ptr<TransformResultValue> TransformStep::TakeResult() {
 	return std::move(result);
 }
 
+TransformInput TransformInput::Unwrap() const {
+	if (GetRule()) {
+		return *this;
+	}
+	// choices, present optionals and unnamed single-child groups carry no rule: unwrap to the rule-boundary node
+	reference<ParseResult> target(parse_result);
+	while (!target.get().GetRule()) {
+		auto &node = target.get();
+		if (node.type == ParseResultType::CHOICE) {
+			target = node.Cast<ChoiceParseResult>().GetResult();
+		} else if (node.type == ParseResultType::OPTIONAL && node.Cast<OptionalParseResult>().HasResult()) {
+			target = node.Cast<OptionalParseResult>().GetResult();
+		} else if (node.type == ParseResultType::LIST && node.Name().empty() &&
+		           node.Cast<ListParseResult>().GetChildren().size() == 1) {
+			target = node.Cast<ListParseResult>().GetChild(0);
+		} else {
+			break;
+		}
+	}
+	auto &node = target.get();
+	if (!node.GetRule()) {
+		string description = ParseResultToString(node.type);
+		if (node.type == ParseResultType::OPTIONAL) {
+			description = "empty " + description;
+		}
+		if (!node.Name().empty()) {
+			description += " '" + node.Name() + "'";
+		}
+		throw NotImplementedException("Cannot transform %s parse node: no grammar rule is associated with it",
+		                              description);
+	}
+	return TransformInput(node);
+}
+
 GeneratedTransformProcess::GeneratedTransformProcess(PEGTransformer &transformer_p, TransformInput input,
                                                      const TransformFrameOps &info_p)
     : parse_result(input.parse_result), info(info_p), child_results(transformer_p.process_allocator),
@@ -144,7 +178,8 @@ TransformStack::~TransformStack() {
 }
 
 void TransformStack::PushFrame(TransformInput input) {
-	frames.emplace_back(input);
+	// inline fast path: in-tree frames always carry a rule
+	frames.emplace_back(input.GetRule() ? input : input.Unwrap());
 	auto &frame = frames.back();
 	frame.process_arena_position = transformer.process_allocator.GetPosition();
 	auto weight = transformer.ExpressionDepthWeight(frame.rule, frame.parse_result);
@@ -165,9 +200,8 @@ void TransformStack::PopFrame() {
 }
 
 void TransformStack::InitializeFrame(TransformStackFrame &frame) {
-	if (!frame.rule) {
-		throw InternalException("No registered data exists for rule '%s'", frame.parse_result.Name());
-	}
+	// PushFrame unwraps every input to a rule-bearing node or throws
+	D_ASSERT(frame.rule);
 	frame.process = frame.rule->StartTransform(transformer, frame.parse_result);
 }
 
@@ -187,9 +221,6 @@ arena_ptr<TransformResultValue> TransformStack::ExecuteFrame(TransformStackFrame
 
 arena_ptr<TransformResultValue> TransformStack::Execute(TransformInput input) {
 	D_ASSERT(frames.empty());
-	if (!input.GetRule()) {
-		throw InternalException("No registered data exists for rule '%s'", input.parse_result.Name());
-	}
 	PushFrame(input);
 	while (!frames.empty()) {
 		auto result = ExecuteFrame(frames.back());
@@ -227,13 +258,8 @@ string TransformStack::FormatStack() const {
 #endif
 
 arena_ptr<TransformResultValue> PEGTransformer::TransformInternal(ParseResult &parse_result) {
-	auto rule = parse_result.GetRule();
-	if (!rule) {
-		throw InternalException("No registered data exists for rule '%s'", parse_result.Name());
-	}
-	TransformInput input {*rule, parse_result};
 	TransformStack stack(*this);
-	return stack.Execute(input);
+	return stack.Execute(TransformInput(parse_result));
 }
 
 //! The number of repeated elements directly in a rule's match: the links of an operator chain

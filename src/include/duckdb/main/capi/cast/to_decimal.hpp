@@ -15,8 +15,8 @@ namespace duckdb {
 template <class INTERNAL_TYPE>
 struct ToCDecimalCastWrapper {
 	template <class SOURCE_TYPE>
-	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint8_t width,
-	                      uint8_t scale) {
+	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint32_t width,
+	                      uint32_t scale) {
 		throw NotImplementedException("Type not implemented for CDecimalCastWrapper");
 	}
 };
@@ -25,8 +25,8 @@ struct ToCDecimalCastWrapper {
 template <>
 struct ToCDecimalCastWrapper<hugeint_t> {
 	template <class SOURCE_TYPE>
-	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint8_t width,
-	                      uint8_t scale) {
+	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint32_t width,
+	                      uint32_t scale) {
 		hugeint_t intermediate_result;
 
 		if (!TryCastToDecimal::Operation<SOURCE_TYPE, hugeint_t>(input, intermediate_result, parameters, width,
@@ -34,8 +34,8 @@ struct ToCDecimalCastWrapper<hugeint_t> {
 			result = FetchDefaultValue::Operation<duckdb_decimal>();
 			return false;
 		}
-		result.scale = scale;
-		result.width = width;
+		result.scale = NumericCast<uint8_t>(scale);
+		result.width = NumericCast<uint8_t>(width);
 
 		duckdb_hugeint hugeint_value;
 		hugeint_value.upper = intermediate_result.upper;
@@ -50,8 +50,8 @@ struct ToCDecimalCastWrapper<hugeint_t> {
 template <>
 struct ToCDecimalCastWrapper<int16_t> {
 	template <class SOURCE_TYPE>
-	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint8_t width,
-	                      uint8_t scale) {
+	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint32_t width,
+	                      uint32_t scale) {
 		int16_t intermediate_result;
 
 		if (!TryCastToDecimal::Operation<SOURCE_TYPE, int16_t>(input, intermediate_result, parameters, width, scale)) {
@@ -60,8 +60,8 @@ struct ToCDecimalCastWrapper<int16_t> {
 		}
 		hugeint_t hugeint_result = Hugeint::Convert(intermediate_result);
 
-		result.scale = scale;
-		result.width = width;
+		result.scale = NumericCast<uint8_t>(scale);
+		result.width = NumericCast<uint8_t>(width);
 
 		duckdb_hugeint hugeint_value;
 		hugeint_value.upper = hugeint_result.upper;
@@ -74,8 +74,8 @@ struct ToCDecimalCastWrapper<int16_t> {
 template <>
 struct ToCDecimalCastWrapper<int32_t> {
 	template <class SOURCE_TYPE>
-	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint8_t width,
-	                      uint8_t scale) {
+	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint32_t width,
+	                      uint32_t scale) {
 		int32_t intermediate_result;
 
 		if (!TryCastToDecimal::Operation<SOURCE_TYPE, int32_t>(input, intermediate_result, parameters, width, scale)) {
@@ -84,8 +84,8 @@ struct ToCDecimalCastWrapper<int32_t> {
 		}
 		hugeint_t hugeint_result = Hugeint::Convert(intermediate_result);
 
-		result.scale = scale;
-		result.width = width;
+		result.scale = NumericCast<uint8_t>(scale);
+		result.width = NumericCast<uint8_t>(width);
 
 		duckdb_hugeint hugeint_value;
 		hugeint_value.upper = hugeint_result.upper;
@@ -98,8 +98,8 @@ struct ToCDecimalCastWrapper<int32_t> {
 template <>
 struct ToCDecimalCastWrapper<int64_t> {
 	template <class SOURCE_TYPE>
-	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint8_t width,
-	                      uint8_t scale) {
+	static bool Operation(SOURCE_TYPE input, duckdb_decimal &result, CastParameters &parameters, uint32_t width,
+	                      uint32_t scale) {
 		int64_t intermediate_result;
 
 		if (!TryCastToDecimal::Operation<SOURCE_TYPE, int64_t>(input, intermediate_result, parameters, width, scale)) {
@@ -108,8 +108,8 @@ struct ToCDecimalCastWrapper<int64_t> {
 		}
 		hugeint_t hugeint_result = Hugeint::Convert(intermediate_result);
 
-		result.scale = scale;
-		result.width = width;
+		result.scale = NumericCast<uint8_t>(scale);
+		result.width = NumericCast<uint8_t>(width);
 
 		duckdb_hugeint hugeint_value;
 		hugeint_value.upper = hugeint_result.upper;
@@ -120,7 +120,7 @@ struct ToCDecimalCastWrapper<int64_t> {
 };
 
 template <class SOURCE_TYPE, class OP>
-duckdb_decimal TryCastToDecimalCInternal(SOURCE_TYPE source, uint8_t width, uint8_t scale) {
+duckdb_decimal TryCastToDecimalCInternal(SOURCE_TYPE source, uint32_t width, uint32_t scale) {
 	duckdb_decimal result;
 	try {
 		CastParameters parameters;
@@ -134,7 +134,7 @@ duckdb_decimal TryCastToDecimalCInternal(SOURCE_TYPE source, uint8_t width, uint
 }
 
 template <class SOURCE_TYPE, class OP>
-duckdb_decimal TryCastToDecimalCInternal(duckdb_result *result, idx_t col, idx_t row, uint8_t width, uint8_t scale) {
+duckdb_decimal TryCastToDecimalCInternal(duckdb_result *result, idx_t col, idx_t row, uint32_t width, uint32_t scale) {
 	return TryCastToDecimalCInternal<SOURCE_TYPE, OP>(UnsafeFetch<SOURCE_TYPE>(result, col, row), width, scale);
 }
 

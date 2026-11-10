@@ -73,9 +73,12 @@ BoundLimitNode Binder::BindLimitValue(OrderBinder &order_binder, unique_ptr<Pars
 			return BoundLimitNode::ExpressionValue(std::move(bound_limit));
 		}
 	}
-	if (expr->IsFoldable()) {
+
+	Value constant;
+	// if evaluation throws, evaluate at runtime instead, so it only fails if the LIMIT operator receives rows
+	if (expr->IsFoldable() && ExpressionExecutor::TryEvaluateScalar(context, *expr, constant)) {
 		//! this is a constant
-		auto val = ExpressionExecutor::EvaluateScalar(context, *expr).CastAs(context, target_type);
+		auto val = constant.CastAs(context, target_type);
 		if (is_percentage) {
 			D_ASSERT(!is_offset);
 			double percentage_val;
@@ -345,8 +348,20 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 		switch (bound_mod->type) {
 		case ResultModifierType::DISTINCT_MODIFIER: {
 			auto &distinct = bound_mod->Cast<BoundDistinctModifier>();
+			if (distinct.distinct_type == DistinctType::DISTINCT) {
+				// DISTINCT covers every result column: the targets were prepared before the select list was bound,
+				// and an UNNEST of a struct expands an entry into several columns
+				distinct.target_distincts.clear();
+				for (idx_t i = 0; i < result.types.size(); i++) {
+					distinct.target_distincts.push_back(make_uniq<BoundColumnRefExpression>(
+					    names[i], sql_types[i], ColumnBinding(table_index, ProjectionIndex(i))));
+				}
+			}
 			// set types of distinct targets
 			for (auto &expr : distinct.target_distincts) {
+				if (expr->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+					continue;
+				}
 				expr = FinalizeBindOrderExpression(std::move(expr), table_index, names, sql_types, bind_state);
 				if (!expr) {
 					throw InternalException("DISTINCT ON ORDER BY ALL not supported");

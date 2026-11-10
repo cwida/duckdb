@@ -2,6 +2,8 @@
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/vector.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
@@ -119,15 +121,66 @@ void StructStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) 
 	});
 }
 
-child_list_t<Value> StructStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> StructStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	child_list_t<Value> result;
 	child_list_t<Value> child_info;
 	auto &child_types = StructType::GetChildTypes(stats.GetType());
 	for (idx_t i = 0; i < child_types.size(); i++) {
-		child_info.emplace_back(child_types[i].first, stats.child_stats[i].ToStruct());
+		child_info.emplace_back(child_types[i].first, stats.child_stats[i].ToStruct(exact));
 	}
 	result.emplace_back("child_stats", Value::STRUCT(std::move(child_info)));
 	return result;
+}
+
+//! The children of a TUPLE's `child_stats` are positional: a TUPLE as ToStruct renders it, or a LIST as stats() does
+static void SetTupleChildrenFromValue(BaseStatistics &stats, const Value &children, StatsStructFields &fields) {
+	auto plain = StatsStructFields::Plain(children);
+	optional_ptr<const vector<Value>> values;
+	switch (plain.type().id()) {
+	case LogicalTypeId::TUPLE:
+		values = StructValue::GetChildren(plain);
+		break;
+	case LogicalTypeId::LIST:
+		values = ListValue::GetChildren(plain);
+		break;
+	default:
+		fields.Throw("child_stats", StringUtil::Format("expected a tuple of statistics, got a value of type %s",
+		                                               plain.type().ToString()));
+	}
+	auto count = StructType::GetChildCount(stats.GetType());
+	if (values->size() != count) {
+		fields.Throw("child_stats",
+		             StringUtil::Format("expected the statistics of %llu elements, got %llu", count, values->size()));
+	}
+	auto path = fields.FieldPath("child_stats");
+	for (idx_t i = 0; i < count; i++) {
+		auto &child = (*values)[i];
+		if (child.IsNull()) {
+			continue;
+		}
+		StructStats::GetChildStats(stats, i).SetFromStruct(child, path + "." + TupleType::GetChildName(i));
+	}
+}
+
+void StructStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto children = fields.Get("child_stats");
+	if (!children) {
+		return;
+	}
+	if (stats.GetType().id() == LogicalTypeId::TUPLE) {
+		SetTupleChildrenFromValue(stats, *children, fields);
+		return;
+	}
+	StatsStructFields child_fields(*children, fields.FieldPath("child_stats"));
+	auto &child_types = StructType::GetChildTypes(stats.GetType());
+	for (idx_t i = 0; i < child_types.size(); i++) {
+		auto &name = child_types[i].first.GetIdentifierName();
+		auto child = child_fields.Get(name);
+		if (child) {
+			stats.child_stats[i].SetFromStruct(*child, child_fields.FieldPath(name));
+		}
+	}
+	child_fields.VerifyAllRead(stats.GetType());
 }
 
 void StructStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {

@@ -1,0 +1,50 @@
+diff --git a/src/http/http_state.cpp b/src/http/http_state.cpp
+index ba5fd09..6dedd4a 100644
+--- a/src/http/http_state.cpp
++++ b/src/http/http_state.cpp
+@@ -194,7 +194,7 @@ bool HTTPState::IsEmpty() const {
+ }
+ 
+ shared_ptr<HTTPState> HTTPState::TryGetState(ClientContext &context) {
+-	return context.registered_state->GetOrCreate<HTTPState>("http_state");
++	return context.GetContext().GetRegisteredState().GetOrCreate<HTTPState>("http_state");
+ }
+ 
+ shared_ptr<HTTPState> HTTPState::TryGetState(optional_ptr<FileOpener> opener) {
+diff --git a/src/http/httpfs.cpp b/src/http/httpfs.cpp
+index b15a929..14091ce 100644
+--- a/src/http/httpfs.cpp
++++ b/src/http/httpfs.cpp
+@@ -663,8 +663,8 @@ static optional_ptr<HTTPMetadataCache> TryGetMetadataCache(optional_ptr<FileOpen
+ 	if (use_shared_cache) {
+ 		return httpfs.GetGlobalCache();
+ 	} else if (client_context) {
+-		return client_context->registered_state->GetOrCreate<HTTPMetadataCache>("http_cache",
+-		                                                                        HTTPMetadataCacheMode::QUERY_LOCAL);
++		return client_context->GetContext().GetRegisteredState().GetOrCreate<HTTPMetadataCache>(
++		    "http_cache", HTTPMetadataCacheMode::QUERY_LOCAL);
+ 	}
+ 	return nullptr;
+ }
+@@ -1098,7 +1098,7 @@ void HTTPFileHandle::LoadFileInfo() {
+ void HTTPFileHandle::InitializeLogger(FileOpener &opener) {
+ 	auto context = opener.TryGetClientContext();
+ 	if (context) {
+-		logger = context->logger;
++		logger = context->GetContext().GetLoggerPtr();
+ 		return;
+ 	}
+ 	auto database = opener.TryGetDatabase();
+@@ -1145,7 +1145,11 @@ void HTTPFileHandle::InitializeRequestState(const OpenFileInfo &file, optional_p
+ 	auto captured = request_session->Capture();
+ 	auto snapshot_params = captured.snapshot->Params();
+ 	if (database) {
+-		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, client_context, *database);
++		optional_ptr<Context> services;
++		if (client_context) {
++			services = &client_context->GetContext();
++		}
++		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, services, *database);
+ 		snapshot_params.override_response_cache_policy =
+ 		    snapshot_params.override_response_cache_policy || validation == CacheValidationMode::NO_VALIDATION;
+ 	}

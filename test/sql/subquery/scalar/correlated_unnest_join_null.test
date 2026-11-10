@@ -1,0 +1,113 @@
+# name: test/sql/subquery/scalar/correlated_unnest_join_null.test
+# description: A correlated subquery joining two unnests of an outer list keeps every match when the list holds NULL
+# group: [scalar]
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT [1, NULL, 1] AS l)
+----
+4
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT [NULL, 1, 1] AS l)
+----
+4
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT [1, 1, NULL] AS l)
+----
+4
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT [1, 1] AS l)
+----
+4
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT [NULL, NULL]::INTEGER[] AS l)
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT []::INTEGER[] AS l)
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT NULL::INTEGER[] AS l)
+----
+0
+
+# every 10th key NULL: 90 distinct keys match themselves
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT list(CASE WHEN i % 10 = 0 THEN NULL ELSE i END ORDER BY i) AS l FROM range(100) r(i))
+----
+90
+
+# keys i // 3 over 3000 rows, every 10th row NULL, more than one vector
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (SELECT list(CASE WHEN i % 10 = 0 THEN NULL ELSE i // 3 END ORDER BY i) AS l FROM range(3000) r(i))
+----
+7500
+
+query I
+SELECT c
+FROM (SELECT [1, NULL, 1] AS l) s,
+     LATERAL (SELECT count(*) AS c FROM (SELECT unnest(s.l) AS x) a JOIN (SELECT unnest(s.l) AS x) b ON a.x = b.x)
+----
+4
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l1) AS x) a JOIN (SELECT unnest(l2) AS x) b ON a.x = b.x)
+FROM (SELECT [NULL, 1, 2, 2] AS l1, [2, NULL, 1, 2] AS l2)
+----
+5
+
+query II
+SELECT id, (SELECT count(*) FROM (SELECT unnest(l) AS x) a JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (VALUES (1, [1, NULL, 1]), (2, [NULL, 2, 2, 2]), (3, [3]), (4, [NULL]), (5, NULL)) t(id, l)
+ORDER BY id
+----
+1	4
+2	9
+3	1
+4	0
+5	0
+
+query II
+SELECT id, (SELECT count(*) FROM (SELECT unnest(l) AS x) a LEFT JOIN (SELECT unnest(l) AS x) b ON a.x = b.x)
+FROM (VALUES (1, [1, NULL, 1]), (2, [NULL, 2, 2, 2]), (3, [3]), (4, [NULL]), (5, NULL)) t(id, l)
+ORDER BY id
+----
+1	5
+2	10
+3	1
+4	1
+5	0
+
+query II
+SELECT id, (SELECT count(*) FROM (SELECT unnest(l) AS x) a LEFT JOIN (SELECT unnest(l) AS x) b ON a.x = b.x
+            WHERE a.x IS NOT NULL)
+FROM (VALUES (1, [1, NULL, 1]), (2, [NULL, 2, 2, 2]), (3, [3]), (4, [NULL]), (5, NULL)) t(id, l)
+ORDER BY id
+----
+1	4
+2	9
+3	1
+4	0
+5	0
+
+query I
+SELECT (SELECT count(*) FROM (SELECT unnest(l) AS x) a LEFT JOIN (SELECT unnest(l) AS x) b ON a.x = b.x
+        WHERE a.x IS NOT NULL)
+FROM (SELECT [NULL, 1, 1] AS l)
+----
+4

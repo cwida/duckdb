@@ -59,7 +59,10 @@ static void EnableProfiling(ClientContext &context, TableFunctionInput &data, Da
 		if (metrics_value.type().id() == LogicalTypeId::VARCHAR) {
 			metrics_value = Value::LIST(LogicalType::VARCHAR, {metrics_value});
 		}
-		TrackedMetricsSetting::SetLocal(context, metrics_value);
+		// validate the metrics like SET tracked_metrics does
+		SettingCallbackInfo info(context, SetScope::SESSION);
+		TrackedMetricsSetting::OnSet(info, metrics_value);
+		Settings::Set<TrackedMetricsSetting>(context, SetScope::SESSION, std::move(metrics_value));
 	}
 }
 
@@ -147,9 +150,12 @@ void EnableProfilingFun::RegisterFunction(BuiltinFunctions &set) {
 	                                                                        .Add("mode", LogicalType::VARCHAR)),
 	                                     EnableProfiling, BindEnableProfiling));
 
+	// reconfigures profiling per execution
+	enable_set.ApplyToFunctions([](TableFunction &function) { function.stability = FunctionStability::VOLATILE; });
 	set.AddFunction(std::move(enable_set));
 
 	auto disable_fun = TableFunction("disable_profiling", {}, DisableProfiling, BindDisableProfiling, nullptr, nullptr);
+	disable_fun.stability = FunctionStability::VOLATILE;
 	set.AddFunction(std::move(disable_fun));
 }
 

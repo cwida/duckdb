@@ -3,6 +3,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension_entries.hpp"
+#include "duckdb/main/extension_helper.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
 namespace duckdb {
@@ -79,6 +81,22 @@ unique_ptr<ExternalResourceType> ExternalResourceTypeRegistry::Lookup(const stri
 		}
 	}
 	return nullptr;
+}
+
+unique_ptr<ExternalResourceType> ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance &db,
+                                                                                const string &name) {
+	auto &registry = Get(db);
+	auto type = registry.Lookup(name);
+	if (type) {
+		return type;
+	}
+	// The extension registers its types on load, so a successful autoload makes the second lookup succeed
+	ExtensionHelper::TryAutoloadFromEntry(db, Identifier(name), EXTENSION_EXTERNAL_RESOURCE_TYPES);
+	return registry.Lookup(name);
+}
+
+string ExternalResourceTypeRegistry::ProvidingExtension(const string &name) {
+	return ExtensionHelper::FindExtensionInEntries(Identifier(name), EXTENSION_EXTERNAL_RESOURCE_TYPES);
 }
 
 } // namespace duckdb

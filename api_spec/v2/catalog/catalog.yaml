@@ -40,8 +40,8 @@ functions:
       partial: an unqualified or schema-qualified name resolves through the connection's search path, exactly as the
       same name resolves in SQL. A two-part name tries the first part as a schema and as an attached database, as SQL
       does, and is rejected when both readings exist. A name that resolves to nothing is rejected with the engine's
-      missing-table error; a name that resolves to a view is rejected with the engine's not-a-table error, since a
-      description snapshots a base table.
+      missing-table error. A name that resolves to a view is rejected with the same error: a description snapshots a
+      base table, and a view is not one, so it is reported as a table that does not exist.
     role: constructor
     belongs_to: table_description
     parameters:
@@ -203,10 +203,16 @@ functions:
         type: column_description
         description: The column description.
       name:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
+        const: true
         kind: OUT_BORROW
-        description: Receives a borrowed view of the column name. Valid until the column description is destroyed.
+        description: Receives a borrowed pointer to the column name. Valid until the column description is destroyed.
+      name_length:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the length of `*name` in bytes. `*name` is not guaranteed to be null-terminated.
       err:
         type: error_info
         indirection: 1

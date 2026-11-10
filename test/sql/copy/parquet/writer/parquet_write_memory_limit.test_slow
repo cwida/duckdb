@@ -12,6 +12,10 @@ load {TEST_DIR}/parquet_write_memory_limit.db
 statement ok
 COPY (SELECT i, i // 5 AS j FROM range(100000000) t(i)) TO '{TEST_DIR}/large_integers.parquet'
 
+# pin the thread count, the writer's per-thread memory floor scales with it
+statement ok
+SET threads=16
+
 statement ok
 SET memory_limit='0.3GB'
 
@@ -33,3 +37,9 @@ SET memory_limit='-1'
 query II
 SELECT * FROM '{TEST_DIR}/large_integers.parquet' EXCEPT FROM '{TEST_DIR}/large_integers2.parquet'
 ----
+
+# EXCEPT has set semantics, the count catches duplicated rows
+query I
+SELECT count(*) FROM '{TEST_DIR}/large_integers2.parquet'
+----
+100000000

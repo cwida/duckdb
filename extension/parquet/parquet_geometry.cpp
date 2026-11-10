@@ -1,5 +1,6 @@
 
 #include "parquet_geometry.hpp"
+#include "duckdb/main/context.hpp"
 
 #include <stdlib.h>
 #include <string.h>
@@ -40,7 +41,7 @@ using namespace duckdb_yyjson; // NOLINT
 unique_ptr<GeoParquetFileMetadata> GeoParquetFileMetadata::TryRead(const duckdb_parquet::FileMetaData &file_meta_data,
                                                                    ClientContext &context) {
 	// Conversion not enabled, or spatial is not loaded!
-	if (!IsGeoParquetConversionEnabled(context)) {
+	if (!IsGeoParquetConversionEnabled(context.GetContext())) {
 		return nullptr;
 	}
 
@@ -354,7 +355,7 @@ bool GeoParquetFileMetadata::IsGeometryColumn(const string &column_name) const {
 	return geometry_columns.find(column_name) != geometry_columns.end();
 }
 
-bool GeoParquetFileMetadata::IsGeoParquetConversionEnabled(const ClientContext &context) {
+bool GeoParquetFileMetadata::IsGeoParquetConversionEnabled(const Context &context) {
 	bool geoparquet_enabled = false;
 	context.TryGetCurrentSetting("enable_geoparquet_conversion", geoparquet_enabled);
 	return geoparquet_enabled;
