@@ -5,6 +5,7 @@
 #include "duckdb_test/test_bundle.hpp"
 #include "test_config.hpp"
 #include "test_helpers.hpp"
+#include "test_reporter.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -71,6 +72,12 @@ struct TempDirReclaimer {
 };
 
 static thread_local optional_ptr<RunContext> current_run;
+
+struct CatchTestReporter : public TestReporter {
+	string CurrentTestName() override {
+		return Catch::getResultCapture().getCurrentTestName();
+	}
+};
 
 static void ReportResult(RunContext &run_context, const string &test_name, TestStatus status, double duration_ms,
                          idx_t assertion_count, vector<CapturedFailure> failures, const string &message) {
@@ -292,12 +299,11 @@ static void RunTests(void *, const char *const *test_names, uint64_t test_count,
 	config.testsOrTags.push_back(std::move(test_filter));
 	session->useConfigData(config);
 	{
+		CatchTestReporter reporter;
+		TestReporterScope reporter_scope(reporter);
 		StreamCapture stream_capture;
 		session->run();
 	}
-	std::fflush(stdout);
-	std::fputc('\n', stdout);
-	std::fflush(stdout);
 	current_run = nullptr;
 }
 
