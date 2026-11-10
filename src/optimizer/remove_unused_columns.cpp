@@ -1888,6 +1888,7 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
 	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
 	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR ||
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_COALESCE ||
 	    (*expression)->GetExpressionClass() == ExpressionClass::BOUND_CASE) {
 		const auto was_inside_conditional = inside_conditional;
 		inside_conditional = true;
@@ -1896,7 +1897,7 @@ void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
 		return;
 	}
 
-	//! Keep a cast inside its CASE or error guard when pushing the underlying extract.
+	//! Keep casts inside conditional or error guards when pushing the underlying extract.
 	optional_ptr<unique_ptr<Expression>> cast_child;
 	if (!inside_conditional && TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {

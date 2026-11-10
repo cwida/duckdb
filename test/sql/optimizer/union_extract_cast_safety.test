@@ -32,4 +32,36 @@ SELECT CASE WHEN id = 1 THEN {FIELD}.k::INTEGER END FROM (SELECT id, {FIELD} FRO
 1
 NULL
 
+query I rowsort
+SELECT IF(id = 1, {FIELD}.k::INTEGER, NULL)
+FROM (SELECT id, {FIELD} FROM guarded_casts UNION ALL SELECT id, {FIELD} FROM guarded_casts);
+----
+1
+1
+NULL
+NULL
+
+query I rowsort
+SELECT COALESCE(CASE WHEN id = 2 THEN 42 END, {FIELD}.k::INTEGER)
+FROM (SELECT id, {FIELD} FROM guarded_casts UNION ALL SELECT id, {FIELD} FROM guarded_casts);
+----
+1
+1
+42
+42
+
+query I rowsort
+SELECT COALESCE(CASE WHEN id = 2 THEN 42 END, {FIELD}.k::INTEGER) FROM (SELECT id, {FIELD} FROM guarded_casts);
+----
+1
+42
+
+query I rowsort
+SELECT {FIELD}.k::INTEGER
+FROM (SELECT id, {FIELD} FROM guarded_casts UNION ALL SELECT id, {FIELD} FROM guarded_casts)
+WHERE id + random() * 0 = 1;
+----
+1
+1
+
 endloop
