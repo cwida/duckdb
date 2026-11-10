@@ -68,6 +68,7 @@ struct TestResult {
 	string status;
 	double duration_ms = 0;
 	idx_t assertion_count = 0;
+	SQLLogicTestStats sql_stats;
 	vector<string> failures;
 	string message;
 };
@@ -913,7 +914,7 @@ static TestResult RunSQLTest(const TestDescription &test) {
 	TestResult result;
 	result.test_id = test.test_id;
 	try {
-		RunSQLLogicTestFile(test.source, test.auto_switch_test_dir, false);
+		result.sql_stats = RunSQLLogicTestFile(test.source, test.auto_switch_test_dir, false);
 		result.status = reporter.skip_reason.empty() ? "passed" : "skipped";
 		result.message = reporter.skip_reason;
 	} catch (TestFailureException &ex) {
@@ -960,9 +961,11 @@ static void PersistResult(TestRunState &state, const TestResult &result) {
 	try {
 		auto query_result = connection.Query(
 		    "UPDATE test_results SET status = $1, duration_ms = $2, assertion_count = $3, failures = $4, "
-		    "message = $5 WHERE test_id = $6 AND attempt = 0 AND status = 'pending' RETURNING test_id",
+		    "message = $5, skip_mode = $6, partial_skip_reasons = $7 "
+		    "WHERE test_id = $8 AND attempt = 0 AND status = 'pending' RETURNING test_id",
 		    Value(result.status), result.duration_ms, Value::UBIGINT(result.assertion_count),
 		    FailureListValue(result.failures), result.message.empty() ? Value() : Value(result.message),
+		    Value::UBIGINT(result.sql_stats.skip_mode), FailureListValue(result.sql_stats.partial_skip_reasons),
 		    Value(result.test_id));
 		if (query_result->HasError()) {
 			throw IOException("Failed to persist test result: %s", query_result->GetError());
@@ -1051,7 +1054,8 @@ static unique_ptr<FunctionData> TestRunBind(ClientContext &context, TableFunctio
 static void InitializeStateDatabase(ClientContext &context, TestRunState &state, const TestRunData &data) {
 	state.state_database = data.state_database;
 	if (state.state_database.empty()) {
-		state.state_database = TestCreatePath("test-results-" + UUID::ToString(UUID::GenerateRandomUUID()) + ".duckdb");
+		state.state_database =
+		    LocalTestDirectoryPath() + "-results-" + UUID::ToString(UUID::GenerateRandomUUID()) + ".duckdb";
 	}
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (fs.FileExists(state.state_database) || fs.FileExists(state.state_database + ".wal")) {
@@ -1071,11 +1075,13 @@ static void InitializeStateDatabase(ClientContext &context, TestRunState &state,
 		                                      "assertion_count UBIGINT, "
 		                                      "failures VARCHAR[], "
 		                                      "message VARCHAR, "
+		                                      "skip_mode UBIGINT, "
+		                                      "partial_skip_reasons VARCHAR[], "
 		                                      "PRIMARY KEY(test_id, attempt))");
 		ThrowQueryError(std::move(create_result), "create test state table");
 		for (auto &test : data.tests) {
 			auto insert_result = connection.Query(
-			    "INSERT INTO test_results VALUES ($1, 0, 'pending', NULL, NULL, NULL, NULL)", Value(test.test_id));
+			    "INSERT INTO test_results (test_id, attempt, status) VALUES ($1, 0, 'pending')", Value(test.test_id));
 			ThrowQueryError(std::move(insert_result), "initialize test state");
 		}
 		connection.Commit();

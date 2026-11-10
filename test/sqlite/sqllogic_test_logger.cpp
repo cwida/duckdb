@@ -8,6 +8,8 @@
 #include "duckdb/common/box_renderer.hpp"
 #include "duckdb/common/box_renderer_context.hpp"
 
+#include <cstdio>
+
 namespace duckdb {
 
 //! Process-wide: a failure report is a sequence of writes to stderr, and test files running
@@ -32,10 +34,9 @@ void SQLLogicTestLogger::AppendFailure(const string &log_message) {
 }
 
 void SQLLogicTestLogger::EmitTestEvent(const string &json_payload) {
-	// The "[TEST_EVENT] " flare marks a line as a machine-readable event; the payload is a JSON
-	// object (begin / end). Callers gate on EmitTestEventsEnabled() and pass a serialized object.
-	// Build the whole line first so it reaches cerr as a single insertion — no interleaving.
-	std::cerr << "[TEST_EVENT] " + json_payload + "\n";
+	// Lifecycle events must survive the extension's capture of C++ streams.
+	std::fprintf(stderr, "[TEST_EVENT] %s\n", json_payload.c_str());
+	std::fflush(stderr);
 }
 
 void SQLLogicTestLogger::LogFailure(const string &log_message) {

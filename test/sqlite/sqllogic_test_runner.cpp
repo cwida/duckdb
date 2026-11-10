@@ -137,6 +137,10 @@ void SQLLogicTestRunner::CountSkipMode() {
 	test_stat_skip_mode++;
 }
 
+vector<string> SQLLogicTestRunner::GetPartialSkipReasons() const {
+	return vector<string>(partial_skip_reasons.begin(), partial_skip_reasons.end());
+}
+
 void SQLLogicTestRunner::EmitBegin(const string &test_name) {
 	// Snapshotted before the enabled check and before the body runs: this is the dir the harness just
 	// assigned, and it must survive any test-env rewrite so end still reports what begin did.

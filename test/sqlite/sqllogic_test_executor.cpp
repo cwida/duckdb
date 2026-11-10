@@ -8,7 +8,7 @@
 
 namespace duckdb {
 
-void RunSQLLogicTestFile(const string &name, bool auto_switch_test_dir, bool output_sql) {
+SQLLogicTestStats RunSQLLogicTestFile(const string &name, bool auto_switch_test_dir, bool output_sql) {
 	const auto test_dir_path = TestDirectoryPath();
 	const auto local_test_dir_path = LocalTestDirectoryPath();
 	string test_dir_absolute = TestMakeAbsolute(test_dir_path, TestGetCurrentDirectory());
@@ -117,6 +117,10 @@ void RunSQLLogicTestFile(const string &name, bool auto_switch_test_dir, bool out
 	if (error.HasError()) {
 		TEST_FAIL(error.Message());
 	}
+	SQLLogicTestStats stats;
+	stats.skip_mode = runner.test_stat_skip_mode.load();
+	stats.partial_skip_reasons = runner.GetPartialSkipReasons();
+	return stats;
 }
 
 } // namespace duckdb

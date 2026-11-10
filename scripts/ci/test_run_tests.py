@@ -38,7 +38,172 @@ def strip_ansi_lines(lines: list[str]) -> list[str]:
     return [run_tests.strip_ansi(line) for line in lines]
 
 
+def protocol_config(**overrides):
+    values = dict(
+        test_list=Path("unused"),
+        unittest_bin="duckdb",
+        test_config=None,
+        test_flags="",
+        patterns=[],
+        test_command=None,
+        workers=1,
+        retry=0,
+        max_retries=0,
+        batch_size=1,
+        batch_timeout_seconds=10,
+        rss_memory_threshold_mib=None,
+        runtime_threshold_seconds=None,
+        max_failures=None,
+        fail_require_skip=False,
+        coverage_profile_dir=None,
+    )
+    values.update(overrides)
+    return run_tests.TestRunnerConfig(**values)
+
+
 class RunTestsScriptTest(unittest.TestCase):
+    def test_protocol_timeout_warning_requires_an_active_body(self):
+        test_id = "sql:test/sql/slow.test"
+        begin = {"version": 2, "event": "begin", "name": "test/sql/slow.test"}
+        execution_begin = {"event": "execution-begin", "name": "test/sql/slow.test"}
+        for events, expected_warning in (
+            ([], False),
+            ([begin], False),
+            ([begin, execution_begin], True),
+            ([begin, execution_begin, {"event": "execution-complete", "name": begin["name"]}], False),
+            ([begin, execution_begin, {"event": "error", "name": begin["name"], "data": "query failed"}], False),
+        ):
+            with self.subTest(events=events):
+                output = "".join(run_tests.TEST_EVENT_MARKER + json.dumps(event) + "\n" for event in events)
+                child = (
+                    "import sys, time; sys.stdin.read(); "
+                    f"sys.stderr.write({output!r}); sys.stderr.flush(); time.sleep(60)"
+                )
+                config = protocol_config(batch_timeout_seconds=0.3, timeout_policy="warn")
+                with (
+                    mock.patch(
+                        "scripts.ci.run_tests.test_protocol_command",
+                        return_value=[sys.executable, "-c", child],
+                    ),
+                    mock.patch(
+                        "scripts.ci.run_tests.read_test_state",
+                        return_value=([{"test_id": test_id, "attempt": 0, "status": "pending"}], None),
+                    ),
+                ):
+                    result = run_tests.run_batch(config, [test_id])
+                self.assertTrue(result["timed_out"], result)
+                self.assertEqual(run_tests.can_warn_timeout(config, [test_id], result), expected_warning)
+
+    def test_protocol_results_preserve_partial_skips_and_individual_runtimes(self):
+        test_ids = ["sql:test/sql/fast.test", "sql:test/sql/slow.test"]
+        rows = [
+            {
+                "test_id": test_ids[0],
+                "attempt": 0,
+                "status": "passed",
+                "duration_ms": 12,
+                "skip_mode": "2",
+                "partial_skip_reasons": ["mode skip unsupported"],
+            },
+            {
+                "test_id": test_ids[1],
+                "attempt": 0,
+                "status": "passed",
+                "duration_ms": 3500,
+            },
+        ]
+        terminal = run_tests.TEST_EVENT_MARKER + json.dumps(
+            {"event": "end", "name": "test/sql/fast.test", "status": "ok", "skip-mode": 2}
+        )
+        child = f"import sys; sys.stdin.read(); print({terminal!r}, file=sys.stderr)"
+        with (
+            mock.patch(
+                "scripts.ci.run_tests.test_protocol_command",
+                return_value=[sys.executable, "-c", child],
+            ),
+            mock.patch("scripts.ci.run_tests.read_test_state", return_value=(rows, None)),
+            mock.patch("scripts.ci.run_tests.subprocess.Popen", wraps=run_tests.subprocess.Popen) as popen,
+        ):
+            result = run_tests.run_batch(protocol_config(batch_size=2), test_ids)
+
+        self.assertFalse(result["failed"], result)
+        self.assertEqual(popen.call_args_list[0].kwargs["stdout"], run_tests.subprocess.DEVNULL)
+        self.assertEqual(
+            run_tests.extract_test_runtimes(result["stdout"], result["stderr"]),
+            [
+                (test_ids[0], 0.012),
+                (test_ids[1], 3.5),
+            ],
+        )
+        skip_events = run_tests.extract_skip_events(result["stdout"], result["stderr"])
+        self.assertEqual(skip_events[3], {test_ids[0]})
+        self.assertEqual(skip_events[4], {"mode skip unsupported": {test_ids[0]}})
+        self.assertEqual(len(run_tests.parse_test_events(result["stdout"] + result["stderr"])), 2)
+
+    def test_protocol_changed_tests_stabilize_only_new_identifiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline"
+            baseline.write_text("test/sql/base.test\ncpp:first:Shared test name\n")
+            changed = root / "changed"
+            changed.write_text("test/sql/new.test\ncpp:second:Shared test name\n")
+            generated = root / "generated"
+            generated.write_text(
+                "sql:test/sql/base.test\nsql:test/sql/new.test\n"
+                "cpp:first:Shared test name\ncpp:second:Shared test name\n"
+            )
+            calls = []
+
+            def run_config(_config, batches, total_tests):
+                calls.append([name for batch in batches for name in batch])
+                return run_tests.ConfigRunResult(0, total_tests, 0, 0, 0.0)
+
+            with (
+                mock.patch("scripts.ci.run_tests.create_temp_test_list", return_value=generated),
+                mock.patch("scripts.ci.run_tests.run_tests", side_effect=run_config),
+            ):
+                result = start_runner(
+                    ["duckdb", "--workers", "1", "--test-list", str(baseline), "--changed-tests", str(changed)]
+                )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("added 2 tests", result.stdout)
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(
+            calls[0],
+            [
+                "sql:test/sql/base.test",
+                "sql:test/sql/new.test",
+                "cpp:first:Shared test name",
+                "cpp:second:Shared test name",
+            ],
+        )
+        self.assertTrue(all(names == ["sql:test/sql/new.test", "cpp:second:Shared test name"] for names in calls[1:]))
+
+    def test_batch_reproducer_uses_runner_and_preserves_context(self):
+        config = protocol_config(
+            unittest_bin="/repo/build/reldebug/duckdb",
+            test_flags="--force-storage",
+            test_config="test/configs/a config.json",
+        )
+        batch = ["sql:test/sql/a.test", "cpp:duckdb_tests:Compiled, test"]
+        attempt = run_tests.FailedAttempt(["failed"], batch, batch)
+        output = run_tests.strip_ansi(run_tests.format_batch_failure(batch, config, [attempt], False, 0))
+        command = output.splitlines()[-1]
+        self.assertEqual(
+            shlex.split(command),
+            [
+                os.path.relpath("/repo/build/reldebug/test/run", REPO_ROOT),
+                "--test-flags=--force-storage",
+                "--test-config",
+                "test/configs/a config.json",
+                '"sql:test/sql/a.test","cpp:duckdb_tests:Compiled\\, test"',
+            ],
+        )
+        parsed = run_tests.parse_args(["duckdb", *shlex.split(command)[1:]])
+        self.assertEqual(parsed.test_flags, config.test_flags)
+        self.assertEqual(parsed.test_config, [config.test_config])
+
     def run_timeout_fixture(self, modes, *args):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -600,8 +765,7 @@ class RunTestsScriptTest(unittest.TestCase):
             shlex.split(command),
             [
                 os.path.relpath("/repo/build/reldebug/test/run", REPO_ROOT),
-                "--test-flags",
-                "--force-storage --label 'two words'",
+                "--test-flags=--force-storage --label 'two words'",
                 "--test-config",
                 "test/configs/a config.json",
                 '"test/sql/a.test","Compiled\\, test\'s name"',
@@ -3203,8 +3367,7 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
             shlex.split(command),
             [
                 "build/reldebug/test/run",
-                "--test-flags",
-                "--force-storage --force-reload",
+                "--test-flags=--force-storage --force-reload",
                 "--test-config",
                 "test/configs/fail.json",
                 '"test/sql/b.test"',

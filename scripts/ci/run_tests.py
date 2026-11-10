@@ -1473,8 +1473,6 @@ def format_batch_failure(
     retry_count: int,
 ):
     reproduce_batch = batch
-    rerun_parts = [shlex.quote(format_unittest_bin_for_display(config.unittest_bin))]
-    rerun_parts.extend(shlex.split(config.test_flags))
     parts = []
     if recovered:
         first_attempt = attempt_summaries[0]
@@ -1485,8 +1483,7 @@ def format_batch_failure(
         last_attempt = attempt_summaries[-1]
         parts.extend(last_attempt.lines)
         reproduce_batch = last_attempt.reproduce_batch
-    rerun_parts.append(",".join(reproduce_batch))
-    rerun_cmd = shlex.join(rerun_parts)
+    rerun_cmd = format_batch_reproducer(config, reproduce_batch)
     parts.extend(["", format_dark_gray("reproduce:"), format_dark_gray(rerun_cmd), ""])
     return "\n".join(parts)
 
@@ -1526,13 +1523,30 @@ def format_failed_tests_reproducer(
     if os.name == "nt":
         command.insert(0, sys.executable)
     if test_flags:
-        command.extend(["--test-flags", test_flags])
+        command.append("--test-flags=" + test_flags)
     for test_config in failed_test_configs:
         command.extend(["--test-config", test_config])
     command.append(",".join(quote_catch_test_name(test_name) for test_name in failed_test_names))
     if os.name == "nt":
         return subprocess.list2cmdline(command)
     return shlex.join(command)
+
+
+def format_batch_reproducer(config: TestRunnerConfig, batch):
+    if config.test_command is not None and not test_protocol_available(config.unittest_bin):
+        return shlex.join(
+            [
+                format_unittest_bin_for_display(config.unittest_bin),
+                *shlex.split(config.test_flags),
+                ",".join(batch),
+            ]
+        )
+    return format_failed_tests_reproducer(
+        config.unittest_bin,
+        config.test_flags,
+        [config.test_config] if config.test_config is not None else [],
+        batch,
+    )
 
 
 def normalize_output(output):
@@ -1547,7 +1561,7 @@ SKIPPED_TESTS_PATTERN = re.compile(
 SKIP_REASON_PATTERN = re.compile(r"(.+):\s+(\d+)$")
 MODE_SKIP_REASON_PATTERN = re.compile(r"^mode skip(?:\s+(.*\S))?\s*$")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-TEST_RUNTIME_PATTERN = re.compile(r"^\[\d+/\d+\] \(\d+%\): (.+) took ([0-9]+(?:\.[0-9]+)?)s\s*$")
+TEST_RUNTIME_PATTERN = re.compile(r"^(?:\[\d+/\d+\] \(\d+%\): )?(.+) took ([0-9]+(?:\.[0-9]+)?)s\s*$")
 TEST_EVENT_MARKER = "[TEST_EVENT] "
 
 
@@ -1633,6 +1647,27 @@ def parse_test_events(output: str):
         if isinstance(event, dict):
             events.append(event)
     return events
+
+
+def normalize_protocol_event_output(output: str, batch):
+    test_ids = {test_id_to_list_name(test_id): test_id for test_id in batch}
+    for test_id in batch:
+        if test_id.startswith("sql:"):
+            test_ids[Path(test_id_to_list_name(test_id)).resolve().as_posix()] = test_id
+    lines = []
+    for line in output.splitlines():
+        events = parse_test_events(line)
+        if len(events) == 1:
+            event = events[0]
+            # Terminal events are reconstructed from durable results.
+            if event.get("event") == "end":
+                continue
+            name = event.get("name")
+            if isinstance(name, str):
+                event["name"] = test_ids.get(name, name)
+            line = TEST_EVENT_MARKER + json.dumps(event, separators=(",", ":"))
+        lines.append(line)
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def extract_skip_events(stdout: str, stderr: str):
@@ -1987,7 +2022,8 @@ def read_test_state(config: TestRunnerConfig, state_database: Path, child_env):
     proc = subprocess.run(
         [config.unittest_bin, "-no-agent", "-batch", "-jsonlines", os.fspath(state_database)],
         input=(
-            "SELECT test_id, attempt, status, duration_ms, assertion_count, failures, message " "FROM test_results;\n"
+            "SELECT test_id, attempt, status, duration_ms, assertion_count, failures, message, "
+            "skip_mode, partial_skip_reasons FROM test_results;\n"
         ),
         text=True,
         encoding="utf8",
@@ -2034,6 +2070,8 @@ def run_batch(config: TestRunnerConfig, batch):
 
     _, test_roots, bundle_roots = resolve_test_protocol_paths(config.unittest_bin)
     configuration_flags, thread_stack_size = split_process_test_flags(config.test_flags)
+    if "--emit-test-events" not in configuration_flags:
+        configuration_flags.append("--emit-test-events")
     state_directory = Path(tempfile.mkdtemp(prefix="duckdb-test-state-"))
     state_database = state_directory / "results.duckdb"
     query = (
@@ -2060,23 +2098,14 @@ def run_batch(config: TestRunnerConfig, batch):
         )
     else:
         command = test_protocol_command(config.unittest_bin, thread_stack_size, jsonlines=False)
-    # Capture the child's stdout/stderr to temp files rather than pipes, avoid deadlock
-    # between a process.wait() and a full unread pipe.
-    stdout_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
+    # A file avoids blocking the child on an unread stderr pipe.
     stderr_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
-
-    def read_captures():
-        stdout_capture.seek(0)
-        stderr_capture.seek(0)
-        out = normalize_output(stdout_capture.read().decode("utf8", "backslashreplace"))
-        err = normalize_output(stderr_capture.read().decode("utf8", "backslashreplace"))
-        return out, err
 
     try:
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE if protocol_file_path is None else None,
-            stdout=stdout_capture,
+            stdout=subprocess.DEVNULL,
             stderr=stderr_capture,
             env=child_env,
             text=True,
@@ -2110,7 +2139,8 @@ def run_batch(config: TestRunnerConfig, batch):
                 time.sleep(DEFAULT_RSS_POLL_INTERVAL_SECONDS)
 
         proc.wait()
-        _, stderr = read_captures()
+        stderr_capture.seek(0)
+        stderr = normalize_protocol_event_output(stderr_capture.read().decode("utf8", "backslashreplace"), batch)
         rss_bytes = get_process_rss_bytes(proc.pid)
         if rss_bytes is not None:
             peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
@@ -2169,6 +2199,8 @@ def run_batch(config: TestRunnerConfig, batch):
                 message = f"run_tests stored invalid status {status!r} for {test_id}"
                 failure_lines.extend([f"1. {test_id}:1", message])
             event = {"version": 2, "event": "end", "name": test_id, "status": event_status}
+            event["skip-mode"] = int(row.get("skip_mode") or 0)
+            event["partial-skip-reasons"] = row.get("partial_skip_reasons") or []
             if row.get("message"):
                 event["data"] = row["message"]
             event_lines.append(TEST_EVENT_MARKER + json.dumps(event, separators=(",", ":")))
@@ -2214,9 +2246,7 @@ def run_batch(config: TestRunnerConfig, batch):
     finally:
         if protocol_file_path is not None:
             protocol_file_path.unlink(missing_ok=True)
-        stdout_capture.close()
         stderr_capture.close()
-        Path(stdout_capture.name).unlink(missing_ok=True)
         Path(stderr_capture.name).unlink(missing_ok=True)
         shutil.rmtree(state_directory, ignore_errors=True)
 
@@ -2314,16 +2344,7 @@ def handle_failed_batch(ctx: RunContext, batch_info, result):
         ctx.progress.print_message(
             f"warn: timeout ({format_duration_seconds(failure.timeout_seconds)}s) for {test_name}; not retried."
         )
-        ctx.progress.print_message(
-            "reproduce: "
-            + shlex.join(
-                [
-                    format_unittest_bin_for_display(ctx.config.unittest_bin),
-                    *shlex.split(ctx.config.test_flags),
-                    test_name,
-                ]
-            )
-        )
+        ctx.progress.print_message("reproduce: " + format_batch_reproducer(ctx.config, [test_name]))
         return False
     ctx.state.add_failed_attempt(batch_info["batch_idx"], lines, reproduce_batch, failed_test_names)
     retry_target = format_failed_test_retry_target(failure.test_name, batch_info)
@@ -2624,7 +2645,12 @@ def run_single_config(
         stabilization_tests = []
         if args.changed_tests is not None:
             merged_names = {test.name for test in tests}
-            base_names = {test.name for test in load_tests(args.test_list)}
+            base_list_names = {test.name for test in load_tests(args.test_list)}
+            base_names = {
+                test.name
+                for test in tests
+                if test.name in base_list_names or test_id_to_list_name(test.name) in base_list_names
+            }
             changed_test_names = merged_names - base_names
             added_test_count = len(changed_test_names)
             print(

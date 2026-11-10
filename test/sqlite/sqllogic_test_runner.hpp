@@ -143,6 +143,7 @@ public:
 	//! Statement tallies and lifecycle JSON events emitted under --emit-test-events.
 	void CountStatement(bool passed);
 	void CountSkipMode();
+	vector<string> GetPartialSkipReasons() const;
 	void EmitBegin(const string &test_name);
 	void EmitExecutionComplete(const string &test_name, const string &status, const string &data);
 	static void EmitError(const string &test_name, const string &data);
