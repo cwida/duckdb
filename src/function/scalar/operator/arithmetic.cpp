@@ -232,13 +232,16 @@ struct SubtractPropagateStatistics {
 };
 
 //! The bounds of an operation in the bignum_t tier of decimals: the combinations of the input bounds are computed
-//! exactly, the result overflows when one of them does not fit the width of the result type
+//! exactly (a cut input bound widens the result bounds), the result overflows when one of them does not fit the
+//! width of the result type
 template <class OP>
 static bool BignumDecimalPropagateStatistics(const LogicalType &type, const BaseStatistics &lstats,
                                              const BaseStatistics &rstats, Value &new_min, Value &new_max) {
 	const auto width = DecimalType::GetWidth(type);
-	const string_t lvals[] {BignumStats::MinBlob(lstats), BignumStats::MaxBlob(lstats)};
-	const string_t rvals[] {BignumStats::MinBlob(rstats), BignumStats::MaxBlob(rstats)};
+	const string lblobs[] {BignumStats::MinBlob(lstats), BignumStats::MaxBlob(lstats)};
+	const string rblobs[] {BignumStats::MinBlob(rstats), BignumStats::MaxBlob(rstats)};
+	const string_t lvals[] {string_t(lblobs[0]), string_t(lblobs[1])};
+	const string_t rvals[] {string_t(rblobs[0]), string_t(rblobs[1])};
 	StringHeap heap;
 	BignumArithmeticState state;
 	string_t min;

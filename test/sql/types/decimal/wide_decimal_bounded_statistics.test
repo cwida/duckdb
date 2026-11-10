@@ -1,0 +1,224 @@
+# name: test/sql/types/decimal/wide_decimal_bounded_statistics.test
+# description: The min/max statistics of wide decimals keep at most 32 magnitude bytes, a wider bound is cut and inexact
+# group: [decimal]
+
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
+# values of up to 77 digits keep exact bounds
+statement ok
+CREATE TABLE exact(d DECIMAL(77,0));
+
+statement ok
+INSERT INTO exact VALUES (repeat('9', 77)::DECIMAL(77,0)), (('-' || repeat('9', 77))::DECIMAL(77,0)), (0), (NULL);
+
+query IIII
+SELECT s.min = ('-' || repeat('9', 77))::DECIMAL(77,0), s.max = repeat('9', 77)::DECIMAL(77,0), s.min_exact, s.max_exact FROM (SELECT STATS(d) s FROM exact LIMIT 1);
+----
+true	true	true	true
+
+query II
+SELECT min(d) = ('-' || repeat('9', 77))::DECIMAL(77,0), max(d) = repeat('9', 77)::DECIMAL(77,0) FROM exact;
+----
+true	true
+
+# wider values get cut bounds: a min below the smallest value and a max above the largest, neither attained
+statement ok
+CREATE TABLE t(i INTEGER, d DECIMAL(100,10));
+
+statement ok
+INSERT INTO t SELECT i, (repeat('1', 80) || i::VARCHAR || '.5')::DECIMAL(100,10) FROM range(10, 20) t(i);
+
+statement ok
+INSERT INTO t VALUES (NULL, NULL), (-1, ('-' || repeat('3', 85) || '.25')::DECIMAL(100,10));
+
+query IIIIII
+SELECT s.min < (SELECT min(d) FROM t), s.max > (SELECT max(d) FROM t), s.min_exact, s.max_exact, s.has_null, s.has_no_null FROM (SELECT STATS(d) s FROM t LIMIT 1);
+----
+true	true	false	false	true	true
+
+# the cut bounds are close to the values: the 8 omitted bytes of these 40-byte values span less than 2^64 unscaled units
+query II
+SELECT (SELECT min(d) FROM t) - s.min::DECIMAL(100,10) < '10000000000.0'::DECIMAL(100,10), s.max::DECIMAL(100,10) - (SELECT max(d) FROM t) < '10000000000.0'::DECIMAL(100,10) FROM (SELECT STATS(d) s FROM t LIMIT 1);
+----
+true	true
+
+# the aggregates do not take a cut bound for a value
+query II
+SELECT min(d) = ('-' || repeat('3', 85) || '.25')::DECIMAL(100,10), max(d) = (repeat('1', 80) || '19.5')::DECIMAL(100,10) FROM t;
+----
+true	true
+
+query II
+SELECT min(i), max(i) FROM t WHERE d > (repeat('1', 80) || '15')::DECIMAL(100,10);
+----
+15	19
+
+# arithmetic and casts propagate the cut bounds, which still enclose the results
+query IIII
+SELECT s.min <= (SELECT min(d + d) FROM t), s.max >= (SELECT max(d + d) FROM t), s.min_exact, s.max_exact FROM (SELECT STATS(d + d) s FROM t LIMIT 1);
+----
+true	true	false	false
+
+query II
+SELECT s.min <= (SELECT min(d::DECIMAL(110,20)) FROM t), s.max >= (SELECT max(d::DECIMAL(110,20)) FROM t) FROM (SELECT STATS(d::DECIMAL(110,20)) s FROM t LIMIT 1);
+----
+true	true
+
+# a filter the bounds decide folds, one they cannot decide scans
+query I
+SELECT count(*) FROM t WHERE d > (repeat('2', 85))::DECIMAL(100,10);
+----
+0
+
+query I
+SELECT count(*) FROM t WHERE d >= ('-' || repeat('3', 85) || '.25')::DECIMAL(100,10);
+----
+11
+
+query I
+SELECT count(*) FROM t WHERE d = ('-' || repeat('3', 85) || '.25')::DECIMAL(100,10);
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE d = (repeat('1', 80) || '19.5')::DECIMAL(100,10);
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE d <> (repeat('1', 80) || '19.5')::DECIMAL(100,10);
+----
+10
+
+# zone maps of small row groups with cut bounds: no row is skipped wrongly, provable skips still apply
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_bounded_statistics.db' AS db (ROW_GROUP_SIZE 2048, STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TABLE db.pruned AS SELECT i, (repeat('7', 80) || lpad(i::VARCHAR, 5, '0'))::DECIMAL(100,10) AS d FROM range(10000) t(i);
+
+query IIII
+SELECT s.min_exact, s.max_exact, s.min < (SELECT min(d) FROM db.pruned), s.max > (SELECT max(d) FROM db.pruned) FROM (SELECT STATS(d) s FROM db.pruned LIMIT 1);
+----
+false	false	true	true
+
+query I
+SELECT count(*) FROM db.pruned WHERE d > (repeat('7', 80) || '05000')::DECIMAL(100,10);
+----
+4999
+
+query I
+SELECT count(*) FROM db.pruned WHERE d >= (repeat('7', 80) || '05000')::DECIMAL(100,10);
+----
+5000
+
+query I
+SELECT count(*) FROM db.pruned WHERE d < (repeat('7', 80) || '02048')::DECIMAL(100,10);
+----
+2048
+
+query I
+SELECT count(*) FROM db.pruned WHERE d <= (repeat('7', 80) || '02048')::DECIMAL(100,10);
+----
+2049
+
+query II
+SELECT count(*), min(i) FROM db.pruned WHERE d = (repeat('7', 80) || '04096')::DECIMAL(100,10);
+----
+1	4096
+
+query I
+SELECT count(*) FROM db.pruned WHERE d BETWEEN (repeat('7', 80) || '02047')::DECIMAL(100,10) AND (repeat('7', 80) || '06144')::DECIMAL(100,10);
+----
+4098
+
+query I
+SELECT count(*) FROM db.pruned WHERE d <> (repeat('7', 80) || '00000')::DECIMAL(100,10);
+----
+9999
+
+query I
+SELECT count(*) FROM db.pruned WHERE d > (repeat('7', 85))::DECIMAL(100,10);
+----
+0
+
+query I
+SELECT count(*) FROM db.pruned WHERE d < (repeat('7', 80) || '00000')::DECIMAL(100,10);
+----
+0
+
+query II
+SELECT min(d) = (repeat('7', 80) || '00000')::DECIMAL(100,10), max(d) = (repeat('7', 80) || '09999')::DECIMAL(100,10) FROM db.pruned;
+----
+true	true
+
+# the bounds and their exactness survive a checkpoint
+statement ok
+CHECKPOINT db;
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_bounded_statistics.db' AS db;
+
+query IIII
+SELECT s.min_exact, s.max_exact, s.min < (SELECT min(d) FROM db.pruned), s.max > (SELECT max(d) FROM db.pruned) FROM (SELECT STATS(d) s FROM db.pruned LIMIT 1);
+----
+false	false	true	true
+
+query I
+SELECT count(*) FROM db.pruned WHERE d > (repeat('7', 80) || '05000')::DECIMAL(100,10);
+----
+4999
+
+query II
+SELECT count(*), min(i) FROM db.pruned WHERE d = (repeat('7', 80) || '04096')::DECIMAL(100,10);
+----
+1	4096
+
+query II
+SELECT min(d) = (repeat('7', 80) || '00000')::DECIMAL(100,10), max(d) = (repeat('7', 80) || '09999')::DECIMAL(100,10) FROM db.pruned;
+----
+true	true
+
+statement ok
+DETACH db;
+
+# the statistics of huge values stay small: three 200000-digit values (83 KB blobs) take two 256 KB blocks of data,
+# complete min/max blobs would add half a megabyte of statistics
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_bounded_statistics_huge.db' AS huge (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TABLE huge.t(i INTEGER, d DECIMAL(200000,0));
+
+statement ok
+INSERT INTO huge.t SELECT i, (i::VARCHAR || repeat('9', 199990))::DECIMAL(200000,0) FROM range(1, 4) t(i);
+
+statement ok
+CHECKPOINT huge;
+
+query I
+SELECT used_blocks * block_size < 800000 FROM pragma_database_size() WHERE database_name = 'huge';
+----
+true
+
+query IIII
+SELECT s.min_exact, s.max_exact, s.min < (SELECT min(d) FROM huge.t), s.max > (SELECT max(d) FROM huge.t) FROM (SELECT STATS(d) s FROM huge.t LIMIT 1);
+----
+false	false	true	true
+
+query I
+SELECT count(*) FROM huge.t WHERE d > ('2' || repeat('9', 199990))::DECIMAL(200000,0);
+----
+1
+
+query II
+SELECT min(i), max(i) FROM huge.t;
+----
+1	3
+
+statement ok
+DETACH huge;

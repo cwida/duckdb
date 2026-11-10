@@ -258,7 +258,8 @@ struct StatsWriter<string_t> : public BaseStatsWriter {
 	}
 
 private:
-	//! The byte order of the BIGNUM encoding is the numeric order, so the exact min/max blobs are kept
+	//! The byte order of the BIGNUM encoding is the numeric order; the exact min/max blobs are kept while a vector is
+	//! written, the statistics they are merged into cut them to the bound size
 	inline void UpdateBignum(const string_t &value) {
 		if (bignum_min.empty() || LessThan::Operation(value, string_t(bignum_min))) {
 			bignum_min.assign(value.GetData(), value.GetSize());

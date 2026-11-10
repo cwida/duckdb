@@ -93,7 +93,7 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::CreateNumericStats(const Logi
 	return stats.ToUnique();
 }
 
-//! Decimals wider than 38 digits are BIGNUM blobs with exact min/max statistics
+//! Decimals wider than 38 digits are BIGNUM blobs with min/max bounds, which are cut when the values are long
 static unique_ptr<BaseStatistics> CreateWideDecimalStats(const LogicalType &type, const ParquetColumnSchema &schema_ele,
                                                          const duckdb_parquet::Statistics &parquet_stats) {
 	auto stats = BignumStats::CreateUnknown(type);

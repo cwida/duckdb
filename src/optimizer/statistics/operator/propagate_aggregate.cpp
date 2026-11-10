@@ -142,7 +142,8 @@ bool TryGetValueFromStats(Context &context, const PartitionStatistics &stats, co
 			return false;
 		}
 	} else if (column_stats->GetStatsType() == StatisticsType::BIGNUM_STATS) {
-		if (!BignumStats::HasMinMax(*column_stats)) {
+		if (!BignumStats::MinIsExact(*column_stats) || !BignumStats::MaxIsExact(*column_stats)) {
+			// a cut bound is not attained by a value
 			return false;
 		}
 	} else {

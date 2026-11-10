@@ -81,7 +81,7 @@ StatisticsType BaseStatistics::GetStatsType(const LogicalType &type) {
 		return StatisticsType::VARIANT_STATS;
 	}
 	if (type.id() == LogicalTypeId::DECIMAL && type.InternalType() == PhysicalType::VARCHAR) {
-		// decimals wider than 38 digits are BIGNUM blobs with exact min/max statistics
+		// decimals wider than 38 digits are BIGNUM blobs with min/max bounds of a bounded size
 		return StatisticsType::BIGNUM_STATS;
 	}
 	switch (type.InternalType()) {

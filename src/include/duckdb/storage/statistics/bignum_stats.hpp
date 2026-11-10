@@ -21,13 +21,22 @@ class Vector;
 class Serializer;
 class Deserializer;
 
-//! Statistics of values stored as BIGNUM blobs (decimals wider than 38 digits): the byte order of the BIGNUM
-//! encoding is the numeric order, so the exact min/max are kept as blobs and compared with memcmp
+//! Statistics of values stored as BIGNUM blobs (decimals wider than 38 digits). The byte order of the BIGNUM encoding
+//! is the numeric order, so the bounds are blobs compared bytewise. A bound keeps at most MAX_BOUND_SIZE bytes: a
+//! longer blob is cut after the header and the first magnitude bytes, which makes the bound inexact. The bytes a cut
+//! min bound omits read as 0x00 and those of a cut max bound as 0xFF, so a cut min is below the value it was cut from
+//! and a cut max above it: the bounds always enclose every value, they are only not attained when inexact.
 struct BignumStatsData {
+	//! The magnitude bytes a bound keeps (256 bits): decimals of up to 77 digits keep exact bounds
+	static constexpr uint32_t MAX_BOUND_DATA_BYTES = 32;
+
 	//! Whether the min/max are known - unknown bounds cannot prune anything
 	bool has_min;
 	bool has_max;
-	//! The minimum and maximum blob - empty (zero bytes) while no value has been seen
+	//! Whether the bound is the exact min/max of the values, false when it was cut
+	bool min_exact;
+	bool max_exact;
+	//! The minimum and maximum bound - empty (zero bytes) while no value has been seen
 	string_t min;
 	string_t max;
 };
@@ -40,15 +49,19 @@ struct BignumStats {
 
 	//! Whether the stats have a known min and max that cover at least one value
 	DUCKDB_API static bool HasMinMax(const BaseStatistics &stats);
-	//! The min/max as a value of the type of the statistics - throws if there is none
+	//! Whether the min/max is attained by a value, i.e. was not cut to the bound size
+	DUCKDB_API static bool MinIsExact(const BaseStatistics &stats);
+	DUCKDB_API static bool MaxIsExact(const BaseStatistics &stats);
+	//! The min/max bound as a value of the type of the statistics - throws if there is none
 	DUCKDB_API static Value Min(const BaseStatistics &stats);
 	DUCKDB_API static Value Max(const BaseStatistics &stats);
-	//! The min/max blob - only valid if HasMinMax
-	DUCKDB_API static string_t MinBlob(const BaseStatistics &stats);
-	DUCKDB_API static string_t MaxBlob(const BaseStatistics &stats);
+	//! The min/max bound as a complete BIGNUM blob (a cut bound is padded) - only valid if HasMinMax
+	DUCKDB_API static string MinBlob(const BaseStatistics &stats);
+	DUCKDB_API static string MaxBlob(const BaseStatistics &stats);
 	//! Sets the min/max to a value of the type of the statistics (a NULL value makes the bound unknown)
 	DUCKDB_API static void SetMin(BaseStatistics &stats, const Value &val);
 	DUCKDB_API static void SetMax(BaseStatistics &stats, const Value &val);
+	//! Sets the min/max to a value, which is cut when it is longer than a bound
 	DUCKDB_API static void SetMin(BaseStatistics &stats, string_t blob);
 	DUCKDB_API static void SetMax(BaseStatistics &stats, string_t blob);
 
@@ -73,9 +86,9 @@ struct BignumStats {
 private:
 	static BignumStatsData &GetDataUnsafe(BaseStatistics &stats);
 	static const BignumStatsData &GetDataUnsafe(const BaseStatistics &stats);
-	//! Stores a copy of the blob in the statistics and returns a reference to it
-	static string_t AssignBlob(BaseStatistics &stats, string_t blob, bool is_min);
-	static void MergeBound(BaseStatistics &stats, string_t blob, bool is_min);
+	//! Stores a copy of the blob in the statistics, cut to the bound size, and returns a reference to it
+	static string_t AssignBound(BaseStatistics &stats, string_t blob, bool is_min, bool &exact);
+	static void MergeBound(BaseStatistics &stats, string_t blob, bool exact, bool is_min);
 };
 
 } // namespace duckdb

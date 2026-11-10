@@ -1,5 +1,5 @@
 # name: test/sql/types/decimal/wide_decimal_unbounded_statistics.test
-# description: Statistics of decimals wider than 255 digits: exact min/max, propagation and pruning
+# description: Statistics of decimals wider than 255 digits: cut min/max bounds, propagation and pruning
 # group: [decimal]
 
 # wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
@@ -14,14 +14,19 @@ INSERT INTO wide SELECT i, (repeat('9', 200) || '.' || repeat('9', 100))::DECIMA
 statement ok
 INSERT INTO wide VALUES (3, NULL), (4, '-1.5');
 
-# the column carries exact min/max statistics
-query IIII
-SELECT s.min = '-1.5'::DECIMAL(300,100), s.max = (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100), s.has_null, s.has_no_null FROM (SELECT STATS(d) s FROM wide LIMIT 1);
+# the unscaled values are longer than a bound, so the column carries cut min/max bounds that enclose the values
+query IIIIII
+SELECT s.min < '-1.5'::DECIMAL(300,100), s.max > (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100), s.min_exact, s.max_exact, s.has_null, s.has_no_null FROM (SELECT STATS(d) s FROM wide LIMIT 1);
 ----
-true	true	true	true
+true	true	false	false	true	true
 
 query II
-SELECT typeof(d + d), s.max::DECIMAL(301,100) = ('1' || repeat('9', 200) || '.' || repeat('9', 99) || '8')::DECIMAL(301,100) FROM (SELECT d, STATS(d + d) s FROM wide LIMIT 1);
+SELECT min(d) = '-1.5'::DECIMAL(300,100), max(d) = (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100) FROM wide;
+----
+true	true
+
+query II
+SELECT typeof(d + d), s.max::DECIMAL(301,100) > ('1' || repeat('9', 200) || '.' || repeat('9', 99) || '8')::DECIMAL(301,100) FROM (SELECT d, STATS(d + d) s FROM wide LIMIT 1);
 ----
 DECIMAL(301,100)	true
 
