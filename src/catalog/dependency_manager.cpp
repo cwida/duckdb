@@ -12,7 +12,6 @@
 #include "duckdb/catalog/catalog_entry/dependency/dependency_subject_entry.hpp"
 #include "duckdb/catalog/catalog_entry/dependency/dependency_dependent_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
-#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/common/queue.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/trigger_catalog_entry.hpp"
@@ -576,13 +575,13 @@ void DependencyManager::VerifyExistence(CatalogTransaction transaction, CatalogT
 		    "Could not commit creation of dependency, subject %s was dropped and re-created by another transaction",
 		    object.EntryInfo().name);
 	}
+	// An alter preserves the oid. If the subject changed after this transaction's snapshot, the entry decides
+	// whether the change breaks what the dependent was bound against.
 	if (!subject.flags.IsOwnership() && lookup_result.result &&
-	    (type == CatalogType::MACRO_ENTRY || type == CatalogType::TABLE_MACRO_ENTRY)) {
+	    lookup_result.result->timestamp >= snapshot_transaction.view.visibility_bound) {
 		auto bound_entry = LookupEntry(snapshot_transaction, info);
-		// An overload removal preserves the oid, but changes the definition a dependency was bound against.
-		if (bound_entry && bound_entry->Cast<MacroCatalogEntry>().macros.size() >
-		                       lookup_result.result->Cast<MacroCatalogEntry>().macros.size()) {
-			throw DependencyException("Could not commit creation of dependency, subject %s had an overload removed "
+		if (bound_entry && lookup_result.result->InvalidatesDependents(*bound_entry)) {
+			throw DependencyException("Could not commit creation of dependency, subject %s was altered incompatibly "
 			                          "by another transaction",
 			                          object.EntryInfo().name);
 		}

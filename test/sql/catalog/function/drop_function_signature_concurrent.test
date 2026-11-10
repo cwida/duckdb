@@ -49,7 +49,7 @@ COMMIT;
 statement error con2
 COMMIT;
 ----
-had an overload removed by another transaction
+was altered incompatibly by another transaction
 
 statement ok con1
 BEGIN;
@@ -69,7 +69,7 @@ COMMIT;
 statement error con2
 COMMIT;
 ----
-had an overload removed by another transaction
+was altered incompatibly by another transaction
 
 # The dependency commits first: the removal must recheck dependents at commit.
 statement ok
@@ -275,7 +275,7 @@ COMMIT;
 statement error con2
 COMMIT;
 ----
-had an overload removed by another transaction
+was altered incompatibly by another transaction
 
 statement ok
 CREATE OR REPLACE MACRO removed_subject(x INTEGER) AS x, (x VARCHAR) AS 42;

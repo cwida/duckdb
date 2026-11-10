@@ -79,6 +79,10 @@ string MacroCatalogEntry::ToSQL() const {
 	return create_info->ToString();
 }
 
+bool MacroCatalogEntry::InvalidatesDependents(const CatalogEntry &previous) const {
+	return previous.type == type && previous.Cast<MacroCatalogEntry>().macros.size() > macros.size();
+}
+
 unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transaction, AlterInfo &info) {
 	if (info.type != AlterType::ALTER_MACRO) {
 		return CatalogEntry::AlterEntry(transaction, info);

@@ -30,6 +30,8 @@ public:
 	unique_ptr<CreateInfo> GetInfo() const override;
 
 	unique_ptr<CatalogEntry> AlterEntry(CatalogTransaction transaction, AlterInfo &info) override;
+	//! A dependent may have bound any overload, so losing one invalidates it
+	bool InvalidatesDependents(const CatalogEntry &previous) const override;
 
 	//! The index of the member a parameter type list names, invalid when none matches
 	optional_idx FindMember(const vector<LogicalType> &signature) const;
