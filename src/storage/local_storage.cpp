@@ -683,8 +683,7 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 		}
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
-		throw FatalException("Failed to flush table \"%s\" during commit: %s", table.GetTableName(),
-		                     error.RawMessage());
+		throw FatalException("Failed to flush table %s during commit: %s", table.GetTableName(), error.RawMessage());
 	}
 	if (retryable_error.HasError()) {
 		retryable_error.Throw();
