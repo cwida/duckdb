@@ -1033,6 +1033,20 @@
         "default_value": ""
     },
     {
+        "name": "filter_selectivity_sample_max_row_groups",
+        "description": "If set, filter selectivity sampling does not sample tables with more row groups than this. 0 samples every table.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "512"
+    },
+    {
+        "name": "filter_selectivity_sample_size",
+        "description": "The number of rows sampled from a table scan to estimate the selectivity of its filters during join ordering. 0 disables sampling.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "2048"
+    },
+    {
         "name": "force_column_metadata_reuse",
         "description": "Force re-use of row group metadata on a column-level when checkpointing on older storage versions 6 and 7. This breaks storage backward-compatibility with older DuckDB versions.",
         "type": "BOOLEAN",

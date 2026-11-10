@@ -26,7 +26,9 @@ struct SelectivitySubgraph;
 
 class CardinalityEstimator {
 public:
-	CardinalityEstimator(JoinRelationSetManager &set_manager, const JoinPredicateModel &predicate_model);
+	//! With use_current_domains, inner equality joins divide by the largest current (filtered) domain of their keys
+	CardinalityEstimator(JoinRelationSetManager &set_manager, const JoinPredicateModel &predicate_model,
+	                     bool use_current_domains = false);
 	~CardinalityEstimator();
 
 public:
@@ -40,6 +42,7 @@ private:
 	void InitEquivalentRelations();
 	void UpdateTotalDomains(RelationIndex relation, const RelationStats &stats, const join_column_sources_t &sources);
 	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
+	vector<RelationStats> ApplyImpliedKeyRanges(const vector<RelationStats> &relations) const;
 	bool IsFilterApplicable(const FilterInfo &filter, JoinRelationSet &set) const;
 	CardinalityValue GetNumerator(JoinRelationSet &set);
 	CardinalityValue GetInnerSelectivity(JoinRelationSet &set);
@@ -80,6 +83,7 @@ private:
 	unique_ptr<CardinalityEstimatorState> state;
 	JoinRelationSetManager &set_manager;
 	const JoinPredicateModel &predicate_model;
+	bool use_current_domains;
 };
 
 } // namespace duckdb

@@ -69,7 +69,8 @@ public:
 	                                                       RelationStatsExtractor &extractor,
 	                                                       bool use_cached_cardinality = false);
 	static optional<RelationStats> ExtractWindowStats(LogicalWindow &window, const RelationStats &child_stats);
-	static optional<RelationStats> ExtractFilterStats(LogicalFilter &filter, const RelationStats &child_stats);
+	static optional<RelationStats> ExtractFilterStats(LogicalFilter &filter, const RelationStats &child_stats,
+	                                                  ClientContext &context);
 	static optional<RelationStats> ExtractLimitStats(LogicalLimit &limit, const RelationStats &child_stats);
 	static RelationStats ExtractEmptyResultStats(LogicalEmptyResult &empty);
 	static optional<RelationStats> ProjectOutputStats(const RelationStats &stats, LogicalOperator &op);
@@ -103,6 +104,23 @@ public:
 	EstimateSemiAntiJoinCardinality(LogicalComparisonJoin &join, const RelationStats &left, const RelationStats &right);
 	static optional_idx EstimateDirectFilterDomain(const Expression &expression, optional<ColumnBinding> target_binding,
 	                                               idx_t maximum_domain);
+
+	//! An integral scan column whose values among the sampled rows that pass all filters are requested
+	struct SampledColumnRange {
+		explicit SampledColumnRange(ProjectionIndex column) : column(column) {
+		}
+		ProjectionIndex column;
+		IntegralValueRange range;
+	};
+	//! Evaluates the table filters of a scan and then each stage of filters on a row sample of the scan. Returns the
+	//! sample size followed by the rows passing after each step, or nothing if no sample is taken. Fills the value
+	//! ranges of the requested columns among the rows that pass every step.
+	static vector<idx_t> SampleFilterPassCounts(ClientContext &context, LogicalGet &get,
+	                                            const vector<vector<reference<const Expression>>> &filter_stages,
+	                                            optional_ptr<vector<SampledColumnRange>> ranges = nullptr);
+	//! The selectivity of a filter chain on top of a scan, estimated on a row sample of the scan
+	static optional<double> SampleFilterSelectivity(ClientContext &context, LogicalFilter &filter);
+	static double SampledSelectivity(idx_t passing_count, idx_t evaluated_count);
 
 private:
 	static unique_ptr<BaseStatistics> GetColumnStatistics(LogicalGet &get, ClientContext &context,

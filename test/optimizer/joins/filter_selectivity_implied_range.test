@@ -1,0 +1,38 @@
+# name: test/optimizer/joins/filter_selectivity_implied_range.test
+# description: With filter sampling, the sampled key range of a filtered relation narrows the other side of its join
+# group: [joins]
+
+# d is a date-like dimension: key k, week w, year y (364 keys per year)
+statement ok
+CREATE TABLE d AS SELECT i::INTEGER AS k, (i // 7)::INTEGER AS w, (i // 364)::INTEGER AS y FROM range(36400) r(i);
+
+statement ok
+CREATE TABLE f AS SELECT ((i * 7) % 36400)::INTEGER AS fk FROM range(1000000) r(i);
+
+statement ok
+SET explain_output = 'optimized_only';
+
+statement ok
+SET filter_selectivity_sample_size = 0;
+
+# without sampling, d2 is unfiltered and the join with f divides by all 36400 keys of d2
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM d d1, d d2, f WHERE d1.y = 5 AND d1.w = d2.w AND f.fk = d2.k;
+----
+logical_opt	<REGEX>:.*"Conditions":\s*"\((fk = k|k = fk)\)",\s*"Estimated Cardinality":\s*"[0-9]{1,5}".*
+
+statement ok
+SET filter_selectivity_sample_size = 2048;
+
+# the sampled weeks of year 5 restrict d2 to 364 keys through d1.w = d2.w: the join with f no longer divides by the
+# keys of the other years
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM d d1, d d2, f WHERE d1.y = 5 AND d1.w = d2.w AND f.fk = d2.k;
+----
+logical_opt	<REGEX>:.*"Conditions":\s*"\((fk = k|k = fk)\)",\s*"Estimated Cardinality":\s*"[0-9]{6,}".*
+
+# the implied range only changes estimates
+query I
+SELECT count(*) FROM d d1, d d2, f WHERE d1.y = 5 AND d1.w = d2.w AND f.fk = d2.k;
+----
+70252

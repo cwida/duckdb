@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
@@ -110,7 +111,8 @@ optional<RelationStats> RelationStatsExtractor::ExtractJoinStats(LogicalOperator
 		return {};
 	}
 	auto relation_stats = graph.relation_manager.GetRelationStats();
-	CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
+	CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel(),
+	                               Settings::Get<FilterSelectivitySampleSizeSetting>(context) > 0);
 	estimator.Initialize(relation_stats, graph.GetJoinOperators(), graph.relation_manager.GetColumnSources());
 	unordered_set<RelationIndex> relations;
 	for (idx_t i = 0; i < relation_stats.size(); i++) {

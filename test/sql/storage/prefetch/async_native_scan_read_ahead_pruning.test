@@ -19,6 +19,10 @@ CHECKPOINT
 # restart so the payload blocks begin cold
 restart
 
+# the scans read only what the query reads: filter sampling would read blocks during planning
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 SET threads=4
 

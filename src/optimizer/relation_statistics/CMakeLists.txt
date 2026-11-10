@@ -5,6 +5,7 @@ add_library_unity(
   relation_statistics_extractor.cpp
   relation_statistics_helper.cpp
   relation_statistics_operator.cpp
+  relation_statistics_sample.cpp
   relation_statistics_scan.cpp)
 
 set(ALL_OBJECT_FILES

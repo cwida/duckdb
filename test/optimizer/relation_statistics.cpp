@@ -1901,6 +1901,8 @@ TEST_CASE("UNION grouping refinement shares the CTE extraction snapshot", "[opti
 TEST_CASE("Standalone join statistics share estimation without mutating the plan", "[optimizer][relation_statistics]") {
 	DuckDB db;
 	Connection connection(db);
+	// the cardinality bounds below are those without filter sampling
+	REQUIRE_NO_FAIL(connection.Query("SET filter_selectivity_sample_size = 0"));
 	CreateStatisticsJoinTables(connection);
 	connection.BeginTransaction();
 	for (auto query : {"SELECT a.x,b.y FROM stats_a a JOIN stats_b b USING(k)",

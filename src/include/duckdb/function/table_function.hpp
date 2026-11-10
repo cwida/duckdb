@@ -36,6 +36,7 @@ enum class TableFunctionParallelism : uint8_t {
 };
 
 class BaseStatistics;
+class ColumnDataCollection;
 class LogicalDependencyList;
 class LogicalGet;
 class TableFunction;
@@ -424,6 +425,23 @@ typedef void (*table_function_set_scan_order)(unique_ptr<RowGroupOrderOptions> o
 typedef void (*table_function_set_partitions_to_scan_t)(vector<idx_t> partition_indices,
                                                         optional_ptr<FunctionData> bind_data);
 
+struct TableFunctionGetSampleInput {
+	TableFunctionGetSampleInput(optional_ptr<const FunctionData> bind_data_p,
+	                            const vector<ColumnIndex> &column_indexes_p, idx_t sample_size_p)
+	    : bind_data(bind_data_p), column_indexes(column_indexes_p), sample_size(sample_size_p) {
+	}
+
+	optional_ptr<const FunctionData> bind_data;
+	//! The columns to sample, in the order of the result columns
+	const vector<ColumnIndex> &column_indexes;
+	//! The maximum number of rows to sample
+	idx_t sample_size;
+};
+
+//! Returns a uniform row sample of the requested columns, or nullptr if no sample can be taken
+typedef unique_ptr<ColumnDataCollection> (*table_function_get_sample_t)(ClientContext &context,
+                                                                        TableFunctionGetSampleInput &input);
+
 //! When to call init_global to initialize the table function
 enum class TableFunctionInitialization { INITIALIZE_ON_EXECUTE, INITIALIZE_ON_SCHEDULE };
 
@@ -550,6 +568,8 @@ public:
 	table_function_set_scan_order set_scan_order;
 	//! (Optional) restricts the scan to a specific subset of partitions (by index in get_partition_stats order)
 	table_function_set_partitions_to_scan_t set_partitions_to_scan = nullptr;
+	//! (Optional) returns a row sample, used to estimate the selectivity of filters on this scan
+	table_function_get_sample_t get_sample = nullptr;
 
 	table_function_serialize_t serialize;
 	table_function_deserialize_t deserialize;

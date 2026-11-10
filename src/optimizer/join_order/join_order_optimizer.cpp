@@ -3,6 +3,7 @@
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/pair.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
@@ -56,7 +57,8 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	if (reorderable) {
 		// query graph now has filters and relations
 		auto cardinality_estimator =
-		    CardinalityEstimator(query_graph_manager.set_manager, query_graph_manager.GetPredicateModel());
+		    CardinalityEstimator(query_graph_manager.set_manager, query_graph_manager.GetPredicateModel(),
+		                         Settings::Get<FilterSelectivitySampleSizeSetting>(context) > 0);
 		auto cost_model = CostModel(cardinality_estimator);
 
 		// Initialize a plan enumerator.

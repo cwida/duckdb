@@ -2,6 +2,10 @@
 # description: Integer scan ranges interpolate broad predicates with a default-selectivity floor
 # group: [joins]
 
+# these are the estimates without filter sampling
+statement ok
+SET filter_selectivity_sample_size = 0;
+
 statement ok
 CREATE TABLE input AS SELECT i AS k, i::DOUBLE AS d, i::DECIMAL(10,0) AS dec, i::HUGEINT AS h, DATE '2000-01-01' + i::INTEGER AS day FROM range(1000) r(i);
 

@@ -112,6 +112,7 @@ BoundTableFunction::BoundTableFunction(shared_ptr<const TableFunction> function_
 	get_row_id_columns = function.get_row_id_columns;
 	set_scan_order = function.set_scan_order;
 	set_partitions_to_scan = function.set_partitions_to_scan;
+	get_sample = function.get_sample;
 	serialize = function.serialize;
 	deserialize = function.deserialize;
 	verify_serialization = function.verify_serialization;
@@ -177,7 +178,7 @@ bool BaseTableFunction::operator==(const BaseTableFunction &rhs) const {
 	       get_multi_file_reader == rhs.get_multi_file_reader && supports_pushdown_type == rhs.supports_pushdown_type &&
 	       stability == rhs.stability && get_partition_info == rhs.get_partition_info &&
 	       get_partition_stats == rhs.get_partition_stats && get_virtual_columns == rhs.get_virtual_columns &&
-	       get_row_id_columns == rhs.get_row_id_columns && serialize == rhs.serialize &&
+	       get_row_id_columns == rhs.get_row_id_columns && get_sample == rhs.get_sample && serialize == rhs.serialize &&
 	       deserialize == rhs.deserialize && verify_serialization == rhs.verify_serialization &&
 	       projection_pushdown == rhs.projection_pushdown && filter_pushdown == rhs.filter_pushdown &&
 	       filter_prune == rhs.filter_prune && sampling_pushdown == rhs.sampling_pushdown &&
