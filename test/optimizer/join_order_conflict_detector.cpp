@@ -6,6 +6,8 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
 
 using namespace duckdb;
 
@@ -120,6 +122,75 @@ TEST_CASE("CD-C preserves operator ownership after simplifying absorbed conflict
 	REQUIRE(ParentMustApplyAsOperator(JoinOrderOperatorType::LEFT, false));
 	REQUIRE(ParentMustApplyAsOperator(JoinOrderOperatorType::LEFT, true));
 	REQUIRE_FALSE(ParentMustApplyAsOperator(JoinOrderOperatorType::INNER, false));
+}
+
+TEST_CASE("CD-C splits filtering join predicates only when each satisfies the conflicts", "[optimizer][join_order]") {
+	const auto child_type = GENERATE(JoinOrderOperatorType::SEMI, JoinOrderOperatorType::ANTI);
+	JoinRelationSetManager set_manager;
+	auto &r0 = set_manager.GetJoinRelation(RelationIndex(0));
+	auto &r1 = set_manager.GetJoinRelation(RelationIndex(1));
+	auto &r2 = set_manager.GetJoinRelation(RelationIndex(2));
+	auto &r3 = set_manager.GetJoinRelation(RelationIndex(3));
+	auto &r0_r1 = set_manager.Union(r0, r1);
+	auto &r2_r3 = set_manager.Union(r2, r3);
+	auto &r0_r1_r2 = set_manager.Union(r0_r1, r2);
+	unordered_map<TableIndex, RelationIndex> relation_mapping;
+	for (idx_t relation_idx = 0; relation_idx < 6; relation_idx++) {
+		relation_mapping[TableIndex(relation_idx)] = RelationIndex(relation_idx);
+	}
+	auto first_lhs = Column(TableIndex(0));
+	auto second_rhs = Column(TableIndex(2));
+	bool residual = false;
+	bool left_region = false;
+	bool must_apply = true;
+	SECTION("Each predicate contains the required visible input") {
+		must_apply = false;
+	}
+	SECTION("One predicate lacks the requirement") {
+		second_rhs = Column(TableIndex(0));
+	}
+	SECTION("A binding is unmapped") {
+		relation_mapping.erase(TableIndex(0));
+	}
+	SECTION("A binding is correlated") {
+		first_lhs->Cast<BoundColumnRefExpression>().DepthMutable() = 1;
+	}
+	SECTION("A binding is already physical") {
+		first_lhs = make_uniq<BoundReferenceExpression>(LogicalType::INTEGER, 0);
+	}
+	SECTION("A subquery has not been flattened") {
+		first_lhs = make_uniq<BoundSubqueryExpression>(LogicalType::INTEGER);
+	}
+	SECTION("A condition is residual") {
+		residual = true;
+	}
+	SECTION("A sibling introduces NULLs") {
+		left_region = true;
+	}
+	vector<JoinCondition> conditions;
+	conditions.emplace_back(std::move(first_lhs), Column(TableIndex(2)), ExpressionType::COMPARE_EQUAL);
+	if (residual) {
+		conditions.emplace_back(BoundComparisonExpression::Create(ExpressionType::COMPARE_EQUAL, Column(TableIndex(1)),
+		                                                          std::move(second_rhs)));
+	} else {
+		conditions.emplace_back(Column(TableIndex(1)), std::move(second_rhs), ExpressionType::COMPARE_EQUAL);
+	}
+	vector<unique_ptr<JoinOrderOperator>> operators;
+	operators.push_back(make_uniq<JoinOrderOperator>(
+	    0, child_type, r2, r3, r2_r3, Comparison(TableIndex(2), TableIndex(3), ExpressionType::COMPARE_EQUAL)));
+	operators.push_back(
+	    make_uniq<JoinOrderOperator>(1, JoinOrderOperatorType::INNER, r0_r1, r2_r3, r0_r1_r2, std::move(conditions)));
+	operators[1]->right_operators.push_back(*operators[0]);
+	if (left_region) {
+		auto &r4 = set_manager.GetJoinRelation(RelationIndex(4));
+		auto &r5 = set_manager.GetJoinRelation(RelationIndex(5));
+		operators.push_back(
+		    make_uniq<JoinOrderOperator>(2, JoinOrderOperatorType::LEFT, r4, r5, set_manager.Union(r4, r5),
+		                                 Comparison(TableIndex(4), TableIndex(5), ExpressionType::COMPARE_EQUAL)));
+	}
+	JoinOrderConflictDetector::Build(operators, set_manager, relation_mapping);
+	REQUIRE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[0]));
+	REQUIRE(JoinOrderConflictDetector::MustApplyAsOperator(*operators[1]) == must_apply);
 }
 
 TEST_CASE("CD-C tests conditional associativity against the shared input", "[optimizer][join_order]") {

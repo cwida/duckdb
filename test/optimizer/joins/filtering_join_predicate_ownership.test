@@ -1,0 +1,106 @@
+# name: test/optimizer/joins/filtering_join_predicate_ownership.test
+# description: Filtering joins do not force products between independent inner join predicates
+# group: [joins]
+
+require parquet
+
+statement ok
+CREATE TABLE f_native AS SELECT i % 1000 AS cid FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE d_native AS SELECT i AS did FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE c_native AS SELECT i AS cid, i AS did, i % 12 AS mon FROM range(1000) t(i);
+
+statement ok
+ANALYZE;
+
+foreach table f d c
+
+statement ok
+COPY {table}_native TO '{TEST_DIR}/filtering_join_{table}.parquet';
+
+statement ok
+CREATE VIEW {table}_parquet AS FROM read_parquet('{TEST_DIR}/filtering_join_{table}.parquet');
+
+endloop
+
+foreach source native parquet
+
+foreach threshold 0 30
+
+statement ok
+SET approximate_join_order_threshold = {threshold};
+
+# MARK conversion must retain independently usable equality edges.
+query I
+SELECT count(*) FROM f_{source} f, d_{source} d, c_{source} c
+WHERE f.cid=c.cid AND d.did=c.did AND c.mon IN (1,3,5,7,9,11);
+----
+5000
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM f_{source} f, d_{source} d, c_{source} c
+WHERE f.cid=c.cid AND d.did=c.did AND c.mon IN (1,3,5,7,9,11);
+----
+physical_plan	<!REGEX>:.*CROSS_PRODUCT.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM f_{source} f, d_{source} d, c_{source} c
+WHERE f.cid=c.cid AND d.did=c.did AND c.mon IN (1,3,5,7,9,11);
+----
+physical_plan	<REGEX>:.*"Join Type": "(RIGHT_)?SEMI".*
+
+query I
+SELECT count(*) FROM f_{source} f, d_{source} d,
+(c_{source} c ANTI JOIN (VALUES (1),(3),(5),(7),(9),(11)) s(mon) ON c.mon=s.mon)
+WHERE f.cid=c.cid AND d.did=c.did;
+----
+5000
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM f_{source} f, d_{source} d,
+(c_{source} c ANTI JOIN (VALUES (1),(3),(5),(7),(9),(11)) s(mon) ON c.mon=s.mon)
+WHERE f.cid=c.cid AND d.did=c.did;
+----
+physical_plan	<!REGEX>:.*CROSS_PRODUCT.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM f_{source} f, d_{source} d,
+(c_{source} c ANTI JOIN (VALUES (1),(3),(5),(7),(9),(11)) s(mon) ON c.mon=s.mon)
+WHERE f.cid=c.cid AND d.did=c.did;
+----
+physical_plan	<REGEX>:.*"Join Type": "(RIGHT_)?ANTI".*
+
+# Commuting the original INNER inputs must preserve the same freedom.
+query I
+SELECT count(*) FROM
+(c_{source} c SEMI JOIN (VALUES (1),(3),(5),(7),(9),(11)) s(mon) ON c.mon=s.mon),
+f_{source} f, d_{source} d
+WHERE f.cid=c.cid AND d.did=c.did;
+----
+5000
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM
+(c_{source} c SEMI JOIN (VALUES (1),(3),(5),(7),(9),(11)) s(mon) ON c.mon=s.mon),
+f_{source} f, d_{source} d
+WHERE f.cid=c.cid AND d.did=c.did;
+----
+physical_plan	<!REGEX>:.*CROSS_PRODUCT.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*) FROM
+(c_{source} c SEMI JOIN (VALUES (1),(3),(5),(7),(9),(11)) s(mon) ON c.mon=s.mon),
+f_{source} f, d_{source} d
+WHERE f.cid=c.cid AND d.did=c.did;
+----
+physical_plan	<REGEX>:.*"Join Type": "(RIGHT_)?SEMI".*
+
+endloop
+
+endloop
+
+statement ok
+RESET approximate_join_order_threshold;

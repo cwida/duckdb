@@ -1,11 +1,13 @@
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 
 #include "duckdb/common/assert.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/expression_nullability.hpp"
 
 namespace duckdb {
@@ -224,14 +226,65 @@ static void SimplifyConflictRules(JoinOrderOperator &op, JoinRelationSetManager 
 	op.right_total_set = set_manager.Intersection(op.total_set, op.right_relations);
 }
 
+static bool ConditionsContainConflictRequirements(const JoinOrderOperator &op,
+                                                  const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
+	if (op.conditions.empty()) {
+		return false;
+	}
+	for (auto &condition : op.conditions) {
+		if (!condition.IsComparison()) {
+			return false;
+		}
+		unordered_set<RelationIndex> bindings;
+		bool valid_bindings = true;
+		auto collect_bindings = [&](const Expression &expression) {
+			ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+			    expression, [&](const BoundColumnRefExpression &column) {
+				    auto entry = relation_mapping.find(column.Binding().table_index);
+				    if (column.Depth() != 0 || entry == relation_mapping.end()) {
+					    valid_bindings = false;
+				    } else {
+					    bindings.insert(entry->second);
+				    }
+			    });
+			for (auto expr_class : {ExpressionClass::BOUND_REF, ExpressionClass::BOUND_SUBQUERY}) {
+				ExpressionIterator::VisitExpressionClass(expression, expr_class,
+				                                         [&](const Expression &) { valid_bindings = false; });
+			}
+		};
+		collect_bindings(condition.GetLHS());
+		collect_bindings(condition.GetRHS());
+		if (!valid_bindings) {
+			return false;
+		}
+		for (auto &rule : op.conflict_rules) {
+			for (idx_t relation_idx = 0; relation_idx < rule.requirement.get().count; relation_idx++) {
+				if (!bindings.count(rule.requirement.get().relations[relation_idx])) {
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
 void JoinOrderConflictDetector::Build(vector<unique_ptr<JoinOrderOperator>> &operators,
                                       JoinRelationSetManager &set_manager,
                                       const unordered_map<TableIndex, RelationIndex> &relation_mapping) {
+	bool has_left_join = false;
+	for (auto &op : operators) {
+		has_left_join |= op->type == JoinOrderOperatorType::LEFT;
+	}
 	for (auto &op : operators) {
 		D_ASSERT(!JoinRelationSet::Intersects(op->left_relations, op->right_relations));
 		BuildConflictRules(*op, set_manager, relation_mapping);
-		op->must_apply_as_operator = op->type != JoinOrderOperatorType::CROSS_PRODUCT &&
-		                             (op->type != JoinOrderOperatorType::INNER || !op->conflict_rules.empty());
+		// Nullable inputs still require the original operator boundary.
+		auto can_split_conditions = op->type == JoinOrderOperatorType::INNER && !has_left_join &&
+		                            !op->conflict_rules.empty() &&
+		                            ConditionsContainConflictRequirements(*op, relation_mapping);
+		op->must_apply_as_operator =
+		    op->type != JoinOrderOperatorType::CROSS_PRODUCT &&
+		    (op->type != JoinOrderOperatorType::INNER || (!op->conflict_rules.empty() && !can_split_conditions));
 		SimplifyConflictRules(*op, set_manager);
 		D_ASSERT(ContainedInUnion(op->total_set, op->left_relations, op->right_relations));
 #ifdef D_ASSERT_IS_ENABLED

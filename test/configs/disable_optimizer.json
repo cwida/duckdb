@@ -8,7 +8,8 @@
       "reason": "Checks MARK conversion plan shapes and its optimizer gate.",
       "paths": [
         "test/optimizer/mark_join_simplifier.test",
-        "test/optimizer/mark_predicates.test"
+        "test/optimizer/mark_predicates.test",
+        "test/optimizer/joins/filtering_join_predicate_ownership.test"
       ]
     },
     {

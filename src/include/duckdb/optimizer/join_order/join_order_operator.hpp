@@ -62,8 +62,8 @@ struct JoinOrderOperator {
 	vector<idx_t> costing_predicate_indices;
 	//! LEFT ON residuals not covered by a costing predicate or an equivalent equality key.
 	vector<reference<const Expression>> residual_predicates;
-	//! Whether the complete conditions must be applied by this operator occurrence. This is decided before conflict
-	//! rule simplification, which can erase conflicts already absorbed by the syntactic eligibility set.
+	//! Whether this occurrence must apply its complete conditions together.
+	//! Independent predicates must each satisfy the raw conflicts before simplification.
 	bool must_apply_as_operator = false;
 };
 
