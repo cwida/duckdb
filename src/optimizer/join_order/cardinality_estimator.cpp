@@ -216,7 +216,9 @@ double FilterInfoWithTotalDomains::GetDistinctCount() const {
 }
 
 bool FilterInfoWithTotalDomains::RequiresSelectivityFloor() const {
-	return GetPredicate().GetJoinType() == JoinType::INNER && GetPredicate().IsEquivalencePredicate() &&
+	auto comparison = GetPredicate().GetComparisonType();
+	return GetPredicate().GetJoinType() == JoinType::INNER &&
+	       (comparison == ExpressionType::COMPARE_EQUAL || comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM) &&
 	       domain.source == DistinctCountSource::CARDINALITY &&
 	       GetDistinctCount() > 1 / RelationStatisticsHelper::DEFAULT_SELECTIVITY;
 }
@@ -662,9 +664,12 @@ void CardinalityEstimator::ProcessSelectivityEdge(FilterInfoWithTotalDomains &ed
 		if (CanIncrementExistingJoin(edge_kind) &&
 		    ApplyJoinIncrement(complete_subgraph.selectivity, edge, state.join_pair_stats, state.capped_join_pairs,
 		                       *complete_subgraph.relations)) {
-			auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
-			if (equality_class_index.IsValid()) {
-				state.applied_equivalence_groups.insert(equality_class_index.GetIndex());
+			auto pair = GetEqualityJoinPair(edge, set_manager);
+			if (pair && this->state->floored_join_pairs.count(*pair)) {
+				auto equality_class_index = edge.GetPredicate().GetEqualityClassIndex();
+				if (equality_class_index.IsValid()) {
+					state.applied_equivalence_groups.insert(equality_class_index.GetIndex());
+				}
 			}
 			return;
 		}
