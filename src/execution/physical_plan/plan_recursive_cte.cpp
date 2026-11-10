@@ -197,6 +197,18 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalRecursiveCTE &op) {
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCTERef &op) {
 	D_ASSERT(op.children.empty());
 
+	if (op.is_frontier) {
+		auto frontier = trampoline_frontier_tables.find(op.cte_index);
+		if (frontier == trampoline_frontier_tables.end()) {
+			throw InvalidInputException("Referenced TRAMPOLINE frontier does not exist.");
+		}
+		auto &types = frontier->second.get()->Types();
+		auto &chunk_scan = Make<PhysicalColumnDataScan>(types, PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN,
+		                                                op.estimated_cardinality, op.cte_index);
+		chunk_scan.Cast<PhysicalColumnDataScan>().collection = frontier->second.get();
+		return chunk_scan;
+	}
+
 	// Check if this LogicalCTERef is supposed to scan a materialized CTE.
 	// Lookup if there is a materialized CTE for the cte_index.
 	auto materialized_cte = materialized_ctes.find(op.cte_index);

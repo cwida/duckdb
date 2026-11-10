@@ -57,7 +57,7 @@ public:
 	                 const LogicalPlanVerificationPath &path,
 	                 optional_ptr<BoundExpressionSQLExportState> composition = nullptr);
 	unique_ptr<SelectNode> CreateNamedSource(const Identifier &name, const vector<LogicalPlanSQLExportField> &fields,
-	                                         bool recurring = false);
+	                                         const Identifier &qualifier = Identifier());
 
 	LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>
 	ExportNamedProducer(LogicalOperator &op, const LogicalPlanVerificationPath &path, const Identifier &name);

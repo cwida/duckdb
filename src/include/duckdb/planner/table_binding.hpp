@@ -208,6 +208,12 @@ public:
 	bool IsReferenced() const;
 	void Reference();
 
+public:
+	//! Set on the binding a trampoline seed registers for its own frontier relation:
+	//! the name is in scope so it cannot resolve to an outer frontier, but any
+	//! reference is a binder error since the frontier does not exist during the seed
+	bool frontier_seed_guard = false;
+
 private:
 	CTEType cte_type;
 	idx_t reference_count;

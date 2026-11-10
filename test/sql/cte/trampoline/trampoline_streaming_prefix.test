@@ -1,0 +1,80 @@
+# name: test/sql/cte/trampoline/trampoline_streaming_prefix.test
+# description: Optimizer-dependent trampoline cases: streaming prefixes under LIMIT (needs CTE inlining)
+# group: [trampoline]
+
+# partial output stays live: a LIMIT can consume an already emitted row even
+# when the remaining trampoline work never emits again
+statement ok
+SET max_execution_time = 60000;
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (0, 42), (1, 0)) v(b, n))
+    BRANCH 1: (SELECT CASE WHEN n < 100000000 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT n FROM t LIMIT 1;
+----
+42
+
+# the same holds when the prefix row came from a branch instead of the seed
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (2, 42), (1, 0)) v(b, n))
+    BRANCH 1: (SELECT CASE WHEN n < 100000000 THEN 1 ELSE 0 END, n + 1 FROM t)
+    BRANCH 2: (SELECT 0, n FROM t)
+)
+SELECT n FROM t LIMIT 1;
+----
+42
+
+statement ok
+SET max_execution_time = 0;
+
+# ASOF joins against the routed input inherit the upstream recursive-CTE
+# limitation ("AsOf joins are not supported in recursive CTEs yet") in plans
+# that keep the ASOF operator, so no per-wave ASOF case is asserted here.
+
+# Already emitted prefixes stay consumable before a nonterminating branch invocation.
+statement ok
+SET threads=1;
+
+statement ok
+SET max_execution_time=5000;
+
+# The seed already satisfies LIMIT. Starting branch 1 must not prevent delivery.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (0, 42), (1, 0))
+	BRANCH 1: (
+		WITH RECURSIVE r(x) AS (
+			SELECT n FROM t
+			UNION ALL
+			SELECT x FROM r
+		)
+		SELECT 0, max(x) FROM r
+	)
+)
+SELECT n FROM t LIMIT 1;
+----
+42
+
+# The same dependency can arise after a branch produces both output and work.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 42))
+	BRANCH 1: (
+		WITH RECURSIVE r(x) AS (
+			SELECT n FROM t
+			UNION ALL
+			SELECT x FROM r
+		)
+		SELECT 0, max(x) FROM r
+	)
+	BRANCH 2: (SELECT 0, n FROM t UNION ALL SELECT 1, n FROM t)
+)
+SELECT n FROM t LIMIT 1;
+----
+42
+
+statement ok
+RESET max_execution_time;

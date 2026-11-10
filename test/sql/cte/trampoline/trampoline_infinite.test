@@ -1,0 +1,41 @@
+# name: test/sql/cte/trampoline/trampoline_infinite.test
+# description: Non-terminating trampolines are bounded by max_execution_time
+# group: [trampoline]
+
+statement ok
+SET max_execution_time = 2000;
+
+# a branch that always routes back to itself never terminates on its own
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 1, n + 1 FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:INTERRUPT Error.*
+
+# two branches bouncing a row between each other never terminate either
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 2, n + 1 FROM t)
+    BRANCH 2: (SELECT 1, n + 1 FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:INTERRUPT Error.*
+
+statement ok
+SET max_execution_time = 0;
+
+
+# after an interrupt the same connection runs trampolines normally again
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+0	4

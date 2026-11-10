@@ -1,0 +1,142 @@
+# name: test/sql/cte/trampoline/trampoline_nested.test
+# description: Trampoline CTEs combined with other query constructs
+# group: [trampoline]
+
+statement ok
+CREATE TABLE edges(src INTEGER, dst INTEGER);
+
+statement ok
+INSERT INTO edges VALUES (0, 1), (1, 2), (2, 3), (1, 4), (4, 5);
+
+# graph reachability from node 0, joining the frontier against a base table
+query I
+WITH RECURSIVE reach(b, node) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT c AS b, node
+               FROM (SELECT e.dst AS node FROM reach JOIN edges e ON e.src = reach.node), (VALUES (0), (1)) tag(c))
+)
+SELECT node FROM reach ORDER BY node;
+----
+1
+2
+3
+4
+5
+
+# a trampoline CTE next to an ordinary CTE in the same WITH clause
+query II
+WITH RECURSIVE
+    base(k) AS (SELECT 3),
+    t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 0)
+        BRANCH 1: (SELECT CASE WHEN n < (SELECT k FROM base) THEN 1 ELSE 0 END, n + 1 FROM t)
+    )
+SELECT b, n FROM t;
+----
+0	4
+
+# two trampoline CTEs in one WITH clause
+query II
+WITH RECURSIVE
+    t1(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 0)
+        BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t1)
+    ),
+    t2(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 10)
+        BRANCH 1: (SELECT CASE WHEN n < 12 THEN 1 ELSE 0 END, n + 1 FROM t2)
+    )
+SELECT t1.n, t2.n FROM t1, t2;
+----
+3	13
+
+# trampoline result joined and aggregated in the outer query
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, x FROM (VALUES (1), (2), (3)) v(x))
+    BRANCH 1: (SELECT CASE WHEN n < 10 THEN 1 ELSE 0 END, n * 2 FROM t)
+)
+SELECT sum(n)::INT FROM t;
+----
+88
+
+# a trampoline inside a subquery
+query I
+SELECT (
+    WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 1)
+        BRANCH 1: (SELECT CASE WHEN n < 8 THEN 1 ELSE 0 END, n * 2 FROM t)
+    )
+    SELECT n FROM t
+);
+----
+16
+
+# recursive CTE and trampoline CTE can coexist in one WITH clause
+query II rowsort
+WITH RECURSIVE
+    r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3),
+    t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 100)
+        BRANCH 1: (SELECT 0, n FROM t)
+    )
+SELECT r.n, t.n FROM r, t;
+----
+1	100
+2	100
+3	100
+
+# a static lookup join inside a branch is retained across many waves
+statement ok
+CREATE TABLE step(k BIGINT, v BIGINT);
+
+statement ok
+INSERT INTO step SELECT i, i + 1 FROM range(2001) t(i);
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0::BIGINT)
+    BRANCH 1: (SELECT CASE WHEN s.v < 2000 THEN 1 ELSE 0 END, s.v FROM t JOIN step s ON s.k = t.n)
+)
+SELECT b, n FROM t;
+----
+0	2000
+
+# a branch probing a large static table from a small wave parallelizes the scan;
+# the semi join keeps the static side as the probe (its build depends on the wave,
+# so the recursive probe-side preference does not reorient it into an invariant build)
+statement ok
+CREATE TABLE probe_rows AS SELECT r::INT AS n FROM range(500000) tbl(r);
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, i * 7 FROM range(4096) r(i))
+    BRANCH 1: (SELECT 0, p.n FROM probe_rows p WHERE EXISTS (SELECT 1 FROM t WHERE t.n = p.n))
+)
+SELECT count(*) FROM t;
+----
+4096
+
+# a branch-local materialized CTE reading the current wave
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, r::INT FROM range(100) tbl(r))
+    BRANCH 1: (WITH wave AS MATERIALIZED (SELECT n FROM t)
+               SELECT 0, w1.n FROM wave w1 WHERE w1.n IN (SELECT max(n) FROM wave))
+)
+SELECT n FROM t;
+----
+99
+
+# one outer materialized CTE consumed by several branches
+query I
+WITH RECURSIVE
+    lookup AS MATERIALIZED (SELECT r::INT AS k FROM range(50) tbl(r)),
+    t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT * FROM (VALUES (1, 10), (2, 20)) v(b, n))
+        BRANCH 1: (SELECT 0, l.k FROM lookup l JOIN t ON l.k = t.n)
+        BRANCH 2: (SELECT 0, l.k FROM lookup l JOIN t ON l.k = t.n)
+    )
+SELECT sum(n)::INT FROM t;
+----
+30

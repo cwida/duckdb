@@ -1,0 +1,190 @@
+# name: test/sql/cte/trampoline/trampoline_column_pruning.test
+# description: Prune unused trampoline state using fixed-point column liveness
+# group: [trampoline]
+
+statement ok
+SET explain_output='optimized_only';
+
+# The unused wide payload and its per-branch expression disappear from the optimized plan.
+query II
+EXPLAIN WITH RECURSIVE t(b, i, unused) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, unused || 'y' FROM t)
+)
+SELECT i FROM t;
+----
+logical_opt	<!REGEX>:.*xxxxx.*
+
+# The selector stays live even when the outer query never reads it, and its
+# position is remapped when columns before it are pruned.
+query II
+EXPLAIN WITH RECURSIVE t(x, b, y) USING TRAMPOLINE (b) AS (
+	(SELECT repeat('x', 1000), 1, 1)
+	BRANCH 1: (SELECT x || 'y', CASE WHEN y < 3 THEN 1 ELSE 0 END, y + 1 FROM t)
+)
+SELECT y FROM t;
+----
+logical_opt	<!REGEX>:.*xxxxx.*
+
+# MERGE coalesces bags without admission, so pruning stays licensed.
+query II
+EXPLAIN WITH RECURSIVE t(b, i, unused) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1 MERGE: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, unused FROM t)
+)
+SELECT i FROM t;
+----
+logical_opt	<!REGEX>:.*xxxxx.*
+
+# DISTINCT admission hashes the full row, so every column is identity and nothing is pruned.
+query II
+EXPLAIN WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, p FROM t)
+)
+SELECT i FROM t;
+----
+logical_opt	<REGEX>:.*xxxxx.*
+
+# EMIT DISTINCT admission equally keeps the full row.
+query II
+EXPLAIN WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, p FROM t)
+)
+SELECT i FROM t;
+----
+logical_opt	<REGEX>:.*xxxxx.*
+
+# A volatile branch is not repeatable, so the trampoline is left untouched.
+query II
+EXPLAIN WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, p || CASE WHEN random() >= 0 THEN 'y' ELSE 'z' END FROM t)
+)
+SELECT i FROM t;
+----
+logical_opt	<REGEX>:.*xxxxx.*
+
+statement ok
+SET explain_output='all';
+
+query I
+WITH RECURSIVE t(b, i, unused) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, unused || 'y' FROM t)
+)
+SELECT i FROM t;
+----
+4
+
+# Selector remap: routing still terminates and emits through the moved selector.
+query I
+WITH RECURSIVE t(x, b, y) USING TRAMPOLINE (b) AS (
+	(SELECT repeat('x', 1000), 1, 1)
+	BRANCH 1: (SELECT x || 'y', CASE WHEN y < 3 THEN 1 ELSE 0 END, y + 1 FROM t)
+)
+SELECT y FROM t;
+----
+4
+
+# Liveness is transitive across branches: branch 2 reads c, branch 1 writes it,
+# so c survives while the payload d does not.
+# Trace: (1,10) -b1-> (2,11) -b2-> (13,11) -b1-> (14,12) -b2-> emit (26,12).
+query II
+WITH RECURSIVE t(b, a, c, d) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, 10, repeat('x', 1000))
+	BRANCH 1: (SELECT 2, a + 1, c + 1, d FROM t)
+	BRANCH 2: (SELECT CASE WHEN a < 3 THEN 1 ELSE 0 END, a + c, c, d FROM t)
+)
+SELECT a, c FROM t ORDER BY a;
+----
+26	12
+
+# TEE emissions carry the pruned schema.
+query I rowsort
+WITH RECURSIVE t(b, i, unused) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, repeat('x', 1000))
+	BRANCH 1 TEE: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, unused FROM t)
+)
+SELECT i FROM t;
+----
+1
+2
+3
+4
+
+# A frontier read keeps its column live; the payload still prunes.
+statement ok
+SET explain_output='optimized_only';
+
+query II
+EXPLAIN WITH RECURSIVE t(b, i, p, unused) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, 100, repeat('x', 1000))
+	BRANCH 1 MERGE: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + (SELECT max(p) FROM frontier.t), p, unused FROM t)
+)
+SELECT i FROM t;
+----
+logical_opt	<!REGEX>:.*xxxxx.*
+
+statement ok
+SET explain_output='all';
+
+query I
+WITH RECURSIVE t(b, i, p, unused) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, 100, repeat('x', 1000))
+	BRANCH 1 MERGE: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + (SELECT max(p) FROM frontier.t), p, unused FROM t)
+)
+SELECT i FROM t;
+----
+201
+
+# DISTINCT admission result protection: the payload distinguishes the two seed
+# rows, so pruning it would collapse them at the round boundary.
+query I
+WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, 'a' UNION ALL SELECT 1, 1, 'b')
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN i < 2 THEN 1 ELSE 0 END, i + 1, p FROM t)
+)
+SELECT count(*) FROM t;
+----
+2
+
+# A fixed point that reaches every column preserves the complete schema.
+query I
+WITH RECURSIVE t(b, x, y) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1, 2)
+	BRANCH 1: (SELECT CASE WHEN y < 20 THEN 1 ELSE 0 END, y, x + y FROM t)
+)
+SELECT x FROM t;
+----
+21
+
+# A correlated trampoline is left untouched; the lateral result stays correct.
+query II
+SELECT o.k, (
+	WITH RECURSIVE t(b, i, unused) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k, repeat('x', 100))
+		BRANCH 1: (SELECT CASE WHEN i < 3 THEN 1 ELSE 0 END, i + 1, unused FROM t)
+	)
+	SELECT max(i) FROM t)
+FROM (VALUES (1), (2)) o(k) ORDER BY o.k;
+----
+1	4
+2	4
+
+# Hidden recursive state requires multiple dependency-closure passes:
+# a needs c on the first pass, then c needs d on the second pass.
+# Neither c nor d is an outer output, and both dead payloads can disappear.
+query I
+WITH RECURSIVE t(dead0, b, step, a, c, d, dead1) USING TRAMPOLINE (b) AS (
+    (VALUES ('unused', 1, 0, 10, 20, 30, 'also unused'))
+    BRANCH 1: (SELECT dead0, 2, step+1, c, d, d+1, dead1 FROM t)
+    BRANCH 2: (
+        SELECT dead0, CASE WHEN step<3 THEN 1 ELSE 0 END,
+               step+1, a+1, c, d, dead1 FROM t
+    )
+)
+SELECT a FROM t;
+----
+31

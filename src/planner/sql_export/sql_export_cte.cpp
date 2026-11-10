@@ -4,10 +4,15 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/planner/operator/logical_recursive_cte.hpp"
+#include "duckdb/planner/operator/logical_trampoline.hpp"
+#include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/planner/bound_expression_sql_exporter.hpp"
@@ -130,17 +135,23 @@ LogicalPlanSQLExportResult LogicalCTERef::ToSQL(LogicalPlanSQLExportContext &exp
 	if (fields.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
+	Identifier qualifier;
+	if (ref.is_recurring) {
+		qualifier = Identifier("recurring");
+	} else if (ref.is_frontier) {
+		qualifier = Identifier("frontier");
+	}
 	return LogicalPlanSQLExportResult::Success(
-	    {export_context.CreateNamedSource(*name, fields.GetValue(), ref.is_recurring), std::move(fields.GetValue())});
+	    {export_context.CreateNamedSource(*name, fields.GetValue(), qualifier), std::move(fields.GetValue())});
 }
 
 unique_ptr<SelectNode> LogicalPlanSQLExportContext::CreateNamedSource(const Identifier &name,
                                                                       const vector<LogicalPlanSQLExportField> &fields,
-                                                                      bool recurring) {
+                                                                      const Identifier &qualifier) {
 	auto table = make_uniq<BaseTableRef>();
 	table->SetTable(name);
-	if (recurring) {
-		table->SetQualifiedName(Identifier(), Identifier("recurring"), name);
+	if (!qualifier.empty()) {
+		table->SetQualifiedName(Identifier(), qualifier, name);
 	}
 	table->alias = NextRelationAlias();
 	auto select = make_uniq<SelectNode>();
@@ -176,7 +187,8 @@ LogicalPlanSQLExportResult LogicalRecursiveCTE::ExportSQLDefinition(LogicalPlanS
 	}
 	if ((references == 0 && recurring_references == 0) || (cte.ref_recurring && recurring_references == 0)) {
 		// Binding still needs a self reference when optimization removed the recursive scan.
-		auto empty = export_context.CreateNamedSource(name, fields.GetValue(), cte.ref_recurring);
+		auto empty = export_context.CreateNamedSource(name, fields.GetValue(),
+		                                              cte.ref_recurring ? Identifier("recurring") : Identifier());
 		empty->select_list.clear();
 		for (auto &type : cte.internal_types) {
 			auto value = LogicalPlanSQLExportHelpers::ExportTypedNull(type, path);
@@ -287,6 +299,8 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 		}
 	}
 	if (op.type != LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+		// a trampoline producer also takes this path: its ToSQL wraps itself in an
+		// unhinted CTE, so a materialized parent hints the wrapper, which stays parseable
 		return ExportChild(op, path);
 	}
 	ancestors.push_back(op);
@@ -297,6 +311,114 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 	}
 	return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Success(
 	    {std::move(exported.GetValue()), NextRelationAlias()});
+}
+
+//! Detects a frontier.<name> reference in exported SQL, the tree as it will be re-bound:
+//! source replacements and optimized-away references leave no trace here.
+static void DetectExportedFrontierReference(QueryNode &node, const Identifier &name, bool &found) {
+	std::function<void(ParsedExpression &)> walk_expr = [&](ParsedExpression &expr) {
+		if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			auto &subquery = expr.Cast<SubqueryExpression>();
+			if (subquery.Subquery() && subquery.Subquery()->node) {
+				DetectExportedFrontierReference(*subquery.Subquery()->node, name, found);
+			}
+		}
+		ParsedExpressionIterator::EnumerateChildren(expr, walk_expr);
+	};
+	auto expr_cb = [&](unique_ptr<ParsedExpression> &child) {
+		if (child) {
+			walk_expr(*child);
+		}
+	};
+	// the iterator unfolds refs, subqueries, and CTE definitions itself and invokes the
+	// callback once per ref, so the callback only inspects
+	auto ref_cb = [&](TableRef &ref) {
+		if (ref.type == TableReferenceType::BASE_TABLE) {
+			auto &base = ref.Cast<BaseTableRef>();
+			if (base.GetQualifiedName().Schema() == Identifier("frontier") && base.Table() == name) {
+				found = true;
+			}
+		}
+	};
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, expr_cb, ref_cb);
+}
+
+LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQLExportContext &export_context,
+                                                                  const LogicalPlanVerificationPath &path,
+                                                                  const Identifier &name) {
+	auto &trampoline = *this;
+	D_ASSERT(trampoline.children.size() >= 2);
+	auto fields = LogicalPlanSQLExportHelpers::CreateFields(trampoline, path);
+	if (fields.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(fields);
+	}
+	auto seed = export_context.Export(*trampoline.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
+	if (seed.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(seed);
+	}
+	auto query = make_uniq<TrampolineCTENode>();
+	query->ctename = name;
+	query->selector = LogicalPlanSQLExportHelpers::FieldIdentifier(trampoline.selector_idx);
+	for (idx_t i = 0; i < fields.GetValue().size(); i++) {
+		query->aliases.push_back(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
+	}
+	query->seed = std::move(seed.GetValue().query);
+	query->branch_options = trampoline.branch_options;
+	query->branch_options.resize(trampoline.children.size() - 1);
+	query->emit_distinct = trampoline.emit_distinct;
+	for (idx_t branch_idx = 1; branch_idx < trampoline.children.size(); branch_idx++) {
+		export_context.PushNamedRelation(trampoline.table_index, name, false);
+		auto branch = export_context.Export(*trampoline.children[branch_idx],
+		                                    LogicalPlanSQLExportHelpers::PlanChildPath(path, branch_idx));
+		export_context.PopNamedRelation();
+		if (branch.HasError()) {
+			return LogicalPlanSQLExportResult::Failure(branch);
+		}
+		query->branches.push_back(std::move(branch.GetValue().query));
+	}
+	if (trampoline.reads_frontier) {
+		// the lockstep-round contract was fixed at binding; re-binding the exported SQL
+		// re-derives it from frontier references or coalescing branch markers, so the
+		// check runs on the exported text: optimization or a source replacement can
+		// remove the last frontier reference, and silently re-binding without rounds
+		// would change scheduling observably. A surviving MERGE or DISTINCT branch
+		// forces rounds on rebind by itself.
+		bool rounds_witness = false;
+		for (auto &options : query->branch_options) {
+			rounds_witness = rounds_witness || options.Coalescing();
+		}
+		for (auto &branch_node : query->branches) {
+			DetectExportedFrontierReference(*branch_node, name, rounds_witness);
+		}
+		if (!rounds_witness) {
+			return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+			    path, "trampoline_round_contract",
+			    "The trampoline requires lockstep rounds but no frontier reference survived in the exported SQL")});
+		}
+	}
+	return LogicalPlanSQLExportResult::Success({std::move(query), std::move(fields.GetValue())});
+}
+
+LogicalPlanSQLExportResult LogicalTrampoline::ToSQL(LogicalPlanSQLExportContext &export_context,
+                                                    const LogicalPlanVerificationPath &path) {
+	auto &trampoline = *this;
+	if (Optimizer::OptimizerDisabled(export_context.GetClientContext(), OptimizerType::CTE_INLINING) ||
+	    Settings::Get<DebugDisableOptimizerSetting>(export_context.GetClientContext())) {
+		return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+		    path, "trampoline_materialization",
+		    "The SQL wrapper requires CTE inlining to preserve trampoline evaluation")});
+	}
+	auto name = export_context.NextRelationAlias(trampoline.ctename);
+	auto definition = ExportSQLDefinition(export_context, path, name);
+	if (definition.HasError()) {
+		return definition;
+	}
+	auto info = make_uniq<CommonTableExpressionInfo>();
+	info->aliases = definition.GetValue().query->Cast<TrampolineCTENode>().aliases;
+	info->query_node = std::move(definition.GetValue().query);
+	auto select = export_context.CreateNamedSource(name, definition.GetValue().fields);
+	select->cte_map.map.insert(name, std::move(info));
+	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(definition.GetValue().fields)});
 }
 
 LogicalPlanSQLExportResult LogicalRecursiveCTE::ToSQL(LogicalPlanSQLExportContext &export_context,

@@ -660,6 +660,46 @@ bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, Pending
 		empty_result.SetEstimatedCardinality(stats.cardinality);
 		return AddRelation(input_op, parent, stats);
 	}
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE: {
+		RelationStats seed_stats;
+		auto seed_optimizer = optimizer.CreateChildOptimizer();
+		op->children[0] = seed_optimizer.Optimize(std::move(op->children[0]), &seed_stats);
+		const auto table_index = op->Cast<LogicalCTE>().table_index;
+		const auto seed_card = seed_stats.stats_initialized ? seed_stats.cardinality : 0;
+
+		idx_t branch_card_sum = 0;
+		for (idx_t child_idx = 1; child_idx < op->children.size(); child_idx++) {
+			auto branch_optimizer = optimizer.CreateChildOptimizer();
+			auto branch_seed_stats = seed_stats;
+			branch_optimizer.AddMaterializedCTEStats(table_index, std::move(branch_seed_stats));
+			branch_optimizer.recursive_cte_indexes.insert(table_index);
+			RelationStats branch_stats;
+			op->children[child_idx] = branch_optimizer.Optimize(std::move(op->children[child_idx]), &branch_stats);
+			branch_card_sum += branch_stats.stats_initialized ? branch_stats.cardinality : 0;
+		}
+
+		// like a recursive CTE, the number of iterations is unknown; assume 1000
+		const auto cte_cardinality = seed_card + branch_card_sum * 1000;
+		op->SetEstimatedCardinality(cte_cardinality);
+		auto output_stats = RelationStatisticsHelper::ProjectOutputStats(seed_stats, input_op);
+		if (!output_stats) {
+			output_stats = RelationStatisticsHelper::RebindOutputStats(seed_stats, input_op);
+		}
+		if (output_stats) {
+			output_stats->cardinality = cte_cardinality;
+			output_stats->row_retention = 1;
+			// statistics of the seed do not describe the full iteration; fall back to cardinality-based domains
+			for (auto &column : output_stats->columns) {
+				column.total_domain = DistinctCount(cte_cardinality, DistinctCountSource::CARDINALITY);
+				column.current_domain = column.total_domain;
+				column.semi_anti_join_domain_evidence.Invalidate();
+			}
+		}
+		if (!output_stats || !AddRelation(input_op, parent, *output_stats)) {
+			stats_complete = false;
+		}
+		return false;
+	}
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
 		RelationStats lhs_stats;

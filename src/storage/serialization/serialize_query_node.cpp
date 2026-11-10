@@ -55,6 +55,9 @@ unique_ptr<QueryNode> QueryNode::Deserialize(Deserializer &deserializer) {
 	case QueryNodeType::SET_OPERATION_NODE:
 		result = SetOperationNode::Deserialize(deserializer);
 		break;
+	case QueryNodeType::TRAMPOLINE_CTE_NODE:
+		result = TrampolineCTENode::Deserialize(deserializer);
+		break;
 	case QueryNodeType::UPDATE_QUERY_NODE:
 		result = UpdateQueryNode::Deserialize(deserializer);
 		break;
@@ -251,6 +254,29 @@ unique_ptr<QueryNode> SetOperationNode::Deserialize(Deserializer &deserializer) 
 	auto setop_all = deserializer.ReadPropertyWithExplicitDefault<bool>(203, "setop_all", true);
 	auto children = deserializer.ReadPropertyWithDefault<vector<unique_ptr<QueryNode>>>(204, "children");
 	auto result = duckdb::unique_ptr<SetOperationNode>(new SetOperationNode(setop_type, std::move(left), std::move(right), std::move(children), setop_all));
+	return std::move(result);
+}
+
+void TrampolineCTENode::Serialize(Serializer &serializer) const {
+	QueryNode::Serialize(serializer);
+	serializer.WritePropertyWithDefault<Identifier>(200, "cte_name", ctename);
+	serializer.WritePropertyWithDefault<Identifier>(201, "selector", selector);
+	serializer.WritePropertyWithDefault<unique_ptr<QueryNode>>(202, "seed", seed);
+	serializer.WritePropertyWithDefault<vector<unique_ptr<QueryNode>>>(203, "branches", branches);
+	serializer.WritePropertyWithDefault<vector<Identifier>>(204, "aliases", aliases);
+	serializer.WritePropertyWithDefault<vector<TrampolineBranchOptions>>(205, "branch_options", branch_options);
+	serializer.WritePropertyWithDefault<bool>(207, "emit_distinct", emit_distinct);
+}
+
+unique_ptr<QueryNode> TrampolineCTENode::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<TrampolineCTENode>(new TrampolineCTENode());
+	deserializer.ReadPropertyWithDefault<Identifier>(200, "cte_name", result->ctename);
+	deserializer.ReadPropertyWithDefault<Identifier>(201, "selector", result->selector);
+	deserializer.ReadPropertyWithDefault<unique_ptr<QueryNode>>(202, "seed", result->seed);
+	deserializer.ReadPropertyWithDefault<vector<unique_ptr<QueryNode>>>(203, "branches", result->branches);
+	deserializer.ReadPropertyWithDefault<vector<Identifier>>(204, "aliases", result->aliases);
+	deserializer.ReadPropertyWithDefault<vector<TrampolineBranchOptions>>(205, "branch_options", result->branch_options);
+	deserializer.ReadPropertyWithDefault<bool>(207, "emit_distinct", result->emit_distinct);
 	return std::move(result);
 }
 

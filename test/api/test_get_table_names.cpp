@@ -40,6 +40,14 @@ TEST_CASE("Test GetTableNames", "[api]") {
 	REQUIRE(table_names.size() == 1);
 	REQUIRE(table_names.count("my_table"));
 
+	// trampoline cte: name extraction binds dummy NULL-typed columns, so the selector's
+	// execution-time integer requirement must not apply to the table-backed selector
+	table_names = con.GetTableNames("WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS ("
+	                                "(SELECT i, j FROM my_table) "
+	                                "BRANCH 1: (SELECT 0, n FROM t)) SELECT n FROM t");
+	REQUIRE(table_names.size() == 1);
+	REQUIRE(table_names.count("my_table"));
+
 	// subqueries
 	table_names = con.GetTableNames("SELECT * FROM (SELECT * FROM (SELECT * FROM my_table) bla) bla3");
 	REQUIRE(table_names.size() == 1);

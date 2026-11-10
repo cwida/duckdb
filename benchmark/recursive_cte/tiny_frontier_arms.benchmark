@@ -1,0 +1,8 @@
+# name: benchmark/recursive_cte/tiny_frontier_arms.benchmark
+# group: [recursive_cte]
+
+template benchmark/recursive_cte/recursive_cte.benchmark.in
+TIER=performance
+QUERY=tiny_frontier_arms
+BENCHMARK_NAME=Recursive CTE tiny frontier, UNION ALL arms
+DESCRIPTION=Run many one-row epochs through two filtered arms to expose the per-arm scan cost

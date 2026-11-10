@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/vm_collatz.benchmark
+# description: Step a compiled register program with one branch per opcode
+# group: [recursive_cte]
+
+name Collatz register machine
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/vm_collatz.sql
+
+run benchmark/recursive_cte/queries/performance/vm_collatz.sql
+
+result benchmark/recursive_cte/answers/performance/vm_collatz.csv

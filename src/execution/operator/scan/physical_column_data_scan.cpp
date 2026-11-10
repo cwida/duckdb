@@ -302,6 +302,7 @@ void PhysicalColumnDataScan::BuildPipelines(Pipeline &current, MetaPipeline &met
 		return;
 	}
 	case PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN:
+	case PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN:
 	case PhysicalOperatorType::RECURSIVE_CTE_SCAN:
 		if (!meta_pipeline.HasRecursiveCTE()) {
 			throw InternalException("Recursive CTE scan found without recursive CTE node");
@@ -323,6 +324,7 @@ InsertionOrderPreservingMap<string> PhysicalColumnDataScan::ParamsToString() con
 		}
 		break;
 	case PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN:
+	case PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN:
 	case PhysicalOperatorType::CTE_SCAN:
 	case PhysicalOperatorType::RECURSIVE_CTE_SCAN: {
 		result["CTE Index"] = StringUtil::Format("%llu", cte_index.index);

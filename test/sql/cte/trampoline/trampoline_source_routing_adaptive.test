@@ -1,0 +1,85 @@
+# name: test/sql/cte/trampoline/trampoline_source_routing_adaptive.test
+# description: Measured arbitration recovers an underestimated independent source
+# group: [trampoline]
+
+# The selective equality estimates ~200 output rows, far below the parallelization
+# threshold, but every wave scans the full 20M-row table. The first inline wave crosses
+# the 8 ms slow-probe threshold (measured floor: 36 ms single-threaded on an idle
+# aarch64 host, so the margin assumes no host scans above ~2.5G rows/s per core), the
+# next wave probes the parallel route, the faster route wins and is pinned, so at least
+# one wave runs parallel. The vector-size requirement keeps the estimate below the
+# threshold (16 vectors), which scales with the vector size.
+
+require vector_size 2048
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE s AS SELECT i, (i * 7919) % 100000 AS k FROM range(20000000) r(i);
+
+statement ok
+ANALYZE s;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0::BIGINT))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t
+	           UNION ALL SELECT 0, i FROM s WHERE k = 42424 AND sin(i) < 2)
+)
+SELECT count(*) FROM t;
+----
+801
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.epochs::UBIGINT = 4,
+       info.scheduled_workers::UBIGINT > info.epochs::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1
+
+query I
+SELECT info.workers_max::UBIGINT > 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Multi-row waves under a pinned or probing parallel route must restore
+# estimate-independent source sizing: 4096-row waves give two frontier-sized workers,
+# but the probed parallel route over the 20M-row scan must use the configured four.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0::BIGINT FROM range(4096) q(r))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t
+	           UNION ALL SELECT 0, i FROM s WHERE k = 42424 AND sin(i) < 2)
+)
+SELECT count(*) FROM t;
+----
+4896
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.workers_max::UBIGINT = 4
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1

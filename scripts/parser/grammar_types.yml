@@ -626,6 +626,8 @@ TableRef:
     - CTEBody
     - CTESelectBody
     - CTEDMLBody
+    - CTETrampolineBody
+    - TrampolineCTEBody
     - TableMatchRecognizeClause
     - MatchRecognizeBody
 
@@ -1785,6 +1787,9 @@ overrides:
     type: "TrimArguments"
     by_value: true
   # select.gram
+  TrampolineBranchClause:
+    type: "TrampolineBranch"
+    by_value: true
   WithStatement:
     type: "pair<Identifier, unique_ptr<CommonTableExpressionInfo>>"
     by_value: true
@@ -1814,6 +1819,7 @@ IdentifierType:
     - ColIdOrString
     - ShowExternalResourcesType
     - UsingColumnName
+    - UsingTrampoline
     - ColLabelOrString
     - ColLabelIdentifier
     - StringLiteralIdentifier

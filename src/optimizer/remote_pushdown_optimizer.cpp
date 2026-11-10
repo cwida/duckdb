@@ -52,6 +52,7 @@
 #include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 
@@ -1653,6 +1654,24 @@ void RemotePushdownOptimizer::StripCatalogName(QueryNode &node, const Identifier
 			default:
 				break;
 			}
+		}
+		break;
+	}
+	case QueryNodeType::TRAMPOLINE_CTE_NODE: {
+		auto &trampoline = node.Cast<TrampolineCTENode>();
+		for (auto &cte_pair : trampoline.cte_map.map) {
+			if (cte_pair.second->query_node) {
+				StripCatalogName(*cte_pair.second->query_node, catalog_name);
+			}
+			for (auto &key : cte_pair.second->key_targets) {
+				StripCatalogName(*key, catalog_name);
+			}
+		}
+		if (trampoline.seed) {
+			StripCatalogName(*trampoline.seed, catalog_name);
+		}
+		for (auto &branch : trampoline.branches) {
+			StripCatalogName(*branch, catalog_name);
 		}
 		break;
 	}

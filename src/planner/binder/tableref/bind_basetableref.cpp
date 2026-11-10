@@ -149,9 +149,14 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	// check if the table name refers to a CTE
 
 	// CTE name should never be qualified (i.e. schema_name should be empty)
-	// unless we want to refer to the recurring table of "using key".
-	BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
-	auto ctebinding = GetCTEBinding(binding_alias);
+	// unless we want to refer to the recurring table of "using key" or a trampoline frontier.
+	// Those virtual qualifiers are exactly two parts: any deeper qualification (a catalog, a
+	// nested schema) names a real object, never a CTE.
+	optional_ptr<CTEBinding> ctebinding;
+	if (ref.GetQualifiedName().Path().size() <= 2) {
+		BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
+		ctebinding = GetCTEBinding(binding_alias);
+	}
 	if (ctebinding && ctebinding->CanBeReferenced()) {
 		ctebinding->Reference();
 
@@ -166,11 +171,18 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		bind_context.AddGenericBinding(index, alias, names, ctebinding->GetColumnTypes());
 
 		bool is_recurring = ref.GetQualifiedName().Schema() == "recurring";
+		bool is_frontier = ref.GetQualifiedName().Schema() == "frontier";
+		if (is_frontier && ctebinding->frontier_seed_guard) {
+			throw BinderException(error_context, "frontier.%s cannot be referenced in the seed of TRAMPOLINE CTE %s",
+			                      ref.Table().GetIdentifierName(), ref.Table().GetIdentifierName());
+		}
 
 		BoundStatement result;
 		result.types = ctebinding->GetColumnTypes();
 		result.names = names;
-		result.plan = make_uniq<LogicalCTERef>(index, ctebinding->GetIndex(), result.types, names, is_recurring);
+		auto cteref = make_uniq<LogicalCTERef>(index, ctebinding->GetIndex(), result.types, names, is_recurring);
+		cteref->is_frontier = is_frontier;
+		result.plan = std::move(cteref);
 		return result;
 	}
 

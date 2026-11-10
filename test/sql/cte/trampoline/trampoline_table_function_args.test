@@ -1,0 +1,79 @@
+# name: test/sql/cte/trampoline/trampoline_table_function_args.test
+# description: Subquery-parameterized table functions inside branches plan and stay per-wave when volatile
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# volatility is read from the logical tree before physical planning consumes the
+# table function's subquery child; this raised an internal error before
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 5))
+	BRANCH 1: (SELECT 0, t.n + x::INTEGER FROM t, range((SELECT 1)) q(x))
+) SELECT * FROM t;
+----
+0	5
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 5))
+	BRANCH 1: (SELECT 0, t.n + x::INTEGER FROM t, range((SELECT 1)) q(x))
+) SELECT * FROM t;
+----
+physical_plan	<REGEX>:.*Trampoline.*
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 5))
+	BRANCH 1: (SELECT 0, t.n + x::INTEGER FROM t, generate_series(0, (SELECT 0)) q(x))
+) SELECT * FROM t;
+----
+0	5
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 5))
+	BRANCH 1: (SELECT 0, t.n + x::INTEGER FROM t, unnest((SELECT [0])) q(x))
+) SELECT * FROM t;
+----
+0	5
+
+# wave-policy protection: a constant subquery argument merges, a volatile one stays
+# per-batch. Volatile subplans are also caught by the repeatability analysis, so these
+# cases pin the observable policy, and the merged case rejects an always-volatile capture
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
+	           FROM t, range((SELECT 1)) q(x) WHERE x = 0)
+) SELECT n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: merged.*
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
+	           FROM t, range((SELECT nextval('seq'))) q(x) WHERE x = 0)
+) SELECT n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+# the volatile argument is evaluated once per wave: three waves advance the sequence three times
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
+	           FROM t, range((SELECT nextval('seq'))) q(x) WHERE x = 0)
+) SELECT n FROM t;
+----
+3
+
+query I
+SELECT currval('seq');
+----
+3

@@ -1,0 +1,194 @@
+# name: test/sql/cte/trampoline/trampoline_frontier.test
+# description: frontier.t reads a frozen per-round snapshot under lockstep rounds
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# Whole-frontier barrier: label 1 waits until no rows with another label remain.
+# The waiter counts the rounds it waited.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0), (2, 10))
+	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 1) THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT CASE WHEN n < 13 THEN 2 ELSE 0 END, n + 1 FROM t)
+) SELECT * FROM t ORDER BY n;
+----
+0	5
+0	14
+
+# Invocation order must not matter: the same program with waiter and competitor
+# labels exchanged, so the competitor's wave executes before the waiter's.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 0), (1, 10))
+	BRANCH 1: (SELECT CASE WHEN n < 13 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 2) THEN 2 ELSE 0 END, n + 1 FROM t)
+) SELECT * FROM t ORDER BY n;
+----
+0	5
+0	14
+
+# The frontier excludes emitted rows: an early selector-0 row never blocks a barrier.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0), (0, 99), (2, 10))
+	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 1) THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, n FROM t)
+) SELECT * FROM t ORDER BY n;
+----
+0	2
+0	10
+0	99
+
+# A frontier-only aggregate still runs once per incoming wave and sees the round's
+# snapshot, not a stale one: round 0 sums {1, 7}, round 1 sums {7}.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 7))
+	BRANCH 1: (SELECT 0, (SELECT sum(f.n)::INTEGER FROM frontier.t f) FROM t)
+	BRANCH 2: (SELECT 1, n FROM t)
+) SELECT * FROM t ORDER BY n;
+----
+0	7
+0	8
+
+# Snapshot stability: two waves of the same round observe the same frontier. The
+# seed queues one wave for branch 2 and one for branch 3; both forward to branch 1
+# in the same round, whose frontier-only sum must be identical for both waves.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1: (SELECT 0, (SELECT sum(f.n)::INTEGER FROM frontier.t f) FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+113
+113
+
+# A join against the frontier rebuilds its build side every round.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 7))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END,
+	                  n + (SELECT count(*)::INTEGER FROM frontier.t f JOIN frontier.t g ON f.n = g.n) FROM t)
+	BRANCH 2: (SELECT CASE WHEN n < 9 THEN 2 ELSE 0 END, n + 1 FROM t)
+) SELECT * FROM t ORDER BY n;
+----
+0	5
+0	10
+
+# Any frontier read disables wave merging: execution is per-batch under rounds.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 1) THEN 1 ELSE 0 END, n + 1 FROM t)
+) SELECT * FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+# Emission stays live across rounds: a bounded prefix returns without draining the
+# recursion.
+query I
+SELECT n FROM (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(VALUES (1, 0))
+		BRANCH 1 TEE: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.n < 100000) THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) LIMIT 1;
+----
+0
+
+# frontier.t cannot be referenced in the owning trampoline's seed.
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT f.b, f.n FROM frontier.t f)
+	BRANCH 1: (SELECT 0, n FROM t)
+) SELECT * FROM t;
+----
+<REGEX>:Binder Error.*frontier.t cannot be referenced in the seed.*
+
+# An inner trampoline of the same name shadows the outer frontier: the inner seed
+# reference reports the inner-seed error instead of resolving the outer snapshot.
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1))
+	BRANCH 1: (
+		SELECT 0, (
+			WITH RECURSIVE t(b2, m) USING TRAMPOLINE (b2) AS (
+				(SELECT 1, f.n FROM frontier.t f LIMIT 1)
+				BRANCH 1: (SELECT 0, m FROM t)
+			) SELECT max(m) FROM t
+		) FROM t
+	)
+) SELECT * FROM t;
+----
+<REGEX>:Binder Error.*frontier.t cannot be referenced in the seed.*
+
+# Cross-trampoline frontier references are rejected.
+statement error
+WITH RECURSIVE outer_t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1))
+	BRANCH 1: (
+		SELECT 0, (
+			WITH RECURSIVE inner_t(b2, m) USING TRAMPOLINE (b2) AS (
+				(VALUES (1, 1))
+				BRANCH 1: (SELECT 0, m + (SELECT count(*)::INTEGER FROM frontier.outer_t f) FROM inner_t)
+			) SELECT max(m) FROM inner_t
+		) FROM outer_t
+	)
+) SELECT * FROM outer_t;
+----
+<REGEX>:Not implemented Error.*frontier references across nested TRAMPOLINE.*
+
+# Referencing a frontier outside any trampoline falls through to the catalog.
+statement error
+SELECT * FROM frontier.no_such_table;
+----
+<REGEX>:.*no_such_table.*
+
+# The seed guard answers only frontier-qualified lookups: an unqualified seed
+# reference to a same-named catalog table keeps resolving to the table.
+statement ok
+CREATE TABLE guard_shadow(n INTEGER);
+
+statement ok
+INSERT INTO guard_shadow VALUES (7);
+
+statement ok
+ALTER TABLE guard_shadow RENAME TO t;
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, n FROM t)
+	BRANCH 1: (SELECT 0, n FROM t)
+) SELECT * FROM t;
+----
+0	7
+
+statement ok
+DROP TABLE t;
+
+# Frontier scans under a physical delim join are rebound per round: the frozen
+# seed frontier is visible to the correlated aggregate.
+statement ok
+SET delim_join_as_cte = false;
+
+statement ok
+SET disabled_optimizers = 'deliminator';
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (1, 2))
+	BRANCH 1: (SELECT 0, (SELECT count(*)::INTEGER FROM frontier.t f WHERE f.n <= w.n) FROM t w)
+) SELECT n FROM t ORDER BY n;
+----
+1
+2
+
+statement ok
+SET delim_join_as_cte = true;
+
+statement ok
+SET disabled_optimizers = '';

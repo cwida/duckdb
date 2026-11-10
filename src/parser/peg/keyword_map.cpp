@@ -111,6 +111,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("backward");
 	unreserved_keyword_map.insert("before");
 	unreserved_keyword_map.insert("begin");
+	unreserved_keyword_map.insert("branch");
 	unreserved_keyword_map.insert("cache");
 	unreserved_keyword_map.insert("call");
 	unreserved_keyword_map.insert("called");
@@ -173,6 +174,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("double");
 	unreserved_keyword_map.insert("drop");
 	unreserved_keyword_map.insert("each");
+	unreserved_keyword_map.insert("emit");
 	unreserved_keyword_map.insert("enable");
 	unreserved_keyword_map.insert("encoding");
 	unreserved_keyword_map.insert("encrypted");
@@ -389,11 +391,13 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("tables");
 	unreserved_keyword_map.insert("tablespace");
 	unreserved_keyword_map.insert("target");
+	unreserved_keyword_map.insert("tee");
 	unreserved_keyword_map.insert("temp");
 	unreserved_keyword_map.insert("template");
 	unreserved_keyword_map.insert("temporary");
 	unreserved_keyword_map.insert("text");
 	unreserved_keyword_map.insert("ties");
+	unreserved_keyword_map.insert("trampoline");
 	unreserved_keyword_map.insert("transaction");
 	unreserved_keyword_map.insert("transform");
 	unreserved_keyword_map.insert("trigger");
@@ -590,6 +594,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("bigint");
 	bare_label_keyword_map.insert("bit");
 	bare_label_keyword_map.insert("boolean");
+	bare_label_keyword_map.insert("branch");
 	bare_label_keyword_map.insert("cache");
 	bare_label_keyword_map.insert("call");
 	bare_label_keyword_map.insert("called");
@@ -651,6 +656,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("double");
 	bare_label_keyword_map.insert("drop");
 	bare_label_keyword_map.insert("each");
+	bare_label_keyword_map.insert("emit");
 	bare_label_keyword_map.insert("enable");
 	bare_label_keyword_map.insert("encoding");
 	bare_label_keyword_map.insert("encrypted");
@@ -866,6 +872,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("tables");
 	bare_label_keyword_map.insert("tablespace");
 	bare_label_keyword_map.insert("target");
+	bare_label_keyword_map.insert("tee");
 	bare_label_keyword_map.insert("temp");
 	bare_label_keyword_map.insert("template");
 	bare_label_keyword_map.insert("temporary");
@@ -873,6 +880,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("ties");
 	bare_label_keyword_map.insert("time");
 	bare_label_keyword_map.insert("timestamp");
+	bare_label_keyword_map.insert("trampoline");
 	bare_label_keyword_map.insert("transaction");
 	bare_label_keyword_map.insert("transform");
 	bare_label_keyword_map.insert("treat");

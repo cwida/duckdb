@@ -182,6 +182,9 @@ unique_ptr<LogicalOperator> LogicalOperator::Deserialize(Deserializer &deseriali
 	case LogicalOperatorType::LOGICAL_TOP_N:
 		result = LogicalTopN::Deserialize(deserializer);
 		break;
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
+		result = LogicalTrampoline::Deserialize(deserializer);
+		break;
 	case LogicalOperatorType::LOGICAL_TRANSACTION:
 		result = LogicalTransaction::Deserialize(deserializer);
 		break;
@@ -339,6 +342,7 @@ void LogicalCTERef::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<Identifier>>(203, "bound_columns", bound_columns);
 	/* [Deleted] (CTEMaterialize) "materialized_cte" */
 	serializer.WritePropertyWithDefault<bool>(205, "is_recurring", is_recurring);
+	serializer.WritePropertyWithDefault<bool>(206, "is_frontier", is_frontier);
 }
 
 unique_ptr<LogicalOperator> LogicalCTERef::Deserialize(Deserializer &deserializer) {
@@ -349,6 +353,7 @@ unique_ptr<LogicalOperator> LogicalCTERef::Deserialize(Deserializer &deserialize
 	auto result = duckdb::unique_ptr<LogicalCTERef>(new LogicalCTERef(table_index, cte_index, std::move(chunk_types), std::move(bound_columns)));
 	deserializer.ReadDeletedProperty<CTEMaterialize>(204, "materialized_cte");
 	deserializer.ReadPropertyWithDefault<bool>(205, "is_recurring", result->is_recurring);
+	deserializer.ReadPropertyWithDefault<bool>(206, "is_frontier", result->is_frontier);
 	return std::move(result);
 }
 
@@ -918,6 +923,29 @@ unique_ptr<LogicalOperator> LogicalTopN::Deserialize(Deserializer &deserializer)
 	auto offset = deserializer.ReadPropertyWithDefault<idx_t>(202, "offset");
 	auto result = duckdb::unique_ptr<LogicalTopN>(new LogicalTopN(std::move(orders), limit, offset));
 	deserializer.ReadPropertyWithExplicitDefault<optional_idx>(203, "unpruned_offset", result->unpruned_offset, optional_idx());
+	return std::move(result);
+}
+
+void LogicalTrampoline::Serialize(Serializer &serializer) const {
+	LogicalOperator::Serialize(serializer);
+	serializer.WritePropertyWithDefault<Identifier>(200, "ctename", ctename);
+	serializer.WritePropertyWithDefault<TableIndex>(201, "table_index", table_index);
+	serializer.WritePropertyWithDefault<idx_t>(202, "column_count", column_count);
+	serializer.WritePropertyWithDefault<idx_t>(203, "selector_idx", selector_idx);
+	serializer.WritePropertyWithDefault<vector<TrampolineBranchOptions>>(204, "branch_options", branch_options);
+	serializer.WritePropertyWithDefault<bool>(205, "reads_frontier", reads_frontier);
+	serializer.WritePropertyWithDefault<bool>(207, "emit_distinct", emit_distinct);
+}
+
+unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<LogicalTrampoline>(new LogicalTrampoline());
+	deserializer.ReadPropertyWithDefault<Identifier>(200, "ctename", result->ctename);
+	deserializer.ReadPropertyWithDefault<TableIndex>(201, "table_index", result->table_index);
+	deserializer.ReadPropertyWithDefault<idx_t>(202, "column_count", result->column_count);
+	deserializer.ReadPropertyWithDefault<idx_t>(203, "selector_idx", result->selector_idx);
+	deserializer.ReadPropertyWithDefault<vector<TrampolineBranchOptions>>(204, "branch_options", result->branch_options);
+	deserializer.ReadPropertyWithDefault<bool>(205, "reads_frontier", result->reads_frontier);
+	deserializer.ReadPropertyWithDefault<bool>(207, "emit_distinct", result->emit_distinct);
 	return std::move(result);
 }
 

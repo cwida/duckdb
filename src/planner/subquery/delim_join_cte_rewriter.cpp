@@ -1896,7 +1896,7 @@ GeneratedDomainJoinEliminator::GeneratedDomainJoinEliminator(unique_ptr<LogicalO
 
 void GeneratedDomainJoinEliminator::CollectCTEs(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE || op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
 		ctes.push_back(op.Cast<LogicalCTE>());
 	}
 	for (auto &child : op.children) {
@@ -2085,7 +2085,8 @@ unique_ptr<GeneratedDomainRef> GeneratedDomainJoinEliminator::GetGeneratedDomain
 		if (!cte || cte->children.empty()) {
 			return nullptr;
 		}
-		if (cte->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+		if (cte->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
+		    cte->type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
 			return nullptr;
 		}
 		auto result = GetGeneratedDomainDefinition(*cte->children[0]);
@@ -2156,7 +2157,8 @@ bool GeneratedDomainJoinEliminator::ContainsRecursiveCTERef(LogicalOperator &op)
 		auto &cteref = op.Cast<LogicalCTERef>();
 		for (auto &cte : ctes) {
 			if (cte.get().table_index == cteref.cte_index) {
-				return cte.get().type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE;
+				return cte.get().type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
+				       cte.get().type == LogicalOperatorType::LOGICAL_TRAMPOLINE;
 			}
 		}
 	}

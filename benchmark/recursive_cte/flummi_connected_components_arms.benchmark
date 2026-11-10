@@ -1,0 +1,8 @@
+# name: benchmark/recursive_cte/flummi_connected_components_arms.benchmark
+# group: [recursive_cte]
+
+template benchmark/recursive_cte/flummi/recursive_cte_flummi.benchmark.in
+LOAD=connected_components
+QUERY=flummi_connected_components_arms
+BENCHMARK_NAME=Flummi connected components, UNION ALL arms
+DESCRIPTION=Label propagation with one full UNION ALL arm per program label

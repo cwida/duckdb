@@ -1,0 +1,250 @@
+# name: test/sql/cte/trampoline/trampoline_errors.test
+# description: Error handling of WITH RECURSIVE ... USING TRAMPOLINE
+# group: [trampoline]
+
+# USING TRAMPOLINE requires the RECURSIVE keyword
+statement error
+WITH t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*TRAMPOLINE.*RECURSIVE.*
+
+# branch labels must start at 1
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 0: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# branch labels must be unique
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# branch labels must be contiguous (no gaps)
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 2: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# a trampoline body requires USING TRAMPOLINE
+statement error
+WITH RECURSIVE t(b, n) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# USING TRAMPOLINE requires a trampoline body with at least one branch
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    SELECT 1, 0
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# USING KEY and USING TRAMPOLINE cannot be combined
+statement error
+WITH RECURSIVE t(b, n) USING KEY (n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# the selector must name a column of the CTE
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (nosuch) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*nosuch.*
+
+# the selector column must have an integral type
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 'one', 0)
+    BRANCH 1: (SELECT 'zero', n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integ.*
+
+# all branches must produce the same number of columns as the seed
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*
+
+# a NULL selector value is an error at execution time
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT NULL::INT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+# a negative selector value is an error at execution time
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT -1, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+# an out-of-range selector value is an error at execution time
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 2, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+# invalid selector values in the seed are also detected
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 5, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+# correlated shapes that would fabricate per-domain invocations stay rejected
+statement error
+SELECT * FROM (VALUES (1), (2)) v(x), LATERAL (
+    WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, v.x)
+        BRANCH 1: (SELECT 0, count(*)::INTEGER FROM t)
+    )
+    SELECT n FROM t
+) sq;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# materialization hints are rejected for trampoline CTEs
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS MATERIALIZED (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Parser Error.*
+
+# correlation reaching the trampoline through a sibling CTE is supported now;
+# positive coverage lives in trampoline_correlated.test
+
+# selector types outside plain integers are rejected
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1::HUGEINT, 0)
+    BRANCH 1: (SELECT 0::HUGEINT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integer type.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1.0, 0)
+    BRANCH 1: (SELECT 0.0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integer type.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT true, 0)
+    BRANCH 1: (SELECT false, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integer type.*
+
+# unsigned selector extremes are out of range, not wrapped
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 255::UTINYINT, 0)
+    BRANCH 1: (SELECT 0::UTINYINT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 18446744073709551615::UBIGINT, 0)
+    BRANCH 1: (SELECT 0::UBIGINT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+# a branch value that cannot narrow to the seed type fails cleanly
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 1000::INT)
+    BRANCH 1: (SELECT 0, n * 100000000000 FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:.*(Conversion|out of range|cast).*
+
+# the selector name resolves case-insensitively and quoted
+query II
+WITH RECURSIVE t("Branch Col", n) USING TRAMPOLINE ("BRANCH COL") AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT "Branch Col", n FROM t;
+----
+0	3
+
+# trampoline CTEs cannot be stored in pre-v2.0.0 storage formats
+statement ok
+ATTACH '{TEST_DIR}/trampoline_old_storage.db' AS old_db (STORAGE_VERSION 'v1.0.0');
+
+statement error
+CREATE VIEW old_db.v AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+) SELECT n FROM t;
+----
+<REGEX>:.*Trampoline CTEs require storage version v2\.0\.0 or higher.*
+
+statement ok
+DETACH old_db;

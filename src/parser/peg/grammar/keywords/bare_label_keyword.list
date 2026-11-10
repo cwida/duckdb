@@ -1,3 +1,7 @@
+BRANCH
+EMIT
+TEE
+TRAMPOLINE
 abort
 absolute
 access

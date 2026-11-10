@@ -1,0 +1,91 @@
+# name: test/sql/cte/trampoline/trampoline_frontier_qualification.test
+# description: The frontier qualifier binds only the exact two-part form frontier.<name>
+# group: [trampoline]
+
+statement ok
+ATTACH ':memory:' AS otherdb;
+
+statement ok
+CREATE SCHEMA otherdb.frontier;
+
+statement ok
+CREATE TABLE otherdb.frontier.t AS SELECT 99 AS n;
+
+# a catalog-qualified table named like the frontier resolves to the real table inside a branch
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, n FROM otherdb.frontier.t)
+) SELECT n FROM t;
+----
+99
+
+# quoted qualification behaves the same
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, n FROM "otherdb"."frontier"."t")
+) SELECT n FROM t;
+----
+99
+
+# a qualified read in the seed is a real table, not a frontier-in-seed error
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 0, n FROM otherdb.frontier.t)
+	BRANCH 1: (SELECT 0, n FROM t)
+) SELECT n FROM t;
+----
+99
+
+# nested schema qualification also names the real table
+statement ok
+ATTACH ':memory:' AS nesteddb;
+
+statement ok
+CREATE SCHEMA nesteddb.p;
+
+statement ok
+CREATE SCHEMA nesteddb.p.frontier;
+
+statement ok
+CREATE TABLE nesteddb.p.frontier.t AS SELECT 42 AS n;
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, n FROM nesteddb.p.frontier.t)
+) SELECT n FROM t;
+----
+42
+
+# an unknown catalog raises a catalog error instead of silently reading the frontier
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, n FROM nonexistent.frontier.t)
+) SELECT n FROM t;
+----
+<REGEX>:.*Catalog Error.*
+
+# protection: the bare two-part form keeps frontier semantics inside branches, shadowing a
+# real frontier.<name> table, which stays reachable through its catalog
+statement ok
+CREATE SCHEMA frontier;
+
+statement ok
+CREATE TABLE frontier.t AS SELECT 55 AS n;
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, (SELECT max(f.n) FROM frontier.t f) + (SELECT max(n) FROM otherdb.frontier.t) FROM t)
+) SELECT n FROM t;
+----
+106
+
+# outside any trampoline the real table is unaffected
+query I
+SELECT n FROM frontier.t;
+----
+55

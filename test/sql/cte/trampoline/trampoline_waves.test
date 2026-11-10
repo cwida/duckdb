@@ -1,0 +1,270 @@
+# name: test/sql/cte/trampoline/trampoline_waves.test
+# description: Per-wave evaluation of nonlinear trampoline branches
+# group: [trampoline]
+
+# A nonlinear branch (global aggregate) is evaluated once per incoming wave.
+# Branch 1 and branch 2 each route one row to branch 3 in the same round,
+# so branch 3 sees two separate waves and sums them separately.
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, sum(n)::INT FROM t)
+)
+SELECT n FROM t;
+----
+1
+10
+
+# window functions also restart per wave
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, row_number() OVER ()::INT FROM t)
+)
+SELECT n FROM t;
+----
+1
+1
+
+# a semi join whose existence test reads the recursive input is not additive:
+# two waves that match the same static row must emit that row twice
+statement ok
+CREATE TABLE statics(v INTEGER);
+
+statement ok
+INSERT INTO statics VALUES (1), (2);
+
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 1)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, s.v FROM statics s WHERE EXISTS (SELECT 1 FROM t WHERE t.n = s.v))
+)
+SELECT n FROM t;
+----
+1
+1
+
+# renumbering the branches so the consumer sits between the producers
+# must not change the result
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (3, 1)) v(b, n))
+    BRANCH 1: (SELECT 2, n FROM t)
+    BRANCH 2: (SELECT 0, s.v FROM statics s WHERE EXISTS (SELECT 1 FROM t WHERE t.n = s.v))
+    BRANCH 3: (SELECT 2, n FROM t)
+)
+SELECT n FROM t;
+----
+1
+1
+
+# a nonlinear self-join of the wave sees only its own wave on both sides
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 2), (2, 20)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, a.n + b.n FROM t a, t b)
+)
+SELECT n FROM t;
+----
+4
+40
+
+# waves routed to the same branch by a single producing invocation form one wave:
+# both rows of the seed go to branch 1 in one wave, so the aggregate sees both
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (1, 10)) v(b, n))
+    BRANCH 1: (SELECT 0, sum(n)::INT FROM t)
+)
+SELECT n FROM t;
+----
+11
+
+# linear branches may be merged; the result of a linear pipeline does not
+# depend on wave boundaries
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, n + 100 FROM t)
+)
+SELECT n FROM t;
+----
+101
+110
+
+# a UNION ALL arm that does not read the trampoline contributes its rows once
+# per invocation, so such a branch must stay on per-wave evaluation
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 10), (2, 20)) v(b, n))
+    BRANCH 1: (SELECT 2, n FROM t)
+    BRANCH 2: (SELECT 0, n FROM t UNION ALL SELECT 0, 99)
+)
+SELECT n FROM t;
+----
+10
+20
+99
+99
+
+# a LIMIT above a union of two trampoline scans applies once per invocation,
+# not once per union arm
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 7)
+    BRANCH 1: (SELECT 0, n FROM (SELECT n FROM t UNION ALL SELECT n + 1 FROM t) u LIMIT 1)
+)
+SELECT count(*) FROM t;
+----
+1
+
+# volatile expressions observe how often a branch runs, so they disable merging
+statement ok
+CREATE SEQUENCE wave_seq START 1;
+
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 10), (2, 20)) v(b, n))
+    BRANCH 1: (SELECT 2, n FROM t)
+    BRANCH 2: (SELECT 0, s.n::INT FROM t CROSS JOIN (SELECT nextval('wave_seq') AS n) s)
+)
+SELECT n FROM t;
+----
+1
+2
+
+# an anti join testing existence against the routed input is evaluated per wave
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 2)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, s.v FROM statics s WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.n = s.v))
+)
+SELECT n FROM t;
+----
+1
+2
+
+# one producing invocation routes a multi-chunk wave; the aggregate sees all of it
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, r::INT FROM range(5000) tbl(r))
+    BRANCH 1: (SELECT 0, count(*)::INT FROM t)
+)
+SELECT n FROM t;
+----
+5000
+
+# a rotation across four linear branches keeps duplicates and totals exact
+# regardless of how rounds are scheduled
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT (r % 4)::INT + 1, 16::BIGINT FROM range(40000) tbl(r))
+    BRANCH 1: (SELECT CASE WHEN n > 1 THEN 2 ELSE 0 END, CASE WHEN n > 1 THEN n - 1 ELSE n END FROM t)
+    BRANCH 2: (SELECT CASE WHEN n > 1 THEN 3 ELSE 0 END, CASE WHEN n > 1 THEN n - 1 ELSE n END FROM t)
+    BRANCH 3: (SELECT CASE WHEN n > 1 THEN 4 ELSE 0 END, CASE WHEN n > 1 THEN n - 1 ELSE n END FROM t)
+    BRANCH 4: (SELECT CASE WHEN n > 1 THEN 1 ELSE 0 END, CASE WHEN n > 1 THEN n - 1 ELSE n END FROM t)
+)
+SELECT count(*), sum(n)::BIGINT FROM t;
+----
+40000	40000
+
+# duplicate rows survive rounds with several pending branches, in the same branch and across branches
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 5), (1, 5), (2, 5), (2, 5)) v(b, n))
+    BRANCH 1: (SELECT 0, n FROM t)
+    BRANCH 2: (SELECT 0, n FROM t)
+)
+SELECT count(*), sum(n) FROM t;
+----
+4	20
+
+# an emit-only linear branch may merge its waves even when another branch is
+# nonlinear: its output never reaches a consumer that could observe boundaries
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, sum(n)::INT FROM t)
+    BRANCH 4: (SELECT 0, n + 1000 FROM t)
+)
+SELECT n FROM t;
+----
+1
+10
+
+# the same program routing through the emit-only branch keeps bag semantics
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 4, n FROM t)
+    BRANCH 2: (SELECT 4, n FROM t)
+    BRANCH 3: (SELECT 0, sum(n)::INT FROM t)
+    BRANCH 4: (SELECT 0, n + 1000 FROM t)
+)
+SELECT n FROM t;
+----
+1001
+1010
+
+# a MARK join (IN over the routed input) sees NULL semantics per wave
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, NULL::INT), (2, 1)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, CASE WHEN 1 IN (SELECT n FROM t) THEN 1
+                              WHEN (1 IN (SELECT n FROM t)) IS NULL THEN -1
+                              ELSE 0 END
+               FROM (VALUES (0)) d)
+)
+SELECT n FROM t;
+----
+-1
+1
+
+# an anti join against a wave containing NULL finds no match in that wave
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, NULL::INT), (2, 1)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, s.v FROM (VALUES (1)) s(v) WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.n = s.v))
+)
+SELECT count(*) FROM t;
+----
+1
+
+# a scalar subquery over a multi-row wave raises the single-row error per wave
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (1, 2)) v(b, n))
+    BRANCH 1: (SELECT 0, (SELECT n FROM t) FROM (VALUES (0)) s)
+)
+SELECT * FROM t;
+----
+<REGEX>:.*(single|one) row.*
+
+# selective filters hand sliced vectors to the router
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, r::INT FROM range(10000) tbl(r))
+    BRANCH 1: (SELECT CASE WHEN n % 3 = 0 THEN 0 ELSE 2 END, n FROM t WHERE n % 2 = 0)
+    BRANCH 2: (SELECT 0, n FROM t)
+)
+SELECT count(*), sum(n)::BIGINT FROM t;
+----
+5000	24995000

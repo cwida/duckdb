@@ -1,0 +1,537 @@
+# name: test/sql/cte/trampoline/trampoline_correlated.test
+# description: Correlated and LATERAL trampolines: per-domain evaluation
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# Scalar correlated seed and correlated branch body under CROSS JOIN LATERAL.
+query II
+SELECT * FROM (VALUES (2), (5)) outers(k),
+LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, outers.k)
+		BRANCH 1: (SELECT CASE WHEN n < outers.k + 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q ORDER BY k, n;
+----
+2	6
+5	9
+
+# The same trampoline as an ordinary correlated scalar subquery.
+query II
+SELECT k, (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, outers.k)
+		BRANCH 1: (SELECT CASE WHEN n < outers.k + 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT max(n) FROM t
+) FROM (VALUES (2), (5)) outers(k) ORDER BY k;
+----
+2	6
+5	9
+
+# LEFT JOIN LATERAL: a domain whose trampoline emits nothing null-extends.
+query II
+SELECT * FROM (VALUES (1), (2)) outers(k)
+LEFT JOIN LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, outers.k)
+		BRANCH 1: (SELECT CASE WHEN n = 1 THEN 0 ELSE 1 END, n FROM t WHERE n = 1)
+	) SELECT n FROM t
+) q ON true ORDER BY k;
+----
+1	1
+2	NULL
+
+# Isolated-versus-combined oracle: domain A alone must match A evaluated next to
+# an unrelated B with a different termination depth.
+query I
+SELECT q.n FROM (VALUES ('A', 2)) outers(dom, depth),
+LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 0)
+		BRANCH 1: (SELECT CASE WHEN n < outers.depth THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q;
+----
+3
+
+query TI
+SELECT dom, q.n FROM (VALUES ('A', 2), ('B', 7)) outers(dom, depth),
+LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 0)
+		BRANCH 1: (SELECT CASE WHEN n < outers.depth THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	3
+B	8
+
+# The frontier is implicitly scoped to the domain: A's waiter releases
+# immediately while B's waits out its own competitor, including the implicit
+# barrier with no explicit outer reference in the subquery.
+query TII
+SELECT * FROM (VALUES ('A', 0), ('B', 3)) outers(dom, depth),
+LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 0 UNION ALL SELECT 2, 0 WHERE outers.depth > 0)
+		BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 1) THEN 1 ELSE 0 END, n + 1 FROM t)
+		BRANCH 2: (SELECT CASE WHEN n < outers.depth THEN 2 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	0	1
+B	3	4
+B	3	5
+
+# A nonlinear branch's self join stays within the domain.
+query II
+SELECT * FROM (VALUES (1), (10)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k UNION ALL SELECT 1, o.k + 1)
+		BRANCH 1: (SELECT 0, a.n + b.n FROM t a, t b)
+	) SELECT n FROM t
+) q ORDER BY k, n;
+----
+1	2
+1	3
+1	3
+1	4
+10	20
+10	21
+10	21
+10	22
+
+# DISTINCT admission includes the domain: identical payloads from different
+# domains both survive, duplicates within a domain are admitted once.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(VALUES (1, 7), (1, 7))
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	7
+B	7
+
+# EMIT DISTINCT is also per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+		(VALUES (0, 7), (0, 7), (1, 7))
+		BRANCH 1 TEE: (SELECT 0, n * 10 FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	7
+A	70
+B	7
+B	70
+
+# MERGE coalesces per round while branch evaluation stays per domain: the grouped
+# per-domain sum sees each domain's own rows.
+query TII
+SELECT * FROM (VALUES ('A', 1), ('B', 100)) o(dom, base), LATERAL (
+	WITH RECURSIVE t(b, g, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 1, o.base UNION ALL SELECT 2, 1, o.base + 1)
+		BRANCH 1: (SELECT 3, g, n FROM t)
+		BRANCH 2: (SELECT 3, g, n FROM t)
+		BRANCH 3 MERGE: (SELECT 0, g, sum(n)::INTEGER FROM t GROUP BY g)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	1	3
+B	100	201
+
+# TEE under correlation: each domain's arrivals tee independently.
+query TII
+SELECT * FROM (VALUES ('A', 1), ('B', 5)) o(dom, s), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.s)
+		BRANCH 1 TEE: (SELECT CASE WHEN n < o.s + 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	1	1
+A	1	2
+A	1	3
+A	1	4
+B	5	5
+B	5	6
+B	5	7
+B	5	8
+
+# NULL outer keys and duplicate outer bindings evaluate like any other domain.
+query II
+SELECT * FROM (VALUES (NULL), (3), (3)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, coalesce(o.k, 0))
+		BRANCH 1: (SELECT CASE WHEN n < 5 THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q ORDER BY k, n;
+----
+NULL	6
+3	6
+3	6
+
+# Multi-chunk outer side: one aggregate over many domains.
+query III
+SELECT count(*), min(q.n), max(q.n) FROM range(5000) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT CASE WHEN n < o.k + 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q;
+----
+5000	3	5002
+
+# Nested correlation: the branch correlates to two outer levels.
+query III
+SELECT * FROM (VALUES (10)) a(x), (VALUES (3)) b(y),
+LATERAL (
+	WITH RECURSIVE t(bb, n) USING TRAMPOLINE (bb) AS (
+		(SELECT 1, a.x)
+		BRANCH 1: (SELECT CASE WHEN n < a.x + b.y THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT n FROM t
+) q;
+----
+10	3	14
+
+# Correlation through a correlated materialized CTE feeding the seed.
+query II
+SELECT *
+FROM (VALUES (1), (2)) v(x),
+LATERAL (
+	WITH RECURSIVE
+		base(n) AS MATERIALIZED (SELECT v.x),
+		t(b, n) USING TRAMPOLINE (b) AS (
+			(SELECT 1, n FROM base)
+			BRANCH 1: (SELECT 0, n FROM t)
+		)
+	SELECT n FROM t
+) s ORDER BY x;
+----
+1	1
+2	2
+
+# Shapes whose output can exist for outer rows with an empty wave are rejected
+# with one provenance error; collated outer keys are rejected under admission.
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, count(*)::INTEGER FROM t)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, n FROM t UNION ALL SELECT 0, 99)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, o.k FROM range(1))
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+statement error
+SELECT * FROM (SELECT 'a' COLLATE nocase AS k) o, LATERAL (
+	WITH RECURSIVE t(b, s) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1 DISTINCT: (SELECT 0, s FROM t)
+	) SELECT s FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*collated.*
+
+# Window functions over the wave partition per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, v.n FROM (VALUES (10), (20)) v(n) WHERE o.dom IS NOT NULL)
+		BRANCH 1: (SELECT 0, row_number() OVER (ORDER BY n)::INTEGER FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	1
+A	2
+B	1
+B	2
+
+# LIMIT inside a branch applies per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, v.n FROM (VALUES (10), (20)) v(n) WHERE o.dom IS NOT NULL)
+		BRANCH 1: (SELECT 0, n FROM t ORDER BY n LIMIT 1)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	10
+B	10
+
+# Row-preserving join sides independent of the wave are rejected: they would
+# fabricate rows for domains whose seed is empty.
+statement error
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, coalesce(t.n, 99) FROM (VALUES (1)) v(x) LEFT JOIN t ON true)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# Empty grouping sets hide an ungrouped aggregate.
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, count(*)::INTEGER FROM t GROUP BY GROUPING SETS ((n), ()))
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# A materialized alias of the wave does not launder an ungrouped aggregate.
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (WITH w AS MATERIALIZED (SELECT n FROM t) SELECT 0, count(*)::INTEGER FROM w)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# Correlated DISTINCT: the admission identity includes the hidden domain even when
+# the payload is identical, with a real outer reference in the body.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.dom IS NOT NULL UNION ALL SELECT 1, 7 WHERE o.dom IS NOT NULL)
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	7
+B	7
+
+# Correlated EMIT DISTINCT per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+		(SELECT 0, 7 WHERE o.dom IS NOT NULL UNION ALL SELECT 0, 7 WHERE o.dom IS NOT NULL)
+		BRANCH 1: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	7
+B	7
+
+# A collated outer key is rejected under admission even when it never appears in
+# the visible payload: the hidden domain joins the admission identity.
+statement error
+SELECT * FROM (SELECT 'a' COLLATE nocase AS k) o, LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, length(o.k)::INTEGER)
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*collated outer columns.*
+
+# The default collation also taints the hidden domain.
+statement ok
+SET default_collation = 'nocase';
+
+statement error
+SELECT * FROM (SELECT 'a' AS k) o, LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, length(o.k)::INTEGER)
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*collated outer columns.*
+
+statement ok
+RESET default_collation;
+
+# A nested recursive producer with an independent seed could emit rows for
+# domains whose wave is empty: rejected by output provenance.
+statement error
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH RECURSIVE r(n) AS (SELECT 99 UNION ALL SELECT t.n FROM r, t WHERE r.n = 0)
+			SELECT 0, n FROM r)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# A wave-seeded nested recursive CTE stays accepted: its output chains to the wave.
+query II
+SELECT o.k, q.n FROM (VALUES (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (
+			WITH RECURSIVE r(n) AS (SELECT t.n FROM t UNION ALL SELECT n + 1 FROM r WHERE n < 4)
+			SELECT 0, n FROM r WHERE n = 4)
+	) SELECT n FROM t
+) q;
+----
+2	4
+
+# An independent lookup subtree with its own LEFT join is admissible when the
+# branch output is anchored through the wave side of a cross join.
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, t.n FROM t CROSS JOIN (
+			SELECT v.x FROM (VALUES (1)) v(x) LEFT JOIN (VALUES (2)) w(y) ON v.x = w.y) lookup)
+	) SELECT n FROM t
+) q ORDER BY o.k;
+----
+1	1
+
+# An independent arm inside a nested recursive MEMBER also fabricates: the member
+# executes even on an empty seed, so seed anchoring alone is not a proof.
+statement error
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH RECURSIVE r(n) AS (
+				SELECT t.n FROM t
+				UNION
+				(SELECT r.n FROM r WHERE r.n = 0 UNION ALL SELECT 99)
+			)
+			SELECT 0, n FROM r WHERE n = 99)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# A nested TRAMPOLINE with an independent inner branch is sound: branches run only on
+# nonempty waves and their decorrelated feeds are restricted to the wave's domains, so a
+# wave-anchored inner seed anchors the whole construct.
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			SELECT 0, (WITH RECURSIVE u(c, m) USING TRAMPOLINE (c) AS (
+				(SELECT 1, n FROM t)
+				BRANCH 1: (SELECT 0, 99)
+			) SELECT max(m) FROM u)
+			FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	99
+
+# gating probe: the inner constant branch runs once for the active domain and never for
+# the inactive one
+statement ok
+CREATE SEQUENCE nested_seq;
+
+query I
+SELECT nextval('nested_seq');
+----
+1
+
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			SELECT 0, (WITH RECURSIVE u(c, m) USING TRAMPOLINE (c) AS (
+				(SELECT 1, n FROM t)
+				BRANCH 1: (SELECT 0, nextval('nested_seq')::INTEGER)
+			) SELECT max(m) FROM u)
+			FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	2
+
+query I
+SELECT currval('nested_seq');
+----
+2
+
+# The non-key recurring collection starts empty for every nested invocation: a
+# second wave or domain must not replay the previous invocation's rows.
+statement ok
+SET max_execution_time=5000;
+
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1 DISTINCT: (
+			WITH RECURSIVE r(n) AS MATERIALIZED (
+				SELECT n FROM t
+				UNION
+				SELECT n FROM recurring.r
+			)
+			SELECT CASE WHEN n = 2 THEN 1 ELSE 0 END, n + 1
+			FROM r
+		)
+	)
+	SELECT n FROM t
+) q
+ORDER BY o.k, q.n;
+----
+1	2
+2	4
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1)
+	BRANCH 1: (
+		WITH RECURSIVE r(m) AS MATERIALIZED (
+			SELECT n FROM t UNION SELECT m FROM recurring.r
+		)
+		SELECT CASE WHEN m < 3 THEN 1 ELSE 0 END, m + 1 FROM r
+	)
+) SELECT n FROM t ORDER BY n;
+----
+4
+
+statement ok
+RESET max_execution_time;
+
+# A row-wise in-out table function (no final emission) is anchored when its
+# input derives from the wave, so this correlated branch stays accepted.
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, n FROM summary((SELECT n FROM t)))
+	)
+	SELECT n FROM t
+) q ORDER BY o.k;
+----
+1	1
+2	2

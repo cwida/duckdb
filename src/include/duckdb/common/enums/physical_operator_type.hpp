@@ -48,6 +48,7 @@ enum class PhysicalOperatorType : uint8_t {
 	CHUNK_SCAN,
 	RECURSIVE_CTE_SCAN,
 	RECURSIVE_RECURRING_CTE_SCAN,
+	TRAMPOLINE_FRONTIER_SCAN,
 	CTE_SCAN,
 	DELIM_SCAN,
 	EXPRESSION_SCAN,
@@ -72,6 +73,7 @@ enum class PhysicalOperatorType : uint8_t {
 	RECURSIVE_CTE,
 	RECURSIVE_KEY_CTE,
 	CTE,
+	TRAMPOLINE,
 
 	// -----------------------------
 	// Updates

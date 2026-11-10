@@ -23,6 +23,8 @@
         "test/sql/cte/recursive_cte_key_probe.test",
         "test/sql/cte/recursive_cte_key_union_plan.test",
         "test/sql/cte/recursive_cte_logging.test",
+        "test/sql/cte/trampoline/trampoline_logging.test",
+        "test/sql/cte/trampoline/trampoline_frontier_sizing.test",
         "test/sql/optimizer/expression/test_row_comparison_simplification.test"
       ]
     },

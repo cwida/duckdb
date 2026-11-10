@@ -840,8 +840,8 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 }
 
 void JoinFilterPushdownOptimizer::VisitOperator(LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
-		// Runtime filters disable build-side reuse across recursive iterations.
+	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE || op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
+		// Runtime filters disable build-side reuse across recursive iterations and trampoline waves.
 		VisitOperator(*op.children[0]);
 		return;
 	}

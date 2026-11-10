@@ -494,6 +494,11 @@
         "id": 205,
         "name": "is_recurring",
         "type": "bool"
+      },
+      {
+        "id": 206,
+        "name": "is_frontier",
+        "type": "bool"
       }
     ],
     "constructor": [
@@ -702,6 +707,48 @@
         "id": 207,
         "name": "internal_types",
         "type": "vector<LogicalType>"
+      }
+    ]
+  },
+  {
+    "class": "LogicalTrampoline",
+    "base": "LogicalOperator",
+    "enum": "LOGICAL_TRAMPOLINE",
+    "members": [
+      {
+        "id": 200,
+        "name": "ctename",
+        "type": "Identifier"
+      },
+      {
+        "id": 201,
+        "name": "table_index",
+        "type": "TableIndex"
+      },
+      {
+        "id": 202,
+        "name": "column_count",
+        "type": "idx_t"
+      },
+      {
+        "id": 203,
+        "name": "selector_idx",
+        "type": "idx_t"
+      },
+      {
+        "id": 204,
+        "name": "branch_options",
+        "type": "vector<TrampolineBranchOptions>"
+      },
+      {
+        "id": 205,
+        "name": "reads_frontier",
+        "type": "bool"
+      },
+      {
+        "id": 207,
+        "name": "emit_distinct",
+        "type": "bool"
       }
     ]
   },

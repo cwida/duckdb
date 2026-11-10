@@ -3,6 +3,7 @@
 #include "duckdb/parser/expression/list.hpp"
 #include "duckdb/parser/query_node.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/query_node/update_query_node.hpp"
@@ -165,6 +166,14 @@ void ParsedExpressionIterator::EnumerateQueryNodeChildren(
 		auto &rcte_node = node.Cast<RecursiveCTENode>();
 		EnumerateQueryNodeChildren(*rcte_node.left, expr_callback, ref_callback);
 		EnumerateQueryNodeChildren(*rcte_node.right, expr_callback, ref_callback);
+		break;
+	}
+	case QueryNodeType::TRAMPOLINE_CTE_NODE: {
+		auto &tramp_node = node.Cast<TrampolineCTENode>();
+		EnumerateQueryNodeChildren(*tramp_node.seed, expr_callback, ref_callback);
+		for (auto &branch : tramp_node.branches) {
+			EnumerateQueryNodeChildren(*branch, expr_callback, ref_callback);
+		}
 		break;
 	}
 	case QueryNodeType::SELECT_NODE: {

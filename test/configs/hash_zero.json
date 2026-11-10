@@ -40,6 +40,8 @@
         "test/sql/cte/recursive_cte_invariant_build_logging.test",
         "test/sql/cte/recursive_cte_key_probe.test",
         "test/sql/cte/recursive_cte_logging.test",
+        "test/sql/cte/trampoline/trampoline_logging.test",
+        "test/sql/cte/trampoline/trampoline_frontier_sizing.test",
         "test/sql/cte/recursive_cte_parallel_union_distinct_sink.test",
         "test/sql/optimizer/monotone_preimage.test",
         "test/sql/storage/test_eviction_queue_dead_nodes_underflow.test",

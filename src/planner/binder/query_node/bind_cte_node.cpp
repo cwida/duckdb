@@ -65,6 +65,9 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 	case QueryNodeType::RECURSIVE_CTE_NODE:
 		result = current_binder.get().BindNode(node.Cast<RecursiveCTENode>());
 		break;
+	case QueryNodeType::TRAMPOLINE_CTE_NODE:
+		result = current_binder.get().BindNode(node.Cast<TrampolineCTENode>());
+		break;
 	case QueryNodeType::SET_OPERATION_NODE:
 		result = current_binder.get().BindNode(node.Cast<SetOperationNode>());
 		break;

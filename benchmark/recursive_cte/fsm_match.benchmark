@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/fsm_match.benchmark
+# description: One row per candidate match through a tag-dispatch state machine
+# group: [recursive_cte]
+
+name FSM row pattern match
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/fsm_match.sql
+
+run benchmark/recursive_cte/queries/performance/fsm_match.sql
+
+result benchmark/recursive_cte/answers/performance/fsm_match.csv

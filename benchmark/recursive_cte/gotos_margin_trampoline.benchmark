@@ -1,0 +1,14 @@
+# name: benchmark/recursive_cte/gotos_margin_trampoline.benchmark
+# description: Buy-sell margin search over TPC-H from the One-WITH-RECURSIVE-is-Worth-Many-GOTOs use cases (margin), trampoline formulation
+# group: [recursive_cte]
+
+name GOTOs margin search, trampoline
+group Recursive CTE
+
+require tpch
+
+load benchmark/recursive_cte/load/performance/gotos_margin.sql
+
+run benchmark/recursive_cte/queries/performance/gotos_margin_trampoline.sql
+
+result benchmark/recursive_cte/answers/performance/gotos_margin_trampoline.csv

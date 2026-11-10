@@ -831,6 +831,7 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::PlanOperator(unique_ptr<L
 	if (!op_ptr->children.empty()) {
 		// Collect all recursive CTEs during recursive descend
 		if (op_ptr->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
+		    op_ptr->type == LogicalOperatorType::LOGICAL_TRAMPOLINE ||
 		    op_ptr->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 			auto &rec_cte = op_ptr->Cast<LogicalCTE>();
 			binder.recursive_ctes[rec_cte.table_index] = op_ptr.get();

@@ -142,9 +142,33 @@ private:
 	UnnestingState PushDownDML(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                           vector<ColumnBinding> state);
 	UnnestingState PushDownGet(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
+	UnnestingState PushDownTrampoline(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
+	                                  vector<ColumnBinding> state);
 	UnnestingState PushDownCTE(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                           vector<ColumnBinding> state);
 	UnnestingState PushDownCTERef(unique_ptr<LogicalOperator> &plan);
+	//! Wraps surviving frontier reads of a trampoline branch in a null-safe semi join
+	//! against the wave's distinct domains
+	void RestrictBranchFrontierScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
+	                                 const vector<LogicalType> &wave_types, const vector<Identifier> &wave_names);
+	//! Wave layout of the trampoline branch currently being pushed down; while set,
+	//! domain sources are built from the wave instead of the full outer domain
+	struct TrampolineDomainScope {
+		TableIndex cte_index;
+		vector<LogicalType> wave_types;
+		vector<Identifier> wave_names;
+	};
+	//! Creates the domain feed of one decorrelated consumer: ordinarily the full-domain
+	//! delim scan, inside a trampoline branch the distinct domains of the current wave.
+	//! Both expose the same (delim_index, i) bindings to the consumer.
+	unique_ptr<LogicalOperator> CreateDomainSource(TableIndex delim_index);
+	//! Builds the distinct correlation domains of a trampoline wave, exposed as
+	//! (output_index, 0..n-1) in correlated-column order
+	unique_ptr<LogicalOperator> CreateWaveDomainDistinct(TableIndex cte_index, const vector<LogicalType> &wave_types,
+	                                                     const vector<Identifier> &wave_names, TableIndex output_index);
+	unique_ptr<TrampolineDomainScope> trampoline_domain_scope;
+	//! Nonzero while pushing down the branches of a trampoline (nested trampolines)
+	idx_t trampoline_branch_depth = 0;
 };
 
 } // namespace duckdb

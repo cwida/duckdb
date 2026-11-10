@@ -169,6 +169,7 @@ protected:
 			return;
 		}
 		if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
+		    op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE ||
 		    op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 			AdjustCorrelatedColumns(op.Cast<LogicalCTE>().correlated_columns, scope_depth);
 		}

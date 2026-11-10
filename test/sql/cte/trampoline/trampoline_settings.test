@@ -1,0 +1,75 @@
+# name: test/sql/cte/trampoline/trampoline_settings.test
+# description: Resource limits and ordering settings on trampoline execution
+# group: [trampoline]
+
+# An exponentially growing DISTINCT admission respects the memory limit.
+statement ok
+SET memory_limit = '32MB';
+
+statement ok
+SET max_execution_time = 60000;
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0::BIGINT)
+	BRANCH 1 DISTINCT: (SELECT 1, n * 4 + s FROM t, range(4) v(s))
+)
+SELECT count(*) FROM t;
+----
+<REGEX>:Out of Memory Error.*
+
+statement ok
+RESET memory_limit;
+
+# The same program bounded by value stays executable after the failure.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0::BIGINT)
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN n < 100 THEN 1 ELSE 0 END, n * 4 + s FROM t, range(4) v(s))
+)
+SELECT count(*) > 0 FROM t;
+----
+1
+
+# Lockstep rounds reach the interrupt check: a frontier-reading trampoline whose
+# branches bounce forever is bounded by max_execution_time.
+statement ok
+SET max_execution_time = 2000;
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0)
+	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t) THEN 2 ELSE 2 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:INTERRUPT Error.*
+
+statement ok
+SET max_execution_time = 0;
+
+# preserve_insertion_order=false leaves trampoline results intact.
+statement ok
+SET preserve_insertion_order = false;
+
+query III
+WITH RECURSIVE t(b, i) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0::BIGINT)
+	BRANCH 1 TEE: (SELECT CASE WHEN i + 1 < 5000 THEN 1 ELSE 0 END, i + 1 FROM t)
+)
+SELECT count(*), sum(i)::BIGINT, max(i) FROM t;
+----
+5001	12502500	5000
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0), (2, 10))
+	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 1) THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT CASE WHEN n < 13 THEN 2 ELSE 0 END, n + 1 FROM t)
+) SELECT sum(n)::INTEGER FROM t;
+----
+19
+
+statement ok
+SET preserve_insertion_order = true;

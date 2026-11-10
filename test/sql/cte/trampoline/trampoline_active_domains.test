@@ -1,0 +1,307 @@
+# name: test/sql/cte/trampoline/trampoline_active_domains.test
+# description: Branch decorrelation evaluates nonlinear subplans only for domains in the current wave
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# the restriction must not be schedule-dependent
+statement ok
+SET threads=1;
+
+# domain 2 never enters the trampoline: the materialized aggregate over the wave must not
+# reconstruct an empty-input result for it, whose expression would raise the cast error
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t
+		)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	7
+
+# protection: a domain that IS in the wave still gets empty-group reconstruction when the
+# aggregate's filtered input is empty
+query II
+SELECT o.k, q.v FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (SELECT count(*) AS c FROM t WHERE n > 100)
+			SELECT 0, (SELECT c FROM agg) FROM t
+		)
+	) SELECT n AS v FROM t
+) q ORDER BY ALL;
+----
+1	0
+2	0
+
+# empty-input recovery draws from the sequence only when it actually evaluates: after the
+# baseline draw, the inactive domain must not add draws
+statement ok
+CREATE SEQUENCE dseq;
+
+query I
+SELECT nextval('dseq');
+----
+1
+
+query II
+SELECT o.k, q.v FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN nextval('dseq')::INTEGER ELSE -1 END AS c FROM t)
+			SELECT 0, (SELECT c FROM agg) FROM t
+		)
+	) SELECT n AS v FROM t
+) q ORDER BY ALL;
+----
+1	-1
+
+# no draw happened for the inactive domain
+query I
+SELECT currval('dseq');
+----
+1
+
+# an inactive domain must not start the nested recursion that only terminates on a
+# nonempty wave; bounded so a regression fails fast instead of hanging
+statement ok
+SET max_execution_time=1000;
+
+query II
+SELECT o.k, q.v FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH RECURSIVE loop(x) AS (
+				SELECT count(*)::INTEGER FROM t
+				UNION ALL
+				SELECT x FROM loop WHERE x = 0)
+			SELECT 0, (SELECT max(x) FROM loop) FROM t
+		)
+	) SELECT n AS v FROM t
+) q ORDER BY ALL;
+----
+1	1
+
+statement ok
+SET max_execution_time=0;
+
+# controls: a single active domain and a fully inactive domain set behave plainly
+query II
+SELECT o.k, q.n FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t
+		)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	7
+
+query II
+SELECT o.k, q.n FROM (VALUES (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t
+		)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+
+# a frontier read is also restricted to active domains: branch 1 never runs for domain 2,
+# so its grouped computation must not evaluate domain 2's frontier rows
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT o.k, o.k)
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT n, CASE WHEN n = 2 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m
+				FROM frontier.t GROUP BY n
+			)
+			SELECT 0, (SELECT max(m) FROM w) FROM t
+		)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	1
+2	2
+
+# protection: an active domain keeps the whole frontier, including rows routed to the
+# other branch within that domain
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT s.c, o.k FROM (VALUES (1), (2)) s(c) WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	1
+1	2
+
+# two correlated columns restrict as a tuple
+query III
+SELECT o.k, o.j, q.n FROM (VALUES (1, 10), (2, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k + o.j WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	10	11
+
+# a NULL domain value is an active domain under null-safe domain equality
+query II
+SELECT coalesce(o.k, -1), q.n FROM (VALUES (NULL::INTEGER), (5)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k IS NULL)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+-1	7
+
+# the frontier restriction matches the whole domain tuple: with (1, 10) and (2, 20)
+# active in branch 1 and (1, 20) active only in branch 2, component-wise matching would
+# admit (1, 20)'s frontier row into branch 1 and raise the cast error
+query III
+SELECT o.k, o.j, q.n FROM (VALUES (1, 10), (2, 20), (1, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN (o.k, o.j) IN ((1, 10), (2, 20)) THEN 1 ELSE 2 END, o.k * 100 + o.j)
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT CASE WHEN n = 120 THEN CAST('leaked' AS INTEGER) ELSE n END AS m FROM frontier.t)
+			SELECT 0, (SELECT max(m) FROM w) FROM t
+		)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	10	110
+1	20	120
+2	20	220
+
+# a NULL active domain keeps its frontier rows under null-safe domain equality
+query II
+SELECT coalesce(o.k, -1), q.n FROM (VALUES (NULL::INTEGER), (5)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN o.k IS NULL THEN 1 ELSE 2 END, coalesce(o.k, 0))
+		BRANCH 1: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+-1	1
+5	5
+
+# smoke: a frontier read inside a SEMI join ON subquery (lowered by the dependent join
+# planner before the restriction runs) binds the restricted snapshot
+statement ok
+CREATE TABLE ninetynine AS SELECT 99 AS n;
+
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, t.n FROM t SEMI JOIN ninetynine x
+		           ON EXISTS (SELECT 1 FROM frontier.t f WHERE f.n < 100))
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	1
+
+# the restriction holds on the parallel event schedule: large per-domain waves with the
+# tuple and NULL shapes; the frontier count equals the single active wave, not a multiple
+statement ok
+SET threads=8;
+
+query III
+SELECT o.k, o.j, q.v = current_setting('standard_vector_size')::BIGINT * 32 FROM (VALUES (1, 10), (2, 20), (1, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN (o.k, o.j) IN ((1, 10), (2, 20)) THEN 1 ELSE 2 END, r::INTEGER
+		 FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r))
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('leaked' AS INTEGER) ELSE count(*)::INTEGER END AS m
+				FROM frontier.t)
+			SELECT 0, (SELECT max(m) FROM w) FROM t WHERE n = 0
+		)
+		BRANCH 2: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n = 0)
+	) SELECT max(n) AS v FROM t
+) q ORDER BY ALL;
+----
+1	10	true
+1	20	true
+2	20	true
+
+query II
+SELECT coalesce(o.k, -1), q.v = current_setting('standard_vector_size')::BIGINT * 32 FROM (VALUES (NULL::INTEGER), (5)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN o.k IS NULL THEN 1 ELSE 2 END, r::INTEGER
+		 FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r))
+		BRANCH 1: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n = 0)
+		BRANCH 2: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n = 0)
+	) SELECT max(n) AS v FROM t
+) q ORDER BY ALL;
+----
+-1	true
+5	true
+
+statement ok
+SET threads=1;
+
+# probe variant: inactive-domain frontier rows carry marker values, and the branch
+# evaluates a per-row expression that fails on any leaked marker, so this detects the
+# frontier restriction itself rather than downstream filtering
+statement ok
+SET threads=8;
+
+query III
+SELECT o.k, o.j, q.v = current_setting('standard_vector_size')::BIGINT * 32 FROM (VALUES (1, 10), (2, 20), (1, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN (o.k, o.j) IN ((1, 10), (2, 20)) THEN 1 ELSE 2 END,
+		        r::INTEGER + o.k * 10000000 + o.j * 100000
+		 FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r))
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT CASE WHEN n BETWEEN 12000000 AND 12999999 THEN CAST('leaked' AS INTEGER)
+				            ELSE 1 END AS probe
+				FROM frontier.t)
+			SELECT 0, (SELECT sum(probe)::INTEGER FROM w) FROM t WHERE n % 100000 = 0
+		)
+		BRANCH 2: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n % 100000 = 0)
+	) SELECT max(n) AS v FROM t
+) q ORDER BY ALL;
+----
+1	10	true
+1	20	true
+2	20	true
+
+statement ok
+SET threads=1;

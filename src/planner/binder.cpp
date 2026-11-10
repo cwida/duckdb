@@ -206,6 +206,11 @@ optional_ptr<CTEBinding> Binder::GetCTEBinding(const BindingAlias &name) {
 	while (true) {
 		auto &current = current_binder.get();
 		auto entry = current.bind_context.GetCTEBinding(name);
+		// a frontier seed guard only answers lookups that spell the frontier schema;
+		// an unqualified reference must keep resolving past it
+		if (entry && entry->frontier_seed_guard && !(name.GetSchema() == "frontier")) {
+			entry = nullptr;
+		}
 		if (entry) {
 			// we only directly return the CTE if it can be referenced
 			// if it cannot be referenced (circular reference) we keep going up the stack

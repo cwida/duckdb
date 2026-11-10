@@ -97,6 +97,7 @@ void GatherLocalCTEInfo(const LogicalOperator &op, unordered_set<TableIndex> &de
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
 		definitions.insert(op.Cast<LogicalCTE>().table_index);
 		break;
 	case LogicalOperatorType::LOGICAL_CTE_REF:

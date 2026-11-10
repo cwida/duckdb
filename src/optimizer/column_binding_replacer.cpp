@@ -246,6 +246,7 @@ void CorrelatedColumnBindingReplacer::VisitOperatorBindings(LogicalOperator &op)
 	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
 		ReplaceCorrelatedColumns(op.Cast<LogicalCTE>().correlated_columns, *this);
 		break;
 	default:

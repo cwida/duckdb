@@ -1,0 +1,8 @@
+# name: benchmark/recursive_cte/tiny_frontier_trampoline.benchmark
+# group: [recursive_cte]
+
+template benchmark/recursive_cte/recursive_cte.benchmark.in
+TIER=performance
+QUERY=tiny_frontier_trampoline
+BENCHMARK_NAME=Trampoline tiny frontier with TEE
+DESCRIPTION=Run many one-row epochs where BRANCH TEE both emits and continues each row

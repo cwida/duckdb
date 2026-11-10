@@ -1,0 +1,54 @@
+# name: test/sql/cte/trampoline/trampoline_source_sizing.test
+# description: Small independent sources keep cheap waves on the inline path
+# group: [trampoline]
+
+# Holds with and without optimizer estimates: a missing estimate reads as zero and stays
+# below the parallelization threshold as well.
+
+statement ok
+SET threads=4;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CREATE TABLE lr8 AS SELECT * FROM (VALUES (-2.0, 0),(-1.0, 0),(0.5, 0),(1.0, 1),(1.5, 1),(2.0, 1)) v(f, y);
+
+# A scan-bearing light branch body: the correlated aggregate re-scans a tiny base table
+# every wave. The scan's estimated work is far below the parallelization threshold, so
+# every one-row wave must run inline instead of through the parallel event machinery.
+# MERGE forces lockstep rounds, under which measured route arbitration is disabled, so
+# the assertions observe the estimate policy deterministically. Reverting the
+# estimate-sized policy puts every round on the parallel route and fails both metric
+# checks; estimate protection for the parallel direction lives in
+# trampoline_source_sizing_estimates.test.
+query II
+WITH RECURSIVE t(b, w, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0.0, 0))
+	BRANCH 1 MERGE: (SELECT CASE WHEN n < 20 THEN 1 ELSE 0 END,
+	                  w - (SELECT avg((w - y) * f) FROM lr8), n + 1 FROM t)
+)
+SELECT count(*), max(n) FROM t;
+----
+1	21
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.epochs::UBIGINT = 21,
+       info.scheduled_workers::UBIGINT = info.epochs::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1
+
+query I
+SELECT info.workers_max::UBIGINT = 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1

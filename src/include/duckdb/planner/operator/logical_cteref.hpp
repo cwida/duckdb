@@ -42,6 +42,8 @@ public:
 	idx_t correlated_columns;
 	//! Does this operator read the recurring CTE table
 	bool is_recurring = false;
+	//! Does this operator read a trampoline's frozen round frontier
+	bool is_frontier = false;
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;

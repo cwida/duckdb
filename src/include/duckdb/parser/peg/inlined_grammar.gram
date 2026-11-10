@@ -193,7 +193,11 @@ RowOrStruct <- 'ROW' / 'STRUCT'
 List(D) <- D (',' D)* ','?
 Parens(D) <- '(' D ')'
 
-BareLabelKeyword <- 'abort' /
+BareLabelKeyword <- 'BRANCH' /
+'EMIT' /
+'TEE' /
+'TRAMPOLINE' /
+'abort' /
 'absolute' /
 'access' /
 'action' /
@@ -764,6 +768,7 @@ UnreservedKeyword <- 'ABORT' /
 'BACKWARD' /
 'BEFORE' /
 'BEGIN' /
+'BRANCH' /
 'CACHE' /
 'CALL' /
 'CALLED' /
@@ -826,6 +831,7 @@ UnreservedKeyword <- 'ABORT' /
 'DOUBLE' /
 'DROP' /
 'EACH' /
+'EMIT' /
 'ENABLE' /
 'ENCODING' /
 'ENCRYPTED' /
@@ -1042,11 +1048,13 @@ UnreservedKeyword <- 'ABORT' /
 'TABLES' /
 'TABLESPACE' /
 'TARGET' /
+'TEE' /
 'TEMP' /
 'TEMPLATE' /
 'TEMPORARY' /
 'TEXT' /
 'TIES' /
+'TRAMPOLINE' /
 'TRANSACTION' /
 'TRANSFORM' /
 'TRIGGER' /
@@ -2256,11 +2264,15 @@ SimpleSelect <- SelectFrom WhereClause? GroupByClause? HavingClause? WindowClaus
 SelectFrom <- SelectFromClause / FromSelectClause
 SelectFromClause <- SelectClause FromClause?
 FromSelectClause <- FromClause SelectClause?
-WithStatement <- ColIdOrString ColumnAliases? UsingKey? 'AS' Materialized? CTEBody
-CTEBody <- CTESelectBody / CTEDMLBody
+WithStatement <- ColIdOrString ColumnAliases? UsingKey? UsingTrampoline? ('EMIT' 'DISTINCT')? 'AS' Materialized? CTEBody
+CTEBody <- CTETrampolineBody / CTESelectBody / CTEDMLBody
 CTESelectBody <- Parens(SelectStatementInternal)
 CTEDMLBody <- Parens(Statement)
+CTETrampolineBody <- Parens(TrampolineCTEBody)
+TrampolineCTEBody <- SelectParens TrampolineBranchClause+
+TrampolineBranchClause <- 'BRANCH' NumberLiteral 'DISTINCT'? 'MERGE'? 'TEE'? ':' SelectParens
 UsingKey <- 'USING' 'KEY' Parens(TargetList)
+UsingTrampoline <- 'USING' 'TRAMPOLINE' Parens(ColId)
 Materialized <- 'NOT'? 'MATERIALIZED'
 WithClause <- 'WITH' Recursive? List(WithStatement)
 Recursive <- 'RECURSIVE'

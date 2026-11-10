@@ -1,0 +1,143 @@
+# name: test/sql/cte/trampoline/trampoline_routing_graph.test
+# description: Selector-routing-graph wave merging with backward unsafety propagation
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# A linear branch whose selector provably routes only to itself or to the output
+# merges even next to a nonlinear branch.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: mixed.*Merged Branches: 1.*
+
+# The same branch routing into the nonlinear branch must not merge: coarsening its
+# input coarsens the nonlinear branch's waves.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 2 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+# A statically unbounded selector routes everywhere, so it only merges when every
+# branch is safe.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1: (SELECT n % 2, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1: (SELECT n % 2, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, n FROM t)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: merged.*
+
+# A CASE arm without ELSE yields NULL, which errors at routing, so the set is
+# treated as unbounded.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 END, n + 1 FROM t WHERE n < 3)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+# Selector casts above the CASE stay analyzable: a narrow seed selector type makes
+# the planner wrap branch selectors in casts.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1::TINYINT, 1), (2::TINYINT, 10))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: mixed.*Merged Branches: 1.*
+
+# Deterministic wave pile-up: branches 2 and 3 each queue one wave for branch 1
+# before branch 1 runs. Branch 1 feeds the per-wave aggregate in branch 4, so its
+# two waves must stay separate: one aggregate row per producing invocation.
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1: (SELECT 4, n FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+	BRANCH 4: (SELECT 0, sum(n)::INTEGER FROM t)
+) SELECT n FROM t;
+----
+102
+11
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1: (SELECT 4, n FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+	BRANCH 4: (SELECT 0, sum(n)::INTEGER FROM t)
+) SELECT n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+# The same topology with a linear terminal branch merges everything and keeps the
+# same results.
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1: (SELECT 4, n FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+	BRANCH 4: (SELECT 0, n FROM t)
+) SELECT n FROM t;
+----
+102
+11
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1: (SELECT 4, n FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+	BRANCH 4: (SELECT 0, n FROM t)
+) SELECT n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: merged.*
+
+# Two safe branches routing into each other merge as a cycle next to an unsafe
+# branch they never reach.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (3, 50))
+	BRANCH 1: (SELECT CASE WHEN n < 4 THEN 2 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT CASE WHEN n < 4 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 3: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: mixed.*Merged Branches: 1,2.*
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (3, 50))
+	BRANCH 1: (SELECT CASE WHEN n < 4 THEN 2 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT CASE WHEN n < 4 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 3: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n)::INTEGER FROM t;
+----
+105

@@ -23,8 +23,10 @@ class Binder;
 class BoundColumnRefExpression;
 class ClientContext;
 class LogicalColumnDataGet;
+class LogicalCTE;
 class LogicalRecursiveCTE;
 class LogicalSecureView;
+class LogicalTrampoline;
 class Optimizer;
 
 struct ReferencedExtractComponent {
@@ -176,11 +178,16 @@ private:
 	void GatherRecursiveDependencies(unique_ptr<LogicalOperator> &bottom, TableIndex cte_index,
 	                                 const unordered_set<ProjectionIndex> &required_columns,
 	                                 unordered_set<ProjectionIndex> &recursive_dependencies);
-	bool ComputeRecursiveRequiredColumns(LogicalRecursiveCTE &rec, unordered_set<ProjectionIndex> &required_columns);
-	void ApplyRecursiveProjections(LogicalRecursiveCTE &rec, const unordered_set<ProjectionIndex> &required_columns);
-	vector<ReplacementBinding> RewriteRecursiveCTEReferences(LogicalRecursiveCTE &rec,
-	                                                         const unordered_set<ProjectionIndex> &required_columns);
+	//! Shared across the recursive CTE and the trampoline: dependency closure over the
+	//! member children, child projections onto the kept columns (returning the retained
+	//! old indices in new-column order), and CTE-reference pruning. Eligibility and
+	//! metadata remaps stay in the callers.
+	bool ComputeCTEMemberRequiredColumns(LogicalCTE &cte, unordered_set<ProjectionIndex> &required_columns);
+	vector<idx_t> ApplyCTEMemberProjections(LogicalCTE &cte, const unordered_set<ProjectionIndex> &required_columns);
+	vector<ReplacementBinding> RewriteCTEMemberReferences(LogicalCTE &cte,
+	                                                      const unordered_set<ProjectionIndex> &required_columns);
 	bool TryPruneRecursiveCTE(LogicalRecursiveCTE &rec);
+	bool TryPruneTrampoline(LogicalTrampoline &tramp);
 	void VisitPrunableChildren(LogicalOperator &op);
 	void WritePushdownExtractColumns(
 	    ReferencedColumn &col,

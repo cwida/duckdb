@@ -174,6 +174,7 @@ void LogicalOperatorDeepCopy::VisitOperator(LogicalOperator &op) {
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 		ReplaceTableIndex<LogicalCTE>(op);
 		break;
@@ -221,6 +222,7 @@ void TableBindingReplacer::VisitOperator(LogicalOperator &op) {
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 		// The visitor does not catch the correlated_column vector,
 		// therefore we need to special case it.

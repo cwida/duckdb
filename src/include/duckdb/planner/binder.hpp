@@ -583,6 +583,7 @@ private:
 	BoundStatement BindNode(SelectNode &node);
 	BoundStatement BindNode(SetOperationNode &node);
 	BoundStatement BindNode(RecursiveCTENode &node);
+	BoundStatement BindNode(TrampolineCTENode &node);
 	BoundStatement BindNode(QueryNode &node);
 	BoundStatement BindNode(StatementNode &node);
 	BoundStatement BindNode(InsertQueryNode &node);
