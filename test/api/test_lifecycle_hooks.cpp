@@ -109,6 +109,44 @@ TEST_CASE("Transaction finalization finishes despite caller cancellation", "[api
 	CHECK(con.context->IsInterrupted());
 }
 
+struct CommitCancellationState : ClientContextState {
+	bool armed = false;
+	bool interrupted = false;
+
+	void TransactionCommit(MetaTransaction &, ClientContext &context) override {
+		if (armed) {
+			armed = false;
+			interrupted = true;
+			context.Interrupt();
+		}
+	}
+};
+
+TEST_CASE("Cancellation during commit stops later statements in the same query", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE items(i INTEGER)"));
+	auto state = make_shared_ptr<CommitCancellationState>();
+	con.context->registered_state->Insert("commit_cancellation", state);
+	unique_ptr<QueryResult> result;
+	SECTION("autocommit") {
+		state->armed = true;
+		result = con.Query("INSERT INTO items VALUES (42); SELECT sum(sin(i)) FROM range(1000000) t(i)");
+	}
+	SECTION("explicit commit") {
+		con.BeginTransaction();
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO items VALUES (42)"));
+		state->armed = true;
+		result = con.Query("COMMIT; SELECT sum(sin(i)) FROM range(1000000) t(i)");
+	}
+	REQUIRE(state->interrupted);
+	REQUIRE(result->HasError());
+	CHECK_THAT(result->GetError(), Contains("Interrupt"));
+	result = con.Query("SELECT count(*) FROM items");
+	REQUIRE_NO_FAIL(*result);
+	CHECK_COLUMN(result, 0, {1});
+}
+
 TEST_CASE("Test ClientContextState", "[api]") {
 	DuckDB db(nullptr);
 	Connection conn(db);
