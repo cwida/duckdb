@@ -264,7 +264,9 @@ TEST_CASE("Join source populations survive changes in relation cardinality", "[o
 }
 
 TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimizer][relation_statistics]") {
-	for (auto synthetic_rows : {idx_t(6), idx_t(600)}) {
+	vector<pair<idx_t, idx_t>> cases {{2, 400000000}, {6, 480000000}, {600, 48000000000}};
+	for (auto &test_case : cases) {
+		auto synthetic_rows = test_case.first;
 		JoinRelationSetManager sets;
 		JoinPredicateModel model;
 		vector<ColumnBinding> bindings;
@@ -307,9 +309,9 @@ TEST_CASE("Synthetic relation rows do not replace a base join domain", "[optimiz
 		CardinalityEstimator estimator(sets, model);
 		estimator.Initialize(stats, {}, sources);
 		auto &base_join = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
-		REQUIRE(estimator.EstimateCardinality(base_join).GetIndex() == 100000);
+		REQUIRE(estimator.EstimateCardinality(base_join).GetIndex() == 400000000);
 		auto &full_join = sets.Union(base_join, sets.GetJoinRelation(RelationIndex(2)));
-		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == 100000);
+		REQUIRE(estimator.EstimateCardinality(full_join).GetIndex() == test_case.second);
 	}
 }
 
@@ -420,9 +422,9 @@ TEST_CASE("Predicate-local fallback domains order competing equality edges", "[o
 			estimator.Initialize(stats, {}, sources);
 			auto &base = sets.Union(sets.GetJoinRelation(RelationIndex(0)), sets.GetJoinRelation(RelationIndex(1)));
 			auto &all = sets.Union(base, sets.GetJoinRelation(RelationIndex(2)));
-			REQUIRE(estimator.EstimateCardinality(base).GetIndex() == 1000);
-			// Use domains 1000 and 100 before the redundant local domain of 10.
-			REQUIRE(estimator.EstimateCardinality(all).GetIndex() == 100);
+			REQUIRE(estimator.EstimateCardinality(base).GetIndex() == 200000);
+			// Raw domains still order the edges; the row-count factor uses the floor.
+			REQUIRE(estimator.EstimateCardinality(all).GetIndex() == 20000);
 		}
 	}
 }

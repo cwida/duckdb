@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/list.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/operator/list.hpp"
 
@@ -145,12 +146,12 @@ struct ExpressionBinding {
 		return FoundExpression() && expression->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF;
 	}
 
-	optional_ptr<const Expression> expression;
+	optional_ptr<Expression> expression;
 	ColumnBinding child_binding;
 	bool expression_is_constant = false;
 };
 
-static ExpressionBinding GetChildColumnBinding(const Expression &expr) {
+static ExpressionBinding GetChildColumnBinding(Expression &expr) {
 	ExpressionBinding result;
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		result.expression = expr;
@@ -162,13 +163,18 @@ static ExpressionBinding GetChildColumnBinding(const Expression &expr) {
 		result.expression_is_constant = true;
 		return result;
 	}
-	if (BoundCastExpression::IsCast(expr)) {
-		auto &cast = expr.Cast<BoundFunctionExpression>();
-		if (!BoundCastExpression::IsTryCast(cast) &&
-		    BoundCastExpression::CastIsInvertible(BoundCastExpression::SourceType(cast), cast.GetReturnType())) {
-			return GetChildColumnBinding(BoundCastExpression::Child(cast));
-		}
+	if (expr.IsVolatile()) {
+		return result;
 	}
+	ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &child) {
+		if (result.FoundColumnRef()) {
+			return;
+		}
+		auto child_result = GetChildColumnBinding(*child);
+		if (child_result.FoundColumnRef()) {
+			result = child_result;
+		}
+	});
 	return result;
 }
 

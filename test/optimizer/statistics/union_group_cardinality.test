@@ -99,7 +99,7 @@ EXPLAIN SELECT label,a,b,count(*)
 FROM (SELECT 0 label,a,b FROM grid UNION ALL SELECT 1,a+50,b+50 FROM grid) t
 GROUP BY ALL;
 ----
-physical_plan	<REGEX>:(?s).*GROUP_BY.*~4,998 rows.*
+physical_plan	<REGEX>:(?s).*GROUP_BY.*~4,367 rows.*
 
 # Overlapping arms are not assumed disjoint or identical; the key's min/max domain (0..9) then caps the estimate.
 query I

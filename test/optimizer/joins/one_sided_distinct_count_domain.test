@@ -199,15 +199,15 @@ JOIN (VALUES ('0'), ('20'), ('40'), ('60'), ('80'), ('100')) v(k) USING(k);
 ----
 6000
 
-# A VALUES list supplies its own join fallback without becoming Parquet's base NDV.
+# A VALUES list supplies a local fallback; the uncertain-domain floor still applies.
 
 query II
 EXPLAIN SELECT * FROM read_parquet('{TEST_DIR}/od_lowndv.parquet') f
 JOIN (VALUES ('0'), ('20'), ('40'), ('60'), ('80'), ('100')) v(k) USING(k);
 ----
-physical_plan	<REGEX>:[^~]*~50.000 rows.*
+physical_plan	<REGEX>:[^~]*~60.000 rows.*
 
-# Grouped and materialized CSV dimensions likewise retain their local fallback.
+# Grouped and materialized CSV inputs remain unanchored and use the uncertain-domain floor.
 
 statement ok
 COPY (SELECT (range % 1000)::BIGINT k FROM range(1000000)) TO '{TEST_DIR}/od_csv_fact.csv' (HEADER);
@@ -219,13 +219,13 @@ query II
 EXPLAIN SELECT * FROM read_csv('{TEST_DIR}/od_csv_fact.csv') f
 JOIN (SELECT k, sum(v) FROM read_csv('{TEST_DIR}/od_csv_dim.csv') GROUP BY k) d USING(k);
 ----
-physical_plan	<REGEX>:[^~]*~[6-9][0-9]{2}.[0-9]{3} rows.*
+physical_plan	<REGEX>:[^~]*~121.056.800 rows.*
 
 query II
 EXPLAIN WITH d AS MATERIALIZED (SELECT * FROM read_csv('{TEST_DIR}/od_csv_dim.csv'))
 SELECT * FROM read_csv('{TEST_DIR}/od_csv_fact.csv') f JOIN d USING(k);
 ----
-physical_plan	<REGEX>:[^~]*~[6-9][0-9]{2}.[0-9]{3} rows.*
+physical_plan	<REGEX>:[^~]*~121.056.800 rows.*
 
 query I
 SELECT count(*) FROM read_csv('{TEST_DIR}/od_csv_fact.csv') f

@@ -115,23 +115,6 @@ public:
 	    : equivalent_relations(column_binding_set) {
 	}
 
-	bool HasExpressionInput(ColumnBinding binding) const {
-		if (predicates.size() != 1) {
-			return false;
-		}
-		auto &predicate = predicates[0].get();
-		if (predicate.GetPredicateClass() != JoinPredicateClass::INNER_EQUALITY) {
-			return false;
-		}
-		for (bool left : {true, false}) {
-			if (predicate.GetStatsBinding(left) == binding &&
-			    !predicate.GetEqualityBinding(left).table_index.IsValid()) {
-				return true;
-			}
-		}
-		return false;
-	}
-
 public:
 	//! Column binding sets that are equivalent in a join plan.
 	column_binding_set_t equivalent_relations;
@@ -1004,11 +987,6 @@ void CardinalityEstimator::UpdateTotalDomains(RelationIndex relation_id, const R
 		for (auto &relation_to_tdom : state->relation_set_stats) {
 			const auto &i_set = relation_to_tdom.equivalent_relations;
 			if (i_set.find(key) == i_set.end()) {
-				continue;
-			}
-			if (relation_to_tdom.HasExpressionInput(key)) {
-				relation_to_tdom.domain_estimate.Update(
-				    key, DistinctCount(stats.cardinality, DistinctCountSource::CARDINALITY), nullptr);
 				continue;
 			}
 			relation_to_tdom.domain_estimate.Update(key, stats.columns[i].total_domain,

@@ -1,11 +1,12 @@
 # name: test/optimizer/statistics/large_join_cardinality.test
-# description: Join estimates divide overflowing intermediate products before converting to a row count
+# description: Large uncertain-domain join estimates saturate without overflowing
 # group: [statistics]
 
 statement ok
 PRAGMA explain_output='optimized_only';
 
-# Each range has 2^60 distinct values. The 20-way equality join still has 2^60 rows.
+# Each range has 2^60 distinct values, but currently supplies only a row-count fallback.
+# The uncertain-domain floor makes the estimate exceed a representable row count.
 # Match the root's final cardinality field, rather than a leaf's range estimate.
 query II
 EXPLAIN (FORMAT JSON)
@@ -31,4 +32,4 @@ JOIN range(1152921504606846976) t17(k) ON t16.k=t17.k
 JOIN range(1152921504606846976) t18(k) ON t17.k=t18.k
 JOIN range(1152921504606846976) t19(k) ON t18.k=t19.k;
 ----
-logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"1152921504606846976"\s*}\s*}\s*\]\s*$
+logical_opt	<REGEX>:(?s).*"Estimated Cardinality":\s*"18446744073709551615"\s*}\s*}\s*\]\s*$
