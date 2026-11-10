@@ -22,6 +22,8 @@
         "test/optimizer/fixed_key_domain_removal_plan.test",
         "test/optimizer/fixed_key_domain_replacement_plan.test",
         "test/optimizer/partial_aggregate_precomputation.test",
+        "test/optimizer/partial_aggregate_pushdown_serialized_plan.test",
+        "test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
         "test/optimizer/partition_stats_exactness.test",
         "test/optimizer/remove_redundant_order.test",
         "test/optimizer/runtime_key_domain_plan.test",
