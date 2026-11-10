@@ -93,6 +93,17 @@ REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS "weird name" FROM {'id': 'i-123', 
 ----
 <REGEX>:.*unknown resource type.*
 
+# the type as words prints as the string form
+statement error
+CREATE RESOURCE aws ec2 quack AS "weird name" (SPOT, REGION 'eu-west-1')
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack".*
+
+statement error
+REGISTER RESOURCE aws ec2 quack_quack AS "select" FROM {'id': 'i-123'}
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack-quack".*
+
 # a scalar handle reaches the cast rather than the type lookup - still a full ToString round-trip
 statement error
 REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM 'plain-handle'

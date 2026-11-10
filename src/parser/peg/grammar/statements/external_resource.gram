@@ -1,9 +1,14 @@
 # Every statement about external resources, so the top-level Statement choice carries one entry
 # rather than one per form. SHOW [ALL] EXTERNAL RESOURCES is a query (describe.gram), so it can be a subquery.
-ExternalResourceStatement <- CreateExternalResourceStmt / RegisterExternalResourceStmt / DestroyExternalResourceStmt / AttachToExternalResource / ConnectToExternalResource
+ExternalResourceStatement <- CreateExternalResourceStmt / CreateResourceWords / RegisterExternalResourceStmt / RegisterResourceWords / DestroyExternalResourceStmt / AttachToExternalResource / ConnectToExternalResource
 
 CreateExternalResourceStmt <- 'CREATE' ExternalResourceKeyword StringLiteral AttachAlias? ExternalResourceCreationOptions?
 RegisterExternalResourceStmt <- 'REGISTER' ExternalResourceKeyword StringLiteral AttachAlias? 'FROM' Expression
+# "CREATE RESOURCE A B AS r (...)" is "CREATE EXTERNAL RESOURCE 'a:b' AS r (...)": the long noun takes the type as a
+# string, the short one as words (two at least, a namespace and a name; lower-cased, joined with ':', '_' read as
+# '-'). A word is a ColId, so a reserved word needs quotes ("table"), and the words stop at AS, FROM or the options.
+CreateResourceWords <- 'CREATE' 'RESOURCE' ColId ColId+ AttachAlias? ExternalResourceCreationOptions?
+RegisterResourceWords <- 'REGISTER' 'RESOURCE' ColId ColId+ AttachAlias? 'FROM' Expression
 DestroyExternalResourceStmt <- 'DESTROY' ExternalResourceKeyword ColId
 
 # Syntax only: the keyword pair every singular form repeats.

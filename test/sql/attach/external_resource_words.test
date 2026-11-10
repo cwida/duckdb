@@ -1,0 +1,134 @@
+# name: test/sql/attach/external_resource_words.test
+# description: CREATE / REGISTER / ATTACH TO / CONNECT TO with the type as words: RESOURCE A B is EXTERNAL RESOURCE 'a:b'
+# group: [attach]
+
+statement ok
+ATTACH '{TEST_DIR}/er_words.db' AS seed;
+
+statement ok
+CREATE TABLE seed.t AS SELECT 42 AS x;
+
+statement ok
+DETACH seed;
+
+statement ok
+CREATE MACRO w_create(p) AS TABLE SELECT MAP {'id': 'w1'} AS handle;
+
+statement ok
+CREATE MACRO w_status(h) AS TABLE SELECT 'ready' AS state,
+  MAP {'uri': '{TEST_DIR}/er_words.db', 'attached_db_type': 'duckdb'} AS result;
+
+statement ok
+CREATE MACRO w_destroy(h) AS TABLE SELECT 'gone' AS status;
+
+statement ok
+CALL register_external_resource_type('ns:duck-file', kind := 'catalog', create_function := 'w_create',
+    status_function := 'w_status', destroy_function := 'w_destroy');
+
+# CREATE RESOURCE A B AS r is CREATE EXTERNAL RESOURCE 'a:b' AS r: lower-cased, '_' read as '-', joined with ':'.
+statement ok
+CREATE RESOURCE NS DUCK_FILE AS r1;
+
+query TT
+SELECT name, type FROM duckdb_external_resources() ORDER BY name;
+----
+r1	ns:duck-file
+
+# ATTACH TO RESOURCE r is ATTACH TO EXTERNAL RESOURCE r: a reference has no type to spell.
+statement ok
+ATTACH TO RESOURCE r1 AS a1 (READ_ONLY);
+
+query I
+SELECT x FROM a1.t;
+----
+42
+
+statement ok
+DETACH a1;
+
+statement ok
+DESTROY EXTERNAL RESOURCE r1;
+
+# ATTACH TO NEW TEMPORARY RESOURCE A B AS a provisions, as the long form does.
+statement ok
+ATTACH TO NEW TEMPORARY RESOURCE ns duck_file AS a2 (READ_ONLY);
+
+query I
+SELECT x FROM a2.t;
+----
+42
+
+statement ok
+DETACH a2;
+
+# REGISTER RESOURCE A B AS r FROM h adopts a handle under the words' type.
+statement ok
+REGISTER RESOURCE ns duck_file AS adopted FROM MAP {'id': 'w9'};
+
+query TT
+SELECT name, type FROM duckdb_external_resources() ORDER BY name;
+----
+adopted	ns:duck-file
+
+statement ok
+DESTROY EXTERNAL RESOURCE adopted;
+
+# The words stop at AS, FROM and the option list: the alias and the params are never read as type words, and the
+# type the words spell is the one reported.
+statement error
+CREATE RESOURCE aws ec2 quack AS x (SPOT, REGION 'eu-west-1');
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack".*
+
+statement error
+REGISTER RESOURCE aws ec2 quack AS x FROM {'id': 'i-123'};
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack".*
+
+statement error
+ATTACH TO NEW TEMPORARY RESOURCE aws ec2 quack (SPOT) AS x (READ_ONLY);
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack".*
+
+statement error
+CONNECT TO NEW TEMPORARY RESOURCE aws ec2 quack;
+----
+<REGEX>:.*unknown resource type "aws:ec2:quack".*
+
+statement error
+CONNECT TO RESOURCE nope;
+----
+<REGEX>:.*"nope".*
+
+# The long noun takes a string, the short one words; neither takes the other's, and a type is two words at least.
+statement error
+CREATE RESOURCE 'ns:duck-file' AS r3;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+statement error
+CREATE EXTERNAL RESOURCE ns duck_file AS r3;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+statement error
+CREATE RESOURCE duck AS r3;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+# A reserved word is a type word when quoted.
+statement error
+CREATE RESOURCE ns "table" AS r3;
+----
+<REGEX>:.*unknown resource type "ns:table".*
+
+statement error
+CREATE RESOURCE ns table AS r3;
+----
+<REGEX>:.*(syntax error|Parser).*
+
+# The first word is never EXTERNAL: that is the long form.
+statement error
+CREATE RESOURCE external thing AS r3;
+----
+<REGEX>:Parser Error.*EXTERNAL RESOURCE.*

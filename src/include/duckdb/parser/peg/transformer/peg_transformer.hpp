@@ -2087,6 +2087,10 @@ public:
 	FinalizeCreateExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeRegisterExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeCreateResourceWordsTrampoline(PEGTransformer &transformer,
+	                                                                             GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeRegisterResourceWordsTrampoline(PEGTransformer &transformer,
+	                                                                               GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeDestroyExternalResourceStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
@@ -2097,6 +2101,10 @@ public:
 	FinalizeExternalResourceCreateClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeExternalResourceReferenceClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeResourceWordsCreateClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeResourceReferenceClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeInsertStatementTrampoline(PEGTransformer &transformer,
 	                                                                         GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeInsertOrReplaceTrampoline(PEGTransformer &transformer,
@@ -3936,6 +3944,15 @@ public:
 	                                                                      const string &string_literal,
 	                                                                      const optional<Identifier> &attach_alias,
 	                                                                      unique_ptr<ParsedExpression> expression);
+	static unique_ptr<SQLStatement>
+	TransformCreateResourceWords(PEGTransformer &transformer, const Identifier &col_id,
+	                             const vector<Identifier> &col_ids, const optional<Identifier> &attach_alias,
+	                             const optional<vector<GenericCopyOption>> &external_resource_creation_options);
+	static unique_ptr<SQLStatement> TransformRegisterResourceWords(PEGTransformer &transformer,
+	                                                               const Identifier &col_id,
+	                                                               const vector<Identifier> &col_ids,
+	                                                               const optional<Identifier> &attach_alias,
+	                                                               unique_ptr<ParsedExpression> expression);
 	static unique_ptr<SQLStatement> TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
 	                                                                     const Identifier &col_id);
 	static unique_ptr<SQLStatement> TransformAttachToExternalResource(
@@ -3950,6 +3967,12 @@ public:
 	    const optional<vector<GenericCopyOption>> &external_resource_creation_options);
 	static unique_ptr<ExternalResourceOptions> TransformExternalResourceReferenceClause(PEGTransformer &transformer,
 	                                                                                    const Identifier &col_id);
+	static unique_ptr<ExternalResourceOptions>
+	TransformResourceWordsCreateClause(PEGTransformer &transformer, const Identifier &col_id,
+	                                   const vector<Identifier> &col_ids,
+	                                   const optional<vector<GenericCopyOption>> &external_resource_creation_options);
+	static unique_ptr<ExternalResourceOptions> TransformResourceReferenceClause(PEGTransformer &transformer,
+	                                                                            const Identifier &col_id);
 	static unique_ptr<SQLStatement>
 	TransformInsertStatement(PEGTransformer &transformer, optional<CommonTableExpressionMap> with_clause,
 	                         const optional<OnConflictAction> &or_action, unique_ptr<BaseTableRef> insert_target,

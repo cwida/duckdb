@@ -1,3 +1,5 @@
+#include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
@@ -5,6 +7,7 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/statement/external_resource_statement.hpp"
+#include "duckdb/parser/parsed_data/external_resource_options.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
 namespace duckdb {
@@ -78,6 +81,60 @@ PEGTransformerFactory::TransformShowExternalResources(PEGTransformer &transforme
 	select_node->select_list.push_back(make_uniq<StarExpression>());
 	select_node->from_table = std::move(table_function);
 	return std::move(select_node);
+}
+
+//! The type spelled as words: `A B C` is 'a:b:c'. Lower-cased, since type names are, and '_' read as '-', since an
+//! identifier cannot carry one; the string form is there for any name this cannot spell.
+static string TypeOfWords(const vector<Identifier> &words) {
+	// A truncated or misspelt long form ("SHOW EXTERNAL RESOURCE") must not read as a type named after the noun.
+	if (StringUtil::CIEquals(words[0].GetIdentifierName(), "EXTERNAL")) {
+		throw ParserException("a resource type spelled as words cannot start with EXTERNAL; the long form, EXTERNAL "
+		                      "RESOURCE, takes the type as a string");
+	}
+	vector<string> parts;
+	for (auto &word : words) {
+		parts.push_back(StringUtil::Replace(StringUtil::Lower(word.GetIdentifierName()), "_", "-"));
+	}
+	return StringUtil::Join(parts, ":");
+}
+
+//! The grammar splits the words into the first and the rest, so that there are two at least.
+static string TypeOfWords(const Identifier &first, const vector<Identifier> &rest) {
+	vector<Identifier> words;
+	words.push_back(first);
+	words.insert(words.end(), rest.begin(), rest.end());
+	return TypeOfWords(words);
+}
+
+// CREATE RESOURCE <words> ... is CREATE EXTERNAL RESOURCE '<words joined>' ...
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateResourceWords(
+    PEGTransformer &transformer, const Identifier &col_id, const vector<Identifier> &col_ids,
+    const optional<Identifier> &attach_alias,
+    const optional<vector<GenericCopyOption>> &external_resource_creation_options) {
+	return TransformCreateExternalResourceStmt(transformer, TypeOfWords(col_id, col_ids), attach_alias,
+	                                           external_resource_creation_options);
+}
+
+// REGISTER RESOURCE <words> ... is REGISTER EXTERNAL RESOURCE '<words joined>' ...
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformRegisterResourceWords(
+    PEGTransformer &transformer, const Identifier &col_id, const vector<Identifier> &col_ids,
+    const optional<Identifier> &attach_alias, unique_ptr<ParsedExpression> expression) {
+	return TransformRegisterExternalResourceStmt(transformer, TypeOfWords(col_id, col_ids), attach_alias,
+	                                             std::move(expression));
+}
+
+// NEW TEMPORARY RESOURCE <words> ... is NEW TEMPORARY EXTERNAL RESOURCE '<words joined>' ...
+unique_ptr<ExternalResourceOptions> PEGTransformerFactory::TransformResourceWordsCreateClause(
+    PEGTransformer &transformer, const Identifier &col_id, const vector<Identifier> &col_ids,
+    const optional<vector<GenericCopyOption>> &external_resource_creation_options) {
+	return TransformExternalResourceCreateClause(transformer, TypeOfWords(col_id, col_ids),
+	                                             external_resource_creation_options);
+}
+
+// RESOURCE <name> is EXTERNAL RESOURCE <name>
+unique_ptr<ExternalResourceOptions> PEGTransformerFactory::TransformResourceReferenceClause(PEGTransformer &transformer,
+                                                                                            const Identifier &col_id) {
+	return TransformExternalResourceReferenceClause(transformer, col_id);
 }
 
 } // namespace duckdb
