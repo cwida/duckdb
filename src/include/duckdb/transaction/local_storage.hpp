@@ -96,8 +96,10 @@ public:
 	void Rollback();
 	idx_t EstimatedSize() const;
 
-	void AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state);
-	void AppendToTable(DuckTransaction &transaction, TableAppendState &append_state);
+	//! Appends to the table's indexes at commit. A returned error means the indexes were restored.
+	ErrorData AppendToIndexes(DuckTransaction &transaction, TableAppendState &append_state);
+	//! Appends to the table at commit. A returned error means the table and its indexes were restored.
+	ErrorData AppendToTable(DuckTransaction &transaction, TableAppendState &append_state);
 	ErrorData AppendToIndexes(DuckTransaction &transaction, RowGroupCollection &source, TableIndexList &index_list,
 	                          const vector<LogicalType> &table_types, row_t &start_row);
 	//! Removes the rows of this storage that were appended to the indexes of the table at [row_start, row_end)
@@ -239,6 +241,7 @@ private:
 	bool synced_flushed_blocks = false;
 
 private:
+	//! Flushes the local rows into the shared table and indexes; invalidates the database if they cannot be restored
 	void Flush(DataTable &table, LocalTableStorage &storage, optional_ptr<StorageCommitState> commit_state);
 };
 
