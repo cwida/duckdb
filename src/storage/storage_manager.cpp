@@ -166,8 +166,8 @@ StorageManager::StorageManager(AttachedDatabase &db, string path_p, AttachOption
 	auto &fs = FileSystem::Get(db);
 	path = fs.ExpandPath(path);
 
-	auto services = db.GetDatabase().Services();
-	storage_options.Initialize(*services, options.options);
+	auto &services = db.GetDatabase().GetContext();
+	storage_options.Initialize(services, options.options);
 }
 
 StorageManager::~StorageManager() {
@@ -263,6 +263,13 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 	if (!options.commit_lock) {
 		// not holding the commit lock yet - grab it
 		guard = GetCommitLock();
+	}
+	if (ValidChecker::IsInvalidated(db.GetDatabase())) {
+		// a commit that failed while we waited for the commit lock invalidated the database
+		throw IOException("%s", ValidChecker::InvalidatedMessage(db.GetDatabase()));
+	}
+	if (ValidChecker::IsInvalidated(db)) {
+		throw IOException("%s", ValidChecker::InvalidatedMessage(db));
 	}
 	// drain under the commit lock before the checkpoint transaction starts: its snapshot would
 	// otherwise be bounded below commits whose WAL this checkpoint deletes
@@ -446,7 +453,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 	}
 	options.io_mode = resolved_io_mode;
 	options.mmap_reserve_size = storage_options.mmap_reserve_size;
-	options.debug_initialize = config.options.debug_initialize;
+	options.debug_initialize = Settings::Get<DebugInitializeSetting>(config);
 	options.storage_version = storage_options.storage_version;
 
 	if (storage_options.encryption) {
@@ -909,8 +916,8 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	auto &config = DBConfig::Get(db);
 	// We only need to checkpoint if there is anything in the WAL.
 	auto wal_size = GetWALSize();
-	auto should_checkpoint =
-	    wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT;
+	auto should_checkpoint = wal_size > 0 || Settings::Get<DebugForceCheckpointSetting>(config) ||
+	                         options.action == CheckpointAction::ALWAYS_CHECKPOINT;
 	// Shared by the index binds before the checkpoint and by the checkpoint transaction.
 	unique_ptr<Connection> checkpoint_connection;
 	optional_ptr<ClientContext> checkpoint_context;

@@ -269,15 +269,15 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 	auto &executor = *active_query->executor;
 
 	auto &config = ClientConfig::GetConfig(*this);
-	if (config.enable_progress_bar) {
+	if (Settings::Get<EnableProgressBarSetting>(*this)) {
 		progress_bar_display_create_func_t display_create_func = nullptr;
-		if (config.print_progress_bar) {
+		if (Settings::Get<EnableProgressBarPrintSetting>(*this)) {
 			// Use either a custom display function, or the default.
 			display_create_func =
 			    config.display_create_func ? config.display_create_func : ProgressBar::DefaultProgressBarDisplay;
 		}
-		active_query->progress_bar =
-		    make_uniq<ProgressBar>(executor, NumericCast<idx_t>(config.wait_time), display_create_func);
+		active_query->progress_bar = make_uniq<ProgressBar>(
+		    executor, NumericCast<idx_t>(Settings::Get<ProgressBarTimeSetting>(*this)), display_create_func);
 		active_query->progress_bar->Start();
 		query_progress.Restart();
 	}

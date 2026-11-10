@@ -1,0 +1,63 @@
+diff --git a/src/spatial/modules/geos/geos_module.cpp b/src/spatial/modules/geos/geos_module.cpp
+--- a/src/spatial/modules/geos/geos_module.cpp
++++ b/src/spatial/modules/geos/geos_module.cpp
+@@ -26,7 +26,7 @@
+ public:
+ 	static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
+ 	                                           FunctionData *bind_data) {
+-		return make_uniq<LocalState>(state.GetContext());
++		return make_uniq<LocalState>(state.GetClientContext());
+ 	}
+ 
+ 	static LocalState &ResetAndGet(ExpressionState &state) {
+diff --git a/src/spatial/modules/main/spatial_functions_scalar.cpp b/src/spatial/modules/main/spatial_functions_scalar.cpp
+--- a/src/spatial/modules/main/spatial_functions_scalar.cpp
++++ b/src/spatial/modules/main/spatial_functions_scalar.cpp
+@@ -68,7 +68,7 @@
+ 
+ unique_ptr<FunctionLocalState> LocalState::Init(ExpressionState &state, const BoundFunctionExpression &expr,
+                                                 FunctionData *bind_data) {
+-	return make_uniq_base<FunctionLocalState, LocalState>(state.GetContext());
++	return make_uniq_base<FunctionLocalState, LocalState>(state.GetClientContext());
+ }
+ 
+ LocalState &LocalState::ResetAndGet(ExpressionState &state) {
+diff --git a/src/spatial/modules/mvt/mvt_module.cpp b/src/spatial/modules/mvt/mvt_module.cpp
+--- a/src/spatial/modules/mvt/mvt_module.cpp
++++ b/src/spatial/modules/mvt/mvt_module.cpp
+@@ -45,7 +45,7 @@
+ 
+ unique_ptr<FunctionLocalState> LocalState::Init(ExpressionState &state, const BoundFunctionExpression &expr,
+                                                 FunctionData *bind_data) {
+-	return make_uniq_base<FunctionLocalState, LocalState>(state.GetContext());
++	return make_uniq_base<FunctionLocalState, LocalState>(state.GetClientContext());
+ }
+ 
+ LocalState &LocalState::ResetAndGet(ExpressionState &state) {
+diff --git a/src/spatial/modules/proj/proj_module.cpp b/src/spatial/modules/proj/proj_module.cpp
+--- a/src/spatial/modules/proj/proj_module.cpp
++++ b/src/spatial/modules/proj/proj_module.cpp
+@@ -352,7 +352,7 @@
+ 
+ 		static unique_ptr<FunctionLocalState> Init(ExpressionState &state, const BoundFunctionExpression &expr,
+ 		                                           FunctionData *bind_data) {
+-			auto result = make_uniq<LocalState>(state.GetContext());
++			auto result = make_uniq<LocalState>(state.GetClientContext());
+ 			return std::move(result);
+ 		}
+ 
+@@ -761,12 +761,12 @@
+ 
+ 	static unique_ptr<FunctionLocalState> InitPolygon(ExpressionState &state, const BoundFunctionExpression &expr,
+ 	                                                  FunctionData *bind_data) {
+-		return make_uniq<GeodesicLocalState>(state.GetContext(), false);
++		return make_uniq<GeodesicLocalState>(state.GetClientContext(), false);
+ 	}
+ 
+ 	static unique_ptr<FunctionLocalState> InitLine(ExpressionState &state, const BoundFunctionExpression &expr,
+ 	                                               FunctionData *bind_data) {
+-		return make_uniq<GeodesicLocalState>(state.GetContext(), true);
++		return make_uniq<GeodesicLocalState>(state.GetClientContext(), true);
+ 	}
+ 
+ 	static GeodesicLocalState &ResetAndGet(ExpressionState &state) {

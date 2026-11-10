@@ -44,8 +44,8 @@ unique_ptr<Expression> JoinCondition::CreateExpression(vector<JoinCondition> con
 		if (!result) {
 			result = std::move(expr);
 		} else {
-			auto conj = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(expr),
-			                                                  std::move(result));
+			auto conj = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(result),
+			                                                  std::move(expr));
 			result = std::move(conj);
 		}
 	}

@@ -1552,7 +1552,7 @@ ParserOptions ClientContext::GetParserOptions() {
 	options.extensions = DBConfig::GetConfig(*this).GetCallbackManager();
 	options.parser_override_setting = Settings::Get<AllowParserOverrideExtensionSetting>(*this);
 	options.compiled_grammar = CompiledGrammar::Get(*this);
-	options.context = *this;
+	options.context = GetContext();
 	return options;
 }
 
