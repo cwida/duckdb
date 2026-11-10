@@ -6,6 +6,10 @@ set variable sf 0.01
 
 include test/sql/tpch/tpch_setup.test_template
 
+# debug builds compress the join keys regardless of cardinality, which casts the probe key out of the index
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
+
 statement ok
 CREATE TABLE random_orders AS (
 	(SELECT o_orderkey FROM orders
