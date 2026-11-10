@@ -257,13 +257,17 @@ optional_ptr<CreateSecretFunction> SecretManager::LookupFunctionInternal(const I
 }
 
 //! Secret providers read environment variables, files and credential endpoints: none of that without external access
-static void ThrowIfSecretCreationDisabled(DatabaseInstance &db, const Identifier &type, const Identifier &provider) {
+void SecretManager::ThrowIfSecretCreationDisabled(DatabaseInstance &db, const Identifier &type,
+                                                  const Identifier &provider) {
 	if (Settings::Get<EnableExternalAccessSetting>(db)) {
 		return;
 	}
+	string what = "Creating secrets is disabled when enable_external_access is false";
+	if (type.empty()) {
+		throw PermissionException(what);
+	}
 	string provider_string = provider.empty() ? "" : StringUtil::Format(", provider %s", provider);
-	throw PermissionException("Creating secrets is disabled when enable_external_access is false (secret type %s%s)",
-	                          type, provider_string);
+	throw PermissionException("%s (secret type %s%s)", what, type, provider_string);
 }
 
 unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, const CreateSecretInput &input) {
