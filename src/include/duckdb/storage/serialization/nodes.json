@@ -300,7 +300,10 @@
       {
         "id": 104,
         "name": "repeatable",
-        "type": "bool"
+        "type": "bool",
+        "version": "v2.0.0",
+        "default": "seed.IsValid()",
+        "deserialize_default": "result->seed.IsValid()"
       },
       {
         "id": 105,
