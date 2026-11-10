@@ -179,6 +179,9 @@ struct ParseTypeInfo {
 
 class StringValueResult : public ScannerResult {
 public:
+	//! Scanned block by block, see BaseScanner::ProcessBlocks
+	static constexpr bool BLOCK_SCAN = true;
+
 	StringValueResult(CSVStates &states, CSVStateMachine &state_machine,
 	                  const shared_ptr<CSVBufferHandle> &buffer_handle, Allocator &buffer_allocator,
 	                  idx_t result_size_p, idx_t buffer_position, CSVErrorHandler &error_handler, CSVIterator &iterator,

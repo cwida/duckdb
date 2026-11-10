@@ -18,7 +18,6 @@
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
@@ -591,11 +590,6 @@ static void FindFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColu
 	case LogicalOperatorType::LOGICAL_INTERSECT:
 	case LogicalOperatorType::LOGICAL_UNION:
 		FindSetOperationFilterTargets(op.Cast<LogicalSetOperation>(), columns, targets, context);
-		break;
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-		if (op.Cast<LogicalDistinct>().distinct_type == DistinctType::DISTINCT) {
-			FindFilterTargets(*op.children[0], std::move(columns), targets, context);
-		}
 		break;
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:

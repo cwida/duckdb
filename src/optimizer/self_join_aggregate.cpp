@@ -58,7 +58,6 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_materialized_cte.hpp"
@@ -147,13 +146,6 @@ public:
 			}
 		} else {
 			VisitOperatorExpressions(op);
-		}
-		if (op.type == LogicalOperatorType::LOGICAL_DISTINCT &&
-		    op.Cast<LogicalDistinct>().distinct_type == DistinctType::DISTINCT_ON) {
-			// the columns it does not deduplicate on pass through by position
-			for (auto &binding : op.children[0]->GetColumnBindings()) {
-				read.insert(binding);
-			}
 		}
 		VisitOperatorChildren(op);
 	}
@@ -343,11 +335,6 @@ private:
 		}
 		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
 			Walk(op.children[0], AggregateIgnoresDuplicates(op.Cast<LogicalAggregate>()));
-			return;
-		case LogicalOperatorType::LOGICAL_DISTINCT:
-			// its targets are expressions, so what it deduplicates on counts as read, and so does every column a
-			// DISTINCT ON passes through
-			Walk(op.children[0], true);
 			return;
 		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 			// its references are all below its second child, so they are all seen before its definition is

@@ -20,7 +20,7 @@ EXPLAIN SELECT * FROM (SELECT 1) lhs
 EXCEPT
 SELECT * FROM (SELECT 1 WHERE 1=0) rhs
 ----
-logical_opt	<REGEX>:.*DISTINCT.*
+logical_opt	<REGEX>:.*AGGREGATE.*
 
 query II
 EXPLAIN SELECT * FROM (SELECT 1) lhs

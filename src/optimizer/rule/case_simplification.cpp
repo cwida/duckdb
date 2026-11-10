@@ -21,7 +21,7 @@ unique_ptr<Expression> CaseSimplificationRule::Apply(LogicalOperator &op, vector
 			// use an ExpressionExecutor to execute the expression
 			Value condition;
 			if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), *case_check.when_expr, condition) ||
-			    !condition.DefaultTryCastAs(LogicalType::BOOLEAN)) {
+			    !condition.TryCastAs(GetContext(), LogicalType::BOOLEAN)) {
 				// the condition cannot be evaluated: leave it to execution
 				continue;
 			}
