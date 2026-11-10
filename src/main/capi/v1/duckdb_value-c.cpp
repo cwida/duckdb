@@ -7,7 +7,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/bignum.hpp"
 #include "duckdb/common/types/decimal.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/main/capi/cast/utils.hpp"
 #include "duckdb/main/capi/capi_internal.hpp"
 
@@ -174,7 +174,7 @@ duckdb_decimal duckdb_get_decimal(duckdb_value val) {
 	duckdb::hugeint_t hugeint;
 	if (type.InternalType() == duckdb::PhysicalType::VARCHAR) {
 		// the BIGNUM blob of a wide decimal is only representable if it fits in 128 bits
-		if (!duckdb::BignumDecimal::TryToHugeint(v.GetValueUnsafe<duckdb::bignum_t>(), hugeint)) {
+		if (!duckdb::DecimalHelper<duckdb::bignum_t>::TryToHugeint(v.GetValueUnsafe<duckdb::bignum_t>(), hugeint)) {
 			return duckdb::FetchDefaultValue::Operation<duckdb_decimal>();
 		}
 	} else {

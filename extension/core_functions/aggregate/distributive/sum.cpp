@@ -4,7 +4,7 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/bignum_limbs.hpp"
 #include "duckdb/common/types/bignum.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"

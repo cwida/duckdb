@@ -1,6 +1,6 @@
 #include "duckdb/main/capi/cast/from_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 
 namespace duckdb {
 

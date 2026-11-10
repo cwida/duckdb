@@ -10,7 +10,7 @@
 #include "duckdb/common/arrow/appender/list.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 
 namespace duckdb {
 
@@ -24,7 +24,7 @@ struct ArrowWideDecimalConverter {
 	template <class TGT, class SRC>
 	static TGT Operation(SRC input) {
 		TGT result;
-		BignumDecimal::ToTwosComplement(input, data_ptr_cast(&result), sizeof(TGT), false);
+		DecimalHelper<bignum_t>::ToTwosComplement(input, data_ptr_cast(&result), sizeof(TGT), false);
 		return result;
 	}
 

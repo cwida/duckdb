@@ -1,7 +1,8 @@
 #include "duckdb/common/types/decimal.hpp"
 
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
@@ -65,14 +66,46 @@ string Decimal::ToString(hugeint_t value, uint32_t width, uint32_t scale) {
 }
 
 string Decimal::ToString(bignum_t value, uint32_t width, uint32_t scale, optional_ptr<ClientContext> context) {
-	auto result = BignumDecimal::ToString(value, scale, context);
-	if (width == scale && scale > 0) {
-		// like the fixed-size decimals, a decimal without integer digits prints no leading zero: .100, -.100
-		auto point = result.find('.');
-		D_ASSERT(point != string::npos && point > 0 && result[point - 1] == '0');
-		result.erase(point - 1, 1);
-	}
-	return result;
+	return DecimalHelper<bignum_t>::ToString(value, width, scale, context);
 }
+
+//===--------------------------------------------------------------------===//
+// DecimalHelper of the fixed-size tiers: the conversions that run through the cast operators
+//===--------------------------------------------------------------------===//
+template <class T, class POWERS_OF_TEN_CLASS>
+bool FixedSizeDecimalHelper<T, POWERS_OF_TEN_CLASS>::TryParse(const char *data, idx_t size, uint32_t width,
+                                                              uint32_t scale, T &result, char decimal_separator,
+                                                              optional_ptr<ClientContext> context) {
+	if (decimal_separator == ',') {
+		return TryDecimalStringCast<T, ','>(data, size, result, width, scale);
+	}
+	return TryDecimalStringCast<T, '.'>(data, size, result, width, scale);
+}
+
+template <class T, class POWERS_OF_TEN_CLASS>
+bool FixedSizeDecimalHelper<T, POWERS_OF_TEN_CLASS>::TryToFloating(T value, uint32_t scale, float &result,
+                                                                   optional_ptr<ClientContext> context) {
+	CastParameters parameters;
+	return TryCastFromDecimal::Operation<T, float>(value, result, parameters, MAX_WIDTH, scale);
+}
+
+template <class T, class POWERS_OF_TEN_CLASS>
+bool FixedSizeDecimalHelper<T, POWERS_OF_TEN_CLASS>::TryToFloating(T value, uint32_t scale, double &result,
+                                                                   optional_ptr<ClientContext> context) {
+	CastParameters parameters;
+	return TryCastFromDecimal::Operation<T, double>(value, result, parameters, MAX_WIDTH, scale);
+}
+
+template <class T, class POWERS_OF_TEN_CLASS>
+bool FixedSizeDecimalHelper<T, POWERS_OF_TEN_CLASS>::TryFromDouble(double value, uint32_t width, uint32_t scale,
+                                                                   T &result, optional_ptr<ClientContext> context) {
+	CastParameters parameters;
+	return TryCastToDecimal::Operation<double, T>(value, result, parameters, width, scale);
+}
+
+template struct FixedSizeDecimalHelper<int16_t, NumericHelper>;
+template struct FixedSizeDecimalHelper<int32_t, NumericHelper>;
+template struct FixedSizeDecimalHelper<int64_t, NumericHelper>;
+template struct FixedSizeDecimalHelper<hugeint_t, Hugeint>;
 
 } // namespace duckdb

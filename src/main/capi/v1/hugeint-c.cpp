@@ -4,7 +4,7 @@
 #include <cmath>
 #include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/types/decimal.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/main/capi/cast/utils.hpp"
 #include "duckdb/main/capi/cast/to_decimal.hpp"
@@ -50,8 +50,8 @@ duckdb_decimal duckdb_double_to_decimal(double val, uint8_t width, uint8_t scale
 		// wide decimals convert exactly and are only representable if they fit in 128 bits
 		std::string blob;
 		duckdb::hugeint_t hugeint;
-		if (!duckdb::BignumDecimal::TryFromDouble(val, width, scale, blob) ||
-		    !duckdb::BignumDecimal::TryToHugeint(duckdb::bignum_t(duckdb::string_t(blob)), hugeint)) {
+		if (!duckdb::DecimalHelper<duckdb::bignum_t>::TryFromDouble(val, width, scale, blob) ||
+		    !duckdb::DecimalHelper<duckdb::bignum_t>::TryToHugeint(duckdb::bignum_t(duckdb::string_t(blob)), hugeint)) {
 			return duckdb::FetchDefaultValue::Operation<duckdb_decimal>();
 		}
 		return {width, scale, {hugeint.lower, hugeint.upper}};

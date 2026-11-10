@@ -17,7 +17,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types/date.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/string_heap.hpp"
@@ -247,7 +247,7 @@ static bool BignumDecimalPropagateStatistics(const LogicalType &type, const Base
 		for (idx_t r = 0; r < 2; r++) {
 			// the combination of two bounds is exact in a BIGNUM
 			auto result = OP::Operation(bignum_t(lvals[l]), bignum_t(rvals[r]), heap, state).data;
-			if (!BignumDecimal::FitsWidth(bignum_t(result), width)) {
+			if (!DecimalHelper<bignum_t>::FitsWidth(bignum_t(result), width)) {
 				// potential overflow
 				return true;
 			}

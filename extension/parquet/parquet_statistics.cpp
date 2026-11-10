@@ -15,7 +15,7 @@
 #include "reader/variant_column_reader.hpp"
 #include "zstd/common/xxhash.hpp"
 #include "duckdb/common/types/blob.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -262,7 +262,7 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 				// wide decimal stored as a BIGNUM blob
 				auto blob = ParquetDecimalUtils::ReadWideDecimalValue(stats_data, stats.size());
 				bignum_t value {string_t(blob)};
-				if (!BignumDecimal::FitsWidth(value, width)) {
+				if (!DecimalHelper<bignum_t>::FitsWidth(value, width)) {
 					return Value();
 				}
 				return Value::DECIMAL(value, width, scale);

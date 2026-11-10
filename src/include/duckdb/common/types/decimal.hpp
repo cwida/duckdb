@@ -42,6 +42,12 @@ class ClientContext;
 //! How the digits a decimal drops when it is rounded, rescaled or parsed are rounded
 enum class DecimalRounding : uint8_t { TRUNCATE, FLOOR, CEIL, HALF_AWAY_FROM_ZERO, HALF_TO_EVEN };
 
+//! The operations on the unscaled value of a DECIMAL stored as T: specialised for the fixed-size tiers int16_t,
+//! int32_t, int64_t and hugeint_t in decimal_helper.hpp and for the bignum_t tier (above 38 digits) in
+//! bignum_decimal.hpp, with the same interface, so that code is written once for every tier
+template <class T>
+struct DecimalHelper;
+
 //! The Decimal class is a static class that holds helper functions for the Decimal type
 class Decimal {
 public:

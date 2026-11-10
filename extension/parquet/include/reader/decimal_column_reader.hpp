@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include <stdint.h>
 
 #include "column_reader.hpp"
@@ -162,7 +162,7 @@ template <class PARQUET_TYPE>
 template <bool CHECKED>
 bignum_t WideDecimalFromIntegerConversion<PARQUET_TYPE>::PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 	auto value = CHECKED ? plain_data.read<PARQUET_TYPE>() : plain_data.unsafe_read<PARQUET_TYPE>();
-	auto blob = BignumDecimal::FromInteger(hugeint_t(value));
+	auto blob = DecimalHelper<bignum_t>::FromInteger(hugeint_t(value));
 	auto &wide_reader = reader.Cast<WideDecimalColumnReader>();
 	D_ASSERT(wide_reader.current_result);
 	return bignum_t(StringVector::AddStringOrBlob(*wide_reader.current_result, blob.data(), blob.size()));

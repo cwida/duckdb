@@ -2,7 +2,7 @@
 #include "duckdb/function/cast/vector_cast_helpers.hpp"
 
 #include "duckdb/common/vector_operations/general_cast.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
@@ -235,7 +235,7 @@ static bignum_t UnscaledBignum(bignum_t input, string &blob) {
 
 template <class INPUT_TYPE>
 static bignum_t UnscaledBignum(INPUT_TYPE input, string &blob) {
-	blob = BignumDecimal::FromInteger(hugeint_t(input));
+	blob = DecimalHelper<bignum_t>::FromInteger(hugeint_t(input));
 	return bignum_t(string_t(blob));
 }
 
@@ -245,8 +245,8 @@ struct BignumDecimalScaleOperator {
 		string unscaled_blob;
 		auto unscaled = UnscaledBignum(input, unscaled_blob);
 		string rescaled;
-		if (!BignumDecimal::TryRescale(unscaled, data.source_scale, data.target_width, data.target_scale, rescaled,
-		                               data.context)) {
+		if (!DecimalHelper<bignum_t>::TryRescale(unscaled, data.source_scale, data.target_width, data.target_scale,
+		                                         rescaled, data.context)) {
 			auto error = StringUtil::Format("Casting value \"%s\" to type %s failed: value is out of range!",
 			                                Decimal::ToString(input, data.source_width, data.source_scale),
 			                                data.result.GetType().ToString());
@@ -257,7 +257,7 @@ struct BignumDecimalScaleOperator {
 		} else {
 			// the checked width guarantees the value fits the integer
 			hugeint_t value;
-			if (!BignumDecimal::TryToHugeint(bignum_t(string_t(rescaled)), value)) {
+			if (!DecimalHelper<bignum_t>::TryToHugeint(bignum_t(string_t(rescaled)), value)) {
 				throw InternalException("Rescaled decimal does not fit a HUGEINT despite the width check");
 			}
 			return Cast::Operation<hugeint_t, RESULT_TYPE>(value);

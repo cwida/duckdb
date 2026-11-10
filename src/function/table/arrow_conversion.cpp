@@ -10,7 +10,7 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/arrow_aux_data.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/decimal_helper.hpp"
 #include "duckdb/common/types/arrow_string_view_type.hpp"
 #include "duckdb/function/table/arrow.hpp"
 
@@ -890,7 +890,8 @@ static void ConvertDecimal256(const_data_ptr_t src_ptr, Vector &vector, idx_t si
 			if (!val_mask.RowIsValid(row)) {
 				continue;
 			}
-			auto blob = BignumDecimal::FromTwosComplement(src_ptr + row * DECIMAL256_BYTES, DECIMAL256_BYTES, false);
+			auto blob =
+			    DecimalHelper<bignum_t>::FromTwosComplement(src_ptr + row * DECIMAL256_BYTES, DECIMAL256_BYTES, false);
 			tgt_ptr[row] = bignum_t(StringVector::AddStringOrBlob(vector, blob.data(), blob.size()));
 		}
 		break;
@@ -903,9 +904,10 @@ static void ConvertDecimal256(const_data_ptr_t src_ptr, Vector &vector, idx_t si
 			if (!val_mask.RowIsValid(row)) {
 				continue;
 			}
-			auto blob = BignumDecimal::FromTwosComplement(src_ptr + row * DECIMAL256_BYTES, DECIMAL256_BYTES, false);
+			auto blob =
+			    DecimalHelper<bignum_t>::FromTwosComplement(src_ptr + row * DECIMAL256_BYTES, DECIMAL256_BYTES, false);
 			hugeint_t value;
-			if (!BignumDecimal::TryToHugeint(bignum_t(string_t(blob)), value)) {
+			if (!DecimalHelper<bignum_t>::TryToHugeint(bignum_t(string_t(blob)), value)) {
 				throw ConversionException("Arrow decimal256 value does not fit in %s", vector.GetType().ToString());
 			}
 			switch (vector.GetType().InternalType()) {
