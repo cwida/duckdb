@@ -292,20 +292,22 @@ void Parser::ParseQuery(const string &query_p) {
 	auto &tokenizer = GetGrammar().GetTokenizer();
 	tokenizer.TokenizeInput(behavior);
 	TokenIterator token_iterator(std::move(owned_tokens));
+	// A statement's text starts where the previous one ended, so comments and whitespace before its
+	// first token belong to it; the last statement runs to the end of the input.
+	idx_t stmt_start = 0;
 	while (token_iterator.Current()) {
 		auto stmt = ParseTopLevelStatement(token_iterator, query);
+		auto stmt_end = token_iterator.ConsumedEndOffset();
 		if (stmt) {
+			stmt->stmt_location = QueryLocation(stmt_start, stmt_end - stmt_start);
 			statements.push_back(std::move(stmt));
 		}
+		stmt_start = stmt_end;
 	}
 
 	if (!statements.empty()) {
-		for (idx_t i = 0; i + 1 < statements.size(); i++) {
-			auto start = statements[i]->stmt_location.offset;
-			statements[i]->stmt_location = QueryLocation(start, statements[i + 1]->stmt_location.offset - start);
-		}
-		statements.back()->stmt_location = QueryLocation(statements.back()->stmt_location.offset,
-		                                                 query.size() - statements.back()->stmt_location.offset);
+		auto &last_location = statements.back()->stmt_location;
+		last_location = QueryLocation(last_location.offset, query.size() - last_location.offset);
 		for (auto &statement : statements) {
 			statement->query = query.substr(statement->stmt_location.offset, statement->stmt_location.length);
 			statement->stmt_location = QueryLocation(0, statement->query.size());
