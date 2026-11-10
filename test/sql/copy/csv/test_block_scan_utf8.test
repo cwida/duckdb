@@ -1,0 +1,173 @@
+# name: test/sql/copy/csv/test_block_scan_utf8.test
+# description: UTF-8 validation with the block scanner: values in ASCII blocks skip the check, invalid bytes anywhere else still fail, are ignored or rejected as before
+# group: [csv]
+
+statement ok
+COPY (SELECT i || ',' || repeat(chr(233), i % 7) || 'x' || repeat('y', i % 50) || ',' || CASE WHEN i % 3 = 0 THEN '"' || chr(8364) || 'q"' ELSE 'plain' END FROM range(600) t(i)) TO '{TEST_DIR}/utf8_valid.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT i || ',' || repeat(chr(233), i % 7) || 'x' || repeat('y', i % 50) || ',' || CASE WHEN i % 3 = 0 THEN '"' || chr(8364) || 'q"' ELSE 'plain' END FROM range(600) t(i)) TO '{TEST_DIR}/utf8_valid_crlf.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', NEW_LINE '\r\n');
+
+statement ok
+COPY (SELECT string_agg('v' || i || '_' || j, ',') FROM range(40) t(i), range(2) u(j) GROUP BY j ORDER BY j) TO '{TEST_DIR}/ascii_wide.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+# invalid bytes, strict, selecting *
+statement error
+SELECT * FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 2
+
+# invalid bytes, ignore_errors, selecting *
+query III
+SELECT * FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+1	abc	x
+4	é	ok
+7	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	b
+10	ascii	quoted
+11	a"b	e
+12	€	euro
+
+# invalid bytes, strict, selecting b
+statement error
+SELECT b FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 2
+
+# invalid bytes, ignore_errors, selecting b
+query I
+SELECT b FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+a
+a"b
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+abc
+ascii
+fine
+x
+é
+€
+
+# invalid bytes, strict, selecting c
+statement error
+SELECT c FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 5
+
+# invalid bytes, ignore_errors, selecting c
+query I
+SELECT c FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+b
+b
+c
+d
+e
+euro
+ok
+quoted
+x
+y
+z
+
+# invalid bytes, strict, selecting a
+statement error
+SELECT a FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+CSV Error on Line: 6
+
+# invalid bytes, ignore_errors, selecting a
+query I
+SELECT a FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, ignore_errors=true) ORDER BY ALL
+----
+1
+2
+3
+4
+5
+7
+8
+9
+10
+11
+12
+13
+
+# invalid bytes, rejects stored
+statement ok
+CREATE OR REPLACE TEMP TABLE r AS SELECT * FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, store_rejects=true)
+
+query IIII
+SELECT line, column_idx, error_type, replace(csv_line, chr(10), '<LF>') FROM reject_errors ORDER BY ALL
+----
+2	2	INVALID ENCODING	2,?bad,y
+3	2	INVALID ENCODING	3,"q?",z
+5	3	INVALID ENCODING	5,fine,?
+6	1	CAST	?6,a,b
+8	2	INVALID ENCODING	8,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,c
+9	2	INVALID ENCODING	9,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?",d
+13	3	INVALID ENCODING	13,x,?
+
+# invalid bytes, rejects stored, only c read
+statement ok
+CREATE OR REPLACE TEMP TABLE r2 AS SELECT c FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}, store_rejects=true, rejects_table='rej_c', rejects_scan='scan_c')
+
+query III
+SELECT line, column_idx, error_type FROM rej_c ORDER BY ALL
+----
+5	3	INVALID ENCODING
+13	3	INVALID ENCODING
+
+# invalid bytes, all_varchar, ignore_errors
+query III
+SELECT * FROM read_csv('data/csv/block_scan_invalid_utf8.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, all_varchar=true, ignore_errors=true, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'}) ORDER BY ALL
+----
+1	abc	x
+4	é	ok
+7	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	b
+10	ascii	quoted
+11	a"b	e
+12	€	euro
+
+# invalid bytes, sniffed, strict
+statement error
+SELECT * FROM read_csv('data/csv/block_scan_invalid_utf8.csv')
+----
+CSV Error on Line: 2
+
+# invalid bytes, sniffed, ignore_errors
+query I
+SELECT count(*) FROM read_csv('data/csv/block_scan_invalid_utf8.csv', ignore_errors=true)
+----
+12
+
+# valid multi byte values, utf8_valid.csv
+query IIIIII
+SELECT count(*), sum(length(b)), sum(strlen(b)), sum(length(c)), max(b), max(c) FROM read_csv('{TEST_DIR}/utf8_valid.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+600	17095	18890	2400	ééééééxyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy	€q
+
+# valid multi byte values, utf8_valid.csv, one column
+query I
+SELECT sum(length(c)) FROM read_csv('{TEST_DIR}/utf8_valid.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+2400
+
+# valid multi byte values, utf8_valid_crlf.csv
+query IIIIII
+SELECT count(*), sum(length(b)), sum(strlen(b)), sum(length(c)), max(b), max(c) FROM read_csv('{TEST_DIR}/utf8_valid_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+600	17095	18890	2400	ééééééxyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy	€q
+
+# valid multi byte values, utf8_valid_crlf.csv, one column
+query I
+SELECT sum(length(c)) FROM read_csv('{TEST_DIR}/utf8_valid_crlf.csv', delim=',', quote='"', escape='"', header=false, new_line='\r\n', auto_detect=false, columns={'a':'INTEGER','b':'VARCHAR','c':'VARCHAR'})
+----
+2400
+
+# ascii values in every block
+query III
+SELECT c0, c39, count(*) FROM read_csv('{TEST_DIR}/ascii_wide.csv', delim=',', quote='"', escape='"', header=false, new_line='\n', auto_detect=false, columns={'c0':'VARCHAR','c1':'VARCHAR','c2':'VARCHAR','c3':'VARCHAR','c4':'VARCHAR','c5':'VARCHAR','c6':'VARCHAR','c7':'VARCHAR','c8':'VARCHAR','c9':'VARCHAR','c10':'VARCHAR','c11':'VARCHAR','c12':'VARCHAR','c13':'VARCHAR','c14':'VARCHAR','c15':'VARCHAR','c16':'VARCHAR','c17':'VARCHAR','c18':'VARCHAR','c19':'VARCHAR','c20':'VARCHAR','c21':'VARCHAR','c22':'VARCHAR','c23':'VARCHAR','c24':'VARCHAR','c25':'VARCHAR','c26':'VARCHAR','c27':'VARCHAR','c28':'VARCHAR','c29':'VARCHAR','c30':'VARCHAR','c31':'VARCHAR','c32':'VARCHAR','c33':'VARCHAR','c34':'VARCHAR','c35':'VARCHAR','c36':'VARCHAR','c37':'VARCHAR','c38':'VARCHAR','c39':'VARCHAR'}) GROUP BY ALL ORDER BY ALL
+----
+v0_0	v39_0	1
+v0_1	v39_1	1

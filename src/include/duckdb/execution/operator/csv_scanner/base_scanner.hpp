@@ -105,7 +105,15 @@ public:
 	static inline bool AddRowWithoutValue(T &result, const idx_t buffer_pos) {
 		return false;
 	}
+	//! Whether a value of this result may skip its UTF-8 check, so the block scan tracks ASCII blocks
+	template <class T>
+	static inline bool TracksAscii(const T &result) {
+		return false;
+	}
 
+	//! Set by the block scan while it adds a value whose bytes all lie in blocks without high bits, so the value
+	//! needs no UTF-8 validation
+	bool ascii_value = false;
 	//! Variable to keep information regarding quoted and escaped values
 	bool quoted = false;
 	//! If the current quoted value is unquoted
@@ -356,27 +364,37 @@ protected:
 		candidates &= ~(((uint64_t(1) << (to - from)) - 1) << (from - pos));
 	}
 
-	//! The delimiter at `at`, `before` is the state before it
+	//! The delimiter at `at`, `before` is the state before it, `ascii` whether the value lies in ASCII blocks
 	template <class T>
-	void BlockDelimiter(T &result, const idx_t at, const CSVState before) {
+	void BlockDelimiter(T &result, const idx_t at, const CSVState before, const bool ascii) {
 		states.states[0] = before;
 		states.states[1] = CSVState::DELIMITER;
 		iterator.pos.buffer_pos = at;
 		if (T::CanSkipValue(result)) {
 			T::SkipValue(result, at);
 		} else {
+			result.ascii_value = ascii;
 			T::AddValue(result, at);
+			result.ascii_value = false;
 		}
 	}
 
-	//! The row end at `at`, `before` is the state before it. Returns true when the result is full
+	//! The row end at `at`, `before` is the state before it, `ascii` whether the last value lies in ASCII blocks.
+	//! Returns true when the result is full
 	template <class T>
 	bool BlockRowEnd(T &result, const idx_t at, const CSVState before, const bool crlf, uint64_t &candidates,
-	                 const idx_t pos) {
+	                 const idx_t pos, const bool ascii) {
 		states.states[0] = before;
 		states.states[1] = crlf ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR;
 		iterator.pos.buffer_pos = at;
-		const bool full = T::CanSkipValue(result) ? T::AddRowWithoutValue(result, at) : T::AddRow(result, at);
+		bool full;
+		if (T::CanSkipValue(result)) {
+			full = T::AddRowWithoutValue(result, at);
+		} else {
+			result.ascii_value = ascii;
+			full = T::AddRow(result, at);
+			result.ascii_value = false;
+		}
 		lines_read++;
 		if (full) {
 			iterator.pos.buffer_pos = at + 1;
@@ -424,10 +442,18 @@ protected:
 		// inside a comment only a row end matters, `comment_before` is the state before the comment byte
 		bool comment = false;
 		CSVState comment_before = CSVState::NOT_SET;
+		// whether every block that holds a byte of the current value is ASCII, tracked only when a value can skip
+		// its UTF-8 check, a value that began before the block scan is validated as every other value of the byte loop
+		const bool track_ascii = T::TracksAscii(result);
+		bool value_ascii = track_ascii && IsSeparatorState(states.states[1]);
+		bool block_ascii = false;
 		uint64_t candidates;
 		idx_t block_end;
 		while (pos < to_pos && skipper.BlockCandidates(pos, candidates, block_end)) {
 			const idx_t limit = MinValue<idx_t>(block_end, to_pos);
+			block_ascii =
+			    track_ascii && !SwarBlock::HasHighBits(const_data_ptr_cast(buffer + block_end - SwarBlock::SIZE));
+			value_ascii = value_ascii && block_ascii;
 			while (candidates) {
 				const idx_t at = pos + CountZeros<uint64_t>::Trailing(candidates);
 				if (at >= limit) {
@@ -450,6 +476,7 @@ protected:
 						return true;
 					}
 					comment = false;
+					value_ascii = block_ascii;
 					last = at + row_end_bytes;
 					continue;
 				}
@@ -508,13 +535,16 @@ protected:
 							ClearCandidates(candidates, pos, at + 2, at + 1 + delimiter_bytes);
 						}
 						BlockDelimiter(result, at + delimiter_bytes,
-						               MULTI_BYTE_DELIMITER ? DelimiterPenultimateState() : CSVState::UNQUOTED);
+						               MULTI_BYTE_DELIMITER ? DelimiterPenultimateState() : CSVState::UNQUOTED, value_ascii);
+						value_ascii = block_ascii;
 						last = at + 1 + delimiter_bytes;
 						continue;
 					}
-					if (BlockRowEnd(result, at + 1, CSVState::UNQUOTED, row_end_bytes == 2, candidates, pos)) {
+					if (BlockRowEnd(result, at + 1, CSVState::UNQUOTED, row_end_bytes == 2, candidates, pos,
+					                value_ascii)) {
 						return true;
 					}
+					value_ascii = block_ascii;
 					last = at + 1 + row_end_bytes;
 					continue;
 				}
@@ -529,13 +559,15 @@ protected:
 						D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[1] == CSVState::DELIMITER);
 						D_ASSERT(ReplayStates(last, at + delimiter_bytes).states[0] == DelimiterPenultimateState());
 						ClearCandidates(candidates, pos, at + 1, at + delimiter_bytes);
-						BlockDelimiter(result, at + delimiter_bytes - 1, DelimiterPenultimateState());
+						BlockDelimiter(result, at + delimiter_bytes - 1, DelimiterPenultimateState(), value_ascii);
+						value_ascii = block_ascii;
 						last = at + delimiter_bytes;
 						continue;
 					}
 					D_ASSERT(ReplayStates(last, at + 1).states[1] == CSVState::DELIMITER);
 					D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
-					BlockDelimiter(result, at, before);
+					BlockDelimiter(result, at, before, value_ascii);
+					value_ascii = block_ascii;
 					last = at + 1;
 					continue;
 				}
@@ -581,9 +613,10 @@ protected:
 				D_ASSERT(ReplayStates(last, at + 1).states[0] == before);
 				D_ASSERT(ReplayStates(last, at + 1).states[1] ==
 				         (row_end_bytes == 2 ? CSVState::CARRIAGE_RETURN : CSVState::RECORD_SEPARATOR));
-				if (BlockRowEnd(result, at, before, row_end_bytes == 2, candidates, pos)) {
+				if (BlockRowEnd(result, at, before, row_end_bytes == 2, candidates, pos, value_ascii)) {
 					return true;
 				}
+				value_ascii = block_ascii;
 				last = at + row_end_bytes;
 			}
 			pos = limit;
