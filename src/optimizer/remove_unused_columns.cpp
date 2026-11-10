@@ -762,6 +762,20 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		}
 		return;
 	}
+	case LogicalOperatorType::LOGICAL_FILTER: {
+		// Casts referenced above this filter must not run on rows that it removes.
+		for (auto &entry : column_references) {
+			auto &column = entry.second;
+			for (auto &extract : column.struct_extracts) {
+				for (auto &component : extract.components) {
+					if (component.cast && (*component.cast)->CanThrow()) {
+						column.supports_pushdown_extract = PushdownExtractSupport::DISABLED;
+					}
+				}
+			}
+		}
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &proj = op.Cast<LogicalProjection>();
 		if (analyze) {
