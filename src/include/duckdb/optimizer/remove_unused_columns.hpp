@@ -190,6 +190,15 @@ private:
 	optional_ptr<unordered_map<TableIndex, MaterializedCTEInfo>> TryGetCTEMap();
 };
 
+class ColumnReferenceExtractor : public BaseColumnPruner {
+public:
+	static column_binding_map_t<ReferencedColumn> GetReferences(unique_ptr<Expression> *expression) {
+		ColumnReferenceExtractor extractor;
+		extractor.VisitExpression(expression);
+		return extractor.column_references;
+	}
+};
+
 class CTERefPruner : public LogicalOperatorVisitor {
 public:
 	CTERefPruner(const TableIndex table_index, const unordered_set<ProjectionIndex> &referenced_columns);

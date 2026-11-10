@@ -495,6 +495,10 @@ InsertionOrderPreservingMap<string> PhysicalStreamingWindow::ParamsToString() co
 		projections += select_list[i]->GetName();
 	}
 	result["Projections"] = projections;
+	if (partition_limit.IsValid()) {
+		result["Limit"] = to_string(partition_limit.GetIndex());
+	}
+
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
 }

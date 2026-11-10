@@ -6,7 +6,7 @@ statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-PRAGMA explain_output = OPTIMIZED_ONLY;
+PRAGMA explain_output = PHYSICAL_ONLY;
 
 query II
 explain
@@ -14,7 +14,7 @@ SELECT id
 FROM range(100) tbl(id)
 QUALIFY row_number() OVER() = 1
 ----
-logical_opt	<!REGEX>:.*FILTER.*
+physical_plan	<REGEX>:.*FILTER.*STREAMING_WINDOW.*Limit.*
 
 query I
 SELECT id
