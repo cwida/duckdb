@@ -49,6 +49,34 @@ SELECT {FIELD}.k::INTEGER FROM (
 ----
 1
 
+query I rowsort
+SELECT u.{FIELD}.k::INTEGER
+FROM (SELECT id, {FIELD} FROM cast_rows UNION ALL SELECT id, {FIELD} FROM cast_rows) u
+WHERE id = 1;
+----
+1
+1
+
+endloop
+
+# Native visibility selection must happen before evaluating casts on deleted values.
+statement ok
+DELETE FROM cast_rows WHERE id = 2;
+
+foreach FIELD v s
+
+query I rowsort
+SELECT u.{FIELD}.k::INTEGER
+FROM (SELECT {FIELD} FROM cast_rows UNION ALL SELECT {FIELD} FROM cast_rows) u;
+----
+1
+1
+
+query I
+SELECT {FIELD}.k::INTEGER FROM cast_rows;
+----
+1
+
 endloop
 
 # A sibling residual filter must not inspect references owned by rewritten union expressions.
