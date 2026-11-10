@@ -32,3 +32,28 @@ WHERE EXISTS (
 ORDER BY d.id;
 ----
 1
+
+# the same guard protects UNNEST, in the FROM clause and in the select list, and other table in-out functions
+query I
+SELECT count(*) FROM docs d
+WHERE NOT EXISTS (
+    SELECT 1 FROM docs AS a, unnest(CAST(a.payload AS JSON[])) AS t(item)
+    WHERE a.id = d.id AND json_valid(a.payload) AND json_extract_string(t.item, '$.kind') = 'X');
+----
+2
+
+query I
+SELECT count(*) FROM docs d
+WHERE NOT EXISTS (
+    SELECT 1 FROM docs AS a, LATERAL (SELECT unnest(CAST(a.payload AS JSON[])) AS item) t
+    WHERE a.id = d.id AND json_valid(a.payload) AND json_extract_string(t.item, '$.kind') = 'X');
+----
+2
+
+query I
+SELECT count(*) FROM docs d
+WHERE NOT EXISTS (
+    SELECT 1 FROM docs AS a, json_each(a.payload) AS t
+    WHERE a.id = d.id AND json_valid(a.payload) AND json_extract_string(t.value, '$.kind') = 'X');
+----
+2
