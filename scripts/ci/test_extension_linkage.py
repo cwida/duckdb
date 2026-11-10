@@ -61,6 +61,8 @@ class ExtensionLinkageTest(unittest.TestCase):
                 linked = libraries(name)
                 if sys.platform == "win32":
                     self.assertIn("duckdb_static", linked, f"{name}: {linked}")
+                    for extension in ("core_functions_extension", "tpch_extension"):
+                        self.assertIn(extension, linked, f"{name}: {linked}")
                     self.assertNotIn("tools/shell/duckdb.lib", linked.replace("\\", "/"), f"{name}: {linked}")
                 else:
                     for library in ("duckdb_static", "core_functions_extension", "parquet_extension"):

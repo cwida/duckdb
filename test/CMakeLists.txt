@@ -94,6 +94,9 @@ target_include_directories(
           "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
 target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner
                       duckdb_re2)
+if(WIN32)
+  link_extension_libraries(test_loadable_extension "")
+endif()
 set_target_properties(shell PROPERTIES ENABLE_EXPORTS ON)
 
 if(${ENABLE_UNITTEST_CPP_TESTS})
@@ -109,6 +112,9 @@ if(${ENABLE_UNITTEST_CPP_TESTS})
     PRIVATE "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
   target_link_libraries(duckdb_tests_loadable_extension duckdb_fsst
                         duckdb_mbedtls)
+  if(WIN32)
+    link_extension_libraries(duckdb_tests_loadable_extension "")
+  endif()
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
