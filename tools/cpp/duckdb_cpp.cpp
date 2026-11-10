@@ -4956,9 +4956,9 @@ void *TableFunction::MetricsInput::GetUserDataInternal() const {
 	return RequireTableUserData(function.user_data);
 }
 
-auto TableFunction::MetricsInput::SetRowGroups(idx_t scanned, idx_t total) -> void {
-	CheckedAPICall(duckdb_v2_table_function_metrics_set_row_groups,
-	               static_cast<duckdb_v2_table_function_metrics_info_handle>(args), scanned, total);
+auto TableFunction::MetricsInput::SetMetric(const std::string &name, idx_t value) -> void {
+	CheckedAPICall(duckdb_v2_table_function_metrics_set_metric,
+	               static_cast<duckdb_v2_table_function_metrics_info_handle>(args), name.data(), name.size(), value);
 }
 
 auto TableFunction::MetricsInput::GetContext() -> Context & {

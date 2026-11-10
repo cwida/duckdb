@@ -6,6 +6,7 @@
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/execution/partition_info.hpp"
 #include "duckdb/function/partition_stats.hpp"
+#include "duckdb/main/profiler/metrics.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -226,8 +227,8 @@ public:
 	void *in_bind_data = nullptr;
 	void *in_global_state = nullptr;
 
-	idx_t out_row_groups_scanned = 0;
-	idx_t out_total_row_groups = 0;
+	//! The metrics the callback reported, by the name of the profiling metric
+	unordered_map<string, idx_t> out_metrics;
 };
 
 static auto Convert(duckdb_v2_table_function_metrics_info_handle info) -> CV2TableMetricsInfo * {
@@ -896,6 +897,23 @@ static auto CV2TableProgress(ClientContext &context, const FunctionData *bind_da
 	return MinValue<double>(MaxValue<double>(args.out_progress, 0.0), 1.0) * 100.0;
 }
 
+//! The field of the operator metrics that a profiling metric name stands for, or null if a scan cannot report it
+static auto CV2TableMetricField(const string &name, OperatorMetrics &metrics) -> idx_t * {
+	if (name == MetricOperatorRowsScanned::Name) {
+		return &metrics.rows_scanned;
+	}
+	if (name == MetricOperatorRowGroupsScanned::Name) {
+		return &metrics.row_groups_scanned;
+	}
+	if (name == MetricOperatorTotalRowGroupsToScan::Name) {
+		return &metrics.total_row_groups_to_scan;
+	}
+	if (name == MetricOperatorBytesScanned::Name) {
+		return &metrics.bytes_scanned;
+	}
+	return nullptr;
+}
+
 static auto CV2TableGetMetrics(TableFunctionGetMetricsInput &input) -> void {
 	if (!input.bind_data) {
 		return;
@@ -920,8 +938,13 @@ static auto CV2TableGetMetrics(TableFunctionGetMetricsInput &input) -> void {
 		err.ThrowAsException();
 	}
 
-	input.operator_metrics.row_groups_scanned = args.out_row_groups_scanned;
-	input.operator_metrics.total_row_groups_to_scan = args.out_total_row_groups;
+	for (auto &metric : args.out_metrics) {
+		auto &field = *CV2TableMetricField(metric.first, input.operator_metrics);
+		field = metric.second;
+		if (metric.first == MetricOperatorBytesScanned::Name) {
+			input.operator_metrics.bytes_scanned_reported = true;
+		}
+	}
 }
 
 //! Registered only for functions that declared the file_row_number virtual column, which is all there is to know
@@ -1632,13 +1655,18 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_global_state(duckdb_v2_tabl
 	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_global_state; });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set_row_groups(duckdb_v2_table_function_metrics_info_handle info,
-                                                                idx_t scanned, idx_t total,
-                                                                duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set_metric(duckdb_v2_table_function_metrics_info_handle info,
+                                                            const char *name, idx_t name_length, idx_t value,
+                                                            duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	return WithErrorHandler(err, [&]() {
-		Convert(info)->out_row_groups_scanned = scanned;
-		Convert(info)->out_total_row_groups = total;
+		const string metric(name, name_length);
+		OperatorMetrics unused;
+		if (!CV2TableMetricField(metric, unused)) {
+			throw duckdb::InvalidInputException("A table function cannot report the metric \"%s\"", metric);
+		}
+		Convert(info)->out_metrics[metric] = value;
 	});
 }
 

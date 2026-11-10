@@ -956,6 +956,11 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 		// the metrics of the scan include those the wrapped function keeps per file
 		result.get_metrics = TableFunctionMultiFileGetMetrics;
 	}
+	if (single_file_function.statistics && !single_file_function.statistics_extended) {
+		throw InternalException("Table function %s defines statistics, but a function wrapped in a multi file function "
+		                        "needs statistics_extended",
+		                        single_file_function.name);
+	}
 	if (single_file_function.statistics_extended) {
 		// the statistics of the scan are those of its files, combined
 		result.statistics_extended = TableFunctionMultiFileFunction::MultiFileScanStatsExtended;

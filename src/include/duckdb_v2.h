@@ -14925,25 +14925,37 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_get_global_state(
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 /*!
- * Reports how many row groups the scan has read, out of how many it has found to read.
+ * Reports a metric of the scan by name.
  *
- * A row group is the unit a format lets the scan skip, e.g. a Parquet row group or an ORC stripe. The engine shows the
- * numbers in the metrics of the scan, which tells how much of the data the filters of the query spared. The engine may
- * collect the metrics of a scan more than once, and adds up what it is told: `scanned` is the number of row groups read
- * since the metrics were last collected, `total` is the number of row groups found so far in all.
+ * The names are those of the operator metrics DuckDB's profiling gathers (see
+ * `duckdb_v2_query_metrics_node_get_metric()`), and the engine shows what is reported under them in the metrics of the
+ * scan. A scan can report:
+ *
+ * - `operator.rows_scanned`: the number of rows read since the metrics were last collected;
+ * - `operator.row_groups_scanned`: the number of row groups read since the metrics were last collected. A row group is
+ * the unit a format lets the scan skip, e.g. a Parquet row group or an ORC stripe;
+ * - `operator.total_row_groups_to_scan`: the number of row groups that were read or skipped, in all, so far;
+ * - `operator.bytes_scanned`: the number of bytes read since the metrics were last collected.
+ *
+ * The engine may collect the metrics of a scan more than once, and adds up what it is told for the metrics that are
+ * counted since the last collection. A metric the callback does not set is not reported. Setting a metric twice keeps
+ * the last value, and a name that is not one of the above is rejected with `ERROR_INPUT_INVALID`.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param info The metrics info handle.
- * @param scanned The number of row groups that were read since the metrics were last collected.
- * @param total The number of row groups that were read or skipped, in all.
+ * @param name The name of the metric, matched exactly. Borrowed for the call only.
+ * @param name_length The length of `name` in bytes. `name` need not be null-terminated and may be NULL only when this
+ * is 0.
+ * @param value The value of the metric.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
  * `duckdb_v2_error_info_destroy()`.
  * @return DUCKDB_V2_ERROR
  */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_table_function_metrics_set_row_groups(
-    duckdb_v2_table_function_metrics_info_handle info, idx_t scanned, idx_t total, duckdb_v2_error_info_handle *err);
+DUCKDB_C_API DUCKDB_V2_ERROR
+duckdb_v2_table_function_metrics_set_metric(duckdb_v2_table_function_metrics_info_handle info, const char *name,
+                                            idx_t name_length, idx_t value, duckdb_v2_error_info_handle *err);
 #endif
 
 #if DUCKDB_V2_API_ALLOW_UNSTABLE

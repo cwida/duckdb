@@ -230,7 +230,9 @@ void MetricsReport(TableFunction::MetricsInput &input) {
 	if (!global) {
 		return;
 	}
-	input.SetRowGroups(global->scanned.exchange(0), input.GetBindData<HintBind>().count);
+	input.SetMetric("operator.row_groups_scanned", global->scanned.exchange(0));
+	input.SetMetric("operator.total_row_groups_to_scan", input.GetBindData<HintBind>().count);
+	REQUIRE_THROWS_AS(input.SetMetric("operator.timing", 1), InvalidInputException);
 }
 
 std::optional<QueryMetricsNode> FindOperator(const QueryMetricsNode &node, std::string_view name) {

@@ -1578,8 +1578,9 @@ typedef struct {
 	(duckdb_v2_table_function_metrics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_table_function_metrics_get_user_data)
 	(duckdb_v2_table_function_metrics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_metrics_set_row_groups)
-	(duckdb_v2_table_function_metrics_info_handle info, idx_t scanned, idx_t total, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_table_function_metrics_set_metric)
+	(duckdb_v2_table_function_metrics_info_handle info, const char *name, idx_t name_length, idx_t value,
+	 duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_table_function_set_metrics_callback)
 	(duckdb_v2_table_function_handle function, duckdb_v2_table_function_metrics_callback_fn callback,
 	 duckdb_v2_error_info_handle *err);
@@ -3625,7 +3626,7 @@ typedef struct {
 #define duckdb_v2_table_function_metrics_get_user_data duckdb_ext_api.duckdb_v2_table_function_metrics_get_user_data
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_metrics_set_row_groups duckdb_ext_api.duckdb_v2_table_function_metrics_set_row_groups
+#define duckdb_v2_table_function_metrics_set_metric duckdb_ext_api.duckdb_v2_table_function_metrics_set_metric
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_table_function_set_metrics_callback duckdb_ext_api.duckdb_v2_table_function_set_metrics_callback
