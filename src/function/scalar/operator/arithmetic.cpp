@@ -404,7 +404,7 @@ void DecimalAddSubtractResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	if (check_overflow) {
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OPOVERFLOWCHECK>(result_type.InternalType()));
 	} else {
-		// the result type holds every sum of the input types, so the operation cannot overflow
+		// the result type holds every result of the operation, so it cannot overflow
 		bound_function.SetFunctionCallback(GetScalarBinaryFunction<OP>(result_type.InternalType()));
 		bound_function.SetErrorMode(FunctionErrors::CANNOT_ERROR);
 	}
