@@ -159,7 +159,7 @@ where (t1.i = t2.i and t1.i = 7) or (t1.j = 3)
 ----
 physical_plan	<REGEX>:.*FILTER.*
 
-# we can also do more complex expressions, like modulo
+# Expressions marked as fallible stay within the original join condition.
 query I
 select count(*)
 from test t1, test t2
@@ -172,9 +172,9 @@ explain select count(*)
 from test t1, test t2
 where (t1.i = t2.i and t1.i % 5 = 0) or (t1.j % 6 = 0)
 ----
-physical_plan	<REGEX>:.*FILTER.*
+physical_plan	<!REGEX>:.*FILTER.*
 
-# or something like IN
+# Non-fallible IN predicates can still be derived.
 query I
 select count(*)
 from test t1, test t2
