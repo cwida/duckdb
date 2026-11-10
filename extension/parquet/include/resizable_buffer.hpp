@@ -105,6 +105,9 @@ public:
 		ptr = allocated_data.get();
 		len = alloc_len;
 	}
+	idx_t GetCapacity() const {
+		return alloc_len;
+	}
 
 private:
 	AllocatedData allocated_data;

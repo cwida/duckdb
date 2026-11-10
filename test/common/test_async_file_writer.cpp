@@ -1075,7 +1075,7 @@ TEST_CASE("ManagedAsyncWriteQueue applies backpressure to allocation capacity", 
 	AsyncThreadBlocker async_thread_blocker(*con->context, 1);
 	REQUIRE(async_thread_blocker.WaitForStarted());
 	BlockingAsyncWriteTarget target;
-	ManagedAsyncWriteQueue queue(*con->context, target);
+	ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
 
 	idx_t completion_count = 0;
 	idx_t completion_offset = 0;
@@ -1135,7 +1135,7 @@ TEST_CASE("ManagedAsyncWriteStreamQueue drains oversized sequential tails under 
 		REQUIRE(async_thread_blocker.WaitForStarted());
 		BlockingAsyncWriteTarget target;
 		SequentialAsyncWriteStreamTarget stream_target(target, local_file);
-		ManagedAsyncWriteStreamQueue queue(*con->context, stream_target);
+		ManagedAsyncWriteStreamQueue queue(con->context->GetContext(), stream_target);
 
 		auto head_size = AsyncWriteConfig::REMOTE_COALESCE_THRESHOLD;
 		auto tail_capacity = ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD + 1;
@@ -1200,7 +1200,7 @@ TEST_CASE("ManagedAsyncWriteStreamQueue rechecks concurrent batches under backpr
 	REQUIRE(async_thread_blocker.WaitForStarted());
 	BlockingAsyncWriteTarget target;
 	SequentialAsyncWriteStreamTarget stream_target(target, false);
-	ManagedAsyncWriteStreamQueue queue(*con->context, stream_target);
+	ManagedAsyncWriteStreamQueue queue(con->context->GetContext(), stream_target);
 
 	auto head_size = AsyncWriteConfig::REMOTE_COALESCE_THRESHOLD;
 	auto tail_capacity = ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD + 1;
@@ -1267,7 +1267,7 @@ TEST_CASE("ManagedAsyncWriteQueue releases allocation capacity after write failu
 	DuckDB db(nullptr);
 	auto con = CreateConnectionWithAsyncThreads(db);
 	FailingAsyncWriteTarget target;
-	ManagedAsyncWriteQueue queue(*con->context, target);
+	ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
 	mutex completion_lock;
 	vector<idx_t> completion_offsets;
 	vector<idx_t> completion_sizes;
@@ -1302,7 +1302,7 @@ TEST_CASE("ManagedAsyncWriteQueue releases pending and active allocation capacit
 	DuckDB db(nullptr);
 	auto con = CreateConnectionWithAsyncThreads(db);
 	BlockingAsyncWriteTarget target;
-	ManagedAsyncWriteQueue queue(*con->context, target);
+	ManagedAsyncWriteQueue queue(con->context->GetContext(), target);
 	mutex completion_lock;
 	std::condition_variable completion_cv;
 	idx_t completion_count = 0;

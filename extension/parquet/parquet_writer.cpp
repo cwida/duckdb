@@ -129,6 +129,10 @@ public:
 		return bloom_filter->Get()->len;
 	}
 
+	idx_t AllocationSize() const override {
+		return bloom_filter->Get()->GetCapacity();
+	}
+
 private:
 	unique_ptr<ParquetBloomFilter> bloom_filter;
 };
