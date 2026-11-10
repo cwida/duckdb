@@ -72,6 +72,9 @@ public:
 	//! Whether a registered cast can change this default conversion, including nested casts.
 	//! Data-dependent VARIANT conversions are treated conservatively.
 	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;
+	//! Whether a custom type has a cast registered directly to JSON. Built-in types and GEOMETRY have their own
+	//! JSON handling, so only aliases are considered here.
+	DUCKDB_API bool HasCustomJSONCast(const LogicalType &source) const;
 
 	//! Register a combine rule for LogicalType::TryGetMaxLogicalType, consulted before previously registered rules
 	//! and the built-in rules

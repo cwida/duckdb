@@ -6,6 +6,7 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/vector/variant_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
@@ -109,14 +110,19 @@ static bool WriteVariantResultData(ToVariantSourceData &source, ToVariantGlobalR
 }
 
 struct VariantCastData : BoundCastData {
-	explicit VariantCastData(const LogicalType &source_type_p)
-	    : shredded_type(VariantUtils::ShreddedType(source_type_p)) {
+	VariantCastData(const LogicalType &variant_source_type, unique_ptr<BoundCastInfo> pre_cast_p)
+	    : shredded_type(VariantUtils::ShreddedType(variant_source_type)), pre_cast_target(variant_source_type),
+	      pre_cast(std::move(pre_cast_p)) {
 	}
 
 	LogicalType shredded_type;
+	LogicalType pre_cast_target;
+	//! Casts custom types in the source to their registered JSON representation before converting to VARIANT
+	unique_ptr<BoundCastInfo> pre_cast;
 
 	unique_ptr<BoundCastData> Copy() const override {
-		return make_uniq<VariantCastData>(*this);
+		return make_uniq<VariantCastData>(pre_cast_target,
+		                                  pre_cast ? make_uniq<BoundCastInfo>(pre_cast->Copy()) : nullptr);
 	}
 };
 
@@ -128,6 +134,9 @@ struct VariantLocalData : FunctionLocalState {
 	//! Allocator for temporary conversion memory (e.g. JSON parsing), backed by the buffer allocator when possible
 	//! so the memory is tracked
 	Allocator &allocator;
+
+	//! Local state of the cast that converts custom types to their JSON representation
+	unique_ptr<FunctionLocalState> pre_cast_local_state;
 
 	void Initialize(const LogicalType &shredded_type, idx_t new_capacity) {
 		capacity = new_capacity;
@@ -157,7 +166,12 @@ private:
 unique_ptr<FunctionLocalState> CastToVariantLocalState(CastLocalStateParameters &parameters) {
 	auto &cast_data = parameters.cast_data->Cast<VariantCastData>();
 	auto &allocator = parameters.context ? BufferAllocator::Get(*parameters.context) : Allocator::DefaultAllocator();
-	return make_uniq<VariantLocalData>(cast_data.shredded_type, allocator);
+	auto result = make_uniq<VariantLocalData>(cast_data.shredded_type, allocator);
+	if (cast_data.pre_cast && cast_data.pre_cast->HasInitLocalState()) {
+		CastLocalStateParameters pre_cast_params(parameters, cast_data.pre_cast->GetCastData());
+		result->pre_cast_local_state = cast_data.pre_cast->InitLocalState(pre_cast_params);
+	}
+	return std::move(result);
 }
 
 static bool SupportsShreddedCast(const LogicalType &type) {
@@ -221,10 +235,24 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 	if (!count) {
 		return true;
 	}
-	if (TryToShreddedCast(source, result, count, parameters)) {
+	auto &local_data = parameters.local_state->Cast<VariantLocalData>();
+	auto &cast_data = parameters.cast_data->Cast<VariantCastData>();
+
+	optional_ptr<Vector> source_vector(&source);
+	unique_ptr<Vector> pre_cast_vector;
+	if (cast_data.pre_cast) {
+		pre_cast_vector = make_uniq<Vector>(cast_data.pre_cast_target, count);
+		CastParameters pre_cast_params(parameters, cast_data.pre_cast->GetCastData(), local_data.pre_cast_local_state);
+		if (!cast_data.pre_cast->Cast(source, *pre_cast_vector, count, pre_cast_params)) {
+			return false;
+		}
+		source_vector = pre_cast_vector.get();
+	}
+	auto &converted_source = *source_vector;
+
+	if (TryToShreddedCast(converted_source, result, count, parameters)) {
 		return true;
 	}
-	auto &local_data = parameters.local_state->Cast<VariantLocalData>();
 	DataChunk offsets;
 	offsets.Initialize(Allocator::DefaultAllocator(),
 	                   {LogicalType::UINTEGER, LogicalType::UINTEGER, LogicalType::UINTEGER, LogicalType::UINTEGER},
@@ -236,7 +264,7 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 	//! Initialize the dictionary
 	OrderedOwningStringMap<uint32_t> dictionary(StringVector::GetStringAllocator(keys_entry));
 	SelectionVector keys_selvec;
-	ToVariantSourceData source_data(source, count);
+	ToVariantSourceData source_data(converted_source, count);
 
 	{
 		VariantVectorData variant_data(result);
@@ -273,6 +301,47 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 	return true;
 }
 
+//! The type that is converted to VARIANT: custom types with a registered JSON cast become JSON, so the
+//! conversion stores the value the cast produces instead of the base type's physical representation.
+static LogicalType GetVariantSourceType(const CastFunctionSet &casts, const LogicalType &type) {
+	if (type.IsJSONType() || casts.HasCustomJSONCast(type)) {
+		return LogicalType::JSON();
+	}
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(GetVariantSourceType(casts, ListType::GetChildType(type)));
+	case LogicalTypeId::ARRAY:
+		return LogicalType::ARRAY(GetVariantSourceType(casts, ArrayType::GetChildType(type)), ArrayType::GetSize(type));
+	case LogicalTypeId::STRUCT: {
+		child_list_t<LogicalType> children;
+		for (auto &entry : StructType::GetChildTypes(type)) {
+			children.emplace_back(entry.first, GetVariantSourceType(casts, entry.second));
+		}
+		return LogicalType::STRUCT(std::move(children));
+	}
+	case LogicalTypeId::TUPLE: {
+		vector<LogicalType> children;
+		for (auto &entry : StructType::GetChildTypes(type)) {
+			children.push_back(GetVariantSourceType(casts, entry.second));
+		}
+		return LogicalType::TUPLE(std::move(children));
+	}
+	case LogicalTypeId::MAP:
+		return LogicalType::MAP(GetVariantSourceType(casts, MapType::KeyType(type)),
+		                        GetVariantSourceType(casts, MapType::ValueType(type)));
+	case LogicalTypeId::UNION: {
+		child_list_t<LogicalType> children;
+		for (idx_t i = 0; i < UnionType::GetMemberCount(type); i++) {
+			children.emplace_back(UnionType::GetMemberName(type, i),
+			                      GetVariantSourceType(casts, UnionType::GetMemberType(type, i)));
+		}
+		return LogicalType::UNION(std::move(children));
+	}
+	default:
+		return type;
+	}
+}
+
 } // namespace variant
 
 BoundCastInfo DefaultCasts::ImplicitToVariantCast(BindCastInput &input, const LogicalType &source,
@@ -281,7 +350,16 @@ BoundCastInfo DefaultCasts::ImplicitToVariantCast(BindCastInput &input, const Lo
 		//! TYPE has no VARIANT representation - only NULL values can be cast
 		return TryVectorNullCast;
 	}
-	return BoundCastInfo(variant::CastToVARIANT, make_uniq<variant::VariantCastData>(source),
+	auto has_custom_cast = TypeVisitor::Contains(
+	    source, [&](const LogicalType &type) { return input.function_set.HasCustomJSONCast(type); });
+	auto variant_source = source;
+	unique_ptr<BoundCastInfo> pre_cast;
+	if (has_custom_cast) {
+		variant_source = variant::GetVariantSourceType(input.function_set, source);
+		pre_cast = make_uniq<BoundCastInfo>(input.GetCastFunction(source, variant_source));
+	}
+	return BoundCastInfo(variant::CastToVARIANT,
+	                     make_uniq<variant::VariantCastData>(variant_source, std::move(pre_cast)),
 	                     variant::CastToVariantLocalState);
 }
 

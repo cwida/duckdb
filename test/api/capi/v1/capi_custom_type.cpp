@@ -1,5 +1,7 @@
 #include "capi_tester.hpp"
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 using namespace duckdb;
 
@@ -256,4 +258,131 @@ TEST_CASE("Test Custom Type Function", "[capi]") {
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->row_count() == 1);
 	REQUIRE(result->Fetch<bool>(0, 0) == true);
+}
+
+static bool IntegerToCustomJSON(duckdb_function_info info, idx_t count, duckdb_vector input, duckdb_vector output) {
+	const auto input_data = static_cast<const int32_t *>(duckdb_vector_get_data(input));
+	const auto output_data = static_cast<int32_t *>(duckdb_vector_get_data(output));
+	const auto input_validity = duckdb_vector_get_validity(input);
+	duckdb_vector_ensure_validity_writable(output);
+	const auto output_validity = duckdb_vector_get_validity(output);
+
+	for (idx_t i = 0; i < count; i++) {
+		if (input_validity && !duckdb_validity_row_is_valid(input_validity, i)) {
+			duckdb_validity_set_row_invalid(output_validity, i);
+			continue;
+		}
+		output_data[i] = input_data[i] + 1000;
+		duckdb_validity_set_row_valid(output_validity, i);
+	}
+	return true;
+}
+
+static void WriteCustomJSONString(duckdb_vector input, duckdb_vector output, idx_t count, bool json) {
+	const auto input_data = static_cast<const int32_t *>(duckdb_vector_get_data(input));
+	const auto input_validity = duckdb_vector_get_validity(input);
+	duckdb_vector_ensure_validity_writable(output);
+	const auto output_validity = duckdb_vector_get_validity(output);
+
+	for (idx_t i = 0; i < count; i++) {
+		if (input_validity && !duckdb_validity_row_is_valid(input_validity, i)) {
+			duckdb_validity_set_row_invalid(output_validity, i);
+			continue;
+		}
+		auto str = json ? StringUtil::Format("%d", input_data[i] - 1000)
+		                : StringUtil::Format("custom_%d", input_data[i] - 1000);
+		duckdb_vector_assign_string_element_len(output, i, str.c_str(), str.size());
+		duckdb_validity_set_row_valid(output_validity, i);
+	}
+}
+
+static bool CustomJSONToVarcharCastFunction(duckdb_function_info info, idx_t count, duckdb_vector input,
+                                            duckdb_vector output) {
+	WriteCustomJSONString(input, output, count, false);
+	return true;
+}
+
+static bool CustomJSONToJSONCastFunction(duckdb_function_info info, idx_t count, duckdb_vector input,
+                                         duckdb_vector output) {
+	WriteCustomJSONString(input, output, count, true);
+	return true;
+}
+
+TEST_CASE("Test Custom Type JSON Casts", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	auto integer_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+	auto custom_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+	duckdb_logical_type_set_alias(custom_type, "CUSTOM_JSON");
+	REQUIRE(duckdb_register_logical_type(tester.connection, custom_type, nullptr) == DuckDBSuccess);
+
+	auto varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+	auto json_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+	duckdb_logical_type_set_alias(json_type, "JSON");
+
+	auto register_cast = [&](duckdb_logical_type source, duckdb_logical_type target, duckdb_cast_function_t function) {
+		auto cast = duckdb_create_cast_function();
+		duckdb_cast_function_set_source_type(cast, source);
+		duckdb_cast_function_set_target_type(cast, target);
+		duckdb_cast_function_set_implicit_cast_cost(cast, 0);
+		duckdb_cast_function_set_function(cast, function);
+		auto state = duckdb_register_cast_function(tester.connection, cast);
+		duckdb_destroy_cast_function(&cast);
+		return state;
+	};
+
+	REQUIRE(register_cast(integer_type, custom_type, IntegerToCustomJSON) == DuckDBSuccess);
+	REQUIRE(register_cast(custom_type, json_type, CustomJSONToJSONCastFunction) == DuckDBSuccess);
+	REQUIRE(register_cast(custom_type, varchar_type, CustomJSONToVarcharCastFunction) == DuckDBSuccess);
+
+	duckdb_destroy_logical_type(&integer_type);
+	duckdb_destroy_logical_type(&custom_type);
+	duckdb_destroy_logical_type(&varchar_type);
+	duckdb_destroy_logical_type(&json_type);
+
+	result = tester.Query(R"(
+		SELECT to_json(x)::VARCHAR, json_array(x, 'x')::VARCHAR, json_object('k', x)::VARCHAR,
+		       array_to_json([x])::VARCHAR, row_to_json({'k': x})::VARCHAR,
+		       CAST([x] AS JSON)::VARCHAR, CAST({'k': x} AS JSON)::VARCHAR,
+		       CAST(x AS VARIANT)::VARCHAR, CAST([x] AS VARIANT)::VARCHAR
+		FROM (VALUES (1::INTEGER::CUSTOM_JSON), ((-3)::INTEGER::CUSTOM_JSON), (NULL::CUSTOM_JSON)) t(x)
+	)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->row_count() == 3);
+	REQUIRE(result->ColumnCount() == 9);
+
+	const char *expected[3][9] = {
+	    {"1", "[1,\"x\"]", "{\"k\":1}", "[1]", "{\"k\":1}", "[1]", "{\"k\":1}", "1", "[1]"},
+	    {"-3", "[-3,\"x\"]", "{\"k\":-3}", "[-3]", "{\"k\":-3}", "[-3]", "{\"k\":-3}", "-3", "[-3]"},
+	    {"", "[null,\"x\"]", "{\"k\":null}", "[null]", "{\"k\":null}", "[null]", "{\"k\":null}", "", "[NULL]"}};
+	for (idx_t row = 0; row < 3; row++) {
+		for (idx_t col = 0; col < 9; col++) {
+			REQUIRE(result->Fetch<string>(col, row) == expected[row][col]);
+		}
+	}
+	REQUIRE(result->IsNull(0, 2));
+	REQUIRE(result->IsNull(7, 2));
+
+	result = tester.Query(R"(
+		SELECT json_group_array(x)::VARCHAR, json_group_object(x::VARCHAR, x)::VARCHAR
+		FROM (VALUES (1::INTEGER::CUSTOM_JSON), (2::INTEGER::CUSTOM_JSON)) t(x)
+	)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<string>(0, 0) == "[1,2]");
+	REQUIRE(result->Fetch<string>(1, 0) == "{\"custom_1\":1,\"custom_2\":2}");
+
+	auto file_path = TestDirectoryPath() + "/custom_json_copy.json";
+	result = tester.Query(
+	    StringUtil::Format("COPY (SELECT x FROM (VALUES (1::INTEGER::CUSTOM_JSON), ((-3)::INTEGER::CUSTOM_JSON), "
+	                       "(NULL::CUSTOM_JSON)) t(x)) TO '%s' (FORMAT JSON)",
+	                       file_path));
+	REQUIRE_NO_FAIL(*result);
+
+	std::ifstream file(file_path);
+	std::stringstream contents;
+	contents << file.rdbuf();
+	REQUIRE(contents.str() == "{\"x\":1}\n{\"x\":-3}\n{\"x\":null}\n");
 }
