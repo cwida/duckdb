@@ -2,6 +2,8 @@
 # description: Persisted index expressions must satisfy creation-time validation
 # group: [corrupt]
 
+require exact_vector_size 2048
+
 statement ok
 CREATE TABLE volatile_key(i INTEGER)
 
