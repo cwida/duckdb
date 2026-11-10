@@ -119,6 +119,8 @@ protected:
 	                            reference<ColumnIndex> &path_ref, vector<ReferencedExtractComponent> &expressions);
 	void SetMode(BaseColumnPrunerMode mode);
 	BaseColumnPrunerMode GetMode() const;
+	//! Keep throwing casts at their original evaluation site while retaining safe field extraction.
+	void PreserveThrowingCasts(const vector<ColumnBinding> &bindings);
 
 private:
 	void MergeChildColumns(vector<ColumnIndex> &current_child_columns, ColumnIndex &new_child_column);

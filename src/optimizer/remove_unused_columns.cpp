@@ -515,6 +515,27 @@ static bool IsDuplicateCondition(const vector<JoinCondition> &conditions, const 
 void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	const bool analyze = mode == RemoveUnusedColumnsMode::ANALYZE;
 	auto &op = *op_ref;
+	// Only cross operators that preserve all input rows with a potentially throwing cast. Other operators
+	// may discard rows before the original projection evaluates it; the field extraction itself is safe.
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_PROJECTION:
+	case LogicalOperatorType::LOGICAL_UNION:
+	case LogicalOperatorType::LOGICAL_ORDER_BY:
+	case LogicalOperatorType::LOGICAL_WINDOW:
+	case LogicalOperatorType::LOGICAL_SECURE_VIEW:
+	case LogicalOperatorType::LOGICAL_CHUNK_GET:
+		break;
+	case LogicalOperatorType::LOGICAL_GET: {
+		auto &get = op.Cast<LogicalGet>();
+		if (get.table_filters.HasFilters() || get.table_filters.HasMultiColumnFilters()) {
+			PreserveThrowingCasts(op.GetColumnBindings());
+		}
+		break;
+	}
+	default:
+		PreserveThrowingCasts(op.GetColumnBindings());
+		break;
+	}
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_WINDOW: {
 		auto &window = op.Cast<LogicalWindow>();
@@ -761,20 +782,6 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			remove.VisitOperator(child);
 		}
 		return;
-	}
-	case LogicalOperatorType::LOGICAL_FILTER: {
-		// Casts referenced above this filter must not run on rows that it removes.
-		for (auto &entry : column_references) {
-			auto &column = entry.second;
-			for (auto &extract : column.struct_extracts) {
-				for (auto &component : extract.components) {
-					if (component.cast && (*component.cast)->CanThrow()) {
-						column.supports_pushdown_extract = PushdownExtractSupport::DISABLED;
-					}
-				}
-			}
-		}
-		break;
 	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &proj = op.Cast<LogicalProjection>();
@@ -1180,7 +1187,6 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 		auto &colref = expr.Cast<BoundColumnRefExpression>();
 		auto original_binding = colref.Binding();
 		auto &column_type = expr.GetReturnType();
-		idx_t start = expressions.size();
 		//! Pushdown Extract is supported, emit a column for every field
 		WritePushdownExtractColumns(
 		    entry->second,
@@ -1205,10 +1211,9 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 			    new_bindings.emplace(full_path, new_binding_idx);
 			    return new_binding_idx;
 		    });
-		for (; start < expressions.size(); start++) {
-			VisitExpression(&expressions[start]);
-		}
 	}
+	// The child pruner registers these expressions after the final vector is installed. Registering them
+	// here would retain references to reallocating vector slots, or to the temporary UNION projection.
 	proj.expressions = std::move(expressions);
 }
 
@@ -1883,6 +1888,47 @@ void BaseColumnPruner::AddBinding(BoundColumnRefExpression &col) {
 		auto &column = entry->second;
 		column.bindings.push_back(col);
 		column.child_columns.clear();
+	}
+}
+
+void BaseColumnPruner::PreserveThrowingCasts(const vector<ColumnBinding> &bindings) {
+	// Restrict this to the current operator's outputs. References from an already visited sibling may
+	// have been rewritten, and must not be inspected while descending a different subtree.
+	for (auto &binding : bindings) {
+		auto entry = column_references.find(binding);
+		if (entry == column_references.end() || entry->second.child_columns.empty()) {
+			continue;
+		}
+		auto &column = entry->second;
+		bool changed = false;
+		for (auto &extract : column.struct_extracts) {
+			reference<ColumnIndex> path(extract.extract_path);
+			for (idx_t i = 0; i < extract.components.size(); i++) {
+				auto &component = extract.components[i];
+				if (component.cast && (*component.cast)->CanThrow()) {
+					component.cast = nullptr;
+					path.get().SetType(LogicalType::INVALID);
+					changed = true;
+				}
+				if (i + 1 < extract.components.size()) {
+					path = path.get().GetChildIndex(0);
+				}
+			}
+		}
+		if (!changed) {
+			continue;
+		}
+		column.child_columns.clear();
+		column.unique_paths.clear();
+		for (auto &extract : column.struct_extracts) {
+			auto child_column = extract.extract_path;
+			if (column.child_columns.empty()) {
+				column.child_columns.push_back(std::move(child_column));
+			} else {
+				MergeChildColumns(column.child_columns, child_column);
+			}
+			column.AddPath(extract.extract_path);
+		}
 	}
 }
 
