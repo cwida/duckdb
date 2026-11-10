@@ -66,3 +66,12 @@ query II
 SELECT count(*), sum(v) FROM gaps WHERE rowid BETWEEN 2045 AND 2049 OR rowid BETWEEN 9997 AND 9999 OR rowid < 2;
 ----
 10	40230
+
+# no deletes: a filter on another column of the same scan approves fewer rows than the vector holds
+statement ok
+CREATE TABLE thinned AS SELECT i AS v, CASE WHEN i % 2048 IN (100, 101) THEN 1 ELSE 0 END AS g FROM range(10000) t(i);
+
+query II
+SELECT count(*), sum(v) FROM thinned WHERE g = 0 AND (rowid BETWEEN 2045 AND 2047 OR rowid < 2);
+----
+5	6139
