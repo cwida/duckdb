@@ -219,6 +219,18 @@ public:
 		return &target_type_entry->second;
 	}
 
+	vector<LogicalType> GetSourceTypes(const LogicalType &target) const {
+		vector<LogicalType> result;
+		for (auto &source_id : casts) {
+			for (auto &source_type : source_id.second) {
+				if (GetEntry(source_type.first, target)) {
+					result.push_back(source_type.first);
+				}
+			}
+		}
+		return result;
+	}
+
 	void AddEntry(const LogicalType &source, const LogicalType &target, MapCastNode node) {
 		casts[source.id()][source][target.id()].insert(make_pair(target, std::move(node)));
 	}
@@ -229,6 +241,10 @@ private:
 
 bool CastFunctionSet::HasRegisteredCast(const LogicalType &source, const LogicalType &target) const {
 	return map_info && map_info->GetEntry(source, target);
+}
+
+vector<LogicalType> CastFunctionSet::GetRegisteredCastSourceTypes(const LogicalType &target) const {
+	return map_info ? map_info->GetSourceTypes(target) : vector<LogicalType>();
 }
 
 bool CastFunctionSet::CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const {
