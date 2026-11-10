@@ -16,7 +16,7 @@ statement ok
 PRAGMA enable_profiling = 'json'
 
 statement ok
-PRAGMA profiling_output = '__TEST_DIR__/serialized_plan.json'
+PRAGMA profiling_output = '{TEST_DIR}/serialized_plan.json'
 
 statement ok
 SELECT a, b, sum(price - discount) FROM sales JOIN dim ON sales.id = dim.id GROUP BY a, b
@@ -28,6 +28,6 @@ statement ok
 RESET debug_verify_serializer
 
 query I
-SELECT content LIKE '%combine_aggr%' FROM read_text('__TEST_DIR__/serialized_plan.json')
+SELECT content LIKE '%combine_aggr%' FROM read_text('{TEST_DIR}/serialized_plan.json')
 ----
 true
