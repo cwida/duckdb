@@ -275,6 +275,8 @@ Matcher &MatcherFactory::CreateRootMatcher(const string &root_rule) {
 	// queries.
 	SuppressSuggestions("ShowDeprecatedQualifiedTableName");
 	SuppressSuggestions("ShowDeprecatedSelect");
+	// a CREATE MACRO name is usually new, so it is not completed with the names of existing functions
+	SuppressSuggestions("MacroFunctionName");
 
 	// Register all named rules before constructing any children. Grammar changes can introduce cycles through
 	// parameterized rules, so registering only the current recursive path is insufficient.

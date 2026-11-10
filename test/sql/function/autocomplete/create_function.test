@@ -33,3 +33,35 @@ query II
 SELECT suggestion, suggestion_start FROM sql_auto_complete('CREATE MACRO name (a) AS TABLE SEL') LIMIT 1;
 ----
 SELECT 	31
+
+# the name of a new macro completes IF NOT EXISTS and the schemas, not the names of existing functions
+
+statement ok
+CREATE MACRO my_existing_macro(x) AS x
+
+query II
+SELECT suggestion, suggestion_start FROM sql_auto_complete('CREATE MACRO ') LIMIT 1;
+----
+if 	13
+
+query I
+SELECT count(*) FROM sql_auto_complete('CREATE MACRO i') WHERE suggestion IN ('if ', 'information_schema.');
+----
+2
+
+query I
+SELECT count(*) FROM sql_auto_complete('CREATE OR REPLACE FUNCTION ') WHERE suggestion = 'main.';
+----
+1
+
+query I
+SELECT count(*) FROM sql_auto_complete('CREATE MACRO my_') WHERE suggestion = 'my_existing_macro';
+----
+0
+
+# after a type_function keyword name the definition completes
+
+query II
+SELECT suggestion, suggestion_start FROM sql_auto_complete('CREATE MACRO semi(a) A') LIMIT 1;
+----
+AS 	21
