@@ -59,6 +59,7 @@ public:
 	unsafe_vector<uint8_t> is_empty;
 	idx_t parent_null_count = 0;
 	idx_t null_count = 0;
+	optional_ptr<idx_t> fallback_filter_bytes_remaining;
 
 public:
 	template <class TARGET>

@@ -560,16 +560,31 @@ void PrimitiveColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 		FinalizePageIndex(state, page_index);
 		writer.BufferPageIndex(state.col_idx, std::move(page_index));
 	}
-	if (state.bloom_filter && !HasDictionary(state) &&
-	    state.bloom_filter->Get()->len * MIN_COMPRESSED_TO_FILTER_RATIO >
-	        NumericCast<idx_t>(column_chunk.meta_data.total_compressed_size)) {
+	const bool fallback = state.bloom_filter && !HasDictionary(state);
+	if (fallback && !KeepFallbackFilter(*state.bloom_filter, column_chunk)) {
 		state.bloom_filter.reset();
 	}
 	if (state.bloom_filter) {
-		writer.BufferBloomFilter(state.col_idx, std::move(state.bloom_filter));
+		writer.BufferBloomFilter(state.col_idx, std::move(state.bloom_filter), fallback);
 	}
 	// finalize the stats
 	writer.FlushColumnStats(state.col_idx, column_chunk, state.stats_state.get());
+}
+
+bool PrimitiveColumnWriter::KeepFallbackFilter(ParquetBloomFilter &filter,
+                                               const duckdb_parquet::ColumnChunk &column_chunk) {
+	if (filter.Get()->len * MIN_COMPRESSED_TO_FILTER_RATIO >
+	    NumericCast<idx_t>(column_chunk.meta_data.total_compressed_size)) {
+		return false;
+	}
+	if (first_fallback_filter) {
+		return filter.SharedValueRatio(*first_fallback_filter) <= MAX_SHARED_VALUE_RATIO;
+	}
+	auto &source = *filter.Get();
+	auto copy = make_uniq<ResizeableBuffer>(BufferAllocator::Get(writer.GetContext()), source.len);
+	memcpy(copy->ptr, source.ptr, source.len);
+	first_fallback_filter = make_uniq<ParquetBloomFilter>(std::move(copy));
+	return true;
 }
 
 void PrimitiveColumnWriter::AddPageToPageIndex(PrimitiveColumnWriterState &state,

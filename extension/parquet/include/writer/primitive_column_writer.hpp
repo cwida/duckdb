@@ -83,6 +83,7 @@ public:
 	bool pages_start_at_rows = true;
 
 	unique_ptr<ParquetBloomFilter> bloom_filter;
+	idx_t fallback_filter_charge = 0;
 };
 
 //! Base class for writing non-compound types (ex. numerics, strings)
@@ -103,6 +104,8 @@ public:
 	static constexpr const idx_t MAX_UNCOMPRESSED_DICT_PAGE_SIZE = 1073741824ULL;
 	//! Fallback filters are dropped unless the compressed column chunk is at least this many times larger
 	static constexpr const idx_t MIN_COMPRESSED_TO_FILTER_RATIO = 2;
+	//! Fallback filters are dropped when they share more than this ratio of values with the first one of the file
+	static constexpr const double MAX_SHARED_VALUE_RATIO = 0.5;
 
 public:
 	unique_ptr<ColumnWriterState> InitializeWriteState(duckdb_parquet::RowGroup &row_group) override;
@@ -155,6 +158,9 @@ protected:
 	                        idx_t &first_row_index);
 	//! Completes the page index of the column chunk (boundary order, whether a ColumnIndex can be written)
 	void FinalizePageIndex(PrimitiveColumnWriterState &state, ParquetPageIndexEntry &page_index);
+	bool KeepFallbackFilter(ParquetBloomFilter &filter, const duckdb_parquet::ColumnChunk &column_chunk);
+
+	unique_ptr<ParquetBloomFilter> first_fallback_filter;
 };
 
 } // namespace duckdb

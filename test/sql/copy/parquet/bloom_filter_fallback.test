@@ -1,5 +1,5 @@
 # name: test/sql/copy/parquet/bloom_filter_fallback.test
-# description: Non-dictionary Bloom filters, folding, and bounded allocation
+# description: Non-dictionary Bloom filters, folding, the row-group budget and repeated values
 # group: [parquet]
 
 require parquet
@@ -62,10 +62,10 @@ SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/disabled.par
 ----
 0
 
-# A zero budget suppresses only fallback filters.
+# A zero threshold disables only fallback filters.
 statement ok
 COPY input TO '{TEST_DIR}/zero-budget.parquet'
-(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 0)
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD 0)
 
 query TI
 SELECT path_in_schema, count(bloom_filter_length)
@@ -154,11 +154,33 @@ SELECT path_in_schema, count(bloom_filter_length)
 FROM parquet_metadata('{TEST_DIR}/sizes.parquet')
 GROUP BY ALL ORDER BY ALL
 ----
-repeated_int	2
+repeated_int	1
 unique_bigint	0
 unique_int	0
 unique_string	2
 unique_uuid	2
+
+# A fallback filter is dropped when most of its values are in the first one of the file.
+statement ok
+COPY (
+ SELECT (hash(i) % 50000)::INTEGER AS repeated, md5(i::VARCHAR) AS unique_string, md5((i // 4)::VARCHAR) AS clustered
+ FROM range(491520) t(i)
+) TO '{TEST_DIR}/repeats.parquet' (FORMAT PARQUET)
+
+query TI
+SELECT path_in_schema, count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/repeats.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+clustered	4
+repeated	1
+unique_string	4
+
+query I
+SELECT count(*) = (SELECT count(*) FROM range(491520) t(i) WHERE hash(i) % 50000 = 4242)
+FROM '{TEST_DIR}/repeats.parquet' WHERE repeated = 4242
+----
+true
 
 # A higher false positive ratio makes smaller filters, which can fit.
 statement ok
@@ -242,15 +264,15 @@ FROM '{TEST_DIR}/null-strings.parquet'
 ----
 0	0	4096	1
 
-# Folding releases reservation bytes, so later chunks can also get filters.
+# Filters fold to a smaller size, and each row group starts with a fresh budget.
 statement ok
-CREATE TABLE repeated AS
-SELECT CASE WHEN i % 17 = 0 THEN NULL ELSE (i % 10)::BIGINT END AS n
+CREATE TABLE few_values AS
+SELECT CASE WHEN i % 17 = 0 THEN NULL ELSE (i // 2048 * 10 + i % 10)::BIGINT END AS n
 FROM range(8192) t(i)
 
 statement ok
-COPY repeated TO '{TEST_DIR}/folded.parquet'
-(FORMAT PARQUET, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALLBACK_MAX_BYTES 16384)
+COPY few_values TO '{TEST_DIR}/folded.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD 16384)
 
 query II
 SELECT count(bloom_filter_length), bool_and(bloom_filter_length BETWEEN 32 AND 256)
@@ -258,17 +280,18 @@ FROM parquet_metadata('{TEST_DIR}/folded.parquet')
 ----
 4	true
 
-loop i 0 10
+loop i 0 40
 
 query I
 SELECT bool_or(bloom_filter_excludes)
 FROM parquet_bloom_probe('{TEST_DIR}/folded.parquet', 'n', {i})
+WHERE row_group_id = {i} // 10
 ----
 false
 
 query I
 SELECT (SELECT count(*) FROM '{TEST_DIR}/folded.parquet' WHERE n={i}) =
-       (SELECT count(*) FROM repeated WHERE n={i})
+       (SELECT count(*) FROM few_values WHERE n={i})
 ----
 true
 
@@ -276,14 +299,14 @@ endloop
 
 query I
 SELECT (SELECT count(*) FROM '{TEST_DIR}/folded.parquet' WHERE n IS NULL) =
-       (SELECT count(*) FROM repeated WHERE n IS NULL)
+       (SELECT count(*) FROM few_values WHERE n IS NULL)
 ----
 true
 
-# Buffered filters are written early when the budget runs out, freeing it for later row groups.
+# Buffered fallback filters are written between row groups once they exceed the threshold.
 statement ok
 COPY (SELECT k, label FROM input) TO '{TEST_DIR}/limited.parquet'
-(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 8192)
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD 8192)
 
 query TII
 SELECT path_in_schema, count(bloom_filter_length), count(DISTINCT bloom_filter_offset)
@@ -310,23 +333,23 @@ true
 
 statement ok
 COPY (SELECT k FROM input) TO '{TEST_DIR}/limited-string.parquet'
-(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES '8KiB')
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8KiB')
 
 query I
 SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/limited-string.parquet')
 ----
 4
 
-# Within the budget, all filters stay after the row groups.
+# Below the threshold, all filters stay after the row groups.
 query I
 SELECT min(bloom_filter_offset) > max(data_page_offset) FROM parquet_metadata('{TEST_DIR}/default-V1.parquet')
 ----
 true
 
-# A filter that can never fit the budget gets skipped without writing the buffered ones early.
+# A filter that can't fit the row-group budget is skipped, dictionary filters are not affected.
 statement ok
 COPY (SELECT k, label FROM input) TO '{TEST_DIR}/too-small.parquet'
-(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 4096)
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD 4096)
 
 query TI
 SELECT path_in_schema, count(bloom_filter_length)
@@ -340,6 +363,47 @@ query I
 SELECT min(bloom_filter_offset) > max(data_page_offset) FROM parquet_metadata('{TEST_DIR}/too-small.parquet')
 ----
 true
+
+# Filters that don't fit the budget are skipped before allocating them.
+statement ok
+SET memory_limit='8MiB'
+
+statement ok
+COPY (SELECT md5(i::VARCHAR) AS k FROM range(2048) t(i)) TO '{TEST_DIR}/oversized.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALSE_POSITIVE_RATIO 1e-30,
+ BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '1MiB')
+
+statement ok
+COPY (SELECT md5(i::VARCHAR) AS a, md5((i + 1)::VARCHAR) AS b FROM range(2048) t(i))
+TO '{TEST_DIR}/two-large.parquet'
+(FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALSE_POSITIVE_RATIO 1e-25,
+ BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8MiB')
+
+statement ok
+RESET memory_limit
+
+query II
+SELECT count(bloom_filter_length), (SELECT count(*) FROM '{TEST_DIR}/oversized.parquet')
+FROM parquet_metadata('{TEST_DIR}/oversized.parquet')
+----
+0	2048
+
+# The second filter doesn't fit next to the first, which is then too large for its column.
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/two-large.parquet')
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT md5(i::VARCHAR) AS a, md5((i + 1)::VARCHAR) AS b FROM range(2048) t(i)
+   EXCEPT ALL SELECT * FROM '{TEST_DIR}/two-large.parquet')
+  UNION ALL
+  (SELECT * FROM '{TEST_DIR}/two-large.parquet'
+   EXCEPT ALL SELECT md5(i::VARCHAR) AS a, md5((i + 1)::VARCHAR) AS b FROM range(2048) t(i))
+)
+----
+0
 
 # Extreme requested accuracy must not overflow the size calculation.
 statement ok
@@ -378,10 +442,153 @@ SELECT count(*) FROM '{TEST_DIR}/empty.parquet'
 ----
 0
 
+# Folding gives bytes back to the budget, so a later column fits.
+statement ok
+COPY (
+ SELECT md5((i % 16)::VARCHAR) AS c0, i % 2 = 0 AS c1, i % 2 = 0 AS c2, i % 2 = 0 AS c3, i % 2 = 0 AS c4,
+        i % 2 = 0 AS c5, i % 2 = 0 AS c6, i % 2 = 0 AS c7, md5(i::VARCHAR) AS c8
+ FROM range(2048) t(i)
+) TO '{TEST_DIR}/refund.parquet' (FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8KiB')
+
+query TI
+SELECT path_in_schema, bloom_filter_length < 64
+FROM parquet_metadata('{TEST_DIR}/refund.parquet') WHERE bloom_filter_length IS NOT NULL
+ORDER BY ALL
+----
+c0	true
+c8	false
+
+# Repeated values keep only the first filter, so a missing key is only excluded from the first row group.
+statement ok
+COPY (SELECT md5((i % 1024)::VARCHAR) AS k FROM range(8192) t(i)) TO '{TEST_DIR}/repeated-keys.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048)
+
+query I
+SELECT count(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/repeated-keys.parquet')
+----
+1
+
+query I
+SELECT count(*) FILTER (bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/repeated-keys.parquet', 'k', md5('-1'))
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/repeated-keys.parquet' WHERE k = md5('42')
+----
+8
+
+# Disjoint filters of different sizes are compared by folding the larger one.
+statement ok
+COPY (
+ SELECT CASE WHEN i < 16384 THEN md5(i::VARCHAR) ELSE md5((100000 + (i - 16384) // 2)::VARCHAR) END AS k
+ FROM range(32768) t(i)
+) TO '{TEST_DIR}/disjoint.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 16384, DICTIONARY_SIZE_LIMIT 0)
+
+query II
+SELECT row_group_id, bloom_filter_length > 32768
+FROM parquet_metadata('{TEST_DIR}/disjoint.parquet') ORDER BY ALL
+----
+0	true
+1	false
+
+query II
+SELECT row_group_id, bloom_filter_excludes
+FROM parquet_bloom_probe('{TEST_DIR}/disjoint.parquet', 'k', md5('100042')) ORDER BY ALL
+----
+0	true
+1	false
+
+query I
+SELECT bool_and(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/disjoint.parquet', 'k', md5('-1'))
+----
+true
+
+statement ok
+COPY (SELECT md5((i % 16384)::VARCHAR) AS k FROM range(32768) t(i)) TO '{TEST_DIR}/identical.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 16384, DICTIONARY_SIZE_LIMIT 0)
+
+query II
+SELECT row_group_id, bloom_filter_length IS NOT NULL
+FROM parquet_metadata('{TEST_DIR}/identical.parquet') ORDER BY ALL
+----
+0	true
+1	false
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/identical.parquet' WHERE k IN (md5('42'), md5('-1'))
+----
+2
+
+# Filters kept in a row group stay charged, so only the first of nine columns fits in each row group.
+statement ok
+CREATE TABLE nine AS
+SELECT md5(i::VARCHAR) AS c0, md5((i + 4096)::VARCHAR) AS c1, md5((i + 8192)::VARCHAR) AS c2,
+       md5((i + 12288)::VARCHAR) AS c3, md5((i + 16384)::VARCHAR) AS c4, md5((i + 20480)::VARCHAR) AS c5,
+       md5((i + 24576)::VARCHAR) AS c6, md5((i + 28672)::VARCHAR) AS c7, md5((i + 32768)::VARCHAR) AS c8, i
+FROM range(4096) t(i)
+
+statement ok
+COPY nine TO '{TEST_DIR}/scope-t1.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8KiB')
+
+statement ok
+SET threads=4
+
+statement ok
+COPY nine TO '{TEST_DIR}/scope-t4.parquet'
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8KiB')
+
+statement ok
+COPY (SELECT *, i // 2048 AS part FROM nine) TO '{TEST_DIR}/scope-part'
+(FORMAT PARQUET, PARTITION_BY (part), ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0,
+ BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8KiB')
+
+statement ok
+COPY nine TO '{TEST_DIR}/scope-rotated'
+(FORMAT PARQUET, ROW_GROUPS_PER_FILE 1, ROW_GROUP_SIZE 2048, DICTIONARY_SIZE_LIMIT 0,
+ BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD '8KiB')
+
+foreach files scope-t1.parquet scope-t4.parquet scope-part/**/*.parquet scope-rotated/*.parquet
+
+query IT
+SELECT r.stats_min::BIGINT, f.path_in_schema
+FROM parquet_metadata('{TEST_DIR}/{files}') f
+JOIN parquet_metadata('{TEST_DIR}/{files}') r USING (file_name, row_group_id)
+WHERE r.path_in_schema = 'i' AND f.bloom_filter_length IS NOT NULL
+ORDER BY ALL
+----
+0	c0
+2048	c0
+
+query I
+SELECT bool_or(p.bloom_filter_excludes)
+FROM (
+  SELECT 0 AS first_row, * FROM parquet_bloom_probe('{TEST_DIR}/{files}', 'c0', md5('5'))
+  UNION ALL
+  SELECT 2048 AS first_row, * FROM parquet_bloom_probe('{TEST_DIR}/{files}', 'c0', md5('3000'))
+) p
+JOIN parquet_metadata('{TEST_DIR}/{files}') r USING (file_name, row_group_id)
+WHERE r.path_in_schema = 'i' AND r.stats_min::BIGINT = p.first_row
+----
+false
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM nine EXCEPT ALL SELECT * FROM read_parquet('{TEST_DIR}/{files}', hive_partitioning=false))
+  UNION ALL
+  (SELECT * FROM read_parquet('{TEST_DIR}/{files}', hive_partitioning=false) EXCEPT ALL SELECT * FROM nine)
+)
+----
+0
+
+endloop
+
 statement ok
 SET debug_verify_serializer=false
 
-# Multiple row-group writers share the same budget.
+# Row groups prepared in parallel each get their own budget.
 statement ok
 SET threads=4
 
@@ -391,7 +598,7 @@ SET preserve_insertion_order=false
 statement ok
 COPY (SELECT md5(i::VARCHAR) AS k, md5((i+1)::VARCHAR) AS other FROM range(65536) t(i))
 TO '{TEST_DIR}/parallel.parquet'
-(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_MAX_BYTES 32768)
+(FORMAT PARQUET, ROW_GROUP_SIZE 2048, BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD 32768)
 
 query I
 SELECT count(bloom_filter_length)>0

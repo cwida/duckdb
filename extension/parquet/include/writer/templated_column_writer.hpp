@@ -358,10 +358,15 @@ public:
 		}
 		if (state.bloom_filter && state.sortedness.IsSorted()) {
 			state.bloom_filter.reset();
+			*state.fallback_filter_bytes_remaining += state.fallback_filter_charge;
+			state.fallback_filter_charge = 0;
 		}
 		if (state.bloom_filter) {
 			state.bloom_filter->FoldToTarget(BufferAllocator::Get(writer.GetContext()),
 			                                 writer.BloomFilterFalsePositiveRatio());
+			const auto final_size = state.bloom_filter->Get()->len;
+			*state.fallback_filter_bytes_remaining += state.fallback_filter_charge - final_size;
+			state.fallback_filter_charge = final_size;
 		}
 	}
 
@@ -515,13 +520,22 @@ private:
 		if (!bloom_filter_fallback || SkipBloomFilterFallback(state)) {
 			return;
 		}
-		auto bloom_filter = ParquetBloomFilter::TryCreate(
-		    BufferAllocator::Get(writer.GetContext()),
-		    NumericCast<idx_t>(state.row_group.num_rows) * OP::template BloomFilterEntriesPerValue<SRC, TGT>(),
-		    writer.BloomFilterFalsePositiveRatio(), writer.BloomFilterFallbackMemory());
-		if (!bloom_filter) {
+		D_ASSERT(state.fallback_filter_bytes_remaining);
+		const auto entries =
+		    NumericCast<idx_t>(state.row_group.num_rows) * OP::template BloomFilterEntriesPerValue<SRC, TGT>();
+		const auto size = ParquetBloomFilter::EstimateSize(entries, writer.BloomFilterFalsePositiveRatio());
+		if (!size.IsValid()) {
 			return;
 		}
+		const auto charge = size.GetIndex() + size.GetIndex() / 2;
+		auto &remaining = *state.fallback_filter_bytes_remaining;
+		if (charge > remaining) {
+			return;
+		}
+		remaining -= charge;
+		state.fallback_filter_charge = charge;
+		auto bloom_filter = ParquetBloomFilter::Create(BufferAllocator::Get(writer.GetContext()), entries,
+		                                               writer.BloomFilterFalsePositiveRatio());
 		auto &filter = *bloom_filter;
 		bool seedable = true;
 		if (OP::template BloomFilterEntriesPerValue<SRC, TGT>() == 1) {
@@ -538,6 +552,9 @@ private:
 		state.dictionary.Reset();
 		if (seedable) {
 			state.bloom_filter = std::move(bloom_filter);
+		} else {
+			remaining += charge;
+			state.fallback_filter_charge = 0;
 		}
 	}
 

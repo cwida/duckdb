@@ -22,7 +22,7 @@ query II
 SELECT count(bloom_filter_length), bool_and(bloom_filter_length < 512)
 FROM parquet_metadata('{TEST_DIR}/numbers.parquet')
 ----
-2	true
+1	true
 
 foreach value 0 24 98
 
@@ -147,17 +147,17 @@ true
 
 statement ok
 CREATE TABLE typed AS SELECT i AS row_id,
- md5((i % 10)::VARCHAR) AS s,
- md5((i % 10)::VARCHAR)::BLOB AS b,
- md5((i % 10)::VARCHAR)::UUID AS u,
- DATE '2020-01-01' + (i % 10)::INTEGER AS d,
- TIME '12:00:00' + (i % 10) * INTERVAL '1 second' AS t,
- (TIME '12:00:00' + (i % 10) * INTERVAL '1 second')::TIME_NS AS tn,
- (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second') AS ts,
- (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second')::TIMESTAMP_S AS tss,
- (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second')::TIMESTAMP_MS AS tsm,
- (TIMESTAMP '2020-01-01' + (i % 10) * INTERVAL '1 second')::TIMESTAMP_NS AS tsn
-FROM range(4096) t(i)
+ md5(v::VARCHAR) AS s,
+ md5(v::VARCHAR)::BLOB AS b,
+ md5(v::VARCHAR)::UUID AS u,
+ DATE '2020-01-01' + v::INTEGER AS d,
+ TIME '12:00:00' + v * INTERVAL '1 second' AS t,
+ (TIME '12:00:00' + v * INTERVAL '1 second')::TIME_NS AS tn,
+ (TIMESTAMP '2020-01-01' + v * INTERVAL '1 second') AS ts,
+ (TIMESTAMP '2020-01-01' + v * INTERVAL '1 second')::TIMESTAMP_S AS tss,
+ (TIMESTAMP '2020-01-01' + v * INTERVAL '1 second')::TIMESTAMP_MS AS tsm,
+ (TIMESTAMP '2020-01-01' + v * INTERVAL '1 second')::TIMESTAMP_NS AS tsn
+FROM (SELECT i, i // 2048 * 10 + i % 10 AS v FROM range(4096) t(i))
 
 statement ok
 COPY typed TO '{TEST_DIR}/typed.parquet'
@@ -172,7 +172,7 @@ foreach column s b u d t tn ts tss tsm tsn
 
 query I
 SELECT (SELECT count(*) FROM '{TEST_DIR}/typed.parquet'
-        WHERE {column}=(SELECT {column} FROM typed WHERE row_id=3))=410
+        WHERE {column}=(SELECT {column} FROM typed WHERE row_id=3))=205
 ----
 true
 
@@ -190,7 +190,7 @@ SELECT count(*) FROM (
 query I
 SELECT count(*) FROM '{TEST_DIR}/typed.parquet' WHERE s=md5('3')
 ----
-410
+205
 
 query T
 SELECT list(bloom_filter_excludes ORDER BY column_name) FROM (
@@ -220,12 +220,12 @@ SELECT list(bloom_filter_excludes ORDER BY column_name) FROM (
 query I
 SELECT count(*) FROM '{TEST_DIR}/typed.parquet' WHERE d=DATE '2020-01-04'
 ----
-410
+205
 
 query I
 SELECT count(*) FROM '{TEST_DIR}/typed.parquet' WHERE tss=TIMESTAMP '2020-01-01 00:00:03'
 ----
-410
+205
 
 # Time zone values are hashed in the normalized representation written to Parquet.
 statement ok

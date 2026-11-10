@@ -1,5 +1,5 @@
 # name: test/sql/copy/parquet/bloom_filter_fallback_options.test
-# description: Validate the Bloom fallback budget and which columns get fallback filters
+# description: Validate the Bloom fallback size threshold and which columns get fallback filters
 # group: [parquet]
 
 require parquet
@@ -8,19 +8,24 @@ statement ok
 CREATE TABLE options_test(k VARCHAR)
 
 statement error
-COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES NULL)
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD NULL)
 ----
 NULL is not supported
 
 statement error
-COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES -1)
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD -1)
 ----
 Unable to parse bytes
 
 statement error
-COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES 'lots')
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_SIZE_THRESHOLD 'lots')
 ----
 Memory must have a number
+
+statement error
+COPY options_test TO '{TEST_DIR}/bad.parquet' (BLOOM_FILTER_FALLBACK_MAX_BYTES 1024)
+----
+Unrecognized option "bloom_filter_fallback_max_bytes"
 
 # Only top-level columns with a fallback-capable writer get fallback filters.
 statement ok
