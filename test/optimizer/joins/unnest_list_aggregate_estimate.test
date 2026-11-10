@@ -48,11 +48,12 @@ FROM (SELECT list(v) AS xs, row_number() OVER () AS rn FROM vertices) s;
 logical_opt	<REGEX>:.*"Expressions":\s*"UNNEST\(xs\)",\s*"Estimated Cardinality":\s*"1000".*
 
 # the unnested column takes the distinct count of the aggregate input, not one value per element
+# rows are shuffled so the per-vector HLL sample cannot alias with the period of g at small vector sizes
 statement ok
-CREATE TABLE groups_large AS SELECT (i % 10)::INT AS g FROM range(100000) t(i);
+CREATE TABLE groups_large AS SELECT (i % 10)::INT AS g FROM range(100000) t(i) ORDER BY hash(i);
 
 statement ok
-CREATE TABLE groups_small AS SELECT (i % 10)::INT AS g FROM range(1000) t(i);
+CREATE TABLE groups_small AS SELECT (i % 10)::INT AS g FROM range(1000) t(i) ORDER BY hash(i);
 
 query II
 EXPLAIN (FORMAT JSON) SELECT x, count(*) FROM (SELECT unnest((SELECT list(g) FROM groups_large)) AS x) u GROUP BY x;
