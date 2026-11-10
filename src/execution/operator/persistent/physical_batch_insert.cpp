@@ -442,8 +442,11 @@ SinkResultType PhysicalBatchInsert::Sink(ExecutionContext &context, DataChunk &i
 		// we are not processing the current min batch index
 		// check if we have exceeded the maximum number of unflushed rows
 		if (memory_manager.OutOfMemory(batch_index)) {
-			// out-of-memory
-			// execute tasks while we wait (if any are available)
+			// try to free memory by merging finished batches and executing any pending tasks
+			{
+				annotated_lock_guard<annotated_mutex> l(gstate.lock);
+				gstate.ScheduleMergeTasks(context.client, memory_manager.GetMinimumBatchIndex());
+			}
 			ExecuteTasks(context.client, gstate, lstate);
 
 			const annotated_lock_guard<annotated_mutex> guard {memory_manager.lock};

@@ -156,6 +156,12 @@ def run_step(cli, report, func_name, *args):
     return report.end_step(step_name, output)
 
 
+def same_extension_version(a, b):
+    # Builds abbreviate the commit hash to different lengths, e.g. 2669706 and 2669706d33
+    shorter, longer = sorted([a.strip(), b.strip()], key=len)
+    return shorter == longer or (len(shorter) >= 7 and longer.startswith(shorter))
+
+
 def get_extensions_versions(clis):
     results = run_multi_clis(
         clis, "SELECT extension_version FROM duckdb_extensions() WHERE extension_name='test_utils';"
@@ -197,7 +203,7 @@ def do_run_test(ctx, test_spec):
 
             if not has_checked_versions:
                 versions = get_extensions_versions([old_cli, new_cli])
-                if versions[0] != versions[1]:
+                if not same_extension_version(versions[0], versions[1]):
                     # make release EXTENSION_CONFIGS=.github/config/extensions/test-utils.cmake to compile in this repo
                     raise RuntimeError(
                         f"test-utils extension version mismatch: {old_cli.version} is @ {versions[0]} and {new_cli.version} is @ {versions[1]}"
