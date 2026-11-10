@@ -1,0 +1,39 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_icu.test
+# description: Preserve common subplan sharing for repeatable table functions
+# group: [optimizer]
+
+require icu
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+SET TimeZone='America/New_York';
+
+# Timezone-aware range uses bound timezone and calendar.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM range(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day') INTERSECT ALL SELECT * FROM range(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day') INTERSECT ALL SELECT * FROM range(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day'));
+----
+3
+
+# Inclusive series across a daylight-saving transition.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM generate_series(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day') INTERSECT ALL SELECT * FROM generate_series(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day');
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM generate_series(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day') INTERSECT ALL SELECT * FROM generate_series(TIMESTAMPTZ '2020-03-07 00:00:00', TIMESTAMPTZ '2020-03-10 00:00:00', INTERVAL '1 day'));
+----
+4
+
+# Static calendar names.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM icu_calendar_names() INTERSECT ALL SELECT * FROM icu_calendar_names();
+----
+logical_opt	<REGEX>:.*__common_subplan_.*

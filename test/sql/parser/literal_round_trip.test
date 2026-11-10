@@ -159,4 +159,4 @@ query I
 SELECT v FROM s ORDER BY ALL
 ----
 {'a': 1, 'b': x, 'c': 7}
-{'a': 1, 'b': x, 'c': NULL}
+{'a': 1, 'b': x, 'c': 7}

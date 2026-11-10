@@ -118,6 +118,7 @@ def load_grammar_types(types_file):
             "excluded_rules",
             "matcher_rule_overrides",
             "packrat_memoized_rules",
+            "rule_labels",
             "collapsible_rules",
             "expression_depth_nesting_rules",
             "expression_depth_chain_rules",
@@ -188,6 +189,42 @@ def load_rule_name_list(types_file, key, known_rules=None):
             sys.exit(1)
 
     return rules
+
+
+def load_rule_labels(types_file, known_rules=None):
+    """Load rule_labels from grammar_types.yml as a list of (rule, label) pairs."""
+    data = load_grammar_types_yaml(types_file)
+
+    labels = data.get("rule_labels", {})
+    if not isinstance(labels, dict):
+        print(f"Error: rule_labels in {types_file} must be a mapping from label to a list of rules.", file=sys.stderr)
+        sys.exit(1)
+    result = []
+    seen = {}
+    for label, rules in labels.items():
+        if not isinstance(rules, list):
+            print(f"Error: rule_labels entry {label!r} in {types_file} must be a list of rules.", file=sys.stderr)
+            sys.exit(1)
+        for rule in rules:
+            rule = str(rule)
+            if rule in seen:
+                print(
+                    f"Error: rule {rule} has two labels in {types_file}: {seen[rule]!r} and {label!r}.", file=sys.stderr
+                )
+                sys.exit(1)
+            seen[rule] = label
+            result.append((rule, str(label)))
+
+    if known_rules is not None:
+        known_rules = set(known_rules)
+        missing_rules = sorted(rule for rule, _ in result if rule not in known_rules)
+        if missing_rules:
+            print(f"Error: rule_labels in {types_file} contains unknown grammar rules:", file=sys.stderr)
+            for rule in missing_rules:
+                print(f"  - {rule}", file=sys.stderr)
+            sys.exit(1)
+
+    return result
 
 
 def load_packrat_memoized_rules(types_file, known_rules=None):

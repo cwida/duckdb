@@ -125,26 +125,6 @@ SELECT count(*) FROM stats_t
 ----
 8
 
-# A trigger target is modified even when it is not the statement's explicit target.
-statement ok
-CREATE TABLE trigger_source(i INTEGER)
-
-statement ok
-CREATE TABLE trigger_target(i INTEGER)
-
-statement ok
-INSERT INTO trigger_target VALUES (1)
-
-statement ok
-CREATE TRIGGER write_null AFTER INSERT ON trigger_source FOR EACH STATEMENT
-INSERT INTO trigger_target VALUES (NULL)
-
-query II
-WITH ins AS (INSERT INTO trigger_source VALUES (1) RETURNING i)
-SELECT count(*), count(i) FROM trigger_target
-----
-2	1
-
 # Simplifying filters over nested CTEs must keep their producers reachable.
 query I
 WITH a AS MATERIALIZED (SELECT 1 AS i), b AS MATERIALIZED (SELECT i FROM a)

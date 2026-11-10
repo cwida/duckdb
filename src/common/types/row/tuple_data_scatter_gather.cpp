@@ -753,9 +753,11 @@ static void TupleDataTemplatedScatterInternal(const Vector &, const TupleDataVec
 	const auto offset_in_row = layout.GetOffsets()[col_idx];
 
 	const auto null_value = NullValue<T>();
+	const auto append_indices = append_sel.data();
+	const auto source_indices = source_sel.data();
 	for (idx_t i = 0; i < append_count; i++) {
-		const auto append_idx = HAS_APPEND_SEL ? append_sel.get_index_unsafe(i) : i;
-		const auto source_idx = HAS_SOURCE_SEL ? source_sel.get_index_unsafe(append_idx) : append_idx;
+		const auto append_idx = HAS_APPEND_SEL ? append_indices[i] : i;
+		const auto source_idx = HAS_SOURCE_SEL ? source_indices[append_idx] : append_idx;
 		const auto &target_location = target_locations[i];
 		if (ALL_VALID || validity.RowIsValidUnsafe(source_idx)) {
 			TupleDataValueStore<T>(data[source_idx], target_location, offset_in_row, target_heap_locations[i]);
@@ -1395,9 +1397,11 @@ static void TupleDataTemplatedGatherInternal(const TupleDataLayout &layout, Vect
 
 	const auto offset_in_row = layout.GetOffsets()[col_idx];
 	const auto column_count = layout.ColumnCount();
+	const auto scan_indices = scan_sel.data();
+	const auto target_indices = target_sel.data();
 	for (idx_t i = 0; i < scan_count; i++) {
-		const auto source_idx = HAS_SCAN_SEL ? scan_sel.get_index_unsafe(i) : i;
-		const auto target_idx = HAS_TARGET_SEL ? target_sel.get_index_unsafe(i) : i;
+		const auto source_idx = HAS_SCAN_SEL ? scan_indices[i] : i;
+		const auto target_idx = HAS_TARGET_SEL ? target_indices[i] : i;
 		const auto &source_row = source_locations[source_idx];
 		target_data[target_idx] = Load<T>(source_row + offset_in_row);
 		if (!ALL_VALID &&
@@ -1472,7 +1476,7 @@ void TupleDataSortKeyGather(const TupleDataLayout &layout, Vector &row_locations
                             const SelectionVector &scan_sel, const idx_t scan_count, Vector &target,
                             const SelectionVector &target_sel, optional_ptr<Vector>,
                             const vector<TupleDataGatherFunction> &) {
-	throw NotImplementedException("Unimplemented type for TupleDataSortKeyGather");
+	NotImplementedException::Throw("Unimplemented type for TupleDataSortKeyGather");
 }
 
 static void TupleDataStructGather(const TupleDataLayout &layout, Vector &row_locations, const idx_t col_idx,

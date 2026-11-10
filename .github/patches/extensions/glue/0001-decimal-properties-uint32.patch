@@ -1,0 +1,15 @@
+diff --git a/src/core/glue_types.cpp b/src/core/glue_types.cpp
+index ee70e1d..6bf3050 100644
+--- a/src/core/glue_types.cpp
++++ b/src/core/glue_types.cpp
+@@ -241,8 +241,8 @@ string GlueTypes::FromLogicalType(const LogicalType &type) {
+ 	case LogicalTypeId::DOUBLE:
+ 		return "double";
+ 	case LogicalTypeId::DECIMAL: {
+-		uint8_t width;
+-		uint8_t scale;
++		uint32_t width;
++		uint32_t scale;
+ 		type.GetDecimalProperties(width, scale);
+ 		return StringUtil::Format("decimal(%d,%d)", width, scale);
+ 	}

@@ -107,3 +107,24 @@ false	true	true	true	false	false
 false	true	true	true	false	false
 true	false	false	true	false	true
 NULL	NULL	NULL	NULL	NULL	NULL
+
+# the year check of the constant does not need a TIMESTAMPTZ to DATE cast
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE trunc_values(stamp TIMESTAMPTZ);
+
+statement ok
+INSERT INTO trunc_values VALUES (TIMESTAMPTZ '2024-06-15 00:00:00+00');
+
+statement ok
+SET disable_timestamptz_casts = true;
+
+query I
+SELECT count(*) FROM trunc_values WHERE date_trunc('century', stamp) = TIMESTAMPTZ '2000-01-01 00:00:00+00';
+----
+1
+
+statement ok
+RESET disable_timestamptz_casts;

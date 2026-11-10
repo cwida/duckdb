@@ -15,6 +15,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector_size.hpp"
 #include "duckdb/execution/expression_executor_state.hpp"
+#include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -185,10 +186,14 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, SelectionVector &result_
 	D_ASSERT(hashes_v.GetType() == LogicalType::HASH);
 
 	const auto hashes = FlatVector::GetData<uint64_t>(hashes_v);
+	const bool prefetch = count >= 128 && num_sectors * sizeof(uint64_t) >= 1024ULL * 1024ULL;
 	idx_t found_count = 0;
 	for (idx_t i = 0; i < count; i++) {
 		result_sel.set_index(found_count, i);
 		found_count += LookupOne(hashes[i]);
+		if (prefetch) {
+			PrefetchHashTableEntry(i, count, [&](idx_t next_idx) { return &bf[hashes[next_idx] & bitmask]; });
+		}
 	}
 	return found_count;
 }
@@ -199,10 +204,15 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, const SelectionVector &s
 	D_ASSERT(hashes_v.GetType() == LogicalType::HASH);
 
 	const auto hashes = FlatVector::GetData<uint64_t>(hashes_v);
+	const bool prefetch = count >= 128 && num_sectors * sizeof(uint64_t) >= 1024ULL * 1024ULL;
 	idx_t found_count = 0;
 	for (idx_t i = 0; i < count; i++) {
 		result_sel.set_index(found_count, i);
 		found_count += LookupOne(hashes[sel.get_index_unsafe(i)]);
+		if (prefetch) {
+			PrefetchHashTableEntry(
+			    i, count, [&](idx_t next_idx) { return &bf[hashes[sel.get_index_unsafe(next_idx)] & bitmask]; });
+		}
 	}
 	return found_count;
 }
@@ -276,9 +286,8 @@ static idx_t SelectBloomFilter(Vector &input, const BloomFilterFunctionData &fun
 	state.Prepare(count);
 	auto &hashes = state.hashes;
 	VectorOperations::Hash(input, hashes, count);
-	UnifiedVectorFormat input_data;
-	input.ToUnifiedFormat(input_data);
-	auto &bloom_sel = input_data.validity.CannotHaveNull() ? result_sel : state.bloom_sel;
+	auto validity = input.Validity();
+	auto &bloom_sel = validity.CannotHaveNull() ? result_sel : state.bloom_sel;
 	idx_t bloom_count;
 	if (hashes.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		bloom_count = func_data.filter->LookupOne(*ConstantVector::GetData<hash_t>(hashes)) ? count : 0;
@@ -289,8 +298,18 @@ static idx_t SelectBloomFilter(Vector &input, const BloomFilterFunctionData &fun
 		bloom_count = func_data.filter->LookupHashes(hashes, bloom_sel, count);
 	}
 
-	if (input_data.validity.CannotHaveNull()) {
+	if (validity.CannotHaveNull()) {
 		return bloom_count;
+	}
+
+	if (func_data.filters_null_values) {
+		idx_t result_count = 0;
+		for (idx_t i = 0; i < bloom_count; i++) {
+			const auto row_idx = bloom_sel.get_index(i);
+			result_sel.set_index(result_count, row_idx);
+			result_count += validity.IsValid(row_idx);
+		}
+		return result_count;
 	}
 
 	idx_t result_count = 0;
@@ -300,9 +319,8 @@ static idx_t SelectBloomFilter(Vector &input, const BloomFilterFunctionData &fun
 		if (matched) {
 			bloom_idx++;
 		}
-		const auto input_idx = input_data.sel->get_index(i);
 		bool passed;
-		if (!input_data.validity.RowIsValid(input_idx)) {
+		if (!validity.IsValid(i)) {
 			passed = !func_data.filters_null_values;
 		} else {
 			passed = matched;

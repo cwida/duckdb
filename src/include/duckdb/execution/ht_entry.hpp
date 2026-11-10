@@ -96,6 +96,17 @@ private:
 	hash_t value;
 };
 
+//! Prefetch a future bucket, evaluating its address only within the loop bounds.
+template <class GET_ENTRY>
+inline void PrefetchHashTableEntry(idx_t row_idx, idx_t row_count, GET_ENTRY get_entry) {
+#if defined(__GNUC__) || defined(__clang__)
+	constexpr idx_t PREFETCH_DISTANCE = 64;
+	if (row_idx + PREFETCH_DISTANCE < row_count) {
+		__builtin_prefetch(get_entry(row_idx + PREFETCH_DISTANCE), 0, 3);
+	}
+#endif
+}
+
 // uses an AND operation to apply the modulo operation instead of an if condition that could be branch mispredicted
 inline void IncrementAndWrap(idx_t &offset, const uint64_t &capacity_mask) {
 	++offset &= capacity_mask;

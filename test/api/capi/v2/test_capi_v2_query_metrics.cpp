@@ -28,9 +28,10 @@ duckdb_v2_query_metrics_node_handle GetMetricsRoot(duckdb_v2_query_metrics_handl
 }
 
 std::string MetricsNodeName(duckdb_v2_query_metrics_node_handle node) {
-	duckdb_v2_str name = {nullptr, 0};
-	REQUIRE(duckdb_v2_query_metrics_node_get_name(node, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
-	return std::string(name.ptr, name.len);
+	const char *name = nullptr;
+	idx_t name_length = 0;
+	REQUIRE(duckdb_v2_query_metrics_node_get_name(node, &name, &name_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	return std::string(name, name_length);
 }
 
 idx_t MetricsNodeChildCount(duckdb_v2_query_metrics_node_handle node) {
@@ -62,11 +63,10 @@ duckdb_v2_query_metrics_node_handle FindMetricsNode(duckdb_v2_query_metrics_node
 }
 
 // Looks a metric up by name, returning whether the node carries it and, if so, its value as a count.
-bool GetMetricCount(duckdb_v2_query_metrics_node_handle node, const char *name, uint64_t &count) {
-	auto name_str = Convert(name);
+bool GetMetricCount(duckdb_v2_query_metrics_node_handle node, std::string_view name, uint64_t &count) {
 	duckdb_v2_value_handle value = nullptr;
 	bool present = true;
-	REQUIRE(duckdb_v2_query_metrics_node_get_metric(node, &name_str, &value, &present, nullptr) ==
+	REQUIRE(duckdb_v2_query_metrics_node_get_metric(node, name.data(), name.size(), &value, &present, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	if (!present) {
 		REQUIRE(value == nullptr);
@@ -77,11 +77,10 @@ bool GetMetricCount(duckdb_v2_query_metrics_node_handle node, const char *name, 
 	return true;
 }
 
-bool NodeHasMetric(duckdb_v2_query_metrics_node_handle node, const char *name) {
-	auto name_str = Convert(name);
+bool NodeHasMetric(duckdb_v2_query_metrics_node_handle node, std::string_view name) {
 	duckdb_v2_value_handle value = nullptr;
 	bool present = false;
-	REQUIRE(duckdb_v2_query_metrics_node_get_metric(node, &name_str, &value, &present, nullptr) ==
+	REQUIRE(duckdb_v2_query_metrics_node_get_metric(node, name.data(), name.size(), &value, &present, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&value);
 	return present;
@@ -120,10 +119,12 @@ TEST_CASE("V2 query metrics: a profiled query", "[capi_v2][query_metrics]") {
 	auto count = MetricsNodeMetricCount(root);
 	REQUIRE(count > 0);
 	for (idx_t i = 0; i < count; i++) {
-		duckdb_v2_str name = {nullptr, 0};
-		REQUIRE(duckdb_v2_query_metrics_node_get_metric_name(root, i, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(name.len > 0);
-		REQUIRE(NodeHasMetric(root, std::string(name.ptr, name.len).c_str()));
+		const char *name = nullptr;
+		idx_t name_length = 0;
+		REQUIRE(duckdb_v2_query_metrics_node_get_metric_name(root, i, &name, &name_length, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(name_length > 0);
+		REQUIRE(NodeHasMetric(root, std::string(name, name_length).c_str()));
 		duckdb_v2_value_handle value = nullptr;
 		REQUIRE(duckdb_v2_query_metrics_node_get_metric_value(root, i, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
 		double number = -1;
@@ -221,15 +222,16 @@ TEST_CASE("V2 query metrics: argument checks", "[capi_v2][query_metrics]") {
 	duckdb_v2_query_metrics_node_handle child = nullptr;
 	REQUIRE(duckdb_v2_query_metrics_node_get_child(root, 0, &child, nullptr) == DUCKDB_V2_ERROR_INPUT_OUT_OF_RANGE);
 	REQUIRE(child == nullptr);
-	duckdb_v2_str name = {nullptr, 0};
-	REQUIRE(duckdb_v2_query_metrics_node_get_metric_name(root, 0, &name, nullptr) ==
+	const char *name = nullptr;
+	idx_t name_length = 0;
+	REQUIRE(duckdb_v2_query_metrics_node_get_metric_name(root, 0, &name, &name_length, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_OUT_OF_RANGE);
 	duckdb_v2_value_handle value = nullptr;
 	REQUIRE(duckdb_v2_query_metrics_node_get_metric_value(root, 0, &value, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_OUT_OF_RANGE);
 	REQUIRE(value == nullptr);
 	bool present = false;
-	REQUIRE(duckdb_v2_query_metrics_node_get_metric(root, nullptr, &value, &present, nullptr) ==
+	REQUIRE(duckdb_v2_query_metrics_node_get_metric(root, nullptr, 1, &value, &present, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_connection_get_query_metrics(nullptr, &metrics, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_query_metrics_destroy(&metrics);

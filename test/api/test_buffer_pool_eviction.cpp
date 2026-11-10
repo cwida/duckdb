@@ -3,6 +3,7 @@
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
@@ -288,6 +289,115 @@ idx_t SumApproxSize(const vector<EvictionQueueInformation> &info) {
 
 } // namespace
 
+TEST_CASE("Hash buffers reuse live eviction entries without changing tracked or storage-page recency",
+          "[storage][buffer_pool]") {
+	const auto tag = GENERATE(MemoryTag::HASH_TABLE, MemoryTag::EXTENSION);
+	const auto track_timestamps = GENERATE(false, true);
+	DBConfig config;
+	config.options.buffer_manager_track_eviction_timestamps = track_timestamps;
+	DuckDB db(nullptr, &config);
+	auto &manager = BufferManager::GetBufferManager(*db.instance);
+	auto &pool = manager.GetBufferPool();
+	auto pin = manager.Allocate(tag, manager.GetBlockSize(), true);
+	auto block = pin.GetBlockHandle();
+	pin.Destroy();
+	const auto sequence = block->GetMemory().GetEvictionSequenceNumber();
+	for (idx_t i = 0; i < 100; i++) {
+		auto repinned = manager.Pin(block);
+	}
+	const auto final_sequence = block->GetMemory().GetEvictionSequenceNumber();
+	REQUIRE(final_sequence == sequence + ((!track_timestamps && tag == MemoryTag::HASH_TABLE) ? 0 : 100));
+	const auto dead_before = SumDeadNodes(pool.GetEvictionQueueInfo());
+	block.reset();
+	REQUIRE(SumDeadNodes(pool.GetEvictionQueueInfo()) == dead_before + 1);
+}
+
+TEST_CASE("Hash buffer eviction entries survive reuse and queue purging", "[storage][buffer_pool]") {
+	DuckDB db;
+	auto &manager = BufferManager::GetBufferManager(*db.instance);
+	auto &pool = manager.GetBufferPool();
+	const auto initial_memory = pool.GetUsedMemory();
+	const idx_t size = 64 * 1024;
+	auto pin = manager.Allocate(MemoryTag::HASH_TABLE, size, true);
+	auto block = pin.GetBlockHandle();
+	pin.Destroy();
+	const auto sequence = block->GetMemory().GetEvictionSequenceNumber();
+	for (idx_t i = 0; i < 100; i++) {
+		auto repinned = manager.Pin(block);
+	}
+	REQUIRE(block->GetMemory().GetEvictionSequenceNumber() == sequence);
+	pin = manager.Pin(block);
+	// Exceed the 32768-entry purge threshold while keeping this live entry pinned.
+	for (idx_t i = 0; i < 40000; i++) {
+		auto transient = manager.Allocate(MemoryTag::HASH_TABLE, size, true);
+	}
+	const auto info = pool.GetEvictionQueueInfo();
+	REQUIRE(SumApproxSize(info) < 40000);
+	REQUIRE(SumDeadNodes(info) < SumApproxSize(info));
+	pin.Destroy();
+	pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT);
+	REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+}
+
+TEST_CASE("Hash buffer unpin restores an entry consumed while pinned", "[storage][buffer_pool]") {
+	DuckDB db;
+	auto &manager = BufferManager::GetBufferManager(*db.instance);
+	auto &pool = manager.GetBufferPool();
+	const auto initial_memory = pool.GetUsedMemory();
+	const auto size = manager.GetBlockSize();
+	const auto allocation_size = BufferManager::GetAllocSize(size + Storage::DEFAULT_BLOCK_HEADER_SIZE);
+	pool.SetLimit(initial_memory + allocation_size, EXCEPTION_POSTSCRIPT);
+	auto pin = manager.Allocate(MemoryTag::HASH_TABLE, size, true);
+	auto block = pin.GetBlockHandle();
+	pin.Destroy();
+	pin = manager.Pin(block);
+	REQUIRE_THROWS_AS(manager.Allocate(MemoryTag::HASH_TABLE, size, true), OutOfMemoryException);
+	{
+		auto lock = block->GetMemory().GetLock();
+		REQUIRE_FALSE(block->GetMemory().HasLiveQueueEntry(lock));
+	}
+	pin.Destroy();
+	{
+		auto lock = block->GetMemory().GetLock();
+		REQUIRE(block->GetMemory().HasLiveQueueEntry(lock));
+	}
+	auto replacement = manager.Allocate(MemoryTag::HASH_TABLE, size, true);
+	REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+}
+
+TEST_CASE("Hash buffer eviction can retry a failed spill without another unpin", "[storage][buffer_pool]") {
+	DuckDB db;
+	auto &manager = BufferManager::GetBufferManager(*db.instance);
+	auto &pool = manager.GetBufferPool();
+	manager.SetTemporaryDirectory(TestCreatePath("hash_buffer_spill_retry"));
+	manager.SetSwapLimit(0);
+	const auto initial_memory = pool.GetUsedMemory();
+	const auto size = manager.GetBlockSize();
+	auto pin = manager.Allocate(MemoryTag::HASH_TABLE, size, false);
+	auto block = pin.GetBlockHandle();
+	memset(pin.GetDataMutable(), 42, size);
+	pin.Destroy();
+	for (idx_t i = 0; i < 10; i++) {
+		auto repinned = manager.Pin(block);
+	}
+	REQUIRE_THROWS(pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT));
+	{
+		auto lock = block->GetMemory().GetLock();
+		REQUIRE(block->GetMemory().HasLiveQueueEntry(lock));
+	}
+	manager.SetSwapLimit(32 * 1024 * 1024);
+	pool.SetLimit(initial_memory, EXCEPTION_POSTSCRIPT);
+	REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+	REQUIRE(manager.GetUsedSwap() > 0);
+	pool.SetLimit(initial_memory + 2 * size, EXCEPTION_POSTSCRIPT);
+	auto reloaded = manager.Pin(block);
+	idx_t mismatches = 0;
+	for (idx_t i = 0; i < size; i++) {
+		mismatches += reloaded.Ptr()[i] != 42;
+	}
+	REQUIRE(mismatches == 0);
+}
+
 // Regression test for eviction-queue dead-node accounting.
 //
 // Only blocks with a live queue entry (has_queue_entry == true) should increment dead_nodes on
@@ -496,6 +606,51 @@ TEST_CASE("Temporary buffer cleanup after spill and destruction policy changes",
 }
 
 #ifndef DUCKDB_NO_THREADS
+TEST_CASE("Eviction consumes purge survivors before recently unpinned buffers", "[storage][buffer_pool]") {
+	DuckDB db;
+	auto &manager = BufferManager::GetBufferManager(*db.instance);
+	auto &pool = manager.GetBufferPool();
+	const idx_t size = 64 * 1024;
+	auto old_pin = manager.Allocate(MemoryTag::EXTENSION, size, true);
+	auto old_block = old_pin.GetBlockHandle();
+	old_pin.Destroy();
+
+	// Move the old live entry into the purge producer's queue among dead entries.
+	for (idx_t i = 0; i < 40000; i++) {
+		auto transient = manager.Allocate(MemoryTag::EXTENSION, size, true);
+	}
+	REQUIRE(SumApproxSize(pool.GetEvictionQueueInfo()) < 40000);
+
+	constexpr idx_t worker_count = 3;
+	vector<BufferHandle> recent_pins;
+	vector<shared_ptr<BlockHandle>> recent_blocks;
+	for (idx_t i = 0; i < worker_count; i++) {
+		recent_pins.emplace_back(manager.Allocate(MemoryTag::EXTENSION, size, true));
+		recent_blocks.emplace_back(recent_pins.back().GetBlockHandle());
+	}
+	atomic<idx_t> ready {0};
+	vector<thread> workers;
+	for (idx_t i = 0; i < worker_count; i++) {
+		workers.emplace_back([&, i]() {
+			recent_pins[i].Destroy();
+			ready++;
+			// Keep the producers distinct until every worker has enqueued its buffer.
+			while (ready.load() != worker_count) {
+				std::this_thread::yield();
+			}
+		});
+	}
+	for (auto &worker : workers) {
+		worker.join();
+	}
+
+	pool.SetLimit(pool.GetUsedMemory() - old_block->GetMemory().GetMemoryUsage(), EXCEPTION_POSTSCRIPT);
+	REQUIRE(old_block->GetMemory().GetState() == BlockState::BLOCK_UNLOADED);
+	for (const auto &block : recent_blocks) {
+		REQUIRE(block->GetMemory().GetState() == BlockState::BLOCK_LOADED);
+	}
+}
+
 TEST_CASE("Concurrent first spills and temporary buffer cleanup", "[storage][buffer_pool]") {
 	DuckDB db;
 	auto &bm = BufferManager::GetBufferManager(*db.instance);

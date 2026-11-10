@@ -1,0 +1,94 @@
+# name: test/sql/cte/recursive_cte_event_schedule_reset.test
+# description: Event-scheduled operator state is invalidated once per iteration and built lazily
+# group: [cte]
+
+# Disabling operator caching forces the event-based schedule even for single-threaded iterations.
+
+statement ok
+SET enable_caching_operators=false;
+
+# A member-level LIMIT above a UNION ALL is shared between the arm pipelines. It must apply once
+# per iteration, not once per arm.
+query I rowsort
+WITH RECURSIVE r(n) AS (
+    SELECT 1
+    UNION ALL
+    (SELECT n + 1 FROM r WHERE n < 3 UNION ALL SELECT n + 1 FROM r WHERE n < 3 LIMIT 1)
+)
+SELECT n FROM r;
+----
+1
+2
+3
+
+# OFFSET discards rows across arms: with a per-arm reset each arm's single row would be dropped
+# and the recursion would end after the seed.
+query I rowsort
+WITH RECURSIVE r(n) AS (
+    SELECT 1
+    UNION ALL
+    (SELECT n + 1 FROM r WHERE n < 3 UNION ALL SELECT n + 1 FROM r WHERE n < 3 LIMIT 1 OFFSET 1)
+)
+SELECT n FROM r;
+----
+1
+2
+3
+
+# A join build inside the member is rebuilt every iteration. Missing operator state of the probe
+# pipeline is constructed only after that build has finished.
+statement ok
+CREATE TABLE steps(x INTEGER);
+
+statement ok
+INSERT INTO steps VALUES (1), (2);
+
+query I
+WITH RECURSIVE r(i) AS (
+    SELECT 0
+    UNION ALL
+    SELECT s.x FROM steps s JOIN r ON s.x = r.i + 1 WHERE r.i < 2
+)
+SELECT count(*) FROM r;
+----
+3
+
+# Multi-chunk frontier with several workers. Without insertion-order preservation the limit
+# allows parallel execution within an arm; the limit still orders the arms relative to each
+# other, so this cannot create competing reset entrants of the shared limit. Values stay
+# deterministic because both arms produce the same value per iteration.
+statement ok
+SET threads=4;
+
+statement ok
+SET preserve_insertion_order=false;
+
+query I
+WITH RECURSIVE r(n) AS (
+    SELECT 1 FROM range(5000)
+    UNION ALL
+    (SELECT n + 1 FROM r WHERE n < 3 UNION ALL SELECT n + 1 FROM r WHERE n < 3 LIMIT 1)
+)
+SELECT count(*) FROM r;
+----
+5002
+
+# Join arms below the shared limit: missing probe operator state is constructed only after the
+# per-iteration build stages finish, and the limit still applies once per iteration. Whether a
+# caching-enabled run takes the event schedule depends on worker heuristics, so the event path
+# stays pinned through disabled caching here.
+statement ok
+INSERT INTO steps VALUES (3);
+
+query I
+WITH RECURSIVE r(n) AS (
+    SELECT 1 FROM range(5000)
+    UNION ALL
+    (SELECT s.x FROM steps s JOIN r ON s.x = r.n + 1 WHERE r.n < 3
+     UNION ALL
+     SELECT s.x FROM steps s JOIN r ON s.x = r.n + 1 WHERE r.n < 3
+     LIMIT 1)
+)
+SELECT count(*) FROM r;
+----
+5002

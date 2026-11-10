@@ -1,0 +1,43 @@
+# name: test/optimizer/joins/connected_hypergraph_cross_product.test
+# description: A connected join graph can require cross products to assemble a constrained join input
+# group: [joins]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE a AS SELECT i FROM range(7) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT i FROM range(100) t(i);
+
+statement ok
+CREATE TABLE c AS SELECT i % 100 AS i, i AS j FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE d AS SELECT i, i % 7 AS j FROM range(100) t(i);
+
+foreach threshold 0 30
+
+statement ok
+SET approximate_join_order_threshold = {threshold};
+
+query I
+SELECT count(*) FROM a, b, c, d
+WHERE a.i = d.j AND b.i = d.i AND c.i = d.i AND b.i = c.i
+  AND c.j IN (1, 3, 5, 7, 9, 11, 13, 15, 17, 19);
+----
+10
+
+# Enumeration must finish so the filtering joins run before the cross product.
+query II
+EXPLAIN SELECT count(*) FROM a, b, c, d
+WHERE a.i = d.j AND b.i = d.i AND c.i = d.i AND b.i = c.i
+  AND c.j IN (1, 3, 5, 7, 9, 11, 13, 15, 17, 19);
+----
+physical_plan	<REGEX>:.*CROSS_PRODUCT.*SEMI.*
+
+endloop
+
+statement ok
+RESET approximate_join_order_threshold;

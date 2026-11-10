@@ -1,0 +1,135 @@
+# name: test/sql/storage/list_length_stats.test
+# description: Test that min/max/total list length statistics are tracked and persisted
+# group: [storage]
+
+load {TEST_DIR}/list_length_stats.db readwrite v2.1.0
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+CREATE TABLE t(l INT[], n INT[][]);
+
+# lengths 2..5, every tenth list is NULL
+statement ok
+INSERT INTO t SELECT CASE WHEN i % 10 = 0 THEN NULL ELSE range(2 + i % 4) END, [range(i % 3), range(5)] FROM range(1000) t(i);
+
+query IIII
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM t), s.total_list_length > 0 FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+2	5	true	true
+
+# nested lists: outer length is always 2, inner lengths are 0..2 and 5
+query IIII
+SELECT s.min_list_length, s.max_list_length, s.total_list_length, s.child_stats.max_list_length FROM (SELECT stats(n) s FROM t LIMIT 1)
+----
+2	2	2000	5
+
+query II
+SELECT s.child_stats.min_list_length, s.child_stats.total_list_length FROM (SELECT stats(n) s FROM t LIMIT 1)
+----
+0	5999
+
+statement ok
+CHECKPOINT
+
+statement ok
+SELECT * FROM t
+
+restart
+
+query IIII
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM t), s.total_list_length > 0 FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+2	5	true	true
+
+query IIII
+SELECT s.min_list_length, s.max_list_length, s.total_list_length, s.child_stats.max_list_length FROM (SELECT stats(n) s FROM t LIMIT 1)
+----
+2	2	2000	5
+
+# appending to a persistent table keeps the stats up-to-date
+statement ok
+INSERT INTO t VALUES ([], [[1, 2, 3, 4, 5, 6, 7]]), ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], NULL);
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM t) FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+0	10	true
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM t) FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+0	10	true
+
+# deleting rows keeps the stats as bounds
+statement ok
+DELETE FROM t WHERE len(l) = 10
+
+query II
+SELECT s.min_list_length, s.max_list_length FROM (SELECT stats(l) s FROM t LIMIT 1)
+----
+0	10
+
+# only NULL lists
+statement ok
+CREATE TABLE nulls(l INT[]);
+
+statement ok
+INSERT INTO nulls SELECT NULL FROM range(100);
+
+query I
+SELECT s.total_list_length FROM (SELECT stats(l) s FROM nulls LIMIT 1)
+----
+0
+
+# expression statistics
+query II
+SELECT s.min_list_length, s.max_list_length FROM (SELECT stats([1, 2, 3]) s)
+----
+3	3
+
+query II
+SELECT s.min_list_length, s.max_list_length FROM (SELECT stats([i, i + 1]) s FROM range(10) t(i) LIMIT 1)
+----
+2	2
+
+query II
+SELECT s.min_list_length, s.max_list_length FROM (SELECT stats([1, 2, 3, 4]::INT[]) s)
+----
+4	4
+
+query II
+SELECT s.min_list_length, s.max_list_length FROM (SELECT stats([1, 2, 3]::INT[3]::INT[]) s)
+----
+3	3
+
+# totals merge correctly across multiple row groups
+statement ok
+CREATE TABLE multi_rg(l INT[]);
+
+statement ok
+INSERT INTO multi_rg SELECT range(i % 7) FROM range(250000) t(i);
+
+statement ok
+INSERT INTO multi_rg SELECT range(i % 11) FROM range(50000) t(i);
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM multi_rg) FROM (SELECT stats(l) s FROM multi_rg LIMIT 1)
+----
+0	10	true
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(l)) FROM multi_rg) FROM (SELECT stats(l) s FROM multi_rg LIMIT 1)
+----
+0	10	true

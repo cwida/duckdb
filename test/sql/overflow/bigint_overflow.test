@@ -57,6 +57,126 @@ SELECT 1073741823::BIGINT * 8589934592::BIGINT
 ----
 9223372028264841216
 
+# both operands below 2^32 with a product above the signed range: the fallback
+# overflow check (non-GCC/Clang builds) skipped this case entirely
+statement error
+SELECT 3037000500::BIGINT * 3037000500::BIGINT
+----
+Out of Range Error: Overflow
+
+statement error
+SELECT -3037000500::BIGINT * 3037000500::BIGINT
+----
+Out of Range Error: Overflow
+
+statement error
+SELECT 4294967295::BIGINT * 4294967295::BIGINT
+----
+Out of Range Error: Overflow
+
+# the largest square that still fits
+query I
+SELECT 3037000499::BIGINT * 3037000499::BIGINT
+----
+9223372030926249001
+
+query I
+SELECT 3037000499::BIGINT * (-3037000500)::BIGINT
+----
+-9223372033963249500
+
+# near-boundary products that still fit
+query I
+SELECT 2147483648::BIGINT * 4294967295::BIGINT
+----
+9223372034707292160
+
+query I
+SELECT 2147483647::BIGINT * 4294967297::BIGINT
+----
+9223372034707292159
+
+# the low-limb product carries into the upper half of a fitting product
+query I
+SELECT 4294967299::BIGINT * 2147483646::BIGINT
+----
+9223372034707292154
+
+query I
+SELECT 4294967299::BIGINT * (-2147483646)::BIGINT
+----
+-9223372034707292154
+
+# overflows only the carry out of the 64-bit magnitude: cross term and range check pass
+statement error
+SELECT 4294967298::BIGINT * 4294967295::BIGINT
+----
+Out of Range Error: Overflow
+
+statement error
+SELECT 4294967295::BIGINT * 4294967298::BIGINT
+----
+Out of Range Error: Overflow
+
+# a product whose high half sets only bits >= 56: the fallback check's mask missed it
+statement error
+SELECT 2305843009213693952::BIGINT * 2147483648::BIGINT
+----
+Out of Range Error: Overflow
+
+# 2^57 * 2^31: sets exactly bit 56, the first bit the mask omits
+statement error
+SELECT 144115188075855872::BIGINT * 2147483648::BIGINT
+----
+Out of Range Error: Overflow
+
+# 2^33 * 2^31 = 2^64: the smallest product rejected by the cross-term bound
+statement error
+SELECT 8589934592::BIGINT * 2147483648::BIGINT
+----
+Out of Range Error: Overflow
+
+statement error
+SELECT 2147483648::BIGINT * 2305843009213693952::BIGINT
+----
+Out of Range Error: Overflow
+
+# exactly the minimum: representable when the signs differ
+query I
+SELECT (-2147483648)::BIGINT * 4294967296::BIGINT
+----
+-9223372036854775808
+
+query I
+SELECT 4294967296::BIGINT * (-2147483648)::BIGINT
+----
+-9223372036854775808
+
+query I
+SELECT 2147483648::BIGINT * (-4294967296)::BIGINT
+----
+-9223372036854775808
+
+query I
+SELECT (-4294967296)::BIGINT * 2147483648::BIGINT
+----
+-9223372036854775808
+
+statement error
+SELECT 2147483648::BIGINT * 4294967296::BIGINT
+----
+Out of Range Error: Overflow
+
+statement error
+SELECT (-2147483648)::BIGINT * (-4294967296)::BIGINT
+----
+Out of Range Error: Overflow
+
+statement error
+SELECT (-9223372036854775808)::BIGINT * (-9223372036854775808)::BIGINT
+----
+Out of Range Error: Overflow
+
 # int64_min
 statement error
 SELECT (-9223372036854775808)::BIGINT * 2::BIGINT

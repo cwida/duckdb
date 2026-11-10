@@ -126,17 +126,7 @@ bool ParseIterator::PeekInternal() {
 			exhausted = true;
 			return false;
 		}
-		unique_ptr<SQLStatement> stmt;
-		try {
-			stmt = parser.ParseTopLevelStatement(*token_iterator);
-		} catch (ParserException &) {
-			// Mirror Parser::ParseQuery's parse_function-extension fallback so extensions like
-			// `quack` can claim a segment that PEG couldn't parse.
-			stmt = parser.TryParseExtensionStatement(*token_iterator, sql);
-			if (!stmt) {
-				throw;
-			}
-		}
+		auto stmt = parser.ParseTopLevelStatement(*token_iterator, sql);
 		if (stmt) {
 			// ParseTopLevelStatement doesn't populate stmt->query (it operates on tokens, not the
 			// source string). Mirror Parser::ParseQuery's per-statement post-processing: extend from

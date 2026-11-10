@@ -73,9 +73,12 @@ BoundLimitNode Binder::BindLimitValue(OrderBinder &order_binder, unique_ptr<Pars
 			return BoundLimitNode::ExpressionValue(std::move(bound_limit));
 		}
 	}
-	if (expr->IsFoldable()) {
+
+	Value constant;
+	// if evaluation throws, evaluate at runtime instead, so it only fails if the LIMIT operator receives rows
+	if (expr->IsFoldable() && ExpressionExecutor::TryEvaluateScalar(context, *expr, constant)) {
 		//! this is a constant
-		auto val = ExpressionExecutor::EvaluateScalar(context, *expr).CastAs(context, target_type);
+		auto val = constant.CastAs(context, target_type);
 		if (is_percentage) {
 			D_ASSERT(!is_offset);
 			double percentage_val;
@@ -345,8 +348,20 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 		switch (bound_mod->type) {
 		case ResultModifierType::DISTINCT_MODIFIER: {
 			auto &distinct = bound_mod->Cast<BoundDistinctModifier>();
+			if (distinct.distinct_type == DistinctType::DISTINCT) {
+				// DISTINCT covers every result column: the targets were prepared before the select list was bound,
+				// and an UNNEST of a struct expands an entry into several columns
+				distinct.target_distincts.clear();
+				for (idx_t i = 0; i < result.types.size(); i++) {
+					distinct.target_distincts.push_back(make_uniq<BoundColumnRefExpression>(
+					    names[i], sql_types[i], ColumnBinding(table_index, ProjectionIndex(i))));
+				}
+			}
 			// set types of distinct targets
 			for (auto &expr : distinct.target_distincts) {
+				if (expr->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+					continue;
+				}
 				expr = FinalizeBindOrderExpression(std::move(expr), table_index, names, sql_types, bind_state);
 				if (!expr) {
 					throw InternalException("DISTINCT ON ORDER BY ALL not supported");
@@ -415,7 +430,7 @@ static unique_ptr<Expression> BindUncollatedFirst(Binder &binder, unique_ptr<Exp
 	vector<unique_ptr<Expression>> first_children;
 	first_children.push_back(std::move(uncollated_expr));
 	FunctionBinder function_binder(binder);
-	auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
+	auto function = function_binder.BindAggregateFunction(first_fun, std::move(first_children));
 	function->SetAlias("__collated_group");
 	return std::move(function);
 }
@@ -689,7 +704,13 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		bool is_window = statement.select_list[i]->IsWindow();
 		idx_t unnest_count = result.unnests.SelectList().size();
 		LogicalType result_type;
+		// the select item of a TRY subquery transports the error flags of nested scalar subqueries to
+		// the TRY lowering of this node; GROUP BY ALL may move the item into the group expressions,
+		// where the flag would have no consumer, so such items bind as plain subqueries
+		select_binder.SetTransportTryErrors(i == 0 && IsBindingTrySubquery() &&
+		                                    statement.aggregate_handling != AggregateHandling::FORCE_AGGREGATES);
 		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
+		select_binder.SetTransportTryErrors(false);
 		bool is_original_column = i < result.column_count;
 		bool can_group_by_all =
 		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;

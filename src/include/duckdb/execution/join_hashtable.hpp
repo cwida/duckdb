@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/types/column/column_data_consumer.hpp"
@@ -170,7 +171,7 @@ public:
 		idx_t last_match_count;
 		SelectionVector last_sel_vector;
 
-		// thread-local probe match count, flushed to ht.total_probe_matches once per thread to avoid contention
+		// Thread-local probe match count, flushed when the current chunk's pointer scan is exhausted.
 		idx_t local_probe_matches = 0;
 
 		explicit ScanStructure(JoinHashTable &ht, TupleDataChunkState &key_state);
@@ -318,7 +319,10 @@ public:
 	//! Combines the partitions in sink_collection into data_collection, as if it were not partitioned
 	void Unpartition();
 	//! Allocate the pointer table for the probe
-	void AllocatePointerTable();
+	void AllocatePointerTable(bool use_radix_layout = false);
+	idx_t GetBucketShift() const {
+		return bucket_shift;
+	}
 	//! Initialize the pointer table for the probe
 	void InitializePointerTable(idx_t entry_idx_from, idx_t entry_idx_to);
 	//! Finalize the build of the HT, constructing the actual hash table and making the HT ready for probing.
@@ -457,8 +461,8 @@ public:
 	bool single_join_error_on_multiple_rows = true;
 	//! Whether or not to perform deduplication based on join_keys when building ht
 	bool insert_duplicate_keys = true;
-	//! Number of probe matches
-	atomic<idx_t> total_probe_matches {0};
+	//! Number of probe matches, isolated from immutable probe metadata.
+	PaddedAtomic<idx_t> total_probe_matches {0};
 	//! Residual predicate to evaluate during probing
 	optional_ptr<Expression> residual_predicate;
 	//! Residual predicate mapping info
@@ -549,6 +553,8 @@ private:
 
 	//! The hash map of the HT, created after finalization
 	HugeAllocation hash_map;
+	//! Shift to align fully resident buckets with radix partitions; zero selects the external/low-bit layout.
+	idx_t bucket_shift = 0;
 	//! Whether or not NULL values are considered equal in each of the comparisons
 	vector<bool> null_values_are_equal;
 	//! An empty tuple that's a "dead end", can be used to stop chains early

@@ -49,6 +49,8 @@ public:
 	bool inside_submission = false;
 	//! Whether the statement runs on the CONNECT-ed database, outside the local transaction
 	bool outside_local_transaction = false;
+	//! Whether the registered states saw the begin of the running statement and not yet its end
+	bool statement_began = false;
 
 public:
 	void SetOpenResult(BaseQueryResult &result) {

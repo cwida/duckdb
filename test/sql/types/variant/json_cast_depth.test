@@ -26,23 +26,23 @@ SELECT obj::JSON::VARIANT IS NOT NULL FROM deep_json;
 ----
 true
 
-# moderately deep values survive the roundtrip through VARIANT unchanged
+# values within the VARIANT nesting limit survive the roundtrip through VARIANT unchanged
 query I
-SELECT v::JSON::VARCHAR = repeat('[', 200) || '1' || repeat(']', 200)
-FROM (SELECT (repeat('[', 200) || '1' || repeat(']', 200))::JSON::VARIANT v)
+SELECT v::JSON::VARCHAR = repeat('[', 100) || '1' || repeat(']', 100)
+FROM (SELECT (repeat('[', 100) || '1' || repeat(']', 100))::JSON::VARIANT v)
 ----
 true
 
 query I
-SELECT v::JSON::VARCHAR = repeat('{"k":', 200) || '1' || repeat('}', 200)
-FROM (SELECT (repeat('{"k":', 200) || '1' || repeat('}', 200))::JSON::VARIANT v)
+SELECT v::JSON::VARCHAR = repeat('{"k":', 100) || '1' || repeat('}', 100)
+FROM (SELECT (repeat('{"k":', 100) || '1' || repeat('}', 100))::JSON::VARIANT v)
 ----
 true
 
 # alternating arrays and objects
 query I
-SELECT v::JSON::VARCHAR = repeat('{"k":[', 100) || '1' || repeat(']}', 100)
-FROM (SELECT (repeat('{"k":[', 100) || '1' || repeat(']}', 100))::JSON::VARIANT v)
+SELECT v::JSON::VARCHAR = repeat('{"k":[', 50) || '1' || repeat(']}', 50)
+FROM (SELECT (repeat('{"k":[', 50) || '1' || repeat(']}', 50))::JSON::VARIANT v)
 ----
 true
 

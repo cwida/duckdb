@@ -158,3 +158,31 @@ SELECT finalize(to_aggregate_state({
 }, 'approx_top_k', ['VARCHAR', 'BIGINT']));
 ----
 [a, b]
+
+# combining states that are not full adds nothing for the values a state lacks
+statement ok
+CREATE TABLE partial AS SELECT * FROM (VALUES (0, 1), (0, 1), (0, 1), (1, 2), (1, 2), (2, 2), (2, 2), (3, 3)) t(b, v);
+
+query I
+SELECT finalize(combine_aggr(s)) FROM (SELECT b, approx_top_k(v, 1) EXPORT_STATE s FROM partial GROUP BY b);
+----
+[2]
+
+# a full state keeps adding the minimum it guarantees for the values it lacks
+query I
+SELECT finalize(combine_aggr(s)) FROM (
+	SELECT b, approx_top_k(v, 1) EXPORT_STATE s
+	FROM (SELECT i % 2 b, CASE WHEN i < 40 THEN 7 ELSE i END v FROM range(100) r(i)) GROUP BY b
+);
+----
+[7]
+
+# only a full state drops values into the filter, so a state with fewer values cannot have filter counts
+statement error
+SELECT finalize(to_aggregate_state({
+	'k': 2::UBIGINT,
+	'values': [{'value': 'a'::VARCHAR, 'count': 5::UBIGINT}]::STRUCT("value" VARCHAR, "count" UBIGINT)[],
+	'filter': list_transform(range(64), lambda x: 1::UBIGINT)
+}, 'approx_top_k', ['VARCHAR', 'BIGINT']));
+----
+<REGEX>:Invalid Input Error: Invalid approx_top_k state - the filter must be empty.*

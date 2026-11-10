@@ -34,7 +34,8 @@ tpcds_append_information::tpcds_append_information(duckdb::ClientContext &contex
 		auto collection = optimistic_writer->CreateCollection(table_entry->GetStorage(), types, partial_manager_type);
 		auto &row_collection = *collection->collection;
 		row_collection.InitializeEmpty();
-		row_collection.InitializeAppend(append_state);
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		row_collection.InitializeAppend(duckdb::DuckTransaction::Get(context, table_entry->catalog), append_state);
 		optimistic_collection_index =
 		    table_entry->GetStorage().CreateOptimisticCollection(context, std::move(collection));
 		optimistic_collection = table_entry->GetStorage().GetOptimisticCollection(context, optimistic_collection_index);
@@ -60,7 +61,7 @@ tpcds_append_information::tpcds_append_information(duckdb::ClientContext &contex
 			append_types.push_back(TPCDSAppendType::DATE);
 			break;
 		case duckdb::LogicalTypeId::DECIMAL:
-			decimal_scales.back() = static_cast<uint8_t>(duckdb::DecimalType::GetScale(type));
+			decimal_scales.back() = duckdb::DecimalType::GetScale(type);
 			switch (type.InternalType()) {
 			case duckdb::PhysicalType::INT16:
 				append_types.push_back(TPCDSAppendType::DECIMAL16);
@@ -156,9 +157,8 @@ void tpcds_append_information::FinalizeOptimisticAppend() {
 		return;
 	}
 	FlushChunk();
-	auto transaction_data = duckdb::TransactionData::Unversioned();
 	auto &row_collection = *optimistic_collection->collection;
-	row_collection.FinalizeAppend(transaction_data, append_state);
+	row_collection.FinalizeAppend(append_state.transaction, append_state);
 	finalized = true;
 }
 
@@ -237,7 +237,7 @@ TPCDSAppendType tpcds_append_information::ActiveAppendType() const {
 	return append_types[active_col];
 }
 
-uint8_t tpcds_append_information::ActiveDecimalScale() const {
+uint32_t tpcds_append_information::ActiveDecimalScale() const {
 	D_ASSERT(active_col < decimal_scales.size());
 	return decimal_scales[active_col];
 }
@@ -405,6 +405,6 @@ void append_decimal(append_info info, decimal_t *val, int nColumn) {
 		append_info->AppendNull();
 		return;
 	}
-	D_ASSERT(append_info->ActiveDecimalScale() == val->precision);
+	D_ASSERT(append_info->ActiveDecimalScale() == static_cast<uint32_t>(val->precision));
 	append_info->AppendDecimal(val->number);
 }

@@ -170,22 +170,19 @@ SELECT count(*) FROM ets WHERE year(t) = 2005;
 
 # ---------------------------------------------------------------------------
 # bounds on the edge of the TIMESTAMP domain.  Every int64 except the two infinity sentinels is a valid
-# timestamp (make_timestamp accepts all of them), but the values between INT64_MIN and the first midnight
-# of year -290308 (290309 BC) have no date/time form and cannot be rendered: EXPLAIN / EXPLAIN ANALYZE of a
-# preimage that reached the bottom of the domain failed with "Date out of range in timestamp conversion".
-# A bound on the domain edge is therefore written as a strict comparison against the adjacent sentinel
-# (t > '-infinity', t < 'infinity'), which renders and keeps every finite row; a bound strictly inside the
-# unrenderable band leaves f(t) in place.
+# timestamp that renders. The rewrite searches between the sentinels, and a bound on its edge is written as a
+# strict comparison against the adjacent sentinel (t > '-infinity', t < 'infinity'), or as t != '-infinity'
+# when the finite INT64_MIN below -infinity satisfies the comparison too.
 # ---------------------------------------------------------------------------
 query II
 EXPLAIN SELECT count(*) FROM ets WHERE epoch(t) > -9223372036854775807;
 ----
-logical_opt	<REGEX>:.*t > '-infinity'.*
+logical_opt	<REGEX>:.*t != '-infinity'.*
 
 query II
 EXPLAIN SELECT count(*) FROM ets WHERE epoch(t) < 9223372036854775807;
 ----
-logical_opt	<REGEX>:.*t > '-infinity'.*t < 'infinity'.*
+logical_opt	<REGEX>:.*t != '-infinity'.*t < 'infinity'.*
 
 query II
 EXPLAIN SELECT count(*) FROM ets WHERE epoch(t) > -9223372036854775807;
@@ -212,8 +209,8 @@ SELECT count(*) FROM ets WHERE epoch(t) < 9223372036854775807;
 ----
 200000
 
-# the smallest finite timestamp (INT64_MIN + 2, right above the -infinity sentinel) is a valid row that the
-# rewrite must keep, even though it cannot be printed
+# the smallest finite timestamp above the -infinity sentinel (INT64_MIN + 2) is a valid row that the rewrite
+# must keep
 statement ok
 CREATE TABLE ts_min(t TIMESTAMP);
 
@@ -225,7 +222,7 @@ SELECT count(*) FROM ts_min WHERE epoch(t) > -9223372036854775807;
 ----
 1
 
-# both ends of the finite domain, the first renderable timestamp, ±infinity and NULL
+# both ends of the finite domain, the first midnight of the range, ±infinity and NULL
 statement ok
 CREATE TABLE edge(t TIMESTAMP);
 
@@ -263,9 +260,9 @@ SELECT count(*) FROM edge WHERE epoch_us(t) <= 9223372036854775806;
 query II
 EXPLAIN SELECT count(*) FROM edge WHERE epoch_us(t) <= 9223372036854775806;
 ----
-logical_opt	<REGEX>:.*t > '-infinity'.*t < 'infinity'.*
+logical_opt	<REGEX>:.*t != '-infinity'.*t < 'infinity'.*
 
-# ... or one step inside the unrenderable band, where the function is kept and the result is unchanged
+# ... or one step inside the domain, below the first midnight of the range
 query I
 SELECT count(*) FROM edge WHERE epoch_us(t) > -9223372036854775806;
 ----
@@ -284,7 +281,7 @@ SELECT count(*) FROM edge WHERE epoch_us(t) = -9223372036854775806;
 query II
 EXPLAIN SELECT count(*) FROM edge WHERE epoch_us(t) > -9223372036854775806;
 ----
-logical_opt	<REGEX>:.*epoch_us.*
+logical_opt	<REGEX>:.*t >= '290309-12-21 \(BC\) 19:59:05.224195'.*
 
 query I
 SELECT count(*) FROM edge WHERE epoch_us(t) >= -9223372036854775000;
@@ -326,6 +323,50 @@ endloop
 
 endloop
 
+# INT64_MIN is finite but sorts below the -infinity sentinel, outside the searched domain
+statement ok
+CREATE TABLE below(t TIMESTAMP);
+
+statement ok
+INSERT INTO below VALUES (make_timestamp(-9223372036854775807 - 1)), (make_timestamp(-9223372036854775806)), ('-infinity'), (NULL);
+
+query IIII
+SELECT count(*) FILTER (epoch_us(t) <= -9223372036854775806), count(*) FILTER (epoch(t) > -9223372036854775807),
+       count(*) FILTER (epoch_us(t) >= -9223372036854775806), count(*) FILTER (year(t) < 2000) FROM below;
+----
+2	2	1	2
+
+query I
+SELECT count(*) FROM below WHERE epoch_us(t) <= -9223372036854775806;
+----
+2
+
+query I
+SELECT count(*) FROM below WHERE epoch(t) > -9223372036854775807;
+----
+2
+
+query I
+SELECT count(*) FROM below WHERE epoch_us(t) >= -9223372036854775806;
+----
+1
+
+query I
+SELECT count(*) FROM below WHERE year(t) < 2000;
+----
+2
+
+query III
+SELECT (SELECT count(*) FROM below WHERE year(t) = -290308), (SELECT count(*) FROM below WHERE epoch_us(t) = -9223372036854775806),
+       (SELECT count(*) FROM below WHERE epoch_us(t) = -9223372036854775807 - 1);
+----
+2	1	1
+
+query II
+EXPLAIN SELECT count(*) FROM below WHERE year(t) < 2000;
+----
+logical_opt	<REGEX>:.*t != '-infinity'.*
+
 # DATE: every non-sentinel int32 renders, the domain edges are still written against the sentinels
 statement ok
 CREATE TABLE edge_d(dt DATE);
@@ -344,7 +385,19 @@ SELECT count(*) FROM edge_d WHERE year(dt) > -1000000000;
 ----
 3
 
+# the smallest finite DATE sorts below its -infinity sentinel too
+statement ok
+CREATE TABLE below_d(dt DATE);
+
+statement ok
+INSERT INTO below_d VALUES (make_date(-2147483647 - 1)), (make_date(-2147483646)), ('-infinity'), (NULL);
+
+query I
+SELECT count(*) FROM below_d WHERE year(dt) < 2000;
+----
+2
+
 query II
 EXPLAIN SELECT count(*) FROM edge_d WHERE year(dt) > -1000000000;
 ----
-logical_opt	<REGEX>:.*dt > '-infinity'.*dt < 'infinity'.*
+logical_opt	<REGEX>:.*dt != '-infinity'.*dt < 'infinity'.*

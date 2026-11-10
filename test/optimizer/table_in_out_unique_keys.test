@@ -1,0 +1,21 @@
+# name: test/optimizer/table_in_out_unique_keys.test
+# description: Table-in/out functions can produce multiple rows for a unique input key
+# group: [optimizer]
+
+# range expands each correlated key, so row_number must not be folded to one.
+query III
+SELECT k, j, rn
+FROM (VALUES (1), (2), (1)) t(k),
+LATERAL (
+	SELECT j, row_number() OVER (ORDER BY k, j DESC) rn
+	FROM range(k + 1) r(j)
+) q
+ORDER BY k, j;
+----
+1	0	2
+1	0	2
+1	1	1
+1	1	1
+2	0	3
+2	1	2
+2	2	1

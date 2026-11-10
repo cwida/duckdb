@@ -1,0 +1,147 @@
+# name: test/sql/types/variant/variant_cast_type_null.test
+# description: Casting TYPE to VARIANT only succeeds for NULL values
+# group: [variant]
+
+# a flat all-NULL vector casts to NULL
+query I
+SELECT CAST(v AS VARIANT) FROM (VALUES (NULL::TYPE), (NULL::TYPE)) t(v)
+----
+NULL
+NULL
+
+query I
+SELECT TRY_CAST(v AS VARIANT) FROM (VALUES (NULL::TYPE), (NULL::TYPE)) t(v)
+----
+NULL
+NULL
+
+# constant NULL shapes keep working
+query I
+SELECT CAST(NULL::TYPE AS VARIANT)
+----
+NULL
+
+query I
+SELECT CAST(CASE WHEN i > 10 THEN make_type('INTEGER') ELSE NULL END AS VARIANT) FROM range(3) t(i)
+----
+NULL
+NULL
+NULL
+
+# an actual TYPE value raises the regular unimplemented-cast error
+statement error
+SELECT CAST(v AS VARIANT) FROM (VALUES (make_type('INTEGER')), (NULL::TYPE)) t(v)
+----
+Conversion Error: Unimplemented type for cast (TYPE -> VARIANT)
+
+statement error
+SELECT CAST(make_type('INTEGER') AS VARIANT)
+----
+Conversion Error: Unimplemented type for cast (TYPE -> VARIANT)
+
+query I
+SELECT TRY_CAST(make_type('INTEGER') AS VARIANT)
+----
+NULL
+
+# TRY_CAST returns NULL for TYPE values instead of throwing
+query I
+SELECT TRY_CAST(v AS VARIANT) FROM (VALUES (make_type('INTEGER')), (NULL::TYPE), (make_type('VARCHAR'))) t(v)
+----
+NULL
+NULL
+NULL
+
+# the UNION member-to-member cast also casts members no row selects - an unselected TYPE member is all-NULL
+query I
+SELECT CAST(union_value(i := 42)::UNION(i INTEGER, t TYPE) AS UNION(i BIGINT, t VARIANT))
+----
+42
+
+# a selected TYPE member holding NULL casts to NULL
+query I
+SELECT CAST(union_value(t := NULL::TYPE)::UNION(i INTEGER, t TYPE) AS UNION(i BIGINT, t VARIANT))
+----
+NULL
+
+# a selected TYPE member holding a value errors
+statement error
+SELECT CAST(union_value(t := make_type('INTEGER'))::UNION(i INTEGER, t TYPE) AS UNION(i BIGINT, t VARIANT))
+----
+Conversion Error: Unimplemented type for cast (TYPE -> VARIANT)
+
+query I
+SELECT TRY_CAST(union_value(t := make_type('INTEGER'))::UNION(i INTEGER, t TYPE) AS UNION(i BIGINT, t VARIANT)) FROM range(2)
+----
+NULL
+NULL
+
+# member tags survive the member-to-member cast, only the failing row becomes a NULL union
+query III
+WITH input(id, u) AS (
+    VALUES
+      (1, union_value(i := 42)::UNION(i INTEGER, t TYPE)),
+      (2, union_value(t := NULL::TYPE)::UNION(i INTEGER, t TYPE)),
+      (3, union_value(t := make_type('INTEGER'))::UNION(i INTEGER, t TYPE))
+), converted AS (
+    SELECT id, TRY_CAST(u AS UNION(i BIGINT, t VARIANT)) AS v FROM input
+)
+SELECT id, v IS NULL, union_tag(v)::VARCHAR FROM converted ORDER BY id
+----
+1	false	i
+2	false	t
+3	true	NULL
+
+# types composed over TYPE have no VARIANT representation either
+query I
+SELECT CAST(v AS VARIANT) FROM (VALUES (NULL::TYPE[]), (NULL::TYPE[])) t(v)
+----
+NULL
+NULL
+
+query I
+SELECT CAST(v AS VARIANT) FROM (VALUES (NULL::STRUCT(a TYPE)), (NULL::STRUCT(a TYPE))) t(v)
+----
+NULL
+NULL
+
+# a non-NULL container counts as a value even if its TYPE elements are NULL
+statement error
+SELECT CAST([NULL::TYPE] AS VARIANT)
+----
+Conversion Error: Unimplemented type for cast (TYPE[] -> VARIANT)
+
+statement error
+SELECT CAST(v AS VARIANT) FROM (VALUES (union_value(t := NULL::TYPE)::UNION(i INTEGER, t TYPE))) t(v)
+----
+Conversion Error: Unimplemented type for cast (UNION(i INTEGER, t TYPE) -> VARIANT)
+
+# nested targets cast the TYPE elements directly, so NULL elements convert
+query I
+SELECT CAST([NULL::TYPE] AS VARIANT[])
+----
+[NULL]
+
+query I
+SELECT CAST(row(NULL::TYPE) AS STRUCT(a VARIANT))
+----
+{'a': NULL}
+
+# the member-to-member cast stays executable inside aggregates like histogram
+query I
+SELECT histogram(x::UNION(i BIGINT, t VARIANT), [union_value(i := 10)::UNION(i BIGINT, t VARIANT)])
+FROM (VALUES (union_value(i := 5)::UNION(i INTEGER, t TYPE)), (union_value(i := 42)::UNION(i INTEGER, t TYPE))) t(x)
+----
+{10=1}
+
+# representable types still take the real conversion
+query III
+SELECT 42::VARIANT, 'hello'::VARIANT, [1, 2]::VARIANT
+----
+42	hello	[1, 2]
+
+query I
+SELECT CAST(v AS VARIANT) FROM (VALUES (row(1)), (NULL::STRUCT(a INTEGER))) t(v)
+----
+{'a': 1}
+NULL

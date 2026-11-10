@@ -1,0 +1,160 @@
+# name: test/sql/attach/external_resource_show_with_type.test
+# description: SHOW [ALL] EXTERNAL RESOURCES WITH TYPE '<type>' restricts the listing to one type, and discovers only it
+# group: [attach]
+
+# Each list callback bumps its own sequence, so the sequences count how often discovery called it.
+statement ok
+CREATE SEQUENCE calls_a;
+
+statement ok
+CREATE SEQUENCE calls_b;
+
+statement ok
+CREATE MACRO list_a(opts) AS TABLE
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'bucket-a' AS name, 'a-ref' AS reference, 'running' AS state;
+
+statement ok
+CREATE MACRO list_b(opts) AS TABLE
+    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'bucket-b' AS name, 'b-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('a@st', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
+
+statement ok
+CALL register_external_resource_type('b@st', kind := 'catalog', create_function := 'noop_create', list_function := 'list_b');
+
+statement ok
+CALL register_external_resource('a@st', 'local_a', MAP {'id': 'x'});
+
+# currval needs a prior nextval
+query II
+SELECT nextval('calls_a'), nextval('calls_b');
+----
+1	1
+
+# Without a type, SHOW ALL discovers every type.
+query I
+SELECT count(*) FROM (SHOW ALL EXTERNAL RESOURCES);
+----
+3
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+2	2
+
+# With a type, only that type's callback runs; its registered resources are listed as managed.
+query TTTTTTTT rowsort
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'a@st';
+----
+bucket-a	a@st	false	running	a-ref	NULL	NULL	{id=a3}
+local_a	a@st	true	NULL	NULL	NULL	NULL	{id=x}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	2
+
+query TTTTTTTT
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'b@st';
+----
+bucket-b	b@st	false	running	b-ref	NULL	NULL	{id=b3}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	3
+
+# It is the query duckdb_external_resources(discover := true, type := '...'), so it works as a subquery too.
+query I
+SELECT count(*) FROM (SHOW ALL EXTERNAL RESOURCES WITH TYPE 'a@st');
+----
+2
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# Without ALL there is no discovery: the type restricts the registry listing and no callback runs.
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE 'a@st';
+----
+local_a	a@st	true	NULL	NULL	NULL	NULL	{id=x}
+
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE 'b@st';
+----
+
+# An unknown type is not an error for the registry listing: nothing is registered under it, so nothing is listed.
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE 'none@st';
+----
+
+# Discovering a type nothing provides is an error (most likely a typo), and calls nothing.
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'none@st';
+----
+<REGEX>:.*unknown resource type "none@st".*
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# A type nothing provides but the registry knows (its extension is not loaded) lists what is registered under it.
+statement ok
+CALL register_external_resource('orphan@st', 'kept', MAP {'id': 'o'});
+
+query TTTTTTTT
+SHOW ALL EXTERNAL RESOURCES WITH TYPE 'orphan@st';
+----
+kept	orphan@st	true	NULL	NULL	NULL	NULL	{id=o}
+
+# The type is a string literal, so it may need escaping; it is matched exactly, no patterns.
+statement ok
+CALL register_external_resource('it''s@st', 'quoted', MAP {'id': 'q'});
+
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE 'it''s@st';
+----
+quoted	it's@st	true	NULL	NULL	NULL	NULL	{id=q}
+
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE '%@st';
+----
+
+# A bare identifier is the type name as well, for types that are plain names.
+statement ok
+CALL register_external_resource('plain', 'bare', MAP {'id': 'p'});
+
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE plain;
+----
+bare	plain	true	NULL	NULL	NULL	NULL	{id=p}
+
+query TTTTTTTT
+SHOW EXTERNAL RESOURCES WITH TYPE "it's@st";
+----
+quoted	it's@st	true	NULL	NULL	NULL	NULL	{id=q}
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# The type is required after WITH TYPE, and WITH alone is not accepted.
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH TYPE;
+----
+<REGEX>:Parser Error.*
+
+statement error
+SHOW ALL EXTERNAL RESOURCES WITH 'a@st';
+----
+<REGEX>:Parser Error.*
+
+statement error
+SHOW ALL EXTERNAL RESOURCES 'a@st';
+----
+<REGEX>:Parser Error.*

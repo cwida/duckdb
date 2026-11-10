@@ -1,0 +1,50 @@
+# name: test/sql/storage/revert_append_nested_list.test
+# description: A reverted append to a nested list removes the child rows also when the kept lists are empty
+# group: [storage]
+
+require skip_reload
+
+require no_alternative_verify
+
+load {TEST_DIR}/revert_append_nested_list.db
+
+# keep the row groups in memory until the explicit checkpoints
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+CREATE TABLE n (i INTEGER, l INTEGER[][], l3 INTEGER[][][])
+
+statement ok
+INSERT INTO n VALUES (0, [], [[]])
+
+statement ok
+SET debug_force_commit_failure = true
+
+statement error
+INSERT INTO n VALUES (1, [[1, 2, 3]], [[[1, 2], [3]]])
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false
+
+statement ok
+INSERT INTO n VALUES (2, [[4]], [[[4]]])
+
+query III
+SELECT i, l, l3 FROM n ORDER BY i
+----
+0	[]	[[]]
+2	[[4]]	[[[4]]]
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT i, l, l3 FROM n ORDER BY i
+----
+0	[]	[[]]
+2	[[4]]	[[[4]]]

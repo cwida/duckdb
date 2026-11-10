@@ -114,7 +114,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 	auto ext_directories = ExtensionHelper::GetExtensionDirectoryPath(context);
 	for (const auto &ext_directory : ext_directories) {
 		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-			if (!StringUtil::EndsWith(path, ".duckdb_extension")) {
+			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 				return;
 			}
 			ExtensionInformation info;
@@ -256,7 +256,10 @@ void DuckDBExtensionsFunction(ClientContext &context, TableFunctionInput &data_p
 
 void DuckDBExtensionsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet functions("duckdb_extensions");
-	functions.AddFunction(TableFunction({}, DuckDBExtensionsFunction, DuckDBExtensionsBind, DuckDBExtensionsInit));
+	TableFunction extensions_fun({}, DuckDBExtensionsFunction, DuckDBExtensionsBind, DuckDBExtensionsInit);
+	// reads installed and loaded extension state, which autoloading can change while a query executes
+	extensions_fun.stability = FunctionStability::VOLATILE;
+	functions.AddFunction(std::move(extensions_fun));
 	set.AddFunction(functions);
 }
 

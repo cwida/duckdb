@@ -67,8 +67,9 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 		}
 	}
 
-	event->FinishTask();
+	// release the local states and their buffer pins before the sink can be finalized
 	pipeline_executor.reset();
+	event->FinishTask();
 	return TaskExecutionResult::TASK_FINISHED;
 }
 
@@ -158,11 +159,8 @@ bool Pipeline::TryGetMaxThreads(idx_t &max_threads) {
 	if (sink) {
 		lock_guard<mutex> guard(sink->lock);
 		if (sink->sink_state) {
-			max_threads = sink->sink_state->MaxThreads(max_threads);
+			max_threads = MinValue<idx_t>(max_threads, sink->sink_state->MaxThreads(max_threads));
 		}
-	}
-	if (max_threads > active_threads) {
-		max_threads = active_threads;
 	}
 
 	return true;
@@ -395,6 +393,10 @@ void Pipeline::PrepareFinalize() {
 
 void Pipeline::ResetSinkAndOperators() {
 	ResetSink();
+	InitializeOperatorState();
+}
+
+void Pipeline::InitializeOperatorState() {
 	for (auto &op_ref : operators) {
 		auto &op = op_ref.get();
 		lock_guard<mutex> guard(op.lock);
@@ -410,17 +412,13 @@ void Pipeline::Reset() {
 	initialized = true;
 }
 
-void Pipeline::ResetOperatorsForReschedule() {
-	auto &client = GetClientContext();
+void Pipeline::InvalidateOperatorStateForReschedule(ClientContext &client, PhysicalOperator &op) {
 	auto allow_reuse = Settings::Get<EnableCachingOperatorsSetting>(client);
-	for (auto &op_ref : operators) {
-		auto &op = op_ref.get();
-		lock_guard<mutex> guard(op.lock);
-		if (allow_reuse && op.op_state && op.ResetGlobalOperatorState(client, *op.op_state)) {
-			continue;
-		}
-		op.op_state = op.GetGlobalOperatorState(client);
+	lock_guard<mutex> guard(op.lock);
+	if (allow_reuse && op.op_state && op.ResetGlobalOperatorState(client, *op.op_state)) {
+		return;
 	}
+	op.op_state.reset();
 }
 
 void Pipeline::ResetSourceForReschedule() {
@@ -441,14 +439,6 @@ void Pipeline::ResetSourceForReschedule() {
 		ResetBatchIndexes();
 	}
 	initialized = true;
-}
-
-void Pipeline::ResetForReschedule(bool reset_sink) {
-	if (reset_sink) {
-		ResetSinkForReschedule(TaskScheduler::GetScheduler(executor.context).NumberOfThreads(), false);
-	}
-	ResetOperatorsForReschedule();
-	ResetSourceForReschedule();
 }
 
 void Pipeline::NotifyProgressReset() {
@@ -662,6 +652,32 @@ void Pipeline::AddDataflowDependency(shared_ptr<Pipeline> &pipeline) {
 	pipeline->parents.push_back(weak_ptr<Pipeline>(shared_from_this()));
 }
 
+void Pipeline::RemoveDataflowDependency(const shared_ptr<Pipeline> &pipeline) {
+	D_ASSERT(pipeline);
+	bool found_dependency = false;
+	for (auto entry = dataflow_dependencies.begin(); entry != dataflow_dependencies.end(); entry++) {
+		auto dependency = entry->lock();
+		D_ASSERT(dependency);
+		if (RefersToSameObject(*dependency, *pipeline)) {
+			dataflow_dependencies.erase(entry);
+			found_dependency = true;
+			break;
+		}
+	}
+	if (!found_dependency) {
+		throw InternalException("Attempted to remove a missing pipeline dataflow dependency");
+	}
+	for (auto entry = pipeline->parents.begin(); entry != pipeline->parents.end(); entry++) {
+		auto parent = entry->lock();
+		D_ASSERT(parent);
+		if (RefersToSameObject(*parent, *this)) {
+			pipeline->parents.erase(entry);
+			return;
+		}
+	}
+	throw InternalException("Pipeline dataflow dependency had no matching parent");
+}
+
 vector<weak_ptr<Pipeline>> Pipeline::GetDependencies() const {
 	return dependencies;
 }
@@ -839,11 +855,27 @@ struct CTEPipelineSelection {
 	bool stream_serialized_candidates = false;
 };
 
+struct PipelineBufferedConsumerRecord {
+	PipelineBufferedConsumerRecord(Pipeline &pipeline_p, PhysicalOperator &materialized_source_p,
+	                               shared_ptr<Pipeline> cte_dependency_p, PhysicalCTE &cte_p, idx_t consumer_idx_p)
+	    : pipeline(pipeline_p), materialized_source(materialized_source_p), cte_dependency(std::move(cte_dependency_p)),
+	      cte(cte_p), consumer_idx(consumer_idx_p) {
+	}
+
+	reference<Pipeline> pipeline;
+	reference<PhysicalOperator> materialized_source;
+	shared_ptr<Pipeline> cte_dependency;
+	reference<PhysicalCTE> cte;
+	idx_t consumer_idx;
+	bool demoted = false;
+};
+
 class PipelineBuildStateData {
 public:
 	vector<PipelineExternalInputCandidate> external_input_candidates;
 	vector<CTEPipelineSelection> cte_selections;
 	reference_map_t<PhysicalCTE, idx_t> cte_selection_map;
+	vector<PipelineBufferedConsumerRecord> buffered_consumers;
 };
 
 struct RemovedOptionalPipelineDependency {
@@ -1032,6 +1064,355 @@ void PipelineBuildState::AddExternalInputCandidate(Pipeline &pipeline, PhysicalO
 	                                             std::move(cte_dependency), cte, consumer_idx);
 }
 
+void PipelineBuildState::AddBufferedConsumer(Pipeline &pipeline, PhysicalOperator &materialized_source,
+                                             shared_ptr<Pipeline> cte_dependency, PhysicalCTE &cte,
+                                             idx_t consumer_idx) {
+	data->buffered_consumers.emplace_back(pipeline, materialized_source, std::move(cte_dependency), cte, consumer_idx);
+}
+
+//! Deadlock avoidance for buffered exchange consumers. An exchange producer throttles once the exchange buffer is
+//! full. It can only progress when a direct consumer runs it, or when a buffered consumer is draining. A buffered
+//! consumer drains when it can start without waiting on the exchange's own progress, and when its sink chain is
+//! itself live. This computes a least fixed point of stage and exchange liveness over the scheduled and analysis
+//! dependencies and returns a buffered consumer of an exchange that cannot be proven live, if any. Such a consumer
+//! is demoted to the materialized working table, which removes the producer's dependence on it.
+//! Before demoting, the caller tries the optional_candidates: execute-to-execute edges in the dead exchanges'
+//! gating regions. When such an edge is an optional ordering (cross product and union siblings are ordered for
+//! memory, not correctness), removing it can revive the exchange and preserve streaming, which beats falling back
+//! to a full materialization.
+static optional_ptr<PipelineBufferedConsumerRecord>
+FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const PipelineSchedule &schedule,
+                                    vector<pair<reference<Pipeline>, reference<Pipeline>>> &optional_candidates) {
+	struct ExchangeLiveness {
+		vector<reference<PipelineBufferedConsumerRecord>> records;
+		bool has_direct = false;
+		//! The producers can run and the buffered consumers can drain, so the producers are never parked forever.
+		bool live = false;
+		//! The exchange can also deliver EOF: live, and every producer's own dataflow inputs can finish. An EOF
+		//! wait must only be discharged by this, never by liveness alone, because a live producer that consumes
+		//! another exchange completes only once that exchange finishes.
+		bool finishes = false;
+	};
+	reference_map_t<PhysicalCTE, ExchangeLiveness> exchanges;
+	for (auto &record : data.buffered_consumers) {
+		if (!record.demoted) {
+			exchanges[record.cte.get()].records.push_back(record);
+		}
+	}
+	if (exchanges.empty()) {
+		return nullptr;
+	}
+	// An exchange with a direct consumer creates a shared spool at the buffer high watermark instead of
+	// throttling, so its producer never waits on the buffered consumers.
+	for (auto &entry : exchanges) {
+		auto &cte = entry.first.get();
+		D_ASSERT(cte.exchange);
+		entry.second.has_direct = cte.exchange->GetConsumerSummary().direct > 0;
+	}
+	for (auto &candidate : data.external_input_candidates) {
+		if (!candidate.UsesExternalInput()) {
+			continue;
+		}
+		auto entry = exchanges.find(candidate.cte.get());
+		if (entry != exchanges.end()) {
+			entry->second.has_direct = true;
+		}
+	}
+
+	auto stage_count = schedule.stages.size();
+	// The exchange a stage's pipeline produces into, if that exchange has active buffered consumers.
+	auto producing_exchange = [&](const PipelineScheduleStage &stage) -> optional_ptr<ExchangeLiveness> {
+		auto sink = stage.pipeline->GetSink();
+		if (!sink || sink->type != PhysicalOperatorType::CTE) {
+			return nullptr;
+		}
+		auto entry = exchanges.find(sink->Cast<PhysicalCTE>());
+		if (entry == exchanges.end()) {
+			return nullptr;
+		}
+		return &entry->second;
+	};
+	// A consumer's execute only completes after its own producer finalized (the mirrored analysis edge), but for
+	// liveness that wait resolves whenever the exchange itself is live, so it must not count as a gate. For two
+	// ordered consumers of one exchange this exclusion is sound only together with the exchange's shared-spool
+	// rule: with more than one active consumer the producer spools at the high watermark instead of throttling
+	// (ShouldCreateSharedSpoolLocked), so the pinned later consumer cannot park the producer. Tightening that
+	// spool rule would reintroduce an ordered-pair deadlock invisible to this analysis.
+	auto is_own_producer_eof = [&](const PipelineScheduleStage &stage, idx_t dependency) {
+		if (stage.type != PipelineScheduleStageType::EXECUTE) {
+			return false;
+		}
+		auto &target = schedule.stages[dependency];
+		if (target.type != PipelineScheduleStageType::FINISH) {
+			return false;
+		}
+		for (auto &dataflow : stage.pipeline->GetDataflowDependencies()) {
+			auto producer = dataflow.lock();
+			if (producer && RefersToSameObject(*producer, *target.pipeline)) {
+				return true;
+			}
+		}
+		return false;
+	};
+	// Index the execute stages once: the stage array is scanned repeatedly below.
+	reference_map_t<Pipeline, idx_t> execute_stages;
+	vector<optional_ptr<ExchangeLiveness>> stage_producing_exchange(stage_count, nullptr);
+	vector<pair<reference<ExchangeLiveness>, idx_t>> producer_execute_stages;
+	for (idx_t stage_idx = 0; stage_idx < stage_count; stage_idx++) {
+		auto &stage = schedule.stages[stage_idx];
+		if (stage.type != PipelineScheduleStageType::EXECUTE) {
+			continue;
+		}
+		execute_stages.emplace(*stage.pipeline, stage_idx);
+		auto exchange = producing_exchange(stage);
+		stage_producing_exchange[stage_idx] = exchange;
+		if (exchange) {
+			producer_execute_stages.emplace_back(*exchange, stage_idx);
+		}
+	}
+	auto record_execute_stage = [&](const PipelineBufferedConsumerRecord &record) {
+		auto entry = execute_stages.find(record.pipeline.get());
+		return entry == execute_stages.end() ? optional_idx() : optional_idx(entry->second);
+	};
+
+	// The exchange each active dataflow producer pipeline feeds, for resolving EOF waits.
+	reference_map_t<Pipeline, reference<ExchangeLiveness>> producer_pipeline_exchange;
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
+			continue;
+		}
+		auto entry = exchanges.find(record.cte.get());
+		D_ASSERT(entry != exchanges.end());
+		producer_pipeline_exchange.emplace(*record.cte_dependency, entry->second);
+	}
+
+	vector<bool> stage_live(stage_count, false);
+	// An analysis dependency is the mirrored wait on a producer's finalization. It resolves only once the
+	// producer's exchange can deliver EOF: exchange liveness alone proves the producer can run, not that it can
+	// finish, because the producer may itself wait on another exchange's EOF. The finish stage's own liveness
+	// must not be used either, since a dataflow consumer's execute is considered live without its EOF wait.
+	auto dependencies_live = [&](const PipelineScheduleStage &stage) {
+		for (auto dependency : stage.dependencies) {
+			if (!stage_live[dependency]) {
+				return false;
+			}
+		}
+		for (auto dependency : stage.analysis_dependencies) {
+			if (is_own_producer_eof(stage, dependency)) {
+				continue;
+			}
+			auto target_exchange = producing_exchange(schedule.stages[dependency]);
+			if (target_exchange) {
+				if (!target_exchange->finishes) {
+					return false;
+				}
+			} else if (!stage_live[dependency]) {
+				return false;
+			}
+		}
+		return true;
+	};
+	// The exchange's producers must be able to run: a live exchange with a producer that is itself gated would
+	// wrongly resolve the finalization waits of its consumers. Ordering between the exchange's own producer
+	// pipelines (a UNION's later branches wait on the base pipeline) resolves with the exchange itself and must
+	// not count as a gate.
+	auto producers_startable = [&](const ExchangeLiveness &exchange) {
+		for (auto &entry : producer_execute_stages) {
+			if (&entry.first.get() != &exchange) {
+				continue;
+			}
+			auto &stage = schedule.stages[entry.second];
+			for (auto dependency : stage.dependencies) {
+				if (stage_live[dependency] || producing_exchange(schedule.stages[dependency]).get() == &exchange) {
+					continue;
+				}
+				return false;
+			}
+			for (auto dependency : stage.analysis_dependencies) {
+				if (stage_live[dependency] || is_own_producer_eof(stage, dependency)) {
+					continue;
+				}
+				auto target_exchange = producing_exchange(schedule.stages[dependency]);
+				if (target_exchange && (target_exchange->live || target_exchange.get() == &exchange)) {
+					continue;
+				}
+				return false;
+			}
+		}
+		return true;
+	};
+
+	bool changed = true;
+	while (changed) {
+		changed = false;
+		for (auto &entry : exchanges) {
+			auto &exchange = entry.second;
+			if (exchange.live) {
+				continue;
+			}
+			if (!producers_startable(exchange)) {
+				continue;
+			}
+			bool all_draining = true;
+			if (!exchange.has_direct) {
+				// A direct consumer creates the shared spool; otherwise every buffered consumer must be able
+				// to start (everything its execute waits on is live) and to drain (its own sink's exchange
+				// is live).
+				for (auto &record_ref : exchange.records) {
+					auto &record = record_ref.get();
+					auto execute_stage = record_execute_stage(record);
+					if (!execute_stage.IsValid()) {
+						continue;
+					}
+					if (!dependencies_live(schedule.stages[execute_stage.GetIndex()])) {
+						all_draining = false;
+						break;
+					}
+					// Only CTE exchange sinks are modeled as drain obstacles. Blocking batch sinks (batch
+					// INSERT/COPY) cannot stall a consumer here because PhysicalUnion::BuildPipelines forces
+					// ordering edges between sibling pipelines whenever the sink requires a batch index, which
+					// makes that gate visible as scheduled dependencies.
+					auto consumer_sink_exchange = stage_producing_exchange[execute_stage.GetIndex()];
+					if (consumer_sink_exchange && !consumer_sink_exchange->live) {
+						all_draining = false;
+						break;
+					}
+				}
+			}
+			if (all_draining) {
+				exchange.live = true;
+				changed = true;
+			}
+		}
+		for (auto &entry : exchanges) {
+			auto &exchange = entry.second;
+			if (!exchange.live || exchange.finishes) {
+				continue;
+			}
+			// EOF requires every producer's own dataflow inputs to finish as well. CTE references are acyclic,
+			// so this grounds out at exchanges whose producers read no other exchange.
+			bool inputs_finish = true;
+			for (auto &producer_entry : producer_execute_stages) {
+				if (&producer_entry.first.get() != &exchange) {
+					continue;
+				}
+				for (auto &dataflow : schedule.stages[producer_entry.second].pipeline->GetDataflowDependencies()) {
+					auto producer = dataflow.lock();
+					D_ASSERT(producer);
+					auto upstream = producer_pipeline_exchange.find(*producer);
+					if (upstream == producer_pipeline_exchange.end() || !upstream->second.get().finishes) {
+						inputs_finish = false;
+						break;
+					}
+				}
+				if (!inputs_finish) {
+					break;
+				}
+			}
+			if (inputs_finish) {
+				exchange.finishes = true;
+				changed = true;
+			}
+		}
+		for (idx_t stage_idx = 0; stage_idx < stage_count; stage_idx++) {
+			if (stage_live[stage_idx]) {
+				continue;
+			}
+			auto &stage = schedule.stages[stage_idx];
+			if (!dependencies_live(stage)) {
+				continue;
+			}
+			auto exchange = stage_producing_exchange[stage_idx];
+			if (exchange && !exchange->live) {
+				continue;
+			}
+			stage_live[stage_idx] = true;
+			changed = true;
+		}
+	}
+
+	// Collect candidate ordering edges in the dead exchanges' gating regions, in registration order for
+	// deterministic removal: walk from each record's and producer's execute stage through non-live stages and
+	// record every execute-to-execute edge onto a non-live dependency. Only edges that are optional orderings
+	// can actually be removed; the caller filters by attempting the removal.
+	vector<bool> walked(stage_count, false);
+	auto collect_gating_edges = [&](idx_t seed_stage) {
+		vector<idx_t> worklist {seed_stage};
+		while (!worklist.empty()) {
+			auto stage_idx = worklist.back();
+			worklist.pop_back();
+			if (walked[stage_idx]) {
+				continue;
+			}
+			walked[stage_idx] = true;
+			auto &stage = schedule.stages[stage_idx];
+			for (auto dependency : stage.dependencies) {
+				if (stage_live[dependency]) {
+					continue;
+				}
+				auto &target = schedule.stages[dependency];
+				if (stage.type == PipelineScheduleStageType::EXECUTE &&
+				    target.type == PipelineScheduleStageType::EXECUTE) {
+					optional_candidates.emplace_back(*stage.pipeline, *target.pipeline);
+				}
+				worklist.push_back(dependency);
+			}
+			for (auto dependency : stage.analysis_dependencies) {
+				if (is_own_producer_eof(stage, dependency)) {
+					// Exempted waits are not gates, so descending through them only surfaces noise candidates.
+					continue;
+				}
+				// An EOF wait resolves through the target exchange's finishes bit, so the gate can run through
+				// a live-but-unfinishing exchange even when the finish stage itself is live.
+				auto target_exchange = producing_exchange(schedule.stages[dependency]);
+				if (!stage_live[dependency] || (target_exchange && !target_exchange->finishes)) {
+					worklist.push_back(dependency);
+				}
+			}
+		}
+	};
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
+			continue;
+		}
+		auto entry = exchanges.find(record.cte.get());
+		if (entry == exchanges.end() || entry->second.live) {
+			continue;
+		}
+		auto execute_stage = record_execute_stage(record);
+		if (execute_stage.IsValid()) {
+			collect_gating_edges(execute_stage.GetIndex());
+		}
+		for (auto &producer_entry : producer_execute_stages) {
+			if (&producer_entry.first.get() == &entry->second) {
+				collect_gating_edges(producer_entry.second);
+			}
+		}
+	}
+
+	// Select the victim in registration order: the exchange map is keyed by pointers, and an address-dependent
+	// choice would make the demoted side of mutually gated exchanges differ across runs.
+	optional_ptr<PipelineBufferedConsumerRecord> fallback;
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
+			continue;
+		}
+		auto entry = exchanges.find(record.cte.get());
+		if (entry == exchanges.end() || entry->second.live) {
+			continue;
+		}
+		// Prefer a consumer that cannot start, otherwise any consumer of a dead exchange.
+		auto execute_stage = record_execute_stage(record);
+		if (execute_stage.IsValid() && !dependencies_live(schedule.stages[execute_stage.GetIndex()])) {
+			return &record;
+		}
+		if (!fallback) {
+			fallback = &record;
+		}
+	}
+	return fallback;
+}
+
 void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pipeline,
                                                  shared_ptr<Pipeline> cte_dependency, bool dependency_added) {
 	D_ASSERT(data->cte_selection_map.find(cte) == data->cte_selection_map.end());
@@ -1039,11 +1420,15 @@ void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pip
 	data->cte_selections.emplace_back(cte, pipeline, std::move(cte_dependency), dependency_added);
 }
 
-void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines) {
-	if (data->external_input_candidates.empty()) {
-		return;
+unique_ptr<PipelineSchedule>
+PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+                                          bool model_runtime_filter_edges) {
+	if (data->external_input_candidates.empty() && data->buffered_consumers.empty()) {
+		return nullptr;
 	}
-	SelectExternalInputCandidates(*data);
+	if (!data->external_input_candidates.empty()) {
+		SelectExternalInputCandidates(*data);
+	}
 	auto activate_candidate = [&](PipelineExternalInputCandidate &candidate) {
 		D_ASSERT(candidate.UsesExternalInput());
 		auto &pipeline = candidate.pipeline.get();
@@ -1082,12 +1467,58 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 		selection.fallback_dependency_active = false;
 	}
 
+	auto demote_buffered_consumer = [&](PipelineBufferedConsumerRecord &record) {
+		auto &pipeline = record.pipeline.get();
+		pipeline.RemoveDataflowDependency(record.cte_dependency);
+		SetPipelineSource(pipeline, record.materialized_source.get());
+		pipeline.AddDependency(record.cte_dependency);
+		record.cte.get().DemoteBufferedConsumer(record.consumer_idx);
+		record.demoted = true;
+		DUCKDB_LOG(pipeline.GetClientContext(), PhysicalOperatorLogType, record.cte.get(), "PhysicalCTE",
+		           "SelectConsumer",
+		           {{"consumer", to_string(record.consumer_idx)}, {"mode", "MATERIALIZED"}, {"reason", "GATED"}});
+	};
+
 	vector<RemovedOptionalPipelineDependency> removed_dependencies;
+	unique_ptr<PipelineSchedule> validated_schedule;
 	while (true) {
 		auto schedule = BuildPipelineSchedule(meta_pipelines);
+		if (model_runtime_filter_edges) {
+			// The executor adds runtime-filter ordering edges to the final schedule under the same condition
+			// (Executor::ScheduleEventsInternal, initial schedule without recursive CTEs). Cycle detection and
+			// the exchange liveness analysis must see those edges: an edge they never saw can gate a buffered
+			// exchange consumer invisibly and deadlock the producer at the exchange watermark. The selection is
+			// a deterministic function of the schedule graph, so the final iteration models exactly the edges
+			// the executor will add. The suppression check inside the selection already refuses edges that would
+			// cycle through streaming EOF waits, so an admitted edge cannot close a WITH_ANALYSIS cycle; it can
+			// still gate a consumer through producer backpressure, which the liveness analysis resolves.
+			AddRuntimeFilterScheduleDependencies(*schedule);
+		}
 		auto cycle = schedule->GetCycle();
 		if (cycle.empty()) {
-			break;
+			vector<pair<reference<Pipeline>, reference<Pipeline>>> optional_candidates;
+			auto starved = FindExchangeStarvedBufferedConsumer(*data, *schedule, optional_candidates);
+			if (!starved) {
+				validated_schedule = std::move(schedule);
+				break;
+			}
+			// An optional ordering (cross product and union siblings) in the gating region can starve the
+			// exchange. Dropping the ordering preserves streaming and beats a full materialization, so try
+			// that before demoting, mirroring the cycle path below.
+			bool removed_optional = false;
+			for (auto &candidate : optional_candidates) {
+				if (MetaPipeline::RemoveOptionalDependency(candidate.first.get(), candidate.second.get())) {
+					removed_dependencies.emplace_back(candidate.first.get(), candidate.second.get());
+					removed_optional = true;
+					break;
+				}
+			}
+			if (removed_optional) {
+				continue;
+			}
+			demote_buffered_consumer(*starved);
+			RestoreOptionalDependencies(removed_dependencies);
+			continue;
 		}
 		if (RemoveOptionalDependencyInCycle(*schedule, cycle, removed_dependencies)) {
 			continue;
@@ -1098,6 +1529,27 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 		}
 		restore_materialized_candidate(*candidate);
 		RestoreOptionalDependencies(removed_dependencies);
+	}
+
+	// Re-add removed orderings the accepted graph does not need. A removal that failed to revive an exchange
+	// is only superseded by a later removal or demotion, and dropping it permanently would lose a
+	// memory-protecting sibling ordering for nothing. Each re-add is verified against the full analysis and
+	// reverted when the graph stops being accepted.
+	for (idx_t removed_idx = removed_dependencies.size(); removed_idx > 0; removed_idx--) {
+		auto &removed = removed_dependencies[removed_idx - 1];
+		MetaPipeline::AddOptionalDependency(removed.pipeline, removed.dependency);
+		auto probe_schedule = BuildPipelineSchedule(meta_pipelines);
+		if (model_runtime_filter_edges) {
+			AddRuntimeFilterScheduleDependencies(*probe_schedule);
+		}
+		vector<pair<reference<Pipeline>, reference<Pipeline>>> probe_candidates;
+		if (!probe_schedule->HasCycle() &&
+		    !FindExchangeStarvedBufferedConsumer(*data, *probe_schedule, probe_candidates)) {
+			validated_schedule = std::move(probe_schedule);
+			removed_dependencies.erase(removed_dependencies.begin() + NumericCast<int64_t>(removed_idx - 1));
+		} else {
+			MetaPipeline::RemoveOptionalDependency(removed.pipeline, removed.dependency);
+		}
 	}
 
 	for (auto &candidate : data->external_input_candidates) {
@@ -1121,7 +1573,18 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 	for (auto &selection : data->cte_selections) {
 		selection.cte.get().SetPipelineSelectionResolved();
 	}
-	D_ASSERT(!BuildPipelineSchedule(meta_pipelines)->HasCycle());
+#ifdef D_ASSERT_IS_ENABLED
+	{
+		auto final_schedule = BuildPipelineSchedule(meta_pipelines);
+		if (model_runtime_filter_edges) {
+			AddRuntimeFilterScheduleDependencies(*final_schedule);
+		}
+		D_ASSERT(!final_schedule->HasCycle());
+	}
+#endif
+	// Hand the validated graph to the executor: the consumer registrations above change modes and batch
+	// preferences, never schedule edges, so this is the graph the analysis proved live and acyclic.
+	return validated_schedule;
 }
 
 } // namespace duckdb

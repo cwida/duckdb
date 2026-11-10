@@ -21,12 +21,6 @@
 			"paths": [
 				"test/sql/types/variant/variant_stats_merge_decimal.test"
 			]
-		},
-		{
-			"reason": "VariantShreddingStats::GetShreddedTypeInternal recurses once per nesting level; shredding the depth-50000 fixture overflows the stack",
-			"paths": [
-				"test/sql/types/variant/json_cast_depth.test"
-			]
 		}
 	]
 }

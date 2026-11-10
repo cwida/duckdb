@@ -1,0 +1,48 @@
+# name: test/sql/catalog/function/macro_typed_parameter_rendering.test
+# description: Typed macro parameters render through their type identity, so definitions round-trip
+# group: [function]
+
+# a collated parameter type renders in the VARCHAR constructor form instead of losing the collation
+statement ok
+CREATE MACRO cm(p VARCHAR('nocase')) AS p = 'A';
+
+query I
+SELECT cm('a');
+----
+true
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/typed_param_render';
+
+statement ok
+DROP MACRO cm;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/typed_param_render';
+
+# the collation survived the round trip
+query I
+SELECT cm('a');
+----
+true
+
+statement ok
+DROP MACRO cm;
+
+# plain typed parameters keep their current rendering
+statement ok
+CREATE MACRO plain_typed(x INTEGER, y) AS x + y;
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/typed_param_render_plain';
+
+statement ok
+DROP MACRO plain_typed;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/typed_param_render_plain';
+
+query I
+SELECT plain_typed(1, 2);
+----
+3

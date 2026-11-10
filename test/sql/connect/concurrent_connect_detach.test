@@ -7,10 +7,12 @@ require quack
 require httpfs
 
 statement ok
-CALL quack_serve(token='test_token');
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:localhost:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
 
 statement ok
-ATTACH 'quack:localhost' AS qk (TOKEN 'test_token');
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
 
 concurrentloop threadid 0 8
 
@@ -23,7 +25,7 @@ DETACH qk;
 
 onlyif threadid=0
 statement maybe
-ATTACH 'quack:localhost' AS qk (TOKEN 'test_token');
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
 ----
 
 onlyif threadid>0

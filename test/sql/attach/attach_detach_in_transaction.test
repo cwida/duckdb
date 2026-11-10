@@ -1,0 +1,117 @@
+# name: test/sql/attach/attach_detach_in_transaction.test
+# description: DETACH of a database the current transaction has used keeps the transaction, and COMMIT commits it
+# group: [attach]
+
+# attach, write and detach in one transaction
+statement ok
+START TRANSACTION;
+
+statement ok
+ATTACH '{TEST_DIR}/detach_in_transaction.db' AS other_db;
+
+statement ok
+CREATE TABLE other_db.test (ts TIMESTAMP);
+
+statement ok
+INSERT INTO other_db.test(ts) VALUES (now());
+
+statement ok
+DETACH other_db;
+
+# the detached database cannot be used by name anymore
+statement error
+SELECT * FROM other_db.test;
+----
+does not exist
+
+statement ok
+ROLLBACK;
+
+# the same without the failing query commits the work
+statement ok
+START TRANSACTION;
+
+statement ok
+ATTACH '{TEST_DIR}/detach_in_transaction.db' AS other_db;
+
+statement ok
+CREATE TABLE other_db.test (ts TIMESTAMP);
+
+statement ok
+INSERT INTO other_db.test(ts) VALUES (now());
+
+statement ok
+DETACH other_db;
+
+statement ok
+COMMIT;
+
+statement ok
+ATTACH '{TEST_DIR}/detach_in_transaction.db' AS other_db;
+
+query I
+SELECT count(*) FROM other_db.test;
+----
+1
+
+# copy from a read-only attachment into the main database, then detach it in the same transaction
+statement ok
+DETACH other_db;
+
+statement ok
+ATTACH '{TEST_DIR}/detach_in_transaction.db' AS source_db (READ_ONLY);
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE TABLE copied AS SELECT * FROM source_db.test;
+
+statement ok
+DETACH source_db;
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM copied;
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'source_db';
+----
+0
+
+# the rollback of an ATTACH keeps a database another connection attached under the name after this transaction
+# detached its own
+statement ok
+BEGIN;
+
+statement ok
+ATTACH ':memory:' AS x;
+
+statement ok
+CREATE TABLE x.original AS SELECT 1 AS i;
+
+statement ok
+DETACH x;
+
+statement ok other
+ATTACH ':memory:' AS x;
+
+statement ok other
+CREATE TABLE x.replacement AS SELECT 2 AS i;
+
+statement ok
+ROLLBACK;
+
+query I other
+SELECT i FROM x.replacement;
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'x';
+----
+1

@@ -427,15 +427,62 @@ SELECT nextval('a.b.c.d');
 ----
 <REGEX>:.*does not exist.*
 
-# start exceeds max value
-statement error
+# an ascending non-cycling sequence can start past its maximum, which creates it exhausted
+statement ok
 CREATE SEQUENCE seq MAXVALUE 5 START WITH 6;
+
+statement error
+SELECT nextval('seq');
+----
+<REGEX>:.*reached maximum value.*
+
+statement ok
+DROP SEQUENCE seq;
+
+# a descending non-cycling sequence can start past its minimum
+statement ok
+CREATE SEQUENCE seq INCREMENT BY -1 MINVALUE 1 MAXVALUE 5 START WITH 0;
+
+statement error
+SELECT nextval('seq');
+----
+<REGEX>:.*reached minimum value.*
+
+statement ok
+DROP SEQUENCE seq;
+
+# a descending non-cycling sequence can also start above its maximum
+statement ok
+CREATE SEQUENCE seq INCREMENT BY -1 MINVALUE 1 MAXVALUE 5 START WITH 7;
+
+statement error
+SELECT nextval('seq');
+----
+<REGEX>:.*reached minimum value.*
+
+statement ok
+DROP SEQUENCE seq;
+
+# an ascending sequence exhausted at the top of the int64 range keeps its counter at the minimum sentinel
+statement ok
+CREATE SEQUENCE seq NO MAXVALUE START WITH -9223372036854775808;
+
+statement error
+SELECT nextval('seq');
+----
+<REGEX>:.*reached maximum value.*
+
+statement ok
+DROP SEQUENCE seq;
+
+# a cycling sequence still rejects an out-of-range start, in both directions
+statement error
+CREATE SEQUENCE seq MAXVALUE 5 START WITH 6 CYCLE;
 ----
 <REGEX>:.*Parser Error.*cannot be greater than MAXVALUE.*
 
-# start preceeds min value
 statement error
-CREATE SEQUENCE seq MINVALUE 5 START WITH 4;
+CREATE SEQUENCE seq MINVALUE 5 START WITH 4 CYCLE;
 ----
 <REGEX>:.*Parser Error.*cannot be less than MINVALUE.*
 

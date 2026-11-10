@@ -169,4 +169,4 @@ INSERT INTO mixed_array_table VALUES ([1, 2], ['a', 'b'], [1.5, 2.5]);
 statement error
 SELECT list_value(a, b, c) FROM mixed_array_table;
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*

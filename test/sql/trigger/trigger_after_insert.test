@@ -415,3 +415,23 @@ MERGE INTO t_merge_target t USING t_merge_source s ON t.id = s.id
     WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.val);
 ----
 Not implemented Error: MERGE INTO is not supported on tables with triggers
+
+# A trigger target is modified even when it is not the statement's explicit target.
+statement ok
+CREATE TABLE trigger_source(i INTEGER)
+
+statement ok
+CREATE TABLE trigger_target(i INTEGER)
+
+statement ok
+INSERT INTO trigger_target VALUES (1)
+
+statement ok
+CREATE TRIGGER write_null AFTER INSERT ON trigger_source FOR EACH STATEMENT
+INSERT INTO trigger_target VALUES (NULL)
+
+query II
+WITH ins AS (INSERT INTO trigger_source VALUES (1) RETURNING i)
+SELECT count(*), count(i) FROM trigger_target
+----
+2	1

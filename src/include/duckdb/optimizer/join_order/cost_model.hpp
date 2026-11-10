@@ -12,21 +12,17 @@
 
 namespace duckdb {
 
-class QueryGraphManager;
-
 class CostModel {
 public:
-	explicit CostModel(QueryGraphManager &query_graph_manager, CardinalityEstimator &cardinality_estimator);
+	explicit CostModel(CardinalityEstimator &cardinality_estimator);
 
 public:
-	//! Compute cost of a join relation set
-	double ComputeCost(DPJoinNode &left, DPJoinNode &right, JoinRelationSet &combination,
-	                   const vector<reference<NeighborInfo>> &possible_connections);
+	//! Compute work for the selected operator and its estimated output.
+	double ComputeCost(const DPJoinNode &left, const DPJoinNode &right, optional_ptr<JoinOrderOperator> join_operator,
+	                   double output_rows);
 	CardinalityEstimator &GetCardinalityEstimator();
 
 private:
-	//! query graph storing relation manager information
-	QueryGraphManager &query_graph_manager;
 	CardinalityEstimator &cardinality_estimator;
 };
 

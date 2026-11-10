@@ -545,22 +545,31 @@ AggregateFunction GetContinuousQuantileTemplated(const LogicalType &type) {
 		default:
 			throw NotImplementedException("Unimplemented continuous quantile DECIMAL aggregate");
 		}
-	case LogicalTypeId::DATE:
-		return OP::template GetFunction<date_t, timestamp_t>(type, LogicalType::TIMESTAMP);
+	case LogicalTypeId::DATE: {
+		auto fun = OP::template GetFunction<date_t, timestamp_t>(type, LogicalType::TIMESTAMP);
+		fun.SetFallible(); // the TIMESTAMP cast throws for out-of-range dates, interpolation for the infinities
+		return fun;
+	}
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_TZ:
 	case LogicalTypeId::TIMESTAMP_TZ_NS:
 	case LogicalTypeId::TIMESTAMP_SEC:
 	case LogicalTypeId::TIMESTAMP_MS:
-	case LogicalTypeId::TIMESTAMP_NS:
-		return OP::template GetFunction<timestamp_t, timestamp_t>(type, type);
+	case LogicalTypeId::TIMESTAMP_NS: {
+		auto fun = OP::template GetFunction<timestamp_t, timestamp_t>(type, type);
+		fun.SetFallible(); // interpolation throws for the infinities
+		return fun;
+	}
 	case LogicalTypeId::TIME:
 		return OP::template GetFunction<dtime_t, dtime_t>(type, type);
 	case LogicalTypeId::TIME_TZ:
 		// TIMETZ is ordered and interpolated by its normalized time, not by its raw bits
 		return OP::template GetFunction<dtime_tz_t, dtime_tz_t>(type, type);
-	case LogicalTypeId::INTERVAL:
-		return OP::template GetFunction<interval_t, interval_t>(type, type);
+	case LogicalTypeId::INTERVAL: {
+		auto fun = OP::template GetFunction<interval_t, interval_t>(type, type);
+		fun.SetFallible(); // interpolation converts to microseconds, which throws for extreme intervals
+		return fun;
+	}
 	default:
 		throw NotImplementedException("Unimplemented continuous quantile aggregate");
 	}
@@ -626,6 +635,19 @@ static Value CheckQuantile(const Value &quantile_val) {
 	}
 
 	return quantile_val;
+}
+
+//! The exact DECIMAL rank arithmetic of discrete quantiles multiplies the row count by 10^scale with overflow
+//! checks - overflowing needs at least 10^(38 - scale) rows, which is reachable for scales above 18. Continuous
+//! quantiles compute their rank in DOUBLE and are unaffected.
+static bool HasExtremeDecimalQuantile(const QuantileBindData &bind_data) {
+	for (auto &quantile : bind_data.quantiles) {
+		const auto &quantile_type = quantile.val.type();
+		if (quantile_type.id() == LogicalTypeId::DECIMAL && DecimalType::GetScale(quantile_type) > 18) {
+			return true;
+		}
+	}
+	return false;
 }
 
 //! Binds the quantile parameter into the bind data. It stays part of the expression tree, and the aggregate is
@@ -738,6 +760,9 @@ struct DiscreteQuantileListFunction {
 
 		auto &input_type = function.GetArguments()[0];
 		function.ReplaceImplementation(GetAggregate(input_type));
+		if (HasExtremeDecimalQuantile(bind_data->Cast<QuantileBindData>())) {
+			function.SetFallible();
+		}
 		return bind_data;
 	}
 
@@ -745,7 +770,11 @@ struct DiscreteQuantileListFunction {
 		auto &function = input.GetBoundFunction();
 		auto &arguments = input.GetArguments();
 		function.ReplaceImplementation(GetAggregate(arguments[0]->GetReturnType()));
-		return BindQuantile(input);
+		auto bind_data = BindQuantile(input);
+		if (HasExtremeDecimalQuantile(bind_data->Cast<QuantileBindData>())) {
+			function.SetFallible();
+		}
+		return bind_data;
 	}
 };
 
@@ -773,6 +802,9 @@ struct DiscreteQuantileFunction {
 		} else {
 			function.ReplaceImplementation(DiscreteQuantileListFunction::GetAggregate(input_type));
 		}
+		if (HasExtremeDecimalQuantile(quantile_data)) {
+			function.SetFallible();
+		}
 		return bind_data;
 	}
 
@@ -780,7 +812,11 @@ struct DiscreteQuantileFunction {
 		auto &function = input.GetBoundFunction();
 		auto &arguments = input.GetArguments();
 		function.ReplaceImplementation(GetAggregate(arguments[0]->GetReturnType()));
-		return BindQuantile(input);
+		auto bind_data = BindQuantile(input);
+		if (HasExtremeDecimalQuantile(bind_data->Cast<QuantileBindData>())) {
+			function.SetFallible();
+		}
+		return bind_data;
 	}
 };
 

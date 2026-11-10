@@ -3,6 +3,16 @@
 #include "duckdb/parser/peg/matcher.hpp"
 
 namespace duckdb {
+class ListMatcher;
+class ChoiceMatcher;
+
+//! A prepared, uniquely linked group. Members and FIRST data belong to the same matcher allocator.
+struct ListMatchChain {
+	vector<reference<const ListMatcher>> lists;
+	MatcherFirstSet tail_first_set;
+	MatcherFirstSet prefix_first_set;
+	bool has_optional_prefix = false;
+};
 
 class ListMatcher : public Matcher {
 public:
@@ -15,19 +25,34 @@ public:
 	}
 
 	DUCKDB_API arena_ptr<MatchProcess> StartMatch(MatchState &state) const override;
-	//! Prepare after matcher links and flags are final; unprepared lists use ordinary execution.
+	//! Prepare after matcher links, flags and FIRST sets are final; unprepared lists use ordinary execution.
 	DUCKDB_API void InitializeListChain();
 
 	optional_ptr<const ListMatcher> GetChainChild() const {
-		if (!first_child_is_chainable) {
+		if (!chain_child_index.IsValid()) {
 			return nullptr;
 		}
 		D_ASSERT(IsStructural() && !suppress_suggestions && !matchers.empty());
-		auto &child = matchers[0].get();
+		auto &child = matchers[chain_child_index.GetIndex()].get();
 		D_ASSERT(child.IsStructural() && child.Type() == MatcherType::LIST && !child.IsPackratMemoized());
 		auto &list = static_cast<const ListMatcher &>(child);
 		D_ASSERT(!list.suppress_suggestions);
 		return list;
+	}
+
+	idx_t GetChainChildIndex() const {
+		return chain_child_index.GetIndex();
+	}
+
+	optional_ptr<const ChoiceMatcher> GetFirstChoice() const {
+		return first_choice;
+	}
+
+	optional_ptr<const ListMatchChain> GetPreparedChain() const {
+		return prepared_chain;
+	}
+	idx_t GetPreparedChainIndex() const {
+		return prepared_chain_index;
 	}
 
 	SuggestionType AddSuggestionInternal(MatchState &state) const override {
@@ -62,7 +87,11 @@ public:
 	bool suppress_suggestions = false;
 
 private:
-	bool first_child_is_chainable = false;
+	friend class MatcherAllocator;
+	optional_idx chain_child_index;
+	optional_ptr<const ChoiceMatcher> first_choice;
+	optional_ptr<const ListMatchChain> prepared_chain;
+	idx_t prepared_chain_index = 0;
 };
 
 } // namespace duckdb

@@ -94,11 +94,17 @@ bool MultiFileBindData::MatchesPhysicalColumn(idx_t column_idx, const Identifier
 }
 
 bool MultiFileBindData::HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const {
-	if (physical_columns.size() != names.size() || physical_columns.size() != types.size()) {
+	if (physical_columns.size() > names.size() || names.size() != types.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < physical_columns.size(); i++) {
 		if (!MatchesPhysicalColumn(i, physical_columns[i].name, physical_columns[i].type)) {
+			return false;
+		}
+	}
+	// Appended generated columns have no physical statistics to misinterpret.
+	for (idx_t i = physical_columns.size(); i < names.size(); i++) {
+		if (!IsGeneratedColumn(i)) {
 			return false;
 		}
 	}
@@ -483,7 +489,8 @@ void MultiFileOptions::ValidateBoundSchema() const {
 	}
 }
 
-bool MultiFileReader::ParseCopyOption(const Identifier &key, const vector<Value> &values, MultiFileOptions &options) {
+bool MultiFileReader::ParseCopyOption(Context &context, const Identifier &key, const vector<Value> &values,
+                                      MultiFileOptions &options) {
 	if (key != "file_row_number") {
 		return false;
 	}
@@ -493,7 +500,7 @@ bool MultiFileReader::ParseCopyOption(const Identifier &key, const vector<Value>
 		return true;
 	}
 	string error_message;
-	auto value = values[0].DefaultTryCastAs(LogicalType::BOOLEAN, &error_message);
+	auto value = values[0].TryCastAs(context, LogicalType::BOOLEAN, &error_message);
 	if (!value) {
 		throw InvalidInputException("Unable to cast \"%s\" to BOOLEAN for boolean option %s", values[0].ToString(),
 		                            key);
@@ -514,7 +521,7 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 			options.filename_column = StringValue::Get(val);
 		} else {
 			string error_message;
-			auto boolean_value = val.DefaultTryCastAs(LogicalType::BOOLEAN, &error_message);
+			auto boolean_value = val.TryCastAs(context, LogicalType::BOOLEAN, &error_message);
 			if (boolean_value) {
 				// If the argument can be cast to boolean, we just interpret it as a boolean
 				options.filename = BooleanValue::Get(*boolean_value);
@@ -537,9 +544,14 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		}
 		options.allow_empty = BooleanValue::Get(val);
 	} else if (key == "column_statistics") {
-		options.SetColumnStatistics(key, val);
+		options.SetColumnStatistics(context.GetContext(), key, val);
 	} else if (key == "maximum_sample_files") {
-		options.SetMaximumSampleFiles(key, val);
+		options.SetMaximumSampleFiles(context.GetContext(), key, val);
+	} else if (key == "maximum_files_for_stats") {
+		if (val.IsNull()) {
+			throw InvalidInputException("Cannot use NULL as argument for %s", key);
+		}
+		options.maximum_files_for_stats = val.CastAs(context, LogicalType::UBIGINT).GetValue<idx_t>();
 	} else if (key == "hive_types_autocast" || key == "hive_type_autocast") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -1067,7 +1079,41 @@ MultiFileReaderBindData MultiFileReader::BindReader(ClientContext &context, vect
 	if (file_options.maximum_sample_files > 1) {
 		return BindSampledReader(context, return_types, names, files, result, options, file_options);
 	}
-	return BindFirstReader(context, return_types, names, files, result, options, file_options);
+	auto bind_data = BindFirstReader(context, return_types, names, files, result, options, file_options);
+	ReadFilesForStatistics(context, files, result, options, file_options);
+	return bind_data;
+}
+
+void MultiFileReader::ReadFilesForStatistics(ClientContext &context, MultiFileList &files, MultiFileBindData &result,
+                                             BaseFileReaderOptions &options, MultiFileOptions &file_options) {
+	auto max_files = file_options.maximum_files_for_stats;
+	if (max_files == 0 || !result.union_readers.empty()) {
+		return;
+	}
+	// a single file bound on its own already has its statistics from the initial reader
+	const idx_t min_files = result.initial_reader ? 2 : 1;
+	auto count = files.GetFileCount(max_files + 1);
+	if (count.type != FileExpansionType::ALL_FILES_EXPANDED || count.count < min_files || count.count > max_files) {
+		return;
+	}
+	// an open first file is reused: only the others are read. A file that cannot be read gives no statistics rather
+	// than failing the bind: the scan reports it
+	auto all_files = files.GetAllFiles();
+	if (result.initial_reader && result.initial_reader->GetFileName() != all_files[0].path) {
+		return;
+	}
+	vector<OpenFileInfo> unread_files(all_files.begin() + (result.initial_reader ? 1 : 0), all_files.end());
+	auto readers = UnionByName::ReadUnionData(context, unread_files, options, file_options, *this, *result.interface,
+	                                          true, TaskSchedulerType::ASYNC);
+	for (auto &reader : readers) {
+		if (!reader) {
+			return;
+		}
+	}
+	if (result.initial_reader) {
+		readers.insert(readers.begin(), result.initial_reader->GetUnionData(0));
+	}
+	std::move(readers.begin(), readers.end(), std::back_inserter(result.union_readers));
 }
 
 MultiFileReaderBindData MultiFileReader::BindFirstReader(ClientContext &context, vector<LogicalType> &return_types,
@@ -1380,22 +1426,22 @@ LogicalType MultiFileOptions::GetHiveLogicalType(const string &hive_partition_co
 	return LogicalType::VARCHAR;
 }
 
-void MultiFileOptions::SetMaximumSampleFiles(const Identifier &key, const Value &val) {
+void MultiFileOptions::SetMaximumSampleFiles(Context &context, const Identifier &key, const Value &val) {
 	if (val.IsNull()) {
 		throw BinderException("Cannot use NULL as argument to key %s", key);
 	}
-	if (!TrySetMaximumSampleFiles(val)) {
+	if (!TrySetMaximumSampleFiles(context, val)) {
 		throw BinderException("%s parameter must be positive, or -1 to remove the limit on the number of files "
 		                      "used to determine the schema.",
 		                      key);
 	}
 }
 
-bool MultiFileOptions::TrySetMaximumSampleFiles(const Value &val) {
+bool MultiFileOptions::TrySetMaximumSampleFiles(Context &context, const Value &val) {
 	if (val.IsNull()) {
 		return false;
 	}
-	auto sample_files = val.DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+	auto sample_files = val.CastAs(context, LogicalType::BIGINT).GetValue<int64_t>();
 	if (sample_files == -1) {
 		maximum_sample_files = NumericLimits<idx_t>::Maximum();
 		return true;
@@ -1407,7 +1453,7 @@ bool MultiFileOptions::TrySetMaximumSampleFiles(const Value &val) {
 	return true;
 }
 
-void MultiFileOptions::SetColumnStatistics(const Identifier &key, const Value &val) {
+void MultiFileOptions::SetColumnStatistics(Context &context, const Identifier &key, const Value &val) {
 	if (val.IsNull()) {
 		column_statistics = Value();
 		return;
@@ -1416,7 +1462,7 @@ void MultiFileOptions::SetColumnStatistics(const Identifier &key, const Value &v
 	// next scan as it is. Anything that casts to it (a MAP literal of other value types, say) is taken.
 	auto target = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
 	string error;
-	auto cast = val.DefaultTryCastAs(target, &error);
+	auto cast = val.TryCastAs(context, target, &error);
 	if (!cast) {
 		throw InvalidInputException(
 		    "%s must be a MAP of column name to a MAP of statistic name ('min', 'max', 'count', 'null_count', "
@@ -1471,7 +1517,7 @@ static vector<string> ParseColumnStatisticsKey(const string &key) {
 }
 
 // Apply the statistics given for one (possibly nested) column to the statistics object of that column.
-static void ApplyColumnStatistics(BaseStatistics &result, const Value &given, const string &key) {
+static void ApplyColumnStatistics(Context &context, BaseStatistics &result, const Value &given, const string &key) {
 	Value min, max;
 	optional<idx_t> count, null_count, distinct_count;
 	for (auto &stat : MapValue::GetChildren(given)) {
@@ -1487,7 +1533,7 @@ static void ApplyColumnStatistics(BaseStatistics &result, const Value &given, co
 			max = stat_value;
 		} else if (stat_name == "count" || stat_name == "null_count" || stat_name == "distinct_count") {
 			string error;
-			auto parsed = stat_value.DefaultTryCastAs(LogicalType::UBIGINT, &error);
+			auto parsed = stat_value.TryCastAs(context, LogicalType::UBIGINT, &error);
 			if (!parsed) {
 				throw InvalidInputException("column_statistics: '%s' of '%s' must be a count, got '%s'", stat_name, key,
 				                            stat_value.ToString());
@@ -1516,8 +1562,8 @@ static void ApplyColumnStatistics(BaseStatistics &result, const Value &given, co
 	auto &type = result.GetType();
 	if (has_values && !min.IsNull() && !max.IsNull() &&
 	    BaseStatistics::GetStatsType(type) == StatisticsType::NUMERIC_STATS) {
-		NumericStats::SetMin(result, min.DefaultCastAs(type, true));
-		NumericStats::SetMax(result, max.DefaultCastAs(type, true));
+		NumericStats::SetMin(result, min.CastAs(context, type, true));
+		NumericStats::SetMax(result, max.CastAs(context, type, true));
 	}
 	if (distinct_count.has_value() && *distinct_count > 0) {
 		result.SetDistinctCount(*distinct_count);
@@ -1564,7 +1610,8 @@ static optional_ptr<BaseStatistics> DescendColumnStatistics(BaseStatistics &stat
 	}
 }
 
-void MultiFileOptions::VerifyColumnStatistics(const vector<Identifier> &names, const vector<LogicalType> &types) const {
+void MultiFileOptions::VerifyColumnStatistics(Context &context, const vector<Identifier> &names,
+                                              const vector<LogicalType> &types) const {
 	if (column_statistics.IsNull()) {
 		return;
 	}
@@ -1593,11 +1640,11 @@ void MultiFileOptions::VerifyColumnStatistics(const vector<Identifier> &names, c
 			throw InvalidInputException("column_statistics: '%s' names no part of column \"%s\" of type %s", key,
 			                            path[0], types[column.GetIndex()].ToString());
 		}
-		ApplyColumnStatistics(*target, key_value[1], key);
+		ApplyColumnStatistics(context, *target, key_value[1], key);
 	}
 }
 
-unique_ptr<BaseStatistics> MultiFileOptions::GetColumnStatistics(const Identifier &column_name,
+unique_ptr<BaseStatistics> MultiFileOptions::GetColumnStatistics(Context &context, const Identifier &column_name,
                                                                  const LogicalType &type) const {
 	if (column_statistics.IsNull()) {
 		return nullptr;
@@ -1623,7 +1670,7 @@ unique_ptr<BaseStatistics> MultiFileOptions::GetColumnStatistics(const Identifie
 			throw InternalException("column_statistics: '%s' names no part of column \"%s\"", key,
 			                        column_name.GetIdentifierName());
 		}
-		ApplyColumnStatistics(*target, key_value[1], key);
+		ApplyColumnStatistics(context, *target, key_value[1], key);
 	}
 	return result;
 }

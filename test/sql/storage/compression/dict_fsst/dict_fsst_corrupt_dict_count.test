@@ -19,4 +19,4 @@ DICT_FSST
 statement error
 SELECT count(*) FROM t WHERE s = 'string_1';
 ----
-Data Corruption Error: Failed to scan dictionary string - dict_count was out of range. Database file appears to be corrupted.
+Data Corruption Error: Corrupted DICT_FSST segment: zero-width lengths allow at most two dictionary entries

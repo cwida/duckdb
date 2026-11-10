@@ -241,20 +241,12 @@ optional_ptr<PhysicalOperator> PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalCo
 		aggr_children.push_back(std::move(col_ref));
 		auto comp_expr = make_uniq<BoundReferenceExpression>(comp_types.back(), comp_types.size() - 1);
 		aggr_children.push_back(std::move(comp_expr));
-		vector<LogicalType> child_types;
-		for (const auto &child : aggr_children) {
-			child_types.emplace_back(child->GetReturnType());
-		}
 
-		auto &func = arg_min_max_entry;
 		ErrorData error;
-		auto best_function = function_binder.BindFunction(func.name, func.functions, child_types, error);
-		if (!best_function.IsValid()) {
+		auto aggr_expr = function_binder.BindAggregateFunction(arg_min_max_entry, std::move(aggr_children), error);
+		if (!aggr_expr) {
 			return nullptr;
 		}
-		const auto &bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
-		auto aggr_expr = function_binder.BindAggregateFunction(bound_function, std::move(aggr_children), nullptr,
-		                                                       AggregateType::NON_DISTINCT);
 		D_ASSERT(col_type == aggr_expr->GetReturnType());
 		if (!HasOnlyReferenceChildren(*aggr_expr)) {
 			return nullptr;
@@ -341,6 +333,8 @@ static idx_t ValidateAsOfConditions(LogicalComparisonJoin &op, vector<idx_t> &eq
 }
 
 PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op) {
+	// The sorted ASOF operator emits the full left payload in child order. Pruning left projection maps are
+	// honored by ExtractPrunedJoinProjection, which wraps the operator in an explicit projection.
 	// If we have a predicate and its a "simple" join, then we can just plan a regular join
 	switch (op.join_type) {
 	case JoinType::SEMI:
@@ -404,7 +398,11 @@ PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op)
 			rhs_partition_cols.clear();
 		}
 
-		return Make<PhysicalAsOfJoin>(op, left, right, lhs_partition_cols, rhs_partition_cols);
+		// The sorted operator always emits the full left input width. A pruning left
+		// projection map is applied through a projection above the join instead.
+		auto pruned = ExtractPrunedJoinProjection(op, left, right, true, false);
+		auto &asof_join = Make<PhysicalAsOfJoin>(op, left, right, lhs_partition_cols, rhs_partition_cols);
+		return RestorePrunedJoinProjection(op, asof_join, std::move(pruned));
 	}
 
 	return *PlanAsOfInequalityJoin(op, left, right, lhs_cardinality, rhs_cardinality);

@@ -162,6 +162,7 @@ struct ICUListRange : public ICUDateFunc {
 		range.AddFunction(range_fun);
 		// throws for infinite or mixed-sign intervals
 		range.SetFallible();
+		range.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(range);
 
 		// generate_series: similar to range, but inclusive instead of exclusive bounds on the RHS
@@ -176,6 +177,7 @@ struct ICUListRange : public ICUDateFunc {
 
 		// throws for infinite or mixed-sign intervals
 		generate_series.SetFallible();
+		generate_series.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(generate_series);
 	}
 };
