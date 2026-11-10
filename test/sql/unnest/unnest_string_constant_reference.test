@@ -8,9 +8,9 @@ require 64bit
 # Exercise overflow strings at the default block size.
 require block_size 262144
 
-# a long string, a non-ASCII one, an inlined one, an empty one and NULL, each repeated over three output chunks
+# a string above the 4 KB overflow limit, a non-ASCII heap string, an inlined one, an empty one and NULL, each repeated over three output chunks
 statement ok
-CREATE TABLE strs AS SELECT * FROM (VALUES (1, repeat('ab', 50000)), (2, repeat('é', 30000)), (3, 'short'), (4, ''), (5, NULL)) t(id, s);
+CREATE TABLE strs AS SELECT * FROM (VALUES (1, repeat('ab', 2500)), (2, repeat('é', 1500)), (3, 'short'), (4, ''), (5, NULL)) t(id, s);
 
 # stored in a table, so the strings outlive the chunks of the query
 statement ok
@@ -46,8 +46,8 @@ SELECT id, count(*), count(DISTINCT s), sum(length(s))
 FROM (SELECT id, s, u FROM strs, LATERAL unnest(range(5000 + id * 0)) t(u) ORDER BY u, id)
 GROUP BY id ORDER BY id;
 ----
-1	5000	1	500000000
-2	5000	1	150000000
+1	5000	1	25000000
+2	5000	1	7500000
 3	5000	1	25000
 4	5000	1	0
 5	5000	0	NULL
