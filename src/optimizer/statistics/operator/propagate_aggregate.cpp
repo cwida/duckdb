@@ -1,3 +1,4 @@
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/column_index.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -121,7 +122,7 @@ bool TryGetMinMaxColumnInfo(const Expression &expr, MinMaxColumnInfo &info) {
 	return true;
 }
 
-bool TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &storage_index,
+bool TryGetValueFromStats(Context &context, const PartitionStatistics &stats, const StorageIndex &storage_index,
                           const ValueComparator &comparator, const LogicalType &result_type, Value &result) {
 	if (!stats.partition_row_group) {
 		return false;
@@ -153,7 +154,7 @@ bool TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &
 	if (result.type() == result_type) {
 		return true;
 	}
-	auto cast = result.DefaultTryCastAs(result_type);
+	auto cast = result.TryCastAs(context, result_type);
 	if (!cast) {
 		return false;
 	}
@@ -499,13 +500,14 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 			auto &comparator = comparators[agg_idx];
 
 			Value agg_result;
-			if (!TryGetValueFromStats(partition_stats[0], storage_index, *comparator, result_type, agg_result)) {
+			if (!TryGetValueFromStats(context.GetContext(), partition_stats[0], storage_index, *comparator, result_type,
+			                          agg_result)) {
 				return;
 			}
 			for (idx_t partition_idx = 1; partition_idx < partition_stats.size(); partition_idx++) {
 				Value rhs;
-				if (!TryGetValueFromStats(partition_stats[partition_idx], storage_index, *comparator, result_type,
-				                          rhs)) {
+				if (!TryGetValueFromStats(context.GetContext(), partition_stats[partition_idx], storage_index,
+				                          *comparator, result_type, rhs)) {
 					return;
 				}
 				if (!comparator->Compare(agg_result, rhs)) {

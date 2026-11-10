@@ -6,6 +6,7 @@
 #include "duckdb/common/json_document.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_entries.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/settings.hpp"
@@ -315,13 +316,13 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 		SQLLogicTestLogger::LoadDatabaseFail(file_name, db_path, err.Message());
 		TEST_FAIL("");
 	}
-	result.con = ConnectToDatabase(*result.db);
-	// load any previously loaded extensions again
+	// load any previously loaded extensions again, before a connection snapshots the search path
 	if (load_extensions) {
 		for (auto &extension : extensions) {
 			SQLLogicTestRunner::LoadExtension(*result.db, extension);
 		}
 	}
+	result.con = ConnectToDatabase(*result.db);
 	return result;
 }
 
@@ -716,6 +717,11 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 		if (result == ExtensionLoadResult::LOADED_EXTENSION) {
 			// add the extension to the list of loaded extensions
 			extensions.insert(param);
+			// Loading the extension didn't put the extension schema (if present) on the search path yet
+			ExtensionLoader::RefreshSearchPath(*con->context);
+			for (auto &entry : named_connection_map) {
+				ExtensionLoader::RefreshSearchPath(*entry.second->context);
+			}
 		} else if (result == ExtensionLoadResult::EXTENSION_UNKNOWN) {
 			parser.Fail("unknown extension type: %s", params[0]);
 		} else if (result == ExtensionLoadResult::NOT_LOADED) {

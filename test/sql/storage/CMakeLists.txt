@@ -10,6 +10,7 @@ add_library_unity(
   test_revert_append_segments.cpp
   wal_checkpoint_marker.cpp
   wal_prescan.cpp
+  wal_replay_invalid_info.cpp
   wal_torn_write.cpp)
 set(UNITTEST_OBJECT_FILES
     ${UNITTEST_OBJECT_FILES} $<TARGET_OBJECTS:test_sql_storage>

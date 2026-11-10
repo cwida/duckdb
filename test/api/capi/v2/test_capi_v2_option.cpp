@@ -12,8 +12,9 @@ namespace {
 
 // A VARCHAR value holding SQL `SET` text.
 struct TextValue {
-	TextValue(duckdb_v2_factory_handle factory, const duckdb_v2_str *text) {
-		REQUIRE(duckdb_v2_value_create_varchar(factory, text, &value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	TextValue(duckdb_v2_factory_handle factory, const std::string_view *text) {
+		REQUIRE(duckdb_v2_value_create_varchar(factory, text->data(), text->size(), &value, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
 	}
 	~TextValue() {
 		duckdb_v2_value_destroy(&value);
@@ -22,11 +23,12 @@ struct TextValue {
 };
 
 // The value of a setting in `config`, rendered as text, plus the scope it was read from.
-std::string Setting(duckdb_v2_config_handle config, const char *name, DUCKDB_V2_SETTING_SCOPE *out_scope = nullptr) {
-	auto name_str = Convert(name);
+std::string Setting(duckdb_v2_config_handle config, std::string_view name,
+                    DUCKDB_V2_SETTING_SCOPE *out_scope = nullptr) {
 	duckdb_v2_value_handle value = nullptr;
 	DUCKDB_V2_SETTING_SCOPE scope = DUCKDB_V2_SETTING_SCOPE_DEFAULT;
-	REQUIRE(duckdb_v2_config_get_option_value(config, &name_str, &value, &scope, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_config_get_option_value(config, name.data(), name.size(), &value, &scope, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	auto result = Render(value);
 	duckdb_v2_value_destroy(&value);
 	if (out_scope) {
@@ -51,10 +53,11 @@ void OptionProbeExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_
 		return;
 	}
 	duckdb_v2_option_handle opt = nullptr;
-	auto name_str = Convert("max_execution_time");
+	std::string_view name_str = "max_execution_time";
 	duckdb_v2_value_handle value = nullptr;
 	DUCKDB_V2_SETTING_SCOPE scope = DUCKDB_V2_SETTING_SCOPE_DEFAULT;
-	if (duckdb_v2_config_get_option_value(config, &name_str, &value, &scope, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_config_get_option_value(config, name_str.data(), name_str.size(), &value, &scope, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	option_probe.setting = Render(value);
@@ -64,8 +67,9 @@ void OptionProbeExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_
 	if (duckdb_v2_config_get_option_count(config, &option_probe.count, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto name_str2 = Convert("no_such_option");
-	option_probe.unknown_rc = duckdb_v2_config_get_option_by_name(config, &name_str2, &opt, nullptr);
+	std::string_view name_str2 = "no_such_option";
+	option_probe.unknown_rc =
+	    duckdb_v2_config_get_option_by_name(config, name_str2.data(), name_str2.size(), &opt, nullptr);
 	option_probe.by_index_rc = duckdb_v2_config_get_option_by_index(config, 0, &opt, nullptr);
 	duckdb_v2_option_destroy(&opt);
 
@@ -82,8 +86,8 @@ void RegisterOptionProbe(EnvFixture &fx) {
 	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	duckdb_v2_scalar_function_handle function = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto name = Convert("probe_option");
-	REQUIRE(duckdb_v2_scalar_function_set_name(function, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name = "probe_option";
+	REQUIRE(duckdb_v2_scalar_function_set_name(function, name.data(), name.size(), nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_function_signature_handle sig = nullptr;
 	REQUIRE(duckdb_v2_scalar_function_get_signature(function, &sig, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -100,9 +104,10 @@ TEST_CASE("V2 db option: set + get round-trip", "[capi_v2][db][option]") {
 
 	// Read the default before mutating so we can compare against it.
 	auto default_value = Setting(fx.instance_config, "memory_limit");
-	auto name_str = Convert("memory_limit");
-	auto setting_str = Convert("1GB");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "memory_limit";
+	std::string_view setting_str = "1GB";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto after = Setting(fx.instance_config, "memory_limit");
 	REQUIRE(!after.empty());
@@ -115,36 +120,41 @@ TEST_CASE("V2 db option: get populates description and aliases", "[capi_v2][db][
 	EnvFixture fx;
 
 	duckdb_v2_option_handle opt = nullptr;
-	auto name_str = Convert("memory_limit");
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str, &opt, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str = "memory_limit";
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str.data(), name_str.size(), &opt, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 
 	// "memory_limit" is an alias; the canonical name is "max_memory", and the alias list carries "memory_limit".
-	duckdb_v2_str name = {nullptr, 0};
-	duckdb_v2_option_get_name(opt, &name, nullptr);
-	REQUIRE(name == "max_memory");
+	const char *name = nullptr;
+	idx_t name_length = 0;
+	duckdb_v2_option_get_name(opt, &name, &name_length, nullptr);
+	REQUIRE(std::string_view(name, name_length) == "max_memory");
 	idx_t alias_count = 0;
 	duckdb_v2_option_get_alias_count(opt, &alias_count, nullptr);
 	bool has_memory_limit = false;
 	for (idx_t i = 0; i < alias_count; i++) {
-		duckdb_v2_str alias = {nullptr, 0};
-		duckdb_v2_option_get_alias(opt, i, &alias, nullptr);
-		if (alias == "memory_limit") {
+		const char *alias = nullptr;
+		idx_t alias_length = 0;
+		duckdb_v2_option_get_alias(opt, i, &alias, &alias_length, nullptr);
+		if (std::string_view(alias, alias_length) == "memory_limit") {
 			has_memory_limit = true;
 			break;
 		}
 	}
 	REQUIRE(has_memory_limit);
 
-	duckdb_v2_str desc = {nullptr, 0};
-	duckdb_v2_option_get_description(opt, &desc, nullptr);
-	REQUIRE(desc.ptr != nullptr);
-	REQUIRE(desc.len != 0);
+	const char *desc = nullptr;
+	idx_t desc_length = 0;
+	duckdb_v2_option_get_description(opt, &desc, &desc_length, nullptr);
+	REQUIRE(desc != nullptr);
+	REQUIRE(desc_length != 0);
 
 	duckdb_v2_option_destroy(&opt);
 
 	// The supported scopes are reported; allow_community_extensions can only be written GLOBAL.
-	auto name_str2 = Convert("allow_community_extensions");
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str2, &opt, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str2 = "allow_community_extensions";
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str2.data(), name_str2.size(), &opt,
+	                                            nullptr) == DUCKDB_V2_ERROR_NONE);
 	bool supported = false;
 	REQUIRE(duckdb_v2_option_supports_scope(opt, DUCKDB_V2_SETTING_SCOPE_GLOBAL, &supported, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
@@ -158,8 +168,9 @@ TEST_CASE("V2 db option: get populates description and aliases", "[capi_v2][db][
 	duckdb_v2_option_destroy(&opt);
 
 	// max_execution_time can be written at either scope, and a bare SET writes the session.
-	auto name_str3 = Convert("max_execution_time");
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str3, &opt, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str3 = "max_execution_time";
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str3.data(), name_str3.size(), &opt,
+	                                            nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_option_supports_scope(opt, DUCKDB_V2_SETTING_SCOPE_GLOBAL, &supported, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(supported);
@@ -175,8 +186,8 @@ TEST_CASE("V2 db option: get unknown name errors", "[capi_v2][db][option]") {
 	EnvFixture fx;
 	duckdb_v2_option_handle out = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto name_str = Convert("this_option_does_not_exist");
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str, &out, &err) ==
+	std::string_view name_str = "this_option_does_not_exist";
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str.data(), name_str.size(), &out, &err) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 	REQUIRE(err != nullptr);
@@ -194,10 +205,11 @@ TEST_CASE("V2 db option: get_option_count and get_option_by_index", "[capi_v2][d
 	for (idx_t i = 0; i < to_check; i++) {
 		duckdb_v2_option_handle opt = nullptr;
 		REQUIRE(duckdb_v2_config_get_option_by_index(fx.instance_config, i, &opt, nullptr) == DUCKDB_V2_ERROR_NONE);
-		duckdb_v2_str name = {nullptr, 0};
-		duckdb_v2_option_get_name(opt, &name, nullptr);
-		REQUIRE(name.ptr != nullptr);
-		REQUIRE(name.len != 0);
+		const char *name = nullptr;
+		idx_t name_length = 0;
+		duckdb_v2_option_get_name(opt, &name, &name_length, nullptr);
+		REQUIRE(name != nullptr);
+		REQUIRE(name_length != 0);
 		duckdb_v2_option_destroy(&opt);
 	}
 
@@ -211,14 +223,16 @@ TEST_CASE("V2 db option: get_option_count and get_option_by_index", "[capi_v2][d
 TEST_CASE("V2 db option: set rejects an unparseable setting and a null value", "[capi_v2][db][option]") {
 	EnvFixture fx;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto name_str = Convert("threads");
-	auto setting_str = Convert("lots");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "threads";
+	std::string_view setting_str = "lots";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT, &err) != DUCKDB_V2_ERROR_NONE);
 	REQUIRE(err != nullptr);
 	duckdb_v2_error_info_destroy(&err);
 	// A null value is caught up front.
-	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, &name_str, nullptr, DUCKDB_V2_SETTING_SCOPE_DEFAULT,
+	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, name_str.data(), name_str.size(), nullptr,
+	                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT,
 	                                          nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 }
 
@@ -231,9 +245,10 @@ TEST_CASE("V2 conn option: set SESSION is invisible to other connections", "[cap
 
 	// max_execution_time is LOCAL_DEFAULT, so a LOCAL-scope write stays
 	// session-local — perfect for this test.
-	auto name_str = Convert("max_execution_time");
-	auto setting_str = Convert("5000");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "max_execution_time";
+	std::string_view setting_str = "5000";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Setting(fx.config, "max_execution_time") == "5000");
 	// The other connection sees the static default ("0"), not "5000".
@@ -249,10 +264,11 @@ TEST_CASE("V2 conn option: set GLOBAL is visible everywhere", "[capi_v2][conn][o
 	duckdb_v2_config_handle other_config = nullptr;
 	duckdb_v2_connection_get_config(other, &other_config, nullptr);
 
-	auto name_str = Convert("memory_limit");
-	auto setting_str = Convert("2GB");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &setting_str).value,
-	                                          DUCKDB_V2_SETTING_SCOPE_GLOBAL, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str = "memory_limit";
+	std::string_view setting_str = "2GB";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value, DUCKDB_V2_SETTING_SCOPE_GLOBAL,
+	                                          nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	auto fx_setting = Setting(fx.config, "memory_limit");
 	REQUIRE(!fx_setting.empty());
@@ -267,9 +283,10 @@ TEST_CASE("V2 conn option: scope enforcement matches SQL", "[capi_v2][conn][opti
 	duckdb_v2_error_info_handle err = nullptr;
 
 	// GLOBAL_ONLY × LOCAL: rejected. allow_community_extensions is GLOBAL_ONLY.
-	auto name_str = Convert("allow_community_extensions");
-	auto setting_str = Convert("false");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "allow_community_extensions";
+	std::string_view setting_str = "false";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_SESSION, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_error_info_destroy(&err);
 }
@@ -277,9 +294,10 @@ TEST_CASE("V2 conn option: scope enforcement matches SQL", "[capi_v2][conn][opti
 TEST_CASE("V2 conn option: DEFAULT scope mirrors bare SQL `SET`", "[capi_v2][conn][option]") {
 	EnvFixture fx;
 	// max_execution_time is LOCAL_DEFAULT → AUTOMATIC resolves to SESSION → write succeeds.
-	auto name_str = Convert("max_execution_time");
-	auto setting_str = Convert("5000");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "max_execution_time";
+	std::string_view setting_str = "5000";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Setting(fx.config, "max_execution_time") == "5000");
 }
@@ -287,14 +305,16 @@ TEST_CASE("V2 conn option: DEFAULT scope mirrors bare SQL `SET`", "[capi_v2][con
 TEST_CASE("V2 conn option: unknown name errors", "[capi_v2][conn][option]") {
 	EnvFixture fx;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto name_str = Convert("no_such_option_xyz");
-	auto setting_str = Convert("1");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "no_such_option_xyz";
+	std::string_view setting_str = "1";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT, &err) != DUCKDB_V2_ERROR_NONE);
 	REQUIRE(err != nullptr);
 	duckdb_v2_error_info_destroy(&err);
 	duckdb_v2_option_handle opt = nullptr;
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.config, &name_str, &opt, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.config, name_str.data(), name_str.size(), &opt, &err) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(opt == nullptr);
 	duckdb_v2_error_info_destroy(&err);
 }
@@ -311,11 +331,12 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		auto default_value = Setting(plain_config, "memory_limit");
 		duckdb_v2_instance_destroy(&plain);
 
-		duckdb_v2_str names[] = {Convert("max_memory"), Convert("threads")};
-		duckdb_v2_str values[] = {Convert("2GB"), Convert("3")};
+		StrArray names = {std::string_view("max_memory"), std::string_view("threads")};
+		StrArray values = {std::string_view("2GB"), std::string_view("3")};
 		duckdb_v2_instance_handle instance = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, names, values, 2, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, names.ptrs(), names.lengths(), values.ptrs(),
+		                                               values.lengths(), 2, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_config_handle instance_config = nullptr;
 		duckdb_v2_instance_get_config(instance, &instance_config, nullptr);
 		auto applied = Setting(instance_config, "memory_limit");
@@ -336,7 +357,7 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		duckdb::DeleteDatabase(path);
 		{
 			duckdb_v2_instance_handle instance = nullptr;
-			OpenInstance(env, Convert(path), &instance, nullptr);
+			OpenInstance(env, std::string_view(path), &instance, nullptr);
 			duckdb_v2_connection_handle conn = nullptr;
 			duckdb_v2_connection_create(instance, &conn, nullptr);
 			ExecSQL(conn, "CREATE TABLE t(i INTEGER)");
@@ -344,14 +365,15 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 			duckdb_v2_instance_destroy(&instance);
 		}
 
-		auto name_str = Convert("access_mode");
-		auto value_str = Convert("READ_ONLY");
+		StrArray names = {"access_mode"};
+		StrArray values = {"READ_ONLY"};
 		duckdb_v2_instance_handle instance = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
-		auto path_str = Convert(path);
-		REQUIRE(duckdb_v2_instance_attach(instance, nullptr, &path_str, nullptr, true, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, names.ptrs(), names.lengths(), values.ptrs(),
+		                                               values.lengths(), 1, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_NONE);
+		auto path_str = std::string_view(path);
+		REQUIRE(duckdb_v2_instance_attach(instance, nullptr, 0, path_str.data(), path_str.size(), nullptr, true,
+		                                  nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_connection_handle conn = nullptr;
 		duckdb_v2_connection_create(instance, &conn, nullptr);
 
@@ -363,10 +385,12 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		// Once the instance exists, access_mode can no longer change: the same error SET GLOBAL gives.
 		duckdb_v2_config_handle instance_config = nullptr;
 		duckdb_v2_instance_get_config(instance, &instance_config, nullptr);
-		auto read_write = Convert("READ_WRITE");
-		REQUIRE(
-		    duckdb_v2_config_set_option_value(instance_config, &name_str, TextValue(FactoryOf(conn), &read_write).value,
-		                                      DUCKDB_V2_SETTING_SCOPE_DEFAULT, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		std::string_view access_mode = "access_mode";
+		std::string_view read_write = "READ_WRITE";
+		REQUIRE(duckdb_v2_config_set_option_value(instance_config, access_mode.data(), access_mode.size(),
+		                                          TextValue(FactoryOf(conn), &read_write).value,
+		                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT,
+		                                          &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(err != nullptr);
 		duckdb_v2_error_info_destroy(&err);
 
@@ -376,41 +400,43 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 	}
 
 	SECTION("an option no one claims fails creation") {
-		auto name_str = Convert("no_such_option_xyz");
-		auto value_str = Convert("1");
+		StrArray names = {"no_such_option_xyz"};
+		StrArray values = {"1"};
 		duckdb_v2_instance_handle instance = nullptr;
 		duckdb_v2_error_info_handle err = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, &err) !=
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, names.ptrs(), names.lengths(), values.ptrs(),
+		                                               values.lengths(), 1, &instance, &err) != DUCKDB_V2_ERROR_NONE);
 		REQUIRE(instance == nullptr);
 		REQUIRE(err != nullptr);
-		duckdb_v2_str msg = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &msg);
-		REQUIRE(Convert(msg).find("no_such_option_xyz") != std::string::npos);
+		const char *msg = nullptr;
+		idx_t msg_length = 0;
+		duckdb_v2_error_info_get_text(err, &msg, &msg_length);
+		REQUIRE(std::string(msg, msg_length).find("no_such_option_xyz") != std::string::npos);
 		duckdb_v2_error_info_destroy(&err);
 	}
 
 	SECTION("an option that needs a running instance is written through the config instead") {
-		auto name_str = Convert("allowed_directories");
-		auto value_str = Convert("[]");
+		StrArray names = {"allowed_directories"};
+		StrArray values = {"[]"};
 		duckdb_v2_instance_handle instance = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, names.ptrs(), names.lengths(), values.ptrs(),
+		                                               values.lengths(), 1, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(instance == nullptr);
 	}
 
 	SECTION("malformed option arrays are rejected") {
 		duckdb_v2_instance_handle instance = nullptr;
-		auto name_str = Convert("threads");
-		auto value_str = Convert("2");
-		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, &value_str, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, nullptr, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		StrArray names = {"threads"};
+		StrArray values = {"2"};
+		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, nullptr, values.ptrs(), values.lengths(), 1,
+		                                               &instance, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, names.ptrs(), names.lengths(), nullptr, nullptr, 1,
+		                                               &instance, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(instance == nullptr);
 		// No options at all is the same as instance_create.
-		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, nullptr, 0, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, nullptr, nullptr, nullptr, 0, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_instance_destroy(&instance);
 	}
 
@@ -421,9 +447,10 @@ TEST_CASE("V2 context option: read through a context inside a callback", "[capi_
 	EnvFixture fx;
 	option_probe = OptionProbe {};
 	RegisterOptionProbe(fx);
-	auto name_str = Convert("max_execution_time");
-	auto setting_str = Convert("4242");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &setting_str).value,
+	std::string_view name_str = "max_execution_time";
+	std::string_view setting_str = "4242";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &setting_str).value,
 	                                          DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_result_handle result = nullptr;
@@ -446,8 +473,9 @@ TEST_CASE("V2 context option: read through a context inside a callback", "[capi_
 TEST_CASE("V2 option: descriptor accessors", "[capi_v2][option]") {
 	EnvFixture fx;
 	duckdb_v2_option_handle opt = nullptr;
-	auto name_str = Convert("threads");
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str, &opt, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str = "threads";
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str.data(), name_str.size(), &opt, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 
 	SECTION("get_default_value is populated") {
 		duckdb_v2_value_handle def = nullptr;
@@ -457,26 +485,30 @@ TEST_CASE("V2 option: descriptor accessors", "[capi_v2][option]") {
 	}
 
 	SECTION("borrowed pointers stay stable across reads") {
-		duckdb_v2_str first_name = {nullptr, 0};
-		duckdb_v2_str second_name = {nullptr, 0};
-		duckdb_v2_option_get_name(opt, &first_name, nullptr);
-		duckdb_v2_option_get_name(opt, &second_name, nullptr);
-		REQUIRE(first_name.ptr == second_name.ptr);
-		REQUIRE(first_name == "threads");
+		const char *first_name = nullptr;
+		idx_t first_name_length = 0;
+		const char *second_name = nullptr;
+		idx_t second_name_length = 0;
+		duckdb_v2_option_get_name(opt, &first_name, &first_name_length, nullptr);
+		duckdb_v2_option_get_name(opt, &second_name, &second_name_length, nullptr);
+		REQUIRE(std::string_view(first_name, first_name_length) == std::string_view(second_name, second_name_length));
+		REQUIRE(std::string_view(first_name, first_name_length) == "threads");
 	}
 
 	SECTION("get_alias out-of-range surfaces a descriptive error") {
-		duckdb_v2_str alias = {nullptr, 0};
+		const char *alias = nullptr;
+		idx_t alias_length = 0;
 		duckdb_v2_error_info_handle err = nullptr;
-		REQUIRE(duckdb_v2_option_get_alias(opt, 99, &alias, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(alias.ptr == nullptr);
+		REQUIRE(duckdb_v2_option_get_alias(opt, 99, &alias, &alias_length, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(alias == nullptr);
 		REQUIRE(err != nullptr);
-		duckdb_v2_str msg = {nullptr, 0};
-		duckdb_v2_error_info_get_text(err, &msg);
-		REQUIRE(Convert(msg).find("out of range") != std::string::npos);
+		const char *msg = nullptr;
+		idx_t msg_length = 0;
+		duckdb_v2_error_info_get_text(err, &msg, &msg_length);
+		REQUIRE(std::string(msg, msg_length).find("out of range") != std::string::npos);
 		duckdb_v2_error_info_destroy(&err);
 		// err == nullptr is tolerated on the failure path.
-		REQUIRE(duckdb_v2_option_get_alias(opt, 99, &alias, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_option_get_alias(opt, 99, &alias, &alias_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 
 	SECTION("destroy nulls the slot and is safe to repeat") {
@@ -488,13 +520,14 @@ TEST_CASE("V2 option: descriptor accessors", "[capi_v2][option]") {
 
 	SECTION("handles are independent") {
 		duckdb_v2_option_handle other = nullptr;
-		auto name_str2 = Convert("memory_limit");
-		REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str2, &other, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		std::string_view name_str2 = "memory_limit";
+		REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str2.data(), name_str2.size(), &other,
+		                                            nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_option_destroy(&other);
-		duckdb_v2_str still = {nullptr, 0};
-		REQUIRE(duckdb_v2_option_get_name(opt, &still, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(still == "threads");
+		const char *still = nullptr;
+		idx_t still_length = 0;
+		REQUIRE(duckdb_v2_option_get_name(opt, &still, &still_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(std::string_view(still, still_length) == "threads");
 	}
 
 	duckdb_v2_option_destroy(&opt);
@@ -503,15 +536,17 @@ TEST_CASE("V2 option: descriptor accessors", "[capi_v2][option]") {
 TEST_CASE("V2 option: accessor null-arg validation", "[capi_v2][option]") {
 	EnvFixture fx;
 	duckdb_v2_option_handle opt = nullptr;
-	auto name_str = Convert("threads");
-	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str, &opt, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str = "threads";
+	REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str.data(), name_str.size(), &opt, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 
 	SECTION("get_name rejects null option") {
-		duckdb_v2_str out = {nullptr, 0};
-		REQUIRE(duckdb_v2_option_get_name(nullptr, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		const char *out = nullptr;
+		idx_t out_length = 0;
+		REQUIRE(duckdb_v2_option_get_name(nullptr, &out, &out_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("get_name rejects null out_name") {
-		REQUIRE(duckdb_v2_option_get_name(opt, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_option_get_name(opt, nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("get_default_value rejects null option") {
 		duckdb_v2_value_handle out = nullptr;
@@ -521,8 +556,9 @@ TEST_CASE("V2 option: accessor null-arg validation", "[capi_v2][option]") {
 		REQUIRE(duckdb_v2_option_get_default_value(opt, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("get_description rejects null option") {
-		duckdb_v2_str out = {nullptr, 0};
-		REQUIRE(duckdb_v2_option_get_description(nullptr, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		const char *out = nullptr;
+		idx_t out_length = 0;
+		REQUIRE(duckdb_v2_option_get_description(nullptr, &out, &out_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("supports_scope and get_default_scope reject null arguments") {
 		bool supported = false;
@@ -539,27 +575,27 @@ TEST_CASE("V2 option: accessor null-arg validation", "[capi_v2][option]") {
 		REQUIRE(duckdb_v2_option_get_alias_count(nullptr, &c, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("get_alias rejects null option") {
-		duckdb_v2_str out = {nullptr, 0};
-		REQUIRE(duckdb_v2_option_get_alias(nullptr, 0, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		const char *out = nullptr;
+		idx_t out_length = 0;
+		REQUIRE(duckdb_v2_option_get_alias(nullptr, 0, &out, &out_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 	SECTION("set_option / get_option reject null and malformed arguments") {
-		auto setting_str = Convert("1");
-		REQUIRE(duckdb_v2_config_set_option_value(nullptr, &name_str, TextValue(fx.factory, &setting_str).value,
-		                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT,
-		                                          nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-		auto name_str2 = duckdb_v2_str {nullptr, 1};
+		std::string_view setting_str = "1";
 		REQUIRE(duckdb_v2_config_set_option_value(
-		            fx.instance_config, &name_str2, TextValue(fx.factory, &setting_str).value,
+		            nullptr, name_str.data(), name_str.size(), TextValue(fx.factory, &setting_str).value,
+		            DUCKDB_V2_SETTING_SCOPE_DEFAULT, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_config_set_option_value(
+		            fx.instance_config, nullptr, 1, TextValue(fx.factory, &setting_str).value,
 		            DUCKDB_V2_SETTING_SCOPE_DEFAULT, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_option_handle out = nullptr;
-		REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, &name_str, nullptr, nullptr) ==
+		REQUIRE(duckdb_v2_config_get_option_by_name(fx.instance_config, name_str.data(), name_str.size(), nullptr,
+		                                            nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_config_set_option_value(
+		            nullptr, name_str.data(), name_str.size(), TextValue(fx.factory, &setting_str).value,
+		            DUCKDB_V2_SETTING_SCOPE_DEFAULT, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_config_get_option_by_name(fx.config, name_str.data(), name_str.size(), nullptr, nullptr) ==
 		        DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(duckdb_v2_config_set_option_value(nullptr, &name_str, TextValue(fx.factory, &setting_str).value,
-		                                          DUCKDB_V2_SETTING_SCOPE_DEFAULT,
-		                                          nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(duckdb_v2_config_get_option_by_name(fx.config, &name_str, nullptr, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(duckdb_v2_config_get_option_by_name(nullptr, &name_str, &out, nullptr) ==
+		REQUIRE(duckdb_v2_config_get_option_by_name(nullptr, name_str.data(), name_str.size(), &out, nullptr) ==
 		        DUCKDB_V2_ERROR_INPUT_INVALID);
 	}
 
@@ -575,19 +611,21 @@ TEST_CASE("V2 option values report the scope they were read from", "[capi_v2][op
 	REQUIRE(scope == DUCKDB_V2_SETTING_SCOPE_GLOBAL);
 
 	// A session write is read back as SESSION by the connection, and leaves the instance's value alone.
-	auto name_str = Convert("max_execution_time");
-	auto session = Convert("5000");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &session).value,
-	                                          DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view name_str = "max_execution_time";
+	std::string_view session = "5000";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &session).value, DUCKDB_V2_SETTING_SCOPE_SESSION,
+	                                          nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Setting(fx.config, "max_execution_time", &scope) == "5000");
 	REQUIRE(scope == DUCKDB_V2_SETTING_SCOPE_SESSION);
 	REQUIRE(Setting(fx.instance_config, "max_execution_time", &scope) != "5000");
 	REQUIRE(scope == DUCKDB_V2_SETTING_SCOPE_GLOBAL);
 
 	// A GLOBAL write through a context reaches every connection.
-	auto global = Convert("4242");
-	REQUIRE(duckdb_v2_config_set_option_value(fx.config, &name_str, TextValue(fx.factory, &global).value,
-	                                          DUCKDB_V2_SETTING_SCOPE_GLOBAL, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view global = "4242";
+	REQUIRE(duckdb_v2_config_set_option_value(fx.config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &global).value, DUCKDB_V2_SETTING_SCOPE_GLOBAL,
+	                                          nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_connection_handle other = nullptr;
 	REQUIRE(duckdb_v2_connection_create(fx.instance, &other, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_config_handle other_config = nullptr;
@@ -597,31 +635,33 @@ TEST_CASE("V2 option values report the scope they were read from", "[capi_v2][op
 	duckdb_v2_connection_destroy(&other);
 
 	// An instance has no SESSION scope.
-	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, &name_str, TextValue(fx.factory, &global).value,
-	                                          DUCKDB_V2_SETTING_SCOPE_SESSION,
+	REQUIRE(duckdb_v2_config_set_option_value(fx.instance_config, name_str.data(), name_str.size(),
+	                                          TextValue(fx.factory, &global).value, DUCKDB_V2_SETTING_SCOPE_SESSION,
 	                                          nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// The text setter is the one-call form, and casts like SQL `SET`.
-	auto text = Convert("1234");
-	REQUIRE(duckdb_v2_config_set_option_text(fx.config, &name_str, &text, DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	std::string_view text = "1234";
+	REQUIRE(duckdb_v2_config_set_option_text(fx.config, name_str.data(), name_str.size(), text.data(), text.size(),
+	                                         DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Setting(fx.config, "max_execution_time", &scope) == "1234");
 	REQUIRE(scope == DUCKDB_V2_SETTING_SCOPE_SESSION);
-	auto bad = Convert("not-a-number");
-	REQUIRE(duckdb_v2_config_set_option_text(fx.config, &name_str, &bad, DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) !=
-	        DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_config_set_option_text(nullptr, &name_str, &text, DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_config_set_option_text(fx.config, &name_str, nullptr, DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	std::string_view bad = "not-a-number";
+	REQUIRE(duckdb_v2_config_set_option_text(fx.config, name_str.data(), name_str.size(), bad.data(), bad.size(),
+	                                         DUCKDB_V2_SETTING_SCOPE_SESSION, nullptr) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_config_set_option_text(nullptr, name_str.data(), name_str.size(), text.data(), text.size(),
+	                                         DUCKDB_V2_SETTING_SCOPE_SESSION,
+	                                         nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_config_set_option_text(fx.config, name_str.data(), name_str.size(), nullptr, 1,
+	                                         DUCKDB_V2_SETTING_SCOPE_SESSION,
+	                                         nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// Unknown names fail on every read.
 	duckdb_v2_value_handle value = nullptr;
-	auto unknown = Convert("no_such_option");
-	REQUIRE(duckdb_v2_config_get_option_value(fx.config, &unknown, &value, &scope, nullptr) ==
+	std::string_view unknown = "no_such_option";
+	REQUIRE(duckdb_v2_config_get_option_value(fx.config, unknown.data(), unknown.size(), &value, &scope, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_config_get_option_value(fx.instance_config, &unknown, &value, &scope, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_config_get_option_value(fx.instance_config, unknown.data(), unknown.size(), &value, &scope,
+	                                          nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(value == nullptr);
 }
 

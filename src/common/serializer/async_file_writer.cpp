@@ -14,8 +14,8 @@ const FileOpenFlags AsyncFileWriter::DEFAULT_OPEN_FLAGS =
 
 class CopiedAsyncWriteBuffer : public AsyncWriteBuffer {
 public:
-	CopiedAsyncWriteBuffer(Context &services, idx_t capacity_p)
-	    : data(BufferAllocator::Get(services).Allocate(capacity_p)), capacity(capacity_p) {
+	CopiedAsyncWriteBuffer(Context &context, idx_t capacity_p)
+	    : data(BufferAllocator::Get(context).Allocate(capacity_p)), capacity(capacity_p) {
 	}
 
 	data_ptr_t Ptr() override {
@@ -42,14 +42,14 @@ private:
 	idx_t size = 0;
 };
 
-AsyncFileWriter::AsyncFileWriter(Context &services_p, FileSystem &fs_p, const string &path_p,
+AsyncFileWriter::AsyncFileWriter(Context &context_p, FileSystem &fs_p, const string &path_p,
                                  const FileOpenFlags &open_flags)
-    : context(services_p), services(services_p), fs(fs_p), path(path_p) {
+    : context(context_p), fs(fs_p), path(path_p) {
 	handle = fs.OpenFile(path, open_flags | FileLockType::WRITE_LOCK);
 
 	try {
 		ManagedAsyncWriteStreamTarget &target = *this;
-		write_queue = make_uniq<ManagedAsyncWriteStreamQueue>(services, target);
+		write_queue = make_uniq<ManagedAsyncWriteStreamQueue>(context, target);
 	} catch (...) {
 		auto error = std::current_exception();
 		try {
@@ -138,7 +138,7 @@ void AsyncFileWriter::WriteDataInternal(const_data_ptr_t buffer, idx_t write_siz
 	// Caller-owned memory cannot outlive async scheduling, so even large const inputs are copied before registration.
 	if (write_size >= AsyncWriteConfig::COPIED_BUFFER_CAPACITY) {
 		SealCopiedBuffer(ScheduleMode::DEFER);
-		auto owned_buffer = make_uniq<CopiedAsyncWriteBuffer>(services, write_size);
+		auto owned_buffer = make_uniq<CopiedAsyncWriteBuffer>(context, write_size);
 		owned_buffer->Append(buffer, write_size);
 		RegisterWrite(std::move(owned_buffer));
 		return;
@@ -150,7 +150,7 @@ void AsyncFileWriter::WriteDataInternal(const_data_ptr_t buffer, idx_t write_siz
 		idx_t sealed_buffer_offset = 0;
 		if (!copied_buffer) {
 			copied_buffer_offset = total_written;
-			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(services, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
+			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(context, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
 		}
 		auto append_size = MinValue(write_size - offset, copied_buffer->Remaining());
 		copied_buffer->Append(buffer + offset, append_size);
@@ -250,7 +250,7 @@ void AsyncFileWriter::WriteDataSynchronously(data_ptr_t buffer, idx_t write_size
 		idx_t sealed_buffer_offset = 0;
 		if (!copied_buffer) {
 			copied_buffer_offset = total_written;
-			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(services, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
+			copied_buffer = make_uniq<CopiedAsyncWriteBuffer>(context, AsyncWriteConfig::COPIED_BUFFER_CAPACITY);
 		}
 		auto append_size = MinValue(write_size - input_offset, copied_buffer->Remaining());
 		copied_buffer->Append(buffer + input_offset, append_size);

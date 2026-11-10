@@ -2165,6 +2165,12 @@ optional<Value> Value::TryCastAs(ClientContext &context, const LogicalType &targ
 	return TryCastAs(CastFunctionSet::Get(context), get_input, target_type, error_message, strict);
 }
 
+optional<Value> Value::TryCastAs(Context &context, const LogicalType &target_type, string *error_message,
+                                 bool strict) const {
+	GetCastFunctionInput get_input(context);
+	return TryCastAs(CastFunctionSet::Get(context), get_input, target_type, error_message, strict);
+}
+
 optional<Value> Value::DefaultTryCastAs(const LogicalType &target_type, string *error_message, bool strict) const {
 	CastFunctionSet set;
 	GetCastFunctionInput get_input;
@@ -2185,6 +2191,11 @@ Value Value::CastAs(CastFunctionSet &set, GetCastFunctionInput &get_input, const
 }
 
 Value Value::CastAs(ClientContext &context, const LogicalType &target_type, bool strict) const {
+	GetCastFunctionInput get_input(context);
+	return CastAs(CastFunctionSet::Get(context), get_input, target_type, strict);
+}
+
+Value Value::CastAs(Context &context, const LogicalType &target_type, bool strict) const {
 	GetCastFunctionInput get_input(context);
 	return CastAs(CastFunctionSet::Get(context), get_input, target_type, strict);
 }

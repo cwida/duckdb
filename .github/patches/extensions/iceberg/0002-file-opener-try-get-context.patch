@@ -1,0 +1,13 @@
+diff --git a/test/native_catalog/catalog_transport.cpp b/test/native_catalog/catalog_transport.cpp
+index 20dc8fd78..ae8fb50b9 100644
+--- a/test/native_catalog/catalog_transport.cpp
++++ b/test/native_catalog/catalog_transport.cpp
+@@ -74,7 +74,7 @@ public:
+ 	}
+ 	unique_ptr<HTTPParams> InitializeParameters(ClientContext &context, const string &url) override {
+ 		CheckOrigin(url);
+-		ClientContextFileOpener opener(context);
++		ClientContextFileOpener opener(context.GetContext());
+ 		return HTTPUtil::InitializeParameters(&opener, nullptr);
+ 	}
+ 	unique_ptr<HTTPParams> InitializeParameters(DatabaseInstance &db, const string &url) override {

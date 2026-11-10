@@ -13,6 +13,8 @@
 #include "duckdb/common/types/variant_visitor.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
 #include "duckdb/function/cast/cast_statistics.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
+#include "duckdb/common/algorithm.hpp"
 
 namespace duckdb {
 
@@ -398,7 +400,7 @@ void VariantStats::Deserialize(Deserializer &deserializer, BaseStatistics &base)
 	}
 }
 
-static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shredded) {
+static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shredded, bool exact) {
 	if (VariantShreddedStats::IsFullyShredded(stats) != fully_shredded) {
 		return Value();
 	}
@@ -409,7 +411,7 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 		// list
 		auto &child_stats = ListStats::GetChildStats(typed_value);
 		child_list_t<Value> result;
-		auto result_stats = GetShreddedStatsStruct(child_stats, fully_shredded);
+		auto result_stats = GetShreddedStatsStruct(child_stats, fully_shredded, exact);
 		if (result_stats.IsNull()) {
 			return Value();
 		}
@@ -433,7 +435,7 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 		for (idx_t i = 0; i < indices.size(); i++) {
 			auto &child_stats = StructStats::GetChildStats(typed_value, indices[i]);
 			auto &field = fields[indices[i]];
-			auto child_stats_entry = GetShreddedStatsStruct(child_stats, fully_shredded);
+			auto child_stats_entry = GetShreddedStatsStruct(child_stats, fully_shredded, exact);
 			if (child_stats_entry.IsNull()) {
 				continue;
 			}
@@ -446,26 +448,228 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 	}
 	child_list_t<Value> result;
 	result.emplace_back("type", Value(typed_value.GetType().ToString()));
-	result.emplace_back("stats", typed_value.ToStruct());
+	result.emplace_back("stats", typed_value.ToStruct(exact));
 	return Value::STRUCT(std::move(result));
 }
 
-child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	child_list_t<Value> result;
 	bool is_shredded = IsShredded(stats);
 	auto &data = GetDataUnsafe(stats);
 	result.emplace_back("shredding_state", Value(EnumUtil::ToString(data.shredding_state)));
 	if (is_shredded) {
-		auto fully_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], true);
+		auto fully_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], true, exact);
 		if (!fully_shredded_stats.IsNull()) {
 			result.emplace_back("fully_shredded", std::move(fully_shredded_stats));
 		}
-		auto partially_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], false);
+		auto partially_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], false, exact);
 		if (!partially_shredded_stats.IsNull()) {
 			result.emplace_back("partially_shredded", std::move(partially_shredded_stats));
 		}
 	}
 	return result;
+}
+
+//! What a node of a shredded layout tree (as ToStruct renders it) describes
+enum class VariantStatsNodeKind { LEAF, LIST, OBJECT };
+
+//! A leaf is {type, stats} with a type name, a list {child_stats}, anything else the fields of an object (whose
+//! fields may be named type and stats as well, holding nodes rather than a name)
+static VariantStatsNodeKind VariantStatsClassifyNode(const StatsStructFields &fields) {
+	if (fields.FieldCount() == 1 && fields.FieldName(0) == "child_stats") {
+		return VariantStatsNodeKind::LIST;
+	}
+	if (fields.FieldCount() == 2) {
+		auto &first = fields.FieldName(0);
+		auto &second = fields.FieldName(1);
+		bool type_first = first == "type" && second == "stats";
+		bool stats_first = first == "stats" && second == "type";
+		if ((type_first || stats_first) && fields.FieldType(type_first ? 0 : 1).id() == LogicalTypeId::VARCHAR) {
+			return VariantStatsNodeKind::LEAF;
+		}
+	}
+	return VariantStatsNodeKind::OBJECT;
+}
+
+//! The type a shredded leaf holds, from its rendering
+static LogicalType VariantStatsLeafType(StatsStructFields &fields) {
+	Value name;
+	if (!fields.TryGet("type", LogicalType::VARCHAR, name)) {
+		fields.Throw("type", "expected the name of the type the values are shredded on");
+	}
+	auto &text = StringValue::Get(name);
+	LogicalType type;
+	try {
+		type = UnboundType::TryParseAndDefaultBind(text);
+	} catch (std::exception &) {
+		fields.Throw("type", StringUtil::Format("'%s' is not a type", text));
+	}
+	if (type.id() == LogicalTypeId::INVALID || TypeVisitor::Contains(type, LogicalTypeId::UNBOUND)) {
+		fields.Throw("type", StringUtil::Format("'%s' is not a type", text));
+	}
+	const bool shreddable = type.id() != LogicalTypeId::UNKNOWN && type.id() != LogicalTypeId::ANY &&
+	                        type.id() != LogicalTypeId::SQLNULL && type.id() != LogicalTypeId::VARIANT &&
+	                        type.id() != LogicalTypeId::ENUM;
+	if (!shreddable) {
+		fields.Throw("type", StringUtil::Format("'%s' is not a type a VARIANT is shredded on", text));
+	}
+	if (type.IsNested() || type.IsJSONType()) {
+		fields.Throw("type", StringUtil::Format("'%s' is not a type a VARIANT is shredded on: an object is described "
+		                                        "by its fields, an array by its 'child_stats'",
+		                                        text));
+	}
+	return type;
+}
+
+static BaseStatistics VariantStatsBuildNode(optional_ptr<StatsStructFields> fully,
+                                            optional_ptr<StatsStructFields> partially);
+
+//! The statistics of a child node, from the (optional) fully and partially shredded renderings of it
+static BaseStatistics VariantStatsBuildChild(optional_ptr<StatsStructFields> fully,
+                                             optional_ptr<StatsStructFields> partially, const string &name) {
+	optional_ptr<const Value> fully_child;
+	optional_ptr<const Value> partially_child;
+	if (fully) {
+		fully_child = fully->Get(name);
+	}
+	if (partially) {
+		partially_child = partially->Get(name);
+	}
+	if (!fully_child && !partially_child) {
+		auto &present = fully ? *fully : *partially;
+		present.Throw(name, "expected the statistics of the shredded values");
+	}
+	unique_ptr<StatsStructFields> fully_fields;
+	unique_ptr<StatsStructFields> partially_fields;
+	if (fully_child) {
+		fully_fields = make_uniq<StatsStructFields>(*fully_child, fully->FieldPath(name));
+	}
+	if (partially_child) {
+		partially_fields = make_uniq<StatsStructFields>(*partially_child, partially->FieldPath(name));
+	}
+	return VariantStatsBuildNode(fully_fields.get(), partially_fields.get());
+}
+
+//! Builds the STRUCT(typed_value, untyped_value_index) statistics of a layout node from its renderings: a node in the
+//! fully shredded tree has no values in the generic layout (an untyped_value_index of 0 throughout)
+static BaseStatistics VariantStatsBuildNode(optional_ptr<StatsStructFields> fully,
+                                            optional_ptr<StatsStructFields> partially) {
+	auto &any = fully ? *fully : *partially;
+	auto kind = VariantStatsClassifyNode(any);
+	if (fully && partially && VariantStatsClassifyNode(*partially) != kind) {
+		partially->Throw("describes another kind of value than the fully shredded statistics");
+	}
+	unique_ptr<BaseStatistics> typed_value;
+	switch (kind) {
+	case VariantStatsNodeKind::LEAF: {
+		if (fully && partially) {
+			partially->Throw("a shredded value is either fully or partially shredded, not both");
+		}
+		auto type = VariantStatsLeafType(any);
+		auto stats = any.Get("stats");
+		if (!stats) {
+			any.Throw("stats", "expected the statistics of the shredded values");
+		}
+		typed_value = BaseStatistics::CreateUnknown(type).ToUnique();
+		typed_value->SetFromStruct(*stats, any.FieldPath("stats"));
+		break;
+	}
+	case VariantStatsNodeKind::LIST: {
+		auto child = VariantStatsBuildChild(fully, partially, "child_stats");
+		typed_value = BaseStatistics::CreateUnknown(LogicalType::LIST(child.GetType())).ToUnique();
+		ListStats::SetChildStats(*typed_value, child.ToUnique());
+		break;
+	}
+	case VariantStatsNodeKind::OBJECT: {
+		// the fields of the fully shredded rendering first, then those only the partially shredded one has; a NULL
+		// field is absent
+		vector<string> names;
+		for (auto source : {fully, partially}) {
+			for (idx_t i = 0; source && i < source->FieldCount(); i++) {
+				auto &name = source->FieldName(i);
+				if (source->FieldValue(i) && std::find(names.begin(), names.end(), name) == names.end()) {
+					names.push_back(name);
+				}
+			}
+		}
+		if (names.empty()) {
+			any.Throw("expected a shredded value ({'type', 'stats'}), an array ({'child_stats'}) or the fields of an "
+			          "object");
+		}
+		child_list_t<LogicalType> child_types;
+		vector<BaseStatistics> children;
+		for (auto &name : names) {
+			children.push_back(VariantStatsBuildChild(fully, partially, name));
+			child_types.emplace_back(name, children.back().GetType());
+		}
+		typed_value = BaseStatistics::CreateUnknown(LogicalType::STRUCT(std::move(child_types))).ToUnique();
+		for (idx_t i = 0; i < children.size(); i++) {
+			StructStats::SetChildStats(*typed_value, i, children[i]);
+		}
+		break;
+	}
+	}
+	for (auto source : {fully, partially}) {
+		if (source) {
+			source->VerifyAllRead(LogicalType::VARIANT());
+		}
+	}
+
+	child_list_t<LogicalType> node_type;
+	node_type.emplace_back("typed_value", typed_value->GetType());
+	node_type.emplace_back("untyped_value_index", LogicalType::UINTEGER);
+	auto node = BaseStatistics::CreateUnknown(LogicalType::STRUCT(std::move(node_type)));
+	// the node itself is never NULL: a NULL or missing value is a NULL typed_value
+	node.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
+	StructStats::SetChildStats(node, VariantStats::TYPED_VALUE_INDEX, *typed_value);
+	auto untyped_value_index =
+	    fully ? BaseStatistics::FromConstant(Value::UINTEGER(0)) : BaseStatistics::CreateUnknown(LogicalType::UINTEGER);
+	StructStats::SetChildStats(node, VariantStats::UNTYPED_VALUE_INDEX, untyped_value_index);
+	return node;
+}
+
+void VariantStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto &data = GetDataUnsafe(stats);
+	Value state_name;
+	bool has_state = fields.TryGet("shredding_state", LogicalType::VARCHAR, state_name);
+	auto state = VariantStatsShreddingState::UNINITIALIZED;
+	if (has_state) {
+		try {
+			state = EnumUtil::FromString<VariantStatsShreddingState>(StringValue::Get(state_name).c_str());
+		} catch (std::exception &) {
+			fields.Throw("shredding_state",
+			             StringUtil::Format("'%s' is not a shredding state (UNINITIALIZED, NOT_SHREDDED, SHREDDED or "
+			                                "INCONSISTENT)",
+			                                StringValue::Get(state_name)));
+		}
+	}
+
+	auto fully = fields.Get("fully_shredded");
+	auto partially = fields.Get("partially_shredded");
+	if (fully || partially) {
+		if (has_state && state != VariantStatsShreddingState::SHREDDED) {
+			fields.Throw(fully ? "fully_shredded" : "partially_shredded",
+			             "only SHREDDED statistics describe a shredded layout");
+		}
+		unique_ptr<StatsStructFields> fully_fields;
+		unique_ptr<StatsStructFields> partially_fields;
+		if (fully) {
+			fully_fields = make_uniq<StatsStructFields>(*fully, fields.FieldPath("fully_shredded"));
+		}
+		if (partially) {
+			partially_fields = make_uniq<StatsStructFields>(*partially, fields.FieldPath("partially_shredded"));
+		}
+		auto layout = VariantStatsBuildNode(fully_fields.get(), partially_fields.get());
+		// the layout replaces the shredding known so far
+		BaseStatistics::Construct(stats.child_stats[1], layout.GetType());
+		stats.child_stats[1].Copy(layout);
+		data.shredding_state = VariantStatsShreddingState::SHREDDED;
+		return;
+	}
+	// SHREDDED without a layout tells nothing: the shredding known so far stays
+	if (has_state && state != VariantStatsShreddingState::SHREDDED) {
+		data.shredding_state = state;
+	}
 }
 
 static BaseStatistics WrapTypedValue(const BaseStatistics &typed_value,
@@ -528,6 +732,7 @@ static unique_ptr<BaseStatistics> TryBuildShreddingStats(const LogicalType &type
 		// a variant stores both LISTs and fixed-size ARRAYs as a (variable length) array
 		auto typed_value = BaseStatistics::CreateEmpty(LogicalType::LIST(child_result->GetType()));
 		ListStats::SetChildStats(typed_value, std::move(child_result));
+		ListStats::SetLengthBounds(typed_value, optional_idx(), optional_idx());
 		typed_value.CopyValidity(input);
 		return WrapTypedValue(typed_value, nullptr).ToUnique();
 	}
@@ -692,6 +897,7 @@ bool VariantStats::MergeShredding(const BaseStatistics &stats, const BaseStatist
 		auto new_typed_value = BaseStatistics::CreateEmpty(LogicalType::LIST(new_child_stats.type));
 		new_typed_value.CombineValidity(stats_typed_value, other_typed_value);
 		ListStats::SetChildStats(new_typed_value, new_child_stats.ToUnique());
+		ListStats::SetLengthBounds(new_typed_value, optional_idx(), optional_idx());
 		new_stats = WrapTypedValue(new_typed_value, new_untyped_value_stats);
 		return true;
 	} else {

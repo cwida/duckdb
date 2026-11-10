@@ -1066,6 +1066,22 @@
         "struct": "HTTPProxyUsernameSetting"
     },
     {
+        "name": "http_retry_quota_throttled",
+        "description": "Whether the per-host retry quota can refuse the retry of a throttled request (HTTP 429 or 503). When false, a throttled retry is still charged to the quota but is not refused when the quota is empty.",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "true",
+        "struct": "HTTPRetryQuotaThrottledSetting"
+    },
+    {
+        "name": "http_retry_throttled_wait_ms",
+        "description": "Smallest base wait, in milliseconds, of the back-off between retries of a throttled request (HTTP 429 or 503). Throttled retries back off from the larger of this and http_retry_wait_ms.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0",
+        "struct": "HTTPRetryThrottledWaitMsSetting"
+    },
+    {
         "name": "ieee_floating_point_ops",
         "description": "Use IEEE 754 behavior for supported floating point operations, returning NAN/INF instead of errors/NULL.",
         "type": "BOOLEAN",
@@ -1563,8 +1579,11 @@
         "name": "tracked_metrics",
         "description": "A list of metric glob patterns to enable for collection, e.g. ['query.*', 'optimizer.*'].",
         "type": "VARCHAR[]",
-        "scope": "local",
-        "custom_implementation": true
+        "default_scope": "local",
+        "default_value": "['*']",
+        "on_callbacks": [
+            "set"
+        ]
     },
     {
         "name": "username",

@@ -23,7 +23,6 @@ class LogicalAggregate;
 class LogicalColumnDataGet;
 class LogicalComparisonJoin;
 class LogicalDelimGet;
-class LogicalDistinct;
 class LogicalDummyScan;
 class LogicalEmptyResult;
 class LogicalExpressionGet;
@@ -70,7 +69,6 @@ public:
 	                                                       RelationStatsExtractor &extractor,
 	                                                       bool use_cached_cardinality = false);
 	static optional<RelationStats> ExtractWindowStats(LogicalWindow &window, const RelationStats &child_stats);
-	static optional<RelationStats> ExtractDistinctStats(LogicalDistinct &distinct, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractFilterStats(LogicalFilter &filter, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractLimitStats(LogicalLimit &limit, const RelationStats &child_stats);
 	static RelationStats ExtractEmptyResultStats(LogicalEmptyResult &empty);

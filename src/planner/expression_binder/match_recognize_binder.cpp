@@ -1,3 +1,4 @@
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression_binder/match_recognize_binder.hpp"
 
 #include "duckdb/function/function_binder.hpp"
@@ -165,7 +166,8 @@ static bool HasAggregateModifiers(const FunctionExpression &function) {
 	return function.Distinct() || function.Filter() || (function.OrderBy() && !function.OrderBy()->orders.empty());
 }
 
-idx_t MatchRecognizeNavigationOffset(const string &function_name, const ParsedExpression &offset_expr) {
+idx_t MatchRecognizeNavigationOffset(Context &context, const string &function_name,
+                                     const ParsedExpression &offset_expr) {
 	if (offset_expr.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 		throw BinderException("The offset of %s() must be a constant", function_name);
 	}
@@ -173,7 +175,7 @@ idx_t MatchRecognizeNavigationOffset(const string &function_name, const ParsedEx
 	if (offset_value.IsNull()) {
 		throw BinderException("The offset of %s() must be a non-negative integer, not NULL", function_name);
 	}
-	if (!offset_value.DefaultTryCastAs(LogicalType::UBIGINT) || offset_value.IsNull()) {
+	if (!offset_value.TryCastAs(context, LogicalType::UBIGINT) || offset_value.IsNull()) {
 		throw BinderException("The offset of %s() must be a non-negative integer", function_name);
 	}
 	const auto offset = offset_value.GetValue<uint64_t>();
@@ -437,7 +439,7 @@ void MatchRecognizeRejectNestedStep(const ParsedExpression &inner, const string 
 	}
 }
 
-MatchRecognizeSteppedNavigation MatchRecognizePeelStep(unique_ptr<ParsedExpression> &inner) {
+MatchRecognizeSteppedNavigation MatchRecognizePeelStep(Context &context, unique_ptr<ParsedExpression> &inner) {
 	MatchRecognizeSteppedNavigation result;
 	if (inner->GetExpressionType() == ExpressionType::FUNCTION) {
 		auto &marker = inner->Cast<FunctionExpression>();
@@ -458,7 +460,7 @@ MatchRecognizeSteppedNavigation MatchRecognizePeelStep(unique_ptr<ParsedExpressi
 			result.last = name == "LAST";
 			if (navigation.GetArguments().size() == 2) {
 				result.offset_value =
-				    MatchRecognizeNavigationOffset(name, navigation.GetArguments()[1].GetExpression());
+				    MatchRecognizeNavigationOffset(context, name, navigation.GetArguments()[1].GetExpression());
 				result.offset = std::move(navigation.GetArgumentsMutable()[1].GetExpressionMutable());
 			}
 			// taken out before the navigation it sat in is dropped, which is what frees it
@@ -696,7 +698,7 @@ BindResult MatchRecognizeDefineBinder::BindNeighbour(FunctionExpression &functio
 	// a step is a fixed distance through the partition, so the offset is a non-negative constant - a
 	// negative one would step the other way and a column a different way per row
 	if (arguments.size() == 2) {
-		MatchRecognizeNavigationOffset(function_name, arguments[1].GetExpression());
+		MatchRecognizeNavigationOffset(context.GetContext(), function_name, arguments[1].GetExpression());
 	}
 	MatchRecognizeRejectNestedStep(arguments[0].GetExpression(), function_name);
 	// A step names the row it starts from rather than the one it reaches: a pattern variable in front
@@ -707,7 +709,7 @@ BindResult MatchRecognizeDefineBinder::BindNeighbour(FunctionExpression &functio
 	auto inner = std::move(arguments[0].GetExpressionMutable());
 	auto variable = MatchRecognizeNavigationVariable(
 	    inner, [&](const string &name) { return symbols.count(name) > 0; }, universal, function_name);
-	auto stepped = MatchRecognizePeelStep(inner);
+	auto stepped = MatchRecognizePeelStep(context.GetContext(), inner);
 	if (stepped.final_semantics) {
 		throw BinderException("FINAL reads the whole match, which a DEFINE condition is still assembling, so "
 		                      "only RUNNING is available there");
@@ -720,10 +722,10 @@ BindResult MatchRecognizeDefineBinder::BindNeighbour(FunctionExpression &functio
 		}
 		// the classifier of the row a fixed distance from the row navigated to, which the matcher
 		// reads off the attempt under way (5.9); a step naming no variable starts from the row tested
-		const auto distance =
-		    arguments.size() == 2
-		        ? NumericCast<int64_t>(MatchRecognizeNavigationOffset(function_name, arguments[1].GetExpression()))
-		        : int64_t(1);
+		const auto distance = arguments.size() == 2
+		                          ? NumericCast<int64_t>(MatchRecognizeNavigationOffset(
+		                                context.GetContext(), function_name, arguments[1].GetExpression()))
+		                          : int64_t(1);
 		auto symbol = variable.empty() ? string() : MatchRecognizeDefineColumn(variable);
 		return BindNavigated(std::move(inner), std::move(symbol), !stepped.navigated || stepped.last,
 		                     stepped.offset_value, depth, function_name == "PREV" ? -distance : distance);
@@ -758,7 +760,7 @@ BindResult MatchRecognizeDefineBinder::BindNavigation(FunctionExpression &functi
 	}
 	idx_t offset = 0;
 	if (arguments.size() == 2) {
-		offset = MatchRecognizeNavigationOffset(function_name, arguments[1].GetExpression());
+		offset = MatchRecognizeNavigationOffset(context.GetContext(), function_name, arguments[1].GetExpression());
 	}
 	auto inner = std::move(arguments[0].GetExpressionMutable());
 	auto variable = MatchRecognizeNavigationVariable(
@@ -1005,12 +1007,13 @@ BindResult MatchRecognizeMeasureBinder::BindClassifierStep(FunctionExpression &f
 	MatchRecognizeRejectNestedStep(arguments[0].GetExpression(), function_name);
 	int64_t distance = 1;
 	if (arguments.size() == 2) {
-		distance = NumericCast<int64_t>(MatchRecognizeNavigationOffset(function_name, arguments[1].GetExpression()));
+		distance = NumericCast<int64_t>(
+		    MatchRecognizeNavigationOffset(context.GetContext(), function_name, arguments[1].GetExpression()));
 	}
 	auto inner = std::move(arguments[0].GetExpressionMutable());
 	auto variable = MatchRecognizeNavigationVariable(
 	    inner, [&](const string &name) { return symbols.find(name) != symbols.end(); }, universal, function_name);
-	auto stepped = MatchRecognizePeelStep(inner);
+	auto stepped = MatchRecognizePeelStep(context.GetContext(), inner);
 	if (!IsClassifierRead(*inner)) {
 		throw BinderException("%s() over CLASSIFIER() reads the classifier of the row it steps to, and nothing else "
 		                      "of it",
@@ -1082,7 +1085,8 @@ BindResult MatchRecognizeMeasureBinder::BindNavigation(FunctionExpression &funct
                                                        bool root_expression) {
 	idx_t offset = 0;
 	if (function.GetArguments().size() == 2) {
-		offset = MatchRecognizeNavigationOffset(function_name, function.GetArguments()[1].GetExpression());
+		offset = MatchRecognizeNavigationOffset(context.GetContext(), function_name,
+		                                        function.GetArguments()[1].GetExpression());
 	}
 	auto inner = std::move(function.GetArgumentsMutable()[0].GetExpressionMutable());
 	auto variable = MatchRecognizeNavigationVariable(

@@ -70,7 +70,6 @@ static bool ContainsLimit(const LogicalOperator &op) {
 bool CTEInlining::EndsInAggregateOrDistinct(const LogicalOperator &op) {
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
-	case LogicalOperatorType::LOGICAL_DISTINCT:
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		return true;
 	default:
