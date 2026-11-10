@@ -2,8 +2,8 @@
 # description: DROP MACRO/FUNCTION with a parameter type list drops a single overload member
 # group: [function]
 
-# a member drop needs storage v2.1.0, the forced-storage configs run on the default version
-require noforcestorage
+# a member drop needs storage v2.1.0
+load {TEST_DIR}/drop_function_signature.db readwrite v2.1.0
 
 statement ok
 CREATE MACRO f(a INTEGER) AS a + 1, (a VARCHAR) AS a || '!', (a INTEGER, b INTEGER) AS a + b;
