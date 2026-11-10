@@ -29,6 +29,9 @@ public:
 
 public:
 	CatalogType GetCatalogType() const override;
+	//! DROP MACRO also names a table macro
+	vector<CatalogType> GetEntryLookupTypes() const override;
+	void SetResolvedEntryType(CatalogType type) override;
 
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<AlterInfo> Deserialize(Deserializer &deserializer);
@@ -50,6 +53,7 @@ struct RemoveMacroOverloadInfo : public AlterMacroInfo {
 public:
 	unique_ptr<AlterInfo> Copy() const override;
 	string ToString() const override;
+	vector<reference<LogicalType>> GetTypesToBind() override;
 
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<AlterMacroInfo> Deserialize(Deserializer &deserializer);

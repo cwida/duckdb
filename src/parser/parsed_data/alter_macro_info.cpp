@@ -1,5 +1,6 @@
 #include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 
+
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
@@ -23,6 +24,17 @@ CatalogType AlterMacroInfo::GetCatalogType() const {
 	return entry_catalog_type;
 }
 
+vector<CatalogType> AlterMacroInfo::GetEntryLookupTypes() const {
+	if (entry_catalog_type == CatalogType::MACRO_ENTRY) {
+		return {CatalogType::MACRO_ENTRY, CatalogType::TABLE_MACRO_ENTRY};
+	}
+	return {entry_catalog_type};
+}
+
+void AlterMacroInfo::SetResolvedEntryType(CatalogType type) {
+	entry_catalog_type = type;
+}
+
 //===--------------------------------------------------------------------===//
 // RemoveMacroOverloadInfo
 //===--------------------------------------------------------------------===//
@@ -41,6 +53,14 @@ unique_ptr<AlterInfo> RemoveMacroOverloadInfo::Copy() const {
 	auto result = make_uniq<RemoveMacroOverloadInfo>(GetAlterEntryData(), entry_catalog_type, signature);
 	result->allow_internal = allow_internal;
 	return std::move(result);
+}
+
+vector<reference<LogicalType>> RemoveMacroOverloadInfo::GetTypesToBind() {
+	vector<reference<LogicalType>> result;
+	for (auto &type : signature) {
+		result.push_back(type);
+	}
+	return result;
 }
 
 string RemoveMacroOverloadInfo::ToString() const {

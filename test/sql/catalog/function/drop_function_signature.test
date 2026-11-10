@@ -574,6 +574,11 @@ DETACH cat_b;
 statement ok
 SET schema = 'main';
 
-# IF EXISTS on a missing entry does not resolve the signature types
+# IF EXISTS on a missing entry succeeds, and the signature types still bind like any alter's types
 statement ok
+DROP MACRO IF EXISTS missing_entry(INTEGER);
+
+statement error
 DROP MACRO IF EXISTS missing_entry(nonexistent_type);
+----
+<REGEX>:.*Type with name nonexistent_type does not exist.*

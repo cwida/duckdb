@@ -7,7 +7,6 @@
 #include "duckdb/parser/constraints/unique_constraint.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
-#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
 #include "duckdb/parser/parsed_data/alter_schema_info.hpp"
 #include "duckdb/parser/parsed_data/comment_on_column_info.hpp"
 #include "duckdb/parser/statement/alter_statement.hpp"
@@ -106,10 +105,9 @@ static void BindAlterTypes(Binder &binder, AlterStatement &stmt) {
 		default:
 			break;
 		}
-	} else if (stmt.info->type == AlterType::ALTER_MACRO) {
-		for (auto &type : stmt.info->Cast<RemoveMacroOverloadInfo>().signature) {
-			binder.BindLogicalType(type);
-		}
+	}
+	for (auto &type : stmt.info->GetTypesToBind()) {
+		binder.BindLogicalType(type.get());
 	}
 }
 
@@ -152,23 +150,35 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 			auto &view = entry->Cast<ViewCatalogEntry>();
 			view.BindView(context);
 		}
-	} else if (stmt.info->type == AlterType::ALTER_MACRO) {
-		// a member drop resolves its entry as DROP MACRO does
-		auto &macro_info = stmt.info->Cast<AlterMacroInfo>();
-		entry = GetMacroEntry(macro_info.entry_catalog_type, macro_info.GetQualifiedName(), macro_info.if_not_found);
 	} else {
-		// For any other ALTER, we retrieve the catalog entry directly.
-		EntryLookupInfo lookup_info(stmt.info->GetCatalogType(), stmt.info->GetQualifiedName());
-		entry = entry_retriever.GetEntry(lookup_info, stmt.info->if_not_found);
+		// For any other ALTER, we retrieve the catalog entry directly, trying each type the alter accepts
+		auto lookup_types = stmt.info->GetEntryLookupTypes();
+		EntryLookupInfo lookup_info(lookup_types[0], stmt.info->GetQualifiedName());
+		if (lookup_types.size() == 1) {
+			entry = entry_retriever.GetEntry(lookup_info, stmt.info->if_not_found);
+		} else {
+			for (auto &lookup_type : lookup_types) {
+				EntryLookupInfo type_lookup(lookup_type, stmt.info->GetQualifiedName());
+				entry = entry_retriever.GetEntry(type_lookup, OnEntryNotFound::RETURN_NULL);
+				if (entry) {
+					break;
+				}
+			}
+			if (!entry) {
+				// a missing entry is reported for the first type
+				entry = entry_retriever.GetEntry(lookup_info, stmt.info->if_not_found);
+			}
+		}
+		if (entry) {
+			stmt.info->SetResolvedEntryType(entry->type);
+		}
 	}
 
 	auto &properties = GetStatementProperties();
 	properties.return_type = StatementReturnType::NOTHING;
 	if (!entry) {
-		// Bind types in this binder, except a member drop's signature: IF EXISTS on a missing macro resolves nothing
-		if (stmt.info->type != AlterType::ALTER_MACRO) {
-			BindAlterTypes(*this, stmt);
-		}
+		// Bind types in this binder
+		BindAlterTypes(*this, stmt);
 
 		result.plan = make_uniq<LogicalAlter>(std::move(stmt.info));
 		return result;

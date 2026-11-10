@@ -96,6 +96,12 @@ public:
 	virtual Identifier GetColumnName() const {
 		return Identifier();
 	};
+	//! Types the binder resolves against the altered entry's catalog and schema
+	virtual vector<reference<LogicalType>> GetTypesToBind();
+	//! The catalog types the altered entry may have, tried in order when binding
+	virtual vector<CatalogType> GetEntryLookupTypes() const;
+	//! Records the type of the entry the binder resolved, for an alter that accepts several
+	virtual void SetResolvedEntryType(CatalogType type);
 
 	AlterEntryData GetAlterEntryData() const;
 	bool IsAddPrimaryKey() const;

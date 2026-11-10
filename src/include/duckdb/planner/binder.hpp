@@ -517,9 +517,6 @@ private:
 	BoundStatement Bind(CreateStatement &stmt);
 	BoundStatement Bind(DropStatement &stmt);
 	BoundStatement Bind(AlterStatement &stmt);
-	//! Look up a macro for DROP or a member drop: DROP MACRO also names a table macro, and type is updated to it
-	optional_ptr<CatalogEntry> GetMacroEntry(CatalogType &type, const QualifiedName &name,
-	                                         OnEntryNotFound if_not_found);
 	BoundStatement Bind(PrepareStatement &stmt);
 	BoundStatement Bind(ExecuteStatement &stmt);
 	BoundStatement Bind(TransactionStatement &stmt);
