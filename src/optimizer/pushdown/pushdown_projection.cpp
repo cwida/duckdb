@@ -158,7 +158,7 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownProjection(unique_ptr<Logica
 	vector<unique_ptr<Expression>> remain_expressions;
 	vector<unique_ptr<Expression>> split_expressions;
 	auto stays_on_top = [&](const Filter &f) {
-		return IsVolatile(proj, *f.filter) || (f.filter->CanThrow() && !f.has_barrier);
+		return IsVolatile(proj, *f.filter) || (f.filter->CanThrow() && !f.has_barrier && proj.query_block_boundary);
 	};
 	auto splits_off = [&](const Filter &f) {
 		return projection_mode == ProjectionMode::PRESERVE_COMPUTED_EXPRESSIONS &&

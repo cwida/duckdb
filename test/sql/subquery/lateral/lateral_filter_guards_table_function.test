@@ -1,0 +1,34 @@
+# name: test/sql/subquery/lateral/lateral_filter_guards_table_function.test
+# description: A filter on the input of a lateral table function also guards the function inside a correlated subquery
+# group: [lateral]
+
+require json
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+CREATE TABLE docs AS SELECT * FROM (VALUES
+    (1, '[{"kind": "X", "n": 1}]'),
+    (2, '[{"kind": "Y"}]'),
+    (3, 'a free text note, not JSON')) v(id, payload);
+
+# json_array_length must only see payloads that pass json_valid, also when the lateral join is correlated with d
+query I
+SELECT count(*) FROM docs d
+WHERE NOT EXISTS (
+    SELECT 1 FROM docs AS a, range(0, CAST(coalesce(json_array_length(a.payload), 0) AS BIGINT)) AS t(i)
+    WHERE a.id = d.id AND json_valid(a.payload)
+      AND json_extract_string(json_extract(a.payload, '$[' || t.i || ']'), '$.kind') = 'X');
+----
+2
+
+query I
+SELECT d.id FROM docs d
+WHERE EXISTS (
+    SELECT 1 FROM docs AS a, range(0, CAST(coalesce(json_array_length(a.payload), 0) AS BIGINT)) AS t(i)
+    WHERE a.id = d.id AND json_valid(a.payload)
+      AND json_extract_string(json_extract(a.payload, '$[' || t.i || ']'), '$.kind') = 'X')
+ORDER BY d.id;
+----
+1

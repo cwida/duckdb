@@ -475,6 +475,11 @@ void Optimizer::RunBuiltInOptimizers() {
 			ProjectionPlacementOptimizer projection_placement(*this, statistics_map);
 			projection_placement.Optimize(plan);
 		});
+		// statistics propagation can prove inputs empty after the empty results were pulled up
+		RunOptimizer(OptimizerType::EMPTY_RESULT_PULLUP, [&]() {
+			EmptyResultPullup empty_result_pullup;
+			plan = empty_result_pullup.Optimize(std::move(plan));
+		});
 	}
 
 	// rewrite row_number window function + filter on row_number to aggregate
