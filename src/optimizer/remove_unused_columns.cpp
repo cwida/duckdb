@@ -515,6 +515,27 @@ static bool IsDuplicateCondition(const vector<JoinCondition> &conditions, const 
 void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	const bool analyze = mode == RemoveUnusedColumnsMode::ANALYZE;
 	auto &op = *op_ref;
+	// Only cross operators that preserve all input rows with a potentially throwing cast. Other operators
+	// may discard rows before the original projection evaluates it; the field extraction itself is safe.
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_PROJECTION:
+	case LogicalOperatorType::LOGICAL_UNION:
+	case LogicalOperatorType::LOGICAL_ORDER_BY:
+	case LogicalOperatorType::LOGICAL_WINDOW:
+	case LogicalOperatorType::LOGICAL_SECURE_VIEW:
+	case LogicalOperatorType::LOGICAL_CHUNK_GET:
+		break;
+	case LogicalOperatorType::LOGICAL_GET: {
+		auto &get = op.Cast<LogicalGet>();
+		if (get.table_filters.HasFilters() || get.table_filters.HasMultiColumnFilters()) {
+			PreserveThrowingCasts(op.GetColumnBindings());
+		}
+		break;
+	}
+	default:
+		PreserveThrowingCasts(op.GetColumnBindings());
+		break;
+	}
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_WINDOW: {
 		auto &window = op.Cast<LogicalWindow>();
@@ -688,6 +709,9 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			return;
 		}
 		if (setop.setop_all && !everything_referenced) {
+			if (TryPushdownUnionExtracts(setop)) {
+				return;
+			}
 			// for UNION we can remove unreferenced columns if union all is used
 			// it's possible not all columns are referenced, but unreferenced columns in the union can
 			// still have an affect on the result of the union
@@ -1106,7 +1130,7 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 static unique_ptr<Expression> ConstructStructExtractFromPath(ClientContext &context, unique_ptr<Expression> target,
                                                              const ColumnIndex &path) {
 	auto &struct_type = target->GetReturnType();
-	D_ASSERT(struct_type.id() == LogicalTypeId::STRUCT);
+	D_ASSERT(struct_type.id() == LogicalTypeId::STRUCT || struct_type.id() == LogicalTypeId::VARIANT);
 	reference<const LogicalType> type_iter(struct_type);
 	reference<const ColumnIndex> path_iter(path);
 	while (true) {
@@ -1163,7 +1187,6 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 		auto &colref = expr.Cast<BoundColumnRefExpression>();
 		auto original_binding = colref.Binding();
 		auto &column_type = expr.GetReturnType();
-		idx_t start = expressions.size();
 		//! Pushdown Extract is supported, emit a column for every field
 		WritePushdownExtractColumns(
 		    entry->second,
@@ -1188,11 +1211,60 @@ void RemoveUnusedColumns::RewriteExpressions(LogicalProjection &proj, idx_t expr
 			    new_bindings.emplace(full_path, new_binding_idx);
 			    return new_binding_idx;
 		    });
-		for (; start < expressions.size(); start++) {
-			VisitExpression(&expressions[start]);
+	}
+	// The child pruner registers these expressions after the final vector is installed. Registering them
+	// here would retain references to reallocating vector slots, or to the temporary UNION projection.
+	proj.expressions = std::move(expressions);
+}
+
+bool RemoveUnusedColumns::TryPushdownUnionExtracts(LogicalSetOperation &setop) {
+	D_ASSERT(setop.setop_all && !everything_referenced && mode == RemoveUnusedColumnsMode::APPLY);
+	// Branch scans may discard invisible rows after evaluating a pushed cast. Keep throwing casts at
+	// their original site above the union, while still pushing the field extraction into each branch.
+	PreserveThrowingCasts(setop.GetColumnBindings());
+	setop.ResolveOperatorTypes();
+	auto original_bindings = setop.children[0]->GetColumnBindings();
+	vector<unique_ptr<Expression>> expressions;
+	for (idx_t i = 0; i < setop.column_count; i++) {
+		expressions.push_back(make_uniq<BoundColumnRefExpression>(setop.types[i], original_bindings[i]));
+	}
+	// Build one output layout, then apply the same extracts to every branch.
+	LogicalProjection projection(setop.table_index, std::move(expressions));
+	CheckPushdownExtract(projection);
+	bool has_extracts = false;
+	for (idx_t i = 0; i < setop.column_count; i++) {
+		auto entry = column_references.find(ColumnBinding(setop.table_index, ProjectionIndex(i)));
+		if (entry != column_references.end() &&
+		    entry->second.supports_pushdown_extract == PushdownExtractSupport::ENABLED) {
+			has_extracts = true;
+			break;
 		}
 	}
-	proj.expressions = std::move(expressions);
+	if (!has_extracts) {
+		return false;
+	}
+	ClearUnusedExpressions(projection.expressions, setop.table_index);
+	RewriteExpressions(projection, setop.column_count);
+	ApplySecureViewReplacements();
+	for (auto &child : setop.children) {
+		vector<unique_ptr<Expression>> branch_expressions;
+		for (auto &expression : projection.expressions) {
+			branch_expressions.push_back(expression->Copy());
+		}
+		auto branch = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(branch_expressions));
+		ColumnBindingReplacer replacer;
+		replacer.AddReplacements(original_bindings, child->GetColumnBindings());
+		replacer.VisitOperatorBindings(*branch);
+		if (child->has_estimated_cardinality) {
+			branch->SetEstimatedCardinality(child->estimated_cardinality);
+		}
+		branch->children.push_back(std::move(child));
+		child = std::move(branch);
+		RemoveUnusedColumns remove(*this, true);
+		remove.VisitOperator(child);
+	}
+	setop.column_count = projection.expressions.size();
+	return true;
 }
 
 void RemoveUnusedColumns::CheckPushdownExtract(LogicalOperator &op) {
@@ -1258,13 +1330,18 @@ void RemoveUnusedColumns::CheckPushdownExtract(LogicalOperator &op) {
 				//! Not a column reference, can't pull up the extract
 				continue;
 			}
-			if (expr.GetReturnType().id() != LogicalTypeId::STRUCT) {
-				//! Extract pull up only supported for STRUCT currently
+			if (expr.GetReturnType().id() != LogicalTypeId::STRUCT &&
+			    expr.GetReturnType().id() != LogicalTypeId::VARIANT) {
+				//! Only nested column references support extract pushdown
 				continue;
 			}
 			if (col.supports_pushdown_extract == PushdownExtractSupport::DISABLED) {
 				//! Already explicitly disabled, don't need to check
 				continue;
+			}
+			if (expr.GetReturnType().id() == LogicalTypeId::VARIANT) {
+				// New VARIANT projection routes must not move casts into scans that apply runtime row filters.
+				PreserveThrowingCasts({ColumnBinding(proj.table_index, proj_idx)});
 			}
 			col.supports_pushdown_extract = PushdownExtractSupport::ENABLED;
 		}
@@ -1821,6 +1898,47 @@ void BaseColumnPruner::AddBinding(BoundColumnRefExpression &col) {
 	}
 }
 
+void BaseColumnPruner::PreserveThrowingCasts(const vector<ColumnBinding> &bindings) {
+	// Restrict this to the current operator's outputs. References from an already visited sibling may
+	// have been rewritten, and must not be inspected while descending a different subtree.
+	for (auto &binding : bindings) {
+		auto entry = column_references.find(binding);
+		if (entry == column_references.end() || entry->second.child_columns.empty()) {
+			continue;
+		}
+		auto &column = entry->second;
+		bool changed = false;
+		for (auto &extract : column.struct_extracts) {
+			reference<ColumnIndex> path(extract.extract_path);
+			for (idx_t i = 0; i < extract.components.size(); i++) {
+				auto &component = extract.components[i];
+				if (component.cast && (*component.cast)->CanThrow()) {
+					component.cast = nullptr;
+					path.get().SetType(LogicalType::INVALID);
+					changed = true;
+				}
+				if (i + 1 < extract.components.size()) {
+					path = path.get().GetChildIndex(0);
+				}
+			}
+		}
+		if (!changed) {
+			continue;
+		}
+		column.child_columns.clear();
+		column.unique_paths.clear();
+		for (auto &extract : column.struct_extracts) {
+			auto child_column = extract.extract_path;
+			if (column.child_columns.empty()) {
+				column.child_columns.push_back(std::move(child_column));
+			} else {
+				MergeChildColumns(column.child_columns, child_column);
+			}
+			column.AddPath(extract.extract_path);
+		}
+	}
+}
+
 static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_ptr<Expression>> &child) {
 	if (expr->GetExpressionType() != ExpressionType::OPERATOR_CAST) {
 		return false;
@@ -1836,20 +1954,19 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
 	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
-	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
-		const auto was_inside_try = inside_try;
-		inside_try = true;
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR ||
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_COALESCE ||
+	    (*expression)->GetExpressionClass() == ExpressionClass::BOUND_CASE) {
+		const auto was_inside_conditional = inside_conditional;
+		inside_conditional = true;
 		LogicalOperatorVisitor::VisitExpression(expression);
-		inside_try = was_inside_try;
+		inside_conditional = was_inside_conditional;
 		return;
 	}
 
-	//! Check if this is a struct extract wrapped in a cast. TRY_CAST is already
-	//! skipped by TryGetCastChild. A throwing CAST under TRY must also stay put:
-	//! unused-columns would otherwise emit CAST(struct_extract) in a child
-	//! projection and leave TRY wrapping only the already-cast column (#25236).
+	//! Keep casts inside conditional or error guards when pushing the underlying extract.
 	optional_ptr<unique_ptr<Expression>> cast_child;
-	if (!inside_try && TryGetCastChild(*expression, cast_child)) {
+	if (!inside_conditional && TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {
 			// already handled
 			return;

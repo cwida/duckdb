@@ -1,0 +1,197 @@
+# name: test/sql/optimizer/union_extract_pushdown.test
+# description: Extract nested fields through UNION ALL without changing its row or column semantics
+# group: [optimizer]
+
+require parquet
+
+require json
+
+load {TEST_DIR}/union_extract_pushdown.db readwrite v2.0.0
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE t AS SELECT i, {'k': i, 'nested': {'x': i + 10}, 'unused': 'padding'}::VARIANT AS v,
+    {'k': i, 'nested': {'x': i + 10}, 'v': {'k': i * 2}} AS s FROM range(3) r(i);
+
+statement ok
+INSERT INTO t VALUES (3, NULL, NULL), (4, {'other': 4}::VARIANT, {'k': NULL, 'nested': NULL, 'v': NULL});
+
+statement ok
+COPY t TO '{TEST_DIR}/union_extract_pushdown.parquet';
+
+statement ok
+CHECKPOINT;
+
+restart
+
+foreach SOURCE t read_parquet('{TEST_DIR}/union_extract_pushdown.parquet')
+
+# One field replaces the only union column (the old all-columns-retained path).
+query I rowsort
+SELECT v.k::BIGINT FROM (SELECT v FROM {SOURCE} WHERE i < 2 UNION ALL SELECT v FROM {SOURCE} WHERE i < 2);
+----
+0
+0
+1
+1
+
+# Several fields replace one column, followed by another live column and an unused column.
+query IIIIII
+SELECT v.k::INTEGER, v.nested.x::INTEGER, v.k::VARCHAR, s.nested.x, s.v.k::INTEGER, i
+FROM (SELECT v, s, i, 'unused' AS extra FROM {SOURCE} WHERE i < 2
+      UNION ALL SELECT v, s, i, 'unused' FROM {SOURCE} WHERE i >= 2) ORDER BY i;
+----
+0	10	0	10	0	0
+1	11	1	11	2	1
+2	12	2	12	4	2
+NULL	NULL	NULL	NULL	NULL	3
+NULL	NULL	NULL	NULL	NULL	4
+
+# Whole-value references must retain the unprojected payload.
+query IIII
+SELECT v = {'k': i, 'nested': {'x': i + 10}, 'unused': 'padding'}::VARIANT,
+       v.k::INTEGER, v.nested = {'x': i + 10}::VARIANT, v.nested.x::INTEGER
+FROM (SELECT v, i FROM {SOURCE} WHERE i < 1 UNION ALL SELECT v, i FROM {SOURCE} WHERE i = 1) ORDER BY i;
+----
+true	0	true	10
+true	1	true	11
+
+# An ancestor path and its child can share the ancestor projection.
+query III
+SELECT v.nested, v.nested.x::INTEGER, s.nested.x
+FROM (SELECT v, s, i FROM {SOURCE} WHERE i = 0 UNION ALL SELECT v, s, i FROM {SOURCE} WHERE i = 1) ORDER BY i;
+----
+{'x': 10}	10	10
+{'x': 11}	11	11
+
+# Filters, aggregation, and branch NULLs/missing keys.
+query II
+SELECT v.k::INTEGER, count(*)
+FROM (SELECT v FROM {SOURCE} UNION ALL SELECT v FROM {SOURCE})
+WHERE v.k::INTEGER >= 1 GROUP BY v.k::INTEGER ORDER BY 1;
+----
+1	2
+2	2
+
+query II
+SELECT count(*), count(v.missing)
+FROM (SELECT v FROM {SOURCE} UNION ALL SELECT v FROM {SOURCE});
+----
+10	0
+
+# UNION DISTINCT must compare complete values, including the unused field.
+query I
+SELECT count(*) FROM (
+    SELECT v.k FROM (
+        SELECT v FROM {SOURCE} WHERE i = 0
+        UNION SELECT {'k': 0, 'nested': {'x': 10}, 'unused': 'different'}::VARIANT));
+----
+2
+
+# Computed branch outputs are evaluated before their field is extracted.
+query I rowsort
+SELECT v.k::INTEGER FROM (
+    SELECT {'k': i + 20}::VARIANT AS v FROM {SOURCE} WHERE i < 2
+    UNION ALL SELECT v FROM {SOURCE} WHERE i < 2
+    UNION ALL SELECT NULL::VARIANT);
+----
+0
+1
+20
+21
+NULL
+
+# Binder-aligned BY NAME branches include reordered and absent columns.
+query III rowsort
+SELECT i, v.k::INTEGER, extra FROM (
+    SELECT i, v FROM {SOURCE} WHERE i = 0
+    UNION ALL BY NAME SELECT v, 7 AS extra, i FROM {SOURCE} WHERE i = 1);
+----
+0	0	NULL
+1	1	7
+
+# Materialized CTE readers need both a whole value and a nested projection.
+query I
+WITH u AS MATERIALIZED (SELECT v FROM {SOURCE} UNION ALL SELECT v FROM {SOURCE})
+SELECT (SELECT count(v) FROM u) + (SELECT sum(v.k::INTEGER) FROM u);
+----
+14
+
+endloop
+
+# Cast behavior, including throwing casts inside TRY and JSON string serialization.
+statement ok
+CREATE TABLE casts AS SELECT {'k': x}::VARIANT AS v FROM (VALUES ('001'), ('bad'), (NULL)) t(x);
+
+query I rowsort
+SELECT TRY(v.k::INTEGER) FROM (SELECT v FROM casts UNION ALL SELECT v FROM casts);
+----
+1
+1
+NULL
+NULL
+NULL
+NULL
+
+query I rowsort
+SELECT TRY_CAST(v.k AS INTEGER) FROM (SELECT v FROM casts UNION ALL SELECT v FROM casts);
+----
+1
+1
+NULL
+NULL
+NULL
+NULL
+
+query T rowsort
+SELECT v.k::JSON FROM (SELECT v FROM casts UNION ALL SELECT v FROM casts);
+----
+"001"
+"001"
+"bad"
+"bad"
+NULL
+NULL
+
+statement error
+SELECT v.k::INTEGER FROM (SELECT v FROM casts UNION ALL SELECT v FROM casts);
+----
+Conversion Error
+
+# Recursive state must retain the nested fields needed by the next iteration.
+query I
+WITH RECURSIVE r(v) AS (
+    SELECT {'k': 0, 'next': 1}::VARIANT
+    UNION ALL SELECT {'k': v.next::INTEGER, 'next': v.next::INTEGER + 1}::VARIANT FROM r WHERE v.k::INTEGER < 2
+)
+SELECT sum(v.k::INTEGER) FROM r;
+----
+3
+
+# A volatile branch payload must not be recomputed for every projected field.
+statement ok
+CREATE SEQUENCE seq;
+
+query III
+SELECT count(*), bool_and(v.k::BIGINT = v.nested.x::BIGINT), max(v.k::BIGINT)
+FROM (
+    SELECT {'k': n, 'nested': {'x': n}}::VARIANT AS v FROM (SELECT nextval('seq') n FROM range(3))
+    UNION ALL SELECT {'k': n, 'nested': {'x': n}}::VARIANT FROM (SELECT nextval('seq') n FROM range(3))
+);
+----
+6	true	6
+
+# Case-sensitive VARIANT keys, punctuation, lists, and unnamed STRUCT fields.
+statement ok
+CREATE TABLE names AS SELECT '{"X":1,"x":2,"a.b":3,"key space":4,"arr":[5,6]}'::JSON::VARIANT AS v,
+    row(7, {'x': 8}) AS s;
+
+query IIIIIII rowsort
+SELECT v."X"::INTEGER, v.x::INTEGER, v."a.b"::INTEGER, v."key space"::INTEGER,
+       v.arr[1]::INTEGER, s[1], s[2].x
+FROM (SELECT v, s FROM names UNION ALL SELECT v, s FROM names);
+----
+1	2	3	4	5	7	8
+1	2	3	4	5	7	8

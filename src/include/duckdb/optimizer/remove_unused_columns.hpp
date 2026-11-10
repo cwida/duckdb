@@ -25,6 +25,7 @@ class ClientContext;
 class LogicalColumnDataGet;
 class LogicalRecursiveCTE;
 class LogicalSecureView;
+class LogicalSetOperation;
 class Optimizer;
 
 struct ReferencedExtractComponent {
@@ -118,6 +119,8 @@ protected:
 	                            reference<ColumnIndex> &path_ref, vector<ReferencedExtractComponent> &expressions);
 	void SetMode(BaseColumnPrunerMode mode);
 	BaseColumnPrunerMode GetMode() const;
+	//! Keep throwing casts at their original evaluation site while retaining safe field extraction.
+	void PreserveThrowingCasts(const vector<ColumnBinding> &bindings);
 
 private:
 	void MergeChildColumns(vector<ColumnIndex> &current_child_columns, ColumnIndex &new_child_column);
@@ -129,8 +132,8 @@ protected:
 private:
 	//! The current mode of the pruner, enables/disables certain behaviors
 	BaseColumnPrunerMode mode = BaseColumnPrunerMode::DEFAULT;
-	//! True while visiting the child of OPERATOR_TRY or OPERATOR_HAS_ERROR. Do not push throwing CASTs (#25236).
-	bool inside_try = false;
+	//! Casts must remain inside expressions that guard their evaluation or catch their errors.
+	bool inside_conditional = false;
 };
 
 //! The RemoveUnusedColumns optimizer traverses the logical operator tree and removes any columns that are not required
@@ -172,6 +175,7 @@ private:
 	void RemoveColumnsFromLogicalGet(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref);
 	void VisitSecureView(LogicalSecureView &view);
 	void CheckPushdownExtract(LogicalOperator &op);
+	bool TryPushdownUnionExtracts(LogicalSetOperation &setop);
 	void RewriteExpressions(LogicalProjection &proj, idx_t expression_count);
 	void GatherRecursiveDependencies(unique_ptr<LogicalOperator> &bottom, TableIndex cte_index,
 	                                 const unordered_set<ProjectionIndex> &required_columns,

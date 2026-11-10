@@ -1,0 +1,89 @@
+# name: test/sql/optimizer/union_extract_pushdown_plan.test
+# description: Both UNION ALL branches scan nested fields instead of complete STRUCT/VARIANT payloads
+# group: [optimizer]
+
+require parquet
+
+statement ok
+COPY (SELECT {'k': i, 'unused': repeat('x', 100)}::VARIANT AS v,
+             {'k': i, 'unused': repeat('x', 100)} AS s FROM range(10) t(i))
+TO '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+
+statement ok
+PRAGMA explain_output = optimized_only;
+
+# Every union column is retained, but only a nested field is needed.
+query II
+EXPLAIN SELECT v.k FROM (
+    SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<!REGEX>:.*variant_extract.*
+
+# Existing direct native and Parquet scans retain typed extraction pushdown.
+statement ok
+CREATE TABLE native_extract_plan AS SELECT * FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM native_extract_plan;
+----
+logical_opt	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+----
+logical_opt	<!REGEX>:.*CAST.*
+
+# Throwing casts remain above a new UNION boundary; the field itself still pushes down.
+query II
+EXPLAIN SELECT v.k::BIGINT FROM (
+    SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM (
+    SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<!REGEX>:.*variant_extract.*
+
+# A plain scan must leave a guarded cast inside CASE, even without a union.
+query II
+EXPLAIN SELECT CASE WHEN s.k = 0 THEN v.k::BIGINT END FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet';
+----
+logical_opt	<REGEX>:.*CAST.*
+
+# A row filter keeps the cast above it without disabling the safe field extract.
+query II
+EXPLAIN SELECT v.k::BIGINT FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet' WHERE random() < 0.5;
+----
+logical_opt	<REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet' WHERE random() < 0.5;
+----
+logical_opt	<!REGEX>:.*variant_extract.*
+
+query II
+EXPLAIN SELECT v.k::BIGINT FROM (
+    SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet') WHERE random() < 0.5;
+----
+logical_opt	<!REGEX>:.*variant_extract.*
+
+query II
+EXPLAIN SELECT s.k FROM (
+    SELECT s FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT s FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<!REGEX>:.*struct_extract.*
+
+# Pruning an unrelated column must not stop extract pushdown either.
+query II
+EXPLAIN SELECT v.k::BIGINT FROM (
+    SELECT v, s FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet'
+    UNION ALL SELECT v, s FROM '{TEST_DIR}/union_extract_pushdown_plan.parquet');
+----
+logical_opt	<!REGEX>:.*variant_extract.*
