@@ -267,6 +267,43 @@ SELECT count(*) FROM glob('{TEST_DIR}/iad_user_first/*/*/repositories/iadrepo/lo
 ----
 1
 
+# a repository name is case insensitive: INSTALL writes the subfolder of the lower case name, and LOAD ... FROM finds
+# it there and accepts its origin however the name is written
+statement ok
+CREATE EXTENSION REPOSITORY IadCaseRepo WITH PREFIX '{TEST_DIR}/iad_repo' USING PUBLIC KEY 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9+KeDkWJa7SiBb7AMdXAPV2qpRunztoC2c7DtRmN9+Lq2YQm4rMQmmAQcwyxTxcK8vwPKOiE4mLMwmQMvTty9tL+buREfvg5KJ+FY3Bv05cZYsf7VuYgUDcw41zSEE5W1thh5PiafcrMn7CPF0jN0oFfVvAHB/fAM0yaZGPKs3WYqnHAHa6v/cVMeiWZ/lQORCBqqL2hii1fEiuIqw6AOEoZVsN0/lqm7GfnD899zrzLOPRuP4YFg46drL1UyNdg+4TquJ2OV9kR4CAfdGRexqHFWLmoxkTfnUxJ4yL+gkV57K1H+smEdKrDhDX68pEFM/34E2eVKZoRU/0paxDZQIDAQAB'
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_case_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM IadCaseRepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_case_second/*/*/repositories/iadcaserepo/loadable_extension_demo.duckdb_extension')
+----
+1
+
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_case_first', '{TEST_DIR}/iad_case_second']
+
+statement ok
+INSTALL loadable_extension_demo FROM IADCASEREPO
+
+statement ok
+LOAD loadable_extension_demo FROM IadCaseRepo
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_case_first/**')
+----
+0
+
+# a later directory inside allowed_directories, prepared before external access is disabled
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_ok_pinned']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
 # a first directory below the home directory, prepared before external access is disabled
 statement ok
 SET extension_directories = ['{TEST_DIR}/iad_home/extensions']
@@ -280,7 +317,7 @@ statement ok
 SET extension_directories = ['{TEST_DIR}/iad_allowed', '{TEST_DIR}/iad_pinned']
 
 statement ok
-SET allowed_directories = ['{TEST_DIR}/iad_allowed', '{BUILD_DIRECTORY}/test/extension', '{TEST_DIR}/iad_home/extensions', '{TEST_DIR}/iad_repo/', '{TEST_DIR}/iad_repositories/']
+SET allowed_directories = ['{TEST_DIR}/iad_allowed', '{BUILD_DIRECTORY}/test/extension', '{TEST_DIR}/iad_home/extensions', '{TEST_DIR}/iad_repo/', '{TEST_DIR}/iad_repositories/', '{TEST_DIR}/iad_ok_first', '{TEST_DIR}/iad_ok_pinned']
 
 statement ok
 SET enable_external_access = false
@@ -289,6 +326,18 @@ statement error
 INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
 ----
 <REGEX>:Permission Error: Cannot access directory "[^"]*iad_pinned.*
+
+# a later directory inside allowed_directories is looked at like any other, and its copy makes INSTALL a no op
+statement ok
+SET extension_directories = ['{TEST_DIR}/iad_ok_first', '{TEST_DIR}/iad_ok_pinned']
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension'
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/iad_ok_first/**')
+----
+0
 
 # creating the repository subfolder in an existing first directory needs no access to the home directory around it
 statement ok
