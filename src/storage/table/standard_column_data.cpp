@@ -119,6 +119,13 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}
+	// a scan references uncompressed data without copying it: slicing beats gathering unless few rows are selected
+	static constexpr idx_t UNCOMPRESSED_SELECT_DENSITY = 5;
+	if (compression->type == CompressionType::COMPRESSION_UNCOMPRESSED &&
+	    sel_count * UNCOMPRESSED_SELECT_DENSITY > target_count) {
+		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
+		return;
+	}
 	SelectVector(state, result, target_count, sel, sel_count, scan_type);
 	validity->SelectVector(state.child_states[0], result, target_count, sel, sel_count, scan_type);
 }

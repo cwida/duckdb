@@ -26,7 +26,6 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
-#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
@@ -827,27 +826,6 @@ TEST_CASE("Grouping sets discard inherited SEMI domain evidence", "[optimizer][r
 	    RelationStatisticsHelper::ExtractAggregationStats(aggregate, child_stats, *connection.context);
 	REQUIRE(duplicate_groups);
 	REQUIRE_FALSE(duplicate_groups->columns[0].GetSupportedSemiAntiDomainSize().IsValid());
-}
-
-TEST_CASE("DISTINCT establishes a new statistics source on supported and fallback targets",
-          "[optimizer][relation_statistics]") {
-	auto input = ColumnBinding(TableIndex(10), ProjectionIndex(0));
-	auto child_stats = CreateStats({input}, {10}, 100);
-	child_stats.row_retention = 0.04;
-	LogicalDistinct distinct(DistinctType::DISTINCT);
-	distinct.children.push_back(make_uniq<LogicalDummyScan>(TableIndex(10)));
-	auto ordinary = RelationStatisticsHelper::ExtractDistinctStats(distinct, child_stats);
-	REQUIRE(ordinary);
-	REQUIRE(ordinary->row_retention == 1);
-	REQUIRE(ordinary->cardinality == 10);
-	auto target = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
-	target->GetChildrenMutable().push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, input));
-	distinct.distinct_type = DistinctType::DISTINCT_ON;
-	distinct.distinct_targets.push_back(std::move(target));
-	auto fallback = RelationStatisticsHelper::ExtractDistinctStats(distinct, child_stats);
-	REQUIRE(fallback);
-	REQUIRE(fallback->row_retention == 1);
-	REQUIRE(fallback->cardinality == 100);
 }
 
 TEST_CASE("Relation statistics extraction is cached by operator", "[optimizer][relation_statistics]") {

@@ -80,6 +80,8 @@ public:
 public:
 	//! Take `cost` tokens; false (and nothing taken) when fewer are available.
 	DUCKDB_API bool TryAcquire(int64_t cost, int64_t now_ms = TimePoint::GetTickMs());
+	//! Take `cost` tokens, or all that are left when fewer are available; returns the number taken.
+	DUCKDB_API int64_t AcquireUpTo(int64_t cost, int64_t now_ms = TimePoint::GetTickMs());
 	//! Return tokens, never above the initial capacity.
 	DUCKDB_API void Release(int64_t amount, int64_t now_ms = TimePoint::GetTickMs());
 	DUCKDB_API int64_t Available() const;
@@ -203,6 +205,10 @@ private:
 	const uint64_t retries;
 	const uint64_t retry_wait_ms;
 	const float retry_backoff;
+	//! Whether the host quota may refuse a throttled retry; when not, it is charged what the quota has left.
+	const bool retry_quota_throttled;
+	//! Smallest base wait of throttled retries.
+	const uint64_t retry_throttled_wait_ms;
 	//! Who settles the outcome with the quota.
 	const HTTPRetryOutcomeOwner owner;
 

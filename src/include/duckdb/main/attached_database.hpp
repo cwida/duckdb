@@ -67,7 +67,7 @@ struct AttachOptions {
 	//! Constructor for databases we attach outside of the ATTACH DATABASE statement.
 	explicit AttachOptions(const DBConfigOptions &options);
 	//! Constructor for databases we attach when using ATTACH DATABASE.
-	AttachOptions(const unordered_map<string, Value> &options, const AccessMode default_access_mode);
+	AttachOptions(Context &context, const unordered_map<string, Value> &options, const AccessMode default_access_mode);
 
 	//! The setting an attach option controls, lower-cased. All four spellings of the access mode
 	//! (readonly, read_only, readwrite, read_write) share one setting, so two of them in the same

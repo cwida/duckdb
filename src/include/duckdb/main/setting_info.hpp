@@ -85,6 +85,7 @@ typedef void (*set_local_function_t)(ClientContext &context, const Value &parame
 typedef void (*reset_global_function_t)(DatabaseInstance *db, DBConfig &config);
 typedef void (*reset_local_function_t)(ClientContext &context);
 typedef Value (*get_setting_function_t)(const ClientContext &context);
+typedef Value (*get_default_value_function_t)();
 
 struct ConfigurationOption {
 	const char *name;
@@ -101,6 +102,8 @@ struct ConfigurationOption {
 	optional_idx setting_idx;
 	bool is_debug = false;
 	bool is_deprecated = false;
+	//! The typed default value of a generic setting
+	get_default_value_function_t get_default_value = nullptr;
 };
 
 struct ConfigurationAlias {
