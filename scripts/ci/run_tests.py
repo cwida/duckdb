@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import re
+import runpy
 import shutil
 import shlex
 import signal
@@ -2486,6 +2487,39 @@ def parse_args(argv: list[str] | None = None):
     return parser.parse_intermixed_args(argv)
 
 
+def resolve_test_runner_args(args):
+    if not args.unittest_bin:
+        return
+    path = Path(args.unittest_bin).resolve()
+    if path.parent.name != "test" or path.name not in {
+        "unittest",
+        "unittest.exe",
+        "unittest.py",
+        "unittest.bat",
+        "run",
+        "run.py",
+        "run.bat",
+    }:
+        return
+    wrapper_path = path.with_suffix(".py") if path.suffix in {".exe", ".bat"} else path
+    if not wrapper_path.is_file() and not path.suffix:
+        wrapper_path = path.with_suffix(".py")
+    try:
+        source = wrapper_path.read_text(encoding="utf8")
+    except (OSError, UnicodeError):
+        return
+    if "from scripts.ci.test_runner_wrapper import main" not in source:
+        return
+    wrapper = runpy.run_path(os.fspath(wrapper_path), run_name="duckdb_test_runner")
+    build_dir = wrapper_path.parent.parent
+    duckdb_name = wrapper.get("DUCKDB_NAME", "duckdb.exe" if wrapper_path.suffix == ".py" else "duckdb")
+    args.unittest_bin = os.fspath(build_dir / duckdb_name)
+    args.test_extension = args.test_extension or build_dir / "extension" / "test" / "test.duckdb_extension"
+    args.test_root = args.test_root or [Path(root) for root in wrapper["TEST_ROOTS"]]
+    args.test_bundle_root = args.test_bundle_root or [build_dir / "test" / "extensions"]
+    return wrapper["SOURCE_ROOT"]
+
+
 @dataclass(frozen=True)
 class InvocationResult:
     returncode: int
@@ -2809,8 +2843,18 @@ def main(argv: list[str] | None = None):
 
 
 def main_impl(argv: list[str] | None = None):
-    global TEST_EXTENSION_OVERRIDE, TEST_ROOT_OVERRIDES, TEST_BUNDLE_ROOT_OVERRIDES
     args = parse_args(argv)
+    source_root = resolve_test_runner_args(args)
+    if source_root is None:
+        return run_tests_from_args(args)
+    from scripts.ci.test_runner_wrapper import pushd
+
+    with pushd(source_root):
+        return run_tests_from_args(args)
+
+
+def run_tests_from_args(args):
+    global TEST_EXTENSION_OVERRIDE, TEST_ROOT_OVERRIDES, TEST_BUNDLE_ROOT_OVERRIDES
     TEST_EXTENSION_OVERRIDE = args.test_extension
     TEST_ROOT_OVERRIDES = args.test_root
     TEST_BUNDLE_ROOT_OVERRIDES = args.test_bundle_root

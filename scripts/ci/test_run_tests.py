@@ -38,6 +38,23 @@ def strip_ansi_lines(lines: list[str]) -> list[str]:
     return [run_tests.strip_ansi(line) for line in lines]
 
 
+def write_runner_wrapper(path: Path, test_roots: list[Path], duckdb_name="duckdb", legacy=False):
+    template = (REPO_ROOT / "scripts" / "ci" / "test_runner_wrapper.py.in").read_text(encoding="utf8")
+    replacements = {
+        "@PROJECT_SOURCE_DIR@": str(REPO_ROOT),
+        "@RUN_WRAPPER_TEST_ROOTS@": ";".join(map(str, test_roots)),
+        "@RUN_WRAPPER_DEFAULT_ARGS@": "--workers;1",
+        "@RUN_WRAPPER_DUCKDB_NAME@": duckdb_name,
+    }
+    for key, value in replacements.items():
+        template = template.replace(key, value)
+    if legacy:
+        template = template.replace(f'DUCKDB_NAME = "{duckdb_name}"\n', "")
+        template = template.replace("duckdb_name=DUCKDB_NAME,", f'duckdb_name="{duckdb_name}",')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(template, encoding="utf8")
+
+
 def protocol_config(**overrides):
     values = dict(
         test_list=Path("unused"),
@@ -697,6 +714,95 @@ class RunTestsScriptTest(unittest.TestCase):
                 "test/sql/a.test",
             ],
         )
+
+    def test_legacy_runner_paths_preserve_generated_roots_and_runner_options(self):
+        for name in ["unittest", "unittest.py", "unittest.bat", "unittest.exe", "run", "run.py", "run.bat"]:
+            for legacy in [False, True]:
+                with self.subTest(name=name, legacy=legacy), tempfile.TemporaryDirectory() as directory:
+                    build_dir = Path(directory).resolve() / "build"
+                    path = build_dir / "test" / name
+                    wrapper_path = path.with_suffix(".py") if path.suffix in {".bat", ".exe"} else path
+                    duckdb_name = "duckdb.exe" if wrapper_path.suffix == ".py" else "duckdb"
+                    extension_root = Path(directory).resolve() / "extension" / "test" / "sql"
+                    write_runner_wrapper(wrapper_path, [extension_root], duckdb_name, legacy)
+                    args = run_tests.parse_args(
+                        [str(path), "--workers", "3", "--test-flags=--force-storage", "[appender]"]
+                    )
+                    with mock.patch("scripts.ci.run_tests.main", side_effect=AssertionError("ran wrapper")):
+                        source_root = run_tests.resolve_test_runner_args(args)
+                    self.assertEqual(source_root, REPO_ROOT)
+                    self.assertEqual(args.unittest_bin, str(build_dir / duckdb_name))
+                    self.assertEqual(
+                        args.test_root,
+                        [REPO_ROOT / "test", REPO_ROOT / "third_party" / "sqllogictest" / "test", extension_root],
+                    )
+                    self.assertEqual(args.test_extension, build_dir / "extension" / "test" / "test.duckdb_extension")
+                    self.assertEqual(args.test_bundle_root, [build_dir / "test" / "extensions"])
+                    self.assertEqual(args.workers, "3")
+                    self.assertEqual(args.test_flags, "--force-storage")
+                    self.assertEqual(args.patterns, ["[appender]"])
+
+    def test_legacy_runner_resolution_preserves_explicit_path_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "build" / "test" / "unittest"
+            write_runner_wrapper(path, [])
+            args = run_tests.parse_args(
+                [
+                    str(path),
+                    "--test-extension",
+                    "custom.duckdb_extension",
+                    "--test-root",
+                    "custom/sql",
+                    "--test-bundle-root",
+                    "custom/bundles",
+                ]
+            )
+            run_tests.resolve_test_runner_args(args)
+            self.assertEqual(args.unittest_bin, str(path.parent.parent / "duckdb"))
+            self.assertEqual(args.test_extension, Path("custom.duckdb_extension"))
+            self.assertEqual(args.test_root, [Path("custom/sql")])
+            self.assertEqual(args.test_bundle_root, [Path("custom/bundles")])
+
+    def test_legacy_windows_paths_without_suffix_resolve_python_wrappers(self):
+        for name in ["unittest", "run"]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory).resolve() / "build" / "test" / name
+                write_runner_wrapper(path.with_suffix(".py"), [], "duckdb.exe", legacy=True)
+                args = run_tests.parse_args([str(path)])
+                run_tests.resolve_test_runner_args(args)
+                self.assertEqual(args.unittest_bin, str(path.parent.parent / "duckdb.exe"))
+
+    def test_legacy_runner_invocation_uses_source_directory_and_restores_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "build" / "test" / "unittest"
+            write_runner_wrapper(path, [])
+            original_cwd = Path.cwd()
+            with test_runner_wrapper.pushd(directory):
+                with mock.patch(
+                    "scripts.ci.run_tests.run_tests_from_args",
+                    side_effect=lambda args: (Path.cwd(), args.unittest_bin),
+                ):
+                    result = run_tests.main_impl([str(path)])
+                self.assertEqual(Path.cwd(), Path(directory).resolve())
+            self.assertEqual(result, (REPO_ROOT, str(path.resolve().parent.parent / "duckdb")))
+            self.assertEqual(Path.cwd(), original_cwd)
+
+    def test_runner_resolution_preserves_native_binaries_and_custom_fixtures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, content in [("unittest", b"\x7fELF\xff"), ("unittest.py", b"print('custom fixture')")]:
+                with self.subTest(name=name):
+                    path = root / "test" / name
+                    path.parent.mkdir(exist_ok=True)
+                    path.write_bytes(content)
+                    args = run_tests.parse_args([str(path), "--test-command", "{binary}"])
+                    run_tests.resolve_test_runner_args(args)
+                    self.assertEqual(args.unittest_bin, str(path))
+                    self.assertEqual(args.test_root, [])
+                    self.assertIsNone(args.test_extension)
+            args = run_tests.parse_args([str(root / "duckdb")])
+            run_tests.resolve_test_runner_args(args)
+            self.assertEqual(args.unittest_bin, str(root / "duckdb"))
 
     def test_wrapper_uses_windows_executable_name(self):
         wrapper_path = Path("test") / "run.py"

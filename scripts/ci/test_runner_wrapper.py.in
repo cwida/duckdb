@@ -23,6 +23,7 @@ TEST_ROOTS = [
     *filter(None, r"@RUN_WRAPPER_TEST_ROOTS@".split(";")),
 ]
 DEFAULT_ARGS = [*filter(None, r"@RUN_WRAPPER_DEFAULT_ARGS@".split(";"))]
+DUCKDB_NAME = "@RUN_WRAPPER_DUCKDB_NAME@"
 
 if __name__ == "__main__":
     raise SystemExit(
@@ -30,7 +31,7 @@ if __name__ == "__main__":
             [*DEFAULT_ARGS, *sys.argv[1:]],
             wrapper_path=__file__,
             source_root=SOURCE_ROOT,
-            duckdb_name="@RUN_WRAPPER_DUCKDB_NAME@",
+            duckdb_name=DUCKDB_NAME,
             test_roots=TEST_ROOTS,
         )
     )

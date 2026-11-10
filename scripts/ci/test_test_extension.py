@@ -5,12 +5,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from scripts.ci import run_tests
-from scripts.ci.test_run_tests import protocol_config
+from scripts.ci.test_run_tests import REPO_ROOT, protocol_config, write_runner_wrapper
 
 
 @unittest.skipUnless(os.environ.get("DUCKDB_TEST_BINARY"), "requires DUCKDB_TEST_BINARY")
@@ -63,6 +64,39 @@ class TestExtensionIntegrationTest(unittest.TestCase):
         self.assertFalse((self.temp_root / "integration").exists())
         rows = self.query("SELECT test_id, status FROM test_results;", database)
         self.assertEqual(rows, [{"test_id": test_id, "status": "passed"}])
+
+    def test_legacy_unittest_entrypoint_runs_tests_from_generated_extension_roots(self):
+        self.create_test(
+            "legacy_runner_external_root.test",
+            "query I\nSELECT count(*) FROM read_text('CMakeLists.txt')\n----\n1\n",
+        )
+        build_dir = self.root / "build"
+        build_dir.mkdir()
+        duckdb_name = Path(self.binary).name
+        (build_dir / duckdb_name).symlink_to(self.binary)
+        wrapper = build_dir / "test" / ("unittest.py" if os.name == "nt" else "unittest")
+        write_runner_wrapper(wrapper, [self.test_root], duckdb_name, legacy=True)
+        extension_dir = build_dir / "extension" / "test"
+        extension_dir.mkdir(parents=True)
+        (extension_dir / "test.duckdb_extension").symlink_to(
+            Path(self.binary).parent / "extension" / "test" / "test.duckdb_extension"
+        )
+        command = [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "ci" / "run_tests.py"),
+            str(wrapper),
+            "--workers",
+            "1",
+            "--retry",
+            "0",
+            "--max-retries",
+            "0",
+            f"--test-flags=--temp-dir-root {self.temp_root}",
+            "*legacy_runner_external_root.test",
+        ]
+        result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 passed", result.stdout)
 
     def test_partial_skip_statistics_are_durable(self):
         test_id = self.create_test(
