@@ -392,6 +392,14 @@ void ExtensionLoader::RegisterCastFunction(const LogicalType &source, const Logi
 	casts.RegisterCastFunction(source, target, bind_function, implicit_cast_cost);
 }
 
+void ExtensionLoader::RegisterCastFunction(const LogicalType &source, const LogicalType &target,
+                                           bind_cast_function_t bind_function, shared_ptr<BindCastInfo> bind_info,
+                                           int64_t implicit_cast_cost) {
+	auto &config = DBConfig::GetConfig(db);
+	config.GetCastFunctions().RegisterCastFunction(source, target, bind_function, std::move(bind_info),
+	                                               implicit_cast_cost);
+}
+
 void ExtensionLoader::RegisterCastFunction(const LogicalType &source, const LogicalType &target, BoundCastInfo function,
                                            int64_t implicit_cast_cost) {
 	auto &config = DBConfig::GetConfig(db);

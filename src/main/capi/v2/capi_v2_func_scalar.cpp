@@ -202,8 +202,12 @@ static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression 
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	CV2CallbackContext callback_context(state.GetContext());
-	info.init_cb(Convert(&args), Convert(&callback_context), &err_ptr);
+	// Without a client context (e.g. while an index is built) the callback receives a NULL context
+	unique_ptr<CV2CallbackContext> callback_context;
+	if (state.HasContext()) {
+		callback_context = make_uniq<CV2CallbackContext>(state.GetContext());
+	}
+	info.init_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
 
 	unique_ptr<FunctionLocalState> result = nullptr;
 	if (args.out_init_data.ptr) {
@@ -224,6 +228,12 @@ static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression 
 static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &result) -> void {
 	auto &expr = state.expr.Cast<BoundFunctionExpression>();
 	const auto &info = expr.Function().GetExtraFunctionInfo().Cast<CV2ScalarFunctionInfo>();
+
+	// A function registered as the try cast runs under a cast executor that swallows its error
+	optional_ptr<CV2CastExecutor> cast_executor;
+	if (state.root.executor && state.root.executor == ActiveCastExecutor()) {
+		cast_executor = ActiveCastExecutor();
+	}
 
 	CV2ExecInfo args;
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
@@ -246,10 +256,18 @@ static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &resu
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
 
-	CV2CallbackContext callback_context(state.GetContext());
-	info.exec_cb(Convert(&args), Convert(&callback_context), &err_ptr);
+	unique_ptr<CV2CallbackContext> callback_context;
+	if (state.HasContext()) {
+		callback_context = make_uniq<CV2CallbackContext>(state.GetContext());
+	}
+	info.exec_cb(Convert(&args), Convert(callback_context.get()), &err_ptr);
 
 	if (err.HasError()) {
+		if (cast_executor && cast_executor->is_try) {
+			// The rows the callback wrote stay: the cast reports that not every row converted
+			cast_executor->error = err.message;
+			return;
+		}
 		err.ThrowAsException();
 	}
 }
@@ -341,6 +359,21 @@ public:
 		return function;
 	}
 
+	//! Builds the function a cast is registered from: one concrete parameter, converting to the concrete return type
+	ScalarFunction BuildForCast(DatabaseInstance &target) {
+		if (signature.GetParameterCount() != 1 || signature.IsVariadic() ||
+		    !signature.GetParameter(0).AcceptsPosition()) {
+			throw InvalidInputException("A cast function must take exactly one standard parameter: the value to cast.");
+		}
+		if (!signature.GetParameter(0).GetType().IsComplete()) {
+			throw InvalidInputException("The parameter of a cast function must be a fully defined concrete type");
+		}
+		if (info.resolve_types_cb) {
+			throw InvalidInputException("A cast function cannot have a resolve types callback: its types are fixed.");
+		}
+		return Build(target);
+	}
+
 public:
 	//! The database it was created for: the only one it can be registered on.
 	DatabaseInstance &db;
@@ -356,6 +389,10 @@ static auto Convert(duckdb_v2_scalar_function_handle func) -> CV2ScalarFunction 
 }
 static auto Convert(CV2ScalarFunction *func) -> duckdb_v2_scalar_function_handle {
 	return reinterpret_cast<duckdb_v2_scalar_function_handle>(func);
+}
+
+ScalarFunction BuildScalarFunctionForCast(duckdb_v2_scalar_function_handle function, DatabaseInstance &target) {
+	return Convert(function)->BuildForCast(target);
 }
 
 } // namespace duckdb::capiv2

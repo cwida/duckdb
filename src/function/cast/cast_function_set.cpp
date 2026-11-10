@@ -123,9 +123,15 @@ struct MapCastNode {
 	MapCastNode(bind_cast_function_t func, int64_t implicit_cast_cost)
 	    : cast_info(nullptr), bind_function(func), implicit_cast_cost(implicit_cast_cost) {
 	}
+	MapCastNode(bind_cast_function_t func, shared_ptr<BindCastInfo> bind_info, int64_t implicit_cast_cost)
+	    : cast_info(nullptr), bind_function(func), bind_info(std::move(bind_info)),
+	      implicit_cast_cost(implicit_cast_cost) {
+	}
 
 	BoundCastInfo cast_info;
 	bind_cast_function_t bind_function;
+	//! Per-cast info, visible as input.info while bind_function runs
+	shared_ptr<BindCastInfo> bind_info;
 	int64_t implicit_cast_cost;
 };
 
@@ -286,7 +292,20 @@ static BoundCastInfo MapCastFunction(BindCastInput &input, const LogicalType &so
 	auto entry = map_info.GetEntry(source, target);
 	if (entry) {
 		if (entry->bind_function) {
-			return entry->bind_function(input, source, target);
+			if (!entry->bind_info) {
+				return entry->bind_function(input, source, target);
+			}
+			// the outer info is restored afterwards, also when the bind function throws
+			auto outer_info = input.info;
+			input.info = entry->bind_info.get();
+			try {
+				auto result = entry->bind_function(input, source, target);
+				input.info = outer_info;
+				return result;
+			} catch (...) {
+				input.info = outer_info;
+				throw;
+			}
 		}
 		return entry->cast_info.Copy();
 	}
@@ -301,6 +320,12 @@ void CastFunctionSet::RegisterCastFunction(const LogicalType &source, const Logi
 void CastFunctionSet::RegisterCastFunction(const LogicalType &source, const LogicalType &target,
                                            bind_cast_function_t bind_function, int64_t implicit_cast_cost) {
 	RegisterCastFunction(source, target, MapCastNode(bind_function, implicit_cast_cost));
+}
+
+void CastFunctionSet::RegisterCastFunction(const LogicalType &source, const LogicalType &target,
+                                           bind_cast_function_t bind_function, shared_ptr<BindCastInfo> bind_info,
+                                           int64_t implicit_cast_cost) {
+	RegisterCastFunction(source, target, MapCastNode(bind_function, std::move(bind_info), implicit_cast_cost));
 }
 
 void CastFunctionSet::RegisterCastFunction(const LogicalType &source, const LogicalType &target, MapCastNode node) {

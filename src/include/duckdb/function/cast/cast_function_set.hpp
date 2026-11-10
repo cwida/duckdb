@@ -65,6 +65,10 @@ public:
 	                                     int64_t implicit_cast_cost = -1);
 	DUCKDB_API void RegisterCastFunction(const LogicalType &source, const LogicalType &target,
 	                                     bind_cast_function_t bind, int64_t implicit_cast_cost = -1);
+	//! Register a bind function with per-cast info, visible as input.info while the bind function runs
+	DUCKDB_API void RegisterCastFunction(const LogicalType &source, const LogicalType &target,
+	                                     bind_cast_function_t bind, shared_ptr<BindCastInfo> bind_info,
+	                                     int64_t implicit_cast_cost = -1);
 	//! Whether a registered cast can change this default conversion, including nested casts.
 	//! Data-dependent VARIANT conversions are treated conservatively.
 	DUCKDB_API bool CanOverrideDefaultCast(const LogicalType &source, const LogicalType &target) const;

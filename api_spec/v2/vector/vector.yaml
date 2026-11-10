@@ -154,6 +154,24 @@ enums:
       VECTOR_TYPE_DICTIONARY:
         value: 3
         description: Data + selection vector indirection into another vector.
+  CAST_MODE:
+    description: |
+      The mode a cast is being executed in. A normal cast must either succeed
+      for every row or report an error, which aborts the query. A "try" cast
+      (SQL TRY_CAST, and implicit casts the engine probes speculatively)
+      tolerates per-row failures: the callback writes NULL for the rows it
+      could not convert instead of aborting, and still reports the failure
+      through the error slot once the batch is written: that makes the cast
+      return "not every row converted", which callers that probe a cast, such
+      as the CSV sniffer, rely on. Passed to `[[vector_cast]]`; see
+      `[[connection_register_cast]]` for the functions that implement the two modes of a registered cast.
+    values:
+      CAST_MODE_NORMAL:
+        value: 0
+        description: A regular cast. A conversion failure reported through the error slot aborts the query.
+      CAST_MODE_TRY:
+        value: 1
+        description: A "try" cast. Conversion failures should be written as NULLs into the output vector and reported through the error slot once the batch is written; the error is swallowed, the rows the callback wrote stay, and the cast reports that not every row converted. A callback that leaves a row NULL without reporting an error tells the engine the row converted.
 functions:
   # -----------------------------------------------------------------------
   # Vector-level introspection

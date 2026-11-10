@@ -12,6 +12,7 @@
 #include "duckdb/common/named_parameter_map.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 
@@ -59,6 +60,48 @@ public:
 	vector<CV2FunctionExample> examples;
 	vector<string> categories;
 };
+
+//! Executes the scalar function a cast is registered from. The exec callback of a try cast reports a failed row
+//! through the error slot, which the executor holds on to instead of aborting.
+class CV2CastExecutor final : public ExpressionExecutor {
+public:
+	CV2CastExecutor(ClientContext &context, const Expression &expr, bool is_try)
+	    : ExpressionExecutor(context, expr), is_try(is_try) {
+	}
+	//! Without a client context, e.g. while an index is built
+	CV2CastExecutor(const Expression &expr, bool is_try) : ExpressionExecutor(), is_try(is_try) {
+		AddExpression(expr);
+	}
+
+public:
+	//! Whether the function is a try cast, whose error is held instead of thrown
+	bool is_try = false;
+	//! The error a try cast reported, empty if it converted every row
+	string error;
+};
+
+//! The cast executor running on this thread, or null. A scalar exec callback compares it with its own executor.
+inline CV2CastExecutor *&ActiveCastExecutor() {
+	static thread_local CV2CastExecutor *active = nullptr;
+	return active;
+}
+
+//! Marks a cast executor as the one running on this thread while in scope
+class CV2ActiveCastScope {
+public:
+	explicit CV2ActiveCastScope(CV2CastExecutor &executor) : previous(ActiveCastExecutor()) {
+		ActiveCastExecutor() = &executor;
+	}
+	~CV2ActiveCastScope() {
+		ActiveCastExecutor() = previous;
+	}
+
+private:
+	CV2CastExecutor *previous;
+};
+
+//! Builds the scalar function a cast is registered from, validating that it can convert between two types.
+ScalarFunction BuildScalarFunctionForCast(duckdb_v2_scalar_function_handle function, DatabaseInstance &target);
 
 inline auto Convert(duckdb_v2_function_docs_handle docs) -> CV2FunctionDocs * {
 	return reinterpret_cast<CV2FunctionDocs *>(docs);
