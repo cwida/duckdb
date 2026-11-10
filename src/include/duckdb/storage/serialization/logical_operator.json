@@ -551,12 +551,18 @@
         "id": 208,
         "name": "predicate",
         "type": "Expression*",
-        "status": "deleted"
+        "status": "read_only",
+        "deserialize_skip_assign": true
       }
     ],
     "constructor": [
       "join_type",
       "type"
+    ],
+    "finalize_deserialization": [
+      "if (predicate) {",
+      "\tresult->conditions.emplace_back(std::move(predicate));",
+      "}"
     ]
   },
   {
