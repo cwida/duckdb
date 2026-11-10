@@ -66,6 +66,7 @@
         "test/sql/copy/parquet/bloom_filter_fallback_types.test",
         "test/sql/aggregate/aggregates/summarize_nanosecond_types.test",
         "test/sql/optimizer/expression/test_time_ns_cast_comparison.test",
+        "test/optimizer/comparison_simplification_equality_casts.test",
         "test/fuzzer/duckfuzz/arg_minmax_by_decimal.test",
         "test/fuzzer/duckfuzz/array_distance.test",
         "test/fuzzer/duckfuzz/array_hash.test",
