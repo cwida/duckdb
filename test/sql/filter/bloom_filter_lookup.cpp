@@ -2,12 +2,113 @@
 #include "test_helpers.hpp"
 
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
 
+#include <atomic>
+#include <thread>
+
 using namespace duckdb;
+
+TEST_CASE("Bloom sector indexing preserves concurrent inserts, folding and mapped probes", "[filter][bloom_filter]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &context = *con.context;
+	static constexpr idx_t LARGE_BUILD_COUNT = 1ULL << 19;
+	static constexpr idx_t WORKER_COUNT = 4;
+	static constexpr idx_t PROBE_COUNT = 2048;
+	BloomFilter filter;
+
+	for (const auto count : {idx_t(513), LARGE_BUILD_COUNT}) {
+		CAPTURE(count);
+		filter.Initialize(context, LARGE_BUILD_COUNT);
+		vector<unique_ptr<Vector>> inputs;
+		for (idx_t worker = 0; worker < WORKER_COUNT; worker++) {
+			const auto begin = count * worker / WORKER_COUNT;
+			const auto end = count * (worker + 1) / WORKER_COUNT;
+			auto input = make_uniq<Vector>(LogicalType::HASH, end - begin);
+			{
+				auto writer = FlatVector::Writer<hash_t>(*input, count_t(end - begin));
+				for (idx_t row = begin; row < end; row++) {
+					writer.WriteValue(Hash(uint64_t(row * 2)));
+				}
+			}
+			inputs.push_back(std::move(input));
+		}
+		std::atomic<idx_t> ready {0};
+		std::atomic<bool> start {false};
+		vector<std::thread> workers;
+		for (idx_t worker = 0; worker < WORKER_COUNT; worker++) {
+			workers.emplace_back([&, worker] {
+				ready.fetch_add(1, std::memory_order_relaxed);
+				while (!start.load(std::memory_order_acquire)) {
+					std::this_thread::yield();
+				}
+				filter.InsertHashes(*inputs[worker]);
+			});
+		}
+		while (ready.load(std::memory_order_relaxed) != WORKER_COUNT) {
+			std::this_thread::yield();
+		}
+		start.store(true, std::memory_order_release);
+		for (auto &worker : workers) {
+			worker.join();
+		}
+		Vector boundary_hashes(LogicalType::HASH, 2);
+		{
+			auto writer = FlatVector::Writer<hash_t>(boundary_hashes, count_t(2));
+			writer.WriteValue(0);
+			writer.WriteValue(~uint64_t(0));
+		}
+		filter.InsertHashes(boundary_hashes);
+		// The smaller build folds; the larger one keeps enough sectors to prefetch.
+		filter.Seal(context);
+		REQUIRE(filter.IsSealed());
+		REQUIRE(filter.IsUseful());
+		for (const auto &input : inputs) {
+			for (const auto &hash : input->Values<hash_t>()) {
+				REQUIRE(filter.LookupOne(hash.GetValue()));
+			}
+		}
+		REQUIRE(filter.LookupOne(0));
+		REQUIRE(filter.LookupOne(~uint64_t(0)));
+
+		Vector probes(LogicalType::HASH, PROBE_COUNT);
+		{
+			auto writer = FlatVector::Writer<hash_t>(probes, count_t(PROBE_COUNT));
+			for (idx_t row = 0; row < PROBE_COUNT; row++) {
+				writer.WriteValue(Hash(uint64_t((row % count) * 2 + row % 2)));
+			}
+		}
+		auto probe_hashes = probes.Values<hash_t>();
+		SelectionVector input_sel(PROBE_COUNT), result_sel(PROBE_COUNT);
+		for (idx_t row = 0; row < PROBE_COUNT; row++) {
+			input_sel.set_index(row, (row * 73 + 19) % PROBE_COUNT);
+		}
+		for (bool mapped : {false, true}) {
+			CAPTURE(mapped);
+			vector<idx_t> expected;
+			for (idx_t row = 0; row < PROBE_COUNT; row++) {
+				const auto index = mapped ? input_sel.get_index(row) : row;
+				if (filter.LookupOne(probe_hashes[index].GetValue())) {
+					expected.push_back(row);
+				}
+			}
+			REQUIRE(expected.size() >= PROBE_COUNT / 2);
+			REQUIRE(expected.size() < PROBE_COUNT);
+			const auto found = mapped ? filter.LookupHashes(probes, input_sel, result_sel, PROBE_COUNT)
+			                          : filter.LookupHashes(probes, result_sel, PROBE_COUNT);
+			REQUIRE(found == expected.size());
+			for (idx_t row = 0; row < found; row++) {
+				REQUIRE(result_sel.get_index(row) == expected[row]);
+			}
+		}
+	}
+}
 
 TEST_CASE("Bloom filter selection preserves NULL policy and mapped rows", "[filter][bloom_filter]") {
 	DuckDB db(nullptr);
