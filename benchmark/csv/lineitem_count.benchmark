@@ -1,0 +1,12 @@
+# name: benchmark/csv/lineitem_count.benchmark
+# description: Count the rows of lineitem written as CSV, read with an explicit dialect and schema
+# group: [csv]
+
+template benchmark/csv/lineitem_csv.benchmark.in
+name=Lineitem Count
+variant=plain
+copy_options=FORMAT CSV, DELIMITER '|', HEADER false
+newline=\n
+query_start=SELECT count(*) FROM
+query_end=;
+result=6001215

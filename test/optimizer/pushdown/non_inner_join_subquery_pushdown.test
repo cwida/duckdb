@@ -1,0 +1,66 @@
+# name: test/optimizer/pushdown/non_inner_join_subquery_pushdown.test
+# description: Single-side conjuncts of non-inner join conditions with subqueries are pushed into their side
+# group: [pushdown]
+
+statement ok
+CREATE TABLE dim AS SELECT i AS id, i % 50 AS grp FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE fact AS
+SELECT i AS id, i % 1000 AS dim_id, TIMESTAMP '2024-01-01 00:00:00' + INTERVAL (i) SECOND AS ts, 'b' || i AS payload
+FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE q AS SELECT i, 'b' || (i * 7919) AS f FROM range(80) t(i);
+
+# the IN subquery becomes a SEMI join below the outer join and the range becomes a scan filter
+query II
+EXPLAIN (FORMAT compact) SELECT q.i, count(c.id) AS matches
+FROM q LEFT JOIN fact c
+  ON c.dim_id IN (SELECT id FROM dim WHERE grp IN (1, 2))
+ AND c.ts >= TIMESTAMP '2024-01-10 00:00:00' AND c.ts < TIMESTAMP '2024-01-11 00:00:00'
+ AND contains(c.payload, q.f)
+GROUP BY 1;
+----
+physical_plan	<REGEX>:.*Condition: contains\(payload, f\)\n.*Join Type: SEMI;.*\n *SEQ_SCAN [^\n]*Table: [^\n]*\.fact;[^\n]*Filters: [^\n]*ts >= [^\n]*ts < .*
+
+query III
+SELECT count(*), count(*) FILTER (WHERE matches > 0), sum(matches) FROM (
+	SELECT q.i, count(c.id) AS matches
+	FROM q LEFT JOIN fact c
+	  ON c.dim_id IN (SELECT id FROM dim WHERE grp IN (1, 2))
+	 AND c.ts >= TIMESTAMP '2024-01-10 00:00:00' AND c.ts < TIMESTAMP '2024-01-11 00:00:00'
+	 AND contains(c.payload, q.f)
+	GROUP BY 1
+);
+----
+80	2	6
+
+# the equality stays a hash join condition without the subquery marker
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM dim a LEFT JOIN fact c ON c.dim_id = a.id AND c.id IN (SELECT id FROM dim WHERE grp = 1);
+----
+physical_plan	<REGEX>:.*HASH_JOIN [^\n]*Join Type: (LEFT|RIGHT); Conditions: (dim_id = id|id = dim_id)\n.*HASH_JOIN [^\n]*Join Type: SEMI.*
+
+query II
+SELECT count(*), count(c.id) FROM dim a LEFT JOIN fact c ON c.dim_id = a.id AND c.id IN (SELECT id FROM dim WHERE grp = 1);
+----
+1000	20
+
+# RIGHT join: the left side is the one that gets filtered
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM fact c RIGHT JOIN dim a ON c.dim_id = a.id AND c.id IN (SELECT id FROM dim WHERE grp = 1);
+----
+physical_plan	<REGEX>:.*HASH_JOIN [^\n]*Join Type: (LEFT|RIGHT); Conditions: (dim_id = id|id = dim_id)\n.*HASH_JOIN [^\n]*Join Type: SEMI.*
+
+# a left-only conjunct of a LEFT join cannot filter the left side
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM dim a LEFT JOIN fact c ON c.dim_id = a.id AND a.id IN (SELECT id FROM dim WHERE grp = 1);
+----
+physical_plan	<REGEX>:.*HASH_JOIN [^\n]*Join Type: MARK.*
+
+# FULL join: nothing is pushed
+query II
+EXPLAIN (FORMAT compact) SELECT count(*) FROM dim a FULL JOIN fact c ON c.dim_id = a.id AND c.id IN (SELECT id FROM dim WHERE grp = 1);
+----
+physical_plan	<REGEX>:.*HASH_JOIN [^\n]*Join Type: MARK.*

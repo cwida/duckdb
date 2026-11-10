@@ -123,6 +123,10 @@ public:
 		return batch_index <= min_batch_index;
 	}
 
+	idx_t GetMinimumBatchIndex() const {
+		return min_batch_index;
+	}
+
 	void FinalCheck() {
 		if (unflushed_memory_usage != 0) {
 			throw InternalException("Unflushed memory usage is not zero at finalize but %llu",

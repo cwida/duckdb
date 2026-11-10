@@ -47,6 +47,14 @@ idx_t TokenIterator::EndOffset() const {
 	return last_token.offset + last_token.length;
 }
 
+idx_t TokenIterator::ConsumedEndOffset() const {
+	if (position == 0) {
+		return 0;
+	}
+	auto &last_token = Previous();
+	return last_token.offset + last_token.length;
+}
+
 const MatcherToken &TokenIterator::Previous() const {
 	if (position == 0) {
 		throw InternalException("TokenIterator has no previous token");
