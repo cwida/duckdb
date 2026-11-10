@@ -8,6 +8,7 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression_binder/table_function_binder.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/planner/operator/logical_external_resource.hpp"
 
 namespace duckdb {
@@ -49,6 +50,12 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	BoundStatement result;
 	result.types = {LogicalType::BOOLEAN};
 	result.names = {"Success"};
+
+	// Every verb runs the resource type's callbacks (create/status, resolve, destroy), which reach outside the
+	// database - refused up front, before the statement is looked at any further.
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
+	}
 
 	BoundExternalResource data;
 	data.operation = stmt.operation;
