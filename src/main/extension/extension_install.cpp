@@ -144,6 +144,8 @@ bool ExtensionHelper::IsInstalledExtensionFile(const string &path) {
 	return StringUtil::EndsWith(path, ".duckdb_extension") && !StringUtil::Contains(path, ".duckdb_extension.tmp-");
 }
 
+// User provided repositories install into a per repository subfolder to avoid on disk name collisions between
+// repositories; core and community extensions keep the flat top level layout for backwards compatibility.
 string ExtensionHelper::RepositoryInstallDirectory(FileSystem &fs, const string &extension_directory,
                                                    const string &user_repository_name) {
 	if (user_repository_name.empty()) {
