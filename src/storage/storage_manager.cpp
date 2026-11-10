@@ -704,8 +704,7 @@ idx_t SingleFileStorageCommitState::FlushCommit(bool sync_now) {
 		auto &writer = wal.Initialize();
 		writer.Sync();
 		storage.SetWALSize(writer.GetFileSize());
-		ValidChecker::Invalidate(storage.GetDatabase(), "Simulated crash before WAL_FLUSH write");
-		ValidChecker::Invalidate(storage.GetAttached(), "Simulated crash before WAL_FLUSH write");
+		storage.GetAttached().Invalidate("of a simulated crash", "Simulated crash before WAL_FLUSH write");
 		// Prevent `RevertCommit` from truncating the WAL so the torn records are kept for crash recovery
 		state = WALCommitState::FLUSHED;
 		throw FatalException("Simulated crash before WAL_FLUSH write");
@@ -940,12 +939,12 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
-			if (db.IsInitialDatabase()) {
+			if (!db.SupportsScopedInvalidation()) {
 				ValidChecker::Invalidate(db.GetDatabase(), error.RawMessage());
 				throw FatalException("Failed to create checkpoint because of error: %s", error.RawMessage());
 			}
 			// A non-initial database can be detached and reattached, so scope invalidation to this db.
-			db.Invalidate(error.RawMessage());
+			db.Invalidate("checkpointing failed", error.RawMessage());
 			throw IOException("Checkpoint failed for database %s. The database has been invalidated. Original "
 			                  "error: %s",
 			                  db.GetName(), error.RawMessage());

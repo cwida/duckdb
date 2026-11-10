@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/prefetched_file_data.hpp"
 #include "duckdb/main/config.hpp"
@@ -143,7 +144,13 @@ public:
 	ValidChecker &GetValidChecker() {
 		return validity;
 	}
-	void Invalidate(const string &reason);
+	//! Whether an unrecoverable error in this database can be scoped to it, i.e. it can be detached to recover
+	bool SupportsScopedInvalidation() const;
+	//! Invalidate this database after an unrecoverable error: it rejects all use until it is detached.
+	//! Escalates to the database instance if the invalidation cannot be scoped to this database.
+	void Invalidate(const string &cause, const string &error);
+	//! Scope a fatal error raised by this database to it: invalidates it and returns a non-fatal error
+	ErrorData ScopeFatalError(ErrorData error);
 
 	optional_ptr<StorageExtension> GetStorageExtension() {
 		return storage_extension;

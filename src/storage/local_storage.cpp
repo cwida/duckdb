@@ -655,8 +655,7 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 					error.Throw();
 				}
 			} catch (std::exception &ex) {
-				ValidChecker::Invalidate(table.db.GetDatabase(),
-				                         "Failed to revert a failed append: " + ErrorData(ex).RawMessage());
+				table.db.Invalidate("reverting a failed append failed", ErrorData(ex).RawMessage());
 			}
 			throw;
 		}

@@ -521,7 +521,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 			// published and no longer revertable, but not durable: invalidate. The WAL keeps the
 			// bytes; whether a restart replays them is in doubt
 			error = ErrorData(ex);
-			ValidChecker::Invalidate(db, "Failed to sync the WAL after committing: " + error.Message());
+			db.Invalidate("syncing the WAL after a commit failed", error.RawMessage());
 			// no checkpoint after a failed commit, as on the rollback path above
 			checkpoint_decision = CheckpointDecision(error.Message());
 			lock.reset();

@@ -356,13 +356,33 @@ bool AttachedDatabase::IsInitialDatabase() const {
 	return is_initial_database;
 }
 
-void AttachedDatabase::Invalidate(const string &reason) {
+bool AttachedDatabase::SupportsScopedInvalidation() const {
+	return !IsSystem() && !IsTemporary() && !IsInitialDatabase();
+}
+
+void AttachedDatabase::Invalidate(const string &cause, const string &error) {
+	if (!SupportsScopedInvalidation()) {
+		ValidChecker::Invalidate(db,
+		                         StringUtil::Format("Database %s has been invalidated because %s. Original error: %s",
+		                                            GetName(), cause, error));
+		return;
+	}
 	string recovery = HasStorageManager() && GetStorageManager().InMemory()
 	                      ? "It is an in-memory database, so its data cannot be recovered."
 	                      : "Detach and reattach it before using it again.";
-	ValidChecker::Invalidate(*this, StringUtil::Format("Database %s has been invalidated because checkpointing "
-	                                                   "failed. %s Original error: %s",
-	                                                   GetName(), recovery, reason));
+	ValidChecker::Invalidate(*this, StringUtil::Format("Database %s has been invalidated because %s. %s Original "
+	                                                   "error: %s",
+	                                                   GetName(), cause, recovery, error));
+}
+
+ErrorData AttachedDatabase::ScopeFatalError(ErrorData error) {
+	if (!error.HasError() || !Exception::InvalidatesDatabase(error.Type()) || !SupportsScopedInvalidation()) {
+		return error;
+	}
+	if (!ValidChecker::Get(*this).IsInvalidated()) {
+		Invalidate("of a fatal error", error.RawMessage());
+	}
+	return ErrorData(IOException("%s", ValidChecker::InvalidatedMessage(*this)));
 }
 
 void AttachedDatabase::SetInitialDatabase() {
