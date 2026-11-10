@@ -18,6 +18,7 @@
         "test/sql/optimizer/modulo_zonemap_pruning.test",
         "test/sql/types/decimal/wide_decimal_statistics.test",
         "test/sql/types/decimal/wide_decimal_unbounded_statistics.test",
+        "test/sql/types/decimal/wide_decimal_bounded_statistics.test",
         "test/sql/types/variant/variant_wide_decimal.test",
         "test/sql/copy/parquet/parquet_wrong_geometry_types.test",
         "test/sql/optimizer/unsigned_divide_statistics.test",
