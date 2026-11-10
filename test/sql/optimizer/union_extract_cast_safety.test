@@ -64,4 +64,57 @@ WHERE id + random() * 0 = 1;
 1
 1
 
+query I rowsort
+SELECT TRY({FIELD}.k::INTEGER)
+FROM (SELECT {FIELD} FROM guarded_casts UNION ALL SELECT {FIELD} FROM guarded_casts);
+----
+1
+1
+NULL
+NULL
+
+query I rowsort
+SELECT has_error({FIELD}.k::INTEGER)
+FROM (SELECT {FIELD} FROM guarded_casts UNION ALL SELECT {FIELD} FROM guarded_casts);
+----
+false
+false
+true
+true
+
 endloop
+
+# A throwing conversion beneath an extract must stay inside the guard as well.
+query I rowsort
+SELECT CASE WHEN id = 1 THEN (s::STRUCT(k INTEGER)).k END
+FROM (SELECT id, s FROM guarded_casts UNION ALL SELECT id, s FROM guarded_casts);
+----
+1
+1
+NULL
+NULL
+
+query I rowsort
+SELECT TRY((s::STRUCT(k INTEGER)).k)
+FROM (SELECT s FROM guarded_casts UNION ALL SELECT s FROM guarded_casts);
+----
+1
+1
+NULL
+NULL
+
+# Constant-key VARIANT extracts return NULL for missing keys and non-object values.
+statement ok
+CREATE TABLE guarded_extracts AS SELECT id, v FROM (VALUES
+    (1, {'k': {'x': 1}}::VARIANT), (2, 42::VARIANT), (3, {'other': 3}::VARIANT)) t(id, v);
+
+query I rowsort
+SELECT TRY(v.k.x::INTEGER)
+FROM (SELECT v FROM guarded_extracts UNION ALL SELECT v FROM guarded_extracts);
+----
+1
+1
+NULL
+NULL
+NULL
+NULL
