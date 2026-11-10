@@ -108,8 +108,10 @@ StringValueResult::StringValueResult(CSVStates &states, CSVStateMachine &state_m
 		}
 	}
 
-	for (idx_t i = 0; i < logical_types.size(); i++) {
-		// only values stored as strings reach the check, the directly cast types never do
+	// only values stored as strings reach the check, the directly cast types never do; a scan that reads its first
+	// column only to count rows validates a few bytes per row, less than the tracking would cost
+	const bool counts_rows_only = csv_file_scan && csv_file_scan->reads_first_column_to_count_rows;
+	for (idx_t i = 0; i < logical_types.size() && !counts_rows_only; i++) {
 		validates_utf8 =
 		    validates_utf8 || (parse_types[i].validate_utf8 && parse_types[i].type_id == LogicalTypeId::VARCHAR);
 	}
