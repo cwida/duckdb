@@ -4,9 +4,11 @@
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/random_engine.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/thread.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 #include "duckdb/main/http/http_util.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include <cmath>
 #ifndef DUCKDB_NO_THREADS
@@ -259,11 +261,11 @@ bool HTTPRetryBudget::TryParseRetryAfterMs(const string &retry_after, uint64_t &
 }
 
 void HTTPRetryBudget::Run(const std::function<HTTPRetryDecision()> &attempt) {
-	Run(attempt, {});
+	Run(attempt, {}, nullptr);
 }
 
-void HTTPRetryBudget::Run(const std::function<HTTPRetryDecision()> &attempt,
-                          const std::function<void()> &before_retry) {
+void HTTPRetryBudget::Run(const std::function<HTTPRetryDecision()> &attempt, const std::function<void()> &before_retry,
+                          optional_ptr<const BaseRequest> request) {
 	if (!attempt) {
 		throw InternalException("HTTP retry loop requires an attempt callback");
 	}
@@ -286,6 +288,9 @@ void HTTPRetryBudget::Run(const std::function<HTTPRetryDecision()> &attempt,
 		uint64_t &depth;
 	} depth_guard(run_depth);
 	for (;;) {
+		if (request) {
+			request->InterruptCheck();
+		}
 		auto decision = attempt();
 		switch (decision.type) {
 		case HTTPRetryDecision::Type::SUCCESS:
@@ -311,7 +316,7 @@ void HTTPRetryBudget::Run(const std::function<HTTPRetryDecision()> &attempt,
 			}
 			continue;
 		default:
-			if (!ConsumeAndWait(decision)) {
+			if (!ConsumeAndWait(decision, request)) {
 				return;
 			}
 			if (before_retry) {
@@ -334,8 +339,11 @@ bool HTTPRetryBudget::AdmitCorrection() {
 	return true;
 }
 
-bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
+bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision, optional_ptr<const BaseRequest> request) {
 	D_ASSERT(decision.type != HTTPRetryDecision::Type::FINISH);
+	if (request) {
+		request->InterruptCheck();
+	}
 	const bool throttled = decision.type == HTTPRetryDecision::Type::THROTTLED;
 	const auto extra_retries = throttled ? ThrottleExtraRetries() : 0;
 	// Asking for a retry means the last attempt did not get the operation through, whatever a nested loop recorded.
@@ -377,10 +385,22 @@ bool HTTPRetryBudget::ConsumeAndWait(const HTTPRetryDecision &decision) {
 	// Throttled retries back off from at least http_retry_throttled_wait_ms.
 	const auto wait_ms = throttled ? MaxValue<uint64_t>(retry_wait_ms, retry_throttled_wait_ms) : retry_wait_ms;
 	RandomEngine random;
-	const auto sleep_ms =
-	    BackoffMs(wait_ms, retry_backoff, retries_used, floor_ms, random.NextRandomInteger64(), throttled);
+	auto sleep_ms = BackoffMs(wait_ms, retry_backoff, retries_used, floor_ms, random.NextRandomInteger64(), throttled);
+	if (request && request->deadline.IsValid()) {
+		const auto now = NumericCast<idx_t>(TimePoint::GetTickMs());
+		const auto deadline = request->deadline.GetIndex();
+		sleep_ms = MinValue<uint64_t>(sleep_ms, deadline > now ? deadline - now : 0);
+	}
 	if (sleep_ms > 0) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+		auto context = request ? request->interrupt_context : nullptr;
+		if (!context) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+		} else {
+			ThreadUtil::SleepMs(sleep_ms, context);
+		}
+	}
+	if (request) {
+		request->InterruptCheck();
 	}
 #endif
 	return true;

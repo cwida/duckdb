@@ -393,10 +393,10 @@ void HTTPTransportManager::ValidateStateLocked(const HTTPTransportManagerState &
 HTTPTransportManager::Reservation
 HTTPTransportManager::ReserveClientLocked(HTTPTransportManagerState &state, ClientKey key, const string &origin,
                                           const HTTPTransportConfig &transport_config,
-                                          annotated_unique_lock<annotated_mutex> &guard) {
+                                          annotated_unique_lock<annotated_mutex> &guard, const BaseRequest &request) {
 	D_ASSERT(state.reuse_policy != HTTPTransportReusePolicy::CLIENT_FREE);
 	ValidateStateLocked(state);
-	clients.WaitForAdmission(guard, HTTPTransportCapacityGuard::CurrentThreadOwnsCapacity(*this));
+	clients.WaitForAdmission(guard, HTTPTransportCapacityGuard::CurrentThreadOwnsCapacity(*this), request);
 	ValidateStateLocked(state);
 
 	key.connection_epoch = state.connection_epoch;
@@ -426,7 +426,9 @@ void HTTPTransportManager::PrepareClient(Reservation &reservation, HTTPTransport
 	}
 }
 
-HTTPTransportManager::Lease HTTPTransportManager::Acquire(Session &session, HTTPParams &params, const string &origin) {
+HTTPTransportManager::Lease HTTPTransportManager::Acquire(Session &session, BaseRequest &request) {
+	auto &params = request.params;
+	auto &origin = request.proto_host_port;
 	auto &state = *session.state;
 	D_ASSERT(state.reuse_policy != HTTPTransportReusePolicy::CLIENT_FREE);
 	const HTTPTransportConfig transport_config(params);
@@ -441,7 +443,7 @@ HTTPTransportManager::Lease HTTPTransportManager::Acquire(Session &session, HTTP
 	Reservation reservation;
 	{
 		annotated_unique_lock<annotated_mutex> guard(lock);
-		reservation = ReserveClientLocked(state, key, origin, transport_config, guard);
+		reservation = ReserveClientLocked(state, key, origin, transport_config, guard, request);
 	}
 	try {
 		if (reservation.PrepareBucket(origin, transport_config)) {
@@ -473,7 +475,7 @@ unique_ptr<HTTPResponse> HTTPTransportManager::PerformRequest(Session &session, 
 	}
 
 	HTTPTransportCapacityGuard capacity_guard(*this);
-	auto lease = Acquire(session, request.params, request.proto_host_port);
+	auto lease = Acquire(session, request);
 	unique_ptr<HTTPResponse> response;
 	try {
 		response = state.http_util->Request(request, lease.Client());

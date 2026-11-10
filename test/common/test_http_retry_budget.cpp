@@ -1,4 +1,6 @@
 #include "catch.hpp"
+#include "duckdb.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include "duckdb/main/http/http_retry_budget.hpp"
 #include "duckdb/main/http/http_util.hpp"
@@ -9,7 +11,143 @@
 
 #include <chrono>
 
+#include <chrono>
+#include <future>
+
 using namespace duckdb;
+
+TEST_CASE("HTTP request deadlines do not need a client context", "[http][intraquery]") {
+	HTTPUtil http;
+	HTTPParams params(http);
+	params.retries = 1;
+	HeadRequestInfo request("http://example.com/", HTTPHeaders(), params);
+	idx_t attempts = 0;
+	SECTION("expired before sending") {
+		request.deadline = 0;
+		CHECK_THROWS_AS(HTTPUtil::RunRequestWithRetry(
+		                    [&]() {
+			                    attempts++;
+			                    return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+		                    },
+		                    request, {}),
+		                InterruptException);
+		CHECK(attempts == 0);
+	}
+#ifndef DUCKDB_NO_THREADS
+	SECTION("retry backoff") {
+		const auto start = TimePoint::GetTickMs();
+		request.deadline = NumericCast<idx_t>(start + 200);
+		CHECK_THROWS_AS(HTTPUtil::RunRequestWithRetry(
+		                    [&]() {
+			                    attempts++;
+			                    auto response = make_uniq<HTTPResponse>(HTTPStatusCode::ServiceUnavailable_503);
+			                    response->headers.Insert("Retry-After", "5");
+			                    return response;
+		                    },
+		                    request, {}),
+		                InterruptException);
+		CHECK(attempts == 1);
+		CHECK(TimePoint::GetTickMs() - start < 1500);
+	}
+#endif
+}
+
+TEST_CASE("HTTP requests check their caller before sending", "[http]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto internal = Connection::CreateInternal(*con.context);
+	HTTPUtil http;
+	HTTPParams params(http);
+	HeadRequestInfo request("http://example.com/", HTTPHeaders(), params);
+	request.interrupt_context = internal.context.get();
+	SECTION("interruption") {
+		con.Interrupt();
+	}
+	SECTION("deadline") {
+		con.context->query_deadline = 0;
+	}
+	idx_t attempts = 0;
+	CHECK_THROWS_AS(HTTPUtil::RunRequestWithRetry(
+	                    [&]() {
+		                    attempts++;
+		                    return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+	                    },
+	                    request, {}),
+	                InterruptException);
+	CHECK(attempts == 0);
+}
+
+TEST_CASE("HTTP cancellation during an attempt prevents retries", "[http]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	HTTPUtil http;
+	HTTPParams params(http);
+	params.retry_wait_ms = 0;
+	HeadRequestInfo request("http://example.com/", HTTPHeaders(), params);
+	request.interrupt_context = con.context.get();
+	idx_t attempts = 0;
+	CHECK_THROWS_AS(HTTPUtil::RunRequestWithRetry(
+	                    [&]() {
+		                    attempts++;
+		                    con.Interrupt();
+		                    return make_uniq<HTTPResponse>(HTTPStatusCode::ServiceUnavailable_503);
+	                    },
+	                    request, {}),
+	                InterruptException);
+	CHECK(attempts == 1);
+}
+
+#ifndef DUCKDB_NO_THREADS
+TEST_CASE("HTTP retry backoff observes cancellation and deadlines", "[http][intraquery]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	HTTPUtil http;
+	HTTPParams params(http);
+	params.retries = 1;
+	params.retry_wait_ms = 0;
+	HeadRequestInfo request("http://example.com/", HTTPHeaders(), params);
+	request.interrupt_context = con.context.get();
+	bool interrupt = true;
+	SECTION("interruption") {
+	}
+	SECTION("deadline") {
+		interrupt = false;
+	}
+	idx_t attempts = 0;
+	std::promise<void> attempted;
+	auto result = std::async(std::launch::async, [&]() {
+		HTTPUtil::RunRequestWithRetry(
+		    [&]() {
+			    if (++attempts == 1) {
+				    if (!interrupt) {
+					    con.context->query_deadline =
+					        NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+					                               std::chrono::steady_clock::now().time_since_epoch())
+					                               .count() +
+					                           200);
+				    }
+				    attempted.set_value();
+				    auto response = make_uniq<HTTPResponse>(HTTPStatusCode::ServiceUnavailable_503);
+				    response->headers.Insert("Retry-After", "5");
+				    return response;
+			    }
+			    return make_uniq<HTTPResponse>(HTTPStatusCode::OK_200);
+		    },
+		    request, {});
+	});
+	auto started = attempted.get_future().wait_for(std::chrono::seconds(2));
+	if (interrupt) {
+		// Let the first attempt enter its five-second backoff.
+		result.wait_for(std::chrono::milliseconds(100));
+		con.Interrupt();
+	}
+	auto completed = result.wait_for(std::chrono::seconds(2));
+	CHECK_THROWS_AS(result.get(), InterruptException);
+	CHECK(started == std::future_status::ready);
+	CHECK(completed == std::future_status::ready);
+	CHECK(attempts == 1);
+}
+#endif
 
 TEST_CASE("HTTP retry back-off uses full jitter with a cap", "[http]") {
 	// Retry 1 sleeps anywhere in [0, wait]

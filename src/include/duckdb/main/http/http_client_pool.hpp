@@ -100,7 +100,8 @@ public:
 	explicit HTTPClientPool(idx_t capacity);
 
 	//! May release the manager lock while waiting; reserve with refreshed parameters before unlocking.
-	void WaitForAdmission(annotated_unique_lock<annotated_mutex> &guard, bool owns_capacity);
+	void WaitForAdmission(annotated_unique_lock<annotated_mutex> &guard, bool owns_capacity,
+	                      const BaseRequest &request);
 	void Close() noexcept;
 	bool IsClosed() const;
 	bool HasAdmissionResource() const;

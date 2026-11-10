@@ -187,6 +187,7 @@ unique_ptr<HTTPResponse> HTTPUtil::Request(BaseRequest &request) {
 }
 
 unique_ptr<HTTPResponse> HTTPUtil::Request(BaseRequest &request, unique_ptr<HTTPClient> &client) {
+	request.InterruptCheck();
 	if (request.params.db && !request.params.skip_external_access_check) {
 		// HTTP requests access an external resource - check this is allowed by the file access settings. This is the
 		// central check for requests that do not go through the file system (e.g. the REST catalog calls of iceberg).
@@ -213,6 +214,15 @@ BaseRequest::BaseRequest(RequestType type, const string &url, const HTTPHeaders 
 // Out-of-line destructors: force the symbols to be emitted and exported from the main WASM module so
 // loadable side-module extensions (e.g. the aws/httpfs extensions) can link against them at load time.
 BaseRequest::~BaseRequest() = default;
+
+void BaseRequest::InterruptCheck() const {
+	if (deadline.IsValid() && NumericCast<idx_t>(TimePoint::GetTickMs()) >= deadline.GetIndex()) {
+		throw InterruptException("HTTP request deadline exceeded");
+	}
+	if (interrupt_context) {
+		interrupt_context->BlockingInterruptCheck();
+	}
+}
 GetRequestInfo::~GetRequestInfo() = default;
 PutRequestInfo::~PutRequestInfo() = default;
 HeadRequestInfo::~HeadRequestInfo() = default;
@@ -511,7 +521,7 @@ HTTPUtil::RunRequestWithRetry(const std::function<unique_ptr<HTTPResponse>(void)
 		    }
 		    return HTTPRetryDecision::Retry();
 	    },
-	    retry_cb);
+	    retry_cb, request);
 
 	// With a coordinator-owned budget the outcome is settled by the coordinator once it has validated the response:
 	// an error document behind HTTP 200 is a failure or a retry there and must not refund the retry it consumed.

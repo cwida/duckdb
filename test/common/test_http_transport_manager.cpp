@@ -10,8 +10,11 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/time_point.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/extension_helper.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -530,7 +533,95 @@ static bool WaitForAdmissionWaiters(HTTPTransportManager &manager, idx_t count) 
 	return false;
 }
 
+TEST_CASE("HTTP request deadlines expire while waiting for transport capacity", "[http_transport_manager]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	bool with_context = false;
+	SECTION("without a caller context") {
+	}
+	SECTION("with a caller context") {
+		with_context = true;
+	}
+	auto provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::SHARED);
+	auto manager = HTTPTransportManagerTestHelper::Create(provider, 1);
+	auto holder_session = manager->CreateSession(nullptr, nullptr);
+	auto waiting_session = manager->CreateSession(nullptr, nullptr);
+	BlockMockRequests(*provider->state);
+	auto holder = std::async(std::launch::async, [&]() {
+		return RunManagedRequest(holder_session, holder_session.Parameters(), "https://example.com/");
+	});
+	auto holder_started = WaitForMockRequests(*provider->state, 1);
+	auto waiter = std::async(std::launch::async, [&]() {
+		GetRequestInfo request("https://example.com/", HTTPHeaders(), waiting_session.Parameters(), nullptr, nullptr);
+		request.deadline = NumericCast<idx_t>(TimePoint::GetTickMs() + 500);
+		if (with_context) {
+			request.interrupt_context = con.context.get();
+		}
+		return waiting_session.Request(request);
+	});
+	auto queued = WaitForAdmissionWaiters(*manager, 1);
+	auto completed = waiter.wait_for(std::chrono::seconds(2));
+	auto remaining_waiters = HTTPTransportManagerTestHelper::AdmissionWaiters(*manager);
+	AllowMockRequests(*provider->state, NumericLimits<idx_t>::Maximum());
+	CHECK(holder.get());
+	CHECK_THROWS_AS(waiter.get(), InterruptException);
+	CHECK(holder_started);
+	CHECK(queued);
+	CHECK(completed == std::future_status::ready);
+	CHECK(remaining_waiters == 0);
+	CHECK(provider->state->requests_started == 1);
+	CHECK(RunManagedRequest(waiting_session, waiting_session.Parameters(), "https://example.com/"));
+	CHECK(provider->state->requests_started == 2);
+}
+
 TEST_CASE("HTTP transport manager synchronous session API", "[http_transport_manager]") {
+	SECTION("cancelling a capacity waiter removes it without blocking the next caller") {
+		DuckDB db(nullptr);
+		Connection con(db);
+		auto provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::SHARED);
+		auto manager = HTTPTransportManagerTestHelper::Create(provider, 1);
+		auto holder_session = manager->CreateSession(nullptr, nullptr);
+		auto waiting_session = manager->CreateSession(nullptr, nullptr);
+		auto next_session = manager->CreateSession(nullptr, nullptr);
+		BlockMockRequests(*provider->state);
+		auto holder = std::async(std::launch::async, [&]() {
+			return RunManagedRequest(holder_session, holder_session.Parameters(), "https://example.com/");
+		});
+		auto holder_started = WaitForMockRequests(*provider->state, 1);
+		auto waiter = std::async(std::launch::async, [&]() {
+			GetRequestInfo request("https://example.com/", HTTPHeaders(), waiting_session.Parameters(), nullptr,
+			                       nullptr);
+			request.interrupt_context = con.context.get();
+			return waiting_session.Request(request);
+		});
+		auto queued = WaitForAdmissionWaiters(*manager, 1);
+		auto next = std::async(std::launch::async, [&]() {
+			return RunManagedRequest(next_session, next_session.Parameters(), "https://example.com/");
+		});
+		auto next_queued = WaitForAdmissionWaiters(*manager, 2);
+		con.Interrupt();
+		// Release capacity without waiting for the interrupted waiter to leave.
+		AllowMockRequests(*provider->state, NumericLimits<idx_t>::Maximum());
+		auto completed = waiter.wait_for(std::chrono::seconds(2));
+		auto next_completed = next.wait_for(std::chrono::seconds(2));
+		if (next_completed != std::future_status::ready) {
+			HTTPTransportManagerTestHelper::Close(*manager);
+		}
+		CHECK(holder.get());
+		CHECK_THROWS_AS(waiter.get(), InterruptException);
+		CHECK(next.get());
+		CHECK(holder_started);
+		CHECK(queued);
+		CHECK(next_queued);
+		CHECK(next_completed == std::future_status::ready);
+		CHECK(completed == std::future_status::ready);
+		CHECK(provider->state->requests_started == 2);
+		CHECK(HTTPTransportManagerTestHelper::AdmissionWaiters(*manager) == 0);
+		CHECK(RunManagedRequest(waiting_session, waiting_session.Parameters(), "https://example.com/"));
+		CHECK(provider->state->requests_started == 3);
+		CHECK(provider->state->created == 1);
+	}
+
 	SECTION("resizing wakes waiters and retires excess clients") {
 		auto provider = make_shared_ptr<MockHTTPUtil>(HTTPTransportReusePolicy::SHARED);
 		auto manager = HTTPTransportManagerTestHelper::Create(provider, 1);

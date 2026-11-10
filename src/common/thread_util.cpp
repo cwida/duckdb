@@ -14,8 +14,8 @@ void ThreadUtil::SleepMs(idx_t sleep_ms, optional_ptr<ClientContext> context) {
 	static constexpr idx_t DEFAULT_SLEEP_INTERVAL_MS = 100;
 
 	while (true) {
-		if (context && context->IsInterrupted()) {
-			throw InterruptException();
+		if (context) {
+			context->BlockingInterruptCheck();
 		}
 		auto elapsed_ms = static_cast<idx_t>(start_time.ElapsedMillis());
 		if (elapsed_ms >= sleep_ms) {
