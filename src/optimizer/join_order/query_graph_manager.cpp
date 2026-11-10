@@ -1,4 +1,6 @@
 #include "duckdb/optimizer/join_order/query_graph_manager.hpp"
+#include "duckdb/optimizer/join_order/join_order_optimizer.hpp"
+#include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/join_type.hpp"
@@ -248,6 +250,7 @@ void QueryGraphManager::BuildInnerCompanionSets() {
 }
 
 bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op) {
+	relation_manager.SetSourceStats(optimizer.GetSourceStats());
 	// have the relation manager extract the join relations and create a reference list of all the
 	// filter operators.
 	auto can_reorder = relation_manager.ExtractJoinRelations(optimizer, op, filter_operators);
@@ -263,6 +266,7 @@ bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op
 }
 
 bool QueryGraphManager::BuildForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op) {
+	relation_manager.SetSourceStats(extractor.GetSourceStats(op));
 	if (!relation_manager.ExtractJoinRelationsForEstimation(extractor, op, filter_operators) ||
 	    relation_manager.NumRelations() <= 1) {
 		return false;

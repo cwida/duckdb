@@ -1,16 +1,23 @@
 # fmt: off
 
+import os
 import signal
 import subprocess
 import sys
 
 import pytest
 
+from conftest import ShellTest
+
 resource = pytest.importorskip("resource")
 
 
 def run_with_address_space_limit(shell, limit_mb, sql):
     limit = limit_mb << 20
+    env = dict(os.environ)
+    # agent-mode variables of the runner must not switch the shell under test into agent mode
+    for key in ShellTest.AGENT_ENVIRONMENT_VARIABLES:
+        env.pop(key, None)
 
     def limit_address_space():
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
@@ -18,6 +25,7 @@ def run_with_address_space_limit(shell, limit_mb, sql):
     return subprocess.run(
         [shell, "--batch", "--no-init", ":memory:", "-c", sql],
         capture_output=True,
+        env=env,
         preexec_fn=limit_address_space,
         timeout=300,
     )

@@ -191,7 +191,11 @@ QueryResult::QueryResult(ErrorData error)
 }
 
 QueryResult::~QueryResult() {
-	Close();
+	try {
+		Close();
+	} catch (...) {
+		// a destructor cannot throw, and locking the context allocates
+	}
 }
 
 void QueryResult::DeduplicateColumns(vector<string> &names) {

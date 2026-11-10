@@ -1,0 +1,12 @@
+# name: benchmark/csv/lineitem_load.benchmark
+# description: Load lineitem written as CSV into a table, every column parsed and cast
+# group: [csv]
+
+template benchmark/csv/lineitem_csv.benchmark.in
+name=Lineitem Load
+variant=plain
+copy_options=FORMAT CSV, DELIMITER '|', HEADER false
+newline=\n
+query_start=CREATE OR REPLACE TABLE lineitem_from_csv AS SELECT * FROM
+query_end=;
+result=6001215
