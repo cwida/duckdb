@@ -4,7 +4,6 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/os_util.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
-#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -73,11 +72,6 @@ static void TrySetValueFromEnv(OSUtil &os_util, KeyValueSecret &secret, const st
 
 unique_ptr<BaseSecret> CreateHTTPSecretFunctions::CreateHTTPSecretFromEnv(ClientContext &context,
                                                                           CreateSecretInput &input) {
-	// the provider reads the host's environment variables, which is external state like the shell's getenv()
-	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
-		throw PermissionException("Cannot create a secret with PROVIDER env: reading environment variables is disabled "
-		                          "through configuration");
-	}
 	auto secret = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 
 	auto &os_util = OSUtil::Get(*context.db);

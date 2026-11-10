@@ -17,6 +17,7 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/secret/secret_storage.hpp"
 #include "duckdb/main/secret/default_secrets.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/create_secret_info.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/planner/operator/logical_create_secret.hpp"
@@ -255,9 +256,17 @@ optional_ptr<CreateSecretFunction> SecretManager::LookupFunctionInternal(const I
 	return nullptr;
 }
 
+//! Secret providers read environment variables, files and credential endpoints: none of that without external access
+static void ThrowIfSecretCreationDisabled(DatabaseInstance &db) {
+	if (!Settings::Get<EnableExternalAccessSetting>(db)) {
+		throw PermissionException("Creating secrets is disabled when enable_external_access is false");
+	}
+}
+
 unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, const CreateSecretInput &input) {
 	// Note that a context is required for CreateSecret, as the CreateSecretFunction expects one
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+	ThrowIfSecretCreationDisabled(transaction.db);
 	InitializeSecrets(transaction);
 
 	// Make a copy to set the provider to default if necessary
@@ -288,6 +297,7 @@ unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, cons
 
 BoundStatement SecretManager::BindCreateSecret(Context &context, CatalogTransaction transaction,
                                                CreateSecretInput &info) {
+	ThrowIfSecretCreationDisabled(transaction.db);
 	if (info.persist_type == SecretPersistType::TRANSACTION || info.storage_type == TRANSACTION_STORAGE_NAME) {
 		throw BinderException("Transaction-scoped secrets cannot be created through SQL");
 	}
