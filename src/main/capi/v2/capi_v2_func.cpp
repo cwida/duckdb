@@ -142,25 +142,27 @@ DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_value(duckdb_v2_function_bind_in
 }
 
 DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_name(duckdb_v2_function_bind_info_handle info, idx_t index,
-                                                     duckdb_v2_identifier_t *name, duckdb_v2_error_info_handle *err) {
+                                                     const char **name, idx_t *name_length,
+                                                     duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_ARG(name_length);
 	return WithErrorHandler(err, [&]() {
 		auto &bind_info = *Convert(info);
 		CheckArgIndex(bind_info, index, "duckdb_v2_function_bind_get_arg_name");
-		*name = Convert(bind_info.GetArgName(index));
+		SetStringOut(name, name_length, bind_info.GetArgName(index));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_index(duckdb_v2_function_bind_info_handle info,
-                                                      const duckdb_v2_identifier_t *name, idx_t *index, bool *found,
+DUCKDB_V2_ERROR duckdb_v2_function_bind_get_arg_index(duckdb_v2_function_bind_info_handle info, const char *name,
+                                                      idx_t name_length, idx_t *index, bool *found,
                                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	DUCKDB_CHECK_ARG(index);
 	DUCKDB_CHECK_ARG(found);
 	return WithErrorHandler(err, [&]() {
-		auto entry = Convert(info)->FindArg(duckdb::Identifier(ConvertIdentifierName(name)));
+		auto entry = Convert(info)->FindArg(duckdb::Identifier(ConvertIdentifierName(name, name_length)));
 		*found = entry.IsValid();
 		if (entry.IsValid()) {
 			*index = entry.GetIndex();

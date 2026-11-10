@@ -67,6 +67,10 @@ CollationBinding &CollationBinding::Get(ClientContext &context) {
 	return DBConfig::GetConfig(context).GetCollationBinding();
 }
 
+CastFunctionSet &CastFunctionSet::Get(Context &context) {
+	return DBConfig::GetConfig(context.GetDatabase()).GetCastFunctions();
+}
+
 CastFunctionSet &CastFunctionSet::Get(DatabaseInstance &db) {
 	return DBConfig::GetConfig(db).GetCastFunctions();
 }

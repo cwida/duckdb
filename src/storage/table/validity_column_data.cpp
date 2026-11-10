@@ -1,6 +1,5 @@
 #include "duckdb/storage/table/validity_column_data.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
-#include "duckdb/storage/table/scan_state.hpp"
 
 namespace duckdb {
 
@@ -17,15 +16,18 @@ ValidityColumnData::ValidityColumnData(BlockManager &block_manager, DataTableInf
 void ValidityColumnData::UpdateWithBase(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                                         Vector &update_vector, row_t *row_ids, idx_t update_count, ColumnData &base,
                                         idx_t row_group_start) {
-	Vector base_vector(base.type);
-	ColumnScanState validity_scan_state(nullptr);
-	FetchUpdateData(validity_scan_state, row_ids, base_vector, row_group_start);
-	if (validity_scan_state.current.get()->ReferenceNode().get()->GetCompressionFunction().type ==
-	    CompressionType::COMPRESSION_EMPTY) {
+	D_ASSERT(update_count > 0);
+	if (row_ids[0] < UnsafeNumericCast<row_t>(row_group_start)) {
+		throw InternalException("ValidityColumnData::UpdateWithBase - row id out of range");
+	}
+	const idx_t row_offset = UnsafeNumericCast<idx_t>(row_ids[0]) - row_group_start;
+	Vector base_vector(base.type, update_count);
+	auto &segment = data.GetSegment(row_offset)->GetNode();
+	if (segment.GetCompressionFunction().type == CompressionType::COMPRESSION_EMPTY) {
 		// The validity is actually covered by the data, so we read it to get the validity for UpdateInternal.
-		ColumnScanState data_scan_state(nullptr);
-		base.Fetch(data_scan_state, row_ids[0] - UnsafeNumericCast<row_t>(row_group_start), base_vector);
-		base_vector.Flatten();
+		base.FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
+	} else {
+		FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
 	}
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,

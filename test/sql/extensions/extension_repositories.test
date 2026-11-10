@@ -295,12 +295,11 @@ CREATE EXTENSION REPOSITORY foo WITH PREFIX 'http://foo.com' USING PUBLIC KEY 'M
 ----
 <REGEX>:Permission Error.*forbidden.*
 
-# installing from a user-provided repository requires the opt-in, so it is blocked when not allowed - this prevents
-# pointing extension_repository_directory at an attacker-controlled directory and installing from it
+# forbidding repositories also distrusts the existing ones, so installing from one is blocked as well
 statement error
 INSTALL some_extension FROM acme
 ----
-<REGEX>:Permission Error.*user-provided repository.*
+<REGEX>:Permission Error.*user-provided repository.*forbidden.*
 
 # dropping an existing repository is still allowed - it only removes trust
 statement ok

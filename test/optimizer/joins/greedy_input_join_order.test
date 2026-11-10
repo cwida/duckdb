@@ -1,0 +1,58 @@
+# name: test/optimizer/joins/greedy_input_join_order.test
+# description: Greedy search retains a complete input plan that filters before LEFT join fan-out
+# group: [joins]
+
+statement ok
+CREATE TABLE orders AS
+SELECT i AS order_id, i % 10000 AS customer_id,
+       i % 10000 AS server_id, (i + 1) % 10000 AS other_server_id
+FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE server AS
+SELECT i AS server_id, 'srv' || i AS name FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE raw_address AS
+SELECT i AS address_id, i % 10000 AS customer_id FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE deleted_address AS
+SELECT address_id FROM raw_address WHERE hash(address_id) % 100 < 35;
+
+statement ok
+CREATE VIEW address AS
+SELECT a.* FROM raw_address a ANTI JOIN deleted_address d USING(address_id);
+
+statement ok
+SET approximate_join_order_threshold=2;
+
+# The filter needs both server joins. Greedy steps prefer the underestimated
+# address inputs, but the complete input order has lower estimated cost.
+query I
+SELECT count(*)
+FROM orders o
+LEFT JOIN server s ON o.server_id = s.server_id
+LEFT JOIN server t ON o.other_server_id = t.server_id
+LEFT JOIN address a ON o.customer_id = a.customer_id
+LEFT JOIN address b ON o.customer_id = b.customer_id
+WHERE md5(md5(md5(md5(concat(o.order_id, s.name, t.name))))) LIKE '%ab%';
+----
+26134
+
+# The filter's input contains just the two server joins above the orders scan.
+# Internal compression can insert unary projections between these operators.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT count(*)
+FROM orders o
+LEFT JOIN server s ON o.server_id = s.server_id
+LEFT JOIN server t ON o.other_server_id = t.server_id
+LEFT JOIN address a ON o.customer_id = a.customer_id
+LEFT JOIN address b ON o.customer_id = b.customer_id
+WHERE md5(md5(md5(md5(concat(o.order_id, s.name, t.name))))) LIKE '%ab%';
+----
+physical_plan	<REGEX>:.*"name": "FILTER",\s*"children": \[\s*\{\s*(?:"name": "PROJECTION",\s*"children": \[\s*\{\s*)*"name": "HASH_JOIN",\s*"children": \[\s*\{\s*(?:"name": "PROJECTION",\s*"children": \[\s*\{\s*)*"name": "HASH_JOIN",\s*"children": \[\s*\{\s*(?:"name": "PROJECTION",\s*"children": \[\s*\{\s*)*"name": "SEQ_SCAN",\s*"children": \[\],\s*"extra_info": \{\s*"Table": "[^"]*\.orders".*
+
+statement ok
+RESET approximate_join_order_threshold;

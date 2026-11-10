@@ -54,13 +54,22 @@ query I nosort empty
 explain select * from parquet_scan('{DATA_DIR}/parquet-testing/timestamp-ms.parquet') where time > '2020-10-06';
 ----
 
-query I nosort empty
-explain select * from parquet_scan('{DATA_DIR}/parquet-testing/data-types.parquet') where timestampval < '2019-11-25';
+# data-types.parquet stores timestampval as a physical INT96 column and declares TYPE_ORDER for it, so its statistics
+# are ignored and its row group is no longer pruned here - the rows are still filtered correctly
+query I
+select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/data-types.parquet') where timestampval < '2019-11-25';
 ----
+0
 
-query I nosort empty
-explain select * from parquet_scan('{DATA_DIR}/parquet-testing/data-types.parquet') where timestampval > '2019-11-27';
+query I
+select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/data-types.parquet') where timestampval > '2019-11-27';
 ----
+0
+
+query I
+select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/data-types.parquet') where timestampval < '2019-11-27';
+----
+1
 
 # TODO string comparisons are not pruned yet
 # verify min/max stats on string cols work

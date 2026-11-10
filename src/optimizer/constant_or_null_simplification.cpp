@@ -1,10 +1,8 @@
 #include "duckdb/optimizer/constant_or_null_simplification.hpp"
 
 #include "duckdb/function/scalar/generic_common.hpp"
-#include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
-#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/expression_nullability.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
@@ -104,36 +102,7 @@ unique_ptr<Expression> ConstantOrNullSimplification::SimplifyExpression(LogicalO
 		return expr;
 	}
 
-	if (expr->GetExpressionType() != ExpressionType::OPERATOR_NOT) {
-		return expr;
-	}
-
-	// Push NOT into constant_or_null without dropping per-row NULL checks.
-	auto &not_expr = expr->Cast<BoundOperatorExpression>();
-	D_ASSERT(not_expr.GetChildren().size() == 1);
-
-	auto value = GetBooleanConstant(*not_expr.GetChildren()[0]);
-	if (value.has_value()) {
-		return make_uniq<BoundConstantExpression>(Value::BOOLEAN(!value.value()));
-	}
-
-	value = GetConstantOrNullBoolean(*not_expr.GetChildren()[0]);
-	if (!value.has_value()) {
-		return expr;
-	}
-
-	auto &func = not_expr.GetChildren()[0]->Cast<BoundFunctionExpression>();
-	auto &func_children = func.GetChildrenMutable();
-	D_ASSERT(func_children.size() >= 2);
-
-	vector<unique_ptr<Expression>> children;
-	children.reserve(func_children.size());
-	children.push_back(make_uniq<BoundConstantExpression>(Value::BOOLEAN(!value.value())));
-	for (idx_t child_idx = 1; child_idx < func_children.size(); ++child_idx) {
-		children.push_back(std::move(func_children[child_idx]));
-	}
-
-	return ExpressionRewriter::ConstantOrNull(this->context, std::move(children), Value::BOOLEAN(!value.value()));
+	return expr;
 }
 
 unique_ptr<LogicalOperator> ConstantOrNullSimplification::OptimizeFilter(unique_ptr<LogicalOperator> op,

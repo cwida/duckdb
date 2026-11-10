@@ -60,6 +60,8 @@ struct JoinOrderOperator {
 	vector<JoinCondition> conditions;
 	//! Predicate copies used only for cardinality estimation and query-graph connectivity.
 	vector<idx_t> costing_predicate_indices;
+	//! LEFT ON residuals not covered by a costing predicate or an equivalent equality key.
+	vector<reference<const Expression>> residual_predicates;
 	//! Whether the complete conditions must be applied by this operator occurrence. This is decided before conflict
 	//! rule simplification, which can erase conflicts already absorbed by the syntactic eligibility set.
 	bool must_apply_as_operator = false;

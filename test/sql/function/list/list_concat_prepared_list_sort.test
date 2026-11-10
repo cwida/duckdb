@@ -1,0 +1,34 @@
+# name: test/sql/function/list/list_concat_prepared_list_sort.test
+# description: list_concat with an untyped parameter passed through list_sort
+# group: [list]
+
+statement ok
+PREPARE p1 AS SELECT list_concat([{'a': 1, 'b': 'x'}], list_sort($1));
+
+query I
+EXECUTE p1([{'a': 2, 'b': 'y'}]);
+----
+[{'a': 1, 'b': x}, {'a': 2, 'b': y}]
+
+statement ok
+PREPARE p2 AS SELECT 1 WHERE list_concat([{'a': 1, 'b': 'x'}, {'a': 1, 'b': 'x'}], list_sort(?)) IS NULL;
+
+query I
+EXECUTE p2([{'a': 2, 'b': 'y'}]);
+----
+
+statement ok
+PREPARE p3 AS SELECT list_concat([[1]], list_sort($1));
+
+query I
+EXECUTE p3([[3], [2]]);
+----
+[[1], [2], [3]]
+
+statement ok
+PREPARE p4 AS SELECT list_concat(list_sort($1), [[1]]);
+
+query I
+EXECUTE p4([[3], [2]]);
+----
+[[2], [3], [1]]

@@ -1,0 +1,181 @@
+# name: test/issues/general/test_27715.test
+# description: Issue 27715: TRUE-or-NULL table filters are only replaced by IS NOT NULL when NULL comes from the column
+# group: [general]
+
+statement ok
+CREATE TABLE t(b BOOLEAN);
+
+statement ok
+INSERT INTO t VALUES (true), (false);
+
+foreach func contains prefix suffix
+
+query I
+SELECT * FROM t WHERE {func}(CASE WHEN b THEN 'a' END, 'a');
+----
+true
+
+endloop
+
+query I
+SELECT * FROM t WHERE (CASE WHEN b THEN 'a' END) LIKE '%a%';
+----
+true
+
+query I
+SELECT * FROM t WHERE (CASE WHEN b THEN 'a' END) = 'a';
+----
+true
+
+query I
+SELECT * FROM t WHERE (CASE WHEN b THEN 'a' END) IN ('a');
+----
+true
+
+statement ok
+CREATE TABLE u(c INT);
+
+statement ok
+INSERT INTO u VALUES (1), (NULL);
+
+query I
+SELECT c FROM u WHERE suffix(nullif('ba', CAST(c AS VARCHAR)), 'ba') ORDER BY c;
+----
+1
+NULL
+
+query I
+SELECT c FROM u WHERE coalesce(c, 1) = 1 ORDER BY c;
+----
+1
+NULL
+
+# filters that are NULL exactly when the column is NULL can still become IS NOT NULL
+statement ok
+CREATE TABLE s(v VARCHAR);
+
+statement ok
+INSERT INTO s VALUES ('a'), (NULL), ('a');
+
+query I
+SELECT * FROM s WHERE contains(v, 'a');
+----
+a
+a
+
+query I
+SELECT count(*) FROM s WHERE v = 'a' AND prefix(v, 'a');
+----
+2
+
+query II
+EXPLAIN SELECT * FROM s WHERE contains(v, 'a');
+----
+physical_plan	<REGEX>:.*IS NOT NULL.*
+
+query II
+EXPLAIN SELECT * FROM t WHERE contains(CASE WHEN b THEN 'a' END, 'a');
+----
+physical_plan	<!REGEX>:.*IS NOT NULL.*
+
+query II
+EXPLAIN SELECT * FROM s WHERE contains(v, 'a') AND contains(nullif(v, 'a'), 'a');
+----
+physical_plan	<!REGEX>:.*IS NOT NULL.*
+
+query I
+SELECT count(*) FROM s WHERE contains(v, 'a') AND contains(nullif(v, 'a'), 'a');
+----
+0
+
+query I
+SELECT count(*) FROM s WHERE contains(v, 'a') OR contains(nullif(v, 'a'), 'a');
+----
+2
+
+query I
+SELECT count(*) FROM s WHERE v IN ('a', NULL);
+----
+2
+
+statement ok
+INSERT INTO t VALUES (NULL);
+
+query I
+SELECT count(*) FROM t WHERE prefix(CASE WHEN b THEN 'ab' END, 'a') AND suffix(CASE WHEN b THEN 'ab' END, 'b');
+----
+1
+
+query I
+SELECT count(*) FROM t WHERE contains(CASE WHEN b THEN 'a' END, 'a') OR contains(CASE WHEN NOT b THEN 'a' END, 'a');
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE (CASE WHEN b THEN 'a' END) IN ('a', NULL);
+----
+1
+
+# all-NULL column
+statement ok
+CREATE TABLE n(v VARCHAR);
+
+statement ok
+INSERT INTO n VALUES (NULL), (NULL);
+
+query I
+SELECT count(*) FROM n WHERE contains(v, 'a');
+----
+0
+
+query I
+SELECT count(*) FROM n WHERE contains(coalesce(v, 'a'), 'a');
+----
+2
+
+# NOT over a boolean column and constant_or_null over the column still become IS NOT NULL
+statement ok
+CREATE TABLE nb(b BOOLEAN);
+
+statement ok
+INSERT INTO nb VALUES (false), (NULL);
+
+query I
+SELECT * FROM nb WHERE NOT b;
+----
+false
+
+query II
+EXPLAIN SELECT * FROM nb WHERE NOT b;
+----
+physical_plan	<REGEX>:.*IS NOT NULL.*
+
+query I
+SELECT c FROM u WHERE c >= 0;
+----
+1
+
+query II
+EXPLAIN SELECT c FROM u WHERE c >= 0;
+----
+physical_plan	<REGEX>:.*IS NOT NULL.*
+
+# statistics from checkpointed storage with multiple row groups
+statement ok
+ATTACH '{TEST_DIR}/test_27715.db' AS disk;
+
+statement ok
+CREATE TABLE disk.big AS SELECT CASE WHEN i % 10 = 0 THEN NULL ELSE i % 2 = 0 END AS b FROM range(300000) r(i);
+
+statement ok
+CHECKPOINT disk;
+
+query I
+SELECT count(*) FROM disk.big WHERE contains(CASE WHEN b THEN 'a' END, 'a');
+----
+120000
+
+query I
+SELECT count(*) FROM disk.big WHERE b;
+----
+120000

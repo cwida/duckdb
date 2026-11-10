@@ -1,0 +1,78 @@
+# name: test/sql/optimizer/test_common_subplan_scan_filters.test
+# description: Share joins with different pushed-down filters on one input
+# group: [optimizer]
+
+statement ok
+CREATE TABLE csp_fact AS
+SELECT i::INTEGER AS k, CASE WHEN i % 13 <> 0 THEN (i % 97)::INTEGER END AS v
+FROM range(1000) t(i);
+
+statement ok
+INSERT INTO csp_fact VALUES (NULL, 77);
+
+statement ok
+CREATE TABLE csp_dim AS
+SELECT i::INTEGER AS k, (i % 20)::INTEGER AS bucket
+FROM range(1000) t(i);
+
+statement ok
+INSERT INTO csp_dim VALUES (21, 0), (NULL, 1);
+
+# Keep bag multiplicity and nullable aggregate payloads.
+query IIII
+SELECT *
+FROM (SELECT count(*), sum(v) FROM csp_fact f JOIN csp_dim d USING (k) WHERE bucket = 0) a,
+     (SELECT count(*), sum(v) FROM csp_fact f JOIN csp_dim d USING (k) WHERE bucket = 1) b;
+----
+51	2203	50	2155
+
+# Ordinary grouped aggregates may also consume the shared input.
+query III rowsort
+SELECT bucket, count(v), sum(v)
+FROM csp_fact f JOIN csp_dim d USING (k)
+WHERE bucket = 0
+GROUP BY bucket
+UNION ALL
+SELECT bucket, count(v), sum(v)
+FROM csp_fact x JOIN csp_dim y USING (k)
+WHERE bucket = 1
+GROUP BY bucket;
+----
+0	47	2203
+1	47	2155
+
+# Prepared executions must rebuild both the shared guard and each residual.
+statement ok
+PREPARE csp_p AS
+SELECT *
+FROM (SELECT count(*), sum(v) FROM csp_fact f JOIN csp_dim d USING (k) WHERE bucket = $1) a,
+     (SELECT count(*), sum(v) FROM csp_fact f JOIN csp_dim d USING (k) WHERE bucket = $2) b;
+
+query IIII
+EXECUTE csp_p(0, 1);
+----
+51	2203	50	2155
+
+query IIII
+EXECUTE csp_p(1, 0);
+----
+50	2155	51	2203
+
+query IIII
+EXECUTE csp_p(0, 1);
+----
+51	2203	50	2155
+
+# A consumer without a scan restriction must still see all matching rows.
+query II
+SELECT (SELECT count(*) FROM csp_fact f JOIN csp_dim d USING (k)),
+       (SELECT count(*) FROM csp_fact f JOIN csp_dim d USING (k) WHERE bucket = 0);
+----
+1001	51
+
+# Different join conditions remain different subplans.
+query II
+SELECT (SELECT count(*) FROM csp_fact f JOIN csp_dim d ON f.k = d.k WHERE bucket = 0),
+       (SELECT count(*) FROM csp_fact f JOIN csp_dim d ON f.k = d.k + 1 WHERE bucket = 1);
+----
+51	50

@@ -68,6 +68,13 @@ public:
 	//! using `stmt->stmt_location` if needed.
 	DUCKDB_API unique_ptr<SQLStatement> ParseTopLevelStatement(TokenIterator &token_iterator, const string &query);
 
+	//! Whether `query` is a complete, semicolon-terminated statement sequence under this parser's
+	//! grammar. Interactive frontends use this to decide between submitting the buffer and reading
+	//! more input: an unterminated string or comment, a missing final semicolon, and a statement
+	//! prefix the grammar can extend are incomplete. Input the grammar rejects mid-way counts as
+	//! complete, so the error surfaces on execution.
+	DUCKDB_API bool IsQueryComplete(const string &query);
+
 	//! Tokenize a query, returning the raw tokens together with their locations
 	static vector<SimplifiedToken> Tokenize(const string &query);
 

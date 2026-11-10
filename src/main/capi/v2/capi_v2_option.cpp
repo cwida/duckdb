@@ -14,11 +14,12 @@ DUCKDB_V2_ERROR duckdb_v2_option_destroy(duckdb_v2_option_handle *option) {
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_option_get_name(duckdb_v2_option_handle option, duckdb_v2_identifier_t *out_name,
+DUCKDB_V2_ERROR duckdb_v2_option_get_name(duckdb_v2_option_handle option, const char **out_name, idx_t *out_name_length,
                                           duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
 	DUCKDB_CHECK_ARG(out_name);
-	return WithErrorHandler(err, [&]() { *out_name = Convert(Convert(option)->name); });
+	DUCKDB_CHECK_ARG(out_name_length);
+	return WithErrorHandler(err, [&]() { SetStringOut(out_name, out_name_length, Convert(option)->name); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_option_get_default_value(duckdb_v2_option_handle option, duckdb_v2_value_handle *out_value,
@@ -29,11 +30,13 @@ DUCKDB_V2_ERROR duckdb_v2_option_get_default_value(duckdb_v2_option_handle optio
 	return WithErrorHandler(err, [&]() { *out_value = Convert(new duckdb::Value(Convert(option)->default_value)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_option_get_description(duckdb_v2_option_handle option, duckdb_v2_str *out_description,
-                                                 duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_option_get_description(duckdb_v2_option_handle option, const char **out_description,
+                                                 idx_t *out_description_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
 	DUCKDB_CHECK_ARG(out_description);
-	return WithErrorHandler(err, [&]() { *out_description = Convert(Convert(option)->description); });
+	DUCKDB_CHECK_ARG(out_description_length);
+	return WithErrorHandler(
+	    err, [&]() { SetStringOut(out_description, out_description_length, Convert(option)->description); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_option_supports_scope(duckdb_v2_option_handle option, DUCKDB_V2_SETTING_SCOPE scope,
@@ -70,17 +73,19 @@ DUCKDB_V2_ERROR duckdb_v2_option_get_alias_count(duckdb_v2_option_handle option,
 	return WithErrorHandler(err, [&]() { *out_count = static_cast<idx_t>(Convert(option)->aliases.size()); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_option_get_alias(duckdb_v2_option_handle option, idx_t index,
-                                           duckdb_v2_identifier_t *out_alias, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_option_get_alias(duckdb_v2_option_handle option, idx_t index, const char **out_alias,
+                                           idx_t *out_alias_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(option);
 	DUCKDB_CHECK_ARG(out_alias);
+	DUCKDB_CHECK_ARG(out_alias_length);
 	return WithErrorHandler(err, [&]() {
 		const auto &wrapper = *Convert(option);
 		if (index >= wrapper.aliases.size()) {
-			*out_alias = duckdb_v2_str {nullptr, 0};
+			*out_alias = nullptr;
+			*out_alias_length = 0;
 			throw duckdb::InvalidInputException("alias index out of range in duckdb_v2_option_get_alias");
 		}
-		*out_alias = Convert(wrapper.aliases[index]);
+		SetStringOut(out_alias, out_alias_length, wrapper.aliases[index]);
 	});
 }
 

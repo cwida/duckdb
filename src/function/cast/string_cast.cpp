@@ -526,7 +526,7 @@ BoundCastInfo DefaultCasts::StringCastSwitch(BindCastInput &input, const Logical
 		                         input, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR), target),
 		                     InitMapCastLocalState);
 	case LogicalTypeId::BIGNUM:
-		return BoundCastInfo(&VectorCastHelpers::TryCastStringLoop<string_t, bignum_t, TryCastToBignum>);
+		return BoundCastInfo(&Bignum::VarcharToBignumCast);
 	default:
 		return VectorStringCastNumericSwitch(input, source, target);
 	}

@@ -4,6 +4,10 @@
 
 require json
 
+# the counters are checked per scan, so sibling scalar subqueries over one file must each keep their own scan
+statement ok
+SET disabled_optimizers = 'scalar_aggregate_merge';
+
 statement ok
 COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_1.json';
 

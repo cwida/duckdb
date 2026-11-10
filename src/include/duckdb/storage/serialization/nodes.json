@@ -627,7 +627,12 @@
       "expression",
       "category"
     ],
-    "pointer_type": "none"
+    "pointer_type": "none",
+    "finalize_deserialization": [
+      "if (result.Generated() && !result.HasGeneratedExpression()) {",
+      "\tthrow SerializationException(\"Failed to deserialize: generated column has no expression\");",
+      "}"
+    ]
   },
   {
     "class": "ColumnList",
@@ -1339,6 +1344,9 @@
     "methods": {
       "Verify": []
     },
+    "finalize_deserialization": [
+      "deserializer.CheckAllowed(result.kind);"
+    ],
     "pointer_type": "none"
   },
   {

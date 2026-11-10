@@ -385,7 +385,10 @@ optional_idx RowGroupCollection::NextParallelScan(ClientContext &context, Parall
 			}
 			auto &current_row_group = state.current_row_group->GetNode();
 			if (current_row_group.count == 0) {
-				break;
+				// InitializeAppend creates a row group before any rows are written. A later merge in the
+				// same transaction can append real groups after that empty one, so it is not the end of the table.
+				state.AssignRowGroup(state.GetNextRowGroup(*state.row_groups, *state.current_row_group).get());
+				continue;
 			}
 			auto row_start = state.current_row_group->GetRowStart();
 			collection = state.collection;
@@ -1201,7 +1204,7 @@ public:
 	void ExecuteTask() override {
 		auto entry = checkpoint_state.GetSegment(index);
 		auto &row_group = entry->GetNode();
-		checkpoint_state.writers[index] = checkpoint_state.writer.GetRowGroupWriter(row_group);
+		checkpoint_state.writers[index] = checkpoint_state.writer.GetRowGroupWriter();
 		checkpoint_state.write_data[index] = row_group.WriteToDisk(*checkpoint_state.writers[index]);
 	}
 
@@ -1343,9 +1346,9 @@ public:
 
 	void ExecuteTask() override {
 		MetricsTimer timer;
-		auto context = checkpoint_state.writer.TryGetClientContext();
-		if (context) {
-			timer = QueryProfiler::Get(*context).StartTimer<MetricStorageTotalVacuumTime>();
+		auto profiler = checkpoint_state.writer.GetContext().TryGetQueryProfiler();
+		if (profiler) {
+			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
 		}
 
 		auto &collection = checkpoint_state.collection;
@@ -1845,7 +1848,7 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 				         RowGroupWriteAction::REUSE_EXISTING_ROW_GROUP_METADATA);
 				vector<MetaBlockPointer> extra_metadata_block_pointers = row_group.GetExtraMetadataBlockPointers();
 				metadata_manager.ClearModifiedBlocks(extra_metadata_block_pointers);
-				auto row_group_writer = checkpoint_state.writer.GetRowGroupWriter(row_group);
+				auto row_group_writer = checkpoint_state.writer.GetRowGroupWriter();
 				row_group.CheckpointDeletes(*row_group_writer);
 			}
 			// the totals as of the snapshot: rows appended since stay in the WAL
@@ -2122,14 +2125,13 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 		}
 	}
 
-	// flush any partial blocks BEFORE updating the row group pointer
-	// flushing partial blocks updates where data lives
-	// this cannot be done after other threads start scanning the row groups
-	// so this HAS to happen before we call "SetRowGroups" to update the row groups
-	writer.FlushPartialBlocks();
-	// Rebuild indexes if the REBUILD strategy was chosen (legacy vacuum_rebuild_indexes path) and rowids changed.
+	// Index rebuilds need the checkpointed row groups to be installed first.
 	if (vacuum_state.index_strategy == VacuumIndexStrategy::REBUILD && writer.RowIdsChanged()) {
 		writer.SetRebuildIndexes();
+	}
+	// Flush before installing row groups, since flushing changes their segment locations.
+	if (!writer.CanDeferPublication()) {
+		writer.FlushPartialBlocks();
 	}
 
 	CollectionCheckpointResult result;

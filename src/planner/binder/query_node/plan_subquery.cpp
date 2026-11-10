@@ -448,9 +448,46 @@ static bool PerformDelimOnType(const LogicalType &type) {
 	return true;
 }
 
+//! Like IsVolatile, but ignores error()
+//! Error is deterministic, so it can be evaluated once per distinct correlated value
+//! FIXME: remove once `error` no longer has to be volatile (fixing blockers is WIP)
+static bool IsVolatileIgnoringError(const Expression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::BOUND_FUNCTION: {
+		auto &function = expr.Cast<BoundFunctionExpression>().Function();
+		if (function.HasBindLambdaCallback() ||
+		    (function.GetName() != ErrorFun::Name && function.GetStability() == FunctionStability::VOLATILE)) {
+			return expr.IsVolatile();
+		}
+		break;
+	}
+	case ExpressionClass::BOUND_CASE:
+	case ExpressionClass::BOUND_CONJUNCTION:
+	case ExpressionClass::BOUND_OPERATOR:
+		break;
+	default:
+		return expr.IsVolatile();
+	}
+	bool is_volatile = false;
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { is_volatile = is_volatile || IsVolatileIgnoringError(child); });
+	return is_volatile;
+}
+
+static bool HasVolatileExpressionsIgnoringError(const LogicalOperator &op) {
+	bool is_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expression) {
+		is_volatile = is_volatile || IsVolatileIgnoringError(**expression);
+	});
+	for (auto &child : op.children) {
+		is_volatile = is_volatile || (child && HasVolatileExpressionsIgnoringError(*child));
+	}
+	return is_volatile;
+}
+
 static bool PerformDuplicateElimination(Binder &binder, CorrelatedColumns &correlated_columns,
                                         optional_ptr<LogicalOperator> dependent_plan = nullptr) {
-	bool perform_delim = !dependent_plan || !dependent_plan->HasVolatileExpressions();
+	bool perform_delim = !dependent_plan || !HasVolatileExpressionsIgnoringError(*dependent_plan);
 	if (perform_delim && !Settings::Get<EnableOptimizerSetting>(binder.context)) {
 		// if optimizations are disabled we always do a delim join
 		return true;
@@ -482,7 +519,7 @@ static unique_ptr<Expression> PlanCorrelatedSubquery(Binder &binder, BoundSubque
 	// Preserve the existing duplicate-elimination path for deterministic ANY queries. Volatile ANY queries require
 	// row identity for the same reason as other correlated subqueries: sharing one result between equal outer values
 	// changes their evaluation cardinality.
-	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !plan->HasVolatileExpressions()
+	bool perform_delim = expr.GetSubqueryType() == SubqueryType::ANY && !HasVolatileExpressionsIgnoringError(*plan)
 	                         ? true
 	                         : PerformDuplicateElimination(binder, correlated_columns, plan);
 	D_ASSERT(expr.IsCorrelated());
@@ -669,6 +706,102 @@ void RecursiveDependentJoinPlanner::PlanJoinExpressions(LogicalOperator &op) {
 	}
 }
 
+static bool OperandIsCorrelated(const Expression &expr) {
+	bool correlated = false;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+	    expr, [&](const BoundColumnRefExpression &colref) { correlated |= colref.Depth() > 0; });
+	return correlated;
+}
+
+static bool JoinSideContributesOutput(JoinType join_type, idx_t side) {
+	if (side == 0) {
+		return join_type != JoinType::RIGHT_SEMI && join_type != JoinType::RIGHT_ANTI;
+	}
+	return join_type != JoinType::SEMI && join_type != JoinType::ANTI && join_type != JoinType::MARK;
+}
+
+BindingReplacementGraph RecursiveDependentJoinPlanner::NormalizeJoinConditionOperands(unique_ptr<LogicalOperator> &op) {
+	BindingReplacementGraph result;
+	if (op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+	    op->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		return result;
+	}
+	auto &join = op->Cast<LogicalComparisonJoin>();
+	for (idx_t side = 0; side < 2; side++) {
+		// a comparison condition operand evaluates in its owning child's scope, but ownership
+		// does not imply permission to evaluate eagerly: joins may skip either operand entirely
+		// (an empty build short-circuits the probe, input swapping exchanges the roles, and the
+		// blockwise join evaluates nothing without candidate pairs), so operands always keep
+		// their computation at the join and only their outer references move into the child,
+		// where decorrelation rewrites them in the owning child's domain
+		vector<optional_ptr<unique_ptr<Expression>>> operands;
+		for (auto &cond : join.conditions) {
+			if (!cond.IsComparison()) {
+				continue;
+			}
+			auto &operand = side == 0 ? cond.LeftReference() : cond.RightReference();
+			if (OperandIsCorrelated(*operand)) {
+				operands.push_back(&operand);
+			}
+		}
+		if (operands.empty()) {
+			continue;
+		}
+		auto &child = op->children[side];
+		child->ResolveOperatorTypes();
+		auto child_bindings = child->GetColumnBindings();
+		auto child_types = child->types;
+		auto projection_index = binder.GenerateTableIndex();
+		vector<unique_ptr<Expression>> expressions;
+		expressions.reserve(child_bindings.size() + operands.size());
+		for (idx_t i = 0; i < child_bindings.size(); i++) {
+			expressions.push_back(make_uniq<BoundColumnRefExpression>(child_types[i], child_bindings[i]));
+		}
+		for (auto &operand_ptr : operands) {
+			// hoist each outer reference into the projection and keep the operand in place
+			std::function<void(unique_ptr<Expression> &)> hoist = [&](unique_ptr<Expression> &expr) {
+				if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					auto &colref = expr->Cast<BoundColumnRefExpression>();
+					if (colref.Depth() > 0) {
+						auto hoisted_binding = ColumnBinding(projection_index, ProjectionIndex(expressions.size()));
+						auto local = make_uniq<BoundColumnRefExpression>(colref.GetReturnType(), hoisted_binding);
+						expressions.push_back(std::move(expr));
+						expr = std::move(local);
+					}
+					return;
+				}
+				ExpressionIterator::EnumerateChildren(*expr, hoist);
+			};
+			hoist(*operand_ptr);
+		}
+		auto projection = make_uniq<LogicalProjection>(projection_index, std::move(expressions));
+		projection->children.push_back(std::move(child));
+		child = std::move(projection);
+
+		// rewrite the join's remaining references to the child's columns
+		CorrelatedColumnBindingReplacer replacer;
+		for (idx_t i = 0; i < child_bindings.size(); i++) {
+			auto new_binding = ColumnBinding(projection_index, ProjectionIndex(i));
+			replacer.replacement_bindings.emplace_back(child_bindings[i], new_binding);
+			result.Add(child_bindings[i], new_binding);
+		}
+		replacer.BuildIndex();
+		replacer.VisitOperatorBindings(*op);
+
+		// the hoisted columns are internal to the condition and must not join the output
+		if (JoinSideContributesOutput(join.join_type, side)) {
+			auto &projection_map = side == 0 ? join.left_projection_map : join.right_projection_map;
+			if (projection_map.empty()) {
+				projection_map.reserve(child_bindings.size());
+				for (idx_t i = 0; i < child_bindings.size(); i++) {
+					projection_map.emplace_back(i);
+				}
+			}
+		}
+	}
+	return result;
+}
+
 void RecursiveDependentJoinPlanner::PlanJoinChildFilters(LogicalOperator &op) {
 	if (!HasJoinConditionExpressions(op.type)) {
 		return;
@@ -721,6 +854,9 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::PlanOperator(unique_ptr<L
 				    operator_replacements.Merge(child_replacements);
 			    });
 		}
+		// normalize after the children are final, so the recorded boundary edges
+		// start from the bindings the children export now
+		operator_replacements.Merge(NormalizeJoinConditionOperands(op_ptr));
 	}
 	ColumnBindingRewrite::ValidateOutput(old_output, op_ptr->GetColumnBindings(), operator_replacements);
 	return operator_replacements;

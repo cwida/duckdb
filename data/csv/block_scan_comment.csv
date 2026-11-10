@@ -1,0 +1,19 @@
+# a comment line at the start
+1,ann,x,7
+# a comment line between rows
+2,"q#q",x,8
+3,bob,x,9# a comment after the values
+4,#x,y,10
+5,a#b,x,11
+6,"c"#x,y,12
+#
+7,b,x
+8,b,x,y,extra
+9, ,x,13
+   # a comment after spaces
+10,b,x,14
+# ccccccccccccccccccccccccccccccccccccccccccc
+11,b,x,15
+12,ppppppppppppppppppppppppppppppppppppp#tail
+13,b,x,16
+# a comment without a newline at the end

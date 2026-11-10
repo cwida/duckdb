@@ -21,7 +21,7 @@
 
 namespace duckdb {
 
-class ClientContext;
+class Context;
 class TaskExecutor;
 
 //! Compile-time policy used by the async write layers.
@@ -88,7 +88,7 @@ class AsyncWriteQueue {
 	friend class AsyncWriteQueueTaskGuard;
 
 public:
-	DUCKDB_API AsyncWriteQueue(ClientContext &client_context, AsyncWriteTarget &target);
+	DUCKDB_API AsyncWriteQueue(Context &context, AsyncWriteTarget &target);
 	DUCKDB_API ~AsyncWriteQueue();
 
 	AsyncWriteQueue(const AsyncWriteQueue &) = delete;
@@ -157,7 +157,7 @@ private:
 	void CancelPendingRequestsAfterFailure(const ErrorData &error) noexcept;
 
 private:
-	ClientContext &client_context;
+	Context &context;
 	AsyncWriteTarget &target;
 	//! Maximum scheduled/running write tasks for this queue.
 	idx_t max_active_tasks = 1;
@@ -218,7 +218,7 @@ public:
 	enum class SchedulePolicy : uint8_t { THRESHOLD, FORCE };
 
 public:
-	DUCKDB_API ManagedAsyncWriteQueue(ClientContext &client_context, AsyncWriteTarget &target);
+	DUCKDB_API ManagedAsyncWriteQueue(Context &context, AsyncWriteTarget &target);
 	DUCKDB_API ~ManagedAsyncWriteQueue() override;
 
 	ManagedAsyncWriteQueue(const ManagedAsyncWriteQueue &) = delete;
@@ -307,7 +307,7 @@ private:
 	void Write(data_ptr_t buffer, idx_t size, idx_t offset) override;
 
 private:
-	ClientContext &client_context;
+	Context &context;
 	AsyncWriteTarget &target;
 
 	//! Low-level positional request scheduler.
@@ -354,7 +354,7 @@ public:
 	enum class BatchDrainMode : uint8_t { PRESERVE_BATCH, FORCE_CLOSE_BATCH };
 
 public:
-	DUCKDB_API ManagedAsyncWriteStreamQueue(ClientContext &client_context, ManagedAsyncWriteStreamTarget &target);
+	DUCKDB_API ManagedAsyncWriteStreamQueue(Context &context, ManagedAsyncWriteStreamTarget &target);
 	DUCKDB_API ~ManagedAsyncWriteStreamQueue() override;
 
 	ManagedAsyncWriteStreamQueue(const ManagedAsyncWriteStreamQueue &) = delete;
@@ -447,7 +447,7 @@ private:
 	void Write(data_ptr_t buffer, idx_t size, idx_t offset) override;
 
 private:
-	ClientContext &client_context;
+	Context &context;
 	ManagedAsyncWriteStreamTarget &target;
 
 	//! Managed queue that owns TMM reservation, backpressure, and task scheduling for physical write requests.

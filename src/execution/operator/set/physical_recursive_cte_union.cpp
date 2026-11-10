@@ -350,7 +350,8 @@ void RecursiveCTEUnionState::RebindRecursiveScans() {
 }
 
 SourceResultType RecursiveCTEUnionState::GetData(ExecutionContext &context, DataChunk &chunk,
-                                                 RecursiveCTEGlobalSourceState &source) {
+                                                 RecursiveCTEGlobalSourceState &source,
+                                                 const InterruptState &interrupt_state) {
 	if (source_phase == RecursiveCTESourcePhase::INITIAL) {
 		CurrentOutputTable().InitializeScan(scan_state);
 		source.StartIteration(CurrentOutputTable().Count());
@@ -366,11 +367,11 @@ SourceResultType RecursiveCTEUnionState::GetData(ExecutionContext &context, Data
 			}
 		} else if (source_phase == RecursiveCTESourcePhase::FINISHED) {
 			break;
-		} else {
+		} else if (source_phase != RecursiveCTESourcePhase::EXECUTING_RECURSION) {
 			throw InternalException("Unsupported recursive CTE union source phase");
 		}
 
-		if (chunk.size() == 0) {
+		if (source_phase != RecursiveCTESourcePhase::EXECUTING_RECURSION) {
 			// we have run out of chunks
 			// now we need to recurse
 			// we set up the working table as the data we gathered in this iteration of the recursion
@@ -413,20 +414,26 @@ SourceResultType RecursiveCTEUnionState::GetData(ExecutionContext &context, Data
 				}
 			}
 
-			// now we need to re-execute all of the pipelines that depend on the recursion
-			op.ExecuteRecursivePipelines(context);
-
-			// check if we obtained any results
-			// if not, we are done
-			if (CurrentOutputTable().Count() == 0) {
-				source_phase = RecursiveCTESourcePhase::FINISHED;
-				source.Finish();
-				break;
-			}
-			// set up the scan again
-			CurrentOutputTable().InitializeScan(scan_state);
-			source.StartIteration(CurrentOutputTable().Count());
+			source_phase = RecursiveCTESourcePhase::EXECUTING_RECURSION;
 		}
+
+		// now we need to re-execute all of the pipelines that depend on the recursion
+		if (op.ExecuteRecursivePipelines(context, interrupt_state) == RecursiveEpochResult::BLOCKED) {
+			// the epoch waits for blocked inner work; the interrupt state re-enters this source
+			return SourceResultType::BLOCKED;
+		}
+
+		// check if we obtained any results
+		// if not, we are done
+		if (CurrentOutputTable().Count() == 0) {
+			source_phase = RecursiveCTESourcePhase::FINISHED;
+			source.Finish();
+			break;
+		}
+		// set up the scan again
+		source_phase = RecursiveCTESourcePhase::SCANNING_UNION;
+		CurrentOutputTable().InitializeScan(scan_state);
+		source.StartIteration(CurrentOutputTable().Count());
 	}
 
 	return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;

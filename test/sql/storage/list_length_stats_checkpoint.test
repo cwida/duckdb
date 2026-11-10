@@ -1,0 +1,136 @@
+# name: test/sql/storage/list_length_stats_checkpoint.test
+# description: Test that list length statistics stay correct across WAL replay, multi-segment row groups and repeated checkpoints
+# group: [storage]
+
+load {TEST_DIR}/list_length_stats_checkpoint.db readwrite v2.1.0
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+CREATE TABLE wal(l INTEGER[]);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+INSERT INTO wal SELECT [1, 2, 3] FROM range(400000);
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM wal LIMIT 1)
+----
+3	3	1200000
+
+# the data is only in the WAL, so it is replayed on restart
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM wal LIMIT 1)
+----
+3	3	1200000
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM wal LIMIT 1)
+----
+3	3	1200000
+
+# a row group with multiple offset segments keeps its minimum across checkpoints
+statement ok
+SET force_compression='uncompressed';
+
+statement ok
+CREATE TABLE multi AS SELECT [1, 2, 3]::INTEGER[] AS l, 0 AS n FROM range(100000);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM multi LIMIT 1)
+----
+3	3	300000
+
+statement ok
+UPDATE multi SET n = n + 1;
+
+statement ok
+CHECKPOINT;
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM multi LIMIT 1)
+----
+3	3	300000
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM multi LIMIT 1)
+----
+3	3	300000
+
+# the total of an unchanged column is not counted twice
+statement ok
+SET experimental_metadata_reuse=false;
+
+statement ok
+CREATE TABLE unchanged(l INTEGER[], n INTEGER);
+
+statement ok
+INSERT INTO unchanged VALUES ([1], 0);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+UPDATE unchanged SET n = n + 1;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+UPDATE unchanged SET n = n + 1;
+
+statement ok
+CHECKPOINT;
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length FROM (SELECT stats(l) s FROM unchanged LIMIT 1)
+----
+1	1	1
+
+# a column with many offset segments and NULL lists keeps exact stats across restarts
+statement ok
+CREATE TABLE segments AS SELECT CASE WHEN i % 5 = 0 THEN NULL WHEN i < 60000 THEN [1, 2, 3] ELSE range(i % 7 + 10) END AS l FROM range(120000) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(list_reverse(l))) FROM segments) FROM (SELECT stats(l) s FROM segments LIMIT 1)
+----
+3	16	true
+
+# the stats survive another checkpoint of the same data
+statement ok
+INSERT INTO segments VALUES ([1, 2, 3, 4]);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query III
+SELECT s.min_list_length, s.max_list_length, s.total_list_length = (SELECT sum(len(list_reverse(l))) FROM segments) FROM (SELECT stats(l) s FROM segments LIMIT 1)
+----
+3	16	true

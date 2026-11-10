@@ -1,0 +1,67 @@
+# name: test/sql/optimizer/expression/not_constant_or_null.test
+# description: NOT(constant_or_null(v, e)) is rewritten to constant_or_null(!v, e) in all expression positions
+# group: [expression]
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+statement ok
+CREATE TABLE person(name VARCHAR, mood mood, i INTEGER);
+
+statement ok
+INSERT INTO person VALUES ('alice', 'sad', 1), ('bob', NULL, 2), ('carol', 'ok', NULL);
+
+statement ok
+CREATE TABLE nums(j INTEGER);
+
+statement ok
+INSERT INTO nums VALUES (1), (2);
+
+# The NOT is pushed inside constant_or_null in a projection: the full-domain IN
+# folds to constant_or_null(true, mood) first, then NOT is folded into the constant.
+# The rewrite used to run only for filter expressions.
+
+query II
+EXPLAIN SELECT NOT (mood IN ('sad', 'ok', 'happy')) FROM person;
+----
+physical_plan	<REGEX>:.*constant_or_null\(false, mood\).*
+
+# direct function call in a projection: the constant is negated
+
+query II
+EXPLAIN SELECT NOT constant_or_null(false, mood = 'sad') FROM person;
+----
+physical_plan	<REGEX>:.*constant_or_null\(true,.*
+
+# semantics: the per-row NULL check on the remaining arguments is preserved
+
+query TT
+SELECT name, NOT (mood IN ('sad', 'ok', 'happy')) FROM person ORDER BY name;
+----
+alice	false
+bob	NULL
+carol	false
+
+query TT
+SELECT name, NOT constant_or_null(false, mood = 'sad') FROM person ORDER BY name;
+----
+alice	true
+bob	NULL
+carol	true
+
+# the rewritten call must not duplicate the leading constant: the value is
+# inserted once, by ExpressionRewriter::ConstantOrNull
+
+query II
+EXPLAIN SELECT name, i, j FROM person JOIN nums ON i = j AND NOT constant_or_null(false, i < 10);
+----
+physical_plan	<!REGEX>:.*constant_or_null\(true, true,.*
+
+# the rewrite also fires inside join conditions: for NULL i the rewritten
+# condition must stay NULL (no match) instead of becoming true
+
+query III
+SELECT name, i, j FROM person JOIN nums ON i = j AND NOT constant_or_null(false, i < 10) ORDER BY name;
+----
+alice	1	1
+bob	2	2

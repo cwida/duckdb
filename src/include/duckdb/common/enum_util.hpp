@@ -472,6 +472,8 @@ enum class PipelineBroadcastExchangeScanMode : uint8_t;
 
 enum class PipelineInputMode : uint8_t;
 
+enum class PipelineScheduleGraph : uint8_t;
+
 enum class PipelineScheduleMode : uint8_t;
 
 enum class PipelineScheduleStageType : uint8_t;
@@ -509,6 +511,10 @@ enum class RecursiveCTEMode : uint8_t;
 enum class RecursiveCTEPipelineMetricType : uint8_t;
 
 enum class RecursiveCTESourcePhase : uint8_t;
+
+enum class RecursiveCTEStageStep : uint8_t;
+
+enum class RecursiveEpochResult : uint8_t;
 
 enum class RecursiveProbeSidePreference : uint8_t;
 
@@ -645,6 +651,8 @@ enum class TransactionInvalidationPolicy : uint8_t;
 enum class TransactionModifierType : uint8_t;
 
 enum class TransactionType : uint8_t;
+
+enum class TransformChildKind : uint8_t;
 
 enum class TriggerEventType : uint8_t;
 
@@ -1358,6 +1366,9 @@ template<>
 const char* EnumUtil::ToChars<PipelineInputMode>(PipelineInputMode value);
 
 template<>
+const char* EnumUtil::ToChars<PipelineScheduleGraph>(PipelineScheduleGraph value);
+
+template<>
 const char* EnumUtil::ToChars<PipelineScheduleMode>(PipelineScheduleMode value);
 
 template<>
@@ -1413,6 +1424,12 @@ const char* EnumUtil::ToChars<RecursiveCTEPipelineMetricType>(RecursiveCTEPipeli
 
 template<>
 const char* EnumUtil::ToChars<RecursiveCTESourcePhase>(RecursiveCTESourcePhase value);
+
+template<>
+const char* EnumUtil::ToChars<RecursiveCTEStageStep>(RecursiveCTEStageStep value);
+
+template<>
+const char* EnumUtil::ToChars<RecursiveEpochResult>(RecursiveEpochResult value);
 
 template<>
 const char* EnumUtil::ToChars<RecursiveProbeSidePreference>(RecursiveProbeSidePreference value);
@@ -1617,6 +1634,9 @@ const char* EnumUtil::ToChars<TransactionModifierType>(TransactionModifierType v
 
 template<>
 const char* EnumUtil::ToChars<TransactionType>(TransactionType value);
+
+template<>
+const char* EnumUtil::ToChars<TransformChildKind>(TransformChildKind value);
 
 template<>
 const char* EnumUtil::ToChars<TriggerEventType>(TriggerEventType value);
@@ -2355,6 +2375,9 @@ template<>
 PipelineInputMode EnumUtil::FromString<PipelineInputMode>(const char *value);
 
 template<>
+PipelineScheduleGraph EnumUtil::FromString<PipelineScheduleGraph>(const char *value);
+
+template<>
 PipelineScheduleMode EnumUtil::FromString<PipelineScheduleMode>(const char *value);
 
 template<>
@@ -2410,6 +2433,12 @@ RecursiveCTEPipelineMetricType EnumUtil::FromString<RecursiveCTEPipelineMetricTy
 
 template<>
 RecursiveCTESourcePhase EnumUtil::FromString<RecursiveCTESourcePhase>(const char *value);
+
+template<>
+RecursiveCTEStageStep EnumUtil::FromString<RecursiveCTEStageStep>(const char *value);
+
+template<>
+RecursiveEpochResult EnumUtil::FromString<RecursiveEpochResult>(const char *value);
 
 template<>
 RecursiveProbeSidePreference EnumUtil::FromString<RecursiveProbeSidePreference>(const char *value);
@@ -2614,6 +2643,9 @@ TransactionModifierType EnumUtil::FromString<TransactionModifierType>(const char
 
 template<>
 TransactionType EnumUtil::FromString<TransactionType>(const char *value);
+
+template<>
+TransformChildKind EnumUtil::FromString<TransformChildKind>(const char *value);
 
 template<>
 TriggerEventType EnumUtil::FromString<TriggerEventType>(const char *value);

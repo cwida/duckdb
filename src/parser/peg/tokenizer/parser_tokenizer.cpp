@@ -3,7 +3,7 @@
 
 namespace duckdb {
 
-static bool IsEmptyQuotedIdentifier(const string &sql, idx_t start, idx_t end, TokenType type) {
+bool ParserTokenizerBehavior::IsEmptyQuotedIdentifier(const string &sql, idx_t start, idx_t end, TokenType type) {
 	if (type != TokenType::IDENTIFIER || end != start + 2) {
 		return false;
 	}

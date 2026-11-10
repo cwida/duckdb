@@ -82,8 +82,9 @@ public:
 	void RollbackWrite(const uint16_t rows[], idx_t count, const transaction_t previous_ids[], idx_t previous_id_count);
 
 	//! Attempts to compress the per-row insert/delete ids into constants. Ids that precede
-	//! lowest_visibility_bound look the same to every active and future transaction, so they can collapse
-	VersionCompressionResult CompressVersionIds(VisibilityBound lowest_visibility_bound);
+	//! lowest_visibility_bound look the same to every active and future transaction, so they can collapse.
+	//! Only the first row_count rows hold rows - the insert ids past them are not considered
+	VersionCompressionResult CompressVersionIds(VisibilityBound lowest_visibility_bound, idx_t row_count);
 	//! Whether a compression pass could achieve anything for this vector (see recheck_compression)
 	bool RecheckCompression() const {
 		return recheck_compression;
@@ -92,7 +93,8 @@ public:
 	//! compressible now or in the future without a modification that re-arms the check
 	void VerifyCachedCompressionState() const;
 
-	bool HasDeletes(VisibilityBound visibility_bound = VisibilityBound::IncludingUncommitted()) const;
+	//! Whether any of the first row_count rows are deleted (or not yet committed) as of visibility_bound
+	bool HasDeletes(VisibilityBound visibility_bound, idx_t row_count) const;
 	bool HasUncommittedChanges() const;
 	bool AnyDeleted() const;
 	bool HasConstantInsertionId() const;
@@ -100,7 +102,8 @@ public:
 	bool HasConstantDeleteId() const;
 	transaction_t ConstantDeleteId() const;
 
-	void Write(WriteStream &writer, VisibilityBound visibility_bound) const;
+	//! Writes which of the first row_count rows are deleted - the slots past them are written as not deleted
+	void Write(WriteStream &writer, VisibilityBound visibility_bound, idx_t row_count) const;
 	static unique_ptr<ChunkVectorInfo> Read(FixedSizeAllocator &allocator, ReadStream &reader);
 
 private:

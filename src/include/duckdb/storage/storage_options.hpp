@@ -55,7 +55,7 @@ struct StorageOptions {
 	EncryptionTypes::EncryptionVersion encryption_version = EncryptionTypes::NONE;
 
 	void SetEncryptionVersion(string &storage_version_user_provided);
-	void Initialize(unordered_map<string, Value> &options);
+	void Initialize(Context &context, unordered_map<string, Value> &options);
 };
 
 } // namespace duckdb

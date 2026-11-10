@@ -73,6 +73,10 @@ public:
 	shared_ptr<CSVStateMachine> state_machine;
 	//! How many bytes were read up to this point
 	atomic<idx_t> bytes_read {0};
+	//! The bytes of the stored file scanned but not yet reported to the profiler
+	atomic<idx_t> bytes_scanned_unreported {0};
+	//! Counts the stored bytes the file was read for since the last call as scanned
+	void CountBytesScanned(CSVBufferManager &manager);
 	//! The progress of a compressed file is estimated - keeps it monotonic
 	MonotonicProgress compressed_progress;
 	//! Size of this file

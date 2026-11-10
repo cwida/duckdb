@@ -156,7 +156,7 @@ void PreparedStatementData::Bind(ClientContext &context, const identifier_map_t<
 		auto parameter_value = GetParameterValue(context, values, it.first, can_read_user_variable);
 		D_ASSERT(it.second);
 		const auto &value = parameter_value.GetValue();
-		auto cast_value = value.DefaultTryCastAs(it.second->return_type);
+		auto cast_value = value.TryCastAs(context, it.second->return_type);
 		if (!cast_value) {
 			throw BinderException(
 			    "Type mismatch for binding parameter with identifier %s, expected type %s but got type %s", identifier,
