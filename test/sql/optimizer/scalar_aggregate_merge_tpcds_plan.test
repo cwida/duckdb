@@ -265,6 +265,10 @@ LIMIT 100
 ----
 physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*
 
+# at SF0.01 statistics prove some q88 and q90 filters empty, which would remove the joins checked here
+statement ok
+SET disabled_optimizers = 'empty_result_pullup';
+
 # q88: eight count(*)s over the same join of four tables become one join: time_dim is read once, and the OR of the
 # eight time_dim predicates is factored into a t_hour filter on its scan (the merged OR goes through the rewriter)
 query II

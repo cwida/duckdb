@@ -145,7 +145,7 @@ QUALIFY max(train_number) OVER(PARTITION BY date, train_number) = 100
 query II
 EXPLAIN
 FROM services
-WHERE date > '2024-06-30'::DATE
+WHERE date > '2024-01-01'::DATE
 QUALIFY max(train_number) OVER(PARTITION BY date, train_number) = 100
     AND count(*) OVER(PARTITION BY date, train_number) = 1;
 ----
