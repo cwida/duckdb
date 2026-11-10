@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/catalog/catalog_access_intent.hpp"
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/enums/join_type.hpp"
@@ -622,6 +623,11 @@ private:
 
 	BoundStatement BindJoin(Binder &parent, TableRef &ref);
 	BoundStatement Bind(BaseTableRef &ref);
+	//! Bind a base table reference whose catalog lookup carries 'access_intent'
+	BoundStatement Bind(BaseTableRef &ref, CatalogAccessIntent access_intent);
+	//! Bind the target of an UPDATE, DELETE or MERGE INTO: a base table is looked up with 'access_intent'; any other
+	//! reference, or a sampled table, binds as usual (and the caller refuses it)
+	BoundStatement BindWriteTarget(TableRef &ref, CatalogAccessIntent access_intent);
 	BoundStatement Bind(BoundRefWrapper &ref);
 	BoundStatement Bind(JoinRef &ref);
 	BoundStatement Bind(MatchRecognizeRef &ref);

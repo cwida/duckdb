@@ -443,7 +443,9 @@ void Catalog::DropEntry(ClientContext &context, DropInfo &info) {
 	}
 
 	CatalogEntryRetriever retriever(context);
-	EntryLookupInfo lookup_info(info.type, info.GetQualifiedName());
+	// look the entry up again with the intent the binder's lookup of the DROP had
+	EntryLookupInfo lookup_info(info.type, info.GetQualifiedName(), nullptr, QueryErrorContext(),
+	                            CatalogAccessIntent::DROP_ENTRY);
 	auto lookup = LookupEntry(retriever, lookup_info, info.if_not_found);
 	if (!lookup.Found()) {
 		return;
@@ -1302,7 +1304,8 @@ CatalogEntryLookup Catalog::TryLookupDefaultTable(CatalogEntryRetriever &retriev
 		}
 
 		EntryLookupInfo info(CatalogType::TABLE_ENTRY,
-		                     QualifiedName(catalog_by_name->GetName(), table_schema, table_name), at_clause, context);
+		                     QualifiedName(catalog_by_name->GetName(), table_schema, table_name), at_clause, context,
+		                     lookup_info.GetAccessIntent());
 		return catalog_by_name->TryLookupEntryInternal(transaction, info);
 	}
 
@@ -1625,7 +1628,9 @@ void Catalog::Alter(CatalogTransaction transaction, AlterInfo &info) {
 	}
 	if (transaction.HasContext()) {
 		CatalogEntryRetriever retriever(transaction.GetContext());
-		EntryLookupInfo lookup_info(info.GetCatalogType(), info.GetQualifiedName());
+		// look the entry up again with the intent the binder's lookup of the ALTER had
+		EntryLookupInfo lookup_info(info.GetCatalogType(), info.GetQualifiedName(), nullptr, QueryErrorContext(),
+		                            CatalogAccessIntent::MODIFY_METADATA);
 		auto lookup = LookupEntry(retriever, lookup_info, info.if_not_found);
 		if (!lookup.Found()) {
 			return;

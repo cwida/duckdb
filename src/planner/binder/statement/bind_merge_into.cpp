@@ -226,10 +226,35 @@ BoundStatement Binder::Bind(MergeIntoStatement &stmt) {
 }
 
 BoundStatement Binder::BindNode(MergeQueryNode &node) {
+	// modification type depends on actions; the target is looked up with the union of the actions' intents, and
+	// every MERGE INTO reads the target to match its rows
+	DatabaseModificationType modification;
+	CatalogAccessIntent target_intent = CatalogAccessIntent::READ_DATA;
+	for (auto &action_condition : node.actions) {
+		for (auto &action : action_condition.second) {
+			switch (action->action_type) {
+			case MergeActionType::MERGE_UPDATE:
+				modification |= DatabaseModificationType::UPDATE_DATA;
+				target_intent |= CatalogAccessIntent::UPDATE_DATA;
+				break;
+			case MergeActionType::MERGE_DELETE:
+				modification |= DatabaseModificationType::DELETE_DATA;
+				target_intent |= CatalogAccessIntent::DELETE_DATA;
+				break;
+			case MergeActionType::MERGE_INSERT:
+				modification |= DatabaseModificationType::INSERT_DATA;
+				target_intent |= CatalogAccessIntent::INSERT_DATA;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
 	// bind the target table
 	auto target_binder = Binder::CreateBinder(context, this);
 	auto table_alias = node.target->alias;
-	auto bound_table = target_binder->Bind(*node.target);
+	auto bound_table = target_binder->BindWriteTarget(*node.target, target_intent);
 	if (bound_table.plan->type != LogicalOperatorType::LOGICAL_GET) {
 		throw BinderException("Can only merge into base tables!");
 	}
@@ -247,25 +272,6 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		throw NotImplementedException("MERGE INTO is not supported on tables with triggers");
 	}
 
-	// modification type depends on actions
-	DatabaseModificationType modification;
-	for (auto &action_condition : node.actions) {
-		for (auto &action : action_condition.second) {
-			switch (action->action_type) {
-			case MergeActionType::MERGE_UPDATE:
-				modification |= DatabaseModificationType::UPDATE_DATA;
-				break;
-			case MergeActionType::MERGE_DELETE:
-				modification |= DatabaseModificationType::DELETE_DATA;
-				break;
-			case MergeActionType::MERGE_INSERT:
-				modification |= DatabaseModificationType::INSERT_DATA;
-				break;
-			default:
-				break;
-			}
-		}
-	}
 	GetStatementProperties().RegisterDBModify(table.catalog, context, modification);
 
 	// bind the source

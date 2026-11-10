@@ -11,6 +11,13 @@ EntryLookupInfo::EntryLookupInfo(CatalogType catalog_type_p, QualifiedName name_
     : catalog_type(catalog_type_p), name(std::move(name_p)), at_clause(at_clause_p), error_context(error_context_p) {
 }
 
+EntryLookupInfo::EntryLookupInfo(CatalogType catalog_type_p, QualifiedName name_p,
+                                 optional_ptr<BoundAtClause> at_clause_p, QueryErrorContext error_context_p,
+                                 CatalogAccessIntent access_intent_p)
+    : catalog_type(catalog_type_p), name(std::move(name_p)), at_clause(at_clause_p), error_context(error_context_p),
+      access_intent(access_intent_p) {
+}
+
 EntryLookupInfo::EntryLookupInfo(CatalogType catalog_type_p, Identifier name_p, QueryErrorContext error_context_p)
     : EntryLookupInfo(catalog_type_p, QualifiedName(std::move(name_p)), error_context_p) {
 }
@@ -22,12 +29,16 @@ EntryLookupInfo::EntryLookupInfo(CatalogType catalog_type_p, Identifier name_p, 
 
 EntryLookupInfo::EntryLookupInfo(const EntryLookupInfo &parent, QualifiedName name_p)
     : catalog_type(parent.catalog_type), name(std::move(name_p)), at_clause(parent.at_clause),
-      error_context(parent.error_context) {
+      error_context(parent.error_context), access_intent(parent.access_intent) {
 }
 
 EntryLookupInfo::EntryLookupInfo(const EntryLookupInfo &parent, optional_ptr<BoundAtClause> at_clause)
     : EntryLookupInfo(parent.catalog_type, parent.name, parent.at_clause ? parent.at_clause : at_clause,
-                      parent.error_context) {
+                      parent.error_context, parent.access_intent) {
+}
+
+EntryLookupInfo::EntryLookupInfo(const EntryLookupInfo &parent, CatalogAccessIntent access_intent_p)
+    : EntryLookupInfo(parent.catalog_type, parent.name, parent.at_clause, parent.error_context, access_intent_p) {
 }
 
 EntryLookupInfo EntryLookupInfo::SchemaLookup(const EntryLookupInfo &parent, vector<Identifier> schema_path) {
@@ -65,6 +76,10 @@ const QueryErrorContext &EntryLookupInfo::GetErrorContext() const {
 
 const optional_ptr<BoundAtClause> EntryLookupInfo::GetAtClause() const {
 	return at_clause;
+}
+
+CatalogAccessIntent EntryLookupInfo::GetAccessIntent() const {
+	return access_intent;
 }
 
 } // namespace duckdb

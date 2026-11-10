@@ -161,7 +161,7 @@ BoundStatement Binder::BindNode(UpdateQueryNode &node) {
 	unique_ptr<LogicalOperator> root;
 
 	// visit the table reference
-	auto bound_table = Bind(*node.table);
+	auto bound_table = BindWriteTarget(*node.table, CatalogAccessIntent::UPDATE_DATA | CatalogAccessIntent::READ_DATA);
 	if (bound_table.plan->type != LogicalOperatorType::LOGICAL_GET) {
 		throw BinderException("Can only update base table");
 	}

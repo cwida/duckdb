@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/catalog/catalog_access_intent.hpp"
 #include "duckdb/catalog/catalog_entry.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/parser/query_error_context.hpp"
@@ -24,15 +25,20 @@ public:
 	                QueryErrorContext error_context = QueryErrorContext());
 	EntryLookupInfo(CatalogType catalog_type, QualifiedName name, optional_ptr<BoundAtClause> at_clause,
 	                QueryErrorContext error_context);
+	//! Look up an entry that the statement accesses with 'access_intent' (see GetAccessIntent)
+	EntryLookupInfo(CatalogType catalog_type, QualifiedName name, optional_ptr<BoundAtClause> at_clause,
+	                QueryErrorContext error_context, CatalogAccessIntent access_intent);
 	//! Deprecated: pass a QualifiedName instead (use QualifiedName(name) for an unqualified lookup)
 	[[deprecated("Pass a QualifiedName instead, e.g. QualifiedName(name)")]] EntryLookupInfo(
 	    CatalogType catalog_type, Identifier name, QueryErrorContext error_context = QueryErrorContext());
 	[[deprecated("Pass a QualifiedName instead, e.g. QualifiedName(name)")]] EntryLookupInfo(
 	    CatalogType catalog_type, Identifier name, optional_ptr<BoundAtClause> at_clause,
 	    QueryErrorContext error_context);
-	//! Re-use a parent lookup's type/at-clause/error-context with a different (re-qualified) name
+	//! Re-use a parent lookup's type/at-clause/error-context/access intent with a different (re-qualified) name
 	EntryLookupInfo(const EntryLookupInfo &parent, QualifiedName name);
 	EntryLookupInfo(const EntryLookupInfo &parent, optional_ptr<BoundAtClause> at_clause);
+	//! Re-use a parent lookup with a different access intent
+	EntryLookupInfo(const EntryLookupInfo &parent, CatalogAccessIntent access_intent);
 
 public:
 	CatalogType GetCatalogType() const;
@@ -48,9 +54,13 @@ public:
 	const Identifier &GetSchema() const;
 	const QueryErrorContext &GetErrorContext() const;
 	const optional_ptr<BoundAtClause> GetAtClause() const;
+	//! What the statement does with the entry: DEFAULT (read its definition and data) unless the lookup is for a
+	//! statement's target, e.g. INSERT_DATA for INSERT or DROP_ENTRY for DROP
+	CatalogAccessIntent GetAccessIntent() const;
 
 	//! Build a schema lookup from a (possibly nested) schema path ([outermost..innermost]); the innermost component is
-	//! the schema name and the preceding components are its parent schemas
+	//! the schema name and the preceding components are its parent schemas. The schema lookup has the DEFAULT intent:
+	//! the parent's intent applies to its entry, not to the schema
 	static EntryLookupInfo SchemaLookup(const EntryLookupInfo &parent, vector<Identifier> schema_path);
 
 private:
@@ -58,6 +68,7 @@ private:
 	QualifiedName name;
 	optional_ptr<BoundAtClause> at_clause;
 	QueryErrorContext error_context;
+	CatalogAccessIntent access_intent;
 };
 
 //! Return value of Catalog::LookupEntry

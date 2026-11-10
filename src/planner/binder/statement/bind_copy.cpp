@@ -674,7 +674,14 @@ BoundStatement Binder::BindCopyFrom(CopyStatement &stmt, const CopyFunction &fun
 
 	// lookup the table to copy into
 	stmt.info->SetQualifiedName(BindTableName(stmt.info->GetQualifiedName()));
-	auto &table = Catalog::GetEntry<TableCatalogEntry>(context, stmt.info->GetQualifiedName());
+	EntryLookupInfo table_lookup(CatalogType::TABLE_ENTRY, stmt.info->GetQualifiedName(), nullptr, QueryErrorContext(),
+	                             CatalogAccessIntent::INSERT_DATA);
+	auto &table_entry = Catalog::GetEntry(context, table_lookup);
+	if (table_entry.type != CatalogType::TABLE_ENTRY) {
+		throw CatalogException("%s is not an %s", stmt.info->GetQualifiedName().Name().GetIdentifierName(),
+		                       TableCatalogEntry::Name);
+	}
+	auto &table = table_entry.Cast<TableCatalogEntry>();
 	IndexVector<idx_t, PhysicalIndex> column_index_map;
 	vector<LogicalIndex> named_column_map;
 	vector<LogicalType> expected_types;

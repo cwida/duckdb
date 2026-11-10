@@ -144,6 +144,17 @@ void Binder::SetSearchPath(Catalog &catalog, const vector<Identifier> &schema_pa
 }
 
 BoundStatement Binder::Bind(BaseTableRef &ref) {
+	return Bind(ref, CatalogAccessIntent::DEFAULT);
+}
+
+BoundStatement Binder::BindWriteTarget(TableRef &ref, CatalogAccessIntent access_intent) {
+	if (ref.type != TableReferenceType::BASE_TABLE || ref.sample) {
+		return Bind(ref);
+	}
+	return Bind(ref.Cast<BaseTableRef>(), access_intent);
+}
+
+BoundStatement Binder::Bind(BaseTableRef &ref, CatalogAccessIntent access_intent) {
 	QueryErrorContext error_context(ref.query_location);
 	// CTEs and views are also referred to using BaseTableRefs, hence need to distinguish here
 	// check if the table name refers to a CTE
@@ -178,7 +189,8 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	// extract a table or view from the catalog
 	auto at_clause = BindAtClause(ref.at_clause);
 	auto entry_at_clause = at_clause ? at_clause.get() : entry_retriever.GetAtClause();
-	EntryLookupInfo table_lookup(CatalogType::TABLE_ENTRY, QualifiedName(ref.Table()), entry_at_clause, error_context);
+	EntryLookupInfo table_lookup(CatalogType::TABLE_ENTRY, QualifiedName(ref.Table()), entry_at_clause, error_context,
+	                             access_intent);
 	// resolve the catalog/schema qualification for the lookup only - the reference itself keeps the name as written,
 	// which is what name extraction and replacement scans report
 	auto bound_name = BindTableName(entry_retriever, ref.GetQualifiedName());

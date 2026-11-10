@@ -71,11 +71,13 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		if (stmt.info->type == CatalogType::MACRO_ENTRY) {
 			// We also support "DROP MACRO" (instead of "DROP MACRO TABLE") for table macros
 			// First try to drop a scalar macro
-			EntryLookupInfo macro_entry_lookup(stmt.info->type, stmt.info->GetQualifiedName());
+			EntryLookupInfo macro_entry_lookup(stmt.info->type, stmt.info->GetQualifiedName(), nullptr,
+			                                   QueryErrorContext(), CatalogAccessIntent::DROP_ENTRY);
 			entry = Catalog::GetEntry(context, macro_entry_lookup, OnEntryNotFound::RETURN_NULL);
 			if (!entry) {
 				// Unable to find a scalar macro, try to drop a table macro
-				EntryLookupInfo table_macro_entry_lookup(CatalogType::TABLE_MACRO_ENTRY, stmt.info->GetQualifiedName());
+				EntryLookupInfo table_macro_entry_lookup(CatalogType::TABLE_MACRO_ENTRY, stmt.info->GetQualifiedName(),
+				                                         nullptr, QueryErrorContext(), CatalogAccessIntent::DROP_ENTRY);
 				entry = Catalog::GetEntry(context, table_macro_entry_lookup, OnEntryNotFound::RETURN_NULL);
 				if (entry) {
 					// Change type to table macro so future lookups get the correct one
@@ -88,7 +90,8 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 				entry = Catalog::GetEntry(context, macro_entry_lookup, stmt.info->if_not_found);
 			}
 		} else {
-			EntryLookupInfo entry_lookup(stmt.info->type, stmt.info->GetQualifiedName());
+			EntryLookupInfo entry_lookup(stmt.info->type, stmt.info->GetQualifiedName(), nullptr, QueryErrorContext(),
+			                             CatalogAccessIntent::DROP_ENTRY);
 			entry = Catalog::GetEntry(context, entry_lookup, stmt.info->if_not_found);
 		}
 		if (!entry) {
