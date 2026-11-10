@@ -4,7 +4,6 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/storage/storage_manager.hpp"
@@ -40,6 +39,86 @@ void WALWriteState::SwitchTable(DuckTableEntry &table_entry, UndoFlags new_op) {
 		// write the current table to the log
 		log.WriteSetTable(QualifiedName(table_entry.schema.GetSchemaPath(), table_entry.name));
 		current_table_entry = table_entry;
+	}
+}
+
+void WALWriteState::WriteCreateEntry(CatalogEntry &entry) {
+	switch (entry.type) {
+	case CatalogType::TABLE_ENTRY:
+		// CREATE TABLE statement
+		log.WriteCreateTable(entry.Cast<TableCatalogEntry>());
+		break;
+	case CatalogType::VIEW_ENTRY:
+		// CREATE VIEW statement
+		log.WriteCreateView(entry.Cast<ViewCatalogEntry>());
+		break;
+	case CatalogType::INDEX_ENTRY:
+		// CREATE INDEX statement
+		log.WriteCreateIndex(entry.Cast<IndexCatalogEntry>());
+		break;
+	case CatalogType::SEQUENCE_ENTRY:
+		// CREATE SEQUENCE statement
+		log.WriteCreateSequence(entry.Cast<SequenceCatalogEntry>());
+		break;
+	case CatalogType::TYPE_ENTRY:
+		// CREATE TYPE statement
+		log.WriteCreateType(entry.Cast<TypeCatalogEntry>());
+		break;
+	case CatalogType::MACRO_ENTRY:
+		log.WriteCreateMacro(entry.Cast<ScalarMacroCatalogEntry>());
+		break;
+	case CatalogType::TABLE_MACRO_ENTRY:
+		log.WriteCreateTableMacro(entry.Cast<TableMacroCatalogEntry>());
+		break;
+	default:
+		throw InternalException("Don't know how to create this type!");
+	}
+}
+
+void WALWriteState::WriteDropEntry(CatalogEntry &entry) {
+	switch (entry.type) {
+	case CatalogType::TABLE_ENTRY: {
+		auto &table_entry = entry.Cast<DuckTableEntry>();
+		D_ASSERT(table_entry.IsDuckTable());
+		log.WriteDropTable(table_entry);
+		break;
+	}
+	case CatalogType::SCHEMA_ENTRY:
+		log.WriteDropSchema(entry.Cast<SchemaCatalogEntry>());
+		break;
+	case CatalogType::VIEW_ENTRY:
+		log.WriteDropView(entry.Cast<ViewCatalogEntry>());
+		break;
+	case CatalogType::SEQUENCE_ENTRY:
+		log.WriteDropSequence(entry.Cast<SequenceCatalogEntry>());
+		break;
+	case CatalogType::MACRO_ENTRY:
+		log.WriteDropMacro(entry.Cast<ScalarMacroCatalogEntry>());
+		break;
+	case CatalogType::TABLE_MACRO_ENTRY:
+		log.WriteDropTableMacro(entry.Cast<TableMacroCatalogEntry>());
+		break;
+	case CatalogType::TYPE_ENTRY:
+		log.WriteDropType(entry.Cast<TypeCatalogEntry>());
+		break;
+	case CatalogType::INDEX_ENTRY: {
+		log.WriteDropIndex(entry.Cast<IndexCatalogEntry>());
+		break;
+	}
+	case CatalogType::TRIGGER_ENTRY:
+		log.WriteDropTrigger(entry.Cast<TriggerCatalogEntry>());
+		break;
+	case CatalogType::RENAMED_ENTRY:
+	case CatalogType::PREPARED_STATEMENT:
+	case CatalogType::SCALAR_FUNCTION_ENTRY:
+	case CatalogType::DEPENDENCY_ENTRY:
+	case CatalogType::SECRET_ENTRY:
+	case CatalogType::SECRET_TYPE_ENTRY:
+	case CatalogType::SECRET_FUNCTION_ENTRY:
+		// do nothing, prepared statements and scalar functions aren't persisted to disk
+		break;
+	default:
+		throw InternalException("Don't know how to drop this type!");
 	}
 }
 
@@ -81,55 +160,19 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, data_ptr_t dataptr) {
 			deserializer.End();
 
 			auto &alter_info = parse_info->Cast<AlterInfo>();
-			if (alter_info.type == AlterType::ALTER_MACRO) {
-				auto &storage_manager = log.GetDatabase().GetStorageManager();
-				if (storage_manager.HasStorageVersion() &&
-				    StorageManager::IsPriorToVersion(StorageVersion::V2_1_0, storage_manager.GetStorageVersion())) {
-					// releases that do not know the ALTER_MACRO record treat it as a torn WAL tail and
-					// silently truncate everything after it: keep files pinned to such versions readable
-					// by writing the member drop as the replacement it used to be
-					if (parent.type == CatalogType::TABLE_MACRO_ENTRY) {
-						log.WriteDropTableMacro(parent.Cast<TableMacroCatalogEntry>());
-						log.WriteCreateTableMacro(parent.Cast<TableMacroCatalogEntry>());
-					} else {
-						log.WriteDropMacro(parent.Cast<ScalarMacroCatalogEntry>());
-						log.WriteCreateMacro(parent.Cast<ScalarMacroCatalogEntry>());
-					}
-					break;
-				}
+			auto &storage_manager = log.GetDatabase().GetStorageManager();
+			if (entry.type == parent.type && storage_manager.HasStorageVersion() &&
+			    StorageManager::IsPriorToVersion(alter_info.GetMinimumStorageVersion(),
+			                                     storage_manager.GetStorageVersion())) {
+				// readers of this file's storage version do not know the alter record, and treat it as a
+				// torn WAL tail: write the altered entry as a replacement they replay instead
+				WriteDropEntry(entry);
+				WriteCreateEntry(parent);
+				break;
 			}
 			log.WriteAlter(entry, alter_info);
 		} else {
-			switch (parent.type) {
-			case CatalogType::TABLE_ENTRY:
-				// CREATE TABLE statement
-				log.WriteCreateTable(parent.Cast<TableCatalogEntry>());
-				break;
-			case CatalogType::VIEW_ENTRY:
-				// CREATE VIEW statement
-				log.WriteCreateView(parent.Cast<ViewCatalogEntry>());
-				break;
-			case CatalogType::INDEX_ENTRY:
-				// CREATE INDEX statement
-				log.WriteCreateIndex(parent.Cast<IndexCatalogEntry>());
-				break;
-			case CatalogType::SEQUENCE_ENTRY:
-				// CREATE SEQUENCE statement
-				log.WriteCreateSequence(parent.Cast<SequenceCatalogEntry>());
-				break;
-			case CatalogType::TYPE_ENTRY:
-				// CREATE TYPE statement
-				log.WriteCreateType(parent.Cast<TypeCatalogEntry>());
-				break;
-			case CatalogType::MACRO_ENTRY:
-				log.WriteCreateMacro(parent.Cast<ScalarMacroCatalogEntry>());
-				break;
-			case CatalogType::TABLE_MACRO_ENTRY:
-				log.WriteCreateTableMacro(parent.Cast<TableMacroCatalogEntry>());
-				break;
-			default:
-				throw InternalException("Don't know how to create this type!");
-			}
+			WriteCreateEntry(parent);
 		}
 		break;
 	case CatalogType::SCHEMA_ENTRY:
@@ -143,50 +186,7 @@ void WALWriteState::WriteCatalogEntry(CatalogEntry &entry, data_ptr_t dataptr) {
 		// This is a rename, nothing needs to be done for this
 		break;
 	case CatalogType::DELETED_ENTRY:
-		switch (entry.type) {
-		case CatalogType::TABLE_ENTRY: {
-			auto &table_entry = entry.Cast<DuckTableEntry>();
-			D_ASSERT(table_entry.IsDuckTable());
-			log.WriteDropTable(table_entry);
-			break;
-		}
-		case CatalogType::SCHEMA_ENTRY:
-			log.WriteDropSchema(entry.Cast<SchemaCatalogEntry>());
-			break;
-		case CatalogType::VIEW_ENTRY:
-			log.WriteDropView(entry.Cast<ViewCatalogEntry>());
-			break;
-		case CatalogType::SEQUENCE_ENTRY:
-			log.WriteDropSequence(entry.Cast<SequenceCatalogEntry>());
-			break;
-		case CatalogType::MACRO_ENTRY:
-			log.WriteDropMacro(entry.Cast<ScalarMacroCatalogEntry>());
-			break;
-		case CatalogType::TABLE_MACRO_ENTRY:
-			log.WriteDropTableMacro(entry.Cast<TableMacroCatalogEntry>());
-			break;
-		case CatalogType::TYPE_ENTRY:
-			log.WriteDropType(entry.Cast<TypeCatalogEntry>());
-			break;
-		case CatalogType::INDEX_ENTRY: {
-			log.WriteDropIndex(entry.Cast<IndexCatalogEntry>());
-			break;
-		}
-		case CatalogType::TRIGGER_ENTRY:
-			log.WriteDropTrigger(entry.Cast<TriggerCatalogEntry>());
-			break;
-		case CatalogType::RENAMED_ENTRY:
-		case CatalogType::PREPARED_STATEMENT:
-		case CatalogType::SCALAR_FUNCTION_ENTRY:
-		case CatalogType::DEPENDENCY_ENTRY:
-		case CatalogType::SECRET_ENTRY:
-		case CatalogType::SECRET_TYPE_ENTRY:
-		case CatalogType::SECRET_FUNCTION_ENTRY:
-			// do nothing, prepared statements and scalar functions aren't persisted to disk
-			break;
-		default:
-			throw InternalException("Don't know how to drop this type!");
-		}
+		WriteDropEntry(entry);
 		break;
 	case CatalogType::PREPARED_STATEMENT:
 	case CatalogType::AGGREGATE_FUNCTION_ENTRY:

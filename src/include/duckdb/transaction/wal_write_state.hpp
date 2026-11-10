@@ -34,6 +34,10 @@ private:
 	void SwitchTable(DuckTableEntry &table_entry, UndoFlags new_op);
 
 	void WriteCatalogEntry(CatalogEntry &entry, data_ptr_t extra_data);
+	//! Write the CREATE record of an entry
+	void WriteCreateEntry(CatalogEntry &entry);
+	//! Write the DROP record of an entry
+	void WriteDropEntry(CatalogEntry &entry);
 	void WriteDelete(DeleteInfo &info);
 	void WriteUpdate(UpdateInfo &info);
 
