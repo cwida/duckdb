@@ -1,0 +1,76 @@
+# name: test/sql/aggregate/aggregate_state_export/bignum_sum_export_state.test
+# description: Test EXPORT_STATE for the BIGNUM and wide decimal sums - the state is the sum as a BIGNUM
+# group: [aggregate_state_export]
+
+query I
+SELECT typeof(sum(1::BIGNUM) EXPORT_STATE);
+----
+AGGREGATE_STATE
+
+# the sum is accumulated in a hugeint_t while it fits
+query III
+SELECT (sum(x) EXPORT_STATE)::VARCHAR, finalize(sum(x) EXPORT_STATE), sum(x) FROM (VALUES (1::BIGNUM), (-2::BIGNUM)) t(x), range(100000);
+----
+-100000	-100000	-100000
+
+# and moves to the wide value once it does not
+query III
+SELECT (sum(x) EXPORT_STATE)::VARCHAR, finalize(sum(x) EXPORT_STATE), sum(x) FROM (VALUES ('170141183460469231731687303715884105727'::BIGNUM), ('170141183460469231731687303715884105727'::BIGNUM), (5::BIGNUM)) t(x);
+----
+340282366920938463463374607431768211459	340282366920938463463374607431768211459	340282366920938463463374607431768211459
+
+# a state without values is NULL
+query II
+SELECT (sum(x) EXPORT_STATE)::VARCHAR IS NULL, finalize(sum(x) EXPORT_STATE) FROM (VALUES (NULL::BIGNUM)) t(x);
+----
+true	NULL
+
+query I
+SELECT finalize(sum(x) EXPORT_STATE) FROM (SELECT 1::BIGNUM AS x WHERE false) t;
+----
+NULL
+
+# combining partial sums, also with a multiplicity
+query II
+SELECT finalize(combine_aggr(s)), finalize(combine_aggr(s, 3)) FROM (
+    SELECT sum(x) EXPORT_STATE s FROM range(10) t(y), (VALUES (1::BIGNUM), ('99999999999999999999999999999999999999999'::BIGNUM)) v(x) GROUP BY x
+);
+----
+1000000000000000000000000000000000000000000	3000000000000000000000000000000000000000000
+
+query I
+SELECT finalize(combine_aggr(s)) FROM (
+    SELECT sum(x) EXPORT_STATE s FROM (VALUES (1::BIGNUM), (NULL), ('-99999999999999999999999999999999999999999'::BIGNUM)) t(x) GROUP BY x
+);
+----
+-99999999999999999999999999999999999999998
+
+# a hand-built state is the sum itself
+query II
+SELECT finalize(to_aggregate_state('-123456789012345678901234567890123456789012345'::BIGNUM, 'sum', ['BIGNUM'])), finalize(to_aggregate_state(NULL::BIGNUM, 'sum', ['BIGNUM']));
+----
+-123456789012345678901234567890123456789012345	NULL
+
+# the sum of a wide decimal exports the unscaled sum as a BIGNUM
+query III
+SELECT (sum(x) EXPORT_STATE)::VARCHAR, finalize(sum(x) EXPORT_STATE), sum(x) FROM (VALUES (1.25::DECIMAL(40,2)), ('99999999999999999999999999999999999999.75'::DECIMAL(40,2))) t(x);
+----
+10000000000000000000000000000000000000100	100000000000000000000000000000000000001.00	100000000000000000000000000000000000001.00
+
+query I
+SELECT finalize(combine_aggr(s)) FROM (
+    SELECT sum(x) EXPORT_STATE s FROM (VALUES (1.25::DECIMAL(40,2)), (NULL), ('-99999999999999999999999999999999999999.75'::DECIMAL(40,2))) t(x) GROUP BY x
+);
+----
+-99999999999999999999999999999999999998.50
+
+query I
+SELECT finalize(to_aggregate_state(12345::BIGNUM, 'sum', ['DECIMAL(40,2)']));
+----
+123.45
+
+# the finalize still checks that the sum fits the width of the result
+statement error
+SELECT finalize(to_aggregate_state(('1' || repeat('0', 260))::BIGNUM, 'sum', ['DECIMAL(40,2)']));
+----
+Overflow in SUM of DECIMAL

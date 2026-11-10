@@ -710,11 +710,28 @@ void BignumSumImportState(AggregateImportInputData &input) {
 	}
 }
 
-//! Sums wide decimals as BIGNUMs, the width of the result decimal holds the sum of any number of rows
+//! Sums wide decimals as BIGNUMs, the result must still fit the width of the result decimal
+struct WideDecimalSumOperation : public BignumOperation {
+	template <class TARGET_TYPE, class STATE>
+	static void Finalize(STATE &state, TARGET_TYPE &target, AggregateFinalizeData &finalize_data) {
+		BignumOperation::Finalize<TARGET_TYPE, STATE>(state, target, finalize_data);
+		if (!state.is_set) {
+			return;
+		}
+		// the result width holds the sum of 2^64 rows, but an imported state can carry any value
+		const auto &result_type = finalize_data.result.GetType();
+		if (!DecimalHelper<bignum_t>::FitsWidth(target, DecimalType::GetWidth(result_type))) {
+			throw OutOfRangeException("Overflow in SUM of DECIMAL: the result does not fit in %s",
+			                          result_type.ToString());
+		}
+	}
+};
+
 AggregateFunction GetWideDecimalSumAggregate() {
-	auto function = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, BignumOperation>(
+	auto function = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, WideDecimalSumOperation>(
 	    LogicalTypeId::DECIMAL, LogicalTypeId::DECIMAL);
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	function.SetFallible(); // the finalize throws when the sum does not fit the width of the result
 	function.SetStateExportCallbacks(BignumSumStateLayout, BignumSumExportState, BignumSumImportState);
 	return function;
 }
