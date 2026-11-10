@@ -618,6 +618,7 @@ TableRef:
     - SubqueryReference
     - BaseTableRef
     - ParensTableRef
+    - CallSubquery
     - ValuesRef
     - MergeIntoUsingClause
     - UpdateTarget

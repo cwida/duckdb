@@ -21,6 +21,7 @@
 #include "duckdb/parser/tableref/at_clause.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
+#include "duckdb/parser/statement/call_statement.hpp"
 #include "duckdb/parser/statement/insert_statement.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/statement/delete_statement.hpp"
@@ -1474,6 +1475,15 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformParensTableRef(PEGTransform
 		subquery->sample = std::move(*sample_clause);
 	}
 	return std::move(subquery);
+}
+
+unique_ptr<TableRef> PEGTransformerFactory::TransformCallSubquery(PEGTransformer &transformer,
+                                                                  const optional<Identifier> &table_alias_colon,
+                                                                  unique_ptr<SQLStatement> call_statement,
+                                                                  const optional<TableAlias> &table_alias,
+                                                                  optional<unique_ptr<SampleOptions>> sample_clause) {
+	auto &call = call_statement->Cast<CallStatement>();
+	throw ParserException("CALL cannot be used as a subquery, use FROM %s instead", call.function->ToString());
 }
 
 vector<string> PEGTransformerFactory::TransformPivotGroupByList(PEGTransformer &transformer,

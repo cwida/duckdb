@@ -1013,6 +1013,7 @@ enum class PEGRuleId : uint32_t {
 	TableAliasColon,
 	ValuesRef,
 	ParensTableRef,
+	CallSubquery,
 	JoinOrPivot,
 	TablePivotClause,
 	TablePivotClauseBody,

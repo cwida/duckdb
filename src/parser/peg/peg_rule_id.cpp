@@ -1012,6 +1012,7 @@ static const char *const PEG_RULE_NAMES[] = {
     "TableAliasColon",
     "ValuesRef",
     "ParensTableRef",
+    "CallSubquery",
     "JoinOrPivot",
     "TablePivotClause",
     "TablePivotClauseBody",

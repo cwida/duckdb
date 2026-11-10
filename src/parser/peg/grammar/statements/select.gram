@@ -48,7 +48,7 @@ DistinctAll <- 'ALL'
 DistinctOn <- 'DISTINCT' DistinctOnTargets?
 DistinctOnTargets <- 'ON' Parens(List(Expression))
 
-InnerTableRef <- ValuesRef / TableFunction / TableSubquery / BaseTableRef / ParensTableRef
+InnerTableRef <- ValuesRef / TableFunction / TableSubquery / BaseTableRef / CallSubquery / ParensTableRef
 
 TableRef <- InnerTableRef JoinOrPivot*
 TableSubquery <- TableAliasColon? Lateral? SubqueryReference TableAlias? SampleClause?
@@ -56,6 +56,8 @@ BaseTableRef <- TableAliasColon? BaseTableName TableAlias? AtClause? SampleClaus
 TableAliasColon <- ColIdOrString ':'
 ValuesRef <- TableAliasColon? ValuesClause TableAlias? SampleClause?
 ParensTableRef <- TableAliasColon? Parens(TableRef) TableAlias? SampleClause?
+# Rejected in the transformer. Without it, (CALL f('x')) parses as a table named CALL with alias f("x").
+CallSubquery <- TableAliasColon? Parens(CallStatement) TableAlias? SampleClause?
 
 JoinOrPivot <- JoinClause / TablePivotClause / TableUnpivotClause / TableMatchRecognizeClause
 
