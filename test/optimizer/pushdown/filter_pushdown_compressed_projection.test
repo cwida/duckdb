@@ -1,0 +1,39 @@
+# name: test/optimizer/pushdown/filter_pushdown_compressed_projection.test
+# description: A filter derived from join statistics is not inlined through a compressed materialization projection
+# group: [pushdown]
+
+statement ok
+SET disabled_optimizers='cte_filter_pusher,build_side_probe_side';
+
+statement ok
+CREATE TABLE facts AS SELECT i%2000 AS k, i AS v FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE dates AS SELECT i AS k, i+1000 AS g FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT 1500+i%100 AS g FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE c AS SELECT i AS g FROM range(1500,1700) t(i);
+
+# The join with b narrows y.g, and the derived filter is pushed into the join with c, whose compressed g only holds
+# above the filter on g: inlining the compression into that filter evaluates it on the rows the filter removes.
+query II
+WITH p AS MATERIALIZED (SELECT d.g, sum(f.v) v FROM facts f JOIN dates d USING (k) GROUP BY d.g)
+SELECT sum(x.v), sum(y.v)
+FROM (SELECT p.* FROM p JOIN b USING (g)) x
+JOIN (SELECT p.* FROM p JOIN c USING (g)) y ON x.g = y.g;
+----
+95495000	95495000
+
+statement ok
+RESET disabled_optimizers
+
+query II
+WITH p AS MATERIALIZED (SELECT d.g, sum(f.v) v FROM facts f JOIN dates d USING (k) GROUP BY d.g)
+SELECT sum(x.v), sum(y.v)
+FROM (SELECT p.* FROM p JOIN b USING (g)) x
+JOIN (SELECT p.* FROM p JOIN c USING (g)) y ON x.g = y.g;
+----
+95495000	95495000
