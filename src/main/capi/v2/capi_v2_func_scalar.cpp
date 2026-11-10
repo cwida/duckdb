@@ -202,7 +202,7 @@ static auto CV2ScalarInit(ExpressionState &state, const BoundFunctionExpression 
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
-	CV2CallbackContext callback_context(state.GetContext());
+	CV2CallbackContext callback_context(state.GetClientContext());
 	info.init_cb(Convert(&args), Convert(&callback_context), &err_ptr);
 
 	unique_ptr<FunctionLocalState> result = nullptr;
@@ -246,7 +246,7 @@ static auto CV2ScalarExec(DataChunk &input, ExpressionState &state, Vector &resu
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
 
-	CV2CallbackContext callback_context(state.GetContext());
+	CV2CallbackContext callback_context(state.GetClientContext());
 	info.exec_cb(Convert(&args), Convert(&callback_context), &err_ptr);
 
 	if (err.HasError()) {
@@ -378,11 +378,12 @@ DUCKDB_V2_ERROR duckdb_v2_scalar_function_create(duckdb_v2_factory_handle factor
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar_function_handle function, const duckdb_v2_str *name,
-                                                   duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_scalar_function_set_name(duckdb_v2_scalar_function_handle function, const char *name,
+                                                   idx_t name_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(function);
-	DUCKDB_CHECK_ARG(name);
-	return WithErrorHandler(err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name)); });
+	DUCKDB_CHECK_STR_ARG(name, name_length);
+	return WithErrorHandler(
+	    err, [&]() { Convert(function)->name = duckdb::Identifier(ConvertIdentifierName(name, name_length)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_scalar_function_get_docs(duckdb_v2_scalar_function_handle function,

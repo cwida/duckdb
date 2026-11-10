@@ -151,3 +151,49 @@ EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST
 WHERE ident > 5000;
 ----
 physical_plan	<REGEX>:(?s).*Empty Result.*
+
+# A read whose schema is given opens no file at bind. The statistics the caller gives are then the only ones it has,
+# and they apply the same way
+statement ok
+CREATE MACRO column_stats_schema() AS MAP {'id': {name: 'id', type: 'BIGINT', default_value: NULL::VARCHAR},
+    'nation': {name: 'nation', type: 'INTEGER', default_value: NULL::VARCHAR},
+    'half': {name: 'half', type: 'BIGINT', default_value: NULL::VARCHAR}};
+
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'], schema = column_stats_schema(),
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '199999', 'count': '200000', 'null_count': '0', 'distinct_count': '200000'}})
+WHERE id > 1000000;
+----
+physical_plan	<REGEX>:(?s).*Empty Result.*
+
+query III
+SELECT count(*), min(id), max(id) FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'], schema = column_stats_schema(),
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '199999', 'count': '200000', 'null_count': '0', 'distinct_count': '200000'}})
+WHERE id >= 150000;
+----
+50000	150000	199999
+
+# The distinct count sets an equality's selectivity: 200,000 rows over 25 nations
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'], schema = column_stats_schema(),
+    explicit_cardinality = 200000,
+    column_statistics := MAP {'nation': MAP {'min': '0', 'max': '24', 'count': '200000', 'null_count': '0', 'distinct_count': '25'}})
+WHERE nation = 3;
+----
+physical_plan	<REGEX>:(?s).*~8,000 rows.*
+
+# A column the option does not name has no statistics, so its filter stays
+query II
+EXPLAIN SELECT id FROM read_parquet(['{TEST_DIR}/column_stats_1.parquet', '{TEST_DIR}/column_stats_2.parquet'], schema = column_stats_schema(),
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '199999', 'count': '200000', 'null_count': '0'}})
+WHERE half IS NULL;
+----
+physical_plan	<!REGEX>:(?s).*Empty Result.*
+
+# The file row number of such a read has no statistics without an opened file
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/column_stats_1.parquet', schema = column_stats_schema(), file_row_number = true,
+    column_statistics := MAP {'id': MAP {'min': '0', 'max': '99999', 'count': '100000', 'null_count': '0'}})
+WHERE file_row_number < 10;
+----
+10

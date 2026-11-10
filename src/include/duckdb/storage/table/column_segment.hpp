@@ -50,7 +50,7 @@ public:
 	                                                         DataPointer &data_pointer);
 	static unique_ptr<ColumnSegment> CreateTransientSegment(DatabaseInstance &db, const CompressionFunction &function,
 	                                                        const LogicalType &type, const idx_t segment_size,
-	                                                        BlockManager &block_manager);
+	                                                        BlockManager &block_manager, bool zero_initialize = false);
 
 public:
 	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state);
@@ -165,6 +165,7 @@ public:
 			SetBlock(std::move(block_handle_p), offset);
 		}
 	}
+	void UsePackedCopy(const shared_ptr<BlockHandle> &block_handle_p, uint32_t offset) override;
 
 private:
 	void Scan(ColumnScanState &state, idx_t scan_count, Vector &result);

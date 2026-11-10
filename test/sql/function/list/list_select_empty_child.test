@@ -1,0 +1,41 @@
+# name: test/sql/function/list/list_select_empty_child.test
+# description: list_select and list_where when every input list in the chunk is empty
+# group: [list]
+
+query I
+SELECT list_select(x, [1]) FROM (VALUES ([]::INTEGER[])) t(x);
+----
+[NULL]
+
+query I
+SELECT list_where(x, [true]) FROM (VALUES ([]::INTEGER[])) t(x);
+----
+[NULL]
+
+query I
+SELECT list_where(map_extract(MAP {'k': 1}::MAP(VARCHAR, INTEGER), v), [true]) FROM (VALUES ('z'), ('y')) t(v);
+----
+[NULL]
+[NULL]
+
+statement ok
+CREATE TABLE w(c2 INTEGER[]);
+
+statement ok
+INSERT INTO w VALUES ([]);
+
+statement ok
+UPDATE w SET c2 = list_select(list_distinct(c2), [1, 1]);
+
+query I
+SELECT c2 FROM w
+----
+[NULL, NULL]
+
+statement ok
+PREPARE p AS SELECT 1 FROM (VALUES (0)) v1(id)
+WHERE list_contains(list_select(list_transform($1::VARCHAR[], lambda x, i: {'a': i::INTEGER, 'b': x}), [2, 1]), {'a': 1, 'b': 'x'});
+
+query I
+EXECUTE p([]::VARCHAR[]);
+----

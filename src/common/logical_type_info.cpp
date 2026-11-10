@@ -6,6 +6,7 @@
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/string_map_set.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
 
@@ -136,7 +137,7 @@ bool LogicalTypeInfo::EqualsInternal(const LogicalTypeInfo *other_p) const {
 DecimalTypeInfo::DecimalTypeInfo() : LogicalTypeInfo(LogicalTypeInfoType::DECIMAL_TYPE_INFO) {
 }
 
-DecimalTypeInfo::DecimalTypeInfo(uint8_t width_p, uint8_t scale_p)
+DecimalTypeInfo::DecimalTypeInfo(uint32_t width_p, uint32_t scale_p)
     : LogicalTypeInfo(LogicalTypeInfoType::DECIMAL_TYPE_INFO), width(width_p), scale(scale_p) {
 	D_ASSERT(width_p >= scale_p);
 }
@@ -246,6 +247,28 @@ void UnboundTypeInfo::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<Value>>(203, "user_type_modifiers", user_type_mods);
 }
 
+// v1.x stores type parameters as typed values: the size of FLOAT[3] is a BIGINT, which reads back as
+// CAST(3 AS BIGINT). The width of an integer parameter does not matter, so keep the literal, as the parser produces it.
+static void UnwrapIntegerParameterCasts(ParsedExpression &expr) {
+	if (expr.GetExpressionClass() != ExpressionClass::TYPE) {
+		return;
+	}
+	for (auto &param : expr.Cast<TypeExpression>().GetChildren()) {
+		if (param->GetExpressionClass() == ExpressionClass::CAST) {
+			auto &cast = param->Cast<CastExpression>();
+			auto &child = cast.Child();
+			if (child.GetExpressionClass() == ExpressionClass::CONSTANT &&
+			    child.Cast<ConstantExpression>().GetLiteral().kind == LiteralKind::INTEGER &&
+			    UnboundType::TryDefaultBind(cast.TargetType()).IsIntegral()) {
+				auto alias = param->GetAlias();
+				param = std::move(cast.ChildMutable());
+				param->SetAlias(std::move(alias));
+			}
+		}
+		UnwrapIntegerParameterCasts(*param);
+	}
+}
+
 unique_ptr<LogicalTypeInfo> UnboundTypeInfo::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<UnboundTypeInfo>(new UnboundTypeInfo());
 
@@ -269,6 +292,7 @@ unique_ptr<LogicalTypeInfo> UnboundTypeInfo::Deserialize(Deserializer &deseriali
 		result->expr = make_uniq<TypeExpression>(
 		    QualifiedName(Identifier(catalog), Identifier(schema), Identifier(name)), std::move(user_type_mods));
 	}
+	UnwrapIntegerParameterCasts(*result->expr);
 
 	return std::move(result);
 }

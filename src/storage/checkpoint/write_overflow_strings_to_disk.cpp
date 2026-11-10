@@ -129,7 +129,7 @@ void WriteOverflowStringsToDisk::Flush() {
 		}
 		// write to disk
 		auto &block_manager = partial_block_manager.GetBlockManager();
-		block_manager.Write(partial_block_manager.GetClientContext(), handle.GetFileBuffer(), block_id);
+		block_manager.Write(partial_block_manager.GetQueryContext(), handle.GetFileBuffer(), block_id);
 	}
 	block_id = INVALID_BLOCK;
 	offset = 0;
@@ -144,6 +144,7 @@ void WriteOverflowStringsToDisk::AllocateNewBlock(UncompressedStringSegmentState
 	}
 	offset = 0;
 	block_id = new_block_id;
+	memset(handle.GetDataMutable() + GetStringSpace(), 0, sizeof(block_id_t));
 	auto &block_manager = partial_block_manager.GetBlockManager();
 	state.RegisterBlock(block_manager, new_block_id);
 }

@@ -1,0 +1,209 @@
+# name: test/optimizer/pushdown/semi_anti_join_implied_filters.test
+# description: A filter on one side of a SEMI or ANTI join reaches the other side when the join conditions imply it
+# group: [pushdown]
+
+statement ok
+CREATE TABLE ints_a AS SELECT range AS i FROM range(100);
+
+statement ok
+CREATE TABLE ints_b AS SELECT range AS i FROM range(50);
+
+# a filter above the join reaches the right side through the condition
+query II
+EXPLAIN SELECT * FROM ints_a SEMI JOIN ints_b USING (i) WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+EXPLAIN SELECT * FROM ints_a ANTI JOIN ints_b USING (i) WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+EXPLAIN SELECT * FROM ints_a SEMI JOIN ints_b ON ints_a.i IS NOT DISTINCT FROM ints_b.i WHERE ints_a.i BETWEEN 3 AND 5;
+----
+physical_plan	<REGEX>:.*Filters: \(i >= 3\) AND \(i <= 5\).*Filters: \(i >= 3\) AND \(i <= 5\).*
+
+query I
+SELECT * FROM ints_a SEMI JOIN ints_b USING (i) WHERE i = 7;
+----
+7
+
+query I
+SELECT count(*) FROM ints_a ANTI JOIN ints_b USING (i) WHERE i = 7 OR i = 70;
+----
+1
+
+# a filter on the right side of a SEMI join reaches the left side
+query II
+EXPLAIN SELECT * FROM ints_a SEMI JOIN (SELECT * FROM ints_b WHERE i = 7) b ON ints_a.i IS NOT DISTINCT FROM b.i;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+# also through a window, when every window expression partitions by the filtered columns
+query II
+EXPLAIN SELECT * FROM (SELECT i, row_number() OVER (PARTITION BY i) AS rn FROM ints_a WHERE i = 7) a SEMI JOIN ints_b ON a.i IS NOT DISTINCT FROM ints_b.i;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+query II
+SELECT count(*), sum(rn) FROM (SELECT i, p, row_number() OVER (PARTITION BY p ORDER BY i) AS rn FROM (SELECT i, i % 2 AS p FROM ints_a) WHERE i < 10) a SEMI JOIN ints_b ON a.i IS NOT DISTINCT FROM ints_b.i;
+----
+10	30
+
+query II
+SELECT count(*), sum(rn) FROM (SELECT i, p, row_number() OVER (PARTITION BY p ORDER BY i) AS rn FROM (SELECT i, i % 2 AS p FROM ints_a) WHERE p = 0) a SEMI JOIN ints_b ON a.i IS NOT DISTINCT FROM ints_b.i;
+----
+25	325
+
+# a filter on the right side of an ANTI join does not reach the left side
+query I
+SELECT count(*) FROM ints_a ANTI JOIN (SELECT * FROM ints_b WHERE i = 7) b USING (i);
+----
+99
+
+# only comparisons of the compared values, -0.0 equals 0.0 but has another text
+statement ok
+CREATE TABLE d (x DOUBLE);
+
+statement ok
+CREATE TABLE z (x DOUBLE);
+
+statement ok
+INSERT INTO d VALUES (-0.0::DOUBLE), (1.5);
+
+statement ok
+INSERT INTO z VALUES (0.0);
+
+query I
+SELECT count(*) FROM d SEMI JOIN z ON d.x = z.x WHERE d.x::VARCHAR = '-0.0';
+----
+1
+
+query I
+SELECT count(*) FROM d ANTI JOIN z ON d.x = z.x WHERE d.x::VARCHAR = '-0.0';
+----
+0
+
+query I
+SELECT count(*) FROM d SEMI JOIN (SELECT * FROM z WHERE x::VARCHAR = '0.0') z ON d.x = z.x;
+----
+1
+
+query I
+SELECT count(*) FROM d SEMI JOIN z ON d.x = z.x WHERE d.x < 1;
+----
+1
+
+# NULLs that are not distinct from each other
+statement ok
+CREATE TABLE t (x INTEGER);
+
+statement ok
+INSERT INTO t VALUES (NULL), (1);
+
+statement ok
+CREATE TABLE u (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO u VALUES (NULL, NULL), (1, 2);
+
+query I
+SELECT count(*) FROM t SEMI JOIN u ON u.a IS NOT DISTINCT FROM t.x AND u.b IS NOT DISTINCT FROM t.x WHERE t.x IS NULL;
+----
+1
+
+query I
+SELECT count(*) FROM t ANTI JOIN u ON u.a IS NOT DISTINCT FROM t.x AND u.b IS NOT DISTINCT FROM t.x WHERE t.x IS NULL;
+----
+0
+
+query I
+SELECT count(*) FROM t SEMI JOIN u ON u.a IS NOT DISTINCT FROM t.x WHERE t.x = 1 OR t.x IS NULL;
+----
+2
+
+# a condition with a volatile side implies nothing, the join evaluates it once per row
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+CREATE TABLE vl (i BIGINT);
+
+statement ok
+CREATE TABLE vr (i BIGINT);
+
+statement ok
+INSERT INTO vl VALUES (2);
+
+statement ok
+INSERT INTO vr VALUES (1);
+
+query I
+SELECT count(*) FROM vl SEMI JOIN vr ON vl.i = vr.i + nextval('seq') WHERE vl.i = 2;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+1
+
+# a filter that tells apart equal values implies nothing for another condition that compares the same text
+statement ok
+CREATE TABLE dl (x DOUBLE, s VARCHAR);
+
+statement ok
+INSERT INTO dl VALUES (-0.0::DOUBLE, '0.0');
+
+query I
+SELECT count(*) FROM dl SEMI JOIN z ON dl.x = z.x AND dl.s = z.x::VARCHAR WHERE dl.x::VARCHAR = '-0.0';
+----
+1
+
+query I
+SELECT count(*) FROM dl ANTI JOIN z ON dl.x = z.x AND dl.s = z.x::VARCHAR WHERE dl.x::VARCHAR = '-0.0';
+----
+0
+
+# a filter below a window stays there when it tells apart values the window partitions as equal
+statement ok
+CREATE TABLE w (x DOUBLE);
+
+statement ok
+INSERT INTO w VALUES (-0.0::DOUBLE), (0.0::DOUBLE);
+
+statement ok
+CREATE TABLE gw (p INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO gw VALUES (0, '5'), (1, 'bad');
+
+statement ok
+SET disabled_optimizers = 'filter_pushdown';
+
+query I
+SELECT a.rn FROM (SELECT x, row_number() OVER (PARTITION BY x ORDER BY x::VARCHAR) AS rn FROM w WHERE x::VARCHAR = '0.0') a SEMI JOIN (VALUES (0.0::DOUBLE)) b(x) ON a.x IS NOT DISTINCT FROM b.x;
+----
+1
+
+# and when the window expressions can throw for the rows it removes
+query I
+SELECT a.rn FROM (SELECT p, row_number() OVER (PARTITION BY p ORDER BY s::INTEGER) AS rn FROM gw WHERE p = 0) a SEMI JOIN (VALUES (0)) b(p) ON a.p IS NOT DISTINCT FROM b.p;
+----
+1
+
+# also when the window function itself fails for those rows
+statement ok
+CREATE TABLE nw (p BIGINT);
+
+statement ok
+INSERT INTO nw VALUES (0), (1);
+
+query I
+SELECT a.n FROM (SELECT p, ntile(p) OVER (PARTITION BY p) AS n FROM nw WHERE p = 1) a SEMI JOIN (VALUES (1::BIGINT)) b(p) ON a.p IS NOT DISTINCT FROM b.p;
+----
+1
+
+statement ok
+RESET disabled_optimizers;

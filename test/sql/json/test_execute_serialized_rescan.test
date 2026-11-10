@@ -1,0 +1,73 @@
+# name: test/sql/json/test_execute_serialized_rescan.test
+# description: json_execute_serialized_sql must produce its full result on every scan initialization
+# group: [json]
+
+require json
+
+# The function streams its inner result without a progress callback, which the progress verifier flags
+# for sources of two or more chunks. Pre-existing, first exposed by the two-chunk shapes below.
+statement ok
+SET debug_verify_progress_ignore='UNSUPPORTED_SOURCE:JSON_EXECUTE_SERIALIZED_SQL';
+
+# A recursive CTE re-initializes the scan of the inlined condition subquery on every iteration. The
+# executed result must not be consumed across iterations.
+query I
+WITH RECURSIVE
+c AS (
+    SELECT * FROM json_execute_serialized_sql(
+        json_serialize_sql('SELECT 1 UNION ALL SELECT 2')
+    )
+),
+walk(depth) AS (
+    SELECT 0
+    UNION ALL
+    SELECT depth + 1
+    FROM walk
+    WHERE depth < (SELECT count(*) FROM c)
+)
+SELECT depth FROM walk ORDER BY depth;
+----
+0
+1
+2
+
+# The materialized form stays correct.
+query I
+WITH RECURSIVE
+c AS MATERIALIZED (
+    SELECT * FROM json_execute_serialized_sql(
+        json_serialize_sql('SELECT 1 UNION ALL SELECT 2')
+    )
+),
+walk(depth) AS (
+    SELECT 0
+    UNION ALL
+    SELECT depth + 1
+    FROM walk
+    WHERE depth < (SELECT count(*) FROM c)
+)
+SELECT depth FROM walk ORDER BY depth;
+----
+0
+1
+2
+
+# Protection: two references stay correct (the CTE is materialized once and read twice).
+query II
+WITH c AS (SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 1 UNION ALL SELECT 2')))
+SELECT (SELECT count(*) FROM c) AS a, (SELECT count(*) FROM c) AS b;
+----
+2	2
+
+# Protection: the cross product collects the function's rows once and rescans the collection.
+query I
+SELECT count(*)
+FROM range(3) r(i), json_execute_serialized_sql(json_serialize_sql('SELECT 1 UNION ALL SELECT 2')) t;
+----
+6
+
+# An execution error surfaces as the original error, not wrapped in a fetch-time diagnostic.
+statement error
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT error(''boom'')'));
+----
+<REGEX>:Invalid Input Error: boom(\n.*)?

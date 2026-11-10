@@ -62,7 +62,14 @@ RenameEntry <- ExcludeName 'AS' Identifier
 SubqueryExpression <- SubqueryNot? SubqueryExists? SubqueryReference
 SubqueryNot <- 'NOT'
 SubqueryExists <- 'EXISTS'
-CaseExpression <- 'CASE' Expression? CaseWhenThen+ CaseElse? 'END'
+CaseExpression <- SimpleCaseExpression / SearchedCaseExpression
+SimpleCaseExpression <- 'CASE' Expression SimpleCaseWhenThen+ CaseElse? 'END'
+SearchedCaseExpression <- 'CASE' CaseWhenThen+ CaseElse? 'END'
+SimpleCaseWhenThen <- 'WHEN' List(SimpleCaseWhenOperand) 'THEN' Expression
+# WHEN < 0 compares the CASE operand with <, a WHEN operand without an operator compares with =
+# WHEN 0, 1 matches if any of the operands matches
+SimpleCaseWhenOperand <- ComparisonExpressionTail / SimpleCaseWhenEquals
+SimpleCaseWhenEquals <- Expression
 CaseWhenThen <- 'WHEN' Expression 'THEN' Expression
 CaseElse <- 'ELSE' Expression
 TypeLiteral <- Type StringLiteral
@@ -156,11 +163,8 @@ SingleExpression <-
     DefaultExpression
 
 # LEVEL 1 (Lowest)
-Expression <- LambdaArrowExpression
+Expression <- LogicalOrExpression
 ColumnDefaultExpr <- ColDefOrExpr
-# LEVEL 1.5
-LambdaArrowExpression <- LogicalOrExpression SingleArrowPair*
-SingleArrowPair <- '->' LogicalOrExpression
 LogicalOrExpression <- LogicalAndExpression LogicalOrExpressionTail*
 LogicalOrExpressionTail <- 'OR' LogicalAndExpression
 ColDefOrExpr <- ColDefAndExpr ColDefOrExpressionTail*
@@ -246,7 +250,17 @@ Asymmetric <- 'ASYMMETRIC'
 # LEVEL 8
 OtherOperatorExpression <- InfixOtherOperatorExpression
 InfixOtherOperatorExpression <- BitwiseExpression OtherOperatorTail*
-OtherOperatorTail <- OtherOperator BitwiseExpression
+OtherOperatorTail <- AnyAllSubqueryTail / OtherOperatorExpressionTail / SingleArrowTail
+AnyAllSubqueryTail <- AnyAllParsedOperator SubqueryReference
+OtherOperatorExpressionTail <- OtherOperator BitwiseExpression
+# '->' is the lambda arrow or the JSON extract operator. Its operand extends as far as possible (the lambda body),
+# unless another arrow follows directly: then the arrows chain to the left, like in PostgreSQL.
+SingleArrowTail <- '->' SingleArrowBody
+SingleArrowBody <- ArrowChainBody / ArrowFullBody
+ArrowChainBody <- BitwiseExpression ArrowChainTail+
+ArrowChainTail <- DoubleArrowTail / SingleArrowTail
+DoubleArrowTail <- '->>' BitwiseExpression
+ArrowFullBody <- LogicalOrExpression
 OtherOperator <-
     AnyAllParsedOperator / NamedOtherOperator
 AnyAllParsedOperator <- AnyAllOperator

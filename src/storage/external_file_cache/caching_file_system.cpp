@@ -309,8 +309,8 @@ CachingFileHandle::CachingFileHandle(QueryContext context, CachingFileSystem &ca
                                      optional_ptr<FileOpener> opener_p)
     : context(context), file_system(caching_file_system_p.file_system), db(caching_file_system_p.db),
       external_file_cache(caching_file_system_p.external_file_cache), path(path_p), flags(std::move(flags_p)),
-      opener(opener_p), validate(ExternalFileCacheUtil::GetCacheValidationMode(path_p, context.GetClientContext(),
-                                                                               caching_file_system_p.db)),
+      opener(opener_p),
+      validate(ExternalFileCacheUtil::GetCacheValidationMode(path_p, context.GetContext(), caching_file_system_p.db)),
       cached_file(nullptr), position(0) {
 	cached_file = external_file_cache.GetOrCreateCachedFile(path_p.path);
 	if (!external_file_cache.IsEnabled() || Validate()) {

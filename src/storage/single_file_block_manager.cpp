@@ -610,6 +610,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	h1.block_alloc_size = GetBlockAllocSize();
 	h1.vector_size = STANDARD_VECTOR_SIZE;
 	h1.storage_compatibility = options.storage_version;
+	header_buffer.Clear();
 	SerializeHeaderStructure<DatabaseHeader>(h1, header_buffer.GetDataMutable());
 	ChecksumAndWrite(context, header_buffer, Storage::FILE_HEADER_SIZE);
 
@@ -623,6 +624,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	h2.block_alloc_size = GetBlockAllocSize();
 	h2.vector_size = STANDARD_VECTOR_SIZE;
 	h2.storage_compatibility = options.storage_version;
+	header_buffer.Clear();
 	SerializeHeaderStructure<DatabaseHeader>(h2, header_buffer.GetDataMutable());
 	ChecksumAndWrite(context, header_buffer, Storage::FILE_HEADER_SIZE * 2ULL);
 
@@ -836,7 +838,10 @@ void SingleFileBlockManager::Initialize(const DatabaseHeader &header, const opti
 	free_list_id = header.free_list;
 	meta_block = header.meta_block;
 	iteration_count = header.iteration;
-	max_block = NumericCast<block_id_t>(header.block_count);
+	if (header.block_count > static_cast<uint64_t>(NumericLimits<block_id_t>::Maximum())) {
+		throw DataCorruptionException("Corrupt database file: invalid block count %llu", header.block_count);
+	}
+	max_block = UnsafeNumericCast<block_id_t>(header.block_count);
 	if (options.storage_version != StorageVersion::INVALID) {
 		// storage version specified explicitly - use requested storage version
 		auto requested_compat_version = options.storage_version;
@@ -1484,7 +1489,7 @@ void SingleFileBlockManager::TrimFreeBlockRange(block_id_t start, block_id_t end
 }
 
 void SingleFileBlockManager::TrimFreeBlocks(const set<block_id_t> &blocks) {
-	if (!DBConfig::Get(db).options.trim_free_blocks) {
+	if (!Settings::Get<TrimFreeBlocksSetting>(DBConfig::Get(db))) {
 		return;
 	}
 	lock_guard<mutex> lock(single_file_block_lock);

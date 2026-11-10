@@ -1,0 +1,32 @@
+# name: test/sql/update/test_update_string_heap_concurrent.test_slow
+# description: Test that scans see valid strings while concurrent updates compact the update string heaps
+# group: [update]
+
+statement ok
+CREATE TABLE t AS SELECT i, 'v0_' || repeat('x', 100) || '_' || i AS s FROM range(20000) tbl(i);
+
+concurrentloop threadid 0 8
+
+loop round 0 30
+
+statement ok
+UPDATE t SET s = 'v{round}_' || repeat('x', 100) || '_' || i WHERE i % 8 = {threadid}
+
+query I
+SELECT COUNT(*) FROM t WHERE split_part(s, '_', 2) = repeat('x', 100) AND split_part(s, '_', 3) = i::VARCHAR
+----
+20000
+
+query I
+SELECT COUNT(*) FROM (SELECT i, s FROM t ORDER BY i DESC LIMIT 100) WHERE split_part(s, '_', 3) = i::VARCHAR
+----
+100
+
+endloop
+
+endloop
+
+query I
+SELECT COUNT(*) FROM t WHERE s = 'v29_' || repeat('x', 100) || '_' || i
+----
+20000

@@ -20,6 +20,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/capi/extension_api.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/database_file_path_manager.hpp"
@@ -87,6 +88,7 @@ DatabaseInstance::DatabaseInstance() : db_validity(*this) {
 	create_api_v1 = nullptr;
 	invoke_capi_v2 = nullptr;
 	parser_cache = make_uniq<ParserCache>();
+	services = make_uniq<Context>(*this);
 }
 
 ParserCache &DatabaseInstance::GetParserCache() {
@@ -98,7 +100,10 @@ DatabaseInstance::~DatabaseInstance() {
 	if (db_manager) {
 		db_manager->ResetDatabases();
 	}
-	config.http_transport_manager->Close();
+	// an instance whose initialization failed may not have every member yet, and a destructor cannot throw
+	if (config.http_transport_manager) {
+		config.http_transport_manager->Close();
+	}
 	// destroy child elements
 	connection_manager.reset();
 	object_cache.reset();
@@ -114,7 +119,9 @@ DatabaseInstance::~DatabaseInstance() {
 	buffer_manager.reset();
 
 	// Flush allocations and disable the background thread.
-	config.block_allocator->FlushOnShutdown();
+	if (config.block_allocator) {
+		config.block_allocator->FlushOnShutdown();
+	}
 	Allocator::SetBackgroundThreads(false);
 	// after all destruction is complete clear the cache entry
 	config.db_cache_entry.reset();
@@ -174,7 +181,7 @@ DBConfig &DBConfig::GetConfig(DatabaseInstance &db) {
 }
 
 ClientConfig &ClientConfig::GetConfig(ClientContext &context) {
-	return context.config;
+	return context.GetContext().GetClientConfig();
 }
 
 DBConfig &DBConfig::Get(AttachedDatabase &db) {
@@ -186,7 +193,7 @@ const DBConfig &DBConfig::GetConfig(const DatabaseInstance &db) {
 }
 
 const ClientConfig &ClientConfig::GetConfig(const ClientContext &context) {
-	return context.config;
+	return context.GetContext().GetClientConfig();
 }
 
 TransactionManager &TransactionManager::Get(AttachedDatabase &db) {
@@ -604,9 +611,10 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	if (new_config.buffer_pool) {
 		config.buffer_pool = std::move(new_config.buffer_pool);
 	} else {
-		config.buffer_pool = make_shared_ptr<BufferPool>(*config.block_allocator, config.options.maximum_memory,
-		                                                 config.options.buffer_manager_track_eviction_timestamps,
-		                                                 config.options.allocator_bulk_deallocation_flush_threshold);
+		config.buffer_pool =
+		    make_shared_ptr<BufferPool>(*config.block_allocator, config.options.maximum_memory,
+		                                Settings::Get<BufferManagerTrackEvictionTimestampsSetting>(config),
+		                                config.options.allocator_bulk_deallocation_flush_threshold);
 	}
 	config.db_cache_entry = std::move(new_config.db_cache_entry);
 	config.path_manager = std::move(new_config.path_manager);

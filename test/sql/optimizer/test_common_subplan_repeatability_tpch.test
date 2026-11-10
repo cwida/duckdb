@@ -1,0 +1,25 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_tpch.test
+# description: Preserve common subplan sharing for repeatable table functions
+# group: [optimizer]
+
+require tpch
+
+statement ok
+SET explain_output='optimized_only';
+
+# Bound scale factor selects static query strings.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM tpch_queries(1) INTERSECT ALL SELECT * FROM tpch_queries(1);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM tpch_queries(1) INTERSECT ALL SELECT * FROM tpch_queries(1));
+----
+22
+
+# Static expected answers.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM tpch_answers() INTERSECT ALL SELECT * FROM tpch_answers();
+----
+logical_opt	<REGEX>:.*__common_subplan_.*

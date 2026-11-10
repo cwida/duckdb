@@ -1,6 +1,6 @@
 #include "core_functions/scalar/string_functions.hpp"
 #include "core_functions/scalar/string_characters.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -10,8 +10,8 @@ namespace duckdb {
 // Can't calculate as trivial modification to levenshtein algorithm
 // as we need to potentially know about earlier in the string
 template <class T>
-static idx_t DamerauLevenshteinDistance(ClientContext &context, const T *source_str, idx_t source_len,
-                                        const T *target_str, idx_t target_len) {
+static idx_t DamerauLevenshteinDistance(Context &context, const T *source_str, idx_t source_len, const T *target_str,
+                                        idx_t target_len) {
 	// costs associated with each type of edit, to aid readability
 	constexpr uint8_t COST_SUBSTITUTION = 1;
 	constexpr uint8_t COST_INSERTION = 1;
@@ -84,7 +84,7 @@ static idx_t DamerauLevenshteinDistance(ClientContext &context, const T *source_
 }
 
 //! The distance between the characters of the strings - not their bytes
-static idx_t DamerauLevenshteinDistance(ClientContext &context, const string_t &source, const string_t &target) {
+static idx_t DamerauLevenshteinDistance(Context &context, const string_t &source, const string_t &target) {
 	if (StringIsAscii(source) && StringIsAscii(target)) {
 		return DamerauLevenshteinDistance(context, source.GetData(), source.GetSize(), target.GetData(),
 		                                  target.GetSize());
@@ -95,7 +95,7 @@ static idx_t DamerauLevenshteinDistance(ClientContext &context, const string_t &
 	                                  target_chars.size());
 }
 
-static int64_t DamerauLevenshteinScalarFunction(ClientContext &context, const string_t source, const string_t target) {
+static int64_t DamerauLevenshteinScalarFunction(Context &context, const string_t source, const string_t target) {
 	return (int64_t)DamerauLevenshteinDistance(context, source, target);
 }
 

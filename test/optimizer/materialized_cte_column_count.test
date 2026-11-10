@@ -1,0 +1,49 @@
+# name: test/optimizer/materialized_cte_column_count.test
+# description: Materialized CTE column counts follow the producer before and after pruning
+# group: [optimizer]
+
+require json
+
+statement ok
+CREATE TABLE t(dead VARCHAR, payload BIGINT, key INTEGER);
+
+statement ok
+INSERT INTO t VALUES ('unused', 101, 1), ('unused', 102, 1), ('unused', 201, 2), ('unused', 999, NULL);
+
+# The producer has three columns, although the final query returns only one.
+query I
+SELECT json_extract(json_serialize_plan(
+	'WITH c AS MATERIALIZED (SELECT * FROM t) SELECT payload + key FROM c',
+	optimize := false
+), '$.plans[0].column_count');
+----
+3
+
+# Pruning removes dead from the producer and updates its column count.
+query I
+SELECT json_extract(json_serialize_plan(
+	'WITH c AS MATERIALIZED (SELECT * FROM t) SELECT payload + key FROM c',
+	optimize := true
+), '$.plans[0].column_count');
+----
+2
+
+query I
+WITH c AS MATERIALIZED (SELECT * FROM t)
+SELECT payload + key FROM c ORDER BY ALL;
+----
+102
+103
+203
+NULL
+
+# Both readers retain the correct bindings after pruning the producer.
+query II
+WITH c AS MATERIALIZED (SELECT * FROM t)
+SELECT a.key, b.payload FROM c a JOIN c b ON a.key = b.key ORDER BY ALL;
+----
+1	101
+1	101
+1	102
+1	102
+2	201

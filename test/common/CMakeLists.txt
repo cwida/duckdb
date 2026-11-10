@@ -10,6 +10,7 @@ add_library_unity(
   test_checked_integer.cpp
   test_checksum.cpp
   test_dictionary_hash_cache.cpp
+  test_vector_hash.cpp
   test_column_data_allocator.cpp
   test_column_data_compact.cpp
   test_file_buffer_handle_group.cpp
@@ -25,11 +26,13 @@ add_library_unity(
   test_http_retry_budget.cpp
   test_httplib_header_length.cpp
   test_httplib_sigpipe.cpp
+  test_list_stats.cpp
   test_literal.cpp
   test_lru_cache.cpp
   test_minmax_n_heap.cpp
   test_numeric_utils.cpp
   test_optional_idx.cpp
+  test_time_point.cpp
   test_parse_expression.cpp
   test_parse_load_statement.cpp
   test_parse_external_resource_source.cpp
@@ -39,6 +42,8 @@ add_library_unity(
   test_pipeline_broadcast_exchange.cpp
   test_recursive_cte_metrics.cpp
   test_scalar_executor.cpp
+  test_shared_ptr.cpp
+  test_string_stats.cpp
   test_logical_type_is_complete.cpp
   test_logical_type_immutable.cpp
   test_type_visitor.cpp
@@ -59,6 +64,7 @@ add_library_unity(
   test_versioning_utils.cpp
   test_value_to_sql_string.cpp
   test_value_to_expression.cpp
+  test_variant_cast.cpp
   test_variant_size.cpp
   test_vector_buffer_validity.cpp
   test_lazy_vector.cpp

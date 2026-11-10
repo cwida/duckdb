@@ -214,7 +214,6 @@ def test_explicit_bail_within_read(shell, generated_file):
     result.check_stderr("selec")
     assert "reached here" in str(result.stdout)
 
-@pytest.mark.skipif(os.name == 'nt', reason="Skipped on windows")
 def test_shell_command(shell):
     test = (
         ShellTest(shell)
@@ -222,6 +221,34 @@ def test_shell_command(shell):
     )
     result = test.run()
     result.check_stdout("quack")
+
+
+def test_shell_command_pipe(shell):
+    # the command line reaches the system shell as-is: echo and sort exist in both sh and cmd.exe,
+    # and a quoted-per-word command line would print the pipe symbol instead of piping
+    test = ShellTest(shell).statement(".shell echo quack | sort")
+    result = test.run()
+    result.check_stdout("quack")
+    result.check_not_exist("|")
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="uses POSIX shell syntax")
+def test_shell_command_quoting(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".shell echo 'quack quack' | tr a-z A-Z")
+        .statement('.system DUCK=mallard; echo "$DUCK"')
+    )
+    result = test.run()
+    result.check_stdout("QUACK QUACK")
+    result.check_stdout("mallard")
+
+
+def test_shell_command_exit_code(shell):
+    test = ShellTest(shell).statement(".shell exit 3")
+    result = test.run()
+    result.check_stderr("System command returns 3")
+
 
 def test_cd(shell, tmp_path):
     pwd_dir = os.getcwd()
@@ -1008,7 +1035,6 @@ def test_profiling_select(shell):
     result.check_stderr('Total Time')
     result.check_stdout('42')
 
-@pytest.mark.skipif(os.name == 'nt', reason="echo does not exist on Windows")
 @pytest.mark.parametrize("command", [
     "system",
     "shell"

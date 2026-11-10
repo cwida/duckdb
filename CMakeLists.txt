@@ -77,7 +77,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_VERBOSE_MAKEFILE OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_MACOSX_RPATH 1)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 if(NOT DEFINED CMAKE_C_COMPILER_LAUNCHER)
   find_program(COMPILER_LAUNCHER NAMES ccache sccache)
@@ -201,7 +203,8 @@ if("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang" AND NOT MSVC)
   set(CMAKE_CXX_FLAGS_RELEASE
       "${CMAKE_CXX_FLAGS_RELEASE} -ffunction-sections -fdata-sections")
 elseif(WIN32 AND MSVC)
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Gy")
+  # clang-cl sets MSVC=TRUE and takes this branch, so /Gw is needed here too
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Gy /Gw")
 endif()
 
 option(SHADOW_FORBIDDEN_FUNCTIONS
@@ -231,10 +234,9 @@ if(${FORCE_COLORED_OUTPUT})
 endif()
 
 # Enable Clang thread-safety annotations when using Clang compiler
-# TODO(hjiang): enable error for thread annotation warnings, because of certain
-# extensions.
 if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang$")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wthread-safety")
+  set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Wthread-safety -Werror=thread-safety")
 endif()
 
 if(DUCKDB_EXPLICIT_PLATFORM)

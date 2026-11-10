@@ -19,6 +19,7 @@ namespace duckdb {
 
 struct ICUDateFunc {
 	struct BindData : public FunctionData {
+		explicit BindData(Context &context);
 		explicit BindData(ClientContext &context);
 		BindData(const string &tz_setting, const string &cal_setting);
 		BindData(const BindData &other);
@@ -47,7 +48,7 @@ struct ICUDateFunc {
 	template <typename SRC, typename DST>
 	static inline DST TruncCast(const SRC &src) {
 		DST dst;
-		if (SRC::PRECISION == DST::PRECISION) {
+		if (SRC::PRECISION == DST::PRECISION || !src.IsFinite()) {
 			dst.value = src.value;
 		} else {
 			//	Truncate towards -infinity, not epoch.

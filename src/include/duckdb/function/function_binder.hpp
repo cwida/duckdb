@@ -98,8 +98,8 @@ struct FunctionCallArgument {
 	    : type(std::move(type)), name(std::move(name)), location(location) {
 	}
 	//! For the type constants, e.g. LogicalType::INTEGER
-	FunctionCallArgument(LogicalTypeId id)
-	    : FunctionCallArgument(LogicalType(id)) { // NOLINT: allow implicit conversion
+	FunctionCallArgument(LogicalTypeId id) // NOLINT: allow implicit conversion
+	    : FunctionCallArgument(LogicalType(id)) {
 	}
 
 	LogicalType type;
@@ -394,6 +394,8 @@ public:
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;
+	//! Set when the arguments were bound before, so their collations are not pushed again
+	bool arguments_collated = false;
 
 public:
 	//! Overload selection: the cheapest overload of a function set that a call with the given arguments binds to.
@@ -409,6 +411,10 @@ public:
 	DUCKDB_API unique_ptr<ResolvedTableFunction>
 	BindTableFunction(const TableFunctionSet &functions, vector<unique_ptr<Expression>> &positional_arguments,
 	                  vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments, ErrorData &error);
+	//! Select a table in-out function using input column types and bind its named scalar options.
+	DUCKDB_API unique_ptr<ResolvedTableFunction>
+	BindTableInOutFunction(const TableFunctionSet &functions, const vector<LogicalType> &input_types,
+	                       vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments, ErrorData &error);
 	//! Bind a pragma function, as BindTableFunction binds a table function
 	DUCKDB_API unique_ptr<BoundPragmaInfo>
 	BindPragmaFunction(const PragmaFunctionSet &functions, vector<unique_ptr<Expression>> &positional_arguments,

@@ -58,18 +58,18 @@ string InsertQueryNode::ToString() const {
 	}
 	if (!or_replace_shorthand_set && on_conflict_info) {
 		auto &conflict_info = *on_conflict_info;
-		result += " ON CONFLICT ";
+		result += " ON CONFLICT";
 		// (optional) conflict target
 		if (!conflict_info.indexed_columns.empty()) {
-			result += "(";
+			result += " (";
 			auto &cols = conflict_info.indexed_columns;
 			for (auto it = cols.begin(); it != cols.end();) {
-				result += StringUtil::Lower(it->GetIdentifierName());
+				result += SQLIdentifier(*it);
 				if (++it != cols.end()) {
 					result += ", ";
 				}
 			}
-			result += " )";
+			result += ")";
 		}
 
 		// (optional) where clause
@@ -79,18 +79,8 @@ string InsertQueryNode::ToString() const {
 		result += " " + OnConflictInfo::ActionToString(conflict_info.action_type);
 		if (conflict_info.set_info) {
 			D_ASSERT(conflict_info.action_type == OnConflictAction::UPDATE);
-			result += " SET ";
 			auto &set_info = *conflict_info.set_info;
-			D_ASSERT(set_info.columns.size() == set_info.expressions.size());
-			// SET <column_name> = <expression>
-			for (idx_t i = 0; i < set_info.columns.size(); i++) {
-				auto &column = set_info.columns[i];
-				auto &expr = set_info.expressions[i];
-				if (i) {
-					result += ", ";
-				}
-				result += StringUtil::Lower(column.GetIdentifierName()) + " = " + expr->ToString();
-			}
+			result += " " + set_info.ToString();
 			// (optional) where clause
 			if (set_info.condition) {
 				result += " WHERE " + set_info.condition->ToString();

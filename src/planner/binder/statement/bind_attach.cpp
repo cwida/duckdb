@@ -5,10 +5,17 @@
 #include "duckdb/planner/operator/logical_attach.hpp"
 #include "duckdb/planner/expression_binder/table_function_binder.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
 void Binder::BindExternalResource(ExternalResourceOptions &external_resource) {
+	// Provisioning or borrowing a resource runs the resource type's callbacks and attaches to the endpoint they
+	// hand back, both of which reach outside the database - refused up front, before anything is resolved.
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("External resources are disabled through configuration");
+	}
+
 	// Reference form (`EXTERNAL RESOURCE <name>`): the resource already exists — the physical operator
 	// looks it up in the manager at execution. Nothing to resolve here.
 	if (!external_resource.reference_name.empty()) {

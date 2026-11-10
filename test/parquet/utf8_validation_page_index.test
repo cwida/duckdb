@@ -1,0 +1,38 @@
+# name: test/parquet/utf8_validation_page_index.test
+# description: The page index describes the stored bytes, which a repairing utf8_validation changes (duckdblabs/bot-issue-tracker#639)
+# group: [parquet]
+
+require parquet
+
+# the last pages hold only '\x80zz', so their bounds are an invalid byte sequence
+statement ok
+COPY (SELECT x FROM (SELECT ('k' || lpad(i::VARCHAR, 5, '0'))::BLOB AS x FROM range(5000) t(i) UNION ALL SELECT '\x80zz'::BLOB FROM range(1000)) ORDER BY x) TO '{TEST_DIR}/repaired_page_index.parquet' (DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query II
+SELECT count(*) > 1, bool_and(min_value IS NOT NULL) FROM parquet_page_index('{TEST_DIR}/repaired_page_index.parquet');
+----
+true	true
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+# blobs are not repaired, so their page index prunes
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_page_index.parquet') WHERE x = 'k00001'::BLOB;
+----
+1
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('PhysicalOperator') WHERE class = 'ParquetReader' AND event = 'SkipPages';
+----
+true
+
+# the repaired values sort below the bounds of the pages that hold only '\x80zz'
+query II
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_page_index.parquet', binary_as_string = true, utf8_validation = 'ignore') WHERE x = 'zz'),
+	(SELECT count(*) FROM read_parquet('{TEST_DIR}/repaired_page_index.parquet', binary_as_string = true, utf8_validation = 'replace') WHERE x = '?zz');
+----
+1000	1000

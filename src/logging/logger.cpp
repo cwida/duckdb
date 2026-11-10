@@ -1,3 +1,4 @@
+#include "duckdb/main/context.hpp"
 #include "duckdb/logging/log_storage.hpp"
 #include "duckdb/logging/log_manager.hpp"
 
@@ -38,6 +39,10 @@ Logger &Logger::Get(const ClientContext &client_context) {
 	return client_context.GetLogger();
 }
 
+Logger &Logger::Get(const Context &context) {
+	return context.GetLogger();
+}
+
 Logger &Logger::Get(const FileOpener &opener) {
 	return opener.GetLogger();
 }
@@ -46,28 +51,25 @@ Logger &Logger::Get(const shared_ptr<Logger> &logger) {
 	return *logger;
 }
 
-ThreadSafeLogger::ThreadSafeLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager)
-    : ThreadSafeLogger(config_p, manager.RegisterLoggingContext(context_p), manager) {
-}
-
-ThreadSafeLogger::ThreadSafeLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
-    : Logger(manager), config(config_p), context(context_p) {
+ThreadSafeLogger::ThreadSafeLogger(shared_ptr<const LogConfig> config_p, RegisteredLoggingContext context_p,
+                                   LogManager &manager)
+    : Logger(manager), config(std::move(config_p)), context(context_p) {
 	// NopLogger should be used instead
-	D_ASSERT(config_p.enabled);
+	D_ASSERT(config && config->enabled);
 }
 
 bool ThreadSafeLogger::ShouldLog(const char *log_type, LogLevel log_level) {
-	if (config.level > log_level) {
+	if (config->level > log_level) {
 		return false;
 	}
 
 	// TODO: improve these: they are currently fairly expensive due to requiring allocations when looking up const char*
 	//       also, we would ideally do prefix matching, not string matching here
-	if (config.mode == LogMode::ENABLE_SELECTED) {
-		return config.enabled_log_types.find(log_type) != config.enabled_log_types.end();
+	if (config->mode == LogMode::ENABLE_SELECTED) {
+		return config->enabled_log_types.find(log_type) != config->enabled_log_types.end();
 	}
-	if (config.mode == LogMode::DISABLE_SELECTED) {
-		return config.disabled_log_types.find(log_type) == config.disabled_log_types.end();
+	if (config->mode == LogMode::DISABLE_SELECTED) {
+		return config->disabled_log_types.find(log_type) == config->disabled_log_types.end();
 	}
 	return true;
 }
@@ -103,18 +105,18 @@ void ThreadLocalLogger::Flush() {
 	manager.Flush();
 }
 
-MutableLogger::MutableLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager)
+MutableLogger::MutableLogger(const LogConfig &config_p, LoggingContext &context_p, LogManager &manager)
     : MutableLogger(config_p, manager.RegisterLoggingContext(context_p), manager) {
 }
 
-MutableLogger::MutableLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
+MutableLogger::MutableLogger(const LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
     : Logger(manager), config(config_p), context(context_p) {
 	enabled = config.enabled;
 	level = config.level;
 	mode = config.mode;
 }
 
-void MutableLogger::UpdateConfig(LogConfig &new_config) {
+void MutableLogger::UpdateConfig(const LogConfig &new_config) {
 	unique_lock<mutex> lck(lock);
 	config = new_config;
 

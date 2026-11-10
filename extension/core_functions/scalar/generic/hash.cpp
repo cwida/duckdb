@@ -11,6 +11,8 @@ ScalarFunction HashFun::GetFunction() {
 	hash_fun.GetSignature().AddParameter("value", LogicalType::ANY);
 	hash_fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	hash_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// hash the arguments after their combinable collations
+	hash_fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	return hash_fun;
 }
 

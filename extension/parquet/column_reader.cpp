@@ -472,7 +472,8 @@ bool ColumnReader::PageIsFilteredOut(PageHeader &page_hdr, optional_ptr<const Ta
 			return false;
 		}
 		auto stats =
-		    ParquetStatisticsUtils::TransformParquetStatistics(Type(), Schema(), *page_stats, /*can_have_nan=*/true);
+		    ParquetStatisticsUtils::TransformParquetStatistics(Type(), Schema(), *page_stats, reader.parquet_options,
+		                                                       /*can_have_nan=*/true);
 		auto &expr_filter = filter->Cast<ExpressionFilter>();
 		if (stats) {
 			auto prune_result = expr_filter.CheckStatistics(*stats);
@@ -602,13 +603,16 @@ void ColumnReader::ResetPage() {
 void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	D_ASSERT(page_hdr.type == PageType::DATA_PAGE_V2);
 
-	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size) + 1);
+	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size));
 	const auto page_body_size = GetPageBodySize(page_hdr);
 	bool uncompressed = false;
 	if (page_hdr.data_page_header_v2.__isset.is_compressed && !page_hdr.data_page_header_v2.is_compressed) {
 		uncompressed = true;
 	}
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {
+		uncompressed = true;
+	}
+	if (uncompressed) {
 		if (page_body_size != NumericCast<uint32_t>(page_hdr.uncompressed_page_size)) {
 			// LCOV_EXCL_START
 			const auto &file_name = Reader().GetFileName();
@@ -617,9 +621,6 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 			    page_hdr.uncompressed_page_size, page_body_size);
 			// LCOV_EXCL_STOP
 		}
-		uncompressed = true;
-	}
-	if (uncompressed) {
 		ReadData(block->ptr, page_body_size, page_hdr.type);
 		return;
 	}
@@ -701,16 +702,20 @@ uint32_t ColumnReader::GetPageBodySize(const PageHeader &page_hdr) const {
 	return page_body_size;
 }
 
-void ColumnReader::AllocateBlock(idx_t size) {
+void ColumnReader::AllocateBlock(idx_t payload_size) {
+	const auto allocation_size = payload_size + 1;
 	if (!block) {
-		block = make_shared_ptr<ResizeableBuffer>(GetAllocator(), size);
+		block = make_shared_ptr<ResizeableBuffer>(GetAllocator(), allocation_size);
 	} else {
-		block->resize(GetAllocator(), size);
+		block->resize(GetAllocator(), allocation_size);
 	}
+	// Keep a zeroed guard byte for decoder lookahead, but exclude it from the payload.
+	block->ptr[payload_size] = 0;
+	block->len = payload_size;
 }
 
 void ColumnReader::PreparePage(PageHeader &page_hdr) {
-	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size) + 1);
+	AllocateBlock(NumericCast<idx_t>(page_hdr.uncompressed_page_size));
 	const auto compressed_page_size = GetPageBodySize(page_hdr);
 
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {
@@ -785,7 +790,12 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 		throw InternalException("Parquet data unexpectedly uncompressed");
 	case CompressionCodec::GZIP: {
 		MiniZStream s;
-		s.Decompress(const_char_ptr_cast(src), src_size, char_ptr_cast(dst), dst_size);
+		auto remaining_size = s.Decompress(const_char_ptr_cast(src), src_size, char_ptr_cast(dst), dst_size);
+		if (remaining_size != 0) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": GZIP uncompressed data size mismatch (expected %d, actual: %d)",
+			    Reader().GetFileName(), dst_size, dst_size - remaining_size);
+		}
 		break;
 	}
 	case CompressionCodec::LZ4:
@@ -845,6 +855,11 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 		if (res != duckdb_brotli::BROTLI_DECODER_RESULT_SUCCESS) {
 			throw InvalidInputException("Failed to read file \"%s\": Brotli Decompression failure",
 			                            Reader().GetFileName());
+		}
+		if (total_out != dst_size) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": Brotli uncompressed data size mismatch (expected %d, actual: %d)",
+			    Reader().GetFileName(), dst_size, total_out);
 		}
 		break;
 	}
@@ -1099,7 +1114,11 @@ void ColumnReader::Select(ColumnReaderInput &input, Vector &result, const Select
 		DirectSelect(input, result, sel, approved_tuple_count);
 		return;
 	}
-	Read(input, result);
+	const auto rows_read = Read(input, result);
+	if (rows_read != num_values) {
+		throw DataCorruptionException("Mismatch in parquet read for column \"%s\", expected %llu rows, got %llu",
+		                              Schema().name, num_values, rows_read);
+	}
 }
 
 void ColumnReader::DirectSelect(ColumnReaderInput &input, Vector &result, const SelectionVector &sel,

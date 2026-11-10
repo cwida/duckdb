@@ -1,0 +1,22 @@
+# name: benchmark/micro/optimizer/one_sided_distinct_count_repeated_keys.benchmark
+# description: Repeated Parquet string keys must not inflate a native NDV and move the expanding join first
+# group: [optimizer]
+
+name One-Sided Distinct Count Repeated Keys
+group micro
+subgroup optimizer
+
+load
+CREATE TABLE f AS SELECT (range % 50)::VARCHAR k, range::VARCHAR j FROM range(100000);
+CREATE TABLE t AS SELECT ((range % 100000) * 10)::VARCHAR j FROM range(300000);
+ANALYZE;
+COPY (SELECT (range % 50)::VARCHAR k FROM range(50000)) TO '${BENCHMARK_DIR}/repeated_keys.parquet' (FORMAT parquet);
+
+run
+SELECT count(*)
+FROM f
+JOIN read_parquet('${BENCHMARK_DIR}/repeated_keys.parquet') r USING(k)
+JOIN t USING(j);
+
+result I
+30000000

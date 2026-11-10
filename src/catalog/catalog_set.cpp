@@ -376,7 +376,7 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	unique_ptr<CatalogEntry> entry_to_destroy;
 	if (transaction.transaction) {
 		// serialize the AlterInfo into a temporary buffer
-		MemoryStream stream(Allocator::Get(*transaction.db));
+		MemoryStream stream(Allocator::Get(transaction.db));
 		BinarySerializer serializer(stream);
 		serializer.Begin();
 		serializer.WriteProperty(100, "column_name", alter_info.GetColumnName());

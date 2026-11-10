@@ -7,7 +7,8 @@ namespace duckdb {
 unique_ptr<LogicalOperator> FilterPullup::PullupFromLeft(unique_ptr<LogicalOperator> op) {
 	D_ASSERT(op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN ||
 	         op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op->type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
-	         op->type == LogicalOperatorType::LOGICAL_EXCEPT || op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
+	         op->type == LogicalOperatorType::LOGICAL_EXCEPT || op->type == LogicalOperatorType::LOGICAL_INTERSECT ||
+	         op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
 
 	FilterPullup left_pullup(true, can_add_column);
 	FilterPullup right_pullup(false, can_add_column);

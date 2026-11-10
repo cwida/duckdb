@@ -253,6 +253,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 		    child->GetReturnType().id() == LogicalTypeId::SQLNULL) {
 			has_invalidated_parameter = true;
 		}
+		// neither does an input whose type depends on an unresolved parameter
+		if (!child->GetReturnType().IsComplete()) {
+			has_invalidated_parameter = true;
+		}
 		if (!stat) {
 			stats.push_back(BaseStatistics::CreateUnknown(child->GetReturnType()));
 		} else {
