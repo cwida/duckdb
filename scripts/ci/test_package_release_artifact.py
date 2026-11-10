@@ -190,6 +190,9 @@ class PackageReleaseArtifactTest(unittest.TestCase):
             (source / "src" / "duckdb_static.lib").write_bytes(b"static")
             (source / "extension" / "json" / "json_extension.lib").write_bytes(b"extension library")
             (source / "extension" / "test" / "test.duckdb_extension").write_bytes(b"test extension")
+            repository_extension = Path("repository/vtest/windows_amd64/test.duckdb_extension")
+            (source / repository_extension.parent).mkdir(parents=True)
+            (source / repository_extension).write_bytes(b"test extension")
             (source / "test" / "extension" / "loadable_extension_demo.duckdb_extension").write_bytes(b"test fixture")
             (source / "test" / "extensions" / "duckdb_tests.duckdb_extension").write_bytes(b"test bundle")
 
@@ -221,11 +224,15 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                     "release/src/duckdb.dll",
                     "release/src/duckdb_static.lib",
                     "release/extension/json/json_extension.lib",
-                    "release/extension/test/test.duckdb_extension",
+                    f"release/{repository_extension.as_posix()}",
                     "release/test/extension/loadable_extension_demo.duckdb_extension",
                     "release/test/extensions/duckdb_tests.duckdb_extension",
                 }
-                self.assertTrue(expected.issubset(members))
+                self.assertTrue(expected.issubset(members), expected - members.keys())
+                self.assertNotIn("release/extension/test/test.duckdb_extension", members)
+                self.assertEqual(
+                    archive.extractfile(members[f"release/{repository_extension.as_posix()}"]).read(), b"test extension"
+                )
                 self.assertTrue(members["release/duckdb.exe"].mode & stat.S_IXUSR)
 
 
