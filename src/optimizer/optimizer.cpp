@@ -225,6 +225,12 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	if (!plan->CTEContainsDML()) {
+		// Expose filtering joins before choosing aggregate key domains.
+		RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
+			MarkJoinSimplifier mark_simplifier(*this);
+			mark_simplifier.Optimize(plan);
+		});
+
 		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
 			domain_optimizer.Optimize(plan);
@@ -293,7 +299,7 @@ void Optimizer::RunBuiltInOptimizers() {
 		plan = window_self_join_optimizer.Optimize(std::move(plan));
 	});
 
-	// Restore filtered markers before projection pullup exposes the converted joins.
+	// IN-clause rewriting and delim elimination can expose more filtered markers.
 	if (!plan->CTEContainsDML()) {
 		RunOptimizer(OptimizerType::MARK_JOIN_SIMPLIFIER, [&]() {
 			MarkJoinSimplifier mark_simplifier(*this);

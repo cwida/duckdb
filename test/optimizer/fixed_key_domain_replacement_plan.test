@@ -26,6 +26,27 @@ LEFT JOIN (
 ----
 physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
 
+# An IN restriction can replace its duplicate-producing source as well.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k, a.s
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f WHERE f.k IN (SELECT k FROM old_keys) GROUP BY f.k
+) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II rowsort
+SELECT d.k, a.s
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(v) s FROM fact f WHERE f.k IN (SELECT k FROM old_keys) GROUP BY f.k
+) a USING(k);
+----
+1	45010
+2	45020
+
 # Replacement also retains the existing restriction's native scan-filter opportunity.
 query II
 EXPLAIN (FORMAT JSON)

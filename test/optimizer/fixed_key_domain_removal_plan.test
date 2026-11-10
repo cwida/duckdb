@@ -17,6 +17,23 @@ LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
 ----
 physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
 
+# Filtered MARK joins expose the same restriction before domain optimization.
+query II
+EXPLAIN(FORMAT JSON)
+SELECT d.k,a.s FROM (VALUES(0),(1))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ WHERE f.k IN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k)) GROUP BY f.k)a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*(MARK|SEMI)[\s\S]*
+
+query II rowsort
+SELECT d.k,a.s FROM (VALUES(0),(1))d(k)
+LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
+ WHERE f.k IN (SELECT DISTINCT k FROM (VALUES(0),(1))keys(k)) GROUP BY f.k)a USING(k);
+----
+0	24995000
+1	25000000
+
 # Statistics callbacks on the key and in ancestors do not prevent removal.
 query II
 EXPLAIN (FORMAT JSON)
