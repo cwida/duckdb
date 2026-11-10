@@ -34,7 +34,8 @@ public:
 public:
 	OwningStringMap() : free_type(AllocatorFreeType::DOES_NOT_REQUIRE_FREE) {
 	}
-	explicit OwningStringMap(Allocator &allocator) : allocator(&allocator), free_type(AllocatorFreeType::REQUIRES_FREE) {
+	explicit OwningStringMap(Allocator &allocator)
+	    : allocator(&allocator), free_type(AllocatorFreeType::REQUIRES_FREE) {
 	}
 	~OwningStringMap() {
 		Destroy();

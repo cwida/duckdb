@@ -14,8 +14,8 @@
 namespace duckdb {
 
 VariantNormalizerState::VariantNormalizerState(idx_t result_row, VariantVectorData &source,
-                                               OrderedOwningStringMap<uint32_t> &dictionary,
-                                               ArenaAllocator &keys_arena, SelectionVector &keys_selvec)
+                                               OrderedOwningStringMap<uint32_t> &dictionary, ArenaAllocator &keys_arena,
+                                               SelectionVector &keys_selvec)
     : source(source), dictionary(dictionary), keys_arena(keys_arena), keys_selvec(keys_selvec),
       keys_index_validity(source.keys_index_validity) {
 	auto keys_list_entry = source.keys_data[result_row];

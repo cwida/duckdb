@@ -241,7 +241,8 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 	{
 		VariantVectorData variant_data(result);
-		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_arena, keys_selvec, local_data.allocator);
+		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_arena, keys_selvec,
+		                                      local_data.allocator);
 		if (!GatherOffsetsAndSizes(source_data, result_data, count)) {
 			return false;
 		}
@@ -253,7 +254,8 @@ static bool CastToVARIANT(Vector &source, Vector &result, idx_t count, CastParam
 
 	{
 		VariantVectorData variant_data(result);
-		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_arena, keys_selvec, local_data.allocator);
+		ToVariantGlobalResultData result_data(variant_data, offsets, dictionary, keys_arena, keys_selvec,
+		                                      local_data.allocator);
 		if (!WriteVariantResultData(source_data, result_data, count)) {
 			return false;
 		}
