@@ -273,3 +273,21 @@ statement error
 SELECT count(*) FROM hi WHERE h::DECIMAL(38,0) = 1::DECIMAL(38,0);
 ----
 <REGEX>:Conversion Error.*
+
+# -> VARCHAR is kept for types whose equal values can render differently, and under a collation
+statement ok
+CREATE TABLE ex AS SELECT * FROM (VALUES
+	(INTERVAL 1 MONTH, TIMETZ '12:00:00+01', 1.5::DOUBLE, true),
+	(INTERVAL 30 DAY, TIMETZ '13:00:00+02', '-0.0'::DOUBLE, false)
+) v(i, tz, f, b);
+
+# the second row equals the first in the source type, so applying the comparison to the source would match both
+query IIII
+SELECT
+	count(*) FILTER (WHERE i::VARCHAR = '1 month'),
+	count(*) FILTER (WHERE tz::VARCHAR = '12:00:00+01'),
+	count(*) FILTER (WHERE f::VARCHAR = '0.0'),
+	count(*) FILTER (WHERE b::VARCHAR COLLATE nocase = 'TRUE')
+FROM ex;
+----
+1	1	0	1

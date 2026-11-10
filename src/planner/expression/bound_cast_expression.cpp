@@ -312,6 +312,8 @@ static bool HasCanonicalVarcharRepresentation(const LogicalType &type) {
 	if (type.IsIntegral()) {
 		return true;
 	}
+	// unlike CastIsInvertible, TZ types are excluded: equal TIME_TZ values with different offsets render differently,
+	// and the rendering of TIMESTAMP_TZ depends on the TimeZone setting
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::DECIMAL:
