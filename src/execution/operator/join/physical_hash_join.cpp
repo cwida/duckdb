@@ -982,7 +982,7 @@ struct HashJoinBuildConfig {
 	static constexpr idx_t SMALL_PARALLEL_CONSTRUCT_THRESHOLD = 65536;
 	static constexpr idx_t SMALL_PARALLEL_MIN_THREADS = 4;
 	static constexpr double SKEW_SINGLE_THREADED_THRESHOLD = 0.33;
-	static constexpr double SMALL_BUILD_SKEW_THRESHOLD = 0.25;
+	static constexpr double SMALL_BUILD_SKEW_THRESHOLD = 0.20;
 };
 
 //! If the data is very skewed (many of the exact same key), our finalize will become slow,
