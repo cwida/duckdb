@@ -24,7 +24,7 @@ Value ConvertVectorToValue(vector<Value> set) {
 	return Value::LIST(std::move(set));
 }
 
-idx_t ParseBytesArg(const Identifier &name, const Value &arg) {
+idx_t ParseBytesArg(Context &context, const Identifier &name, const Value &arg) {
 	if (arg.IsNull()) {
 		throw BinderException("NULL is not supported as a valid option for COPY option \"%s\"",
 		                      StringUtil::Upper(name.GetIdentifierName()));
@@ -33,7 +33,7 @@ idx_t ParseBytesArg(const Identifier &name, const Value &arg) {
 	if (arg.type().id() == LogicalTypeId::VARCHAR) {
 		result = DBConfig::ParseMemoryLimit(arg.ToString());
 	} else {
-		auto cast_arg = arg.DefaultTryCastAs(LogicalType::UBIGINT);
+		auto cast_arg = arg.TryCastAs(context, LogicalType::UBIGINT);
 		if (!cast_arg) {
 			throw BinderException("Unable to parse bytes from \"%s\" for copy option \"%s\" ", arg.ToString(),
 			                      StringUtil::Upper(name.GetIdentifierName()));

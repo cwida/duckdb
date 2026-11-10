@@ -486,6 +486,28 @@ bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const 
 	                                     signature_key_fingerprint);
 }
 
+#ifndef WASM_LOADABLE_EXTENSIONS
+// The trusted user-provided repositories for which is_installed holds. This only feeds an error message, so a
+// repository file that cannot be read is skipped rather than reported
+static vector<string> FindUserRepositoryInstalls(DatabaseInstance &db, FileSystem &fs,
+                                                 const std::function<bool(const string &)> &is_installed) {
+	vector<string> result;
+	if (!ExtensionRepositoryManager::TrustsExistingRepositories(db)) {
+		return result;
+	}
+	try {
+		for (auto &repository : ExtensionRepositoryManager::GetRepositories(db, fs)) {
+			if (is_installed(repository.name)) {
+				result.push_back(repository.name);
+			}
+		}
+	} catch (std::exception &) {
+		result.clear();
+	}
+	return result;
+}
+#endif
+
 bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const string &extension,
                                      const string &repository_name, bool core_only, ExtensionInitResult &result,
                                      string &error) {
@@ -523,6 +545,9 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		}
 	}
 
+	// the user-provided repositories that have the extension installed, when a bare load cannot find it
+	vector<string> installed_in_repositories;
+
 	// shorthand case
 	if (!ExtensionHelper::IsFullPath(extension)) {
 		direct_load = false;
@@ -552,7 +577,8 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 #else
 
 		// Local function to process local path
-		auto ComputeLocalExtensionPath = [&](const string &base_path, const string &extension_name) -> string {
+		auto ComputeLocalExtensionPath = [&](const string &base_path, const string &extension_name,
+		                                     const string &user_repository) -> string {
 			// convert random separators to platform-canonic
 			string local_path = fs.ConvertSeparators(base_path);
 			// expand ~ in extension directory
@@ -561,8 +587,8 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 			for (auto &path_ele : path_components) {
 				local_path = fs.JoinPath(local_path, path_ele);
 			}
-			if (expect_user_repo) {
-				local_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), repository_name);
+			if (!user_repository.empty()) {
+				local_path = fs.JoinPath(fs.JoinPath(local_path, "repositories"), user_repository);
 			}
 			return fs.JoinPath(local_path, extension_name + ".duckdb_extension");
 		};
@@ -587,9 +613,10 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 		}
 
 		// Try each directory in sequence until extension is found
+		const string user_repository = expect_user_repo ? repository_name : string();
 		bool found = false;
 		for (const auto &directory : search_directories) {
-			filename = ComputeLocalExtensionPath(directory, extension_name);
+			filename = ComputeLocalExtensionPath(directory, extension_name, user_repository);
 			if (fs.FileExists(filename)) {
 				found = true;
 				break;
@@ -598,7 +625,17 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 
 		// If not found in any directory, use the first directory for error reporting
 		if (!found) {
-			filename = ComputeLocalExtensionPath(search_directories[0], extension_name);
+			filename = ComputeLocalExtensionPath(search_directories[0], extension_name, user_repository);
+			if (repository_name.empty()) {
+				installed_in_repositories = FindUserRepositoryInstalls(db, fs, [&](const string &repository) {
+					for (const auto &directory : search_directories) {
+						if (fs.FileExists(ComputeLocalExtensionPath(directory, extension_name, repository))) {
+							return true;
+						}
+					}
+					return false;
+				});
+			}
 		}
 #endif
 	} else {
@@ -613,8 +650,12 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 	}
 	if (!fs.FileExists(filename)) {
 		string message;
-		bool exact_match = ExtensionHelper::CreateSuggestions(extension, message);
-		if (exact_match) {
+		if (!installed_in_repositories.empty()) {
+			message = StringUtil::Format("Note: extension '%s' exists in one or more user-provided repositories.\n"
+			                             "Consider `LOAD %s FROM <repo_name>`",
+			                             extension, extension);
+			message += StringUtil::CandidatesMessage(installed_in_repositories, "Candidate repositories");
+		} else if (ExtensionHelper::CreateSuggestions(extension, message)) {
 			message += "\nInstall it first using \"INSTALL " + extension + "\".";
 		}
 		error = StringUtil::Format("Extension \"%s\" not found.\n%s", filename, message);

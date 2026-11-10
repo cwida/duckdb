@@ -10,8 +10,26 @@
 
 #include "duckdb/storage/table/column_data.hpp"
 #include "duckdb/storage/table/validity_column_data.hpp"
+#include "duckdb/storage/statistics/list_stats.hpp"
 
 namespace duckdb {
+
+//! The list length statistics that are persisted with a list column
+class ListPersistentColumnData final : public ExtraPersistentColumnData {
+public:
+	static constexpr auto TYPE = ExtraPersistentColumnDataType::LIST;
+	ListPersistentColumnData() : ExtraPersistentColumnData(TYPE) {
+	}
+	explicit ListPersistentColumnData(const ListStatsData &length_data_p)
+	    : ExtraPersistentColumnData(TYPE), length_data(length_data_p) {
+	}
+
+	bool IsSupported(const Serializer &serializer) const override;
+	void SerializeFields(Serializer &serializer) const;
+	static unique_ptr<ExtraPersistentColumnData> Deserialize(Deserializer &deserializer);
+
+	ListStatsData length_data = ListStatsData {false, false, false, 0, 0, 0};
+};
 
 //! List column data represents a list
 class ListColumnData : public ColumnData {
@@ -21,10 +39,11 @@ public:
 
 public:
 	void SetDataType(ColumnDataType data_type) override;
-	FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter,
-	                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) override;
+	FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                   optional_idx &checked_end) override;
 
-	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) override;
+	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                        idx_t end_row) override;
 	void InitializeScan(ColumnScanState &state) override;
 	void InitializeScanWithOffset(ColumnScanState &state, idx_t row_idx) override;
 
@@ -38,7 +57,6 @@ public:
 	void Append(ColumnAppendState &state, const Vector &vector, idx_t count) override;
 	void FinalizeAppend(ColumnDataFinalizeAppendState &finalize_state, ColumnAppendState &state) override;
 	void RevertAppend(row_t new_count) override;
-	idx_t Fetch(ColumnScanState &state, row_t row_id, Vector &result) override;
 	void FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
 	               const idx_t *offsets, const SelectionVector &sel, idx_t count, Vector &result,
 	               idx_t result_offset) override;
@@ -66,6 +84,8 @@ public:
 	                          const ColumnSegmentInfoScanOptions &options) override;
 
 	void SetValidityData(shared_ptr<ValidityColumnData> validity_p);
+	//! The statistics of this column, if they can be resolved
+	optional_ptr<const BaseStatistics> GetColumnStatistics() const;
 	void SetChildData(shared_ptr<ColumnData> child_column_p);
 
 	const BaseStatistics &GetChildStats(const ColumnData &child) const override;

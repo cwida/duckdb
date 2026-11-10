@@ -61,6 +61,7 @@ class LogicalVacuum;
 
 class ColumnList;
 class ExternalDependency;
+class FunctionArgument;
 class FunctionSignature;
 class TableFunction;
 class BoundTableFunction;
@@ -97,6 +98,8 @@ struct TrySubqueryPlanIndexes {
 	bool recorded = false;
 	//! The select list projection
 	TableIndex projection_index;
+	//! The projection that restores the select list above the aggregate of a DISTINCT, only set for DISTINCT
+	TableIndex distinct_index;
 	//! The prune projection above the result modifiers, only set when pruning is needed
 	TableIndex prune_index;
 	//! The aggregate node of the select node
@@ -217,6 +220,8 @@ struct GlobalBinderState {
 	vector<unique_ptr<UsingColumnSet>> using_column_sets;
 	//! The set of parameter expressions bound by this binder
 	optional_ptr<BoundParameterMap> parameters;
+	//! The parameters declared by the statement text, as found by the parser
+	identifier_map_t<idx_t> statement_parameters;
 	//! Tables whose triggers have already been expanded in this query (recursion detection)
 	reference_set_t<TableCatalogEntry> trigger_expanded_tables;
 	//! Generated base-UPDATE nodes that must capture the pre-update (OLD) row image (the capture request),
@@ -417,6 +422,9 @@ public:
 	}
 	optional_ptr<BoundParameterMap> GetParameters();
 	void SetParameters(BoundParameterMap &parameters);
+	void SetStatementParameters(const identifier_map_t<idx_t> &statement_parameters);
+	//! Whether the statement text declares a parameter with this identifier
+	bool StatementHasParameter(const Identifier &identifier) const;
 	//! Returns a ColumnRefExpression after it was resolved (i.e. past the STAR expression/USING clauses)
 	static optional_ptr<ParsedExpression> GetResolvedColumnExpression(ParsedExpression &root_expr);
 
@@ -603,6 +611,9 @@ private:
 	BoundStatement BindNode(CopyQueryNode &node);
 
 	unique_ptr<LogicalOperator> VisitQueryNode(BoundQueryNode &node, unique_ptr<LogicalOperator> root);
+	//! Plans a DISTINCT (ON) as an aggregate that groups on the targets and takes the first value of other columns
+	unique_ptr<LogicalOperator> PlanDistinct(BoundDistinctModifier &distinct, optional_ptr<BoundOrderModifier> order,
+	                                         unique_ptr<LogicalOperator> root);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSelectNode &statement);
 	unique_ptr<LogicalOperator> CreatePlan(BoundSetOperationNode &node);
 	unique_ptr<LogicalOperator> CreatePlan(BoundQueryNode &node);
@@ -635,8 +646,7 @@ private:
 
 	unique_ptr<BoundAtClause> BindAtClause(optional_ptr<AtClause> at_clause);
 
-	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function,
-	                                 vector<unique_ptr<ParsedExpression>> &expressions,
+	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function, vector<FunctionArgument> &arguments,
 	                                 vector<unique_ptr<Expression>> &positional_arguments,
 	                                 vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
 	                                 BoundStatement &subquery, bool &table_in_out, ErrorData &error);

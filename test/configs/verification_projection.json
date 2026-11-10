@@ -27,6 +27,12 @@
       ]
     },
     {
+      "reason": "Asserts the EXPLAIN ANALYZE row counts of secure views, whose layout the synthetic verification projections change.",
+      "paths": [
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test"
+      ]
+    },
+    {
       "reason": "Projection placement and pullup tests assert topology changed by synthetic verification projections.",
       "paths": [
         "test/optimizer/projection_placement.test",
@@ -40,12 +46,6 @@
         "test/sql/sql_export/scope_reuse_plan.test",
         "test/sql/sql_export/composition_q1_plan.test",
         "test/sql/sql_export/dml_statements.test"
-      ]
-    },
-    {
-      "reason": "FIXME: INTERNAL binding error for an ANY subquery in the ON clause of a LEFT JOIN with a verification projection",
-      "paths": [
-        "test/sql/subquery/any_all/test_any_left_join_in_on_clause.test"
       ]
     }
   ]

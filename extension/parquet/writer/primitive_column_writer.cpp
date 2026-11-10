@@ -435,13 +435,13 @@ void PrimitiveColumnWriter::SetParquetStatistics(PrimitiveColumnWriterState &sta
 		// this code is not going to win any beauty contests, but well
 		auto min = state.stats_state->GetMin();
 		if (!min.empty()) {
-			column_chunk.meta_data.statistics.min = std::move(min);
+			column_chunk.meta_data.statistics.min = min;
 			column_chunk.meta_data.statistics.__isset.min = true;
 			column_chunk.meta_data.__isset.statistics = true;
 		}
 		auto max = state.stats_state->GetMax();
 		if (!max.empty()) {
-			column_chunk.meta_data.statistics.max = std::move(max);
+			column_chunk.meta_data.statistics.max = max;
 			column_chunk.meta_data.statistics.__isset.max = true;
 			column_chunk.meta_data.__isset.statistics = true;
 		}

@@ -922,7 +922,7 @@ void fallback_format(Double d, buffer<char>& buf, int& exp10) {
       upper = &upper_store;
     }
     denominator.assign_pow10(exp10);
-    denominator <<= 1;
+    denominator <<= shift;
   } else if (exp10 < 0) {
     numerator.assign_pow10(-exp10);
     lower.assign(numerator);

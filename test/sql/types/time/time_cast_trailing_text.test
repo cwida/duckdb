@@ -1,0 +1,240 @@
+# name: test/sql/types/time/time_cast_trailing_text.test
+# description: A VARCHAR to TIME, TIME_NS or TIMETZ cast rejects text after the time and its offset
+# group: [time]
+
+statement error
+SELECT CAST('12:00:00xyz' AS TIME)
+----
+<REGEX>:Conversion Error:.*time field value out of range.*
+
+statement error
+SELECT CAST('12:00:00+05:30xyz' AS TIMETZ)
+----
+<REGEX>:Conversion Error:.*time field value out of range.*
+
+# no zone offset has fractional seconds
+statement error
+SELECT CAST('12:00:00+05:30:15.5' AS TIMETZ)
+----
+<REGEX>:Conversion Error:.*time field value out of range.*
+
+statement error
+SELECT CAST('12:00:00xyz' AS TIME_NS)
+----
+<REGEX>:Conversion Error:.*time field value out of range.*
+
+statement error
+SELECT TIME '12:00:00xyz'
+----
+<REGEX>:Conversion Error:.*time field value out of range.*
+
+# the TIMESTAMPTZ cast already rejects the same suffixes
+statement error
+SELECT CAST('2024-01-01 12:00:00+05:30xyz' AS TIMESTAMPTZ)
+----
+<REGEX>:Conversion Error:.*
+
+statement error
+SELECT CAST('2024-01-01 12:00:00+05:30:15.5' AS TIMESTAMPTZ)
+----
+<REGEX>:Conversion Error:.*
+
+query III
+SELECT TRY_CAST('12:00:00xyz' AS TIME), TRY_CAST('12:00:00+05:30xyz' AS TIMETZ), TRY_CAST('12:00:00+05:30:15.5' AS TIMETZ)
+----
+NULL	NULL	NULL
+
+query IIII
+SELECT s, TRY_CAST(s AS TIME), TRY_CAST(s AS TIME_NS), TRY_CAST(s AS TIMETZ) FROM (VALUES
+	(1, '12:00:00 xyz'),
+	(2, '12:00:00a'),
+	(3, '12:00:00.5xyz'),
+	(4, '12:00:00.x'),
+	(5, '12:00:00.123456789xyz'),
+	(6, '12:00:00+05xyz'),
+	(7, '12:00:00+05:30 xyz'),
+	(8, '12:00:00+05:30:15xyz'),
+	(9, '12:00:00+05:30:15.5'),
+	(10, '12:00:00+05:30.5'),
+	(11, '11:xyz'),
+	(12, '12:00:00 12:00:00')
+) v(i, s) ORDER BY i
+----
+12:00:00 xyz	NULL	NULL	NULL
+12:00:00a	NULL	NULL	NULL
+12:00:00.5xyz	NULL	NULL	NULL
+12:00:00.x	NULL	NULL	NULL
+12:00:00.123456789xyz	NULL	NULL	NULL
+12:00:00+05xyz	NULL	NULL	NULL
+12:00:00+05:30 xyz	NULL	NULL	NULL
+12:00:00+05:30:15xyz	NULL	NULL	NULL
+12:00:00+05:30:15.5	NULL	NULL	NULL
+12:00:00+05:30.5	NULL	NULL	NULL
+11:xyz	NULL	NULL	NULL
+12:00:00 12:00:00	NULL	NULL	NULL
+
+# whitespace around the time stays accepted
+query IIII
+SELECT i, TRY_CAST(s AS TIME), TRY_CAST(s AS TIME_NS), TRY_CAST(s AS TIMETZ) FROM (VALUES
+	(1, '12:00:00 '),
+	(2, '  12:00:00  '),
+	(3, E'12:00:00\t'),
+	(4, E'12:00:00\n'),
+	(5, '12:00:00.5 '),
+	(6, '12:00:00.123456789 '),
+	(7, '12:00:00+05:30 '),
+	(8, E'12:00:00+05:30:15\t')
+) v(i, s) ORDER BY i
+----
+1	12:00:00	12:00:00	12:00:00+00
+2	12:00:00	12:00:00	12:00:00+00
+3	12:00:00	12:00:00	12:00:00+00
+4	12:00:00	12:00:00	12:00:00+00
+5	12:00:00.5	12:00:00.5	12:00:00.5+00
+6	12:00:00.123456	12:00:00.123456789	12:00:00.123456+00
+7	12:00:00	12:00:00	12:00:00+05:30
+8	12:00:00	12:00:00	12:00:00+05:30:15
+
+# the lenient forms of the time itself stay accepted
+query IIII
+SELECT s, TRY_CAST(s AS TIME), TRY_CAST(s AS TIME_NS), TRY_CAST(s AS TIMETZ) FROM (VALUES
+	(1, '11:'),
+	(2, '11:11:'),
+	(3, '1:2:3'),
+	(4, '12:30'),
+	(5, '24:00:00'),
+	(6, '12:00:00.'),
+	(7, '11/11/11'),
+	(8, '2024-01-01 12:00:00')
+) v(i, s) ORDER BY i
+----
+11:	11:00:00	11:00:00	11:00:00+00
+11:11:	11:11:00	11:11:00	11:11:00+00
+1:2:3	01:02:03	01:02:03	01:02:03+00
+12:30	12:30:00	12:30:00	12:30:00+00
+24:00:00	24:00:00	24:00:00	24:00:00+00
+12:00:00.	12:00:00	12:00:00	12:00:00+00
+11/11/11	00:00:00	00:00:00	00:00:00+00
+2024-01-01 12:00:00	12:00:00	12:00:00	12:00:00+00
+
+# a TIME reads the offset a TIMETZ reads and drops it, as the TIMESTAMP cast does; a zone name or an offset the
+# TIMETZ cast rejects is rejected
+query IIII
+SELECT s, TRY_CAST(s AS TIME), TRY_CAST(s AS TIME_NS), TRY_CAST(s AS TIMETZ) FROM (VALUES
+	(1, '12:00:00+05:30'),
+	(2, '12:00:00 +05:30'),
+	(3, '12:00:00-0530'),
+	(4, '12:00:00+05'),
+	(5, '12:00:00+05:30:15'),
+	(6, '12:00:00+15:59:59'),
+	(7, '12:00:00Z'),
+	(8, '12:00:00.5Z'),
+	(9, '12:00:00 Z '),
+	(10, '12:00:00.123456789+05:30'),
+	(11, '12:00:00+16:00'),
+	(12, '12:00:00+5'),
+	(13, '12:00:00z'),
+	(14, '12:00:00ZZ'),
+	(15, '12:00:00Z+01'),
+	(16, '12:00:00 UTC'),
+	(17, '12:00:00 Europe/Amsterdam')
+) v(i, s) ORDER BY i
+----
+12:00:00+05:30	12:00:00	12:00:00	12:00:00+05:30
+12:00:00 +05:30	12:00:00	12:00:00	12:00:00+05:30
+12:00:00-0530	12:00:00	12:00:00	12:00:00-05:30
+12:00:00+05	12:00:00	12:00:00	12:00:00+05
+12:00:00+05:30:15	12:00:00	12:00:00	12:00:00+05:30:15
+12:00:00+15:59:59	12:00:00	12:00:00	12:00:00+15:59:59
+12:00:00Z	12:00:00	12:00:00	12:00:00+00
+12:00:00.5Z	12:00:00.5	12:00:00.5	12:00:00.5+00
+12:00:00 Z 	12:00:00	12:00:00	12:00:00+00
+12:00:00.123456789+05:30	12:00:00.123456	12:00:00.123456789	12:00:00.123456+05:30
+12:00:00+16:00	NULL	NULL	NULL
+12:00:00+5	NULL	NULL	NULL
+12:00:00z	NULL	NULL	NULL
+12:00:00ZZ	NULL	NULL	NULL
+12:00:00Z+01	NULL	NULL	NULL
+12:00:00 UTC	NULL	NULL	NULL
+12:00:00 Europe/Amsterdam	NULL	NULL	NULL
+
+# a text that does not start with a time is read as a date and time, with the suffix rule of the TIMESTAMP cast
+query IIII
+SELECT s, TRY_CAST(s AS TIME), TRY_CAST(s AS TIME_NS), TRY_CAST(s AS TIMESTAMP) FROM (VALUES
+	(1, '2024-01-01 12:00:00xyz'),
+	(2, '2024-01-01 12:00:00Z'),
+	(3, '2024-01-01 12:00:00+05:30'),
+	(4, '2024-01-01 12:00:00 xyz')
+) v(i, s) ORDER BY i
+----
+2024-01-01 12:00:00xyz	NULL	NULL	NULL
+2024-01-01 12:00:00Z	12:00:00	12:00:00	2024-01-01 12:00:00
+2024-01-01 12:00:00+05:30	12:00:00	12:00:00	2024-01-01 12:00:00
+2024-01-01 12:00:00 xyz	12:00:00	12:00:00	2024-01-01 12:00:00
+
+# a column with NULLs: TRY_CAST nulls the malformed rows only, CAST raises on them
+statement ok
+CREATE TABLE times AS SELECT * FROM (VALUES (1, '12:00:00'), (2, NULL), (3, '12:00:00xyz'), (4, '13:30:00+01'), (5, '14:00:00 x')) v(i, s)
+
+query III
+SELECT i, TRY_CAST(s AS TIME), TRY_CAST(s AS TIMETZ) FROM times ORDER BY i
+----
+1	12:00:00	12:00:00+00
+2	NULL	NULL
+3	NULL	NULL
+4	13:30:00	13:30:00+01
+5	NULL	NULL
+
+statement error
+SELECT CAST(s AS TIME) FROM times
+----
+<REGEX>:Conversion Error:.*time field value out of range.*12:00:00xyz.*
+
+statement ok
+SELECT CAST(s AS TIME) FROM times WHERE i IN (1, 2, 4)
+
+# the CSV reader with an explicit TIME column
+statement ok
+COPY (SELECT s AS t FROM times ORDER BY i) TO '{TEST_DIR}/trailing_time.csv' (HEADER true)
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/trailing_time.csv', columns = {'t': 'TIME'}, header = true)
+----
+<REGEX>:Conversion Error:.*12:00:00xyz.*
+
+query I
+SELECT t FROM read_csv('{TEST_DIR}/trailing_time.csv', columns = {'t': 'TIME'}, header = true, ignore_errors = true)
+----
+12:00:00
+NULL
+13:30:00
+
+statement ok
+SELECT * FROM read_csv('{TEST_DIR}/trailing_time.csv', columns = {'t': 'TIME'}, header = true, store_rejects = true)
+
+query III
+SELECT line, column_name, error_type FROM reject_errors ORDER BY line
+----
+4	t	CAST
+6	t	CAST
+
+# the sniffer does not read the column as TIME
+query I
+SELECT typeof(t) FROM read_csv('{TEST_DIR}/trailing_time.csv', header = true) LIMIT 1
+----
+VARCHAR
+
+require json
+
+statement ok
+COPY (SELECT s AS t FROM times ORDER BY i) TO '{TEST_DIR}/trailing_time.json'
+
+statement error
+SELECT * FROM read_json('{TEST_DIR}/trailing_time.json', columns = {'t': 'TIME'})
+----
+<REGEX>:Invalid Input Error: JSON transform error.*time field value out of range.*12:00:00xyz.*
+
+query I
+SELECT typeof(t) FROM read_json('{TEST_DIR}/trailing_time.json') LIMIT 1
+----
+VARCHAR

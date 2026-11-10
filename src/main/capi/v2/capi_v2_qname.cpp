@@ -26,15 +26,15 @@ static void CheckQNameParts(const QualifiedName &name, const char *function_name
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_qname_parse(const duckdb_v2_str *text, duckdb_v2_qname_handle *out_name,
+DUCKDB_V2_ERROR duckdb_v2_qname_parse(const char *text, idx_t text_length, duckdb_v2_qname_handle *out_name,
                                       duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(text);
+	DUCKDB_CHECK_STR_ARG(text, text_length);
 	DUCKDB_CHECK_ARG(out_name);
 	*out_name = nullptr;
 	return WithErrorHandler(err, [&]() {
 		duckdb::QualifiedName parsed;
 		duckdb::string error;
-		if (!duckdb::QualifiedName::TryParse(duckdb::string(ConvertIdentifierName(text)), parsed, error)) {
+		if (!duckdb::QualifiedName::TryParse(duckdb::string(ConvertIdentifierName(text, text_length)), parsed, error)) {
 			throw duckdb::InvalidInputException("%s in duckdb_v2_qname_parse.", error);
 		}
 		CheckQNameParts(parsed, "duckdb_v2_qname_parse");
@@ -42,7 +42,7 @@ DUCKDB_V2_ERROR duckdb_v2_qname_parse(const duckdb_v2_str *text, duckdb_v2_qname
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_qname_create(const duckdb_v2_identifier_t *parts, idx_t part_count,
+DUCKDB_V2_ERROR duckdb_v2_qname_create(const char **parts, const idx_t *parts_lengths, idx_t part_count,
                                        duckdb_v2_qname_handle *out_name, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(out_name);
 	*out_name = nullptr;
@@ -54,14 +54,14 @@ DUCKDB_V2_ERROR duckdb_v2_qname_create(const duckdb_v2_identifier_t *parts, idx_
 		if (!parts) {
 			throw duckdb::InvalidInputException("Parts cannot be null when part_count is non-zero.");
 		}
+		string_view_array part_views(parts, parts_lengths, part_count);
 
 		// The last part is the object name; everything before it is the qualification.
 		duckdb::vector<duckdb::Identifier> qualification;
 		for (idx_t i = 0; i + 1 < part_count; i++) {
-			qualification.push_back(duckdb::Identifier(ConvertIdentifierName(parts[i])));
+			qualification.push_back(duckdb::Identifier(part_views[i]));
 		}
-		auto name = duckdb::QualifiedName(std::move(qualification),
-		                                  duckdb::Identifier(ConvertIdentifierName(parts[part_count - 1])));
+		auto name = duckdb::QualifiedName(std::move(qualification), duckdb::Identifier(part_views[part_count - 1]));
 		CheckQNameParts(name, "duckdb_v2_qname_create");
 		*out_name = Convert(new duckdb::QualifiedName(std::move(name)));
 	});
@@ -74,11 +74,13 @@ DUCKDB_V2_ERROR duckdb_v2_qname_get_part_count(duckdb_v2_qname_handle name, idx_
 	return WithErrorHandler(err, [&]() { *out_count = Convert(name)->Path().size(); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_qname_get_part(duckdb_v2_qname_handle name, idx_t index, duckdb_v2_identifier_t *out_part,
-                                         duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_qname_get_part(duckdb_v2_qname_handle name, idx_t index, const char **out_part,
+                                         idx_t *out_part_length, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(name);
 	DUCKDB_CHECK_ARG(out_part);
-	*out_part = duckdb_v2_identifier_t {nullptr, 0};
+	DUCKDB_CHECK_ARG(out_part_length);
+	*out_part = nullptr;
+	*out_part_length = 0;
 	return WithErrorHandler(err, [&]() {
 		auto &path = Convert(name)->Path();
 		if (index >= path.size()) {
@@ -88,7 +90,7 @@ DUCKDB_V2_ERROR duckdb_v2_qname_get_part(duckdb_v2_qname_handle name, idx_t inde
 			                                                   static_cast<uint64_t>(index),
 			                                                   static_cast<uint64_t>(path.size())));
 		}
-		*out_part = Convert(path[index]);
+		SetStringOut(out_part, out_part_length, path[index]);
 	});
 }
 

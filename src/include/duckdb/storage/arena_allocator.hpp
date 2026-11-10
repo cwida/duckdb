@@ -133,18 +133,18 @@ public:
 	}
 
 	template <class T, class... ARGS>
-	T *Make(ARGS &&... args) {
+	T *Make(ARGS &&...args) {
 		auto mem = AllocateAligned(sizeof(T));
 		return new (mem) T(std::forward<ARGS>(args)...);
 	}
 
 	template <class T, class... ARGS>
-	arena_ptr<T> MakePtr(ARGS &&... args) {
+	arena_ptr<T> MakePtr(ARGS &&...args) {
 		return arena_ptr<T>(Make<T>(std::forward<ARGS>(args)...));
 	}
 
 	template <class T, class... ARGS>
-	unsafe_arena_ptr<T> MakeUnsafePtr(ARGS &&... args) {
+	unsafe_arena_ptr<T> MakeUnsafePtr(ARGS &&...args) {
 		return unsafe_arena_ptr<T>(Make<T>(std::forward<ARGS>(args)...));
 	}
 

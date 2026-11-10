@@ -3,8 +3,13 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector.hpp"
+
+#include <cmath>
+#include <limits>
 
 using namespace duckdb; // NOLINT
 
@@ -329,4 +334,37 @@ TEST_CASE("Test casting to double", "[cast]") {
 	    "1 . 2", "1. 2",    "1.2 e20",
 	    "+"};
 	TestStringCastDouble<double>(working_values, expected_values, broken_values);
+}
+
+TEST_CASE("Test converting long double to HUGEINT and UHUGEINT", "[cast]") {
+	const long double two_to_the_127 = std::ldexp(1.0L, 127);
+	hugeint_t hugeint_result;
+	REQUIRE(Hugeint::TryConvert(-two_to_the_127, hugeint_result));
+	REQUIRE(hugeint_result == NumericLimits<hugeint_t>::Minimum());
+	REQUIRE(!Hugeint::TryConvert(two_to_the_127, hugeint_result));
+	REQUIRE(!Hugeint::TryConvert(-two_to_the_127 * 2, hugeint_result));
+
+	uhugeint_t uhugeint_result;
+	REQUIRE(Uhugeint::TryConvert(two_to_the_127, uhugeint_result));
+	REQUIRE(uhugeint_result == uhugeint_t(uint64_t(1) << 63, 0));
+	REQUIRE(!Uhugeint::TryConvert(two_to_the_127 * 2, uhugeint_result));
+
+	if (std::numeric_limits<long double>::digits < 64) {
+		return;
+	}
+	// Exact only in a long double with at least 64 mantissa bits, and lost by a conversion through double.
+	const long double uint64_maximum = static_cast<long double>(NumericLimits<uint64_t>::Maximum());
+	const long double above_uint64 = std::ldexp(1.0L, 66) + 8;
+	REQUIRE(Hugeint::TryConvert(uint64_maximum, hugeint_result));
+	REQUIRE(hugeint_result == hugeint_t(0, NumericLimits<uint64_t>::Maximum()));
+	REQUIRE(Hugeint::TryConvert(-uint64_maximum, hugeint_result));
+	REQUIRE(hugeint_result == -hugeint_t(0, NumericLimits<uint64_t>::Maximum()));
+	REQUIRE(Hugeint::TryConvert(above_uint64, hugeint_result));
+	REQUIRE(hugeint_result == hugeint_t(4, 8));
+	REQUIRE(Hugeint::TryConvert(-above_uint64, hugeint_result));
+	REQUIRE(hugeint_result == -hugeint_t(4, 8));
+	REQUIRE(Uhugeint::TryConvert(uint64_maximum, uhugeint_result));
+	REQUIRE(uhugeint_result == uhugeint_t(0, NumericLimits<uint64_t>::Maximum()));
+	REQUIRE(Uhugeint::TryConvert(above_uint64, uhugeint_result));
+	REQUIRE(uhugeint_result == uhugeint_t(4, 8));
 }

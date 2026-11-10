@@ -562,6 +562,10 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::TransformParquetStatistics(
 		    max_stats_type == StringStatsType::EXACT_STATS && min_stats == max_stats) {
 			auto constant_stats = StringStats::CreateEmpty(type);
 			StringStats::FromConstant(constant_stats, string_t(min_stats));
+			// min/max statistics do not tell us whether the chunk also contains NULL values. CreateEmpty
+			// leaves the validity mask as "no rows at all", which lets an IS NULL filter prune pages that
+			// do contain nulls. Keep the validity unknown here; callers that know the null count refine it.
+			constant_stats.Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
 			return constant_stats.ToUnique();
 		}
 		auto string_stats = StringStats::CreateUnknown(type);
@@ -1176,6 +1180,11 @@ ParquetStatisticsUtils::GetBloomFilterHashStrategy(const ParquetColumnSchema &sc
 	}
 }
 
+bool ParquetStatisticsUtils::HasBloomFilterConstants(const TableFilter &filter,
+                                                     ParquetBloomFilterHashStrategy hash_strategy) {
+	return HasFilterConstants(filter, hash_strategy);
+}
+
 bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filter,
                                                  const duckdb_parquet::ColumnMetaData &column_meta_data,
                                                  TProtocol &file_proto, Allocator &allocator,
@@ -1205,7 +1214,10 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 
 	transport.SetLocation(bloom_filter_start);
 	if (bloom_filter_length > 0) {
-		transport.Prefetch(bloom_filter_start, bloom_filter_length);
+		auto read_head = transport.GetReadHead(bloom_filter_start, bloom_filter_length);
+		if (!read_head || !read_head->data_isset) {
+			transport.Prefetch(bloom_filter_start, bloom_filter_length);
+		}
 	}
 
 	duckdb_parquet::BloomFilterHeader filter_header;

@@ -22,6 +22,18 @@ SELECT * FROM read_json_objects('{DATA_DIR}/json/example_rn.ndjson', format='nd'
 statement ok
 SET memory_limit='50MiB';
 
+query I
+SELECT * FROM read_json_objects('{DATA_DIR}/json/example_rn.ndjson', format='nd');
+----
+{"id":1,"name":"O Brother, Where Art Thou?"}
+{"id":2,"name":"Home for the Holidays"}
+{"id":3,"name":"The Firm"}
+{"id":4,"name":"Broadcast News"}
+{"id":5,"name":"Raising Arizona"}
+
+statement ok
+SET memory_limit='20MiB';
+
 statement error
 SELECT * FROM read_json_objects('{DATA_DIR}/json/example_rn.ndjson', format='nd');
 ----

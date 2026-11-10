@@ -994,3 +994,20 @@ TEST_CASE("Test appender when the search path resolves into a read only database
 	}
 	REQUIRE(failed);
 }
+
+TEST_CASE("Test appender on a view keeps the open transaction", "[appender]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE u(k INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE VIEW vw AS SELECT 1 AS k"));
+
+	REQUIRE_NO_FAIL(con.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (1)"));
+	REQUIRE_THROWS_AS(Appender(con, "vw"), CatalogException);
+	REQUIRE_THROWS_WITH(Appender(con, "vw"), Catch::Matchers::Contains("vw' could not be found"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO u VALUES (2)"));
+	REQUIRE_NO_FAIL(con.Query("COMMIT"));
+
+	auto result = con.Query("SELECT k FROM u ORDER BY k");
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2}));
+}

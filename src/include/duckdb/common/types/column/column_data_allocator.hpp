@@ -44,6 +44,8 @@ public:
 	                             ColumnDataCollectionLifetime lifetime = ColumnDataCollectionLifetime::REGULAR);
 	ColumnDataAllocator(ClientContext &context, ColumnDataAllocatorType allocator_type,
 	                    ColumnDataCollectionLifetime lifetime = ColumnDataCollectionLifetime::REGULAR);
+	ColumnDataAllocator(Context &context, ColumnDataAllocatorType allocator_type,
+	                    ColumnDataCollectionLifetime lifetime = ColumnDataCollectionLifetime::REGULAR);
 	ColumnDataAllocator(ColumnDataAllocator &allocator);
 	~ColumnDataAllocator();
 

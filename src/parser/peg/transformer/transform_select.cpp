@@ -1049,37 +1049,49 @@ void PEGTransformerFactory::InitializeWithClauseTrampoline(PEGTransformer &trans
                                                            GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	auto with_statement_list = ExtractParseResultsFromList(list_pr.Child<ListParseResult>(2));
-	process.ReserveChildSlots(with_statement_list.size());
-	for (idx_t i = with_statement_list.size(); i > 0; i--) {
-		auto child_idx = i - 1;
-		process.PushChild({with_statement_list[child_idx].get()}, child_idx);
-	}
+	auto entry_count = with_statement_list.size();
+	// the last slot holds the CTE map that is built up while the CTEs are transformed
+	process.ReserveChildSlots(entry_count + 1);
+	process.SetChildResult(entry_count, transformer.MakeResult<CommonTableExpressionMap>(CommonTableExpressionMap()));
+	// earlier CTEs are visible while transforming later ones (e.g. for PIVOT enum extraction)
+	transformer.stored_cte_map.push_back(process.GetResult<CommonTableExpressionMap>(entry_count));
+	process.manual_state = 0;
+	process.PushChild({with_statement_list[0].get()}, 0);
 }
 
 arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	bool is_recursive = list_pr.Child<OptionalParseResult>(1).HasResult();
-	CommonTableExpressionMap result;
-	for (idx_t entry_idx = 0; entry_idx < process.child_results.size(); entry_idx++) {
-		auto with_entry = process.TakeResult<pair<Identifier, unique_ptr<CommonTableExpressionInfo>>>(entry_idx);
-		if (is_recursive) {
-			auto &query_node = with_entry.second->query_node;
-			if (!query_node) {
-				throw ParserException("Recursive CTEs with DML statements are not supported");
-			}
-			ValidateRecursiveCTEQueryNode(*query_node);
-			query_node = ToRecursiveCTE(std::move(query_node), with_entry.first, with_entry.second->aliases,
-			                            with_entry.second->key_targets);
+	auto entry_count = process.child_results.size() - 1;
+	auto &result = process.GetResult<CommonTableExpressionMap>(entry_count);
+
+	auto entry_idx = process.manual_state;
+	auto with_entry = process.TakeResult<pair<Identifier, unique_ptr<CommonTableExpressionInfo>>>(entry_idx);
+	if (is_recursive) {
+		auto &query_node = with_entry.second->query_node;
+		if (!query_node) {
+			throw ParserException("Recursive CTEs with DML statements are not supported");
 		}
-		auto &cte_name = with_entry.first;
-		auto it = result.map.find(cte_name);
-		if (it != result.map.end()) {
-			throw ParserException("Duplicate CTE name %s", cte_name);
-		}
-		result.map.insert(with_entry.first, std::move(with_entry.second));
+		ValidateRecursiveCTEQueryNode(*query_node);
+		query_node = ToRecursiveCTE(std::move(query_node), with_entry.first, with_entry.second->aliases,
+		                            with_entry.second->key_targets);
 	}
-	return transformer.MakeResult<CommonTableExpressionMap>(std::move(result));
+	auto &cte_name = with_entry.first;
+	auto it = result.map.find(cte_name);
+	if (it != result.map.end()) {
+		throw ParserException("Duplicate CTE name %s", cte_name);
+	}
+	result.map.insert(with_entry.first, std::move(with_entry.second));
+
+	if (entry_idx + 1 < entry_count) {
+		process.manual_state = entry_idx + 1;
+		auto with_statement_list = ExtractParseResultsFromList(list_pr.Child<ListParseResult>(2));
+		process.PushChild({with_statement_list[entry_idx + 1].get()}, entry_idx + 1);
+		return nullptr;
+	}
+	transformer.stored_cte_map.pop_back();
+	return transformer.MakeResult<CommonTableExpressionMap>(process.TakeResult<CommonTableExpressionMap>(entry_count));
 }
 
 pair<Identifier, unique_ptr<CommonTableExpressionInfo>>
@@ -1534,19 +1546,22 @@ unique_ptr<BaseTableRef> PEGTransformerFactory::TransformCatalogReservedSchemaTa
 	return make_uniq<BaseTableRef>(description);
 }
 
-QualifiedName PEGTransformerFactory::TransformQualifiedTableFunction(
-    PEGTransformer &transformer, const optional<Identifier> &catalog_qualification,
-    const optional<vector<Identifier>> &schema_qualification, const Identifier &table_function_name) {
+QualifiedName PEGTransformerFactory::TransformCatalogReservedSchemaTableFunctionName(
+    PEGTransformer &transformer, const Identifier &catalog_qualification,
+    const optional<vector<Identifier>> &schema_qualification, const Identifier &reserved_table_function_name) {
 	vector<Identifier> qualification;
-	if (catalog_qualification) {
-		qualification.push_back(*catalog_qualification);
-	}
+	qualification.push_back(catalog_qualification);
 	if (schema_qualification) {
 		for (auto &schema : *schema_qualification) {
 			qualification.push_back(schema);
 		}
 	}
-	return QualifiedName(std::move(qualification), table_function_name);
+	return QualifiedName(std::move(qualification), reserved_table_function_name);
+}
+
+QualifiedName PEGTransformerFactory::TransformTableFunctionNameAsQualifiedName(PEGTransformer &transformer,
+                                                                               const Identifier &table_function_name) {
+	return QualifiedName(table_function_name);
 }
 
 vector<FunctionArgument>

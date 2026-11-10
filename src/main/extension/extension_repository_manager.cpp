@@ -229,6 +229,17 @@ ExtensionRepositoryAccess ExtensionRepositoryManager::GetAccess(DatabaseInstance
 	return ParseAccess(Settings::Get<AllowExtensionRepositoriesSetting>(db));
 }
 
+bool ExtensionRepositoryManager::TrustsExistingRepositories(DatabaseInstance &db) {
+	// the access values that trust existing repositories are listed explicitly, any other value distrusts them
+	switch (GetAccess(db)) {
+	case ExtensionRepositoryAccess::UNDECIDED:
+	case ExtensionRepositoryAccess::ALLOWED:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void ExtensionRepositoryManager::CheckNotLocked(DatabaseInstance &db) {
 	// modifying the trusted repositories changes the set of keys that are trusted to sign extensions, so it is gated
 	// by the configuration lock: a locked configuration freezes the trust store
