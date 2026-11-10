@@ -1138,13 +1138,21 @@ unique_ptr<QueryResult> ClientContext::SubmitInternal(ClientContextLock &lock, u
 }
 
 void ClientContext::Interrupt() {
-	ClientInterruptState expected = ClientInterruptState::NOT_INTERRUPTED;
-	interrupt_state.compare_exchange_strong(expected, ClientInterruptState::INTERRUPTED);
+	auto state = interrupt_state.load();
+	while (state == ClientInterruptState::NOT_INTERRUPTED || state == ClientInterruptState::INTERRUPTS_SUPPRESSED) {
+		auto interrupted = state == ClientInterruptState::INTERRUPTS_SUPPRESSED
+		                       ? ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED
+		                       : ClientInterruptState::INTERRUPTED;
+		if (interrupt_state.compare_exchange_weak(state, interrupted)) {
+			return;
+		}
+	}
 }
 
 bool ClientContext::IsInterrupted() const {
 	auto state = interrupt_state.load(std::memory_order_relaxed);
-	if (state == ClientInterruptState::INTERRUPTS_SUPPRESSED) {
+	if (state == ClientInterruptState::INTERRUPTS_SUPPRESSED ||
+	    state == ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED) {
 		return false;
 	}
 	// an internal connection is also interrupted when its base client is
@@ -1156,7 +1164,11 @@ void ClientContext::ClearInterrupt() {
 }
 
 void ClientContext::SuppressInterrupts() {
-	interrupt_state = ClientInterruptState::INTERRUPTS_SUPPRESSED;
+	auto previous = interrupt_state.exchange(ClientInterruptState::INTERRUPTS_SUPPRESSED);
+	if (previous == ClientInterruptState::INTERRUPTED ||
+	    previous == ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED) {
+		Interrupt();
+	}
 }
 
 void ClientContext::InterruptCheck() const {
@@ -1188,7 +1200,9 @@ bool ClientContext::HasQueryDeadline() const {
 
 static bool InterruptsSuppressed(const ClientContext &context) {
 	// Internal queries can have their own deadline while their caller is finalizing.
-	return context.interrupt_state.load(std::memory_order_relaxed) == ClientInterruptState::INTERRUPTS_SUPPRESSED ||
+	auto state = context.interrupt_state.load(std::memory_order_relaxed);
+	return state == ClientInterruptState::INTERRUPTS_SUPPRESSED ||
+	       state == ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED ||
 	       (context.base_context && InterruptsSuppressed(*context.base_context));
 }
 

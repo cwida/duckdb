@@ -1335,19 +1335,20 @@ const StringUtil::EnumStringLiteral *GetClientInterruptStateValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ClientInterruptState::NOT_INTERRUPTED), "NOT_INTERRUPTED" },
 		{ static_cast<uint32_t>(ClientInterruptState::INTERRUPTED), "INTERRUPTED" },
-		{ static_cast<uint32_t>(ClientInterruptState::INTERRUPTS_SUPPRESSED), "INTERRUPTS_SUPPRESSED" }
+		{ static_cast<uint32_t>(ClientInterruptState::INTERRUPTS_SUPPRESSED), "INTERRUPTS_SUPPRESSED" },
+		{ static_cast<uint32_t>(ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED), "INTERRUPTED_WHILE_SUPPRESSED" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ClientInterruptState>(ClientInterruptState value) {
-	return StringUtil::EnumToString(GetClientInterruptStateValues(), 3, "ClientInterruptState", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetClientInterruptStateValues(), 4, "ClientInterruptState", static_cast<uint32_t>(value));
 }
 
 template<>
 ClientInterruptState EnumUtil::FromString<ClientInterruptState>(const char *value) {
-	return static_cast<ClientInterruptState>(StringUtil::StringToEnum(GetClientInterruptStateValues(), 3, "ClientInterruptState", value));
+	return static_cast<ClientInterruptState>(StringUtil::StringToEnum(GetClientInterruptStateValues(), 4, "ClientInterruptState", value));
 }
 
 const StringUtil::EnumStringLiteral *GetColumnDataAllocatorTypeValues() {

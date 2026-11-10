@@ -73,7 +73,7 @@ TEST_CASE("Transaction finalization finishes despite caller cancellation", "[api
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE items(i INTEGER)"));
 	auto state = make_shared_ptr<FinalizationInterruptState>();
-	con.context->registered_state->Insert("finalization_interrupt", state);
+	con.context->GetContext().GetRegisteredState().Insert("finalization_interrupt", state);
 	bool committed = false;
 	SECTION("explicit commit") {
 		con.BeginTransaction();
@@ -128,7 +128,7 @@ TEST_CASE("Cancellation during commit stops later statements in the same query",
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE items(i INTEGER)"));
 	auto state = make_shared_ptr<CommitCancellationState>();
-	con.context->registered_state->Insert("commit_cancellation", state);
+	con.context->GetContext().GetRegisteredState().Insert("commit_cancellation", state);
 	unique_ptr<QueryResult> result;
 	SECTION("autocommit") {
 		state->armed = true;

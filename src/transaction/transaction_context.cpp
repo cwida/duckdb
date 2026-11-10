@@ -19,7 +19,10 @@ public:
 	    : context(context_p), previous(context.interrupt_state.exchange(ClientInterruptState::INTERRUPTS_SUPPRESSED)) {
 	}
 	~TransactionInterruptGuard() {
-		context.interrupt_state = previous;
+		auto state = context.interrupt_state.exchange(previous);
+		if (state == ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED) {
+			context.Interrupt();
+		}
 	}
 
 private:

@@ -87,7 +87,12 @@ struct StatementSignature {
 };
 
 //! Interrupt state for the client context
-enum class ClientInterruptState : uint8_t { NOT_INTERRUPTED, INTERRUPTED, INTERRUPTS_SUPPRESSED };
+enum class ClientInterruptState : uint8_t {
+	NOT_INTERRUPTED,
+	INTERRUPTED,
+	INTERRUPTS_SUPPRESSED,
+	INTERRUPTED_WHILE_SUPPRESSED
+};
 
 //! The ClientContext holds information relevant to the current client session
 //! during execution

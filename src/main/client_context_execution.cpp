@@ -33,8 +33,16 @@ namespace duckdb {
 void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStatement statements,
                                        const QueryParameters &parameters, Retention retention) {
 	// Suppression after an irreversible operation ends with its statement.
-	auto suppressed = ClientInterruptState::INTERRUPTS_SUPPRESSED;
-	interrupt_state.compare_exchange_strong(suppressed, ClientInterruptState::NOT_INTERRUPTED);
+	auto state = interrupt_state.load();
+	while (state == ClientInterruptState::INTERRUPTS_SUPPRESSED ||
+	       state == ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED) {
+		auto restored = state == ClientInterruptState::INTERRUPTED_WHILE_SUPPRESSED
+		                    ? ClientInterruptState::INTERRUPTED
+		                    : ClientInterruptState::NOT_INTERRUPTED;
+		if (interrupt_state.compare_exchange_weak(state, restored)) {
+			break;
+		}
+	}
 	// check if we are on AutoCommit. In this case we should start a transaction
 	D_ASSERT(!active_query);
 	D_ASSERT(!statements.statements.empty());
