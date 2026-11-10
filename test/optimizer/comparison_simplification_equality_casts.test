@@ -165,11 +165,45 @@ FROM v;
 ----
 1	3	1	1	1	2	1	1
 
-# a double cannot tell apart all decimals with more digits
+# DECIMAL -> DOUBLE (FLOAT) only if its width fits in the 15 (6) digits the floating type tells apart
 query II
-EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(18,2)::DOUBLE = 1.5::DOUBLE;
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(15,2)::DOUBLE = 1.5::DOUBLE AND d::DECIMAL(6,2)::FLOAT = 1.5::FLOAT;
+----
+analyzed_plan	<!REGEX>:.*AS (DOUBLE|FLOAT).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(16,2)::DOUBLE = 1.5::DOUBLE;
 ----
 analyzed_plan	<REGEX>:.*AS DOUBLE.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM v WHERE d::DECIMAL(7,2)::FLOAT = 1.5::FLOAT;
+----
+analyzed_plan	<REGEX>:.*AS FLOAT.*
+
+query II
+SELECT
+	count(*) FILTER (WHERE d::DECIMAL(6,2)::FLOAT IN (1.5::FLOAT, 1.501::FLOAT, -2::FLOAT)),
+	count(*) FILTER (WHERE d::DECIMAL(6,2)::FLOAT != 1.501::FLOAT)
+FROM v;
+----
+2	2
+
+# DECIMAL(w,0) -> integer only if the integer type fits all w digits
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::DECIMAL(10,0)::BIGINT IN (5, 5000000000);
+----
+analyzed_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a::DECIMAL(10,0)::INTEGER = 5;
+----
+analyzed_plan	<REGEX>:.*AS INTEGER.*
+
+query I
+SELECT count(*) FILTER (WHERE a::DECIMAL(10,0)::BIGINT IN (5, 5000000000)) FROM t;
+----
+1
 
 # temporal -> VARCHAR: only the canonical string of a value can match
 statement ok
